@@ -2,14 +2,23 @@ import React, { memo, useCallback, useMemo, type ReactNode } from "react";
 import { View } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { MAX_CONTENT_WIDTH } from "@/constants/layout";
-import { SPACING, type Theme } from "@/styles/theme";
+import { type Theme } from "@/styles/theme";
+import {
+  TURN_FOOTER_BOTTOM_SPACING,
+  TURN_FOOTER_COMPACT_BOTTOM_SPACING,
+  type TurnFooterDensity,
+} from "./turn-footer-spacing";
 import type { TurnTiming } from "@/timeline/turn-time";
 import type { StreamItem } from "@/types/stream";
 import {
   collectAssistantResponseContentForStreamRenderStrategy,
   type StreamStrategy,
 } from "./strategy";
-import { resolveAssistantTurnForkBoundary, type AssistantTurnForkBoundary } from "./turn-boundary";
+import {
+  resolveAssistantTurnForkBoundary,
+  resolvePrecedingUserMessage,
+  type AssistantTurnForkBoundary,
+} from "./turn-boundary";
 import {
   AssistantTurnFooter,
   LiveElapsed,
@@ -23,13 +32,20 @@ import { useRetainedPanelActive } from "@/components/retained-panel";
 
 const ThemedSyncedLoader = withUnistyles(SyncedLoader);
 const workingIndicatorColorMapping = (theme: Theme) => ({ color: theme.colors.foreground });
-export const TURN_FOOTER_BOTTOM_SPACING = SPACING[8];
+export {
+  TURN_FOOTER_BOTTOM_SPACING,
+  TURN_FOOTER_COMPACT_BOTTOM_SPACING,
+  resolveTurnFooterBottomSpacing,
+  type TurnFooterDensity,
+} from "./turn-footer-spacing";
 
 export type TurnContentStrategy = StreamStrategy;
 export type AssistantTurnForkHandler = (input: {
   target: AssistantForkTarget;
   boundary: AssistantTurnForkBoundary;
 }) => Promise<void> | void;
+export type JumpToUserMessageHandler = (itemId: string) => void;
+
 /**
  * Fork handler for the turn that is still streaming. It deliberately takes no
  * boundary: `selectForkContextRows` projects the entire timeline when neither
@@ -49,7 +65,9 @@ export const TurnFooter = memo(function TurnFooter({
   strategy,
   supportsTimelineCursor,
   onForkAssistantTurn,
+  onJumpToUserMessage,
   onForkInFlightTurn,
+  density = "comfortable",
 }: {
   isRunning: boolean;
   inFlightTurnStartedAt: Date | null;
@@ -57,14 +75,22 @@ export const TurnFooter = memo(function TurnFooter({
   strategy: TurnContentStrategy;
   supportsTimelineCursor: boolean;
   onForkAssistantTurn?: AssistantTurnForkHandler;
+  onJumpToUserMessage?: JumpToUserMessageHandler;
   onForkInFlightTurn?: InFlightTurnForkHandler;
+  density?: TurnFooterDensity;
 }) {
+  // Compact grid tiles must not keep the live elapsed row or the completed
+  // 3-dot/fork chrome. Hide the whole footer, not just the fork control.
+  if (density === "compact") {
+    return null;
+  }
   if (isRunning) {
     return (
       <TurnFooterRow>
         <RunningTurnFooter
           inFlightTurnStartedAt={inFlightTurnStartedAt}
           onForkInFlightTurn={onForkInFlightTurn}
+          density={density}
         />
       </TurnFooterRow>
     );
@@ -80,6 +106,7 @@ export const TurnFooter = memo(function TurnFooter({
       startIndex={host.startIndex}
       supportsTimelineCursor={supportsTimelineCursor}
       onForkAssistantTurn={onForkAssistantTurn}
+      onJumpToUserMessage={onJumpToUserMessage}
     />
   );
 });
@@ -91,6 +118,7 @@ export const CompletedTurnFooterRow = memo(function CompletedTurnFooterRow({
   startIndex,
   supportsTimelineCursor,
   onForkAssistantTurn,
+  onJumpToUserMessage,
 }: {
   strategy: TurnContentStrategy;
   items: StreamItem[];
@@ -98,6 +126,7 @@ export const CompletedTurnFooterRow = memo(function CompletedTurnFooterRow({
   startIndex: number;
   supportsTimelineCursor: boolean;
   onForkAssistantTurn?: AssistantTurnForkHandler;
+  onJumpToUserMessage?: JumpToUserMessageHandler;
 }) {
   return (
     <TurnFooterRow>
@@ -108,6 +137,7 @@ export const CompletedTurnFooterRow = memo(function CompletedTurnFooterRow({
         startIndex={startIndex}
         supportsTimelineCursor={supportsTimelineCursor}
         onForkAssistantTurn={onForkAssistantTurn}
+        onJumpToUserMessage={onJumpToUserMessage}
       />
     </TurnFooterRow>
   );
@@ -143,12 +173,21 @@ const WorkingIndicator = memo(function WorkingIndicator({
 function RunningTurnFooter({
   inFlightTurnStartedAt,
   onForkInFlightTurn,
+  density = "comfortable",
 }: {
   inFlightTurnStartedAt: Date | null;
   onForkInFlightTurn?: InFlightTurnForkHandler;
+  density?: TurnFooterDensity;
 }) {
   return (
-    <View style={stylesheet.turnFooterSlot} testID="turn-working-indicator">
+    <View
+      style={
+        density === "compact"
+          ? [stylesheet.turnFooterSlot, stylesheet.turnFooterSlotCompact]
+          : stylesheet.turnFooterSlot
+      }
+      testID="turn-working-indicator"
+    >
       <WorkingIndicator
         inFlightTurnStartedAt={inFlightTurnStartedAt}
         onForkInFlightTurn={onForkInFlightTurn}
@@ -164,6 +203,7 @@ function CompletedTurnFooter({
   startIndex,
   supportsTimelineCursor,
   onForkAssistantTurn,
+  onJumpToUserMessage,
 }: {
   strategy: TurnContentStrategy;
   items: StreamItem[];
@@ -171,6 +211,7 @@ function CompletedTurnFooter({
   startIndex: number;
   supportsTimelineCursor: boolean;
   onForkAssistantTurn?: AssistantTurnForkHandler;
+  onJumpToUserMessage?: JumpToUserMessageHandler;
 }) {
   const getContent = useCallback(
     () =>
@@ -186,6 +227,15 @@ function CompletedTurnFooter({
     startIndex,
     supportsTimelineCursor,
   });
+  const precedingUserMessage = useMemo(
+    () =>
+      resolvePrecedingUserMessage({
+        items,
+        startIndex,
+        getNeighborIndex: strategy.getNeighborIndex,
+      }),
+    [items, startIndex, strategy],
+  );
   const handleFork = useCallback(
     (target: AssistantForkTarget) => {
       if (!boundary) {
@@ -195,6 +245,12 @@ function CompletedTurnFooter({
     },
     [boundary, onForkAssistantTurn],
   );
+  const handleJumpToUserMessage = useCallback(() => {
+    if (!precedingUserMessage || !onJumpToUserMessage) {
+      return;
+    }
+    onJumpToUserMessage(precedingUserMessage.id);
+  }, [onJumpToUserMessage, precedingUserMessage]);
   return (
     <View style={stylesheet.turnFooterSlot}>
       <AssistantTurnFooter
@@ -202,6 +258,9 @@ function CompletedTurnFooter({
         completedAt={timing?.completedAt}
         durationMs={timing?.durationMs}
         onFork={boundary && onForkAssistantTurn ? handleFork : undefined}
+        onJumpToUserMessage={
+          precedingUserMessage && onJumpToUserMessage ? handleJumpToUserMessage : undefined
+        }
       />
     </View>
   );
@@ -216,6 +275,8 @@ const stylesheet = StyleSheet.create((theme) => ({
   streamItemWrapper: {
     width: "100%",
     maxWidth: MAX_CONTENT_WIDTH,
+    // Web flex parents often ignore alignSelf centering; match the composer.
+    marginHorizontal: "auto",
     alignSelf: "center",
     paddingHorizontal: theme.spacing[2],
   },
@@ -228,6 +289,9 @@ const stylesheet = StyleSheet.create((theme) => ({
     alignSelf: "flex-start",
     minHeight: 24,
     paddingBottom: TURN_FOOTER_BOTTOM_SPACING,
+  },
+  turnFooterSlotCompact: {
+    paddingBottom: TURN_FOOTER_COMPACT_BOTTOM_SPACING,
   },
   turnFooterContent: {
     height: 24,

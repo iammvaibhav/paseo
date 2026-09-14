@@ -7,6 +7,8 @@ import { supportsDesktopPaneSplits, useIsCompactFormFactor } from "@/constants/l
 import { usePaneContext } from "@/panels/pane-context";
 import { useSettings } from "@/hooks/use-settings";
 import { PluginComposerPills } from "@/plugins";
+import { SelectionAsksList, selectSelectionAsks } from "@/selection-ask";
+import { useShallow } from "zustand/shallow";
 import { useSessionStore } from "@/stores/session-store";
 import {
   type ArchiveFinishedStatus,
@@ -24,9 +26,6 @@ import { openComposerChanges } from "@/workspace-tabs/open-supporting-view";
 /**
  * The pane's ambient context — workspace changes, subagents, and tasks — as a row of pills above
  * the composer.
- *
- * The row shares the composer's keyboard transform and owns the space between itself and the
- * transcript. Each pill owns its action while tab placement stays behind the workspace boundary.
  */
 export const AgentTracks = memo(function AgentTracks({
   serverId,
@@ -51,6 +50,10 @@ export const AgentTracks = memo(function AgentTracks({
 }): ReactElement | null {
   const { tabId, openTab } = usePaneContext();
   const hasWorkspaceDiffStat = useWorkspaceHasDiffStat(serverId, workspaceId);
+  const selectionAsks = useSessionStore(
+    useShallow((state) => selectSelectionAsks(state, serverId, agentId)),
+  );
+  const hasSelectionAsks = selectionAsks.length > 0;
   const isCompact = useIsCompactFormFactor();
   const canSplit = supportsDesktopPaneSplits() && !isCompact;
   const openInSidePane = useSettings((settings) => settings.openInSidePane);
@@ -119,6 +122,7 @@ export const AgentTracks = memo(function AgentTracks({
       tasks,
       archiveFinishedStatus,
       hasPluginComposerPills,
+      hasSelectionAsks,
     })
   ) {
     return null;
@@ -137,6 +141,7 @@ export const AgentTracks = memo(function AgentTracks({
         archiveFinishedStatus={archiveFinishedStatus}
         onDetachSubagent={canDetachSubagents ? detachSubagent : undefined}
       />
+      <SelectionAsksList serverId={serverId} agentId={agentId} />
       <PluginComposerPills
         serverId={serverId}
         workspaceId={workspaceId}
@@ -157,16 +162,19 @@ export function hasAgentTracks({
   tasks,
   archiveFinishedStatus,
   hasPluginComposerPills = false,
+  hasSelectionAsks = false,
 }: {
   subagentRows: readonly SubagentRow[];
   tasks: readonly TodoEntry[] | undefined;
   archiveFinishedStatus: ArchiveFinishedStatus;
   hasPluginComposerPills?: boolean;
+  hasSelectionAsks?: boolean;
 }): boolean {
   return (
     subagentRows.length > 0 ||
     Boolean(tasks?.length) ||
     archiveFinishedStatus.kind !== "idle" ||
-    hasPluginComposerPills
+    hasPluginComposerPills ||
+    hasSelectionAsks
   );
 }

@@ -1,0 +1,62 @@
+packages:
+  - "packages/expo-two-way-audio"
+  - "packages/highlight"
+  - "packages/plugin"
+  - "packages/protocol"
+  - "packages/client"
+  - "packages/server"
+  - "packages/app"
+  - "packages/relay"
+  - "packages/website"
+  - "packages/desktop"
+  - "packages/cli"
+
+allowBuilds:
+  dtrace-provider: true
+  electron-winstaller: true
+  esbuild: true
+  lefthook: true
+  node-pty: true
+  unrs-resolver: true
+  workerd: true
+
+# Supply-chain hardening: refuse to resolve a package version published less
+# than a week ago. Malicious releases are almost always pulled within days.
+minimumReleaseAge: 10080
+minimumReleaseAgeExclude:
+  - "@getpaseo/client@0.8.0-beta.1"
+  - "@getpaseo/highlight@0.8.0-beta.1"
+  - "@getpaseo/plugin@0.8.0-beta.1"
+  - "@getpaseo/protocol@0.8.0-beta.1"
+  - "@getpaseo/relay@0.8.0-beta.1"
+  - electron@44.2.0
+minimumReleaseAgeStrict: false
+
+overrides:
+  "@codemirror/language": "6.12.4"
+  "@types/react": "~19.2.0"
+  # supports-color has two incompatible lines in this tree: CJS (<=9.x,
+  # named `supportsColor` export) and pure-ESM v10 (no named export, so
+  # every CJS `require('supports-color').supportsColor` throws). debug
+  # declares an OPTIONAL supports-color peer with range "*", which admits
+  # v10, and pnpm then resolves it differently per subtree (10.2.2 vs
+  # 8.1.1) — splitting react-native (and debug itself) into duplicate
+  # instances and breaking packages/app typecheck. npm-era resolution
+  # was uniformly 8.1.1 via root hoisting, so pin the whole tree back
+  # to CJS 8.1.1. NOTE: pnpm parent selectors (e.g.
+  # "debug>supports-color") do NOT match optional peer edges —
+  # verified empirically: the pin was recorded but both debug variants
+  # survived. Only a global override collapses them.
+  supports-color: "8.1.1"
+  # Carve-out: supports-hyperlinks declares ^7.0.0 directly (regular
+  # dep, so the parent selector DOES match here) and must stay on its
+  # author-tested 7.x line — 8.1.1 is outside its range.
+  "supports-hyperlinks>supports-color": "7.2.0"
+  "@codemirror/view": "6.43.6"
+  lightningcss: "1.30.1"
+  react: "19.1.0"
+  react-dom: "19.1.0"
+  react-native-reanimated: "4.3.1"
+  react-native-worklets: "0.8.3"
+
+hoistWorkspacePackages: true

@@ -178,7 +178,7 @@ export interface WorktreeCheckoutRef {
 }
 
 export type WorktreeSource =
-  | { kind: "branch-off"; baseBranch: string; branchName: string }
+  | { kind: "branch-off"; baseBranch?: string; branchName: string }
   | { kind: "checkout-branch"; branchName: string }
   | {
       kind: "checkout-change-request";
@@ -283,6 +283,24 @@ export function getWorktreeSetupCommands(repoRoot: string): string[] {
 
 export function getWorktreeTeardownCommands(repoRoot: string): string[] {
   return readPaseoConfigOrThrow(repoRoot)?.worktree?.teardown ?? [];
+}
+
+/**
+ * The git ref this project cuts worktrees from (`worktree.warmPool.baseRef`),
+ * or undefined when unset. Shared with the warm pool on purpose: a project that
+ * pre-warms from a ref must also cut cold worktrees from it, or the two paths
+ * hand back workspaces on different branches.
+ */
+export function getWorktreeConfiguredBaseRef(repoRoot: string): string | undefined {
+  try {
+    const result = readPaseoConfig(repoRoot);
+    if (!result.ok || !result.config) {
+      return undefined;
+    }
+    return result.config.worktree?.warmPool?.baseRef?.trim() || undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export function getWorktreeTerminalSpecs(repoRoot: string): WorktreeTerminalConfig[] {
@@ -914,8 +932,7 @@ export function mapWorkspaceRelativeCwdToWorktree(input: {
   }
   return mappedCwd;
 }
-
-function normalizePathForOwnership(input: string): string {
+export function normalizePathForOwnership(input: string): string {
   try {
     return realpathSync(input);
   } catch {
@@ -1039,10 +1056,12 @@ export async function listPaseoWorktrees({
   cwd,
   paseoHome,
   worktreesRoot,
+  includeWarm,
 }: {
   cwd: string;
   paseoHome?: string;
   worktreesRoot?: string;
+  includeWarm?: boolean;
 }): Promise<PaseoWorktreeInfo[]> {
   const projectWorktreesRoot = await getPaseoWorktreesRoot(cwd, paseoHome, worktreesRoot);
   const { stdout } = await runGitCommand(["worktree", "list", "--porcelain"], {
@@ -1053,6 +1072,7 @@ export async function listPaseoWorktrees({
   return parseWorktreeList(stdout)
     .map((entry) => Object.assign({}, entry, { path: normalizePathForOwnership(entry.path) }))
     .filter((entry) => getRealpathAwareRelativePath(projectWorktreesRoot, entry.path) !== null)
+    .filter((entry) => includeWarm || !basename(entry.path).startsWith(".warm-"))
     .map((entry) =>
       Object.assign({}, entry, { createdAt: resolveWorktreeCreatedAtIso(entry.path) }),
     );
@@ -1230,10 +1250,28 @@ export const createWorktree = async ({
   }
 
   // Primitive owner for `git worktree add`; callers route through createWorktreeCore.
-  await runGitCommand(["worktree", "add", finalWorktreePath, ...sourcePlan.addArguments], {
-    cwd,
-    timeout: 120_000,
-  });
+  try {
+    await runGitCommand(["worktree", "add", finalWorktreePath, ...sourcePlan.addArguments], {
+      cwd,
+      timeout: 120_000,
+    });
+  } catch (error) {
+    // A killed `git worktree add` (the 120s timeout SIGKILLs mid-checkout)
+    // leaves the partial checkout AND its .git/worktrees/<slug> admin entry
+    // behind. Both cleanups are best-effort so neither can mask the git error
+    // the caller surfaces.
+    try {
+      await removeDirectoryWithRetries(finalWorktreePath);
+    } catch {
+      // ignore
+    }
+    try {
+      await runGitCommand(["worktree", "prune"], { cwd, timeout: 30_000 });
+    } catch {
+      // git prunes lazily
+    }
+    throw error;
+  }
   worktreePath = normalizePathForOwnership(finalWorktreePath);
 
   if (sourcePlan.pushRemote) {
@@ -1275,13 +1313,13 @@ export const createWorktree = async ({
   };
 };
 
-interface ResolveWorktreeSourcePlanOptions {
+export interface ResolveWorktreeSourcePlanOptions {
   cwd: string;
   source: WorktreeSource;
   desiredSlug: string;
 }
 
-interface WorktreeSourcePlan {
+export interface WorktreeSourcePlan {
   branchName: string;
   // Display name and exact ref are two different facts. The name cannot round-trip to a
   // commit — "main" resolves local-first even when the worktree was cut from a fork's
@@ -1302,7 +1340,7 @@ interface WorktreeSourcePlan {
   };
 }
 
-async function resolveWorktreeSourcePlan({
+export async function resolveWorktreeSourcePlan({
   cwd,
   source,
   desiredSlug,
@@ -1311,8 +1349,8 @@ async function resolveWorktreeSourcePlan({
     case "branch-off": {
       const branchName = source.branchName;
       await validateGitBranchName(cwd, branchName);
-      const normalizedBaseBranch = normalizeRequiredBaseBranch(source.baseBranch);
       const resolvedBaseBranch = await resolveBaseBranchForWorktree(cwd, source.baseBranch);
+      const normalizedBaseBranch = normalizeBaseRefName(resolvedBaseBranch);
       const branchExists = await localBranchExists(cwd, branchName);
       const base = branchExists ? branchName : resolvedBaseBranch;
       const candidateBranch = branchExists ? desiredSlug : branchName;
@@ -1429,7 +1467,7 @@ async function resolveWorktreeSourcePlan({
   }
 }
 
-async function configureWorktreePushRemote(options: {
+export async function configureWorktreePushRemote(options: {
   cwd: string;
   branchName: string;
   remote: {
@@ -1570,7 +1608,7 @@ async function getWorktreeRemotePushUrl(
   }
 }
 
-async function configureWorktreeTrackingRemote(options: {
+export async function configureWorktreeTrackingRemote(options: {
   cwd: string;
   branchName: string;
   remote: {
@@ -1611,11 +1649,70 @@ function normalizeRequiredBaseBranch(baseBranch: string): string {
   return normalizedBaseBranch;
 }
 
+async function resolveRepositoryDefaultBranchForWorktree(cwd: string): Promise<string> {
+  try {
+    const { stdout } = await runGitCommand(
+      ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
+      {
+        cwd,
+        envOverlay: READ_ONLY_GIT_ENV,
+      },
+    );
+    const ref = stdout.trim();
+    if (ref) {
+      const remoteShort = ref.replace(/^refs\/remotes\//, "");
+      const localName = remoteShort.startsWith("origin/")
+        ? remoteShort.slice("origin/".length)
+        : remoteShort;
+      try {
+        await runGitCommand(["show-ref", "--verify", "--quiet", `refs/heads/${localName}`], {
+          cwd,
+          envOverlay: READ_ONLY_GIT_ENV,
+        });
+        return localName;
+      } catch {
+        return remoteShort;
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  const { stdout } = await runGitCommand(["branch", "--format=%(refname:short)"], {
+    cwd,
+    envOverlay: READ_ONLY_GIT_ENV,
+  });
+  const branches = new Set(
+    stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0),
+  );
+
+  if (branches.has("main")) {
+    return "main";
+  }
+  if (branches.has("master")) {
+    return "master";
+  }
+
+  const firstBranch = branches.values().next().value;
+  if (firstBranch) {
+    return firstBranch;
+  }
+
+  throw new Error("Unable to resolve repository default branch");
+}
+
 async function resolveBaseBranchForWorktree(
   cwd: string,
-  requestedBaseBranch: string,
+  requestedBaseBranch?: string,
 ): Promise<string> {
-  const requested = requestedBaseBranch.trim();
+  const requested = requestedBaseBranch?.trim();
+  if (!requested) {
+    const defaultBranch = await resolveRepositoryDefaultBranchForWorktree(cwd);
+    return resolveBaseBranchForWorktree(cwd, defaultBranch);
+  }
   const normalized = normalizeRequiredBaseBranch(requested);
   let exactRef: string | null = null;
   if (requested.startsWith("refs/")) {

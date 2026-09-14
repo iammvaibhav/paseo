@@ -21,6 +21,12 @@ import {
 } from "@/stores/session-store";
 import { useWorkspaceSetupStore } from "@/stores/workspace-setup-store";
 import { normalizeAgentSnapshot } from "@/utils/agent-snapshots";
+import {
+  beginPendingAgentLoaderSpan,
+  clearPendingAgentLoaderSpan,
+  resolvePendingAgentLoaderSpan,
+} from "@/utils/agent-loader-span";
+import { generateMessageId } from "@/types/stream";
 import { applyLegacyDaemonWorkspaceOwnership } from "@/workspace/legacy-daemon-workspaces";
 import { encodeImages } from "@/utils/encode-images";
 import { toErrorMessage } from "@/utils/error-messages";
@@ -343,19 +349,37 @@ export function WorkspaceSetupDialog() {
           workspaceId: "",
           provider: composerState.selectedProvider,
         });
-        const ensuredWorkspace = await ensureWorkspace({
-          cwd,
-          attachments,
-          agent: {
-            ...agentInput,
-            clientMessageId: `${pendingWorkspaceSetup.creationId}:initial-message`,
-          },
-          onAgentCreated: (value) => {
-            createdAgent = value;
-          },
-        });
+        // The loader span starts at the create request (not the dialog open) so
+        // the measured window is click-to-running for this surface, matching
+        // the composer draft flow. Resolved onto the real agent id on success,
+        // cleared on failure so a dead span never lingers.
+        const pendingSpanId = generateMessageId();
+        beginPendingAgentLoaderSpan(serverId, pendingSpanId, "create");
+        let ensuredWorkspace: Awaited<ReturnType<typeof ensureWorkspace>>;
+        try {
+          ensuredWorkspace = await ensureWorkspace({
+            cwd,
+            attachments,
+            agent: {
+              ...agentInput,
+              clientMessageId: `${pendingWorkspaceSetup.creationId}:initial-message`,
+            },
+            onAgentCreated: (value) => {
+              createdAgent = value;
+            },
+          });
+        } catch (error) {
+          clearPendingAgentLoaderSpan(serverId, pendingSpanId);
+          throw error;
+        }
         if (!createdAgent) throw new Error("The daemon did not create the requested agent");
         const agent = createdAgent;
+        resolvePendingAgentLoaderSpan(
+          serverId,
+          pendingSpanId,
+          agent.id,
+          agent.status === "running",
+        );
 
         if (!getIsStillActive()) {
           return;

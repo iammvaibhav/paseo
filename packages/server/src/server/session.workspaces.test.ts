@@ -557,6 +557,7 @@ function createSessionForWorkspaceTests(
     appVersion?: string | null;
     onMessage?: (message: SessionOutboundMessage) => void;
     onWorkspaceRecovered?: SessionOptions["onWorkspaceRecovered"];
+    onWorkspaceArchived?: SessionOptions["onWorkspaceArchived"];
     workspaceGitService?: ReturnType<typeof createNoopWorkspaceGitService>;
     terminalManager?: TerminalManager | null;
     agentManager?: { [K in keyof SessionOptions["agentManager"]]?: unknown };
@@ -585,6 +586,7 @@ function createSessionForWorkspaceTests(
     subscribe: () => () => {},
     listAgents: () => [],
     listProviderSubagentActivity: () => [],
+    getRegisteredProviderIds: () => [],
     getAgent: () => null,
     archiveAgent: async () => ({ archivedAt: new Date().toISOString() }),
     archiveSnapshot: async () => ({}),
@@ -652,6 +654,7 @@ function createSessionForWorkspaceTests(
       appVersion: options.appVersion ?? null,
       onMessage: options.onMessage ?? vi.fn(),
       onWorkspaceRecovered: options.onWorkspaceRecovered,
+      onWorkspaceArchived: options.onWorkspaceArchived,
       logger: asSessionLogger(logger),
       downloadTokenStore: asDownloadTokenStore(),
       pushNotifications: asPushNotifications(),
@@ -1584,6 +1587,7 @@ test("archive emits an authoritative agent_update upsert for subscribed clients"
       agentManager: asAgentManager({
         subscribe: () => () => {},
         listAgents: () => [],
+        getRegisteredProviderIds: () => ["codex"],
         getAgent: () => null,
         archiveAgent: async () => {
           const archivedAt = new Date().toISOString();
@@ -2068,6 +2072,7 @@ test("close_items_request archives agents and kills terminals in one batch", asy
       agentManager: asAgentManager({
         subscribe: () => () => {},
         listAgents: () => [],
+        getRegisteredProviderIds: () => ["codex"],
         getAgent: (agentId: string) => (agentId === "agent-1" ? { id: agentId } : null),
         hasInFlightRun: (agentId: string) => agentId === "agent-1",
         cancelAgentRun,
@@ -2238,6 +2243,7 @@ test("close_items_request archives stored agents that are not currently loaded",
       agentManager: asAgentManager({
         subscribe: () => () => {},
         listAgents: () => [],
+        getRegisteredProviderIds: () => ["codex"],
         getAgent: (agentId: string) => (agentId === "agent-live" ? { id: agentId } : null),
         hasInFlightRun: () => false,
         archiveAgent: async (agentId: string) => {
@@ -2399,6 +2405,7 @@ test("close_items_request continues after an archive failure", async () => {
       agentManager: asAgentManager({
         subscribe: () => () => {},
         listAgents: () => [],
+        getRegisteredProviderIds: () => ["codex"],
         getAgent: (agentId: string) =>
           agentId === "agent-bad" || agentId === "agent-good" ? { id: agentId } : null,
         hasInFlightRun: () => false,
@@ -3672,6 +3679,7 @@ test("workspace update stream keeps persisted workspace visible after agents sto
       agentManager: asAgentManager({
         subscribe: () => () => {},
         listAgents: () => [],
+        getRegisteredProviderIds: () => ["codex"],
         getAgent: () => null,
       }),
       agentStorage: asAgentStorage({
@@ -3866,6 +3874,7 @@ test("archiving the last workspace emits a remove carrying the now-empty project
       projectCustomIconRevision: null,
       projectRootPath: REPO_CWD,
       projectKind: "git",
+      baseWorkspaceId: null,
     },
   });
 });
@@ -5941,6 +5950,40 @@ test("archive_workspace_request hides non-destructive workspace records", async 
     | { payload: Record<string, unknown> }
     | undefined;
   expect(response?.payload.error).toBeNull();
+});
+
+test("archive_workspace_request invokes onWorkspaceArchived callback", async () => {
+  const archivedWorkspaceIds: string[] = [];
+  const session = createSessionForWorkspaceTests({
+    onWorkspaceArchived: (id) => {
+      archivedWorkspaceIds.push(id);
+    },
+  });
+  const workspace = createPersistedWorkspaceRecord({
+    workspaceId: "ws-repo-archive-hook",
+    projectId: "proj-repo-archive-hook",
+    cwd: REPO_CWD,
+    kind: "directory",
+    displayName: "repo",
+    createdAt: "2026-03-01T12:00:00.000Z",
+    updatedAt: "2026-03-01T12:00:00.000Z",
+  });
+
+  session.workspaceRegistry.get = async () => workspace;
+  session.workspaceRegistry.archive = async (_workspaceId: string, archivedAt: string) => {
+    workspace.archivedAt = archivedAt;
+  };
+  session.workspaceRegistry.list = async () => [workspace];
+  session.projectRegistry.archive = async () => {};
+
+  await session.handleMessage({
+    type: "archive_workspace_request",
+    workspaceId: "ws-repo-archive-hook",
+    requestId: "req-archive-hook",
+  });
+
+  expect(workspace.archivedAt).toBeTruthy();
+  expect(archivedWorkspaceIds).toEqual(["ws-repo-archive-hook"]);
 });
 
 test("archive_workspace_request archives a worktree-kind workspace and removes the directory on last reference", async () => {

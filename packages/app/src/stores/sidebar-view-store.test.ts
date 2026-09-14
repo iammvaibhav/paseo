@@ -40,6 +40,7 @@ function createMemoryStorage(entries: Record<string, string | null>): MemoryStor
 describe("sidebar view store", () => {
   beforeEach(() => {
     useSidebarViewStore.setState({
+      viewMode: "workspaces",
       groupMode: "project",
       hostFilters: [],
       projectFilters: [],
@@ -92,6 +93,7 @@ describe("sidebar view store", () => {
         },
       }),
     ).toEqual({
+      viewMode: "workspaces",
       groupMode: "status",
       hostFilters: [],
       projectFilters: [],
@@ -106,6 +108,7 @@ describe("sidebar view store", () => {
         hostFilter: "host-a",
       }),
     ).toEqual({
+      viewMode: "workspaces",
       groupMode: "status",
       hostFilters: ["host-a"],
       projectFilters: [],
@@ -120,6 +123,7 @@ describe("sidebar view store", () => {
         hostFilters: ["host-a", "host-b"],
       }),
     ).toEqual({
+      viewMode: "workspaces",
       groupMode: "status",
       hostFilters: ["host-a", "host-b"],
       projectFilters: [],
@@ -230,6 +234,7 @@ describe("sidebar view store", () => {
         projectFilters: ["project-a", "project-b"],
       }),
     ).toEqual({
+      viewMode: "workspaces",
       groupMode: "project",
       hostFilters: ["host-a"],
       projectFilters: ["project-a", "project-b"],
@@ -239,6 +244,52 @@ describe("sidebar view store", () => {
 
   it("never keeps project filters from state the schema rejects", () => {
     expect(migrateSidebarViewState({ projectFilters: "project-a" })).toEqual({
+      viewMode: "workspaces",
+      groupMode: "project",
+      hostFilters: [],
+      projectFilters: [],
+      labelFilter: { labels: [] },
+    });
+  });
+
+  it("persists and rehydrates viewMode", () => {
+    const store = useSidebarViewStore.getState();
+    store.setViewMode("agents");
+    expect(useSidebarViewStore.getState().viewMode).toBe("agents");
+
+    expect(migrateSidebarViewState({ viewMode: "agents" })).toEqual({
+      viewMode: "agents",
+      groupMode: "project",
+      hostFilters: [],
+      projectFilters: [],
+      labelFilter: { labels: [] },
+    });
+  });
+
+  it("migrates a v6 payload without viewMode to workspaces", () => {
+    expect(
+      migrateSidebarViewState({
+        groupMode: "status",
+        hostFilters: ["host-a"],
+        projectFilters: ["project-a"],
+      }),
+    ).toEqual({
+      viewMode: "workspaces",
+      groupMode: "status",
+      hostFilters: ["host-a"],
+      projectFilters: ["project-a"],
+      labelFilter: { labels: [] },
+    });
+  });
+
+  it("falls back to workspaces when given an invalid viewMode value", () => {
+    expect(
+      migrateSidebarViewState({
+        viewMode: "invalid-mode",
+        groupMode: "status",
+      }),
+    ).toEqual({
+      viewMode: "workspaces",
       groupMode: "project",
       hostFilters: [],
       projectFilters: [],

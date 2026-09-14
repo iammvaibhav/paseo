@@ -5,12 +5,12 @@ import { z } from "zod";
 import { workspaceLabelKey } from "@getpaseo/protocol/workspace-labels";
 import { createValidatedPersistStorage } from "@/storage/validated-persist-storage";
 
+export type SidebarViewMode = "workspaces" | "agents";
 export type SidebarGroupMode = "project" | "status";
 
 const SIDEBAR_VIEW_STORAGE_KEY = "sidebar-view";
 const LEGACY_SIDEBAR_GROUP_MODE_STORAGE_KEY = "sidebar-group-mode";
-const SIDEBAR_VIEW_STORE_VERSION = 6;
-
+const SIDEBAR_VIEW_STORE_VERSION = 7;
 /**
  * The key standing for "this workspace carries no labels at all".
  *
@@ -41,11 +41,12 @@ export function hasActiveSidebarLabelFilter(filter: SidebarLabelFilter): boolean
  * so they share the operation. The label filter does not: its keys go through
  * `workspaceLabelKey` first, which is a different identity.
  */
-function toggleFilterEntry(list: readonly string[], key: string): string[] {
+export function toggleFilterEntry(list: readonly string[], key: string): string[] {
   return list.includes(key) ? list.filter((entry) => entry !== key) : [...list, key];
 }
 
 interface SidebarViewStoreState {
+  viewMode: SidebarViewMode;
   groupMode: SidebarGroupMode;
   // Empty means "all hosts". A non-empty list pins the sidebar to those hosts.
   hostFilters: string[];
@@ -61,6 +62,7 @@ interface SidebarViewStoreState {
    */
   projectFilters: string[];
   labelFilter: SidebarLabelFilter;
+  setViewMode: (mode: SidebarViewMode) => void;
   setGroupMode: (mode: SidebarGroupMode) => void;
   toggleHostFilter: (serverId: string) => void;
   clearHostFilters: () => void;
@@ -73,17 +75,20 @@ interface SidebarViewStoreState {
 }
 
 interface SidebarViewPersistedState {
+  viewMode: SidebarViewMode;
   groupMode: SidebarGroupMode;
   hostFilters: string[];
   projectFilters: string[];
   labelFilter: SidebarLabelFilter;
 }
 
+const PersistedSidebarViewModeSchema = z.enum(["workspaces", "agents"]);
 const PersistedSidebarGroupModeSchema = z.enum(["project", "status", "label"]);
 const SidebarLabelFilterSchema = z.object({
   labels: z.array(z.string()),
 });
 const SidebarViewPersistedStateSchema = z.strictObject({
+  viewMode: PersistedSidebarViewModeSchema.optional(),
   groupMode: PersistedSidebarGroupModeSchema.optional(),
   hostFilters: z.array(z.string()).optional(),
   hostFilter: z.string().nullable().optional(),
@@ -122,6 +127,7 @@ export function migrateSidebarViewState(persistedState: unknown): SidebarViewPer
   const result = SidebarViewPersistedStateSchema.safeParse(persistedState);
   if (!result.success) {
     return {
+      viewMode: "workspaces",
       groupMode: "project",
       hostFilters: [],
       projectFilters: [],
@@ -133,6 +139,7 @@ export function migrateSidebarViewState(persistedState: unknown): SidebarViewPer
   const legacyGroupMode = readLegacyGroupMode(state);
   if (legacyGroupMode) {
     return {
+      viewMode: "workspaces",
       groupMode: legacyGroupMode,
       hostFilters: [],
       projectFilters: [],
@@ -141,6 +148,7 @@ export function migrateSidebarViewState(persistedState: unknown): SidebarViewPer
   }
 
   return {
+    viewMode: state.viewMode === "agents" ? "agents" : "workspaces",
     groupMode: state.groupMode === "status" ? "status" : "project",
     hostFilters: readHostFilters(state),
     projectFilters: state.projectFilters ?? [],
@@ -178,10 +186,12 @@ export function createSidebarViewStorage(
 export const useSidebarViewStore = create<SidebarViewStoreState>()(
   persist(
     (set) => ({
+      viewMode: "workspaces",
       groupMode: "project",
       hostFilters: [],
       projectFilters: [],
       labelFilter: emptyLabelFilter(),
+      setViewMode: (viewMode) => set({ viewMode }),
       setGroupMode: (mode) => set({ groupMode: mode }),
       toggleHostFilter: (serverId) =>
         set((state) => ({ hostFilters: toggleFilterEntry(state.hostFilters, serverId) })),
@@ -228,6 +238,7 @@ export const useSidebarViewStore = create<SidebarViewStoreState>()(
         SidebarViewPersistedStateSchema,
       ),
       partialize: (state) => ({
+        viewMode: state.viewMode,
         groupMode: state.groupMode,
         hostFilters: state.hostFilters,
         projectFilters: state.projectFilters,

@@ -1,0 +1,29 @@
+{
+  "name": "omp-account-routing",
+  "version": "0.1.0",
+  "description": "Per-host / per-project OAuth account routing for Oh My Pi — pin which provider account a project uses, with primary-fallback or round-robin strategies",
+  "license": "MIT",
+  "type": "module",
+  "keywords": [
+    "oh-my-pi",
+    "omp",
+    "extension",
+    "oauth",
+    "routing",
+    "multi-account"
+  ],
+  "omp": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "peerDependencies": {
+    "@oh-my-pi/pi-coding-agent": "*",
+    "@oh-my-pi/pi-ai": "*"
+  }
+}

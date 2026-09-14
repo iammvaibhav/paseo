@@ -155,6 +155,41 @@ export function buildSelectableProviderSelectorProviders(
     });
 }
 
+/**
+ * Drops rows the user hid in provider settings. Purely presentational: it runs
+ * where a picker builds its choosable list, never where a selected model is
+ * labelled, so a provider that falls back onto a hidden model still names it.
+ *
+ * The active pick always survives the filter — a picker that cannot show what
+ * is currently selected reads as broken.
+ */
+export function filterHiddenProviderModelRows(input: {
+  providers: ProviderSelectorProvider[];
+  hiddenKeys: ReadonlySet<string>;
+  selectedProvider?: string;
+  selectedModel?: string;
+}): ProviderSelectorProvider[] {
+  if (input.hiddenKeys.size === 0) return input.providers;
+
+  const keptKey =
+    input.selectedProvider && input.selectedModel
+      ? buildModelRowKey(input.selectedProvider, input.selectedModel)
+      : null;
+
+  let changed = false;
+  const filtered = input.providers.map((provider) => {
+    if (provider.modelSelection.kind !== "models") return provider;
+    const rows = provider.modelSelection.rows.filter(
+      (row) => row.favoriteKey === keptKey || !input.hiddenKeys.has(row.favoriteKey),
+    );
+    if (rows.length === provider.modelSelection.rows.length) return provider;
+    changed = true;
+    return { ...provider, modelSelection: { kind: "models" as const, rows } };
+  });
+
+  return changed ? filtered : input.providers;
+}
+
 export function getProviderModelRows(
   provider: ProviderSelectorProvider,
 ): ProviderSelectionModelRow[] {

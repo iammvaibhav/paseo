@@ -6,10 +6,12 @@ import { buildDeterministicWorkspaceTabId } from "@/workspace-tabs/identity";
 export type WorkspaceTabMenuSurface = "desktop" | "mobile";
 
 export interface WorkspaceTabMenuLabels {
+  markDone: string;
   copyResumeCommand: string;
   copyAgentId: string;
   copyTerminalId: string;
   copyFilePath: string;
+  moveToNewWorkspace: string;
   rename: string;
   closeAbove: string;
   closeBelow: string;
@@ -22,10 +24,12 @@ export interface WorkspaceTabMenuLabels {
 }
 
 export const DEFAULT_WORKSPACE_TAB_MENU_LABELS: WorkspaceTabMenuLabels = {
+  markDone: i18n.t("workspace.tabs.menu.markDone"),
   copyResumeCommand: i18n.t("workspace.tabs.menu.copyResumeCommand"),
   copyAgentId: i18n.t("workspace.tabs.menu.copyAgentId"),
   copyTerminalId: i18n.t("workspace.tabs.menu.copyTerminalId"),
   copyFilePath: i18n.t("workspace.tabs.menu.copyFilePath"),
+  moveToNewWorkspace: i18n.t("workspace.tabs.menu.moveToNewWorkspace"),
   rename: i18n.t("workspace.tabs.menu.rename"),
   closeAbove: i18n.t("workspace.tabs.menu.closeAbove"),
   closeBelow: i18n.t("workspace.tabs.menu.closeBelow"),
@@ -49,6 +53,8 @@ export type WorkspaceTabMenuEntry =
         | "arrow-right-to-line"
         | "copy-x"
         | "pencil"
+        | "circle-check"
+        | "folder-plus"
         | "x";
       hint?: string;
       tooltip?: string;
@@ -68,11 +74,16 @@ interface BuildWorkspaceTabMenuEntriesInput {
   index: number;
   tabCount: number;
   menuTestIDBase: string;
+  /** Show "Mark done" as the first entry for a Ready agent tab (spec). */
+  showMarkDone?: boolean;
+  /** Invoked when the "Mark done" entry is selected. */
+  onMarkDone?: () => void;
   onCopyResumeCommand: (agentId: string) => Promise<void> | void;
   onCopyAgentId: (agentId: string) => Promise<void> | void;
   onCopyTerminalId: (terminalId: string) => Promise<void> | void;
   onCopyFilePath: (path: string) => Promise<void> | void;
   onReloadAgent: (agentId: string) => Promise<void> | void;
+  onMoveToNewWorkspace?: (agentId: string) => Promise<void> | void;
   onRenameTab: (tab: WorkspaceTabDescriptor) => void;
   onCloseTab: (tabId: string) => Promise<void> | void;
   onCloseTabsBefore: (tabId: string) => Promise<void> | void;
@@ -85,11 +96,16 @@ interface BuildWorkspaceDesktopTabActionsInput {
   tab: WorkspaceTabDescriptor;
   index: number;
   tabCount: number;
+  /** Show "Mark done" as the first entry for a Ready agent tab (spec). */
+  showMarkDone?: boolean;
+  /** Invoked when the "Mark done" entry is selected. */
+  onMarkDone?: () => void;
   onCopyResumeCommand: (agentId: string) => Promise<void> | void;
   onCopyAgentId: (agentId: string) => Promise<void> | void;
   onCopyTerminalId: (terminalId: string) => Promise<void> | void;
   onCopyFilePath: (path: string) => Promise<void> | void;
   onReloadAgent: (agentId: string) => Promise<void> | void;
+  onMoveToNewWorkspace?: (agentId: string) => Promise<void> | void;
   onRenameTab: (tab: WorkspaceTabDescriptor) => void;
   onCloseTab: (tabId: string) => Promise<void> | void;
   onCloseTabsToLeft: (tabId: string) => Promise<void> | void;
@@ -172,11 +188,14 @@ export function buildWorkspaceTabMenuEntries(
     index,
     tabCount,
     menuTestIDBase,
+    showMarkDone = false,
+    onMarkDone,
     onCopyResumeCommand,
     onCopyAgentId,
     onCopyTerminalId,
     onCopyFilePath,
     onReloadAgent,
+    onMoveToNewWorkspace,
     onRenameTab,
     onCloseTab,
     onCloseTabsBefore,
@@ -191,6 +210,16 @@ export function buildWorkspaceTabMenuEntries(
 
   if (tab.target.kind === "agent") {
     const { agentId } = tab.target;
+    if (showMarkDone && onMarkDone) {
+      entries.push({
+        kind: "item",
+        key: "mark-done",
+        label: labels.markDone,
+        icon: "circle-check",
+        testID: `${menuTestIDBase}-mark-done`,
+        onSelect: onMarkDone,
+      });
+    }
     entries.push({
       kind: "item",
       key: "copy-resume-command",
@@ -212,6 +241,18 @@ export function buildWorkspaceTabMenuEntries(
         void onCopyAgentId(agentId);
       },
     });
+    if (onMoveToNewWorkspace) {
+      entries.push({
+        kind: "item",
+        key: "move-to-new-workspace",
+        label: labels.moveToNewWorkspace,
+        icon: "folder-plus",
+        testID: `${menuTestIDBase}-move-to-new-workspace`,
+        onSelect: () => {
+          void onMoveToNewWorkspace(agentId);
+        },
+      });
+    }
   }
 
   if (tab.target.kind === "terminal") {
@@ -333,11 +374,14 @@ export function buildWorkspaceDesktopTabActions(
       index: input.index,
       tabCount: input.tabCount,
       menuTestIDBase: contextMenuTestId,
+      showMarkDone: input.showMarkDone,
+      onMarkDone: input.onMarkDone,
       onCopyResumeCommand: input.onCopyResumeCommand,
       onCopyAgentId: input.onCopyAgentId,
       onCopyTerminalId: input.onCopyTerminalId,
       onCopyFilePath: input.onCopyFilePath,
       onReloadAgent: input.onReloadAgent,
+      onMoveToNewWorkspace: input.onMoveToNewWorkspace,
       onRenameTab: input.onRenameTab,
       onCloseTab: input.onCloseTab,
       onCloseTabsBefore: input.onCloseTabsToLeft,

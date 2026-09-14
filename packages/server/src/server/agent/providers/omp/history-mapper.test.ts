@@ -629,4 +629,95 @@ describe("OMP history mapper", () => {
       ]),
     );
   });
+
+  test("rehydrates interrupted task children from on-disk session files without a toolResult", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "omp-subagent-interrupted-"));
+    const parentFile = join(dir, "parent.jsonl");
+    const parentStem = parentFile.slice(0, -".jsonl".length);
+    const childId = "InvestigateGhostAgent";
+    const childFile = join(parentStem, `${childId}.jsonl`);
+    mkdirSync(parentStem, { recursive: true });
+
+    const writeEntries = (file: string, entries: object[]): void => {
+      writeFileSync(file, entries.map((entry) => JSON.stringify(entry)).join("\n"));
+    };
+    writeEntries(childFile, [
+      { type: "session", id: "child-root", parentId: null, timestamp: "2026-09-07T18:00:00Z" },
+      {
+        type: "message",
+        id: "child-user",
+        parentId: "child-root",
+        timestamp: "2026-09-07T18:00:01Z",
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "Investigate the ghost agent." }],
+        },
+      },
+      {
+        type: "message",
+        id: "child-partial",
+        parentId: "child-user",
+        timestamp: "2026-09-07T18:00:02Z",
+        message: { role: "assistant", content: [{ type: "text", text: "Started looking." }] },
+      },
+    ]);
+    writeEntries(parentFile, [
+      { type: "session", id: "parent-root", parentId: null, timestamp: "2026-09-07T17:00:00Z" },
+      {
+        type: "message",
+        id: "task-call",
+        parentId: "parent-root",
+        timestamp: "2026-09-07T17:00:01Z",
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "toolCall",
+              id: "task-open",
+              name: "task",
+              arguments: { agent: childId },
+            },
+          ],
+        },
+      },
+    ]);
+
+    const events: AgentStreamEvent[] = [];
+    for await (const event of streamOmpHistory({ sessionFile: parentFile, provider: "omp" })) {
+      events.push(event);
+    }
+    const subagentEvents = events.flatMap((event) =>
+      event.type === "provider_subagent" ? [event.event] : [],
+    );
+    expect(subagentEvents.filter((event) => event.type === "timeline")).toContainEqual(
+      expect.objectContaining({
+        type: "timeline",
+        id: childId,
+        timestamp: "2026-09-07T18:00:02Z",
+        item: expect.objectContaining({
+          type: "assistant_message",
+          text: "Started looking.",
+        }),
+      }),
+    );
+    expect(subagentEvents.filter((event) => event.type === "upsert")).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: childId,
+          title: childId,
+          status: "running",
+          toolCallId: "task-open",
+          timestamp: "2026-09-07T18:00:00Z",
+        }),
+        expect.objectContaining({
+          id: childId,
+          title: childId,
+          status: "canceled",
+          toolCallId: "task-open",
+          timestamp: "2026-09-07T18:00:02Z",
+        }),
+      ]),
+    );
+    expect(subagentEvents.filter((event) => event.type === "upsert")).toHaveLength(2);
+  });
 });

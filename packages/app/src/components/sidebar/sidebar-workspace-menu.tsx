@@ -7,6 +7,7 @@ import {
   Circle,
   CircleCheck,
   Copy,
+  MessageCircleQuestion,
   MoreVertical,
   Pencil,
   Pin,
@@ -58,6 +59,7 @@ const ThemedPencil = withUnistyles(Pencil);
 const ThemedCircleCheck = withUnistyles(CircleCheck);
 const ThemedPin = withUnistyles(Pin);
 const ThemedPinOff = withUnistyles(PinOff);
+const ThemedMessageCircleQuestion = withUnistyles(MessageCircleQuestion);
 const ThemedTag = withUnistyles(Tag);
 
 const copyLeadingIcon = <ThemedCopy size={14} uniProps={foregroundMutedColorMapping} />;
@@ -69,6 +71,9 @@ const markAsUnreadLeadingIcon = <ThemedCircle size={14} uniProps={foregroundMute
 const archiveLeadingIcon = <ThemedArchive size={14} uniProps={foregroundMutedColorMapping} />;
 const pinLeadingIcon = <ThemedPin size={14} uniProps={foregroundMutedColorMapping} />;
 const unpinLeadingIcon = <ThemedPinOff size={14} uniProps={foregroundMutedColorMapping} />;
+const askHistoryLeadingIcon = (
+  <ThemedMessageCircleQuestion size={14} uniProps={foregroundMutedColorMapping} />
+);
 
 function renderTriggerIcon({ hovered }: { hovered?: boolean }) {
   return (
@@ -88,6 +93,7 @@ export interface SidebarWorkspaceMenuProps {
   onCopyBranchName?: () => void;
   onRename?: () => void;
   onMarkAsRead?: () => void;
+  onAskHistory?: () => void;
   onMarkAsUnread?: () => void;
   onArchive: () => void;
   archiveLabel?: string;
@@ -136,6 +142,7 @@ function SidebarWorkspaceMenuItems({
   onCopyBranchName,
   onRename,
   onMarkAsRead,
+  onAskHistory,
   onMarkAsUnread,
   onArchive,
   archiveLabel,
@@ -218,6 +225,16 @@ function SidebarWorkspaceMenuItems({
           {isPinned ? t("sidebar.workspace.actions.unpin") : t("sidebar.workspace.actions.pin")}
         </WorkspaceMenuItem>
       ) : null}
+      {onAskHistory ? (
+        <WorkspaceMenuItem
+          surface={surface}
+          testID={`sidebar-workspace-menu-ask-history-${workspaceKey}`}
+          leading={askHistoryLeadingIcon}
+          onSelect={onAskHistory}
+        >
+          {t("sidebar.workspace.actions.askHistory")}
+        </WorkspaceMenuItem>
+      ) : null}
       {serverId && workspaceId ? (
         <DropdownMenuSubTrigger
           id={WORKSPACE_LABEL_PAGE_ID}
@@ -258,6 +275,7 @@ export function SidebarWorkspaceMenu({
   onCopyBranchName,
   onRename,
   onMarkAsRead,
+  onAskHistory,
   onMarkAsUnread,
   onArchive,
   archiveLabel,
@@ -304,6 +322,7 @@ export function SidebarWorkspaceMenu({
           onCopyBranchName={onCopyBranchName}
           onRename={onRename}
           onMarkAsRead={onMarkAsRead}
+          onAskHistory={onAskHistory}
           onMarkAsUnread={onMarkAsUnread}
           onArchive={onArchive}
           archiveLabel={archiveLabel}
@@ -337,6 +356,7 @@ export function SidebarWorkspaceContextMenu({
   onCopyBranchName,
   onRename,
   onMarkAsRead,
+  onAskHistory,
   onMarkAsUnread,
   onArchive,
   archiveLabel,
@@ -417,6 +437,7 @@ export function SidebarWorkspaceContextMenu({
           onCopyBranchName={onCopyBranchName}
           onRename={onRename}
           onMarkAsRead={onMarkAsRead}
+          onAskHistory={onAskHistory}
           onMarkAsUnread={onMarkAsUnread}
           onArchive={onArchive}
           archiveLabel={archiveLabel}

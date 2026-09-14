@@ -37,3 +37,32 @@ export function buildGroupingContribution(
     },
   };
 }
+
+export interface ItsaplanCommandCenterSource {
+  labels: {
+    section: string;
+    itsaplan: string;
+  };
+  icon?: CommandCenterIcon;
+  onOpen(): void;
+}
+
+export function buildItsaplanContribution(
+  source: ItsaplanCommandCenterSource,
+): CommandCenterContribution {
+  return {
+    id: "itsaplan",
+    group: "actions",
+    groupRank: 0,
+    rank: 2.5,
+    keywords: ["itsaplan", "tickets", "issues", "board", "kanban", "plan"],
+    visibility: "always",
+    run: source.onOpen,
+    presentation: {
+      kind: "action",
+      title: source.labels.itsaplan,
+      sectionTitle: source.labels.section,
+      icon: source.icon,
+    },
+  };
+}

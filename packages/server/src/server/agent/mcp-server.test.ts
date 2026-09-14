@@ -577,6 +577,10 @@ class BoundaryAgentManagerFake {
   public listAgents(): ManagedAgent[] {
     return [];
   }
+
+  public getRegisteredProviderIds(): AgentProvider[] {
+    return [];
+  }
 }
 
 class BoundaryAgentStorageFake {

@@ -59,7 +59,7 @@ cat node_modules/material-icon-theme/icons/ICON_NAME.svg
      "ext": "icon_name",
      ```
 
-4. Run `npm run typecheck` to verify.
+4. Run `pnpm run typecheck` to verify.
 
 ## Currently included icons
 

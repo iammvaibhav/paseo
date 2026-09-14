@@ -168,3 +168,27 @@ export function formatDuration(durationMs: number): string {
   const remMinutes = totalMinutes % 60;
   return remMinutes === 0 ? `${hours}h` : `${hours}h ${remMinutes}m`;
 }
+
+/**
+ * The same wording as `formatDuration`, minute-granular: seconds are dropped
+ * once a duration passes a minute ("<1m", "3m", "1h 5m").
+ *
+ * A row in a list is read at a glance and is woken by the minute ticker, so a
+ * seconds digit there would be both noise and up to a minute stale. Below a
+ * minute the label says "<1m" rather than a second count for the same reason.
+ */
+export function formatDurationMinutes(durationMs: number): string {
+  if (!Number.isFinite(durationMs) || durationMs < 0) {
+    return "<1m";
+  }
+  const totalMinutes = Math.floor(durationMs / 60_000);
+  if (totalMinutes < 1) {
+    return "<1m";
+  }
+  if (totalMinutes < 60) {
+    return `${totalMinutes}m`;
+  }
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}m`;
+}

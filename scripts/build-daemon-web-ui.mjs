@@ -37,8 +37,8 @@ function run(command, args, options) {
 
 async function exportBrowserWebApp() {
   console.log("Exporting browser web app...");
-  await run("npm", ["run", "build:web", "--workspace=@getpaseo/app"], {
-    cwd: REPO_ROOT,
+  await run("npm", ["run", "build:web"], {
+    cwd: APP_DIR,
   });
 }
 

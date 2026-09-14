@@ -368,6 +368,66 @@ function resolveServiceProxyConfig(
   return { publicBaseUrl, standaloneListen };
 }
 
+// The local address the tunnel forwards to. The daemon may bind to a non-loopback
+// address (e.g. its Tailscale IP), so the tunnel target is the daemon's actual
+// host:port — not merely 127.0.0.1:<port>. Wildcard binds collapse to loopback.
+function parseListenTarget(listen: string, fallbackPort: number): { host: string; port: number } {
+  const match = listen.match(/^(.*):(\d+)$/);
+  let host = match?.[1]?.trim() || "127.0.0.1";
+  const port = match ? Number.parseInt(match[2], 10) || fallbackPort : fallbackPort;
+  host = host.replace(/^\[|\]$/g, "");
+  if (host === "0.0.0.0" || host === "::" || host === "") {
+    host = "127.0.0.1";
+  }
+  return { host, port };
+}
+
+type ResolvedTunnel = NonNullable<PaseoDaemonConfig["tunnel"]>;
+
+function resolveTunnelProvider(candidate: string | undefined): ResolvedTunnel["provider"] {
+  return candidate === "tailscale-funnel" || candidate === "cloudflared" ? candidate : "none";
+}
+
+interface PersistedCloudflared {
+  hostname?: string;
+  bin?: string;
+  configFile?: string;
+  token?: string;
+  tunnel?: string;
+}
+
+function resolveCloudflaredConfig(
+  cloudflared: PersistedCloudflared | undefined,
+): ResolvedTunnel["cloudflared"] {
+  const cf = cloudflared ?? {};
+  return {
+    hostname: cf.hostname ?? null,
+    bin: cf.bin ?? null,
+    configFile: cf.configFile ?? null,
+    token: cf.token ?? null,
+    tunnel: cf.tunnel ?? null,
+  };
+}
+
+function resolveTunnelConfig(
+  env: NodeJS.ProcessEnv,
+  persisted: ReturnType<typeof loadPersistedConfig>,
+  listen: string,
+): ResolvedTunnel {
+  const tunnel = persisted.daemon?.tunnel;
+  const listenTarget = parseListenTarget(listen, 6767);
+  const localPort = tunnel?.localPort ?? listenTarget.port;
+  return {
+    provider: resolveTunnelProvider(env.PASEO_TUNNEL_PROVIDER ?? tunnel?.provider),
+    localPort,
+    localTarget: tunnel?.localTarget ?? `${listenTarget.host}:${localPort}`,
+    autoStart: parseBooleanEnv(env.PASEO_TUNNEL_AUTOSTART) ?? tunnel?.autoStart ?? false,
+    publicBaseUrl: (env.PASEO_TUNNEL_PUBLIC_BASE_URL ?? tunnel?.publicBaseUrl ?? "").trim() || null,
+    tailscaleBin: tunnel?.tailscaleBin ?? null,
+    cloudflared: resolveCloudflaredConfig(tunnel?.cloudflared),
+  };
+}
+
 interface ResolvedWebUi {
   enabled: boolean;
   distDir: string | null;
@@ -517,6 +577,8 @@ function resolveProfileLists(persisted: ReturnType<typeof loadPersistedConfig>) 
   return {
     terminalProfiles: persisted.daemon?.terminalProfiles,
     agentProfiles: persisted.daemon?.agentProfiles,
+    visibleModels: persisted.daemon?.visibleModels,
+    ompIdleCloseAfterSeconds: persisted.daemon?.ompIdleCloseAfterSeconds ?? 1800,
   };
 }
 
@@ -566,9 +628,11 @@ export function resolveConfigFromPersisted(
     mcpInjectIntoAgents,
     browserToolsEnabled,
     autoArchiveAfterMerge,
+    ompIdleCloseAfterSeconds,
     appendSystemPrompt,
     terminalProfiles,
     agentProfiles,
+    visibleModels,
     hostnames,
     trustedProxies,
     appBaseUrl,
@@ -582,9 +646,10 @@ export function resolveConfigFromPersisted(
     enabledFallback: relayEnabledFallback,
   });
   const serviceProxy = resolveServiceProxyConfig(env, persisted);
+  const tunnel = resolveTunnelConfig(env, persisted, listen);
   const webUi = resolveWebUiConfig(paseoHome, env, cli, persisted);
 
-  const { openai, speech } = resolveSpeechConfig({
+  const { openai, fish, speech } = resolveSpeechConfig({
     paseoHome,
     env,
     persisted,
@@ -610,10 +675,12 @@ export function resolveConfigFromPersisted(
     browserToolsEnabled,
     git: resolveGitProcessConfig(env, persisted),
     autoArchiveAfterMerge,
+    ompIdleCloseAfterSeconds,
     enableTerminalAgentHooks: persisted.daemon?.enableTerminalAgentHooks ?? false,
     appendSystemPrompt,
     terminalProfiles,
     agentProfiles,
+    visibleModels,
     skillSelection: persisted.agents?.skills?.selection,
     pluginsEnabled: persisted.pluginsEnabled ?? false,
     plugins: persisted.plugins,
@@ -629,10 +696,12 @@ export function resolveConfigFromPersisted(
     relayUseTls: relay.useTls,
     relayPublicUseTls: relay.publicUseTls,
     serviceProxy,
+    tunnel,
     webUi,
     appBaseUrl,
     auth: resolveAuthConfig(env, persisted),
     openai,
+    fish,
     speech,
     voiceLlmProvider: voiceLlm.provider,
     voiceLlmProviderExplicit: voiceLlm.providerExplicit,
@@ -640,6 +709,7 @@ export function resolveConfigFromPersisted(
     agentProviderSettings: extractAgentProviderSettings(providerOverrides),
     providerCatalogRefreshTimeoutMs: persisted.agents?.catalogRefreshTimeoutMs,
     metadataGeneration: persisted.agents?.metadataGeneration,
+    missionControl: persisted.missionControl,
     providerOverrides,
     log: resolveLogConfigFromEnv(env, persisted),
     configReload: {

@@ -10,6 +10,8 @@ import { shareCheckoutDiff } from "@/git/diff-sharing";
 import { orderCheckoutDiffFiles } from "@/git/diff-order";
 import { daemonConfigQueryKey } from "@/data/daemon-config";
 import { daemonPairingOfferQueryKey } from "@/data/daemon-pairing";
+import { missionControlEventsQueryKey } from "@/data/mission-control-events";
+import { missionControlInstructionsQueryKey } from "@/data/mission-control-instructions";
 import { type ProviderSnapshotCache } from "@/data/provider-snapshot-cache";
 import {
   normalizeProvidersSnapshotCwd,
@@ -28,6 +30,7 @@ type SubscribeCheckoutDiffResponseMessage = Extract<
 >;
 type StatusMessage = Extract<SessionOutboundMessage, { type: "status" }>;
 type TerminalsChangedMessage = Extract<SessionOutboundMessage, { type: "terminals_changed" }>;
+
 type CheckoutDiffResponsePayload = SubscribeCheckoutDiffResponseMessage["payload"];
 type CheckoutDiffCachePayload = Omit<CheckoutDiffResponsePayload, "subscriptionId">;
 type ListTerminalsPayload = ListTerminalsResponse["payload"];
@@ -126,6 +129,17 @@ const RECONNECT_REPAIR_POLICIES: ReconnectRepairPolicy[] = [
     invalidate: ({ queryClient, serverId }) => {
       void queryClient.invalidateQueries({
         predicate: (query) => isQueryForServer(query.queryKey, "terminals", serverId),
+      });
+    },
+  },
+  {
+    domain: "missionControlEvents",
+    invalidate: ({ queryClient, serverId }) => {
+      void queryClient.invalidateQueries({ queryKey: missionControlEventsQueryKey(serverId) });
+      // M8 instruction ledger: a citing card closes a row, so the ledger
+      // refreshes with the same push that refreshes the feed.
+      void queryClient.invalidateQueries({
+        queryKey: missionControlInstructionsQueryKey(serverId),
       });
     },
   },

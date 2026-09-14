@@ -34,7 +34,11 @@ export type WorkspaceTitleSource = "title" | "branch";
 export type PullRequestOpenLocation = "main" | "side" | "explorer";
 /** What a sidebar workspace row shows in the space to the right of its title. */
 export type SidebarWorkspaceTrailing = "diff" | "timestamp" | "none";
+/** How workspaces inside a project are ordered in the sidebar. */
+export type SidebarWorkspaceSort = "manual" | "activity" | "created";
 export type ToolCallDetailLevel = "overview" | "detailed";
+export type PlannotatorFeedbackMode = "auto-send" | "compose";
+export type DefaultFileOpener = "paseo" | "vscode-web" | "plannotator";
 
 const ThemePreferenceSchema = z.enum([
   ...THEME_OPTIONS.map((option) => option.name),
@@ -42,6 +46,7 @@ const ThemePreferenceSchema = z.enum([
 ]);
 /** Where the theme picker lands when the persisted preference cannot be honoured. */
 export const DEFAULT_THEME_PREFERENCE = "auto" satisfies ThemePreference;
+
 export const DEFAULT_TERMINAL_SCROLLBACK_LINES = 10_000;
 export const MIN_TERMINAL_SCROLLBACK_LINES = 0;
 export const MAX_TERMINAL_SCROLLBACK_LINES = 1_000_000;
@@ -59,6 +64,10 @@ export function defaultContentFontSize(native: boolean): number {
 export const DEFAULT_CONTENT_FONT_SIZE = defaultContentFontSize(isNative);
 export const MIN_CONTENT_FONT_SIZE = 10;
 export const MAX_CONTENT_FONT_SIZE = 21;
+/** Agent Grid tiles: independent of the full-agent content size. */
+export const DEFAULT_AGENT_GRID_FONT_SIZE = 12;
+export const MIN_AGENT_GRID_FONT_SIZE = MIN_CONTENT_FONT_SIZE;
+export const MAX_AGENT_GRID_FONT_SIZE = MAX_CONTENT_FONT_SIZE;
 export const DEFAULT_CODE_FONT_SIZE = 12; // == FONT_SIZE.code
 export const MIN_CODE_FONT_SIZE = 9;
 export const MAX_CODE_FONT_SIZE = 22; // line-height 1.5×22=33 stays safe
@@ -77,10 +86,13 @@ export interface AppSettings {
   monoFontFamily: string; // "" = platform default mono stack
   uiBaseFontSize: number; // clamped px, platform default 14 or 15
   contentFontSize: number; // clamped px, platform default 15 or 16
+  /** Mission Control Agent Grid transcripts only; independent of contentFontSize. */
+  agentGridFontSize: number; // clamped px, default 12
   codeFontSize: number; // clamped px, default 12
   syntaxTheme: SyntaxThemeId; // default "one"
   workspaceTitleSource: WorkspaceTitleSource;
   sidebarWorkspaceTrailing: SidebarWorkspaceTrailing;
+  sidebarWorkspaceSort: SidebarWorkspaceSort;
   sidebarRowItems: SidebarRowItems;
   sidebarChecksDisplay: SidebarChecksDisplay;
   /** Top-level sidebar rows in display order; empty means the default order, all visible. */
@@ -89,7 +101,15 @@ export interface AppSettings {
   toolCallDetailLevel: ToolCallDetailLevel;
   chatOutlineEnabled: boolean;
   vimKeybindings: boolean;
-  /** Desktop-only preferences for implicit opens into the ordinary side pane. */
+  /** Preferred destination for ordinary file opens. Explicit side-pane opens remain in Paseo. */
+  defaultFileOpener: DefaultFileOpener;
+  /** How to deliver Plannotator feedback to the linked agent. */
+  plannotatorFeedbackMode: PlannotatorFeedbackMode;
+  /**
+   * Origin the sidebar itsaplan embed loads (e.g. `https://10.7.0.1:8443`).
+   * Empty derives it from the host profile like a Plannotator embed.
+   */
+  itsaplanOrigin: string;
   openInSidePane: OpenInSidePanePreferences;
   pullRequestOpenLocation: PullRequestOpenLocation;
 }
@@ -131,10 +151,12 @@ export const DEFAULT_CLIENT_SETTINGS: AppSettings = {
   monoFontFamily: "",
   uiBaseFontSize: DEFAULT_UI_BASE_FONT_SIZE,
   contentFontSize: DEFAULT_CONTENT_FONT_SIZE,
+  agentGridFontSize: DEFAULT_AGENT_GRID_FONT_SIZE,
   codeFontSize: DEFAULT_CODE_FONT_SIZE,
   syntaxTheme: "one",
   workspaceTitleSource: "title",
   sidebarWorkspaceTrailing: "diff",
+  sidebarWorkspaceSort: "manual",
   sidebarRowItems: DEFAULT_SIDEBAR_ROW_ITEMS,
   sidebarChecksDisplay: DEFAULT_SIDEBAR_CHECKS_DISPLAY,
   sidebarNavItems: [],
@@ -142,6 +164,9 @@ export const DEFAULT_CLIENT_SETTINGS: AppSettings = {
   toolCallDetailLevel: "detailed",
   chatOutlineEnabled: true,
   vimKeybindings: false,
+  defaultFileOpener: "paseo",
+  plannotatorFeedbackMode: "auto-send",
+  itsaplanOrigin: "",
   openInSidePane: DEFAULT_OPEN_IN_SIDE_PANE_PREFERENCES,
   pullRequestOpenLocation: "explorer",
 };
@@ -213,6 +238,9 @@ const StoredAppSettingsSchema = z
     contentFontSize: clampedNumber(MIN_CONTENT_FONT_SIZE, MAX_CONTENT_FONT_SIZE)
       .optional()
       .catch(DEFAULT_CONTENT_FONT_SIZE),
+    agentGridFontSize: clampedNumber(MIN_AGENT_GRID_FONT_SIZE, MAX_AGENT_GRID_FONT_SIZE).catch(
+      DEFAULT_AGENT_GRID_FONT_SIZE,
+    ),
     // COMPAT(uiFontSizeScale): replaced by the literal base size in v0.4, remove after 2027-08-17.
     uiFontSize: clampedNumber(11, 24).optional().catch(undefined),
     codeFontSize: clampedNumber(MIN_CODE_FONT_SIZE, MAX_CODE_FONT_SIZE).catch(
@@ -221,6 +249,7 @@ const StoredAppSettingsSchema = z
     syntaxTheme: z.string().refine(isSyntaxThemeId).catch("one"),
     workspaceTitleSource: z.enum(["title", "branch"]).catch("title"),
     sidebarWorkspaceTrailing: z.enum(["diff", "timestamp", "none"]).catch("diff"),
+    sidebarWorkspaceSort: z.enum(["manual", "activity", "created"]).catch("manual"),
     sidebarRowItems: SidebarRowItemsSchema,
     sidebarChecksDisplay: z
       .enum(["iconAndText", "icon", "none"])
@@ -237,6 +266,12 @@ const StoredAppSettingsSchema = z
     compactToolCalls: z.boolean().optional().catch(undefined),
     chatOutlineEnabled: z.boolean().catch(true),
     vimKeybindings: z.boolean().catch(false),
+    defaultFileOpener: z.enum(["paseo", "vscode-web", "plannotator"]).optional().catch(undefined),
+    // COMPAT(defaultFileOpener): added in v0.2.0-beta.1; remove after 2027-01-21.
+    // Previously, a configured host sent non-markdown files to VS Code Web.
+    openMarkdownInPlannotator: z.boolean().optional().catch(undefined),
+    plannotatorFeedbackMode: z.enum(["auto-send", "compose"]).catch("auto-send"),
+    itsaplanOrigin: z.string().catch(""),
     openInSidePane: z
       .object({
         explorerFiles: z.boolean().catch(false),
@@ -283,6 +318,10 @@ const StoredAppSettingsSchema = z
         : DEFAULT_SIDEBAR_CHECKS_DISPLAY);
     const toolCallDetailLevel =
       stored.toolCallDetailLevel ?? (stored.compactToolCalls ? "overview" : "detailed");
+    let defaultFileOpener = stored.defaultFileOpener ?? DEFAULT_CLIENT_SETTINGS.defaultFileOpener;
+    if (stored.defaultFileOpener === undefined && stored.openMarkdownInPlannotator !== undefined) {
+      defaultFileOpener = stored.openMarkdownInPlannotator ? "plannotator" : "vscode-web";
+    }
     return {
       ...stored,
       openInSidePane,
@@ -290,6 +329,7 @@ const StoredAppSettingsSchema = z
         stored.pullRequestOpenLocation ?? (legacyPullRequestsInSidePane ? "side" : "explorer"),
       uiBaseFontSize,
       contentFontSize: stored.contentFontSize ?? uiBaseFontSize,
+      agentGridFontSize: stored.agentGridFontSize ?? DEFAULT_AGENT_GRID_FONT_SIZE,
       sidebarChecksDisplay,
       sidebarRowItems: {
         ...stored.sidebarRowItems,
@@ -298,6 +338,7 @@ const StoredAppSettingsSchema = z
           (stored.sidebarRowItems.scripts === false ? false : DEFAULT_SIDEBAR_ROW_ITEMS.services),
       },
       toolCallDetailLevel,
+      defaultFileOpener,
       needsWrite,
     };
   })

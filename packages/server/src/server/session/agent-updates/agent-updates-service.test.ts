@@ -101,6 +101,8 @@ function buildHarness() {
   let providerVisible: (provider: string) => boolean = () => true;
   let buildAgentPayloadError: Error | null = null;
   let enrichProjectedPayload = false;
+  let storedEnricher: ((payload: AgentSnapshotPayload) => Promise<AgentSnapshotPayload>) | null =
+    null;
   const directorySync = new DirectorySyncService("test-generation");
 
   const service = createAgentUpdatesService({
@@ -122,6 +124,8 @@ function buildHarness() {
       }
       return registeredPayload;
     },
+    enrichStoredPayload: (payload) =>
+      storedEnricher ? storedEnricher(payload) : Promise.resolve(payload),
     buildStoredAgentPayload: (record) => {
       const payload = payloadById.get(record.id);
       if (!payload) {
@@ -142,7 +146,10 @@ function buildHarness() {
         agentId,
         includeSequence,
       ),
-    logger: { error: (...args: unknown[]) => loggedErrors.push(args) } as unknown as pino.Logger,
+    logger: {
+      error: (...args: unknown[]) => loggedErrors.push(args),
+      warn: (...args: unknown[]) => loggedErrors.push(args),
+    } as unknown as pino.Logger,
   });
 
   return {
@@ -173,6 +180,11 @@ function buildHarness() {
     },
     queuePayloadBuilds(...payloads: Promise<AgentSnapshotPayload>[]) {
       queuedPayloadBuilds.push(...payloads);
+    },
+    setStoredEnricher(
+      fn: ((payload: AgentSnapshotPayload) => Promise<AgentSnapshotPayload>) | null,
+    ) {
+      storedEnricher = fn;
     },
     agentUpdates(): AgentUpdatePayload[] {
       return emitted
@@ -500,6 +512,44 @@ describe("emitStoredRecord", () => {
 
     expect(payload.id).toBe("a");
     expect(h.agentUpdates()).toEqual([]);
+  });
+
+  test("applies enrichStoredPayload to the emitted upsert (recomputed bucket rides the push)", async () => {
+    const h = buildHarness();
+    // F2: session wires the same wire-boundary enrich the live path uses, so
+    // a stored-record push carries the recomputed lifecycle bucket.
+    h.setStoredEnricher(async (payload) => ({ ...payload, bucket: "done" as const }));
+    h.service.beginSubscription({ subscriptionId: "sub", filter: {} });
+    h.service.flushBootstrapped("sub");
+    h.register(makeAgentPayload({ id: "a", workspaceId: "ws-1" }));
+
+    await h.service.emitStoredRecord(h.stored("a"));
+
+    expect(h.agentUpdates()).toEqual([
+      {
+        kind: "upsert",
+        agent: expect.objectContaining({ id: "a", bucket: "done" }),
+        project: makeProject(),
+      },
+    ]);
+  });
+
+  test("a failing enrichStoredPayload falls back to the built payload and logs", async () => {
+    const h = buildHarness();
+    h.setStoredEnricher(async () => {
+      throw new Error("enrich boom");
+    });
+    h.service.beginSubscription({ subscriptionId: "sub", filter: {} });
+    h.service.flushBootstrapped("sub");
+    h.register(makeAgentPayload({ id: "a", workspaceId: "ws-1" }));
+
+    const payload = await h.service.emitStoredRecord(h.stored("a"));
+
+    expect(payload.id).toBe("a");
+    expect(h.agentUpdates()).toEqual([
+      { kind: "upsert", agent: expect.objectContaining({ id: "a" }), project: makeProject() },
+    ]);
+    expect(h.loggedErrors).toHaveLength(1);
   });
 });
 

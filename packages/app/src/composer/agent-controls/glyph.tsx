@@ -3,12 +3,7 @@ import { StyleSheet, View } from "react-native";
 
 export function ComposerToolbarGlyph({ children, size }: { children: ReactNode; size: number }) {
   return (
-    <View
-      style={size >= 20 ? styles.native : styles.web}
-      accessibilityElementsHidden
-      importantForAccessibility="no-hide-descendants"
-      pointerEvents="none"
-    >
+    <View style={size >= 20 ? styles.native : styles.web} aria-hidden pointerEvents="none">
       {children}
     </View>
   );

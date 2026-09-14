@@ -58,6 +58,16 @@ import {
   computeTabDropPreview,
   type TabDropPreview,
 } from "@/components/split-container-tab-drop-preview";
+import { useToast } from "@/contexts/toast-context";
+import { useSessionStore } from "@/stores/session-store";
+import { navigateToWorkspace } from "@/stores/navigation-active-workspace-store";
+import { useAgentTabDropTracking } from "@/workspace-tabs/use-agent-tab-drop";
+import {
+  buildMoveAgentTabMessages,
+  describeMoveAgentTabResult,
+  moveAgentTabToExistingWorkspace,
+  sessionFromStore,
+} from "@/workspace-tabs/move-agent-tab";
 import {
   SplitDropZone,
   resolveSplitDropPosition,
@@ -485,22 +495,69 @@ export function SplitContainer({
     [resizeExplorerSidebar, workspaceKey, workspaceShellWidth],
   );
   const renderRoot = useMemo(() => wrapRootPaneForStableMount(splitRoot.root), [splitRoot.root]);
-  const handleDragStart = useCallback((event: DragStartEvent) => {
-    const data = asWorkspaceTabDragData(event.active.data.current);
-    if (!data) {
-      setActiveDragTabId(null);
-      setDropPreview(null);
-      setTabDropPreview(null);
-      return;
-    }
-    setActiveDragTabId(data.tabId);
-  }, []);
+  const { t } = useTranslation();
+  const toast = useToast();
+  const agentTabDropTracking = useAgentTabDropTracking();
+
+  const handleDragStart = useCallback(
+    (event: DragStartEvent) => {
+      const data = asWorkspaceTabDragData(event.active.data.current);
+      if (!data) {
+        setActiveDragTabId(null);
+        setDropPreview(null);
+        setTabDropPreview(null);
+        return;
+      }
+      setActiveDragTabId(data.tabId);
+      const target = uiTabs.find((tab) => tab.tabId === data.tabId)?.target;
+      if (target?.kind === "agent") {
+        agentTabDropTracking.begin({
+          serverId: normalizedServerId,
+          sourceWorkspaceId: normalizedWorkspaceId,
+          agentId: target.agentId,
+          tabId: data.tabId,
+        });
+      }
+    },
+    [agentTabDropTracking, normalizedServerId, normalizedWorkspaceId, uiTabs],
+  );
 
   const handleDragCancel = useCallback(() => {
+    agentTabDropTracking.end();
     setActiveDragTabId(null);
     setDropPreview(null);
     setTabDropPreview(null);
-  }, []);
+  }, [agentTabDropTracking]);
+
+  /** Drops onto a sidebar workspace row, which lives outside this DndContext. */
+  const applySidebarWorkspaceDrop = useCallback(
+    async (input: { agentId: string; tabId: string; targetWorkspaceId: string }) => {
+      const session = useSessionStore.getState().sessions[normalizedServerId];
+      const result = await moveAgentTabToExistingWorkspace({
+        session: sessionFromStore(session),
+        layout: useWorkspaceLayoutStore.getState(),
+        navigation: { navigateToWorkspace },
+        messages: buildMoveAgentTabMessages(t),
+        serverId: normalizedServerId,
+        sourceWorkspaceId: normalizedWorkspaceId,
+        targetWorkspaceId: input.targetWorkspaceId,
+        agentId: input.agentId,
+        tabId: input.tabId,
+      });
+      const described = describeMoveAgentTabResult(result, {
+        existing: t("workspace.tabs.toasts.movedToWorkspace", {
+          workspaceName: session?.workspaces.get(input.targetWorkspaceId)?.name ?? "",
+        }),
+        created: t("workspace.tabs.toasts.movedToNewWorkspace"),
+      });
+      if (described.kind === "error") {
+        toast.error(described.message);
+        return;
+      }
+      toast.show(described.message, { variant: "success" });
+    },
+    [normalizedServerId, normalizedWorkspaceId, t, toast],
+  );
 
   const updateDropPreview = useCallback(
     (event: Pick<DragMoveEvent, "active" | "over"> | Pick<DragOverEvent, "active" | "over">) => {
@@ -625,8 +682,22 @@ export function SplitContainer({
     (event: DragEndEvent) => {
       const activeData = asWorkspaceTabDragData(event.active.data.current);
       const overData = asDragOverData(event.over?.data.current);
+      const sidebarDrop = agentTabDropTracking.end();
 
       setActiveDragTabId(null);
+      setDropPreview(null);
+      setTabDropPreview(null);
+
+      // A sidebar workspace row wins over any in-workspace pane drop: the tab
+      // leaves this workspace entirely.
+      if (activeData?.kind === "workspace-tab" && sidebarDrop) {
+        void applySidebarWorkspaceDrop({
+          agentId: sidebarDrop.drag.agentId,
+          tabId: activeData.tabId,
+          targetWorkspaceId: sidebarDrop.target.workspaceId,
+        });
+        return;
+      }
 
       if (activeData?.kind === "workspace-tab" && event.over) {
         if (overData?.kind === "workspace-tab") {
@@ -635,11 +706,8 @@ export function SplitContainer({
           applyPaneDropEnd({ activeData, overData });
         }
       }
-
-      setDropPreview(null);
-      setTabDropPreview(null);
     },
-    [applyTabDropEnd, applyPaneDropEnd],
+    [agentTabDropTracking, applySidebarWorkspaceDrop, applyTabDropEnd, applyPaneDropEnd],
   );
 
   return (

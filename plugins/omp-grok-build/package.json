@@ -1,0 +1,38 @@
+{
+  "name": "omp-grok-build",
+  "version": "0.1.0",
+  "description": "Grok Build provider for Oh My Pi — CLI proxy route, native /login, Build limits",
+  "license": "MIT",
+  "type": "module",
+  "private": false,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ART1KZ/omp-grok-build.git"
+  },
+  "keywords": [
+    "oh-my-pi",
+    "omp",
+    "extension",
+    "grok-build",
+    "xai",
+    "provider"
+  ],
+  "omp": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "files": [
+    "src",
+    "README.md",
+    "README.ru.md",
+    "LICENSE"
+  ],
+  "peerDependencies": {
+    "@oh-my-pi/pi-coding-agent": "*",
+    "@oh-my-pi/pi-ai": "*"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

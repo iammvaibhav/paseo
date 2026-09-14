@@ -198,7 +198,7 @@ snapshot so a mixed edit can apply its live subset and still name the paths that
     listen: "127.0.0.1:6767",
     hostnames: true | string[],   // legacy alias `allowedHosts` is migrated on load
     trustedProxies: true | string[], // defaults to ["loopback"]; Express proxy names/CIDRs
-    mcp: { enabled: boolean, injectIntoAgents: boolean },
+    mcp: { enabled: boolean, injectIntoAgents: boolean }, // injectIntoAgents = HTTP MCP URL in the session; native host tools (fleet_*, report_status) stay on either way
     git: { maxProcessesPerSecond: number, maxProcessConcurrency: number },
     appendSystemPrompt: string,    // appended to supported provider system/developer prompts
     terminalProfiles: TerminalProfile[],  // named shell commands; omitted means DEFAULT_TERMINAL_PROFILES
@@ -352,7 +352,7 @@ remains authoritative during reload.
 
 Local speech model ids are intentionally narrow: STT uses `parakeet-tdt-0.6b-v2-int8`, TTS uses `kokoro-en-v0_19`, and turn detection uses the bundled Silero VAD model.
 
-Set these to select OpenAI instead of local speech:
+Set these to select OpenAI or Fish instead of local speech (Fish is TTS-only):
 
 | Env var                        | Applies to                      |
 | ------------------------------ | ------------------------------- |
@@ -380,6 +380,8 @@ OpenAI speech can be configured under `providers.openai`. STT and TTS resolve in
 ```
 
 `providers.openai.stt` is used for both composer dictation and voice mode speech-to-text; `providers.openai.tts` is used for voice mode text-to-speech. The equivalent env vars are `OPENAI_STT_API_KEY`/`OPENAI_STT_BASE_URL` and `OPENAI_TTS_API_KEY`/`OPENAI_TTS_BASE_URL`. Each feature falls back to `providers.openai.apiKey`/`providers.openai.baseUrl`, then `OPENAI_API_KEY`/`OPENAI_BASE_URL`, when its own fields are unset. These settings apply only to Paseo OpenAI speech features, not to Codex or other OpenAI-backed tools.
+
+Fish Audio TTS (optional): set `features.voiceMode.tts.provider` to `"fish"` and provide `providers.fish.apiKey` or `FISH_AUDIO_API_KEY`. STT stays local/OpenAI.
 
 Paseo uses these paths under the configured OpenAI base URL:
 

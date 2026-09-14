@@ -135,6 +135,36 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
       });
     });
 
+    it("cuts from the repository default branch when no baseBranch is specified", async () => {
+      execFileSync("git", ["checkout", "-b", "other-feature"], { cwd: repoDir });
+      writeFileSync(join(repoDir, "feature-only.txt"), "feature\n");
+      execFileSync("git", ["add", "."], { cwd: repoDir });
+      execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-m", "feature commit"], {
+        cwd: repoDir,
+      });
+
+      const result = await createWorktreePrimitive({
+        cwd: repoDir,
+        worktreeSlug: "from-default-branch",
+        source: {
+          kind: "branch-off",
+          branchName: "from-default-branch",
+        },
+        runSetup: false,
+        paseoHome,
+      });
+
+      const metadataPath = getPaseoWorktreeMetadataPath(result.worktreePath);
+      expect(existsSync(metadataPath)).toBe(true);
+      const metadata = JSON.parse(readFileSync(metadataPath, "utf8"));
+      expect(metadata).toMatchObject({
+        version: 1,
+        baseRefName: "main",
+      });
+      expect(existsSync(join(result.worktreePath, "file.txt"))).toBe(true);
+      expect(existsSync(join(result.worktreePath, "feature-only.txt"))).toBe(false);
+    });
+
     it("creates and owns worktrees under a configured root", async () => {
       const worktreesRoot = join(tempDir, "custom-worktrees");
       const projectHash = await deriveWorktreeProjectHash(repoDir);
@@ -328,6 +358,35 @@ describe.skipIf(isPlatform("win32"))("worktree POSIX-only", () => {
         headRef: "main-1",
         localBranchName: "main-1",
       });
+    });
+
+    it("cleans up worktree directory and git admin entry when worktree add fails", async () => {
+      const hookPath = join(repoDir, ".git", "hooks", "post-checkout");
+      mkdirSync(dirname(hookPath), { recursive: true });
+      writeFileSync(hookPath, "#!/bin/sh\nexit 1\n");
+      chmodSync(hookPath, 0o755);
+
+      const worktreeSlug = "failing-worktree";
+      const projectHash = await deriveWorktreeProjectHash(repoDir);
+      const expectedWorktreePath = join(paseoHome, "worktrees", projectHash, worktreeSlug);
+      const expectedAdminPath = join(repoDir, ".git", "worktrees", worktreeSlug);
+
+      await expect(
+        createWorktreePrimitive({
+          cwd: repoDir,
+          worktreeSlug,
+          source: {
+            kind: "branch-off",
+            branchName: "failing-branch",
+            baseBranch: "main",
+          },
+          runSetup: false,
+          paseoHome,
+        }),
+      ).rejects.toThrow(/worktree.*add/);
+
+      expect(existsSync(expectedWorktreePath)).toBe(false);
+      expect(existsSync(expectedAdminPath)).toBe(false);
     });
 
     it("fetches a GitHub PR branch, checks it out, writes metadata, and runs setup", async () => {

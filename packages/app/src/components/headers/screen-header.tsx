@@ -84,7 +84,11 @@ const styles = StyleSheet.create((theme) => ({
     borderBottomColor: theme.colors.border,
     userSelect: "none",
   },
+  // Stack above the absolute TitlebarDragRegion overlay so Electron
+  // doesn't intercept clicks on the buttons in these containers.
   left: {
+    position: "relative",
+    zIndex: 1,
     flex: 1,
     flexDirection: "row",
     alignItems: "center",
@@ -92,6 +96,8 @@ const styles = StyleSheet.create((theme) => ({
     minWidth: 0,
   },
   right: {
+    position: "relative",
+    zIndex: 1,
     flexDirection: "row",
     alignItems: "center",
     gap: theme.spacing[2],

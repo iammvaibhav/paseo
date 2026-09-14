@@ -94,6 +94,7 @@ function createCoreDeps(options?: {
               service: options.forge.service,
             }
           : null,
+      hasOriginTrackingBranch: async () => false,
     },
     resolveDefaultBranch: async () => "main",
   };
@@ -136,6 +137,38 @@ function createGitRepoWithOriginMain(): { tempDir: string; repoDir: string; pase
   execFileSync("git", ["remote", "add", "origin", remoteDir], { cwd: repoDir, stdio: "pipe" });
   execFileSync("git", ["fetch", "origin"], { cwd: repoDir, stdio: "pipe" });
   return { tempDir, repoDir, paseoHome };
+}
+
+function createGitRepoWithStaleLocalDefault(): {
+  tempDir: string;
+  repoDir: string;
+  paseoHome: string;
+  originTip: string;
+} {
+  const { tempDir, repoDir, paseoHome } = createGitRepoWithOriginMain();
+  // Advance origin's main ahead of repoDir's local `main` (and its already-fetched
+  // `refs/remotes/origin/main`) via a separate clone — the exact ADR 0001 staleness bug:
+  // repoDir's local branch and tracking ref both still point at the pre-advance commit.
+  const scratchDir = path.join(tempDir, "scratch");
+  execFileSync("git", ["clone", path.join(tempDir, "origin.git"), scratchDir], {
+    stdio: "pipe",
+  });
+  execFileSync("git", ["config", "user.email", "test@test.com"], {
+    cwd: scratchDir,
+    stdio: "pipe",
+  });
+  execFileSync("git", ["config", "user.name", "Test"], { cwd: scratchDir, stdio: "pipe" });
+  writeFileSync(path.join(scratchDir, "ADVANCE.md"), "origin advanced\n");
+  execFileSync("git", ["add", "ADVANCE.md"], { cwd: scratchDir, stdio: "pipe" });
+  execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-m", "advance origin"], {
+    cwd: scratchDir,
+    stdio: "pipe",
+  });
+  execFileSync("git", ["push", "origin", "HEAD:main"], { cwd: scratchDir, stdio: "pipe" });
+  const originTip = execFileSync("git", ["rev-parse", "HEAD"], { cwd: scratchDir })
+    .toString()
+    .trim();
+  return { tempDir, repoDir, paseoHome, originTip };
 }
 
 function createGitHubPrRemoteRepo(): { tempDir: string; repoDir: string; paseoHome: string } {
@@ -442,6 +475,58 @@ describe.skipIf(isPlatform("win32"))("worktree-core POSIX-only", () => {
         branchName: "no-upstream-feature",
       });
       expect(getBranchUpstream(result.worktree.worktreePath)).toBeNull();
+    });
+
+    test("branch-off with no baseBranch cuts from origin/<default> even when a stale local default exists", async () => {
+      const { tempDir, repoDir, paseoHome, originTip } = createGitRepoWithStaleLocalDefault();
+      cleanupPaths.push(tempDir);
+
+      // No `deps.resolveDefaultBranch` override here: the fallback must go through
+      // `deps.workspaceGitService.resolveDefaultBranch`, exercising ADR 0001's
+      // origin-preference fix. The stub mimics `resolveRepositoryDefaultBranch`'s real
+      // local-first behavior — it returns the bare local branch name "main" even though
+      // that local branch (and its already-fetched origin/main tracking ref) are stale.
+      const deps = {
+        github: createGitHubServiceStub(),
+        workspaceGitService: {
+          resolveRepoRoot: async (cwd: string) => cwd,
+          resolveForge: async () => null,
+          resolveDefaultBranch: async () => "main",
+          hasOriginTrackingBranch: async (repoRoot: string, branch: string) => {
+            try {
+              execFileSync("git", ["rev-parse", "--verify", `refs/remotes/origin/${branch}`], {
+                cwd: repoRoot,
+                stdio: "pipe",
+              });
+              return true;
+            } catch {
+              return false;
+            }
+          },
+        },
+      };
+
+      const result = await createCoreWorktree(
+        {
+          cwd: repoDir,
+          worktreeSlug: "dispatch-cut",
+          paseoHome,
+          runSetup: false,
+        },
+        deps,
+      );
+
+      expect(result.intent).toEqual({
+        kind: "branch-off",
+        baseBranch: "origin/main",
+        branchName: "dispatch-cut",
+      });
+      const worktreeHead = execFileSync("git", ["rev-parse", "HEAD"], {
+        cwd: result.worktree.worktreePath,
+      })
+        .toString()
+        .trim();
+      expect(worktreeHead).toBe(originTip);
     });
 
     test("creates a branch-off worktree with a mnemonic slug when no slug is supplied", async () => {

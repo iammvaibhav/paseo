@@ -280,7 +280,16 @@ async function selectAssistantAcrossCodeLines(
   );
 }
 
-async function copySelection(page: Page): Promise<void> {
+/** Cmd/Ctrl+Shift+C: the Markdown copy path (async clipboard write). */
+async function copySelectionAsMarkdown(page: Page): Promise<void> {
+  await page.keyboard.press("ControlOrMeta+Shift+c");
+  // The shortcut writes through navigator.clipboard.write, which resolves after
+  // the key press; let it land before the reader polls.
+  await page.waitForTimeout(100);
+}
+
+/** Cmd/Ctrl+C: the plain-text copy path. */
+async function copySelectionAsText(page: Page): Promise<void> {
   await page.keyboard.press("ControlOrMeta+c");
 }
 
@@ -346,7 +355,7 @@ test("copying an assistant selection preserves Markdown structure and links", as
     await expect(inlineCode).toHaveAttribute("data-pmono", "");
 
     await selectStructuredClipboardFixture(page);
-    await copySelection(page);
+    await copySelectionAsMarkdown(page);
 
     const clipboard = await readRichClipboard(page);
     expect(clipboard.plainText).toBe(EXPECTED_WHOLE_SELECTION_MARKDOWN);
@@ -388,14 +397,14 @@ test("copying an assistant selection preserves Markdown structure and links", as
     expect(clipboard.html).toContain('<th style="text-align:center">Center</th>');
 
     await doubleClickAssistantMarkdownText(page, "code", "apply_patch");
-    await copySelection(page);
+    await copySelectionAsMarkdown(page);
 
     const doubleClickedCodeClipboard = await readRichClipboard(page);
     expect(doubleClickedCodeClipboard.plainText).toBe("apply_patch");
     expect(doubleClickedCodeClipboard.html).not.toContain("<code>");
 
     await doubleClickAssistantMarkdownText(page, "strong", "strong prose");
-    await copySelection(page);
+    await copySelectionAsMarkdown(page);
 
     const doubleClickedBoldClipboard = await readRichClipboard(page);
     expect(doubleClickedBoldClipboard.plainText).toBe("strong");
@@ -406,7 +415,7 @@ test("copying an assistant selection preserves Markdown structure and links", as
       "P1 — High-value UI behavior",
       "Smoke with an older saved Fabel/model alias and with daemon/client version drift.",
     );
-    await copySelection(page);
+    await copySelectionAsMarkdown(page);
 
     const headingAndListClipboard = await readRichClipboard(page);
     expect(headingAndListClipboard.plainText).toBe(
@@ -426,14 +435,14 @@ test("copying an assistant selection preserves Markdown structure and links", as
     );
 
     await selectAssistantText(page, "First");
-    await copySelection(page);
+    await copySelectionAsMarkdown(page);
 
     const partialClipboard = await readRichClipboard(page);
     expect(partialClipboard.plainText).toBe("First");
     expect(partialClipboard.html).toContain("<p>First</p>");
 
     await selectAssistantTextRange(page, "Direct matches:", "repeated sandbox setup.");
-    await copySelection(page);
+    await copySelectionAsMarkdown(page);
 
     const paragraphAndListClipboard = await readRichClipboard(page);
     expect(paragraphAndListClipboard.plainText).toBe(
@@ -453,7 +462,7 @@ test("copying an assistant selection preserves Markdown structure and links", as
     );
 
     await selectAssistantListItemFromMarker(page, "ul", "First issue", "failure.");
-    await copySelection(page);
+    await copySelectionAsMarkdown(page);
 
     const draggedBulletClipboard = await readRichClipboard(page);
     expect(draggedBulletClipboard.plainText).toBe(
@@ -464,55 +473,55 @@ test("copying an assistant selection preserves Markdown structure and links", as
     );
 
     await selectAssistantListItemFromMarker(page, "ol", "Sixth item", "Sixth item");
-    await copySelection(page);
+    await copySelectionAsMarkdown(page);
 
     const draggedNumberClipboard = await readRichClipboard(page);
     expect(draggedNumberClipboard.plainText).toBe("6. Sixth item");
     expect(draggedNumberClipboard.html).toContain("<div>6. Sixth item</div>");
 
     await selectAssistantText(page, "docs");
-    await copySelection(page);
+    await copySelectionAsMarkdown(page);
 
     const titledLinkClipboard = await readRichClipboard(page);
     expect(titledLinkClipboard.plainText).toBe("docs");
     expect(titledLinkClipboard.html).not.toContain("<a ");
 
     await selectAssistantText(page, "https://autolink.example.com");
-    await copySelection(page);
+    await copySelectionAsMarkdown(page);
 
     const autolinkClipboard = await readRichClipboard(page);
     expect(autolinkClipboard.plainText).toBe("https://autolink.example.com");
 
     await selectAssistantText(page, "workspace file");
-    await copySelection(page);
+    await copySelectionAsMarkdown(page);
 
     const fileLinkClipboard = await readRichClipboard(page);
     expect(fileLinkClipboard.plainText).toBe("workspace file");
     expect(fileLinkClipboard.html).not.toContain("<a ");
 
     await selectAssistantTextRange(page, "Seventh item", "Eighth item");
-    await copySelection(page);
+    await copySelectionAsMarkdown(page);
 
     const midListClipboard = await readRichClipboard(page);
     expect(midListClipboard.plainText).toBe("Seventh item\n\n8. Eighth item");
     expect(midListClipboard.html).toContain("<div>8. Eighth item</div>");
 
     await selectAssistantTextRange(page, "Inner eight", "Inner nine");
-    await copySelection(page);
+    await copySelectionAsMarkdown(page);
 
     const nestedListClipboard = await readRichClipboard(page);
     expect(nestedListClipboard.plainText).toBe("Inner eight\n\n9. Inner nine");
     expect(nestedListClipboard.html).toContain("<div>9. Inner nine</div>");
 
     await selectAssistantTextRange(page, "Seventh item", "Nested list:");
-    await copySelection(page);
+    await copySelectionAsMarkdown(page);
 
     const crossBlockClipboard = await readRichClipboard(page);
     expect(crossBlockClipboard.plainText).toBe("Seventh item\n\n8. Eighth item\n\nNested list:");
     expect(crossBlockClipboard.html).toContain("<div>8. Eighth item</div>");
 
     await selectAssistantText(page, "Current");
-    await copySelection(page);
+    await copySelectionAsMarkdown(page);
 
     const partialTableClipboard = await readRichClipboard(page);
     expect(partialTableClipboard.plainText).toBe("Current");
@@ -520,7 +529,7 @@ test("copying an assistant selection preserves Markdown structure and links", as
     expect(partialTableClipboard.html).not.toContain("&lt;table");
 
     await selectAssistantTextRange(page, "Right", "ready");
-    await copySelection(page);
+    await copySelectionAsMarkdown(page);
 
     const columnSliceClipboard = await readRichClipboard(page);
     expect(columnSliceClipboard.plainText).toContain("ready");
@@ -532,7 +541,7 @@ test("copying an assistant selection preserves Markdown structure and links", as
     // prose unless it is diverted first: the line break and the indentation go, and
     // Markdown-significant characters get escaped.
     await selectAssistantAcrossCodeLines(page, "const", "return");
-    await copySelection(page);
+    await copySelectionAsMarkdown(page);
 
     const codeLinesClipboard = await readRichClipboard(page);
     expect(codeLinesClipboard.plainText).toBe('const answer = "yes";\n  return');
@@ -544,14 +553,14 @@ test("copying an assistant selection preserves Markdown structure and links", as
       page,
       '[data-paseo-markdown-language="typescript"] [data-paseo-markdown-tag="code"]',
     );
-    await copySelection(page);
+    await copySelectionAsMarkdown(page);
 
     const completeCodeClipboard = await readRichClipboard(page);
     expect(completeCodeClipboard.plainText).toBe('const answer = "yes";\n  return answer;');
 
     // Crossing the block boundary expresses an intent to carry its Markdown structure.
     await selectAssistantAcrossCodeLines(page, "const", "After code.");
-    await copySelection(page);
+    await copySelectionAsMarkdown(page);
 
     const crossedCodeClipboard = await readRichClipboard(page);
     expect(crossedCodeClipboard.plainText).toBe(
@@ -561,7 +570,7 @@ test("copying an assistant selection preserves Markdown structure and links", as
     // Selecting a whole line runs off its end into the newline node. A trailing
     // newline auto-executes the line when it is pasted into a terminal.
     await selectAssistantAcrossCodeLines(page, "const", "  ");
-    await copySelection(page);
+    await copySelectionAsMarkdown(page);
 
     expect((await readRichClipboard(page)).plainText).toBe('const answer = "yes";');
 
@@ -581,6 +590,23 @@ test("copying an assistant selection preserves Markdown structure and links", as
     await bashFence.locator("[data-paseo-markdown-ignore]").click();
 
     expect(await readPlainClipboard(page)).toBe("echo trailing");
+
+    // Cmd+C without Shift copies the rendered text only: no Markdown syntax and no
+    // rich-text half. Cmd+Shift+C above stays the Markdown path.
+    await selectStructuredClipboardFixture(page);
+    await copySelectionAsText(page);
+
+    const plainTextCopy = await readPlainClipboard(page);
+    expect(plainTextCopy).not.toContain("**");
+    expect(plainTextCopy).toContain("Formatted strong prose, emphasized prose, and struck prose.");
+    expect(plainTextCopy).toContain('const answer = "yes";');
+
+    const copiedTypes = await page.evaluate(async () => {
+      const items = await navigator.clipboard.read();
+      return items[0]?.types ?? [];
+    });
+    expect(copiedTypes).toContain("text/plain");
+    expect(copiedTypes).not.toContain("text/html");
   } finally {
     await agent.cleanup();
   }

@@ -52,10 +52,10 @@ function createOmpChild(options?: {
 function createRuntime(
   child: OmpChild,
   launches: OmpRuntimeLaunch[] = [],
-  options?: { requestTimeoutMs?: number },
+  options?: { requestTimeoutMs?: number; logger?: pino.Logger },
 ): OmpCliRuntime {
   return new OmpCliRuntime({
-    logger: pino({ level: "silent" }),
+    logger: options?.logger ?? pino({ level: "silent" }),
     command: ["omp"],
     commandsRpcName: "get_available_commands",
     requestTimeoutMs: options?.requestTimeoutMs,
@@ -183,6 +183,106 @@ describe("OMP CLI runtime", () => {
     expect(eventTypes).toEqual(["notice"]);
   });
 
+  test("logs omp.rpc.schema_drop when a frame fails schema validation", async () => {
+    const child = createOmpChild();
+    const warnings: Array<{ msg: string; frameType?: string }> = [];
+    const logger = pino(
+      { level: "warn" },
+      {
+        write(line: string) {
+          const parsed = JSON.parse(line) as { msg: string; frameType?: string };
+          warnings.push(parsed);
+        },
+      },
+    );
+    const session = await createRuntime(child, [], { logger }).startSession({
+      cwd: "/workspace/project",
+    });
+    const eventTypes: string[] = [];
+    session.onEvent((event) => eventTypes.push(event.type));
+
+    // agent_end with a malformed messages entry fails OmpAgentMessageSchema.
+    child.stdout.write(
+      `${JSON.stringify({
+        type: "agent_end",
+        messages: [{ role: "assistant", content: [{ type: "text", text: "ok" }] }],
+      })}\n`,
+    );
+    child.stdout.write(
+      `${JSON.stringify({
+        type: "agent_end",
+        messages: [{ role: "assistant", content: [{ type: "mystery_block", data: 1 }] }],
+      })}\n`,
+    );
+
+    await vi.waitFor(() => expect(warnings.length).toBeGreaterThan(0));
+
+    expect(warnings[0]).toMatchObject({
+      msg: "omp.rpc.schema_drop",
+      frameType: "agent_end",
+    });
+    // The malformed frame is dropped, the valid one still emits.
+    expect(eventTypes).toEqual(["agent_end"]);
+  });
+
+  test("accepts omp 17.2+ stream error, toolcall, and turn_end frames", async () => {
+    const child = createOmpChild();
+    const warnings: Array<{ msg: string }> = [];
+    const logger = pino(
+      { level: "warn" },
+      {
+        write(line: string) {
+          warnings.push(JSON.parse(line) as { msg: string });
+        },
+      },
+    );
+    const session = await createRuntime(child, [], { logger }).startSession({
+      cwd: "/workspace/project",
+    });
+    const eventTypes: string[] = [];
+    session.onEvent((event) => eventTypes.push(event.type));
+
+    // omp 17.2+ streams model-stream failures as message_update frames with
+    // assistantMessageEvent.type "error". These used to fail schema
+    // validation and vanish (omp.rpc.schema_drop), erasing the error trail.
+    child.stdout.write(
+      `${JSON.stringify({
+        type: "message_update",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: "partial" }],
+          errorMessage: "upstream stream failed",
+          stopReason: "error",
+        },
+        assistantMessageEvent: {
+          type: "error",
+          reason: "error",
+          error: { role: "assistant", content: [{ type: "text", text: "boom" }] },
+        },
+      })}\n`,
+    );
+    // toolcall deltas and the turn_end frame belong to the same contract.
+    child.stdout.write(
+      `${JSON.stringify({
+        type: "message_update",
+        message: { role: "assistant", content: [{ type: "text", text: "" }] },
+        assistantMessageEvent: { type: "toolcall_delta", delta: '{"id":' },
+      })}\n`,
+    );
+    child.stdout.write(
+      `${JSON.stringify({
+        type: "turn_end",
+        message: { role: "assistant", content: [{ type: "text", text: "done" }] },
+        toolResults: [],
+      })}\n`,
+    );
+
+    await vi.waitFor(() => expect(eventTypes).toHaveLength(3));
+
+    expect(warnings).toEqual([]);
+    expect(eventTypes).toEqual(["message_update", "message_update", "turn_end"]);
+  });
+
   test("lists commands through get_available_commands", async () => {
     const child = createOmpChild();
     const commandTypes: string[] = [];
@@ -277,6 +377,37 @@ describe("OMP CLI runtime", () => {
     expect(commands.map(withoutRequestId)).toEqual([
       { type: "set_subagent_subscription", level: "events" },
     ]);
+  });
+
+  test("wraps OMP switch_session", async () => {
+    const child = createOmpChild();
+    const commands: Record<string, unknown>[] = [];
+    replyToCommands(child, (command) => {
+      commands.push(command);
+      return undefined;
+    });
+    const session = await createRuntime(child).startSession({ cwd: "/workspace/project" });
+
+    await session.switchSession("/tmp/session.jsonl");
+
+    expect(commands.map(withoutRequestId)).toEqual([
+      { type: "switch_session", sessionPath: "/tmp/session.jsonl" },
+    ]);
+  });
+
+  test("rejects a cancelled OMP switch_session", async () => {
+    const child = createOmpChild();
+    replyToCommands(child, (command) => {
+      if (command.type === "switch_session") {
+        return { cancelled: true };
+      }
+      return undefined;
+    });
+    const session = await createRuntime(child).startSession({ cwd: "/workspace/project" });
+
+    await expect(session.switchSession("/tmp/session.jsonl")).rejects.toThrow(
+      "OMP switch_session was cancelled",
+    );
   });
 
   test("accepts the empty prompt acknowledgement emitted by OMP 17", async () => {

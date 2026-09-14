@@ -340,6 +340,7 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
     updateSessionServerInfo(serverId, {
       serverId: serverInfo.serverId,
       hostname: serverInfo.hostname,
+      missionControlHostAlias: serverInfo.missionControlHostAlias ?? null,
       version: serverInfo.version,
       ...(serverInfo.desktopManaged !== undefined
         ? { desktopManaged: serverInfo.desktopManaged }
@@ -352,11 +353,11 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
   useEffect(() => {
     const unregister = voiceRuntime?.registerSession({
       serverId,
-      setVoiceMode: async (enabled, agentId) => {
+      setVoiceMode: async (enabled, agentId, options) => {
         if (!client) {
           throw new Error(t("common.errors.daemonUnavailable"));
         }
-        await client.setVoiceMode(enabled, agentId);
+        await client.setVoiceMode(enabled, agentId, options);
       },
       sendVoiceAudioChunk: async (audioData, mimeType) => {
         if (!client) {
@@ -580,6 +581,7 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
         updateSessionServerInfo(serverId, {
           serverId: serverInfo.serverId,
           hostname: serverInfo.hostname,
+          missionControlHostAlias: serverInfo.missionControlHostAlias ?? null,
           version: serverInfo.version,
           ...(serverInfo.desktopManaged !== undefined
             ? { desktopManaged: serverInfo.desktopManaged }

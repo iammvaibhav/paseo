@@ -24,6 +24,8 @@ Evidence is something someone else can look at:
 - A video of the interaction
 - Logs, requests, responses
 
+For agent-executed verification, [verification.md](verification.md) is the standard: isolated throwaway stacks, committed check scripts, and video proofs with before/after stills.
+
 Redact what you need to, keep the technical details. If an agent did the work, submit its raw output. A summary drops the details someone else needs to check it.
 
 ## Does it work well
@@ -77,4 +79,4 @@ Tests are evidence only when they exercise the real thing.
 
 Tests that mock away the behavior, assert on internals, or pass against the broken code claim coverage that isn't there.
 
-[testing.md](testing.md) is the standard, including how to run suites without freezing your machine. For driving a real daemon in a test, see [ad-hoc-daemon-testing.md](ad-hoc-daemon-testing.md). For mobile flows, [mobile-testing.md](mobile-testing.md). For Electron screenshots, [browser-capture-harness.md](browser-capture-harness.md).
+[testing.md](testing.md) is the standard, including how to run suites without freezing your machine. For agent-executed integration checks on isolated stacks, see [verification.md](verification.md). For driving an in-process test daemon, see [ad-hoc-daemon-testing.md](ad-hoc-daemon-testing.md). For mobile flows, [mobile-testing.md](mobile-testing.md). For Electron screenshots, [browser-capture-harness.md](browser-capture-harness.md).
