@@ -57,13 +57,19 @@ const GOOGLE_ANTIGRAVITY_CLIENT_SECRET = "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";
 // ourselves would revoke the refresh token OMP has persisted and break OMP's own
 // refresh (and the OMP CLI, which reads the same db). Paseo never calls those
 // token endpoints. Before collecting usage, it asks `omp token` to refresh any
-// expired Grok Build credential so OMP owns the rotating-token write. The normal
-// `omp usage --json` path refreshes the other supported providers and persists
-// their rotated tokens. google-antigravity is the one exception: Google's
-// installed-app OAuth refresh tokens do not rotate (the token endpoint returns no
-// new refresh_token), so refreshing that one in memory is safe. A stored access
-// token is used only while it is still valid; once expired (or rejected with 401)
-// the account card falls back to CLI report data, or reports the expiry.
+// expired Grok Build credential so OMP owns the rotating-token write. The account
+// number for `--account N` is resolved via `omp token --list` (matched by email,
+// then account id) because agent.db updated_at order does not match OMP's stored
+// order. The same listing covers broker-backed plugin logins that omp
+// materializes without agent.db rows: a live token is resolved per listed number
+// and used for the billing fetch directly. The normal `omp usage --json` path
+// refreshes the other supported providers and persists their rotated tokens.
+// google-antigravity is the one exception: Google's installed-app OAuth refresh
+// tokens do not rotate (the token endpoint returns no new refresh_token), so
+// refreshing that one in memory is safe. A
+// stored access token is used only while it is still valid; once expired (or
+// rejected with 401) the account card falls back to CLI report data, or reports
+// the expiry.
 const OMP_TOKEN_SKEW_MS = 30_000;
 const OMP_TOKEN_EXPIRED_ERROR = "Token expired — will recover when OMP refreshes it";
 const OMP_REAUTH_ERROR = "Token expired — re-authenticate in OMP";
@@ -187,7 +193,7 @@ const XaiCreditsConfigSchema = z
       })
       .nullish(),
     creditUsagePercent: ApiNumberSchema.optional(),
-    // productUsage is intentionally ignored: SuperGrok UI only shows weekly credits.
+    // productUsage is intentionally ignored: the card only shows weekly credits.
     isUnifiedBillingUser: z.boolean().optional(),
   })
   .passthrough();
@@ -238,7 +244,8 @@ export interface OmpStoredAccount {
 }
 
 const OMP_PROVIDER_IDENTITIES: Record<string, OmpProviderIdentity> = {
-  "xai-oauth": { providerId: "omp", displayName: "SuperGrok" },
+  // xai-oauth (SuperGrok) is retired: Grok Build supersedes it, so its rows and
+  // reports are skipped below and no SuperGrok card is ever emitted.
   "grok-build": { providerId: "omp-grok-build", displayName: "Grok Build" },
   anthropic: { providerId: "omp-claude", displayName: "Claude" },
   cursor: { providerId: "omp-cursor", displayName: "Cursor" },
@@ -325,6 +332,8 @@ function mapCliReportsToCards(
   const pendingAgyCliCards = new Map<string, ProviderUsage>();
 
   for (const [provider, reports] of cliReportsByProvider.entries()) {
+    // xai-oauth (SuperGrok) is retired: never emit its CLI reports as cards.
+    if (provider === "xai-oauth") continue;
     const isMulti = isProviderMultiAccount(provider);
     for (const [index, report] of reports.entries()) {
       const card = mapOmpReportToUsage(report, { isMultiAccount: isMulti, reportIndex: index });
@@ -501,20 +510,13 @@ function mapOmpLimitToBalance(
 
 function appendOmpLimit(
   limit: z.infer<typeof OmpUsageLimitSchema>,
-  isSuperGrok: boolean,
   windows: ProviderUsageWindow[],
   balances: ProviderUsageBalance[],
 ): void {
-  // SuperGrok reports multiple sub-windows; only keep the overall weekly credits bar.
-  if (isSuperGrok && limit.id !== "xai-oauth:credits:1w") {
-    return;
-  }
   const window = mapOmpLimitToWindow(limit);
   if (window) {
     windows.push(window);
-    return;
   }
-  if (isSuperGrok) return;
   const balance = mapOmpLimitToBalance(limit);
   if (balance) balances.push(balance);
 }
@@ -522,7 +524,7 @@ function appendOmpLimit(
 function resolveOmpPlanLabel(metadata: Record<string, unknown> | undefined): string | null {
   if (typeof metadata?.planType === "string") return metadata.planType;
   if (typeof metadata?.billingKind !== "string") return null;
-  if (metadata.billingKind === "unified") return "SuperGrok (unified)";
+  if (metadata.billingKind === "unified") return "Grok Build";
   return metadata.billingKind;
 }
 
@@ -607,10 +609,8 @@ function mapOmpReportToUsage(
   const windows: ProviderUsageWindow[] = [];
   const balances: ProviderUsageBalance[] = [];
   const details: ProviderUsageDetail[] = [];
-  const isSuperGrok = report.provider === "xai-oauth";
-
   for (const limit of report.limits ?? []) {
-    appendOmpLimit(limit, isSuperGrok, windows, balances);
+    appendOmpLimit(limit, windows, balances);
   }
 
   const email = typeof report.metadata?.email === "string" ? report.metadata.email.trim() : null;
@@ -619,11 +619,8 @@ function mapOmpReportToUsage(
   const orgName =
     typeof report.metadata?.orgName === "string" ? report.metadata.orgName.trim() : null;
 
-  // Keep SuperGrok card lean: no account/org detail rows.
-  if (!isSuperGrok) {
-    if (email) details.push({ id: "account_email", label: "Account", value: email });
-    if (orgName) details.push({ id: "org_name", label: "Org", value: orgName });
-  }
+  if (email) details.push({ id: "account_email", label: "Account", value: email });
+  if (orgName) details.push({ id: "org_name", label: "Org", value: orgName });
 
   if (windows.length === 0 && balances.length === 0 && details.length === 0) {
     return null;
@@ -663,17 +660,23 @@ function parseCreditsPayload(payload: unknown): {
     ? toIsoStringOrNull(Date.parse(config.currentPeriod.end))
     : null;
   const windows: ProviderUsageWindow[] = [];
-  const weekly = percentWindow({
-    id: "weekly_credits",
-    label: "SuperGrok Weekly Credits",
-    usagePercent: config?.creditUsagePercent,
-    resetsAt,
-  });
+  // proto3 JSON omits zero-valued scalars: an absent creditUsagePercent on an
+  // otherwise valid config means 0% used, not unknown (upstream consumers map
+  // it to 0; a $0 Cent still arrives explicitly as {"val":0}). Only skip the
+  // window when there is no config at all.
+  const weekly = config
+    ? percentWindow({
+        id: "weekly_credits",
+        label: "Grok Build Weekly Credits",
+        usagePercent: config.creditUsagePercent ?? 0,
+        resetsAt,
+      })
+    : null;
   if (weekly) windows.push(weekly);
 
   return {
     windows,
-    planLabel: config?.isUnifiedBillingUser === true ? "SuperGrok (unified)" : null,
+    planLabel: config?.isUnifiedBillingUser === true ? "Grok Build" : null,
   };
 }
 
@@ -1034,6 +1037,63 @@ export function resolveActiveOmpCardIds(
   return activeCardIds;
 }
 
+/**
+ * Parse `omp token <provider> --list` output ("1. alice@example.com" per line)
+ * into account numbers. `--account N` numbers accounts in OMP's stored order,
+ * which does not match agent.db updated_at order (ties make that order
+ * arbitrary), so an expired credential must be refreshed by its listed number,
+ * not by its row index.
+ */
+function parseOmpTokenList(stdout: string): { number: number; identity: string }[] {
+  const entries: { number: number; identity: string }[] = [];
+  for (const line of stdout.split("\n")) {
+    const match = /^\s*(\d+)\s*[.):-]\s*(.+?)\s*$/.exec(line);
+    if (!match?.[1] || !match[2]) continue;
+    entries.push({ number: Number(match[1]), identity: match[2] });
+  }
+  return entries;
+}
+
+function countUniqueIdentities(values: (string | null | undefined)[]): number {
+  const seen = new Set<string>();
+  for (const value of values) {
+    const normalized = value?.trim().toLowerCase();
+    if (normalized) seen.add(normalized);
+  }
+  return seen.size;
+}
+
+/**
+ * Extract a live access token from `omp token <provider> --account N` output.
+ * Normally the first line; tolerate a JSON credential dump defensively.
+ */
+function parseOmpTokenOutput(stdout: string): string | null {
+  const text = stdout.trim();
+  if (!text) return null;
+  if (text.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(text) as {
+        access?: unknown;
+        access_token?: unknown;
+        token?: unknown;
+      };
+      for (const key of ["access", "access_token", "token"] as const) {
+        const value = parsed[key];
+        if (typeof value === "string" && value.trim()) return value.trim();
+      }
+    } catch {
+      return null;
+    }
+    return null;
+  }
+  return (
+    text
+      .split("\n")
+      .map((line) => line.trim())
+      .find((line) => line.length > 0) ?? null
+  );
+}
+
 export class OmpQuotaProvider implements ProviderUsageFetcher {
   readonly providerId = "omp";
   readonly agentProviderIds: readonly string[] = ["omp"];
@@ -1082,7 +1142,11 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
     };
 
     let storedAccounts = await this.readAllOmpAccounts();
-    await this.refreshExpiredGrokBuildCredentials(storedAccounts.get("grok-build") ?? []);
+    const listedGrokBuild = await this.listGrokBuildAccountNumbers();
+    await this.refreshExpiredGrokBuildCredentials(
+      storedAccounts.get("grok-build") ?? [],
+      listedGrokBuild,
+    );
     storedAccounts = await this.readAllOmpAccounts();
     const cliResult = await this.fetchFromOmpUsageReports();
     const cliReports = cliResult.reports;
@@ -1090,6 +1154,21 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
     const providerAccountCounts = this.computeProviderAccountCounts(
       storedAccounts,
       cliReportsByProvider,
+    );
+    // Grok Build logins come from the omp-grok-build plugin (device OAuth), and on
+    // broker-backed hosts omp materializes those accounts without storing rows in
+    // agent.db. The listing above covers them too; count them so multi-account
+    // card ids stay unique.
+    providerAccountCounts.set(
+      "grok-build",
+      Math.max(
+        providerAccountCounts.get("grok-build") ?? 0,
+        this.countGrokBuildAccounts(
+          storedAccounts.get("grok-build") ?? [],
+          cliReportsByProvider.get("grok-build"),
+          listedGrokBuild,
+        ),
+      ),
     );
     const isProviderMultiAccount = (provider: string): boolean => {
       return (providerAccountCounts.get(provider) ?? 0) > 1;
@@ -1117,9 +1196,18 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
       }
     }
     // When the CLI itself failed to authenticate a provider, its own refresh could
-    // not help either: tell the user to re-authenticate instead of to wait.
+    // not help either: tell the user to re-authenticate instead of to wait. The same
+    // applies to Grok Build credentials that are still expired after the refresh
+    // pass above ran: OMP could not recover them, so waiting helps nothing.
+    const grokBuildRefreshFailed = (storedAccounts.get("grok-build") ?? []).some(
+      (account) =>
+        account.disabledCause === null && this.resolveAccountAccessToken(account).expired,
+    );
     const expiredErrorFor = (provider: string): string =>
-      cliResult.authFailureProviders.has(provider) ? OMP_REAUTH_ERROR : OMP_TOKEN_EXPIRED_ERROR;
+      cliResult.authFailureProviders.has(provider) ||
+      (provider === "grok-build" && grokBuildRefreshFailed)
+        ? OMP_REAUTH_ERROR
+        : OMP_TOKEN_EXPIRED_ERROR;
 
     const { cards, coveredAccounts, pendingAgyCliCards } = mapCliReportsToCards(
       cliReportsByProvider,
@@ -1162,21 +1250,19 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
       pushUsage,
     );
     await this.pushFallbackAccountCards(
-      storedAccounts.get("xai-oauth") ?? [],
-      isProviderMultiAccount("xai-oauth"),
-      coveredAccounts,
-      "xai-oauth",
-      (account, multi) =>
-        this.fetchSuperGrokUsageForAccount(account, multi, expiredErrorFor("xai-oauth")),
-      pushUsage,
-    );
-    await this.pushFallbackAccountCards(
       storedAccounts.get("grok-build") ?? [],
       isProviderMultiAccount("grok-build"),
       coveredAccounts,
       "grok-build",
       (account, multi) =>
         this.fetchGrokBuildUsageForAccount(account, multi, expiredErrorFor("grok-build")),
+      pushUsage,
+    );
+    await this.pushListedGrokBuildCards(
+      storedAccounts.get("grok-build") ?? [],
+      listedGrokBuild,
+      isProviderMultiAccount("grok-build"),
+      coveredAccounts,
       pushUsage,
     );
     // Host-level definition of active: most recently used sticky pin per provider
@@ -1192,27 +1278,63 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
     return usages.length === 1 ? usages[0]! : usages;
   }
 
-  private async refreshExpiredGrokBuildCredentials(accounts: OmpStoredAccount[]): Promise<void> {
-    for (const [index, account] of accounts.entries()) {
-      if (
-        account.disabledCause !== null ||
-        account.refreshToken === null ||
-        (account.expiresAtMs !== null && account.expiresAtMs > Date.now() + OMP_TOKEN_SKEW_MS)
-      ) {
-        continue;
-      }
+  private async refreshExpiredGrokBuildCredentials(
+    accounts: OmpStoredAccount[],
+    listed: { number: number; identity: string }[],
+  ): Promise<void> {
+    const expired = accounts.filter(
+      (account) =>
+        account.disabledCause === null &&
+        account.refreshToken !== null &&
+        (account.expiresAtMs === null || account.expiresAtMs <= Date.now() + OMP_TOKEN_SKEW_MS),
+    );
+    if (expired.length === 0) return;
 
+    const numberByIdentity = new Map<string, number>();
+    for (const entry of listed) {
+      numberByIdentity.set(entry.identity.trim().toLowerCase(), entry.number);
+    }
+    const matchNumber = (account: OmpStoredAccount): number | null => {
+      for (const key of [account.email, account.accountId, account.identity]) {
+        const normalized = key?.trim().toLowerCase();
+        if (!normalized) continue;
+        const number = numberByIdentity.get(normalized);
+        if (number !== undefined) return number;
+      }
+      return null;
+    };
+    const targets = new Set<number>();
+    for (const account of expired) {
+      const number = matchNumber(account);
+      if (number !== null) targets.add(number);
+    }
+    if (targets.size === 0) {
+      // The list was unusable: refresh every stored slot. Without
+      // --force-refresh, fresh accounts are a no-op read.
+      for (let number = 1; number <= accounts.length; number++) targets.add(number);
+    }
+    for (const number of [...targets].sort((a, b) => a - b)) {
       try {
         await this.usageCommandRunner({
-          args: ["token", "grok-build", "--account", String(index + 1)],
+          args: ["token", "grok-build", "--account", String(number)],
           timeoutMs: OMP_USAGE_TIMEOUT_MS,
         });
       } catch (error) {
-        this.logger.debug(
-          { err: error, account: account.identity },
-          "OMP Grok Build token refresh failed",
-        );
+        this.logger.debug({ err: error, account: number }, "OMP Grok Build token refresh failed");
       }
+    }
+  }
+
+  private async listGrokBuildAccountNumbers(): Promise<{ number: number; identity: string }[]> {
+    try {
+      const { stdout } = await this.usageCommandRunner({
+        args: ["token", "grok-build", "--list"],
+        timeoutMs: OMP_USAGE_TIMEOUT_MS,
+      });
+      return parseOmpTokenList(stdout);
+    } catch (error) {
+      this.logger.debug({ err: error }, "OMP Grok Build account list failed");
+      return [];
     }
   }
 
@@ -1448,74 +1570,6 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
     });
   }
 
-  private async fetchSuperGrokUsageForAccount(
-    account: OmpStoredAccount,
-    isMultiAccount: boolean,
-    expiredError: string,
-  ): Promise<ProviderUsage | null> {
-    const identity = resolveOmpIdentity("xai-oauth");
-    const emailOrIdentity = account.email || account.accountId || account.identity;
-    const { providerId, groupId } = resolveOmpCardIds(
-      identity.providerId,
-      emailOrIdentity,
-      isMultiAccount,
-    );
-    const displayName = identity.displayName;
-
-    const { token, expired, disabled } = this.resolveAccountAccessToken(account);
-    if (disabled) {
-      // Emitted as an "Account disabled in OMP" card by pushDisabledAccountCards.
-      return null;
-    }
-    if (!token) {
-      return ompUnavailableCard({
-        providerId,
-        groupId,
-        accountEmail: account.email,
-        displayName,
-        error: expired ? expiredError : OMP_REAUTH_ERROR,
-      });
-    }
-
-    try {
-      const creditsRes = await this.fetchXaiCredits(token);
-      if (creditsRes.status === 401) {
-        // Never refresh OMP-owned credentials; surface the rejection instead.
-        return ompUnavailableCard({
-          providerId,
-          groupId,
-          accountEmail: account.email,
-          displayName,
-          error: expiredError,
-        });
-      }
-      if (!creditsRes.ok) {
-        this.logger.debug({ creditsStatus: creditsRes.status }, "OMP SuperGrok usage fetch failed");
-        return null;
-      }
-
-      const parsed = parseCreditsPayload(await creditsRes.json());
-      if (parsed.windows.length === 0) return null;
-
-      return {
-        providerId,
-        groupId,
-        accountEmail: account.email ?? undefined,
-        displayName,
-        status: "available",
-        planLabel: parsed.planLabel ?? "SuperGrok",
-        windows: parsed.windows,
-        balances: [],
-        details: [],
-        error: null,
-        sourceLabel: "via OMP",
-      };
-    } catch (err) {
-      this.logger.debug({ err }, "OMP SuperGrok credits fetch failed");
-      return null;
-    }
-  }
-
   private async fetchGrokBuildUsageForAccount(
     account: OmpStoredAccount,
     isMultiAccount: boolean,
@@ -1545,23 +1599,39 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
       });
     }
 
+    return this.fetchGrokBuildUsageWithToken({
+      token,
+      email: account.email,
+      providerId,
+      groupId,
+    });
+  }
+
+  private async fetchGrokBuildUsageWithToken(input: {
+    token: string;
+    email: string | null;
+    providerId: string;
+    groupId: string;
+  }): Promise<ProviderUsage> {
+    const displayName = resolveOmpIdentity("grok-build").displayName;
+    const accountEmail = input.email ?? undefined;
     try {
-      const creditsRes = await this.fetchXaiCredits(token);
+      const creditsRes = await this.fetchXaiCredits(input.token);
       if (creditsRes.status === 401) {
-        // Never refresh OMP-owned credentials; surface the rejection instead.
+        // A live token the API rejects needs re-authentication, not waiting.
         return ompUnavailableCard({
-          providerId,
-          groupId,
-          accountEmail: account.email,
+          providerId: input.providerId,
+          groupId: input.groupId,
+          accountEmail,
           displayName,
-          error: expiredError,
+          error: OMP_REAUTH_ERROR,
         });
       }
       if (!creditsRes.ok) {
         return grokBuildErrorCard({
-          providerId,
-          groupId,
-          accountEmail: account.email ?? undefined,
+          providerId: input.providerId,
+          groupId: input.groupId,
+          accountEmail,
           displayName,
           error: `Grok Build billing returned status ${creditsRes.status}`,
         });
@@ -1569,14 +1639,14 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
 
       const parsed = parseCreditsPayload(await creditsRes.json());
       const details: ProviderUsageDetail[] = [];
-      if (account.email) {
-        details.push({ id: "account_email", label: "Account", value: account.email });
+      if (accountEmail) {
+        details.push({ id: "account_email", label: "Account", value: accountEmail });
       }
 
       return {
-        providerId,
-        groupId,
-        accountEmail: account.email ?? undefined,
+        providerId: input.providerId,
+        groupId: input.groupId,
+        accountEmail,
         displayName,
         status: "available",
         planLabel: parsed.planLabel ?? "Grok Build",
@@ -1588,13 +1658,78 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
       };
     } catch (err) {
       return grokBuildErrorCard({
-        providerId,
-        groupId,
-        accountEmail: account.email ?? undefined,
+        providerId: input.providerId,
+        groupId: input.groupId,
+        accountEmail,
         displayName,
         error: `Grok Build billing fetch failed: ${err instanceof Error ? err.message : String(err)}`,
       });
     }
+  }
+
+  /**
+   * Broker-backed Grok Build accounts: the omp-grok-build plugin logs in via
+   * device OAuth and omp materializes those accounts without agent.db rows.
+   * Resolve a live token per listed account number and report usage. Accounts
+   * already covered by stored rows or CLI reports are skipped (pushUsage
+   * dedupes by providerId regardless).
+   */
+  private async pushListedGrokBuildCards(
+    storedAccounts: OmpStoredAccount[],
+    listed: { number: number; identity: string }[],
+    isMultiAccount: boolean,
+    coveredAccounts: Map<string, Set<string>>,
+    push: (usage: ProviderUsage | null | undefined) => void,
+  ): Promise<void> {
+    const known = new Set<string>();
+    for (const account of storedAccounts) {
+      for (const key of [account.email, account.accountId, account.identity]) {
+        const normalized = key?.trim().toLowerCase();
+        if (normalized) known.add(normalized);
+      }
+    }
+    for (const identity of coveredAccounts.get("grok-build") ?? []) {
+      known.add(identity.trim().toLowerCase());
+    }
+    for (const entry of listed) {
+      const email = entry.identity.trim();
+      if (!email || known.has(email.toLowerCase())) continue;
+      known.add(email.toLowerCase());
+      push(await this.fetchListedGrokBuildUsage(entry.number, email, isMultiAccount));
+    }
+  }
+
+  private async fetchListedGrokBuildUsage(
+    accountNumber: number,
+    email: string,
+    isMultiAccount: boolean,
+  ): Promise<ProviderUsage | null> {
+    const displayName = resolveOmpIdentity("grok-build").displayName;
+    const { providerId, groupId } = resolveOmpCardIds("omp-grok-build", email, isMultiAccount);
+    let token: string | null = null;
+    try {
+      const { stdout } = await this.usageCommandRunner({
+        args: ["token", "grok-build", "--account", String(accountNumber)],
+        timeoutMs: OMP_USAGE_TIMEOUT_MS,
+      });
+      token = parseOmpTokenOutput(stdout);
+    } catch (error) {
+      this.logger.debug(
+        { err: error, account: accountNumber },
+        "OMP Grok Build listed token fetch failed",
+      );
+    }
+    if (!token) {
+      // omp could not materialize a token: re-authentication is required.
+      return ompUnavailableCard({
+        providerId,
+        groupId,
+        accountEmail: email,
+        displayName,
+        error: OMP_REAUTH_ERROR,
+      });
+    }
+    return this.fetchGrokBuildUsageWithToken({ token, email, providerId, groupId });
   }
 
   private parseStoredAccountRow(row: RawAuthCredentialRow, index: number): OmpStoredAccount | null {
@@ -1636,6 +1771,9 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
     const byProvider = new Map<string, OmpStoredAccount[]>();
 
     for (const [index, row] of rows.entries()) {
+      // xai-oauth (SuperGrok) is retired: ignore its rows so no SuperGrok card
+      // (including disabled-credential cards) is ever emitted.
+      if (row.provider === "xai-oauth") continue;
       const account = this.parseStoredAccountRow(row, index);
       if (!account) continue;
       const existing = byProvider.get(row.provider) ?? [];
@@ -1644,6 +1782,31 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
     }
 
     return byProvider;
+  }
+
+  /**
+   * Unique Grok Build identity count across stored rows, CLI reports, and
+   * broker-listed accounts, so multi-account card ids stay unique on every host.
+   */
+  private countGrokBuildAccounts(
+    stored: OmpStoredAccount[],
+    cliReports: z.infer<typeof OmpUsageReportSchema>[] | undefined,
+    listed: { number: number; identity: string }[],
+  ): number {
+    const identities: (string | null | undefined)[] = stored.flatMap((account) => [
+      account.email,
+      account.accountId,
+      account.identity,
+    ]);
+    for (const report of cliReports ?? []) {
+      const metadata = report.metadata;
+      identities.push(
+        typeof metadata?.email === "string" ? metadata.email : null,
+        typeof metadata?.accountId === "string" ? metadata.accountId : null,
+      );
+    }
+    for (const entry of listed) identities.push(entry.identity);
+    return countUniqueIdentities(identities);
   }
 
   private computeProviderAccountCounts(
@@ -1753,6 +1916,12 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
           error: expiredErrorFor("google-antigravity"),
         }),
       );
+    }
+    // CLI-reported accounts with no stored credential (or an identity mismatch)
+    // would otherwise vanish: push whatever is left. pushUsage dedupes by
+    // providerId, so cards already pushed above are skipped here.
+    for (const card of pendingAgyCliCards.values()) {
+      push(card);
     }
   }
 

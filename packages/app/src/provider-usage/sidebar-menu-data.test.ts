@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   cleanProviderUsageDisplayName,
   groupProviderUsage,
+  hostStatusText,
   mergeProviderUsageReports,
+  summarizeHostStatus,
   type HostProviderUsageReport,
 } from "./sidebar-menu-data";
 import type { ProviderUsage } from "./types";
@@ -27,10 +29,12 @@ function readyReport(
   providers: ProviderUsage[],
   enabledProviderIds: readonly string[] | null,
   isRefreshing = false,
+  snapshotError: string | null = null,
 ): HostProviderUsageReport {
   return {
     serverId,
     enabledProviderIds,
+    snapshotError,
     view: {
       kind: "ready",
       payload: { fetchedAt, providers },
@@ -193,6 +197,7 @@ describe("mergeProviderUsageReports", () => {
       {
         serverId: "host-c",
         enabledProviderIds: [],
+        snapshotError: null,
         view: { kind: "error", message: "offline" },
       },
     ]);
@@ -217,5 +222,52 @@ describe("provider usage groups", () => {
       { id: "claude", label: "Claude" },
       { id: "omp-grok", label: "Grok Build" },
     ]);
+  });
+});
+
+describe("summarizeHostStatus", () => {
+  it("counts a ready host with a failed snapshot as failed, not loading", () => {
+    const reports = new Map<string, HostProviderUsageReport>([
+      ["host-a", readyReport("host-a", "2026-08-18T08:00:00.000Z", [], ["omp"])],
+      [
+        "host-b",
+        readyReport("host-b", "2026-08-18T08:00:00.000Z", [], null, false, "snapshot timeout"),
+      ],
+    ]);
+    expect(summarizeHostStatus(["host-a", "host-b"], reports)).toEqual({
+      loading: 0,
+      refreshing: 0,
+      failed: 1,
+    });
+  });
+
+  it("counts a ready host with a pending snapshot as loading", () => {
+    const reports = new Map<string, HostProviderUsageReport>([
+      ["host-a", readyReport("host-a", "2026-08-18T08:00:00.000Z", [], null)],
+    ]);
+    expect(summarizeHostStatus(["host-a"], reports)).toEqual({
+      loading: 1,
+      refreshing: 0,
+      failed: 0,
+    });
+  });
+
+  it("counts missing reports and refreshing hosts", () => {
+    const reports = new Map<string, HostProviderUsageReport>([
+      ["host-a", readyReport("host-a", "2026-08-18T08:00:00.000Z", [], ["omp"], true)],
+    ]);
+    expect(summarizeHostStatus(["host-a", "host-b"], reports)).toEqual({
+      loading: 1,
+      refreshing: 1,
+      failed: 0,
+    });
+  });
+
+  it("formats the status text", () => {
+    expect(hostStatusText({ loading: 1, refreshing: 0, failed: 0 })).toBe("1 host still loading");
+    expect(hostStatusText({ loading: 0, refreshing: 1, failed: 2 })).toBe(
+      "1 host refreshing · 2 hosts failed",
+    );
+    expect(hostStatusText({ loading: 0, refreshing: 0, failed: 0 })).toBeNull();
   });
 });

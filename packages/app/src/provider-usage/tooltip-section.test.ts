@@ -22,9 +22,19 @@ function providerIds(providers: ProviderUsage[]): string[] {
 
 describe("matchProviderUsage", () => {
   const providers = [
-    usage({ providerId: "omp", displayName: "OMP · SuperGrok" }),
+    usage({ providerId: "omp-grok-build", displayName: "OMP · Grok Build" }),
     usage({ providerId: "omp-claude", displayName: "OMP · Claude" }),
     usage({ providerId: "omp-antigravity", displayName: "OMP · Antigravity" }),
+    usage({
+      providerId: "omp-opencode-zen",
+      groupId: "omp-opencode-zen",
+      displayName: "OMP · OpenCode Zen",
+    }),
+    usage({
+      providerId: "omp-opencode-go",
+      groupId: "omp-opencode-go",
+      displayName: "OMP · OpenCode Go",
+    }),
     usage({ providerId: "claude", displayName: "Claude" }),
     usage({ providerId: "grok", displayName: "Grok" }),
   ];
@@ -46,14 +56,19 @@ describe("matchProviderUsage", () => {
     ]);
   });
 
-  it("picks SuperGrok limits for Grok models on OMP agents", () => {
-    expect(providerIds(matchProviderUsage(providers, "omp", "xai/grok-4.5"))).toEqual(["omp"]);
-    expect(providerIds(matchProviderUsage(providers, "omp", "Grok 4.5"))).toEqual(["omp"]);
+  it("picks Grok Build limits for Grok models on OMP agents", () => {
+    expect(providerIds(matchProviderUsage(providers, "omp", "xai/grok-4.5"))).toEqual([
+      "omp-grok-build",
+    ]);
+    expect(providerIds(matchProviderUsage(providers, "omp", "Grok 4.5"))).toEqual([
+      "omp-grok-build",
+    ]);
   });
 
   it("returns every account in the matched provider group", () => {
     const withAccounts = [
-      ...providers,
+      // No bare single-account card: multi-account daemons suffix every id.
+      ...providers.filter((entry) => entry.providerId !== "omp-grok-build"),
       usage({
         providerId: "omp-grok-build:second",
         groupId: "omp-grok-build",
@@ -85,16 +100,16 @@ describe("matchProviderUsage", () => {
     ]);
   });
 
-  it("falls back to native Grok usage when OMP SuperGrok cards are missing", () => {
-    const withoutOmpSuperGrok = providers.filter((entry) => entry.providerId !== "omp");
-    expect(providerIds(matchProviderUsage(withoutOmpSuperGrok, "omp", "grok-4.5"))).toEqual([
+  it("falls back to native Grok usage when OMP Grok Build cards are missing", () => {
+    const withoutOmpGrokBuild = providers.filter((entry) => entry.providerId !== "omp-grok-build");
+    expect(providerIds(matchProviderUsage(withoutOmpGrokBuild, "omp", "grok-4.5"))).toEqual([
       "grok",
     ]);
   });
 
   it("does not show another family when Grok cards are missing", () => {
     const withoutGrokCards = providers.filter(
-      (entry) => entry.providerId !== "omp" && entry.providerId !== "grok",
+      (entry) => entry.providerId !== "omp-grok-build" && entry.providerId !== "grok",
     );
     expect(matchProviderUsage(withoutGrokCards, "omp", "Grok 4.5")).toEqual([]);
   });
@@ -103,5 +118,23 @@ describe("matchProviderUsage", () => {
     expect(
       providerIds(matchProviderUsage(providers, "omp", "google-antigravity/gemini-3.6-flash")),
     ).toEqual(["omp-antigravity"]);
+  });
+
+  it("picks OpenCode Zen limits for opencode-zen models on native opencode agents", () => {
+    expect(
+      providerIds(matchProviderUsage(providers, "opencode", "opencode-zen/kimi-k2.5")),
+    ).toEqual(["omp-opencode-zen"]);
+  });
+
+  it("picks OpenCode Go limits for opencode-go models on OMP agents", () => {
+    expect(
+      providerIds(matchProviderUsage(providers, "omp", "opencode-go/deepseek-v4-flash")),
+    ).toEqual(["omp-opencode-go"]);
+  });
+
+  it("defaults bare opencode models to OpenCode Zen", () => {
+    expect(providerIds(matchProviderUsage(providers, "opencode", "opencode/big-pickle"))).toEqual([
+      "omp-opencode-zen",
+    ]);
   });
 });

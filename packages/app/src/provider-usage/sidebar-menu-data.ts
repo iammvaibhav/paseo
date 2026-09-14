@@ -5,6 +5,8 @@ export interface HostProviderUsageReport {
   view: ProviderUsageView;
   /** Null until this host's provider snapshot has loaded. */
   enabledProviderIds: readonly string[] | null;
+  /** Provider-snapshot fetch error, if the snapshot failed. */
+  snapshotError: string | null;
 }
 
 export interface ProviderUsageGroup {
@@ -176,4 +178,45 @@ export function groupProviderUsage(providers: readonly ProviderUsage[]): Provide
   }).sort(
     (left, right) => left.label.localeCompare(right.label) || left.id.localeCompare(right.id),
   );
+}
+
+export interface HostStatusSummary {
+  loading: number;
+  refreshing: number;
+  failed: number;
+}
+
+export function summarizeHostStatus(
+  serverIds: readonly string[],
+  reports: ReadonlyMap<string, HostProviderUsageReport>,
+): HostStatusSummary {
+  let loading = 0;
+  let refreshing = 0;
+  let failed = 0;
+
+  for (const serverId of serverIds) {
+    const report = reports.get(serverId);
+    const view = report?.view;
+    if (!view || view.kind === "loading") loading += 1;
+    else if (view.kind === "error") failed += 1;
+    else {
+      // Usage arrived but the provider snapshot failed: the host's cards stay
+      // hidden (enablement unknown), so count it as failed, not loading.
+      if (report.enabledProviderIds === null) {
+        if (report.snapshotError) failed += 1;
+        else loading += 1;
+      }
+      if (view.isRefreshing) refreshing += 1;
+    }
+  }
+
+  return { loading, refreshing, failed };
+}
+
+export function hostStatusText({ loading, refreshing, failed }: HostStatusSummary): string | null {
+  const parts: string[] = [];
+  if (loading > 0) parts.push(`${loading} ${loading === 1 ? "host" : "hosts"} still loading`);
+  if (refreshing > 0) parts.push(`${refreshing} ${refreshing === 1 ? "host" : "hosts"} refreshing`);
+  if (failed > 0) parts.push(`${failed} ${failed === 1 ? "host" : "hosts"} failed`);
+  return parts.length > 0 ? parts.join(" · ") : null;
 }

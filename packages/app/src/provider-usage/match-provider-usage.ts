@@ -22,12 +22,16 @@ const OMP_MODEL_RULES: ReadonlyArray<{ providerId: string; needles: readonly str
     needles: ["codex", "openai", "gpt-"],
   },
   {
-    providerId: "omp-grok-build",
-    needles: ["grok-build"],
+    providerId: "omp-opencode-zen",
+    needles: ["opencode-zen"],
   },
   {
-    providerId: "omp",
-    needles: ["grok", "xai", "supergrok"],
+    providerId: "omp-opencode-go",
+    needles: ["opencode-go"],
+  },
+  {
+    providerId: "omp-grok-build",
+    needles: ["grok-build", "grok", "xai", "supergrok"],
   },
 ];
 
@@ -38,9 +42,13 @@ const OMP_VENDOR_TO_PROVIDER: Record<string, string> = {
   cursor: "omp-cursor",
   openai: "omp-codex",
   "openai-codex": "omp-codex",
-  xai: "omp",
-  "xai-oauth": "omp",
+  xai: "omp-grok-build",
+  "xai-oauth": "omp-grok-build",
   "grok-build": "omp-grok-build",
+  "opencode-go": "omp-opencode-go",
+  "opencode-zen": "omp-opencode-zen",
+  // Bare "opencode/..." model ids bill to Zen, the hosted default.
+  opencode: "omp-opencode-zen",
 };
 
 function legacyProviderPrefix(providerId: string): string {
@@ -78,18 +86,14 @@ function isGrokFamilyModel(modelKey: string): boolean {
 }
 
 /**
- * SuperGrok / Grok Build share the same xAI weekly credits. Prefer the OMP-expanded
- * cards when present, then the standalone Grok CLI (`~/.grok/auth.json`) card.
+ * Grok models bill to Grok Build. Prefer the OMP-expanded card when present,
+ * then the standalone Grok CLI (`~/.grok/auth.json`) card.
  */
 function pickGrokFamilyUsage(
   candidates: ProviderUsage[],
   allProviders: ProviderUsage[],
 ): ProviderUsage | null {
-  return (
-    findUsageById(candidates, "omp-grok-build") ??
-    findUsageById(candidates, "omp") ??
-    findUsageById(allProviders, "grok")
-  );
+  return findUsageById(candidates, "omp-grok-build") ?? findUsageById(allProviders, "grok");
 }
 
 function pickOmpUsageForModel(
@@ -104,10 +108,10 @@ function pickOmpUsageForModel(
     const matched = findUsageById(candidates, rule.providerId);
     if (matched) return matched;
 
-    // Identified a Grok family model but the OMP SuperGrok/Grok Build cards are
-    // missing (common when `omp usage` has no xai-oauth report). Fall back to
-    // the native Grok CLI usage card instead of leaking into Claude/etc.
-    if (rule.providerId === "omp-grok-build" || rule.providerId === "omp") {
+    // Identified a Grok family model but the OMP Grok Build card is missing.
+    // Fall back to the native Grok CLI usage card instead of leaking into
+    // Claude/etc.
+    if (rule.providerId === "omp-grok-build") {
       return pickGrokFamilyUsage(candidates, allProviders);
     }
 
@@ -115,7 +119,6 @@ function pickOmpUsageForModel(
     // we do not return a different family's first card.
     return null;
   }
-
   const slash = modelKey.indexOf("/");
   if (slash > 0) {
     const vendor = modelKey.slice(0, slash);
@@ -123,7 +126,7 @@ function pickOmpUsageForModel(
     if (mapped) {
       const matched = findUsageById(candidates, mapped);
       if (matched) return matched;
-      if (mapped === "omp" || mapped === "omp-grok-build") {
+      if (mapped === "omp-grok-build") {
         return pickGrokFamilyUsage(candidates, allProviders);
       }
       return null;
@@ -141,8 +144,9 @@ function pickOmpUsageForModel(
  * Resolve which usage card belongs to the active agent.
  *
  * OMP agents all have provider id `omp`, but the quota service expands one card per
- * authenticated OMP backend (`omp`, `omp-claude`, `omp-antigravity`, …). Prefer the
- * backend implied by the active model id, then fall back to the exact provider id.
+ * authenticated OMP backend (`omp-grok-build`, `omp-claude`, `omp-antigravity`, …).
+ * Prefer the backend implied by the active model id, then fall back to the exact
+ * provider id.
  */
 function resolvePrimaryUsage(
   providers: ProviderUsage[],
@@ -156,6 +160,16 @@ function resolvePrimaryUsage(
 
   const exact = providerKey ? findUsageById(providers, providerKey) : null;
 
+  // Native OpenCode sessions bill to the OMP OpenCode subscriptions, so resolve
+  // by model family (`opencode-zen/...` → Zen) instead of matching `opencode`
+  // exactly (no such card exists, and falling through would show every account).
+  if (providerKey === "opencode") {
+    const ompCandidates = providers.filter((usage) =>
+      normalizeUsageKey(usage.providerId).startsWith("omp"),
+    );
+    return pickOmpUsageForModel(ompCandidates, providers, modelKey) ?? exact;
+  }
+
   // Non-OMP providers keep the simple exact match.
   if (providerKey && providerKey !== "omp") {
     // Native Grok Build CLI sessions are provider id `grok`.
@@ -165,7 +179,7 @@ function resolvePrimaryUsage(
     return exact;
   }
 
-  // OMP: choose by model family first so Claude Fable shows Claude limits, not SuperGrok.
+  // OMP: choose by model family first so Claude Fable shows Claude limits, not Grok Build.
   if (providerKey === "omp" || modelKey.includes("/") || modelKey.length > 0) {
     const ompCandidates = providers.filter((usage) =>
       normalizeUsageKey(usage.providerId).startsWith("omp"),

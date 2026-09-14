@@ -17,7 +17,9 @@ import { ProviderUsageList } from "./list";
 import {
   cleanProviderUsageDisplayName,
   groupProviderUsage,
+  hostStatusText,
   mergeProviderUsageReports,
+  summarizeHostStatus,
   type HostProviderUsageReport,
   type ProviderUsageGroup,
 } from "./sidebar-menu-data";
@@ -31,42 +33,6 @@ const mutedMapping = (theme: Theme) => ({
   color: theme.colors.foregroundMuted,
 });
 
-interface HostStatusSummary {
-  loading: number;
-  refreshing: number;
-  failed: number;
-}
-
-function summarizeHostStatus(
-  serverIds: readonly string[],
-  reports: ReadonlyMap<string, HostProviderUsageReport>,
-): HostStatusSummary {
-  let loading = 0;
-  let refreshing = 0;
-  let failed = 0;
-
-  for (const serverId of serverIds) {
-    const report = reports.get(serverId);
-    const view = report?.view;
-    if (!view || view.kind === "loading") loading += 1;
-    else if (view.kind === "error") failed += 1;
-    else {
-      if (report.enabledProviderIds === null) loading += 1;
-      if (view.isRefreshing) refreshing += 1;
-    }
-  }
-
-  return { loading, refreshing, failed };
-}
-
-function hostStatusText({ loading, refreshing, failed }: HostStatusSummary): string | null {
-  const parts: string[] = [];
-  if (loading > 0) parts.push(`${loading} ${loading === 1 ? "host" : "hosts"} still loading`);
-  if (refreshing > 0) parts.push(`${refreshing} ${refreshing === 1 ? "host" : "hosts"} refreshing`);
-  if (failed > 0) parts.push(`${failed} ${failed === 1 ? "host" : "hosts"} failed`);
-  return parts.length > 0 ? parts.join(" · ") : null;
-}
-
 function HostProviderUsageCollector({
   serverId,
   menuOpen,
@@ -77,20 +43,28 @@ function HostProviderUsageCollector({
   onReport: (report: HostProviderUsageReport) => void;
 }) {
   const { view, refresh } = useProviderUsage(serverId);
-  const { entries } = useProvidersSnapshot(serverId);
+  const {
+    entries,
+    error: snapshotError,
+    refresh: refreshSnapshot,
+  } = useProvidersSnapshot(serverId);
   const enabledProviderIds = useMemo(
     () => entries?.filter((entry) => entry.enabled).map((entry) => entry.provider) ?? null,
     [entries],
   );
 
   useEffect(() => {
-    onReport({ serverId, view, enabledProviderIds });
-  }, [enabledProviderIds, onReport, serverId, view]);
+    onReport({ serverId, view, enabledProviderIds, snapshotError });
+  }, [enabledProviderIds, onReport, serverId, snapshotError, view]);
 
   // Cached usage renders immediately; opening the panel only asks for fresher numbers.
+  // A provider snapshot that failed earlier never retries on its own, which wedges
+  // the host on "still loading" and hides its accounts: refetch it when missing.
   useEffect(() => {
-    if (menuOpen) void refresh().catch(() => {});
-  }, [menuOpen, refresh]);
+    if (!menuOpen) return;
+    void refresh().catch(() => {});
+    if (!entries) void refreshSnapshot().catch(() => {});
+  }, [entries, menuOpen, refresh, refreshSnapshot]);
 
   return null;
 }
@@ -194,7 +168,8 @@ export function SidebarProviderUsageMenu() {
       const previous = current.get(report.serverId);
       if (
         previous?.view === report.view &&
-        previous.enabledProviderIds === report.enabledProviderIds
+        previous.enabledProviderIds === report.enabledProviderIds &&
+        previous.snapshotError === report.snapshotError
       ) {
         return current;
       }
