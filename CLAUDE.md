@@ -246,29 +246,26 @@ Do day-to-day work on this branch, not on `main`.
 
 #### Landing work from a ticket worktree
 
-This is how ticket work lands on local `vaibhav/customizations`. **Only merge for features and bug fixes — do NOT merge for analysis or exploratory tasks.** Commit and merge as soon as changes are done and verified. Never push to `origin` from a worktree — pushing to the remote fork is handled exclusively by `./scripts/deploy.sh` during deploy. Never commit, merge, abort, stash, or reset directly in the shared checkout (`/data/paseo`, `/home/ubuntu/paseo`).
+Ticket work lands on local `vaibhav/customizations` via `./scripts/land-worktree.sh`.
+**Only merge for features and bug fixes — do NOT merge for analysis or exploratory tasks.**
+Commit and land as soon as changes are done and verified. The trigger words are
+**"land it"** / **"merge it"** — both mean: run the script, no push to `origin`
+(deploy owns that), no hand-merging in the shared checkout.
 
-1. **Format and commit** on your worktree branch as soon as changes and verification pass:
-   ```bash
-   npm run format:files -- <changed-files>
-   git add <changed-files>
-   git commit -m "<type>(<scope>): <description> (<TICKET-ID>)"
-   ```
-2. **Merge local `vaibhav/customizations`** into your worktree branch and resolve conflicts here:
-   ```bash
-   git merge vaibhav/customizations
-   ```
-   If conflicts occur, resolve them inside the worktree. If the merge is messy, run `git merge --abort` on this worktree and retry step 2.
-3. **Fast-forward the local shared checkout** without pushing to remote:
-   ```bash
-   # Fast-forward the local branch in the shared checkout (/data/paseo or /home/ubuntu/paseo):
-   git -C /data/paseo merge --ff-only HEAD
-   ```
-4. **Verify local sync**:
-   ```bash
-   git rev-parse vaibhav/customizations
-   ```
-   Do not run `git push origin`.
+```bash
+./scripts/land-worktree.sh
+```
+
+What the script does: Phase A merges the shared tip into your worktree branch with no
+lock held (rerunnable — on conflict it stops with the merge in progress: resolve inside
+the worktree, commit, re-run). Phase B takes the land lock (`/tmp/paseo-land.lock`),
+re-reads the shared tip, and merges only if the tip has not moved since Phase A — the
+check and the merge are one atomic critical section. If the tip moved (another agent
+landed concurrently) it aborts and retries from Phase A, up to `PASEO_LAND_ATTEMPTS`
+(default 5). The lock is cooperative: it only serializes landers that go through this
+script, so never land by hand while another land is in progress. Env overrides:
+`PASEO_SHARED_CHECKOUT`, `PASEO_CUSTOM_BRANCH`, `PASEO_LAND_LOCK`,
+`PASEO_LAND_LOCK_TIMEOUT`, `PASEO_LAND_ATTEMPTS`.
 
 ### Deployment — always use `./scripts/deploy.sh`
 
