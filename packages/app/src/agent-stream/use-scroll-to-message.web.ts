@@ -1,5 +1,5 @@
 import type React from "react";
-import { useCallback, useEffect, useLayoutEffect, useMemo } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import type { Virtualizer } from "@tanstack/react-virtual";
 import { createPromptJumpSettleController, PROMPT_JUMP_TOP_INSET_PX } from "./prompt-jump-settle";
 
@@ -34,6 +34,10 @@ export function useScrollToMessage<T>({
   setFollowOutput,
   onNearBottomChange,
 }: UseScrollToMessageInput<T>) {
+  const occurrenceRef = useRef<
+    { signal: AbortSignal; targetTop(row: HTMLElement): number | null } | undefined
+  >(undefined);
+  const removeAbortListener = useRef<(() => void) | null>(null);
   const settleController = useMemo(
     () =>
       createPromptJumpSettleController({
@@ -43,7 +47,11 @@ export function useScrollToMessage<T>({
             const target = container?.querySelector<HTMLElement>(
               `[data-history-row-id="${CSS.escape(itemId)}"]`,
             );
-            return target?.getBoundingClientRect().top ?? null;
+            const occurrence = occurrenceRef.current;
+            if (occurrence?.signal.aborted) return null;
+            if (!target) return null;
+            if (occurrence) return occurrence.targetTop(target);
+            return target.getBoundingClientRect().top;
           },
           getContainerTop() {
             return scrollContainerRef.current?.getBoundingClientRect().top ?? 0;
@@ -82,7 +90,13 @@ export function useScrollToMessage<T>({
     [scrollContainerRef],
   );
 
-  useEffect(() => () => settleController.cancel(), [settleController]);
+  useEffect(
+    () => () => {
+      removeAbortListener.current?.();
+      settleController.cancel();
+    },
+    [settleController],
+  );
   useLayoutEffect(() => {
     if (!active) {
       settleController.cancel();
@@ -90,7 +104,15 @@ export function useScrollToMessage<T>({
   }, [active, settleController]);
 
   const scrollToMessage = useCallback(
-    (itemId: string) => {
+    (
+      itemId: string,
+      occurrence?: { signal: AbortSignal; targetTop(row: HTMLElement): number | null },
+    ) => {
+      occurrenceRef.current = occurrence;
+      removeAbortListener.current?.();
+      const cancel = () => settleController.cancel();
+      occurrence?.signal.addEventListener("abort", cancel, { once: true });
+      removeAbortListener.current = () => occurrence?.signal.removeEventListener("abort", cancel);
       if (!active) return;
       const container = scrollContainerRef.current;
       if (!container) return;
