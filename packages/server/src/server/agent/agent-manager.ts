@@ -1,4 +1,4 @@
-import { projectTimelineRows } from "./timeline-projection.js";
+import { projectTimelineRows, type ProjectedTimelineRow } from "./timeline-projection.js";
 import type { PluginLifecycle } from "../plugins/lifecycle/index.js";
 import { describeHookAgent, publishAgentStream } from "../plugins/lifecycle/index.js";
 import type { PluginSessionOpenRequest } from "@getpaseo/plugin/server";
@@ -742,6 +742,7 @@ interface AgentMetadataPatch {
    * stored-record writer for both paths.
    */
   workspaceId?: string;
+  cwd?: string;
 }
 
 const SYSTEM_ERROR_PREFIX = "[System Error]";
@@ -1521,6 +1522,38 @@ export class AgentManager {
       }).map((entry) => Object.assign({ seq: entry.seqEnd }, entry));
     }
     return this.timelineStore.getRows(id);
+  }
+
+  async getAgentTimelineForExport(id: string): Promise<AgentTimelineRow[]> {
+    if (this.durableTimelineStore) {
+      try {
+        const rows = await this.durableTimelineStore.getCommittedRows(id);
+        if (rows && rows.length > 0) {
+          return rows;
+        }
+      } catch {
+        // Fall back to in-memory store
+      }
+    }
+    if (this.timelineStore.has(id)) {
+      return this.timelineStore.getRows(id);
+    }
+    return [];
+  }
+
+  async importMigratedTimeline(agentId: string, rows: readonly AgentTimelineRow[]): Promise<void> {
+    if (!rows || rows.length === 0) return;
+    if (this.durableTimelineStore) {
+      await this.durableTimelineStore.bulkInsert(agentId, rows).catch((err) => {
+        this.logger.warn({ err, agentId }, "Failed to bulkInsert migrated timeline rows");
+      });
+    }
+    const maxSeq = rows.reduce((max, r) => Math.max(max, r.seq), 0);
+    this.timelineStore.initialize(agentId, {
+      rows: rows as ProjectedTimelineRow[],
+      nextSeq: maxSeq + 1,
+      timestamp: new Date().toISOString(),
+    });
   }
 
   fetchTimeline(id: string, options?: AgentTimelineFetchOptions): AgentTimelineFetchResult {
@@ -2642,13 +2675,23 @@ export class AgentManager {
    * The live path emits agent state (subscribers see the new placement); the
    * stored path returns the rewritten record for the caller to emit.
    */
-  async moveAgentWorkspace(agentId: string, workspaceId: string): Promise<StoredAgentRecord> {
+  async moveAgentWorkspace(
+    agentId: string,
+    workspaceId: string,
+    cwd?: string,
+  ): Promise<StoredAgentRecord> {
     const liveAgent = this.agents.get(agentId);
     if (liveAgent) {
       if (liveAgent.lifecycle === "running") {
         throw new Error(`Agent ${agentId} is running; stop it before moving workspaces`);
       }
       liveAgent.workspaceId = workspaceId;
+      if (cwd) {
+        liveAgent.cwd = cwd;
+        if (liveAgent.config) {
+          liveAgent.config.cwd = cwd;
+        }
+      }
       this.touchUpdatedAt(liveAgent);
       await this.persistSnapshot(liveAgent);
       this.emitState(liveAgent, { persist: false });
@@ -2658,7 +2701,7 @@ export class AgentManager {
       }
       return record;
     }
-    return this.writeStoredMetadata(agentId, { workspaceId });
+    return this.writeStoredMetadata(agentId, { workspaceId, ...(cwd ? { cwd } : {}) });
   }
 
   private async writeLabels(agentId: string, patch: AgentLabelPatch): Promise<WriteLabelsResult> {
@@ -2725,6 +2768,7 @@ export class AgentManager {
           }
         : {}),
       ...(patch.workspaceId !== undefined ? { workspaceId: patch.workspaceId } : {}),
+      ...(patch.cwd !== undefined ? { cwd: patch.cwd } : {}),
       updatedAt: this.nextStoredUpdatedAt(record),
     };
     await registry.upsert(nextRecord);
@@ -4146,6 +4190,10 @@ export class AgentManager {
     }
   }
   async deleteAgentState(agentId: string): Promise<void> {
+    const live = this.agents.get(agentId);
+    if (live) {
+      this.prepareAgentForClosure(live, "agent_deleted");
+    }
     this.discardRetainedAgentState(agentId);
     await this.deleteCommittedTimeline(agentId);
   }
