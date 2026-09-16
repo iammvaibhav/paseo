@@ -8,12 +8,14 @@ import {
   type PressableStateCallbackType,
 } from "react-native";
 import type { TFunction } from "i18next";
+import type { ComposerTextSource } from "./text-source";
 import {
   useState,
   useEffect,
   useRef,
   useCallback,
   useMemo,
+  useSyncExternalStore,
   memo,
   type ReactElement,
   type ReactNode,
@@ -999,7 +1001,7 @@ interface ComposerProps {
   submitBehavior?: "clear" | "preserve-and-lock";
   /** When true, blurs the input immediately when submitting. */
   blurOnSubmit?: boolean;
-  value: string;
+  textSource: ComposerTextSource;
   onChangeText: (text: string) => void;
   textReplacement: TextReplacement;
   attachments: UserComposerAttachment[];
@@ -1330,7 +1332,7 @@ function ComposerContentImpl({
   waitForForgeAutoAttachOnSubmit = false,
   submitBehavior = "clear",
   blurOnSubmit = false,
-  value,
+  textSource,
   onChangeText,
   textReplacement,
   attachments,
@@ -1396,7 +1398,11 @@ function ComposerContentImpl({
   const isDesktopWebBreakpoint = resolveIsDesktopWebBreakpoint(isCompactFormFactor);
   const isDesktopLayout = resolveIsDesktopWebBreakpoint(isCompactLayout);
   const messagePlaceholder = resolveMessagePlaceholder(inputMode, isDesktopLayout, t, placeholder);
-  const userInput = value;
+  const userInput = useSyncExternalStore(
+    textSource.subscribe,
+    textSource.getSnapshot,
+    textSource.getSnapshot,
+  );
   const setUserInput = onChangeText;
   const workspaceAttachments = useWorkspaceAttachmentsForScopes(attachmentScopeKeys);
   const {
@@ -2205,7 +2211,7 @@ function ComposerContentImpl({
   );
 
   const handleFork = useCallback(() => {
-    const submitText = value.trim();
+    const submitText = userInput.trim();
     const outgoingAttachments = buildOutgoingAttachments(attachments);
     if (!submitText && outgoingAttachments.length === 0) return;
     if (!client || !agentWorkspaceId) {
@@ -2238,7 +2244,7 @@ function ComposerContentImpl({
     setSelectedAttachments,
     setUserInput,
     t,
-    value,
+    userInput,
   ]);
 
   const handleForkQueued = useCallback(

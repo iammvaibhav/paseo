@@ -247,7 +247,7 @@ export function EmbeddedAgentPane({
               agentId={agentId}
               serverId={serverId}
               isPaneFocused={isFocused}
-              value={agentDraft.text}
+              textSource={agentDraft.textSource}
               onChangeText={agentDraft.editText}
               textReplacement={agentDraft.textReplacement}
               attachments={agentDraft.attachments}

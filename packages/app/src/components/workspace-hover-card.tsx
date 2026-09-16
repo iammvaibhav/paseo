@@ -25,12 +25,14 @@ import { getForgePresentation, normalizeForge } from "@/git/forge";
 import { ForgeBrandIcon } from "@/git/forge-icon";
 import type { Theme } from "@/styles/theme";
 import { DiffStat } from "@/components/diff-stat";
+import { createPortal } from "react-dom";
 import { Portal } from "@gorhom/portal";
 import { useBottomSheetModalInternal } from "@gorhom/bottom-sheet";
-import type { SidebarWorkspaceEntry } from "@/hooks/use-sidebar-workspaces-list";
 import type { PrHint } from "@/git/use-pr-status-query";
+import type { SidebarWorkspaceEntry } from "@/hooks/use-sidebar-workspaces-list";
 import { openExternalUrl } from "@/utils/open-external-url";
 import { copyToClipboard } from "@/utils/copy-to-clipboard";
+import { OVERLAY_Z, getOverlayRoot } from "@/lib/overlay-root";
 import { PrBadge } from "@/components/sidebar-workspace-list";
 import { useHoverSafeZone } from "@/hooks/use-hover-safe-zone";
 import { useIsCompactFormFactor } from "@/constants/layout";
@@ -300,77 +302,86 @@ function WorkspaceHoverCardContent({
     [position?.x, position?.y],
   );
 
-  return (
-    <Portal hostName={bottomSheetInternal?.hostName}>
-      <View pointerEvents="box-none" style={styles.portalOverlay}>
-        <FloatingSurface
-          ref={contentRef}
-          entering={FadeIn.duration(80)}
-          exiting={FadeOut.duration(80)}
-          collapsable={false}
-          onLayout={handleLayout}
-          accessibilityRole="menu"
-          accessibilityLabel={t("workspace.hoverCard.scriptsAccessibility")}
-          testID="workspace-hover-card"
-          style={styles.card}
-          frameStyle={frameStyle}
-        >
-          <View style={styles.cardHeader}>
-            <Text style={styles.cardTitle} testID="hover-card-workspace-name">
-              {workspace.name}
-            </Text>
-          </View>
-          {projectDescription ? (
-            <Text
-              style={styles.cardDescription}
-              numberOfLines={3}
-              testID="hover-card-workspace-description"
-            >
-              {projectDescription}
-            </Text>
-          ) : null}
-          {prHint ? <PrBadge hint={prHint} style={styles.cardInfoRow} /> : null}
-          {workspace.diffStat ? (
-            <View style={styles.cardInfoRow}>
-              <ThemedFileDiff size={12} uniProps={foregroundMutedColorMapping} />
-              <DiffStat
-                additions={workspace.diffStat.additions}
-                deletions={workspace.diffStat.deletions}
-              />
-            </View>
-          ) : null}
-          <HostRow serverId={workspace.serverId} />
-          {workspace.currentBranch ? (
-            <CopyableInfoRow
-              icon={ThemedGitBranch}
-              value={workspace.currentBranch}
-              copyValue={workspace.currentBranch}
-              copyLabel={t("workspace.hoverCard.copyBranchName")}
-              testID="hover-card-workspace-branch"
-            />
-          ) : null}
-          {workspace.workspaceDirectoryLabel ? (
-            <CopyableInfoRow
-              icon={ThemedFolder}
-              value={workspace.workspaceDirectoryLabel}
-              copyValue={workspace.workspaceDirectory}
-              copyLabel={t("workspace.hoverCard.copyPath")}
-              testID="hover-card-workspace-cwd"
-            />
-          ) : null}
-          {prHint?.checks && prHint.checks.length > 0 ? (
-            <>
-              <View style={styles.separator} />
-              <ChecksSummaryPressable
-                checks={prHint.checks}
-                url={prHint.url}
-                forge={prHint.forge}
-              />
-            </>
-          ) : null}
-        </FloatingSurface>
+  const surface = (
+    <FloatingSurface
+      ref={contentRef}
+      entering={FadeIn.duration(80)}
+      exiting={FadeOut.duration(80)}
+      collapsable={false}
+      onLayout={handleLayout}
+      accessibilityRole="menu"
+      accessibilityLabel={t("workspace.hoverCard.scriptsAccessibility")}
+      testID="workspace-hover-card"
+      style={styles.card}
+      frameStyle={frameStyle}
+    >
+      <View style={styles.cardHeader}>
+        <Text style={styles.cardTitle} testID="hover-card-workspace-name">
+          {workspace.name}
+        </Text>
       </View>
-    </Portal>
+      {projectDescription ? (
+        <Text
+          style={styles.cardDescription}
+          numberOfLines={3}
+          testID="hover-card-workspace-description"
+        >
+          {projectDescription}
+        </Text>
+      ) : null}
+      {prHint ? <PrBadge hint={prHint} style={styles.cardInfoRow} /> : null}
+      {workspace.diffStat ? (
+        <View style={styles.cardInfoRow}>
+          <ThemedFileDiff size={12} uniProps={foregroundMutedColorMapping} />
+          <DiffStat
+            additions={workspace.diffStat.additions}
+            deletions={workspace.diffStat.deletions}
+          />
+        </View>
+      ) : null}
+      <HostRow serverId={workspace.serverId} />
+      {workspace.currentBranch ? (
+        <CopyableInfoRow
+          icon={ThemedGitBranch}
+          value={workspace.currentBranch}
+          copyValue={workspace.currentBranch}
+          copyLabel={t("workspace.hoverCard.copyBranchName")}
+          testID="hover-card-workspace-branch"
+        />
+      ) : null}
+      {workspace.workspaceDirectoryLabel ? (
+        <CopyableInfoRow
+          icon={ThemedFolder}
+          value={workspace.workspaceDirectoryLabel}
+          copyValue={workspace.workspaceDirectory}
+          copyLabel={t("workspace.hoverCard.copyPath")}
+          testID="hover-card-workspace-cwd"
+        />
+      ) : null}
+      {prHint?.checks && prHint.checks.length > 0 ? (
+        <>
+          <View style={styles.separator} />
+          <ChecksSummaryPressable checks={prHint.checks} url={prHint.url} forge={prHint.forge} />
+        </>
+      ) : null}
+    </FloatingSurface>
+  );
+
+  if (!isWeb || typeof document === "undefined") {
+    return (
+      <Portal hostName={bottomSheetInternal?.hostName}>
+        <View pointerEvents="box-none" style={styles.portalOverlay}>
+          {surface}
+        </View>
+      </Portal>
+    );
+  }
+
+  return createPortal(
+    <View pointerEvents="box-none" style={styles.portalOverlay}>
+      {surface}
+    </View>,
+    getOverlayRoot(),
   );
 }
 
@@ -597,7 +608,7 @@ const styles = StyleSheet.create((theme) => ({
     right: 0,
     bottom: 0,
     left: 0,
-    zIndex: 1000,
+    zIndex: OVERLAY_Z.tooltip,
   },
   card: {
     backgroundColor: theme.colors.surface1,
@@ -611,7 +622,7 @@ const styles = StyleSheet.create((theme) => ({
     shadowOpacity: 0.2,
     shadowRadius: 8,
     elevation: 8,
-    zIndex: 1000,
+    zIndex: OVERLAY_Z.tooltip,
   },
   cardHeader: {
     flexDirection: "row",

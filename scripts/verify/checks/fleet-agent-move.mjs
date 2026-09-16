@@ -269,7 +269,8 @@ export const steps = [
           .count()
           .catch(() => -1);
         throw new Error(
-          `Beta workspace option missing (found ${optionCount} workspace options). Modal HTML: ${modalHtml}. Cause: ${err instanceof Error ? err.message : String(err)}`,
+          `Beta workspace option missing (found ${optionCount} workspace options). Modal HTML: ${modalHtml}`,
+          { cause: err },
         );
       }
 
