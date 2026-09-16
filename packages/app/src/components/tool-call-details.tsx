@@ -25,6 +25,7 @@ import { CODE_SURFACE_DATASET } from "@/styles/code-surface";
 import { extensionFromPath, highlightToKeyedLines } from "@/utils/highlight-cache";
 import { parseEvalToolCallDetail, type EvalCell, type EvalDetailModel } from "@/utils/eval-detail";
 import { parseWebSearchToolCallDetail, type WebSearchDetailModel } from "@/utils/web-search-detail";
+import { parseHubToolCallDetail, type HubDetailModel } from "@/utils/hub-detail";
 import { HighlightedLines } from "./highlighted-content";
 import { DiffViewer } from "./diff-viewer";
 import { getCodeInsets } from "./code-insets";
@@ -894,6 +895,95 @@ function buildPaseoUnknownSections(
   if (!sections) return null;
   return sections.map((section) => <PaseoDetailSection key={section.title} section={section} />);
 }
+function HubDetailSection({ model, ds }: { model: HubDetailModel; ds: DetailStyles }) {
+  return (
+    <View style={ds.sectionFillStyle} testID="hub-tool-details">
+      <View style={styles.section}>
+        <View style={styles.groupHeader}>
+          <Text style={styles.groupHeaderText}>
+            {[
+              `Hub · ${model.op}`,
+              model.target,
+              model.timeoutMs !== undefined
+                ? `${Math.round(model.timeoutMs / 1000)}s timeout`
+                : undefined,
+            ]
+              .filter((part): part is string => Boolean(part && part.length > 0))
+              .join(" · ")}
+          </Text>
+        </View>
+        <View style={styles.section}>
+          {model.application ? (
+            <Text selectable style={styles.scrollText} dataSet={CODE_SURFACE_DATASET}>
+              {`application: ${model.application}`}
+            </Text>
+          ) : null}
+          {model.args && model.args.length > 0 ? (
+            <Text selectable style={styles.scrollText} dataSet={CODE_SURFACE_DATASET}>
+              {`args: ${model.args.join(" ")}`}
+            </Text>
+          ) : null}
+          {model.to ? (
+            <Text selectable style={styles.scrollText} dataSet={CODE_SURFACE_DATASET}>
+              {`to: ${model.to}`}
+            </Text>
+          ) : null}
+          {model.from ? (
+            <Text selectable style={styles.scrollText} dataSet={CODE_SURFACE_DATASET}>
+              {`from: ${model.from}`}
+            </Text>
+          ) : null}
+          {model.pattern ? (
+            <Text selectable style={styles.scrollText} dataSet={CODE_SURFACE_DATASET}>
+              {`pattern: ${model.pattern}`}
+            </Text>
+          ) : null}
+          {model.text ? (
+            <Text selectable style={styles.plainText}>
+              {model.text}
+            </Text>
+          ) : null}
+        </View>
+      </View>
+      {model.jobs.map((job) => (
+        <View key={job.key} style={styles.section}>
+          <Text selectable style={styles.sectionTitle}>
+            {[job.id, job.status].filter((part) => part.length > 0).join(" · ")}
+          </Text>
+          {job.label ? (
+            <Text selectable style={styles.scrollText} dataSet={CODE_SURFACE_DATASET}>
+              {job.label}
+            </Text>
+          ) : null}
+          {job.type || job.durationMs !== undefined ? (
+            <Text style={styles.rangeText}>
+              {[
+                job.type ? `[${job.type}]` : undefined,
+                job.durationMs !== undefined ? `${Math.round(job.durationMs / 1000)}s` : undefined,
+              ]
+                .filter((part): part is string => Boolean(part))
+                .join(" · ")}
+            </Text>
+          ) : null}
+        </View>
+      ))}
+      {model.notice ? (
+        <View style={styles.section}>
+          <ScrollView
+            style={ds.scrollAreaStyle}
+            contentContainerStyle={styles.scrollContent}
+            nestedScrollEnabled
+            showsVerticalScrollIndicator
+          >
+            <Text selectable style={styles.plainText}>
+              {model.notice}
+            </Text>
+          </ScrollView>
+        </View>
+      ) : null}
+    </View>
+  );
+}
 
 function buildDetailSections(
   toolName: string | undefined,
@@ -903,6 +993,7 @@ function buildDetailSections(
   t: TFunction,
   evalModel: EvalDetailModel | null,
   webSearchModel: WebSearchDetailModel | null,
+  hubModel: HubDetailModel | null,
 ): ReactNode[] {
   if (!detail) return [];
   if (evalModel) {
@@ -978,6 +1069,9 @@ function buildDetailSections(
     if (!detail.text) return [];
     return [<ScrollablePlainTextSection key="plain-text" text={detail.text} ds={ds} />];
   }
+  if (hubModel) {
+    return [<HubDetailSection key="hub" model={hubModel} ds={ds} />];
+  }
   if (detail.type === "unknown") {
     return buildPaseoUnknownSections(toolName, detail) ?? buildUnknownSections(detail, ds, t);
   }
@@ -1034,11 +1128,12 @@ export function ToolCallDetailsContent({
     () => parseWebSearchToolCallDetail(detail, toolName),
     [detail, toolName],
   );
+  const hubModel = useMemo(() => parseHubToolCallDetail(detail, toolName), [detail, toolName]);
   const ds = useDetailStyles(
     detail,
     resolvedMaxHeight,
     fillAvailableHeight,
-    evalModel !== null || webSearchModel !== null,
+    evalModel !== null || webSearchModel !== null || hubModel !== null,
   );
   const diffLines = useDiffLines(detail);
 
@@ -1050,6 +1145,7 @@ export function ToolCallDetailsContent({
     t,
     evalModel,
     webSearchModel,
+    hubModel,
   );
   if (errorText) {
     sections.push(<ErrorSection key="error" errorText={errorText} ds={ds} />);

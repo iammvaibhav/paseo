@@ -336,11 +336,105 @@ function buildEvalSummary(detail: ToolCallDisplayInput["detail"]): string | unde
   return firstLine.length > 120 ? `${firstLine.slice(0, 120)}...` : firstLine;
 }
 
+// Oh My Pi's `hub` is the agent-coordination and process-supervision tool
+// (wait/send/start/logs/jobs/ps/cancel/stop/restart/inbox/list/describe).
+// Without this the badge reads "Hub" with no hint of which op or ids ran.
+interface HubSummaryFields {
+  op?: string;
+  ids: string[];
+  name?: string;
+  to?: string;
+  from?: string;
+  application?: string;
+  args: string[];
+  pattern?: string;
+  text?: string;
+  message?: string;
+}
+
+function readHubFields(input: Record<string, unknown>): HubSummaryFields {
+  const ids = Array.isArray(input.ids)
+    ? (input.ids as unknown[]).filter((v): v is string => typeof v === "string" && v.length > 0)
+    : [];
+  const args = Array.isArray(input.args)
+    ? (input.args as unknown[]).filter((v): v is string => typeof v === "string" && v.length > 0)
+    : [];
+  const rawOp = readString(input.op);
+  return {
+    ...(rawOp ? { op: rawOp.trim().toLowerCase() } : {}),
+    ids,
+    ...(readString(input.name) ? { name: readString(input.name) } : {}),
+    ...(readString(input.to) ? { to: readString(input.to) } : {}),
+    ...(readString(input.from) ? { from: readString(input.from) } : {}),
+    ...(readString(input.application) ? { application: readString(input.application) } : {}),
+    args,
+    ...(readString(input.pattern) ? { pattern: readString(input.pattern) } : {}),
+    ...(readString(input.text) ? { text: readString(input.text) } : {}),
+    ...(readString(input.message) ? { message: readString(input.message) } : {}),
+  };
+}
+
+function joinHubParts(parts: (string | undefined)[]): string | undefined {
+  const kept = parts.filter((p): p is string => Boolean(p && p.length > 0));
+  return kept.length > 0 ? kept.join(" · ") : undefined;
+}
+
+function summarizeHubOp(fields: HubSummaryFields): string | undefined {
+  const { op, ids, name, to, from, application, args, pattern, text, message } = fields;
+  if (!op) {
+    return joinHubParts([name, to ? `to ${to}` : undefined, application, pattern]);
+  }
+  if (op === "wait") {
+    return joinHubParts([
+      "wait",
+      ids.length > 0 ? ids.join(", ") : name,
+      from ? `from ${from}` : undefined,
+    ]);
+  }
+  if (op === "send") {
+    return joinHubParts(["send", to ? `to ${to}` : undefined, name, text ?? message]);
+  }
+  if (op === "start") {
+    return joinHubParts(["start", name, application, args.length > 0 ? args.join(" ") : undefined]);
+  }
+  return summarizeHubProcessOp(op, fields);
+}
+
+function summarizeHubProcessOp(
+  op: string,
+  fields: Pick<HubSummaryFields, "ids" | "name" | "to">,
+): string | undefined {
+  const { ids, name, to } = fields;
+  if (op === "stop" || op === "restart" || op === "logs" || op === "describe") {
+    return joinHubParts([op, name]);
+  }
+  if (op === "cancel") {
+    return joinHubParts(["cancel", ids.length > 0 ? ids.join(", ") : name]);
+  }
+  if (op === "ps" || op === "jobs" || op === "list" || op === "inbox") {
+    return joinHubParts([op, name ?? (ids.length > 0 ? ids.join(", ") : undefined)]);
+  }
+  return joinHubParts([op, ids.length > 0 ? ids.join(", ") : name, to ? `to ${to}` : undefined]);
+}
+
+function buildHubSummary(detail: ToolCallDisplayInput["detail"]): string | undefined {
+  if (detail.type !== "unknown" || !isRecord(detail.input)) {
+    return undefined;
+  }
+  return summarizeHubOp(readHubFields(detail.input));
+}
+
 function buildUnknownDetailOverride(input: ToolCallDisplayInput): DetailDisplay {
   const lowerName = input.name.trim().toLowerCase();
   if (lowerName === "eval") {
     return {
       summary: buildEvalSummary(input.detail),
+    };
+  }
+  if (lowerName === "hub") {
+    return {
+      displayName: "Hub",
+      summary: buildHubSummary(input.detail),
     };
   }
   if (isWebSearchToolName(input.name)) {

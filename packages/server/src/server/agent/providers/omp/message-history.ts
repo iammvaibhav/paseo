@@ -145,7 +145,13 @@ export class OmpHistoryMapper {
     const messageId =
       message.responseId || `${this.provider}-history-assistant-${this.assistantIndex}`;
     for (const content of message.content) {
+      // Gemini emits an orphaned "```" right before tool calls; an
+      // assistant message with only backticks/whitespace would paint an
+      // empty code block in the feed, so drop it here.
       if (content.type === "text" && content.text) {
+        if (content.text.replace(/[`\s]/g, "").length === 0) {
+          continue;
+        }
         events.push({
           type: "timeline",
           provider: this.provider,
