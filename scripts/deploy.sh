@@ -1894,6 +1894,14 @@ except Exception:
   if [[ ! -x "\$cli_bin" ]]; then
     cli_bin="node \$HOME/\$REMOTE_REPO_DIR/packages/cli/dist/index.js"
   fi
+  # A password-protected daemon authenticates every CLI call, including the worker
+  # probe below, and this shell has no bashrc: source the host's deploy.env first.
+  if [[ -f "\$PASEO_HOME/deploy.env" ]]; then
+    set -a
+    # shellcheck disable=SC1091
+    . "\$PASEO_HOME/deploy.env"
+    set +a
+  fi
   old_worker_pid="\$(\$cli_bin daemon status --json --home "\$PASEO_HOME" 2>/dev/null | node -e '
 let raw = "";
 process.stdin.on("data", (chunk) => (raw += chunk));
