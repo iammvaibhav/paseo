@@ -14,7 +14,7 @@ import {
   resolveWorktreeSourcePlan,
   runWorktreeSetupCommands,
   seedPaseoConfigFile,
-  type WorktreeConfig,
+  type CreatedWorktree,
   type WorktreeSource,
   type WorktreeSourcePlan,
 } from "../utils/worktree.js";
@@ -41,7 +41,7 @@ export interface WarmWorktreeClaimOptions {
 }
 
 export interface WarmWorktreeClaimResult {
-  worktree: WorktreeConfig;
+  worktree: CreatedWorktree;
   claimed: boolean;
 }
 
@@ -305,6 +305,7 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
         worktree: {
           branchName: sourcePlan.branchName,
           worktreePath: normalizedTargetPath,
+          comparisonBaseRef: sourcePlan.metadataBaseRef ?? sourcePlan.metadataBaseRefName,
         },
         claimed: true,
       };

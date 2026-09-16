@@ -1,3 +1,4 @@
+import { searchTimeline } from "./agent/chat-search/index.js";
 import type { BrowserToolsBroker } from "./browser-tools/broker.js";
 import { BrowserAutomationHostCapabilitySchema } from "@getpaseo/protocol/browser-automation/capabilities";
 import type { SessionEventSubscription } from "@getpaseo/protocol/messages";
@@ -149,8 +150,9 @@ import {
   type AgentRunOptions,
   type AgentSessionConfig,
 } from "./agent/agent-sdk-types.js";
-import type { StoredAgentRecord } from "./agent/agent-storage.js";
+import { parseStoredAgentRecord, type StoredAgentRecord } from "./agent/agent-storage.js";
 import type { AgentStorage } from "./agent/agent-storage.js";
+import type { AgentTimelineRow } from "./agent/agent-timeline-store-types.js";
 import {
   ImportSessionsRequestError,
   importProviderSession,
@@ -3943,6 +3945,8 @@ export class Session {
         return this.handleFetchAgentTimelineRequest(msg, source);
       case "agent.timeline.append.request":
         return this.handleAgentTimelineAppendRequest(msg);
+      case "agent.timeline.search.request":
+        return this.handleAgentTimelineSearchRequest(msg, source);
       case "agent.timeline.list_prompts.request":
         return this.handleAgentTimelineListPromptsRequest(msg, source);
       case "agent.provider_subagents.list.request":
@@ -4073,6 +4077,8 @@ export class Session {
         return this.handleClearAgentAttention(msg.agentId, msg.requestId);
       case "agent.workspace.move.request":
         return this.handleAgentWorkspaceMoveRequest(msg);
+      case "agent.workspace.transfer.request":
+        return this.handleAgentWorkspaceTransferRequest(msg);
       default:
         return undefined;
     }
@@ -6373,7 +6379,11 @@ export class Session {
   private async handleAgentWorkspaceMoveRequest(
     msg: Extract<SessionInboundMessage, { type: "agent.workspace.move.request" }>,
   ): Promise<void> {
-    const emitResponse = (accepted: boolean, error: string | null): void => {
+    const emitResponse = (
+      accepted: boolean,
+      error: string | null,
+      targetServerId?: string,
+    ): void => {
       this.emit({
         type: "agent.workspace.move.response",
         payload: {
@@ -6382,6 +6392,7 @@ export class Session {
           workspaceId: msg.workspaceId,
           accepted,
           error,
+          ...(targetServerId ? { targetServerId } : {}),
         },
       });
     };
@@ -6391,23 +6402,103 @@ export class Session {
           agentManager: this.agentManager,
           agentStorage: this.agentStorage,
           workspaceRegistry: this.workspaceRegistry,
+          peerManager: this.peerManager,
+          emitAgentRemove: (agentId) => this.agentUpdates.removeAgent(agentId),
+          emitWorkspaceUpdate: (workspaceId) => this.emitWorkspaceUpdateForWorkspaceId(workspaceId),
+          logger: this.sessionLogger,
         },
-        { agentId: msg.agentId, workspaceId: msg.workspaceId },
+        {
+          agentId: msg.agentId,
+          workspaceId: msg.workspaceId,
+          targetHost: msg.targetHost,
+          targetServerId: msg.targetServerId,
+        },
       );
-      emitResponse(true, null);
-      if (!result.live) {
-        await this.agentUpdates.emitStoredRecord(result.record);
-      }
-      const affectedWorkspaceIds = [result.fromWorkspaceId, result.toWorkspaceId].filter(
-        (workspaceId): workspaceId is string => workspaceId !== null && workspaceId !== undefined,
-      );
-      if (affectedWorkspaceIds.length > 0) {
-        await this.emitWorkspaceUpdatesForWorkspaceIds(affectedWorkspaceIds);
+      emitResponse(true, null, result.targetServerId);
+      if (!result.targetServerId) {
+        if (!result.live) {
+          await this.agentUpdates.emitStoredRecord(result.record);
+        }
+        const affectedWorkspaceIds = [result.fromWorkspaceId, result.toWorkspaceId].filter(
+          (workspaceId): workspaceId is string => workspaceId !== null && workspaceId !== undefined,
+        );
+        if (affectedWorkspaceIds.length > 0) {
+          await this.emitWorkspaceUpdatesForWorkspaceIds(affectedWorkspaceIds);
+        }
       }
     } catch (error) {
       this.sessionLogger.warn(
         { err: error, agentId: msg.agentId, workspaceId: msg.workspaceId },
         "agent.workspace.move rejected",
+      );
+      emitResponse(false, error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  private async handleAgentWorkspaceTransferRequest(
+    msg: Extract<SessionInboundMessage, { type: "agent.workspace.transfer.request" }>,
+  ): Promise<void> {
+    const rawAgent = msg.agent;
+    const agentId = String(rawAgent?.id ?? "");
+    const emitResponse = (accepted: boolean, error: string | null): void => {
+      this.emit({
+        type: "agent.workspace.transfer.response",
+        payload: {
+          requestId: msg.requestId,
+          agentId,
+          workspaceId: msg.targetWorkspaceId,
+          accepted,
+          error,
+        },
+      });
+    };
+
+    try {
+      if (!agentId) {
+        throw new Error("Missing agent id in transfer payload");
+      }
+      const targetWorkspace = await this.workspaceRegistry.get(msg.targetWorkspaceId);
+      if (!targetWorkspace) {
+        throw new Error(`Target workspace ${msg.targetWorkspaceId} not found on this host`);
+      }
+      if (targetWorkspace.archivedAt) {
+        throw new Error(`Target workspace ${msg.targetWorkspaceId} is archived`);
+      }
+
+      const existingLive = this.agentManager.getAgent(agentId);
+      if (existingLive && existingLive.lifecycle === "running") {
+        throw new Error(`Agent ${agentId} is already running on this host`);
+      }
+
+      const nextRecord: StoredAgentRecord = parseStoredAgentRecord({
+        ...rawAgent,
+        workspaceId: msg.targetWorkspaceId,
+        cwd: targetWorkspace.cwd,
+        config:
+          rawAgent.config && typeof rawAgent.config === "object"
+            ? { ...(rawAgent.config as Record<string, unknown>), cwd: targetWorkspace.cwd }
+            : null,
+        updatedAt: new Date().toISOString(),
+        lastStatus: rawAgent.lastStatus === "running" ? "idle" : (rawAgent.lastStatus ?? "idle"),
+      });
+
+      await this.agentStorage.upsert(nextRecord);
+
+      if (Array.isArray(msg.timeline) && msg.timeline.length > 0) {
+        await this.agentManager.importMigratedTimeline(
+          agentId,
+          msg.timeline as unknown as AgentTimelineRow[],
+        );
+      }
+
+      await this.agentUpdates.emitStoredRecord(nextRecord);
+      await this.emitWorkspaceUpdateForWorkspaceId(msg.targetWorkspaceId);
+
+      emitResponse(true, null);
+    } catch (error) {
+      this.sessionLogger.warn(
+        { err: error, targetWorkspaceId: msg.targetWorkspaceId },
+        "agent.workspace.transfer rejected",
       );
       emitResponse(false, error instanceof Error ? error.message : String(error));
     }
@@ -9594,6 +9685,59 @@ export class Session {
       type: "agent.timeline.append.response",
       payload: { requestId: msg.requestId, seq, epoch },
     });
+  }
+
+  private async handleAgentTimelineSearchRequest(
+    msg: Extract<SessionInboundMessage, { type: "agent.timeline.search.request" }>,
+    source?: object,
+  ): Promise<void> {
+    try {
+      await ensureAgentLoaded(msg.agentId, {
+        agentManager: this.agentManager,
+        agentStorage: this.agentStorage,
+        logger: this.sessionLogger,
+      });
+      const rows = await this.agentManager.getTimelineRows(msg.agentId);
+      const { epoch } = this.agentManager.fetchTimeline(msg.agentId, {
+        direction: "tail",
+        limit: 1,
+      });
+      const result = await searchTimeline({ rows, query: msg.query, cursor: msg.cursor });
+      if (
+        this.agentManager.fetchTimeline(msg.agentId, { direction: "tail", limit: 1 }).epoch !==
+        epoch
+      ) {
+        throw new Error("History changed; search again");
+      }
+      this.emitForSource(
+        {
+          type: "agent.timeline.search.response",
+          payload: {
+            requestId: msg.requestId,
+            agentId: msg.agentId,
+            epoch,
+            ...result,
+            error: null,
+          },
+        },
+        source,
+      );
+    } catch (error) {
+      this.emitForSource(
+        {
+          type: "agent.timeline.search.response",
+          payload: {
+            requestId: msg.requestId,
+            agentId: msg.agentId,
+            epoch: "",
+            locations: [],
+            nextCursor: null,
+            error: error instanceof Error ? error.message : String(error),
+          },
+        },
+        source,
+      );
+    }
   }
 
   private async handleAgentTimelineListPromptsRequest(

@@ -1520,7 +1520,10 @@ function FileExplorerPaneContent(props: FileExplorerPaneContentProps) {
   return (
     <View style={[styles.treePane, styles.treePaneFill]}>
       <PaneContentToolbar
-        style={[styles.paneHeader, { paddingRight: paneContentToolbarTrailingPadding(isCompact) }]}
+        style={[
+          styles.paneHeader,
+          { paddingRight: paneContentToolbarTrailingPadding(isCompact, "glyph") },
+        ]}
         testID="files-pane-header"
       >
         <View style={styles.headerLeading}>

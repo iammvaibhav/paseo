@@ -1724,7 +1724,11 @@ describe("agent.workspace.move RPC", () => {
     });
 
     expect(getAgent).toHaveBeenCalledWith("moving-agent");
-    expect(moveAgentWorkspace).toHaveBeenCalledWith("moving-agent", "workspace-target");
+    expect(moveAgentWorkspace).toHaveBeenCalledWith(
+      "moving-agent",
+      "workspace-target",
+      "/tmp/target",
+    );
     expect(messages).toContainEqual({
       type: "agent.workspace.move.response",
       payload: {
@@ -1789,6 +1793,150 @@ describe("agent.workspace.move RPC", () => {
         workspaceId: "workspace-missing",
         accepted: false,
         error: "Workspace workspace-missing not found on this host",
+      },
+    });
+  });
+
+  test("moves an agent across hosts when targetHost is specified", async () => {
+    const messages: unknown[] = [];
+    const transferAgentInbound = vi
+      .fn()
+      .mockResolvedValue({ agentId: "moving-agent", workspaceId: "peer-ws" });
+    const removeStorage = vi.fn().mockResolvedValue(undefined);
+    const deleteAgentState = vi.fn().mockResolvedValue(undefined);
+    const peerClient = { transferAgentInbound };
+    const peerManager = {
+      getPeerStatus: vi.fn(() => ({ name: "peer-b", state: "online" as const })),
+      getPeerClient: vi.fn(() => peerClient),
+      getPeerServerId: vi.fn(() => "srv_peer_b"),
+      getPeerStatuses: vi.fn(() => [{ name: "peer-b", state: "online" as const }]),
+    };
+
+    const session = createSessionForTest({
+      messages,
+      peerManager,
+      agentManager: {
+        getAgent: vi.fn(() => null),
+        moveAgentWorkspace: vi.fn(),
+        getAgentTimelineForExport: vi
+          .fn()
+          .mockResolvedValue([
+            { seq: 1, timestamp: "2026-01-01", item: { type: "user_message", text: "hi" } },
+          ]),
+        deleteAgentState,
+        getRegisteredProviderIds: vi.fn().mockReturnValue(["codex"]),
+      },
+      agentStorage: {
+        list: vi.fn().mockResolvedValue([]),
+        get: vi.fn().mockResolvedValue(
+          createStoredAgentRecord({
+            id: "moving-agent",
+            cwd: "/tmp/source",
+            workspaceId: "workspace-source",
+            title: "Moving",
+          }),
+        ),
+        remove: removeStorage,
+      },
+      workspaceRegistry: {
+        get: vi.fn().mockResolvedValue(null),
+        list: vi.fn().mockResolvedValue([]),
+      },
+    });
+
+    await session.handleMessage({
+      type: "agent.workspace.move.request",
+      agentId: "moving-agent",
+      workspaceId: "peer-ws",
+      targetHost: "peer-b",
+      requestId: "move-cross-1",
+    });
+
+    expect(transferAgentInbound).toHaveBeenCalledWith({
+      targetWorkspaceId: "peer-ws",
+      agent: expect.objectContaining({ id: "moving-agent" }),
+      timeline: expect.arrayContaining([expect.objectContaining({ seq: 1 })]),
+    });
+    expect(removeStorage).toHaveBeenCalledWith("moving-agent");
+    expect(deleteAgentState).toHaveBeenCalledWith("moving-agent");
+    expect(messages).toContainEqual({
+      type: "agent.workspace.move.response",
+      payload: {
+        requestId: "move-cross-1",
+        agentId: "moving-agent",
+        workspaceId: "peer-ws",
+        accepted: true,
+        error: null,
+        targetServerId: "srv_peer_b",
+      },
+    });
+  });
+
+  test("handles inbound agent.workspace.transfer.request and saves agent", async () => {
+    const messages: unknown[] = [];
+    const upsertStorage = vi.fn().mockResolvedValue(undefined);
+    const importMigratedTimeline = vi.fn().mockResolvedValue(undefined);
+    const targetWs = {
+      workspaceId: "target-ws",
+      projectId: "project:test",
+      cwd: "/tmp/imported-target",
+      displayName: "Target",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      archivedAt: null,
+    };
+
+    const session = createSessionForTest({
+      messages,
+      agentManager: {
+        getAgent: vi.fn(() => null),
+        importMigratedTimeline,
+        getRegisteredProviderIds: vi.fn().mockReturnValue(["codex"]),
+      },
+      agentStorage: {
+        upsert: upsertStorage,
+        list: vi.fn().mockResolvedValue([]),
+        get: vi.fn().mockResolvedValue(null),
+      },
+      workspaceRegistry: {
+        get: vi.fn().mockResolvedValue(targetWs),
+        list: vi.fn().mockResolvedValue([targetWs]),
+      },
+    });
+
+    await session.handleMessage({
+      type: "agent.workspace.transfer.request",
+      targetWorkspaceId: "target-ws",
+      agent: {
+        id: "imported-agent",
+        provider: "codex",
+        title: "Imported",
+        cwd: "/old/path",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      },
+      timeline: [
+        { seq: 1, timestamp: "2026-01-01", item: { type: "user_message", text: "hello" } },
+      ],
+      requestId: "transfer-1",
+    });
+
+    expect(upsertStorage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "imported-agent",
+        workspaceId: "target-ws",
+        cwd: "/tmp/imported-target",
+      }),
+    );
+    expect(importMigratedTimeline).toHaveBeenCalledWith("imported-agent", expect.any(Array));
+    expect(messages).toContainEqual({
+      type: "agent.workspace.transfer.response",
+      payload: {
+        requestId: "transfer-1",
+        agentId: "imported-agent",
+        workspaceId: "target-ws",
+        accepted: true,
+        error: null,
       },
     });
   });
@@ -2638,10 +2786,14 @@ describe("session checkout merge handling", () => {
       requestId: "request-merge-from-base-success",
     });
 
-    expect(checkoutGitMocks.mergeFromBase).toHaveBeenCalledWith("/tmp/request-worktree", {
-      baseRef: "main",
-      requireCleanTarget: true,
-    });
+    expect(checkoutGitMocks.mergeFromBase).toHaveBeenCalledWith(
+      "/tmp/request-worktree",
+      {
+        baseRef: "main",
+        requireCleanTarget: true,
+      },
+      { paseoHome: "/tmp/paseo-home", worktreesRoot: undefined },
+    );
     expect(workspaceGitService.getSnapshot).toHaveBeenCalledWith("/tmp/request-worktree", {
       force: true,
       reason: "merge-from-base",
@@ -3098,6 +3250,7 @@ diff --git a/file.txt b/file.txt
         base: "main",
       },
       expect.anything(),
+      { paseoHome: "/tmp/paseo-home", worktreesRoot: undefined },
     );
     expect(messages).toContainEqual({
       type: "checkout_pr_create_response",
@@ -3222,6 +3375,7 @@ diff --git a/file.txt b/file.txt
         base: "main",
       },
       expect.anything(),
+      { paseoHome: "/tmp/paseo-home", worktreesRoot: undefined },
     );
     expect(messages).toContainEqual({
       type: "checkout_pr_create_response",

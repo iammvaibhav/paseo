@@ -2164,6 +2164,14 @@ export const FetchAgentTimelineRequestMessageSchema = z.object({
   mergeWindow: z.boolean().optional(),
 });
 
+export const AgentTimelineSearchRequestMessageSchema = z.object({
+  type: z.literal("agent.timeline.search.request"),
+  agentId: z.string(),
+  requestId: z.string(),
+  query: z.string(),
+  cursor: z.number().int().nonnegative().optional(),
+});
+
 export const AgentTimelineListPromptsRequestMessageSchema = z.object({
   type: z.literal("agent.timeline.list_prompts.request"),
   agentId: z.string(),
@@ -2340,10 +2348,32 @@ export const AgentWorkspaceMoveRequestMessageSchema = z.object({
   agentId: z.string().min(1),
   workspaceId: z.string().min(1),
   requestId: z.string(),
+  targetHost: z.string().optional(),
+  targetServerId: z.string().optional(),
 });
 
 export const AgentWorkspaceMoveResponseMessageSchema = z.object({
   type: z.literal("agent.workspace.move.response"),
+  payload: z.object({
+    requestId: z.string(),
+    agentId: z.string(),
+    workspaceId: z.string(),
+    accepted: z.boolean(),
+    error: z.string().nullable(),
+    targetServerId: z.string().optional(),
+  }),
+});
+
+export const AgentWorkspaceTransferRequestMessageSchema = z.object({
+  type: z.literal("agent.workspace.transfer.request"),
+  requestId: z.string(),
+  targetWorkspaceId: z.string().min(1),
+  agent: z.record(z.string(), z.unknown()),
+  timeline: z.array(z.record(z.string(), z.unknown())).optional(),
+});
+
+export const AgentWorkspaceTransferResponseMessageSchema = z.object({
+  type: z.literal("agent.workspace.transfer.response"),
   payload: z.object({
     requestId: z.string(),
     agentId: z.string(),
@@ -3639,6 +3669,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   RestartServerRequestMessageSchema,
   DaemonUpdateRequestMessageSchema,
   FetchAgentTimelineRequestMessageSchema,
+  AgentTimelineSearchRequestMessageSchema,
   AgentTimelineListPromptsRequestMessageSchema,
   ProviderSubagentListRequestMessageSchema,
   ProviderSubagentTimelineRequestMessageSchema,
@@ -3653,6 +3684,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   AgentDetachRequestMessageSchema,
   AgentRewindRequestMessageSchema,
   AgentWorkspaceMoveRequestMessageSchema,
+  AgentWorkspaceTransferRequestMessageSchema,
   AgentPermissionResponseMessageSchema,
   CheckoutStatusRequestSchema,
   CheckoutDiffGetRequestSchema,
@@ -5076,6 +5108,20 @@ export const AgentTimelineReplacementMessageSchema = z.object({
     subscriptionId: z.string().optional(),
     agentId: z.string(),
     epoch: z.string(),
+  }),
+});
+
+export const AgentTimelineSearchResponseMessageSchema = z.object({
+  type: z.literal("agent.timeline.search.response"),
+  payload: z.object({
+    requestId: z.string(),
+    agentId: z.string(),
+    epoch: z.string(),
+    locations: z.array(
+      z.object({ seq: z.number().int().nonnegative(), role: z.enum(["user", "assistant"]) }),
+    ),
+    nextCursor: z.number().int().nonnegative().nullable(),
+    error: z.string().nullable(),
   }),
 });
 
@@ -7289,6 +7335,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   FetchAgentResponseMessageSchema,
   FetchAgentTimelineResponseMessageSchema,
   AgentTimelineReplacementMessageSchema,
+  AgentTimelineSearchResponseMessageSchema,
   AgentTimelineListPromptsResponseMessageSchema,
   ProviderSubagentListResponseMessageSchema,
   ProviderSubagentTimelineResponseMessageSchema,
@@ -7329,6 +7376,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   AgentRewindResponseMessageSchema,
   UpdateAgentResponseMessageSchema,
   AgentWorkspaceMoveResponseMessageSchema,
+  AgentWorkspaceTransferResponseMessageSchema,
   ProjectRenameResponseSchema,
   ProjectDescriptionSetResponseSchema,
   ProjectIconSetResponseSchema,
@@ -7805,6 +7853,12 @@ export type AgentWorkspaceMoveRequestMessage = z.infer<
 >;
 export type AgentWorkspaceMoveResponseMessage = z.infer<
   typeof AgentWorkspaceMoveResponseMessageSchema
+>;
+export type AgentWorkspaceTransferRequestMessage = z.infer<
+  typeof AgentWorkspaceTransferRequestMessageSchema
+>;
+export type AgentWorkspaceTransferResponseMessage = z.infer<
+  typeof AgentWorkspaceTransferResponseMessageSchema
 >;
 export type AgentPermissionResponseMessage = z.infer<typeof AgentPermissionResponseMessageSchema>;
 export type CheckoutStatusRequest = z.infer<typeof CheckoutStatusRequestSchema>;

@@ -50,14 +50,18 @@ describe("resolveAgentTabDropTarget", () => {
     ).toBeNull();
   });
 
-  it("never offers a workspace on another host", () => {
+  it("offers a workspace on another host", () => {
     expect(
       resolveAgentTabDropTarget({
         point: { x: 100, y: 120 },
         drag,
         targets: [{ ...targetRow, serverId: "server-2" }],
       }),
-    ).toBeNull();
+    ).toEqual({
+      serverId: "server-2",
+      workspaceId: "wks-target",
+      workspaceKey: "server-1:wks-target",
+    });
   });
 
   it("skips rows that cannot be measured", () => {

@@ -148,7 +148,10 @@ describe("moveAgentTabToExistingWorkspace", () => {
       targetWorkspaceId: "wks-target",
       created: false,
     });
-    expect(client.moveAgentToWorkspace).toHaveBeenCalledWith("agent-123", "wks-target");
+    expect(client.moveAgentToWorkspace).toHaveBeenCalledWith("agent-123", "wks-target", {
+      targetHost: undefined,
+      targetServerId: undefined,
+    });
     expect(layout.closeTab).toHaveBeenCalledWith("server-1:wks-source", "tab-123");
     expect(layout.openTab).toHaveBeenCalledWith({
       workspaceKey: "server-1:wks-target",
@@ -188,6 +191,45 @@ describe("moveAgentTabToExistingWorkspace", () => {
     expect(layout.closeTab).not.toHaveBeenCalled();
     expect(navigation.navigateToWorkspace).not.toHaveBeenCalled();
   });
+
+  it("moves an agent tab to another host when targetServerId is provided", async () => {
+    const client = createClient();
+    const layout = createLayout();
+    const navigation = createNavigation();
+    const result = await moveAgentTabToExistingWorkspace({
+      session: createSession({ client }),
+      layout,
+      navigation,
+      messages,
+      serverId: "server-1",
+      sourceWorkspaceId: "wks-source",
+      targetWorkspaceId: "wks-peer",
+      targetServerId: "server-2",
+      agentId: "agent-123",
+      tabId: "tab-123",
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      targetWorkspaceId: "wks-peer",
+      created: false,
+    });
+    expect(client.moveAgentToWorkspace).toHaveBeenCalledWith("agent-123", "wks-peer", {
+      targetHost: "server-2",
+      targetServerId: "server-2",
+    });
+    expect(layout.closeTab).toHaveBeenCalledWith("server-1:wks-source", "tab-123");
+    expect(layout.openTab).toHaveBeenCalledWith({
+      workspaceKey: "server-2:wks-peer",
+      target: { kind: "agent", agentId: "agent-123" },
+      intent: "reveal",
+    });
+    expect(navigation.navigateToWorkspace).toHaveBeenCalledWith({
+      serverId: "server-2",
+      workspaceId: "wks-peer",
+      target: { kind: "agent", agentId: "agent-123" },
+    });
+  });
 });
 
 describe("moveAgentTabToNewWorkspace", () => {
@@ -221,7 +263,10 @@ describe("moveAgentTabToNewWorkspace", () => {
       },
       title: "Source (2)",
     });
-    expect(client.moveAgentToWorkspace).toHaveBeenCalledWith("agent-123", "wks-created");
+    expect(client.moveAgentToWorkspace).toHaveBeenCalledWith("agent-123", "wks-created", {
+      targetHost: undefined,
+      targetServerId: undefined,
+    });
     expect(layout.closeTab).toHaveBeenCalledWith("server-1:wks-source", "tab-123");
     expect(layout.openTab).not.toHaveBeenCalled();
     expect(navigation.navigateToWorkspace).toHaveBeenCalledWith({
