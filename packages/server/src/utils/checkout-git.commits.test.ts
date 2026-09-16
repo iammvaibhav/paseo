@@ -270,6 +270,25 @@ describe("listCheckoutCommits", () => {
     expect(commits.every((entry) => entry.isOnBase === true)).toBe(true);
   });
 
+  it("limits workspace history to 50 commits on long-lived branches", async () => {
+    const { repoDir } = initRepoOnMain();
+    git(["checkout", "-b", "feature"], repoDir);
+    importLinearHistory({
+      repoDir,
+      branch: "feature",
+      file: "feature-history.txt",
+      subject: "Feature",
+      count: 65,
+    });
+
+    const { commits } = await listCheckoutCommits({ cwd: repoDir });
+
+    const workspaceCommits = commits.filter((c) => !c.isOnBase);
+    expect(workspaceCommits).toHaveLength(50);
+    expect(workspaceCommits[0]?.subject).toBe("Feature 65");
+    expect(workspaceCommits[49]?.subject).toBe("Feature 16");
+  });
+
   it("shows merged branch commits and compares the merge against its first parent", async () => {
     const { repoDir } = initRepoOnMain();
     git(["checkout", "-b", "feature"], repoDir);

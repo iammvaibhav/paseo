@@ -315,4 +315,48 @@ describe("shared tool-call display mapping", () => {
     });
     expect(fleetDoubled.displayName).toBe("Spawned agent on work");
   });
+
+  it("summarizes hub wait with its job ids", () => {
+    const display = buildToolCallDisplayModel({
+      name: "hub",
+      status: "completed",
+      error: null,
+      detail: {
+        type: "unknown",
+        input: { op: "wait", ids: ["bg_14"], timeoutMs: 60000 },
+        output: null,
+      },
+    });
+    expect(display).toEqual({ displayName: "Hub", summary: "wait · bg_14" });
+  });
+
+  it("summarizes hub start/send/logs with their targets", () => {
+    const started = buildToolCallDisplayModel({
+      name: "hub",
+      status: "running",
+      error: null,
+      detail: {
+        type: "unknown",
+        input: { op: "start", name: "web", application: "bun" },
+        output: null,
+      },
+    });
+    expect(started.summary).toBe("start · web · bun");
+
+    const sent = buildToolCallDisplayModel({
+      name: "hub",
+      status: "completed",
+      error: null,
+      detail: { type: "unknown", input: { op: "send", to: "worker" }, output: null },
+    });
+    expect(sent.summary).toBe("send · to worker");
+
+    const logs = buildToolCallDisplayModel({
+      name: "hub",
+      status: "completed",
+      error: null,
+      detail: { type: "unknown", input: { op: "logs", name: "web" }, output: null },
+    });
+    expect(logs.summary).toBe("logs · web");
+  });
 });

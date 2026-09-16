@@ -19,6 +19,11 @@ export function MarkdownFenceBlock({
   inheritedStyles,
   textStyle,
 }: MarkdownFenceBlockProps) {
+  // A fence with no code (e.g. an orphaned "```" leaked before a tool call)
+  // must not render at all — the code surface paints an empty grey box.
+  if (!code || code.trim().length === 0) {
+    return null;
+  }
   const language = getMarkdownFenceLanguage(info);
   const DiagramFence = language ? diagramFences[language] : undefined;
   if (DiagramFence) {

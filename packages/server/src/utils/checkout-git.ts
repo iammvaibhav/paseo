@@ -1530,6 +1530,23 @@ async function getGitConfigValue(
   }
 }
 
+async function resolveGitRemoteUrl({
+  cwd,
+  remote,
+  context,
+}: {
+  cwd: string;
+  remote: string;
+  context?: CheckoutContext;
+}): Promise<string | null> {
+  const configuredUrl = await getGitConfigValue(cwd, `remote.${remote}.url`, context);
+  if (configuredUrl) {
+    return configuredUrl;
+  }
+  // Branch remote settings accept repository URLs as well as configured remote names.
+  return parseGitRemoteLocation(remote) ? remote : null;
+}
+
 async function getGitRemotePushUrl(
   cwd: string,
   remoteName: string,
@@ -1594,7 +1611,7 @@ async function resolvePullRequestStatusLookupTarget(
   }
 
   const [branchRemoteUrl, originRemoteUrl, resolvedBaseRef] = await Promise.all([
-    branchRemoteName ? getGitConfigValue(cwd, `remote.${branchRemoteName}.url`, context) : null,
+    branchRemoteName ? resolveGitRemoteUrl({ cwd, remote: branchRemoteName, context }) : null,
     getGitConfigValue(cwd, "remote.origin.url", context),
     getResolvedBaseRefForCwd(cwd, context),
   ]);
@@ -2124,7 +2141,7 @@ async function resolvePullRequestLookupTargetFromPushConfig(
 
   const [pushRefspec, pushRemoteUrl, originRemoteUrl, resolvedBaseRef] = await Promise.all([
     getGitConfigValue(cwd, `remote.${pushRemoteName}.push`, context),
-    getGitConfigValue(cwd, `remote.${pushRemoteName}.url`, context),
+    resolveGitRemoteUrl({ cwd, remote: pushRemoteName, context }),
     knownOriginRemoteUrl === null ? getGitConfigValue(cwd, "remote.origin.url", context) : null,
     knownResolvedBaseRef === null ? getResolvedBaseRefForCwd(cwd, context) : null,
   ]);
@@ -2233,7 +2250,7 @@ export async function getCheckoutSnapshotFacts(
         getGitConfigValue(cwd, `branch.${inspected.currentBranch}.merge`, context),
         branchRemoteName === "origin"
           ? inspected.remoteUrl
-          : getGitConfigValue(cwd, `remote.${branchRemoteName}.url`, context),
+          : resolveGitRemoteUrl({ cwd, remote: branchRemoteName, context }),
       ]);
     }
   }
@@ -2507,9 +2524,10 @@ export async function getCheckoutStatus(
   };
 }
 
-// Workspace history stays complete; base history is bounded context until the
-// commits list supports paging older base commits.
+// Workspace history is bounded to avoid running git log over hundreds of commits on long-lived
+// branches or fork roots; base history is bounded context.
 const CHECKOUT_BASE_COMMIT_LIMIT = 10;
+const CHECKOUT_WORKSPACE_COMMIT_LIMIT = 50;
 // Bytes git emits between fields/records. We split parsed output on these.
 const COMMIT_FIELD_SEPARATOR = "\x00";
 const COMMIT_RECORD_SEPARATOR = "\x1e";
@@ -2756,7 +2774,11 @@ export async function listCheckoutCommits({
   let baseRevision = "HEAD";
   if (comparisonBaseRef) {
     const [records, mergeBase] = await Promise.all([
-      getCheckoutCommitRecords({ cwd, revision: `${comparisonBaseRef}..HEAD` }),
+      getCheckoutCommitRecords({
+        cwd,
+        revision: `${comparisonBaseRef}..HEAD`,
+        maxCount: CHECKOUT_WORKSPACE_COMMIT_LIMIT,
+      }),
       tryResolveMergeBase(cwd, comparisonBaseRef),
     ]);
     workspaceRecords = records;

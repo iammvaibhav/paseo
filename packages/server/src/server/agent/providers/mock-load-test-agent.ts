@@ -423,6 +423,9 @@ function parseLargeAgentStreamPayloadPrompt(
 function shouldEmitEvalToolCall(prompt: AgentPromptInput): boolean {
   return /emit an eval tool call/i.test(promptToText(prompt));
 }
+function shouldEmitHubToolCall(prompt: AgentPromptInput): boolean {
+  return /emit (?:a )?hub tool call/i.test(promptToText(prompt));
+}
 
 /**
  * A realistic Oh My Pi `eval` result. The tool has no canonical detail type, so
@@ -928,6 +931,8 @@ export class MockLoadTestAgentSession implements AgentSession {
         this.scheduleStressTurn(turn, stress);
       } else if (shouldEmitEvalToolCall(prompt)) {
         this.scheduleEvalToolCallTurn(turn);
+      } else if (shouldEmitHubToolCall(prompt)) {
+        this.scheduleHubToolCallTurn(turn);
       } else {
         this.schedule(turn, 0);
       }
@@ -1222,6 +1227,12 @@ export class MockLoadTestAgentSession implements AgentSession {
     }, 0);
     turn.timer.unref?.();
   }
+  private scheduleHubToolCallTurn(turn: ActiveTurn): void {
+    turn.timer = setTimeout(() => {
+      this.emitHubToolCallTurn(turn);
+    }, 0);
+    turn.timer.unref?.();
+  }
 
   private scheduleSteeringReplayTurn(turn: ActiveTurn, shape: SteeringReplayShape): void {
     turn.timer = setTimeout(() => {
@@ -1502,6 +1513,92 @@ export class MockLoadTestAgentSession implements AgentSession {
     turn.resolve({
       sessionId: this.id,
       finalText: "Emitted a synthetic eval tool call",
+      usage,
+      timeline: [],
+      canceled: false,
+    });
+  }
+  private emitHubToolCallTurn(turn: ActiveTurn): void {
+    if (this.activeTurn !== turn) {
+      return;
+    }
+
+    this.clearTurnTimer(turn);
+    this.emitTurnStarted(turn);
+
+    // Spurious empty fence that Gemini/models emit right before tool calls
+    this.emitTimeline(turn.turnId, {
+      type: "assistant_message",
+      text: "```",
+      messageId: turn.assistantMessageId,
+    });
+
+    const callId = `${turn.turnId}:hub`;
+    const args = {
+      op: "wait",
+      ids: ["bg_14"],
+      timeoutMs: 60000,
+    };
+    const output = {
+      content: [
+        {
+          type: "text",
+          text: "## Still Running (1)\n\n- `bg_14` [bash] — pnpm run build:daemon-web-ui",
+        },
+      ],
+      details: {
+        op: "wait",
+        jobs: [
+          {
+            id: "bg_14",
+            type: "bash",
+            status: "running",
+            label: "pnpm run build:daemon-web-ui",
+            durationMs: 69362,
+          },
+        ],
+      },
+    };
+
+    this.emitTimeline(
+      turn.turnId,
+      createToolCall({
+        callId,
+        name: "hub",
+        status: "running",
+        detail: { type: "unknown", input: args, output: null },
+      }),
+    );
+    this.emitTimeline(
+      turn.turnId,
+      createToolCall({
+        callId,
+        name: "hub",
+        status: "completed",
+        detail: {
+          type: "unknown",
+          input: args,
+          output,
+        },
+      }),
+    );
+
+    this.activeTurn = null;
+    const usage = {
+      inputTokens: 1,
+      outputTokens: 1,
+      contextWindowUsedTokens: 1,
+      contextWindowMaxTokens: 128_000,
+    };
+    this.emit({
+      type: "turn_completed",
+      provider: this.provider,
+      turnId: turn.turnId,
+      usage,
+    });
+    turn.resolve({
+      sessionId: this.id,
+      finalText: "Emitted a synthetic hub tool call",
       usage,
       timeline: [],
       canceled: false,

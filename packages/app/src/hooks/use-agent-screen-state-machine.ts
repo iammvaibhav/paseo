@@ -83,7 +83,7 @@ export type AgentScreenReadySyncState =
   | { status: "reconnecting" }
   | {
       status: "catching_up";
-      ui: "overlay" | "silent";
+      ui: "overlay" | "status" | "silent";
     }
   | { status: "sync_error"; isRetrying: boolean };
 
@@ -163,9 +163,9 @@ function resolveCatchingUpUi(args: {
   isVisibilityCatchUpPending: boolean;
   hasHydratedHistoryBefore: boolean;
   hadInitialSyncFailure: boolean;
-}): "overlay" | "silent" {
+}): "overlay" | "status" | "silent" {
   if (args.hasOptimisticCreateContinuity) return "silent";
-  if (args.hasHydratedHistoryBefore) return "silent";
+  if (args.hasHydratedHistoryBefore) return "status";
   if (args.isVisibilityCatchUpPending) return "overlay";
   if (args.hadInitialSyncFailure) return "silent";
   return "overlay";
