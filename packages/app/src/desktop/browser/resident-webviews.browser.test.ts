@@ -458,6 +458,7 @@ describe("resident browser webviews", () => {
     const webview = ensurePersistentBrowserWebview({
       browserId: "browser-persistent",
       url: "https://example.com",
+      profileHost,
     });
     const wrapper = webview?.parentElement ?? null;
     const target = document.createElement("div");
@@ -484,11 +485,13 @@ describe("resident browser webviews", () => {
     expect(wrapper?.style.top).toBe("30px");
     expect(wrapper?.style.width).toBe("900px");
     expect(wrapper?.style.height).toBe("700px");
+    expect(wrapper?.style.zIndex).toBe("0");
 
     expect(hidePersistentBrowserWebview("browser-persistent")).toBe(true);
     expect(webview?.parentElement).toBe(wrapper);
     expect(wrapper?.style.width).toBe("1px");
     expect(wrapper?.style.height).toBe("1px");
+    expect(wrapper?.style.zIndex).toBe("0");
     expect(isBrowserWebviewDomReady(webview as HTMLElement)).toBe(true);
   });
 });
