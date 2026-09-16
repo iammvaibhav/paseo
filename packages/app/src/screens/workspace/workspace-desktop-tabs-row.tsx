@@ -22,6 +22,7 @@ import {
   Rows2,
   Ellipsis,
   FolderPlus,
+  FolderInput,
   Maximize,
   Minimize,
   Plus,
@@ -65,6 +66,7 @@ import {
   type WorkspaceTabMenuLabels,
 } from "@/screens/workspace/workspace-tab-menu";
 import type { WorkspaceTabDescriptor } from "@/screens/workspace/workspace-tabs-types";
+import { MoveAgentModal } from "@/components/move-agent-modal";
 import type { SurfaceBackdrop } from "@/styles/surface-backdrop";
 import type { Theme } from "@/styles/theme";
 import { RenderProfile } from "@/utils/render-profiler";
@@ -102,7 +104,7 @@ const DROPDOWN_WIDTH = 220;
 const DEFAULT_INLINE_ADD_BUTTON_RESERVED_WIDTH = 36;
 const PANE_SPLIT_ACTIONS_HORIZONTAL_PADDING = 2;
 const PANE_SPLIT_ACTIONS_OUTER_MARGIN =
-  paneContentToolbarTrailingPadding(false) - PANE_SPLIT_ACTIONS_HORIZONTAL_PADDING;
+  paneContentToolbarTrailingPadding(false, "glyph") - PANE_SPLIT_ACTIONS_HORIZONTAL_PADDING;
 const PANE_SPLIT_ACTIONS_RESERVED_WIDTH =
   smallIconButtonChromeFrameSize(false) +
   PANE_SPLIT_ACTIONS_HORIZONTAL_PADDING * 2 +
@@ -137,6 +139,7 @@ const ThemedArrowRightToLine = withUnistyles(ArrowRightToLine);
 const ThemedCopyX = withUnistyles(CopyX);
 const ThemedPencil = withUnistyles(Pencil);
 const ThemedFolderPlus = withUnistyles(FolderPlus);
+const ThemedFolderInput = withUnistyles(FolderInput);
 const ThemedPlus = withUnistyles(Plus);
 const ThemedColumns2 = withUnistyles(Columns2);
 const ThemedRows2 = withUnistyles(Rows2);
@@ -433,6 +436,8 @@ function TabContextMenuItem({
         return <ThemedCircleCheck size={16} uniProps={mutedColorMapping} />;
       case "folder-plus":
         return <ThemedFolderPlus size={16} uniProps={mutedColorMapping} />;
+      case "folder-input":
+        return <ThemedFolderInput size={16} uniProps={mutedColorMapping} />;
       case "x":
         return <ThemedX size={16} uniProps={mutedColorMapping} />;
       default:
@@ -760,6 +765,7 @@ function TabChip({
   dragHandleProps: DraggableListDragHandleProps | undefined;
 }) {
   const { closeButtonTestId, contextMenuTestId, menuEntries } = resolvedTab;
+  const { t } = useTranslation();
   const middleClickRef = useMiddleClickClose(
     useCallback(() => void onCloseTab(tab.tabId), [onCloseTab, tab.tabId]),
   );
@@ -909,6 +915,8 @@ function TabChip({
             <Pressable
               {...(closeButtonDragBlockers as object | undefined)}
               testID={closeButtonTestId}
+              accessibilityRole="button"
+              accessibilityLabel={t("workspace.tabs.menu.close")}
               disabled={isClosingTab}
               onPressIn={handleCloseButtonPressIn}
               onHoverIn={handleCloseButtonHoverIn}
@@ -1535,6 +1543,13 @@ function ResolvedDesktopTabChip({
     },
     [item.tab.tabId, normalizedServerId, normalizedWorkspaceId, t, toast],
   );
+  const [isMoveModalOpen, setIsMoveModalOpen] = useState(false);
+  const handleOpenMoveModal = useCallback(() => {
+    setIsMoveModalOpen(true);
+  }, []);
+  const handleCloseMoveModal = useCallback(() => {
+    setIsMoveModalOpen(false);
+  }, []);
 
   const resolvedTab = useMemo(
     () =>
@@ -1549,6 +1564,7 @@ function ResolvedDesktopTabChip({
         onCopyTerminalId,
         onCopyFilePath,
         onMoveToNewWorkspace: handleMoveToNewWorkspace,
+        onMoveAgent: item.tab.target.kind === "agent" ? handleOpenMoveModal : undefined,
         onReloadAgent,
         onRenameTab,
         onCloseTab,
@@ -1574,6 +1590,7 @@ function ResolvedDesktopTabChip({
       showMarkDone,
       handleMarkDone,
       handleMoveToNewWorkspace,
+      handleOpenMoveModal,
       tabCount,
     ],
   );
@@ -1616,6 +1633,16 @@ function ResolvedDesktopTabChip({
       />
       {showDropIndicatorAfter ? (
         <View style={[styles.tabDropIndicator, styles.tabDropIndicatorAfter]} />
+      ) : null}
+      {item.tab.target.kind === "agent" && isMoveModalOpen ? (
+        <MoveAgentModal
+          visible={isMoveModalOpen}
+          onClose={handleCloseMoveModal}
+          agentId={item.tab.target.agentId}
+          tabId={item.tab.tabId}
+          sourceServerId={normalizedServerId}
+          sourceWorkspaceId={normalizedWorkspaceId}
+        />
       ) : null}
     </View>
   );

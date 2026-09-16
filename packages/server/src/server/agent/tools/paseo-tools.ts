@@ -6383,7 +6383,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     {
       title: "Move an agent to another workspace",
       description:
-        "Move an agent to another workspace (same host — cross-host moves are refused). agentId is an " +
+        "Move an agent to another workspace, including across projects or across hosts in the fleet. agentId is an " +
         "agent UUID from fleet_list_agents/fleet_search data; workspaceId is a wks_ id from " +
         "fleet_list_inventory — both fleet-wide, no host needed. Refuses running agents. Approval-gated; " +
         "creates a proposal card the user approves.",

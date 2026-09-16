@@ -317,6 +317,9 @@ importers:
       react-dom:
         specifier: 19.1.0
         version: 19.1.0(react@19.1.0)
+      react-freeze:
+        specifier: 1.0.4
+        version: 1.0.4(react@19.1.0)
       react-i18next:
         specifier: ^17.0.8
         version: 17.0.13(i18next@26.4.1(typescript@5.9.3))(react-dom@19.1.0(react@19.1.0))(react-native@0.81.5(@babel/core@7.29.7(supports-color@8.1.1))(@react-native/metro-config@0.87.1(@babel/core@7.29.7(supports-color@8.1.1))(supports-color@8.1.1))(@types/react@19.2.18)(react@19.1.0)(supports-color@8.1.1))(react@19.1.0)(typescript@5.9.3)
@@ -377,6 +380,9 @@ importers:
       turndown-plugin-gfm:
         specifier: ^1.0.2
         version: 1.0.2
+      unicode-segmenter:
+        specifier: 0.17.3
+        version: 0.17.3
       use-sync-external-store:
         specifier: ^1.6.0
         version: 1.6.0(react@19.1.0)
@@ -866,6 +872,9 @@ importers:
       lru-cache:
         specifier: ^11.5.1
         version: 11.5.2
+      markdown-it:
+        specifier: ^10.0.0
+        version: 10.0.0
       mnemonic-id:
         specifier: ^3.2.7
         version: 3.2.7
@@ -930,6 +939,9 @@ importers:
       '@types/express':
         specifier: ^4.17.20
         version: 4.17.25
+      '@types/markdown-it':
+        specifier: ^14.2.0
+        version: 14.2.0
       '@types/node':
         specifier: ^20.9.0
         version: 20.19.43
@@ -11550,6 +11562,9 @@ packages:
   unicode-property-aliases-ecmascript@2.2.0:
     resolution: {integrity: sha512-hpbDzxUY9BFwX+UeBnxv3Sh1q7HFxj48DTmXchNgRa46lO8uj3/1iEn3MiNUYTg1g9ctIqXCCERn8gYZhHC5lQ==}
     engines: {node: '>=4'}
+
+  unicode-segmenter@0.17.3:
+    resolution: {integrity: sha512-hKZwqBjJDmqNrq1+LjDxck1qLzJFcLLJM2Xq92ORRHOuau6GSHeELmn+uyk6zNH1CK9mogrUJGP9WJCJUQXMAw==}
 
   unified@11.0.5:
     resolution: {integrity: sha512-xKvGhPWw3k84Qjh8bI3ZeJjqnyadK+GEFtazSfZv/rKeTkTjOJho6mFqh2SM96iIcZokxiOpg78GazTSg8+KHA==}
@@ -27826,6 +27841,8 @@ snapshots:
   unicode-match-property-value-ecmascript@2.2.1: {}
 
   unicode-property-aliases-ecmascript@2.2.0: {}
+
+  unicode-segmenter@0.17.3: {}
 
   unified@11.0.5:
     dependencies:
