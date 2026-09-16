@@ -858,7 +858,6 @@ test("a burst of dropped events triggers exactly one authoritative tail re-basel
 
 test("a re-baseline for a non-desired agent is parked until the agent is acknowledged", async () => {
   const world = new TimelineWorld();
-  world.sync.setDeliveryMode("legacy");
   world.sync.setConnected(true);
 
   world.sync.recoverBaseline("agent-a");

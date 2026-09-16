@@ -375,6 +375,7 @@ describe("DirectorySync session readiness", () => {
     store.updateSessionServerInfo(serverId, {
       serverId,
       hostname: null,
+      missionControlHostAlias: null,
       version: "test",
       features: { workspaceMultiplicity: true },
     });
@@ -1270,6 +1271,7 @@ it("fills every cached workspace beneath live updates received during the SQLite
   useSessionStore.getState().updateSessionServerInfo(serverId, {
     serverId,
     hostname: null,
+    missionControlHostAlias: null,
     version: "test",
     features: { workspaceMultiplicity: true },
   });

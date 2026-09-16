@@ -158,7 +158,8 @@ function createFakeClient(config: { rejectCheckoutDiffSubscribe?: boolean } = {}
           ["checkout_diff_update", "subscribe_checkout_diff_response"],
           () => unsubscribeCheckoutDiffCalls.push(subscriptionId),
           (message) =>
-            "subscriptionId" in message.payload &&
+            (message.type === "checkout_diff_update" ||
+              message.type === "subscribe_checkout_diff_response") &&
             message.payload.subscriptionId === subscriptionId,
         );
         if (!config.rejectCheckoutDiffSubscribe) return handle;
