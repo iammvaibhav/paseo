@@ -1,3 +1,4 @@
+import { useWordFadeRules } from "@/word-stream/markdown";
 import React, {
   useCallback,
   useEffect,
@@ -110,6 +111,7 @@ export interface MarkdownRendererProps {
   allowedImageHandlers?: readonly string[];
   topLevelMaxExceededItem?: ReactNode;
   enableHtmlish?: boolean;
+  sourceOffset?: number;
 }
 
 export function MarkdownRenderer({
@@ -121,6 +123,7 @@ export function MarkdownRenderer({
   allowedImageHandlers,
   topLevelMaxExceededItem,
   enableHtmlish = true,
+  sourceOffset = 0,
 }: MarkdownRendererProps) {
   const markdownRules = useMemo(() => rules ?? createSharedMarkdownRules(), [rules]);
   const parts = useMemo(
@@ -130,6 +133,7 @@ export function MarkdownRenderer({
   const rendererProps = useMemo(
     () => ({
       compact,
+      sourceOffset,
       rules: markdownRules,
       markdownit,
       onLinkPress,
@@ -139,6 +143,7 @@ export function MarkdownRenderer({
     [
       allowedImageHandlers,
       compact,
+      sourceOffset,
       markdownRules,
       markdownit,
       onLinkPress,
@@ -177,26 +182,7 @@ function MarkdownPartList({
 function keyMarkdownGroups(
   groups: MarkdownPartGroup[],
 ): { key: string; group: MarkdownPartGroup }[] {
-  const seen = new Map<string, number>();
-  return groups.map((group) => {
-    const identity =
-      group.kind === "part"
-        ? getMarkdownPartIdentity(group.part)
-        : `imageText:${group.images.map((i) => i.src).join(",")}:${group.lead.slice(0, 80)}`;
-    const seenCount = seen.get(identity) ?? 0;
-    seen.set(identity, seenCount + 1);
-    return { key: `${identity}:${seenCount}`, group };
-  });
-}
-
-function getMarkdownPartIdentity(part: MarkdownDisplayPart): string {
-  if (part.kind === "markdown") {
-    return `markdown:${part.text.slice(0, 80)}`;
-  }
-  if (part.kind === "inlineImage") {
-    return `inlineImage:${part.src}:${part.alt}`;
-  }
-  return `details:${part.summary.slice(0, 80)}:${part.body.slice(0, 80)}`;
+  return groups.map((group, index) => ({ key: `${group.kind}:${index}`, group }));
 }
 
 function MarkdownPart({
@@ -223,6 +209,7 @@ function MarkdownPart({
 
 function MarkdownFragment({
   text,
+  sourceOffset = 0,
   compact,
   rules,
   markdownit,
@@ -230,11 +217,12 @@ function MarkdownFragment({
   allowedImageHandlers,
   topLevelMaxExceededItem,
 }: MarkdownRendererProps & { rules: RenderRules }) {
+  const fadeRules = useWordFadeRules(rules, sourceOffset);
   const uniProps = compact ? compactMarkdownStyleMapping : markdownStyleMapping;
   return (
     <ThemedMarkdown
       uniProps={uniProps}
-      rules={rules}
+      rules={fadeRules}
       markdownit={markdownit}
       onLinkPress={onLinkPress}
       allowedImageHandlers={allowedImageHandlers}

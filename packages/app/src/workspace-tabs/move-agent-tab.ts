@@ -244,6 +244,7 @@ export async function moveAgentTabToNewWorkspace(input: {
   const worktreeSlug = createWorktreeSlug();
   const projectId = input.targetProjectId ?? sourceWorkspace?.projectId;
 
+
   let workspaceTitle: string | undefined;
   if (input.targetProjectName) {
     workspaceTitle = `${input.targetProjectName} (new)`;

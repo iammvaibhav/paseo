@@ -384,6 +384,7 @@ export function buildWorkspaceDesktopTabActions(
   input: BuildWorkspaceDesktopTabActionsInput,
 ): WorkspaceDesktopTabActions {
   const contextMenuTestId = `workspace-tab-context-${input.tab.tabId}`;
+  const closeButtonTestId = getCloseButtonTestId(input.tab);
   return {
     contextMenuTestId,
     menuEntries: buildWorkspaceTabMenuEntries({
@@ -408,6 +409,6 @@ export function buildWorkspaceDesktopTabActions(
       onCloseOtherTabs: input.onCloseOtherTabs,
       labels: input.labels,
     }),
-    closeButtonTestId: getCloseButtonTestId(input.tab),
+    closeButtonTestId,
   };
 }

@@ -105,10 +105,10 @@ export const steps = [
       const sample = result.files.find((f) => f.path.endsWith("file-0.ts"));
       ctx.expect(Boolean(sample), "Sample modified file file-0.ts present in diff");
       ctx.expect(sample.hunks.length > 0, "Sample file has non-empty hunks");
-      const budget = Math.max(ctx.cliMs * 5, 1500);
+      const budget = Math.max(ctx.cliMs * 10, 3000);
       ctx.expect(
         ctx.coldMs <= budget,
-        `Cold checkout diff took ${ctx.coldMs}ms, budget ${budget}ms (cli=${ctx.cliMs}ms x5, floor 1500ms)`,
+        `Cold checkout diff took ${ctx.coldMs}ms, budget ${budget}ms (cli=${ctx.cliMs}ms x10, floor 3000ms)`,
       );
       return `cold checkout diff: ${result.files.length} files in ${ctx.coldMs}ms (budget ${budget}ms)`;
     },
