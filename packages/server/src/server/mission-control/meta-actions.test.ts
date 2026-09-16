@@ -1,8 +1,12 @@
 import { describe, expect, test } from "vitest";
 import pino from "pino";
+import { mkdtemp, truncate, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { Writable } from "node:stream";
 import { createTestLogger } from "../../test-utils/test-logger.js";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
+import { OMP_SESSION_TRANSFER_MAX_BYTES } from "../agent/providers/omp/session-transfer.js";
 import type {
   MissionControlMetaPlan,
   MissionControlProposal,
@@ -457,6 +461,88 @@ describe("moveAgentToWorkspace cross-host routing", () => {
     await expect(
       moveAgentToWorkspace(h.deps, { agentId: "agent-1", workspaceId: "wks_target" }),
     ).rejects.toThrow(/no peers configured/);
+  });
+
+  test("carries the OMP transcript to the peer, since its resume handle is a path here", async () => {
+    const transcript = '{"type":"session","cwd":"/work/ws-a"}\n{"type":"user","text":"hi"}\n';
+    const dir = await mkdtemp(path.join(tmpdir(), "paseo-move-carry-"));
+    const sessionFile = path.join(dir, "2026-09-16T15-10-42-000Z_abc123.jsonl");
+    await writeFile(sessionFile, transcript, "utf8");
+
+    const h = build({
+      workspaces: [],
+      storedAgents: [
+        storedAgent({
+          persistence: { provider: "omp", sessionId: "abc123", nativeHandle: sessionFile },
+        }),
+      ],
+    });
+    const transferred: Array<Record<string, unknown>> = [];
+    h.deps.agentStorage = { ...h.deps.agentStorage, remove: async () => {} };
+    h.deps.peerManager = peerManagerFor("blrofc3", {
+      serverIds: { srv_blrofc3: "blrofc3" },
+      transferAgentInbound: async (input) => {
+        transferred.push(input as Record<string, unknown>);
+        return { agentId: "agent-1", workspaceId: "wks_target" };
+      },
+    });
+
+    await moveAgentToWorkspace(h.deps, {
+      agentId: "agent-1",
+      workspaceId: "wks_target",
+      targetServerId: "srv_blrofc3",
+    });
+
+    expect(transferred[0]?.providerSession).toEqual({
+      provider: "omp",
+      sessionId: "abc123",
+      fileName: "2026-09-16T15-10-42-000Z_abc123.jsonl",
+      contentBase64: Buffer.from(transcript, "utf8").toString("base64"),
+    });
+  });
+
+  test("refuses an over-cap transcript and leaves the agent untouched here", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "paseo-move-overcap-"));
+    const sessionFile = path.join(dir, "2026-09-16T15-10-42-000Z_huge.jsonl");
+    // Sparse: reports a size over the cap without writing the bytes.
+    await writeFile(sessionFile, "seed", "utf8");
+    await truncate(sessionFile, OMP_SESSION_TRANSFER_MAX_BYTES + 1);
+
+    const h = build({
+      workspaces: [],
+      storedAgents: [
+        storedAgent({
+          persistence: { provider: "omp", sessionId: "huge", nativeHandle: sessionFile },
+        }),
+      ],
+    });
+    const transferred: unknown[] = [];
+    const removed: string[] = [];
+    h.deps.agentStorage = {
+      ...h.deps.agentStorage,
+      remove: async (agentId: string) => {
+        removed.push(agentId);
+      },
+    };
+    h.deps.peerManager = peerManagerFor("blrofc3", {
+      serverIds: { srv_blrofc3: "blrofc3" },
+      transferAgentInbound: async (input) => {
+        transferred.push(input);
+        return { agentId: "agent-1", workspaceId: "wks_target" };
+      },
+    });
+
+    await expect(
+      moveAgentToWorkspace(h.deps, {
+        agentId: "agent-1",
+        workspaceId: "wks_target",
+        targetServerId: "srv_blrofc3",
+      }),
+    ).rejects.toThrow(/over the 10\.0 MB cross-host move limit/);
+    // Nothing left this host: no transfer, no delete.
+    expect(transferred).toEqual([]);
+    expect(removed).toEqual([]);
+    expect(h.storedAgents.has("agent-1")).toBe(true);
   });
 });
 
