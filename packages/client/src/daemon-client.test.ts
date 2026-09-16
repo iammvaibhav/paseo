@@ -5009,6 +5009,59 @@ test("moves an agent to a workspace through the namespaced agent.workspace.move 
   });
 });
 
+test("transfers an agent inbound through the namespaced agent.workspace.transfer RPC", async () => {
+  const logger = createMockLogger();
+  const mock = createMockTransport();
+
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "clsk_unit_test",
+    logger,
+    reconnect: { enabled: false },
+    transportFactory: () => mock.transport,
+  });
+  clients.push(client);
+
+  const connectPromise = client.connect();
+  mock.triggerOpen();
+  await connectPromise;
+
+  const promise = client.transferAgentInbound(
+    {
+      targetWorkspaceId: "target-ws",
+      agent: { id: "agent-42", provider: "codex" },
+      timeline: [{ seq: 1 }],
+    },
+    "transfer-1",
+  );
+
+  expect(mock.sent).toHaveLength(1);
+  const request = parseSentFrame(mock.sent[0]);
+  expect(request).toMatchObject({
+    type: "agent.workspace.transfer.request",
+    targetWorkspaceId: "target-ws",
+    requestId: "transfer-1",
+  });
+
+  mock.triggerMessage(
+    wrapSessionMessage({
+      type: "agent.workspace.transfer.response",
+      payload: {
+        requestId: "transfer-1",
+        agentId: "agent-42",
+        workspaceId: "target-ws",
+        accepted: true,
+        error: null,
+      },
+    }),
+  );
+
+  await expect(promise).resolves.toEqual({
+    agentId: "agent-42",
+    workspaceId: "target-ws",
+  });
+});
+
 test("rejects when agent.workspace.move is not accepted", async () => {
   const logger = createMockLogger();
   const mock = createMockTransport();

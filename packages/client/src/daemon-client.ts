@@ -3096,8 +3096,17 @@ export class DaemonClient {
   async moveAgentToWorkspace(
     agentId: string,
     workspaceId: string,
-    requestId?: string,
-  ): Promise<{ agentId: string; workspaceId: string }> {
+    options?:
+      | string
+      | {
+          targetHost?: string;
+          targetServerId?: string;
+          requestId?: string;
+        },
+  ): Promise<{ agentId: string; workspaceId: string; targetServerId?: string }> {
+    const requestId = typeof options === "string" ? options : options?.requestId;
+    const targetHost = typeof options === "object" ? options?.targetHost : undefined;
+    const targetServerId = typeof options === "object" ? options?.targetServerId : undefined;
     const payload =
       await this.sendNamespacedCorrelatedSessionRequest<"agent.workspace.move.response">({
         requestId,
@@ -3105,10 +3114,42 @@ export class DaemonClient {
           type: "agent.workspace.move.request",
           agentId,
           workspaceId,
+          ...(targetHost ? { targetHost } : {}),
+          ...(targetServerId ? { targetServerId } : {}),
         },
+        timeout: 30_000,
       });
     if (!payload.accepted) {
       throw new Error(payload.error ?? "moveAgentToWorkspace rejected");
+    }
+    return {
+      agentId: payload.agentId,
+      workspaceId: payload.workspaceId,
+      ...(payload.targetServerId ? { targetServerId: payload.targetServerId } : {}),
+    };
+  }
+
+  async transferAgentInbound(
+    input: {
+      targetWorkspaceId: string;
+      agent: Record<string, unknown>;
+      timeline?: Array<Record<string, unknown>>;
+    },
+    requestId?: string,
+  ): Promise<{ agentId: string; workspaceId: string }> {
+    const payload =
+      await this.sendNamespacedCorrelatedSessionRequest<"agent.workspace.transfer.response">({
+        requestId,
+        message: {
+          type: "agent.workspace.transfer.request",
+          targetWorkspaceId: input.targetWorkspaceId,
+          agent: input.agent,
+          ...(input.timeline ? { timeline: input.timeline } : {}),
+        },
+        timeout: 30_000,
+      });
+    if (!payload.accepted) {
+      throw new Error(payload.error ?? "transferAgentInbound rejected");
     }
     return { agentId: payload.agentId, workspaceId: payload.workspaceId };
   }

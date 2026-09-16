@@ -2348,10 +2348,32 @@ export const AgentWorkspaceMoveRequestMessageSchema = z.object({
   agentId: z.string().min(1),
   workspaceId: z.string().min(1),
   requestId: z.string(),
+  targetHost: z.string().optional(),
+  targetServerId: z.string().optional(),
 });
 
 export const AgentWorkspaceMoveResponseMessageSchema = z.object({
   type: z.literal("agent.workspace.move.response"),
+  payload: z.object({
+    requestId: z.string(),
+    agentId: z.string(),
+    workspaceId: z.string(),
+    accepted: z.boolean(),
+    error: z.string().nullable(),
+    targetServerId: z.string().optional(),
+  }),
+});
+
+export const AgentWorkspaceTransferRequestMessageSchema = z.object({
+  type: z.literal("agent.workspace.transfer.request"),
+  requestId: z.string(),
+  targetWorkspaceId: z.string().min(1),
+  agent: z.record(z.string(), z.unknown()),
+  timeline: z.array(z.record(z.string(), z.unknown())).optional(),
+});
+
+export const AgentWorkspaceTransferResponseMessageSchema = z.object({
+  type: z.literal("agent.workspace.transfer.response"),
   payload: z.object({
     requestId: z.string(),
     agentId: z.string(),
@@ -3662,6 +3684,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   AgentDetachRequestMessageSchema,
   AgentRewindRequestMessageSchema,
   AgentWorkspaceMoveRequestMessageSchema,
+  AgentWorkspaceTransferRequestMessageSchema,
   AgentPermissionResponseMessageSchema,
   CheckoutStatusRequestSchema,
   CheckoutDiffGetRequestSchema,
@@ -7353,6 +7376,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   AgentRewindResponseMessageSchema,
   UpdateAgentResponseMessageSchema,
   AgentWorkspaceMoveResponseMessageSchema,
+  AgentWorkspaceTransferResponseMessageSchema,
   ProjectRenameResponseSchema,
   ProjectDescriptionSetResponseSchema,
   ProjectIconSetResponseSchema,
@@ -7829,6 +7853,12 @@ export type AgentWorkspaceMoveRequestMessage = z.infer<
 >;
 export type AgentWorkspaceMoveResponseMessage = z.infer<
   typeof AgentWorkspaceMoveResponseMessageSchema
+>;
+export type AgentWorkspaceTransferRequestMessage = z.infer<
+  typeof AgentWorkspaceTransferRequestMessageSchema
+>;
+export type AgentWorkspaceTransferResponseMessage = z.infer<
+  typeof AgentWorkspaceTransferResponseMessageSchema
 >;
 export type AgentPermissionResponseMessage = z.infer<typeof AgentPermissionResponseMessageSchema>;
 export type CheckoutStatusRequest = z.infer<typeof CheckoutStatusRequestSchema>;

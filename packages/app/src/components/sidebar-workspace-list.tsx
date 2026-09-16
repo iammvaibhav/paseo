@@ -1055,7 +1055,7 @@ function NewWorkspaceGhostRow({
     </Pressable>
   );
 }
-
+// eslint-disable-next-line complexity -- agent-tab drop-target registration adds branches; the row stays one render path.
 function ProjectHeaderRow({
   project,
   displayName,
@@ -1125,6 +1125,21 @@ function ProjectHeaderRow({
     "aria-roledescription": _dragRoleDescription,
     ...dragAttributes
   } = dragHandleProps?.attributes ?? {};
+  const { dropRowRef, isDropTarget: isAgentTabDropTarget } = useAgentTabDropRow({
+    serverId: baseWorkspaceTarget?.serverId ?? "",
+    workspaceId: baseWorkspaceTarget?.workspaceId ?? "",
+    workspaceKey: baseWorkspaceTarget
+      ? `${baseWorkspaceTarget.serverId}:${baseWorkspaceTarget.workspaceId}`
+      : "",
+    disabled: !baseWorkspaceTarget,
+  });
+  const setRowRef = useCallback(
+    (node: View | null) => {
+      (dragHandleProps?.setActivatorNodeRef as ((value: unknown) => void) | undefined)?.(node);
+      dropRowRef(node);
+    },
+    [dragHandleProps, dropRowRef],
+  );
 
   const handlePress = useCallback(() => {
     if (interaction.didLongPressRef.current) {
@@ -1210,6 +1225,7 @@ function ProjectHeaderRow({
           <SidebarWorkspaceShortcutBadge number={shortcutNumber} />
         </View>
       ) : null}
+      {isAgentTabDropTarget && baseWorkspaceTarget ? <SidebarWorkspaceAgentDropIndicator /> : null}
     </>
   );
 
@@ -1218,7 +1234,7 @@ function ProjectHeaderRow({
       <View
         {...dragAttributes}
         {...dragHandleProps?.listeners}
-        ref={dragHandleProps?.setActivatorNodeRef as unknown as Ref<View>}
+        ref={setRowRef as unknown as Ref<View>}
         onPointerEnter={handlePointerEnter}
         onPointerLeave={handlePointerLeave}
       >
@@ -1243,7 +1259,7 @@ function ProjectHeaderRow({
       <View
         {...dragAttributes}
         {...dragHandleProps?.listeners}
-        ref={dragHandleProps?.setActivatorNodeRef as unknown as Ref<View>}
+        ref={setRowRef as unknown as Ref<View>}
         onPointerEnter={handlePointerEnter}
         onPointerLeave={handlePointerLeave}
       >

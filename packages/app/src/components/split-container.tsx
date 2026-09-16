@@ -531,22 +531,33 @@ export function SplitContainer({
 
   /** Drops onto a sidebar workspace row, which lives outside this DndContext. */
   const applySidebarWorkspaceDrop = useCallback(
-    async (input: { agentId: string; tabId: string; targetWorkspaceId: string }) => {
-      const session = useSessionStore.getState().sessions[normalizedServerId];
+    async (input: {
+      agentId: string;
+      tabId: string;
+      targetWorkspaceId: string;
+      targetServerId?: string;
+    }) => {
+      const sourceSession = useSessionStore.getState().sessions[normalizedServerId];
       const result = await moveAgentTabToExistingWorkspace({
-        session: sessionFromStore(session),
+        session: sessionFromStore(sourceSession),
         layout: useWorkspaceLayoutStore.getState(),
         navigation: { navigateToWorkspace },
         messages: buildMoveAgentTabMessages(t),
         serverId: normalizedServerId,
         sourceWorkspaceId: normalizedWorkspaceId,
         targetWorkspaceId: input.targetWorkspaceId,
+        targetServerId: input.targetServerId,
         agentId: input.agentId,
         tabId: input.tabId,
       });
+      const targetSession = input.targetServerId
+        ? useSessionStore.getState().sessions[input.targetServerId]
+        : sourceSession;
+      const targetWorkspaceName =
+        targetSession?.workspaces.get(input.targetWorkspaceId)?.name ?? "";
       const described = describeMoveAgentTabResult(result, {
         existing: t("workspace.tabs.toasts.movedToWorkspace", {
-          workspaceName: session?.workspaces.get(input.targetWorkspaceId)?.name ?? "",
+          workspaceName: targetWorkspaceName,
         }),
         created: t("workspace.tabs.toasts.movedToNewWorkspace"),
       });
@@ -695,6 +706,7 @@ export function SplitContainer({
           agentId: sidebarDrop.drag.agentId,
           tabId: activeData.tabId,
           targetWorkspaceId: sidebarDrop.target.workspaceId,
+          targetServerId: sidebarDrop.target.serverId,
         });
         return;
       }
