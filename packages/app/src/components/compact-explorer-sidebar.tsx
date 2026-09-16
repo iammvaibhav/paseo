@@ -328,7 +328,11 @@ function HostExplorerTabButton({
 }) {
   const { theme } = useUnistyles();
   const accessibilityState = useMemo(() => ({ selected: active }), [active]);
-  const tabStyle = useMemo(() => [styles.tab, active && styles.tabActive], [active]);
+  const isCompact = useIsCompactFormFactor();
+  const tabStyle = useMemo(
+    () => [styles.tab(isCompact), active && styles.tabActive],
+    [active, isCompact],
+  );
   const tabTextStyle = useMemo(() => [styles.tabText, active && styles.tabTextActive], [active]);
 
   return (

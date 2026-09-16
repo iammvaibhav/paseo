@@ -1225,7 +1225,11 @@ function ProjectHeaderRow({
           <SidebarWorkspaceShortcutBadge number={shortcutNumber} />
         </View>
       ) : null}
-      {isAgentTabDropTarget && baseWorkspaceTarget ? <SidebarWorkspaceAgentDropIndicator /> : null}
+      {isAgentTabDropTarget && baseWorkspaceTarget ? (
+        <SidebarWorkspaceAgentDropIndicator
+          workspaceKey={`${baseWorkspaceTarget.serverId}:${baseWorkspaceTarget.workspaceId}`}
+        />
+      ) : null}
     </>
   );
 

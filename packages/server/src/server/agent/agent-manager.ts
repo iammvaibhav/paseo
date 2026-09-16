@@ -1524,38 +1524,6 @@ export class AgentManager {
     return this.timelineStore.getRows(id);
   }
 
-  async getAgentTimelineForExport(id: string): Promise<AgentTimelineRow[]> {
-    if (this.durableTimelineStore) {
-      try {
-        const rows = await this.durableTimelineStore.getCommittedRows(id);
-        if (rows && rows.length > 0) {
-          return rows;
-        }
-      } catch {
-        // Fall back to in-memory store
-      }
-    }
-    if (this.timelineStore.has(id)) {
-      return this.timelineStore.getRows(id);
-    }
-    return [];
-  }
-
-  async importMigratedTimeline(agentId: string, rows: readonly AgentTimelineRow[]): Promise<void> {
-    if (!rows || rows.length === 0) return;
-    if (this.durableTimelineStore) {
-      await this.durableTimelineStore.bulkInsert(agentId, rows).catch((err) => {
-        this.logger.warn({ err, agentId }, "Failed to bulkInsert migrated timeline rows");
-      });
-    }
-    const maxSeq = rows.reduce((max, r) => Math.max(max, r.seq), 0);
-    this.timelineStore.initialize(agentId, {
-      rows: rows as ProjectedTimelineRow[],
-      nextSeq: maxSeq + 1,
-      timestamp: new Date().toISOString(),
-    });
-  }
-
   fetchTimeline(id: string, options?: AgentTimelineFetchOptions): AgentTimelineFetchResult {
     // Allow timeline fetch after disk-seed even when the provider process is not live yet.
     if (!this.timelineStore.has(id)) {

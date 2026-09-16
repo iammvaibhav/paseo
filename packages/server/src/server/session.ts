@@ -7168,6 +7168,8 @@ export class Session {
     };
 
     const search = agentDirectorySearchQuery(request);
+    // History Ask ranks the whole candidate set before paging (transcripts
+    // included); the chronological path below is for every other listing.
     if (search) {
       return this.listRankedAgentHistoryEntries({
         search,
@@ -7277,7 +7279,6 @@ export class Session {
       searchTruncated: ranked.length > limit,
     };
   }
-
   private readonly agentsPager = new SortablePager<
     AgentSnapshotPayload,
     FetchAgentsRequestSort["key"]

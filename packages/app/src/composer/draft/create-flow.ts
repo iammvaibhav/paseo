@@ -15,6 +15,7 @@ import {
 } from "@/utils/agent-loader-span";
 import {
   createUserMessage,
+  generateMessageId,
   type StreamItem,
   type UserMessageImageAttachment,
 } from "@/types/stream";
@@ -186,6 +187,7 @@ export function useDraftAgentCreateFlow<TDraftAgent, TCreateResult>({
   const setPendingCreateAttempt = useCreateFlowStore((state) => state.setPending);
   const updatePendingAgentId = useCreateFlowStore((state) => state.updateAgentId);
   const markPendingCreateLifecycle = useCreateFlowStore((state) => state.markLifecycle);
+  const clearPendingAttempt = useCreateFlowStore((state) => state.clear);
   const formErrorMessage = machine.tag === "draft" ? machine.errorMessage : "";
   const isSubmitting = machine.tag === "creating";
 
@@ -297,7 +299,7 @@ export function useDraftAgentCreateFlow<TDraftAgent, TCreateResult>({
           errorMessage: resolved.message,
         });
         clearPendingAgentLoaderSpan(pendingServerId, attempt.clientMessageId);
-        clearPendingCreateAttempt({ draftId });
+        clearPendingAttempt({ draftId });
         onCreateError?.(resolved);
         throw error;
       }
@@ -306,6 +308,7 @@ export function useDraftAgentCreateFlow<TDraftAgent, TCreateResult>({
       createRequest,
       draftId,
       getPendingServerId,
+      clearPendingAttempt,
       markPendingCreateLifecycle,
       onBeforeSubmit,
       onCreateError,
