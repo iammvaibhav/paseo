@@ -8,7 +8,7 @@ export const meta = {
   hosts: 1,
   video: true,
   description:
-    "Right-click tab context menu and sidebar hover tooltips render above the VS Code Web window without z-index clipping",
+    "Right-click on a VS Code editor tab and sidebar hover tooltips render cleanly above the VS Code Web window without z-index clipping",
 };
 
 function repoDirFor(ctx) {
@@ -32,8 +32,8 @@ export const steps = [
   },
   {
     id: "build-fixture-and-workspace",
-    label: "Build fixture repo with a file and create workspace",
-    narrate: "Fixture repo backs the test workspace.",
+    label: "Build fixture repo with a modified file and create workspace",
+    narrate: "Fixture repo with modified file backs the test workspace.",
     async run(ctx) {
       const repoDir = repoDirFor(ctx);
       fs.mkdirSync(repoDir, { recursive: true });
@@ -46,6 +46,7 @@ export const steps = [
         git(repoDir, ["add", "-A"]);
         git(repoDir, ["commit", "-m", "initial fixture commit"]);
       }
+      fs.writeFileSync(path.join(repoDir, "file.ts"), "export const a = 2;\n");
 
       const client = ctx.host().client;
       const created = await client.createWorkspace({
@@ -121,9 +122,9 @@ export const steps = [
     },
   },
   {
-    id: "open-workspace-and-present-vscode-web",
-    label: "Navigate to workspace and present VS Code Web persistent browser window",
-    narrate: "VS Code Web persistent browser window presented in the workspace editor area.",
+    id: "open-workspace-and-vscode-editor-tab",
+    label: "Navigate to workspace and open a VS Code editor tab",
+    narrate: "VS Code Web editor tab opened in workspace with the editor window below.",
     async run(ctx) {
       const page = ctx.page;
 
@@ -133,8 +134,30 @@ export const steps = [
       await row.click();
       await page.waitForTimeout(2000);
 
-      // Wait for workspace tab bar to be visible
-      await page.waitForSelector('[data-testid^="workspace-tab-"]', { timeout: 15_000 });
+      // Open Changes tree via shortcut Ctrl+Shift+G
+      await page.keyboard.press("Control+Shift+G");
+      await page.waitForTimeout(1000);
+
+      const changesPanel = page.locator('[data-testid="changes-tree-panel"]');
+      if (!(await changesPanel.isVisible().catch(() => false))) {
+        const newTabBtn = page.locator('[data-testid="workspace-new-tab-changes"]');
+        if (await newTabBtn.isVisible().catch(() => false)) {
+          await newTabBtn.click();
+        }
+      }
+
+      await page.waitForSelector('[data-testid="changes-file-tree"]', { timeout: 30_000 });
+      const fileItem = page
+        .locator('[data-testid="diff-tree-file-0"], [data-testid^="diff-tree-file-"]')
+        .first();
+      await fileItem.waitFor({ state: "visible", timeout: 10_000 });
+
+      // Click the changed file to open VS Code Web editor tab
+      await fileItem.click();
+
+      // Wait for the VS Code Web browser tab to be created in the tab bar
+      const vscodeTab = page.locator('[data-testid^="workspace-tab-browser_"]').first();
+      await vscodeTab.waitFor({ state: "visible", timeout: 15_000 });
 
       // Present the persistent browser webview over the main editor content area
       const presentation = await page.evaluate(() => {
@@ -153,9 +176,9 @@ export const steps = [
         // Target the main workspace content area (below the top tab bar)
         const tabBar =
           document
-            .querySelector('[data-testid^="workspace-tab-"]')
+            .querySelector('[data-testid^="workspace-tab-browser_"]')
             ?.closest(".r-flexDirection-18u37iz") ||
-          document.querySelector('[data-testid^="workspace-tab-"]')?.parentElement;
+          document.querySelector('[data-testid^="workspace-tab-browser_"]')?.parentElement;
         const tabRect = tabBar ? tabBar.getBoundingClientRect() : { top: 0, bottom: 44 };
         const top = Math.round(tabRect.bottom || 44);
         const left = 240; // Sidebar width
@@ -168,7 +191,7 @@ export const steps = [
           document.body.appendChild(fakeTarget);
           window.__paseoResidentWebviews.showPersistentBrowserWebview("vscode-web-1", fakeTarget);
         } else {
-          // Unfixed behavior from resident-webviews.ts:500-507 (wrapper.style.zIndex = "2")
+          // Unfixed behavior: wrapper with z-index 2
           wrapper.setAttribute("aria-hidden", "false");
           wrapper.style.position = "fixed";
           wrapper.style.left = `${left}px`;
@@ -178,7 +201,7 @@ export const steps = [
           wrapper.style.overflow = "hidden";
           wrapper.style.opacity = "1";
           wrapper.style.pointerEvents = "auto";
-          wrapper.style.zIndex = "2"; // Unfixed bug: hardcoded 2
+          wrapper.style.zIndex = "2";
           wrapper.style.visibility = "visible";
         }
 
@@ -191,32 +214,35 @@ export const steps = [
         };
       });
 
+      // Wait for code-server workbench to finish loading inside the iframe
+      await page.waitForTimeout(5000);
+
       ctx.log(
-        `VS Code Web wrapper presented: bounds=(${presentation.left},${presentation.top},${presentation.width},${presentation.height}), zIndex=${presentation.wrapperZ}`,
+        `VS Code Web editor tab opened, wrapper bounds=(${presentation.left},${presentation.top},${presentation.width},${presentation.height}), zIndex=${presentation.wrapperZ}`,
       );
-      return `VS Code Web window presented (zIndex=${presentation.wrapperZ})`;
+      return "VS Code Web editor tab open with editor window positioned below";
     },
   },
   {
     id: "verify-tab-context-menu-layering",
-    label: "Right-click tab context menu renders cleanly above the VS Code Web window",
-    narrate: "Context menu floats above the VS Code Web window without z-index clipping.",
+    label: "Right-click on VS Code editor tab renders context menu cleanly above the editor window",
+    narrate:
+      "Context menu on VS Code editor tab floats above the editor window without z-index clipping.",
     async run(ctx) {
       const page = ctx.page;
 
-      // Find the tab in the top tab bar
-      const tab = page
-        .locator('[data-testid^="workspace-tab-"]:not([data-testid^="workspace-tab-context-"])')
-        .first();
-      await tab.waitFor({ state: "visible", timeout: 10_000 });
+      // Find the VS Code Web editor tab in the top tab bar
+      const vscodeTab = page.locator('[data-testid^="workspace-tab-browser_"]').first();
+      await vscodeTab.waitFor({ state: "visible", timeout: 10_000 });
 
-      // Right-click the tab to open the context menu
-      await tab.click({ button: "right" });
+      // Right-click directly on the VS Code editor tab
+      await vscodeTab.click({ button: "right" });
 
       // Wait for context menu to appear
       const contextMenu = page.locator('[data-menu-surface="true"]').first();
       await contextMenu.waitFor({ state: "visible", timeout: 10_000 });
 
+      // Capture before shot showing context menu on the VS Code editor tab
       await ctx.shot("before");
 
       // Verify z-index planes in the DOM
@@ -236,7 +262,7 @@ export const steps = [
         `Overlay z-index: ${zIndexCheck.overlayZ}, Webview wrapper z-index: ${zIndexCheck.wrapperZ}`,
       );
 
-      // Check hit testing: point at the bottom half of the context menu (which overlaps the webview)
+      // Check hit testing: point at the bottom half of the context menu (where it hangs down over the editor window)
       const menuBounds = await contextMenu.boundingBox();
       ctx.expect(Boolean(menuBounds), "Context menu must have bounds");
 
@@ -261,10 +287,9 @@ export const steps = [
       }, testPoint);
 
       ctx.log(
-        `Hit test at (${testPoint.x}, ${testPoint.y}): hitInsideOverlay=${hitTestResult.hitInsideOverlay}, hitInsideWrapper=${hitTestResult.hitInsideWrapper}, tag=${hitTestResult.topElementTag}`,
+        `Hit test on overlapping context menu item at (${testPoint.x}, ${testPoint.y}): hitInsideOverlay=${hitTestResult.hitInsideOverlay}, hitInsideWrapper=${hitTestResult.hitInsideWrapper}, tag=${hitTestResult.topElementTag}`,
       );
 
-      // Crucial assertion 1: overlay-root must have higher z-index than the webview wrapper
       ctx.expect(
         zIndexCheck.overlayZ !== null &&
           zIndexCheck.wrapperZ !== null &&
@@ -272,17 +297,23 @@ export const steps = [
         `overlay-root z-index (${zIndexCheck.overlayZ}) must be strictly greater than webview wrapper z-index (${zIndexCheck.wrapperZ})`,
       );
 
-      // Crucial assertion 2: element at context menu position must belong to overlay-root, not the webview wrapper
       ctx.expect(
         hitTestResult.hitInsideOverlay === true,
         `Point on context menu must hit-test inside overlay-root, but hit ${hitTestResult.topElementTag} (inside wrapper: ${hitTestResult.hitInsideWrapper})`,
       );
 
+      // Verify that a menu action like "Close other tabs" is visible and clickable
+      const closeOthersItem = page
+        .locator('[data-menu-item="true"]')
+        .filter({ hasText: /Close/i })
+        .first();
+      await closeOthersItem.waitFor({ state: "visible", timeout: 5000 });
+
       // Close menu by pressing Escape
       await page.keyboard.press("Escape");
       await contextMenu.waitFor({ state: "hidden", timeout: 5000 });
 
-      return "Tab context menu renders above VS Code Web window and passes hit-testing";
+      return "VS Code editor tab context menu renders above the editor window and passes hit-testing";
     },
   },
   {
