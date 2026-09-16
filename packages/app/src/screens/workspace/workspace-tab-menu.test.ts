@@ -608,4 +608,37 @@ describe("buildWorkspaceTabMenuEntries", () => {
     }
     moveEntry.onSelect();
   });
+
+  it("includes 'Open in new window' and invokes onOpenInNewWindow when provided", () => {
+    const onOpenInNewWindow = vi.fn();
+    const tab = createAgentTab();
+    const actions = buildWorkspaceDesktopTabActions({
+      tab,
+      index: 0,
+      tabCount: 1,
+      onCopyResumeCommand: vi.fn(),
+      onCopyAgentId: vi.fn(),
+      onCopyTerminalId: vi.fn(),
+      onCopyFilePath: vi.fn(),
+      onOpenInNewWindow,
+      onReloadAgent: vi.fn(),
+      onRenameTab: vi.fn(),
+      onCloseTab: vi.fn(),
+      onCloseTabsToLeft: vi.fn(),
+      onCloseTabsToRight: vi.fn(),
+      onCloseOtherTabs: vi.fn(),
+    });
+
+    const openEntry = actions.menuEntries.find(
+      (entry) => entry.kind === "item" && entry.key === "open-in-new-window",
+    );
+    expect(openEntry).toBeDefined();
+    expect(openEntry?.kind === "item" ? openEntry.label : "").toBe("Open in new window");
+    expect(openEntry?.kind === "item" ? openEntry.icon : "").toBe("external-link");
+    if (!openEntry || openEntry.kind !== "item") {
+      throw new Error("Open in new window entry missing");
+    }
+    openEntry.onSelect();
+    expect(onOpenInNewWindow).toHaveBeenCalledWith(tab);
+  });
 });

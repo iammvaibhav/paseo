@@ -661,6 +661,7 @@ function MobileWorkspaceTabOption({
       copyTerminalId: t("workspace.tabs.menu.copyTerminalId"),
       copyFilePath: t("workspace.tabs.menu.copyFilePath"),
       moveToNewWorkspace: t("workspace.tabs.menu.moveToNewWorkspace"),
+      openInNewWindow: t("workspace.tabs.menu.openInNewWindow"),
       rename: t("workspace.tabs.menu.rename"),
       closeAbove: t("workspace.tabs.menu.closeAbove"),
       closeBelow: t("workspace.tabs.menu.closeBelow"),
