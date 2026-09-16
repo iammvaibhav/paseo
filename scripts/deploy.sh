@@ -447,8 +447,9 @@ sync_local_git() {
 build_server() {
   log "Building server stack"
   (cd "$ROOT_DIR" && pnpm run build:server)
-  # Static bundle for the daemon-served web UI. The daemon is always started
-  # with --web-ui, so without this it answers 404 on every UI route.
+  # Static bundle for the daemon-served web UI. Enablement is the persisted
+  # features.webUi.enabled setting pushed before restarts; without this bundle
+  # the enabled daemon answers 404 on every UI route.
   log "Building daemon web UI"
   (cd "$ROOT_DIR" && pnpm run build:daemon-web-ui)
 }
@@ -645,7 +646,7 @@ export PATH=$(printf %q "$path_env")
 export NVM_DIR="\${NVM_DIR:-\$HOME/.nvm}"
 # shellcheck disable=SC1091
 [ -s "\$NVM_DIR/nvm.sh" ] && . "\$NVM_DIR/nvm.sh"
-exec $cli_cmd daemon restart --web-ui --home $(printf %q "$home")
+exec $cli_cmd daemon restart --home $(printf %q "$home")
 EOF
   )"
 
@@ -670,7 +671,7 @@ export PATH=$(printf %q "$path_env")
 export NVM_DIR="\${NVM_DIR:-\$HOME/.nvm}"
 # shellcheck disable=SC1091
 [ -s "\$NVM_DIR/nvm.sh" ] && . "\$NVM_DIR/nvm.sh"
-exec $cli_cmd daemon start --web-ui --home $(printf %q "$home")
+exec $cli_cmd daemon start --home $(printf %q "$home")
 EOF
   )"
   # After a failed restart, old_pid may already be dead; accept any healthy pid.
@@ -1433,11 +1434,12 @@ sync_system_prompt() {
   done
 }
 
-# The daemon-served web UI. `daemon restart --web-ui` is not enough on its own:
+# The daemon-served web UI. The launch flag is gone from the CLI (removed
+# launch options are rejected), so the persisted setting is the only mechanism:
 # on a remote the flag never reached the worker (blrofc3 restarted with it and
 # its daemon environment had no PASEO_WEB_UI_ENABLED, so GET / stayed 404 while
-# the bundle sat on disk). The persisted setting is the mechanism that holds, so
-# push it the same way the system prompt is pushed - before any daemon restarts,
+# the bundle sat on disk). Push the setting the same way the system prompt is
+# pushed - before any daemon restarts,
 # because the config store only re-reads config.json at boot.
 sync_web_ui_setting() {
   if [[ "${PASEO_SKIP_WEB_UI:-0}" == "1" ]]; then
