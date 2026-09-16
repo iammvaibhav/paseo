@@ -595,21 +595,56 @@ subprocess.Popen(
 PY
 }
 
+read_daemon_worker_pid() {
+  local home="$1"
+  local cli_cmd="$2"
+  # shellcheck disable=SC2086
+  $cli_cmd daemon status --json --home "$home" 2>/dev/null | node -e '
+let raw = "";
+process.stdin.on("data", (chunk) => (raw += chunk));
+process.stdin.on("end", () => {
+  try {
+    const status = JSON.parse(raw);
+    if (typeof status.workerPid === "number" && status.workerPid > 0) {
+      process.stdout.write(String(status.workerPid));
+    }
+  } catch {}
+});
+' 2>/dev/null || true
+}
+
 wait_for_new_daemon() {
   local home="$1"
   local label="$2"
   local old_pid="${3:-}"
   local logf="$4"
   local timeout_s="${5:-90}"
-  local i new_pid
+  local old_worker_pid="${6:-}"
+  local cli_cmd="${7:-}"
+  local i new_pid new_worker_pid
   # shellcheck disable=SC2207
   local urls
   urls=($(daemon_health_urls "$home"))
   log "Waiting for $label daemon NEW pid + health (${urls[*]}; up to ${timeout_s}s; old_pid=${old_pid:-none})"
+  local worker_probe_done=0
+  local new_worker_pid=""
   for ((i = 1; i <= timeout_s; i++)); do
     new_pid="$(read_daemon_pid "$home" || true)"
-    if [[ -n "$new_pid" && "$new_pid" != "${old_pid:-}" ]] && daemon_health_ok "$home"; then
-      log "$label daemon healthy after ${i}s (pid ${old_pid:-none} -> $new_pid)"
+    local pid_advanced=0 worker_advanced=0
+    [[ -n "$new_pid" && "$new_pid" != "${old_pid:-}" ]] && pid_advanced=1
+    # Supervisor-managed daemons keep the pid file and swap the worker. Asking the
+    # daemon for its worker pid costs a socket round trip, so probe it at most once,
+    # and only when the pid file has not moved and the daemon already answers.
+    if [[ $pid_advanced -eq 0 && $worker_probe_done -eq 0 && -n "$cli_cmd" && -n "$old_worker_pid" ]]; then
+      if daemon_health_ok "$home"; then
+        worker_probe_done=1
+        new_worker_pid="$(read_daemon_worker_pid "$home" "$cli_cmd")"
+      fi
+    fi
+    [[ -n "$new_worker_pid" && -n "$old_worker_pid" && "$new_worker_pid" != "$old_worker_pid" ]] &&
+      worker_advanced=1
+    if [[ $pid_advanced -eq 1 || $worker_advanced -eq 1 ]] && daemon_health_ok "$home"; then
+      log "$label daemon healthy after ${i}s (pid ${old_pid:-none} -> ${new_pid:-none}, worker ${old_worker_pid:-none} -> ${new_worker_pid:-none})"
       return 0
     fi
     if [[ $i -ge 8 ]] && grep -Eiq 'ERR_MODULE_NOT_FOUND|Failed to restart|Cannot find module|RESTART_FAILED' "$logf" 2>/dev/null; then
@@ -631,10 +666,11 @@ restart_daemon_detached() {
   local label="$2"
   local cwd="${3:-$ROOT_DIR}"
   local logf="/tmp/paseo-daemon-restart-${label}.log"
-  local path_env cli_cmd old_pid restart_script start_script
+  local path_env cli_cmd old_pid old_worker_pid restart_script start_script
   path_env="$(daemon_path_env)"
   cli_cmd="$(daemon_cli_cmd "$cwd")"
   old_pid="$(read_daemon_pid "$home" || true)"
+  old_worker_pid="$(read_daemon_worker_pid "$home" "$cli_cmd")"
   : >"$logf"
   log "Restarting $label daemon ($home) [new-session detached; log $logf] old_pid=${old_pid:-none} cli=$cli_cmd"
 
@@ -652,7 +688,7 @@ EOF
 
   launch_detached_bash "$logf" "$restart_script"
 
-  if wait_for_new_daemon "$home" "$label" "$old_pid" "$logf" 90; then
+  if wait_for_new_daemon "$home" "$label" "$old_pid" "$logf" 90 "$old_worker_pid" "$cli_cmd"; then
     log "$label daemon restart complete (log: $logf)"
     return 0
   fi
@@ -676,7 +712,7 @@ EOF
   )"
   # After a failed restart, old_pid may already be dead; accept any healthy pid.
   launch_detached_bash "$logf" "$start_script"
-  if wait_for_new_daemon "$home" "$label" "" "$logf" 60; then
+  if wait_for_new_daemon "$home" "$label" "" "$logf" 60 "" ""; then
     log "$label daemon recovered via detached start (log: $logf)"
     return 0
   fi
@@ -1858,7 +1894,17 @@ except Exception:
   if [[ ! -x "\$cli_bin" ]]; then
     cli_bin="node \$HOME/\$REMOTE_REPO_DIR/packages/cli/dist/index.js"
   fi
-  log "Restarting daemon (\$PASEO_HOME) [detached; log \$restart_log] old_pid=\${old_pid:-none}"
+  old_worker_pid="\$(\$cli_bin daemon status --json --home "\$PASEO_HOME" 2>/dev/null | node -e '
+let raw = "";
+process.stdin.on("data", (chunk) => (raw += chunk));
+process.stdin.on("end", () => {
+  try {
+    const status = JSON.parse(raw);
+    if (typeof status.workerPid === "number" && status.workerPid > 0) process.stdout.write(String(status.workerPid));
+  } catch {}
+});
+' 2>/dev/null || true)"
+  log "Restarting daemon (\$PASEO_HOME) [detached; log \$restart_log] old_pid=\${old_pid:-none} worker=\${old_worker_pid:-none}"
   # A password-protected daemon authenticates its own CLI, and this bash is a
   # new session: it inherits no bashrc and no orchestrator env, so the host's
   # deploy.env has to be sourced here or the restart dies with "Password required".
@@ -1870,6 +1916,8 @@ except Exception:
   fi
   ok=0
   primary=""
+  worker_probe_done=0
+  new_worker_pid=""
   for i in \$(seq 1 90); do
     new_pid="\$(read_daemon_pid "\$PASEO_HOME")"
     listen="\$(read_daemon_listen "\$PASEO_HOME")"
@@ -1877,10 +1925,33 @@ except Exception:
     urls=(\$(health_urls_for_listen "\$listen"))
     primary="\${urls[0]}"
     secondary="\${urls[1]:-\$primary}"
-    if [[ -n "\$new_pid" && "\$new_pid" != "\${old_pid:-}" ]]; then
+    # Supervisor-managed daemons keep the pid file and swap the worker, so a changed
+    # workerPid counts as a restart too. That probe is a socket round trip: do it at
+    # most once, only when the pid file has not moved and the daemon already answers.
+    pid_ok=0
+    worker_ok=0
+    [[ -n "\$new_pid" && "\$new_pid" != "\${old_pid:-}" ]] && pid_ok=1
+    if [[ "\$pid_ok" -eq 0 && "\$worker_probe_done" -eq 0 && -n "\$old_worker_pid" ]]; then
+      if curl -fsS --max-time 2 "\$primary" >/dev/null 2>&1 \
+        || curl -fsS --max-time 2 "\$secondary" >/dev/null 2>&1; then
+        worker_probe_done=1
+        new_worker_pid="\$(\$cli_bin daemon status --json --home "\$PASEO_HOME" 2>/dev/null | node -e '
+let raw = "";
+process.stdin.on("data", (chunk) => (raw += chunk));
+process.stdin.on("end", () => {
+  try {
+    const status = JSON.parse(raw);
+    if (typeof status.workerPid === "number" && status.workerPid > 0) process.stdout.write(String(status.workerPid));
+  } catch {}
+});
+' 2>/dev/null || true)"
+      fi
+    fi
+    [[ -n "\$new_worker_pid" && -n "\$old_worker_pid" && "\$new_worker_pid" != "\$old_worker_pid" ]] && worker_ok=1
+    if [[ "\$pid_ok" -eq 1 || "\$worker_ok" -eq 1 ]]; then
       if curl -fsS --max-time 2 "\$primary" >/dev/null 2>&1 \\
         || curl -fsS --max-time 2 "\$secondary" >/dev/null 2>&1; then
-        log "Daemon healthy after \${i}s (pid \${old_pid:-none} -> \$new_pid; \$primary)"
+        log "Daemon healthy after \${i}s (pid \${old_pid:-none} -> \${new_pid:-none}, worker \${old_worker_pid:-none} -> \${new_worker_pid:-none}; \$primary)"
         ok=1
         break
       fi
