@@ -1859,10 +1859,14 @@ except Exception:
     cli_bin="node \$HOME/\$REMOTE_REPO_DIR/packages/cli/dist/index.js"
   fi
   log "Restarting daemon (\$PASEO_HOME) [detached; log \$restart_log] old_pid=\${old_pid:-none}"
+  # A password-protected daemon authenticates its own CLI, and this bash is a
+  # new session: it inherits no bashrc and no orchestrator env, so the host's
+  # deploy.env has to be sourced here or the restart dies with "Password required".
+  remote_restart_cmd="export PATH=\"\$(daemon_path_env)\"; export NVM_DIR=\"\${NVM_DIR:-\$HOME/.nvm}\"; [ -s \"\$NVM_DIR/nvm.sh\" ] && . \"\$NVM_DIR/nvm.sh\"; if [ -f \"\$PASEO_HOME/deploy.env\" ]; then set -a; . \"\$PASEO_HOME/deploy.env\"; set +a; fi; cd \"\$HOME/\$REMOTE_REPO_DIR\"; exec \$cli_bin daemon restart --home \"\$PASEO_HOME\""
   if command -v setsid >/dev/null 2>&1; then
-    setsid bash -c "export PATH=\"\$(daemon_path_env)\"; export NVM_DIR=\"\${NVM_DIR:-\$HOME/.nvm}\"; [ -s \"\$NVM_DIR/nvm.sh\" ] && . \"\$NVM_DIR/nvm.sh\"; cd \"\$HOME/\$REMOTE_REPO_DIR\"; exec \$cli_bin daemon restart --home \"\$PASEO_HOME\"" >>"\$restart_log" 2>&1 </dev/null &
+    setsid bash -c "\$remote_restart_cmd" >>"\$restart_log" 2>&1 </dev/null &
   else
-    nohup bash -c "export PATH=\"\$(daemon_path_env)\"; export NVM_DIR=\"\${NVM_DIR:-\$HOME/.nvm}\"; [ -s \"\$NVM_DIR/nvm.sh\" ] && . \"\$NVM_DIR/nvm.sh\"; cd \"\$HOME/\$REMOTE_REPO_DIR\"; exec \$cli_bin daemon restart --home \"\$PASEO_HOME\"" >>"\$restart_log" 2>&1 </dev/null &
+    nohup bash -c "\$remote_restart_cmd" >>"\$restart_log" 2>&1 </dev/null &
   fi
   ok=0
   primary=""

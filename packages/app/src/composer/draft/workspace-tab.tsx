@@ -383,7 +383,6 @@ export function WorkspaceDraftAgentTab({
         return { agentId: result.id, result };
       }
       return submitDraftCreateRequest({
-        draftId,
         attempt,
         text,
         images,
@@ -421,7 +420,7 @@ export function WorkspaceDraftAgentTab({
 
     try {
       await handleCreateFromInput({
-        text: draftInput.text,
+        text: draftInput.textSource.getSnapshot(),
         attachments: draftInput.attachments,
         cwd: composerState.workingDir,
         startVoiceMode: true,
@@ -436,7 +435,7 @@ export function WorkspaceDraftAgentTab({
   }, [
     composerState.workingDir,
     draftInput.attachments,
-    draftInput.text,
+    draftInput.textSource,
     handleCreateFromInput,
     isConnected,
     isSubmitting,

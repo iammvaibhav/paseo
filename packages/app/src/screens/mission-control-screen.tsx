@@ -623,7 +623,7 @@ export function MissionControlScreen(): ReactElement {
               agentId={commanderRef.agentId}
               serverId={commanderRef.serverId}
               isPaneFocused={commanderFocused}
-              value={commanderDraft.text}
+              textSource={commanderDraft.textSource}
               onChangeText={commanderDraft.editText}
               textReplacement={commanderDraft.textReplacement}
               attachments={commanderDraft.attachments}
