@@ -2164,6 +2164,14 @@ export const FetchAgentTimelineRequestMessageSchema = z.object({
   mergeWindow: z.boolean().optional(),
 });
 
+export const AgentTimelineSearchRequestMessageSchema = z.object({
+  type: z.literal("agent.timeline.search.request"),
+  agentId: z.string(),
+  requestId: z.string(),
+  query: z.string(),
+  cursor: z.number().int().nonnegative().optional(),
+});
+
 export const AgentTimelineListPromptsRequestMessageSchema = z.object({
   type: z.literal("agent.timeline.list_prompts.request"),
   agentId: z.string(),
@@ -3639,6 +3647,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   RestartServerRequestMessageSchema,
   DaemonUpdateRequestMessageSchema,
   FetchAgentTimelineRequestMessageSchema,
+  AgentTimelineSearchRequestMessageSchema,
   AgentTimelineListPromptsRequestMessageSchema,
   ProviderSubagentListRequestMessageSchema,
   ProviderSubagentTimelineRequestMessageSchema,
@@ -5076,6 +5085,20 @@ export const AgentTimelineReplacementMessageSchema = z.object({
     subscriptionId: z.string().optional(),
     agentId: z.string(),
     epoch: z.string(),
+  }),
+});
+
+export const AgentTimelineSearchResponseMessageSchema = z.object({
+  type: z.literal("agent.timeline.search.response"),
+  payload: z.object({
+    requestId: z.string(),
+    agentId: z.string(),
+    epoch: z.string(),
+    locations: z.array(
+      z.object({ seq: z.number().int().nonnegative(), role: z.enum(["user", "assistant"]) }),
+    ),
+    nextCursor: z.number().int().nonnegative().nullable(),
+    error: z.string().nullable(),
   }),
 });
 
@@ -7289,6 +7312,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   FetchAgentResponseMessageSchema,
   FetchAgentTimelineResponseMessageSchema,
   AgentTimelineReplacementMessageSchema,
+  AgentTimelineSearchResponseMessageSchema,
   AgentTimelineListPromptsResponseMessageSchema,
   ProviderSubagentListResponseMessageSchema,
   ProviderSubagentTimelineResponseMessageSchema,

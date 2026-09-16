@@ -476,7 +476,7 @@ export function WorkspaceSetupDialog() {
           onSubmitMessage={handleCreateChatAgent}
           isSubmitLoading={pendingAction === "chat"}
           blurOnSubmit={true}
-          value={chatDraft.text}
+          textSource={chatDraft.textSource}
           onChangeText={chatDraft.editText}
           textReplacement={chatDraft.textReplacement}
           attachments={chatDraft.attachments}

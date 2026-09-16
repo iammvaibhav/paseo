@@ -1089,7 +1089,9 @@ export class VoiceSession {
         },
         "Voice speak tool call received by session handler",
       );
-      const abortSignal = signal ?? this.abortController.signal;
+      const abortSignal = signal
+        ? AbortSignal.any([signal, this.abortController.signal])
+        : this.abortController.signal;
       await this.ttsManager.generateAndWaitForPlayback(
         text,
         (msg) => this.emit(msg),

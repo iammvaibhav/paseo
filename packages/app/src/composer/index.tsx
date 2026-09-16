@@ -2205,9 +2205,9 @@ function ComposerContentImpl({
   );
 
   const handleFork = useCallback(() => {
-    const text = userInput.trim();
+    const submitText = value.trim();
     const outgoingAttachments = buildOutgoingAttachments(attachments);
-    if (!text && outgoingAttachments.length === 0) return;
+    if (!submitText && outgoingAttachments.length === 0) return;
     if (!client || !agentWorkspaceId) {
       setSendError(t("composer.input.forkFailed"));
       return;
@@ -2216,7 +2216,7 @@ function ComposerContentImpl({
     setSendError(null);
     void (async () => {
       try {
-        await forkContentToNewTab(text, outgoingAttachments);
+        await forkContentToNewTab(submitText, outgoingAttachments);
         clearDraft("sent");
         setUserInput("");
         setSelectedAttachments([]);
@@ -2238,7 +2238,7 @@ function ComposerContentImpl({
     setSelectedAttachments,
     setUserInput,
     t,
-    userInput,
+    value,
   ]);
 
   const handleForkQueued = useCallback(
@@ -2276,7 +2276,6 @@ function ComposerContentImpl({
       buildRealtimeVoiceButtonStyle(state.hovered, voiceButtonDisabled, isCompactLayout),
     [isCompactLayout, voiceButtonDisabled],
   );
-
   const activeActionContent = useMemo(
     () => (
       <ComposerCancelButton
