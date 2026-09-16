@@ -42,6 +42,67 @@ const CHROMIUM_CANDIDATES = [
   "/usr/bin/google-chrome",
 ];
 
+const USAGE = [
+  "Browser-tool path (preferred; the user can watch it):",
+  "  node scripts/web-ui-harness.mjs --bootstrap --url http://iammvaibhav:6767",
+  "    [--vantage auto|local|<ssh-host>] [--browser-host macbook]",
+  "    [--address srv_x=host:port] [--itsaplan-embed-origin http://host:3001]",
+  "",
+  "Playwright fallback (headless Chromium here, when that machine is down):",
+  "  node scripts/web-ui-harness.mjs [--once] [--url http://127.0.0.1:6767]",
+  "    [--cdp-port 9222] [--user-data-dir DIR] [--screenshot FILE]",
+  "    [--timeout SECONDS] [--theme dark|light|auto|zinc|...]",
+  "    [--itsaplan-origin https://localhost:8443] [--itsaplan-credentials FILE]",
+  "",
+  "Env: PASEO_PASSWORD, PASEO_WEB_UI_CHROMIUM, PASEO_WEB_UI_THEME,",
+  "     PASEO_BROWSER_HOST, ITSAPLAN_EMAIL, ITSAPLAN_PASSWORD",
+].join("\n");
+
+/** Flags that consume the next argv entry. */
+function valueFlagAppliers(args) {
+  return {
+    "--url": (value) => {
+      args.url = value;
+    },
+    "--cdp-port": (value) => {
+      args.cdpPort = Number(value);
+    },
+    "--paseo-home": (value) => {
+      args.paseoHome = value;
+    },
+    "--user-data-dir": (value) => {
+      args.userDataDir = value;
+    },
+    "--screenshot": (value) => {
+      args.screenshot = value;
+    },
+    "--timeout": (value) => {
+      args.timeoutMs = Number(value) * 1000;
+    },
+    "--theme": (value) => {
+      args.theme = value;
+    },
+    "--vantage": (value) => {
+      args.vantage = value;
+    },
+    "--browser-host": (value) => {
+      args.browserHost = value;
+    },
+    "--address": (value) => {
+      args.addresses.push(value);
+    },
+    "--itsaplan-origin": (value) => {
+      args.itsaplanOrigin = value;
+    },
+    "--itsaplan-embed-origin": (value) => {
+      args.itsaplanEmbedOrigin = value;
+    },
+    "--itsaplan-credentials": (value) => {
+      args.itsaplanCredentials = value;
+    },
+  };
+}
+
 function parseArgs(argv) {
   const args = {
     url: "http://127.0.0.1:6767",
@@ -60,43 +121,19 @@ function parseArgs(argv) {
     itsaplanEmbedOrigin: process.env.ITSAPLAN_EMBED_ORIGIN || "",
     addresses: [],
   };
+  const valueFlags = valueFlagAppliers(args);
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i];
     if (flag === "--once") args.once = true;
     else if (flag === "--bootstrap") args.bootstrap = true;
-    else if (flag === "--url") args.url = argv[++i];
-    else if (flag === "--cdp-port") args.cdpPort = Number(argv[++i]);
-    else if (flag === "--paseo-home") args.paseoHome = argv[++i];
-    else if (flag === "--user-data-dir") args.userDataDir = argv[++i];
-    else if (flag === "--screenshot") args.screenshot = argv[++i];
-    else if (flag === "--timeout") args.timeoutMs = Number(argv[++i]) * 1000;
-    else if (flag === "--theme") args.theme = argv[++i];
-    else if (flag === "--vantage") args.vantage = argv[++i];
-    else if (flag === "--browser-host") args.browserHost = argv[++i];
-    else if (flag === "--address") args.addresses.push(argv[++i]);
-    else if (flag === "--itsaplan-origin") args.itsaplanOrigin = argv[++i];
-    else if (flag === "--itsaplan-embed-origin") args.itsaplanEmbedOrigin = argv[++i];
-    else if (flag === "--itsaplan-credentials") args.itsaplanCredentials = argv[++i];
     else if (flag === "--help" || flag === "-h") {
-      console.log(
-        [
-          "Browser-tool path (preferred; the user can watch it):",
-          "  node scripts/web-ui-harness.mjs --bootstrap --url http://iammvaibhav:6767",
-          "    [--vantage auto|local|<ssh-host>] [--browser-host macbook]",
-          "    [--address srv_x=host:port] [--itsaplan-embed-origin http://host:3001]",
-          "",
-          "Playwright fallback (headless Chromium here, when that machine is down):",
-          "  node scripts/web-ui-harness.mjs [--once] [--url http://127.0.0.1:6767]",
-          "    [--cdp-port 9222] [--user-data-dir DIR] [--screenshot FILE]",
-          "    [--timeout SECONDS] [--theme dark|light|auto|zinc|...]",
-          "    [--itsaplan-origin https://localhost:8443] [--itsaplan-credentials FILE]",
-          "",
-          "Env: PASEO_PASSWORD, PASEO_WEB_UI_CHROMIUM, PASEO_WEB_UI_THEME,",
-          "     PASEO_BROWSER_HOST, ITSAPLAN_EMAIL, ITSAPLAN_PASSWORD",
-        ].join("\n"),
-      );
+      console.log(USAGE);
       process.exit(0);
-    } else throw new Error(`Unknown flag: ${flag}`);
+    } else {
+      const apply = valueFlags[flag];
+      if (!apply) throw new Error(`Unknown flag: ${flag}`);
+      apply(argv[++i]);
+    }
   }
   return args;
 }
