@@ -1524,6 +1524,43 @@ export class AgentManager {
     return this.timelineStore.getRows(id);
   }
 
+  /** A cross-host move carries the agent's timeline verbatim — unresolved rows,
+   *  not the projected view `getTimelineRows` returns — so the target renders
+   *  the same conversation. */
+  async getAgentTimelineForExport(id: string): Promise<AgentTimelineRow[]> {
+    if (this.durableTimelineStore) {
+      try {
+        const rows = await this.durableTimelineStore.getCommittedRows(id);
+        if (rows && rows.length > 0) {
+          return rows;
+        }
+      } catch {
+        // Fall through to the in-memory store below.
+      }
+    }
+    if (this.timelineStore.has(id)) {
+      return this.timelineStore.getRows(id);
+    }
+    return [];
+  }
+
+  /** The receiving half of a cross-host move: land the carried rows in both
+   *  stores so the target agent's timeline is whole before it is opened. */
+  async importMigratedTimeline(agentId: string, rows: readonly AgentTimelineRow[]): Promise<void> {
+    if (!rows || rows.length === 0) return;
+    if (this.durableTimelineStore) {
+      await this.durableTimelineStore.bulkInsert(agentId, rows).catch((err) => {
+        this.logger.warn({ err, agentId }, "Failed to bulkInsert migrated timeline rows");
+      });
+    }
+    const maxSeq = rows.reduce((max, row) => Math.max(max, row.seq), 0);
+    this.timelineStore.initialize(agentId, {
+      rows: rows as ProjectedTimelineRow[],
+      nextSeq: maxSeq + 1,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
   fetchTimeline(id: string, options?: AgentTimelineFetchOptions): AgentTimelineFetchResult {
     // Allow timeline fetch after disk-seed even when the provider process is not live yet.
     if (!this.timelineStore.has(id)) {
