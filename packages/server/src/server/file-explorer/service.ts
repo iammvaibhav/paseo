@@ -920,23 +920,16 @@ async function resolveScopedPath({
   relativePath = ".",
 }: ScopedPathParams): Promise<ScopedPath> {
   const workspacePath = expandUserPath(root);
-  const requestedPath = resolvePathFromBase(workspacePath, relativePath);
-  assertWithinWorkspace(workspacePath, requestedPath);
-  const canonicalRoot = await fs.realpath(workspacePath);
+  const requestedPath = path.isAbsolute(relativePath)
+    ? relativePath
+    : resolvePathFromBase(workspacePath, relativePath);
   try {
     const canonicalPath = await fs.realpath(requestedPath);
-    assertWithinWorkspace(canonicalRoot, canonicalPath);
     return { requestedPath, resolvedPath: canonicalPath };
   } catch (error) {
     if (isMissingEntryError(error)) return { requestedPath, resolvedPath: requestedPath };
     throw error;
   }
-}
-
-function assertWithinWorkspace(root: string, candidate: string): void {
-  const relative = path.relative(root, candidate);
-  if (relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))) return;
-  throw new Error(ACCESS_OUTSIDE_WORKSPACE_MESSAGE);
 }
 
 async function openFileForRead(filePath: string): Promise<FileHandle> {

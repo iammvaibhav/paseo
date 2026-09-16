@@ -503,7 +503,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     );
 
     const workspaceRoot = context.cwd?.trim() || "";
-    const { requestDirectoryListing } = useFileExplorerActions({
+    const { requestDirectoryListing, selectExplorerEntry } = useFileExplorerActions({
       serverId: resolvedServerId,
       workspaceId: context.workspaceId,
       workspaceRoot,
@@ -577,22 +577,37 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
           if (!location) {
             return;
           }
-
           if (onOpenWorkspaceFile) {
             onOpenWorkspaceFile({
               location,
               disposition,
             });
-            return;
-          }
-
-          if (context.workspaceId) {
+          } else if (context.workspaceId) {
             navigateToWorkspace({
               serverId: resolvedServerId,
               workspaceId: context.workspaceId,
               target: createWorkspaceFileTabTarget(location),
             });
           }
+
+          void requestDirectoryListing(normalized.directory, {
+            recordHistory: false,
+            setCurrentPath: false,
+          });
+          selectExplorerEntry(normalized.file);
+          openExplorerSidebarView({
+            isCompact: isMobile,
+            workspaceKey: buildWorkspaceTabPersistenceKey({
+              serverId: resolvedServerId,
+              workspaceId: context.workspaceId ?? "",
+            }),
+            checkout: {
+              serverId: resolvedServerId,
+              cwd: context.cwd,
+              isGit: context.projectPlacement?.checkout?.isGit ?? true,
+            },
+            view: "files",
+          });
           return;
         }
 
