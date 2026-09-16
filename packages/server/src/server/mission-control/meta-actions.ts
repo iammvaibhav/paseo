@@ -23,6 +23,7 @@ import { areEquivalentPaths } from "../../utils/path.js";
 import { COMMANDER_ADOPTED_AT_LABEL } from "./commander-contract.js";
 import { hasMissionControlLabels } from "./naming.js";
 import { toStoredAgentRecord } from "../agent/agent-projections.js";
+import { readOmpSessionForTransfer } from "../agent/providers/omp/session-transfer.js";
 
 /**
  * M5 meta actions: the daemon-side executor for the Commander's `fleet_meta`
@@ -52,9 +53,10 @@ import { toStoredAgentRecord } from "../agent/agent-projections.js";
  *    on identity is TITLE (`rename_agent_title`) — the name is never touched.
  *  - `move_agent` refuses running agents (workspace attribution is stable
  *    while a run is in flight) and archived agents, and refuses archived or
- *    missing target workspaces. Cross-host moves are refused by construction:
- *    both ids are resolved against THIS host's registries (a peer move
- *    targets the peer via its own serverId, so it validates there).
+ *    missing target workspaces. A target workspace that is not on this host
+ *    routes to the peer that owns it: the target host identity (`targetHost`,
+ *    or the app's `targetServerId`) is resolved through the peer identity
+ *    resolver, which spans peer name / serverId / hostname / host alias.
  *
  * The executor mutates the registries directly, so connected sessions observe
  * project/workspace changes through their registry-mutation subscriptions
@@ -100,28 +102,75 @@ interface ResolvedPeerTarget {
   peerClient: DaemonClient;
 }
 
+type PeerTargetResolution = ({ ok: true } & ResolvedPeerTarget) | { ok: false; error: string };
+
+/**
+ * Resolve the peer that owns a target workspace.
+ *
+ * `targetHost` arrives from clients that know the host by whichever identity
+ * they hold — the app sends the target's **serverId**. Those identities live
+ * in different key spaces: `getPeerClient`/`getPeerStatus` match the config
+ * name only, so resolving with them directly misses every serverId and
+ * silently falls through. `resolvePeerName` is the resolver that spans them.
+ *
+ * There is deliberately NO "first online peer" fallback. Guessing a host
+ * moves the agent to a host the user did not pick, and its rejection reads as
+ * a workspace problem rather than a routing problem.
+ */
 function resolvePeerTarget(
   peerManager: MetaPeerManager,
   targetHost: string | undefined,
-): ResolvedPeerTarget | null {
-  if (targetHost && targetHost !== "local") {
-    const status = peerManager.getPeerStatus(targetHost);
-    const client = peerManager.getPeerClient(targetHost);
-    const online = !status || status.state === "online";
-    if (client && online) {
-      return { peerName: targetHost, peerClient: client };
-    }
+): PeerTargetResolution {
+  const raw = targetHost?.trim() ?? "";
+  if (!raw || raw === "local") {
+    return {
+      ok: false,
+      error: `${describeUnresolvableTargetHost(peerManager, raw)} No target host was given for a workspace that is not on this host.`,
+    };
   }
-  const listPeers = peerManager.getPeerStatuses;
-  if (!listPeers) {
-    return null;
+  // Older/structural implementations may not expose the identity resolver;
+  // treating the input as a config name preserves their behaviour (minus the
+  // arbitrary-peer guess).
+  const peerName = peerManager.resolvePeerName?.(raw) ?? raw;
+  const status = peerManager.getPeerStatus(peerName);
+  if (!status) {
+    return {
+      ok: false,
+      error: `${describeUnresolvableTargetHost(peerManager, raw)} Target host "${raw}" did not resolve to a configured peer.`,
+    };
   }
-  const online = listPeers().find((status) => status.state === "online");
-  if (!online) {
-    return null;
+  if (status.state !== "online") {
+    const lastSeen = status.lastSeenAt ? `, last seen ${status.lastSeenAt}` : "";
+    return {
+      ok: false,
+      error: `Target host "${status.name}" is ${status.state}${lastSeen}. Move the agent when that host is reachable.`,
+    };
   }
-  const client = peerManager.getPeerClient(online.name);
-  return client ? { peerName: online.name, peerClient: client } : null;
+  const client = peerManager.getPeerClient(peerName);
+  if (!client) {
+    return {
+      ok: false,
+      error: `Target host "${status.name}" is online but has no open peer connection. Retry once the peer reconnects.`,
+    };
+  }
+  return { ok: true, peerName: status.name, peerClient: client };
+}
+
+/** Fleet state at the moment a host could not be resolved, for the caller's
+ *  error. Names every configured peer and its state so the failure is
+ *  diagnosable from the message alone. */
+function describeUnresolvableTargetHost(peerManager: MetaPeerManager, raw: string): string {
+  const peers = peerManager.getPeerStatuses?.() ?? [];
+  if (peers.length === 0) {
+    return raw ? `This host has no peers configured.` : `This host has no peers configured.`;
+  }
+  const fleet = peers
+    .map(
+      (peer) =>
+        `${peer.name} (${peer.state}${peer.lastSeenAt ? `, last seen ${peer.lastSeenAt}` : ""})`,
+    )
+    .join(", ");
+  return `Configured peers: ${fleet}.`;
 }
 
 async function transferAgentToPeer(
@@ -138,10 +187,15 @@ async function transferAgentToPeer(
     ? { ...storedRecord, ...(liveAgent ? { lastStatus: liveAgent.lifecycle } : {}) }
     : toStoredAgentRecord(liveAgent!, { title: liveAgent?.config?.title });
 
+  // Read the provider transcript BEFORE anything is deleted on this host.
+  // Throwing here (over the size cap) leaves the agent exactly where it was.
+  const providerSession = await readTransferredProviderSession(recordToExport);
+
   await target.peerClient.transferAgentInbound({
     targetWorkspaceId: workspaceId,
     agent: recordToExport as unknown as Record<string, unknown>,
     timeline: timeline as unknown as Array<Record<string, unknown>>,
+    ...(providerSession ? { providerSession } : {}),
   });
 
   await dependencies.agentStorage.remove(agentId);
@@ -161,6 +215,41 @@ async function transferAgentToPeer(
     live: Boolean(liveAgent),
     record: recordToExport,
   };
+}
+
+/**
+ * The provider state a cross-host move must carry, or null when there is none
+ * to carry. OMP is the only provider whose resume handle is a file on the
+ * source host's disk; other providers resolve their session id in their own
+ * store on the target.
+ */
+async function readTransferredProviderSession(record: StoredAgentRecord): Promise<{
+  provider: string;
+  sessionId?: string;
+  fileName: string;
+  contentBase64: string;
+} | null> {
+  const handle = record.persistence;
+  if (!handle || handle.provider !== "omp") {
+    return null;
+  }
+  try {
+    const carried = await readOmpSessionForTransfer(handle.nativeHandle);
+    if (!carried) {
+      return null;
+    }
+    return {
+      provider: "omp",
+      ...(handle.sessionId ? { sessionId: handle.sessionId } : {}),
+      ...carried,
+    };
+  } catch (error) {
+    // Over the size cap: refuse the move while the agent is still intact here.
+    throw new Error(
+      `${error instanceof Error ? error.message : String(error)} (agent ${record.id}, provider ${handle.provider})`,
+      { cause: error },
+    );
+  }
 }
 
 /**
@@ -237,13 +326,16 @@ export async function moveAgentToWorkspace(
 
   const peerManager = dependencies.peerManager;
   if (peerManager) {
-    const peerTarget = resolvePeerTarget(peerManager, input.targetHost);
-    if (peerTarget) {
+    const peerTarget = resolvePeerTarget(peerManager, input.targetHost ?? input.targetServerId);
+    if (peerTarget.ok) {
       return transferAgentToPeer(dependencies, agentId, workspaceId, fromWorkspaceId, peerTarget);
     }
+    throw new Error(`Workspace ${workspaceId} is not on this host. ${peerTarget.error}`);
   }
 
-  throw new Error(`Workspace ${workspaceId} not found on this host`);
+  throw new Error(
+    `Workspace ${workspaceId} not found on this host and this daemon has no peers configured`,
+  );
 }
 
 export interface MetaPeerManager {
@@ -251,6 +343,13 @@ export interface MetaPeerManager {
   getPeerClient(name: string): DaemonClient | null;
   getPeerServerId?(name: string): string | null;
   getPeerStatuses?(): MissionControlPeerStatus[];
+  /**
+   * Resolve ANY of a peer's identities — config name, serverId, hostname, or
+   * Mission Control host alias — to its config name. This is the only
+   * resolver that spans the fleet's identity key space. Optional so fakes
+   * stay cheap; callers fall back to treating the input as a config name.
+   */
+  resolvePeerName?(name: string): string | null;
 }
 
 /** The live-state lookups validation needs (existence + experiments root). */

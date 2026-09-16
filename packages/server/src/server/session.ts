@@ -70,6 +70,7 @@ import {
   unarchiveAgentState,
 } from "./agent/agent-prompt.js";
 import { forkAgentToSibling } from "./agent/fork-agent.js";
+import { ingestTransferredOmpSession } from "./agent/providers/omp/session-transfer.js";
 import {
   resolveCreateAgentTitles,
   resolveFirstAgentPromptTitle,
@@ -6480,7 +6481,13 @@ export class Session {
         lastStatus: rawAgent.lastStatus === "running" ? "idle" : (rawAgent.lastStatus ?? "idle"),
       });
 
-      await this.agentStorage.upsert(nextRecord);
+      const recordToStore = await this.withTransferredProviderSession(
+        nextRecord,
+        msg.providerSession,
+        targetWorkspace.cwd,
+      );
+
+      await this.agentStorage.upsert(recordToStore);
 
       if (Array.isArray(msg.timeline) && msg.timeline.length > 0) {
         await this.agentManager.importMigratedTimeline(
@@ -6489,7 +6496,7 @@ export class Session {
         );
       }
 
-      await this.agentUpdates.emitStoredRecord(nextRecord);
+      await this.agentUpdates.emitStoredRecord(recordToStore);
       await this.emitWorkspaceUpdateForWorkspaceId(msg.targetWorkspaceId);
 
       emitResponse(true, null);
@@ -6500,6 +6507,49 @@ export class Session {
       );
       emitResponse(false, error instanceof Error ? error.message : String(error));
     }
+  }
+
+  /**
+   * Place a provider transcript carried by a cross-host move on THIS host and
+   * repoint the record's resume handle at it.
+   *
+   * The handle is an absolute path on the source host. Left untouched, the
+   * target's `resolveOmpSessionFile` cannot find it, `ensureResumableSessionFile`
+   * writes a fresh header, and the agent resumes with an empty conversation —
+   * a silent loss of the whole transcript.
+   */
+  private async withTransferredProviderSession(
+    record: StoredAgentRecord,
+    session:
+      | { provider: string; sessionId?: string; fileName: string; contentBase64: string }
+      | undefined,
+    cwd: string,
+  ): Promise<StoredAgentRecord> {
+    if (!session) {
+      return record;
+    }
+    const handle = record.persistence;
+    if (!handle || handle.provider !== "omp" || session.provider !== "omp") {
+      this.sessionLogger.warn(
+        { carrier: session.provider, handle: handle?.provider ?? null, agentId: record.id },
+        "agent.workspace.transfer carried provider state this host cannot place; transcript not written",
+      );
+      return record;
+    }
+    const sessionFile = await ingestTransferredOmpSession({
+      fileName: session.fileName,
+      contentBase64: session.contentBase64,
+      cwd,
+    });
+    return {
+      ...record,
+      persistence: {
+        ...handle,
+        sessionId: session.sessionId ?? handle.sessionId,
+        nativeHandle: sessionFile,
+        metadata: { ...handle.metadata, cwd },
+      },
+    };
   }
 
   private async buildAgentSessionConfig(

@@ -2364,12 +2364,31 @@ export const AgentWorkspaceMoveResponseMessageSchema = z.object({
   }),
 });
 
+/**
+ * Provider-native session state carried alongside a cross-host agent move.
+ *
+ * Only OMP populates this today: its resume handle is an absolute path to a
+ * transcript file on the source host, so the record alone cannot resume on the
+ * target. Providers whose resume handle is an opaque session id (looked up in
+ * that host's own store) need no counterpart.
+ *
+ * Optional on the wire in both directions: an old daemon ignores the field, a
+ * new daemon treats a missing one as "nothing to carry".
+ */
+export const AgentWorkspaceTransferProviderSessionSchema = z.object({
+  provider: z.string().min(1),
+  sessionId: z.string().optional(),
+  fileName: z.string().min(1),
+  contentBase64: z.string(),
+});
+
 export const AgentWorkspaceTransferRequestMessageSchema = z.object({
   type: z.literal("agent.workspace.transfer.request"),
   requestId: z.string(),
   targetWorkspaceId: z.string().min(1),
   agent: z.record(z.string(), z.unknown()),
   timeline: z.array(z.record(z.string(), z.unknown())).optional(),
+  providerSession: AgentWorkspaceTransferProviderSessionSchema.optional(),
 });
 
 export const AgentWorkspaceTransferResponseMessageSchema = z.object({

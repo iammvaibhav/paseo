@@ -156,9 +156,20 @@ export const steps = [
     label: "Move agent across hosts in the fleet via RPC",
     narrate: "Moving agent from commander to peer-b in Gamma workspace.",
     async run(ctx) {
-      // Move movingAgentId from commander to peer-b (peerBWsId)
+      // Move movingAgentId from commander to peer-b (peerBWsId).
+      //
+      // Send the shape the web UI sends: it knows the target host by serverId,
+      // so it puts that serverId in BOTH fields. Addressing only the config
+      // peer name ("peer-b") used to pass here while the app failed with
+      // "Workspace <id> not found on this host" for a reachable peer.
+      const peerBServerId = ctx.stack.hosts.find((host) => host.name === "peer-b")?.serverId;
+      ctx.expect(
+        typeof peerBServerId === "string" && peerBServerId.length > 0,
+        "peer-b reports a serverId to address it by",
+      );
       const moveRes = await commanderClient.moveAgentToWorkspace(movingAgentId, peerBWsId, {
-        targetHost: "peer-b",
+        targetServerId: peerBServerId,
+        targetHost: peerBServerId,
       });
       ctx.expect(moveRes.agentId === movingAgentId, "Cross-host move returned matching agentId");
       ctx.expect(moveRes.workspaceId === peerBWsId, "Cross-host move returned target workspaceId");

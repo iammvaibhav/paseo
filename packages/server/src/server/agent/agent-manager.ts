@@ -2704,38 +2704,6 @@ export class AgentManager {
     return this.writeStoredMetadata(agentId, { workspaceId, ...(cwd ? { cwd } : {}) });
   }
 
-  async getAgentTimelineForExport(id: string): Promise<AgentTimelineRow[]> {
-    if (this.durableTimelineStore) {
-      try {
-        const rows = await this.durableTimelineStore.getCommittedRows(id);
-        if (rows && rows.length > 0) {
-          return rows;
-        }
-      } catch {
-        // Fall through to the in-memory store below.
-      }
-    }
-    if (this.timelineStore.has(id)) {
-      return this.timelineStore.getRows(id);
-    }
-    return [];
-  }
-
-  async importMigratedTimeline(agentId: string, rows: readonly AgentTimelineRow[]): Promise<void> {
-    if (!rows || rows.length === 0) return;
-    if (this.durableTimelineStore) {
-      await this.durableTimelineStore.bulkInsert(agentId, rows).catch((err) => {
-        this.logger.warn({ err, agentId }, "Failed to bulkInsert migrated timeline rows");
-      });
-    }
-    const maxSeq = rows.reduce((max, row) => Math.max(max, row.seq), 0);
-    this.timelineStore.initialize(agentId, {
-      rows: rows as ProjectedTimelineRow[],
-      nextSeq: maxSeq + 1,
-      timestamp: new Date().toISOString(),
-    });
-  }
-
   private async writeLabels(agentId: string, patch: AgentLabelPatch): Promise<WriteLabelsResult> {
     const liveAgent = this.agents.get(agentId);
     if (liveAgent) {

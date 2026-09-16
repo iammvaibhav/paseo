@@ -3134,6 +3134,14 @@ export class DaemonClient {
       targetWorkspaceId: string;
       agent: Record<string, unknown>;
       timeline?: Array<Record<string, unknown>>;
+      /** OMP transcript to place on the receiving host; absent when the agent
+       *  has no session file. */
+      providerSession?: {
+        provider: string;
+        sessionId?: string;
+        fileName: string;
+        contentBase64: string;
+      };
     },
     requestId?: string,
   ): Promise<{ agentId: string; workspaceId: string }> {
@@ -3145,6 +3153,7 @@ export class DaemonClient {
           targetWorkspaceId: input.targetWorkspaceId,
           agent: input.agent,
           ...(input.timeline ? { timeline: input.timeline } : {}),
+          ...(input.providerSession ? { providerSession: input.providerSession } : {}),
         },
         timeout: 30_000,
       });

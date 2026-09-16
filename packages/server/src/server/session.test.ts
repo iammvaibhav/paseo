@@ -1792,151 +1792,8 @@ describe("agent.workspace.move RPC", () => {
         agentId: "moving-agent",
         workspaceId: "workspace-missing",
         accepted: false,
-        error: "Workspace workspace-missing not found on this host",
-      },
-    });
-  });
-
-  test("moves an agent across hosts when targetHost is specified", async () => {
-    const messages: unknown[] = [];
-    const transferAgentInbound = vi
-      .fn()
-      .mockResolvedValue({ agentId: "moving-agent", workspaceId: "peer-ws" });
-    const removeStorage = vi.fn().mockResolvedValue(undefined);
-    const deleteAgentState = vi.fn().mockResolvedValue(undefined);
-    const peerClient = { transferAgentInbound };
-    const peerManager = {
-      getPeerStatus: vi.fn(() => ({ name: "peer-b", state: "online" as const })),
-      getPeerClient: vi.fn(() => peerClient),
-      getPeerServerId: vi.fn(() => "srv_peer_b"),
-      getPeerStatuses: vi.fn(() => [{ name: "peer-b", state: "online" as const }]),
-    };
-
-    const session = createSessionForTest({
-      messages,
-      peerManager,
-      agentManager: {
-        getAgent: vi.fn(() => null),
-        moveAgentWorkspace: vi.fn(),
-        getAgentTimelineForExport: vi
-          .fn()
-          .mockResolvedValue([
-            { seq: 1, timestamp: "2026-01-01", item: { type: "user_message", text: "hi" } },
-          ]),
-        deleteAgentState,
-        getRegisteredProviderIds: vi.fn().mockReturnValue(["codex"]),
-      },
-      agentStorage: {
-        list: vi.fn().mockResolvedValue([]),
-        get: vi.fn().mockResolvedValue(
-          createStoredAgentRecord({
-            id: "moving-agent",
-            cwd: "/tmp/source",
-            workspaceId: "workspace-source",
-            title: "Moving",
-          }),
-        ),
-        remove: removeStorage,
-      },
-      workspaceRegistry: {
-        get: vi.fn().mockResolvedValue(null),
-        list: vi.fn().mockResolvedValue([]),
-      },
-    });
-
-    await session.handleMessage({
-      type: "agent.workspace.move.request",
-      agentId: "moving-agent",
-      workspaceId: "peer-ws",
-      targetHost: "peer-b",
-      requestId: "move-cross-1",
-    });
-
-    expect(transferAgentInbound).toHaveBeenCalledWith({
-      targetWorkspaceId: "peer-ws",
-      agent: expect.objectContaining({ id: "moving-agent" }),
-      timeline: expect.arrayContaining([expect.objectContaining({ seq: 1 })]),
-    });
-    expect(removeStorage).toHaveBeenCalledWith("moving-agent");
-    expect(deleteAgentState).toHaveBeenCalledWith("moving-agent");
-    expect(messages).toContainEqual({
-      type: "agent.workspace.move.response",
-      payload: {
-        requestId: "move-cross-1",
-        agentId: "moving-agent",
-        workspaceId: "peer-ws",
-        accepted: true,
-        error: null,
-        targetServerId: "srv_peer_b",
-      },
-    });
-  });
-
-  test("handles inbound agent.workspace.transfer.request and saves agent", async () => {
-    const messages: unknown[] = [];
-    const upsertStorage = vi.fn().mockResolvedValue(undefined);
-    const importMigratedTimeline = vi.fn().mockResolvedValue(undefined);
-    const targetWs = {
-      workspaceId: "target-ws",
-      projectId: "project:test",
-      cwd: "/tmp/imported-target",
-      displayName: "Target",
-      createdAt: "2026-01-01T00:00:00.000Z",
-      updatedAt: "2026-01-01T00:00:00.000Z",
-      archivedAt: null,
-    };
-
-    const session = createSessionForTest({
-      messages,
-      agentManager: {
-        getAgent: vi.fn(() => null),
-        importMigratedTimeline,
-        getRegisteredProviderIds: vi.fn().mockReturnValue(["codex"]),
-      },
-      agentStorage: {
-        upsert: upsertStorage,
-        list: vi.fn().mockResolvedValue([]),
-        get: vi.fn().mockResolvedValue(null),
-      },
-      workspaceRegistry: {
-        get: vi.fn().mockResolvedValue(targetWs),
-        list: vi.fn().mockResolvedValue([targetWs]),
-      },
-    });
-
-    await session.handleMessage({
-      type: "agent.workspace.transfer.request",
-      targetWorkspaceId: "target-ws",
-      agent: {
-        id: "imported-agent",
-        provider: "codex",
-        title: "Imported",
-        cwd: "/old/path",
-        createdAt: "2026-01-01T00:00:00.000Z",
-        updatedAt: "2026-01-01T00:00:00.000Z",
-      },
-      timeline: [
-        { seq: 1, timestamp: "2026-01-01", item: { type: "user_message", text: "hello" } },
-      ],
-      requestId: "transfer-1",
-    });
-
-    expect(upsertStorage).toHaveBeenCalledWith(
-      expect.objectContaining({
-        id: "imported-agent",
-        workspaceId: "target-ws",
-        cwd: "/tmp/imported-target",
-      }),
-    );
-    expect(importMigratedTimeline).toHaveBeenCalledWith("imported-agent", expect.any(Array));
-    expect(messages).toContainEqual({
-      type: "agent.workspace.transfer.response",
-      payload: {
-        requestId: "transfer-1",
-        agentId: "imported-agent",
-        workspaceId: "target-ws",
-        accepted: true,
-        error: null,
+        error:
+          "Workspace workspace-missing not found on this host and this daemon has no peers configured",
       },
     });
   });
@@ -2095,6 +1952,74 @@ describe("agent.workspace cross-host move RPC", () => {
         workspaceId: "target-ws",
         accepted: true,
         error: null,
+      },
+    });
+  });
+
+  test("routes by the target's serverId, which is what the app sends", async () => {
+    // The move dialog knows the target host by serverId, not by config peer
+    // name. Resolving only by config name is what produced "Workspace <id> not
+    // found on this host" for a workspace sitting on a reachable peer.
+    const messages: unknown[] = [];
+    const transferAgentInbound = vi
+      .fn()
+      .mockResolvedValue({ agentId: "moving-agent", workspaceId: "peer-ws" });
+    const peerManager = {
+      getPeerStatus: vi.fn(() => ({ name: "peer-b", state: "online" as const })),
+      getPeerClient: vi.fn(() => ({ transferAgentInbound })),
+      getPeerStatuses: vi.fn(() => [{ name: "peer-b", state: "online" as const }]),
+      getPeerServerId: vi.fn(() => "srv_peer_b"),
+      resolvePeerName: vi.fn((name: string) => (name === "srv_peer_b" ? "peer-b" : null)),
+    };
+
+    const session = createSessionForTest({
+      messages,
+      peerManager,
+      agentManager: {
+        getAgent: vi.fn(() => null),
+        moveAgentWorkspace: vi.fn(),
+        getAgentTimelineForExport: vi.fn().mockResolvedValue([]),
+        deleteAgentState: vi.fn().mockResolvedValue(undefined),
+        getRegisteredProviderIds: vi.fn().mockReturnValue(["codex"]),
+      },
+      agentStorage: {
+        list: vi.fn().mockResolvedValue([]),
+        get: vi.fn().mockResolvedValue(
+          createStoredAgentRecord({
+            id: "moving-agent",
+            cwd: "/tmp/source",
+            workspaceId: "workspace-source",
+            title: "Moving",
+          }),
+        ),
+        remove: vi.fn().mockResolvedValue(undefined),
+      },
+      workspaceRegistry: {
+        get: vi.fn().mockResolvedValue(null),
+        list: vi.fn().mockResolvedValue([]),
+      },
+    });
+
+    await session.handleMessage({
+      type: "agent.workspace.move.request",
+      agentId: "moving-agent",
+      workspaceId: "peer-ws",
+      targetServerId: "srv_peer_b",
+      requestId: "move-by-server-id",
+    });
+
+    expect(transferAgentInbound).toHaveBeenCalledWith(
+      expect.objectContaining({ targetWorkspaceId: "peer-ws" }),
+    );
+    expect(messages).toContainEqual({
+      type: "agent.workspace.move.response",
+      payload: {
+        requestId: "move-by-server-id",
+        agentId: "moving-agent",
+        workspaceId: "peer-ws",
+        accepted: true,
+        error: null,
+        targetServerId: "srv_peer_b",
       },
     });
   });
@@ -4380,7 +4305,7 @@ describe("session checkout status handling", () => {
     });
 
     expect(workspaceGitService.getSnapshot).toHaveBeenCalledTimes(1);
-    expect(workspaceGitService.getSnapshot).toHaveBeenCalledWith("/tmp/service-worktree");
+    expect(workspaceGitService.getSnapshot.mock.calls[0]?.[0]).toBe("/tmp/service-worktree");
     expect(checkoutGitMocks.getCheckoutStatus).not.toHaveBeenCalled();
     expect(messages).toContainEqual({
       type: "checkout_status_response",
