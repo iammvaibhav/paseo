@@ -8,7 +8,7 @@ export const meta = {
   hosts: 1,
   video: true,
   description:
-    "Right-click on a VS Code editor tab and sidebar hover tooltips render cleanly above the VS Code Web window without z-index clipping",
+    "Right-click on a VS Code editor tab and workspace hover card render cleanly above the VS Code Web window without z-index clipping",
 };
 
 function repoDirFor(ctx) {
@@ -134,26 +134,12 @@ export const steps = [
       await row.click();
       await page.waitForTimeout(2000);
 
-      // Open Changes tree via shortcut Ctrl+Shift+G
-      await page.keyboard.press("Control+Shift+G");
-      await page.waitForTimeout(1000);
-
-      const changesPanel = page.locator('[data-testid="changes-tree-panel"]');
-      if (!(await changesPanel.isVisible().catch(() => false))) {
-        const newTabBtn = page.locator('[data-testid="workspace-new-tab-changes"]');
-        if (await newTabBtn.isVisible().catch(() => false)) {
-          await newTabBtn.click();
-        }
-      }
-
-      await page.waitForSelector('[data-testid="changes-file-tree"]', { timeout: 30_000 });
-      const fileItem = page
-        .locator('[data-testid="diff-tree-file-0"], [data-testid^="diff-tree-file-"]')
-        .first();
-      await fileItem.waitFor({ state: "visible", timeout: 10_000 });
-
-      // Click the changed file to open VS Code Web editor tab
-      await fileItem.click();
+      // Open the VS Code editor tab via the header Open split-button.
+      // NOTE: hideLabels means the header shows only icons; the primary
+      // pressable still carries the "Open" accessible name.
+      const openPrimary = page.locator('[data-testid="workspace-open-in-editor-primary"]').first();
+      await openPrimary.waitFor({ state: "visible", timeout: 15_000 });
+      await openPrimary.click();
 
       // Wait for the VS Code Web browser tab to be created in the tab bar
       const vscodeTab = page.locator('[data-testid^="workspace-tab-browser_"]').first();
@@ -317,42 +303,60 @@ export const steps = [
     },
   },
   {
-    id: "verify-sidebar-hover-layering",
-    label: "Sidebar hover tooltips render above the VS Code Web window",
-    narrate: "Hover tooltips from the left sidebar float above the VS Code Web window.",
+    id: "verify-workspace-hover-card-layering",
+    label: "Workspace hover card renders above the VS Code Web window",
+    narrate: "Hover menu on the workspace row floats above the VS Code Web window.",
     async run(ctx) {
       const page = ctx.page;
 
-      // Hover on the add-project button or a sidebar row
-      const addProjectBtn = page.locator('[data-testid="sidebar-add-project"]').first();
-      await addProjectBtn.waitFor({ state: "visible", timeout: 10_000 });
-      await addProjectBtn.hover();
+      // Hover a workspace row in the left sidebar to open the WorkspaceHoverCard
+      const workspaceRow = page
+        .locator(
+          '[data-testid^="sidebar-workspace-row-"], [data-testid^="sidebar-row-project-icon-"]',
+        )
+        .first();
+      await workspaceRow.waitFor({ state: "visible", timeout: 10_000 });
+      await workspaceRow.hover();
 
-      // Wait a moment for tooltip delay
+      const hoverCard = page.locator('[data-testid="workspace-hover-card"]').first();
+      await hoverCard.waitFor({ state: "visible", timeout: 10_000 });
       await page.waitForTimeout(500);
 
-      // Capture after shot
+      // Capture after shot showing the hover card over the VS Code window
       await ctx.shot("after");
 
-      // Verify that the tooltip in overlay-root is above the webview wrapper
-      const tooltipCheck = await page.evaluate(() => {
-        const overlayRoot = document.getElementById("overlay-root");
-        const wrapper = document.querySelector("[data-paseo-persistent-browser-wrapper]");
-        const overlayZ = overlayRoot
-          ? Number.parseInt(window.getComputedStyle(overlayRoot).zIndex || "0", 10)
-          : null;
-        const wrapperZ = wrapper
-          ? Number.parseInt(window.getComputedStyle(wrapper).zIndex || "0", 10)
-          : null;
-        return overlayZ !== null && wrapperZ !== null && overlayZ > wrapperZ;
-      });
+      const cardBounds = await hoverCard.boundingBox();
+      ctx.expect(Boolean(cardBounds), "Workspace hover card must have bounds");
 
-      ctx.expect(
-        tooltipCheck,
-        "Sidebar hover tooltips in overlay-root must render above the webview wrapper",
+      const probe = await page.evaluate(
+        ({ x, y }) => {
+          const el = document.elementFromPoint(x, y);
+          if (!el) return { tag: "null", insideOverlay: false, insideWrapper: false, cardZ: null };
+          const overlayRoot = document.getElementById("overlay-root");
+          const wrapper = document.querySelector("[data-paseo-persistent-browser-wrapper]");
+          const card = document.querySelector('[data-testid="workspace-hover-card"]');
+          return {
+            tag: el.tagName,
+            insideOverlay: overlayRoot ? overlayRoot.contains(el) : false,
+            insideWrapper: wrapper ? wrapper.contains(el) : false,
+            cardZ: card ? window.getComputedStyle(card).zIndex : null,
+            overlayZ: overlayRoot ? window.getComputedStyle(overlayRoot).zIndex : null,
+            wrapperZ: wrapper ? window.getComputedStyle(wrapper).zIndex : null,
+          };
+        },
+        { x: cardBounds.x + cardBounds.width / 2, y: cardBounds.y + cardBounds.height / 2 },
       );
 
-      return "Sidebar hover tooltips render above VS Code Web window";
+      ctx.log(
+        `Hover card hit test: tag=${probe.tag} insideOverlay=${probe.insideOverlay} insideWrapper=${probe.insideWrapper} cardZ=${probe.cardZ} overlayZ=${probe.overlayZ} wrapperZ=${probe.wrapperZ}`,
+      );
+
+      ctx.expect(
+        probe.insideOverlay === true,
+        `Point on workspace hover card must hit-test inside overlay-root, but hit ${probe.tag} (inside wrapper: ${probe.insideWrapper}, cardZ=${probe.cardZ}, overlayZ=${probe.overlayZ}, wrapperZ=${probe.wrapperZ})`,
+      );
+
+      return "Workspace hover card renders above VS Code Web window";
     },
   },
 ];
