@@ -46,8 +46,8 @@ export function registerAgentTabDropTarget(target: RegisteredDropTarget): () => 
 }
 
 /**
- * The workspace whose row contains `point`, or null. A drop is only offered on
- * the dragged agent's own host and never onto the workspace it already lives in.
+ * The workspace whose row contains `point`, or null. A drop is offered on
+ * any workspace across projects and hosts, but never onto the workspace the agent already lives in.
  */
 export function resolveAgentTabDropTarget(input: {
   point: { x: number; y: number };
@@ -56,8 +56,11 @@ export function resolveAgentTabDropTarget(input: {
 }): AgentTabDropTarget | null {
   for (const target of input.targets) {
     if (!target.rect) continue;
-    if (target.serverId !== input.drag.serverId) continue;
-    if (target.workspaceId === input.drag.sourceWorkspaceId) continue;
+    if (
+      target.serverId === input.drag.serverId &&
+      target.workspaceId === input.drag.sourceWorkspaceId
+    )
+      continue;
     const { left, top, right, bottom } = target.rect;
     if (
       input.point.x >= left &&
