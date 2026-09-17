@@ -1,5 +1,5 @@
 import { getMimeTypeFromPath } from "@/attachments/file-types";
-import { readDesktopFileBytes, type PickedFile } from "@/attachments/picked-file";
+import { readDesktopFileBytes, type SelectedFile } from "@/attachments/selected-file";
 import type { DroppedItem } from "@/components/file-drop/types";
 import type { ExplorerEntry } from "@/stores/session-store";
 
@@ -26,23 +26,25 @@ function fileNameFromPath(path: string): string {
 export async function droppedItemsToExplorerFiles(
   items: DroppedItem[],
   runtime: DroppedExplorerFilesRuntime = defaultRuntime,
-): Promise<PickedFile[]> {
-  const files: PickedFile[] = [];
+): Promise<SelectedFile[]> {
+  const files: SelectedFile[] = [];
 
   for (const item of items) {
     if (item.kind === "web-file") {
+      const { file } = item;
       files.push({
-        fileName: item.file.name,
-        mimeType: item.file.type || getMimeTypeFromPath(item.file.name),
-        bytes: new Uint8Array(await item.file.arrayBuffer()),
+        fileName: file.name,
+        mimeType: file.type || getMimeTypeFromPath(file.name),
+        readBytes: async () => new Uint8Array(await file.arrayBuffer()),
       });
       continue;
     }
 
+    const { path } = item;
     files.push({
-      fileName: fileNameFromPath(item.path),
-      mimeType: getMimeTypeFromPath(item.path),
-      bytes: await runtime.readDesktopFileBytes(item.path),
+      fileName: fileNameFromPath(path),
+      mimeType: getMimeTypeFromPath(path),
+      readBytes: () => runtime.readDesktopFileBytes(path),
     });
   }
 

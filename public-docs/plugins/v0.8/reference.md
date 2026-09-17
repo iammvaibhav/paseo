@@ -151,32 +151,105 @@ in your browser and crashes on a phone is the most common plugin bug. The rules:
 | `onPress`                                                                  | `onClick`, `onMouseEnter`, or other DOM handlers                            |
 | `Linking`, `Clipboard`-style React Native APIs                             | `window`, `document`, `localStorage`, `navigator`, `location` in components |
 
-The scaffold's `tsconfig.json` omits the DOM library, so `document` and `window` are type errors
-everywhere by default. The one place browser APIs are allowed is `client/web.ts`. It declares the
-narrow shape of each global it uses, gates every export on `Platform.OS`, and gives native the
-alternative:
+The scaffold's `tsconfig.json` omits the DOM library. Keep DOM globals out of cross-platform
+components; do not add `/// <reference lib="dom" />` or `"DOM"` to `lib`.
+`layout.platform` carries the same value as React Native's `Platform.OS` for rendering decisions.
 
-`client/web.ts`:
+### External links and workspace browsers
 
-```ts
-import { Linking, Platform } from "react-native";
+Use `ExternalLink` to open documentation outside Paseo:
 
-// This plugin typechecks without the DOM library. Declare only what this module uses.
-declare const window: { open(url: string, target: string, features: string): unknown };
+```tsx
+import { ExternalLink } from "@getpaseo/plugin/client/ui";
 
-export async function openExternal(url: string): Promise<void> {
-  if (Platform.OS === "web") {
-    window.open(url, "_blank", "noopener,noreferrer");
-    return;
-  }
-  await Linking.openURL(url);
+export function DocumentationLink() {
+  return <ExternalLink href="https://paseo.sh/docs">Open documentation</ExternalLink>;
 }
 ```
 
-Do not add `/// <reference lib="dom" />` or `"DOM"` to `lib`; either one turns DOM types back on
-for the whole project and hides the next mistake. Components import `openExternal` and never touch
-`window` themselves. `layout.platform` on surface and panel props carries the same value as
-`Platform.OS` for rendering decisions.
+The component has accessible link semantics and uses the same opener as
+`openExternalUrl(url: string): Promise<void>`:
+
+```ts
+import { openExternalUrl } from "@getpaseo/plugin/client";
+
+export async function openDocumentation() {
+  await openExternalUrl("https://paseo.sh/docs");
+}
+```
+
+Call the function directly from a user interaction so the browser permits a new tab.
+
+| Platform      | External links                     | `navigation.openBrowser`                         |
+| ------------- | ---------------------------------- | ------------------------------------------------ |
+| Electron      | System browser                     | Available; creates a local workspace browser tab |
+| Browser web   | New tab with `noopener,noreferrer` | `undefined`                                      |
+| iOS / Android | OS URL handler                     | `undefined`                                      |
+
+#### ExternalLink props
+
+| Prop                            | Required | Behavior / default                                     |
+| ------------------------------- | -------- | ------------------------------------------------------ |
+| `href: string`                  | Yes      | Absolute HTTP(S) destination                           |
+| `children: ReactNode`           | Yes      | Link text or inline React Native content               |
+| `accessibilityLabel: string`    | No       | Overrides the accessible name derived from the content |
+| `testID: string`                | No       | Test identifier; unset by default                      |
+| `onError(error: unknown): void` | No       | Receives opening errors; defaults to logging them      |
+
+#### Open a workspace browser
+
+Use `navigation.openBrowser` from a surface or panel. Check availability before rendering
+the action. This workspace panel chooses an external link on other platforms:
+
+```tsx
+import type { PluginWorkspacePanelProps } from "@getpaseo/plugin/client";
+import { ExternalLink } from "@getpaseo/plugin/client/ui";
+import { Pressable, Text } from "react-native";
+
+export function DocumentationPanel({ navigation, workspaceId, theme }: PluginWorkspacePanelProps) {
+  const openBrowser = navigation?.openBrowser;
+  const url = "https://paseo.sh/docs";
+
+  if (!openBrowser) {
+    return <ExternalLink href={url}>Open documentation</ExternalLink>;
+  }
+
+  return (
+    <Pressable accessibilityRole="button" onPress={() => openBrowser({ url, workspaceId })}>
+      <Text style={{ color: theme.colors.foreground }}>Open in workspace browser</Text>
+    </Pressable>
+  );
+}
+```
+
+`navigation.openBrowser({ url, workspaceId, serverId? }): void` creates and focuses a new tab.
+It never opens externally as an automatic fallback.
+
+| Option                | Required | Behavior / default                                                |
+| --------------------- | -------- | ----------------------------------------------------------------- |
+| `url: string`         | Yes      | Absolute HTTP(S) destination                                      |
+| `workspaceId: string` | Yes      | Workspace already present in the target host's app workspace list |
+| `serverId: string`    | No       | Defaults to the surface or panel's selected host                  |
+
+To target another host, pass its ID with that host's workspace ID:
+
+```ts
+openBrowser({ url, workspaceId: remoteWorkspaceId, serverId: remoteServerId });
+```
+
+`serverId` selects workspace ownership. The page runs on your local desktop, including
+for remote workspaces; `localhost` URLs refer to that desktop.
+
+#### Errors and refusal
+
+| Condition                                                             | Result                                                                         |
+| --------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| External URL is malformed or uses a non-HTTP(S) scheme                | Ignored; `openExternalUrl` resolves without opening anything                   |
+| OS opener fails                                                       | `openExternalUrl` rejects; `ExternalLink` calls `onError` or logs the error    |
+| Browser blocks a new external tab                                     | Cannot be distinguished from a successful `noopener` open                      |
+| In-app browser URL is malformed or uses a non-HTTP(S) scheme          | Throws `Only absolute HTTP(S) URLs are supported.` before creating a tab       |
+| In-app browser workspace ID is empty                                  | Throws `workspaceId is required.` before creating a tab                        |
+| Target host/workspace is unknown or its workspace list has not loaded | Throws `Workspace is unavailable on the requested host.` before creating a tab |
 
 Use the [settings API](#settings-screens) for typed host-scoped persistence across clients.
 Use `openSettings`, `openSurface`, and `openPanel` for your own registered contributions.
@@ -614,12 +687,12 @@ export default function contribute(client: PluginClientContext) {
 
 `PluginSurfaceProps` contains:
 
-| Field        | Meaning                                                                                                                      |
-| ------------ | ---------------------------------------------------------------------------------------------------------------------------- |
-| `theme`      | Typed `PluginTheme` color tokens for the active Paseo theme.                                                                 |
-| `host`       | Selected host `id` and display `label`.                                                                                      |
-| `layout`     | `compact` and the `ios`, `android`, or `web` platform.                                                                       |
-| `navigation` | Optional client navigation. `openAgent({ agentId })` and `openWorkspace({ workspaceId })` open targets on the selected host. |
+| Field        | Meaning                                                                                                                                                                                                                                                                                                                           |
+| ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `theme`      | Typed `PluginTheme` color tokens for the active Paseo theme.                                                                                                                                                                                                                                                                      |
+| `host`       | Selected host `id` and display `label`.                                                                                                                                                                                                                                                                                           |
+| `layout`     | `compact` and the `ios`, `android`, or `web` platform.                                                                                                                                                                                                                                                                            |
+| `navigation` | Optional client navigation. `openAgent({ agentId, serverId? })` and `openWorkspace({ workspaceId, serverId? })` open targets on `serverId`, or on the selected host when omitted. `openBrowser({ url, workspaceId, serverId? })` is available only on Electron; see [links and browsers](#external-links-and-workspace-browsers). |
 
 Paseo owns the route, header, close action, host picker, error boundary, and query client. The plugin owns the surface body.
 
@@ -1526,6 +1599,82 @@ function PullRequestAction({ theme }: PluginSurfaceProps) {
 ```
 
 The returned API covers projects, workspaces, agents, terminals, providers, and daemon config. See the [SDK API reference](/docs/sdk/reference) for its methods. Connection lifecycle methods are intentionally absent because Paseo owns the connection.
+
+### Discover hosts and target another host
+
+Use `useHosts()` to display configured hosts and `getPaseoClient(serverId)` in an action callback
+to run SDK operations on one of them:
+
+```tsx
+import { getPaseoClient, useHosts, type PluginSurfaceProps } from "@getpaseo/plugin/client";
+import { useMemo, useState, type ReactElement } from "react";
+import { Pressable, Text, View } from "react-native";
+
+export function HostAgents({ theme }: Pick<PluginSurfaceProps, "theme">): ReactElement {
+  const hosts = useHosts();
+  const textStyle = useMemo(() => ({ color: theme.colors.foreground }), [theme]);
+  const [result, setResult] = useState("");
+
+  async function listAgents(serverId: string): Promise<void> {
+    try {
+      const { entries } = await getPaseoClient(serverId).agents.list();
+      setResult(`${entries.length} agents`);
+    } catch (error) {
+      setResult(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  const rows = hosts.map((host) => ({
+    host,
+    onPress() {
+      void listAgents(host.serverId);
+    },
+  }));
+
+  return (
+    <View>
+      {rows.map(({ host, onPress }) => (
+        <Pressable key={host.serverId} accessibilityRole="button" onPress={onPress}>
+          <Text style={textStyle}>
+            {host.label}: {host.status}
+          </Text>
+        </Pressable>
+      ))}
+      <Text style={textStyle}>{result}</Text>
+    </View>
+  );
+}
+```
+
+`useHosts(): readonly PluginHostSummary[]` includes offline hosts and updates when hosts,
+labels, or statuses change.
+
+| Summary field | Type or values                                               | Meaning                                                      |
+| ------------- | ------------------------------------------------------------ | ------------------------------------------------------------ |
+| `serverId`    | `string`                                                     | ID to pass to `getPaseoClient`.                              |
+| `label`       | `string`                                                     | Host's display name.                                         |
+| `status`      | `"idle"`, `"connecting"`, `"online"`, `"offline"`, `"error"` | Current app connection status. SDK calls require `"online"`. |
+
+`getPaseoClient(serverId: string): PaseoApi` borrows the host's authenticated app connection.
+Call it in client entry code or callbacks; it opens no socket and does not require the plugin
+on the target daemon. Acquire the API when performing an action to use the current connection.
+
+| Event or condition                                                                       | Result and caller action                                                                                                                                        |
+| ---------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Unknown host ID                                                                          | Throws `Unknown Paseo host: <id>`; never falls through to another host.                                                                                         |
+| Host is not online                                                                       | Throws `Paseo host is disconnected: <id>`, including calls through a retained API. Retry when online.                                                           |
+| Same connection reconnects                                                               | Retained APIs remain usable after reconnection; observations resume automatically.                                                                              |
+| Connection settings change or the app switches connections, including automatic failover | The old API is released. Call `getPaseoClient(serverId)` again and recreate subscriptions.                                                                      |
+| Host is removed                                                                          | Its API is released; the removed ID is unknown.                                                                                                                 |
+| `client.dispose()`                                                                       | Releases that API and its observations. A later getter call returns a fresh API over the app connection. Disposing the old API again leaves the new API usable. |
+| Originating plugin unloads                                                               | All its borrowed APIs and observations are released, including those targeting other hosts. Retained handles cannot outlive the installation.                   |
+| Surface host selection changes                                                           | `usePaseo()` follows the selected host. An explicitly acquired API keeps its original target.                                                                   |
+
+You can also release individual subscriptions through the normal SDK API.
+
+Plugins are trusted app code; cross-host access is intentional. Summaries contain no connection
+URLs or credentials, and borrowed APIs provide no connection lifecycle controls. See the
+[host agents example](https://github.com/getpaseo/paseo/tree/main/plugin-examples/hosts).
 
 ## Add plugin-specific backend behavior
 
