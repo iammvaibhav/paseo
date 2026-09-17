@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DaemonClientConfig } from "@getpaseo/client/internal/daemon-client";
 import type { DaemonConnectionDependencies, DaemonProbeClient } from "./test-daemon-connection";
 
@@ -69,6 +69,15 @@ class FakeDaemonProbe {
 
 describe("test-daemon-connection connectToDaemon", () => {
   let probe: FakeDaemonProbe;
+
+  // Every test imports the module under test dynamically so it sees the stubbed
+  // __DEV__. The first of those imports pays the whole transform for this module
+  // graph, which is several seconds - long enough to blow the default 5s test
+  // timeout and fail whichever test happened to run first. Pay it once, here.
+  beforeAll(async () => {
+    vi.stubGlobal("__DEV__", false);
+    await import("./test-daemon-connection");
+  });
 
   beforeEach(() => {
     vi.stubGlobal("__DEV__", false);

@@ -46,7 +46,7 @@ export function isProvidersSnapshotHomeScope(cwd?: string | null): boolean {
   return normalizeProvidersSnapshotCwd(cwd) === null;
 }
 
-type Snapshot = GetProvidersSnapshotResponseMessage["payload"];
+export type Snapshot = GetProvidersSnapshotResponseMessage["payload"];
 type SnapshotClient = Pick<DaemonClient, "getProvidersSnapshot">;
 
 export async function fetchProvidersSnapshot(input: {

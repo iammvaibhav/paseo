@@ -1,47 +1,73 @@
 import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { join, relative } from "node:path";
+import { join, relative, resolve } from "node:path";
 
 // In CI we often install a single workspace (e.g. server/relay/website). Only apply patches
 // when the patched dependency is actually present.
-// `cwd` is where patch-package must run from. Packages that npm does not hoist to the
-// workspace root live in their workspace's own node_modules, and patch-package resolves
-// the patch's node_modules/... paths relative to its working directory.
+// `cwd` is where patch-package must run from. Under pnpm's isolated node_modules layout,
+// a package is only reachable inside the node_modules of whichever workspace member(s)
+// declare it directly — nothing gets hoisted to the repo root the way npm's flat
+// node_modules did. patch-package resolves the patch's node_modules/... paths relative
+// to its working directory, so nodeModulesPath/cwd must point at the declaring workspace,
+// not the repo root. When a package is shared by several workspace members (e.g.
+// react-native, declared by app/plugin/expo-two-way-audio), pnpm links every consumer's
+// copy to the same underlying store directory, so patching through any one consumer's
+// path patches the shared target for all of them.
 const patchedPackages = [
   {
-    nodeModulesPath: "node_modules/react-native-markdown-display",
+    nodeModulesPath: "packages/app/node_modules/react-native-markdown-display",
     patchPrefix: "react-native-markdown-display+",
+    cwd: "packages/app",
   },
   {
-    nodeModulesPath: "node_modules/react-native",
+    nodeModulesPath: "packages/app/node_modules/react-native",
     patchPrefix: "react-native+",
+    cwd: "packages/app",
   },
   // Remove after react-native-unistyles ships
   // https://github.com/jpudysz/react-native-unistyles/pull/1203.
   {
-    nodeModulesPath: "node_modules/react-native-unistyles",
+    nodeModulesPath: "packages/app/node_modules/react-native-unistyles",
     patchPrefix: "react-native-unistyles+",
+    cwd: "packages/app",
   },
   {
-    nodeModulesPath: "node_modules/react-native-draggable-flatlist",
+    nodeModulesPath: "packages/app/node_modules/react-native-draggable-flatlist",
     patchPrefix: "react-native-draggable-flatlist+",
+    cwd: "packages/app",
   },
   {
-    nodeModulesPath: "node_modules/react-native-gesture-handler",
+    nodeModulesPath: "packages/app/node_modules/react-native-gesture-handler",
     patchPrefix: "react-native-gesture-handler+",
+    cwd: "packages/app",
+  },
+  // @xterm/addon-ligatures ships lru-cache inlined in its prebuilt .mjs,
+  // which imports node:diagnostics_channel at module top level — absent in
+  // every shipped JS runtime (2026-09-09 bundle outage). Dummy the import.
+  {
+    nodeModulesPath: "packages/app/node_modules/@xterm/addon-ligatures",
+    patchPrefix: "@xterm+addon-ligatures+",
+    cwd: "packages/app",
   },
   {
-    nodeModulesPath: "node_modules/react-native-svg",
+    nodeModulesPath: "packages/app/node_modules/react-native-svg",
     patchPrefix: "react-native-svg+",
+    cwd: "packages/app",
   },
   {
-    nodeModulesPath: "node_modules/@mattermost/react-native-paste-input",
+    nodeModulesPath: "packages/app/node_modules/@mattermost/react-native-paste-input",
     patchPrefix: "@mattermost+react-native-paste-input+",
+    cwd: "packages/app",
   },
   {
     nodeModulesPath: "packages/server/node_modules/@opencode-ai/sdk",
     patchPrefix: "@opencode-ai+sdk+",
     cwd: "packages/server",
+  },
+  {
+    nodeModulesPath: "node_modules/@parcel/watcher",
+    patchPrefix: "@parcel+watcher+",
+    rebuildNative: true,
   },
 ];
 
@@ -102,6 +128,30 @@ for (const [cwd, files] of patchFilesByCwd) {
   if (result.status !== 0) {
     process.exit(result.status ?? 1);
   }
+}
+
+// @parcel/watcher ships native code as prebuilt platform packages; patching the
+// source alone does not change what the daemon loads. Rebuild the binding from
+// the patched source (index.js prefers ./build/Release/watcher.node) so the
+// inotify EINTR retry is actually live. Requires a C++ toolchain (node-gyp);
+// the repo already requires one for its React Native native deps.
+const needsNativeRebuild = installedPackages.some(({ rebuildNative }) => rebuildNative);
+if (needsNativeRebuild) {
+  const nodeGyp = resolve("node_modules", "node-gyp", "bin", "node-gyp.js");
+  const watcherDir = "node_modules/@parcel/watcher";
+  if (!existsSync(nodeGyp)) {
+    console.error("postinstall-patches: node-gyp not found; cannot rebuild @parcel/watcher");
+    process.exit(1);
+  }
+  const rebuild = spawnSync(process.execPath, [nodeGyp, "rebuild"], {
+    cwd: watcherDir,
+    stdio: "inherit",
+  });
+  if (rebuild.status !== 0) {
+    console.error("postinstall-patches: failed to rebuild @parcel/watcher");
+    process.exit(rebuild.status ?? 1);
+  }
+  console.log("postinstall-patches: rebuilt @parcel/watcher from patched source");
 }
 
 process.exit(0);

@@ -231,6 +231,7 @@ describe("checkout-git-actions-store", () => {
       useSessionStore.getState().updateSessionServerInfo(serverId, {
         serverId,
         hostname: null,
+        missionControlHostAlias: null,
         version: null,
         features: { [rpc.feature]: true },
       });
@@ -261,6 +262,7 @@ describe("checkout-git-actions-store", () => {
       useSessionStore.getState().updateSessionServerInfo(serverId, {
         serverId,
         hostname: null,
+        missionControlHostAlias: null,
         version: null,
         features: { [rpc.feature]: true },
       });
@@ -288,6 +290,7 @@ describe("checkout-git-actions-store", () => {
     useSessionStore.getState().updateSessionServerInfo(serverId, {
       serverId,
       hostname: null,
+      missionControlHostAlias: null,
       version: null,
       features: {},
     });

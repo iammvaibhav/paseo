@@ -1,6 +1,3 @@
-import type { ComposerTextSource } from "./text-source";
-import { createStore, type StoreApi } from "zustand/vanilla";
-import { useStore } from "zustand";
 import { getHostRuntimeStore } from "@/runtime/host-runtime";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import {
@@ -11,22 +8,20 @@ import {
   type PressableStateCallbackType,
 } from "react-native";
 import type { TFunction } from "i18next";
+import type { ComposerTextSource } from "./text-source";
 import {
   useState,
   useEffect,
-  useLayoutEffect,
   useRef,
   useCallback,
   useMemo,
   useSyncExternalStore,
-  useImperativeHandle,
   memo,
   type ReactElement,
   type ReactNode,
 } from "react";
 import { useTranslation } from "react-i18next";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { useIsCompactFormFactor } from "@/constants/layout";
 import { useShallow } from "zustand/shallow";
 import {
   ArrowUp,
@@ -39,9 +34,10 @@ import {
   Image as ImageIcon,
   ClipboardPaste,
   Paperclip,
+  Split,
 } from "lucide-react-native";
 import * as Clipboard from "expo-clipboard";
-import { FOOTER_HEIGHT, MAX_CONTENT_WIDTH } from "@/constants/layout";
+import { FOOTER_HEIGHT, MAX_CONTENT_WIDTH, useIsCompactFormFactor } from "@/constants/layout";
 import {
   AgentControls,
   DraftAgentControls,
@@ -50,6 +46,7 @@ import {
 import { ContextWindowMeter } from "@/components/context-window-meter";
 import { useImageAttachmentPicker } from "@/hooks/use-image-attachment-picker";
 import { selectAgentTurnPresentation, useSessionStore } from "@/stores/session-store";
+import { navigateToWorkspace } from "@/stores/navigation-active-workspace-store";
 import { useFilePicker } from "@/hooks/use-file-picker";
 import { useFileDrop } from "@/components/file-drop/use-file-drop";
 import type { DroppedItem } from "@/components/file-drop/types";
@@ -59,14 +56,27 @@ import {
   type ComposerKeyPressEvent,
   type MessageInputRef,
 } from "./input/input";
-import type { ImageAttachment, MessagePayload, TextReplacement } from "./types";
+import type {
+  ImageAttachment,
+  MessageDispatchMode,
+  MessagePayload,
+  TextReplacement,
+} from "./types";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
-import type { DraftCommandConfig } from "@/hooks/use-agent-commands-query";
+import {
+  useAgentCommandsQuery,
+  type AgentSlashCommand,
+  type DraftCommandConfig,
+} from "@/hooks/use-agent-commands-query";
+import { isOutOfBandCommandDraft } from "@/composer/out-of-band-command";
 import { encodeImages } from "@/utils/encode-images";
 import { focusWithRetries } from "@/utils/web-focus";
+import { resolveSessionAgent } from "@/utils/agent-snapshots";
 import {
   cancelComposerAgent,
   dispatchComposerAgentMessage,
+  forkComposerAgent,
+  forkQueuedComposerMessage,
   editQueuedComposerMessage,
   findForgeItemByOption,
   isAttachmentSelectedForForgeItem,
@@ -267,7 +277,10 @@ function buildRealtimeVoiceButtonStyle(
 
 function buildAgentStateSelector(serverId: string, agentId: string) {
   return (state: ReturnType<typeof useSessionStore.getState>) => {
-    const agent = state.sessions[serverId]?.agents?.get(agentId) ?? null;
+    // Resolve across both directories: an active agent hydrated without a project
+    // placement lives in `agentDetails`, and reading only `agents` left the
+    // composer believing it had no status — hiding Stop for the whole run.
+    const agent = resolveSessionAgent(state.sessions[serverId], agentId);
     return {
       status: agent?.status ?? null,
       contextWindowMaxTokens: agent?.lastUsage?.contextWindowMaxTokens ?? null,
@@ -286,13 +299,10 @@ function renderContextWindowMeter(
   showPercentage: boolean,
   serverId: string,
   provider: string | null,
+  model: string | null,
   pending: boolean,
   glyphSize: number,
-): ReactElement | null {
-  const hasData = contextWindowMaxTokens !== null && contextWindowUsedTokens !== null;
-  if (!hasData && !pending) {
-    return null;
-  }
+): ReactElement {
   return (
     <ContextWindowMeter
       maxTokens={contextWindowMaxTokens}
@@ -301,6 +311,7 @@ function renderContextWindowMeter(
       showPercentage={showPercentage}
       serverId={serverId}
       provider={provider}
+      model={model}
       pending={pending}
       glyphSize={glyphSize}
     />
@@ -398,13 +409,22 @@ interface RenderQueueTrackArgs {
   queuedMessages: readonly QueuedMessage[];
   handleEditQueuedMessage: (id: string) => void;
   handleSendQueuedNow: (id: string) => Promise<void>;
+  handleForkQueued: ((id: string) => void) | undefined;
   editLabel: string;
   sendNowLabel: string;
+  forkLabel: string;
 }
 
 function renderQueueTrack(args: RenderQueueTrackArgs): ReactElement | null {
-  const { queuedMessages, handleEditQueuedMessage, handleSendQueuedNow, editLabel, sendNowLabel } =
-    args;
+  const {
+    queuedMessages,
+    handleEditQueuedMessage,
+    handleSendQueuedNow,
+    handleForkQueued,
+    editLabel,
+    sendNowLabel,
+    forkLabel,
+  } = args;
   if (queuedMessages.length === 0) return null;
   return (
     <View style={styles.queueTrack}>
@@ -414,8 +434,10 @@ function renderQueueTrack(args: RenderQueueTrackArgs): ReactElement | null {
           item={item}
           onEdit={handleEditQueuedMessage}
           onSendNow={handleSendQueuedNow}
+          onFork={handleForkQueued}
           editLabel={editLabel}
           sendNowLabel={sendNowLabel}
+          forkLabel={forkLabel}
         />
       ))}
     </View>
@@ -520,15 +542,37 @@ interface AttemptStartRealtimeVoiceArgs {
   hasAgent: boolean;
   serverId: string;
   agentId: string;
+  sendBehavior: "interrupt" | "queue";
   toastErrorRef: { current: (message: string) => void };
+  onStartVoiceMode?: (() => void | Promise<void>) | undefined;
 }
 
 function attemptStartRealtimeVoice(args: AttemptStartRealtimeVoiceArgs): void {
-  const { voice, isConnected, hasAgent, serverId, agentId, toastErrorRef } = args;
-  if (!voice || !isConnected || !hasAgent) return;
+  const {
+    voice,
+    isConnected,
+    hasAgent,
+    serverId,
+    agentId,
+    sendBehavior,
+    toastErrorRef,
+    onStartVoiceMode,
+  } = args;
+  if (!voice || !isConnected) return;
   if (voice.isVoiceSwitching) return;
+  if (onStartVoiceMode) {
+    void Promise.resolve(onStartVoiceMode()).catch((error) => {
+      console.error("[Composer] Failed to start voice mode from draft", error);
+      const message = resolveErrorMessage(error);
+      if (message && message.trim().length > 0) {
+        toastErrorRef.current(message);
+      }
+    });
+    return;
+  }
+  if (!hasAgent) return;
   if (voice.isVoiceModeForAgent(serverId, agentId)) return;
-  void voice.startVoice(serverId, agentId).catch((error) => {
+  void voice.startVoice(serverId, agentId, { sendBehavior }).catch((error) => {
     console.error("[Composer] Failed to start voice mode", error);
     const message = resolveErrorMessage(error);
     if (message && message.trim().length > 0) {
@@ -686,16 +730,20 @@ interface QueuedMessageRowProps {
   item: QueuedMessage;
   onEdit: (id: string) => void;
   onSendNow: (id: string) => void;
+  onFork: ((id: string) => void) | undefined;
   editLabel: string;
   sendNowLabel: string;
+  forkLabel: string;
 }
 
 function QueuedMessageRow({
   item,
   onEdit,
   onSendNow,
+  onFork,
   editLabel,
   sendNowLabel,
+  forkLabel,
 }: QueuedMessageRowProps) {
   const handleEdit = useCallback(() => {
     onEdit(item.id);
@@ -703,6 +751,9 @@ function QueuedMessageRow({
   const handleSendNow = useCallback(() => {
     onSendNow(item.id);
   }, [onSendNow, item.id]);
+  const handleFork = useCallback(() => {
+    onFork?.(item.id);
+  }, [onFork, item.id]);
   return (
     <View style={styles.queueItem}>
       <Text style={styles.queueText} numberOfLines={2} ellipsizeMode="tail">
@@ -717,6 +768,16 @@ function QueuedMessageRow({
         >
           <ThemedPencil size={ICON_SIZE.sm} uniProps={iconForegroundMapping} />
         </Pressable>
+        {onFork ? (
+          <Pressable
+            onPress={handleFork}
+            style={styles.queueActionButton}
+            accessibilityLabel={forkLabel}
+            accessibilityRole="button"
+          >
+            <ThemedSplit size={ICON_SIZE.sm} uniProps={iconForegroundMapping} />
+          </Pressable>
+        ) : null}
         <Pressable
           onPress={handleSendNow}
           style={[styles.queueActionButton, styles.queueSendButton]}
@@ -984,6 +1045,29 @@ interface ComposerProps {
   onComposerHeightChange?: (height: number) => void;
   onAttentionInputFocus?: () => void;
   onAttentionPromptSend?: () => void;
+  /**
+   * Draft-tab only: create a real agent (if needed) then start voice mode.
+   * When set, the composer shows the voice button even before an agent exists.
+   */
+  onStartVoiceMode?: () => void | Promise<void>;
+  /**
+   * M9 Commander Voice (Mission Control composer only): when "commander" the
+   * voice-mode button becomes "Commander Voice" and pressing it calls
+   * onCommanderVoicePress (which opens the voice session panel) instead of
+   * starting stock realtime voice mode. Default "stock" keeps every other
+   * agent chat untouched.
+   */
+  voiceModeVariant?: "stock" | "commander";
+  /** M9: required when voiceModeVariant === "commander" — opens the panel. */
+  onCommanderVoicePress?: () => void;
+  /**
+   * M8 mailbox: this thread is the Commander's mailbox. Every send is an
+   * immediate steer-capable delivery — the daemon delivers idle→run /
+   * busy→steer-envelope and IGNORES the client's dispatchMode, so the
+   * composer's send-mode selector (interrupt/queue/steer) stops applying:
+   * submits never queue and never interrupt. The queue track is hidden.
+   */
+  mailboxDelivery?: boolean;
   /** Controlled agent controls rendered in input area (draft flows). */
   agentControls?: DraftAgentControlsProps;
   /** Extra styles merged onto the message input wrapper (e.g. elevated background). */
@@ -996,7 +1080,7 @@ interface ComposerProps {
    * and nothing else — never branch on it at the call site.
    */
   inputMode?: ComposerInputMode;
-  /** Renders the current text as static text on the same surface, for content there is nothing to type into. */
+  /** Renders `value` as static text on the same surface, for content there is nothing to type into. */
   readOnly?: boolean;
   /** Replaces the submit icon with this label, still inside the composer's own toolbar row. */
   submitLabel?: string;
@@ -1015,82 +1099,6 @@ function resolveContextWindowValues(
     return { contextWindowMaxTokens: rawMax, contextWindowUsedTokens: rawUsed };
   }
   return { contextWindowMaxTokens: null, contextWindowUsedTokens: null };
-}
-
-interface ComposerAutocompleteHandle {
-  onKeyPress: (event: ComposerKeyPressEvent) => boolean;
-}
-
-function ComposerAutocompleteBinding({
-  text,
-  cursor,
-  configuration,
-  inputRef,
-  anchorRef,
-  show,
-  ref,
-}: {
-  text: ComposerTextSource;
-  cursor: StoreApi<number>;
-  configuration: Omit<
-    Parameters<typeof useAgentAutocomplete>[0],
-    "userInput" | "cursorIndex" | "onAutocompleteApplied"
-  >;
-  inputRef: React.RefObject<MessageInputRef | null>;
-  anchorRef: React.RefObject<View | null>;
-  show: boolean;
-  ref: React.Ref<ComposerAutocompleteHandle>;
-}) {
-  const userInput = useSyncExternalStore(text.subscribe, text.getSnapshot, text.getSnapshot);
-  const cursorIndex = useStore(cursor);
-  const autocomplete = useAgentAutocomplete({
-    ...configuration,
-    userInput,
-    cursorIndex: Math.min(cursorIndex, userInput.length),
-    onAutocompleteApplied: () => inputRef.current?.focus(),
-  });
-  useImperativeHandle(ref, () => ({ onKeyPress: autocomplete.onKeyPress }), [
-    autocomplete.onKeyPress,
-  ]);
-  const selectOption = autocomplete.onSelectOption;
-  const onSelect = useCallback(
-    (option: AutocompleteOption) => selectOption(option, inputRef.current?.getInputSnapshot()),
-    [selectOption, inputRef],
-  );
-  return (
-    <ComposerAutocomplete
-      visible={autocomplete.isVisible && show}
-      anchorRef={anchorRef}
-      options={autocomplete.options}
-      selectedIndex={autocomplete.selectedIndex}
-      onSelect={onSelect}
-      isLoading={autocomplete.isLoading}
-      errorMessage={autocomplete.errorMessage}
-      loadingText={autocomplete.loadingText}
-      emptyText={autocomplete.emptyText}
-    />
-  );
-}
-
-function ComposerForgeBinding({
-  text,
-  configuration,
-  ref,
-  onResolvingChange,
-}: {
-  text: ComposerTextSource;
-  configuration: Omit<Parameters<typeof useComposerForgeAutoAttach>[0], "text">;
-  ref: React.Ref<ReturnType<typeof useComposerForgeAutoAttach>>;
-  onResolvingChange: (resolving: boolean) => void;
-}) {
-  const value = useSyncExternalStore(text.subscribe, text.getSnapshot, text.getSnapshot);
-  const binding = useComposerForgeAutoAttach({ ...configuration, text: value });
-  useImperativeHandle(ref, () => binding, [binding]);
-  useLayoutEffect(
-    () => onResolvingChange(binding.isResolving),
-    [binding.isResolving, onResolvingChange],
-  );
-  return null;
 }
 
 interface ComposerCancelButtonProps {
@@ -1152,34 +1160,103 @@ interface ComposerVoiceModeButtonProps {
   ) => (object | undefined)[];
   voiceToggleKeys: ReturnType<typeof useShortcutKeys>;
   t: TFunction;
+  /** M9: "commander" swaps the stock voice button for the Commander Voice one. */
+  variant?: "stock" | "commander";
+  onCommanderVoicePress?: () => void;
 }
 
 interface ComposerRightControlsSlotProps extends ComposerVoiceModeButtonProps {
   isVoiceModeForAgent: boolean;
   hasAgent: boolean;
+  isDraftComposer: boolean;
   isAgentRunning: boolean;
   hasSendableContent: boolean;
   isCompact: boolean;
+  isProcessing: boolean;
+  canFork: boolean;
+  onFork: () => void;
   showVoice: boolean;
 }
 
 function ComposerRightControlsSlot({
   isVoiceModeForAgent,
   hasAgent,
+  isDraftComposer,
   isAgentRunning,
   hasSendableContent,
   isCompact,
+  isProcessing,
+  canFork,
+  onFork,
   showVoice,
+  variant = "stock",
   ...voiceProps
 }: ComposerRightControlsSlotProps) {
   const hideVoiceForCompactInput = isCompact && hasSendableContent;
+  const canStartVoiceOnTarget = hasAgent || isDraftComposer;
+  // Commander Voice (M9) is a separate WS session — it never needs the agent
+  // idle, so the commander variant stays visible while the Commander runs
+  // (the voice node dispatches non-blocking and results arrive as pushes).
   const showVoiceModeButton =
-    showVoice && !isVoiceModeForAgent && hasAgent && !isAgentRunning && !hideVoiceForCompactInput;
-  if (!showVoiceModeButton) return null;
+    showVoice &&
+    (variant === "commander"
+      ? canStartVoiceOnTarget && !hideVoiceForCompactInput
+      : !isVoiceModeForAgent &&
+        canStartVoiceOnTarget &&
+        !isAgentRunning &&
+        !hideVoiceForCompactInput);
+  // Fork sits next to the send button while the agent is busy and there's
+  // something to send: it spins the message off into a new sibling agent
+  // instead of queueing/interrupting the current one.
+  const showForkButton = canFork && isAgentRunning && hasSendableContent && !isProcessing;
+  if (!showVoiceModeButton && !showForkButton) return null;
   return (
     <View style={styles.rightControls}>
-      <ComposerVoiceModeButton {...voiceProps} />
+      {showVoiceModeButton ? <ComposerVoiceModeButton {...voiceProps} variant={variant} /> : null}
+      {showForkButton ? (
+        <ComposerForkButton
+          buttonIconSize={voiceProps.buttonIconSize}
+          onFork={onFork}
+          t={voiceProps.t}
+        />
+      ) : null}
     </View>
+  );
+}
+
+function ComposerForkButton({
+  buttonIconSize,
+  onFork,
+  t,
+}: {
+  buttonIconSize: number;
+  onFork: () => void;
+  t: TFunction;
+}) {
+  const renderTriggerContent = useCallback(
+    ({ hovered }: PressableStateCallbackType & { hovered?: boolean }) => {
+      const colorMapping = hovered ? iconForegroundMapping : iconForegroundMutedMapping;
+      return <ThemedSplit size={buttonIconSize} uniProps={colorMapping} />;
+    },
+    [buttonIconSize],
+  );
+  return (
+    <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
+      <TooltipTrigger
+        onPress={onFork}
+        accessibilityLabel={t("composer.input.forkToNewTab")}
+        accessibilityRole="button"
+        testID="composer-fork-button"
+        style={styles.rightControlButton}
+      >
+        {renderTriggerContent}
+      </TooltipTrigger>
+      <TooltipContent side="top" align="center" offset={8}>
+        <View style={styles.tooltipRow}>
+          <Text style={styles.tooltipText}>{t("composer.input.forkToNewTab")}</Text>
+        </View>
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -1191,37 +1268,56 @@ function ComposerVoiceModeButton({
   realtimeVoiceButtonStyle,
   voiceToggleKeys,
   t,
+  variant = "stock",
+  onCommanderVoicePress,
 }: ComposerVoiceModeButtonProps) {
-  const shortcutNode = voiceToggleKeys ? <Shortcut chord={voiceToggleKeys} /> : null;
+  const isCommander = variant === "commander";
+  const shortcutNode =
+    !isCommander && voiceToggleKeys ? <Shortcut chord={voiceToggleKeys} /> : null;
   const renderTriggerContent = useCallback(
     ({ hovered }: PressableStateCallbackType & { hovered?: boolean }) => {
-      if (isVoiceSwitching) {
+      if (!isCommander && isVoiceSwitching) {
         return <LoadingSpinner size="small" color="white" />;
       }
       const colorMapping = hovered ? iconForegroundMapping : iconForegroundMutedMapping;
       return <ThemedAudioLines size={buttonIconSize} uniProps={colorMapping} />;
     },
-    [buttonIconSize, isVoiceSwitching],
+    [buttonIconSize, isCommander, isVoiceSwitching],
   );
   return (
     <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
       <TooltipTrigger
-        onPress={handleToggleRealtimeVoice}
-        disabled={!isConnected || isVoiceSwitching}
-        accessibilityLabel={t("composer.voice.enableVoiceMode")}
+        onPress={isCommander ? onCommanderVoicePress : handleToggleRealtimeVoice}
+        disabled={!isConnected || (!isCommander && isVoiceSwitching)}
+        accessibilityLabel={
+          isCommander ? t("composer.voice.commanderVoice") : t("composer.voice.enableVoiceMode")
+        }
         accessibilityRole="button"
+        testID={isCommander ? "composer-commander-voice-button" : undefined}
         style={realtimeVoiceButtonStyle}
       >
         {renderTriggerContent}
       </TooltipTrigger>
       <TooltipContent side="top" align="center" offset={8}>
         <View style={styles.tooltipRow}>
-          <Text style={styles.tooltipText}>{t("composer.voice.voiceMode")}</Text>
+          <Text style={styles.tooltipText}>
+            {isCommander ? t("composer.voice.commanderVoice") : t("composer.voice.voiceMode")}
+          </Text>
           {shortcutNode}
         </View>
       </TooltipContent>
     </Tooltip>
   );
+}
+
+/** The wire turn behavior for a send: explicit dispatch mode wins, else the default send setting. */
+function resolveActiveTurnBehavior(
+  dispatchMode: MessageDispatchMode | undefined,
+  sendBehavior: string,
+): "steer" | "interrupt" {
+  if (dispatchMode === "steer") return "steer";
+  if (dispatchMode === "interrupt") return "interrupt";
+  return sendBehavior === "steer" ? "steer" : "interrupt";
 }
 
 export function Composer({ isPaneFocused, ...props }: ComposerProps) {
@@ -1273,6 +1369,10 @@ function ComposerContentImpl({
   onComposerHeightChange,
   onAttentionInputFocus,
   onAttentionPromptSend,
+  onStartVoiceMode,
+  voiceModeVariant = "stock",
+  onCommanderVoicePress,
+  mailboxDelivery = false,
   agentControls,
   inputWrapperStyle,
   isCompactLayout: isCompactLayoutOverride,
@@ -1315,10 +1415,10 @@ function ComposerContentImpl({
   const isDesktopWebBreakpoint = resolveIsDesktopWebBreakpoint(isCompactFormFactor);
   const isDesktopLayout = resolveIsDesktopWebBreakpoint(isCompactLayout);
   const messagePlaceholder = resolveMessagePlaceholder(inputMode, isDesktopLayout, t, placeholder);
-  const hasText = useSyncExternalStore(
+  const userInput = useSyncExternalStore(
     textSource.subscribe,
-    () => textSource.getSnapshot().trim().length > 0,
-    () => textSource.getSnapshot().trim().length > 0,
+    textSource.getSnapshot,
+    textSource.getSnapshot,
   );
   const setUserInput = onChangeText;
   const workspaceAttachments = useWorkspaceAttachmentsForScopes(attachmentScopeKeys);
@@ -1341,41 +1441,21 @@ function ComposerContentImpl({
   const supportsForgeSearch = useSessionStore(
     (state) => state.sessions[serverId]?.serverInfo?.features?.forgeSearch === true,
   );
-  const forgeAutoAttachRef = useRef<ReturnType<typeof useComposerForgeAutoAttach>>(null);
-  const [isForgeResolving, setIsForgeResolving] = useState(false);
-  const forgeConfiguration = useMemo(
-    () => ({
-      remoteUrl: resolveCheckoutRemoteUrl(checkoutStatusQuery.status),
-      attachments,
-      client,
-      isConnected,
-      serverId,
-      cwd,
-      supportsForgeSearch,
-      setAttachments: setSelectedAttachments,
-      onChangeRequestDetected: onForgeChangeRequestDetected,
-      onChangeRequestAdded: onForgeChangeRequestAutoAttach,
-    }),
-    [
-      checkoutStatusQuery.status,
-      attachments,
-      client,
-      isConnected,
-      serverId,
-      cwd,
-      supportsForgeSearch,
-      setSelectedAttachments,
-      onForgeChangeRequestDetected,
-      onForgeChangeRequestAutoAttach,
-    ],
-  );
-  const cursor = useMemo(() => createStore<number>(() => 0), []);
-  const cursorPublication = useMemo(
-    () => new AfterPaintPublication<number>((position) => cursor.setState(position)),
-    [cursor],
-  );
-  useEffect(() => () => cursorPublication.cancel(), [cursorPublication]);
-  const autocompleteRef = useRef<ComposerAutocompleteHandle>(null);
+  const forgeAutoAttach = useComposerForgeAutoAttach({
+    text: userInput,
+    remoteUrl: resolveCheckoutRemoteUrl(checkoutStatusQuery.status),
+    attachments,
+    client,
+    isConnected,
+    serverId,
+    cwd,
+    supportsForgeSearch,
+    setAttachments: setSelectedAttachments,
+    onChangeRequestDetected: onForgeChangeRequestDetected,
+    onChangeRequestAdded: onForgeChangeRequestAutoAttach,
+  });
+  const [cursorIndex, setCursorIndex] = useState(0);
+  const cursorPublication = useMemo(() => new AfterPaintPublication<number>(setCursorIndex), []);
   const [isProcessing, setIsProcessing] = useState(false);
   const [pendingFiles, setPendingFiles] = useState<PendingFileAttachment[]>([]);
   const nextPendingFileId = useRef(0);
@@ -1473,6 +1553,36 @@ function ComposerContentImpl({
     [blurOnSubmit, clearDraft, replaceUserInput, resetSuppression, setSelectedAttachments],
   );
 
+  const autocomplete = useAgentAutocomplete({
+    userInput,
+    cursorIndex,
+    setUserInput: replaceUserInput,
+    serverId,
+    agentId,
+    draftConfig: commandDraftConfig,
+    canExecuteClientSlashCommand: buildOutgoingAttachments(attachments).length === 0,
+    onClientSlashCommand: runClientSlashCommand,
+    pluginClientSlashCommands,
+    onAutocompleteApplied: () => {
+      messageInputRef.current?.focus();
+    },
+  });
+  const autocompleteOnKeyPressRef = useRef(autocomplete.onKeyPress);
+  autocompleteOnKeyPressRef.current = autocomplete.onKeyPress;
+  const selectAutocompleteOption = autocomplete.onSelectOption;
+  const handleAutocompleteSelect = useCallback(
+    (option: AutocompleteOption) =>
+      selectAutocompleteOption(option, messageInputRef.current?.getInputSnapshot()),
+    [selectAutocompleteOption],
+  );
+
+  // Clear send error when user edits the input
+  useEffect(() => {
+    setCursorIndex((current) => Math.min(current, userInput.length));
+  }, [userInput.length]);
+
+  useEffect(() => () => cursorPublication.cancel(), [cursorPublication]);
+
   const { pickImages } = useImageAttachmentPicker();
   const { pickFiles } = useFilePicker();
   const agentIdRef = useRef(agentId);
@@ -1481,11 +1591,12 @@ function ComposerContentImpl({
         agentId: string,
         text: string,
         attachments: ComposerAttachment[],
-        activeTurnBehavior: "interrupt" | "steer",
+        dispatchMode?: MessageDispatchMode,
       ) => Promise<void>)
     | null
   >(null);
   const onSubmitMessageRef = useRef(onSubmitMessage);
+  const agentCommandsRef = useRef<readonly AgentSlashCommand[]>([]);
 
   const addImages = useCallback(
     (images: ImageAttachment[]) => {
@@ -1535,23 +1646,27 @@ function ComposerContentImpl({
   }, [focusInput, onFocusInput]);
 
   const submitMessage = useCallback(
-    async (text: string, submitAttachments: ComposerAttachment[]) => {
+    async (
+      text: string,
+      submitAttachments: ComposerAttachment[],
+      dispatchMode?: MessageDispatchMode,
+    ) => {
       onMessageSent?.();
       if (onSubmitMessageRef.current) {
-        await onSubmitMessageRef.current({ text, attachments: submitAttachments, cwd });
+        await onSubmitMessageRef.current({
+          text,
+          attachments: submitAttachments,
+          cwd,
+          dispatchMode,
+        });
         return;
       }
       if (!sendAgentMessageRef.current) {
         throw new Error(t("workspace.terminal.hostDisconnected"));
       }
-      await sendAgentMessageRef.current(
-        agentIdRef.current,
-        text,
-        submitAttachments,
-        appSettings.sendBehavior === "steer" ? "steer" : "interrupt",
-      );
+      await sendAgentMessageRef.current(agentIdRef.current, text, submitAttachments, dispatchMode);
     },
-    [appSettings.sendBehavior, cwd, onMessageSent, t],
+    [cwd, onMessageSent, t],
   );
 
   useEffect(() => {
@@ -1563,11 +1678,16 @@ function ComposerContentImpl({
       targetAgentId: string,
       text: string,
       sendAttachments: ComposerAttachment[],
-      activeTurnBehavior: "interrupt" | "steer",
+      dispatchMode?: MessageDispatchMode,
     ) => {
       if (!client) {
         throw new Error(t("workspace.terminal.hostDisconnected"));
       }
+      const skipOptimistic = isOutOfBandCommandDraft({
+        text,
+        hasAttachments: sendAttachments.length > 0,
+        commands: agentCommandsRef.current,
+      });
       await dispatchComposerAgentMessage({
         client,
         agentId: targetAgentId,
@@ -1578,14 +1698,22 @@ function ComposerContentImpl({
         }),
         encodeImages,
         submission: createMessageSubmissionWriter(serverId),
-        activeTurnBehavior,
+        activeTurnBehavior: resolveActiveTurnBehavior(dispatchMode, appSettings.sendBehavior),
         activeTurnId:
-          activeTurnBehavior === "steer"
+          dispatchMode === "steer" ||
+          (dispatchMode === undefined && appSettings.sendBehavior === "steer")
             ? (selectAgentTurnPresentation(
                 useSessionStore.getState().sessions[serverId],
                 targetAgentId,
               ).turnId ?? undefined)
             : undefined,
+        ...(dispatchMode ? { dispatchMode } : {}),
+        // Steer-behavior sends keep their optimistic user message: the steered
+        // instruction is a user message, not machinery, and providers do not
+        // reliably echo it into the chat. Only a draft that IS an out-of-band
+        // command (typed /steer, /compact, …) skips the bubble — the daemon
+        // runs those out of band and an optimistic copy would double-show.
+        skipOptimisticUserMessage: skipOptimistic,
       });
       onAttentionPromptSend?.();
     };
@@ -1600,6 +1728,9 @@ function ComposerContentImpl({
   );
   const isCancellingAgent = useSessionStore(
     (state) => selectAgentTurnPresentation(state.sessions[serverId], agentId).isCancelling,
+  );
+  const rejectAgentMessageSubmission = useSessionStore(
+    (state) => state.rejectAgentMessageSubmission,
   );
   const isAgentRunning = hasActiveTurn;
   // Queueing behind a permission prompt would strand the message: the turn is
@@ -1617,6 +1748,23 @@ function ComposerContentImpl({
     hasPendingPermission,
   );
   const hasAgent = agentState.status !== null;
+
+  // /steer and friends run against the live turn instead of starting one, so
+  // they must never enter the queue: a queued /steer is delivered after the
+  // turn it was meant to steer. The daemon reports which commands those are;
+  // this query shares its cache with the autocomplete's.
+  const { commands: agentCommands } = useAgentCommandsQuery({
+    serverId,
+    agentId,
+    enabled: isAgentRunning && userInput.trimStart().startsWith("/"),
+    draftConfig: commandDraftConfig,
+  });
+  agentCommandsRef.current = agentCommands;
+  const sendsOutOfBand = isOutOfBandCommandDraft({
+    text: userInput,
+    hasAttachments: buildOutgoingAttachments(attachments).length > 0,
+    commands: agentCommands,
+  });
 
   const queueWriter = useMemo<QueueWriter>(
     () => ({
@@ -1656,6 +1804,7 @@ function ComposerContentImpl({
       outgoingMessage: string,
       outgoingAttachments: ComposerAttachment[],
       forceSend?: boolean,
+      dispatchMode?: MessageDispatchMode,
     ) => {
       const result = await submitAgentInput({
         message: outgoingMessage,
@@ -1663,6 +1812,7 @@ function ComposerContentImpl({
         hasExternalContent,
         allowEmptySubmit,
         forceSend,
+        dispatchMode,
         submitBehavior,
         isAgentRunning,
         // Parent-managed submits are still valid submit paths even when the
@@ -1671,11 +1821,15 @@ function ComposerContentImpl({
         queueMessage: ({ message: queuedText, attachments: queuedAttachments }) => {
           queueMessage(queuedText, queuedAttachments);
         },
-        submitMessage: async ({ message: submitText, attachments: submitAttachments }) => {
+        submitMessage: async ({
+          message: submitText,
+          attachments: submitAttachments,
+          dispatchMode: submitDispatchMode,
+        }) => {
           if (submitBehavior !== "preserve-and-lock") {
             beginSubmit(submitAttachments);
           }
-          await submitMessage(submitText, submitAttachments);
+          await submitMessage(submitText, submitAttachments, submitDispatchMode);
         },
         clearDraft,
         setUserInput: replaceUserInput,
@@ -1730,12 +1884,30 @@ function ComposerContentImpl({
       if (blurOnSubmit) {
         messageInputRef.current?.blur();
       }
-      void sendMessageWithContent(payload.text, outgoingAttachments, payload.forceSend);
+      // M8 mailbox: the Commander thread never queues and never interrupts —
+      // forceSend bypasses the local queue and steer rides the daemon's
+      // single mailbox delivery path (the daemon owns the envelope).
+      const forceSend =
+        mailboxDelivery ||
+        payload.forceSend ||
+        isOutOfBandCommandDraft({
+          text: payload.text,
+          hasAttachments: outgoingAttachments.length > 0,
+          commands: agentCommands,
+        });
+      void sendMessageWithContent(
+        payload.text,
+        outgoingAttachments,
+        forceSend,
+        mailboxDelivery ? "steer" : payload.dispatchMode,
+      );
     },
     [
+      agentCommands,
       attachments,
       blurOnSubmit,
       buildOutgoingAttachments,
+      mailboxDelivery,
       runClientSlashCommand,
       pluginClientSlashCommands,
       runPluginClientSlashCommand,
@@ -1860,7 +2032,7 @@ function ComposerContentImpl({
 
   const handleRemoveAttachment = useCallback(
     (index: number) => {
-      forgeAutoAttachRef.current?.markForgeAttachmentRemoved(selectedAttachments[index]);
+      forgeAutoAttach.markForgeAttachmentRemoved(selectedAttachments[index]);
       const didRemoveWorkspaceAttachment = removeAttachment({
         selectedAttachments,
         index,
@@ -1872,7 +2044,7 @@ function ComposerContentImpl({
         removeComposerAttachmentAtIndex({ attachments: prev, index, deleteAttachments }),
       );
     },
-    [removeAttachment, selectedAttachments, setSelectedAttachments],
+    [forgeAutoAttach, removeAttachment, selectedAttachments, setSelectedAttachments],
   );
 
   const handleOpenAttachment = useCallback(
@@ -1908,10 +2080,26 @@ function ComposerContentImpl({
         }
       })
       .finally(() => {
+        const session = useSessionStore.getState().sessions[serverId];
+        for (const submission of session?.messageSubmissions.get(targetAgentId) ?? []) {
+          if (!submission.providerAcknowledged) {
+            rejectAgentMessageSubmission(serverId, targetAgentId, submission.clientMessageId);
+          }
+        }
+        getHostRuntimeStore().applyAgentTurnLiveness(serverId, targetAgentId, {
+          type: "destructive_close",
+        });
         getHostRuntimeStore().settleAgentCancellation(serverId, targetAgentId, requestId);
       });
     messageInputRef.current?.focus();
-  }, [client, isAgentRunning, isCancellingAgent, isConnected, serverId]);
+  }, [
+    client,
+    isAgentRunning,
+    isCancellingAgent,
+    isConnected,
+    rejectAgentMessageSubmission,
+    serverId,
+  ]);
 
   const focusMessageInputForKeyboardAction = useCallback(() => {
     focusMessageInputWithPlatformStrategy(messageInputRef);
@@ -1926,9 +2114,13 @@ function ComposerContentImpl({
       hasAgent,
       serverId,
       agentId,
+      // Realtime voice predates the Steer send behavior; Steer maps to
+      // Interrupt (spoken input starts its own run).
+      sendBehavior: appSettings.sendBehavior === "steer" ? "interrupt" : appSettings.sendBehavior,
       toastErrorRef,
+      onStartVoiceMode,
     });
-  }, [agentId, hasAgent, isConnected, serverId, voice]);
+  }, [agentId, appSettings.sendBehavior, hasAgent, isConnected, onStartVoiceMode, serverId, voice]);
 
   const handleEditQueuedMessage = useCallback(
     (id: string) => {
@@ -1947,13 +2139,13 @@ function ComposerContentImpl({
   const handleSendQueuedNow = useCallback(
     async (id: string) => {
       if (!sendAgentMessageRef.current && !onSubmitMessageRef.current) return;
-      // Reuse the regular send path; server-side send atomically interrupts any active run.
       const result = await sendQueuedComposerMessageNow({
         agentId,
         messageId: id,
+        deliveryMode: "steer",
         queue: queueWriter,
-        submitMessage: ({ text, attachments: queuedAttachments }) =>
-          submitMessage(text, queuedAttachments),
+        submitMessage: ({ text, attachments: queuedAttachments, dispatchMode }) =>
+          submitMessage(text, queuedAttachments, dispatchMode),
         failedToSendMessage: t("composer.errors.failedToSend"),
       });
       if (result.status === "failed") {
@@ -1979,23 +2171,122 @@ function ComposerContentImpl({
         commands: pluginClientSlashCommands,
       });
       if (pluginSlashCommand && runPluginClientSlashCommand(pluginSlashCommand)) return;
+
+      if (
+        isOutOfBandCommandDraft({
+          text: payload.text,
+          hasAttachments: outgoingAttachments.length > 0,
+          commands: agentCommands,
+        })
+      ) {
+        void sendMessageWithContent(payload.text, outgoingAttachments, true);
+        return;
+      }
       queueMessage(payload.text, outgoingAttachments);
     },
     [
+      agentCommands,
       attachments,
       buildOutgoingAttachments,
       pluginClientSlashCommands,
       queueMessage,
       runClientSlashCommand,
       runPluginClientSlashCommand,
+      sendMessageWithContent,
     ],
   );
 
-  const hasSendableContent = hasText || selectedAttachments.length > 0;
+  const hasSendableContent = userInput.trim().length > 0 || selectedAttachments.length > 0;
+
+  // COMPAT(agentFork): gate the composer fork action on the daemon capability.
+  const supportsAgentFork = useSessionStore(
+    (state) => state.sessions[serverId]?.serverInfo?.features?.agentFork === true,
+  );
+  const agentWorkspaceId = useSessionStore(
+    (state) => state.sessions[serverId]?.agents?.get(agentId)?.workspaceId ?? null,
+  );
+  const canFork = supportsAgentFork && !onSubmitMessage && agentWorkspaceId != null;
+
+  // Shared fork core: create a sibling agent from the given content and open it
+  // in a new tab. Throws on failure so callers can surface/re-queue as needed.
+  const forkContentToNewTab = useCallback(
+    async (text: string, outgoing: ComposerAttachment[]) => {
+      if (!client || !agentWorkspaceId) {
+        throw new Error(t("composer.input.forkFailed"));
+      }
+      const result = await forkComposerAgent({
+        client,
+        sourceAgentId: agentIdRef.current,
+        text,
+        attachments: outgoing,
+        encodeImages,
+      });
+      navigateToWorkspace({
+        serverId,
+        workspaceId: agentWorkspaceId,
+        target: { kind: "agent", agentId: result.agentId },
+      });
+    },
+    [agentWorkspaceId, client, serverId, t],
+  );
+
+  const handleFork = useCallback(() => {
+    const submitText = userInput.trim();
+    const outgoingAttachments = buildOutgoingAttachments(attachments);
+    if (!submitText && outgoingAttachments.length === 0) return;
+    if (!client || !agentWorkspaceId) {
+      setSendError(t("composer.input.forkFailed"));
+      return;
+    }
+    setIsProcessing(true);
+    setSendError(null);
+    void (async () => {
+      try {
+        await forkContentToNewTab(submitText, outgoingAttachments);
+        clearDraft("sent");
+        setUserInput("");
+        setSelectedAttachments([]);
+        resetSuppression();
+      } catch (error) {
+        setSendError(error instanceof Error ? error.message : t("composer.input.forkFailed"));
+      } finally {
+        setIsProcessing(false);
+      }
+    })();
+  }, [
+    agentWorkspaceId,
+    attachments,
+    buildOutgoingAttachments,
+    clearDraft,
+    client,
+    forkContentToNewTab,
+    resetSuppression,
+    setSelectedAttachments,
+    setUserInput,
+    t,
+    userInput,
+  ]);
+
+  const handleForkQueued = useCallback(
+    async (id: string) => {
+      const result = await forkQueuedComposerMessage({
+        agentId,
+        messageId: id,
+        queue: queueWriter,
+        fork: ({ text, attachments: queuedAttachments }) =>
+          forkContentToNewTab(text, queuedAttachments),
+        failedToForkMessage: t("composer.input.forkFailed"),
+      });
+      if (result.status === "failed") {
+        setSendError(result.errorMessage);
+      }
+    },
+    [agentId, forkContentToNewTab, queueWriter, t],
+  );
 
   // Handle keyboard navigation for command autocomplete.
   const handleCommandKeyPress = useCallback(
-    (event: ComposerKeyPressEvent) => autocompleteRef.current?.onKeyPress(event) ?? false,
+    (event: ComposerKeyPressEvent) => autocompleteOnKeyPressRef.current(event),
     [],
   );
 
@@ -2011,7 +2302,6 @@ function ComposerContentImpl({
       buildRealtimeVoiceButtonStyle(state.hovered, voiceButtonDisabled, isCompactLayout),
     [isCompactLayout, voiceButtonDisabled],
   );
-
   const activeActionContent = useMemo(
     () => (
       <ComposerCancelButton
@@ -2040,9 +2330,13 @@ function ComposerContentImpl({
       <ComposerRightControlsSlot
         isVoiceModeForAgent={isVoiceModeForAgent}
         hasAgent={hasAgent}
+        isDraftComposer={Boolean(onStartVoiceMode)}
         isAgentRunning={isAgentRunning}
         hasSendableContent={hasSendableContent}
         isCompact={isCompactLayout}
+        isProcessing={isProcessing}
+        canFork={canFork}
+        onFork={handleFork}
         showVoice={mode.showVoice}
         buttonIconSize={buttonIconSize}
         handleToggleRealtimeVoice={handleToggleRealtimeVoice}
@@ -2051,21 +2345,29 @@ function ComposerContentImpl({
         realtimeVoiceButtonStyle={realtimeVoiceButtonStyle}
         voiceToggleKeys={voiceToggleKeys}
         t={t}
+        variant={voiceModeVariant}
+        onCommanderVoicePress={onCommanderVoicePress}
       />
     ),
     [
       buttonIconSize,
+      canFork,
+      handleFork,
       handleToggleRealtimeVoice,
       hasAgent,
+      onStartVoiceMode,
+      onCommanderVoicePress,
       hasSendableContent,
       isAgentRunning,
       isConnected,
       isCompactLayout,
+      isProcessing,
       isVoiceModeForAgent,
       isVoiceSwitching,
       mode.showVoice,
       realtimeVoiceButtonStyle,
       t,
+      voiceModeVariant,
       voiceToggleKeys,
     ],
   );
@@ -2075,27 +2377,34 @@ function ComposerContentImpl({
     agentState.contextWindowUsedTokens,
   );
 
-  const contextWindowPending = agentState.status === "initializing" || isAgentRunning;
+  // Always reserve the meter for agent composers, even before the first usage
+  // sample arrives (restored idle tabs, brand-new chats).
+  const contextWindowPending = true;
   const contextWindowMeterGlyphSize = isCompactLayout ? ICON_SIZE.md : buttonIconSize;
 
   const contextWindowMeter = useMemo(
     () =>
-      renderContextWindowMeter(
-        contextWindowMaxTokens,
-        contextWindowUsedTokens,
-        agentState.totalCostUsd,
-        false,
-        serverId,
-        agentState.provider,
-        contextWindowPending,
-        contextWindowMeterGlyphSize,
-      ),
+      hasAgent
+        ? renderContextWindowMeter(
+            contextWindowMaxTokens,
+            contextWindowUsedTokens,
+            agentState.totalCostUsd,
+            false,
+            serverId,
+            agentState.provider,
+            agentState.model,
+            contextWindowPending,
+            contextWindowMeterGlyphSize,
+          )
+        : null,
     [
+      hasAgent,
       contextWindowMaxTokens,
       contextWindowUsedTokens,
       agentState.totalCostUsd,
       serverId,
       agentState.provider,
+      agentState.model,
       contextWindowPending,
       contextWindowMeterGlyphSize,
     ],
@@ -2211,14 +2520,19 @@ function ComposerContentImpl({
       const nextAttachments = toggleForgeAttachmentFromPicker({
         current: attachments,
         item,
-        markForgeAttachmentRemoved: (attachment) =>
-          forgeAutoAttachRef.current?.markForgeAttachmentRemoved(attachment),
+        markForgeAttachmentRemoved: forgeAutoAttach.markForgeAttachmentRemoved,
       });
       setSelectedAttachments(nextAttachments);
       setIsGithubPickerOpen(false);
       setGithubSearchQuery("");
     },
-    [attachments, setSelectedAttachments, setGithubSearchQuery, setIsGithubPickerOpen],
+    [
+      attachments,
+      forgeAutoAttach,
+      setSelectedAttachments,
+      setGithubSearchQuery,
+      setIsGithubPickerOpen,
+    ],
   );
 
   const leftContent = useMemo(
@@ -2243,10 +2557,10 @@ function ComposerContentImpl({
       if (isWeb) {
         cursorPublication.stage(selection.start);
       } else {
-        cursor.setState(selection.start);
+        setCursorIndex(selection.start);
       }
     },
-    [cursorPublication, cursor],
+    [cursorPublication],
   );
 
   const handleFocusChange = useCallback(
@@ -2334,43 +2648,36 @@ function ComposerContentImpl({
 
   const queueList = useMemo(
     () =>
-      renderQueueTrack({
-        queuedMessages,
-        handleEditQueuedMessage,
-        handleSendQueuedNow,
-        editLabel: t("composer.attachments.editQueuedMessage"),
-        sendNowLabel: t("composer.attachments.sendQueuedMessageNow"),
-      }),
-    [handleEditQueuedMessage, handleSendQueuedNow, queuedMessages, t],
-  );
-
-  const autocompleteConfiguration = useMemo(
-    () => ({
-      setUserInput: replaceUserInput,
-      serverId,
-      agentId,
-      draftConfig: commandDraftConfig,
-      canExecuteClientSlashCommand: buildOutgoingAttachments(attachments).length === 0,
-      onClientSlashCommand: runClientSlashCommand,
-      pluginClientSlashCommands,
-    }),
+      // M8 mailbox: the Commander thread never queues — messages deliver
+      // immediately (idle run / busy steer); the queue track is hidden.
+      mailboxDelivery
+        ? null
+        : renderQueueTrack({
+            queuedMessages,
+            handleEditQueuedMessage,
+            handleSendQueuedNow,
+            handleForkQueued: canFork ? handleForkQueued : undefined,
+            editLabel: t("composer.attachments.editQueuedMessage"),
+            sendNowLabel: t("composer.attachments.sendQueuedMessageNow"),
+            forkLabel: t("composer.input.forkToNewTab"),
+          }),
     [
-      replaceUserInput,
-      serverId,
-      agentId,
-      commandDraftConfig,
-      buildOutgoingAttachments,
-      attachments,
-      runClientSlashCommand,
-      pluginClientSlashCommands,
+      canFork,
+      handleEditQueuedMessage,
+      handleForkQueued,
+      handleSendQueuedNow,
+      mailboxDelivery,
+      queuedMessages,
+      t,
     ],
   );
+
   const messageInputContainerRef = useRef<View>(null);
 
   const isSubmitLoadingVisible =
     isProcessing || isSubmitLoading || isUploadingFile || pendingNativeImagePastes > 0;
   const isSubmitDisabled =
-    isSubmitLoadingVisible || (waitForForgeAutoAttachOnSubmit && isForgeResolving);
+    isSubmitLoadingVisible || (waitForForgeAutoAttachOnSubmit && forgeAutoAttach.isResolving);
 
   // Disable drops while submitting/uploading: the submit path clears and restores attachments,
   // so a drop in that window would be lost or land on a locked draft. `disabled` hides the
@@ -2398,6 +2705,7 @@ function ComposerContentImpl({
   const githubEmptyText = githubSearchResultsQuery.isFetching
     ? t("composer.github.searching")
     : t("composer.github.noResults");
+  const autocompleteVisible = autocomplete.isVisible && mode.showAutocomplete;
 
   return (
     <>
@@ -2420,27 +2728,23 @@ function ComposerContentImpl({
             {sendErrorNode}
 
             <View ref={messageInputContainerRef} style={styles.messageInputContainer}>
-              <ComposerAutocompleteBinding
-                text={textSource}
-                cursor={cursor}
-                inputRef={messageInputRef}
+              <ComposerAutocomplete
+                visible={autocompleteVisible}
                 anchorRef={messageInputContainerRef}
-                show={mode.showAutocomplete}
-                ref={autocompleteRef}
-                configuration={autocompleteConfiguration}
-              />
-              <ComposerForgeBinding
-                text={textSource}
-                configuration={forgeConfiguration}
-                ref={forgeAutoAttachRef}
-                onResolvingChange={setIsForgeResolving}
+                options={autocomplete.options}
+                selectedIndex={autocomplete.selectedIndex}
+                onSelect={handleAutocompleteSelect}
+                isLoading={autocomplete.isLoading}
+                errorMessage={autocomplete.errorMessage}
+                loadingText={autocomplete.loadingText}
+                emptyText={autocomplete.emptyText}
               />
 
               {/* MessageInput handles everything: text, dictation, attachments, all buttons */}
               <RenderProfile id="MessageInput">
                 <StableMessageInput
                   ref={messageInputRef}
-                  value={textSource.getSnapshot()}
+                  value={userInput}
                   onChangeText={setUserInput}
                   onSubmit={handleSubmit}
                   hasExternalContent={hasExternalContent}
@@ -2470,8 +2774,9 @@ function ComposerContentImpl({
                   voiceServerId={serverId}
                   voiceAgentId={agentId}
                   isAgentRunning={isAgentRunning}
-                  defaultSendBehavior={activeSendBehavior}
-                  onQueue={handleQueue}
+                  defaultSendBehavior={mailboxDelivery ? "steer" : activeSendBehavior}
+                  sendsOutOfBand={sendsOutOfBand}
+                  onQueue={mailboxDelivery ? undefined : handleQueue}
                   onSubmitLoadingPress={submitLoadingPressHandler}
                   onKeyPress={handleCommandKeyPress}
                   onSelectionChange={handleSelectionChange}
@@ -2582,6 +2887,13 @@ const styles = StyleSheet.create((theme: Theme) => ({
     alignItems: "center",
     justifyContent: "center",
   },
+  rightControlButton: {
+    width: 28,
+    height: 28,
+    borderRadius: theme.borderRadius.full,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   realtimeVoiceButtonCompactReserve: {
     marginLeft: theme.spacing[1],
   },
@@ -2658,6 +2970,7 @@ const ThemedArrowUp = withUnistyles(ArrowUp);
 const ThemedGitPullRequest = withUnistyles(GitPullRequest);
 const ThemedCircleDot = withUnistyles(CircleDot);
 const ThemedAudioLines = withUnistyles(AudioLines);
+const ThemedSplit = withUnistyles(Split);
 const ThemedPaperclip = withUnistyles(Paperclip);
 const ThemedImageIcon = withUnistyles(ImageIcon);
 const ThemedClipboardPaste = withUnistyles(ClipboardPaste);

@@ -1,0 +1,16 @@
+{
+  "name": "paseo-bridge",
+  "displayName": "Paseo Bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Opens files in the running code-server window on request from the Paseo app, without reloading the page.",
+  "publisher": "paseo",
+  "main": "./extension.js",
+  "contributes": {},
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "engines": {
+    "vscode": "^1.80.0"
+  }
+}

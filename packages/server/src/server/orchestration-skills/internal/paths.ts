@@ -14,7 +14,9 @@ export function resolveBundledSkillsDir(moduleUrl: string | URL = import.meta.ur
   return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0]!;
 }
 
-export function resolveSkillTargets(home: string = os.homedir()): SkillTargets {
+export function resolveSkillTargets(
+  home: string = process.env.PASEO_SKILLS_HOME?.trim() || os.homedir(),
+): SkillTargets {
   return {
     sourceDir: resolveBundledSkillsDir(),
     agentsDir: path.join(home, ".agents", "skills"),

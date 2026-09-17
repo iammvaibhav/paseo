@@ -31,6 +31,7 @@ import {
   Bell,
   Shield,
   Puzzle,
+  Radar,
   Plus,
   FolderGit2,
   SquareTerminal,
@@ -46,10 +47,12 @@ import { ComboboxTrigger } from "@/components/ui/combobox-trigger";
 import { SidebarHeaderRow } from "@/components/sidebar/sidebar-header-row";
 import { SidebarSeparator } from "@/components/sidebar/sidebar-separator";
 import { HostPicker as SharedHostPicker } from "@/components/hosts/host-picker";
+import { normalizeItsaplanOrigin } from "@/itsaplan/itsaplan-origin";
 import { HostStatusDot } from "@/components/host-status-dot";
 import { ScreenTitle } from "@/components/headers/screen-title";
 import { HeaderIconBadge } from "@/components/headers/header-icon-badge";
 import { SettingsSection } from "@/components/settings/headings/settings-section";
+import { MissionControlSection } from "@/screens/settings/mission-control-section";
 import { AppearanceSection } from "@/screens/settings/appearance/appearance-section";
 import { LayoutSection } from "@/screens/settings/layout/layout-section";
 import {
@@ -61,7 +64,11 @@ import {
   type ServiceUrlBehavior,
   type Settings as EffectiveSettings,
 } from "@/hooks/use-settings";
-import { useHostRuntimeIsConnected, useHosts } from "@/runtime/host-runtime";
+import {
+  syncDesktopInsecureOrigins,
+  useHostRuntimeIsConnected,
+  useHosts,
+} from "@/runtime/host-runtime";
 import { useSessionStore } from "@/stores/session-store";
 import {
   orderHostsLocalFirst,
@@ -151,6 +158,11 @@ interface SidebarSectionItem {
 
 const SIDEBAR_SECTION_ITEMS: SidebarSectionItem[] = [
   { id: "general", labelKey: "settings.sections.general", icon: Settings },
+  {
+    id: "mission-control",
+    labelKey: "settings.sections.missionControl",
+    icon: Radar,
+  },
   { id: "appearance", labelKey: "settings.sections.appearance", icon: Palette },
   {
     id: "layout",
@@ -287,6 +299,7 @@ interface GeneralSectionProps {
   handleServiceUrlBehaviorChange: (behavior: ServiceUrlBehavior) => void;
   handleLanguageChange: (language: AppLanguage) => void;
   handleTerminalScrollbackLinesChange: (lines: number) => void;
+  handleItsaplanOriginChange: (origin: string) => void;
 }
 
 interface ServiceUrlBehaviorMenuItemProps {
@@ -361,6 +374,7 @@ function GeneralSection({
   handleServiceUrlBehaviorChange,
   handleLanguageChange,
   handleTerminalScrollbackLinesChange,
+  handleItsaplanOriginChange,
 }: GeneralSectionProps) {
   const { t, i18n } = useTranslation();
   const activeLocale = getActiveLocale(i18n.language);
@@ -403,6 +417,19 @@ function GeneralSection({
   useEffect(() => {
     setTerminalScrollbackValue(String(settings.terminalScrollbackLines));
   }, [settings.terminalScrollbackLines]);
+
+  const [itsaplanOriginValue, setItsaplanOriginValue] = useState(settings.itsaplanOrigin);
+  const commitItsaplanOrigin = useCallback(() => {
+    const next = normalizeItsaplanOrigin(itsaplanOriginValue) ?? "";
+    setItsaplanOriginValue(next);
+    if (next !== settings.itsaplanOrigin) {
+      handleItsaplanOriginChange(next);
+    }
+  }, [handleItsaplanOriginChange, itsaplanOriginValue, settings.itsaplanOrigin]);
+
+  useEffect(() => {
+    setItsaplanOriginValue(settings.itsaplanOrigin);
+  }, [settings.itsaplanOrigin]);
 
   return (
     <SettingsSection title={t("settings.general.title")}>
@@ -506,6 +533,29 @@ function GeneralSection({
             selectTextOnFocus
             style={styles.terminalScrollbackInput}
             accessibilityLabel={t("settings.general.terminalScrollback.accessibilityLabel")}
+          />
+        </View>
+        <View style={[settingsStyles.row, settingsStyles.rowBorder]}>
+          <View style={settingsStyles.rowContent}>
+            <Text style={settingsStyles.rowTitle}>
+              {t("settings.general.itsaplanOrigin.label")}
+            </Text>
+            <Text style={settingsStyles.rowHint}>
+              {t("settings.general.itsaplanOrigin.description")}
+            </Text>
+          </View>
+          <TextInput
+            initialValue={itsaplanOriginValue}
+            onChangeText={setItsaplanOriginValue}
+            onBlur={commitItsaplanOrigin}
+            onSubmitEditing={commitItsaplanOrigin}
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="url"
+            selectTextOnFocus
+            style={styles.terminalScrollbackInput}
+            accessibilityLabel={t("settings.general.itsaplanOrigin.accessibilityLabel")}
+            placeholder="https://host:8443"
           />
         </View>
       </View>
@@ -1293,6 +1343,15 @@ export default function SettingsScreen({ view, openAddHostIntent = null }: Setti
     [updateSettings],
   );
 
+  const handleItsaplanOriginChange = useCallback(
+    (itsaplanOrigin: string) => {
+      void updateSettings({ itsaplanOrigin });
+      // Persist the plain-HTTP embed origin into the desktop insecure-origin
+      // allowlist right away; Electron applies it on next app launch.
+      void syncDesktopInsecureOrigins();
+    },
+    [updateSettings],
+  );
   const handleUseLegacyTerminalRendererChange = useCallback(
     (useLegacyTerminalRenderer: boolean) => {
       void updateSettings({ useLegacyTerminalRenderer });
@@ -1496,6 +1555,61 @@ export default function SettingsScreen({ view, openAddHostIntent = null }: Setti
   let content: ReactNode;
   if (view.kind === "section" && view.section === "layout") {
     content = isDesktopApp ? <LayoutSection /> : null;
+  } else if (view.kind === "section") {
+    const section = view.section;
+    content = (() => {
+      switch (section) {
+        case "general":
+          return (
+            <>
+              <GeneralSection
+                settings={settings}
+                isDesktopApp={isDesktopApp}
+                handleSendBehaviorChange={handleSendBehaviorChange}
+                handleServiceUrlBehaviorChange={handleServiceUrlBehaviorChange}
+                handleLanguageChange={handleLanguageChange}
+                handleTerminalScrollbackLinesChange={handleTerminalScrollbackLinesChange}
+                handleItsaplanOriginChange={handleItsaplanOriginChange}
+              />
+              {isDesktopApp ? <BrowserDataSection /> : null}
+            </>
+          );
+        case "mission-control":
+          return <MissionControlSection />;
+        case "appearance":
+          return <AppearanceSection />;
+        case "editor":
+          return isWeb ? <EditorSection /> : null;
+        case "shortcuts":
+          return isDesktopApp ? <KeyboardShortcutsSection /> : null;
+        case "integrations":
+          return isDesktopApp ? <IntegrationsSection /> : null;
+        case "notifications":
+          return isDesktopApp ? <DesktopNotificationsSection /> : null;
+        case "permissions":
+          return isDesktopApp ? <DesktopPermissionsSection /> : null;
+        case "diagnostics":
+          return (
+            <DiagnosticsSection
+              useLegacyTerminalRenderer={settings.useLegacyTerminalRenderer}
+              onUseLegacyTerminalRendererChange={handleUseLegacyTerminalRendererChange}
+              voiceAudioEngine={voiceAudioEngine}
+              isPlaybackTestRunning={isPlaybackTestRunning}
+              playbackTestResult={playbackTestResult}
+              handlePlaybackTest={handlePlaybackTest}
+            />
+          );
+        case "about":
+          return (
+            <AboutSection
+              appVersion={appVersion}
+              appVersionText={appVersionText}
+              isDesktopApp={isDesktopApp}
+            />
+          );
+      }
+      return null;
+    })();
   } else {
     content = (() => {
       if (view.kind === "plugin")
@@ -1518,55 +1632,6 @@ export default function SettingsScreen({ view, openAddHostIntent = null }: Setti
             showBackToProjects={!isCompactLayout}
           />
         );
-      }
-      if (view.kind === "section") {
-        switch (view.section) {
-          case "general":
-            return (
-              <>
-                <GeneralSection
-                  settings={settings}
-                  isDesktopApp={isDesktopApp}
-                  handleSendBehaviorChange={handleSendBehaviorChange}
-                  handleServiceUrlBehaviorChange={handleServiceUrlBehaviorChange}
-                  handleLanguageChange={handleLanguageChange}
-                  handleTerminalScrollbackLinesChange={handleTerminalScrollbackLinesChange}
-                />
-                {isDesktopApp ? <BrowserDataSection /> : null}
-              </>
-            );
-          case "appearance":
-            return <AppearanceSection />;
-          case "editor":
-            return isWeb ? <EditorSection /> : null;
-          case "shortcuts":
-            return isDesktopApp ? <KeyboardShortcutsSection /> : null;
-          case "integrations":
-            return isDesktopApp ? <IntegrationsSection /> : null;
-          case "notifications":
-            return isDesktopApp ? <DesktopNotificationsSection /> : null;
-          case "permissions":
-            return isDesktopApp ? <DesktopPermissionsSection /> : null;
-          case "diagnostics":
-            return (
-              <DiagnosticsSection
-                useLegacyTerminalRenderer={settings.useLegacyTerminalRenderer}
-                onUseLegacyTerminalRendererChange={handleUseLegacyTerminalRendererChange}
-                voiceAudioEngine={voiceAudioEngine}
-                isPlaybackTestRunning={isPlaybackTestRunning}
-                playbackTestResult={playbackTestResult}
-                handlePlaybackTest={handlePlaybackTest}
-              />
-            );
-          case "about":
-            return (
-              <AboutSection
-                appVersion={appVersion}
-                appVersionText={appVersionText}
-                isDesktopApp={isDesktopApp}
-              />
-            );
-        }
       }
       return null;
     })();

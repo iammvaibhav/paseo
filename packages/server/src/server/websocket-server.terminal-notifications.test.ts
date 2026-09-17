@@ -198,17 +198,19 @@ function connectClient(server: VoiceAssistantWebSocketServer, subscribed = true)
   const delivery = new SessionDelivery(() => {});
   delivery.attach(ws, false);
   asInternals<{ sessions: Map<unknown, unknown> }>(server).sessions.set(ws, {
-    kind: "trusted",
     session: {
       delivery,
       wantsSourceNotification: () => true,
       getClientActivity: vi.fn(() => null),
       subscribesToTerminalDirectory: vi.fn(async () => subscribed),
     },
+    principalId: "owner",
+    sessionKey: JSON.stringify(["owner", "client-test"]),
     clientId: "client-test",
     appVersion: null,
     connectionLogger: createLogger(),
     sockets: new Set([ws]),
+    lifecycle: "reconnectable",
     externalDisconnectCleanupTimeout: null,
   });
   return ws;

@@ -4,7 +4,9 @@
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "target": "ES2022",
-    "lib": ["ES2022", "DOM"],
+    // Electron 41 runs Node 22 / V8 14, so ES2024 built-ins (Promise.withResolvers,
+    // Object.groupBy) are available at runtime. Emit target stays ES2022.
+    "lib": ["ES2024", "DOM"],
     "types": ["node"],
     "outDir": "./dist",
     "rootDir": "./src",

@@ -1,5 +1,6 @@
 import { Buffer } from "buffer";
 import { buildAgentDeepLinkRoute } from "@getpaseo/protocol/agent-deep-link";
+import type { WorkspaceTabTarget } from "@/workspace-tabs/model";
 
 type NullableString = string | null | undefined;
 const BASE64_WORKSPACE_ID_PREFIX = "b64_";
@@ -124,7 +125,86 @@ export type WorkspaceOpenIntent =
   | { kind: "terminal"; terminalId: string }
   | { kind: "file"; path: string }
   | { kind: "draft"; draftId: string }
-  | { kind: "setup"; workspaceId: string };
+  | { kind: "setup"; workspaceId: string }
+  | { kind: "browser"; browserId: string }
+  | { kind: "commit_diff"; sha: string }
+  | { kind: "working_diff"; path?: string }
+  | { kind: "changes_tree" }
+  | { kind: "files" }
+  | { kind: "pull_request" }
+  | { kind: "provider_subagent"; parentAgentId: string; subagentId: string }
+  | { kind: "plugin"; pluginId: string; panelId: string };
+
+function parseSimpleWorkspaceOpenIntent(normalized: string): WorkspaceOpenIntent | null {
+  if (
+    normalized === "changes_tree" ||
+    normalized === "files" ||
+    normalized === "pull_request" ||
+    normalized === "working_diff"
+  ) {
+    return { kind: normalized };
+  }
+  return null;
+}
+
+function parseDiffWorkspaceOpenIntent(
+  kind: "commit_diff" | "working_diff",
+  payload: string,
+): WorkspaceOpenIntent {
+  const decoded = decodeFilePathFromPathSegment(payload) ?? decodeSegment(payload);
+  return kind === "commit_diff"
+    ? { kind: "commit_diff", sha: decoded }
+    : { kind: "working_diff", path: decoded };
+}
+
+function parsePayloadWorkspaceOpenIntent(
+  kind: string,
+  payload: string,
+): WorkspaceOpenIntent | null {
+  switch (kind) {
+    case "agent":
+      return { kind: "agent", agentId: payload };
+    case "terminal":
+      return { kind: "terminal", terminalId: payload };
+    case "draft":
+      return { kind: "draft", draftId: payload };
+    case "file": {
+      const decodedPath = decodeFilePathFromPathSegment(payload);
+      return decodedPath ? { kind: "file", path: decodedPath } : null;
+    }
+    case "setup": {
+      const workspaceId = decodeWorkspaceIdFromPathSegment(payload);
+      return workspaceId ? { kind: "setup", workspaceId } : null;
+    }
+    case "browser":
+      return { kind: "browser", browserId: decodeSegment(payload) };
+    case "commit_diff":
+    case "working_diff":
+      return parseDiffWorkspaceOpenIntent(kind, payload);
+    case "provider_subagent": {
+      const parts = payload.split(":");
+      return parts.length === 2 && parts[0] && parts[1]
+        ? {
+            kind: "provider_subagent",
+            parentAgentId: decodeSegment(parts[0]),
+            subagentId: decodeSegment(parts[1]),
+          }
+        : null;
+    }
+    case "plugin": {
+      const parts = payload.split(":");
+      return parts.length >= 2 && parts[0] && parts[1]
+        ? {
+            kind: "plugin",
+            pluginId: decodeSegment(parts[0]),
+            panelId: decodeSegment(parts[1]),
+          }
+        : null;
+    }
+    default:
+      return null;
+  }
+}
 
 export function parseWorkspaceOpenIntent(
   value: string | null | undefined,
@@ -132,6 +212,11 @@ export function parseWorkspaceOpenIntent(
   const normalized = trimNonEmpty(value);
   if (!normalized) {
     return null;
+  }
+
+  const simple = parseSimpleWorkspaceOpenIntent(normalized);
+  if (simple) {
+    return simple;
   }
 
   const separator = normalized.indexOf(":");
@@ -145,31 +230,7 @@ export function parseWorkspaceOpenIntent(
     return null;
   }
 
-  if (kind === "agent") {
-    return { kind: "agent", agentId: payload };
-  }
-  if (kind === "terminal") {
-    return { kind: "terminal", terminalId: payload };
-  }
-  if (kind === "draft") {
-    return { kind: "draft", draftId: payload };
-  }
-  if (kind === "file") {
-    const decodedPath = decodeFilePathFromPathSegment(payload);
-    if (!decodedPath) {
-      return null;
-    }
-    return { kind: "file", path: decodedPath };
-  }
-  if (kind === "setup") {
-    const workspaceId = decodeWorkspaceIdFromPathSegment(payload);
-    if (!workspaceId) {
-      return null;
-    }
-    return { kind: "setup", workspaceId };
-  }
-
-  return null;
+  return parsePayloadWorkspaceOpenIntent(kind, payload);
 }
 
 export function parseHostWorkspaceOpenIntentFromPathname(
@@ -371,6 +432,52 @@ export function buildHostWorkspaceOpenRoute(
   }
   return `${base}?open=${encodeURIComponent(normalizedOpenIntent)}` as const;
 }
+export function buildWorkspaceTabOpenIntent(target: WorkspaceTabTarget): string | null {
+  switch (target.kind) {
+    case "agent":
+      return `agent:${target.agentId}`;
+    case "terminal":
+      return `terminal:${target.terminalId}`;
+    case "file":
+      return `file:${encodeFilePathForPathSegment(target.path)}`;
+    case "draft":
+      return `draft:${target.draftId}`;
+    case "setup":
+      return `setup:${encodeWorkspaceIdForPathSegment(target.workspaceId)}`;
+    case "browser":
+      return `browser:${encodeSegment(target.browserId)}`;
+    case "commit_diff":
+      return `commit_diff:${encodeFilePathForPathSegment(target.sha)}`;
+    case "working_diff":
+      return target.focusPath
+        ? `working_diff:${encodeFilePathForPathSegment(target.focusPath)}`
+        : "working_diff";
+    case "changes_tree":
+      return "changes_tree";
+    case "files":
+      return "files";
+    case "pull_request":
+      return "pull_request";
+    case "provider_subagent":
+      return `provider_subagent:${encodeSegment(target.parentAgentId)}:${encodeSegment(target.subagentId)}`;
+    case "plugin":
+      return `plugin:${encodeSegment(target.pluginId)}:${encodeSegment(target.panelId)}`;
+    default:
+      return null;
+  }
+}
+
+export function buildHostWorkspaceTabRoute(
+  serverId: string,
+  workspaceId: string,
+  target: WorkspaceTabTarget,
+): string {
+  const intent = buildWorkspaceTabOpenIntent(target);
+  if (!intent) {
+    return buildHostWorkspaceRoute(serverId, workspaceId);
+  }
+  return buildHostWorkspaceOpenRoute(serverId, workspaceId, intent);
+}
 
 export function buildHostAgentDetailRoute(serverId: string, agentId: string, workspaceId?: string) {
   const normalizedWorkspaceId = trimNonEmpty(workspaceId);
@@ -426,6 +533,29 @@ export function buildSessionsRoute() {
 
 export function buildSchedulesRoute() {
   return "/schedules" as const;
+}
+
+export function buildMissionControlRoute() {
+  return "/mission-control" as const;
+}
+
+export interface ItsaplanRouteOptions {
+  project?: string;
+  projectKey?: string;
+}
+
+export function buildItsaplanRoute(options?: ItsaplanRouteOptions) {
+  const project = trimNonEmpty(options?.projectKey ?? options?.project);
+  if (project) {
+    const params = new URLSearchParams();
+    params.set("project", project);
+    return `/itsaplan?${params.toString()}` as const;
+  }
+  return "/itsaplan" as const;
+}
+
+export function buildWebhooksRoute() {
+  return "/webhooks" as const;
 }
 
 export function buildOpenProjectRoute() {
@@ -491,6 +621,7 @@ export function resolveKnownHostRoute(input: {
 
 export const SETTINGS_SECTION_SLUGS = [
   "general",
+  "mission-control",
   "appearance",
   "layout",
   "editor",

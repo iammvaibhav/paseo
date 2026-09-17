@@ -1,12 +1,17 @@
 import { describe, expect, test } from "vitest";
 import type { ProjectDescriptor, WorkspaceDescriptor } from "@/stores/session-store";
-import { buildWorkspaceStructureProjects, createProjectViewKey } from "./workspace-structure";
+import {
+  buildWorkspaceStructureProjects,
+  createProjectViewKey,
+  type WorkspaceStructureProject,
+} from "./workspace-structure";
 
 function project(input: {
   id: string;
   key: string | null;
   root: string;
   name?: string;
+  baseWorkspaceId?: string | null;
 }): ProjectDescriptor {
   return {
     projectId: input.id,
@@ -15,6 +20,7 @@ function project(input: {
     projectCustomName: null,
     projectRootPath: input.root,
     projectKind: "git",
+    baseWorkspaceId: input.baseWorkspaceId ?? null,
   };
 }
 
@@ -31,6 +37,8 @@ function workspace(id: string, projectId: string, root: string): WorkspaceDescri
     name: "main",
     status: "done",
     statusEnteredAt: null,
+    activityAt: null,
+    createdAt: null,
     archivingAt: null,
     diffStat: null,
     scripts: [],
@@ -173,4 +181,314 @@ describe("buildWorkspaceStructureProjects", () => {
       placementShapedKey,
     );
   });
+
+  test("keeps home-directory workspaces with no agents visible", () => {
+    const result = buildWorkspaceStructureProjects({
+      sessions: [
+        {
+          serverId: "host-a",
+          projects: [project({ id: "/Users/vaibhav", key: null, root: "/Users/vaibhav" })],
+          workspaces: [workspace("ws-home", "/Users/vaibhav", "/Users/vaibhav")],
+          agents: [],
+        },
+      ],
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].workspaceKeys).toEqual(["host-a:ws-home"]);
+  });
+
+  test("keeps home-directory workspaces with a regular agent visible", () => {
+    const result = buildWorkspaceStructureProjects({
+      sessions: [
+        {
+          serverId: "host-a",
+          projects: [project({ id: "/Users/vaibhav", key: null, root: "/Users/vaibhav" })],
+          workspaces: [workspace("ws-home", "/Users/vaibhav", "/Users/vaibhav")],
+          agents: [{ workspaceId: "ws-home", labels: {} }],
+        },
+      ],
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].workspaceKeys).toEqual(["host-a:ws-home"]);
+  });
+
+  test("hides workspaces whose agents are all History Ask agents", () => {
+    const result = buildWorkspaceStructureProjects({
+      sessions: [
+        {
+          serverId: "host-a",
+          projects: [project({ id: "/Users/vaibhav", key: null, root: "/Users/vaibhav" })],
+          workspaces: [workspace("ws-home", "/Users/vaibhav", "/Users/vaibhav")],
+          agents: [{ workspaceId: "ws-home", labels: { "paseo.history-ask": "1" } }],
+        },
+      ],
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].workspaceKeys).toEqual([]);
+  });
+
+  test("hides the Commander's home-directory workspace", () => {
+    const result = buildWorkspaceStructureProjects({
+      sessions: [
+        {
+          serverId: "host-a",
+          projects: [project({ id: "/Users/vaibhav", key: null, root: "/Users/vaibhav" })],
+          workspaces: [workspace("ws-home", "/Users/vaibhav", "/Users/vaibhav")],
+          agents: [{ workspaceId: "ws-home", labels: { "paseo.mission-control": "commander" } }],
+        },
+      ],
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].workspaceKeys).toEqual([]);
+  });
+
+  test("shows the Commander's home-directory workspace when Mission Control verbose mode is on", () => {
+    const result = buildWorkspaceStructureProjects({
+      sessions: [
+        {
+          serverId: "host-a",
+          projects: [project({ id: "/Users/vaibhav", key: null, root: "/Users/vaibhav" })],
+          workspaces: [workspace("ws-home", "/Users/vaibhav", "/Users/vaibhav")],
+          agents: [{ workspaceId: "ws-home", labels: { "paseo.mission-control": "commander" } }],
+        },
+      ],
+      hideSystemOwnedWorkspaces: false,
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].workspaceKeys).toEqual(["host-a:ws-home"]);
+  });
+
+  test("verbose mode never reveals History Ask workspaces", () => {
+    const result = buildWorkspaceStructureProjects({
+      sessions: [
+        {
+          serverId: "host-a",
+          projects: [project({ id: "/Users/vaibhav", key: null, root: "/Users/vaibhav" })],
+          workspaces: [workspace("ws-home", "/Users/vaibhav", "/Users/vaibhav")],
+          agents: [{ workspaceId: "ws-home", labels: { "paseo.history-ask": "1" } }],
+        },
+      ],
+      hideSystemOwnedWorkspaces: false,
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].workspaceKeys).toEqual([]);
+  });
+
+  test("verbose mode keeps a home workspace visible when a Commander shares it with a regular agent", () => {
+    const result = buildWorkspaceStructureProjects({
+      sessions: [
+        {
+          serverId: "host-a",
+          projects: [project({ id: "/Users/vaibhav", key: null, root: "/Users/vaibhav" })],
+          workspaces: [workspace("ws-home", "/Users/vaibhav", "/Users/vaibhav")],
+          agents: [
+            { workspaceId: "ws-home", labels: { "paseo.mission-control": "commander" } },
+            { workspaceId: "ws-home", labels: {} },
+          ],
+        },
+      ],
+      hideSystemOwnedWorkspaces: false,
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].workspaceKeys).toEqual(["host-a:ws-home"]);
+  });
+
+  test("keeps a home workspace visible when a Commander shares it with a regular agent", () => {
+    const result = buildWorkspaceStructureProjects({
+      sessions: [
+        {
+          serverId: "host-a",
+          projects: [project({ id: "/Users/vaibhav", key: null, root: "/Users/vaibhav" })],
+          workspaces: [workspace("ws-home", "/Users/vaibhav", "/Users/vaibhav")],
+          agents: [
+            { workspaceId: "ws-home", labels: { "paseo.mission-control": "commander" } },
+            { workspaceId: "ws-home", labels: {} },
+          ],
+        },
+      ],
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].workspaceKeys).toEqual(["host-a:ws-home"]);
+  });
+
+  test("hides an orphaned Commander home workspace by directory (no agents)", () => {
+    const result = buildWorkspaceStructureProjects({
+      sessions: [
+        {
+          serverId: "host-a",
+          projects: [
+            project({
+              id: "/Users/vaibhav/.paseo/commander",
+              key: null,
+              root: "/Users/vaibhav/.paseo/commander",
+            }),
+          ],
+          workspaces: [
+            workspace(
+              "ws-home",
+              "/Users/vaibhav/.paseo/commander",
+              "/Users/vaibhav/.paseo/commander",
+            ),
+          ],
+          agents: [],
+        },
+      ],
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].workspaceKeys).toEqual([]);
+  });
+
+  test("hides the dev daemon's Commander home workspace by directory", () => {
+    const result = buildWorkspaceStructureProjects({
+      sessions: [
+        {
+          serverId: "host-a",
+          projects: [
+            project({
+              id: "/Users/vaibhav/paseo/.dev/paseo-home/commander",
+              key: null,
+              root: "/Users/vaibhav/paseo/.dev/paseo-home/commander",
+            }),
+          ],
+          workspaces: [
+            workspace(
+              "ws-home",
+              "/Users/vaibhav/paseo/.dev/paseo-home/commander",
+              "/Users/vaibhav/paseo/.dev/paseo-home/commander",
+            ),
+          ],
+          agents: [],
+        },
+      ],
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].workspaceKeys).toEqual([]);
+  });
+
+  test("keeps a user directory merely named commander visible", () => {
+    const result = buildWorkspaceStructureProjects({
+      sessions: [
+        {
+          serverId: "host-a",
+          projects: [
+            project({
+              id: "/Users/vaibhav/commander",
+              key: null,
+              root: "/Users/vaibhav/commander",
+            }),
+          ],
+          workspaces: [
+            workspace("ws-user", "/Users/vaibhav/commander", "/Users/vaibhav/commander"),
+          ],
+          agents: [],
+        },
+      ],
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].workspaceKeys).toEqual(["host-a:ws-user"]);
+  });
+  test("hides a project's base workspace from the sidebar list", () => {
+    const result = buildWorkspaceStructureProjects({
+      sessions: [
+        {
+          serverId: "host-a",
+          projects: [
+            project({ id: "prj_a", key: null, root: "/a/app", baseWorkspaceId: "ws-base" }),
+          ],
+          workspaces: [
+            workspace("ws-base", "prj_a", "/a/app"),
+            workspace("ws-task", "prj_a", "/a/app"),
+          ],
+        },
+      ],
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].workspaceKeys).toEqual(["host-a:ws-task"]);
+  });
+
+  test("keeps every workspace visible when the project has no base workspace", () => {
+    const result = buildWorkspaceStructureProjects({
+      sessions: [
+        {
+          serverId: "host-a",
+          projects: [project({ id: "prj_a", key: null, root: "/a/app" })],
+          workspaces: [
+            workspace("ws-one", "prj_a", "/a/app"),
+            workspace("ws-two", "prj_a", "/a/app"),
+          ],
+        },
+      ],
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].workspaceKeys).toEqual(["host-a:ws-one", "host-a:ws-two"]);
+  });
+
+  test("hides each host's own base workspace independently for a multi-host project", () => {
+    const key = "remote:github.com/acme/app";
+    const result = buildWorkspaceStructureProjects({
+      sessions: [
+        {
+          serverId: "host-a",
+          projects: [project({ id: "prj_a", key, root: "/a/app", baseWorkspaceId: "ws-base-a" })],
+          workspaces: [
+            workspace("ws-base-a", "prj_a", "/a/app"),
+            workspace("ws-task-a", "prj_a", "/a/app"),
+          ],
+        },
+        {
+          serverId: "host-b",
+          projects: [project({ id: "prj_b", key, root: "/b/app", baseWorkspaceId: "ws-base-b" })],
+          workspaces: [
+            workspace("ws-base-b", "prj_b", "/b/app"),
+            workspace("ws-task-b", "prj_b", "/b/app"),
+          ],
+        },
+      ],
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].workspaceKeys).toEqual(["host-a:ws-task-a", "host-b:ws-task-b"]);
+  });
+
+  test("does not hide a workspace that merely shares an id with another host's base workspace", () => {
+    const result = buildWorkspaceStructureProjects({
+      sessions: [
+        {
+          serverId: "host-a",
+          projects: [
+            project({ id: "prj_a", key: null, root: "/a/app", baseWorkspaceId: "ws-shared" }),
+          ],
+          workspaces: [workspace("ws-shared", "prj_a", "/a/app")],
+        },
+        {
+          serverId: "host-b",
+          projects: [project({ id: "prj_b", key: null, root: "/b/app" })],
+          workspaces: [workspace("ws-shared", "prj_b", "/b/app")],
+        },
+      ],
+    });
+
+    expect(result).toHaveLength(2);
+    const hostAProject = findProjectOnHost(result, "host-a");
+    const hostBProject = findProjectOnHost(result, "host-b");
+    expect(hostAProject?.workspaceKeys).toEqual([]);
+    expect(hostBProject?.workspaceKeys).toEqual(["host-b:ws-shared"]);
+  });
 });
+
+function findProjectOnHost(result: WorkspaceStructureProject[], serverId: string) {
+  return result.find((entry) => entry.hosts.some((host) => host.serverId === serverId));
+}

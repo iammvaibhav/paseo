@@ -67,19 +67,27 @@ import { OverviewToolCallGroupView } from "@/tool-calls/detail-level/overview/vi
 import { type AgentStreamRenderModel, buildAgentStreamRenderModel } from "./model";
 import { resolveStreamRenderStrategy } from "./strategy-resolver";
 import { type StreamSegmentRenderers, type StreamViewportHandle } from "./strategy";
+import { AnchoredList } from "./anchored-list";
+import { estimateStreamItemHeight } from "./web-virtualization";
 import { ChatOutlineRail } from "@/agent-stream/chat-outline/rail";
 import { useChatOutline } from "@/agent-stream/chat-outline/use-chat-outline";
 import { getHostRuntimeStore } from "@/runtime/host-runtime";
 import { planTimelineTailFetch } from "@/timeline/timeline-sync-plan";
+import { isPaseoSystemMessage, PaseoSystemRow } from "@/screens/mission-control/paseo-system-row";
+import { MachineryMessageRow } from "./machinery-message-row";
+import { useMissionControlVerbose } from "@/mission-control/use-mission-control-verbose";
 import {
   CompletedTurnFooterRow,
   TurnFooter,
-  TURN_FOOTER_BOTTOM_SPACING,
+  resolveTurnFooterBottomSpacing,
   type AssistantTurnForkHandler,
   type InFlightTurnForkHandler,
   type TurnContentStrategy,
 } from "./turn-footer";
+import { resolveStreamTurnChrome, type StreamChrome } from "./stream-chrome";
+import type { AssistantTurnForkBoundary } from "./turn-boundary";
 import { resolveBottomOverlayTailInset } from "./bottom-overlay-inset";
+
 import { layoutStream, type StreamLayoutItem } from "./layout";
 import {
   type BottomAnchorLocalRequest,
@@ -104,6 +112,10 @@ import { isWeb } from "@/constants/platform";
 import type { Theme } from "@/styles/theme";
 import { recordRenderProfileReasons } from "@/utils/render-profiler";
 import { useRetainedPanelActive } from "@/components/retained-panel";
+import type { WorkspaceDraftForkSource } from "@/workspace-tabs/model";
+import type { SelectionAskConfig } from "@/selection-ask/use-selection-ask";
+import { ProposalCard } from "@/screens/mission-control/proposal-card";
+import type { FeedCardEvent } from "@/screens/mission-control/feed-card";
 import { useStreamHistoryWindow } from "./use-stream-history-window";
 import { PluginTimelineItemView, useInstalledTimelineTransform } from "@/plugins/timeline";
 
@@ -137,13 +149,19 @@ function BottomOverlayInset({ height }: { height: number }) {
 
 function renderPendingPermissionsNode(input: {
   pendingPermissions: PendingPermission[];
+  pendingProposals: readonly FeedCardEvent[];
   client: DaemonClient | null;
 }): ReactNode {
-  if (input.pendingPermissions.length === 0) {
+  if (input.pendingPermissions.length === 0 && input.pendingProposals.length === 0) {
     return null;
   }
   return (
     <View style={stylesheet.permissionsContainer}>
+      {input.pendingProposals.map((event) =>
+        event.proposal ? (
+          <ProposalCard key={event.id} proposal={event.proposal} event={event} />
+        ) : null,
+      )}
       {input.pendingPermissions.map((permission) => (
         <PermissionRequestCard key={permission.key} permission={permission} client={input.client} />
       ))}
@@ -157,12 +175,14 @@ function renderStreamItemWithTurnFooter(input: {
   strategy: TurnContentStrategy;
   supportsTimelineCursor: boolean;
   onForkAssistantTurn?: AssistantTurnForkHandler;
+  onJumpToUserMessage?: (itemId: string) => void;
+  includeTurnFooter: boolean;
 }): ReactNode {
   if (!input.content) {
     return null;
   }
 
-  const footerHost = input.layoutItem.completedFooter;
+  const footerHost = input.includeTurnFooter ? input.layoutItem.completedFooter : null;
   const footer = footerHost ? (
     <CompletedTurnFooterRow
       strategy={input.strategy}
@@ -171,6 +191,7 @@ function renderStreamItemWithTurnFooter(input: {
       startIndex={footerHost.startIndex}
       supportsTimelineCursor={input.supportsTimelineCursor}
       onForkAssistantTurn={input.onForkAssistantTurn}
+      onJumpToUserMessage={input.onJumpToUserMessage}
     />
   ) : null;
   const content = (
@@ -266,6 +287,7 @@ function renderLiveHeadStreamItem(input: {
 
 export interface AgentStreamViewHandle {
   scrollToBottom(reason?: BottomAnchorLocalRequest["reason"]): void;
+  scrollToItemId(itemId: string): void;
   prepareForViewportChange(): void;
 }
 
@@ -276,6 +298,7 @@ export interface AgentStreamViewProps {
   streamItems: StreamItem[];
   streamHead?: StreamItem[];
   pendingPermissions: Map<string, PendingPermission>;
+  pendingProposals?: readonly FeedCardEvent[];
   pendingMessageSubmissions?: readonly PendingMessageSubmission[];
   turnPresentation: TurnPresentation;
   routeBottomAnchorRequest?: BottomAnchorRouteRequest | null;
@@ -287,12 +310,23 @@ export interface AgentStreamViewProps {
   toast?: ToastApi | null;
   onOpenWorkspaceFile?: (request: WorkspaceFileOpenRequest) => void;
   readOnly?: boolean;
+  /**
+   * `compact` drops per-turn Fork/copy/jump chrome, the live elapsed footer,
+   * and the large footer inset so a small tile can show more stream text.
+   * Default `full`.
+   */
+  chrome?: StreamChrome;
   historyPagination?: {
     hasOlder: boolean;
     isLoadingOlder: boolean;
     progressKey: string | null;
     onLoadOlder: () => boolean | Promise<boolean>;
   };
+  /**
+   * Enables the selection Ask popover (web): selecting stream text offers
+   * Add to composer / Ask. Null or absent keeps the stream copy-only.
+   */
+  selectionAsk?: SelectionAskConfig | null;
 }
 
 const AGENT_CAPABILITY_FLAG_KEYS: (keyof AgentCapabilityFlags)[] = [
@@ -309,6 +343,12 @@ const AGENT_CAPABILITY_FLAG_KEYS: (keyof AgentCapabilityFlags)[] = [
 
 const EMPTY_STREAM_HEAD: StreamItem[] = [];
 
+// Stable identity: the strategy viewports key rows off this and re-create
+// their scroll-to-message plumbing when its identity changes.
+function streamItemKeyExtractor(item: StreamItem): string {
+  return item.id;
+}
+
 function useRetainedValue<T>(value: T, active: boolean): T {
   const retainedRef = useRef(value);
   if (active) {
@@ -317,10 +357,64 @@ function useRetainedValue<T>(value: T, active: boolean): T {
   return active ? value : retainedRef.current;
 }
 const EMPTY_PENDING_MESSAGE_SUBMISSIONS: readonly PendingMessageSubmission[] = [];
+const EMPTY_PENDING_PROPOSALS: readonly FeedCardEvent[] = [];
 const GROUPED_TOOL_CALL_DETAIL_MAX_HEIGHT = 200;
+
+/** The source anchor a fork-mode draft submits with. */
+function buildForkSource(
+  sourceAgentId: string,
+  boundary: AssistantTurnForkBoundary,
+): WorkspaceDraftForkSource {
+  return {
+    sourceAgentId,
+    ...(boundary.boundaryCursor ? { boundaryCursor: boundary.boundaryCursor } : {}),
+    ...(boundary.boundaryMessageId ? { boundaryMessageId: boundary.boundaryMessageId } : {}),
+  };
+}
 
 function resolveBottomOverlayControlOffset(clearance: number | undefined): number {
   return Math.max(16, clearance ?? 0);
+}
+
+/**
+ * The scroll-to-bottom affordance, shown whenever the viewport sits away from
+ * the live tail: either the reader scrolled up, or the timeline holds newer
+ * rows the viewport has not caught up to.
+ */
+function ScrollToBottomAffordance({
+  isNearBottom,
+  isTimelineDetached,
+  containerStyle,
+  entering,
+  exiting,
+  onPress,
+}: {
+  isNearBottom: boolean;
+  isTimelineDetached: boolean;
+  containerStyle: StyleProp<ViewStyle>;
+  entering: ComponentProps<typeof Animated.View>["entering"];
+  exiting: ComponentProps<typeof Animated.View>["exiting"];
+  onPress: () => void;
+}) {
+  const { t } = useTranslation();
+  if (isNearBottom && !isTimelineDetached) {
+    return null;
+  }
+  return (
+    <View style={containerStyle} pointerEvents="box-none">
+      <Animated.View entering={entering} exiting={exiting}>
+        <Pressable
+          style={stylesheet.scrollToBottomButton}
+          onPress={onPress}
+          accessibilityRole="button"
+          accessibilityLabel={t("agentStream.scrollToBottom")}
+          testID="scroll-to-bottom-button"
+        >
+          <ChevronDown size={24} color={stylesheet.scrollToBottomIcon.color} />
+        </Pressable>
+      </Animated.View>
+    </View>
+  );
 }
 
 const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamViewProps>(
@@ -332,6 +426,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       streamItems,
       streamHead: providedStreamHead,
       pendingPermissions,
+      pendingProposals = EMPTY_PENDING_PROPOSALS,
       pendingMessageSubmissions = EMPTY_PENDING_MESSAGE_SUBMISSIONS,
       turnPresentation,
       routeBottomAnchorRequest = null,
@@ -341,10 +436,14 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       toast,
       onOpenWorkspaceFile,
       readOnly = false,
+      chrome = "full",
       historyPagination,
+      selectionAsk = null,
     },
     ref,
   ) {
+    const turnChrome = resolveStreamTurnChrome({ chrome, readOnly });
+    const turnFooterBottomSpacing = resolveTurnFooterBottomSpacing(turnChrome.density);
     const { t } = useTranslation();
     const autoExpandReasoning = useSettings((settings) => settings.autoExpandReasoning);
     const toolCallDetailLevel = useSettings((settings) => settings.toolCallDetailLevel);
@@ -370,6 +469,10 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     const [expandedToolCallGroupIds, setExpandedToolCallGroupIds] = useState<Set<string>>(
       new Set(),
     );
+    // The one per-device Mission Control verbose flag: machinery prompt rows
+    // (status-ask nudges) render as a muted one-line placeholder ONLY in
+    // verbose mode — never the raw prompt.
+    const [verbose] = useMissionControlVerbose();
 
     // Get serverId (fallback to agent's serverId if not provided)
     const resolvedServerId = serverId ?? context.serverId ?? "";
@@ -397,7 +500,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     );
 
     const workspaceRoot = context.cwd?.trim() || "";
-    const { requestDirectoryListing } = useFileExplorerActions({
+    const { requestDirectoryListing, selectExplorerEntry } = useFileExplorerActions({
       serverId: resolvedServerId,
       workspaceId: context.workspaceId,
       workspaceRoot,
@@ -407,19 +510,35 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       agentId,
       toast,
     });
+    const paginationState = useMemo(
+      () =>
+        historyPagination
+          ? {
+              isLoadingOlder: historyPagination.isLoadingOlder,
+              hasOlder: historyPagination.hasOlder,
+              progressKey: historyPagination.progressKey,
+              loadOlder: historyPagination.onLoadOlder,
+            }
+          : {
+              isLoadingOlder: agentHistoryPagination.isLoadingOlder,
+              hasOlder: agentHistoryPagination.hasOlder,
+              progressKey: agentHistoryPagination.progressKey,
+              loadOlder: agentHistoryPagination.loadOlder,
+            },
+      [
+        historyPagination,
+        agentHistoryPagination.hasOlder,
+        agentHistoryPagination.isLoadingOlder,
+        agentHistoryPagination.loadOlder,
+        agentHistoryPagination.progressKey,
+      ],
+    );
     const {
       isLoadingOlder: remoteIsLoadingOlder,
       hasOlder: remoteHasOlder,
       progressKey: remoteProgressKey,
       loadOlder: loadRemoteOlder,
-    } = historyPagination
-      ? {
-          isLoadingOlder: historyPagination.isLoadingOlder,
-          hasOlder: historyPagination.hasOlder,
-          progressKey: historyPagination.progressKey,
-          loadOlder: historyPagination.onLoadOlder,
-        }
-      : agentHistoryPagination;
+    } = paginationState;
     // Keep entry/exit animations off on Android due to RN dispatchDraw crashes
     // tracked in react-native-reanimated#8422.
     const shouldDisableEntryExitAnimations = Platform.OS === "android";
@@ -429,7 +548,6 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     const scrollIndicatorFadeOut = shouldDisableEntryExitAnimations
       ? undefined
       : FadeOut.duration(200);
-
     useEffect(() => {
       setIsNearBottom(true);
       setExpandedInlineToolCallIds(new Set());
@@ -456,22 +574,37 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
           if (!location) {
             return;
           }
-
           if (onOpenWorkspaceFile) {
             onOpenWorkspaceFile({
               location,
               disposition,
             });
-            return;
-          }
-
-          if (context.workspaceId) {
+          } else if (context.workspaceId) {
             navigateToWorkspace({
               serverId: resolvedServerId,
               workspaceId: context.workspaceId,
               target: createWorkspaceFileTabTarget(location),
             });
           }
+
+          void requestDirectoryListing(normalized.directory, {
+            recordHistory: false,
+            setCurrentPath: false,
+          });
+          selectExplorerEntry(normalized.file);
+          openExplorerSidebarView({
+            isCompact: isMobile,
+            workspaceKey: buildWorkspaceTabPersistenceKey({
+              serverId: resolvedServerId,
+              workspaceId: context.workspaceId ?? "",
+            }),
+            checkout: {
+              serverId: resolvedServerId,
+              cwd: context.cwd,
+              isGit: context.projectPlacement?.checkout?.isGit ?? true,
+            },
+            view: "files",
+          });
           return;
         }
 
@@ -502,12 +635,19 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
 
     const handleForkAssistantTurn: AssistantTurnForkHandler = useStableEvent(
       async ({ target, boundary }) => {
+        // Both targets go through `useForkAgent`, which preloads the
+        // chat-history snapshot on the draft so the transcript is visible in
+        // the composer before submit. A tab fork additionally carries a
+        // forkSource so the draft submits through the fork RPC, letting the
+        // daemon re-render the transcript from the source timeline at submit
+        // time (same boundary, same rendering).
         await forkAgent({
           agentId,
           agent: context,
           workspaceId: context.workspaceId,
           target,
           boundary,
+          ...(target === "tab" ? { forkSource: buildForkSource(agentId, boundary) } : {}),
         });
       },
     );
@@ -631,6 +771,9 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         scrollToBottom(reason = "jump-to-bottom") {
           viewportRef.current?.scrollToBottom(reason);
         },
+        scrollToItemId(itemId: string) {
+          viewportRef.current?.scrollToMessage?.(itemId);
+        },
         prepareForViewportChange() {
           viewportRef.current?.prepareForViewportChange();
         },
@@ -652,6 +795,10 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         onError: handleTimelineHistoryLoadError,
       });
     }, [agentId, handleTimelineHistoryLoadError, isTimelineDetached, resolvedServerId]);
+
+    const jumpToUserMessage = useCallback((itemId: string) => {
+      viewportRef.current?.scrollToMessage?.(itemId);
+    }, []);
 
     const setInlineDetailsExpanded = useCallback(
       (itemId: string, expanded: boolean) => {
@@ -685,6 +832,28 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
 
     const renderUserMessageItem = useCallback(
       (layoutItem: StreamLayoutItem, item: Extract<StreamItem, { kind: "user_message" }>) => {
+        // Machinery rows (stall status-ask nudges) are the tracker's prompts,
+        // not user prose: verbose mode shows a muted one-line placeholder so
+        // the row stays auditable without leaking the raw nudge text; normal
+        // mode renders nothing (matching the pre-row behavior — steers were
+        // never visible in the chat).
+        if (item.classification === "machinery") {
+          return verbose ? <MachineryMessageRow timestamp={item.timestamp.getTime()} /> : null;
+        }
+        // Voice-mirrored pure Q&A rows (heard utterances mirrored into the
+        // Commander thread by the voice mirror RPC) are quiet: verbose mode
+        // shows the spoken words, normal mode renders nothing. "dispatch"
+        // mirror rows stay visible — they asked the fleet to do something.
+        if (item.voiceMirrorKind === "qa" && !verbose) {
+          return null;
+        }
+        // `<paseo-system>` envelopes (fleet digests, schedule fires, notify-on-
+        // finish) are system-injected context, not user prose: render them as
+        // the same collapsed divider the Mission Control thread uses so the
+        // raw envelope text never leaks into any transcript.
+        if (isPaseoSystemMessage(item.text)) {
+          return <PaseoSystemRow text={item.text} timestamp={item.timestamp.getTime()} />;
+        }
         return (
           <UserMessage
             serverId={resolvedServerId}
@@ -705,11 +874,17 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
           />
         );
       },
-      [context.capabilities, agentId, client, pendingClientMessageIds, resolvedServerId],
+      [context.capabilities, agentId, client, pendingClientMessageIds, resolvedServerId, verbose],
     );
 
     const renderAssistantMessageItem = useCallback(
       (layoutItem: StreamLayoutItem, item: Extract<StreamItem, { kind: "assistant_message" }>) => {
+        // Voice-mirrored pure Q&A replies (spoken answers mirrored into the
+        // Commander thread) are quiet like their user rows: verbose mode
+        // shows the spoken answer, normal mode renders nothing.
+        if (item.voiceMirrorKind === "qa" && !verbose) {
+          return null;
+        }
         return (
           <AssistantFileLinkResolverProvider
             client={client}
@@ -736,7 +911,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
           </AssistantFileLinkResolverProvider>
         );
       },
-      [agentId, client, handleInlinePathPress, resolvedServerId, toast, workspaceRoot],
+      [agentId, client, handleInlinePathPress, resolvedServerId, toast, verbose, workspaceRoot],
     );
 
     const renderThoughtItem = useCallback(
@@ -913,12 +1088,16 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
           layoutItem,
           strategy: streamRenderStrategy,
           supportsTimelineCursor: supportsAgentForkContextCursor,
-          onForkAssistantTurn: readOnly ? undefined : handleForkAssistantTurn,
+          onForkAssistantTurn: turnChrome.suppressTurnActions ? undefined : handleForkAssistantTurn,
+          onJumpToUserMessage: jumpToUserMessage,
+          includeTurnFooter: turnChrome.includeTurnFooter,
         });
       },
       [
         handleForkAssistantTurn,
-        readOnly,
+        jumpToUserMessage,
+        turnChrome.includeTurnFooter,
+        turnChrome.suppressTurnActions,
         renderStreamItemContent,
         streamRenderStrategy,
         supportsAgentForkContextCursor,
@@ -934,27 +1113,35 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       () =>
         renderPendingPermissionsNode({
           pendingPermissions: pendingPermissionItems,
+          pendingProposals,
           client,
         }),
-      [client, pendingPermissionItems],
+      [client, pendingPermissionItems, pendingProposals],
     );
     const turnFooterNode = useMemo(
       () =>
-        isTurnActive || bottomTurnFooterHost ? (
+        turnChrome.includeTurnFooter && (isTurnActive || bottomTurnFooterHost) ? (
           <TurnFooter
             isRunning={isTurnActive}
             inFlightTurnStartedAt={baseRenderModel.turnTiming.runningStartedAt}
             host={bottomTurnFooterHost}
             strategy={streamRenderStrategy}
             supportsTimelineCursor={supportsAgentForkContextCursor}
-            onForkAssistantTurn={readOnly ? undefined : handleForkAssistantTurn}
-            onForkInFlightTurn={readOnly ? undefined : handleForkInFlightTurn}
+            onForkAssistantTurn={
+              turnChrome.suppressTurnActions ? undefined : handleForkAssistantTurn
+            }
+            onJumpToUserMessage={jumpToUserMessage}
+            onForkInFlightTurn={turnChrome.suppressTurnActions ? undefined : handleForkInFlightTurn}
+            density={turnChrome.density}
           />
         ) : null,
       [
         handleForkAssistantTurn,
+        jumpToUserMessage,
         handleForkInFlightTurn,
-        readOnly,
+        turnChrome.density,
+        turnChrome.includeTurnFooter,
+        turnChrome.suppressTurnActions,
         isTurnActive,
         baseRenderModel.turnTiming.runningStartedAt,
         bottomTurnFooterHost,
@@ -1048,7 +1235,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     );
     const renderLiveAuxiliary = useCallback<StreamSegmentRenderers["renderLiveAuxiliary"]>(() => {
       const existingTailSpacing =
-        auxiliary.turnFooter && !auxiliary.pendingPermissions ? TURN_FOOTER_BOTTOM_SPACING : 0;
+        auxiliary.turnFooter && !auxiliary.pendingPermissions ? turnFooterBottomSpacing : 0;
       const bottomOverlayInset = resolveBottomOverlayTailInset({
         requiredTailClearance: bottomOverlayTailClearance,
         existingTailSpacing,
@@ -1058,7 +1245,12 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         turnFooter: auxiliary.turnFooter,
         bottomOverlayInset,
       });
-    }, [auxiliary.pendingPermissions, auxiliary.turnFooter, bottomOverlayTailClearance]);
+    }, [
+      auxiliary.pendingPermissions,
+      auxiliary.turnFooter,
+      bottomOverlayTailClearance,
+      turnFooterBottomSpacing,
+    ]);
 
     const renderers = useMemo<StreamSegmentRenderers>(
       () => ({
@@ -1102,51 +1294,49 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         visibleItemIds={visibleHistoryItemIds}
       >
         <ToolCallSheetProvider>
-          <AssistantSelectionCopySurface style={stylesheet.container}>
+          <AssistantSelectionCopySurface style={stylesheet.container} selectionAsk={selectionAsk}>
             <MessageOuterSpacingProvider disableOuterSpacing>
-              {streamRenderStrategy.render({
-                agentId,
-                segments: renderModel.segments,
-                historyRowRevision,
-                liveHeadRowRevision: expandedToolCallGroupIds,
-                boundary,
-                renderers,
-                listEmptyComponent,
-                viewportRef,
-                routeBottomAnchorRequest,
-                isAuthoritativeHistoryReady,
-                onNearBottomChange: setIsNearBottom,
-                onReadingPositionChange: handleReadingPositionChange,
-                onNearHistoryStart: loadOlder,
-                isLoadingOlderHistory: isLoadingOlder,
-                hasOlderHistory: hasOlder,
-                olderHistoryProgressKey: progressKey,
-                scrollEnabled: streamScrollEnabled,
-                listStyle: stylesheet.list,
-                baseListContentContainerStyle: stylesheet.listContentContainer,
-                forwardListContentContainerStyle: stylesheet.forwardListContentContainer,
-              })}
+              <AnchoredList
+                strategy={streamRenderStrategy}
+                viewportRef={viewportRef}
+                forceShowScrollToBottom={isTimelineDetached}
+                onScrollToBottomPress={scrollToBottom}
+                agentId={agentId}
+                segments={renderModel.segments}
+                historyRowRevision={historyRowRevision}
+                liveHeadRowRevision={expandedToolCallGroupIds}
+                boundary={boundary}
+                renderers={renderers}
+                listEmptyComponent={listEmptyComponent}
+                routeBottomAnchorRequest={routeBottomAnchorRequest}
+                isAuthoritativeHistoryReady={isAuthoritativeHistoryReady}
+                onNearBottomChange={setIsNearBottom}
+                onReadingPositionChange={handleReadingPositionChange}
+                onNearHistoryStart={loadOlder}
+                isLoadingOlderHistory={isLoadingOlder}
+                hasOlderHistory={hasOlder}
+                olderHistoryProgressKey={progressKey}
+                scrollEnabled={streamScrollEnabled}
+                listStyle={stylesheet.list}
+                baseListContentContainerStyle={stylesheet.listContentContainer}
+                forwardListContentContainerStyle={stylesheet.forwardListContentContainer}
+                keyExtractor={streamItemKeyExtractor}
+                estimateItemSize={estimateStreamItemHeight}
+              />
             </MessageOuterSpacingProvider>
             <ChatOutlineRail
               prompts={chatOutline.prompts}
               activePrompt={chatOutline.activePrompt}
               onJumpToPrompt={chatOutline.jumpToPrompt}
             />
-            {(!isNearBottom || isTimelineDetached) && (
-              <View style={scrollToBottomContainerStyle} pointerEvents="box-none">
-                <Animated.View entering={scrollIndicatorFadeIn} exiting={scrollIndicatorFadeOut}>
-                  <Pressable
-                    style={stylesheet.scrollToBottomButton}
-                    onPress={scrollToBottom}
-                    accessibilityRole="button"
-                    accessibilityLabel={t("agentStream.scrollToBottom")}
-                    testID="scroll-to-bottom-button"
-                  >
-                    <ChevronDown size={24} color={stylesheet.scrollToBottomIcon.color} />
-                  </Pressable>
-                </Animated.View>
-              </View>
-            )}
+            <ScrollToBottomAffordance
+              isNearBottom={isNearBottom}
+              isTimelineDetached={isTimelineDetached}
+              containerStyle={scrollToBottomContainerStyle}
+              entering={scrollIndicatorFadeIn}
+              exiting={scrollIndicatorFadeOut}
+              onPress={scrollToBottom}
+            />
           </AssistantSelectionCopySurface>
         </ToolCallSheetProvider>
       </ChatFind>
@@ -1252,6 +1442,7 @@ function agentStreamViewPropsEqual(
   if (left.streamItems !== right.streamItems) reasons.push("streamItems");
   if (left.streamHead !== right.streamHead) reasons.push("streamHead");
   if (left.pendingPermissions !== right.pendingPermissions) reasons.push("pendingPermissions");
+  if (left.pendingProposals !== right.pendingProposals) reasons.push("pendingProposals");
   if (left.pendingMessageSubmissions !== right.pendingMessageSubmissions) {
     reasons.push("pendingMessageSubmissions");
   }
@@ -1267,9 +1458,11 @@ function agentStreamViewPropsEqual(
   if (left.toast !== right.toast) reasons.push("toast");
   if (left.onOpenWorkspaceFile !== right.onOpenWorkspaceFile) reasons.push("onOpenWorkspaceFile");
   if (left.readOnly !== right.readOnly) reasons.push("readOnly");
+  if (left.chrome !== right.chrome) reasons.push("chrome");
   if (!historyPaginationPropsEqual(left.historyPagination, right.historyPagination)) {
     reasons.push("historyPagination");
   }
+  if (left.selectionAsk !== right.selectionAsk) reasons.push("selectionAsk");
   recordRenderProfileReasons(`AgentStreamView:${right.agentId}`, reasons);
   return reasons.length === 0;
 }
@@ -1606,7 +1799,11 @@ function PermissionRequestCard({
       ) : null}
 
       {!isPlanRequest ? (
-        <ToolCallDetailsContent detail={resolvedToolCallDetail} maxHeight={200} />
+        <ToolCallDetailsContent
+          detail={resolvedToolCallDetail}
+          maxHeight={200}
+          toolName={request.name}
+        />
       ) : null}
 
       {footer}
@@ -1622,6 +1819,8 @@ const stylesheet = StyleSheet.create((theme) => ({
   contentWrapper: {
     width: "100%",
     maxWidth: MAX_CONTENT_WIDTH,
+    // Web flex parents often ignore alignSelf centering; match the composer.
+    marginHorizontal: "auto",
     alignSelf: "center",
     paddingHorizontal: theme.spacing[2],
   },
@@ -1643,6 +1842,8 @@ const stylesheet = StyleSheet.create((theme) => ({
   streamItemWrapper: {
     width: "100%",
     maxWidth: MAX_CONTENT_WIDTH,
+    // Web flex parents often ignore alignSelf centering; match the composer.
+    marginHorizontal: "auto",
     alignSelf: "center",
     paddingHorizontal: theme.spacing[2],
   },
@@ -1776,10 +1977,19 @@ interface StreamItemWrapperProps {
   children: ReactNode;
 }
 
-function StreamItemWrapper({ gapBelow, children }: StreamItemWrapperProps) {
+function StreamItemWrapper({ itemId, gapBelow, children }: StreamItemWrapperProps) {
   const wrapperStyle = useMemo(
     () => [stylesheet.streamItemWrapper, { marginBottom: gapBelow }],
     [gapBelow],
   );
-  return <View style={wrapperStyle}>{children}</View>;
+  return (
+    <View
+      style={wrapperStyle}
+      testID={`stream-item-${itemId}`}
+      nativeID={`stream-item-${itemId}`}
+      collapsable={false}
+    >
+      {children}
+    </View>
+  );
 }

@@ -5,6 +5,7 @@ import { useStoreWithEqualityFn } from "zustand/traditional";
 import { useSessionStore, type Agent } from "@/stores/session-store";
 import { refreshProviderSubagents, useProviderSubagentStore } from "./provider-store";
 import type { ProviderSubagentDescriptorPayload } from "@getpaseo/protocol/messages";
+import { isSelectionAskAgent } from "@getpaseo/protocol/agent-labels";
 
 export interface PaseoSubagentRow {
   kind: "paseo";
@@ -82,7 +83,8 @@ export function selectSubagentsForParent(
     if (
       agent.archivedAt ||
       pendingArchiveIds.has(agent.id) ||
-      agent.parentAgentId !== params.parentAgentId
+      agent.parentAgentId !== params.parentAgentId ||
+      isSelectionAskAgent(agent)
     ) {
       continue;
     }

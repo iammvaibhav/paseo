@@ -3,11 +3,12 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react"
 import type { Virtualizer } from "@tanstack/react-virtual";
 import { createPromptJumpSettleController, PROMPT_JUMP_TOP_INSET_PX } from "./prompt-jump-settle";
 
-interface UseScrollToMessageInput {
+interface UseScrollToMessageInput<T> {
   active: boolean;
   scrollContainerRef: React.RefObject<HTMLElement | null>;
   rowVirtualizer: Virtualizer<HTMLElement, Element>;
-  historyVirtualized: readonly { id: string }[];
+  historyVirtualized: readonly T[];
+  keyExtractor: (item: T) => string;
   cancelPendingStickToBottom: () => void;
   setFollowOutput: (value: boolean) => boolean;
   onNearBottomChange: (value: boolean) => void;
@@ -23,15 +24,16 @@ const SCROLL_AFFECTING_KEYS = new Set([
   " ",
 ]);
 
-export function useScrollToMessage({
+export function useScrollToMessage<T>({
   active,
   scrollContainerRef,
   rowVirtualizer,
   historyVirtualized,
+  keyExtractor,
   cancelPendingStickToBottom,
   setFollowOutput,
   onNearBottomChange,
-}: UseScrollToMessageInput) {
+}: UseScrollToMessageInput<T>) {
   const occurrenceRef = useRef<
     { signal: AbortSignal; targetTop(row: HTMLElement): number | null } | undefined
   >(undefined);
@@ -131,7 +133,7 @@ export function useScrollToMessage({
         return;
       }
 
-      const index = historyVirtualized.findIndex((item) => item.id === itemId);
+      const index = historyVirtualized.findIndex((item) => keyExtractor(item) === itemId);
       if (index >= 0) {
         rowVirtualizer.scrollToIndex(index, { align: "start" });
         settleController.start(itemId);
@@ -142,6 +144,7 @@ export function useScrollToMessage({
       active,
       cancelPendingStickToBottom,
       historyVirtualized,
+      keyExtractor,
       onNearBottomChange,
       rowVirtualizer,
       scrollContainerRef,

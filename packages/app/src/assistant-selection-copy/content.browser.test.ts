@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { createAssistantSelectionClipboardContent } from "./content.web";
+import {
+  createAssistantSelectionClipboardContent,
+  createAssistantSelectionPlainText,
+} from "./content.web";
 
 const fixture = `
   <div data-testid="assistant-message">
@@ -354,7 +357,9 @@ function highlightedFixture(language: string | null): string {
     language === null ? "" : ` data-paseo-markdown-language="${escapeAttribute(language)}"`;
   return [
     '<div data-testid="assistant-message">',
-    `<div data-paseo-markdown-tag="pre"${languageAttribute}>`,
+    // The app renders code with `white-space: pre`, which is what keeps the
+    // newlines in a live `Selection.toString()`; the fixture mirrors that.
+    `<div data-paseo-markdown-tag="pre" style="white-space: pre"${languageAttribute}>`,
     '<span data-paseo-markdown-tag="code">',
     "<span>const</span><span> answer</span><span> = 1;</span>",
     "<span>\n</span>",
@@ -416,7 +421,7 @@ function lineBreak(root: Node, index: number): Text {
   return node;
 }
 
-function copyBetween(start: [Text, number], end: [Text, number]) {
+function selectBetween(start: [Text, number], end: [Text, number]): Selection {
   const range = document.createRange();
   range.setStart(start[0], start[1]);
   range.setEnd(end[0], end[1]);
@@ -426,12 +431,21 @@ function copyBetween(start: [Text, number], end: [Text, number]) {
   }
   selection.removeAllRanges();
   selection.addRange(range);
-  return createAssistantSelectionClipboardContent(selection);
+  return selection;
+}
+
+function copyBetween(start: [Text, number], end: [Text, number]) {
+  return createAssistantSelectionClipboardContent(selectBetween(start, end));
 }
 
 /** Select from the start of one text node to the end of another. */
 function copyAcross(root: Node, startText: string, endText: string) {
   return copyBetween([tokenText(root, startText), 0], [tokenText(root, endText), endText.length]);
+}
+
+/** The Selection from the start of one text node to the end of another. */
+function copyAcrossSelection(root: Node, startText: string, endText: string): Selection {
+  return selectBetween([tokenText(root, startText), 0], [tokenText(root, endText), endText.length]);
 }
 
 describe("assistant selection copy inside highlighted code", () => {
@@ -551,5 +565,71 @@ describe("assistant selection copy inside highlighted code", () => {
     expect(content?.plainText).toBe(
       "```typescript\nconst answer = 1;\n  if (answer) {\n    doThing();\n```\n\nAfter the block.",
     );
+  });
+});
+
+describe("assistant selection plain-text copy", () => {
+  it("returns the rendered text of an assistant selection without Markdown syntax", () => {
+    const message = mountFixture();
+    const paragraph = fixtureElement(message, '[data-paseo-markdown-tag="p"]');
+
+    expect(createAssistantSelectionPlainText(selectNodeContents(paragraph))).toBe(
+      "Prefix bold text and inline code suffix.",
+    );
+  });
+
+  it("does not handle absent, collapsed, or non-assistant selections", () => {
+    expect(createAssistantSelectionPlainText(null)).toBeNull();
+
+    const message = mountFixture();
+    const strong = fixtureElement(message, '[data-paseo-markdown-tag="strong"]');
+    expect(createAssistantSelectionPlainText(selectText(strong, 2, 2))).toBeNull();
+
+    const outside = document.createElement("span");
+    outside.textContent = "outside";
+    document.body.append(outside);
+    expect(createAssistantSelectionPlainText(selectText(outside, 0, 7))).toBeNull();
+  });
+
+  it("drops a trailing line break swept in from the end of a code line", () => {
+    const message = mountHighlighted();
+
+    expect(
+      createAssistantSelectionPlainText(
+        selectBetween([tokenText(message, " = 1;"), 1], [lineBreak(message, 0), 1]),
+      ),
+    ).toBe("= 1;");
+  });
+
+  it("drops a trailing line break together with the indentation after it", () => {
+    const message = mountHighlighted();
+
+    expect(
+      createAssistantSelectionPlainText(
+        selectBetween([tokenText(message, "const"), 0], [tokenText(message, "  if"), 2]),
+      ),
+    ).toBe("const answer = 1;");
+  });
+
+  it("keeps code line breaks that are not at the end of the selection", () => {
+    const message = mountHighlighted();
+
+    expect(
+      createAssistantSelectionPlainText(
+        selectBetween([tokenText(message, "const"), 0], [tokenText(message, "  if"), 4]),
+      ),
+    ).toBe("const answer = 1;\n  if");
+  });
+
+  it("leaves prose line structure intact when the selection crosses a code boundary", () => {
+    const message = mountHighlighted();
+
+    const text = createAssistantSelectionPlainText(
+      copyAcrossSelection(message, "const", "After the block."),
+    );
+
+    expect(text).toContain("const answer = 1;");
+    expect(text).toContain("doThing();");
+    expect(text).toContain("After the block.");
   });
 });

@@ -10,6 +10,11 @@ export interface ProviderUsageServiceOptions {
   fetch?: ProviderApiFetch;
   cacheTtlMs?: number;
   now?: () => number;
+  // Called after every completed fresh fetch (client-triggered or RPC
+  // force-refresh) so the owner can push the updated usage to clients.
+  onUsageRefreshed?: (result: ProviderUsageListResult) => void;
+  // Dynamic enablement resolver: consulted per refresh so config toggles apply live.
+  isFetcherEnabled?: (fetcher: ProviderUsageFetcher) => boolean;
 }
 
 export interface ProviderUsageListResult {
@@ -23,10 +28,13 @@ export class ProviderUsageService {
   private readonly logger: Logger;
   private readonly fetchers: ProviderUsageFetcher[];
   private readonly cacheTtlMs: number;
+  private readonly onUsageRefreshed: (result: ProviderUsageListResult) => void;
+  private readonly isFetcherEnabled: (fetcher: ProviderUsageFetcher) => boolean;
   private readonly now: () => number;
   private cached: { fetchedAtMs: number; result: ProviderUsageListResult } | null = null;
   private inFlight: Promise<ProviderUsageListResult> | null = null;
-
+  private enablementChangedDuringFetch = false;
+  private disposed = false;
   constructor(options: ProviderUsageServiceOptions) {
     this.logger = options.logger.child({ module: "provider-usage-service" });
     this.fetchers =
@@ -36,6 +44,8 @@ export class ProviderUsageService {
         fetch: options.fetch,
       });
     this.cacheTtlMs = options.cacheTtlMs ?? DEFAULT_PROVIDER_USAGE_CACHE_TTL_MS;
+    this.onUsageRefreshed = options.onUsageRefreshed ?? (() => {});
+    this.isFetcherEnabled = options.isFetcherEnabled ?? (() => true);
     this.now = options.now ?? Date.now;
   }
 
@@ -56,7 +66,13 @@ export class ProviderUsageService {
     const request = this.fetchFreshUsage(nowMs);
     this.inFlight = request;
     try {
-      return await request;
+      const result = await request;
+      if (this.enablementChangedDuringFetch) {
+        this.enablementChangedDuringFetch = false;
+        this.cached = null;
+        return await this.listUsage({ forceRefresh: true });
+      }
+      return result;
     } finally {
       if (this.inFlight === request) {
         this.inFlight = null;
@@ -64,26 +80,75 @@ export class ProviderUsageService {
     }
   }
 
+  /**
+   * A client connected. Fetch fresh usage now when the cache is empty or stale
+   * so the newly opened app gets pushed data quickly; the refresh broadcast
+   * reaches every connected client.
+   */
+  notifyClientConnected(): void {
+    const nowMs = this.now();
+    if (this.cached && nowMs - this.cached.fetchedAtMs < this.cacheTtlMs) {
+      return;
+    }
+    void this.listUsage({ forceRefresh: true });
+  }
+  /**
+   * The set of enabled providers has changed in configuration.
+   * Drops cached usage and triggers a fresh fetch so disabled provider cards
+   * disappear immediately and newly enabled ones are fetched and broadcast.
+   */
+  notifyProviderEnablementChanged(): void {
+    if (this.disposed) {
+      return;
+    }
+    this.cached = null;
+    if (this.inFlight) {
+      this.enablementChangedDuringFetch = true;
+      return;
+    }
+    void this.listUsage({ forceRefresh: true });
+  }
+
+  dispose(): void {
+    this.disposed = true;
+  }
+
   private async fetchFreshUsage(nowMs: number): Promise<ProviderUsageListResult> {
-    const settled = await Promise.allSettled(this.fetchers.map((fetcher) => fetcher.fetchUsage()));
-    const providers = settled.map((result, index) => {
-      const fetcher = this.fetchers[index];
+    const activeFetchers = this.fetchers.filter((fetcher) => this.isFetcherEnabled(fetcher));
+    const settled = await Promise.allSettled(activeFetchers.map((fetcher) => fetcher.fetchUsage()));
+    const fetchedAt = new Date(nowMs).toISOString();
+    const providers: ProviderUsage[] = [];
+    for (const [index, result] of settled.entries()) {
+      const fetcher = activeFetchers[index];
       if (result.status === "fulfilled") {
-        return result.value;
+        const value = result.value;
+        if (Array.isArray(value)) {
+          for (const usage of value) {
+            // Always stamp the list-response time so "Updated Xm ago" reflects this
+            // daemon fetch, not a nested provider-side cache timestamp (OMP CLI).
+            providers.push({ ...usage, fetchedAt });
+          }
+        } else {
+          providers.push({ ...value, fetchedAt });
+        }
+        continue;
       }
       this.logger.debug(
         { err: result.reason, providerId: fetcher.providerId },
         "Provider usage fetch failed",
       );
-      return unavailableUsage({
-        providerId: fetcher.providerId,
-        displayName: fetcher.displayName,
-        error: result.reason instanceof Error ? result.reason.message : String(result.reason),
-      });
-    });
+      providers.push(
+        unavailableUsage({
+          providerId: fetcher.providerId,
+          displayName: fetcher.displayName,
+          error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+        }),
+      );
+    }
 
-    const result = { fetchedAt: new Date(nowMs).toISOString(), providers };
+    const result = { fetchedAt, providers };
     this.cached = { fetchedAtMs: nowMs, result };
+    this.onUsageRefreshed(result);
     return result;
   }
 }

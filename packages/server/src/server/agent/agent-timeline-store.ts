@@ -22,7 +22,7 @@ export interface SeedAgentTimelineOptions {
 interface AgentTimelineState {
   epoch: string;
   projection: TimelineProjection;
-  minSeq: number;
+  committed: AgentTimelineRow[];
   nextSeq: number;
 }
 const DEFAULT_TIMELINE_FETCH_LIMIT = 200;
@@ -36,19 +36,28 @@ export class InMemoryAgentTimelineStore {
   has(agentId: string): boolean {
     return this.states.has(agentId);
   }
-
   initialize(agentId: string, options?: SeedAgentTimelineOptions): void {
     const timestamp = options?.timestamp ?? new Date().toISOString();
-    const rows = options?.rows?.length
-      ? options.rows.map(cloneRow)
-      : this.buildRowsFromItems(options?.items ?? [], options?.nextSeq ?? 1, timestamp);
-    const nextSeq = rows.reduce((next, row) => Math.max(next, row.seq + 1), options?.nextSeq ?? 1);
+    const committed =
+      options?.rows?.map((row) => ({
+        seq: row.seq,
+        timestamp: row.timestamp,
+        item: row.item,
+        ...(row.turnId !== undefined ? { turnId: row.turnId } : {}),
+        ...(row.providerMessageId !== undefined
+          ? { providerMessageId: row.providerMessageId }
+          : {}),
+      })) ?? this.buildRowsFromItems(options?.items ?? [], options?.nextSeq ?? 1, timestamp);
+    const nextSeq = committed.reduce(
+      (next, row) => Math.max(next, row.seq + 1),
+      options?.nextSeq ?? 1,
+    );
     const projection = new TimelineProjection();
-    for (const row of rows) projection.append(row);
+    for (const row of committed) projection.append(row);
     this.states.set(agentId, {
       epoch: options?.epoch ?? randomUUID(),
       projection,
-      minSeq: projection.getRows()[0]?.seqStart ?? 0,
+      committed,
       nextSeq,
     });
   }
@@ -78,6 +87,53 @@ export class InMemoryAgentTimelineStore {
     return row ? cloneRow(row) : null;
   }
 
+  getCommittedRows(agentId: string): AgentTimelineRow[] {
+    return this.requireState(agentId).committed.map(cloneRow);
+  }
+
+  /**
+   * Oldest submitted user prompt that still lacks provider identity. Used when a
+   * provider echo arrives without `clientMessageId` (e.g. OMP false local-only
+   * race) so FIFO same-text submissions still reconcile correctly.
+   */
+  findOldestUnenrichedSubmittedUserMessageByText(
+    agentId: string,
+    text: string,
+  ): AgentTimelineRow | null {
+    const row = this.requireState(agentId)
+      .projection.getRows()
+      .find(
+        (candidate) =>
+          candidate.item.type === "user_message" &&
+          candidate.item.clientMessageId !== undefined &&
+          candidate.item.text === text &&
+          candidate.providerMessageId === undefined,
+      );
+    return row ? cloneRow(row) : null;
+  }
+
+  /**
+   * Remove committed rows by seq (e.g. digest ack-drop retraction). Returns the
+   * removed rows. Seq identity is preserved — late observers see a gap rather
+   * than renumbered rows, so cursors stay valid.
+   */
+  removeRows(agentId: string, seqs: readonly number[]): AgentTimelineRow[] {
+    if (seqs.length === 0) {
+      return [];
+    }
+    const state = this.requireState(agentId);
+    const drop = new Set(seqs);
+    const removed = state.committed.filter((row) => drop.has(row.seq));
+    if (removed.length === 0) {
+      return [];
+    }
+    state.committed = state.committed.filter((row) => !drop.has(row.seq));
+    const rebuilt = new TimelineProjection();
+    for (const row of state.committed) rebuilt.append(row);
+    state.projection = rebuilt;
+    return removed.map(cloneRow);
+  }
+
   enrichSubmittedUserMessage(
     agentId: string,
     clientMessageId: string,
@@ -98,14 +154,15 @@ export class InMemoryAgentTimelineStore {
     const direction = options?.direction ?? "tail";
     const cursor = options?.cursor;
     const rows = state.projection.getRows();
-    const window = { minSeq: state.minSeq, maxSeq: state.nextSeq - 1, nextSeq: state.nextSeq };
+    const minSeq = rows[0]?.seqStart ?? state.nextSeq;
+    const window = { minSeq, maxSeq: state.nextSeq - 1, nextSeq: state.nextSeq };
     const staleCursor = cursor !== undefined && cursor.epoch !== state.epoch;
     const gap =
       !staleCursor &&
       direction === "after" &&
       cursor !== undefined &&
       rows.length > 0 &&
-      cursor.seq < state.minSeq - 1;
+      cursor.seq < minSeq - 1;
     const reset = staleCursor || gap;
     const page = selectProjectedTimelinePage({
       rows,
@@ -143,7 +200,7 @@ export class InMemoryAgentTimelineStore {
       ...(options?.providerMessageId ? { providerMessageId: options.providerMessageId } : {}),
     };
     state.nextSeq += 1;
-    if (state.minSeq === 0) state.minSeq = row.seq;
+    state.committed.push(row);
     state.projection.append(row);
     return cloneRow(row);
   }
