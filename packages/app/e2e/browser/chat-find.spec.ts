@@ -1,3 +1,4 @@
+import type { TestInfo } from "@playwright/test";
 import { expect, test, type Page } from "../support/fixtures";
 import { openAgentRoute, seedMockAgentWorkspace } from "../support/helpers/mock-agent";
 import { installDaemonWebSocketGate } from "../support/helpers/daemon-websocket-gate";
@@ -6,6 +7,17 @@ import {
   expectReconnectingToastVisible,
 } from "../support/helpers/workspace-ui";
 import { trackPromptJumpRequests } from "../support/helpers/agent-timeline-gate";
+import {
+  composerLocator,
+  fillComposerDraft,
+  expectComposerDraft,
+  expectComposerFocused,
+} from "../support/helpers/composer";
+
+import { openCommandCenter, closeCommandCenter } from "../support/helpers/command-center";
+
+const MAC_USER_AGENT =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
 
 const RESPONSE =
   'İ😀hello **world**; hello *world*.\n\n[hello &amp; world](https://example.com/hidden-destination)\n\n```ts\nconst a = "a.b";\n```\n\n- first cell\n- second cell';
@@ -203,3 +215,126 @@ test("finds text beyond the normal render cap and restores the cap when Find clo
     await agent.cleanup();
   }
 });
+
+async function findFromComposer(page: Page, shortcut: string, testInfo: TestInfo) {
+  const agent = await seedMockAgentWorkspace({
+    repoPrefix: "chat-find-composer-",
+    title: "Chat Find from composer",
+    initialPrompt: "Render the response",
+    featureValues: { mockAssistantResponse: RESPONSE },
+  });
+  try {
+    await agent.client.waitForFinish(agent.agentId, 15_000);
+    await openAgentRoute(page, agent);
+    await searchFromComposerWithoutLosingDraft(page, shortcut);
+    await refocusFindAndReplaceQuery(page, shortcut);
+    await page.screenshot({ path: testInfo.outputPath("find-from-composer.png") });
+    await closeFind(page);
+    await expectCommandCenterOwnsFindShortcut(page, shortcut);
+    await fillComposerDraft(page, "Draft after closing Find");
+    await expectComposerDraft(page, "Draft after closing Find");
+  } finally {
+    await agent.cleanup();
+  }
+}
+
+test("opens and refocuses Find with Control+f from the composer", async ({ page }, testInfo) => {
+  await findFromComposer(page, "Control+f", testInfo);
+});
+
+test.describe("macOS", () => {
+  test.use({ userAgent: MAC_USER_AGENT });
+
+  test("opens and refocuses Find with Meta+f from the composer", async ({ page }, testInfo) => {
+    await findFromComposer(page, "Meta+f", testInfo);
+  });
+
+  // Control+F moves the caret forward on macOS, so chat Find must leave it alone.
+  test("leaves Control+f to the composer", async ({ page }) => {
+    const agent = await seedMockAgentWorkspace({
+      repoPrefix: "chat-find-mac-control-f-",
+      title: "Chat Find macOS Control+f",
+      initialPrompt: "Render the response",
+      featureValues: { mockAssistantResponse: RESPONSE },
+    });
+    try {
+      await agent.client.waitForFinish(agent.agentId, 15_000);
+      await openAgentRoute(page, agent);
+      await fillComposerDraft(page, "Keep this draft");
+      await expectComposerFocused(page);
+      await recordComposerKeydown(page);
+      await page.keyboard.press("Control+f");
+      await expect
+        .poll(() => recordedComposerFindKeydown(page))
+        .toEqual([{ key: "f", defaultPrevented: false }]);
+      await expect(query(page)).toHaveCount(0);
+      await expectComposerFocused(page);
+      await expectComposerDraft(page, "Keep this draft");
+    } finally {
+      await agent.cleanup();
+    }
+  });
+});
+
+interface RecordedKeydown {
+  key: string;
+  defaultPrevented: boolean;
+}
+
+/**
+ * Chat Find listens on `document` in the capture phase, so the composer only ever
+ * sees a Find keystroke after Find decided about it. That makes `defaultPrevented`
+ * on the composer the evidence of who owns the key.
+ */
+async function recordComposerKeydown(page: Page) {
+  await composerLocator(page).evaluate((element) => {
+    const store = window as unknown as { __findKeydown: RecordedKeydown[] };
+    store.__findKeydown = [];
+    element.addEventListener("keydown", (event) => {
+      store.__findKeydown.push({
+        key: (event as KeyboardEvent).key,
+        defaultPrevented: event.defaultPrevented,
+      });
+    });
+  });
+}
+
+async function recordedComposerFindKeydown(page: Page): Promise<RecordedKeydown[]> {
+  const recorded = await page.evaluate(
+    () => (window as unknown as { __findKeydown: RecordedKeydown[] }).__findKeydown,
+  );
+  return recorded.filter((entry) => entry.key.toLowerCase() === "f");
+}
+
+async function openFindFromComposer(page: Page, shortcut: string) {
+  await page.keyboard.press(shortcut);
+  await expect(query(page)).toBeFocused();
+}
+
+async function searchFromComposerWithoutLosingDraft(page: Page, shortcut: string) {
+  await fillComposerDraft(page, "Keep this draft");
+  await expectComposerFocused(page);
+  await openFindFromComposer(page, shortcut);
+  await expectComposerDraft(page, "Keep this draft");
+  await query(page).fill("hello world");
+  await expectHighlight(page, "hello world");
+}
+
+async function refocusFindAndReplaceQuery(page: Page, shortcut: string) {
+  await composerLocator(page).click();
+  await expectComposerFocused(page);
+  await openFindFromComposer(page, shortcut);
+  await expect(query(page)).toHaveValue("hello world");
+  await expectComposerDraft(page, "Keep this draft");
+  await page.keyboard.type("a.b");
+  await expect(query(page)).toHaveValue("a.b");
+  await expectHighlight(page, "a.b");
+}
+
+async function expectCommandCenterOwnsFindShortcut(page: Page, shortcut: string) {
+  await openCommandCenter(page);
+  await page.keyboard.press(shortcut);
+  await expect(page.getByTestId("command-center-panel")).toBeVisible();
+  await expect(query(page)).toHaveCount(0);
+  await closeCommandCenter(page);
+}

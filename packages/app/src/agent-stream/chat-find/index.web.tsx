@@ -11,7 +11,7 @@ import {
 import { View, Text } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { useTranslation } from "react-i18next";
-import { PaneFind, type PaneFindHandle } from "@/pane-find";
+import { PaneFind, findShortcutPlatform, isFindShortcut, type PaneFindHandle } from "@/pane-find";
 import { Button } from "@/components/ui/button";
 import { usePaneFocus } from "@/panels/pane-context";
 import { useRetainedPanelActive } from "@/components/retained-panel";
@@ -92,19 +92,15 @@ export function ChatFind({
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || hasActiveWebOverlay() || isImeComposingKeyboardEvent(event))
         return;
-      if (
-        (event.metaKey || event.ctrlKey) &&
-        !event.altKey &&
-        !event.shiftKey &&
-        event.key.toLowerCase() === "f"
-      ) {
+      if (isFindShortcut(event, findShortcutPlatform())) {
         event.preventDefault();
         model.open();
         widget.current?.focus();
       }
     };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
+    // React Native TextInput stops bubbling key events, including from the composer.
+    document.addEventListener("keydown", onKeyDown, true);
+    return () => document.removeEventListener("keydown", onKeyDown, true);
   }, [active, isInteractive, model]);
   const close = useCallback(() => {
     model.close();

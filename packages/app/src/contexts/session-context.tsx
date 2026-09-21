@@ -499,7 +499,7 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
     setViewedTimelineSync(serverId, sync);
     sync.setActive(getIsAppVisible(appStateRef.current));
     const stopObservingOpenChats = observeOpenWorkspaceAgentIds(serverId, (agentIds) =>
-      sync.replaceOpenAgentIds(agentIds),
+      sync.replaceOpenTabAgentIds(agentIds),
     );
 
     return () => {
