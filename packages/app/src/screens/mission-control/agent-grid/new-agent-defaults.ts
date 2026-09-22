@@ -109,8 +109,13 @@ export function resolveNewAgentDefaults(
     prefill && (prefill.serverId || prefill.projectKey || prefill.workspaceId),
   );
   if (hasExplicitPrefill && prefill) {
+    const preferredServerId =
+      newAgentDefaults?.serverId && hostServerIds.has(newAgentDefaults.serverId)
+        ? newAgentDefaults.serverId
+        : primaryServerId;
+
     const prefillServerId =
-      prefill.serverId && hostServerIds.has(prefill.serverId) ? prefill.serverId : primaryServerId;
+      prefill.serverId && hostServerIds.has(prefill.serverId) ? prefill.serverId : null;
 
     let prefillWorkspace: WorkspaceDescriptor | null = null;
     if (prefillServerId && prefill.workspaceId) {
@@ -124,21 +129,39 @@ export function resolveNewAgentDefaults(
         ? hostProjectFromWorkspace({ serverId: prefillServerId, workspace: prefillWorkspace })
         : null;
 
+    const projects = options?.projects ?? [];
+    const matchedProject =
+      (prefill.projectKey ? projects.find((p) => p.projectKey === prefill.projectKey) : null) ??
+      prefillProject;
+
+    let resolvedServerId = prefillServerId;
+    if (!resolvedServerId) {
+      if (matchedProject) {
+        const hasPreferred =
+          preferredServerId && matchedProject.hosts.some((h) => h.serverId === preferredServerId);
+        resolvedServerId = hasPreferred
+          ? preferredServerId
+          : (matchedProject.hosts[0]?.serverId ?? primaryServerId);
+      } else {
+        resolvedServerId = primaryServerId;
+      }
+    }
+
     let sourceDir: string | null = null;
     if (prefillWorkspace?.workspaceDirectory) {
       sourceDir = prefillWorkspace.workspaceDirectory;
-    } else if (prefillProject && prefillServerId) {
-      sourceDir = getHostProjectSourceDirectory(prefillProject, prefillServerId);
+    } else if (matchedProject && resolvedServerId) {
+      sourceDir = getHostProjectSourceDirectory(matchedProject, resolvedServerId);
     }
 
     return {
-      serverId: prefillServerId,
-      projectKey: prefill.projectKey ?? prefillProject?.projectKey ?? null,
-      projectName: prefillWorkspace?.projectDisplayName ?? prefillProject?.projectName ?? null,
+      serverId: resolvedServerId,
+      projectKey: prefill.projectKey ?? matchedProject?.projectKey ?? null,
+      projectName: prefillWorkspace?.projectDisplayName ?? matchedProject?.projectName ?? null,
       sourceDirectory: sourceDir,
       workspaceId: prefill.workspaceId ?? null,
       isolation: newAgentDefaults?.isolation ?? null,
-      project: prefillProject,
+      project: matchedProject,
     };
   }
 

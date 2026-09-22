@@ -20,7 +20,7 @@ let RUN_ID_SUFFIX = null;
 let RUN_1_ID = null;
 let RUN_2_ID = null;
 let READY_ID = null;
-let DRAFT_AGENT_ID = null;
+let _DRAFT_AGENT_ID = null;
 
 // Selectors for contract testIDs
 function tileTestId(agentId) {
@@ -30,7 +30,7 @@ function tileTestId(agentId) {
 function tileSelector(agentId) {
   return `[data-testid="${tileTestId(agentId)}"]`;
 }
-function tilePlaceholderSelector(agentId) {
+function _tilePlaceholderSelector(agentId) {
   return `[data-testid="mission-control-agent-grid-tile-placeholder-${agentId}"]`;
 }
 
@@ -89,7 +89,7 @@ function tileStatusSelector(agentId) {
   return `[data-testid="mission-control-agent-grid-status-${agentId}"]`;
 }
 
-function tileProjectSelector(agentId) {
+function _tileProjectSelector(agentId) {
   return `[data-testid="mission-control-agent-grid-project-${agentId}"]`;
 }
 
@@ -97,11 +97,11 @@ function tileElapsedSelector(agentId) {
   return `[data-testid="mission-control-agent-grid-elapsed-${agentId}"]`;
 }
 
-function tileLastMsgSelector(agentId) {
+function _tileLastMsgSelector(agentId) {
   return `[data-testid="mission-control-agent-grid-lastmsg-${agentId}"]`;
 }
 
-function tileSubagentsSelector(agentId) {
+function _tileSubagentsSelector(agentId) {
   return `[data-testid="mission-control-agent-grid-subagents-${agentId}"]`;
 }
 

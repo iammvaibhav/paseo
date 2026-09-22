@@ -10,6 +10,7 @@ import {
   PanelRightClose,
   PanelRightOpen,
   Plus,
+  RotateCw,
   Square,
 } from "lucide-react-native";
 import type { Theme } from "@/styles/theme";
@@ -33,6 +34,10 @@ import {
   useAgentGridStore,
   type MissionControlView,
 } from "@/screens/mission-control/agent-grid/store";
+import { useGridNewAgentAction } from "@/hooks/use-grid-new-agent-action";
+import { useMissionControlLifecycle } from "@/mission-control/use-mission-control-lifecycle";
+import { scrollAgentGridToOrigin } from "@/screens/mission-control/agent-grid/grid-glow";
+import { buildAgentGridItems } from "@/screens/mission-control/agent-grid/items";
 import { BoardRail } from "@/mission-control/board-rail";
 import { InspectorRail } from "@/mission-control/inspector-rail";
 import { useMissionControlCentralConfig } from "@/mission-control/central-config";
@@ -79,6 +84,7 @@ const ThemedPanelLeftOpen = withUnistyles(PanelLeftOpen);
 const ThemedPanelRightClose = withUnistyles(PanelRightClose);
 const ThemedPanelRightOpen = withUnistyles(PanelRightOpen);
 const ThemedSquare = withUnistyles(Square);
+const ThemedRotateCw = withUnistyles(RotateCw);
 
 const foregroundMapping = (theme: Theme) => ({ color: theme.colors.foreground });
 const foregroundMutedMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
@@ -207,6 +213,7 @@ interface MissionControlHeaderActionsProps extends CommanderLayoutTogglesProps {
   onViewChange: (view: MissionControlView) => void;
   /** The grid is on screen (desktop view or compact panel): its controls replace the Commander's. */
   isGridView: boolean;
+  onRefreshGrid: () => void;
   onNewAgent: () => void;
 }
 
@@ -223,6 +230,7 @@ function MissionControlHeaderActions({
   boardRailCollapsed,
   onToggleBoardRail,
   onStopCommander,
+  onRefreshGrid,
   onNewAgent,
 }: MissionControlHeaderActionsProps): ReactElement {
   return (
@@ -237,15 +245,26 @@ function MissionControlHeaderActions({
         />
       ) : null}
       {isGridView ? (
-        <Button
-          variant="default"
-          size="sm"
-          leftIcon={ThemedPlus}
-          onPress={onNewAgent}
-          testID="mission-control-new-agent"
-        >
-          New agent
-        </Button>
+        <>
+          <Button
+            variant="outline"
+            size="sm"
+            leftIcon={ThemedRotateCw}
+            onPress={onRefreshGrid}
+            testID="mission-control-grid-refresh"
+          >
+            Refresh
+          </Button>
+          <Button
+            variant="default"
+            size="sm"
+            leftIcon={ThemedPlus}
+            onPress={onNewAgent}
+            testID="mission-control-new-agent"
+          >
+            New agent
+          </Button>
+        </>
       ) : (
         <CommanderLayoutToggles
           v3Enabled={v3Enabled}
@@ -550,6 +569,39 @@ export function MissionControlScreen(): ReactElement {
     });
   }, []);
 
+  const { rows } = useMissionControlLifecycle({ enabled: isFocused });
+
+  const handleRefreshGrid = useCallback(() => {
+    const nextItems = buildAgentGridItems(rows);
+    const nextKeys = nextItems.map((item) => item.key);
+    const keySet = new Set(nextKeys);
+    const store = useAgentGridStore.getState();
+
+    // Clear pin/draft side effects
+    store.clearDraft();
+    store.setPinSlot(null);
+
+    // Clear glow/active if off-list
+    if (store.glowKey && !keySet.has(store.glowKey)) {
+      store.setGlow(null);
+    }
+    if (store.activeKey && !keySet.has(store.activeKey)) {
+      store.setActiveKey(null);
+    }
+
+    // Reset scroll to origin (x0 y0)
+    scrollAgentGridToOrigin();
+
+    // Reuse enterGrid with freshly sorted keys
+    store.enterGrid(nextKeys);
+  }, [rows]);
+
+  useGridNewAgentAction({
+    isGridView,
+    isFocused,
+    onNewAgent: handleNewAgent,
+  });
+
   const headerRightContent = useMemo(
     () => (
       <MissionControlHeaderActions
@@ -565,6 +617,7 @@ export function MissionControlScreen(): ReactElement {
         boardRailCollapsed={boardRailCollapsed}
         onToggleBoardRail={toggleBoardRailCollapsed}
         onStopCommander={handleStopCommander}
+        onRefreshGrid={handleRefreshGrid}
         onNewAgent={handleNewAgent}
       />
     ),
@@ -572,6 +625,7 @@ export function MissionControlScreen(): ReactElement {
       boardRailCollapsed,
       handleCollapseThread,
       handleNewAgent,
+      handleRefreshGrid,
       handleStopCommander,
       hasCommander,
       isCommanderRunning,

@@ -9591,19 +9591,7 @@ export class Session {
         // Empty in-memory timeline so fetchTimeline works without a live agent.
         this.agentManager.seedTimelineFromItems(agentId, []);
       }
-      if (providerAvailable) {
-        // Warm provider runtime in the background when we can answer from disk.
-        void ensureAgentLoaded(agentId, {
-          agentManager: this.agentManager,
-          agentStorage: this.agentStorage,
-          logger: this.sessionLogger,
-        }).catch((error) => {
-          this.sessionLogger.warn(
-            { err: error, agentId },
-            "Background agent resume after disk timeline seed failed",
-          );
-        });
-      } else {
+      if (!providerAvailable) {
         this.sessionLogger.info(
           { agentId, provider: record.provider },
           "Serving agent timeline without unavailable provider runtime",

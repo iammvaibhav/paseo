@@ -2559,6 +2559,9 @@ export const en = {
       },
       agentGrid: {
         title: "Agent Grid",
+        hoverComposer: "Show composer on hover",
+        hoverComposerHint:
+          "Reveal the tile composer when hovering; header or chat click always shows it",
         direction: "Scroll direction",
         directionHint: "Layout direction for the agent grid",
         visibleCount: "Tiles per screen",

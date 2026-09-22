@@ -15,7 +15,11 @@ import { useIsCompactFormFactor } from "@/constants/layout";
 import { useAppSettings } from "@/hooks/use-settings";
 import { useMissionControlLifecycle } from "@/mission-control/use-mission-control-lifecycle";
 import { AgentGridDraftTile } from "./draft-tile";
-import { registerAgentGridScrollHandler, scrollAgentGridIntoView } from "./grid-glow";
+import {
+  registerAgentGridScrollHandler,
+  registerAgentGridScrollOriginHandler,
+  scrollAgentGridIntoView,
+} from "./grid-glow";
 import { buildAgentGridItems, type AgentGridItem } from "./items";
 import { resolveAgentGridLayout, resolveAgentGridWindow } from "./layout";
 import { useAgentGridStore } from "./store";
@@ -58,6 +62,9 @@ export function MissionControlAgentGrid({ isFocused }: { isFocused: boolean }): 
     glowKey,
     draft,
     clearDraft,
+    insertSnapshotKey,
+    pinSlot,
+    setPinSlot,
   } = useAgentGridStore(
     useShallow((state) => ({
       view: state.view,
@@ -71,6 +78,9 @@ export function MissionControlAgentGrid({ isFocused }: { isFocused: boolean }): 
       glowKey: state.glowKey,
       draft: state.draft,
       clearDraft: state.clearDraft,
+      insertSnapshotKey: state.insertSnapshotKey,
+      pinSlot: state.pinSlot,
+      setPinSlot: state.setPinSlot,
     })),
   );
   const direction = settings?.agentGridDirection ?? storedDirection;
@@ -110,6 +120,20 @@ export function MissionControlAgentGrid({ isFocused }: { isFocused: boolean }): 
     };
   }, [clearSnapshot]);
 
+  // Insert newcomer agent created from draft slot into snapshotKeys at pinSlot
+  useEffect(() => {
+    if (pinSlot == null || !snapshotKeys) return;
+    const knownKeys = new Set(snapshotKeys);
+    for (const row of rows) {
+      const key = `${row.agent.serverId}:${row.agent.id}`;
+      if (!knownKeys.has(key) && row.agent.archivedAt == null) {
+        insertSnapshotKey(key, pinSlot);
+        setPinSlot(null);
+        break;
+      }
+    }
+  }, [insertSnapshotKey, pinSlot, rows, setPinSlot, snapshotKeys]);
+
   const prevItemsRef = useRef<AgentGridItem[]>(EMPTY_ITEMS);
   const items = useMemo(() => {
     const next = buildAgentGridItems(rows, prevItemsRef.current, snapshotKeys);
@@ -131,9 +155,23 @@ export function MissionControlAgentGrid({ isFocused }: { isFocused: boolean }): 
 
   const scrollViewRef = useRef<ScrollView>(null);
   const [scroll, setScroll] = useState<ScrollPosition>(SCROLL_ORIGIN);
+  const [isScrolling, setIsScrolling] = useState(false);
+  const scrollSettleTimeoutRef = useRef<NodeJS.Timeout | number | null>(null);
   const handleScroll = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
     const { x, y } = event.nativeEvent.contentOffset;
     setScroll({ x, y });
+    setIsScrolling(true);
+    clearTimeout(scrollSettleTimeoutRef.current ?? undefined);
+    scrollSettleTimeoutRef.current = setTimeout(() => {
+      setIsScrolling(false);
+      scrollSettleTimeoutRef.current = null;
+    }, 150);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      clearTimeout(scrollSettleTimeoutRef.current ?? undefined);
+    };
   }, []);
 
   const hasDraft = draft !== null;
@@ -146,6 +184,13 @@ export function MissionControlAgentGrid({ isFocused }: { isFocused: boolean }): 
     setScroll(SCROLL_ORIGIN);
     scrollViewRef.current?.scrollTo({ x: 0, y: 0, animated: false });
   }, [direction]);
+
+  useEffect(() => {
+    return registerAgentGridScrollOriginHandler(() => {
+      setScroll(SCROLL_ORIGIN);
+      scrollViewRef.current?.scrollTo({ x: 0, y: 0, animated: false });
+    });
+  }, []);
 
   const layout = useMemo(
     () =>
@@ -201,7 +246,8 @@ export function MissionControlAgentGrid({ isFocused }: { isFocused: boolean }): 
     ? layout.contentWidth - (viewport?.width ?? 0)
     : layout.contentHeight - (viewport?.height ?? 0);
   const scrollOffset = Math.max(0, Math.min(isHorizontal ? scroll.x : scroll.y, maxOffset));
-  const overscan = isHorizontal ? layout.rows : layout.columns;
+  const defaultOverscan = isHorizontal ? layout.rows : layout.columns;
+  const overscan = isScrolling ? 0 : defaultOverscan;
   const mountWindow = resolveAgentGridWindow(layout, totalItemCount, scrollOffset, overscan);
   const contentStyle = useMemo(
     () => inlineUnistylesStyle({ width: layout.contentWidth, height: layout.contentHeight }),

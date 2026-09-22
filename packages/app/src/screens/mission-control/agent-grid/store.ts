@@ -3,6 +3,7 @@ import { z } from "zod";
 import { create, type StoreApi, type UseBoundStore } from "zustand";
 import { persist } from "zustand/middleware";
 import { createValidatedPersistStorage } from "@/storage/validated-persist-storage";
+import { insertSnapshotKey } from "./items";
 import type { AgentGridDirection } from "./layout";
 
 export const AGENT_GRID_STORAGE_KEY = "@paseo:mission-control-agent-grid";
@@ -18,6 +19,8 @@ export interface AgentGridDraftState {
   serverId: string | null;
   workspaceId: string | null;
   projectKey: string | null;
+  slotIndex?: number;
+  sourceKey?: string | null;
 }
 
 export interface AgentGridNavigatedFrom {
@@ -37,7 +40,10 @@ export interface AgentGridStoreState {
   snapshotVersion: number;
   enterGrid: (keys: string[]) => void;
   clearSnapshot: () => void;
+  insertSnapshotKey: (key: string, index?: number) => void;
 
+  pinSlot: number | null;
+  setPinSlot: (slot: number | null) => void;
   glowKey: string | null;
   setGlow: (key: string | null) => void;
 
@@ -103,7 +109,21 @@ export const useAgentGridStore: UseBoundStore<StoreApi<AgentGridStoreState>> =
             snapshotVersion: state.snapshotVersion + 1,
           })),
         clearSnapshot: () => set({ snapshotKeys: null }),
+        insertSnapshotKey: (key, index) =>
+          set((state) => {
+            const next = insertSnapshotKey(state.snapshotKeys, key, index ?? state.pinSlot ?? 0);
+            if (next === state.snapshotKeys) {
+              return state;
+            }
+            return {
+              snapshotKeys: next,
+              snapshotVersion: state.snapshotVersion + 1,
+              pinSlot: null,
+            };
+          }),
 
+        pinSlot: null,
+        setPinSlot: (pinSlot) => set({ pinSlot }),
         glowKey: null,
         setGlow: (glowKey) => set({ glowKey }),
 
@@ -111,9 +131,12 @@ export const useAgentGridStore: UseBoundStore<StoreApi<AgentGridStoreState>> =
         setActiveKey: (activeKey) => set({ activeKey }),
 
         draft: null,
-        setDraft: (draft) => set({ draft }),
-        clearDraft: () => set({ draft: null }),
-
+        setDraft: (draft) =>
+          set((state) => ({
+            draft,
+            pinSlot: draft?.slotIndex ?? state.pinSlot ?? (draft ? 0 : null),
+          })),
+        clearDraft: () => set({ draft: null, pinSlot: null }),
         navigatedFromGrid: null,
         setNavigatedFromGrid: (navigatedFromGrid) => set({ navigatedFromGrid }),
       }),

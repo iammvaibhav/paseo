@@ -514,6 +514,25 @@ interface SyntaxRowProps {
   onChange: (id: SyntaxThemeId) => void;
 }
 
+function AgentGridHoverComposerRow({
+  value,
+  onChange,
+}: {
+  value: boolean;
+  onChange: (value: boolean) => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <SettingsSwitch
+      label={t("settings.appearance.agentGrid.hoverComposer")}
+      hint={t("settings.appearance.agentGrid.hoverComposerHint")}
+      value={value}
+      onValueChange={onChange}
+      testID="settings-appearance-agent-grid-hover-composer"
+    />
+  );
+}
+
 function SyntaxRow({ value, onChange }: SyntaxRowProps) {
   const { t } = useTranslation();
   const selectedLabel = syntaxLabelForId(value);
@@ -744,6 +763,13 @@ export function AppearanceSection() {
     [updateSettings],
   );
 
+  const handleAgentGridHoverComposerChange = useCallback(
+    (value: boolean) => {
+      void updateSettings({ agentGridHoverComposer: value });
+    },
+    [updateSettings],
+  );
+
   const commitAgentGridSize = useCallback(() => {
     const parsed = parseClampedFontSize(agentGridSizeDraft, {
       min: MIN_AGENT_GRID_FONT_SIZE,
@@ -869,6 +895,10 @@ export function AppearanceSection() {
             testID="settings-appearance-agent-grid-visible-count"
             onChangeDraft={handleAgentGridVisibleCountChange}
             onCommit={commitAgentGridVisibleCount}
+          />
+          <AgentGridHoverComposerRow
+            value={settings.agentGridHoverComposer}
+            onChange={handleAgentGridHoverComposerChange}
           />
           <FontSizeRow
             title={t("settings.appearance.agentGrid.fontSize")}

@@ -112,6 +112,7 @@ export interface AppSettings {
   codeFontSize: number; // clamped px, default 12
   agentGridDirection: AgentGridDirection;
   agentGridVisibleCount: number;
+  agentGridHoverComposer: boolean;
   syntaxTheme: SyntaxThemeId; // default "one"
   workspaceTitleSource: WorkspaceTitleSource;
   sidebarWorkspaceTrailing: SidebarWorkspaceTrailing;
@@ -181,6 +182,7 @@ export const DEFAULT_CLIENT_SETTINGS: AppSettings = {
   codeFontSize: DEFAULT_CODE_FONT_SIZE,
   agentGridDirection: DEFAULT_AGENT_GRID_DIRECTION,
   agentGridVisibleCount: DEFAULT_AGENT_GRID_VISIBLE_COUNT,
+  agentGridHoverComposer: false,
   syntaxTheme: "one",
   workspaceTitleSource: "title",
   sidebarWorkspaceTrailing: "diff",
@@ -276,6 +278,7 @@ const StoredAppSettingsSchema = z
       MIN_AGENT_GRID_VISIBLE_COUNT,
       MAX_AGENT_GRID_VISIBLE_COUNT,
     ).catch(DEFAULT_AGENT_GRID_VISIBLE_COUNT),
+    agentGridHoverComposer: z.boolean().catch(false),
     // COMPAT(uiFontSizeScale): replaced by the literal base size in v0.4, remove after 2027-08-17.
     uiFontSize: clampedNumber(11, 24).optional().catch(undefined),
     codeFontSize: clampedNumber(MIN_CODE_FONT_SIZE, MAX_CODE_FONT_SIZE).catch(
@@ -380,6 +383,7 @@ const StoredAppSettingsSchema = z
       agentGridFontSize: stored.agentGridFontSize ?? DEFAULT_AGENT_GRID_FONT_SIZE,
       agentGridDirection: stored.agentGridDirection ?? DEFAULT_AGENT_GRID_DIRECTION,
       agentGridVisibleCount: stored.agentGridVisibleCount ?? DEFAULT_AGENT_GRID_VISIBLE_COUNT,
+      agentGridHoverComposer: stored.agentGridHoverComposer ?? false,
       missionControlApprovalMode:
         stored.missionControlApprovalMode ?? DEFAULT_MISSION_CONTROL_APPROVAL_MODE,
       missionControlVerbose: stored.missionControlVerbose ?? false,

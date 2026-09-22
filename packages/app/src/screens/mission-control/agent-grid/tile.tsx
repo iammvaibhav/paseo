@@ -1,4 +1,4 @@
-import { memo, useCallback, useMemo, type ReactElement } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { Pressable, Text, View } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import {
@@ -6,7 +6,7 @@ import {
   CircleCheck,
   Copy,
   ExternalLink,
-  MessageSquare,
+  Maximize2,
   Plus,
   Square,
 } from "lucide-react-native";
@@ -29,12 +29,12 @@ import { setAgentLifecycle } from "@/mission-control/lifecycle-set";
 import { buildAgentReference, resolveBoardRowMenuActions } from "@/mission-control/row-menu";
 import { getHostRuntimeStore } from "@/runtime/host-runtime";
 import { copyToClipboard } from "@/utils/copy-to-clipboard";
+import { focusWithRetries } from "@/utils/web-focus";
 import { openAgentFromHistory } from "@/workspace/open-agent-from-history";
 import { EmbeddedAgentPane } from "@/screens/mission-control/embedded-agent-pane";
 import { isWeb } from "@/constants/platform";
 import { useAppSettings } from "@/hooks/use-settings";
 import type { AgentGridItem } from "./items";
-import { resolveAgentGridZoom } from "./font-size";
 import { useAgentGridStore } from "./store";
 import { TileStatus } from "./tile-status";
 import { useLastUserMessage } from "./last-user-message";
@@ -45,7 +45,7 @@ const ThemedArchive = withUnistyles(Archive);
 const ThemedCircleCheck = withUnistyles(CircleCheck);
 const ThemedCopy = withUnistyles(Copy);
 const ThemedExternalLink = withUnistyles(ExternalLink);
-const ThemedMessageSquare = withUnistyles(MessageSquare);
+const ThemedMaximize2 = withUnistyles(Maximize2);
 const ThemedPlus = withUnistyles(Plus);
 const ThemedSquare = withUnistyles(Square);
 
@@ -314,29 +314,33 @@ function TileContextMenu({ item }: { item: AgentGridItem }): ReactElement {
 
 function TileHeader({
   item,
-  onActivate,
+  onShowComposer,
 }: {
   item: AgentGridItem;
-  onActivate?: () => void;
-}): ReactElement {
+  onShowComposer?: () => void;
+}) {
   const { row } = item;
   const { agent } = row;
-  const primaryLabel = agent.name ?? agent.title ?? agent.id;
-  const secondaryLabel = agent.name && agent.title ? agent.title : null;
+  // STE: Identity layout: primary title is project name (fallback agent title or id);
+  // subtitle is agent title (when project name is primary). Agent name is dropped entirely.
   const projectName = agent.projectPlacement?.projectName;
+  const primaryTitle = projectName || agent.title || agent.id;
+  const subtitle = projectName && agent.title ? agent.title : null;
   const lastUserMessage = useLastUserMessage(agent.serverId, agent.id);
-  const tooltipText = lastUserMessage || agent.title || primaryLabel;
+  const tooltipText = lastUserMessage || agent.title || primaryTitle;
 
   // Same source as the agent window's turn footer, so both timers agree.
   const runStartedAt = agent.turn.phase === "open" ? agent.turn.startedAt : null;
 
+  const handleHeaderClick = useCallback(() => {
+    // STE: Header click reveals the composer; maximize button expands.
+    onShowComposer?.();
+  }, [onShowComposer]);
+
   const handleOpenWorkspace = useCallback(() => {
     const store = useAgentGridStore.getState();
     if ("setNavigatedFromGrid" in store && typeof store.setNavigatedFromGrid === "function") {
-      store.setNavigatedFromGrid({
-        serverId: agent.serverId,
-        agentId: agent.id,
-      });
+      store.setNavigatedFromGrid({ serverId: agent.serverId, agentId: agent.id });
     }
     void openAgentFromHistory({
       serverId: agent.serverId,
@@ -349,23 +353,14 @@ function TileHeader({
   return (
     <View style={styles.header}>
       <Pressable
-        onPress={handleOpenWorkspace}
+        onPress={handleHeaderClick}
         style={styles.headerCluster}
         accessibilityRole="button"
-        accessibilityLabel={`Open ${primaryLabel} in workspace`}
+        accessibilityLabel={`Open ${primaryTitle} in workspace`}
         testID={`mission-control-agent-grid-header-${agent.id}`}
       >
         <TileStatus item={item} />
         <HostGlyph serverId={agent.serverId} label={agent.serverLabel} size="sm" />
-        {projectName ? (
-          <Text
-            style={styles.projectName}
-            numberOfLines={1}
-            testID={`mission-control-agent-grid-project-${agent.id}`}
-          >
-            {projectName}
-          </Text>
-        ) : null}
         <Tooltip delayDuration={300} enabledOnDesktop enabledOnMobile={false}>
           <TooltipTrigger asChild>
             <View
@@ -375,12 +370,16 @@ function TileHeader({
               testID={`mission-control-agent-grid-lastmsg-${agent.id}`}
               {...({ title: tooltipText } as object)}
             >
-              <Text style={styles.name} numberOfLines={1}>
-                {primaryLabel}
+              <Text
+                style={styles.name}
+                numberOfLines={1}
+                testID={`mission-control-agent-grid-project-${agent.id}`}
+              >
+                {primaryTitle}
               </Text>
-              {secondaryLabel ? (
+              {subtitle ? (
                 <Text style={styles.title} numberOfLines={1}>
-                  {secondaryLabel}
+                  {subtitle}
                 </Text>
               ) : null}
             </View>
@@ -407,19 +406,23 @@ function TileHeader({
           />
         ) : null}
       </Pressable>
-      {onActivate ? (
-        <View style={styles.headerAction}>
-          <Pressable
-            onPress={onActivate}
-            style={styles.activateButton}
-            accessibilityRole="button"
-            accessibilityLabel={`Toggle composer for ${primaryLabel}`}
-            testID={`mission-control-agent-grid-activate-${agent.id}`}
-          >
-            <ThemedMessageSquare size={13} uniProps={headerActionIconMapping} />
-          </Pressable>
-        </View>
-      ) : null}
+      <View style={styles.headerAction}>
+        <Pressable
+          onPress={handleOpenWorkspace}
+          style={styles.activateButton}
+          accessibilityRole="button"
+          accessibilityLabel={`Open ${primaryTitle} in workspace`}
+          testID={`mission-control-agent-grid-expand-${agent.id}`}
+          {...({
+            "data-testid": `mission-control-agent-grid-expand-${agent.id}`,
+            "data-test-alias": `mission-control-agent-grid-activate-${agent.id}`,
+          } as object)}
+        >
+          <View testID={`mission-control-agent-grid-activate-${agent.id}`} collapsable={false}>
+            <ThemedMaximize2 size={13} uniProps={headerActionIconMapping} />
+          </View>
+        </Pressable>
+      </View>
     </View>
   );
 }
@@ -457,42 +460,177 @@ export const AgentGridTile = memo(function AgentGridTile({
   const { serverId, id: agentId } = item.row.agent;
   const { settings } = useAppSettings();
   const frameStyle = useTileFrameStyle({ width, height, x, y });
-  const contentZoom = resolveAgentGridZoom(settings.agentGridFontSize, settings.contentFontSize);
-  const handleToggle = useCallback(() => {
-    onActivate(isActive ? null : item.key);
-  }, [isActive, item.key, onActivate]);
+  const tileRef = useRef<View>(null);
+  const hoverComposerEnabled = settings.agentGridHoverComposer === true;
+  const [isHovered, setIsHovered] = useState(false);
+  const [isScrollDismissed, setIsScrollDismissed] = useState(false);
+  const isScrollDismissedRef = useRef(false);
+  const lastComposerToggleRef = useRef(0);
+  const dismissTimerRef = useRef<number | NodeJS.Timeout | null>(null);
+  const lastScrollTopRef = useRef<number | null>(null);
+
+  // STE: Click (header, body, or chat area) shows the composer. Hover shows
+  // it only when the Appearance setting enables hover composer.
+  const shouldShowComposer =
+    (isActive || (hoverComposerEnabled && isHovered)) && !isScrollDismissed;
+
+  // STE: Stamp every composer show/hide so scroll handlers ignore the
+  // layout-settle window that follows a toggle.
+  useEffect(() => {
+    lastComposerToggleRef.current = Date.now();
+    isScrollDismissedRef.current = isScrollDismissed;
+  }, [shouldShowComposer, isScrollDismissed]);
+
+  const handleMouseEnter = useCallback(() => {
+    setIsHovered(true);
+    // STE: Re-hover restores composer if previously dismissed by scrolling up.
+    if (hoverComposerEnabled) setIsScrollDismissed(false);
+  }, [hoverComposerEnabled]);
+
+  const handleMouseLeave = useCallback(() => {
+    setIsHovered(false);
+  }, []);
+
   const handleComposerFocus = useCallback(() => onActivate(item.key), [item.key, onActivate]);
+  const handleShowComposer = useCallback(() => onActivate(item.key), [item.key, onActivate]);
   const handleBodyClick = useCallback(
     (event: { target?: EventTarget | null }) => {
       if (isInteractiveOrSelection(event.target)) {
         return;
       }
-      handleToggle();
+      onActivate(item.key);
     },
-    [handleToggle],
+    [item.key, onActivate],
+  );
+
+  // STE: Composer reveal focuses the textarea with cursor at end of text.
+  useEffect(() => {
+    if (shouldShowComposer && isWeb) {
+      const cancel = focusWithRetries({
+        focus: () => {
+          const root = tileRef.current as unknown as HTMLElement | null;
+          const textarea = root?.querySelector?.("textarea[data-composer-input], textarea");
+          if (textarea instanceof HTMLTextAreaElement) {
+            // STE: Never let auto-focus yank the transcript scroll position.
+            textarea.focus({ preventScroll: true });
+            const end = textarea.value.length;
+            textarea.setSelectionRange(end, end);
+          }
+        },
+        isFocused: () => {
+          const root = tileRef.current as unknown as HTMLElement | null;
+          const textarea = root?.querySelector?.("textarea[data-composer-input], textarea");
+          return textarea != null && document.activeElement === textarea;
+        },
+        timeoutMs: 800,
+      });
+      return cancel;
+    }
+  }, [shouldShowComposer]);
+
+  // STE: Transcript scroll-up dismisses composer to read state; scroll to
+  // bottom or re-hover restores. Dismiss is debounced and scroll events from
+  // the composer mount/unmount layout shift are ignored, so slow scrolling
+  // near the threshold cannot oscillate the composer. Unfocused wheel kept.
+  useEffect(() => {
+    if (!isWeb) return;
+    const root = tileRef.current as unknown as HTMLElement | null;
+    if (!root) return;
+
+    const SCROLL_DISMISS_THRESHOLD_PX = 72;
+    const AT_BOTTOM_THRESHOLD_PX = 12;
+    const DISMISS_DEBOUNCE_MS = 120;
+    const LAYOUT_SETTLE_MS = 350;
+
+    const cancelPendingDismiss = () => {
+      if (dismissTimerRef.current !== null) {
+        clearTimeout(dismissTimerRef.current);
+        dismissTimerRef.current = null;
+      }
+    };
+
+    const handleScroll = (event: Event) => {
+      // STE: Layout shift from showing/hiding the composer moves scroll
+      // metrics; ignore events until the layout settles to avoid toggle loop.
+      if (Date.now() - lastComposerToggleRef.current < LAYOUT_SETTLE_MS) return;
+      const target = event.target as HTMLElement | null;
+      if (!target || target === root) return;
+      if (target.scrollHeight <= target.clientHeight + 1) return;
+
+      // STE: Upward (reading) motion dismisses; reaching the bottom edge or
+      // moving downward restores. Downward motion never hides.
+      const prevTop = lastScrollTopRef.current;
+      lastScrollTopRef.current = target.scrollTop;
+
+      const distanceFromBottom = target.scrollHeight - target.clientHeight - target.scrollTop;
+      if (distanceFromBottom <= AT_BOTTOM_THRESHOLD_PX) {
+        cancelPendingDismiss();
+        if (isScrollDismissedRef.current) setIsScrollDismissed(false);
+        return;
+      }
+      if (prevTop !== null && target.scrollTop >= prevTop) return;
+      if (distanceFromBottom > SCROLL_DISMISS_THRESHOLD_PX) {
+        if (!isScrollDismissedRef.current && dismissTimerRef.current === null) {
+          dismissTimerRef.current = setTimeout(() => {
+            dismissTimerRef.current = null;
+            setIsScrollDismissed(true);
+          }, DISMISS_DEBOUNCE_MS);
+        }
+      } else {
+        cancelPendingDismiss();
+      }
+    };
+
+    root.addEventListener("scroll", handleScroll, { capture: true, passive: true });
+
+    return () => {
+      root.removeEventListener("scroll", handleScroll, { capture: true });
+      cancelPendingDismiss();
+    };
+  }, []);
+
+  const beforeComposer = useMemo(
+    () => (
+      <TilePills
+        serverId={serverId}
+        agentId={agentId}
+        workspaceId={item.row.agent.workspaceId}
+        showComposer={shouldShowComposer}
+        isActive={isActive}
+      />
+    ),
+    [agentId, isActive, item.row.agent.workspaceId, serverId, shouldShowComposer],
   );
 
   return (
     <View
+      ref={tileRef}
       style={[styles.tile, frameStyle, glow ? styles.tileGlow : null]}
       testID={`mission-control-agent-grid-tile-${agentId}`}
       {...({
+        onMouseEnter: handleMouseEnter,
+        onMouseLeave: handleMouseLeave,
+        onPointerEnter: handleMouseEnter,
+        onPointerLeave: handleMouseLeave,
         "data-glow": glow ? "true" : undefined,
-        dataSet: { glow: glow ? "true" : undefined },
+        "data-composer-auto": shouldShowComposer ? "true" : undefined,
+        dataSet: {
+          glow: glow ? "true" : undefined,
+          composerAuto: shouldShowComposer ? "true" : undefined,
+        },
       } as object)}
     >
       <AgentGridTileGlow glow={glow} agentId={agentId} />
       <ContextMenu>
         <ContextMenuTrigger contextOnly style={styles.contextTrigger}>
-          <TileHeader item={item} onActivate={handleToggle} />
+          <TileHeader item={item} onShowComposer={handleShowComposer} />
           <View
             style={styles.body}
             // RN-web: click bubbles from the stream; wheel still hits the list.
             {...({ onClick: handleBodyClick } as object)}
           >
             <View
-              style={[styles.body, isWeb ? ({ zoom: contentZoom } as object) : null]}
-              testID="mission-control-agent-grid-content-scale"
+              style={styles.streamFrame}
               {...({
                 dataSet: { agentGridFontSize: String(settings.agentGridFontSize) },
               } as object)}
@@ -500,21 +638,25 @@ export const AgentGridTile = memo(function AgentGridTile({
               <EmbeddedAgentPane
                 serverId={serverId}
                 agentId={agentId}
-                isFocused={isFocused && isActive}
+                isFocused={isFocused && (isActive || isHovered)}
                 viewedTimelineSourceId={`mission-control-agent-grid:${serverId}:${agentId}`}
                 reportsFocusedAgent={isActive}
                 chrome="compact"
-                showComposer={isActive}
+                showComposer={shouldShowComposer}
                 submitButtonTestID={`mission-control-agent-grid-composer-submit-${agentId}`}
                 onComposerFocus={handleComposerFocus}
+                beforeComposer={beforeComposer}
+                timelineSyncDebounceMs={isActive ? 0 : 150}
               />
             </View>
-            <TilePills
-              serverId={serverId}
-              agentId={agentId}
-              workspaceId={item.row.agent.workspaceId}
-              isActive={isActive}
-            />
+            {shouldShowComposer ? (
+              <View
+                testID="mission-control-agent-grid-composer-auto"
+                collapsable={false}
+                pointerEvents="none"
+                style={styles.composerAutoIndicator}
+              />
+            ) : null}
           </View>
         </ContextMenuTrigger>
         <TileContextMenu item={item} />
@@ -640,6 +782,14 @@ const styles = StyleSheet.create((theme) => ({
     minHeight: 0,
     position: "relative",
   },
+  streamFrame: {
+    flex: 1,
+    minHeight: 0,
+    paddingHorizontal: {
+      xs: theme.spacing[3],
+      md: theme.spacing[4],
+    },
+  },
   placeholderBody: {
     flex: 1,
     minHeight: 0,
@@ -655,5 +805,11 @@ const styles = StyleSheet.create((theme) => ({
     fontFamily: theme.fontFamily.ui,
     fontSize: theme.fontSize.xs,
     color: theme.colors.foreground,
+  },
+  composerAutoIndicator: {
+    position: "absolute",
+    width: 0,
+    height: 0,
+    opacity: 0,
   },
 }));

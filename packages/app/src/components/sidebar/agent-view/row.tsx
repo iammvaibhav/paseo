@@ -9,12 +9,12 @@ import { isWeb } from "@/constants/platform";
 import { useCompactTimeAgo } from "@/hooks/use-compact-time-ago";
 import { useLiveDuration } from "@/hooks/use-live-duration";
 import { rowActivityMs, rowRunningStartedMs, type LifecycleRow } from "@/mission-control/lifecycle";
-import { navigateToAgent } from "@/utils/navigate-to-agent";
+import { buildMissionControlRoute } from "@/utils/host-routes";
 import type { SidebarStateBucket } from "@/utils/sidebar-agent-state";
 import { getStatusDotColor } from "@/utils/status-dot-color";
 import { STATUS_INDICATOR_FILLED_DOT_SIZE } from "@/utils/status-indicator-geometry";
 import { SidebarAgentViewRowMenu } from "./row-menu";
-import { useMissionControlActive } from "@/screens/mission-control/focus-context";
+import { router, usePathname } from "expo-router";
 import { useAgentGridStore } from "@/screens/mission-control/agent-grid/store";
 import { focusAgentInGrid } from "@/screens/mission-control/agent-grid/grid-glow";
 
@@ -84,29 +84,36 @@ export const SidebarAgentViewRow = memo(function SidebarAgentViewRow({
   const stateBucket = rowToSidebarStateBucket(row);
   const title = agent.title ?? agent.name ?? t("agentList.fallbackTitle");
 
-  const isMissionControlActive = useMissionControlActive();
-  const gridView = useAgentGridStore((state) => state.view);
+  const pathname = usePathname();
 
   const handlePress = useCallback(() => {
     onAgentPress?.();
-    if (isMissionControlActive && gridView === "grid") {
-      const key = `${agent.serverId}:${agent.id}`;
-      const store = useAgentGridStore.getState();
-      if (typeof store.setGlow === "function") {
-        store.setGlow(key);
-      }
-      if (typeof store.setActiveKey === "function") {
-        store.setActiveKey(key);
-      }
-      focusAgentInGrid(agent.serverId, agent.id);
-      return;
+    const key = `${agent.serverId}:${agent.id}`;
+    const store = useAgentGridStore.getState();
+
+    // Ensure grid view is active
+    if (store.view !== "grid") {
+      store.setView("grid");
     }
-    navigateToAgent({
-      serverId: agent.serverId,
-      workspaceId: agent.workspaceId ?? undefined,
-      agentId: agent.id,
-    });
-  }, [agent.id, agent.serverId, agent.workspaceId, gridView, isMissionControlActive, onAgentPress]);
+
+    // Set active composer key and glow key
+    if (typeof store.setActiveKey === "function") {
+      store.setActiveKey(key);
+    }
+    if (typeof store.setGlow === "function") {
+      store.setGlow(key);
+    }
+
+    // If not already on mission control route, navigate there
+    const isMissionControlRoute =
+      typeof pathname === "string" && pathname.includes("/mission-control");
+    if (!isMissionControlRoute) {
+      router.push(buildMissionControlRoute());
+    }
+
+    // Scroll to tile + glow in grid (handles pending target if grid mounting)
+    focusAgentInGrid(agent.serverId, agent.id);
+  }, [agent.id, agent.serverId, onAgentPress, pathname]);
 
   const rowStyle = useCallback(
     ({ pressed, hovered = false }: PressableStateCallbackType & { hovered?: boolean }) => [

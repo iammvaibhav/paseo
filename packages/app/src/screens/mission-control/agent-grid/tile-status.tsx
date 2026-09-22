@@ -12,6 +12,7 @@ export interface TileStatusProps {
 
 /**
  * Visual status indicator for an AgentGridTile header:
+ * - Needs you / needs input: solid orange dot (needs_input bucket)
  * - Running: rotating StatusRing
  * - Ready for review: solid green dot (attention bucket)
  * - Done: muted idle dot
@@ -21,24 +22,25 @@ export const TileStatus = memo(function TileStatus({ item }: TileStatusProps): R
   const { agent, bucket } = row;
 
   const isDone = bucket === "done" || bucket === "dormant" || (section as string) === "done";
-  const isRunning =
-    !isDone &&
-    (bucket === "running" ||
-      (bucket === "needs_you" && agent.status === "running") ||
-      section === "running");
+  const isNeedsYou = !isDone && (bucket === "needs_you" || section === "needs-you");
+  const isRunning = !isDone && !isNeedsYou && (bucket === "running" || section === "running");
 
   let accessibilityLabel = "Ready";
   if (isDone) {
     accessibilityLabel = "Done";
+  } else if (isNeedsYou) {
+    accessibilityLabel = "Needs input";
   } else if (isRunning) {
     accessibilityLabel = "Running";
   }
 
   let statusIndicator: ReactElement;
-  if (isRunning) {
-    statusIndicator = <StatusRing backdrop="surface0" />;
-  } else if (isDone) {
+  if (isDone) {
     statusIndicator = <View style={styles.dotDone} />;
+  } else if (isNeedsYou) {
+    statusIndicator = <View style={styles.dotNeedsInput} />;
+  } else if (isRunning) {
+    statusIndicator = <StatusRing backdrop="surface0" />;
   } else {
     statusIndicator = <View style={styles.dotReady} />;
   }
@@ -62,6 +64,13 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     justifyContent: "center",
     flexShrink: 0,
+  },
+  dotNeedsInput: {
+    width: STATUS_INDICATOR_FILLED_DOT_SIZE,
+    height: STATUS_INDICATOR_FILLED_DOT_SIZE,
+    borderRadius: theme.borderRadius.full,
+    backgroundColor:
+      getStatusDotColor({ theme, bucket: "needs_input" }) ?? theme.colors.statusDotWarning,
   },
   dotReady: {
     width: STATUS_INDICATOR_FILLED_DOT_SIZE,

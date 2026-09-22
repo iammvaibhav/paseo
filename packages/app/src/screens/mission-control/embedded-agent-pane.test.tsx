@@ -12,6 +12,9 @@ import { EmbeddedAgentPane } from "./embedded-agent-pane";
 const focus = vi.hoisted(() => ({
   interactive: [] as boolean[],
 }));
+const timelineSync = vi.hoisted(() => ({
+  replaceVisibleAgentIds: vi.fn(),
+}));
 
 vi.mock("react-native-unistyles", () => ({
   StyleSheet: {
@@ -76,13 +79,25 @@ vi.mock("@/utils/agent-snapshots", () => ({
 vi.mock("@/stores/session-store", () => ({
   useSessionStore: (
     selector: (state: {
-      sessions: Record<string, undefined>;
+      sessions: Record<string, unknown>;
       setFocusedAgentId: () => void;
     }) => unknown,
-  ) => selector({ sessions: {}, setFocusedAgentId: () => undefined }),
+  ) =>
+    selector({
+      sessions: {
+        "server-1": {
+          viewedTimelineSync: timelineSync,
+          agentStreamTail: new Map(),
+          agentStreamHead: new Map(),
+          messageSubmissions: new Map(),
+          pendingPermissions: new Map(),
+          agentAuthoritativeHistoryApplied: new Map(),
+        },
+      },
+      setFocusedAgentId: () => undefined,
+    }),
   selectAgentTurnPresentation: () => ({ phase: "idle" }),
 }));
-
 vi.mock("@/stores/navigation-active-workspace-store", () => ({
   navigateToWorkspace: () => undefined,
 }));
@@ -149,5 +164,85 @@ describe("EmbeddedAgentPane pane focus", () => {
 
     renderPane(false);
     expect(focus.interactive.at(-1)).toBe(false);
+  });
+
+  it("immediately registers viewedTimelineSync when timelineSyncDebounceMs is 0", () => {
+    timelineSync.replaceVisibleAgentIds.mockClear();
+    renderPane(true);
+    expect(timelineSync.replaceVisibleAgentIds).toHaveBeenCalledWith(
+      "mission-control-inspector",
+      ["agent-1"],
+      undefined,
+    );
+  });
+
+  it("debounces viewedTimelineSync registration and skips registration on fast unmount", () => {
+    vi.useFakeTimers();
+    try {
+      timelineSync.replaceVisibleAgentIds.mockClear();
+      act(() => {
+        root?.render(
+          <EmbeddedAgentPane
+            serverId="server-1"
+            agentId="agent-1"
+            isFocused={true}
+            viewedTimelineSourceId="mission-control-agent-grid:server-1:agent-1"
+            reportsFocusedAgent={false}
+            timelineSyncDebounceMs={150}
+          />,
+        );
+      });
+      // Immediately after render, debounce has not fired
+      expect(timelineSync.replaceVisibleAgentIds).not.toHaveBeenCalled();
+
+      // Unmounting before 150ms cancels the timer, so agent-1 is never registered
+      act(() => {
+        root?.unmount();
+      });
+      expect(timelineSync.replaceVisibleAgentIds).toHaveBeenCalledWith(
+        "mission-control-agent-grid:server-1:agent-1",
+        [],
+        { ephemeral: true },
+      );
+      // Verify it was never registered with ['agent-1']
+      expect(timelineSync.replaceVisibleAgentIds).not.toHaveBeenCalledWith(
+        "mission-control-agent-grid:server-1:agent-1",
+        ["agent-1"],
+        { ephemeral: true },
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("registers viewedTimelineSync with ephemeral option after debounce delay settles", () => {
+    vi.useFakeTimers();
+    try {
+      timelineSync.replaceVisibleAgentIds.mockClear();
+      act(() => {
+        root?.render(
+          <EmbeddedAgentPane
+            serverId="server-1"
+            agentId="agent-1"
+            isFocused={true}
+            viewedTimelineSourceId="mission-control-agent-grid:server-1:agent-1"
+            reportsFocusedAgent={false}
+            timelineSyncDebounceMs={150}
+          />,
+        );
+      });
+      expect(timelineSync.replaceVisibleAgentIds).not.toHaveBeenCalled();
+
+      act(() => {
+        vi.advanceTimersByTime(150);
+      });
+      expect(timelineSync.replaceVisibleAgentIds).toHaveBeenCalledWith(
+        "mission-control-agent-grid:server-1:agent-1",
+        ["agent-1"],
+        { ephemeral: true },
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -11,7 +11,7 @@ import type { AgentGridItem } from "./items";
 import type { AgentGridLayout } from "./layout";
 import { useAgentGridStore } from "./store";
 
-export const GLOW_DURATION_MS = 2500;
+export const GLOW_DURATION_MS = 3500;
 
 let glowClearTimer: number | NodeJS.Timeout | null = null;
 
@@ -83,6 +83,32 @@ export function registerAgentGridScrollHandler(handler: ScrollToKeyHandler): () 
   };
 }
 
+type ScrollOriginHandler = () => void;
+const scrollOriginHandlers = new Set<ScrollOriginHandler>();
+
+/**
+ * Register a scroll-to-origin handler from the mounted AgentGrid ScrollView.
+ */
+export function registerAgentGridScrollOriginHandler(handler: ScrollOriginHandler): () => void {
+  scrollOriginHandlers.add(handler);
+  return () => {
+    scrollOriginHandlers.delete(handler);
+  };
+}
+
+/**
+ * Reset grid scroll position to origin (x0, y0).
+ */
+export function scrollAgentGridToOrigin(): void {
+  for (const handler of scrollOriginHandlers) {
+    try {
+      handler();
+    } catch {
+      // Ignore initial layout races
+    }
+  }
+}
+
 /**
  * Request grid to scroll to a specific tile key `${serverId}:${agentId}`.
  */
@@ -131,6 +157,59 @@ export interface ScrollAgentGridOptions {
 }
 
 /**
+ * Target animation duration for fast grid tile scrolling (~150-200ms)
+ * so tile focus feels responsive and instant.
+ */
+export const FAST_GRID_SCROLL_DURATION_MS = 180;
+
+function smoothScrollTo(
+  scrollView: ScrollView,
+  targetX: number,
+  targetY: number,
+  durationMs: number = FAST_GRID_SCROLL_DURATION_MS,
+): void {
+  const scrollTarget: unknown = scrollView;
+  const node =
+    scrollTarget &&
+    typeof scrollTarget === "object" &&
+    "getScrollableNode" in scrollTarget &&
+    typeof scrollTarget.getScrollableNode === "function"
+      ? (scrollTarget.getScrollableNode() as HTMLElement | null)
+      : null;
+
+  if (!node || typeof requestAnimationFrame === "undefined") {
+    scrollView.scrollTo({ x: targetX, y: targetY, animated: true });
+    return;
+  }
+
+  const scrollableElement = node;
+  const startX = scrollableElement.scrollLeft;
+  const startY = scrollableElement.scrollTop;
+  const diffX = targetX - startX;
+  const diffY = targetY - startY;
+
+  if (Math.abs(diffX) < 1 && Math.abs(diffY) < 1) {
+    return;
+  }
+
+  const startTime = performance.now();
+  function step(currentTime: number) {
+    const elapsed = currentTime - startTime;
+    const progress = Math.min(1, elapsed / durationMs);
+    const eased = progress * (2 - progress);
+
+    scrollableElement.scrollLeft = startX + diffX * eased;
+    scrollableElement.scrollTop = startY + diffY * eased;
+
+    if (progress < 1) {
+      requestAnimationFrame(step);
+    }
+  }
+
+  requestAnimationFrame(step);
+}
+
+/**
  * Utility to scroll a tile into view within the AgentGrid ScrollView.
  * Clamps coordinates to content boundaries.
  */
@@ -159,13 +238,20 @@ export function scrollAgentGridIntoView(options: ScrollAgentGridOptions): boolea
   if (layout.direction === "horizontal") {
     const maxOffset = Math.max(0, layout.contentWidth - viewportWidth);
     const targetX = Math.max(0, Math.min(x, maxOffset));
-    scrollView.scrollTo({ x: targetX, y: 0, animated });
+    if (animated) {
+      smoothScrollTo(scrollView, targetX, 0, FAST_GRID_SCROLL_DURATION_MS);
+    } else {
+      scrollView.scrollTo({ x: targetX, y: 0, animated: false });
+    }
   } else {
     const maxOffset = Math.max(0, layout.contentHeight - viewportHeight);
     const targetY = Math.max(0, Math.min(y, maxOffset));
-    scrollView.scrollTo({ x: 0, y: targetY, animated });
+    if (animated) {
+      smoothScrollTo(scrollView, 0, targetY, FAST_GRID_SCROLL_DURATION_MS);
+    } else {
+      scrollView.scrollTo({ x: 0, y: targetY, animated: false });
+    }
   }
-
   return true;
 }
 

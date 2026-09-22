@@ -1,11 +1,12 @@
 import type { LifecycleRow } from "@/mission-control/lifecycle";
 
 /**
- * Agent Grid shows two sections: agents the user is watching run, and agents
- * whose run just finished and want review. Every other bucket (done, idle,
- * dormant) has no place in the grid.
+ * Agent Grid shows sections: agents needing user action (needs-you),
+ * agents the user is watching run (running), and agents whose run just
+ * finished and want review (ready). Every other bucket (done, idle,
+ * dormant) has no place in the grid (unless retained in snapshot mode as done).
  */
-export type AgentGridSection = "running" | "ready" | "done";
+export type AgentGridSection = "needs-you" | "running" | "ready" | "done";
 
 export interface AgentGridItem {
   /** `${serverId}:${agentId}` — React key and identity. */
@@ -15,22 +16,45 @@ export interface AgentGridItem {
 }
 
 /**
- * A row counts as Running if it is actually running, or paused on a
- * permission mid-run (`needs_you` while the agent process is still
- * `running`) — the user wants to watch or approve that run, same as a
- * plain running row.
+ * Resolves the grid section for a lifecycle row:
+ * - "needs_you" -> "needs-you"
+ * - "running" -> "running"
+ * - "ready" -> "ready"
+ * Other buckets return null.
  */
 export function resolveAgentGridSection(row: LifecycleRow): AgentGridSection | null {
-  if (row.bucket === "running") {
-    return "running";
+  if (row.bucket === "needs_you") {
+    return "needs-you";
   }
-  if (row.bucket === "needs_you" && row.agent.status === "running") {
+  if (row.bucket === "running") {
     return "running";
   }
   if (row.bucket === "ready") {
     return "ready";
   }
   return null;
+}
+
+/**
+ * Inserts a newly created agent's key into the snapshot keys array at the
+ * specified slot index (defaulting to 0 for index 0 pin). If the key is
+ * already present, returns the existing array unchanged.
+ */
+export function insertSnapshotKey(
+  snapshotKeys: readonly string[] | null,
+  key: string,
+  targetIndex = 0,
+): string[] {
+  if (!snapshotKeys) {
+    return [key];
+  }
+  if (snapshotKeys.includes(key)) {
+    return snapshotKeys as string[];
+  }
+  const next = [...snapshotKeys];
+  const index = Math.max(0, Math.min(targetIndex, next.length));
+  next.splice(index, 0, key);
+  return next;
 }
 
 /**
@@ -55,6 +79,13 @@ function compareByNameThenKey(left: LifecycleRow, right: LifecycleRow): number {
     return nameCmp;
   }
   return rowKey(left).localeCompare(rowKey(right));
+}
+/** Needs-you order: most recent activity first (sortTime desc). */
+function compareNeedsYou(left: LifecycleRow, right: LifecycleRow): number {
+  if (left.sortTime !== right.sortTime) {
+    return right.sortTime - left.sortTime;
+  }
+  return compareByNameThenKey(left, right);
 }
 
 /** Running order: most recently started run first; a run with no known
@@ -153,7 +184,8 @@ function buildSnapshotGridItems(
     }
   }
 
-  // 2. Newcomers appended sorted (running sorted, then ready sorted)
+  // 2. Newcomers appended sorted (needs-you sorted, then running sorted, then ready sorted)
+  const newNeedsYou: LifecycleRow[] = [];
   const newRunning: LifecycleRow[] = [];
   const newReady: LifecycleRow[] = [];
   for (const row of rows) {
@@ -162,23 +194,28 @@ function buildSnapshotGridItems(
       continue;
     }
     const section = resolveAgentGridSection(row);
-    if (section === "running") {
+    if (section === "needs-you") {
+      newNeedsYou.push(row);
+    } else if (section === "running") {
       newRunning.push(row);
     } else if (section === "ready") {
       newReady.push(row);
     }
   }
 
+  newNeedsYou.sort(compareNeedsYou);
   newRunning.sort(compareRunning);
   newReady.sort(compareReady);
 
+  for (const row of newNeedsYou) {
+    items.push(buildItem(row, "needs-you", prevByKey));
+  }
   for (const row of newRunning) {
     items.push(buildItem(row, "running", prevByKey));
   }
   for (const row of newReady) {
     items.push(buildItem(row, "ready", prevByKey));
   }
-
   return items;
 }
 
@@ -186,6 +223,7 @@ function buildDynamicGridItems(
   rows: readonly LifecycleRow[],
   prevByKey: Map<string, AgentGridItem>,
 ): AgentGridItem[] {
+  const needsYou: LifecycleRow[] = [];
   const running: LifecycleRow[] = [];
   const ready: LifecycleRow[] = [];
   for (const row of rows) {
@@ -193,16 +231,22 @@ function buildDynamicGridItems(
       continue;
     }
     const section = resolveAgentGridSection(row);
-    if (section === "running") {
+    if (section === "needs-you") {
+      needsYou.push(row);
+    } else if (section === "running") {
       running.push(row);
     } else if (section === "ready") {
       ready.push(row);
     }
   }
+  needsYou.sort(compareNeedsYou);
   running.sort(compareRunning);
   ready.sort(compareReady);
 
   const items: AgentGridItem[] = [];
+  for (const row of needsYou) {
+    items.push(buildItem(row, "needs-you", prevByKey));
+  }
   for (const row of running) {
     items.push(buildItem(row, "running", prevByKey));
   }

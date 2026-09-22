@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, type ReactElement } from "react";
+import { useCallback, useEffect, useMemo, type ReactElement, type ReactNode } from "react";
 import { View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -48,6 +48,13 @@ export interface EmbeddedAgentPaneProps {
    * Inspector keeps the default (always shown).
    */
   showComposer?: boolean;
+  /** Content rendered immediately above the Composer inside the composer container. */
+  beforeComposer?: ReactNode;
+  /**
+   * Delay before registering with viewedTimelineSync to prevent rapid subscription
+   * churning during scroll. Default 0 (instant).
+   */
+  timelineSyncDebounceMs?: number;
 }
 
 /**
@@ -65,6 +72,8 @@ export function EmbeddedAgentPane({
   onComposerFocus,
   chrome = "full",
   showComposer = true,
+  beforeComposer,
+  timelineSyncDebounceMs = 0,
 }: EmbeddedAgentPaneProps): ReactElement {
   const insets = useSafeAreaInsets();
   const compactChrome = chrome === "compact";
@@ -137,9 +146,20 @@ export function EmbeddedAgentPane({
     if (!viewedTimelineSync) {
       return;
     }
-    viewedTimelineSync.replaceVisibleAgentIds(viewedTimelineSourceId, [agentId]);
-    return () => viewedTimelineSync.replaceVisibleAgentIds(viewedTimelineSourceId, []);
-  }, [agentId, viewedTimelineSourceId, viewedTimelineSync]);
+    const isEphemeral = viewedTimelineSourceId.startsWith("mission-control-agent-grid:");
+    const options = isEphemeral ? { ephemeral: true } : undefined;
+    if (!timelineSyncDebounceMs || timelineSyncDebounceMs <= 0) {
+      viewedTimelineSync.replaceVisibleAgentIds(viewedTimelineSourceId, [agentId], options);
+      return () => viewedTimelineSync.replaceVisibleAgentIds(viewedTimelineSourceId, [], options);
+    }
+    const timer = setTimeout(() => {
+      viewedTimelineSync.replaceVisibleAgentIds(viewedTimelineSourceId, [agentId], options);
+    }, timelineSyncDebounceMs);
+    return () => {
+      clearTimeout(timer);
+      viewedTimelineSync.replaceVisibleAgentIds(viewedTimelineSourceId, [], options);
+    };
+  }, [agentId, timelineSyncDebounceMs, viewedTimelineSourceId, viewedTimelineSync]);
 
   // Presence: while this pane both is visible and is allowed to report focus,
   // its agent is this client's focused agent (heartbeat + proposal presence
@@ -231,6 +251,32 @@ export function EmbeddedAgentPane({
     [isFocused, onComposerFocus],
   );
 
+  // STE: Composer renders as a sibling below the stream. Grid tiles hide it
+  // with showComposer; scroll-up keeps full transcript height for reading.
+  const composerBlock = showComposer ? (
+    <View style={composerContainerStyle}>
+      {beforeComposer}
+      {isArchived ? (
+        <ArchivedAgentCallout serverId={serverId} agentId={agentId} />
+      ) : (
+        <Composer
+          agentId={agentId}
+          serverId={serverId}
+          isPaneFocused={isFocused}
+          textSource={agentDraft.textSource}
+          onChangeText={agentDraft.editText}
+          textReplacement={agentDraft.textReplacement}
+          attachments={agentDraft.attachments}
+          onChangeAttachments={agentDraft.setAttachments}
+          cwd={composerCwd}
+          clearDraft={agentDraft.clear}
+          submitButtonTestID={submitButtonTestID}
+          onAttentionInputFocus={onComposerFocus}
+        />
+      )}
+    </View>
+  ) : null;
+
   return (
     <PaneFocusProvider value={paneFocus}>
       <View style={styles.streamArea}>
@@ -250,28 +296,7 @@ export function EmbeddedAgentPane({
           chrome={chrome}
         />
       </View>
-      {showComposer ? (
-        <View style={composerContainerStyle}>
-          {isArchived ? (
-            <ArchivedAgentCallout serverId={serverId} agentId={agentId} />
-          ) : (
-            <Composer
-              agentId={agentId}
-              serverId={serverId}
-              isPaneFocused={isFocused}
-              textSource={agentDraft.textSource}
-              onChangeText={agentDraft.editText}
-              textReplacement={agentDraft.textReplacement}
-              attachments={agentDraft.attachments}
-              onChangeAttachments={agentDraft.setAttachments}
-              cwd={composerCwd}
-              clearDraft={agentDraft.clear}
-              submitButtonTestID={submitButtonTestID}
-              onAttentionInputFocus={onComposerFocus}
-            />
-          )}
-        </View>
-      ) : null}
+      {composerBlock}
     </PaneFocusProvider>
   );
 }

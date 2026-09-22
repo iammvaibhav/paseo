@@ -337,7 +337,11 @@ export interface ViewedTimelineSyncPorts {
 export type ViewedTimelineStatus = "ready" | "pending" | "error" | "retrying";
 
 export interface ViewedTimelineUiBridge {
-  replaceVisibleAgentIds(sourceId: string, agentIds: string[]): void;
+  replaceVisibleAgentIds(
+    sourceId: string,
+    agentIds: string[],
+    options?: { ephemeral?: boolean },
+  ): void;
   subscribe(listener: () => void): () => void;
   getAgentTimelineStatus(agentId: string): ViewedTimelineStatus;
   getAgentTimelineError(agentId: string): string | null;
@@ -877,11 +881,13 @@ export function createViewedTimelineSync(ports: ViewedTimelineSyncPorts): Viewed
       openedAgentIds = next;
       publishVisibleMembership();
     },
-    replaceVisibleAgentIds(sourceId, agentIds) {
+    replaceVisibleAgentIds(sourceId, agentIds, options) {
       const normalized = normalizeAgentIds(agentIds);
       if (normalized.length === 0) sources.delete(sourceId);
       else sources.set(sourceId, normalized);
-      rememberOpenedAgentIds(normalized);
+      if (!options?.ephemeral) {
+        rememberOpenedAgentIds(normalized);
+      }
       publishVisibleMembership();
       startAcknowledgedCatchUps();
     },
