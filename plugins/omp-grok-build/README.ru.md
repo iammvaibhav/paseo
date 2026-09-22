@@ -98,14 +98,14 @@ Marketplace install не загружает extension modules. Нужны `omp p
 /login
 → Grok Build (CLI proxy)
 
-/model grok-build/grok-4.5
+/model grok-build/grok-4.7
 ```
 
 | Действие | Команда |
 |---|---|
 | Войти | `/login` → **Grok Build (CLI proxy)** |
 | Выйти | `/logout` → **Grok Build** |
-| Выбрать модель | `/model grok-build/grok-4.5` |
+| Выбрать модель | `/model grok-build/grok-4.7` |
 | Справка | `/grok-build-help` |
 | Обновить список моделей | `omp models refresh` |
 
@@ -120,9 +120,9 @@ disabledProviders:
 modelProviderOrder:
   - grok-build
 modelRoles:
-  default: grok-build/grok-4.5
-  plan: grok-build/grok-4.5
-  slow: grok-build/grok-4.5
+  default: grok-build/grok-4.7
+  plan: grok-build/grok-4.7
+  slow: grok-build/grok-4.7
 ```
 
 Ручной `models.yml` не нужен. Extension сам регистрирует provider, models, headers и login flow.
