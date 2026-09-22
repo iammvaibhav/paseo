@@ -19,6 +19,11 @@ export interface GrokBuildModelDef {
 	headers?: Record<string, string>;
 	compat?: Record<string, unknown>;
 	baseUrl?: string;
+	thinking?: {
+		mode?: "effort" | "budget";
+		efforts?: ("minimal" | "low" | "medium" | "high" | "xhigh" | "max")[];
+		defaultLevel?: string;
+	};
 }
 
 const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } as const;
@@ -30,11 +35,63 @@ interface CuratedOverlay {
 	contextWindow?: number;
 	maxTokens?: number;
 	compat?: Record<string, unknown>;
+	thinking?: {
+		mode?: "effort" | "budget";
+		efforts?: ("minimal" | "low" | "medium" | "high" | "xhigh" | "max")[];
+		defaultLevel?: string;
+	};
 }
 
 const CURATED: Record<string, CuratedOverlay> = {
+	"grok-4.7": {
+		name: "Grok 4.7 (Grok Build CLI)",
+		reasoning: true,
+		input: ["text", "image"],
+		contextWindow: 500_000,
+		maxTokens: 64_000,
+		thinking: {
+			mode: "effort",
+			efforts: ["minimal", "low", "medium", "high", "xhigh"],
+		},
+		compat: {
+			supportsReasoningEffort: true,
+			supportsReasoningParams: true,
+			reasoningEffortMap: { minimal: "low" },
+			promptCacheSessionHeader: "x-grok-conv-id",
+		},
+	},
+	"grok-4.7-build-fast": {
+		name: "Grok 4.7 Fast (Grok Build CLI)",
+		reasoning: true,
+		input: ["text", "image"],
+		contextWindow: 500_000,
+		maxTokens: 64_000,
+		thinking: {
+			mode: "effort",
+			efforts: ["minimal", "low", "medium", "high", "xhigh"],
+		},
+		compat: {
+			supportsReasoningEffort: true,
+			supportsReasoningParams: true,
+			reasoningEffortMap: { minimal: "low" },
+			promptCacheSessionHeader: "x-grok-conv-id",
+		},
+	},
 	"grok-4.6": {
 		name: "Grok 4.6 (Grok Build CLI)",
+		reasoning: true,
+		input: ["text", "image"],
+		contextWindow: 500_000,
+		maxTokens: 64_000,
+		compat: {
+			supportsReasoningEffort: true,
+			supportsReasoningParams: true,
+			reasoningEffortMap: { minimal: "low", xhigh: "high" },
+			promptCacheSessionHeader: "x-grok-conv-id",
+		},
+	},
+	"grok-4.5": {
+		name: "Grok 4.5 (Grok Build CLI)",
 		reasoning: true,
 		input: ["text", "image"],
 		contextWindow: 500_000,
@@ -88,6 +145,7 @@ export const STATIC_SEED: readonly GrokBuildModelDef[] = Object.entries(CURATED)
 			compat: {
 				...(curated.compat ?? {}),
 			},
+			thinking: curated.thinking,
 			baseUrl: GROK_BUILD_BASE_URL,
 		};
 	},
