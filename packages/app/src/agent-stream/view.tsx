@@ -25,8 +25,7 @@ import {
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { MAX_CONTENT_WIDTH, useIsCompactFormFactor } from "@/constants/layout";
 import { useMutation } from "@tanstack/react-query";
-import Animated, { FadeIn, FadeOut } from "react-native-reanimated";
-import { Check, ChevronDown, X } from "lucide-react-native";
+import { Check, X } from "lucide-react-native";
 import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
 import { openExplorerSidebarView } from "@/workspace-tabs/explorer-sidebar";
 import {
@@ -372,51 +371,6 @@ function buildForkSource(
   };
 }
 
-function resolveBottomOverlayControlOffset(clearance: number | undefined): number {
-  return Math.max(16, clearance ?? 0);
-}
-
-/**
- * The scroll-to-bottom affordance, shown whenever the viewport sits away from
- * the live tail: either the reader scrolled up, or the timeline holds newer
- * rows the viewport has not caught up to.
- */
-function ScrollToBottomAffordance({
-  isNearBottom,
-  isTimelineDetached,
-  containerStyle,
-  entering,
-  exiting,
-  onPress,
-}: {
-  isNearBottom: boolean;
-  isTimelineDetached: boolean;
-  containerStyle: StyleProp<ViewStyle>;
-  entering: ComponentProps<typeof Animated.View>["entering"];
-  exiting: ComponentProps<typeof Animated.View>["exiting"];
-  onPress: () => void;
-}) {
-  const { t } = useTranslation();
-  if (isNearBottom && !isTimelineDetached) {
-    return null;
-  }
-  return (
-    <View style={containerStyle} pointerEvents="box-none">
-      <Animated.View entering={entering} exiting={exiting}>
-        <Pressable
-          style={stylesheet.scrollToBottomButton}
-          onPress={onPress}
-          accessibilityRole="button"
-          accessibilityLabel={t("agentStream.scrollToBottom")}
-          testID="scroll-to-bottom-button"
-        >
-          <ChevronDown size={24} color={stylesheet.scrollToBottomIcon.color} />
-        </Pressable>
-      </Animated.View>
-    </View>
-  );
-}
-
 const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamViewProps>(
   function AgentStreamView(
     {
@@ -462,7 +416,6 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         }),
       [isMobile],
     );
-    const [isNearBottom, setIsNearBottom] = useState(true);
     const [expandedInlineToolCallIds, setExpandedInlineToolCallIds] = useState<Set<string>>(
       new Set(),
     );
@@ -539,17 +492,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       progressKey: remoteProgressKey,
       loadOlder: loadRemoteOlder,
     } = paginationState;
-    // Keep entry/exit animations off on Android due to RN dispatchDraw crashes
-    // tracked in react-native-reanimated#8422.
-    const shouldDisableEntryExitAnimations = Platform.OS === "android";
-    const scrollIndicatorFadeIn = shouldDisableEntryExitAnimations
-      ? undefined
-      : FadeIn.duration(200);
-    const scrollIndicatorFadeOut = shouldDisableEntryExitAnimations
-      ? undefined
-      : FadeOut.duration(200);
     useEffect(() => {
-      setIsNearBottom(true);
       setExpandedInlineToolCallIds(new Set());
       setExpandedToolCallGroupIds(new Set());
     }, [agentId]);
@@ -1161,13 +1104,6 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     }, [baseRenderModel, pendingPermissionsNode, turnFooterNode]);
 
     const emptyStateStyle = useMemo(() => [stylesheet.emptyState, stylesheet.contentWrapper], []);
-    const scrollToBottomContainerStyle = useMemo(
-      () => [
-        stylesheet.scrollToBottomContainer,
-        { bottom: resolveBottomOverlayControlOffset(bottomOverlayControlClearance) },
-      ],
-      [bottomOverlayControlClearance],
-    );
     const listEmptyComponent = useMemo(
       () =>
         renderListEmptyComponent({
@@ -1300,6 +1236,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
                 strategy={streamRenderStrategy}
                 viewportRef={viewportRef}
                 forceShowScrollToBottom={isTimelineDetached}
+                bottomOverlayControlClearance={bottomOverlayControlClearance}
                 onScrollToBottomPress={scrollToBottom}
                 agentId={agentId}
                 segments={renderModel.segments}
@@ -1310,7 +1247,6 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
                 listEmptyComponent={listEmptyComponent}
                 routeBottomAnchorRequest={routeBottomAnchorRequest}
                 isAuthoritativeHistoryReady={isAuthoritativeHistoryReady}
-                onNearBottomChange={setIsNearBottom}
                 onReadingPositionChange={handleReadingPositionChange}
                 onNearHistoryStart={loadOlder}
                 isLoadingOlderHistory={isLoadingOlder}
@@ -1328,14 +1264,6 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
               prompts={chatOutline.prompts}
               activePrompt={chatOutline.activePrompt}
               onJumpToPrompt={chatOutline.jumpToPrompt}
-            />
-            <ScrollToBottomAffordance
-              isNearBottom={isNearBottom}
-              isTimelineDetached={isTimelineDetached}
-              containerStyle={scrollToBottomContainerStyle}
-              entering={scrollIndicatorFadeIn}
-              exiting={scrollIndicatorFadeOut}
-              onPress={scrollToBottom}
             />
           </AssistantSelectionCopySurface>
         </ToolCallSheetProvider>
@@ -1878,24 +1806,6 @@ const stylesheet = StyleSheet.create((theme) => ({
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.base,
     textAlign: "center",
-  },
-  scrollToBottomContainer: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    alignItems: "center",
-  },
-  scrollToBottomButton: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: theme.colors.surface2,
-    alignItems: "center",
-    justifyContent: "center",
-    ...theme.shadow.sm,
-  },
-  scrollToBottomIcon: {
-    color: theme.colors.foreground,
   },
 }));
 
