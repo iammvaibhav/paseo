@@ -3,13 +3,14 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ptBR: TranslationResources = {
   paneFind: {
-    searchFailed:
+    connectionFailure:
       "Não foi possível pesquisar nesta conversa. Verifique a conexão com o host e tente novamente.",
+    historyChangedFailure: "A conversa mudou durante a busca. Busque novamente.",
+    revealFailure: "Não foi possível mostrar esta correspondência. Tente novamente.",
     searching: "Buscando…",
     loading: "Carregando…",
     failed: "Falhou",
     retry: "Tentar novamente",
-    chatPosition: "{{current}} de {{total}} na mensagem",
 
     title: "Buscar",
     placeholder: "Buscar no painel",
@@ -29,6 +30,7 @@ export const ptBR: TranslationResources = {
     back: "Voltar",
     loading: "Carregando...",
     actions: {
+      backToGrid: en.common.actions.backToGrid,
       back: "Voltar",
       cancel: "Cancelar",
       close: "Fechar",
@@ -737,6 +739,8 @@ export const ptBR: TranslationResources = {
         copyTerminalId: "Copiar ID do terminal",
         copyFilePath: "Copiar caminho do arquivo",
         moveToNewWorkspace: "Mover para um novo espaço de trabalho",
+        openInNewWindow: "Abrir em nova janela",
+        openInNewWindowFailed: "Não foi possível abrir uma nova janela",
         rename: "Renomear",
         closeAbove: "Fechar abas acima",
         closeBelow: "Fechar abas abaixo",
@@ -1419,6 +1423,8 @@ export const ptBR: TranslationResources = {
         copyPath: "Copiar caminho",
         copyBranchName: "Copiar nome da branch",
         rename: "Renomear workspace",
+        openNewWindow: "Abrir em nova janela",
+        openNewWindowFailed: "Não foi possível abrir uma nova janela",
         pin: "Fixar no topo",
         unpin: "Desafixar",
         askHistory: "Ask history…",
@@ -2237,6 +2243,14 @@ export const ptBR: TranslationResources = {
       host: "Visão geral",
     },
     missionControl: {
+      approvalMode: en.settings.missionControl.approvalMode,
+      approvalModeHint: en.settings.missionControl.approvalModeHint,
+      verbose: en.settings.missionControl.verbose,
+      verboseHint: en.settings.missionControl.verboseHint,
+      clearView: en.settings.missionControl.clearView,
+      clearViewHint: en.settings.missionControl.clearViewHint,
+      resetCommander: en.settings.missionControl.resetCommander,
+      resetCommanderHint: en.settings.missionControl.resetCommanderHint,
       memory: "Memória",
       hindsightUrl: "URL do Hindsight",
       hindsightUrlHint:
@@ -2406,6 +2420,7 @@ export const ptBR: TranslationResources = {
       },
     },
     appearance: {
+      agentGrid: en.settings.appearance.agentGrid,
       theme: {
         title: "Tema",
         accessibilityLabel: "Tema: {{value}}",

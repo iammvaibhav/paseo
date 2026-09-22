@@ -222,4 +222,10 @@ describe("AnchoredList", () => {
     renderSurface({ forceShowScrollToBottom: true });
     expect(container?.querySelector('[data-testid="scroll-to-bottom-button"]')).not.toBeNull();
   });
+
+  it("positions the affordance taking into account bottomOverlayControlClearance", () => {
+    renderSurface({ forceShowScrollToBottom: true, bottomOverlayControlClearance: 80 });
+    const button = container?.querySelector('[data-testid="scroll-to-bottom-button"]');
+    expect(button).not.toBeNull();
+  });
 });

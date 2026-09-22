@@ -6,6 +6,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { useDraftStore } from "@/stores/draft-store";
 import type { AttachmentMetadata, ComposerAttachment } from "@/attachments/types";
 import { createWorkspaceFileAttachment } from "@/attachments/workspace-file";
+import type { AgentInputDraft } from "./input-draft";
 
 const { asyncStorage } = vi.hoisted(() => ({
   asyncStorage: new Map<string, string>(),
@@ -602,6 +603,179 @@ describe("useAgentInputDraft live contract", () => {
     expect(useDraftStore.getState().drafts["draft:lifecycle"]).toMatchObject({
       lifecycle: "abandoned",
       input: { text: "", attachments: [] },
+    });
+  });
+
+  it("flushes AfterPaintPublication on unmount and draftKey change, and cancels on replace", async () => {
+    let latest: AgentInputDraft | null = null;
+    function getLatest(): AgentInputDraft {
+      if (!latest) throw new Error("Expected hook result");
+      return latest;
+    }
+
+    function Probe({ draftKey }: { draftKey: string }) {
+      latest = useAgentInputDraft({ draftKey });
+      return null;
+    }
+
+    const queryClient = new QueryClient();
+    const container = document.getElementById("root");
+    if (!container) throw new Error("Missing root container");
+
+    let root: Root | null = createTestRoot(container);
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <Probe draftKey="draft:flush-unmount" />
+        </QueryClientProvider>,
+      );
+    });
+
+    // 1. Stage text and immediately unmount -> flush must write to store
+    await act(async () => {
+      getLatest().editText("unmounted flush text");
+    });
+    await act(async () => {
+      root!.unmount();
+    });
+    root = null;
+
+    expect(useDraftStore.getState().drafts["draft:flush-unmount"]?.input.text).toBe(
+      "unmounted flush text",
+    );
+
+    // 2. Draft key change flushes old key's pending staged text
+    root = createTestRoot(container);
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <Probe draftKey="draft:key-change-1" />
+        </QueryClientProvider>,
+      );
+    });
+
+    await act(async () => {
+      getLatest().editText("key 1 staged text");
+    });
+
+    await act(async () => {
+      root!.render(
+        <QueryClientProvider client={queryClient}>
+          <Probe draftKey="draft:key-change-2" />
+        </QueryClientProvider>,
+      );
+    });
+
+    expect(useDraftStore.getState().drafts["draft:key-change-1"]?.input.text).toBe(
+      "key 1 staged text",
+    );
+
+    // 3. Cancel on replace: replacing text cancels staged publication so old staged text is never flushed
+    await act(async () => {
+      getLatest().editText("staged before replace");
+      getLatest().replaceText("clean replacement");
+    });
+
+    await act(async () => {
+      root!.unmount();
+    });
+    root = null;
+
+    expect(useDraftStore.getState().drafts["draft:key-change-2"]?.input.text).toBe(
+      "clean replacement",
+    );
+  });
+
+  it("subscribes to external draft store text changes and pushes textReplacement while preserving cursor on local edits", async () => {
+    let latestA: AgentInputDraft | null = null;
+    let latestB: AgentInputDraft | null = null;
+
+    function ProbeA({ draftKey }: { draftKey: string }) {
+      latestA = useAgentInputDraft({ draftKey });
+      return null;
+    }
+
+    function ProbeB({ draftKey }: { draftKey: string }) {
+      latestB = useAgentInputDraft({ draftKey });
+      return null;
+    }
+
+    const queryClient = new QueryClient();
+    const container = document.getElementById("root");
+    if (!container) throw new Error("Missing root container");
+
+    const rootA = createTestRoot(container);
+    await act(async () => {
+      rootA.render(
+        <QueryClientProvider client={queryClient}>
+          <ProbeA draftKey="draft:shared-sync" />
+        </QueryClientProvider>,
+      );
+    });
+
+    const initialReplacementA = latestA!.textReplacement;
+
+    // Local typing in pane A does NOT push a new textReplacement revision (preserves cursor)
+    await act(async () => {
+      latestA!.editText("local typed text");
+    });
+    expect(latestA!.textReplacement).toBe(initialReplacementA);
+
+    // External pane edits the draft store for the same draftKey
+    await act(async () => {
+      useDraftStore.getState().editDraftText({
+        draftKey: "draft:shared-sync",
+        text: "external pane text",
+      });
+    });
+
+    // Pane A should have synced immediately via a new textReplacement revision
+    expect(latestA!.textReplacement).not.toBe(initialReplacementA);
+    expect(latestA!.textReplacement.text).toBe("external pane text");
+    expect(latestA!.textSource.getSnapshot()).toBe("external pane text");
+
+    const syncedReplacementA = latestA!.textReplacement;
+
+    // Continued local editing in pane A after sync still preserves cursor (no extra textReplacement)
+    await act(async () => {
+      latestA!.editText("external pane text and more");
+    });
+    expect(latestA!.textReplacement).toBe(syncedReplacementA);
+
+    // Newly mounted pane B for the same draftKey receives the synced text immediately
+    const containerB = document.createElement("div");
+    document.body.appendChild(containerB);
+    const rootB = createTestRoot(containerB);
+
+    await act(async () => {
+      rootB.render(
+        <QueryClientProvider client={queryClient}>
+          <ProbeB draftKey="draft:shared-sync" />
+        </QueryClientProvider>,
+      );
+    });
+
+    // Background or newly mounted pane B reflects the draft store text
+    expect(latestB!.textReplacement.text).toBe("external pane text and more");
+    expect(latestB!.textSource.getSnapshot()).toBe("external pane text and more");
+
+    // External pane clears the draft
+    await act(async () => {
+      useDraftStore.getState().clearDraftInput({
+        draftKey: "draft:shared-sync",
+        lifecycle: "sent",
+      });
+    });
+
+    // Both panes sync to empty without destroying sent lifecycle tombstone
+    expect(latestA!.textReplacement.text).toBe("");
+    expect(latestB!.textReplacement.text).toBe("");
+    expect(useDraftStore.getState().drafts["draft:shared-sync"]?.lifecycle).toBe("sent");
+
+    await act(async () => {
+      rootA.unmount();
+      rootB.unmount();
+      containerB.remove();
     });
   });
 });

@@ -249,12 +249,6 @@ function appendSessionWorkspaces(input: {
     if (!viewKey) continue;
     const draft = byProject.get(viewKey);
     if (!draft) continue;
-    // The project's own root checkout (ADR 0001: worktree-per-dispatch) is opened by
-    // clicking the project name, never listed among task workspaces.
-    const hostPlacement = draft.hosts.get(session.serverId);
-    if (hostPlacement?.baseWorkspaceId && hostPlacement.baseWorkspaceId === workspace.id) {
-      continue;
-    }
     draft.workspaces.push({
       workspaceId: workspace.id,
       workspaceName: workspace.name,

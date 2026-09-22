@@ -122,6 +122,12 @@ export function useAgentInputDraft(input: UseAgentInputDraftInput): AgentInputDr
     key: `${draftKey}:0`,
     text: textSource.getSnapshot(),
   }));
+  const localTextRef = useRef<string>(textSource.getSnapshot());
+  const activeDraftKeyRef = useRef(draftKey);
+  if (activeDraftKeyRef.current !== draftKey) {
+    activeDraftKeyRef.current = draftKey;
+    localTextRef.current = textSource.getSnapshot();
+  }
 
   const publishTextReplacement = useCallback(
     (nextText: string) => {
@@ -163,6 +169,7 @@ export function useAgentInputDraft(input: UseAgentInputDraftInput): AgentInputDr
 
   const editText = useCallback(
     (nextText: string) => {
+      localTextRef.current = nextText;
       if (isWeb) {
         textPublication.stage(nextText);
       } else {
@@ -175,6 +182,7 @@ export function useAgentInputDraft(input: UseAgentInputDraftInput): AgentInputDr
   const replaceText = useCallback(
     (nextText: string) => {
       textPublication.cancel();
+      localTextRef.current = nextText;
       useDraftStore.getState().editDraftText({ draftKey, text: nextText });
       publishTextReplacement(nextText);
     },
@@ -194,6 +202,7 @@ export function useAgentInputDraft(input: UseAgentInputDraftInput): AgentInputDr
   const clear = useCallback(
     (lifecycle: "sent" | "abandoned") => {
       textPublication.cancel();
+      localTextRef.current = "";
       useDraftStore.getState().clearDraftInput({ draftKey, lifecycle });
     },
     [draftKey, textPublication],
@@ -229,6 +238,7 @@ export function useAgentInputDraft(input: UseAgentInputDraftInput): AgentInputDr
       await useDraftStore.getState().hydrateDraftInput({ draftKey });
       if (!cancelled) {
         const hydratedText = useDraftStore.getState().getDraftInput(draftKey)?.text ?? "";
+        localTextRef.current = hydratedText;
         publishTextReplacement(hydratedText);
         setHydratedDraftKey(draftKey);
       }
@@ -238,6 +248,29 @@ export function useAgentInputDraft(input: UseAgentInputDraftInput): AgentInputDr
       cancelled = true;
     };
   }, [draftKey, publishTextReplacement]);
+
+  useEffect(() => {
+    return useDraftStore.subscribe((state, previous) => {
+      const currentRecord = state.drafts[draftKey];
+      const previousRecord = previous.drafts[draftKey];
+      const currentText = currentRecord?.lifecycle === "active" ? currentRecord.input.text : "";
+      const previousText = previousRecord?.lifecycle === "active" ? previousRecord.input.text : "";
+
+      if (currentText === previousText && currentRecord?.lifecycle === previousRecord?.lifecycle) {
+        return;
+      }
+
+      if (currentText !== localTextRef.current) {
+        if (currentRecord?.lifecycle === "active") {
+          replaceText(currentText);
+        } else {
+          localTextRef.current = currentText;
+          textPublication.cancel();
+          publishTextReplacement(currentText);
+        }
+      }
+    });
+  }, [draftKey, publishTextReplacement, replaceText, textPublication]);
 
   // Plannotator (and similar) can prefill the composer while this draft is mounted.
   useEffect(() => {

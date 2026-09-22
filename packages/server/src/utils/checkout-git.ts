@@ -2524,9 +2524,10 @@ export async function getCheckoutStatus(
   };
 }
 
-// Workspace history stays complete; base history is bounded context until the
-// commits list supports paging older base commits.
+// Workspace history is bounded to avoid running git log over hundreds of commits on long-lived
+// branches or fork roots; base history is bounded context.
 const CHECKOUT_BASE_COMMIT_LIMIT = 10;
+const CHECKOUT_WORKSPACE_COMMIT_LIMIT = 50;
 // Bytes git emits between fields/records. We split parsed output on these.
 const COMMIT_FIELD_SEPARATOR = "\x00";
 const COMMIT_RECORD_SEPARATOR = "\x1e";
@@ -2773,7 +2774,11 @@ export async function listCheckoutCommits({
   let baseRevision = "HEAD";
   if (comparisonBaseRef) {
     const [records, mergeBase] = await Promise.all([
-      getCheckoutCommitRecords({ cwd, revision: `${comparisonBaseRef}..HEAD` }),
+      getCheckoutCommitRecords({
+        cwd,
+        revision: `${comparisonBaseRef}..HEAD`,
+        maxCount: CHECKOUT_WORKSPACE_COMMIT_LIMIT,
+      }),
       tryResolveMergeBase(cwd, comparisonBaseRef),
     ]);
     workspaceRecords = records;

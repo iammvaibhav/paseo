@@ -516,6 +516,39 @@ describe("buildWorkspaceTabMenuEntries", () => {
     expect(onMoveToNewWorkspace).toHaveBeenCalledWith("agent-123");
   });
 
+  it("adds 'Move agent...' for agent tabs and invokes the callback with agentId", () => {
+    const onMoveAgent = vi.fn();
+    const entries = buildWorkspaceTabMenuEntries({
+      surface: "desktop",
+      tab: createAgentTab(),
+      index: 0,
+      tabCount: 1,
+      menuTestIDBase: "workspace-tab-context-agent_123",
+      onCopyResumeCommand: vi.fn(),
+      onCopyAgentId: vi.fn(),
+      onCopyTerminalId: vi.fn(),
+      onCopyFilePath: vi.fn(),
+      onMoveAgent,
+      onReloadAgent: vi.fn(),
+      onRenameTab: vi.fn(),
+      onCloseTab: vi.fn(),
+      onCloseTabsBefore: vi.fn(),
+      onCloseTabsAfter: vi.fn(),
+      onCloseOtherTabs: vi.fn(),
+    });
+
+    const moveEntry = entries.find((entry) => entry.kind === "item" && entry.key === "move-agent");
+    expect(moveEntry).toBeDefined();
+    if (!moveEntry || moveEntry.kind !== "item") {
+      throw new Error("Move agent entry missing");
+    }
+    expect(moveEntry.icon).toBe("folder-input");
+    expect(moveEntry.testID).toBe("workspace-tab-context-agent_123-move-agent");
+
+    moveEntry.onSelect();
+    expect(onMoveAgent).toHaveBeenCalledWith("agent-123");
+  });
+
   it("omits 'Move to new workspace' for non-agent tabs", () => {
     const onMoveToNewWorkspace = vi.fn();
     const entries = buildWorkspaceTabMenuEntries({
@@ -574,5 +607,38 @@ describe("buildWorkspaceTabMenuEntries", () => {
       throw new Error("Move entry missing");
     }
     moveEntry.onSelect();
+  });
+
+  it("includes 'Open in new window' and invokes onOpenInNewWindow when provided", () => {
+    const onOpenInNewWindow = vi.fn();
+    const tab = createAgentTab();
+    const actions = buildWorkspaceDesktopTabActions({
+      tab,
+      index: 0,
+      tabCount: 1,
+      onCopyResumeCommand: vi.fn(),
+      onCopyAgentId: vi.fn(),
+      onCopyTerminalId: vi.fn(),
+      onCopyFilePath: vi.fn(),
+      onOpenInNewWindow,
+      onReloadAgent: vi.fn(),
+      onRenameTab: vi.fn(),
+      onCloseTab: vi.fn(),
+      onCloseTabsToLeft: vi.fn(),
+      onCloseTabsToRight: vi.fn(),
+      onCloseOtherTabs: vi.fn(),
+    });
+
+    const openEntry = actions.menuEntries.find(
+      (entry) => entry.kind === "item" && entry.key === "open-in-new-window",
+    );
+    expect(openEntry).toBeDefined();
+    expect(openEntry?.kind === "item" ? openEntry.label : "").toBe("Open in new window");
+    expect(openEntry?.kind === "item" ? openEntry.icon : "").toBe("external-link");
+    if (!openEntry || openEntry.kind !== "item") {
+      throw new Error("Open in new window entry missing");
+    }
+    openEntry.onSelect();
+    expect(onOpenInNewWindow).toHaveBeenCalledWith(tab);
   });
 });

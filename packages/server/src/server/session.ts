@@ -54,6 +54,7 @@ import {
   buildConfigOverrides,
   extractTimestamps,
   isStoredAgentProviderAvailable,
+  resolveStoredAgentUpdatedAt,
   toAgentPersistenceHandle,
 } from "./persistence-hooks.js";
 import { ensureAgentLoaded, ensureUnarchivedAgentLoaded } from "./agent/agent-loading.js";
@@ -70,6 +71,7 @@ import {
   unarchiveAgentState,
 } from "./agent/agent-prompt.js";
 import { forkAgentToSibling } from "./agent/fork-agent.js";
+import { ingestTransferredOmpSession } from "./agent/providers/omp/session-transfer.js";
 import {
   resolveCreateAgentTitles,
   resolveFirstAgentPromptTitle,
@@ -127,11 +129,7 @@ import {
   setAgentModeCommand,
   updateAgentCommand,
 } from "./agent/lifecycle-command.js";
-import {
-  buildStoredAgentPayload,
-  resolveStoredAgentPayloadUpdatedAt,
-  toAgentPayload,
-} from "./agent/agent-projections.js";
+import { buildStoredAgentPayload, toAgentPayload } from "./agent/agent-projections.js";
 import {
   appendTimelineItemIfAgentKnown,
   emitLiveTimelineItemIfAgentKnown,
@@ -150,8 +148,9 @@ import {
   type AgentRunOptions,
   type AgentSessionConfig,
 } from "./agent/agent-sdk-types.js";
-import type { StoredAgentRecord } from "./agent/agent-storage.js";
+import { parseStoredAgentRecord, type StoredAgentRecord } from "./agent/agent-storage.js";
 import type { AgentStorage } from "./agent/agent-storage.js";
+import type { AgentTimelineRow } from "./agent/agent-timeline-store-types.js";
 import {
   ImportSessionsRequestError,
   importProviderSession,
@@ -545,7 +544,7 @@ export interface SessionOptions {
   pluginRuntime?: {
     before: import("./plugins/lifecycle/index.js").PluginLifecycle["before"];
     emit: import("./plugins/lifecycle/index.js").PluginLifecycle["emit"];
-    listPlugins(): import("@getpaseo/protocol/messages").PluginListItem[];
+    listPlugins(): Promise<import("@getpaseo/protocol/messages").PluginListItem[]>;
     getLogs(pluginId: string): import("@getpaseo/protocol/messages").PluginLogEntry[];
     installDirectory(input: {
       path: string;
@@ -560,6 +559,13 @@ export interface SessionOptions {
     statusSources(
       pluginId?: string,
     ): Promise<import("@getpaseo/protocol/messages").PluginSourceStatusItem[]>;
+    previewUpdates(input: {
+      pluginId?: string;
+      target?: import("@getpaseo/protocol/messages").PluginUpdateSelection;
+    }): Promise<import("@getpaseo/protocol/messages").PluginUpdatePreview[]>;
+    applyUpdates(
+      proposals: import("@getpaseo/protocol/messages").PluginUpdateProposal[],
+    ): Promise<import("@getpaseo/protocol/messages").PluginUpdateResult[]>;
     updateSources(
       pluginId?: string,
     ): Promise<import("@getpaseo/protocol/messages").PluginSourceUpdateItem[]>;
@@ -3717,11 +3723,13 @@ export class Session {
 
   private dispatchPluginMessage(msg: SessionInboundMessage): Promise<void> | undefined {
     if (msg.type === "plugin.list.request") {
-      this.emit({
-        type: "plugin.list.response",
-        payload: { requestId: msg.requestId, plugins: this.pluginRuntime?.listPlugins() ?? [] },
+      return (this.pluginRuntime?.listPlugins() ?? Promise.resolve([])).then((plugins) => {
+        this.emit({
+          type: "plugin.list.response",
+          payload: { requestId: msg.requestId, plugins },
+        });
+        return undefined;
       });
-      return undefined;
     }
     if (msg.type === "plugin.logs.get.request") {
       if (!this.pluginRuntime) throw new Error("Plugin service is unavailable");
@@ -3820,6 +3828,28 @@ export class Session {
       return this.pluginRuntime.statusSources(msg.pluginId).then((plugins) => {
         this.emit({
           type: "plugin.source.status.response",
+          payload: { requestId: msg.requestId, plugins },
+        });
+        return undefined;
+      });
+    }
+    if (msg.type === "plugin.source.update.preview.request") {
+      if (!this.pluginRuntime) throw new Error("Plugin service is unavailable");
+      return this.pluginRuntime
+        .previewUpdates({ pluginId: msg.pluginId, target: msg.target })
+        .then((plugins) => {
+          this.emit({
+            type: "plugin.source.update.preview.response",
+            payload: { requestId: msg.requestId, plugins },
+          });
+          return undefined;
+        });
+    }
+    if (msg.type === "plugin.source.update.apply.request") {
+      if (!this.pluginRuntime) throw new Error("Plugin service is unavailable");
+      return this.pluginRuntime.applyUpdates(msg.proposals).then((plugins) => {
+        this.emit({
+          type: "plugin.source.update.apply.response",
           payload: { requestId: msg.requestId, plugins },
         });
         return undefined;
@@ -4076,6 +4106,8 @@ export class Session {
         return this.handleClearAgentAttention(msg.agentId, msg.requestId);
       case "agent.workspace.move.request":
         return this.handleAgentWorkspaceMoveRequest(msg);
+      case "agent.workspace.transfer.request":
+        return this.handleAgentWorkspaceTransferRequest(msg);
       default:
         return undefined;
     }
@@ -4712,8 +4744,8 @@ export class Session {
         return candidate;
       }
       const updatedDelta =
-        Date.parse(resolveStoredAgentPayloadUpdatedAt(candidate)) -
-        Date.parse(resolveStoredAgentPayloadUpdatedAt(latest));
+        Date.parse(resolveStoredAgentUpdatedAt(candidate)) -
+        Date.parse(resolveStoredAgentUpdatedAt(latest));
       if (updatedDelta !== 0) {
         return updatedDelta > 0 ? candidate : latest;
       }
@@ -6367,16 +6399,18 @@ export class Session {
   }
 
   /**
-   * M5: move an agent record to another workspace on the same host
-   * (agent.workspace.move RPC). Same validation + mutation path as the
-   * fleet_meta move_agent action — the session emits the agent_update (live
-   * agents already flow through agent_state; stored records emit here) plus
-   * workspace updates for both affected workspaces, then answers the RPC.
+   * Move an agent record to another workspace — same host, another project,
+   * or a peer host via transfer. Same validation + mutation path as the
+   * fleet_meta move_agent action.
    */
   private async handleAgentWorkspaceMoveRequest(
     msg: Extract<SessionInboundMessage, { type: "agent.workspace.move.request" }>,
   ): Promise<void> {
-    const emitResponse = (accepted: boolean, error: string | null): void => {
+    const emitResponse = (
+      accepted: boolean,
+      error: string | null,
+      targetServerId?: string,
+    ): void => {
       this.emit({
         type: "agent.workspace.move.response",
         payload: {
@@ -6385,6 +6419,7 @@ export class Session {
           workspaceId: msg.workspaceId,
           accepted,
           error,
+          ...(targetServerId ? { targetServerId } : {}),
         },
       });
     };
@@ -6394,18 +6429,29 @@ export class Session {
           agentManager: this.agentManager,
           agentStorage: this.agentStorage,
           workspaceRegistry: this.workspaceRegistry,
+          peerManager: this.peerManager,
+          emitAgentRemove: (agentId) => this.agentUpdates.removeAgent(agentId),
+          emitWorkspaceUpdate: (workspaceId) => this.emitWorkspaceUpdateForWorkspaceId(workspaceId),
+          logger: this.sessionLogger,
         },
-        { agentId: msg.agentId, workspaceId: msg.workspaceId },
+        {
+          agentId: msg.agentId,
+          workspaceId: msg.workspaceId,
+          targetHost: msg.targetHost,
+          targetServerId: msg.targetServerId,
+        },
       );
-      emitResponse(true, null);
-      if (!result.live) {
-        await this.agentUpdates.emitStoredRecord(result.record);
-      }
-      const affectedWorkspaceIds = [result.fromWorkspaceId, result.toWorkspaceId].filter(
-        (workspaceId): workspaceId is string => workspaceId !== null && workspaceId !== undefined,
-      );
-      if (affectedWorkspaceIds.length > 0) {
-        await this.emitWorkspaceUpdatesForWorkspaceIds(affectedWorkspaceIds);
+      emitResponse(true, null, result.targetServerId);
+      if (!result.targetServerId) {
+        if (!result.live) {
+          await this.agentUpdates.emitStoredRecord(result.record);
+        }
+        const affectedWorkspaceIds = [result.fromWorkspaceId, result.toWorkspaceId].filter(
+          (workspaceId): workspaceId is string => workspaceId !== null && workspaceId !== undefined,
+        );
+        if (affectedWorkspaceIds.length > 0) {
+          await this.emitWorkspaceUpdatesForWorkspaceIds(affectedWorkspaceIds);
+        }
       }
     } catch (error) {
       this.sessionLogger.warn(
@@ -6414,6 +6460,124 @@ export class Session {
       );
       emitResponse(false, error instanceof Error ? error.message : String(error));
     }
+  }
+
+  private async handleAgentWorkspaceTransferRequest(
+    msg: Extract<SessionInboundMessage, { type: "agent.workspace.transfer.request" }>,
+  ): Promise<void> {
+    const rawAgent = msg.agent;
+    const agentId = String(rawAgent?.id ?? "");
+    const emitResponse = (accepted: boolean, error: string | null): void => {
+      this.emit({
+        type: "agent.workspace.transfer.response",
+        payload: {
+          requestId: msg.requestId,
+          agentId,
+          workspaceId: msg.targetWorkspaceId,
+          accepted,
+          error,
+        },
+      });
+    };
+
+    try {
+      if (!agentId) {
+        throw new Error("Missing agent id in transfer payload");
+      }
+      const targetWorkspace = await this.workspaceRegistry.get(msg.targetWorkspaceId);
+      if (!targetWorkspace) {
+        throw new Error(`Target workspace ${msg.targetWorkspaceId} not found on this host`);
+      }
+      if (targetWorkspace.archivedAt) {
+        throw new Error(`Target workspace ${msg.targetWorkspaceId} is archived`);
+      }
+
+      const existingLive = this.agentManager.getAgent(agentId);
+      if (existingLive && existingLive.lifecycle === "running") {
+        throw new Error(`Agent ${agentId} is already running on this host`);
+      }
+
+      const nextRecord: StoredAgentRecord = parseStoredAgentRecord({
+        ...rawAgent,
+        workspaceId: msg.targetWorkspaceId,
+        cwd: targetWorkspace.cwd,
+        config:
+          rawAgent.config && typeof rawAgent.config === "object"
+            ? { ...(rawAgent.config as Record<string, unknown>), cwd: targetWorkspace.cwd }
+            : null,
+        updatedAt: new Date().toISOString(),
+        lastStatus: rawAgent.lastStatus === "running" ? "idle" : (rawAgent.lastStatus ?? "idle"),
+      });
+
+      const recordToStore = await this.withTransferredProviderSession(
+        nextRecord,
+        msg.providerSession,
+        targetWorkspace.cwd,
+      );
+
+      await this.agentStorage.upsert(recordToStore);
+
+      if (Array.isArray(msg.timeline) && msg.timeline.length > 0) {
+        await this.agentManager.importMigratedTimeline(
+          agentId,
+          msg.timeline as unknown as AgentTimelineRow[],
+        );
+      }
+
+      await this.agentUpdates.emitStoredRecord(recordToStore);
+      await this.emitWorkspaceUpdateForWorkspaceId(msg.targetWorkspaceId);
+
+      emitResponse(true, null);
+    } catch (error) {
+      this.sessionLogger.warn(
+        { err: error, targetWorkspaceId: msg.targetWorkspaceId },
+        "agent.workspace.transfer rejected",
+      );
+      emitResponse(false, error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  /**
+   * Place a provider transcript carried by a cross-host move on THIS host and
+   * repoint the record's resume handle at it.
+   *
+   * The handle is an absolute path on the source host. Left untouched, the
+   * target's `resolveOmpSessionFile` cannot find it, `ensureResumableSessionFile`
+   * writes a fresh header, and the agent resumes with an empty conversation —
+   * a silent loss of the whole transcript.
+   */
+  private async withTransferredProviderSession(
+    record: StoredAgentRecord,
+    session:
+      | { provider: string; sessionId?: string; fileName: string; contentBase64: string }
+      | undefined,
+    cwd: string,
+  ): Promise<StoredAgentRecord> {
+    if (!session) {
+      return record;
+    }
+    const handle = record.persistence;
+    if (!handle || handle.provider !== "omp" || session.provider !== "omp") {
+      this.sessionLogger.warn(
+        { carrier: session.provider, handle: handle?.provider ?? null, agentId: record.id },
+        "agent.workspace.transfer carried provider state this host cannot place; transcript not written",
+      );
+      return record;
+    }
+    const sessionFile = await ingestTransferredOmpSession({
+      fileName: session.fileName,
+      contentBase64: session.contentBase64,
+      cwd,
+    });
+    return {
+      ...record,
+      persistence: {
+        ...handle,
+        sessionId: session.sessionId ?? handle.sessionId,
+        nativeHandle: sessionFile,
+        metadata: { ...handle.metadata, cwd },
+      },
+    };
   }
 
   private async buildAgentSessionConfig(
@@ -7082,6 +7246,8 @@ export class Session {
     };
 
     const search = agentDirectorySearchQuery(request);
+    // History Ask ranks the whole candidate set before paging (transcripts
+    // included); the chronological path below is for every other listing.
     if (search) {
       return this.listRankedAgentHistoryEntries({
         search,
@@ -7191,7 +7357,6 @@ export class Session {
       searchTruncated: ranked.length > limit,
     };
   }
-
   private readonly agentsPager = new SortablePager<
     AgentSnapshotPayload,
     FetchAgentsRequestSort["key"]

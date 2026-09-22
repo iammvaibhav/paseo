@@ -1,3 +1,21 @@
+import { AgentProfileSchema, AgentSkillSelectionSchema } from "./agent-profile.js";
+export {
+  AgentProfileSchema,
+  AgentSkillSelectionSchema,
+  type AgentProfile,
+  type AgentSkillSelection,
+} from "./agent-profile.js";
+import { PluginIdSchema, PluginRequirementsSchema, PluginSourceSchema } from "./plugin-config.js";
+export {
+  PluginIdSchema,
+  PluginRequirementsSchema,
+  DirectoryPluginSourceSchema,
+  PluginSourceSchema,
+  type PluginRequirements,
+  type PluginSource,
+} from "./plugin-config.js";
+import { TerminalProfileSchema } from "./terminal-profile.js";
+export { TerminalProfileSchema, type TerminalProfile } from "./terminal-profile.js";
 import { z } from "zod";
 import { ComposerPreferencesSchema } from "./composer-preferences.js";
 import { TerminalActivitySchema } from "./terminal-activity.js";
@@ -278,47 +296,6 @@ const MutableMetadataGenerationConfigSchema = z
   })
   .passthrough();
 
-export const TerminalProfileSchema = z
-  .object({
-    id: z.string(),
-    name: z.string(),
-    command: z.string(),
-    args: z.array(z.string()).optional(),
-    icon: z.string().optional(),
-  })
-  .passthrough();
-
-export type TerminalProfile = z.infer<typeof TerminalProfileSchema>;
-
-/**
- * A named launch bundle: a provider plus the agent-config values a client would
- * otherwise set one control at a time. Field names mirror `AgentSessionConfig`
- * so applying a profile is a copy rather than a translation table.
- *
- * There is deliberately no system prompt here. `AgentSessionConfig.systemPrompt`
- * is creation-only, so a profile carrying one would apply when starting a new
- * agent and silently do nothing when applied to a running one.
- */
-export const AgentProfileSchema = z
-  .object({
-    id: z.string(),
-    name: z.string(),
-    /** A key into the client's icon registry, not a glyph. Unknown keys draw the default. */
-    icon: z.string().optional(),
-    /** An identity colour name shared with host badges. Unknown values draw unthemed. */
-    color: z.string().optional(),
-    provider: z.string(),
-    model: z.string().optional(),
-    modeId: z.string().optional(),
-    thinkingOptionId: z.string().optional(),
-    featureValues: z.record(z.string(), z.unknown()).optional(),
-    /** Free text, surfaced to orchestrating agents by the `list_profiles` MCP tool. */
-    notes: z.string().optional(),
-  })
-  .passthrough();
-
-export type AgentProfile = z.infer<typeof AgentProfileSchema>;
-
 const MutableBrowserToolsConfigSchema = z
   .object({
     enabled: z.boolean().default(false),
@@ -414,29 +391,6 @@ const MutableMissionControlConfigSchema = z
     commanderInstructions: z.string().optional(),
   })
   .passthrough();
-
-export const PluginIdSchema = z.string().regex(/^[a-z][a-z0-9-]*$/);
-// Semver validation belongs at the manifest/runtime boundary, not on the wire.
-export const PluginRequirementsSchema = z.object({ paseo: z.string().optional() });
-export type PluginRequirements = z.infer<typeof PluginRequirementsSchema>;
-
-export const DirectoryPluginSourceSchema = z
-  .object({
-    source: z.literal("directory"),
-    path: z.string().min(1),
-    enabled: z.boolean().optional(),
-  })
-  .strict();
-
-export const PluginSourceSchema = z.discriminatedUnion("source", [DirectoryPluginSourceSchema]);
-
-export type PluginSource = z.infer<typeof PluginSourceSchema>;
-
-export const AgentSkillSelectionSchema = z.discriminatedUnion("mode", [
-  z.object({ mode: z.literal("all") }).strict(),
-  z.object({ mode: z.literal("custom"), skills: z.array(z.string()) }).strict(),
-]);
-export type AgentSkillSelection = z.infer<typeof AgentSkillSelectionSchema>;
 
 export const MutableDaemonConfigSchema = z
   .object({
@@ -1653,9 +1607,8 @@ export const FetchAgentHistoryRequestMessageSchema = z.object({
   type: z.literal("fetch_agent_history_request"),
   requestId: z.string(),
   filter: AgentDirectoryFilterSchema.optional(),
-  // A ranked free-text query over agent title, workspace name, branch, and
-  // project name. Present only on history: agent subscriptions filter on
-  // structure, not on relevance. Ranking replaces `sort` when it is set.
+  // A free-text filter over agent title, workspace name, branch, and project name.
+  // Matching rows follow the requested sort and cursor pagination.
   search: z.string().optional(),
   sort: z
     .array(
@@ -1801,6 +1754,53 @@ export const PluginSourceInstallRequestSchema = z.object({
   ref: z.string().min(1).optional(),
   // COMPAT(plugin-source-path): accepted for v0.7 clients; remove after 2027-09-01.
   pluginPath: z.string().min(1).optional(),
+});
+
+export const PluginSourceIdentitySchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("directory"), path: z.string() }),
+  z.object({ kind: z.literal("git"), remote: z.string(), pluginPath: z.string() }),
+  z.object({ kind: z.literal("npm"), packageName: z.string(), pluginPath: z.string() }),
+]);
+export const PluginInstallationSchema = z.object({
+  identity: PluginSourceIdentitySchema,
+  currentRevision: z.string().optional(),
+});
+export type PluginInstallation = z.infer<typeof PluginInstallationSchema>;
+export const PluginUpdateTargetSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("git"), commit: z.string().regex(/^[0-9a-f]{40,64}$/) }),
+  z.object({
+    kind: z.literal("npm"),
+    version: z.string().min(1),
+    resolved: z.string().url(),
+    integrity: z.string().min(1),
+  }),
+]);
+export type PluginUpdateTarget = z.infer<typeof PluginUpdateTargetSchema>;
+export const PluginUpdateProposalSchema = z.object({
+  id: PluginIdSchema,
+  expected: z.object({
+    identity: PluginSourceIdentitySchema,
+    installationRoot: z.string(),
+    revision: z.string(),
+  }),
+  target: PluginUpdateTargetSchema,
+});
+export type PluginUpdateProposal = z.infer<typeof PluginUpdateProposalSchema>;
+export const PluginUpdateSelectionSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("git"), ref: z.string().min(1) }),
+  z.object({ kind: z.literal("npm"), version: z.string().min(1) }),
+]);
+export type PluginUpdateSelection = z.infer<typeof PluginUpdateSelectionSchema>;
+export const PluginUpdatePreviewRequestSchema = z.object({
+  type: z.literal("plugin.source.update.preview.request"),
+  requestId: z.string(),
+  pluginId: PluginIdSchema.optional(),
+  target: PluginUpdateSelectionSchema.optional(),
+});
+export const PluginUpdateApplyRequestSchema = z.object({
+  type: z.literal("plugin.source.update.apply.request"),
+  requestId: z.string(),
+  proposals: z.array(PluginUpdateProposalSchema).min(1),
 });
 
 export const PluginSourceStatusRequestSchema = z.object({
@@ -2348,10 +2348,51 @@ export const AgentWorkspaceMoveRequestMessageSchema = z.object({
   agentId: z.string().min(1),
   workspaceId: z.string().min(1),
   requestId: z.string(),
+  targetHost: z.string().optional(),
+  targetServerId: z.string().optional(),
 });
 
 export const AgentWorkspaceMoveResponseMessageSchema = z.object({
   type: z.literal("agent.workspace.move.response"),
+  payload: z.object({
+    requestId: z.string(),
+    agentId: z.string(),
+    workspaceId: z.string(),
+    accepted: z.boolean(),
+    error: z.string().nullable(),
+    targetServerId: z.string().optional(),
+  }),
+});
+
+/**
+ * Provider-native session state carried alongside a cross-host agent move.
+ *
+ * Only OMP populates this today: its resume handle is an absolute path to a
+ * transcript file on the source host, so the record alone cannot resume on the
+ * target. Providers whose resume handle is an opaque session id (looked up in
+ * that host's own store) need no counterpart.
+ *
+ * Optional on the wire in both directions: an old daemon ignores the field, a
+ * new daemon treats a missing one as "nothing to carry".
+ */
+export const AgentWorkspaceTransferProviderSessionSchema = z.object({
+  provider: z.string().min(1),
+  sessionId: z.string().optional(),
+  fileName: z.string().min(1),
+  contentBase64: z.string(),
+});
+
+export const AgentWorkspaceTransferRequestMessageSchema = z.object({
+  type: z.literal("agent.workspace.transfer.request"),
+  requestId: z.string(),
+  targetWorkspaceId: z.string().min(1),
+  agent: z.record(z.string(), z.unknown()),
+  timeline: z.array(z.record(z.string(), z.unknown())).optional(),
+  providerSession: AgentWorkspaceTransferProviderSessionSchema.optional(),
+});
+
+export const AgentWorkspaceTransferResponseMessageSchema = z.object({
+  type: z.literal("agent.workspace.transfer.response"),
   payload: z.object({
     requestId: z.string(),
     agentId: z.string(),
@@ -3610,6 +3651,8 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   PluginSourceInstallRequestSchema,
   PluginSourceStatusRequestSchema,
   PluginSourceUpdateRequestSchema,
+  PluginUpdatePreviewRequestSchema,
+  PluginUpdateApplyRequestSchema,
   PluginReloadRequestSchema,
   PluginEnableRequestSchema,
   PluginDisableRequestSchema,
@@ -3662,6 +3705,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   AgentDetachRequestMessageSchema,
   AgentRewindRequestMessageSchema,
   AgentWorkspaceMoveRequestMessageSchema,
+  AgentWorkspaceTransferRequestMessageSchema,
   AgentPermissionResponseMessageSchema,
   CheckoutStatusRequestSchema,
   CheckoutDiffGetRequestSchema,
@@ -4027,6 +4071,10 @@ export const ServerInfoStatusPayloadSchema = z
         pluginLogs: z.boolean().optional(),
         // COMPAT(pluginGitManagement): added in v0.7.0, remove gate after 2027-08-26.
         pluginGitManagement: z.boolean().optional(),
+        // COMPAT(pluginSourceInstallation): added in v0.8.0; remove gate after 2027-03-16 once daemon floor supports source identifiers.
+        pluginSourceInstallation: z.boolean().optional(),
+        // COMPAT(pluginSourceUpdates): added in v0.8.0; remove gate after 2027-03-16 once daemon floor supports reviewed updates.
+        pluginSourceUpdates: z.boolean().optional(),
         // COMPAT(pluginThemes): added in v0.5.0, remove gate after 2027-08-20.
         // A daemon that predates this flag keeps `addTheme` in the server bundle it compiles,
         // so a theme plugin cannot start there at all.
@@ -4570,13 +4618,10 @@ export type AgentSearchMatch = z.infer<typeof AgentSearchMatchSchema>;
 const AgentDirectoryResponseEntrySchema = z.object({
   agent: AgentSnapshotPayloadSchema,
   project: ProjectPlacementPayloadSchema,
-  // Relevance of this entry to the request's `search`, lower being better.
-  // Set only when the request carried a query; a client merging results from
-  // several hosts needs it to interleave their separately ranked pages.
+  // Legacy relevance metadata remains accepted from older daemons.
+  // Current history responses use the requested chronological sort.
   searchScore: z.number().optional(),
-  // Where the query matched, so the row can mark it. The ranker computes this
-  // anyway; sending it keeps the client from re-deriving a second opinion that
-  // could disagree with the ranking it is explaining.
+  // Legacy server-generated highlights. Current clients highlight displayed text locally.
   searchMatches: z.array(AgentSearchMatchSchema).optional(),
   // Excerpt from a transcript match. Optional so old clients ignore it; do not
   // add "transcript" to AgentSearchMatchFieldSchema — that enum would fail parse.
@@ -4608,9 +4653,7 @@ export const FetchAgentHistoryResponseMessageSchema = z.object({
     requestId: z.string(),
     entries: z.array(AgentDirectoryResponseEntrySchema),
     pageInfo: AgentDirectoryPageInfoSchema,
-    // More sessions matched the request's `search` than the page could hold.
-    // Distinct from `pageInfo.hasMore`, which promises a fetchable next page —
-    // a ranked result set has none, and the way on is a narrower query.
+    // Older daemons truncate relevance-ranked searches instead of returning a cursor.
     searchTruncated: z.boolean().optional(),
   }),
 });
@@ -4657,8 +4700,8 @@ export const WorkspaceProjectDescriptorPayloadSchema = z.object({
   syncSeq: z.number().int().positive().optional(),
   // The project's base workspace (ADR 0001: project-anchored base
   // workspaces) — the workspace over the project's root checkout, created
-  // with the project, unarchivable while the project is active, opened by
-  // clicking the project name. Null until reconciliation backfills it.
+  // with the project, unarchivable while the project is active. The sidebar
+  // lists it with the project's other workspaces. Null until reconciliation backfills it.
   // COMPAT(baseWorkspace): added in v0.5.3 on 2026-08-25; remove optional
   // after 2027-02-25.
   baseWorkspaceId: z.string().nullable().optional(),
@@ -5095,7 +5138,13 @@ export const AgentTimelineSearchResponseMessageSchema = z.object({
     agentId: z.string(),
     epoch: z.string(),
     locations: z.array(
-      z.object({ seq: z.number().int().nonnegative(), role: z.enum(["user", "assistant"]) }),
+      z.object({
+        seq: z.number().int().nonnegative(),
+        role: z.enum(["user", "assistant"]),
+        // Estimated occurrences in the message; the client verifies against rendered text.
+        // COMPAT(timelineSearchCount): added in v0.9.0, remove optional after 2027-09-22.
+        count: z.number().int().positive().optional(),
+      }),
     ),
     nextCursor: z.number().int().nonnegative().nullable(),
     error: z.string().nullable(),
@@ -7090,12 +7139,22 @@ export const PluginCatalogGetResponseSchema = z.object({
 export const PluginStatusSchema = z.enum(["running", "disabled", "failed"]);
 export type PluginStatus = z.infer<typeof PluginStatusSchema>;
 
+export const PluginNpmInstallationSchema = z.object({
+  packageName: z.string(),
+  requestedSpec: z.string(),
+  version: z.string(),
+  integrity: z.string(),
+});
+
 export const PluginListItemSchema = z.object({
   id: PluginIdSchema,
+  description: z.string().optional(),
   path: z.string(),
   enabled: z.boolean(),
   status: PluginStatusSchema,
   source: z.enum(["directory", "git"]).optional(),
+  npm: PluginNpmInstallationSchema.optional(),
+  installation: PluginInstallationSchema.optional(),
   remote: z.string().optional(),
   ref: z.string().optional(),
   commit: z.string().optional(),
@@ -7143,6 +7202,8 @@ export const PluginSourceInstallResponseSchema = z.object({
 export const PluginSourceStatusItemSchema = z.object({
   id: PluginIdSchema,
   source: z.enum(["directory", "git"]),
+  npm: PluginNpmInstallationSchema.optional(),
+  installation: PluginInstallationSchema.optional(),
   path: z.string(),
   remote: z.string().optional(),
   ref: z.string().optional(),
@@ -7170,6 +7231,33 @@ export type PluginSourceUpdateItem = z.infer<typeof PluginSourceUpdateItemSchema
 export const PluginSourceUpdateResponseSchema = z.object({
   type: z.literal("plugin.source.update.response"),
   payload: z.object({ requestId: z.string(), plugins: z.array(PluginSourceUpdateItemSchema) }),
+});
+
+export const PluginUpdatePreviewSchema = z.object({
+  id: PluginIdSchema,
+  outcome: z.enum(["update", "current", "installed-newer", "local", "error"]),
+  current: PluginInstallationSchema.optional(),
+  target: PluginUpdateTargetSchema.optional(),
+  links: z.array(z.string()),
+  proposal: PluginUpdateProposalSchema.optional(),
+  error: z.string().optional(),
+});
+export type PluginUpdatePreview = z.infer<typeof PluginUpdatePreviewSchema>;
+export const PluginUpdateResultSchema = z.object({
+  id: PluginIdSchema,
+  outcome: z.enum(["updated", "error"]),
+  plugin: PluginListItemSchema.optional(),
+  error: z.string().optional(),
+  warning: z.string().optional(),
+});
+export type PluginUpdateResult = z.infer<typeof PluginUpdateResultSchema>;
+export const PluginUpdatePreviewResponseSchema = z.object({
+  type: z.literal("plugin.source.update.preview.response"),
+  payload: z.object({ requestId: z.string(), plugins: z.array(PluginUpdatePreviewSchema) }),
+});
+export const PluginUpdateApplyResponseSchema = z.object({
+  type: z.literal("plugin.source.update.apply.response"),
+  payload: z.object({ requestId: z.string(), plugins: z.array(PluginUpdateResultSchema) }),
 });
 
 function pluginActionResponse<const Type extends string>(type: Type) {
@@ -7251,6 +7339,8 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   PluginSourceInstallResponseSchema,
   PluginSourceStatusResponseSchema,
   PluginSourceUpdateResponseSchema,
+  PluginUpdatePreviewResponseSchema,
+  PluginUpdateApplyResponseSchema,
   PluginReloadResponseSchema,
   PluginEnableResponseSchema,
   PluginDisableResponseSchema,
@@ -7353,6 +7443,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   AgentRewindResponseMessageSchema,
   UpdateAgentResponseMessageSchema,
   AgentWorkspaceMoveResponseMessageSchema,
+  AgentWorkspaceTransferResponseMessageSchema,
   ProjectRenameResponseSchema,
   ProjectDescriptionSetResponseSchema,
   ProjectIconSetResponseSchema,
@@ -7829,6 +7920,12 @@ export type AgentWorkspaceMoveRequestMessage = z.infer<
 >;
 export type AgentWorkspaceMoveResponseMessage = z.infer<
   typeof AgentWorkspaceMoveResponseMessageSchema
+>;
+export type AgentWorkspaceTransferRequestMessage = z.infer<
+  typeof AgentWorkspaceTransferRequestMessageSchema
+>;
+export type AgentWorkspaceTransferResponseMessage = z.infer<
+  typeof AgentWorkspaceTransferResponseMessageSchema
 >;
 export type AgentPermissionResponseMessage = z.infer<typeof AgentPermissionResponseMessageSchema>;
 export type CheckoutStatusRequest = z.infer<typeof CheckoutStatusRequestSchema>;

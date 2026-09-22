@@ -381,6 +381,10 @@ function isControlEntryType(type: string): boolean {
     type === "model_change" ||
     type === "thinking_level_change" ||
     type === "tool_execution" ||
+    // Auth plumbing written when an OAuth account is pinned to a session
+    // (e.g. omp-account-routing). Carries only provider + credential hash,
+    // never conversation content.
+    type === "credential_pin" ||
     type.startsWith("tool_execution_")
   );
 }

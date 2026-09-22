@@ -1050,12 +1050,22 @@ async function bootstrap(): Promise<void> {
   // In-app "Open in new window": opens a window that lands on the given project
   // via the same open-project flow as a CLI launch (no move, no ownership).
   ipcMain.handle("paseo:window:openNew", async (_event, options?: unknown) => {
-    const pendingPath =
-      options && typeof options === "object" && "pendingOpenProjectPath" in options
-        ? (options as { pendingOpenProjectPath?: unknown }).pendingOpenProjectPath
-        : null;
+    let pendingProjectPath: string | null = null;
+    let initialRoute: string | null = null;
+    if (options && typeof options === "object") {
+      if (
+        "pendingOpenProjectPath" in options &&
+        typeof options.pendingOpenProjectPath === "string"
+      ) {
+        pendingProjectPath = options.pendingOpenProjectPath;
+      }
+      if ("initialRoute" in options && typeof options.initialRoute === "string") {
+        initialRoute = options.initialRoute;
+      }
+    }
     await desktopWindowOwner.openAdditional({
-      pendingProjectPath: typeof pendingPath === "string" ? pendingPath : null,
+      pendingProjectPath,
+      initialRoute,
     });
   });
 

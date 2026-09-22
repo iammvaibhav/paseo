@@ -447,8 +447,9 @@ sync_local_git() {
 build_server() {
   log "Building server stack"
   (cd "$ROOT_DIR" && pnpm run build:server)
-  # Static bundle for the daemon-served web UI. The daemon is always started
-  # with --web-ui, so without this it answers 404 on every UI route.
+  # Static bundle for the daemon-served web UI. Enablement is the persisted
+  # features.webUi.enabled setting pushed before restarts; without this bundle
+  # the enabled daemon answers 404 on every UI route.
   log "Building daemon web UI"
   (cd "$ROOT_DIR" && pnpm run build:daemon-web-ui)
 }
@@ -594,21 +595,54 @@ subprocess.Popen(
 PY
 }
 
+read_daemon_worker_pid() {
+  local home="$1"
+  local cli_cmd="$2"
+  # shellcheck disable=SC2086
+  $cli_cmd daemon status --json --home "$home" 2>/dev/null | node -e '
+let raw = "";
+process.stdin.on("data", (chunk) => (raw += chunk));
+process.stdin.on("end", () => {
+  try {
+    const status = JSON.parse(raw);
+    if (typeof status.workerPid === "number" && status.workerPid > 0) {
+      process.stdout.write(String(status.workerPid));
+    }
+  } catch {}
+});
+' 2>/dev/null || true
+}
+
+read_restart_log_worker_pid() {
+  # "Restarted worker 3324684 → 3554173 at ... Supervisor launch retained."
+  sed -n 's/.*Restarted worker [0-9][0-9]* . \([0-9][0-9]*\) at .*/\1/p' "$1" 2>/dev/null | tail -n 1
+}
+
 wait_for_new_daemon() {
   local home="$1"
   local label="$2"
   local old_pid="${3:-}"
   local logf="$4"
   local timeout_s="${5:-90}"
-  local i new_pid
+  local old_worker_pid="${6:-}"
+  local cli_cmd="${7:-}"
+  local i new_pid new_worker_pid
   # shellcheck disable=SC2207
   local urls
   urls=($(daemon_health_urls "$home"))
   log "Waiting for $label daemon NEW pid + health (${urls[*]}; up to ${timeout_s}s; old_pid=${old_pid:-none})"
+  local new_worker_pid=""
   for ((i = 1; i <= timeout_s; i++)); do
     new_pid="$(read_daemon_pid "$home" || true)"
-    if [[ -n "$new_pid" && "$new_pid" != "${old_pid:-}" ]] && daemon_health_ok "$home"; then
-      log "$label daemon healthy after ${i}s (pid ${old_pid:-none} -> $new_pid)"
+    local pid_advanced=0 worker_advanced=0
+    [[ -n "$new_pid" && "$new_pid" != "${old_pid:-}" ]] && pid_advanced=1
+    # Supervisor-managed daemons keep the pid file and swap the worker. The restart
+    # CLI writes the swap to the restart log once it is done, which is both cheaper
+    # and race-free next to asking the daemon for its worker pid mid-restart.
+    new_worker_pid="$(read_restart_log_worker_pid "$logf")"
+    [[ -n "$new_worker_pid" && "$new_worker_pid" != "${old_worker_pid:-}" ]] && worker_advanced=1
+    if [[ $pid_advanced -eq 1 || $worker_advanced -eq 1 ]] && daemon_health_ok "$home"; then
+      log "$label daemon healthy after ${i}s (pid ${old_pid:-none} -> ${new_pid:-none}, worker ${old_worker_pid:-none} -> ${new_worker_pid:-none})"
       return 0
     fi
     if [[ $i -ge 8 ]] && grep -Eiq 'ERR_MODULE_NOT_FOUND|Failed to restart|Cannot find module|RESTART_FAILED' "$logf" 2>/dev/null; then
@@ -630,10 +664,11 @@ restart_daemon_detached() {
   local label="$2"
   local cwd="${3:-$ROOT_DIR}"
   local logf="/tmp/paseo-daemon-restart-${label}.log"
-  local path_env cli_cmd old_pid restart_script start_script
+  local path_env cli_cmd old_pid old_worker_pid restart_script start_script
   path_env="$(daemon_path_env)"
   cli_cmd="$(daemon_cli_cmd "$cwd")"
   old_pid="$(read_daemon_pid "$home" || true)"
+  old_worker_pid="$(read_daemon_worker_pid "$home" "$cli_cmd")"
   : >"$logf"
   log "Restarting $label daemon ($home) [new-session detached; log $logf] old_pid=${old_pid:-none} cli=$cli_cmd"
 
@@ -645,13 +680,13 @@ export PATH=$(printf %q "$path_env")
 export NVM_DIR="\${NVM_DIR:-\$HOME/.nvm}"
 # shellcheck disable=SC1091
 [ -s "\$NVM_DIR/nvm.sh" ] && . "\$NVM_DIR/nvm.sh"
-exec $cli_cmd daemon restart --web-ui --home $(printf %q "$home")
+exec $cli_cmd daemon restart --home $(printf %q "$home")
 EOF
   )"
 
   launch_detached_bash "$logf" "$restart_script"
 
-  if wait_for_new_daemon "$home" "$label" "$old_pid" "$logf" 90; then
+  if wait_for_new_daemon "$home" "$label" "$old_pid" "$logf" 90 "$old_worker_pid" "$cli_cmd"; then
     log "$label daemon restart complete (log: $logf)"
     return 0
   fi
@@ -670,12 +705,12 @@ export PATH=$(printf %q "$path_env")
 export NVM_DIR="\${NVM_DIR:-\$HOME/.nvm}"
 # shellcheck disable=SC1091
 [ -s "\$NVM_DIR/nvm.sh" ] && . "\$NVM_DIR/nvm.sh"
-exec $cli_cmd daemon start --web-ui --home $(printf %q "$home")
+exec $cli_cmd daemon start --home $(printf %q "$home")
 EOF
   )"
   # After a failed restart, old_pid may already be dead; accept any healthy pid.
   launch_detached_bash "$logf" "$start_script"
-  if wait_for_new_daemon "$home" "$label" "" "$logf" 60; then
+  if wait_for_new_daemon "$home" "$label" "" "$logf" 60 "" ""; then
     log "$label daemon recovered via detached start (log: $logf)"
     return 0
   fi
@@ -1433,11 +1468,12 @@ sync_system_prompt() {
   done
 }
 
-# The daemon-served web UI. `daemon restart --web-ui` is not enough on its own:
+# The daemon-served web UI. The launch flag is gone from the CLI (removed
+# launch options are rejected), so the persisted setting is the only mechanism:
 # on a remote the flag never reached the worker (blrofc3 restarted with it and
 # its daemon environment had no PASEO_WEB_UI_ENABLED, so GET / stayed 404 while
-# the bundle sat on disk). The persisted setting is the mechanism that holds, so
-# push it the same way the system prompt is pushed - before any daemon restarts,
+# the bundle sat on disk). Push the setting the same way the system prompt is
+# pushed - before any daemon restarts,
 # because the config store only re-reads config.json at boot.
 sync_web_ui_setting() {
   if [[ "${PASEO_SKIP_WEB_UI:-0}" == "1" ]]; then
@@ -1856,14 +1892,37 @@ except Exception:
   if [[ ! -x "\$cli_bin" ]]; then
     cli_bin="node \$HOME/\$REMOTE_REPO_DIR/packages/cli/dist/index.js"
   fi
-  log "Restarting daemon (\$PASEO_HOME) [detached; log \$restart_log] old_pid=\${old_pid:-none}"
+  # A password-protected daemon authenticates every CLI call, including the worker
+  # probe below, and this shell has no bashrc: source the host's deploy.env first.
+  if [[ -f "\$PASEO_HOME/deploy.env" ]]; then
+    set -a
+    # shellcheck disable=SC1091
+    . "\$PASEO_HOME/deploy.env"
+    set +a
+  fi
+  old_worker_pid="\$(\$cli_bin daemon status --json --home "\$PASEO_HOME" 2>/dev/null | node -e '
+let raw = "";
+process.stdin.on("data", (chunk) => (raw += chunk));
+process.stdin.on("end", () => {
+  try {
+    const status = JSON.parse(raw);
+    if (typeof status.workerPid === "number" && status.workerPid > 0) process.stdout.write(String(status.workerPid));
+  } catch {}
+});
+' 2>/dev/null || true)"
+  log "Restarting daemon (\$PASEO_HOME) [detached; log \$restart_log] old_pid=\${old_pid:-none} worker=\${old_worker_pid:-none}"
+  # A password-protected daemon authenticates its own CLI, and this bash is a
+  # new session: it inherits no bashrc and no orchestrator env, so the host's
+  # deploy.env has to be sourced here or the restart dies with "Password required".
+  remote_restart_cmd="export PATH=\"\$(daemon_path_env)\"; export NVM_DIR=\"\${NVM_DIR:-\$HOME/.nvm}\"; [ -s \"\$NVM_DIR/nvm.sh\" ] && . \"\$NVM_DIR/nvm.sh\"; if [ -f \"\$PASEO_HOME/deploy.env\" ]; then set -a; . \"\$PASEO_HOME/deploy.env\"; set +a; fi; cd \"\$HOME/\$REMOTE_REPO_DIR\"; exec \$cli_bin daemon restart --home \"\$PASEO_HOME\""
   if command -v setsid >/dev/null 2>&1; then
-    setsid bash -c "export PATH=\"\$(daemon_path_env)\"; export NVM_DIR=\"\${NVM_DIR:-\$HOME/.nvm}\"; [ -s \"\$NVM_DIR/nvm.sh\" ] && . \"\$NVM_DIR/nvm.sh\"; cd \"\$HOME/\$REMOTE_REPO_DIR\"; exec \$cli_bin daemon restart --home \"\$PASEO_HOME\"" >>"\$restart_log" 2>&1 </dev/null &
+    setsid bash -c "\$remote_restart_cmd" >>"\$restart_log" 2>&1 </dev/null &
   else
-    nohup bash -c "export PATH=\"\$(daemon_path_env)\"; export NVM_DIR=\"\${NVM_DIR:-\$HOME/.nvm}\"; [ -s \"\$NVM_DIR/nvm.sh\" ] && . \"\$NVM_DIR/nvm.sh\"; cd \"\$HOME/\$REMOTE_REPO_DIR\"; exec \$cli_bin daemon restart --home \"\$PASEO_HOME\"" >>"\$restart_log" 2>&1 </dev/null &
+    nohup bash -c "\$remote_restart_cmd" >>"\$restart_log" 2>&1 </dev/null &
   fi
   ok=0
   primary=""
+  new_worker_pid=""
   for i in \$(seq 1 90); do
     new_pid="\$(read_daemon_pid "\$PASEO_HOME")"
     listen="\$(read_daemon_listen "\$PASEO_HOME")"
@@ -1871,10 +1930,18 @@ except Exception:
     urls=(\$(health_urls_for_listen "\$listen"))
     primary="\${urls[0]}"
     secondary="\${urls[1]:-\$primary}"
-    if [[ -n "\$new_pid" && "\$new_pid" != "\${old_pid:-}" ]]; then
+    # Supervisor-managed daemons keep the pid file and swap the worker. The restart
+    # CLI records that swap in the restart log when it finishes, which avoids a
+    # socket probe that would race the restart.
+    pid_ok=0
+    worker_ok=0
+    [[ -n "\$new_pid" && "\$new_pid" != "\${old_pid:-}" ]] && pid_ok=1
+    new_worker_pid="\$(sed -n 's/.*Restarted worker [0-9][0-9]* . \([0-9][0-9]*\) at .*/\1/p' "\$restart_log" 2>/dev/null | tail -n 1)"
+    [[ -n "\$new_worker_pid" && "\$new_worker_pid" != "\${old_worker_pid:-}" ]] && worker_ok=1
+    if [[ "\$pid_ok" -eq 1 || "\$worker_ok" -eq 1 ]]; then
       if curl -fsS --max-time 2 "\$primary" >/dev/null 2>&1 \\
         || curl -fsS --max-time 2 "\$secondary" >/dev/null 2>&1; then
-        log "Daemon healthy after \${i}s (pid \${old_pid:-none} -> \$new_pid; \$primary)"
+        log "Daemon healthy after \${i}s (pid \${old_pid:-none} -> \${new_pid:-none}, worker \${old_worker_pid:-none} -> \${new_worker_pid:-none}; \$primary)"
         ok=1
         break
       fi

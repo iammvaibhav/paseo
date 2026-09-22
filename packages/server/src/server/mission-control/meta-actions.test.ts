@@ -1,8 +1,12 @@
 import { describe, expect, test } from "vitest";
 import pino from "pino";
+import { mkdtemp, truncate, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { Writable } from "node:stream";
 import { createTestLogger } from "../../test-utils/test-logger.js";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
+import { OMP_SESSION_TRANSFER_MAX_BYTES } from "../agent/providers/omp/session-transfer.js";
 import type {
   MissionControlMetaPlan,
   MissionControlProposal,
@@ -342,6 +346,203 @@ describe("moveAgentToWorkspace", () => {
     await expect(
       moveAgentToWorkspace(h.deps, { agentId: "agent-1", workspaceId: "" }),
     ).rejects.toThrow("workspaceId is required");
+  });
+});
+
+/**
+ * A target workspace id is host-local, so "not in this registry" means "on
+ * another host" — the move must find that host. These cover the identity key
+ * space the client actually sends (a serverId) and the refusal that replaces
+ * the old "route to whichever peer happens to be online" guess.
+ */
+describe("moveAgentToWorkspace cross-host routing", () => {
+  function peerManagerFor(
+    peerName: string,
+    options: {
+      state?: "online" | "unreachable";
+      serverIds?: Record<string, string>;
+      transferAgentInbound?: (input: unknown) => Promise<unknown>;
+    } = {},
+  ): NonNullable<MetaActionsDependencies["peerManager"]> {
+    const status = {
+      name: peerName,
+      url: `tcp://${peerName}:6767`,
+      state: options.state ?? ("online" as const),
+      lastSeenAt: null,
+    };
+    return {
+      getPeerStatus: (name: string) => (name === peerName ? status : null),
+      getPeerClient: (name: string) =>
+        name === peerName
+          ? ({ transferAgentInbound: options.transferAgentInbound } as unknown as DaemonClient)
+          : null,
+      getPeerStatuses: () => [status],
+      getPeerServerId: (name: string) =>
+        name === peerName ? (Object.keys(options.serverIds ?? {})[0] ?? null) : null,
+      resolvePeerName: (name: string) =>
+        options.serverIds?.[name] ?? (name === peerName ? peerName : null),
+    };
+  }
+
+  test("routes to the peer that owns the target when the client sends a serverId", async () => {
+    // The app sends the target host's serverId, not its config peer name.
+    // Resolving by config name alone missed it and then blamed the workspace.
+    const h = build({ workspaces: [] });
+    const transferred: Array<Record<string, unknown>> = [];
+    const removed: string[] = [];
+    h.deps.agentStorage = {
+      ...h.deps.agentStorage,
+      remove: async (agentId: string) => {
+        removed.push(agentId);
+      },
+    };
+    h.deps.peerManager = peerManagerFor("blrofc3", {
+      serverIds: { srv_blrofc3: "blrofc3" },
+      transferAgentInbound: async (input) => {
+        transferred.push(input as Record<string, unknown>);
+        return { agentId: "agent-1", workspaceId: "wks_target" };
+      },
+    });
+
+    const result = await moveAgentToWorkspace(h.deps, {
+      agentId: "agent-1",
+      workspaceId: "wks_target",
+      targetServerId: "srv_blrofc3",
+    });
+
+    expect(transferred).toEqual([expect.objectContaining({ targetWorkspaceId: "wks_target" })]);
+    expect(result).toMatchObject({ toWorkspaceId: "wks_target", targetServerId: "srv_blrofc3" });
+    // The source record is released only after the peer accepted it.
+    expect(removed).toEqual(["agent-1"]);
+  });
+
+  test("refuses an unresolvable host instead of routing to some other online peer", async () => {
+    // The regression: an online peer existed, so the old fallback shipped the
+    // agent to a host the user never picked.
+    const h = build({ workspaces: [] });
+    const transferred: unknown[] = [];
+    h.deps.peerManager = peerManagerFor("macbook", {
+      transferAgentInbound: async (input) => {
+        transferred.push(input);
+        return {};
+      },
+    });
+
+    await expect(
+      moveAgentToWorkspace(h.deps, {
+        agentId: "agent-1",
+        workspaceId: "wks_target",
+        targetServerId: "srv_unknown",
+      }),
+    ).rejects.toThrow(/did not resolve to a configured peer/);
+    expect(transferred).toEqual([]);
+    expect(h.storedAgents.has("agent-1")).toBe(true);
+  });
+
+  test("names the unreachable target host instead of the workspace", async () => {
+    const h = build({ workspaces: [] });
+    h.deps.peerManager = peerManagerFor("blrofc3", {
+      state: "unreachable",
+      serverIds: { srv_blrofc3: "blrofc3" },
+    });
+
+    await expect(
+      moveAgentToWorkspace(h.deps, {
+        agentId: "agent-1",
+        workspaceId: "wks_target",
+        targetServerId: "srv_blrofc3",
+      }),
+    ).rejects.toThrow(/Target host "blrofc3" is unreachable/);
+  });
+
+  test("says this daemon has no peers when it has none", async () => {
+    const h = build({ workspaces: [] });
+
+    await expect(
+      moveAgentToWorkspace(h.deps, { agentId: "agent-1", workspaceId: "wks_target" }),
+    ).rejects.toThrow(/no peers configured/);
+  });
+
+  test("carries the OMP transcript to the peer, since its resume handle is a path here", async () => {
+    const transcript = '{"type":"session","cwd":"/work/ws-a"}\n{"type":"user","text":"hi"}\n';
+    const dir = await mkdtemp(path.join(tmpdir(), "paseo-move-carry-"));
+    const sessionFile = path.join(dir, "2026-09-16T15-10-42-000Z_abc123.jsonl");
+    await writeFile(sessionFile, transcript, "utf8");
+
+    const h = build({
+      workspaces: [],
+      storedAgents: [
+        storedAgent({
+          persistence: { provider: "omp", sessionId: "abc123", nativeHandle: sessionFile },
+        }),
+      ],
+    });
+    const transferred: Array<Record<string, unknown>> = [];
+    h.deps.agentStorage = { ...h.deps.agentStorage, remove: async () => {} };
+    h.deps.peerManager = peerManagerFor("blrofc3", {
+      serverIds: { srv_blrofc3: "blrofc3" },
+      transferAgentInbound: async (input) => {
+        transferred.push(input as Record<string, unknown>);
+        return { agentId: "agent-1", workspaceId: "wks_target" };
+      },
+    });
+
+    await moveAgentToWorkspace(h.deps, {
+      agentId: "agent-1",
+      workspaceId: "wks_target",
+      targetServerId: "srv_blrofc3",
+    });
+
+    expect(transferred[0]?.providerSession).toEqual({
+      provider: "omp",
+      sessionId: "abc123",
+      fileName: "2026-09-16T15-10-42-000Z_abc123.jsonl",
+      contentBase64: Buffer.from(transcript, "utf8").toString("base64"),
+    });
+  });
+
+  test("refuses an over-cap transcript and leaves the agent untouched here", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "paseo-move-overcap-"));
+    const sessionFile = path.join(dir, "2026-09-16T15-10-42-000Z_huge.jsonl");
+    // Sparse: reports a size over the cap without writing the bytes.
+    await writeFile(sessionFile, "seed", "utf8");
+    await truncate(sessionFile, OMP_SESSION_TRANSFER_MAX_BYTES + 1);
+
+    const h = build({
+      workspaces: [],
+      storedAgents: [
+        storedAgent({
+          persistence: { provider: "omp", sessionId: "huge", nativeHandle: sessionFile },
+        }),
+      ],
+    });
+    const transferred: unknown[] = [];
+    const removed: string[] = [];
+    h.deps.agentStorage = {
+      ...h.deps.agentStorage,
+      remove: async (agentId: string) => {
+        removed.push(agentId);
+      },
+    };
+    h.deps.peerManager = peerManagerFor("blrofc3", {
+      serverIds: { srv_blrofc3: "blrofc3" },
+      transferAgentInbound: async (input) => {
+        transferred.push(input);
+        return { agentId: "agent-1", workspaceId: "wks_target" };
+      },
+    });
+
+    await expect(
+      moveAgentToWorkspace(h.deps, {
+        agentId: "agent-1",
+        workspaceId: "wks_target",
+        targetServerId: "srv_blrofc3",
+      }),
+    ).rejects.toThrow(/over the 10\.0 MB cross-host move limit/);
+    // Nothing left this host: no transfer, no delete.
+    expect(transferred).toEqual([]);
+    expect(removed).toEqual([]);
+    expect(h.storedAgents.has("agent-1")).toBe(true);
   });
 });
 

@@ -22,6 +22,8 @@ import { formatBaseWorkspaceArchiveRefusal } from "../workspace-archive-service.
 import { areEquivalentPaths } from "../../utils/path.js";
 import { COMMANDER_ADOPTED_AT_LABEL } from "./commander-contract.js";
 import { hasMissionControlLabels } from "./naming.js";
+import { toStoredAgentRecord } from "../agent/agent-projections.js";
+import { readOmpSessionForTransfer } from "../agent/providers/omp/session-transfer.js";
 
 /**
  * M5 meta actions: the daemon-side executor for the Commander's `fleet_meta`
@@ -51,9 +53,10 @@ import { hasMissionControlLabels } from "./naming.js";
  *    on identity is TITLE (`rename_agent_title`) — the name is never touched.
  *  - `move_agent` refuses running agents (workspace attribution is stable
  *    while a run is in flight) and archived agents, and refuses archived or
- *    missing target workspaces. Cross-host moves are refused by construction:
- *    both ids are resolved against THIS host's registries (a peer move
- *    targets the peer via its own serverId, so it validates there).
+ *    missing target workspaces. A target workspace that is not on this host
+ *    routes to the peer that owns it: the target host identity (`targetHost`,
+ *    or the app's `targetServerId`) is resolved through the peer identity
+ *    resolver, which spans peer name / serverId / hostname / host alias.
  *
  * The executor mutates the registries directly, so connected sessions observe
  * project/workspace changes through their registry-mutation subscriptions
@@ -64,38 +67,206 @@ import { hasMissionControlLabels } from "./naming.js";
  */
 
 export interface MoveAgentDependencies {
-  agentManager: Pick<AgentManager, "getAgent" | "moveAgentWorkspace">;
-  agentStorage: Pick<AgentStorage, "get">;
+  agentManager: Pick<
+    AgentManager,
+    "getAgent" | "moveAgentWorkspace" | "getAgentTimelineForExport" | "deleteAgentState"
+  >;
+  agentStorage: Pick<AgentStorage, "get" | "remove">;
   workspaceRegistry: Pick<WorkspaceRegistry, "get">;
+  peerManager?: MetaPeerManager | null;
+  emitAgentRemove?: (agentId: string) => Promise<void> | void;
+  emitWorkspaceUpdate?: (workspaceId: string) => Promise<void> | void;
+  logger?: Logger;
 }
 
 export interface MoveAgentInput {
   agentId: string;
   workspaceId: string;
+  targetHost?: string;
+  targetServerId?: string;
 }
 
 export interface MoveAgentResult {
   agentId: string;
   fromWorkspaceId: string | null;
   toWorkspaceId: string;
+  targetServerId?: string;
   /** True when the agent is live (idle/closed/error) on this daemon. */
   live: boolean;
   /** The rewritten record (live agents persisted, stored agents patched). */
   record: StoredAgentRecord;
 }
 
+interface ResolvedPeerTarget {
+  peerName: string;
+  peerClient: DaemonClient;
+}
+
+type PeerTargetResolution = ({ ok: true } & ResolvedPeerTarget) | { ok: false; error: string };
+
 /**
- * Move a non-archived agent record to another workspace on this host. Shared
- * by the `agent.workspace.move` RPC and the meta-actions `move_agent` action —
- * one validation + mutation path for both callers.
+ * Resolve the peer that owns a target workspace.
+ *
+ * `targetHost` arrives from clients that know the host by whichever identity
+ * they hold — the app sends the target's **serverId**. Those identities live
+ * in different key spaces: `getPeerClient`/`getPeerStatus` match the config
+ * name only, so resolving with them directly misses every serverId and
+ * silently falls through. `resolvePeerName` is the resolver that spans them.
+ *
+ * There is deliberately NO "first online peer" fallback. Guessing a host
+ * moves the agent to a host the user did not pick, and its rejection reads as
+ * a workspace problem rather than a routing problem.
+ */
+function resolvePeerTarget(
+  peerManager: MetaPeerManager,
+  targetHost: string | undefined,
+): PeerTargetResolution {
+  const raw = targetHost?.trim() ?? "";
+  if (!raw || raw === "local") {
+    return {
+      ok: false,
+      error: `${describeUnresolvableTargetHost(peerManager, raw)} No target host was given for a workspace that is not on this host.`,
+    };
+  }
+  // Older/structural implementations may not expose the identity resolver;
+  // treating the input as a config name preserves their behaviour (minus the
+  // arbitrary-peer guess).
+  const peerName = peerManager.resolvePeerName?.(raw) ?? raw;
+  const status = peerManager.getPeerStatus(peerName);
+  if (!status) {
+    return {
+      ok: false,
+      error: `${describeUnresolvableTargetHost(peerManager, raw)} Target host "${raw}" did not resolve to a configured peer.`,
+    };
+  }
+  if (status.state !== "online") {
+    const lastSeen = status.lastSeenAt ? `, last seen ${status.lastSeenAt}` : "";
+    return {
+      ok: false,
+      error: `Target host "${status.name}" is ${status.state}${lastSeen}. Move the agent when that host is reachable.`,
+    };
+  }
+  const client = peerManager.getPeerClient(peerName);
+  if (!client) {
+    return {
+      ok: false,
+      error: `Target host "${status.name}" is online but has no open peer connection. Retry once the peer reconnects.`,
+    };
+  }
+  return { ok: true, peerName: status.name, peerClient: client };
+}
+
+/** Fleet state at the moment a host could not be resolved, for the caller's
+ *  error. Names every configured peer and its state so the failure is
+ *  diagnosable from the message alone. */
+function describeUnresolvableTargetHost(peerManager: MetaPeerManager, raw: string): string {
+  const peers = peerManager.getPeerStatuses?.() ?? [];
+  if (peers.length === 0) {
+    return raw ? `This host has no peers configured.` : `This host has no peers configured.`;
+  }
+  const fleet = peers
+    .map(
+      (peer) =>
+        `${peer.name} (${peer.state}${peer.lastSeenAt ? `, last seen ${peer.lastSeenAt}` : ""})`,
+    )
+    .join(", ");
+  return `Configured peers: ${fleet}.`;
+}
+
+async function transferAgentToPeer(
+  dependencies: MoveAgentDependencies,
+  agentId: string,
+  workspaceId: string,
+  fromWorkspaceId: string | null,
+  target: ResolvedPeerTarget,
+): Promise<MoveAgentResult> {
+  const timeline = (await dependencies.agentManager.getAgentTimelineForExport?.(agentId)) ?? [];
+  const liveAgent = dependencies.agentManager.getAgent(agentId);
+  const storedRecord = await dependencies.agentStorage.get(agentId);
+  const recordToExport = storedRecord
+    ? { ...storedRecord, ...(liveAgent ? { lastStatus: liveAgent.lifecycle } : {}) }
+    : toStoredAgentRecord(liveAgent!, { title: liveAgent?.config?.title });
+
+  // Read the provider transcript BEFORE anything is deleted on this host.
+  // Throwing here (over the size cap) leaves the agent exactly where it was.
+  const providerSession = await readTransferredProviderSession(recordToExport);
+
+  await target.peerClient.transferAgentInbound({
+    targetWorkspaceId: workspaceId,
+    agent: recordToExport as unknown as Record<string, unknown>,
+    timeline: timeline as unknown as Array<Record<string, unknown>>,
+    ...(providerSession ? { providerSession } : {}),
+  });
+
+  await dependencies.agentStorage.remove(agentId);
+  await dependencies.agentManager.deleteAgentState?.(agentId);
+  await dependencies.emitAgentRemove?.(agentId);
+  if (fromWorkspaceId) {
+    await dependencies.emitWorkspaceUpdate?.(fromWorkspaceId);
+  }
+
+  const targetServerId = dependencies.peerManager?.getPeerServerId?.(target.peerName) ?? undefined;
+
+  return {
+    agentId,
+    fromWorkspaceId,
+    toWorkspaceId: workspaceId,
+    targetServerId,
+    live: Boolean(liveAgent),
+    record: recordToExport,
+  };
+}
+
+/**
+ * The provider state a cross-host move must carry, or null when there is none
+ * to carry. OMP is the only provider whose resume handle is a file on the
+ * source host's disk; other providers resolve their session id in their own
+ * store on the target.
+ */
+async function readTransferredProviderSession(record: StoredAgentRecord): Promise<{
+  provider: string;
+  sessionId?: string;
+  fileName: string;
+  contentBase64: string;
+} | null> {
+  const handle = record.persistence;
+  if (!handle || handle.provider !== "omp") {
+    return null;
+  }
+  try {
+    const carried = await readOmpSessionForTransfer(handle.nativeHandle);
+    if (!carried) {
+      return null;
+    }
+    return {
+      provider: "omp",
+      ...(handle.sessionId ? { sessionId: handle.sessionId } : {}),
+      ...carried,
+    };
+  } catch (error) {
+    // Over the size cap: refuse the move while the agent is still intact here.
+    throw new Error(
+      `${error instanceof Error ? error.message : String(error)} (agent ${record.id}, provider ${handle.provider})`,
+      { cause: error },
+    );
+  }
+}
+
+/**
+ * Move a non-archived agent record to another workspace — same host, another
+ * project on this host, or a workspace on a peer host. Shared by the
+ * `agent.workspace.move` RPC and the meta-actions `move_agent` action — one
+ * validation + mutation path for both callers.
  *
  * Refusals (all validated BEFORE any write so the record is never half-moved):
- *  - agent not found on this host (a peer agent id is a cross-host move → refused);
+ *  - agent not found on this host;
  *  - agent archived;
  *  - agent running (workspace attribution is a stable identity mid-run;
  *    callers stop the agent first — "non-running preferred");
- *  - target workspace missing or archived on this host.
+ *  - target workspace missing or archived on this host (a peer move fans out
+ *    over peering instead).
  */
+// eslint-disable-next-line complexity
 export async function moveAgentToWorkspace(
   dependencies: MoveAgentDependencies,
   input: MoveAgentInput,
@@ -121,34 +292,64 @@ export async function moveAgentToWorkspace(
     throw new Error(`Agent ${agentId} is running; stop it before moving workspaces`);
   }
 
-  const workspace = await dependencies.workspaceRegistry.get(workspaceId);
-  if (!workspace) {
-    throw new Error(`Workspace ${workspaceId} not found on this host`);
-  }
-  if (workspace.archivedAt) {
-    throw new Error(`Workspace ${workspaceId} is archived`);
-  }
-
   const fromWorkspaceId = liveAgent?.workspaceId ?? storedRecord?.workspaceId ?? null;
-  if (fromWorkspaceId === workspaceId && storedRecord) {
-    // Already there: idempotent no-op, record unchanged.
+
+  const localWorkspace = await dependencies.workspaceRegistry.get(workspaceId);
+  if (localWorkspace) {
+    if (localWorkspace.archivedAt) {
+      throw new Error(`Workspace ${workspaceId} is archived`);
+    }
+
+    if (fromWorkspaceId === workspaceId && storedRecord) {
+      return {
+        agentId,
+        fromWorkspaceId,
+        toWorkspaceId: workspaceId,
+        live: Boolean(liveAgent),
+        record: storedRecord,
+      };
+    }
+
+    const moved = await dependencies.agentManager.moveAgentWorkspace(
+      agentId,
+      workspaceId,
+      localWorkspace.cwd,
+    );
     return {
       agentId,
       fromWorkspaceId,
       toWorkspaceId: workspaceId,
       live: Boolean(liveAgent),
-      record: storedRecord,
+      record: moved,
     };
   }
 
-  const moved = await dependencies.agentManager.moveAgentWorkspace(agentId, workspaceId);
-  return {
-    agentId,
-    fromWorkspaceId,
-    toWorkspaceId: workspaceId,
-    live: Boolean(liveAgent),
-    record: moved,
-  };
+  const peerManager = dependencies.peerManager;
+  if (peerManager) {
+    const peerTarget = resolvePeerTarget(peerManager, input.targetHost ?? input.targetServerId);
+    if (peerTarget.ok) {
+      return transferAgentToPeer(dependencies, agentId, workspaceId, fromWorkspaceId, peerTarget);
+    }
+    throw new Error(`Workspace ${workspaceId} is not on this host. ${peerTarget.error}`);
+  }
+
+  throw new Error(
+    `Workspace ${workspaceId} not found on this host and this daemon has no peers configured`,
+  );
+}
+
+export interface MetaPeerManager {
+  getPeerStatus(name: string): MissionControlPeerStatus | null;
+  getPeerClient(name: string): DaemonClient | null;
+  getPeerServerId?(name: string): string | null;
+  getPeerStatuses?(): MissionControlPeerStatus[];
+  /**
+   * Resolve ANY of a peer's identities — config name, serverId, hostname, or
+   * Mission Control host alias — to its config name. This is the only
+   * resolver that spans the fleet's identity key space. Optional so fakes
+   * stay cheap; callers fall back to treating the input as a config name.
+   */
+  resolvePeerName?(name: string): string | null;
 }
 
 /** The live-state lookups validation needs (existence + experiments root). */
@@ -157,16 +358,7 @@ export interface MetaActionsLookupDependencies {
   agentStorage: Pick<AgentStorage, "get">;
   workspaceRegistry: Pick<WorkspaceRegistry, "get">;
   projectRegistry: Pick<ProjectRegistry, "get" | "list">;
-}
-
-/**
- * The daemon-to-daemon client surface host resolution + peer routing need.
- * The real PeerManager satisfies this structurally (peers/peer-manager.ts);
- * tests hand it a fake without a PeerManager instance.
- */
-export interface MetaPeerManager {
-  getPeerStatus(name: string): MissionControlPeerStatus | null;
-  getPeerClient(name: string): DaemonClient | null;
+  peerManager?: MetaPeerManager | null;
 }
 
 /**
@@ -189,9 +381,14 @@ export interface MetaActionsDependencies
   logger: Logger;
   agentManager: Pick<
     AgentManager,
-    "getAgent" | "moveAgentWorkspace" | "updateAgentMetadata" | "setLabels"
+    | "getAgent"
+    | "moveAgentWorkspace"
+    | "updateAgentMetadata"
+    | "setLabels"
+    | "getAgentTimelineForExport"
+    | "deleteAgentState"
   >;
-  agentStorage: Pick<AgentStorage, "get" | "list">;
+  agentStorage: Pick<AgentStorage, "get" | "list" | "remove">;
   workspaceRegistry: Pick<WorkspaceRegistry, "get" | "update" | "upsert" | "list">;
   projectRegistry: Pick<
     ProjectRegistry,
@@ -489,11 +686,15 @@ async function validateMoveAgent(
     return { ok: false, error: `Agent ${targetId} is running; stop it before moving` };
   }
   const workspace = await deps.workspaceRegistry.get(destination);
-  if (!workspace) {
-    return { ok: false, error: `Workspace ${destination} not found` };
-  }
-  if (workspace.archivedAt) {
-    return { ok: false, error: `Workspace ${destination} is archived` };
+  if (workspace) {
+    if (workspace.archivedAt) {
+      return { ok: false, error: `Workspace ${destination} is archived` };
+    }
+  } else {
+    const hasOnlinePeer = deps.peerManager?.getPeerStatuses?.()?.some((p) => p.state === "online");
+    if (!hasOnlinePeer) {
+      return { ok: false, error: `Workspace ${destination} not found` };
+    }
   }
   return { ok: true };
 }
@@ -872,17 +1073,20 @@ async function applyMoveAgent(
   const agentId = plan.targetId!;
   const workspaceId = plan.destination!;
   const result = await moveAgentToWorkspace(deps, { agentId, workspaceId });
-  if (!result.live) {
+  if (!result.targetServerId && !result.live) {
     await safeEmitStoredAgentUpdate(deps, result.record);
   }
   logMetaEvent(deps, plan, "mission_control.meta.move_agent_applied", {
     agentId,
     fromWorkspaceId: result.fromWorkspaceId,
     toWorkspaceId: workspaceId,
+    targetServerId: result.targetServerId,
   });
   return {
     ok: true,
-    summary: `Moved agent ${agentId} to workspace ${workspaceId}`,
+    summary: result.targetServerId
+      ? `Moved agent ${agentId} across hosts to workspace ${workspaceId} on ${result.targetServerId}`
+      : `Moved agent ${agentId} to workspace ${workspaceId}`,
   };
 }
 

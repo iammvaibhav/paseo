@@ -238,7 +238,7 @@ function applyPersistentWrapperParking(record: PersistentBrowserWebview): void {
   wrapper.style.overflow = "hidden";
   wrapper.style.opacity = "1";
   wrapper.style.pointerEvents = "none";
-  wrapper.style.zIndex = "0";
+  wrapper.style.zIndex = String(WEB_SURFACE_PLANE.browser);
   wrapper.style.visibility = "visible";
 
   applyResidentWebviewStyle(webview, webview.getAttribute(BROWSER_ID_ATTRIBUTE));
@@ -429,6 +429,7 @@ export function ensurePersistentBrowserWebview(input: {
   browserId: string;
   workspaceId?: string;
   url: string;
+  profileHost?: BrowserWebviewProfileHost;
 }): HTMLElement | null {
   const browserId = trimNonEmpty(input.browserId);
   if (!browserId) {
@@ -453,6 +454,7 @@ export function ensurePersistentBrowserWebview(input: {
     browserId,
     workspaceId: input.workspaceId ?? browserId,
     initialUrl: input.url,
+    profileHost: input.profileHost,
   });
   wrapper.appendChild(webview);
   ownerDocument.body.appendChild(wrapper);
@@ -503,7 +505,7 @@ export function showPersistentBrowserWebview(browserId: string, target: HTMLElem
   wrapper.style.overflow = "hidden";
   wrapper.style.opacity = "1";
   wrapper.style.pointerEvents = "auto";
-  wrapper.style.zIndex = "2";
+  wrapper.style.zIndex = String(WEB_SURFACE_PLANE.browser);
   wrapper.style.visibility = "visible";
   webview.style.display = "flex";
   webview.style.position = "absolute";
@@ -709,4 +711,22 @@ export function clearResidentBrowserWebviewsForTests(): void {
   }
   persistentWebviewsByBrowserId.clear();
   readDocument()?.getElementById(RESIDENT_BROWSER_HOST_ID)?.remove();
+}
+
+declare global {
+  interface Window {
+    __paseoResidentWebviews?: {
+      showPersistentBrowserWebview: typeof showPersistentBrowserWebview;
+      hidePersistentBrowserWebview: typeof hidePersistentBrowserWebview;
+      ensurePersistentBrowserWebview: typeof ensurePersistentBrowserWebview;
+    };
+  }
+}
+
+if (typeof window !== "undefined") {
+  window.__paseoResidentWebviews = {
+    showPersistentBrowserWebview,
+    hidePersistentBrowserWebview,
+    ensurePersistentBrowserWebview,
+  };
 }

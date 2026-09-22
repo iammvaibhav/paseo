@@ -66,6 +66,32 @@ Worktree setup (`paseo.json` → `worktree.setup`) runs a plain `pnpm install` i
 
 Ownership rule: each worktree owns its own `node_modules` — `pnpm install` in one worktree never touches another's. Change dependencies on the branch, then re-run `pnpm install` in that worktree.
 
+### Worktree git state
+
+A worktree shares its whole repository with every other worktree: one object store, one ref database, one config, one hook set. Only `HEAD`, the index, `ORIG_HEAD`, `MERGE_HEAD`, `COMMIT_EDITMSG`, `logs/HEAD`, and the working files belong to the worktree that owns them. Everything under `refs/` does not.
+
+So `refs/stash` is a **repo-wide** stack, not a per-worktree one, and git has no option to make it local. `git stash pop` with no argument pops `stash@{0}` — the newest entry pushed by any worktree — so in a repo with several live worktrees it applies a different ticket's changes, drops them, and leaves your own entry stranded further down the stack. `git stash pop` writes no `HEAD` reflog line either, so the damage leaves no trace in reflog history.
+
+To get a clean tree, commit: `git commit -am "wip(<ticket>): <what>"`, then `git reset --soft HEAD~1` when you want the changes uncommitted again. When a stash is genuinely unavoidable:
+
+```bash
+git stash push -m "<ticket>: <what>"
+git branch wip/<ticket> $(git rev-parse refs/stash)   # reachable, so a drop or gc cannot reclaim it
+git stash list                                        # READ it, then address the entry by id
+git stash apply stash@{N}                             # apply, never pop; drop only after verifying
+```
+
+A stash commit's `On <branch>` line records the branch `HEAD` was on in the worktree that ran the push, not the content the stash carries, so it cannot be used to attribute a stash to a ticket.
+
+Dropped stashes are recoverable. Look before you give up:
+
+```bash
+git fsck --unreachable --no-reflogs | awk '$2=="commit"{print $3}' \
+  | xargs git log --no-walk --format='%h %ci %s' | grep -E 'WIP on|On '
+```
+
+Dangling objects survive until a `git gc` runs after `gc.pruneExpire` (two weeks by default). Recover with `git stash store -m "<what>" <sha>` or `git checkout <sha> -- <paths>`.
+
 ### Daemon endpoints
 
 - Stable daemon launched by the desktop app: `localhost:6767`.

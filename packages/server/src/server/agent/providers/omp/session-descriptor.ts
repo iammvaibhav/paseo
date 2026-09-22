@@ -25,7 +25,7 @@ const FULL_SCAN_LINE_LIMIT = 2_000;
 const IMPORT_CANDIDATE_OVERSCAN = 40;
 const IMPORT_CANDIDATE_MIN = 400;
 
-interface OmpSessionDescriptorOptions extends ListImportableSessionsOptions {
+export interface OmpSessionDescriptorOptions extends ListImportableSessionsOptions {
   sessionDir?: string;
   runtimeSettings?: ProviderRuntimeSettings;
   env?: NodeJS.ProcessEnv;
@@ -111,7 +111,12 @@ export async function readOmpImportSessionConfig(
   return toOmpImportSessionConfig(descriptor);
 }
 
-async function resolveOmpSessionsDir(options: OmpSessionDescriptorOptions): Promise<string> {
+/**
+ * Where this host's omp keeps session transcripts. Exported because the
+ * cross-host move writes an incoming transcript into the same layout instead
+ * of inventing a path the provider would not find again.
+ */
+export async function resolveOmpSessionsDir(options: OmpSessionDescriptorOptions): Promise<string> {
   const env = options.env ?? process.env;
   const homeDir = options.homeDir ?? homedir();
   const baseDir = options.cwd ?? process.cwd();

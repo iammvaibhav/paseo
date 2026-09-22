@@ -425,9 +425,16 @@ describe("OMP history mapper", () => {
           command: "secret internal command",
         },
         {
+          type: "credential_pin",
+          id: "pin-active",
+          parentId: "tool-control",
+          provider: "grok-build",
+          hash: "fe5824b3b43cd59f64a2f3e839db78f01b13fde85463dc5f329455dd0bdbf28e",
+        },
+        {
           type: "future_control",
           id: "unknown-active",
-          parentId: "tool-control",
+          parentId: "pin-active",
           secret: "must not stringify",
         },
         {

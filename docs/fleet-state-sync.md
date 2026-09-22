@@ -54,6 +54,16 @@ So the host that receives an itsaplan event is usually **not** the host that own
 
 **6. Standard columns are guaranteed, not assumed.** Paseo projects onto `In Progress`, `Ready to review`, and `Done`. A projection target that exists on only some boards is a bug waiting for the next project. New projects are created with the full set, and adding a standard column backfills every existing board.
 
+## Cross-host agent moves
+
+Moving an agent to a workspace on another host is the clearest instance of the bug class, because both ids involved are host-local and the client knows the destination by a third name.
+
+**Resolve the target host by identity, never by the field's assumed key space.** The move dialog knows the destination as a **serverId**; the daemon's peer config stores a **name**. `getPeerClient(x)`/`getPeerStatus(x)` match the config name only, so resolving with them directly silently misses every other identity. `PeerManager.resolvePeerName` spans name, serverId, hostname, and Mission Control host alias — use it (or `resolveMetaTargetHost`) for any caller-supplied host. On 2026-09-16 the mismatch surfaced as `Workspace wks_… not found on this host` for a workspace sitting on a reachable peer.
+
+**Never fall back to "the first online peer".** That is how a host-local default turns into an agent landing on a host the user did not choose. If the destination does not resolve to exactly one online peer, refuse and name the host and the fleet state in the message. An unresolvable host is a routing problem; saying the workspace is missing sends the reader looking in the wrong place.
+
+**Provider state that is a path must travel with the agent.** An OMP resume handle is an absolute path to a `.jsonl` transcript on the _source_ host (`persistence.nativeHandle`). On the target that path does not exist, `resolveOmpSessionFile` falls back to a basename search that only accepts files over 2000 bytes, and `ensureResumableSessionFile` writes a fresh header — so the agent resumes with an empty conversation and nothing reports an error. The transcript is therefore carried in the transfer message and rewritten to a path in the target's own layout (`encodeOmpSessionDirName` keeps it where `--continue` looks). It is capped at 10 MB, which covers 99.7% of this fleet's transcripts; over the cap the move is refused **before** the source deletes anything, because a truncated transcript is worse than a refused move. Providers whose resume handle is an opaque session id need no counterpart.
+
 ## Verification that would have caught all four
 
 Add these to any change in this area. Each maps to a defect above.

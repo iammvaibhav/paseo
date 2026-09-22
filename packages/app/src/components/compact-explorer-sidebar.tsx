@@ -25,8 +25,8 @@ import {
 } from "@/constants/layout";
 import { GitDiffPane } from "@/git/diff-pane";
 import { FileExplorerPane } from "./file-explorer-pane";
-import { useKeyboardShiftStyle } from "@/hooks/use-keyboard-shift-style";
-import { shouldUseCompactExplorerKeyboardPadding } from "@/hooks/keyboard-shift-policy";
+import { useKeyboardShiftStyle } from "@/keyboard/shift";
+import { shouldUseCompactExplorerKeyboardPadding } from "@/keyboard/shift";
 import { WindowChromeSafeArea } from "@/utils/desktop-window";
 import { TitlebarDragRegion } from "@/components/desktop/titlebar-drag-region";
 import { RetainedPanel, RetainedPanelActivity } from "@/components/retained-panel";
@@ -180,6 +180,8 @@ export function NativeExplorerSidebarDock({
   workspaceRoot,
   isGit,
   onOpenFile,
+  onOpenDiff,
+  onOpenHostFile,
   persistenceKey,
   containerWidth,
 }: NativeExplorerSidebarDockProps) {
@@ -274,6 +276,8 @@ export function NativeExplorerSidebarDock({
             isGit={isGit}
             isOpen={isOpen}
             onOpenFile={onOpenFile}
+            onOpenDiff={onOpenDiff}
+            onOpenHostFile={onOpenHostFile}
           />
         </View>
       </Animated.View>
@@ -324,7 +328,11 @@ function HostExplorerTabButton({
 }) {
   const { theme } = useUnistyles();
   const accessibilityState = useMemo(() => ({ selected: active }), [active]);
-  const tabStyle = useMemo(() => [styles.tab, active && styles.tabActive], [active]);
+  const isCompact = useIsCompactFormFactor();
+  const tabStyle = useMemo(
+    () => [styles.tab(isCompact), active && styles.tabActive],
+    [active, isCompact],
+  );
   const tabTextStyle = useMemo(() => [styles.tabText, active && styles.tabTextActive], [active]);
 
   return (

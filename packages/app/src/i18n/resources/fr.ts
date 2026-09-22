@@ -3,13 +3,14 @@ import { pluginSettings } from "./plugin-settings";
 
 export const fr: TranslationResources = {
   paneFind: {
-    searchFailed:
+    connectionFailure:
       "Impossible de rechercher dans cette conversation. Vérifiez la connexion à l’hôte et réessayez.",
+    historyChangedFailure: "La conversation a changé pendant la recherche. Relancez la recherche.",
+    revealFailure: "Impossible d’afficher ce résultat. Réessayez.",
     searching: "Recherche…",
     loading: "Chargement…",
     failed: "Échec",
     retry: "Réessayer",
-    chatPosition: "{{current}} sur {{total}} dans le message",
 
     title: "Rechercher",
     placeholder: "Rechercher dans le panneau",
@@ -29,6 +30,7 @@ export const fr: TranslationResources = {
     back: "Dos",
     loading: "Chargement...",
     actions: {
+      backToGrid: en.common.actions.backToGrid,
       back: "Dos",
       cancel: "Annuler",
       close: "Fermer",
@@ -738,6 +740,8 @@ export const fr: TranslationResources = {
         copyTerminalId: "Copier l'identifiant du terminal",
         copyFilePath: "Copy file path",
         moveToNewWorkspace: "Déplacer vers un nouvel espace de travail",
+        openInNewWindow: "Ouvrir dans une nouvelle fenêtre",
+        openInNewWindowFailed: "Impossible d'ouvrir une nouvelle fenêtre",
         rename: "Rebaptiser",
         closeAbove: "Fermer les onglets ci-dessus",
         closeBelow: "Fermer les onglets ci-dessous",
@@ -1430,6 +1434,8 @@ export const fr: TranslationResources = {
         copyPath: "Copier le chemin",
         copyBranchName: "Copier le nom de la branche",
         rename: "Renommer l'espace de travail",
+        openNewWindow: "Ouvrir dans une nouvelle fenêtre",
+        openNewWindowFailed: "Impossible d'ouvrir une nouvelle fenêtre",
         pin: "Épingler en haut",
         unpin: "Désépingler",
         askHistory: "Ask history…",
@@ -2258,6 +2264,14 @@ export const fr: TranslationResources = {
       host: "Aperçu",
     },
     missionControl: {
+      approvalMode: en.settings.missionControl.approvalMode,
+      approvalModeHint: en.settings.missionControl.approvalModeHint,
+      verbose: en.settings.missionControl.verbose,
+      verboseHint: en.settings.missionControl.verboseHint,
+      clearView: en.settings.missionControl.clearView,
+      clearViewHint: en.settings.missionControl.clearViewHint,
+      resetCommander: en.settings.missionControl.resetCommander,
+      resetCommanderHint: en.settings.missionControl.resetCommanderHint,
       memory: "Mémoire",
       hindsightUrl: "URL de Hindsight",
       hindsightUrlHint:
@@ -2428,6 +2442,7 @@ export const fr: TranslationResources = {
       },
     },
     appearance: {
+      agentGrid: en.settings.appearance.agentGrid,
       theme: {
         title: "Thème",
         accessibilityLabel: "Thème:{{value}}",

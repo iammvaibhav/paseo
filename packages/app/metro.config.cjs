@@ -17,12 +17,20 @@ const relaySrcRoots = Array.from(
 );
 
 function linkedRelaySrcRoot() {
-  const linkPath = path.resolve(projectRoot, "../../node_modules/@getpaseo/relay");
+  const candidates = [path.resolve(projectRoot, "../../node_modules/@getpaseo/relay")];
   try {
-    return path.join(fs.realpathSync(linkPath), "src");
-  } catch {
-    return null;
+    if (fs.existsSync(appNodeModulesRoot)) {
+      const real = fs.realpathSync(appNodeModulesRoot);
+      candidates.push(path.resolve(real, "../../relay"));
+    }
+  } catch {}
+  for (const candidate of candidates) {
+    try {
+      const resolved = path.join(fs.realpathSync(candidate), "src");
+      if (fs.existsSync(resolved)) return resolved;
+    } catch {}
   }
+  return null;
 }
 const isFdroidBuild = process.env.PASEO_FDROID_BUILD === "1";
 const fdroidModuleOverrides = {
@@ -133,7 +141,8 @@ config.resolver.resolveRequest = (context, moduleName, platform) => {
   if (
     origin &&
     moduleName.endsWith(".js") &&
-    relaySrcRoots.some((root) => origin.startsWith(root))
+    (relaySrcRoots.some((root) => origin.startsWith(root)) ||
+      origin.includes(`${path.sep}packages${path.sep}relay${path.sep}src${path.sep}`))
   ) {
     const tsModuleName = moduleName.replace(/\.js$/, ".ts");
     const candidatePath = path.resolve(path.dirname(origin), tsModuleName);

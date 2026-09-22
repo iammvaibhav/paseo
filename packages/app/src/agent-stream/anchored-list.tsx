@@ -1,13 +1,14 @@
 import React, {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type ReactElement,
   type ReactNode,
   type RefObject,
 } from "react";
-import { Platform, Pressable, View } from "react-native";
+import { Platform, Pressable, View, type StyleProp, type ViewStyle } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import Animated, { FadeIn, FadeOut } from "react-native-reanimated";
 import { ChevronDown } from "lucide-react-native";
@@ -41,6 +42,10 @@ export interface AnchoredListProps<T> extends Omit<
   scrollToBottomAffordance?: ReactNode;
   /** Custom press handler; defaults to `viewportRef.scrollToBottom`. */
   onScrollToBottomPress?: () => void;
+  /** Bottom offset required for controls floating above that overlay (e.g. composer). */
+  bottomOverlayControlClearance?: number;
+  /** Custom container style for the scroll-to-bottom container. */
+  scrollToBottomContainerStyle?: StyleProp<ViewStyle>;
 }
 
 function DefaultScrollToBottomButton({ onPress }: { onPress: () => void }) {
@@ -73,6 +78,8 @@ export function AnchoredList<T>({
   forceShowScrollToBottom = false,
   scrollToBottomAffordance,
   onScrollToBottomPress,
+  bottomOverlayControlClearance,
+  scrollToBottomContainerStyle,
   agentId,
   ...renderInput
 }: AnchoredListProps<T>): ReactElement {
@@ -98,6 +105,14 @@ export function AnchoredList<T>({
   useEffect(() => {
     setIsNearBottom(true);
   }, [agentId]);
+  const resolvedContainerStyle = useMemo(
+    () => [
+      styles.scrollToBottomContainer,
+      { bottom: Math.max(16, bottomOverlayControlClearance ?? 0) },
+      scrollToBottomContainerStyle,
+    ],
+    [bottomOverlayControlClearance, scrollToBottomContainerStyle],
+  );
 
   const showScrollToBottom = !isNearBottom || forceShowScrollToBottom;
   return (
@@ -109,7 +124,7 @@ export function AnchoredList<T>({
         onNearBottomChange: handleNearBottomChange,
       })}
       {showScrollToBottom ? (
-        <View style={styles.scrollToBottomContainer} pointerEvents="box-none">
+        <View style={resolvedContainerStyle} pointerEvents="box-none">
           {scrollToBottomAffordance ?? (
             <DefaultScrollToBottomButton onPress={handleScrollToBottomPress} />
           )}
@@ -125,7 +140,6 @@ const styles = StyleSheet.create((theme) => ({
   },
   scrollToBottomContainer: {
     position: "absolute",
-    bottom: 16,
     left: 0,
     right: 0,
     alignItems: "center",

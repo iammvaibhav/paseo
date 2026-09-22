@@ -4,7 +4,8 @@ export interface MoveAgentTabClient {
   moveAgentToWorkspace(
     agentId: string,
     workspaceId: string,
-  ): Promise<{ agentId: string; workspaceId: string }>;
+    options?: { targetHost?: string; targetServerId?: string; requestId?: string },
+  ): Promise<{ agentId: string; workspaceId: string; targetServerId?: string }>;
   createWorkspace(input: {
     source:
       | { kind: "directory"; path: string; projectId?: string }
@@ -133,6 +134,7 @@ async function applyMove(input: {
   serverId: string;
   sourceWorkspaceId: string;
   targetWorkspaceId: string;
+  targetServerId?: string;
   agentId: string;
   tabId: string;
   layout: MoveAgentTabLayout;
@@ -141,8 +143,12 @@ async function applyMove(input: {
   created: boolean;
   openTargetTab: boolean;
 }): Promise<MoveAgentTabResult> {
+  const destServerId = input.targetServerId ?? input.serverId;
   try {
-    await input.client.moveAgentToWorkspace(input.agentId, input.targetWorkspaceId);
+    await input.client.moveAgentToWorkspace(input.agentId, input.targetWorkspaceId, {
+      targetServerId: input.targetServerId,
+      targetHost: input.targetServerId,
+    });
   } catch (error) {
     return {
       ok: false,
@@ -154,13 +160,13 @@ async function applyMove(input: {
   input.layout.closeTab(`${input.serverId}:${input.sourceWorkspaceId}`, input.tabId);
   if (input.openTargetTab) {
     input.layout.openTab({
-      workspaceKey: `${input.serverId}:${input.targetWorkspaceId}`,
+      workspaceKey: `${destServerId}:${input.targetWorkspaceId}`,
       target: { kind: "agent", agentId: input.agentId },
       intent: "reveal",
     });
   }
   input.navigation.navigateToWorkspace({
-    serverId: input.serverId,
+    serverId: destServerId,
     workspaceId: input.targetWorkspaceId,
     target: { kind: "agent", agentId: input.agentId },
   });
@@ -179,6 +185,7 @@ export async function moveAgentTabToExistingWorkspace(input: {
   serverId: string;
   sourceWorkspaceId: string;
   targetWorkspaceId: string;
+  targetServerId?: string;
   agentId: string;
   tabId: string;
 }): Promise<MoveAgentTabResult> {
@@ -192,6 +199,7 @@ export async function moveAgentTabToExistingWorkspace(input: {
     serverId: input.serverId,
     sourceWorkspaceId: input.sourceWorkspaceId,
     targetWorkspaceId: input.targetWorkspaceId,
+    targetServerId: input.targetServerId,
     agentId: input.agentId,
     tabId: input.tabId,
     layout: input.layout,
@@ -211,6 +219,10 @@ export async function moveAgentTabToNewWorkspace(input: {
   sourceWorkspaceId: string;
   agentId: string;
   tabId: string;
+  targetServerId?: string;
+  targetProjectId?: string;
+  targetDirectory?: string;
+  targetProjectName?: string;
   createWorktreeSlug?: () => string;
 }): Promise<MoveAgentTabResult> {
   const clientResult = requireClient(input.session, input.messages);
@@ -219,7 +231,7 @@ export async function moveAgentTabToNewWorkspace(input: {
   if (running) return running;
 
   const sourceWorkspace = input.session.workspaces.get(input.sourceWorkspaceId);
-  const sourceDirectory = sourceWorkspace?.workspaceDirectory;
+  const sourceDirectory = input.targetDirectory ?? sourceWorkspace?.workspaceDirectory;
   if (!sourceDirectory) {
     return {
       ok: false,
@@ -230,7 +242,14 @@ export async function moveAgentTabToNewWorkspace(input: {
 
   const createWorktreeSlug = input.createWorktreeSlug ?? createNameId;
   const worktreeSlug = createWorktreeSlug();
+  const projectId = input.targetProjectId ?? sourceWorkspace?.projectId;
 
+  let workspaceTitle: string | undefined;
+  if (input.targetProjectName) {
+    workspaceTitle = `${input.targetProjectName} (new)`;
+  } else if (sourceWorkspace?.name) {
+    workspaceTitle = `${sourceWorkspace.name} (2)`;
+  }
   let createdWorkspace: { id: string; name?: string | null };
   try {
     const createResult = await clientResult.client.createWorkspace({
@@ -240,10 +259,10 @@ export async function moveAgentTabToNewWorkspace(input: {
       source: {
         kind: "worktree",
         cwd: sourceDirectory,
-        ...(sourceWorkspace.projectId ? { projectId: sourceWorkspace.projectId } : {}),
+        ...(projectId ? { projectId } : {}),
         worktreeSlug,
       },
-      title: sourceWorkspace.name ? `${sourceWorkspace.name} (2)` : undefined,
+      title: workspaceTitle,
     });
     if (createResult.error || !createResult.workspace) {
       return {
@@ -266,6 +285,7 @@ export async function moveAgentTabToNewWorkspace(input: {
     serverId: input.serverId,
     sourceWorkspaceId: input.sourceWorkspaceId,
     targetWorkspaceId: createdWorkspace.id,
+    targetServerId: input.targetServerId,
     agentId: input.agentId,
     tabId: input.tabId,
     layout: input.layout,

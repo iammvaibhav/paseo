@@ -1,6 +1,6 @@
 {
   "name": "paseo",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "private": true,
   "description": "Paseo: voice-controlled development environment for local AI coding agents",
   "keywords": [
@@ -52,7 +52,7 @@
     "build:app-deps:clean": "pnpm run build:highlight:clean && pnpm run build:client:clean && pnpm run build:plugin:clean && pnpm --filter @getpaseo/expo-two-way-audio run build",
     "watch:protocol": "pnpm --filter @getpaseo/protocol run watch",
     "watch:client": "tsc -p packages/client/tsconfig.json --watch --preserveWatchOutput",
-    "typecheck": "pnpm --if-present -r run typecheck",
+    "typecheck": "pnpm --if-present -r --no-bail run typecheck",
     "typecheck:server": "pnpm --filter @getpaseo/relay run typecheck && pnpm --filter @getpaseo/protocol run typecheck && pnpm --filter @getpaseo/client run typecheck && pnpm --filter @getpaseo/server run typecheck && pnpm --filter @getpaseo/cli run typecheck",
     "test": "pnpm --if-present -r run test",
     "format": "oxfmt .",
@@ -113,6 +113,10 @@
   },
   "devDependencies": {
     "@getpaseo/client": "workspace:*",
+    "@getpaseo/plugin": "workspace:*",
+    "@getpaseo/protocol": "workspace:*",
+    "@tanstack/react-query": "^5.90.11",
+    "@types/react": "~19.2.0",
     "@types/ws": "^8.5.14",
     "@typescript/native-preview": "7.0.0-dev.20260423.1",
     "@vercel/nft": "^1.5.0",
@@ -128,9 +132,13 @@
     "oxlint-tsgolint": "^0.22.1",
     "patch-package": "^8.0.1",
     "playwright": "^1.56.1",
+    "react": "~19.1.0",
+    "react-native": ">=0.81.5",
     "typescript": "^5.9.3",
+    "vitest": "^4.1.6",
     "ws": "^8.20.0",
-    "yaml": "^2.8.4"
+    "yaml": "^2.8.4",
+    "zod": "^4.4.3"
   },
   "packageManager": "pnpm@11.22.0"
 }

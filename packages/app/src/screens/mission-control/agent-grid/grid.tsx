@@ -12,7 +12,10 @@ import { useShallow } from "zustand/react/shallow";
 import { SPACING } from "@/styles/theme";
 import { inlineUnistylesStyle } from "@/styles/unistyles-inline-style";
 import { useIsCompactFormFactor } from "@/constants/layout";
+import { useAppSettings } from "@/hooks/use-settings";
 import { useMissionControlLifecycle } from "@/mission-control/use-mission-control-lifecycle";
+import { AgentGridDraftTile } from "./draft-tile";
+import { registerAgentGridScrollHandler, scrollAgentGridIntoView } from "./grid-glow";
 import { buildAgentGridItems, type AgentGridItem } from "./items";
 import { resolveAgentGridLayout, resolveAgentGridWindow } from "./layout";
 import { useAgentGridStore } from "./store";
@@ -39,22 +42,80 @@ const SCROLL_ORIGIN: ScrollPosition = { x: 0, y: 0 };
  * `direction`. Only tiles inside the viewport window (plus one line of
  * overscan on each side) mount their stream; the others are placeholders.
  */
+// eslint-disable-next-line complexity -- grid layout resolution, windowing, and tile rendering
 export function MissionControlAgentGrid({ isFocused }: { isFocused: boolean }): ReactElement {
   const isCompact = useIsCompactFormFactor();
-  const { visibleCount: storedVisibleCount, direction } = useAgentGridStore(
-    useShallow((state) => ({ visibleCount: state.visibleCount, direction: state.direction })),
+  const { settings } = useAppSettings();
+  const {
+    view,
+    visibleCount: storedVisibleCount,
+    direction: storedDirection,
+    snapshotKeys,
+    enterGrid,
+    clearSnapshot,
+    activeKey,
+    setActiveKey,
+    glowKey,
+    draft,
+    clearDraft,
+  } = useAgentGridStore(
+    useShallow((state) => ({
+      view: state.view,
+      visibleCount: state.visibleCount,
+      direction: state.direction,
+      snapshotKeys: state.snapshotKeys,
+      enterGrid: state.enterGrid,
+      clearSnapshot: state.clearSnapshot,
+      activeKey: state.activeKey,
+      setActiveKey: state.setActiveKey,
+      glowKey: state.glowKey,
+      draft: state.draft,
+      clearDraft: state.clearDraft,
+    })),
   );
+  const direction = settings?.agentGridDirection ?? storedDirection;
+  const configuredVisibleCount = settings?.agentGridVisibleCount ?? storedVisibleCount;
   // A phone shows one tile at a time; the stored count is a desktop preference.
-  const visibleCount = isCompact ? 1 : storedVisibleCount;
+  const visibleCount = isCompact ? 1 : configuredVisibleCount;
+  const { rows, isInitialLoad } = useMissionControlLifecycle({ enabled: isFocused });
 
-  const { rows } = useMissionControlLifecycle({ enabled: isFocused });
+  const isInGrid = isFocused && view === "grid";
+  const wasInGridRef = useRef(false);
+
+  useEffect(() => {
+    if (!isInGrid) {
+      if (wasInGridRef.current) {
+        wasInGridRef.current = false;
+        clearSnapshot();
+      }
+      return;
+    }
+
+    if (!wasInGridRef.current) {
+      if (isInitialLoad && rows.length === 0) {
+        return;
+      }
+      wasInGridRef.current = true;
+      const initialItems = buildAgentGridItems(rows);
+      enterGrid(initialItems.map((item) => item.key));
+    }
+  }, [clearSnapshot, enterGrid, isInitialLoad, isInGrid, rows]);
+
+  useEffect(() => {
+    return () => {
+      if (wasInGridRef.current) {
+        wasInGridRef.current = false;
+        clearSnapshot();
+      }
+    };
+  }, [clearSnapshot]);
+
   const prevItemsRef = useRef<AgentGridItem[]>(EMPTY_ITEMS);
   const items = useMemo(() => {
-    const next = buildAgentGridItems(rows, prevItemsRef.current);
+    const next = buildAgentGridItems(rows, prevItemsRef.current, snapshotKeys);
     prevItemsRef.current = next;
     return next;
-  }, [rows]);
-
+  }, [rows, snapshotKeys]);
   // The last positive measurement. A hidden retained surface reports zero
   // and must not collapse the grid.
   const [viewport, setViewport] = useState<Viewport | null>(null);
@@ -75,6 +136,9 @@ export function MissionControlAgentGrid({ isFocused }: { isFocused: boolean }): 
     setScroll({ x, y });
   }, []);
 
+  const hasDraft = draft !== null;
+  const totalItemCount = items.length + (hasDraft ? 1 : 0);
+
   // Switching axes leaves stale scroll state from the old axis: reset both the
   // tracked offset and the ScrollView's real position so windowing and the
   // visible tiles agree.
@@ -83,20 +147,52 @@ export function MissionControlAgentGrid({ isFocused }: { isFocused: boolean }): 
     scrollViewRef.current?.scrollTo({ x: 0, y: 0, animated: false });
   }, [direction]);
 
-  const [activeKey, setActiveKey] = useState<string | null>(null);
-
   const layout = useMemo(
     () =>
       resolveAgentGridLayout({
-        itemCount: items.length,
+        itemCount: totalItemCount,
         visibleCount,
         direction,
         width: viewport?.width ?? 0,
         height: viewport?.height ?? 0,
         gap: TILE_GAP,
       }),
-    [direction, items.length, viewport, visibleCount],
+    [direction, totalItemCount, viewport, visibleCount],
   );
+
+  useEffect(() => {
+    return registerAgentGridScrollHandler((targetKey: string) => {
+      scrollAgentGridIntoView({
+        scrollView: scrollViewRef.current,
+        layout,
+        items,
+        targetKey,
+        viewportWidth: viewport?.width,
+        viewportHeight: viewport?.height,
+        draftOffset: hasDraft ? 1 : 0,
+      });
+    });
+  }, [hasDraft, items, layout, viewport?.height, viewport?.width]);
+
+  useEffect(() => {
+    if (glowKey) {
+      scrollAgentGridIntoView({
+        scrollView: scrollViewRef.current,
+        layout,
+        items,
+        targetKey: glowKey,
+        viewportWidth: viewport?.width,
+        viewportHeight: viewport?.height,
+        draftOffset: hasDraft ? 1 : 0,
+      });
+    }
+  }, [glowKey, hasDraft, items, layout, viewport?.height, viewport?.width]);
+
+  useEffect(() => {
+    if (draft) {
+      scrollViewRef.current?.scrollTo({ x: 0, y: 0, animated: true });
+    }
+  }, [draft]);
 
   const isHorizontal = direction === "horizontal";
   // The browser clamps the offset when content shrinks (count or direction
@@ -106,8 +202,7 @@ export function MissionControlAgentGrid({ isFocused }: { isFocused: boolean }): 
     : layout.contentHeight - (viewport?.height ?? 0);
   const scrollOffset = Math.max(0, Math.min(isHorizontal ? scroll.x : scroll.y, maxOffset));
   const overscan = isHorizontal ? layout.rows : layout.columns;
-  const mountWindow = resolveAgentGridWindow(layout, items.length, scrollOffset, overscan);
-
+  const mountWindow = resolveAgentGridWindow(layout, totalItemCount, scrollOffset, overscan);
   const contentStyle = useMemo(
     () => inlineUnistylesStyle({ width: layout.contentWidth, height: layout.contentHeight }),
     [layout.contentHeight, layout.contentWidth],
@@ -115,7 +210,7 @@ export function MissionControlAgentGrid({ isFocused }: { isFocused: boolean }): 
 
   return (
     <View style={styles.root} testID="mission-control-agent-grid">
-      {items.length === 0 ? (
+      {totalItemCount === 0 ? (
         <View style={styles.empty} testID="mission-control-agent-grid-empty">
           <Text style={styles.emptyText}>No running or ready-for-review agents</Text>
         </View>
@@ -130,10 +225,23 @@ export function MissionControlAgentGrid({ isFocused }: { isFocused: boolean }): 
             testID="mission-control-agent-grid-scroll"
           >
             <View style={contentStyle}>
-              {viewport
-                ? items.map((item, index) => {
-                    const { x, y } = layout.placeTile(index);
-                    const isMounted = index >= mountWindow.start && index < mountWindow.end;
+              {viewport ? (
+                <>
+                  {hasDraft && mountWindow.start === 0 ? (
+                    <AgentGridDraftTile
+                      key={`draft-${draft.id}`}
+                      onClose={clearDraft}
+                      prefill={draft}
+                      width={layout.tileWidth}
+                      height={layout.tileHeight}
+                      x={layout.placeTile(0).x}
+                      y={layout.placeTile(0).y}
+                    />
+                  ) : null}
+                  {items.map((item, index) => {
+                    const slotIndex = hasDraft ? index + 1 : index;
+                    const { x, y } = layout.placeTile(slotIndex);
+                    const isMounted = slotIndex >= mountWindow.start && slotIndex < mountWindow.end;
                     return isMounted ? (
                       <AgentGridTile
                         key={item.key}
@@ -141,6 +249,7 @@ export function MissionControlAgentGrid({ isFocused }: { isFocused: boolean }): 
                         isFocused={isFocused}
                         isActive={item.key === activeKey}
                         onActivate={setActiveKey}
+                        glow={item.key === glowKey}
                         width={layout.tileWidth}
                         height={layout.tileHeight}
                         x={x}
@@ -150,14 +259,16 @@ export function MissionControlAgentGrid({ isFocused }: { isFocused: boolean }): 
                       <AgentGridTilePlaceholder
                         key={item.key}
                         item={item}
+                        glow={item.key === glowKey}
                         width={layout.tileWidth}
                         height={layout.tileHeight}
                         x={x}
                         y={y}
                       />
                     );
-                  })
-                : null}
+                  })}
+                </>
+              ) : null}
             </View>
           </ScrollView>
         </View>

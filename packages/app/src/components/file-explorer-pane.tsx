@@ -27,7 +27,22 @@ import { StyleSheet, useUnistyles, withUnistyles } from "react-native-unistyles"
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { isWeb } from "@/constants/platform";
 import * as Clipboard from "expo-clipboard";
-import { ChevronDown, Eye, EyeOff, FilePlus, FolderPlus, RotateCw } from "lucide-react-native";
+import {
+  ChevronDown,
+  Eye,
+  EyeOff,
+  FilePlus,
+  FolderPlus,
+  FolderTree,
+  RotateCw,
+} from "lucide-react-native";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { MaterialFileIcon } from "@/components/material-file-icon";
 import {
   TreeChevron,
@@ -404,6 +419,135 @@ function TreeRowItem({
   );
 }
 
+interface HierarchySegment {
+  path: string;
+  label: string;
+  isRoot: boolean;
+  isWorkspace: boolean;
+  isCurrent: boolean;
+}
+
+function computeDirectoryHierarchy(currentPath: string, workspaceRoot: string): HierarchySegment[] {
+  const normCurrent = currentPath.replace(/\\/g, "/").replace(/\/+$/, "") || "/";
+  const normWorkspace = workspaceRoot.replace(/\\/g, "/").replace(/\/+$/, "") || "/";
+
+  const hierarchy: HierarchySegment[] = [
+    {
+      path: "/",
+      label: "/",
+      isRoot: true,
+      isWorkspace: normWorkspace === "/",
+      isCurrent: normCurrent === "/",
+    },
+  ];
+
+  if (normCurrent !== "/") {
+    const parts = normCurrent.split("/").filter(Boolean);
+    let cumulative = "";
+    for (const part of parts) {
+      cumulative = `${cumulative}/${part}`;
+      hierarchy.push({
+        path: cumulative,
+        label: part,
+        isRoot: false,
+        isWorkspace: cumulative === normWorkspace,
+        isCurrent: cumulative === normCurrent,
+      });
+    }
+  }
+
+  return hierarchy;
+}
+
+function HierarchyMenu({
+  effectiveRoot,
+  workspaceRoot,
+  hierarchy,
+  currentFolderLabel,
+  onSelectRoot,
+}: {
+  effectiveRoot: string;
+  workspaceRoot: string;
+  hierarchy: HierarchySegment[];
+  currentFolderLabel: string;
+  onSelectRoot: (path: string | null) => void;
+}) {
+  const { t } = useTranslation();
+  const { theme } = useUnistyles();
+  const isCustomRoot =
+    effectiveRoot !== (workspaceRoot.replace(/\\/g, "/").replace(/\/+$/, "") || "/");
+  const handleResetWorkspace = useCallback(() => onSelectRoot(null), [onSelectRoot]);
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        accessibilityLabel={t("workspace.fileExplorer.hierarchy", {
+          defaultValue: "Directory hierarchy",
+        })}
+        style={styles.hierarchyTrigger}
+        testID="files-hierarchy-trigger"
+      >
+        <FolderTree size={12} color={theme.colors.foregroundMuted} />
+        <Text
+          style={styles.sortTriggerText}
+          numberOfLines={1}
+          testID="files-hierarchy-current-label"
+        >
+          {currentFolderLabel}
+        </Text>
+        <ChevronDown size={10} color={theme.colors.foregroundMuted} />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" width={260} testID="files-hierarchy-menu">
+        {isCustomRoot ? (
+          <>
+            <DropdownMenuItem
+              onSelect={handleResetWorkspace}
+              testID="files-hierarchy-reset-workspace"
+            >
+              {t("workspace.fileExplorer.resetWorkspace", { defaultValue: "Reset to workspace" })}
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+          </>
+        ) : null}
+        {hierarchy.map((item) => (
+          <HierarchyMenuItem key={item.path} item={item} onSelect={onSelectRoot} />
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+function formatHierarchyItemLabel(item: HierarchySegment): string {
+  if (item.isWorkspace) {
+    return `${item.label} (workspace)`;
+  }
+  if (item.isRoot) {
+    return `${item.label} (root)`;
+  }
+  return item.label;
+}
+
+interface HierarchyMenuItemProps {
+  item: HierarchySegment;
+  onSelect: (path: string | null) => void;
+}
+
+function HierarchyMenuItem({ item, onSelect }: HierarchyMenuItemProps) {
+  const handleSelect = useCallback(() => {
+    onSelect(item.isWorkspace ? null : item.path);
+  }, [item.isWorkspace, item.path, onSelect]);
+
+  return (
+    <DropdownMenuItem
+      onSelect={handleSelect}
+      selected={item.isCurrent}
+      testID={`files-hierarchy-item-${item.path === "/" ? "root" : item.label}`}
+    >
+      {formatHierarchyItemLabel(item)}
+    </DropdownMenuItem>
+  );
+}
+
 interface FileExplorerPaneProps {
   serverId: string;
   workspaceId?: string | null;
@@ -424,15 +568,24 @@ export function FileExplorerPane({
   const { t } = useTranslation();
   const client = useSessionStore((state) => state.sessions[serverId]?.client ?? null);
   const isCompact = useIsCompactFormFactor();
+  const [browseRoot, setBrowseRoot] = useState<string | null>(null);
+  const effectiveRoot = useMemo(() => {
+    return (browseRoot?.trim() || workspaceRoot.trim()).replace(/\\/g, "/");
+  }, [browseRoot, workspaceRoot]);
 
-  const normalizedWorkspaceRoot = useMemo(() => workspaceRoot.trim(), [workspaceRoot]);
+  useEffect(() => {
+    setBrowseRoot(null);
+  }, [workspaceRoot]);
+
+  const normalizedWorkspaceRoot = effectiveRoot;
+  const isBrowsingCustomRoot = effectiveRoot !== workspaceRoot.trim().replace(/\\/g, "/");
   const workspaceStateKey = useMemo(
     () =>
       buildWorkspaceExplorerStateKey({
-        workspaceId,
+        workspaceId: isBrowsingCustomRoot ? null : workspaceId,
         workspaceRoot: normalizedWorkspaceRoot,
       }),
-    [normalizedWorkspaceRoot, workspaceId],
+    [isBrowsingCustomRoot, normalizedWorkspaceRoot, workspaceId],
   );
   const hasWorkspaceScope = Boolean(workspaceStateKey && normalizedWorkspaceRoot);
   const explorerState = useSessionStore((state) =>
@@ -564,9 +717,13 @@ export function FileExplorerPane({
       if (!hasWorkspaceScope) {
         return;
       }
-      onOpenFile?.(entry.path);
+      let fullPath = entry.path;
+      if (!entry.path.startsWith("/")) {
+        fullPath = effectiveRoot === "/" ? `/${entry.path}` : `${effectiveRoot}/${entry.path}`;
+      }
+      onOpenFile?.(fullPath);
     },
-    [hasWorkspaceScope, onOpenFile],
+    [effectiveRoot, hasWorkspaceScope, onOpenFile],
   );
 
   const handleEntryPress = useCallback(
@@ -1097,6 +1254,13 @@ export function FileExplorerPane({
           handleBackFromError={handleBackFromError}
           handleRetry={handleRetry}
           sortTriggerStyle={sortTriggerStyle}
+          effectiveRoot={effectiveRoot}
+          workspaceRoot={workspaceRoot}
+          hierarchy={computeDirectoryHierarchy(effectiveRoot, workspaceRoot)}
+          currentFolderLabel={
+            computeDirectoryHierarchy(effectiveRoot, workspaceRoot).at(-1)?.label || "files"
+          }
+          onSelectRoot={setBrowseRoot}
         />
       </FileDropZone>
     </View>
@@ -1171,7 +1335,7 @@ function FileExplorerDropTarget({
             directoryPath,
             fileName: file.fileName,
             mimeType: file.mimeType,
-            bytes: file.bytes,
+            bytes: await file.readBytes(),
           });
           if (response.error) {
             throw new Error(response.error);
@@ -1275,6 +1439,11 @@ interface FileExplorerPaneContentProps {
   handleBackFromError: () => void;
   handleRetry: () => void;
   sortTriggerStyle: (state: PressableStateCallbackType) => StyleProp<ViewStyle>;
+  effectiveRoot: string;
+  workspaceRoot: string;
+  hierarchy: HierarchySegment[];
+  currentFolderLabel: string;
+  onSelectRoot: (path: string | null) => void;
 }
 
 function FileExplorerPaneContent(props: FileExplorerPaneContentProps) {
@@ -1298,6 +1467,11 @@ function FileExplorerPaneContent(props: FileExplorerPaneContentProps) {
     handleBackFromError,
     handleRetry,
     sortTriggerStyle: sortTriggerStyleProp,
+    effectiveRoot,
+    workspaceRoot,
+    hierarchy,
+    currentFolderLabel,
+    onSelectRoot,
   } = props;
 
   const showHiddenFiles = usePanelStore((state) => state.explorerShowHiddenFiles);
@@ -1352,16 +1526,25 @@ function FileExplorerPaneContent(props: FileExplorerPaneContentProps) {
         ]}
         testID="files-pane-header"
       >
-        <Pressable
-          onPress={handleSortCycle}
-          style={sortTriggerStyleProp}
-          testID="files-sort-trigger"
-        >
-          <Text style={styles.sortTriggerText} testID="files-sort-label">
-            {currentSortLabel}
-          </Text>
-          <ChevronDown size={12} color={theme.colors.foregroundMuted} />
-        </Pressable>
+        <View style={styles.headerLeading}>
+          <HierarchyMenu
+            effectiveRoot={effectiveRoot}
+            workspaceRoot={workspaceRoot}
+            hierarchy={hierarchy}
+            currentFolderLabel={currentFolderLabel}
+            onSelectRoot={onSelectRoot}
+          />
+          <Pressable
+            onPress={handleSortCycle}
+            style={sortTriggerStyleProp}
+            testID="files-sort-trigger"
+          >
+            <Text style={styles.sortTriggerText} testID="files-sort-label">
+              {currentSortLabel}
+            </Text>
+            <ChevronDown size={12} color={theme.colors.foregroundMuted} />
+          </Pressable>
+        </View>
         <ToolbarControls style={styles.headerActions}>
           {onNewEntryAtRoot ? (
             <>
@@ -1811,12 +1994,28 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: "space-between",
     backgroundColor: theme.colors.surfaceSidebar,
   },
+  headerLeading: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[1],
+    minWidth: 0,
+    flexShrink: 1,
+  },
+  hierarchyTrigger: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[1],
+    marginLeft: theme.spacing[3] - theme.spacing[1],
+    paddingHorizontal: theme.spacing[1],
+    height: 24,
+    borderRadius: theme.borderRadius.base,
+    maxWidth: 160,
+  },
   sortTrigger: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: theme.spacing[1],
-    marginLeft: theme.spacing[3] - theme.spacing[1],
     paddingHorizontal: theme.spacing[1],
     height: 24,
     borderRadius: theme.borderRadius.base,

@@ -3,13 +3,14 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ru: TranslationResources = {
   paneFind: {
-    searchFailed:
+    connectionFailure:
       "Не удалось выполнить поиск в чате. Проверьте подключение к хосту и повторите попытку.",
+    historyChangedFailure: "Чат изменился во время поиска. Выполните поиск снова.",
+    revealFailure: "Не удалось показать это совпадение. Повторите попытку.",
     searching: "Поиск…",
     loading: "Загрузка…",
     failed: "Ошибка",
     retry: "Повторить",
-    chatPosition: "{{current}} из {{total}} в сообщении",
 
     title: "Найти",
     placeholder: "Найти в панели",
@@ -29,6 +30,7 @@ export const ru: TranslationResources = {
     back: "Назад",
     loading: "Загрузка...",
     actions: {
+      backToGrid: en.common.actions.backToGrid,
       back: "Назад",
       cancel: "Отмена",
       close: "Закрыть",
@@ -739,6 +741,8 @@ export const ru: TranslationResources = {
         copyTerminalId: "Скопировать идентификатор терминала",
         copyFilePath: "Скопировать путь к файлу",
         moveToNewWorkspace: "Переместить в новое рабочее пространство",
+        openInNewWindow: "Открыть в новом окне",
+        openInNewWindowFailed: "Не удалось открыть новое окно",
         rename: "Переименовать",
         closeAbove: "Закрыть вкладки выше",
         closeBelow: "Закрыть вкладки ниже",
@@ -1412,6 +1416,8 @@ export const ru: TranslationResources = {
         copyPath: "Копировать путь",
         copyBranchName: "Скопировать имя ветки",
         rename: "Переименовать рабочее пространство",
+        openNewWindow: "Открыть в новом окне",
+        openNewWindowFailed: "Не удалось открыть новое окно",
         pin: "Закрепить вверху",
         unpin: "Открепить",
         askHistory: "Ask history…",
@@ -2238,6 +2244,14 @@ export const ru: TranslationResources = {
       host: "Обзор",
     },
     missionControl: {
+      approvalMode: en.settings.missionControl.approvalMode,
+      approvalModeHint: en.settings.missionControl.approvalModeHint,
+      verbose: en.settings.missionControl.verbose,
+      verboseHint: en.settings.missionControl.verboseHint,
+      clearView: en.settings.missionControl.clearView,
+      clearViewHint: en.settings.missionControl.clearViewHint,
+      resetCommander: en.settings.missionControl.resetCommander,
+      resetCommanderHint: en.settings.missionControl.resetCommanderHint,
       memory: "Память",
       hindsightUrl: "URL Hindsight",
       hindsightUrlHint:
@@ -2410,6 +2424,7 @@ export const ru: TranslationResources = {
       },
     },
     appearance: {
+      agentGrid: en.settings.appearance.agentGrid,
       theme: {
         title: "Тема",
         accessibilityLabel: "Тема: {{value}}",

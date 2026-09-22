@@ -3,13 +3,14 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ja: TranslationResources = {
   paneFind: {
-    searchFailed:
+    connectionFailure:
       "このチャットを検索できませんでした。ホストへの接続を確認して再試行してください。",
+    historyChangedFailure: "検索中にチャットが変更されました。もう一度検索してください。",
+    revealFailure: "この一致を表示できませんでした。再試行してください。",
     searching: "検索中…",
     loading: "読み込み中…",
     failed: "失敗",
     retry: "再試行",
-    chatPosition: "メッセージ内 {{current}} / {{total}}",
 
     title: "検索",
     placeholder: "ペイン内を検索",
@@ -29,6 +30,7 @@ export const ja: TranslationResources = {
     back: "戻る",
     loading: "読み込み中...",
     actions: {
+      backToGrid: en.common.actions.backToGrid,
       back: "戻る",
       cancel: "キャンセル",
       close: "閉じる",
@@ -738,6 +740,8 @@ export const ja: TranslationResources = {
         copyTerminalId: "ターミナルIDをコピー",
         copyFilePath: "ファイルパスをコピー",
         moveToNewWorkspace: "新しいワークスペースに移動",
+        openInNewWindow: "新しいウィンドウで開く",
+        openInNewWindowFailed: "新しいウィンドウを開けませんでした",
         rename: "名前を変更",
         closeAbove: "上のタブを閉じる",
         closeBelow: "下のタブを閉じる",
@@ -1398,6 +1402,8 @@ export const ja: TranslationResources = {
         copyPath: "パスをコピー",
         copyBranchName: "ブランチ名をコピー",
         rename: "ワークスペースの名前を変更",
+        openNewWindow: "新しいウィンドウで開く",
+        openNewWindowFailed: "新しいウィンドウを開けませんでした",
         pin: "上部に固定",
         unpin: "固定解除",
         askHistory: "Ask history…",
@@ -2215,6 +2221,14 @@ export const ja: TranslationResources = {
       host: "概要",
     },
     missionControl: {
+      approvalMode: en.settings.missionControl.approvalMode,
+      approvalModeHint: en.settings.missionControl.approvalModeHint,
+      verbose: en.settings.missionControl.verbose,
+      verboseHint: en.settings.missionControl.verboseHint,
+      clearView: en.settings.missionControl.clearView,
+      clearViewHint: en.settings.missionControl.clearViewHint,
+      resetCommander: en.settings.missionControl.resetCommander,
+      resetCommanderHint: en.settings.missionControl.resetCommanderHint,
       memory: "メモリ",
       hindsightUrl: "Hindsight URL",
       hindsightUrlHint:
@@ -2381,6 +2395,7 @@ export const ja: TranslationResources = {
       },
     },
     appearance: {
+      agentGrid: en.settings.appearance.agentGrid,
       theme: {
         title: "テーマ",
         accessibilityLabel: "テーマ: {{value}}",

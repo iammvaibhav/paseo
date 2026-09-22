@@ -1,6 +1,6 @@
 {
   "name": "@getpaseo/desktop",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "private": true,
   "description": "Paseo desktop app (Electron wrapper)",
   "homepage": "https://paseo.sh",
@@ -31,6 +31,7 @@
   "dependencies": {
     "@getpaseo/cli": "workspace:*",
     "@getpaseo/server": "workspace:*",
+    "builder-util-runtime": "^9.7.0",
     "electron-log": "^5.4.3",
     "electron-updater": "^6.6.2",
     "ws": "^8.14.2",

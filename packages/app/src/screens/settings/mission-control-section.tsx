@@ -14,6 +14,12 @@ import type {
   MissionControlCentralConfig,
   MissionControlMode,
 } from "@getpaseo/protocol/mission-control/types";
+import { Button } from "@/components/ui/button";
+import { SegmentedControl, type SegmentedControlOption } from "@/components/ui/segmented-control";
+import { confirmDialog } from "@/utils/confirm-dialog";
+import { useClearViewPoint } from "@/mission-control/clear-view";
+import { useMissionControlVerbose } from "@/mission-control/use-mission-control-verbose";
+import { useAppSettings } from "@/hooks/use-settings";
 import { SettingsTextArea } from "@/components/settings-textarea";
 import { CombinedModelSelector } from "@/components/combined-model-selector";
 import { SelectFieldTrigger } from "@/components/ui/select-field";
@@ -25,7 +31,6 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { FormTextInput } from "@/components/ui/form-field";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
-import { StatusBadge } from "@/components/ui/status-badge";
 import { Switch } from "@/components/ui/switch";
 import { SettingsSection } from "@/components/settings/headings/settings-section";
 import { useIsCompactFormFactor } from "@/constants/layout";
@@ -38,7 +43,7 @@ import {
   buildInvocableProviderModelStrings,
   resolveCommanderHostServerId,
 } from "@/mission-control/model-options";
-import { useHosts } from "@/runtime/host-runtime";
+import { getHostRuntimeStore, useHosts } from "@/runtime/host-runtime";
 import { useSessionStore } from "@/stores/session-store";
 import { settingsStyles } from "@/styles/settings";
 import type { Theme } from "@/styles/theme";
@@ -268,18 +273,107 @@ function TextRow({
   );
 }
 
-/** Ask/Auto is toggled in the Mission Control header; settings mirrors it read-only. */
-function ModeRow({ mode }: { mode: MissionControlMode }) {
+const APPROVAL_MODE_OPTIONS: SegmentedControlOption<MissionControlMode>[] = [
+  {
+    value: "ask",
+    label: "Ask",
+    testID: "mission-control-settings-approval-mode-ask",
+  },
+  {
+    value: "auto",
+    label: "Auto",
+    testID: "mission-control-settings-approval-mode-auto",
+  },
+];
+
+interface ModeRowProps {
+  mode: MissionControlMode;
+  onSelect: (mode: MissionControlMode) => void;
+}
+
+function ModeRow({ mode, onSelect }: ModeRowProps) {
+  const { t } = useTranslation();
   return (
     <View style={settingsStyles.row}>
       <View style={settingsStyles.rowContent}>
-        <Text style={settingsStyles.rowTitle}>Approval mode</Text>
-        <Text style={settingsStyles.rowHint}>
-          Set in the Mission Control header. Auto mode sends proposals immediately; destructive
-          actions always ask.
-        </Text>
+        <Text style={settingsStyles.rowTitle}>{t("settings.missionControl.approvalMode")}</Text>
+        <Text style={settingsStyles.rowHint}>{t("settings.missionControl.approvalModeHint")}</Text>
       </View>
-      <StatusBadge label={mode === "auto" ? "Auto" : "Ask"} />
+      <SegmentedControl<MissionControlMode>
+        options={APPROVAL_MODE_OPTIONS}
+        value={mode}
+        onValueChange={onSelect}
+        size="sm"
+        testID="mission-control-settings-approval-mode"
+      />
+    </View>
+  );
+}
+
+interface VerboseRowProps {
+  value: boolean;
+  onChange: () => void;
+}
+
+function VerboseRow({ value, onChange }: VerboseRowProps) {
+  const { t } = useTranslation();
+  return (
+    <View style={[settingsStyles.row, settingsStyles.rowBorder]}>
+      <View style={settingsStyles.rowContent}>
+        <Text style={settingsStyles.rowTitle}>{t("settings.missionControl.verbose")}</Text>
+        <Text style={settingsStyles.rowHint}>{t("settings.missionControl.verboseHint")}</Text>
+      </View>
+      <Switch
+        value={value}
+        onValueChange={onChange}
+        accessibilityLabel="Verbose mode"
+        testID="mission-control-settings-verbose"
+      />
+    </View>
+  );
+}
+
+interface ActionRowProps {
+  title: string;
+  hint: string;
+  buttonLabel: string;
+  onPress: () => void;
+  variant?: "default" | "secondary" | "destructive" | "outline" | "ghost";
+  destructive?: boolean;
+  disabled?: boolean;
+  loading?: boolean;
+  testID: string;
+  first?: boolean;
+}
+
+function ActionRow({
+  title,
+  hint,
+  buttonLabel,
+  onPress,
+  variant = "secondary",
+  destructive = false,
+  disabled = false,
+  loading = false,
+  testID,
+  first = false,
+}: ActionRowProps) {
+  return (
+    <View style={[settingsStyles.row, first ? null : settingsStyles.rowBorder]}>
+      <View style={settingsStyles.rowContent}>
+        <Text style={settingsStyles.rowTitle}>{title}</Text>
+        <Text style={settingsStyles.rowHint}>{hint}</Text>
+      </View>
+      <Button
+        variant={destructive ? "destructive" : variant}
+        size="sm"
+        onPress={onPress}
+        disabled={disabled || loading}
+        loading={loading}
+        testID={testID}
+      >
+        {buttonLabel}
+      </Button>
     </View>
   );
 }
@@ -538,6 +632,10 @@ export function MissionControlSection(): ReactElement {
   const [error, setError] = useState<string | null>(null);
   const toast = useToast();
   const localServerId = useLocalDaemonServerId();
+  const { updateSettings } = useAppSettings();
+  const [verbose, toggleVerbose] = useMissionControlVerbose();
+  const { setClearViewPoint } = useClearViewPoint();
+  const [isResettingCommander, setIsResettingCommander] = useState(false);
 
   const hostnameByServerId = useMemo(() => {
     const map = new Map<string, string | null>();
@@ -675,6 +773,62 @@ export function MissionControlSection(): ReactElement {
     },
     [patchConfig, toast],
   );
+  const handleApprovalModeSelect = useCallback(
+    (next: MissionControlMode) => {
+      void patch({ mode: next });
+      void updateSettings({ missionControlApprovalMode: next });
+    },
+    [patch, updateSettings],
+  );
+
+  const handleToggleVerbose = useCallback(() => {
+    toggleVerbose();
+    void updateSettings({ missionControlVerbose: !verbose });
+  }, [toggleVerbose, updateSettings, verbose]);
+
+  const handleClearView = useCallback(() => {
+    setClearViewPoint(Date.now());
+    toast.show("View cleared", { testID: "mission-control-clear-view-toast" });
+  }, [setClearViewPoint, toast]);
+
+  const handleResetCommander = useCallback(() => {
+    if (isResettingCommander || !commanderHostServerId) {
+      return;
+    }
+    void (async () => {
+      const confirmed = await confirmDialog({
+        title: "Reset Commander?",
+        message:
+          "The current Commander is archived and a fresh one starts with a new context pack. The old conversation stays in History.",
+        confirmLabel: "Reset",
+        destructive: true,
+      });
+      if (!confirmed) {
+        return;
+      }
+      const client = getHostRuntimeStore().getClient(commanderHostServerId);
+      if (!client) {
+        toast.show("Commander host disconnected", { durationMs: 2200 });
+        return;
+      }
+      setIsResettingCommander(true);
+      try {
+        const result = await client.missionControlCommanderReset();
+        if (!result.ok) {
+          throw new Error(result.error ?? "Failed to reset Commander");
+        }
+        toast.show("Commander reset", { testID: "mission-control-reset-toast" });
+      } catch (resetError) {
+        console.error("[MissionControl] Failed to reset Commander:", resetError);
+        toast.show("Unable to reset Commander", {
+          durationMs: 2200,
+          testID: "mission-control-reset-failed-toast",
+        });
+      } finally {
+        setIsResettingCommander(false);
+      }
+    })();
+  }, [commanderHostServerId, isResettingCommander, toast]);
 
   const handleCommanderHostSelect = useCallback(
     (next: string) => void patch({ commanderHost: next }),
@@ -830,7 +984,31 @@ export function MissionControlSection(): ReactElement {
 
       <SettingsSection title="Approval">
         <View style={settingsStyles.card}>
-          <ModeRow mode={config.mode} />
+          <ModeRow mode={config.mode} onSelect={handleApprovalModeSelect} />
+          <VerboseRow value={verbose} onChange={handleToggleVerbose} />
+        </View>
+      </SettingsSection>
+
+      <SettingsSection title="Actions">
+        <View style={settingsStyles.card}>
+          <ActionRow
+            title={t("settings.missionControl.clearView")}
+            hint={t("settings.missionControl.clearViewHint")}
+            buttonLabel={t("settings.missionControl.clearView")}
+            onPress={handleClearView}
+            testID="mission-control-settings-clear-view"
+            first
+          />
+          <ActionRow
+            title={t("settings.missionControl.resetCommander")}
+            hint={t("settings.missionControl.resetCommanderHint")}
+            buttonLabel={t("settings.missionControl.resetCommander")}
+            onPress={handleResetCommander}
+            destructive
+            disabled={!commanderHostServerId || isResettingCommander}
+            loading={isResettingCommander}
+            testID="mission-control-settings-reset-commander"
+          />
         </View>
       </SettingsSection>
 

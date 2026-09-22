@@ -1,4 +1,4 @@
-import { projectTimelineRows } from "./timeline-projection.js";
+import { projectTimelineRows, type ProjectedTimelineRow } from "./timeline-projection.js";
 import type { PluginLifecycle } from "../plugins/lifecycle/index.js";
 import { describeHookAgent, publishAgentStream } from "../plugins/lifecycle/index.js";
 import type { PluginSessionOpenRequest } from "@getpaseo/plugin/server";
@@ -100,6 +100,7 @@ import {
   type ProviderSubagentStoreEvent,
 } from "./provider-subagents/store.js";
 import { withTimeout } from "../../utils/promise-timeout.js";
+import { extractAttention } from "../persistence-hooks.js";
 
 const RELOAD_SESSION_CLOSE_TIMEOUT_MS = 3_000;
 const INTERRUPT_SESSION_TIMEOUT_MS = 2_000;
@@ -742,6 +743,7 @@ interface AgentMetadataPatch {
    * stored-record writer for both paths.
    */
   workspaceId?: string;
+  cwd?: string;
 }
 
 const SYSTEM_ERROR_PREFIX = "[System Error]";
@@ -925,6 +927,11 @@ interface RegisterSessionOptions {
   lastUsage?: AgentUsage;
   lastError?: string;
   attention?: AttentionState;
+  /**
+   * Bringing a known agent back, rather than starting a new one. Installing the
+   * session is not activity in it.
+   */
+  restoring?: boolean;
   initialTitle?: string | null;
   initialPrompt?: string;
   name?: string;
@@ -1523,6 +1530,43 @@ export class AgentManager {
     return this.timelineStore.getRows(id);
   }
 
+  /** A cross-host move carries the agent's timeline verbatim — unresolved rows,
+   *  not the projected view `getTimelineRows` returns — so the target renders
+   *  the same conversation. */
+  async getAgentTimelineForExport(id: string): Promise<AgentTimelineRow[]> {
+    if (this.durableTimelineStore) {
+      try {
+        const rows = await this.durableTimelineStore.getCommittedRows(id);
+        if (rows && rows.length > 0) {
+          return rows;
+        }
+      } catch {
+        // Fall through to the in-memory store below.
+      }
+    }
+    if (this.timelineStore.has(id)) {
+      return this.timelineStore.getRows(id);
+    }
+    return [];
+  }
+
+  /** The receiving half of a cross-host move: land the carried rows in both
+   *  stores so the target agent's timeline is whole before it is opened. */
+  async importMigratedTimeline(agentId: string, rows: readonly AgentTimelineRow[]): Promise<void> {
+    if (!rows || rows.length === 0) return;
+    if (this.durableTimelineStore) {
+      await this.durableTimelineStore.bulkInsert(agentId, rows).catch((err) => {
+        this.logger.warn({ err, agentId }, "Failed to bulkInsert migrated timeline rows");
+      });
+    }
+    const maxSeq = rows.reduce((max, row) => Math.max(max, row.seq), 0);
+    this.timelineStore.initialize(agentId, {
+      rows: rows as ProjectedTimelineRow[],
+      nextSeq: maxSeq + 1,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
   fetchTimeline(id: string, options?: AgentTimelineFetchOptions): AgentTimelineFetchResult {
     // Allow timeline fetch after disk-seed even when the provider process is not live yet.
     if (!this.timelineStore.has(id)) {
@@ -1853,6 +1897,7 @@ export class AgentManager {
       owner?: AgentOwner;
       /** Provisional title for a freshly created agent (e.g. a fork); ignored when a stored record already has one. */
       initialTitle?: string | null;
+      attention?: AttentionState;
     },
     resumeOptions?: AgentResumeSessionOptions,
   ): Promise<ManagedAgent> {
@@ -1885,6 +1930,7 @@ export class AgentManager {
       workspaceId?: string;
       owner?: AgentOwner;
       initialTitle?: string | null;
+      attention?: AttentionState;
     },
     resumeOptions?: AgentResumeSessionOptions,
   ): Promise<ManagedAgent> {
@@ -1943,6 +1989,7 @@ export class AgentManager {
     return this.registerSession(session, storedConfig, resolvedAgentId, {
       ...options,
       persistence: handle,
+      restoring: true,
     });
   }
 
@@ -2136,6 +2183,7 @@ export class AgentManager {
         lastUsage: preservedLastUsage,
         lastError: preservedLastError,
         attention: preservedAttention,
+        restoring: true,
       });
     } catch (error) {
       if (closedExisting) {
@@ -2418,14 +2466,7 @@ export class AgentManager {
 
   private dispatchStoredAgentState(record: StoredAgentRecord): void {
     const updatedAt = new Date(record.updatedAt);
-    const attention: AttentionState =
-      record.requiresAttention && record.attentionReason && record.attentionTimestamp
-        ? {
-            requiresAttention: true,
-            attentionReason: record.attentionReason,
-            attentionTimestamp: new Date(record.attentionTimestamp),
-          }
-        : { requiresAttention: false };
+    const attention = extractAttention(record);
     this.dispatch({
       type: "agent_state",
       agent: {
@@ -2522,11 +2563,17 @@ export class AgentManager {
     }
     await this.drainSessionEvents(agentId);
 
-    agent.config.thinkingOptionId = normalizedThinkingOptionId ?? undefined;
+    let effectiveThinkingOptionId = normalizedThinkingOptionId;
+    const runtimeInfo = await agent.session.getRuntimeInfo();
+    if (runtimeInfo.thinkingOptionId !== undefined) {
+      effectiveThinkingOptionId = runtimeInfo.thinkingOptionId;
+    }
+
+    agent.config.thinkingOptionId = effectiveThinkingOptionId ?? undefined;
     if (agent.runtimeInfo) {
       agent.runtimeInfo = {
         ...agent.runtimeInfo,
-        thinkingOptionId: normalizedThinkingOptionId,
+        thinkingOptionId: effectiveThinkingOptionId,
       };
     }
     // Same persistence-handle refresh as setAgentModel: machinery dispatches
@@ -2642,13 +2689,23 @@ export class AgentManager {
    * The live path emits agent state (subscribers see the new placement); the
    * stored path returns the rewritten record for the caller to emit.
    */
-  async moveAgentWorkspace(agentId: string, workspaceId: string): Promise<StoredAgentRecord> {
+  async moveAgentWorkspace(
+    agentId: string,
+    workspaceId: string,
+    cwd?: string,
+  ): Promise<StoredAgentRecord> {
     const liveAgent = this.agents.get(agentId);
     if (liveAgent) {
       if (liveAgent.lifecycle === "running") {
         throw new Error(`Agent ${agentId} is running; stop it before moving workspaces`);
       }
       liveAgent.workspaceId = workspaceId;
+      if (cwd) {
+        liveAgent.cwd = cwd;
+        if (liveAgent.config) {
+          liveAgent.config.cwd = cwd;
+        }
+      }
       this.touchUpdatedAt(liveAgent);
       await this.persistSnapshot(liveAgent);
       this.emitState(liveAgent, { persist: false });
@@ -2658,7 +2715,7 @@ export class AgentManager {
       }
       return record;
     }
-    return this.writeStoredMetadata(agentId, { workspaceId });
+    return this.writeStoredMetadata(agentId, { workspaceId, ...(cwd ? { cwd } : {}) });
   }
 
   private async writeLabels(agentId: string, patch: AgentLabelPatch): Promise<WriteLabelsResult> {
@@ -2725,6 +2782,7 @@ export class AgentManager {
           }
         : {}),
       ...(patch.workspaceId !== undefined ? { workspaceId: patch.workspaceId } : {}),
+      ...(patch.cwd !== undefined ? { cwd: patch.cwd } : {}),
       updatedAt: this.nextStoredUpdatedAt(record),
     };
     await registry.upsert(nextRecord);
@@ -4146,6 +4204,10 @@ export class AgentManager {
     }
   }
   async deleteAgentState(agentId: string): Promise<void> {
+    const live = this.agents.get(agentId);
+    if (live) {
+      this.prepareAgentForClosure(live, "agent_deleted");
+    }
     this.discardRetainedAgentState(agentId);
     await this.deleteCommittedTimeline(agentId);
   }
@@ -4512,17 +4574,9 @@ export class AgentManager {
       await this.refreshSessionState(managed, { emit: false, skipRuntimeInfo: true });
       this.assertAgentRegistrationActive(managed);
       managed.lifecycle = "idle";
-      // Registration is bookkeeping for a RESTORED agent (resume/reload of an
-      // existing stored record): it did not actually do anything, so do not
-      // advance updatedAt. The snapshot projection derives the record's
-      // lastActivityAt from updatedAt, so bumping it here rewrites every
-      // idle-through-restart agent's real last-activity with this process's
-      // boot/restore time — the shared "last activity" every dormant board
-      // row used to read (live bug). Preserved timestamps mean an agent that
-      // has not run since the last boot keeps its true lastActivityAt; real
-      // activity (timeline rows, user messages, lifecycle transitions) still
-      // bumps updatedAt via touchUpdatedAt and re-persists as usual.
-      if (!existingRecord) {
+      // Restoring a stored agent is bookkeeping, not activity. Stamping now
+      // rewrote lastActivityAt for every idle agent on resume.
+      if (!existingRecord && !options?.restoring) {
         this.touchUpdatedAt(managed);
       }
       await this.persistSnapshot(managed, {

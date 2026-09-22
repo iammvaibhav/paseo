@@ -1,11 +1,12 @@
 export const en = {
   paneFind: {
-    searchFailed: "Could not search this chat. Check the host connection and retry.",
+    connectionFailure: "Could not search this chat. Check the host connection and retry.",
+    historyChangedFailure: "The chat changed while searching. Search again.",
+    revealFailure: "Could not show this match. Retry.",
     searching: "Searching…",
     loading: "Loading…",
     failed: "Failed",
     retry: "Retry",
-    chatPosition: "{{current}} of {{total}} in message",
     title: "Find",
     placeholder: "Find in pane",
     close: "Close Find",
@@ -25,6 +26,7 @@ export const en = {
     loading: "Loading...",
     actions: {
       back: "Back",
+      backToGrid: "Back to grid",
       cancel: "Cancel",
       close: "Close",
       copy: "Copy",
@@ -729,6 +731,8 @@ export const en = {
         copyTerminalId: "Copy terminal id",
         copyFilePath: "Copy file path",
         moveToNewWorkspace: "Move to new workspace",
+        openInNewWindow: "Open in new window",
+        openInNewWindowFailed: "Couldn't open a new window",
         rename: "Rename",
         closeAbove: "Close tabs above",
         closeBelow: "Close tabs below",
@@ -1397,6 +1401,8 @@ export const en = {
         copyPath: "Copy path",
         copyBranchName: "Copy branch name",
         rename: "Rename workspace",
+        openNewWindow: "Open in new window",
+        openNewWindowFailed: "Couldn't open a new window",
         pin: "Pin to top",
         unpin: "Unpin",
         askHistory: "Ask history…",
@@ -2275,6 +2281,16 @@ export const en = {
       voiceMode: "Voice tool mode",
       voiceModeHint:
         "Relay = voice reads like Commander but routes every change through commander_dispatch. Direct = voice holds the full Commander tool surface, approval-gated. Applies to new voice sessions.",
+      approvalMode: "Approval mode",
+      approvalModeHint: "Auto mode sends proposals immediately; destructive actions always ask.",
+      verbose: "Verbose mode",
+      verboseHint:
+        "Show internal Mission Control machinery rows, system-owned workspaces, and detailed diagnostics.",
+      clearView: "Clear view",
+      clearViewHint: "Hide earlier cards from the feed. Older events remain available in History.",
+      resetCommander: "Reset Commander",
+      resetCommanderHint:
+        "Archive current Commander and spawn a fresh one with a new context pack.",
     },
     plugins: {
       title: "Plugins",
@@ -2289,12 +2305,10 @@ export const en = {
         "They run on this host and inside the app without sandboxing. Install only code you trust.",
       globalTitle: "Enable plugins",
       globalHint: "Global switch for every configured plugin",
-      directoryLabel: "Plugin directory",
-      directoryPlaceholder: "/absolute/path/on/host",
-      idLabel: "Plugin installation ID",
-      idHint: "Leave blank to use paseo-plugin.json",
-      idPlaceholder: "Manifest default",
-      install: "Install directory",
+      sourceLabel: "Plugin source",
+      sourcePlaceholder: "Directory, Git URL, or npm package",
+      docs: "Docs",
+      install: "Install plugin",
       installing: "Installing…",
       logs: {
         action: "Logs",
@@ -2307,6 +2321,7 @@ export const en = {
       },
       status: { running: "running", disabled: "disabled", failed: "failed" },
       actions: {
+        menu: "Actions for {{id}}",
         reload: "Reload",
         reloading: "Reloading…",
         enable: "Enable",
@@ -2332,6 +2347,7 @@ export const en = {
         offlineTitle: "Plugin host is offline",
         offlineDescription: "Reconnect to this host to manage its plugins.",
         updateTitle: "Update this host to manage plugins",
+        sourceUpdateTitle: "Update this host to install plugins",
         loading: "Loading plugins…",
         errorTitle: "Unable to load plugins",
         retry: "Retry",
@@ -2539,6 +2555,16 @@ export const en = {
         codeSize: "Code size",
         codeSizeHint: "Used for code, diffs, and terminal output",
         codeSizeAccessibility: "Code font size",
+      },
+      agentGrid: {
+        title: "Agent Grid",
+        direction: "Scroll direction",
+        directionHint: "Layout direction for the agent grid",
+        visibleCount: "Tiles per screen",
+        visibleCountHint: "Number of agent tiles displayed per screen (1–16)",
+        fontSize: "Tile font size",
+        fontSizeHint:
+          "Used for chat text in Mission Control Agent Grid tiles, separate from the full agent pane",
       },
       syntax: {
         title: "Syntax",
