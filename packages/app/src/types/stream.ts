@@ -8,6 +8,7 @@ import { timelineItemIdentity } from "@getpaseo/protocol/timeline-identity";
 import type { AgentAttachment, AgentStreamEventPayload } from "@getpaseo/protocol/messages";
 import type { AttachmentMetadata } from "@/attachments/types";
 import { extractTaskEntriesFromToolCall } from "../utils/tool-call-parsers";
+import { convertIrcMessageToTimelineToolCall, isIrcMessageText } from "@/utils/irc-message";
 
 /**
  * Simple hash function for deterministic ID generation
@@ -1585,6 +1586,12 @@ function reduceTimelineEvent(
         ),
       );
     case "assistant_message":
+      if (isIrcMessageText(item.text)) {
+        const toolItem = convertIrcMessageToTimelineToolCall(item.text, item.messageId);
+        return finalizeActiveThoughts(
+          reduceTimelineToolCall(state, event, toolItem, timestamp, timelineCursor),
+        );
+      }
       return finalizeActiveThoughts(
         appendAssistantMessage(
           state,

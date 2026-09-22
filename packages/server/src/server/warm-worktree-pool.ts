@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
-import { basename, dirname, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Logger } from "pino";
 import { PaseoWorktreeWarmPoolConfigRawSchema } from "@getpaseo/protocol/paseo-config-schema";
@@ -177,6 +177,14 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
 
     const repoRoot = normalizePathForOwnership(resolve(options.repoRoot));
     if (!this.resolvePoolEnabled(repoRoot)) {
+      return null;
+    }
+    // `git worktree move` refuses trees containing submodules, and a claim
+    // is exactly that rename (.warm-* to target slug) — it can never succeed
+    // for such repos, so skip before touching the pool. The per-repo
+    // worktree.warmPool.enabled flag in paseo.json already gates here too;
+    // this is the automatic backstop for repos that never set it.
+    if (existsSync(join(repoRoot, ".gitmodules"))) {
       return null;
     }
 
@@ -365,10 +373,15 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
 
     const normalizedRoot = normalizePathForOwnership(resolve(repoRoot));
     if (!this.resolvePoolEnabled(normalizedRoot)) return;
+    // Same backstop as claim(): a provisioned .warm-* holds submodules, so
+    // the next claim's `git worktree move` fails and the 120s add competes
+    // with the real create it was meant to speed up. Honor the per-repo
+    // worktree.warmPool.enabled flag by setting it false in paseo.json; this
+    // covers repos that never set it.
+    if (existsSync(join(normalizedRoot, ".gitmodules"))) return;
 
     const isGit = await this.isGitRepo(normalizedRoot);
     if (!isGit) return;
-
     const needed = await this.withRepoLock(normalizedRoot, async () => {
       await this.discoverExistingWarmWorktrees(normalizedRoot);
 

@@ -229,7 +229,11 @@ export const MissionControlProposalSchema = z.object({
   // Commander's), which can differ — the app opens the spawned agent against
   // the stamped host, never the emitter. Additive — absent on older records,
   // on failures, and whenever the executing host is unknown.
-  spawnedOnServerId: z.string().optional(),
+  // Set when a spawn- or meta-kind proposal FAILED to execute: the daemon
+  // error that caused it (e.g. worktree provisioning or provider failure).
+  // Persisted on the record so the card renders the cause after restarts and
+  // the Commander can act on it. Additive — absent on older records.
+  failureReason: z.string().optional(),
   // Verifier-origin attribution: the ephemeral verifier agent driving this
   // proposal/exchange, so the app can drill from the card into its thread.
   verifierAgentId: z.string().optional(),

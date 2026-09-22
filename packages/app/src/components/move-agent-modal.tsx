@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
@@ -223,7 +223,7 @@ export function MoveAgentModal({
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
-
+  const wasVisibleRef = useRef(false);
   const header = useMemo<SheetHeader>(() => ({ title: "Move Agent" }), []);
 
   const availableHosts = useMemo(() => {
@@ -287,8 +287,15 @@ export function MoveAgentModal({
   }, [currentTargetSession, selectedProjectId]);
 
   useEffect(() => {
-    if (!visible) {
-      setIsSubmitting(false);
+    const wasVisible = wasVisibleRef.current;
+    wasVisibleRef.current = visible;
+    // Initialize only on the closed→open transition. Session syncs replace
+    // the `sessions` object constantly; re-running init on those would yank
+    // the user's host/project pick back to the source (the reported bug).
+    if (!visible || wasVisible) {
+      if (!visible) {
+        setIsSubmitting(false);
+      }
       return;
     }
 
@@ -298,16 +305,12 @@ export function MoveAgentModal({
     const sourceWs = sourceSession?.workspaces.get(sourceWorkspaceId);
     setSelectedProjectId(sourceWs?.projectId ?? null);
 
-    if (sourceSession?.workspaces) {
-      const other = Array.from(sourceSession.workspaces.values()).find(
-        (w) => w.id !== sourceWorkspaceId && !w.archivingAt,
-      );
-      setSelectedWorkspaceId(other?.id ?? null);
-    } else {
-      setSelectedWorkspaceId(null);
-    }
+    // No pre-selected workspace: the user must pick an explicit target so an
+    // accidental confirm can never move the agent somewhere unintended.
+    setSelectedWorkspaceId(null);
     setIsSubmitting(false);
-  }, [visible, sourceServerId, sourceWorkspaceId, sessions]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, sourceServerId, sourceWorkspaceId]);
 
   const selectServer = useCallback(
     (serverId: string) => {

@@ -856,6 +856,15 @@ export class MissionControlService {
    * convention as cleanFinishedRuns).
    */
   private readonly userStopTerminalEvents = new Set<string>();
+  /**
+   * Per-run system-abort resume dedupe: a provider-killed turn
+   * ("Request was aborted (stopReason=aborted, …)" with no user stop)
+   * proposes exactly ONE resume per run epoch — the turn_failed stream path
+   * and the error-attention state path both funnel through
+   * emitRunTerminalErrorCard, so without this the same abort cards twice.
+   * Keyed by run start like userStopTerminalEvents; a fresh run re-arms.
+   */
+  private readonly systemAbortRecoveryByRun = new Set<string>();
   /** Active running subagent ids per parent agent. */
   private readonly runningSubagentsByAgent = new Map<string, Set<string>>();
   /** Agents whose finished attention arrived while subagents were still running. */
@@ -4671,7 +4680,12 @@ export class MissionControlService {
   }
 
   /**
-   * The feed card for a run that ended in an error state.
+   * The feed card for a run that ended in an error state. A provider-killed
+   * turn ("Request was aborted (stopReason=aborted, …)" with no user stop and
+   * no supersede in flight) additionally proposes ONE resume per run epoch:
+   * the agent stays parked in error and the user gets a Resume card instead
+   * of retyping the nudge. Ask mode holds the card; auto mode sends it.
+   * A resumed run re-arms naturally — the key is per run epoch.
    */
   private emitRunTerminalErrorCard(
     agentId: string,
@@ -4700,7 +4714,61 @@ export class MissionControlService {
       severity: interrupted ? "info" : "attention",
       headline: interrupted ? "Interrupted by you" : "Failed with an error",
     });
+    if (!interrupted) {
+      this.maybeProposeSystemAbortResume(agentId, errorText, candidateAgent);
+    }
   }
+
+  private maybeProposeSystemAbortResume(
+    agentId: string,
+    errorText: string | undefined,
+    candidateAgent?: ManagedAgent | null,
+  ): void {
+    const trimmed = errorText?.trim() ?? "";
+    if (!/^request was aborted\b/i.test(trimmed) || !/stopreason=aborted/i.test(trimmed)) {
+      return;
+    }
+    if (this.store.getStopOrigin(agentId) === "user") {
+      return;
+    }
+    const agent = candidateAgent ?? this.agentManager.getAgent(agentId);
+    if (
+      agent &&
+      (agent.pendingReplacement === true || (agent.pendingReplacementOrigin ?? null) !== null)
+    ) {
+      return;
+    }
+    if (agent && !this.isStallTracked(agent)) {
+      return;
+    }
+    if ((agent?.pendingPermissions?.size ?? 0) > 0) {
+      return;
+    }
+    const runStartedAt = this.runStartedAtByAgent.get(agentId);
+    const key = `${agentId}:${runStartedAt ?? "unseen-run"}`;
+    if (this.systemAbortRecoveryByRun.has(key)) {
+      return;
+    }
+    this.systemAbortRecoveryByRun.add(key);
+    void this.approvals
+      .createProposal({
+        origin: "stall",
+        serverId: this.serverId,
+        targetAgentId: agentId,
+        message:
+          "Your last turn was killed provider-side (request aborted) before it finished. Continue whatever you were working on from where it stopped, then post a one-line report_status.",
+        deliveryMode: "steer",
+        reason: "Provider-side abort killed the turn; one resume proposed",
+        classification: "normal",
+      })
+      .catch((error: unknown) => {
+        this.logger.warn(
+          { err: error, component: "turn-lifecycle", agentId },
+          "Failed to create system-abort resume proposal",
+        );
+      });
+  }
+
   private handleProviderSubagentEvent(
     event: Extract<AgentManagerEvent, { type: "provider_subagent" }>,
   ): void {

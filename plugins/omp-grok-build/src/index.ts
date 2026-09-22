@@ -58,6 +58,7 @@ export default function ompGrokBuildExtension(pi: ExtensionAPI): void {
 			maxTokens: model.maxTokens,
 			headers: model.headers,
 			compat: model.compat,
+			thinking: model.thinking,
 		})),
 		oauth: {
 			name: "Grok Build (CLI proxy)",

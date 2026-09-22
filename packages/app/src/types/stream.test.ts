@@ -2446,3 +2446,53 @@ describe("notification timeline items", () => {
     expect(new Set(state.map((item) => item.id)).size).toBe(state.length);
   });
 });
+
+describe("irc message reduction", () => {
+  it("reduces an assistant message containing <irc> into a hub tool call", () => {
+    const timestamp = new Date("2026-09-22T12:00:00.000Z");
+    const ircText = [
+      "<irc>",
+      "Incoming IRC message from agent `PolishIntegrate` (reply to 1589897060cfaba5):",
+      "",
+      '<task-result id="PolishIntegrate" agent="task" status="completed" duration="6m10s">',
+      '<meta lines="28" size="1.8KB" />',
+      "<output>",
+      '{"status": "complete"}',
+      "</output>",
+      "</task-result>",
+      'If response expected, reply via hub ( op: "send" , to: "PolishIntegrate" ); may finish current step first. No one replies on your behalf.',
+      "</irc>",
+    ].join("\n");
+
+    const state = hydrateStreamState(
+      [
+        {
+          event: {
+            type: "timeline",
+            provider: "omp",
+            item: {
+              type: "assistant_message",
+              text: ircText,
+              messageId: "msg-irc-1",
+            },
+          },
+          timestamp,
+        },
+      ],
+      { source: "canonical" },
+    );
+
+    expect(state).toHaveLength(1);
+    const item = state[0];
+    expect(item?.kind).toBe("tool_call");
+    if (item && item.kind === "tool_call" && item.payload.source === "agent") {
+      expect(item.payload.data.name).toBe("hub");
+      expect(item.payload.data.status).toBe("completed");
+      expect(item.payload.data.detail).toMatchObject({
+        type: "plain_text",
+        label: "receive · from PolishIntegrate · task completed (6m10s)",
+        icon: "bot",
+      });
+    }
+  });
+});

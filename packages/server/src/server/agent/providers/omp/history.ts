@@ -363,6 +363,16 @@ function mapEntryMessage(entry: OmpSessionEntry): OmpAgentMessage | null {
     }
     return visibleFallback(message.role, message);
   }
+  if (entry.type === "custom_message") {
+    return {
+      role: "custom",
+      content: entry.content ?? entry.text ?? "",
+      customType: entry.customType,
+      display: entry.display,
+      details: entry.details,
+      id: entry.id,
+    } as unknown as OmpAgentMessage;
+  }
   if (!entry.type || isControlEntryType(entry.type)) {
     return null;
   }
@@ -381,6 +391,10 @@ function isControlEntryType(type: string): boolean {
     type === "model_change" ||
     type === "thinking_level_change" ||
     type === "tool_execution" ||
+    // Auth plumbing written when an OAuth account is pinned to a session
+    // (e.g. omp-account-routing). Carries only provider + credential hash,
+    // never conversation content.
+    type === "credential_pin" ||
     type.startsWith("tool_execution_")
   );
 }
