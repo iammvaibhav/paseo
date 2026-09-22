@@ -3,6 +3,7 @@ import {
   describeCompactTimeAgo,
   formatCompactTimeAgo,
   formatDuration,
+  formatDurationMinutes,
   formatMessageTimestamp,
   formatTimeAgo,
 } from "./time";
@@ -87,6 +88,31 @@ describe("formatDuration", () => {
   it("guards against negative and NaN", () => {
     expect(formatDuration(-1)).toBe("0s");
     expect(formatDuration(Number.NaN)).toBe("0s");
+  });
+});
+
+describe("formatDurationMinutes", () => {
+  it("collapses anything under a minute to a single sub-minute label", () => {
+    expect(formatDurationMinutes(0)).toBe("<1m");
+    expect(formatDurationMinutes(47_000)).toBe("<1m");
+    expect(formatDurationMinutes(59_999)).toBe("<1m");
+  });
+
+  it("drops the seconds the agent window shows once past a minute", () => {
+    expect(formatDurationMinutes(60_000)).toBe("1m");
+    expect(formatDurationMinutes(132_000)).toBe("2m");
+    expect(formatDurationMinutes(3_540_000)).toBe("59m");
+  });
+
+  it("renders hours and remainder minutes like formatDuration", () => {
+    expect(formatDurationMinutes(3_600_000)).toBe("1h");
+    expect(formatDurationMinutes(3_900_000)).toBe("1h 5m");
+    expect(formatDurationMinutes(8_100_000)).toBe("2h 15m");
+  });
+
+  it("guards against negative and NaN", () => {
+    expect(formatDurationMinutes(-1)).toBe("<1m");
+    expect(formatDurationMinutes(Number.NaN)).toBe("<1m");
   });
 });
 

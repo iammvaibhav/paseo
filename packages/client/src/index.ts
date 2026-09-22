@@ -380,6 +380,10 @@ export interface PaseoAgentHandle {
   commands(options?: PaseoAgentCommandsOptions): Promise<PaseoAgentCommandsResult>;
   archive(): Promise<{ archivedAt: string }>;
   detach(): Promise<void>;
+  moveToWorkspace(
+    workspaceId: string,
+    requestId?: string,
+  ): Promise<{ agentId: string; workspaceId: string }>;
   subscribe(handler: (update: PaseoAgentUpdate) => void): () => void;
 }
 
@@ -979,6 +983,9 @@ function createAgentHandleFactory(
       },
       detach: async () => {
         await daemonClient.detachAgent(id);
+      },
+      moveToWorkspace: async (workspaceId: string, requestId?: string) => {
+        return daemonClient.moveAgentToWorkspace(id, workspaceId, requestId);
       },
       subscribe: (handler) =>
         listen((update) => {

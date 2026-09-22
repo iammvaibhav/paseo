@@ -557,6 +557,7 @@ function createSessionForWorkspaceTests(
     appVersion?: string | null;
     onMessage?: (message: SessionOutboundMessage) => void;
     onWorkspaceRecovered?: SessionOptions["onWorkspaceRecovered"];
+    onWorkspaceArchived?: SessionOptions["onWorkspaceArchived"];
     workspaceGitService?: ReturnType<typeof createNoopWorkspaceGitService>;
     terminalManager?: TerminalManager | null;
     agentManager?: { [K in keyof SessionOptions["agentManager"]]?: unknown };
@@ -585,6 +586,7 @@ function createSessionForWorkspaceTests(
     subscribe: () => () => {},
     listAgents: () => [],
     listProviderSubagentActivity: () => [],
+    getRegisteredProviderIds: () => [],
     getAgent: () => null,
     archiveAgent: async () => ({ archivedAt: new Date().toISOString() }),
     archiveSnapshot: async () => ({}),
@@ -652,6 +654,7 @@ function createSessionForWorkspaceTests(
       appVersion: options.appVersion ?? null,
       onMessage: options.onMessage ?? vi.fn(),
       onWorkspaceRecovered: options.onWorkspaceRecovered,
+      onWorkspaceArchived: options.onWorkspaceArchived,
       logger: asSessionLogger(logger),
       downloadTokenStore: asDownloadTokenStore(),
       pushNotifications: asPushNotifications(),
@@ -1584,6 +1587,7 @@ test("archive emits an authoritative agent_update upsert for subscribed clients"
       agentManager: asAgentManager({
         subscribe: () => () => {},
         listAgents: () => [],
+        getRegisteredProviderIds: () => ["codex"],
         getAgent: () => null,
         archiveAgent: async () => {
           const archivedAt = new Date().toISOString();
@@ -2068,6 +2072,7 @@ test("close_items_request archives agents and kills terminals in one batch", asy
       agentManager: asAgentManager({
         subscribe: () => () => {},
         listAgents: () => [],
+        getRegisteredProviderIds: () => ["codex"],
         getAgent: (agentId: string) => (agentId === "agent-1" ? { id: agentId } : null),
         hasInFlightRun: (agentId: string) => agentId === "agent-1",
         cancelAgentRun,
@@ -2238,6 +2243,7 @@ test("close_items_request archives stored agents that are not currently loaded",
       agentManager: asAgentManager({
         subscribe: () => () => {},
         listAgents: () => [],
+        getRegisteredProviderIds: () => ["codex"],
         getAgent: (agentId: string) => (agentId === "agent-live" ? { id: agentId } : null),
         hasInFlightRun: () => false,
         archiveAgent: async (agentId: string) => {
@@ -2399,6 +2405,7 @@ test("close_items_request continues after an archive failure", async () => {
       agentManager: asAgentManager({
         subscribe: () => () => {},
         listAgents: () => [],
+        getRegisteredProviderIds: () => ["codex"],
         getAgent: (agentId: string) =>
           agentId === "agent-bad" || agentId === "agent-good" ? { id: agentId } : null,
         hasInFlightRun: () => false,
@@ -2967,7 +2974,7 @@ test("fetch_agent_history_request pages archived historical rows separately", as
   expect(session.agentUpdates.hasSubscription()).toBe(false);
 });
 
-test("fetch_agent_history_request filters across history and paginates chronologically", async () => {
+test("fetch_agent_history_request ranks a search across the whole history, not one page", async () => {
   const emitted: SessionOutboundMessage[] = [];
   const session = createSessionForWorkspaceTests();
   const historyCwd = path.resolve("/tmp/history-search");
@@ -2996,7 +3003,8 @@ test("fetch_agent_history_request filters across history and paginates chronolog
   session.workspaceRegistry.list = async () => [workspace];
   session.workspaceRegistry.get = async () => workspace;
   session.listAgentPayloads = async () => [
-    // Search keeps chronological order, skipping unrelated rows between pages.
+    // The strong match is the oldest row, so a chronological answer would rank
+    // it last and a first-page-only search would not see it at all.
     {
       ...makeAgent({
         id: "weak",
@@ -3036,24 +3044,38 @@ test("fetch_agent_history_request filters across history and paginates chronolog
     page: { limit: 1 },
   });
 
-  expect(emitted).toHaveLength(1);
-  const first = filterByType(emitted, "fetch_agent_history_response")[0];
-  expect(first.payload.entries.map((entry) => entry.agent.id)).toEqual(["weak"]);
-  expect(first.payload.pageInfo.hasMore).toBe(true);
-  expect(first.payload.entries[0].searchScore).toBeUndefined();
+  const truncated = emitted[0];
+  if (truncated?.type !== "fetch_agent_history_response") {
+    throw new Error(`Expected a history response, got ${truncated?.type}`);
+  }
+  expect(truncated.payload.entries.map((entry) => entry.agent.id)).toEqual(["strong"]);
+  expect(truncated.payload.entries[0].searchScore).toBeTypeOf("number");
+  // More matched than fit. `hasMore` stays false because no page is fetchable;
+  // truncation is its own fact, so a rank offset can never go stale.
+  expect(truncated.payload.searchTruncated).toBe(true);
+  expect(truncated.payload.pageInfo).toEqual({
+    nextCursor: null,
+    prevCursor: null,
+    hasMore: false,
+  });
+
   await session.handleMessage({
     type: "fetch_agent_history_request",
-    requestId: "req-search-next",
+    requestId: "req-search-whole",
     search: "bill",
-    page: { limit: 1, cursor: first.payload.pageInfo.nextCursor! },
+    page: { limit: 25 },
   });
-  expect(emitted).toHaveLength(2);
-  const second = filterByType(emitted, "fetch_agent_history_response")[1];
-  expect(second.payload.entries.map((entry) => entry.agent.id)).toEqual(["strong"]);
-  expect(second.payload.pageInfo.hasMore).toBe(false);
+
+  const whole = emitted[1];
+  if (whole?.type !== "fetch_agent_history_response") {
+    throw new Error(`Expected a history response, got ${whole?.type}`);
+  }
+  expect(whole.payload.entries.map((entry) => entry.agent.id)).toEqual(["strong", "weak"]);
+  expect(whole.payload.searchTruncated).toBe(false);
+  expect(whole.payload.pageInfo.hasMore).toBe(false);
 });
 
-test("fetch_agent_history_request rejects a malformed search cursor", async () => {
+test("fetch_agent_history_request rejects a cursor on a searched request", async () => {
   const emitted: SessionOutboundMessage[] = [];
   const session = createSessionForWorkspaceTests();
   const historyCwd = path.resolve("/tmp/history-cursor");
@@ -3094,7 +3116,8 @@ test("fetch_agent_history_request rejects a malformed search cursor", async () =
     },
   ];
 
-  // Search uses the same validated chronological cursor as unfiltered history.
+  // A ranked result set has no pages to walk. Answering with the ranked head
+  // would let a caller believe it had paged, so this fails loudly instead.
   await session.handleMessage({
     type: "fetch_agent_history_request",
     requestId: "req-cursor",
@@ -3656,6 +3679,7 @@ test("workspace update stream keeps persisted workspace visible after agents sto
       agentManager: asAgentManager({
         subscribe: () => () => {},
         listAgents: () => [],
+        getRegisteredProviderIds: () => ["codex"],
         getAgent: () => null,
       }),
       agentStorage: asAgentStorage({
@@ -3850,6 +3874,7 @@ test("archiving the last workspace emits a remove carrying the now-empty project
       projectCustomIconRevision: null,
       projectRootPath: REPO_CWD,
       projectKind: "git",
+      baseWorkspaceId: null,
     },
   });
 });
@@ -5925,6 +5950,40 @@ test("archive_workspace_request hides non-destructive workspace records", async 
     | { payload: Record<string, unknown> }
     | undefined;
   expect(response?.payload.error).toBeNull();
+});
+
+test("archive_workspace_request invokes onWorkspaceArchived callback", async () => {
+  const archivedWorkspaceIds: string[] = [];
+  const session = createSessionForWorkspaceTests({
+    onWorkspaceArchived: (id) => {
+      archivedWorkspaceIds.push(id);
+    },
+  });
+  const workspace = createPersistedWorkspaceRecord({
+    workspaceId: "ws-repo-archive-hook",
+    projectId: "proj-repo-archive-hook",
+    cwd: REPO_CWD,
+    kind: "directory",
+    displayName: "repo",
+    createdAt: "2026-03-01T12:00:00.000Z",
+    updatedAt: "2026-03-01T12:00:00.000Z",
+  });
+
+  session.workspaceRegistry.get = async () => workspace;
+  session.workspaceRegistry.archive = async (_workspaceId: string, archivedAt: string) => {
+    workspace.archivedAt = archivedAt;
+  };
+  session.workspaceRegistry.list = async () => [workspace];
+  session.projectRegistry.archive = async () => {};
+
+  await session.handleMessage({
+    type: "archive_workspace_request",
+    workspaceId: "ws-repo-archive-hook",
+    requestId: "req-archive-hook",
+  });
+
+  expect(workspace.archivedAt).toBeTruthy();
+  expect(archivedWorkspaceIds).toEqual(["ws-repo-archive-hook"]);
 });
 
 test("archive_workspace_request archives a worktree-kind workspace and removes the directory on last reference", async () => {

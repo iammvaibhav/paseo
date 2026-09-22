@@ -4,7 +4,11 @@ import {
   applyAgentProfilePreferences,
   mergeCreateAgentSelectionPreferences,
   mergeProviderPreferences,
+  mergeProviderPreferencesWithScope,
   parseFormPreferences,
+  mergeIsolationPreference,
+  mergeBaseBranchPreference,
+  resolveEffectiveFormPreferences,
 } from "./preferences";
 import { FakeCreateAgentPreferenceStorage } from "./test-utils/fake-preference-storage";
 
@@ -248,6 +252,129 @@ describe("create agent preferences", () => {
     expect(parseFormPreferences({ provider: "codex", isolation: "sandbox" })).toEqual({});
   });
 
+  it("resolves the global model pick regardless of scope", () => {
+    const preferences = {
+      provider: "claude",
+      providerPreferences: {
+        claude: { model: "global-model" },
+      },
+      byProject: {
+        "proj-a": {
+          provider: "claude",
+          providerPreferences: {
+            claude: { model: "project-model" },
+          },
+        },
+      },
+      byWorkspace: {
+        "ws-1": {
+          provider: "codex",
+          providerPreferences: {
+            codex: { model: "workspace-model" },
+          },
+        },
+      },
+    };
+
+    const effective = resolveEffectiveFormPreferences(preferences, {
+      workspaceId: "ws-1",
+      projectKey: "proj-a",
+    });
+    expect(effective.provider).toBe("claude");
+    expect(effective.providerPreferences?.claude?.model).toBe("global-model");
+  });
+
+  it("ignores legacy project selection in favor of the global pick", () => {
+    const preferences = {
+      provider: "claude",
+      providerPreferences: {
+        claude: { model: "global-model" },
+      },
+      byProject: {
+        "proj-a": {
+          provider: "codex",
+          providerPreferences: {
+            codex: { model: "project-model" },
+          },
+        },
+      },
+    };
+
+    const effective = resolveEffectiveFormPreferences(preferences, {
+      workspaceId: "ws-new",
+      projectKey: "proj-a",
+    });
+    expect(effective.provider).toBe("claude");
+    expect(effective.providerPreferences?.claude?.model).toBe("global-model");
+  });
+
+  it("writes model selection globally and prunes scoped copies", () => {
+    expect(
+      mergeProviderPreferencesWithScope({
+        preferences: {},
+        provider: "claude",
+        updates: { model: "claude-opus-4-6" },
+        scope: { workspaceId: "ws-1", projectKey: "proj-a" },
+      }),
+    ).toEqual({
+      provider: "claude",
+      providerPreferences: {
+        claude: { model: "claude-opus-4-6" },
+      },
+    });
+  });
+
+  it("prunes legacy scoped model selections on write", () => {
+    const next = mergeProviderPreferencesWithScope({
+      preferences: {
+        byWorkspace: {
+          "ws-1": {
+            provider: "codex",
+            providerPreferences: { codex: { model: "workspace-model" } },
+          },
+        },
+        byProject: {
+          "proj-a": {
+            provider: "codex",
+            providerPreferences: { codex: { model: "project-model" } },
+            isolation: "worktree",
+          },
+        },
+      },
+      provider: "claude",
+      updates: { model: "claude-opus-4-6" },
+      scope: { workspaceId: "ws-1", projectKey: "proj-a" },
+    });
+    expect(next.byWorkspace).toBeUndefined();
+    expect(next.byProject).toEqual({ "proj-a": { isolation: "worktree" } });
+    expect(next.providerPreferences?.claude?.model).toBe("claude-opus-4-6");
+  });
+
+  it("shares the last pick across workspaces", () => {
+    const afterWorkspaceA = mergeProviderPreferencesWithScope({
+      preferences: {},
+      provider: "claude",
+      updates: { model: "opus" },
+      scope: { workspaceId: "ws-a", projectKey: "proj" },
+    });
+    const afterWorkspaceB = mergeProviderPreferencesWithScope({
+      preferences: afterWorkspaceA,
+      provider: "claude",
+      updates: { model: "sonnet" },
+      scope: { workspaceId: "ws-b", projectKey: "proj" },
+    });
+
+    // Last write wins everywhere: no per-workspace isolation for models.
+    for (const workspaceId of ["ws-a", "ws-b", "ws-new"]) {
+      expect(
+        resolveEffectiveFormPreferences(afterWorkspaceB, {
+          workspaceId,
+          projectKey: "proj",
+        }).providerPreferences?.claude?.model,
+      ).toBe("sonnet");
+    }
+  });
+
   it("persists and reloads a terminal launch target", async () => {
     const storage = new FakeCreateAgentPreferenceStorage();
     const preferences = new CreateAgentPreferencesService(storage);
@@ -275,5 +402,79 @@ describe("create agent preferences", () => {
 
   it("rejects an unknown launch target kind as invalid stored preferences", () => {
     expect(parseFormPreferences({ launchTarget: { kind: "shell" } })).toEqual({});
+  });
+});
+
+describe("project-scoped isolation", () => {
+  it("stores isolation under byProject and resolves it over global", () => {
+    const withProject = mergeIsolationPreference({
+      preferences: { isolation: "local" },
+      isolation: "worktree",
+      scope: { projectKey: "proj-a" },
+    });
+    expect(withProject.isolation).toBe("worktree");
+    expect(withProject.byProject?.["proj-a"]?.isolation).toBe("worktree");
+    expect(resolveEffectiveFormPreferences(withProject, { projectKey: "proj-a" }).isolation).toBe(
+      "worktree",
+    );
+    expect(resolveEffectiveFormPreferences(withProject, { projectKey: "proj-b" }).isolation).toBe(
+      "worktree",
+    ); // global fallback
+  });
+
+  it("keeps project isolation when another project is set", () => {
+    let prefs = mergeIsolationPreference({
+      preferences: {},
+      isolation: "worktree",
+      scope: { projectKey: "proj-a" },
+    });
+    prefs = mergeIsolationPreference({
+      preferences: prefs,
+      isolation: "local",
+      scope: { projectKey: "proj-b" },
+    });
+    expect(resolveEffectiveFormPreferences(prefs, { projectKey: "proj-a" }).isolation).toBe(
+      "worktree",
+    );
+    expect(resolveEffectiveFormPreferences(prefs, { projectKey: "proj-b" }).isolation).toBe(
+      "local",
+    );
+  });
+});
+
+describe("project-scoped baseBranch", () => {
+  it("stores baseBranch under byProject and resolves it over global", () => {
+    const withProject = mergeBaseBranchPreference({
+      preferences: { baseBranch: "main" },
+      baseBranch: "develop",
+      scope: { projectKey: "proj-a" },
+    });
+    expect(withProject.baseBranch).toBe("develop");
+    expect(withProject.byProject?.["proj-a"]?.baseBranch).toBe("develop");
+    expect(resolveEffectiveFormPreferences(withProject, { projectKey: "proj-a" }).baseBranch).toBe(
+      "develop",
+    );
+    expect(resolveEffectiveFormPreferences(withProject, { projectKey: "proj-b" }).baseBranch).toBe(
+      "develop",
+    ); // global fallback
+  });
+
+  it("keeps project baseBranch when another project is set", () => {
+    let prefs = mergeBaseBranchPreference({
+      preferences: {},
+      baseBranch: "develop",
+      scope: { projectKey: "proj-a" },
+    });
+    prefs = mergeBaseBranchPreference({
+      preferences: prefs,
+      baseBranch: "staging",
+      scope: { projectKey: "proj-b" },
+    });
+    expect(resolveEffectiveFormPreferences(prefs, { projectKey: "proj-a" }).baseBranch).toBe(
+      "develop",
+    );
+    expect(resolveEffectiveFormPreferences(prefs, { projectKey: "proj-b" }).baseBranch).toBe(
+      "staging",
+    );
   });
 });

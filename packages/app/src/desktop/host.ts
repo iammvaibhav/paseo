@@ -69,14 +69,18 @@ export interface DesktopEditorTargetDescriptor {
   label: string;
   kind: "editor" | "file-manager";
   icon: { kind: "image"; dataUrl: string } | { kind: "symbol"; name: "folder" | "terminal" };
+  supportsRemote?: boolean;
 }
 
 export interface DesktopEditorOpenTargetInput {
   editorId: string;
-  workspacePath: string;
+  workspacePath?: string;
   filePath?: string;
   line?: number;
   column?: number;
+  path?: string;
+  cwd?: string;
+  sshHost?: string;
 }
 
 export interface DesktopEditorBridge {
@@ -117,7 +121,10 @@ export interface DesktopWindowBridge {
 }
 
 export interface DesktopWindowModuleBridge {
-  openNew?: (options?: { pendingOpenProjectPath?: string | null }) => Promise<void>;
+  openNew?: (options?: {
+    pendingOpenProjectPath?: string | null;
+    initialRoute?: string | null;
+  }) => Promise<void>;
   getCurrentWindow?: () => DesktopWindowBridge;
 }
 
@@ -166,6 +173,21 @@ export interface DesktopBrowserBridge {
   ) => Promise<string | null>;
   /** Copy element text and/or an image to the system clipboard from main. */
   copyElement?: (payload: { text?: string; imageDataUrl?: string }) => Promise<boolean>;
+  /** Serve the large Plannotator UI locally while proxying its API to the host. */
+  preparePlannotator?: (input: {
+    browserId: string;
+    remoteUrl: string;
+  }) => Promise<{ url: string; accelerated: boolean }>;
+  releasePlannotator?: (browserId: string) => Promise<void>;
+}
+
+export interface DesktopBrowserEditorBridge {
+  /**
+   * Persist Chromium insecure-origin allowlist entries for VS Code Web hosts.
+   * Applied on next app launch via --unsafely-treat-insecure-origin-as-secure.
+   */
+  setInsecureOrigins?: (origins: string[]) => Promise<{ restartRequired: boolean }>;
+  getInsecureOrigins?: () => Promise<string[]>;
 }
 
 export interface DesktopInvokeBridge {
@@ -187,6 +209,7 @@ export interface DesktopHostBridge {
   webUtils?: DesktopWebUtilsBridge;
   menu?: DesktopMenuBridge;
   browser?: DesktopBrowserBridge;
+  browserEditor?: DesktopBrowserEditorBridge;
 }
 
 declare global {

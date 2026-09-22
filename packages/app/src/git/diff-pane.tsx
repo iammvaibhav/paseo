@@ -55,8 +55,11 @@ import { useIsLocalDaemon } from "@/hooks/use-is-local-daemon";
 import { buildAbsoluteExplorerPath } from "@/utils/explorer-paths";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { GitActionsSplitButton } from "@/git/actions-split-button";
-import type { GitActions } from "@/git/policy";
 import { BranchSwitcher } from "@/components/branch-switcher";
+import {
+  ChangesBaseBranchPicker,
+  type ChangesBaseBranchPickerProps,
+} from "@/git/base-branch-picker";
 import { useGitActions } from "@/git/use-actions";
 import { GIT_ACTION_ICONS } from "@/git/action-icons";
 import { buildForgeSignInCommand, getForgePresentation, type Forge } from "@/git/forge";
@@ -93,11 +96,15 @@ import { usePublishWorkingDiffAttachment, useWorkingDiff } from "@/git/use-worki
 import type { CheckoutStatusPayload } from "@/git/use-status-query";
 import { DiffTooLargeState } from "@/git/diff-too-large-state";
 import { openDesktopTarget, useDesktopOpenTargets } from "@/workspace/desktop-open-targets";
+import { tryOpenReviewInPlannotator } from "@/workspace/open-file-in-plannotator";
+import { resolvePlannotatorEmbedHost } from "@/workspace/plannotator-embed-host";
+import { useHosts } from "@/runtime/host-runtime";
 import { PullRequestStateIcon } from "@/git/pull-request-state-icon";
 import { openExternalUrl } from "@/utils/open-external-url";
 import { openWorkspacePullRequest } from "@/workspace-tabs/open-supporting-view";
 import type { PullRequestOpenLocation } from "@/hooks/use-settings";
 
+import type { GitAction, GitActionId, GitActions } from "@/git/policy";
 export type { GitActionId, GitAction, GitActions } from "@/git/policy";
 
 export function resolveDiffLayout(
@@ -183,6 +190,18 @@ interface ChangesSurfaceProps {
   focusPath?: string;
   focusRequestId?: number;
   onOpenFile?: (path: string) => void;
+  /**
+   * Optional submodule switcher rendered beside the branch switcher in the
+   * pane header. The explorer sidebar renders its own picker in the sidebar
+   * header, so only pane-hosted diff surfaces pass one.
+   */
+  submodulePicker?: ReactNode;
+  /**
+   * Opens the file's git diff in VS Code Web; absent when it isn't configured.
+   * `baseRef` is the pane's comparison base, or null while showing uncommitted
+   * changes (then the diff is the working tree against HEAD).
+   */
+  onOpenDiff?: (path: string, baseRef: string | null) => void;
   onOpenToSide?: (path: string) => void;
   onSelectDiffFile?: (path: string) => void;
   onAddToChat?: (path: string) => void;
@@ -462,9 +481,12 @@ interface ChangesRepositoryToolbarModel {
   pullRequest: ChangesPullRequestLinkModel | null;
   serverId: string;
   workspaceId?: string | null;
+  submodulePicker?: ReactNode;
 }
 
 interface ChangesComparisonToolbarModel {
+  // Present only while comparing against a base; uncommitted mode has no base to pick.
+  baseBranch: ChangesBaseBranchPickerProps | null;
   committedDescription?: string;
   diffMode: "uncommitted" | "base";
   mode: ChangesToolbarMode;
@@ -481,6 +503,7 @@ interface ChangesHeaderProps {
 }
 
 interface BuildChangesHeaderModelInput {
+  baseBranch: ChangesBaseBranchPickerProps | null;
   branchName: string | null;
   committedDescription?: string;
   compact: boolean;
@@ -495,6 +518,7 @@ interface BuildChangesHeaderModelInput {
   selectedDiffStat: { additions: number; deletions: number } | null;
   serverId: string;
   workspaceId?: string | null;
+  submodulePicker?: ReactNode;
 }
 
 function buildChangesHeaderModel(input: BuildChangesHeaderModelInput): {
@@ -511,8 +535,10 @@ function buildChangesHeaderModel(input: BuildChangesHeaderModelInput): {
         : null,
       serverId: input.serverId,
       workspaceId: input.workspaceId,
+      submodulePicker: input.submodulePicker,
     },
     comparison: {
+      baseBranch: input.baseBranch,
       committedDescription: input.committedDescription,
       diffMode: input.diffMode,
       mode: input.mode,
@@ -637,6 +663,7 @@ function ChangesRepositoryToolbar({
           isGitCheckout
           testID="changes-branch-switcher"
         />
+        {model.submodulePicker}
       </ChangesToolbarLeading>
       <ChangesToolbarTrailing>
         {model.pullRequest ? (
@@ -735,6 +762,7 @@ function ChangesComparisonToolbar({
           onSelectUncommitted={model.onSelectUncommitted}
           onSelectBase={model.onSelectBase}
         />
+        {model.baseBranch ? <ChangesBaseBranchPicker {...model.baseBranch} /> : null}
         {model.selectedDiffStat ? (
           <DiffStat
             additions={model.selectedDiffStat.additions}
@@ -1396,6 +1424,11 @@ function useDiffTabNavigation({
   pullRequestOpenLocation: PullRequestOpenLocation;
 }) {
   const openTab = useWorkspaceLayoutStore((state) => state.openTab);
+  const focusTab = useWorkspaceLayoutStore((state) => state.focusTab);
+  const getWorkspaceTabs = useWorkspaceLayoutStore((state) => state.getWorkspaceTabs);
+  const sessionClient = useSessionStore((state) => state.sessions[serverId]?.client);
+  const isLocalDaemon = useIsLocalDaemon(serverId);
+  const hosts = useHosts();
   const openWorkspaceTab = useCallback(
     (workspaceKey: string, target: WorkspaceTabTarget, placement?: WorkspaceTabPlacement) =>
       openTab({ workspaceKey, target, intent: "reveal", placement }),
@@ -1405,12 +1438,58 @@ function useDiffTabNavigation({
     () => buildWorkspaceTabPersistenceKey({ serverId, workspaceId: workspaceId ?? cwd }),
     [cwd, serverId, workspaceId],
   );
+  const plannotatorEmbedHost = useMemo(() => {
+    if (isLocalDaemon) {
+      return null;
+    }
+    const hostProfile = hosts.find((entry) => entry.serverId === serverId) ?? null;
+    return resolvePlannotatorEmbedHost({
+      isLocalDaemon,
+      browserEditorUrl: hostProfile?.browserEditorUrl ?? null,
+      hostProfile,
+    });
+  }, [hosts, isLocalDaemon, serverId]);
   const openDiff = useCallback(() => {
     if (!persistenceKey || isMobile) {
       return;
     }
-    openWorkspaceTab(persistenceKey, { kind: "working_diff" }, FOCUSED_PANE_PLACEMENT);
-  }, [isMobile, openWorkspaceTab, persistenceKey]);
+    if (!sessionClient) {
+      openWorkspaceTab(persistenceKey, { kind: "working_diff" }, FOCUSED_PANE_PLACEMENT);
+      return;
+    }
+    void (async () => {
+      const result = await tryOpenReviewInPlannotator({
+        client: sessionClient,
+        workspaceDirectory: cwd,
+        workspaceKey: persistenceKey,
+        remote: !isLocalDaemon,
+        embedHost: plannotatorEmbedHost,
+        workspaceTabs: getWorkspaceTabs(persistenceKey),
+        openWorkspaceTabFocused: (target) =>
+          openTab({
+            workspaceKey: persistenceKey,
+            target,
+            intent: "reveal",
+            placement: FOCUSED_PANE_PLACEMENT,
+          }),
+        navigateToTabId: (tabId) => focusTab(persistenceKey, tabId),
+      });
+      if (!result.ok) {
+        openWorkspaceTab(persistenceKey, { kind: "working_diff" }, FOCUSED_PANE_PLACEMENT);
+      }
+    })();
+  }, [
+    cwd,
+    focusTab,
+    getWorkspaceTabs,
+    isLocalDaemon,
+    isMobile,
+    openTab,
+    openWorkspaceTab,
+    persistenceKey,
+    plannotatorEmbedHost,
+    sessionClient,
+  ]);
   const openCommit = useCallback(
     (sha: string) => {
       if (persistenceKey) {
@@ -1444,9 +1523,11 @@ export function ChangesSurface({
   focusPath,
   focusRequestId,
   onOpenFile,
+  onOpenDiff,
   onOpenToSide,
   onSelectDiffFile,
   onAddToChat,
+  submodulePicker,
   state: changesState,
   onStateChange,
 }: ChangesSurfaceProps) {
@@ -1538,6 +1619,9 @@ export function ChangesSurface({
     notGit,
     statusErrorMessage,
     baseRef,
+    defaultBaseRef,
+    isCustomBaseRef,
+    selectBaseRef: handleSelectBaseRef,
     currentBranchName,
     diffMode,
     selectUncommitted: handleSelectUncommitted,
@@ -1648,6 +1732,18 @@ export function ChangesSurface({
     },
     [downloadFile],
   );
+  // Pressing a changed file goes straight to VS Code Web's diff where the host
+  // has it: that is the review surface, so expanding the diff inline here (or
+  // focusing it in a Changes tab) would be a detour. The row only knows its
+  // path; the comparison base belongs to the pane.
+  const openDiffAtCurrentBase = useMemo(
+    () =>
+      onOpenDiff
+        ? (path: string) => onOpenDiff(path, diffMode === "base" ? (baseRef ?? null) : null)
+        : undefined,
+    [baseRef, diffMode, onOpenDiff],
+  );
+
   const handleDuplicatePath = useCallback(
     async (path: string) => {
       if (!client) {
@@ -1680,6 +1776,10 @@ export function ChangesSurface({
       : externalFocusRequest;
   const handleSelectTreeFile = useCallback(
     (path: string) => {
+      if (openDiffAtCurrentBase) {
+        openDiffAtCurrentBase(path);
+        return;
+      }
       if (presentation === "tree" && onSelectDiffFile) {
         onSelectDiffFile(path);
         return;
@@ -1689,14 +1789,16 @@ export function ChangesSurface({
         revision: Math.max(Date.now(), (current?.revision ?? 0) + 1),
       }));
     },
-    [onSelectDiffFile, presentation],
+    [onSelectDiffFile, openDiffAtCurrentBase, presentation],
   );
   const workingMode = useMemo(
     () => ({
       kind: "working" as const,
       reviewActions,
+      onFilePress: openDiffAtCurrentBase,
       focusPath: documentFocusRequest?.path,
       focusRequestId: documentFocusRequest?.revision,
+
       workspaceFileDragScope: workspaceId ? { serverId, workspaceId } : undefined,
       onOpenFile,
       onOpenToSide,
@@ -1716,6 +1818,7 @@ export function ChangesSurface({
       serverId,
       workspaceId,
       onOpenFile,
+      openDiffAtCurrentBase,
       onOpenToSide,
       onAddToChat,
       handleCopyPath,
@@ -1765,6 +1868,30 @@ export function ChangesSurface({
   const committedDiffDescription = useMemo(
     () => computeCommittedDiffDescription(branchLabel, baseRefLabel),
     [baseRefLabel, branchLabel],
+  );
+  const baseBranchPicker = useMemo<ChangesBaseBranchPickerProps | null>(
+    () =>
+      diffMode === "base"
+        ? {
+            serverId,
+            cwd,
+            label: baseRefLabel,
+            baseRef,
+            defaultBaseRef,
+            isCustomBaseRef,
+            onSelectBaseRef: handleSelectBaseRef,
+          }
+        : null,
+    [
+      baseRef,
+      baseRefLabel,
+      cwd,
+      defaultBaseRef,
+      diffMode,
+      handleSelectBaseRef,
+      isCustomBaseRef,
+      serverId,
+    ],
   );
   const emptyMessage = t("diffViewer.empty");
   const emptyAction = computeChangesEmptyAction({
@@ -1869,6 +1996,7 @@ export function ChangesSurface({
   const changesHeaderModel = useMemo(
     () =>
       buildChangesHeaderModel({
+        baseBranch: baseBranchPicker,
         branchName: currentBranchName,
         committedDescription: committedDiffDescription,
         compact: isMobile,
@@ -1883,8 +2011,10 @@ export function ChangesSurface({
         selectedDiffStat,
         serverId,
         workspaceId,
+        submodulePicker,
       }),
     [
+      baseBranchPicker,
       committedDiffDescription,
       currentBranchName,
       cwd,
@@ -1898,6 +2028,7 @@ export function ChangesSurface({
       pullRequestStatus,
       selectedDiffStat,
       serverId,
+      submodulePicker,
       toolbarMode,
       workspaceId,
     ],
@@ -1945,6 +2076,9 @@ export function ChangesSurface({
     </View>
   );
 }
+// The fork's explorer sidebar and the upstream refactor name the same surface
+// differently; export both so every caller compiles.
+export const GitDiffPane = ChangesSurface;
 
 const styles = StyleSheet.create((theme) => ({
   container: {

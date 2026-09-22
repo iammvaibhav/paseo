@@ -2,7 +2,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DaemonServerInfo } from "@/stores/session-store";
 import type { AudioEngine } from "@/voice/audio-engine-types";
 import { createVoiceRuntime, type VoiceSessionAdapter } from "@/voice/voice-runtime";
-import { REALTIME_VOICE_VAD_CONFIG } from "@/voice/realtime-voice-config";
 
 function createAudioEngineMock(): AudioEngine {
   return {
@@ -52,6 +51,7 @@ function createServerInfo(): DaemonServerInfo {
   return {
     serverId: "server-1",
     hostname: "host",
+    missionControlHostAlias: null,
     version: "1.0.0",
     capabilities: {
       voice: {
@@ -94,7 +94,9 @@ describe("voice runtime", () => {
     await runtime.startVoice("server-1", "agent-1");
 
     expect(engine.initialize).toHaveBeenCalled();
-    expect(adapter.setVoiceMode).toHaveBeenCalledWith(true, "agent-1");
+    expect(adapter.setVoiceMode).toHaveBeenCalledWith(true, "agent-1", {
+      sendBehavior: "interrupt",
+    });
     expect(engine.startCapture).toHaveBeenCalled();
     expect(runtime.getSnapshot()).toMatchObject({
       phase: "listening",
@@ -243,7 +245,7 @@ describe("voice runtime", () => {
 
   it("leaves playback phase unchanged after assistant playback while the turn is still active", async () => {
     const adapter = createSessionAdapter();
-    const { runtime, engine } = createRuntime();
+    const { runtime } = createRuntime();
     runtime.registerSession(adapter);
 
     await runtime.startVoice("server-1", "agent-1");
@@ -252,10 +254,9 @@ describe("voice runtime", () => {
     runtime.onAssistantAudioFinished("server-1");
 
     expect(runtime.getSnapshot().phase).toBe("waiting");
-    expect(engine.play).toHaveBeenCalled();
   });
 
-  it("starts the thinking tone when an agent turn begins before playback", async () => {
+  it("does not play a thinking tone while waiting for the agent turn", async () => {
     const adapter = createSessionAdapter();
     const { runtime, engine } = createRuntime();
     runtime.registerSession(adapter);
@@ -264,48 +265,29 @@ describe("voice runtime", () => {
     runtime.onTurnEvent("server-1", "agent-1", "turn_started");
 
     expect(runtime.getSnapshot().phase).toBe("waiting");
-    expect(engine.play).toHaveBeenCalled();
+    expect(engine.play).not.toHaveBeenCalled();
   });
 
-  it("does not restart the thinking tone from local detection jitter while waiting", async () => {
+  it("interrupts assistant playback when server speech is detected while waiting", async () => {
     const adapter = createSessionAdapter();
-    let resolvePlay!: (duration: number) => void;
-    const engine = createAudioEngineMock();
-    vi.mocked(engine.play).mockImplementation(
-      () =>
-        new Promise<number>((resolve) => {
-          resolvePlay = resolve;
-        }),
-    );
-    const { runtime } = createRuntime({ engine });
+    const { runtime, engine } = createRuntime();
     runtime.registerSession(adapter);
 
     await runtime.startVoice("server-1", "agent-1");
     runtime.onTurnEvent("server-1", "agent-1", "turn_started");
-
-    expect(runtime.getSnapshot().phase).toBe("waiting");
-    expect(engine.play).toHaveBeenCalledTimes(1);
+    runtime.onAssistantAudioStarted("server-1");
     vi.mocked(engine.stop).mockClear();
     vi.mocked(engine.clearQueue).mockClear();
-
-    runtime.handleCaptureVolume(REALTIME_VOICE_VAD_CONFIG.volumeThreshold + 0.05);
-    runtime.handleCaptureVolume(0);
-
-    expect(engine.stop).not.toHaveBeenCalled();
-    expect(engine.clearQueue).not.toHaveBeenCalled();
-    expect(engine.play).toHaveBeenCalledTimes(1);
 
     runtime.onServerSpeechStateChanged("server-1", true);
 
     expect(engine.stop).toHaveBeenCalledTimes(1);
     expect(engine.clearQueue).toHaveBeenCalledTimes(1);
-
-    resolvePlay(0.1);
   });
 
   it("returns to listening after assistant playback once the turn is complete", async () => {
     const adapter = createSessionAdapter();
-    const { runtime, engine } = createRuntime();
+    const { runtime } = createRuntime();
     runtime.registerSession(adapter);
 
     await runtime.startVoice("server-1", "agent-1");
@@ -315,7 +297,6 @@ describe("voice runtime", () => {
     runtime.onAssistantAudioFinished("server-1");
 
     expect(runtime.getSnapshot().phase).toBe("listening");
-    expect(engine.play).toHaveBeenCalled();
   });
 
   it("keeps local volume alone non-authoritative for playback interruption", async () => {
@@ -369,6 +350,26 @@ describe("voice runtime", () => {
     expect(engine.clearQueue).toHaveBeenCalled();
     expect(adapter.setAssistantAudioPlaying).toHaveBeenCalledWith(false);
     expect(runtime.getTelemetrySnapshot().isSpeaking).toBe(true);
+  });
+
+  it("does not interrupt assistant playback on speech in queue mode", async () => {
+    const adapter = createSessionAdapter();
+    const { runtime, engine } = createRuntime();
+    runtime.registerSession(adapter);
+
+    await runtime.startVoice("server-1", "agent-1", { sendBehavior: "queue" });
+    runtime.onAssistantAudioStarted("server-1");
+    vi.mocked(engine.stop).mockClear();
+    vi.mocked(engine.clearQueue).mockClear();
+
+    runtime.onServerSpeechStateChanged("server-1", true);
+
+    expect(engine.stop).not.toHaveBeenCalled();
+    expect(engine.clearQueue).not.toHaveBeenCalled();
+    expect(runtime.getTelemetrySnapshot().isSpeaking).toBe(true);
+    expect(adapter.setVoiceMode).toHaveBeenCalledWith(true, "agent-1", {
+      sendBehavior: "queue",
+    });
   });
 
   it("drops queued voice chunks that arrive after server speech interrupts playback", async () => {
@@ -434,7 +435,9 @@ describe("voice runtime", () => {
       "audio focus unavailable",
     );
 
-    expect(adapter.setVoiceMode).toHaveBeenNthCalledWith(1, true, "agent-1");
+    expect(adapter.setVoiceMode).toHaveBeenNthCalledWith(1, true, "agent-1", {
+      sendBehavior: "interrupt",
+    });
     expect(adapter.setVoiceMode).toHaveBeenNthCalledWith(2, false);
     expect(runtime.getSnapshot().phase).toBe("disabled");
   });
@@ -458,7 +461,9 @@ describe("voice runtime", () => {
     runtime.updateSessionConnection("server-1", true);
     await Promise.resolve();
 
-    expect(adapter.setVoiceMode).toHaveBeenCalledWith(true, "agent-1");
+    expect(adapter.setVoiceMode).toHaveBeenCalledWith(true, "agent-1", {
+      sendBehavior: "interrupt",
+    });
   });
 
   it("does not emit when the snapshot is unchanged", async () => {

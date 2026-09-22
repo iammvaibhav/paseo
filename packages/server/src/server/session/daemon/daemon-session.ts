@@ -105,6 +105,9 @@ export class DaemonSession {
       sessionLogger: this.logger,
     });
   }
+  get serverIdValue(): string | undefined {
+    return this.serverId;
+  }
 
   async handleHubRelationshipRequest(
     msg: Extract<

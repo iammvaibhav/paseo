@@ -1,6 +1,7 @@
 import type { ComponentType } from "react";
 import { i18n } from "@/i18n/i18next";
 import type { PanelDescriptor, PanelIconProps } from "@/panels/panel-registry";
+import { stripTicketPrefix } from "./agent-tab-presentation";
 
 export function buildDraftPanelDescriptor(input: {
   isCreating: boolean;
@@ -9,7 +10,9 @@ export function buildDraftPanelDescriptor(input: {
 }): PanelDescriptor {
   const { icon, isCreating, pendingPrompt } = input;
   const newAgentLabel = i18n.t("panels.draft.newAgent");
-  const creatingLabel = pendingPrompt?.trim() || newAgentLabel;
+  const trimmedPrompt = pendingPrompt?.trim();
+  const creatingLabel =
+    (trimmedPrompt ? stripTicketPrefix(trimmedPrompt) : null) || trimmedPrompt || newAgentLabel;
   if (isCreating) {
     return {
       label: creatingLabel,

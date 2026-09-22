@@ -11,6 +11,7 @@ import type {
   PaseoConfigRaw,
   PaseoConfigRevision,
   ProjectConfigRpcError,
+  SessionOutboundMessage,
 } from "@getpaseo/protocol/messages";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { Button } from "@/components/ui/button";
@@ -89,7 +90,14 @@ const METADATA_PROMPT_FIELDS: Record<MetadataPromptKey, MetadataPromptField> = {
 
 const WORKTREE_DOCS_URL = "https://paseo.sh/docs/worktrees";
 
-type ReadProjectConfigData = Awaited<ReturnType<DaemonClient["readProjectConfig"]>>;
+type ReadProjectConfigData = Extract<
+  SessionOutboundMessage,
+  { type: "read_project_config_response" }
+>["payload"];
+type WriteProjectConfigData = Extract<
+  SessionOutboundMessage,
+  { type: "write_project_config_response" }
+>["payload"];
 
 export interface ProjectSettingsScreenProps {
   serverId: string;
@@ -244,6 +252,7 @@ function ProjectSettingsBody({
     () => ({
       projectName: selectedHost.projectName,
       projectCustomName: selectedHost.projectCustomName,
+      projectDescription: selectedHost.projectDescription ?? null,
       hasCustomIcon: customIconRevision !== null,
       currentIconDataUri: projectIconDataUri,
     }),
@@ -251,6 +260,7 @@ function ProjectSettingsBody({
       customIconRevision,
       projectIconDataUri,
       selectedHost.projectCustomName,
+      selectedHost.projectDescription,
       selectedHost.projectName,
     ],
   );
@@ -490,16 +500,15 @@ function ProjectConfigForm({
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const toast = useToast();
-
   const [draft, setDraft] = useState<ProjectConfigDraft>(() => configToDraft(baseConfig));
   const [writeError, setWriteError] = useState<ProjectConfigRpcError | null>(null);
   const [editingScriptId, setEditingScriptId] = useState<string | null>(null);
-
-  const saveMutation = useMutation({
-    mutationFn: async (input: {
-      config: PaseoConfigRaw;
-      expectedRevision: PaseoConfigRevision | null;
-    }) => {
+  const saveMutation = useMutation<
+    WriteProjectConfigData,
+    Error,
+    { config: PaseoConfigRaw; expectedRevision: PaseoConfigRevision | null }
+  >({
+    mutationFn: async (input) => {
       return client.writeProjectConfig({
         repoRoot,
         config: input.config,
@@ -508,17 +517,20 @@ function ProjectConfigForm({
     },
     onSuccess: (result) => {
       if (result.ok) {
-        queryClient.setQueryData<ReadProjectConfigData>(queryKey, {
-          ok: true,
-          config: result.config,
-          revision: result.revision,
-          requestId: "local-cache",
-          repoRoot,
-          ...(result.hasUncommittedWorktreeSetupChanges === undefined
-            ? {}
-            : {
-                hasUncommittedWorktreeSetupChanges: result.hasUncommittedWorktreeSetupChanges,
-              }),
+        queryClient.setQueryData<ReadProjectConfigData>(queryKey, (current) => {
+          if (!current || !current.ok) return current;
+          return {
+            ...current,
+            config: result.config,
+            revision: result.revision,
+            requestId: "local-cache",
+            repoRoot,
+            ...(result.hasUncommittedWorktreeSetupChanges === undefined
+              ? {}
+              : {
+                  hasUncommittedWorktreeSetupChanges: result.hasUncommittedWorktreeSetupChanges,
+                }),
+          };
         });
         setWriteError(null);
         queryClient.invalidateQueries({ queryKey: ["projects"] });
