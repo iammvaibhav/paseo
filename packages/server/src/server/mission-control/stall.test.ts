@@ -1364,6 +1364,120 @@ describe("MissionControlService stall machinery (dormant-turn recovery + watchdo
     const internals = service as unknown as { runningSubagentsByAgent: Map<string, Set<string>> };
     expect(internals.runningSubagentsByAgent.get("agent-1")?.size ?? 0).toBe(0);
   });
+  // ==========================================================================
+  // System-abort resume (provider-killed turn proposes exactly one resume)
+  // ==========================================================================
+
+  function failedRun(agentId: string, error: string): void {
+    startRunning(agentId);
+    startRunning(
+      agentId,
+      runningAgent(agentId, {
+        lifecycle: "error",
+        lastError: error,
+        attention: { requiresAttention: true, attentionReason: "error" },
+        pendingReplacement: false,
+        pendingReplacementOrigin: null,
+      }),
+    );
+  }
+
+  test("provider-killed abort proposes one resume, keeps the failed card", async () => {
+    failedRun(
+      "agent-1",
+      "Request was aborted (stopReason=aborted, model=opencode-go/muse-spark-1.3-contributor)",
+    );
+    await flushBroadcasts();
+    expect(
+      broadcast.mock.calls.some(
+        (call: unknown[]) => (call[0] as { event?: { kind?: string } })?.event?.kind === "failed",
+      ),
+    ).toBe(true);
+    expect(createProposal).toHaveBeenCalledTimes(1);
+    expect(createProposal).toHaveBeenCalledWith(
+      expect.objectContaining({
+        origin: "stall",
+        targetAgentId: "agent-1",
+        deliveryMode: "steer",
+        classification: "normal",
+      }),
+    );
+  });
+
+  test("same abort erroring twice proposes once; a fresh run re-arms", async () => {
+    failedRun(
+      "agent-1",
+      "Request was aborted (stopReason=aborted, model=opencode-go/muse-spark-1.3-contributor)",
+    );
+    await flushBroadcasts();
+    expect(createProposal).toHaveBeenCalledTimes(1);
+    // Same run epoch erroring again (both stream + state paths funnel here):
+    startRunning(
+      "agent-1",
+      runningAgent("agent-1", {
+        lifecycle: "error",
+        lastError:
+          "Request was aborted (stopReason=aborted, model=opencode-go/muse-spark-1.3-contributor)",
+        attention: { requiresAttention: true, attentionReason: "error" },
+        pendingReplacement: false,
+        pendingReplacementOrigin: null,
+      }),
+    );
+    await flushBroadcasts();
+    expect(createProposal).toHaveBeenCalledTimes(1);
+    // Fresh run aborts again: new epoch, new proposal.
+    startRunning("agent-1");
+    failedRun(
+      "agent-1",
+      "Request was aborted (stopReason=aborted, model=opencode-go/muse-spark-1.3-contributor)",
+    );
+    await flushBroadcasts();
+    expect(createProposal).toHaveBeenCalledTimes(2);
+  });
+
+  test("user interrupt noise never proposes a resume", async () => {
+    failedRun("agent-1", "Interrupted by user (stopReason=aborted, model=anthropic/claude-opus-5)");
+    await flushBroadcasts();
+    expect(createProposal).not.toHaveBeenCalled();
+  });
+
+  test("user stop origin and superseded runs never propose a resume", async () => {
+    startRunning("agent-1");
+    store.recordStopOrigin("agent-1", "user");
+    startRunning(
+      "agent-1",
+      runningAgent("agent-1", {
+        lifecycle: "error",
+        lastError:
+          "Request was aborted (stopReason=aborted, model=opencode-go/muse-spark-1.3-contributor)",
+        attention: { requiresAttention: true, attentionReason: "error" },
+        pendingReplacement: false,
+        pendingReplacementOrigin: null,
+      }),
+    );
+    await flushBroadcasts();
+    expect(createProposal).not.toHaveBeenCalled();
+    startRunning("agent-1");
+    startRunning(
+      "agent-1",
+      runningAgent("agent-1", {
+        lifecycle: "error",
+        lastError:
+          "Request was aborted (stopReason=aborted, model=opencode-go/muse-spark-1.3-contributor)",
+        attention: { requiresAttention: true, attentionReason: "error" },
+        pendingReplacement: true,
+        pendingReplacementOrigin: "machinery",
+      }),
+    );
+    await flushBroadcasts();
+    expect(createProposal).not.toHaveBeenCalled();
+  });
+
+  test("plain provider errors never propose a resume", async () => {
+    failedRun("agent-1", "provider process crashed");
+    await flushBroadcasts();
+    expect(createProposal).not.toHaveBeenCalled();
+  });
 });
 
 describe("presence helper", () => {

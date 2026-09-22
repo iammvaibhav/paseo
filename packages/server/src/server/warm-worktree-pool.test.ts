@@ -587,6 +587,32 @@ describe("WarmWorktreePoolManager", () => {
     await manager.stop();
   });
 
+  test("skips claim and replenish for repos with submodules", async () => {
+    writeFileSync(join(repoDir, ".gitmodules"), "[submodule]\n", "utf8");
+
+    const manager = new WarmWorktreePoolManager({
+      paseoHome,
+      worktreesRoot,
+      targetIdle: 1,
+      enabled: true,
+      logger,
+    });
+
+    // `git worktree move` refuses submodule trees, so a warm claim can never
+    // succeed — the pool stays out of the way and the caller goes cold.
+    await manager.replenish(repoDir);
+    expect(manager.getStatus().pools).toHaveLength(0);
+    const claimResult = await manager.claim({
+      repoRoot: repoDir,
+      worktreeSlug: "submodule-claim",
+      source: { kind: "branch-off", branchName: "submodule-claim" },
+      paseoHome,
+      worktreesRoot,
+    });
+    expect(claimResult).toBeNull();
+    await manager.stop();
+  });
+
   test("prunes and cleans up dead worktrees", async () => {
     const manager = new WarmWorktreePoolManager({
       paseoHome,

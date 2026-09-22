@@ -893,9 +893,14 @@ describe("MissionControlApprovals ask-mode gating per action class", () => {
       });
       expect(result).toEqual({ ok: false, error: "fleet spawn failed: boom" });
       expect(spawn).toHaveBeenCalledTimes(1);
-      // Terminal failure: proposal status is marked failed.
+      // Terminal failure: proposal status is marked failed and the cause is
+      // persisted for the card (the event detail is a snapshot of the brief).
       expect(harness.approvals.getProposal(proposal.id)?.status).toBe("failed");
+      expect(harness.approvals.getProposal(proposal.id)?.failureReason).toBe(
+        "fleet spawn failed: boom",
+      );
       expect(harness.published.map((p) => p.status)).toEqual(["pending", "failed"]);
+      expect(harness.published.at(-1)?.failureReason).toBe("fleet spawn failed: boom");
     } finally {
       await teardown(harness);
     }
@@ -919,6 +924,9 @@ describe("MissionControlApprovals ask-mode gating per action class", () => {
       expect(spawn).toHaveBeenCalledTimes(1);
       // Terminal failure: proposal status is marked failed and retrievable as failed.
       expect(harness.approvals.getProposal(proposal.id)?.status).toBe("failed");
+      expect(harness.approvals.getProposal(proposal.id)?.failureReason).toBe(
+        "fleet spawn failed: boom",
+      );
       expect(harness.published.map((p) => p.status)).toEqual(["failed"]);
     } finally {
       await teardown(harness);

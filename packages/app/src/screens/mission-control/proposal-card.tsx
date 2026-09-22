@@ -89,6 +89,7 @@ interface ProposalCardActionsProps {
   onCancelDenyReason: () => void;
   error: string | null;
   resolvedStatus: string;
+  failureReason?: string;
 }
 
 /**
@@ -113,6 +114,7 @@ function ProposalCardActions({
   onCancelDenyReason,
   error,
   resolvedStatus,
+  failureReason,
 }: ProposalCardActionsProps): ReactElement {
   let pendingActions: ReactElement;
   if (isEditing) {
@@ -232,6 +234,11 @@ function ProposalCardActions({
         <Text style={styles.resolvedLabel}>{resolvedStatus}</Text>
       )}
 
+      {!isPending && failureReason ? (
+        <Text style={styles.error} testID="mission-control-proposal-failure-reason">
+          {failureReason}
+        </Text>
+      ) : null}
       {error ? <Text style={styles.error}>{error}</Text> : null}
     </>
   );
@@ -662,6 +669,7 @@ export function ProposalCard({
           onCancelDenyReason={handleCancelDenyReason}
           error={error}
           resolvedStatus={proposal.status}
+          failureReason={proposal.failureReason}
         />
       </View>
     </View>

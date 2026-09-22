@@ -356,11 +356,12 @@ export class MissionControlApprovals {
         // An auto-approved send that failed is terminal and must be visible —
         // in auto mode nothing was stored before the send, so without this the
         // only trace is a log line and the ticket that triggered it reads as
-        // ignored. The delivery paths record their own terminal status
-        // (aborted → expired, delivery error → failed); spawn and meta
-        // failures record nothing, which is what this writes.
+        // ignored. Spawn/meta paths write nothing (one card per failure), so
+        // this write is the single failed record.
         if (!this.store.getProposal(proposal.id)) {
           proposal.status = "failed";
+          // Stamp the cause so the card renders it instead of a bare status.
+          if (result.error) proposal.failureReason = result.error;
           await this.store.putProposal(proposal);
           await this.publish(proposal);
         }
@@ -434,8 +435,13 @@ export class MissionControlApprovals {
       const sendResult = await this.send(updated);
       if (!sendResult.ok) {
         // Spec 01 change 5: approve-failure marks the proposal failed (terminal,
-        // additive status alongside expired), never leaves pending.
-        const failed: MissionControlProposal = { ...proposal, status: "failed" };
+        // additive status alongside expired), never leaves pending. Stamp the
+        // cause from the send error so the card renders it.
+        const failed: MissionControlProposal = {
+          ...proposal,
+          status: "failed",
+          ...(sendResult.error ? { failureReason: sendResult.error } : {}),
+        };
         await this.store.putProposal(failed);
         await this.publish(failed);
       }
@@ -558,6 +564,10 @@ export class MissionControlApprovals {
         { proposalId: proposal.id, origin: proposal.origin, error: result.error },
         "mission_control.approvals.spawn_failed",
       );
+      // No store write here: the callers (resolveProposal approve,
+      // createProposal auto-send) record the terminal failed status with
+      // failureReason from this error. Writing here would publish the card
+      // twice for one failure.
       return { ok: false, error: result.error };
     }
     const updated: Proposal = {
@@ -621,6 +631,10 @@ export class MissionControlApprovals {
           { proposalId: proposal.id, origin: proposal.origin, error: result.error },
           "mission_control.approvals.meta_apply_failed",
         );
+        // No store write here: the callers (resolveProposal approve,
+        // createProposal auto-send) record the terminal failed status with
+        // failureReason from this error. Writing here would publish the card
+        // twice for one failure.
         return { ok: false, error: result.error };
       }
       // The apply may have ROUTED to a peer (cross-host meta action): stamp
@@ -677,8 +691,10 @@ export class MissionControlApprovals {
         return { ok: false, error: error instanceof Error ? error.message : String(error) };
       }
       // Spec 01 change 5: approve-failure marks the proposal failed (terminal,
-      // additive status alongside expired), never leaves pending.
+      // additive status alongside expired), never leaves pending. Stamp the
+      // cause so the card renders it instead of a bare status.
       proposal.status = "failed";
+      proposal.failureReason = error instanceof Error ? error.message : String(error);
       await this.store.putProposal(proposal);
       await this.publish(proposal);
       this.logger.error(
