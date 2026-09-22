@@ -352,6 +352,50 @@ describe("OMP agent client and session", () => {
       { type: "assistant_message", text: "fixed", messageId: "omp-assistant-1" },
     ]);
   });
+  test("streams OMP IRC messages as distinct hub tool-call blocks", async () => {
+    const omp = new OmpHarness();
+    await omp.start();
+
+    await omp.runPromptWithCustomMessage(
+      "wait for result",
+      {
+        role: "custom",
+        content:
+          "<irc>\nIncoming IRC message from agent `PolishIntegrate`:\n\nTask complete\n</irc>",
+        customType: "irc:incoming",
+        id: "irc-live-1",
+        display: true,
+        details: {
+          from: "PolishIntegrate",
+          message: "Task complete",
+        },
+      },
+      "acknowledged",
+    );
+
+    expect(omp.timeline()).toEqual([
+      { type: "user_message", text: "wait for result", messageId: "user-1" },
+      {
+        type: "tool_call",
+        callId: "omp-irc:irc-live-1",
+        name: "hub",
+        status: "completed",
+        detail: {
+          type: "plain_text",
+          label: "receive · from PolishIntegrate · Task complete",
+          text: "Task complete",
+          icon: "bot",
+        },
+        metadata: {
+          synthetic: true,
+          source: "omp_irc",
+          from: "PolishIntegrate",
+        },
+        error: null,
+      },
+      { type: "assistant_message", text: "acknowledged", messageId: "omp-assistant-1" },
+    ]);
+  });
 
   test("completes a streamed assistant turn when agent_end omits messages", async () => {
     const omp = new OmpHarness();

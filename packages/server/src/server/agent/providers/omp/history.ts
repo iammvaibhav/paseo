@@ -363,6 +363,16 @@ function mapEntryMessage(entry: OmpSessionEntry): OmpAgentMessage | null {
     }
     return visibleFallback(message.role, message);
   }
+  if (entry.type === "custom_message") {
+    return {
+      role: "custom",
+      content: entry.content ?? entry.text ?? "",
+      customType: entry.customType,
+      display: entry.display,
+      details: entry.details,
+      id: entry.id,
+    } as unknown as OmpAgentMessage;
+  }
   if (!entry.type || isControlEntryType(entry.type)) {
     return null;
   }

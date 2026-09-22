@@ -105,6 +105,7 @@ import { streamOmpHistory } from "./history.js";
 import { mapOmpTodoReminderEvent, mapOmpTodoState, mapOmpTodoToolResult } from "./todo-mapper.js";
 import { mapOmpRuntimeEventToTimelineItem } from "./event-mapper.js";
 import { mapOmpAdvisorMessageToToolCall } from "./advisor-message.js";
+import { mapOmpIrcMessageToToolCall } from "./irc-message.js";
 import {
   clearOmpHostToolState,
   handleOmpHostToolRuntimeEvent,
@@ -2422,6 +2423,7 @@ export class OmpAgentSession implements AgentSession {
         if (text) {
           const item =
             mapOmpAdvisorMessageToToolCall(event.message, text) ??
+            mapOmpIrcMessageToToolCall(event.message, text) ??
             mapOmpSystemNoticeToNotification(text);
           this.emit({
             type: "timeline",

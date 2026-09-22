@@ -19,6 +19,11 @@ export interface GrokBuildModelDef {
 	headers?: Record<string, string>;
 	compat?: Record<string, unknown>;
 	baseUrl?: string;
+	thinking?: {
+		mode?: "effort" | "budget";
+		efforts?: ("minimal" | "low" | "medium" | "high" | "xhigh" | "max")[];
+		defaultLevel?: string;
+	};
 }
 
 const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } as const;
@@ -30,6 +35,11 @@ interface CuratedOverlay {
 	contextWindow?: number;
 	maxTokens?: number;
 	compat?: Record<string, unknown>;
+	thinking?: {
+		mode?: "effort" | "budget";
+		efforts?: ("minimal" | "low" | "medium" | "high" | "xhigh" | "max")[];
+		defaultLevel?: string;
+	};
 }
 
 const CURATED: Record<string, CuratedOverlay> = {
@@ -39,6 +49,10 @@ const CURATED: Record<string, CuratedOverlay> = {
 		input: ["text", "image"],
 		contextWindow: 500_000,
 		maxTokens: 64_000,
+		thinking: {
+			mode: "effort",
+			efforts: ["minimal", "low", "medium", "high", "xhigh"],
+		},
 		compat: {
 			supportsReasoningEffort: true,
 			supportsReasoningParams: true,
@@ -52,6 +66,10 @@ const CURATED: Record<string, CuratedOverlay> = {
 		input: ["text", "image"],
 		contextWindow: 500_000,
 		maxTokens: 64_000,
+		thinking: {
+			mode: "effort",
+			efforts: ["minimal", "low", "medium", "high", "xhigh"],
+		},
 		compat: {
 			supportsReasoningEffort: true,
 			supportsReasoningParams: true,
@@ -127,6 +145,7 @@ export const STATIC_SEED: readonly GrokBuildModelDef[] = Object.entries(CURATED)
 			compat: {
 				...(curated.compat ?? {}),
 			},
+			thinking: curated.thinking,
 			baseUrl: GROK_BUILD_BASE_URL,
 		};
 	},
