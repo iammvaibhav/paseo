@@ -249,9 +249,6 @@ function finalizeProcessedTimeline(input: {
     clearAgentInitializingFlag(input.serverId, input.agentId);
   }
   if (input.synchronized) {
-    useCreateFlowStore
-      .getState()
-      .clearByAgent({ serverId: input.serverId, agentId: input.agentId });
     const session = useSessionStore.getState().sessions[input.serverId];
     const agent = session?.agents.get(input.agentId) ?? session?.agentDetails.get(input.agentId);
     if (agent && agent.turn.phase === "idle") input.drainQueuedAgentMessage(input.agentId);
@@ -330,6 +327,11 @@ export interface ViewedTimelineSyncPorts {
     request: ProjectedTimelineForwardFetchPlan,
   ): Promise<TimelinePageResult>;
   fetchLatestTail(agentId: string): Promise<TimelinePageResult>;
+  /**
+   * The sync no longer owes this chat a catch-up: it reached current, or it left the
+   * demanded set. Disconnect and backgrounding keep the obligation and do not report here.
+   */
+  onCatchUpEnded(agentId: string): void;
   reportError(error: unknown): void;
   schedule(task: () => void, delayMs: number): () => void;
 }
@@ -360,7 +362,7 @@ export interface ViewedTimelineSync extends ViewedTimelineUiBridge {
 
 export type ViewedTimelineOwnerPorts = Omit<
   ViewedTimelineSyncPorts,
-  "prepare" | "replaceDemandedAgentIds"
+  "prepare" | "replaceDemandedAgentIds" | "onCatchUpEnded"
 >;
 
 export interface ViewedTimelineOwner extends ViewedTimelineSync {
@@ -390,6 +392,8 @@ export function createViewedTimelineOwner(input: {
     prepare: (agentId) => input.replica.prepare(agentId),
     readCursor: (agentId) => input.replica.readCursor(agentId) ?? input.ports.readCursor(agentId),
     replaceDemandedAgentIds: input.replaceDemandedAgentIds,
+    onCatchUpEnded: (agentId) =>
+      useCreateFlowStore.getState().clearByAgent({ serverId: input.serverId, agentId }),
   });
   const streamQueue = createSessionAgentStreamReducerQueue({
     serverId: input.serverId,
@@ -553,6 +557,7 @@ export function createViewedTimelineSync(ports: ViewedTimelineSyncPorts): Viewed
     const wasPending = visibilityCatchUpPending.delete(agentId);
     const hadError = visibilityCatchUpErrors.delete(agentId);
     const wasRetrying = manualRetries.delete(agentId);
+    ports.onCatchUpEnded(agentId);
     if (wasPending || hadError || wasRetrying) notifyListeners();
   };
 
@@ -827,12 +832,14 @@ export function createViewedTimelineSync(ports: ViewedTimelineSyncPorts): Viewed
       return;
     }
 
+    const released: string[] = [];
     for (const agentId of desired) {
       if (!nextDesired.includes(agentId)) {
         cancelCatchUp(agentId);
         visibilityCatchUpPending.delete(agentId);
         visibilityCatchUpErrors.delete(agentId);
         manualRetries.delete(agentId);
+        released.push(agentId);
       }
     }
     for (const agentId of nextDesired) {
@@ -848,6 +855,7 @@ export function createViewedTimelineSync(ports: ViewedTimelineSyncPorts): Viewed
     desired = nextDesired;
     ports.replaceDemandedAgentIds(desired);
     membershipGeneration += 1;
+    for (const agentId of released) ports.onCatchUpEnded(agentId);
     notifyListeners();
     void reconcileMembership();
   };
