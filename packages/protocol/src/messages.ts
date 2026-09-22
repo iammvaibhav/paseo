@@ -4700,8 +4700,8 @@ export const WorkspaceProjectDescriptorPayloadSchema = z.object({
   syncSeq: z.number().int().positive().optional(),
   // The project's base workspace (ADR 0001: project-anchored base
   // workspaces) — the workspace over the project's root checkout, created
-  // with the project, unarchivable while the project is active, opened by
-  // clicking the project name. Null until reconciliation backfills it.
+  // with the project, unarchivable while the project is active. The sidebar
+  // lists it with the project's other workspaces. Null until reconciliation backfills it.
   // COMPAT(baseWorkspace): added in v0.5.3 on 2026-08-25; remove optional
   // after 2027-02-25.
   baseWorkspaceId: z.string().nullable().optional(),

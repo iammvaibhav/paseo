@@ -111,6 +111,26 @@ describe("mergeProviderUsageReports", () => {
     expect(merged.map((entry) => entry.providerId)).toEqual(["codex"]);
   });
 
+  it("drops retired SuperGrok and bare-omp cards emitted by stale daemons", () => {
+    const superGrok = usage({
+      providerId: "omp",
+      displayName: "SuperGrok",
+      accountEmail: "user@example.com",
+    });
+    const grokBuild = usage({
+      providerId: "omp-grok-build:user@example.com",
+      groupId: "omp-grok-build",
+      displayName: "Grok Build",
+      accountEmail: "user@example.com",
+    });
+
+    const merged = mergeProviderUsageReports([
+      readyReport("host-a", "2026-08-18T08:00:00.000Z", [superGrok, grokBuild], ["omp"]),
+    ]);
+
+    expect(merged.map((entry) => entry.providerId)).toEqual(["omp-grok-build:user@example.com"]);
+  });
+
   it("holds back every card from a host until its provider snapshot is loaded", () => {
     const heldOmp = usage({
       providerId: "omp-codex:a@b",
@@ -164,13 +184,64 @@ describe("mergeProviderUsageReports", () => {
     expect(merged).toHaveLength(1);
     expect(merged[0]?.windows).toHaveLength(4);
     expect(merged[0]?.windows?.map((window) => window.id)).toEqual([
-      "gemini-weekly",
       "gemini-5h",
-      "3p-weekly",
+      "gemini-weekly",
       "3p-5h",
+      "3p-weekly",
     ]);
     // The richer card is kept even though the CLI-shaped card was fetched later.
     expect(merged[0]?.fetchedAt).toBe("2026-08-18T07:00:00.000Z");
+  });
+
+  it("prefers a clean 4-window direct-API card over a fresher 6-window CLI card with duplicates", () => {
+    const rawCliWithDuplicates = usage({
+      providerId: "omp-antigravity",
+      groupId: "omp-antigravity",
+      accountEmail: "user@example.com",
+      displayName: "Antigravity",
+      fetchedAt: "2026-08-18T09:00:00.000Z",
+      windows: [
+        { id: "1", label: "Gemini", usedPct: 38, remainingPct: 62 },
+        { id: "2", label: "Gemini", usedPct: 26, remainingPct: 74 },
+        { id: "3", label: "Claude & GPT (shared)", usedPct: 0, remainingPct: 100 },
+        { id: "4", label: "Claude & GPT (shared)", usedPct: 0, remainingPct: 100 },
+        { id: "5", label: "Claude & GPT (shared)", usedPct: 0, remainingPct: 100 },
+        { id: "6", label: "Claude & GPT (shared)", usedPct: 0, remainingPct: 100 },
+      ],
+    });
+    const direct = usage({
+      providerId: "omp-antigravity",
+      groupId: "omp-antigravity",
+      accountEmail: "user@example.com",
+      displayName: "Antigravity",
+      fetchedAt: "2026-08-18T08:00:00.000Z",
+      windows: [
+        { id: "gw", label: "Gemini · Weekly Limit Remaining", usedPct: 39, remainingPct: 61 },
+        { id: "g5", label: "Gemini · Five Hour Limit Remaining", usedPct: 0, remainingPct: 100 },
+        { id: "cw", label: "Claude/GPT · Weekly Limit Remaining", usedPct: 6, remainingPct: 94 },
+        {
+          id: "c5",
+          label: "Claude/GPT · Five Hour Limit Remaining",
+          usedPct: 18,
+          remainingPct: 82,
+        },
+      ],
+    });
+
+    const merged = mergeProviderUsageReports([
+      readyReport("host-cli", "2026-08-18T09:00:00.000Z", [rawCliWithDuplicates], ["omp"]),
+      readyReport("host-direct", "2026-08-18T08:00:00.000Z", [direct], ["omp"]),
+    ]);
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0]?.windows).toHaveLength(4);
+    expect(merged[0]?.windows?.map((w) => w.label)).toEqual([
+      "Gemini · Five Hour Limit Remaining",
+      "Gemini · Weekly Limit Remaining",
+      "Claude/GPT · Five Hour Limit Remaining",
+      "Claude/GPT · Weekly Limit Remaining",
+    ]);
+    expect(merged[0]?.fetchedAt).toBe("2026-08-18T08:00:00.000Z");
   });
 
   it("keeps refreshing cache and responsive-host data when another host fails", () => {
