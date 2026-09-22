@@ -1,4 +1,4 @@
-import type { ProviderUsage, ProviderUsageView } from "./types";
+import type { ProviderUsage, ProviderUsageView, ProviderUsageWindow } from "./types";
 
 export interface HostProviderUsageReport {
   serverId: string;
@@ -56,16 +56,48 @@ interface NormalizedProviderUsage {
   nativeMetadataCount: number;
 }
 
+function antigravityWindowOrder(label: string): number {
+  const lower = label.toLowerCase();
+  const isGemini = lower.includes("gemini");
+  const is5h = lower.includes("five hour") || lower.includes("5h") || lower.includes("5 hour");
+  const isWeekly = lower.includes("weekly") || lower.includes("week");
+
+  if (isGemini && is5h) return 1;
+  if (isGemini && isWeekly) return 2;
+  if (!isGemini && is5h) return 3;
+  if (!isGemini && isWeekly) return 4;
+  return 99;
+}
+
+function sortAntigravityWindows(windows: readonly ProviderUsageWindow[]): ProviderUsageWindow[] {
+  return [...windows].sort((a, b) => {
+    return antigravityWindowOrder(a.label) - antigravityWindowOrder(b.label);
+  });
+}
+
 function normalizeProviderUsage(usage: ProviderUsage): NormalizedProviderUsage {
   const groupId = effectiveGroupId(usage);
   const accountEmail = effectiveAccountEmail(usage);
   const displayName =
     cleanDisplayName(usage.displayName, accountEmail) || usage.displayName.trim() || groupId;
+  const windows =
+    groupId === "omp-antigravity" ? sortAntigravityWindows(usage.windows) : usage.windows;
 
   return {
-    usage: { ...usage, groupId, accountEmail: accountEmail ?? undefined, displayName },
+    usage: { ...usage, groupId, accountEmail: accountEmail ?? undefined, displayName, windows },
     nativeMetadataCount: Number(usage.groupId != null) + Number(usage.accountEmail != null),
   };
+}
+
+function isRetiredProviderUsage(usage: ProviderUsage): boolean {
+  const effectiveId = effectiveGroupId(usage);
+  const label = usage.displayName.trim().toLowerCase();
+  return (
+    effectiveId === "omp" ||
+    label === "supergrok" ||
+    label.startsWith("supergrok ") ||
+    label === "super grok"
+  );
 }
 
 function isBackedByEnabledProvider(
@@ -73,7 +105,7 @@ function isBackedByEnabledProvider(
   enabledProviderIds: ReadonlySet<string>,
 ): boolean {
   const groupId = effectiveGroupId(usage);
-  if (groupId === "omp" || groupId.startsWith("omp-")) {
+  if (groupId.startsWith("omp-")) {
     return enabledProviderIds.has("omp");
   }
   return enabledProviderIds.has(usage.providerId);
@@ -98,6 +130,7 @@ export function mergeProviderUsageReports(
     const enabledProviderIds = new Set(report.enabledProviderIds);
 
     for (const sourceUsage of report.view.payload.providers) {
+      if (isRetiredProviderUsage(sourceUsage)) continue;
       const normalized = normalizeProviderUsage(sourceUsage);
       const { usage } = normalized;
       if (!isBackedByEnabledProvider(usage, enabledProviderIds)) continue;
@@ -128,8 +161,23 @@ export function mergeProviderUsageReports(
 }
 
 // Collision order: native group/email metadata first (new daemons over old), then
-// more windows (a direct-API summary, e.g. weekly + 5h Antigravity, beats a
-// CLI-shaped card with daily bars), then freshest fetch.
+// quality score (a direct-API 4-window Antigravity summary beats a raw CLI card with duplicates),
+// then freshest fetch.
+function providerUsageRichnessScore(usage: ProviderUsage): number {
+  const windows = usage.windows;
+  if (windows.length === 0) return 0;
+  const uniqueLabels = new Set(windows.map((w) => w.label.trim().toLowerCase()));
+  if (uniqueLabels.size < windows.length) {
+    return uniqueLabels.size;
+  }
+  if (usage.groupId === "omp-antigravity") {
+    const compoundCount = windows.filter((w) => w.label.includes(" · ")).length;
+    if (compoundCount === 4) return 100;
+    return compoundCount * 10 + windows.length;
+  }
+  return windows.length;
+}
+
 function candidateBeatsCurrent(
   current: { usage: ProviderUsage; fetchedAt: string; nativeMetadataCount: number },
   candidate: NormalizedProviderUsage,
@@ -138,10 +186,10 @@ function candidateBeatsCurrent(
   if (current.nativeMetadataCount !== candidate.nativeMetadataCount) {
     return candidate.nativeMetadataCount > current.nativeMetadataCount;
   }
-  const currentWindowCount = current.usage.windows.length;
-  const candidateWindowCount = candidate.usage.windows.length;
-  if (currentWindowCount !== candidateWindowCount) {
-    return candidateWindowCount > currentWindowCount;
+  const currentRichness = providerUsageRichnessScore(current.usage);
+  const candidateRichness = providerUsageRichnessScore(candidate.usage);
+  if (currentRichness !== candidateRichness) {
+    return candidateRichness > currentRichness;
   }
   return fetchedAtMillis(candidateFetchedAt) > fetchedAtMillis(current.fetchedAt);
 }

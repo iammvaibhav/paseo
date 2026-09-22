@@ -1,4 +1,10 @@
-import { useMemo, type ComponentProps, type PropsWithChildren, type ReactNode } from "react";
+import {
+  useCallback,
+  useMemo,
+  type ComponentProps,
+  type PropsWithChildren,
+  type ReactNode,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { type PressableStateCallbackType } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
@@ -13,8 +19,12 @@ import {
   Pin,
   PinOff,
   Tag,
+  ExternalLink,
 } from "lucide-react-native";
-import { isWeb } from "@/constants/platform";
+import { getIsElectron, isWeb } from "@/constants/platform";
+import { getDesktopHost } from "@/desktop/host";
+import { buildHostWorkspaceRoute } from "@/utils/host-routes";
+import { useToast } from "@/contexts/toast-context";
 import { getForgePresentation, normalizeForge } from "@/git/forge";
 import type { SidebarWorkspaceEntry } from "@/hooks/use-sidebar-workspaces-list";
 import { useAppSettings } from "@/hooks/use-settings";
@@ -61,7 +71,7 @@ const ThemedPin = withUnistyles(Pin);
 const ThemedPinOff = withUnistyles(PinOff);
 const ThemedMessageCircleQuestion = withUnistyles(MessageCircleQuestion);
 const ThemedTag = withUnistyles(Tag);
-
+const ThemedExternalLink = withUnistyles(ExternalLink);
 const copyLeadingIcon = <ThemedCopy size={14} uniProps={foregroundMutedColorMapping} />;
 const renameLeadingIcon = <ThemedPencil size={14} uniProps={foregroundMutedColorMapping} />;
 const markAsReadLeadingIcon = (
@@ -73,6 +83,9 @@ const pinLeadingIcon = <ThemedPin size={14} uniProps={foregroundMutedColorMappin
 const unpinLeadingIcon = <ThemedPinOff size={14} uniProps={foregroundMutedColorMapping} />;
 const askHistoryLeadingIcon = (
   <ThemedMessageCircleQuestion size={14} uniProps={foregroundMutedColorMapping} />
+);
+const openInNewWindowLeadingIcon = (
+  <ThemedExternalLink size={14} uniProps={foregroundMutedColorMapping} />
 );
 
 function renderTriggerIcon({ hovered }: { hovered?: boolean }) {
@@ -103,6 +116,7 @@ export interface SidebarWorkspaceMenuProps {
   isPinned?: boolean;
   onTogglePin?: () => void;
   openInFileManagerPath?: string | null;
+  onOpenInNewWindow?: () => void;
   /**
    * Lifted so the row that reveals the kebab can keep it mounted while its menu is up. See
    * `useOpenKebabMenuVisibility`.
@@ -152,8 +166,40 @@ function SidebarWorkspaceMenuItems({
   isPinned,
   onTogglePin,
   openInFileManagerPath,
+  onOpenInNewWindow,
 }: SidebarWorkspaceMenuItemsProps & { surface: MenuSurface }): ReactNode {
   const { t } = useTranslation();
+  const toast = useToast();
+
+  const handleOpenInNewWindow = useCallback(() => {
+    if (!serverId || !workspaceId) return;
+    const route = buildHostWorkspaceRoute(serverId, workspaceId);
+    if (getIsElectron()) {
+      void getDesktopHost()
+        ?.window?.openNew?.({
+          initialRoute: route,
+          pendingOpenProjectPath: openInFileManagerPath?.trim() || null,
+        })
+        ?.catch((error) => {
+          console.warn("[sidebar] openNew failed", error);
+          toast.error(t("sidebar.workspace.actions.openNewWindowFailed"));
+        });
+      return;
+    }
+    if (isWeb && typeof window !== "undefined") {
+      try {
+        window.open(route, "_blank");
+      } catch (error) {
+        console.warn("[sidebar] window.open failed", error);
+        toast.error(t("sidebar.workspace.actions.openNewWindowFailed"));
+      }
+    }
+  }, [openInFileManagerPath, serverId, t, toast, workspaceId]);
+
+  const canOpenInNewWindow = Boolean(isWeb || getIsElectron());
+  const openInNewWindowAction =
+    onOpenInNewWindow ??
+    (canOpenInNewWindow && serverId && workspaceId ? handleOpenInNewWindow : undefined);
   const archiveTrailing = useMemo(
     () => (archiveShortcutKeys ? <Shortcut chord={archiveShortcutKeys} /> : null),
     [archiveShortcutKeys],
@@ -249,6 +295,16 @@ function SidebarWorkspaceMenuItems({
         path={openInFileManagerPath}
         testID={`sidebar-workspace-menu-open-folder-${workspaceKey}`}
       />
+      {openInNewWindowAction ? (
+        <WorkspaceMenuItem
+          surface={surface}
+          testID={`sidebar-workspace-menu-open-new-window-${workspaceKey}`}
+          leading={openInNewWindowLeadingIcon}
+          onSelect={openInNewWindowAction}
+        >
+          {t("sidebar.workspace.actions.openNewWindow")}
+        </WorkspaceMenuItem>
+      ) : null}
       {onArchive ? (
         <WorkspaceMenuItem
           surface={surface}

@@ -4,9 +4,11 @@ import {
   buildHostRootRoute,
   buildHostWorkspaceOpenRoute,
   buildHostWorkspaceRoute,
+  buildHostWorkspaceTabRoute,
   buildItsaplanRoute,
   buildNewWorkspaceRoute,
   buildOpenProjectRoute,
+  buildWorkspaceTabOpenIntent,
   resolveKnownHostRoute,
   buildSessionsRoute,
   buildSettingsAddHostRoute,
@@ -128,6 +130,26 @@ describe("workspace route parsing", () => {
     expect(buildHostWorkspaceOpenRoute("local", "164", "draft:new")).toBe(
       "/h/local/workspace/164?open=draft%3Anew",
     );
+  });
+
+  it("builds tab open intent and host workspace tab route correctly", () => {
+    expect(buildWorkspaceTabOpenIntent({ kind: "agent", agentId: "agent-123" })).toBe(
+      "agent:agent-123",
+    );
+    expect(buildWorkspaceTabOpenIntent({ kind: "terminal", terminalId: "term-456" })).toBe(
+      "terminal:term-456",
+    );
+    expect(buildWorkspaceTabOpenIntent({ kind: "changes_tree" })).toBe("changes_tree");
+    expect(buildWorkspaceTabOpenIntent({ kind: "files" })).toBe("files");
+    expect(buildWorkspaceTabOpenIntent({ kind: "pull_request" })).toBe("pull_request");
+
+    expect(
+      buildHostWorkspaceTabRoute("local", "wks_1", { kind: "agent", agentId: "agent-123" }),
+    ).toBe("/h/local/workspace/wks_1?open=agent%3Aagent-123");
+
+    expect(
+      buildHostWorkspaceTabRoute("local", "wks_1", { kind: "terminal", terminalId: "term-456" }),
+    ).toBe("/h/local/workspace/wks_1?open=terminal%3Aterm-456");
   });
 
   it("strips route params repeated as workspace route search params", () => {

@@ -3,12 +3,13 @@ import { pluginSettings } from "./plugin-settings";
 
 export const zhCN: TranslationResources = {
   paneFind: {
-    searchFailed: "无法搜索此聊天。请检查主机连接后重试。",
+    connectionFailure: "无法搜索此聊天。请检查主机连接后重试。",
+    historyChangedFailure: "搜索期间聊天已更改。请重新搜索。",
+    revealFailure: "无法显示此匹配项。请重试。",
     searching: "搜索中…",
     loading: "加载中…",
     failed: "失败",
     retry: "重试",
-    chatPosition: "消息内第 {{current}} 项，共 {{total}} 项",
 
     title: "查找",
     placeholder: "在窗格中查找",
@@ -28,6 +29,7 @@ export const zhCN: TranslationResources = {
     back: "返回",
     loading: "加载中...",
     actions: {
+      backToGrid: en.common.actions.backToGrid,
       back: "返回",
       cancel: "取消",
       close: "关闭",
@@ -731,6 +733,8 @@ export const zhCN: TranslationResources = {
         copyTerminalId: "复制 Terminal ID",
         copyFilePath: "Copy file path",
         moveToNewWorkspace: "移动到新工作区",
+        openInNewWindow: "在新窗口中打开",
+        openInNewWindowFailed: "无法打开新窗口",
         rename: "重命名",
         closeAbove: "关闭上方标签",
         closeBelow: "关闭下方标签",
@@ -1373,6 +1377,8 @@ export const zhCN: TranslationResources = {
         copyPath: "复制路径",
         copyBranchName: "复制分支名称",
         rename: "重命名 workspace",
+        openNewWindow: "在新窗口中打开",
+        openNewWindowFailed: "无法打开新窗口",
         pin: "置顶",
         unpin: "取消置顶",
         askHistory: "Ask history…",
@@ -2173,6 +2179,14 @@ export const zhCN: TranslationResources = {
       host: "概览",
     },
     missionControl: {
+      approvalMode: en.settings.missionControl.approvalMode,
+      approvalModeHint: en.settings.missionControl.approvalModeHint,
+      verbose: en.settings.missionControl.verbose,
+      verboseHint: en.settings.missionControl.verboseHint,
+      clearView: en.settings.missionControl.clearView,
+      clearViewHint: en.settings.missionControl.clearViewHint,
+      resetCommander: en.settings.missionControl.resetCommander,
+      resetCommanderHint: en.settings.missionControl.resetCommanderHint,
       memory: "记忆",
       hindsightUrl: "Hindsight URL",
       hindsightUrlHint: "Hindsight API 基础 URL。留空将禁用集群记忆（运行记录写入和召回）。",
@@ -2336,6 +2350,7 @@ export const zhCN: TranslationResources = {
       },
     },
     appearance: {
+      agentGrid: en.settings.appearance.agentGrid,
       theme: {
         title: "主题",
         accessibilityLabel: "主题：{{value}}",

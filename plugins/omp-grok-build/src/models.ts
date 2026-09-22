@@ -33,8 +33,47 @@ interface CuratedOverlay {
 }
 
 const CURATED: Record<string, CuratedOverlay> = {
+	"grok-4.7": {
+		name: "Grok 4.7 (Grok Build CLI)",
+		reasoning: true,
+		input: ["text", "image"],
+		contextWindow: 500_000,
+		maxTokens: 64_000,
+		compat: {
+			supportsReasoningEffort: true,
+			supportsReasoningParams: true,
+			reasoningEffortMap: { minimal: "low" },
+			promptCacheSessionHeader: "x-grok-conv-id",
+		},
+	},
+	"grok-4.7-build-fast": {
+		name: "Grok 4.7 Fast (Grok Build CLI)",
+		reasoning: true,
+		input: ["text", "image"],
+		contextWindow: 500_000,
+		maxTokens: 64_000,
+		compat: {
+			supportsReasoningEffort: true,
+			supportsReasoningParams: true,
+			reasoningEffortMap: { minimal: "low" },
+			promptCacheSessionHeader: "x-grok-conv-id",
+		},
+	},
 	"grok-4.6": {
 		name: "Grok 4.6 (Grok Build CLI)",
+		reasoning: true,
+		input: ["text", "image"],
+		contextWindow: 500_000,
+		maxTokens: 64_000,
+		compat: {
+			supportsReasoningEffort: true,
+			supportsReasoningParams: true,
+			reasoningEffortMap: { minimal: "low", xhigh: "high" },
+			promptCacheSessionHeader: "x-grok-conv-id",
+		},
+	},
+	"grok-4.5": {
+		name: "Grok 4.5 (Grok Build CLI)",
 		reasoning: true,
 		input: ["text", "image"],
 		contextWindow: 500_000,

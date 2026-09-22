@@ -520,7 +520,7 @@ test("routes plugin requests and releases its owned catalog subscription on clea
       return request;
     },
     emit: () => {},
-    listPlugins: () => [plugin],
+    listPlugins: async () => [plugin],
     getLogs: () => [
       {
         sequence: 1,

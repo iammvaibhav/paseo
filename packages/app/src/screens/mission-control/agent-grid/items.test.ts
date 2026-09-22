@@ -11,6 +11,7 @@ interface RowFixture {
   turn?: TurnLiveness;
   name?: string;
   sortTime?: number;
+  archivedAt?: Date | null;
 }
 
 function makeRow(fixture: RowFixture): LifecycleRow {
@@ -46,7 +47,7 @@ function makeRow(fixture: RowFixture): LifecycleRow {
       attentionReason: null,
       attentionTimestamp: null,
       stoppedBy: null,
-      archivedAt: null,
+      archivedAt: fixture.archivedAt ?? null,
       createdAt: new Date(0),
       labels: {},
       projectPlacement: null,
@@ -207,5 +208,108 @@ describe("buildAgentGridItems", () => {
       }
       expect(item).toBe(beforeByKey.get(item.key));
     }
+  });
+
+  it("freezes snapshot order even when timestamps or sections change", () => {
+    const a = makeRow({ id: "a", bucket: "running", turn: openTurn(1_000) });
+    const b = makeRow({ id: "b", bucket: "ready", sortTime: 200 });
+    const c = makeRow({ id: "c", bucket: "running", turn: openTurn(500) });
+
+    const snapshotKeys = ["local:a", "local:b", "local:c"];
+    const initial = buildAgentGridItems([a, b, c], undefined, snapshotKeys);
+    expect(keysOf(initial)).toEqual(["local:a", "local:b", "local:c"]);
+
+    // Row c starts a newer run that would sort first dynamically.
+    // Row b also starts running.
+    const cNewRun = makeRow({ id: "c", bucket: "running", turn: openTurn(10_000) });
+    const bRunning = makeRow({ id: "b", bucket: "running", turn: openTurn(8_000) });
+    const updated = buildAgentGridItems([a, bRunning, cNewRun], initial, snapshotKeys);
+
+    // Order remains frozen in snapshot order
+    expect(keysOf(updated)).toEqual(["local:a", "local:b", "local:c"]);
+    // In-place section update for b
+    expect(updated[1]).toMatchObject({ key: "local:b", section: "running" });
+    // a was untouched, keeps reference identity
+    expect(updated[0]).toBe(initial[0]);
+  });
+
+  it("appends newcomers after snapshot items, sorted running then ready", () => {
+    const snap1 = makeRow({ id: "s1", bucket: "running", turn: openTurn(1_000) });
+    const snap2 = makeRow({ id: "s2", bucket: "ready", sortTime: 100 });
+    const snapshotKeys = ["local:s1", "local:s2"];
+
+    // Newcomers: two running with different start times, one ready
+    const newRunOld = makeRow({ id: "nro", bucket: "running", turn: openTurn(2_000) });
+    const newRunNew = makeRow({ id: "nrn", bucket: "running", turn: openTurn(5_000) });
+    const newReady = makeRow({ id: "nready", bucket: "ready", sortTime: 300 });
+
+    const items = buildAgentGridItems(
+      [snap1, snap2, newRunOld, newRunNew, newReady],
+      undefined,
+      snapshotKeys,
+    );
+
+    expect(keysOf(items)).toEqual([
+      "local:s1",
+      "local:s2",
+      "local:nrn",
+      "local:nro",
+      "local:nready",
+    ]);
+    expect(items.map((item) => item.section)).toEqual([
+      "running",
+      "ready",
+      "running",
+      "running",
+      "ready",
+    ]);
+  });
+
+  it("does not append newcomers that are done", () => {
+    const snap1 = makeRow({ id: "s1", bucket: "running", turn: openTurn(1_000) });
+    const snapshotKeys = ["local:s1"];
+    const doneNewcomer = makeRow({ id: "dnew", bucket: "done" });
+
+    const items = buildAgentGridItems([snap1, doneNewcomer], undefined, snapshotKeys);
+    expect(keysOf(items)).toEqual(["local:s1"]);
+  });
+
+  it("retains an agent in snapshot that transitions to done with section done", () => {
+    const a = makeRow({ id: "a", bucket: "running", turn: openTurn(2_000) });
+    const b = makeRow({ id: "b", bucket: "ready", sortTime: 100 });
+    const snapshotKeys = ["local:a", "local:b"];
+
+    const initial = buildAgentGridItems([a, b], undefined, snapshotKeys);
+    expect(keysOf(initial)).toEqual(["local:a", "local:b"]);
+
+    // a finishes and transitions to done
+    const aDone = makeRow({ id: "a", bucket: "done" });
+    const updated = buildAgentGridItems([aDone, b], initial, snapshotKeys);
+
+    expect(keysOf(updated)).toEqual(["local:a", "local:b"]);
+    expect(updated[0]).toMatchObject({ key: "local:a", section: "done" });
+    expect(updated[1]).toBe(initial[1]);
+  });
+
+  it("removes an agent immediately when archived or removed from rows", () => {
+    const a = makeRow({ id: "a", bucket: "running", turn: openTurn(2_000) });
+    const b = makeRow({ id: "b", bucket: "ready", sortTime: 100 });
+    const c = makeRow({ id: "c", bucket: "running", turn: openTurn(1_000) });
+    const snapshotKeys = ["local:a", "local:b", "local:c"];
+
+    const initial = buildAgentGridItems([a, b, c], undefined, snapshotKeys);
+    expect(keysOf(initial)).toEqual(["local:a", "local:b", "local:c"]);
+
+    // a is archived, c is removed from rows entirely
+    const aArchived = makeRow({
+      id: "a",
+      bucket: "running",
+      turn: openTurn(2_000),
+      archivedAt: new Date("2026-09-22T10:00:00.000Z"),
+    });
+    const updated = buildAgentGridItems([aArchived, b], initial, snapshotKeys);
+
+    expect(keysOf(updated)).toEqual(["local:b"]);
+    expect(updated[0]).toBe(initial[1]);
   });
 });

@@ -1795,6 +1795,8 @@ export class VoiceAssistantWebSocketServer {
         plugins: true,
         pluginManagement: true,
         pluginGitManagement: true,
+        pluginSourceInstallation: true,
+        pluginSourceUpdates: true,
         pluginLogs: true,
         // COMPAT(loaderSpanReport): added in v0.4.0, remove gate after 2027-08-15.
         loaderSpanReport: true,

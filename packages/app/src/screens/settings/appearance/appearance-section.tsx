@@ -18,6 +18,13 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { SettingsCard, SettingsSwitch } from "@/components/settings";
 import { SettingsSection } from "@/components/settings/headings/settings-section";
+import { SegmentedControl, type SegmentedControlOption } from "@/components/ui/segmented-control";
+import { useAgentGridStore } from "@/screens/mission-control/agent-grid/store";
+import {
+  type AgentGridDirection,
+  MIN_AGENT_GRID_VISIBLE_COUNT,
+  MAX_AGENT_GRID_VISIBLE_COUNT,
+} from "@/hooks/use-settings/storage";
 import { useContributedThemes } from "@/appearance/provider";
 import { EditingTextInput as TextInput } from "@/components/ui/text-input";
 import {
@@ -437,6 +444,44 @@ function FontSizeRow({
     </View>
   );
 }
+const AGENT_GRID_DIRECTION_OPTIONS: SegmentedControlOption<AgentGridDirection>[] = [
+  {
+    value: "horizontal",
+    label: "Horizontal",
+    testID: "settings-appearance-agent-grid-direction-horizontal",
+  },
+  {
+    value: "vertical",
+    label: "Vertical",
+    testID: "settings-appearance-agent-grid-direction-vertical",
+  },
+];
+
+interface AgentGridDirectionRowProps {
+  value: AgentGridDirection;
+  onChange: (value: AgentGridDirection) => void;
+}
+
+function AgentGridDirectionRow({ value, onChange }: AgentGridDirectionRowProps) {
+  const { t } = useTranslation();
+  return (
+    <View style={settingsStyles.row}>
+      <View style={settingsStyles.rowContent}>
+        <Text style={settingsStyles.rowTitle}>{t("settings.appearance.agentGrid.direction")}</Text>
+        <Text style={settingsStyles.rowHint}>
+          {t("settings.appearance.agentGrid.directionHint")}
+        </Text>
+      </View>
+      <SegmentedControl<AgentGridDirection>
+        options={AGENT_GRID_DIRECTION_OPTIONS}
+        value={value}
+        onValueChange={onChange}
+        size="sm"
+        testID="settings-appearance-agent-grid-direction"
+      />
+    </View>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Syntax highlight theme picker (commits immediately)
@@ -529,6 +574,9 @@ export function AppearanceSection() {
   const [contentSizeDraft, setContentSizeDraft] = useState(String(settings.contentFontSize));
   const [agentGridSizeDraft, setAgentGridSizeDraft] = useState(String(settings.agentGridFontSize));
   const [codeSizeDraft, setCodeSizeDraft] = useState(String(settings.codeFontSize));
+  const [agentGridVisibleCountDraft, setAgentGridVisibleCountDraft] = useState(
+    String(settings.agentGridVisibleCount),
+  );
 
   // Resync numeric drafts when the committed value changes elsewhere.
   useEffect(() => {
@@ -543,6 +591,9 @@ export function AppearanceSection() {
   useEffect(() => {
     setCodeSizeDraft(String(settings.codeFontSize));
   }, [settings.codeFontSize]);
+  useEffect(() => {
+    setAgentGridVisibleCountDraft(String(settings.agentGridVisibleCount));
+  }, [settings.agentGridVisibleCount]);
 
   const handleThemeChange = useCallback(
     (theme: BuiltInThemePreference) => {
@@ -668,6 +719,31 @@ export function AppearanceSection() {
     }
   }, [contentSizeDraft, settings.contentFontSize, updateSettings]);
 
+  const handleAgentGridVisibleCountChange = useCallback((text: string) => {
+    setAgentGridVisibleCountDraft(text.replace(/[^0-9]/g, ""));
+  }, []);
+
+  const commitAgentGridVisibleCount = useCallback(() => {
+    const parsed = parseClampedFontSize(agentGridVisibleCountDraft, {
+      min: MIN_AGENT_GRID_VISIBLE_COUNT,
+      max: MAX_AGENT_GRID_VISIBLE_COUNT,
+    });
+    const next = parsed ?? settings.agentGridVisibleCount;
+    setAgentGridVisibleCountDraft(String(next));
+    if (next !== settings.agentGridVisibleCount) {
+      void updateSettings({ agentGridVisibleCount: next });
+      useAgentGridStore.getState().setVisibleCount(next);
+    }
+  }, [agentGridVisibleCountDraft, settings.agentGridVisibleCount, updateSettings]);
+
+  const handleAgentGridDirectionChange = useCallback(
+    (direction: AgentGridDirection) => {
+      void updateSettings({ agentGridDirection: direction });
+      useAgentGridStore.getState().setDirection(direction);
+    },
+    [updateSettings],
+  );
+
   const commitAgentGridSize = useCallback(() => {
     const parsed = parseClampedFontSize(agentGridSizeDraft, {
       min: MIN_AGENT_GRID_FONT_SIZE,
@@ -757,15 +833,6 @@ export function AppearanceSection() {
             onChangeDraft={handleContentSizeChange}
             onCommit={commitContentSize}
           />
-          <FontSizeRow
-            title={t("settings.appearance.fonts.agentGridSize")}
-            hint={t("settings.appearance.fonts.agentGridSizeHint")}
-            accessibilityLabel={t("settings.appearance.fonts.agentGridSizeAccessibility")}
-            draft={agentGridSizeDraft}
-            testID="settings-appearance-agent-grid-size"
-            onChangeDraft={handleAgentGridSizeChange}
-            onCommit={commitAgentGridSize}
-          />
           <FontFamilyRow
             title={t("settings.appearance.fonts.codeFont")}
             hint={t("settings.appearance.fonts.codeFontHint")}
@@ -784,6 +851,34 @@ export function AppearanceSection() {
             draft={codeSizeDraft}
             onChangeDraft={handleCodeSizeChange}
             onCommit={commitCodeSize}
+          />
+        </View>
+      </SettingsSection>
+      <SettingsSection title={t("settings.appearance.agentGrid.title")}>
+        <View style={settingsStyles.card}>
+          <AgentGridDirectionRow
+            value={settings.agentGridDirection}
+            onChange={handleAgentGridDirectionChange}
+          />
+          <FontSizeRow
+            title={t("settings.appearance.agentGrid.visibleCount")}
+            hint={t("settings.appearance.agentGrid.visibleCountHint")}
+            accessibilityLabel={t("settings.appearance.agentGrid.visibleCount")}
+            draft={agentGridVisibleCountDraft}
+            withBorder
+            testID="settings-appearance-agent-grid-visible-count"
+            onChangeDraft={handleAgentGridVisibleCountChange}
+            onCommit={commitAgentGridVisibleCount}
+          />
+          <FontSizeRow
+            title={t("settings.appearance.agentGrid.fontSize")}
+            hint={t("settings.appearance.agentGrid.fontSizeHint")}
+            accessibilityLabel={t("settings.appearance.fonts.agentGridSizeAccessibility")}
+            draft={agentGridSizeDraft}
+            withBorder
+            testID="settings-appearance-agent-grid-size"
+            onChangeDraft={handleAgentGridSizeChange}
+            onCommit={commitAgentGridSize}
           />
         </View>
       </SettingsSection>

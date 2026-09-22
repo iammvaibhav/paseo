@@ -13,13 +13,43 @@ export type MissionControlView = "commander" | "grid";
 export const AGENT_GRID_VISIBLE_COUNT_OPTIONS = [1, 2, 4, 6, 8, 9, 12, 16] as const;
 export const AGENT_GRID_DEFAULT_VISIBLE_COUNT = 6;
 
-interface AgentGridStoreState {
+export interface AgentGridDraftState {
+  id: string;
+  serverId: string | null;
+  workspaceId: string | null;
+  projectKey: string | null;
+}
+
+export interface AgentGridNavigatedFrom {
+  serverId: string;
+  agentId: string;
+}
+
+export interface AgentGridStoreState {
   view: MissionControlView;
   visibleCount: number;
   direction: AgentGridDirection;
   setView: (view: MissionControlView) => void;
   setVisibleCount: (count: number) => void;
   setDirection: (direction: AgentGridDirection) => void;
+
+  snapshotKeys: string[] | null;
+  snapshotVersion: number;
+  enterGrid: (keys: string[]) => void;
+  clearSnapshot: () => void;
+
+  glowKey: string | null;
+  setGlow: (key: string | null) => void;
+
+  activeKey: string | null;
+  setActiveKey: (key: string | null) => void;
+
+  draft: AgentGridDraftState | null;
+  setDraft: (draft: AgentGridDraftState | null) => void;
+  clearDraft: () => void;
+
+  navigatedFromGrid: AgentGridNavigatedFrom | null;
+  setNavigatedFromGrid: (navigated: AgentGridNavigatedFrom | null) => void;
 }
 
 export interface AgentGridPersistedState {
@@ -64,6 +94,28 @@ export const useAgentGridStore: UseBoundStore<StoreApi<AgentGridStoreState>> =
           set({ visibleCount: clamped });
         },
         setDirection: (direction) => set({ direction }),
+
+        snapshotKeys: null,
+        snapshotVersion: 0,
+        enterGrid: (keys) =>
+          set((state) => ({
+            snapshotKeys: keys,
+            snapshotVersion: state.snapshotVersion + 1,
+          })),
+        clearSnapshot: () => set({ snapshotKeys: null }),
+
+        glowKey: null,
+        setGlow: (glowKey) => set({ glowKey }),
+
+        activeKey: null,
+        setActiveKey: (activeKey) => set({ activeKey }),
+
+        draft: null,
+        setDraft: (draft) => set({ draft }),
+        clearDraft: () => set({ draft: null }),
+
+        navigatedFromGrid: null,
+        setNavigatedFromGrid: (navigatedFromGrid) => set({ navigatedFromGrid }),
       }),
       {
         name: AGENT_GRID_STORAGE_KEY,

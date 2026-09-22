@@ -108,6 +108,7 @@ const OmpUsageLimitSchema = z
     label: z.string().optional(),
     status: z.string().optional(),
     amount: OmpUsageAmountSchema.optional(),
+    scope: z.record(z.string(), z.unknown()).optional(),
     window: z
       .object({
         id: z.string().optional(),
@@ -593,7 +594,137 @@ function mapAntigravityQuotaSummary(
     displayName,
     status: "available",
     planLabel: null,
-    windows,
+    windows: sortAntigravityWindows(windows),
+    balances: [],
+    details,
+    error: null,
+    sourceLabel: "via OMP",
+  };
+}
+function antigravityWindowOrder(label: string): number {
+  const lower = label.toLowerCase();
+  const isGemini = lower.includes("gemini");
+  const is5h = lower.includes("five hour") || lower.includes("5h") || lower.includes("5 hour");
+  const isWeekly = lower.includes("weekly") || lower.includes("week");
+
+  if (isGemini && is5h) return 1;
+  if (isGemini && isWeekly) return 2;
+  if (!isGemini && is5h) return 3;
+  if (!isGemini && isWeekly) return 4;
+  return 99;
+}
+
+function sortAntigravityWindows(windows: ProviderUsageWindow[]): ProviderUsageWindow[] {
+  return [...windows].sort((a, b) => {
+    return antigravityWindowOrder(a.label) - antigravityWindowOrder(b.label);
+  });
+}
+
+function formatAntigravityLimitLabel(rawLabel: string, limitId: string, isWeekly: boolean): string {
+  const lower = rawLabel.toLowerCase();
+  if (lower.includes("gemini")) {
+    return isWeekly ? "Gemini · Weekly Limit Remaining" : "Gemini · Five Hour Limit Remaining";
+  }
+  if (lower.includes("claude") || lower.includes("gpt") || limitId.includes("3p")) {
+    return isWeekly
+      ? "Claude/GPT · Weekly Limit Remaining"
+      : "Claude/GPT · Five Hour Limit Remaining";
+  }
+  return rawLabel;
+}
+
+function mapAntigravityReportLimits(
+  limits: readonly z.infer<typeof OmpUsageLimitSchema>[],
+): ProviderUsageWindow[] {
+  const windows: ProviderUsageWindow[] = [];
+  const seenShared = new Set<string>();
+
+  for (const limit of limits) {
+    const sharedGroup =
+      typeof limit.scope?.["sharedGroup"] === "string"
+        ? (limit.scope["sharedGroup"] as string).trim()
+        : null;
+    if (sharedGroup) {
+      if (seenShared.has(sharedGroup)) continue;
+      seenShared.add(sharedGroup);
+    }
+
+    const usedPct = usedPctFromAmount(limit.amount);
+    if (usedPct === null) continue;
+
+    const rawLabel = limit.label?.trim() || "";
+    const windowLabel = limit.window?.label?.trim() || "";
+    const windowId = limit.window?.id?.trim() || "";
+    const isWeekly =
+      windowId.includes("weekly") ||
+      windowLabel.toLowerCase().includes("week") ||
+      limit.id.includes("weekly");
+
+    const formattedLabel = formatAntigravityLimitLabel(rawLabel, limit.id, isWeekly);
+    const resetsAt =
+      typeof limit.window?.resetsAt === "number" ? toIsoStringOrNull(limit.window.resetsAt) : null;
+
+    windows.push(
+      windowFromUsedPct({
+        id: limit.id,
+        label: formattedLabel,
+        utilizationPct: usedPct,
+        resetsAt,
+        tone: toneFromUsedPct(usedPct),
+      }),
+    );
+  }
+
+  return sortAntigravityWindows(windows);
+}
+
+function mapAntigravityReportToUsage(
+  report: z.infer<typeof OmpUsageReportSchema>,
+  identity: OmpProviderIdentity,
+  options: { isMultiAccount: boolean; reportIndex: number },
+): ProviderUsage | null {
+  const email = typeof report.metadata?.email === "string" ? report.metadata.email.trim() : null;
+  const accountId =
+    typeof report.metadata?.accountId === "string" ? report.metadata.accountId.trim() : null;
+  const orgName =
+    typeof report.metadata?.orgName === "string" ? report.metadata.orgName.trim() : null;
+
+  const emailOrIdentity = email || accountId || `account-${options.reportIndex + 1}`;
+  const { providerId, groupId } = resolveOmpCardIds(
+    identity.providerId,
+    emailOrIdentity,
+    options.isMultiAccount,
+  );
+
+  if (report.raw) {
+    const parsed = AntigravityQuotaSummarySchema.safeParse(report.raw);
+    if (parsed.success && (parsed.data.groups?.length ?? 0) > 0) {
+      const agyUsage = mapAntigravityQuotaSummary(
+        parsed.data,
+        email,
+        providerId,
+        groupId,
+        identity.displayName,
+      );
+      if (agyUsage) return agyUsage;
+    }
+  }
+
+  const agyWindows = mapAntigravityReportLimits(report.limits ?? []);
+  if (agyWindows.length === 0) return null;
+
+  const details: ProviderUsageDetail[] = [];
+  if (email) details.push({ id: "account_email", label: "Account", value: email });
+  if (orgName) details.push({ id: "org_name", label: "Org", value: orgName });
+
+  return {
+    providerId,
+    groupId,
+    accountEmail: email ?? undefined,
+    displayName: identity.displayName,
+    status: "available",
+    planLabel: resolveOmpPlanLabel(report.metadata),
+    windows: agyWindows,
     balances: [],
     details,
     error: null,
@@ -606,24 +737,15 @@ function mapOmpReportToUsage(
   options: { isMultiAccount: boolean; reportIndex: number },
 ): ProviderUsage | null {
   const identity = resolveOmpIdentity(report.provider);
-  const windows: ProviderUsageWindow[] = [];
-  const balances: ProviderUsageBalance[] = [];
-  const details: ProviderUsageDetail[] = [];
-  for (const limit of report.limits ?? []) {
-    appendOmpLimit(limit, windows, balances);
-  }
-
   const email = typeof report.metadata?.email === "string" ? report.metadata.email.trim() : null;
   const accountId =
     typeof report.metadata?.accountId === "string" ? report.metadata.accountId.trim() : null;
   const orgName =
     typeof report.metadata?.orgName === "string" ? report.metadata.orgName.trim() : null;
 
-  if (email) details.push({ id: "account_email", label: "Account", value: email });
-  if (orgName) details.push({ id: "org_name", label: "Org", value: orgName });
-
-  if (windows.length === 0 && balances.length === 0 && details.length === 0) {
-    return null;
+  if (report.provider === "google-antigravity") {
+    const agyUsage = mapAntigravityReportToUsage(report, identity, options);
+    if (agyUsage) return agyUsage;
   }
 
   const emailOrIdentity = email || accountId || `account-${options.reportIndex + 1}`;
@@ -633,6 +755,20 @@ function mapOmpReportToUsage(
     options.isMultiAccount,
   );
   const displayName = identity.displayName;
+
+  const windows: ProviderUsageWindow[] = [];
+  const balances: ProviderUsageBalance[] = [];
+  const details: ProviderUsageDetail[] = [];
+  for (const limit of report.limits ?? []) {
+    appendOmpLimit(limit, windows, balances);
+  }
+
+  if (email) details.push({ id: "account_email", label: "Account", value: email });
+  if (orgName) details.push({ id: "org_name", label: "Org", value: orgName });
+
+  if (windows.length === 0 && balances.length === 0 && details.length === 0) {
+    return null;
+  }
 
   return {
     providerId,

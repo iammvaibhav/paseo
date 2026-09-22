@@ -4,6 +4,7 @@ import { StyleSheet } from "react-native-unistyles";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useShallow } from "zustand/react/shallow";
 import { AgentStreamView } from "@/agent-stream/view";
+import { createPaneFocusContextValue, PaneFocusProvider } from "@/panels/pane-context";
 import { Composer } from "@/composer";
 import { useAgentInputDraft } from "@/composer/draft/input-draft";
 import { getActiveMessageSubmissions } from "@/composer/submission/model";
@@ -218,9 +219,20 @@ export function EmbeddedAgentPane({
     () => (compactChrome ? undefined : { paddingBottom: insets.bottom }),
     [compactChrome, insets.bottom],
   );
+  // AgentStreamView's chat find requires pane focus. This host is not a
+  // workspace tab, so isFocused is both the workspace and the pane signal.
+  const paneFocus = useMemo(
+    () =>
+      createPaneFocusContextValue({
+        isWorkspaceFocused: isFocused,
+        isPaneFocused: isFocused,
+        onFocusPane: onComposerFocus,
+      }),
+    [isFocused, onComposerFocus],
+  );
 
   return (
-    <>
+    <PaneFocusProvider value={paneFocus}>
       <View style={styles.streamArea}>
         <AgentStreamView
           agentId={agentId}
@@ -260,7 +272,7 @@ export function EmbeddedAgentPane({
           )}
         </View>
       ) : null}
-    </>
+    </PaneFocusProvider>
   );
 }
 

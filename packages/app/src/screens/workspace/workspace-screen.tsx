@@ -40,6 +40,7 @@ import { RetainedPanel } from "@/components/retained-panel";
 import { WorkspaceActions } from "@/git/workspace-actions";
 import { WorkspaceOpenInEditorButton } from "@/workspace/open-in-editor/button";
 import { WorkspaceScriptsButton } from "@/screens/workspace/workspace-scripts-button";
+import { BackToGridButton } from "@/screens/workspace/back-to-grid-button";
 import { ImportSessionSheet } from "@/components/import-session-sheet";
 import { useNavigateToImportedAgent } from "@/hooks/use-import-session";
 import { useToast } from "@/contexts/toast-context";
@@ -88,7 +89,7 @@ import {
   type WorkspaceTab,
   type WorkspaceTabTarget,
 } from "@/workspace-tabs/model";
-import { useSettings } from "@/hooks/use-settings";
+import { useAppSettings, useSettings } from "@/hooks/use-settings";
 import { useKeyboardActionHandler } from "@/hooks/use-keyboard-action-handler";
 import { buildWorkspaceKeyboardHandlerId } from "@/keyboard/handler-id";
 import type {
@@ -236,7 +237,6 @@ import {
 } from "@/workspace/preload-browser-editor";
 import { RenderProfile } from "@/utils/render-profiler";
 import { useWorkspaceCheckoutStatus } from "@/screens/workspace/use-workspace-checkout-status";
-import { useAppSettings } from "@/hooks/use-settings";
 import { useIsLocalDaemon } from "@/hooks/use-is-local-daemon";
 import { useHasPullRequest, usePullRequestAutoAdd } from "@/panels/pull-request";
 
@@ -282,7 +282,12 @@ const ThemedChevronDown = withUnistyles(ChevronDown);
 
 const mutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 
-const GATED_WORKSPACE_HEADER_LEFT = <SidebarMenuToggle />;
+const GATED_WORKSPACE_HEADER_LEFT = (
+  <>
+    <BackToGridButton />
+    <SidebarMenuToggle />
+  </>
+);
 
 interface WorkspaceScreenProps {
   serverId: string;
@@ -661,6 +666,7 @@ function MobileWorkspaceTabOption({
       copyTerminalId: t("workspace.tabs.menu.copyTerminalId"),
       copyFilePath: t("workspace.tabs.menu.copyFilePath"),
       moveToNewWorkspace: t("workspace.tabs.menu.moveToNewWorkspace"),
+      openInNewWindow: t("workspace.tabs.menu.openInNewWindow"),
       rename: t("workspace.tabs.menu.rename"),
       closeAbove: t("workspace.tabs.menu.closeAbove"),
       closeBelow: t("workspace.tabs.menu.closeBelow"),
@@ -4303,6 +4309,7 @@ function WorkspaceScreenContent({
         <ScreenHeader
           left={
             <>
+              <BackToGridButton />
               <SidebarMenuToggle />
               <WorkspaceHeaderTitleBar
                 isLoading={isWorkspaceHeaderLoading}

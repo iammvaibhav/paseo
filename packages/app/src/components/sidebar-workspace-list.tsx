@@ -46,7 +46,6 @@ import {
   Plus,
   SquareKanban,
   Trash2,
-  Home,
 } from "lucide-react-native";
 import { NestableScrollContainer } from "react-native-draggable-flatlist";
 import { DraggableList, type DraggableRenderItemInfo } from "./draggable-list";
@@ -190,7 +189,6 @@ const ThemedMoreVertical = withUnistyles(MoreVertical);
 const ThemedTrash2 = withUnistyles(Trash2);
 const ThemedSettings = withUnistyles(Settings);
 const ThemedMessageCircleQuestion = withUnistyles(MessageCircleQuestion);
-const ThemedHome = withUnistyles(Home);
 
 const foregroundColorMapping = (theme: Theme) => ({
   color: theme.colors.foreground,
@@ -439,7 +437,6 @@ function ProjectRowTrailingActions({
   projectViewKey,
   displayName,
   worktreeTarget,
-  baseWorkspaceTarget,
   settingsTarget,
   projectPath,
   isHovered,
@@ -453,7 +450,6 @@ function ProjectRowTrailingActions({
   projectViewKey: string;
   displayName: string;
   worktreeTarget: SidebarProjectHostTarget | null;
-  baseWorkspaceTarget: SidebarProjectBaseWorkspaceTarget | null;
   settingsTarget: { serverId: string; projectId: string } | null;
   projectPath: string;
   isHovered: boolean;
@@ -499,7 +495,6 @@ function ProjectRowTrailingActions({
             project={project}
             projectViewKey={projectViewKey}
             projectName={displayName}
-            baseWorkspaceTarget={baseWorkspaceTarget}
             settingsTarget={settingsTarget}
             projectPath={projectPath}
             onRemoveProject={onRemoveProject}
@@ -516,9 +511,6 @@ const settingsLeadingIcon = <ThemedSettings size={14} uniProps={foregroundMutedC
 const openInNewWindowLeadingIcon = (
   <ThemedExternalLink size={14} uniProps={foregroundMutedColorMapping} />
 );
-const openBaseWorkspaceLeadingIcon = (
-  <ThemedHome size={14} uniProps={foregroundMutedColorMapping} />
-);
 
 function renderKebabTriggerIcon({ hovered }: { hovered?: boolean }) {
   return (
@@ -533,7 +525,6 @@ function ProjectKebabMenu({
   project,
   projectViewKey,
   projectName,
-  baseWorkspaceTarget,
   settingsTarget,
   projectPath,
   onRemoveProject,
@@ -542,7 +533,6 @@ function ProjectKebabMenu({
   project: SidebarProjectEntry;
   projectViewKey: string;
   projectName: string;
-  baseWorkspaceTarget: SidebarProjectBaseWorkspaceTarget | null;
   settingsTarget: { serverId: string; projectId: string } | null;
   projectPath: string;
   onRemoveProject: () => void;
@@ -566,7 +556,6 @@ function ProjectKebabMenu({
           project={project}
           projectViewKey={projectViewKey}
           projectName={projectName}
-          baseWorkspaceTarget={baseWorkspaceTarget}
           settingsTarget={settingsTarget}
           projectPath={projectPath}
           onRemoveProject={onRemoveProject}
@@ -597,7 +586,6 @@ function ProjectMenuItems({
   project,
   projectViewKey,
   projectName,
-  baseWorkspaceTarget,
   settingsTarget,
   projectPath,
   onRemoveProject,
@@ -607,7 +595,6 @@ function ProjectMenuItems({
   project: SidebarProjectEntry;
   projectViewKey: string;
   projectName: string;
-  baseWorkspaceTarget: SidebarProjectBaseWorkspaceTarget | null;
   settingsTarget: { serverId: string; projectId: string } | null;
   projectPath: string;
   onRemoveProject: () => void;
@@ -615,15 +602,6 @@ function ProjectMenuItems({
 }) {
   const { t } = useTranslation();
   const toast = useToast();
-  const setLastUsedProjectHost = useProjectHostPreferenceStore((state) => state.setLastUsedHost);
-  const handleOpenBaseWorkspace = useCallback(() => {
-    if (!baseWorkspaceTarget) return;
-    setLastUsedProjectHost(projectViewKey, baseWorkspaceTarget.serverId);
-    navigateToWorkspace({
-      serverId: baseWorkspaceTarget.serverId,
-      workspaceId: baseWorkspaceTarget.workspaceId,
-    });
-  }, [baseWorkspaceTarget, projectViewKey, setLastUsedProjectHost]);
   const handleOpenProjectSettings = useCallback(() => {
     if (!settingsTarget) return;
     router.navigate(buildProjectSettingsRoute(settingsTarget.serverId, settingsTarget.projectId));
@@ -672,16 +650,6 @@ function ProjectMenuItems({
 
   return (
     <>
-      {baseWorkspaceTarget ? (
-        <ProjectMenuItem
-          surface={surface}
-          testID={`sidebar-project-menu-open-base-workspace-${projectViewKey}`}
-          leading={openBaseWorkspaceLeadingIcon}
-          onSelect={handleOpenBaseWorkspace}
-        >
-          {t("sidebar.project.actions.openBaseWorkspace")}
-        </ProjectMenuItem>
-      ) : null}
       {settingsTarget ? (
         <ProjectMenuItem
           surface={surface}
@@ -1086,7 +1054,6 @@ function ProjectHeaderRow({
   const localDaemonServerId = useLocalDaemonServerId();
   const projectPath = resolveSidebarProjectLocalPath(project, localDaemonServerId);
   const settingsTarget = project.hosts[0] ?? null;
-  const setLastUsedProjectHost = useProjectHostPreferenceStore((state) => state.setLastUsedHost);
   const handleBeginWorkspaceSetup = useCallback(() => {
     if (!worktreeTarget) {
       return;
@@ -1101,20 +1068,6 @@ function ProjectHeaderRow({
       }) as Href,
     );
   }, [displayName, onWorkspacePress, worktreeTarget]);
-  // Row press opens the project's base workspace (ADR 0001) once a target resolves; expand/
-  // collapse then moves to the chevron's own press target below. No target (feature off, or no
-  // host has created a base workspace yet) keeps today's row-toggles-collapse behavior.
-  const handleOpenBaseWorkspace = useCallback(() => {
-    if (!baseWorkspaceTarget) {
-      return;
-    }
-    onWorkspacePress?.();
-    setLastUsedProjectHost(project.viewKey, baseWorkspaceTarget.serverId);
-    navigateToWorkspace({
-      serverId: baseWorkspaceTarget.serverId,
-      workspaceId: baseWorkspaceTarget.workspaceId,
-    });
-  }, [baseWorkspaceTarget, onWorkspacePress, project.viewKey, setLastUsedProjectHost]);
   const interaction = useLongPressDragInteraction({
     drag,
     menuController,
@@ -1146,12 +1099,8 @@ function ProjectHeaderRow({
       interaction.didLongPressRef.current = false;
       return;
     }
-    if (baseWorkspaceTarget) {
-      handleOpenBaseWorkspace();
-      return;
-    }
     onPress();
-  }, [interaction.didLongPressRef, baseWorkspaceTarget, handleOpenBaseWorkspace, onPress]);
+  }, [interaction.didLongPressRef, onPress]);
 
   const handlePointerEnter = useCallback(() => {
     if (!contextMenuOpen) setIsHovered(true);
@@ -1196,7 +1145,6 @@ function ProjectHeaderRow({
           chevron={chevron}
           showChevron={isHovered && chevron !== null}
           isArchiving={isArchiving}
-          onChevronPress={baseWorkspaceTarget ? onPress : undefined}
         />
 
         <View style={styles.projectTitleGroup}>
@@ -1210,7 +1158,6 @@ function ProjectHeaderRow({
         projectViewKey={project.viewKey}
         displayName={displayName}
         worktreeTarget={worktreeTarget}
-        baseWorkspaceTarget={baseWorkspaceTarget}
         settingsTarget={settingsTarget}
         projectPath={projectPath}
         isHovered={isHovered}
@@ -1291,7 +1238,6 @@ function ProjectHeaderRow({
           project={project}
           projectViewKey={project.viewKey}
           projectName={displayName}
-          baseWorkspaceTarget={baseWorkspaceTarget}
           settingsTarget={settingsTarget}
           projectPath={projectPath}
           onRemoveProject={onRemoveProject}

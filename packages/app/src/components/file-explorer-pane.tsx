@@ -1335,7 +1335,7 @@ function FileExplorerDropTarget({
             directoryPath,
             fileName: file.fileName,
             mimeType: file.mimeType,
-            bytes: file.bytes,
+            bytes: await file.readBytes(),
           });
           if (response.error) {
             throw new Error(response.error);

@@ -3,12 +3,13 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ar: TranslationResources = {
   paneFind: {
-    searchFailed: "تعذر البحث في هذه المحادثة. تحقق من الاتصال بالمضيف وأعد المحاولة.",
+    connectionFailure: "تعذر البحث في هذه المحادثة. تحقق من الاتصال بالمضيف وأعد المحاولة.",
+    historyChangedFailure: "تغيّرت المحادثة أثناء البحث. أعد البحث.",
+    revealFailure: "تعذر عرض هذا التطابق. أعد المحاولة.",
     searching: "جارٍ البحث…",
     loading: "جارٍ التحميل…",
     failed: "فشل",
     retry: "إعادة المحاولة",
-    chatPosition: "{{current}} من {{total}} في الرسالة",
 
     title: "بحث",
     placeholder: "بحث في اللوحة",
@@ -28,6 +29,7 @@ export const ar: TranslationResources = {
     back: "خلف",
     loading: "تحميل...",
     actions: {
+      backToGrid: en.common.actions.backToGrid,
       back: "خلف",
       cancel: "يلغي",
       close: "يغلق",
@@ -731,6 +733,8 @@ export const ar: TranslationResources = {
         copyTerminalId: "نسخ معرف المحطة",
         copyFilePath: "Copy file path",
         moveToNewWorkspace: "الانتقال إلى مساحة عمل جديدة",
+        openInNewWindow: "Open in new window",
+        openInNewWindowFailed: "Couldn't open a new window",
         rename: "إعادة تسمية",
         closeAbove: "إغلاق علامات التبويب أعلاه",
         closeBelow: "إغلاق علامات التبويب أدناه",
@@ -1388,6 +1392,8 @@ export const ar: TranslationResources = {
         copyPath: "نسخ المسار",
         copyBranchName: "انسخ اسم الفرع",
         rename: "إعادة تسمية مساحة العمل",
+        openNewWindow: "Open in new window",
+        openNewWindowFailed: "Couldn't open a new window",
         pin: "تثبيت في الأعلى",
         unpin: "إلغاء التثبيت",
         askHistory: "Ask history…",
@@ -2199,6 +2205,14 @@ export const ar: TranslationResources = {
       host: "نظرة عامة",
     },
     missionControl: {
+      approvalMode: en.settings.missionControl.approvalMode,
+      approvalModeHint: en.settings.missionControl.approvalModeHint,
+      verbose: en.settings.missionControl.verbose,
+      verboseHint: en.settings.missionControl.verboseHint,
+      clearView: en.settings.missionControl.clearView,
+      clearViewHint: en.settings.missionControl.clearViewHint,
+      resetCommander: en.settings.missionControl.resetCommander,
+      resetCommanderHint: en.settings.missionControl.resetCommanderHint,
       memory: "الذاكرة",
       hindsightUrl: "رابط Hindsight",
       hindsightUrlHint:
@@ -2365,6 +2379,7 @@ export const ar: TranslationResources = {
       },
     },
     appearance: {
+      agentGrid: en.settings.appearance.agentGrid,
       theme: {
         title: "سمة",
         accessibilityLabel: "الموضوع:{{value}}",
