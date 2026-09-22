@@ -31,6 +31,7 @@ export const ru: TranslationResources = {
     back: "Назад",
     loading: "Загрузка...",
     actions: {
+      backToGrid: en.common.actions.backToGrid,
       back: "Назад",
       cancel: "Отмена",
       close: "Закрыть",
@@ -2244,6 +2245,14 @@ export const ru: TranslationResources = {
       host: "Обзор",
     },
     missionControl: {
+      approvalMode: en.settings.missionControl.approvalMode,
+      approvalModeHint: en.settings.missionControl.approvalModeHint,
+      verbose: en.settings.missionControl.verbose,
+      verboseHint: en.settings.missionControl.verboseHint,
+      clearView: en.settings.missionControl.clearView,
+      clearViewHint: en.settings.missionControl.clearViewHint,
+      resetCommander: en.settings.missionControl.resetCommander,
+      resetCommanderHint: en.settings.missionControl.resetCommanderHint,
       memory: "Память",
       hindsightUrl: "URL Hindsight",
       hindsightUrlHint:
@@ -2416,6 +2425,7 @@ export const ru: TranslationResources = {
       },
     },
     appearance: {
+      agentGrid: en.settings.appearance.agentGrid,
       theme: {
         title: "Тема",
         accessibilityLabel: "Тема: {{value}}",

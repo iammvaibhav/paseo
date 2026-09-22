@@ -27,6 +27,7 @@ export const en = {
     loading: "Loading...",
     actions: {
       back: "Back",
+      backToGrid: "Back to grid",
       cancel: "Cancel",
       close: "Close",
       copy: "Copy",
@@ -2281,6 +2282,16 @@ export const en = {
       voiceMode: "Voice tool mode",
       voiceModeHint:
         "Relay = voice reads like Commander but routes every change through commander_dispatch. Direct = voice holds the full Commander tool surface, approval-gated. Applies to new voice sessions.",
+      approvalMode: "Approval mode",
+      approvalModeHint: "Auto mode sends proposals immediately; destructive actions always ask.",
+      verbose: "Verbose mode",
+      verboseHint:
+        "Show internal Mission Control machinery rows, system-owned workspaces, and detailed diagnostics.",
+      clearView: "Clear view",
+      clearViewHint: "Hide earlier cards from the feed. Older events remain available in History.",
+      resetCommander: "Reset Commander",
+      resetCommanderHint:
+        "Archive current Commander and spawn a fresh one with a new context pack.",
     },
     plugins: {
       title: "Plugins",
@@ -2545,6 +2556,16 @@ export const en = {
         codeSize: "Code size",
         codeSizeHint: "Used for code, diffs, and terminal output",
         codeSizeAccessibility: "Code font size",
+      },
+      agentGrid: {
+        title: "Agent Grid",
+        direction: "Scroll direction",
+        directionHint: "Layout direction for the agent grid",
+        visibleCount: "Tiles per screen",
+        visibleCountHint: "Number of agent tiles displayed per screen (1–16)",
+        fontSize: "Tile font size",
+        fontSizeHint:
+          "Used for chat text in Mission Control Agent Grid tiles, separate from the full agent pane",
       },
       syntax: {
         title: "Syntax",

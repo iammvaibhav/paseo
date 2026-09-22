@@ -31,6 +31,7 @@ export const es: TranslationResources = {
     back: "Atrás",
     loading: "Cargando...",
     actions: {
+      backToGrid: en.common.actions.backToGrid,
       back: "Atrás",
       cancel: "Cancelar",
       close: "Cerrar",
@@ -2258,6 +2259,14 @@ export const es: TranslationResources = {
       host: "Resumen",
     },
     missionControl: {
+      approvalMode: en.settings.missionControl.approvalMode,
+      approvalModeHint: en.settings.missionControl.approvalModeHint,
+      verbose: en.settings.missionControl.verbose,
+      verboseHint: en.settings.missionControl.verboseHint,
+      clearView: en.settings.missionControl.clearView,
+      clearViewHint: en.settings.missionControl.clearViewHint,
+      resetCommander: en.settings.missionControl.resetCommander,
+      resetCommanderHint: en.settings.missionControl.resetCommanderHint,
       memory: "Memoria",
       hindsightUrl: "URL de Hindsight",
       hindsightUrlHint:
@@ -2429,6 +2438,7 @@ export const es: TranslationResources = {
       },
     },
     appearance: {
+      agentGrid: en.settings.appearance.agentGrid,
       theme: {
         title: "Tema",
         accessibilityLabel: "Tema:{{value}}",

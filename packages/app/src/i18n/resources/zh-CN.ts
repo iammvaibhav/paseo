@@ -30,6 +30,7 @@ export const zhCN: TranslationResources = {
     back: "返回",
     loading: "加载中...",
     actions: {
+      backToGrid: en.common.actions.backToGrid,
       back: "返回",
       cancel: "取消",
       close: "关闭",
@@ -2179,6 +2180,14 @@ export const zhCN: TranslationResources = {
       host: "概览",
     },
     missionControl: {
+      approvalMode: en.settings.missionControl.approvalMode,
+      approvalModeHint: en.settings.missionControl.approvalModeHint,
+      verbose: en.settings.missionControl.verbose,
+      verboseHint: en.settings.missionControl.verboseHint,
+      clearView: en.settings.missionControl.clearView,
+      clearViewHint: en.settings.missionControl.clearViewHint,
+      resetCommander: en.settings.missionControl.resetCommander,
+      resetCommanderHint: en.settings.missionControl.resetCommanderHint,
       memory: "记忆",
       hindsightUrl: "Hindsight URL",
       hindsightUrlHint: "Hindsight API 基础 URL。留空将禁用集群记忆（运行记录写入和召回）。",
@@ -2342,6 +2351,7 @@ export const zhCN: TranslationResources = {
       },
     },
     appearance: {
+      agentGrid: en.settings.appearance.agentGrid,
       theme: {
         title: "主题",
         accessibilityLabel: "主题：{{value}}",

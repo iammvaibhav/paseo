@@ -5,7 +5,7 @@ import type { LifecycleRow } from "@/mission-control/lifecycle";
  * whose run just finished and want review. Every other bucket (done, idle,
  * dormant) has no place in the grid.
  */
-export type AgentGridSection = "running" | "ready";
+export type AgentGridSection = "running" | "ready" | "done";
 
 export interface AgentGridItem {
   /** `${serverId}:${agentId}` — React key and identity. */
@@ -88,20 +88,8 @@ function compareReady(left: LifecycleRow, right: LifecycleRow): number {
 export function buildAgentGridItems(
   rows: readonly LifecycleRow[],
   prev?: readonly AgentGridItem[],
+  snapshotKeys?: readonly string[] | null,
 ): AgentGridItem[] {
-  const running: LifecycleRow[] = [];
-  const ready: LifecycleRow[] = [];
-  for (const row of rows) {
-    const section = resolveAgentGridSection(row);
-    if (section === "running") {
-      running.push(row);
-    } else if (section === "ready") {
-      ready.push(row);
-    }
-  }
-  running.sort(compareRunning);
-  ready.sort(compareReady);
-
   const prevByKey = new Map<string, AgentGridItem>();
   if (prev) {
     for (const item of prev) {
@@ -109,14 +97,10 @@ export function buildAgentGridItems(
     }
   }
 
-  const items: AgentGridItem[] = [];
-  for (const row of running) {
-    items.push(buildItem(row, "running", prevByKey));
-  }
-  for (const row of ready) {
-    items.push(buildItem(row, "ready", prevByKey));
-  }
-
+  const items =
+    snapshotKeys != null
+      ? buildSnapshotGridItems(rows, snapshotKeys, prevByKey)
+      : buildDynamicGridItems(rows, prevByKey);
   if (prev && prev.length === items.length && items.every((item, index) => item === prev[index])) {
     return prev as AgentGridItem[];
   }
@@ -134,4 +118,96 @@ function buildItem(
     return prevItem;
   }
   return { key, section, row };
+}
+
+function buildSnapshotGridItems(
+  rows: readonly LifecycleRow[],
+  snapshotKeys: readonly string[],
+  prevByKey: Map<string, AgentGridItem>,
+): AgentGridItem[] {
+  const items: AgentGridItem[] = [];
+  const rowsByKey = new Map<string, LifecycleRow>();
+  for (const row of rows) {
+    rowsByKey.set(rowKey(row), row);
+  }
+
+  const seenKeys = new Set<string>();
+
+  // 1. Snapshot order first
+  for (const key of snapshotKeys) {
+    if (seenKeys.has(key)) {
+      continue;
+    }
+    seenKeys.add(key);
+
+    const row = rowsByKey.get(key);
+    if (!row || row.agent.archivedAt != null) {
+      continue;
+    }
+
+    const activeSection = resolveAgentGridSection(row);
+    if (activeSection) {
+      items.push(buildItem(row, activeSection, prevByKey));
+    } else if (row.bucket === "done") {
+      items.push(buildItem(row, "done", prevByKey));
+    }
+  }
+
+  // 2. Newcomers appended sorted (running sorted, then ready sorted)
+  const newRunning: LifecycleRow[] = [];
+  const newReady: LifecycleRow[] = [];
+  for (const row of rows) {
+    const key = rowKey(row);
+    if (seenKeys.has(key) || row.agent.archivedAt != null) {
+      continue;
+    }
+    const section = resolveAgentGridSection(row);
+    if (section === "running") {
+      newRunning.push(row);
+    } else if (section === "ready") {
+      newReady.push(row);
+    }
+  }
+
+  newRunning.sort(compareRunning);
+  newReady.sort(compareReady);
+
+  for (const row of newRunning) {
+    items.push(buildItem(row, "running", prevByKey));
+  }
+  for (const row of newReady) {
+    items.push(buildItem(row, "ready", prevByKey));
+  }
+
+  return items;
+}
+
+function buildDynamicGridItems(
+  rows: readonly LifecycleRow[],
+  prevByKey: Map<string, AgentGridItem>,
+): AgentGridItem[] {
+  const running: LifecycleRow[] = [];
+  const ready: LifecycleRow[] = [];
+  for (const row of rows) {
+    if (row.agent.archivedAt != null) {
+      continue;
+    }
+    const section = resolveAgentGridSection(row);
+    if (section === "running") {
+      running.push(row);
+    } else if (section === "ready") {
+      ready.push(row);
+    }
+  }
+  running.sort(compareRunning);
+  ready.sort(compareReady);
+
+  const items: AgentGridItem[] = [];
+  for (const row of running) {
+    items.push(buildItem(row, "running", prevByKey));
+  }
+  for (const row of ready) {
+    items.push(buildItem(row, "ready", prevByKey));
+  }
+  return items;
 }

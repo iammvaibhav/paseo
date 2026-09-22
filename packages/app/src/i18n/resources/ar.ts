@@ -30,6 +30,7 @@ export const ar: TranslationResources = {
     back: "خلف",
     loading: "تحميل...",
     actions: {
+      backToGrid: en.common.actions.backToGrid,
       back: "خلف",
       cancel: "يلغي",
       close: "يغلق",
@@ -2205,6 +2206,14 @@ export const ar: TranslationResources = {
       host: "نظرة عامة",
     },
     missionControl: {
+      approvalMode: en.settings.missionControl.approvalMode,
+      approvalModeHint: en.settings.missionControl.approvalModeHint,
+      verbose: en.settings.missionControl.verbose,
+      verboseHint: en.settings.missionControl.verboseHint,
+      clearView: en.settings.missionControl.clearView,
+      clearViewHint: en.settings.missionControl.clearViewHint,
+      resetCommander: en.settings.missionControl.resetCommander,
+      resetCommanderHint: en.settings.missionControl.resetCommanderHint,
       memory: "الذاكرة",
       hindsightUrl: "رابط Hindsight",
       hindsightUrlHint:
@@ -2371,6 +2380,7 @@ export const ar: TranslationResources = {
       },
     },
     appearance: {
+      agentGrid: en.settings.appearance.agentGrid,
       theme: {
         title: "سمة",
         accessibilityLabel: "الموضوع:{{value}}",

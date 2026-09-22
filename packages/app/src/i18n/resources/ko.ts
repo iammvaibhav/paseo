@@ -30,6 +30,7 @@ export const ko: TranslationResources = {
     back: "뒤로",
     loading: "불러오는 중...",
     actions: {
+      backToGrid: en.common.actions.backToGrid,
       back: "뒤로",
       cancel: "취소",
       close: "닫기",
@@ -2211,6 +2212,14 @@ export const ko: TranslationResources = {
       host: "개요",
     },
     missionControl: {
+      approvalMode: en.settings.missionControl.approvalMode,
+      approvalModeHint: en.settings.missionControl.approvalModeHint,
+      verbose: en.settings.missionControl.verbose,
+      verboseHint: en.settings.missionControl.verboseHint,
+      clearView: en.settings.missionControl.clearView,
+      clearViewHint: en.settings.missionControl.clearViewHint,
+      resetCommander: en.settings.missionControl.resetCommander,
+      resetCommanderHint: en.settings.missionControl.resetCommanderHint,
       memory: "메모리",
       hindsightUrl: "Hindsight URL",
       hindsightUrlHint:
@@ -2379,6 +2388,7 @@ export const ko: TranslationResources = {
       },
     },
     appearance: {
+      agentGrid: en.settings.appearance.agentGrid,
       theme: {
         title: "테마",
         accessibilityLabel: "테마: {{value}}",

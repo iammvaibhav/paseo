@@ -31,6 +31,7 @@ export const fr: TranslationResources = {
     back: "Dos",
     loading: "Chargement...",
     actions: {
+      backToGrid: en.common.actions.backToGrid,
       back: "Dos",
       cancel: "Annuler",
       close: "Fermer",
@@ -2264,6 +2265,14 @@ export const fr: TranslationResources = {
       host: "Aperçu",
     },
     missionControl: {
+      approvalMode: en.settings.missionControl.approvalMode,
+      approvalModeHint: en.settings.missionControl.approvalModeHint,
+      verbose: en.settings.missionControl.verbose,
+      verboseHint: en.settings.missionControl.verboseHint,
+      clearView: en.settings.missionControl.clearView,
+      clearViewHint: en.settings.missionControl.clearViewHint,
+      resetCommander: en.settings.missionControl.resetCommander,
+      resetCommanderHint: en.settings.missionControl.resetCommanderHint,
       memory: "Mémoire",
       hindsightUrl: "URL de Hindsight",
       hindsightUrlHint:
@@ -2434,6 +2443,7 @@ export const fr: TranslationResources = {
       },
     },
     appearance: {
+      agentGrid: en.settings.appearance.agentGrid,
       theme: {
         title: "Thème",
         accessibilityLabel: "Thème:{{value}}",

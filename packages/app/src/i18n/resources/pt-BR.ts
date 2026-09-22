@@ -31,6 +31,7 @@ export const ptBR: TranslationResources = {
     back: "Voltar",
     loading: "Carregando...",
     actions: {
+      backToGrid: en.common.actions.backToGrid,
       back: "Voltar",
       cancel: "Cancelar",
       close: "Fechar",
@@ -2243,6 +2244,14 @@ export const ptBR: TranslationResources = {
       host: "Visão geral",
     },
     missionControl: {
+      approvalMode: en.settings.missionControl.approvalMode,
+      approvalModeHint: en.settings.missionControl.approvalModeHint,
+      verbose: en.settings.missionControl.verbose,
+      verboseHint: en.settings.missionControl.verboseHint,
+      clearView: en.settings.missionControl.clearView,
+      clearViewHint: en.settings.missionControl.clearViewHint,
+      resetCommander: en.settings.missionControl.resetCommander,
+      resetCommanderHint: en.settings.missionControl.resetCommanderHint,
       memory: "Memória",
       hindsightUrl: "URL do Hindsight",
       hindsightUrlHint:
@@ -2412,6 +2421,7 @@ export const ptBR: TranslationResources = {
       },
     },
     appearance: {
+      agentGrid: en.settings.appearance.agentGrid,
       theme: {
         title: "Tema",
         accessibilityLabel: "Tema: {{value}}",

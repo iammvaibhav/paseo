@@ -3,14 +3,13 @@ import { Pressable, Text, View, type PressableStateCallbackType } from "react-na
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { useMissionControlActive } from "@/screens/mission-control/focus-context";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { router } from "expo-router";
 import { useTranslation } from "react-i18next";
 import {
-  MoreVertical,
   PanelLeftClose,
   PanelLeftOpen,
   PanelRightClose,
   PanelRightOpen,
+  Plus,
   Square,
 } from "lucide-react-native";
 import type { Theme } from "@/styles/theme";
@@ -18,18 +17,10 @@ import { Button } from "@/components/ui/button";
 import { SegmentedControl, type SegmentedControlOption } from "@/components/ui/segmented-control";
 import { MenuHeader } from "@/components/headers/menu-header";
 import { HeaderToggleButton } from "@/components/headers/header-toggle-button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { useToast } from "@/contexts/toast-context";
 import { Composer } from "@/composer";
 import { useAgentInputDraft } from "@/composer/draft/input-draft";
 import { buildDraftStoreKey } from "@/stores/draft-keys";
-import { confirmDialog } from "@/utils/confirm-dialog";
 import { MissionControlBoard } from "@/screens/mission-control/board";
 import {
   MissionControlThread,
@@ -38,14 +29,12 @@ import {
 import { MissionControlInspector } from "@/screens/mission-control/inspector";
 import { useInspectorStore } from "@/screens/mission-control/inspector-store";
 import { MissionControlAgentGrid } from "@/screens/mission-control/agent-grid/grid";
-import { AgentGridControls } from "@/screens/mission-control/agent-grid/controls";
 import {
   useAgentGridStore,
   type MissionControlView,
 } from "@/screens/mission-control/agent-grid/store";
 import { BoardRail } from "@/mission-control/board-rail";
 import { InspectorRail } from "@/mission-control/inspector-rail";
-import { MissionControlModeToggle } from "@/mission-control/mode-toggle";
 import { useMissionControlCentralConfig } from "@/mission-control/central-config";
 import { useMissionControlVerbose } from "@/mission-control/use-mission-control-verbose";
 import {
@@ -84,7 +73,7 @@ const VIEW_OPTIONS: SegmentedControlOption<MissionControlView>[] = [
 
 const THREAD_STRIP_WIDTH = 40;
 
-const ThemedMoreVertical = withUnistyles(MoreVertical);
+const ThemedPlus = withUnistyles(Plus);
 const ThemedPanelLeftClose = withUnistyles(PanelLeftClose);
 const ThemedPanelLeftOpen = withUnistyles(PanelLeftOpen);
 const ThemedPanelRightClose = withUnistyles(PanelRightClose);
@@ -213,73 +202,12 @@ function CommanderLayoutToggles({
   );
 }
 
-interface MissionControlOverflowMenuProps {
-  hasCommander: boolean;
-  verbose: boolean;
-  onToggleVerbose: () => void;
-  onClearView: () => void;
-  onResetCommander: () => void;
-  isResettingCommander: boolean;
-  onOpenSettings: () => void;
-}
-
-function MissionControlOverflowMenu({
-  hasCommander,
-  verbose,
-  onToggleVerbose,
-  onClearView,
-  onResetCommander,
-  isResettingCommander,
-  onOpenSettings,
-}: MissionControlOverflowMenuProps): ReactElement {
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger
-        style={overflowTriggerStyle}
-        accessibilityLabel="Mission Control options"
-        testID="mission-control-overflow-trigger"
-      >
-        <ThemedMoreVertical size={16} uniProps={foregroundMutedMapping} />
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" minWidth={200}>
-        <DropdownMenuItem
-          selected={verbose}
-          onSelect={onToggleVerbose}
-          testID="mission-control-verbose-toggle"
-        >
-          Verbose mode
-        </DropdownMenuItem>
-        {hasCommander ? (
-          <>
-            <DropdownMenuItem onSelect={onClearView} testID="mission-control-clear-view">
-              Clear view
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              onSelect={onResetCommander}
-              disabled={isResettingCommander}
-              status={isResettingCommander ? "pending" : undefined}
-              pendingLabel="Resetting..."
-              testID="mission-control-reset-commander"
-            >
-              Reset Commander
-            </DropdownMenuItem>
-          </>
-        ) : null}
-        <DropdownMenuSeparator />
-        <DropdownMenuItem onSelect={onOpenSettings} testID="mission-control-settings-entry">
-          Mission Control settings
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
-}
-
-interface MissionControlHeaderActionsProps
-  extends CommanderLayoutTogglesProps, MissionControlOverflowMenuProps {
+interface MissionControlHeaderActionsProps extends CommanderLayoutTogglesProps {
   view: MissionControlView;
   onViewChange: (view: MissionControlView) => void;
   /** The grid is on screen (desktop view or compact panel): its controls replace the Commander's. */
   isGridView: boolean;
+  onNewAgent: () => void;
 }
 
 function MissionControlHeaderActions({
@@ -295,12 +223,7 @@ function MissionControlHeaderActions({
   boardRailCollapsed,
   onToggleBoardRail,
   onStopCommander,
-  verbose,
-  onToggleVerbose,
-  onClearView,
-  onResetCommander,
-  isResettingCommander,
-  onOpenSettings,
+  onNewAgent,
 }: MissionControlHeaderActionsProps): ReactElement {
   return (
     <View style={styles.headerActions}>
@@ -314,7 +237,15 @@ function MissionControlHeaderActions({
         />
       ) : null}
       {isGridView ? (
-        <AgentGridControls />
+        <Button
+          variant="default"
+          size="sm"
+          leftIcon={ThemedPlus}
+          onPress={onNewAgent}
+          testID="mission-control-new-agent"
+        >
+          New agent
+        </Button>
       ) : (
         <CommanderLayoutToggles
           v3Enabled={v3Enabled}
@@ -328,23 +259,10 @@ function MissionControlHeaderActions({
           onStopCommander={onStopCommander}
         />
       )}
-      {v3Enabled ? <MissionControlModeToggle size="sm" /> : null}
-      {v3Enabled ? (
-        <MissionControlOverflowMenu
-          hasCommander={hasCommander}
-          verbose={verbose}
-          onToggleVerbose={onToggleVerbose}
-          onClearView={onClearView}
-          onResetCommander={onResetCommander}
-          isResettingCommander={isResettingCommander}
-          onOpenSettings={onOpenSettings}
-        />
-      ) : null}
     </View>
   );
 }
 
-// Board + inspector collapse state adds a few branches past the default cap.
 // eslint-disable-next-line complexity -- MC desktop split layout
 export function MissionControlScreen(): ReactElement {
   const { t } = useTranslation();
@@ -371,8 +289,7 @@ export function MissionControlScreen(): ReactElement {
   // One per-device verbose flag, shared with the agent chat's machinery
   // placeholder rendering (useMissionControlVerbose). The hook's second
   // return is the toggle (same semantics as the previous local handler).
-  const [verbose, handleToggleVerbose] = useMissionControlVerbose();
-  const [resettingCommander, setResettingCommander] = useState(false);
+  const [verbose] = useMissionControlVerbose();
   const toast = useToast();
   const { config: missionControlConfig } = useMissionControlCentralConfig();
   const hideAgentNames = missionControlConfig?.hideAgentNames === true;
@@ -382,7 +299,7 @@ export function MissionControlScreen(): ReactElement {
   const voiceNodeUrl = missionControlConfig?.voiceNodeUrl ?? null;
   const composerVoiceVariant = resolveComposerVoiceVariant({ isWeb, voiceNodeUrl });
   const [isCommanderVoiceOpen, setIsCommanderVoiceOpen] = useState(false);
-  const { clearPointTs, setClearViewPoint } = useClearViewPoint();
+  const { clearPointTs } = useClearViewPoint();
   const hostInfoByServerId = useHostInfoByServerId();
 
   // The Commander lives ONLY on the host designated in the central config:
@@ -533,60 +450,6 @@ export function MissionControlScreen(): ReactElement {
     });
   }, [commanderRef, commanderStatus, toast]);
 
-  const handleOpenSettings = useCallback(() => {
-    router.push("/settings/mission-control");
-  }, []);
-
-  const handleClearView = useCallback(() => {
-    // Per-device clear point (spec): the thread renders from this moment;
-    // older cards stay in the store behind the thread's "Show earlier"
-    // affordance. Does not touch the Commander.
-    setClearViewPoint(Date.now());
-  }, [setClearViewPoint]);
-
-  const handleResetCommander = useCallback(() => {
-    if (!commanderRef || resettingCommander) {
-      return;
-    }
-    void (async () => {
-      const confirmed = await confirmDialog({
-        title: "Reset Commander?",
-        message:
-          "The current Commander is archived and a fresh one starts with a new context pack. The old conversation stays in History.",
-        confirmLabel: "Reset",
-        destructive: true,
-      });
-      if (!confirmed || !commanderRef) {
-        return;
-      }
-      const client = getHostRuntimeStore().getClient(commanderRef.serverId);
-      if (!client) {
-        return;
-      }
-      setResettingCommander(true);
-      // Guard the auto-recreate effect against the archive-then-spawn window:
-      // while this agentId is marked as being replaced, the effect must not
-      // launch a second Commander. The guard stays set — it only ever blocks
-      // re-creating the archived commander this reset replaced.
-      setRecreatingArchivedId(commanderRef.agentId);
-      try {
-        const result = await client.missionControlCommanderReset();
-        if (!result.ok) {
-          throw new Error(result.error ?? "Failed to reset Commander");
-        }
-        toast.show("Commander reset", { testID: "mission-control-reset-toast" });
-      } catch (error) {
-        console.error("[MissionControl] Failed to reset Commander:", error);
-        toast.show("Unable to reset Commander", {
-          durationMs: 2200,
-          testID: "mission-control-reset-failed-toast",
-        });
-      } finally {
-        setResettingCommander(false);
-      }
-    })();
-  }, [commanderRef, resettingCommander, toast]);
-
   const inspectorTarget = useInspectorStore((state) => state.target);
 
   const composerCwd = commanderAgent?.cwd ?? "~";
@@ -677,6 +540,16 @@ export function MissionControlScreen(): ReactElement {
   const hasCommander = commanderRef !== null;
   const isCommanderRunning = commanderStatus === "running";
 
+  const handleNewAgent = useCallback(() => {
+    const store = useAgentGridStore.getState();
+    store.setDraft({
+      id: crypto.randomUUID(),
+      serverId: null,
+      workspaceId: null,
+      projectKey: null,
+    });
+  }, []);
+
   const headerRightContent = useMemo(
     () => (
       <MissionControlHeaderActions
@@ -692,31 +565,21 @@ export function MissionControlScreen(): ReactElement {
         boardRailCollapsed={boardRailCollapsed}
         onToggleBoardRail={toggleBoardRailCollapsed}
         onStopCommander={handleStopCommander}
-        verbose={verbose}
-        onToggleVerbose={handleToggleVerbose}
-        onClearView={handleClearView}
-        onResetCommander={handleResetCommander}
-        isResettingCommander={resettingCommander}
-        onOpenSettings={handleOpenSettings}
+        onNewAgent={handleNewAgent}
       />
     ),
     [
       boardRailCollapsed,
-      handleClearView,
       handleCollapseThread,
-      handleOpenSettings,
-      handleResetCommander,
+      handleNewAgent,
       handleStopCommander,
-      handleToggleVerbose,
       hasCommander,
       isCommanderRunning,
       isCompact,
       isGridView,
-      resettingCommander,
       setView,
       threadCollapsed,
       toggleBoardRailCollapsed,
-      verbose,
       view,
       v3Enabled,
     ],
@@ -836,11 +699,6 @@ export function MissionControlScreen(): ReactElement {
   );
 }
 
-const overflowTriggerStyle = ({ pressed }: PressableStateCallbackType) => [
-  styles.overflowTrigger,
-  pressed && styles.overflowTriggerPressed,
-];
-
 const styles = StyleSheet.create((theme) => ({
   container: {
     flex: 1,
@@ -884,13 +742,6 @@ const styles = StyleSheet.create((theme) => ({
     flexDirection: "row",
     alignItems: "center",
     gap: theme.spacing[1],
-  },
-  overflowTrigger: {
-    padding: theme.spacing[1],
-    borderRadius: theme.borderRadius.md,
-  },
-  overflowTriggerPressed: {
-    backgroundColor: theme.colors.surface2,
   },
   compactToggle: {
     paddingHorizontal: theme.spacing[3],

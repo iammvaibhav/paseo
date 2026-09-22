@@ -14,6 +14,9 @@ import type { SidebarStateBucket } from "@/utils/sidebar-agent-state";
 import { getStatusDotColor } from "@/utils/status-dot-color";
 import { STATUS_INDICATOR_FILLED_DOT_SIZE } from "@/utils/status-indicator-geometry";
 import { SidebarAgentViewRowMenu } from "./row-menu";
+import { useMissionControlActive } from "@/screens/mission-control/focus-context";
+import { useAgentGridStore } from "@/screens/mission-control/agent-grid/store";
+import { focusAgentInGrid } from "@/screens/mission-control/agent-grid/grid-glow";
 
 export function rowToSidebarStateBucket(row: LifecycleRow): SidebarStateBucket {
   switch (row.bucket) {
@@ -81,14 +84,29 @@ export const SidebarAgentViewRow = memo(function SidebarAgentViewRow({
   const stateBucket = rowToSidebarStateBucket(row);
   const title = agent.title ?? agent.name ?? t("agentList.fallbackTitle");
 
+  const isMissionControlActive = useMissionControlActive();
+  const gridView = useAgentGridStore((state) => state.view);
+
   const handlePress = useCallback(() => {
     onAgentPress?.();
+    if (isMissionControlActive && gridView === "grid") {
+      const key = `${agent.serverId}:${agent.id}`;
+      const store = useAgentGridStore.getState();
+      if (typeof store.setGlow === "function") {
+        store.setGlow(key);
+      }
+      if (typeof store.setActiveKey === "function") {
+        store.setActiveKey(key);
+      }
+      focusAgentInGrid(agent.serverId, agent.id);
+      return;
+    }
     navigateToAgent({
       serverId: agent.serverId,
       workspaceId: agent.workspaceId ?? undefined,
       agentId: agent.id,
     });
-  }, [agent.id, agent.serverId, agent.workspaceId, onAgentPress]);
+  }, [agent.id, agent.serverId, agent.workspaceId, gridView, isMissionControlActive, onAgentPress]);
 
   const rowStyle = useCallback(
     ({ pressed, hovered = false }: PressableStateCallbackType & { hovered?: boolean }) => [

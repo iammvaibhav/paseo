@@ -40,6 +40,16 @@ export type ToolCallDetailLevel = "overview" | "detailed";
 export type PlannotatorFeedbackMode = "auto-send" | "compose";
 export type DefaultFileOpener = "paseo" | "vscode-web" | "plannotator";
 
+export type AgentGridDirection = "horizontal" | "vertical";
+export type MissionControlApprovalMode = "ask" | "auto";
+
+export interface NewAgentDefaultsPreferences {
+  projectMode: "last-used" | "fixed";
+  fixedProjectKey?: string | null;
+  serverId?: string | null;
+  isolation?: string | null;
+}
+
 const ThemePreferenceSchema = z.enum([
   ...THEME_OPTIONS.map((option) => option.name),
   PLUGIN_THEME_PREFERENCE,
@@ -68,6 +78,17 @@ export const MAX_CONTENT_FONT_SIZE = 21;
 export const DEFAULT_AGENT_GRID_FONT_SIZE = 12;
 export const MIN_AGENT_GRID_FONT_SIZE = MIN_CONTENT_FONT_SIZE;
 export const MAX_AGENT_GRID_FONT_SIZE = MAX_CONTENT_FONT_SIZE;
+export const DEFAULT_AGENT_GRID_DIRECTION: AgentGridDirection = "vertical";
+export const DEFAULT_AGENT_GRID_VISIBLE_COUNT = 6;
+export const MIN_AGENT_GRID_VISIBLE_COUNT = 1;
+export const MAX_AGENT_GRID_VISIBLE_COUNT = 16;
+export const DEFAULT_MISSION_CONTROL_APPROVAL_MODE: MissionControlApprovalMode = "ask";
+export const DEFAULT_NEW_AGENT_DEFAULTS: NewAgentDefaultsPreferences = {
+  projectMode: "last-used",
+  fixedProjectKey: null,
+  serverId: null,
+  isolation: null,
+};
 export const DEFAULT_CODE_FONT_SIZE = 12; // == FONT_SIZE.code
 export const MIN_CODE_FONT_SIZE = 9;
 export const MAX_CODE_FONT_SIZE = 22; // line-height 1.5×22=33 stays safe
@@ -89,6 +110,8 @@ export interface AppSettings {
   /** Mission Control Agent Grid transcripts only; independent of contentFontSize. */
   agentGridFontSize: number; // clamped px, default 12
   codeFontSize: number; // clamped px, default 12
+  agentGridDirection: AgentGridDirection;
+  agentGridVisibleCount: number;
   syntaxTheme: SyntaxThemeId; // default "one"
   workspaceTitleSource: WorkspaceTitleSource;
   sidebarWorkspaceTrailing: SidebarWorkspaceTrailing;
@@ -112,6 +135,9 @@ export interface AppSettings {
   itsaplanOrigin: string;
   openInSidePane: OpenInSidePanePreferences;
   pullRequestOpenLocation: PullRequestOpenLocation;
+  missionControlApprovalMode: MissionControlApprovalMode;
+  missionControlVerbose: boolean;
+  newAgentDefaults: NewAgentDefaultsPreferences;
 }
 
 export type AppSettingsUpdate =
@@ -153,6 +179,8 @@ export const DEFAULT_CLIENT_SETTINGS: AppSettings = {
   contentFontSize: DEFAULT_CONTENT_FONT_SIZE,
   agentGridFontSize: DEFAULT_AGENT_GRID_FONT_SIZE,
   codeFontSize: DEFAULT_CODE_FONT_SIZE,
+  agentGridDirection: DEFAULT_AGENT_GRID_DIRECTION,
+  agentGridVisibleCount: DEFAULT_AGENT_GRID_VISIBLE_COUNT,
   syntaxTheme: "one",
   workspaceTitleSource: "title",
   sidebarWorkspaceTrailing: "diff",
@@ -169,8 +197,10 @@ export const DEFAULT_CLIENT_SETTINGS: AppSettings = {
   itsaplanOrigin: "",
   openInSidePane: DEFAULT_OPEN_IN_SIDE_PANE_PREFERENCES,
   pullRequestOpenLocation: "explorer",
+  missionControlApprovalMode: DEFAULT_MISSION_CONTROL_APPROVAL_MODE,
+  missionControlVerbose: false,
+  newAgentDefaults: DEFAULT_NEW_AGENT_DEFAULTS,
 };
-
 export const DEFAULT_APP_SETTINGS: Settings = {
   ...DEFAULT_CLIENT_SETTINGS,
   manageBuiltInDaemon: true,
@@ -241,6 +271,11 @@ const StoredAppSettingsSchema = z
     agentGridFontSize: clampedNumber(MIN_AGENT_GRID_FONT_SIZE, MAX_AGENT_GRID_FONT_SIZE).catch(
       DEFAULT_AGENT_GRID_FONT_SIZE,
     ),
+    agentGridDirection: z.enum(["horizontal", "vertical"]).catch(DEFAULT_AGENT_GRID_DIRECTION),
+    agentGridVisibleCount: clampedNumber(
+      MIN_AGENT_GRID_VISIBLE_COUNT,
+      MAX_AGENT_GRID_VISIBLE_COUNT,
+    ).catch(DEFAULT_AGENT_GRID_VISIBLE_COUNT),
     // COMPAT(uiFontSizeScale): replaced by the literal base size in v0.4, remove after 2027-08-17.
     uiFontSize: clampedNumber(11, 24).optional().catch(undefined),
     codeFontSize: clampedNumber(MIN_CODE_FONT_SIZE, MAX_CODE_FONT_SIZE).catch(
@@ -300,7 +335,20 @@ const StoredAppSettingsSchema = z
     // COMPAT(rendererDesktopSettings): these fields used to share this renderer-owned key.
     manageBuiltInDaemon: z.boolean().optional().catch(undefined),
     releaseChannel: z.enum(["stable", "beta"]).optional().catch(undefined),
+    missionControlApprovalMode: z
+      .enum(["ask", "auto"])
+      .catch(DEFAULT_MISSION_CONTROL_APPROVAL_MODE),
+    missionControlVerbose: z.boolean().catch(false),
+    newAgentDefaults: z
+      .object({
+        projectMode: z.enum(["last-used", "fixed"]).catch("last-used"),
+        fixedProjectKey: z.string().nullable().optional().catch(null),
+        serverId: z.string().nullable().optional().catch(null),
+        isolation: z.string().nullable().optional().catch(null),
+      })
+      .catch(DEFAULT_NEW_AGENT_DEFAULTS),
   })
+  // eslint-disable-next-line complexity -- settings schema transformation
   .transform((stored) => {
     const { legacyPullRequestsInSidePane, ...openInSidePane } = stored.openInSidePane;
     const needsWrite =
@@ -330,6 +378,12 @@ const StoredAppSettingsSchema = z
       uiBaseFontSize,
       contentFontSize: stored.contentFontSize ?? uiBaseFontSize,
       agentGridFontSize: stored.agentGridFontSize ?? DEFAULT_AGENT_GRID_FONT_SIZE,
+      agentGridDirection: stored.agentGridDirection ?? DEFAULT_AGENT_GRID_DIRECTION,
+      agentGridVisibleCount: stored.agentGridVisibleCount ?? DEFAULT_AGENT_GRID_VISIBLE_COUNT,
+      missionControlApprovalMode:
+        stored.missionControlApprovalMode ?? DEFAULT_MISSION_CONTROL_APPROVAL_MODE,
+      missionControlVerbose: stored.missionControlVerbose ?? false,
+      newAgentDefaults: stored.newAgentDefaults ?? DEFAULT_NEW_AGENT_DEFAULTS,
       sidebarChecksDisplay,
       sidebarRowItems: {
         ...stored.sidebarRowItems,

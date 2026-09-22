@@ -31,6 +31,7 @@ export const ja: TranslationResources = {
     back: "戻る",
     loading: "読み込み中...",
     actions: {
+      backToGrid: en.common.actions.backToGrid,
       back: "戻る",
       cancel: "キャンセル",
       close: "閉じる",
@@ -2221,6 +2222,14 @@ export const ja: TranslationResources = {
       host: "概要",
     },
     missionControl: {
+      approvalMode: en.settings.missionControl.approvalMode,
+      approvalModeHint: en.settings.missionControl.approvalModeHint,
+      verbose: en.settings.missionControl.verbose,
+      verboseHint: en.settings.missionControl.verboseHint,
+      clearView: en.settings.missionControl.clearView,
+      clearViewHint: en.settings.missionControl.clearViewHint,
+      resetCommander: en.settings.missionControl.resetCommander,
+      resetCommanderHint: en.settings.missionControl.resetCommanderHint,
       memory: "メモリ",
       hindsightUrl: "Hindsight URL",
       hindsightUrlHint:
@@ -2387,6 +2396,7 @@ export const ja: TranslationResources = {
       },
     },
     appearance: {
+      agentGrid: en.settings.appearance.agentGrid,
       theme: {
         title: "テーマ",
         accessibilityLabel: "テーマ: {{value}}",
