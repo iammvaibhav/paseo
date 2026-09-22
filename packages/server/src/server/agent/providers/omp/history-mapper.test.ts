@@ -193,6 +193,52 @@ describe("OMP history mapper", () => {
       },
     ]);
   });
+  test("renders replayed OMP IRC messages as synthetic hub tool-call blocks", async () => {
+    await expect(
+      collectHistory([
+        {
+          role: "custom",
+          content: [
+            {
+              type: "text",
+              text: "<irc>\nIncoming IRC message from agent `PolishReview`:\n\nReview verdict: PASS\n</irc>",
+            },
+          ],
+          customType: "irc:incoming",
+          id: "irc-msg-1",
+          display: true,
+          details: {
+            id: "msg-123",
+            from: "PolishReview",
+            message: "Review verdict: PASS",
+          },
+        },
+      ]),
+    ).resolves.toEqual([
+      {
+        type: "timeline",
+        provider: "omp",
+        item: {
+          type: "tool_call",
+          callId: "omp-irc:irc-msg-1",
+          name: "hub",
+          status: "completed",
+          detail: {
+            type: "plain_text",
+            label: "receive · from PolishReview · Review verdict: PASS",
+            text: "Review verdict: PASS",
+            icon: "bot",
+          },
+          metadata: {
+            synthetic: true,
+            source: "omp_irc",
+            from: "PolishReview",
+          },
+          error: null,
+        },
+      },
+    ]);
+  });
 
   test("omits replayed custom messages only when display is false", async () => {
     await expect(
