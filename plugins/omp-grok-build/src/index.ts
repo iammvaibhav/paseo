@@ -85,7 +85,7 @@ export default function ompGrokBuildExtension(pi: ExtensionAPI): void {
 					"",
 					"  /login   → Grok Build (CLI proxy)",
 					"  /logout  → Grok Build",
-					"  /model grok-build/grok-4.5",
+					"  /model grok-build/grok-4.7",
 					"  /usage   → quota (Grok Build section)",
 					"",
 					"Chat:  cli-chat-proxy.grok.com (Build path)",

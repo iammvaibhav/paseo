@@ -7,7 +7,12 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { measureElement as measureVirtualElement, useVirtualizer } from "@tanstack/react-virtual";
+import {
+  defaultRangeExtractor,
+  measureElement as measureVirtualElement,
+  useVirtualizer,
+  type Range as VirtualRange,
+} from "@tanstack/react-virtual";
 import { withUnistyles } from "react-native-unistyles";
 import { useRetainedPanelActive } from "@/components/retained-panel";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
@@ -33,6 +38,8 @@ import {
   createHistoryStartSettleScheduler,
   type HistoryStartSettleScheduler,
 } from "./history-start-settle-scheduler";
+import { useChatFindSelectedMessageId } from "@/agent-stream/chat-find";
+import { readStreamMessageId } from "./presentation";
 import { useScrollToMessage } from "./use-scroll-to-message.web";
 
 interface CreateWebStreamStrategyInput {
@@ -385,6 +392,26 @@ function WebStreamViewport<T>(props: StreamRenderInput<T> & { isMobileBreakpoint
   const activationKey = routeBottomAnchorRequest?.requestKey ?? props.agentId;
   const isActivationReady = !hasRouteBottomAnchorRequest || isAuthoritativeHistoryReady;
 
+  // Chat find counts and highlights occurrences from the DOM, so every block row of
+  // the message it selected has to be mounted even when the scroll window is nowhere
+  // near it. Without this a hit in a far paragraph is invisible to the count and Next
+  // walks off to the following message.
+  const chatFindMessageId = useChatFindSelectedMessageId();
+  const chatFindRowIndexes = useMemo(() => {
+    if (!chatFindMessageId) return null;
+    const indexes = segments.historyVirtualized.flatMap((item, index) =>
+      readStreamMessageId(item) === chatFindMessageId ? [index] : [],
+    );
+    return indexes.length > 0 ? indexes : null;
+  }, [chatFindMessageId, segments.historyVirtualized]);
+  const rangeExtractor = useCallback(
+    (range: VirtualRange) => {
+      const visible = defaultRangeExtractor(range);
+      if (!chatFindRowIndexes) return visible;
+      return [...new Set([...visible, ...chatFindRowIndexes])].sort((left, right) => left - right);
+    },
+    [chatFindRowIndexes],
+  );
   const rowVirtualizer = useVirtualizer({
     count: segments.historyVirtualized.length,
     enabled: shouldUseVirtualizer,
@@ -400,6 +427,7 @@ function WebStreamViewport<T>(props: StreamRenderInput<T> & { isMobileBreakpoint
         : DEFAULT_ESTIMATED_ROW_HEIGHT_PX;
     },
     measureElement: measureVirtualElement,
+    rangeExtractor,
     scrollMargin: VIRTUALIZER_SCROLL_MARGIN_PX,
     useAnimationFrameWithResizeObserver: true,
     overscan: 8,
@@ -835,15 +863,11 @@ function WebStreamViewport<T>(props: StreamRenderInput<T> & { isMobileBreakpoint
     };
   }, [cancelPendingScrollRestore]);
 
-  // Stable per render-input; keeps the viewport handle from being re-created
-  // on every flush just because the scroll-to-message hook reads row keys.
-  const scrollToMessageKeyExtractor = useCallback((item: T) => resolveKey(item, 0), [resolveKey]);
   const { isJumpSettling, scrollToMessage } = useScrollToMessage({
     active: isActive,
     scrollContainerRef,
     rowVirtualizer,
     historyVirtualized: segments.historyVirtualized,
-    keyExtractor: scrollToMessageKeyExtractor,
     cancelPendingStickToBottom,
     setFollowOutput,
     onNearBottomChange,
@@ -1326,7 +1350,12 @@ function WebStreamViewport<T>(props: StreamRenderInput<T> & { isMobileBreakpoint
     return segments.historyMounted.map((item, index) => {
       const rowKey = resolveKey(item, index);
       return (
-        <div key={rowKey} data-history-row-id={rowKey} style={streamRowStyle}>
+        <div
+          key={rowKey}
+          data-history-row-id={rowKey}
+          data-message-id={readStreamMessageId(item)}
+          style={streamRowStyle}
+        >
           {renderHistoryMountedRow(item, index, segments.historyMounted)}
         </div>
       );
@@ -1337,7 +1366,12 @@ function WebStreamViewport<T>(props: StreamRenderInput<T> & { isMobileBreakpoint
     return segments.liveHead.map((item, index) => {
       const rowKey = resolveKey(item, index);
       return (
-        <div key={rowKey} data-history-row-id={rowKey} style={streamRowStyle}>
+        <div
+          key={rowKey}
+          data-history-row-id={rowKey}
+          data-message-id={readStreamMessageId(item)}
+          style={streamRowStyle}
+        >
           {renderLiveHeadRow(item, index, segments.liveHead)}
         </div>
       );
@@ -1393,6 +1427,7 @@ function WebStreamViewport<T>(props: StreamRenderInput<T> & { isMobileBreakpoint
                     key={virtualRow.key}
                     data-index={virtualRow.index}
                     data-history-row-id={rowKey}
+                    data-message-id={readStreamMessageId(item)}
                     ref={measureVirtualizedRowElement}
                     style={renderVirtualRowStyle(virtualRow.start)}
                   >

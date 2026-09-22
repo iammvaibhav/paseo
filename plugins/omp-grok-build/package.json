@@ -1,6 +1,6 @@
 {
   "name": "omp-grok-build",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Grok Build provider for Oh My Pi — CLI proxy route, native /login, Build limits",
   "license": "MIT",
   "type": "module",

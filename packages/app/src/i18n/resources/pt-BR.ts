@@ -3,8 +3,10 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ptBR: TranslationResources = {
   paneFind: {
-    searchFailed:
+    connectionFailure:
       "Não foi possível pesquisar nesta conversa. Verifique a conexão com o host e tente novamente.",
+    historyChangedFailure: "A conversa mudou durante a busca. Busque novamente.",
+    revealFailure: "Não foi possível mostrar esta correspondência. Tente novamente.",
     searching: "Buscando…",
     loading: "Carregando…",
     failed: "Falhou",
@@ -737,6 +739,8 @@ export const ptBR: TranslationResources = {
         copyTerminalId: "Copiar ID do terminal",
         copyFilePath: "Copiar caminho do arquivo",
         moveToNewWorkspace: "Mover para um novo espaço de trabalho",
+        openInNewWindow: "Abrir em nova janela",
+        openInNewWindowFailed: "Não foi possível abrir uma nova janela",
         rename: "Renomear",
         closeAbove: "Fechar abas acima",
         closeBelow: "Fechar abas abaixo",
@@ -1419,6 +1423,8 @@ export const ptBR: TranslationResources = {
         copyPath: "Copiar caminho",
         copyBranchName: "Copiar nome da branch",
         rename: "Renomear workspace",
+        openNewWindow: "Abrir em nova janela",
+        openNewWindowFailed: "Não foi possível abrir uma nova janela",
         pin: "Fixar no topo",
         unpin: "Desafixar",
         askHistory: "Ask history…",

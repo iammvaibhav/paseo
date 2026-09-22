@@ -3,7 +3,9 @@ import { pluginSettings } from "./plugin-settings";
 
 export const zhCN: TranslationResources = {
   paneFind: {
-    searchFailed: "无法搜索此聊天。请检查主机连接后重试。",
+    connectionFailure: "无法搜索此聊天。请检查主机连接后重试。",
+    historyChangedFailure: "搜索期间聊天已更改。请重新搜索。",
+    revealFailure: "无法显示此匹配项。请重试。",
     searching: "搜索中…",
     loading: "加载中…",
     failed: "失败",
@@ -731,6 +733,8 @@ export const zhCN: TranslationResources = {
         copyTerminalId: "复制 Terminal ID",
         copyFilePath: "Copy file path",
         moveToNewWorkspace: "移动到新工作区",
+        openInNewWindow: "在新窗口中打开",
+        openInNewWindowFailed: "无法打开新窗口",
         rename: "重命名",
         closeAbove: "关闭上方标签",
         closeBelow: "关闭下方标签",
@@ -1373,6 +1377,8 @@ export const zhCN: TranslationResources = {
         copyPath: "复制路径",
         copyBranchName: "复制分支名称",
         rename: "重命名 workspace",
+        openNewWindow: "在新窗口中打开",
+        openNewWindowFailed: "无法打开新窗口",
         pin: "置顶",
         unpin: "取消置顶",
         askHistory: "Ask history…",

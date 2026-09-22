@@ -3,7 +3,9 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ar: TranslationResources = {
   paneFind: {
-    searchFailed: "تعذر البحث في هذه المحادثة. تحقق من الاتصال بالمضيف وأعد المحاولة.",
+    connectionFailure: "تعذر البحث في هذه المحادثة. تحقق من الاتصال بالمضيف وأعد المحاولة.",
+    historyChangedFailure: "تغيّرت المحادثة أثناء البحث. أعد البحث.",
+    revealFailure: "تعذر عرض هذا التطابق. أعد المحاولة.",
     searching: "جارٍ البحث…",
     loading: "جارٍ التحميل…",
     failed: "فشل",
@@ -731,6 +733,8 @@ export const ar: TranslationResources = {
         copyTerminalId: "نسخ معرف المحطة",
         copyFilePath: "Copy file path",
         moveToNewWorkspace: "الانتقال إلى مساحة عمل جديدة",
+        openInNewWindow: "Open in new window",
+        openInNewWindowFailed: "Couldn't open a new window",
         rename: "إعادة تسمية",
         closeAbove: "إغلاق علامات التبويب أعلاه",
         closeBelow: "إغلاق علامات التبويب أدناه",
@@ -1388,6 +1392,8 @@ export const ar: TranslationResources = {
         copyPath: "نسخ المسار",
         copyBranchName: "انسخ اسم الفرع",
         rename: "إعادة تسمية مساحة العمل",
+        openNewWindow: "Open in new window",
+        openNewWindowFailed: "Couldn't open a new window",
         pin: "تثبيت في الأعلى",
         unpin: "إلغاء التثبيت",
         askHistory: "Ask history…",

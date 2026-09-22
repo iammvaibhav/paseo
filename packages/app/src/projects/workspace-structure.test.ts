@@ -398,7 +398,7 @@ describe("buildWorkspaceStructureProjects", () => {
     expect(result).toHaveLength(1);
     expect(result[0].workspaceKeys).toEqual(["host-a:ws-user"]);
   });
-  test("hides a project's base workspace from the sidebar list", () => {
+  test("lists a project's base workspace with its other workspaces", () => {
     const result = buildWorkspaceStructureProjects({
       sessions: [
         {
@@ -415,7 +415,7 @@ describe("buildWorkspaceStructureProjects", () => {
     });
 
     expect(result).toHaveLength(1);
-    expect(result[0].workspaceKeys).toEqual(["host-a:ws-task"]);
+    expect(result[0].workspaceKeys).toEqual(["host-a:ws-base", "host-a:ws-task"]);
   });
 
   test("keeps every workspace visible when the project has no base workspace", () => {
@@ -436,7 +436,7 @@ describe("buildWorkspaceStructureProjects", () => {
     expect(result[0].workspaceKeys).toEqual(["host-a:ws-one", "host-a:ws-two"]);
   });
 
-  test("hides each host's own base workspace independently for a multi-host project", () => {
+  test("lists each host's base workspace for a multi-host project", () => {
     const key = "remote:github.com/acme/app";
     const result = buildWorkspaceStructureProjects({
       sessions: [
@@ -460,7 +460,12 @@ describe("buildWorkspaceStructureProjects", () => {
     });
 
     expect(result).toHaveLength(1);
-    expect(result[0].workspaceKeys).toEqual(["host-a:ws-task-a", "host-b:ws-task-b"]);
+    expect(result[0].workspaceKeys).toEqual([
+      "host-a:ws-base-a",
+      "host-b:ws-base-b",
+      "host-a:ws-task-a",
+      "host-b:ws-task-b",
+    ]);
   });
 
   test("does not hide a workspace that merely shares an id with another host's base workspace", () => {
@@ -484,7 +489,7 @@ describe("buildWorkspaceStructureProjects", () => {
     expect(result).toHaveLength(2);
     const hostAProject = findProjectOnHost(result, "host-a");
     const hostBProject = findProjectOnHost(result, "host-b");
-    expect(hostAProject?.workspaceKeys).toEqual([]);
+    expect(hostAProject?.workspaceKeys).toEqual(["host-a:ws-shared"]);
     expect(hostBProject?.workspaceKeys).toEqual(["host-b:ws-shared"]);
   });
 });

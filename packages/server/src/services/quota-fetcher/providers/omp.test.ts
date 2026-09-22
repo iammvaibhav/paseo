@@ -1364,6 +1364,143 @@ describe("resolveActiveOmpCardIds", () => {
     const active = resolveActiveOmpCardIds(stickyRows, credentialRows, () => false);
     expect(active).toEqual(new Set(["omp-antigravity"]));
   });
+
+  it("maps google-antigravity reports with raw summary into the clean 4-window layout", async () => {
+    const provider = new OmpQuotaProvider({
+      agentDbPath: join(tmpdir(), "missing-omp-agent.db"),
+      logger: createTestLogger(),
+      usageCommandRunner: async () => ({
+        stdout: JSON.stringify({
+          reports: [
+            {
+              provider: "google-antigravity",
+              fetchedAt: Date.now(),
+              metadata: { email: "test@example.com" },
+              raw: {
+                groups: [
+                  {
+                    displayName: "Gemini Models",
+                    buckets: [
+                      {
+                        bucketId: "gw",
+                        displayName: "Weekly Limit Remaining",
+                        remainingFraction: 0.6,
+                      },
+                      {
+                        bucketId: "g5",
+                        displayName: "Five Hour Limit Remaining",
+                        remainingFraction: 1,
+                      },
+                    ],
+                  },
+                  {
+                    displayName: "Claude and GPT models",
+                    buckets: [
+                      {
+                        bucketId: "3pw",
+                        displayName: "Weekly Limit Remaining",
+                        remainingFraction: 0.9,
+                      },
+                      {
+                        bucketId: "3p5",
+                        displayName: "Five Hour Limit Remaining",
+                        remainingFraction: 0.8,
+                      },
+                    ],
+                  },
+                ],
+              },
+            },
+          ],
+        }),
+        stderr: "",
+      }),
+    });
+
+    const usage = await provider.fetchUsage();
+    const cards = Array.isArray(usage) ? usage : [usage];
+    const agy = cards.find((c) => c.groupId === "omp-antigravity");
+    expect(agy).toBeDefined();
+    expect(agy?.windows?.map((w) => w.label)).toEqual([
+      "Gemini · Five Hour Limit Remaining",
+      "Gemini · Weekly Limit Remaining",
+      "Claude/GPT · Five Hour Limit Remaining",
+      "Claude/GPT · Weekly Limit Remaining",
+    ]);
+  });
+
+  it("deduplicates shared limits and formats labels for google-antigravity when raw is absent", async () => {
+    const provider = new OmpQuotaProvider({
+      agentDbPath: join(tmpdir(), "missing-omp-agent.db"),
+      logger: createTestLogger(),
+      usageCommandRunner: async () => ({
+        stdout: JSON.stringify({
+          reports: [
+            {
+              provider: "google-antigravity",
+              fetchedAt: Date.now(),
+              metadata: { email: "test@example.com" },
+              limits: [
+                {
+                  id: "google-antigravity:google:default:gemini-weekly",
+                  label: "Gemini",
+                  amount: { usedFraction: 0.4, unit: "percent" },
+                  window: { id: "weekly", label: "Weekly", resetsAt: Date.now() + 86_400_000 },
+                },
+                {
+                  id: "google-antigravity:google:default:gemini-5h",
+                  label: "Gemini",
+                  amount: { usedFraction: 0.1, unit: "percent" },
+                  window: { id: "5h", label: "5 Hour", resetsAt: Date.now() + 18_000_000 },
+                },
+                {
+                  id: "google-antigravity:anthropic:default:3p-5h",
+                  label: "Claude & GPT (shared)",
+                  scope: { windowId: "5h", shared: true, sharedGroup: "3p-5h:5h" },
+                  amount: { usedFraction: 0.2, unit: "percent" },
+                  window: { id: "5h", label: "5 Hour", resetsAt: Date.now() + 18_000_000 },
+                },
+                {
+                  id: "google-antigravity:openai:default:3p-5h",
+                  label: "Claude & GPT (shared)",
+                  scope: { windowId: "5h", shared: true, sharedGroup: "3p-5h:5h" },
+                  amount: { usedFraction: 0.2, unit: "percent" },
+                  window: { id: "5h", label: "5 Hour", resetsAt: Date.now() + 18_000_000 },
+                },
+                {
+                  id: "google-antigravity:anthropic:default:3p-weekly",
+                  label: "Claude & GPT (shared)",
+                  scope: { windowId: "weekly", shared: true, sharedGroup: "3p-weekly:weekly" },
+                  amount: { usedFraction: 0.05, unit: "percent" },
+                  window: { id: "weekly", label: "Weekly", resetsAt: Date.now() + 604_800_000 },
+                },
+                {
+                  id: "google-antigravity:openai:default:3p-weekly",
+                  label: "Claude & GPT (shared)",
+                  scope: { windowId: "weekly", shared: true, sharedGroup: "3p-weekly:weekly" },
+                  amount: { usedFraction: 0.05, unit: "percent" },
+                  window: { id: "weekly", label: "Weekly", resetsAt: Date.now() + 604_800_000 },
+                },
+              ],
+            },
+          ],
+        }),
+        stderr: "",
+      }),
+    });
+
+    const usage = await provider.fetchUsage();
+    const cards = Array.isArray(usage) ? usage : [usage];
+    const agy = cards.find((c) => c.groupId === "omp-antigravity");
+    expect(agy).toBeDefined();
+    expect(agy?.windows).toHaveLength(4);
+    expect(agy?.windows?.map((w) => w.label)).toEqual([
+      "Gemini · Five Hour Limit Remaining",
+      "Gemini · Weekly Limit Remaining",
+      "Claude/GPT · Five Hour Limit Remaining",
+      "Claude/GPT · Weekly Limit Remaining",
+    ]);
+  });
 });
 
 function jsonResponse(body: unknown): Response {

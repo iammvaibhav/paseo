@@ -3,7 +3,9 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ko: TranslationResources = {
   paneFind: {
-    searchFailed: "이 채팅을 검색할 수 없습니다. 호스트 연결을 확인하고 다시 시도하세요.",
+    connectionFailure: "이 채팅을 검색할 수 없습니다. 호스트 연결을 확인하고 다시 시도하세요.",
+    historyChangedFailure: "검색 중에 채팅이 변경되었습니다. 다시 검색하세요.",
+    revealFailure: "이 일치 항목을 표시할 수 없습니다. 다시 시도하세요.",
     searching: "검색 중…",
     loading: "불러오는 중…",
     failed: "실패",
@@ -733,6 +735,8 @@ export const ko: TranslationResources = {
         copyTerminalId: "터미널 ID 복사",
         copyFilePath: "파일 경로 복사",
         moveToNewWorkspace: "새 워크스페이스로 이동",
+        openInNewWindow: "새 창에서 열기",
+        openInNewWindowFailed: "새 창을 열 수 없습니다",
         rename: "이름 변경",
         closeAbove: "위쪽 탭 닫기",
         closeBelow: "아래쪽 탭 닫기",
@@ -1386,6 +1390,8 @@ export const ko: TranslationResources = {
         copyPath: "경로 복사",
         copyBranchName: "브랜치 이름 복사",
         rename: "워크스페이스 이름 변경",
+        openNewWindow: "새 창에서 열기",
+        openNewWindowFailed: "새 창을 열 수 없습니다",
         pin: "상단에 고정",
         unpin: "고정 해제",
         archive: "보관",

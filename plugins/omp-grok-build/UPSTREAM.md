@@ -11,8 +11,8 @@ every host without a standalone checkout.
 
 ## Local changes on top of upstream
 
-- `src/models.ts` — curated overlay key and display name bumped from `grok-4.5`
-  to `grok-4.6`.
+- `src/models.ts` — curated overlay models updated with `grok-4.7` and
+  `grok-4.7-build-fast` alongside `grok-4.6` and `grok-4.5`.
 
 ## Updating from upstream
 

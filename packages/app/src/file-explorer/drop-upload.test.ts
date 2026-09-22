@@ -64,13 +64,10 @@ describe("droppedItemsToExplorerFiles", () => {
   it("includes raster images for explorer writes", async () => {
     const png = new File([new Uint8Array([1, 2, 3])], "shot.png", { type: "image/png" });
     const files = await droppedItemsToExplorerFiles([{ kind: "web-file", file: png }]);
-    expect(files).toEqual([
-      {
-        fileName: "shot.png",
-        mimeType: "image/png",
-        bytes: new Uint8Array([1, 2, 3]),
-      },
-    ]);
+    expect(files).toHaveLength(1);
+    expect(files[0]?.fileName).toBe("shot.png");
+    expect(files[0]?.mimeType).toBe("image/png");
+    await expect(files[0]?.readBytes()).resolves.toEqual(new Uint8Array([1, 2, 3]));
   });
 
   it("reads desktop path drops via the runtime", async () => {
@@ -84,6 +81,6 @@ describe("droppedItemsToExplorerFiles", () => {
       },
     );
     expect(files[0]?.fileName).toBe("notes.txt");
-    expect(files[0]?.bytes).toEqual(new TextEncoder().encode("hi"));
+    await expect(files[0]?.readBytes()).resolves.toEqual(new TextEncoder().encode("hi"));
   });
 });

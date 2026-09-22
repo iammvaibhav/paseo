@@ -9,13 +9,9 @@ import {
 } from "./agent/provider-launch-config.js";
 import type { AgentProviderRuntimeSettingsMap } from "./agent/provider-launch-config.js";
 import { ensurePrivateFile, writePrivateFileAtomicSync } from "./private-files.js";
-import {
-  AgentProfileSchema,
-  AgentSkillSelectionSchema,
-  PluginIdSchema,
-  PluginSourceSchema,
-  TerminalProfileSchema,
-} from "@getpaseo/protocol/messages";
+import { AgentProfileSchema, AgentSkillSelectionSchema } from "@getpaseo/protocol/agent-profile";
+import { PluginIdSchema, PluginSourceSchema } from "@getpaseo/protocol/plugin-config";
+import { TerminalProfileSchema } from "@getpaseo/protocol/terminal-profile";
 import { ComposerPreferencesSchema } from "@getpaseo/protocol/composer-preferences";
 import { PaseoServicePortAllocationSchema } from "@getpaseo/protocol/paseo-config-schema";
 import { PeerConfigSchema } from "./peers/types.js";

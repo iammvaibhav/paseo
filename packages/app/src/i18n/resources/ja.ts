@@ -3,8 +3,10 @@ import { pluginSettings } from "./plugin-settings";
 
 export const ja: TranslationResources = {
   paneFind: {
-    searchFailed:
+    connectionFailure:
       "このチャットを検索できませんでした。ホストへの接続を確認して再試行してください。",
+    historyChangedFailure: "検索中にチャットが変更されました。もう一度検索してください。",
+    revealFailure: "この一致を表示できませんでした。再試行してください。",
     searching: "検索中…",
     loading: "読み込み中…",
     failed: "失敗",
@@ -738,6 +740,8 @@ export const ja: TranslationResources = {
         copyTerminalId: "ターミナルIDをコピー",
         copyFilePath: "ファイルパスをコピー",
         moveToNewWorkspace: "新しいワークスペースに移動",
+        openInNewWindow: "新しいウィンドウで開く",
+        openInNewWindowFailed: "新しいウィンドウを開けませんでした",
         rename: "名前を変更",
         closeAbove: "上のタブを閉じる",
         closeBelow: "下のタブを閉じる",
@@ -1398,6 +1402,8 @@ export const ja: TranslationResources = {
         copyPath: "パスをコピー",
         copyBranchName: "ブランチ名をコピー",
         rename: "ワークスペースの名前を変更",
+        openNewWindow: "新しいウィンドウで開く",
+        openNewWindowFailed: "新しいウィンドウを開けませんでした",
         pin: "上部に固定",
         unpin: "固定解除",
         askHistory: "Ask history…",

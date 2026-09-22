@@ -100,6 +100,7 @@ import {
   type ProviderSubagentStoreEvent,
 } from "./provider-subagents/store.js";
 import { withTimeout } from "../../utils/promise-timeout.js";
+import { extractAttention } from "../persistence-hooks.js";
 
 const RELOAD_SESSION_CLOSE_TIMEOUT_MS = 3_000;
 const INTERRUPT_SESSION_TIMEOUT_MS = 2_000;
@@ -926,6 +927,11 @@ interface RegisterSessionOptions {
   lastUsage?: AgentUsage;
   lastError?: string;
   attention?: AttentionState;
+  /**
+   * Bringing a known agent back, rather than starting a new one. Installing the
+   * session is not activity in it.
+   */
+  restoring?: boolean;
   initialTitle?: string | null;
   initialPrompt?: string;
   name?: string;
@@ -1891,6 +1897,7 @@ export class AgentManager {
       owner?: AgentOwner;
       /** Provisional title for a freshly created agent (e.g. a fork); ignored when a stored record already has one. */
       initialTitle?: string | null;
+      attention?: AttentionState;
     },
     resumeOptions?: AgentResumeSessionOptions,
   ): Promise<ManagedAgent> {
@@ -1923,6 +1930,7 @@ export class AgentManager {
       workspaceId?: string;
       owner?: AgentOwner;
       initialTitle?: string | null;
+      attention?: AttentionState;
     },
     resumeOptions?: AgentResumeSessionOptions,
   ): Promise<ManagedAgent> {
@@ -1981,6 +1989,7 @@ export class AgentManager {
     return this.registerSession(session, storedConfig, resolvedAgentId, {
       ...options,
       persistence: handle,
+      restoring: true,
     });
   }
 
@@ -2174,6 +2183,7 @@ export class AgentManager {
         lastUsage: preservedLastUsage,
         lastError: preservedLastError,
         attention: preservedAttention,
+        restoring: true,
       });
     } catch (error) {
       if (closedExisting) {
@@ -2456,14 +2466,7 @@ export class AgentManager {
 
   private dispatchStoredAgentState(record: StoredAgentRecord): void {
     const updatedAt = new Date(record.updatedAt);
-    const attention: AttentionState =
-      record.requiresAttention && record.attentionReason && record.attentionTimestamp
-        ? {
-            requiresAttention: true,
-            attentionReason: record.attentionReason,
-            attentionTimestamp: new Date(record.attentionTimestamp),
-          }
-        : { requiresAttention: false };
+    const attention = extractAttention(record);
     this.dispatch({
       type: "agent_state",
       agent: {
@@ -2560,11 +2563,17 @@ export class AgentManager {
     }
     await this.drainSessionEvents(agentId);
 
-    agent.config.thinkingOptionId = normalizedThinkingOptionId ?? undefined;
+    let effectiveThinkingOptionId = normalizedThinkingOptionId;
+    const runtimeInfo = await agent.session.getRuntimeInfo();
+    if (runtimeInfo.thinkingOptionId !== undefined) {
+      effectiveThinkingOptionId = runtimeInfo.thinkingOptionId;
+    }
+
+    agent.config.thinkingOptionId = effectiveThinkingOptionId ?? undefined;
     if (agent.runtimeInfo) {
       agent.runtimeInfo = {
         ...agent.runtimeInfo,
-        thinkingOptionId: normalizedThinkingOptionId,
+        thinkingOptionId: effectiveThinkingOptionId,
       };
     }
     // Same persistence-handle refresh as setAgentModel: machinery dispatches
@@ -4565,17 +4574,9 @@ export class AgentManager {
       await this.refreshSessionState(managed, { emit: false, skipRuntimeInfo: true });
       this.assertAgentRegistrationActive(managed);
       managed.lifecycle = "idle";
-      // Registration is bookkeeping for a RESTORED agent (resume/reload of an
-      // existing stored record): it did not actually do anything, so do not
-      // advance updatedAt. The snapshot projection derives the record's
-      // lastActivityAt from updatedAt, so bumping it here rewrites every
-      // idle-through-restart agent's real last-activity with this process's
-      // boot/restore time — the shared "last activity" every dormant board
-      // row used to read (live bug). Preserved timestamps mean an agent that
-      // has not run since the last boot keeps its true lastActivityAt; real
-      // activity (timeline rows, user messages, lifecycle transitions) still
-      // bumps updatedAt via touchUpdatedAt and re-persists as usual.
-      if (!existingRecord) {
+      // Restoring a stored agent is bookkeeping, not activity. Stamping now
+      // rewrote lastActivityAt for every idle agent on resume.
+      if (!existingRecord && !options?.restoring) {
         this.touchUpdatedAt(managed);
       }
       await this.persistSnapshot(managed, {
