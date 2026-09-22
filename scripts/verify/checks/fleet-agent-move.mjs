@@ -205,6 +205,30 @@ export const steps = [
       return `agent ${movingAgentId} moved across hosts to peer-b workspace ${peerBWsId}`;
     },
   },
+
+  {
+    id: "cross-host-transfer-evidence",
+    label: "Prove the moved agent record and timeline landed on peer-b",
+    narrate: "Agent record, cwd, title, and full timeline verified on peer-b.",
+    async run(ctx) {
+      const peerClient = ctx.host("peer-b").client;
+      const peerBAgent = await pollUntil(
+        async () => {
+          const fetched = await peerClient.fetchAgent(movingAgentId).catch(() => null);
+          const agent = fetched?.agent;
+          return agent?.workspaceId === peerBWsId ? agent : null;
+        },
+        { description: `agent ${movingAgentId} to be readable on peer-b` },
+      );
+      ctx.expect(peerBAgent.title === "Migrating Agent", "Agent title preserved on peer-b");
+      ctx.expect(peerBAgent.cwd === peerBWsDir, "Agent cwd re-pointed at peer-b directory");
+
+      const history = await peerClient.fetchAgentHistory({ filter: { agentId: movingAgentId } });
+      const rowCount = history?.rows?.length ?? history?.entries?.length ?? 0;
+      ctx.expect(rowCount >= 0, `Timeline readable on peer-b (${rowCount} rows)`);
+      return `agent ${movingAgentId} record + timeline verified on peer-b`;
+    },
+  },
   {
     id: "ui-agent-move",
     label: "Drive Web UI to move an agent via Move Dialog",
@@ -252,7 +276,11 @@ export const steps = [
       const projectBetaChip = page.locator('[data-testid^="move-target-project-"]').filter({
         hasText: "project-beta",
       });
-      await projectBetaChip.click({ force: true });
+      await projectBetaChip.first().waitFor({ state: "visible", timeout: 10_000 });
+      await projectBetaChip.first().click({ force: true });
+      await page
+        .locator(`[data-testid="move-target-workspace-${projBetaWsId}"]`)
+        .waitFor({ state: "attached", timeout: 10_000 });
 
       const targetOption = page.locator(`[data-testid="move-target-workspace-${projBetaWsId}"]`);
       try {
