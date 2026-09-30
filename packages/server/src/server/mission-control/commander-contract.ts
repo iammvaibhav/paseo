@@ -85,6 +85,15 @@ export const COMMANDER_TOOL_ALLOWLIST: readonly string[] = [
   "fleet_monitor",
   "fleet_ticketize_agent",
   "itsaplan_ticketize",
+  // Native tickets (tickets/tools.ts): board reads and non-destructive
+  // writes, never gated — every write is visible on the board.
+  "ticket_list",
+  "ticket_get",
+  "ticket_create",
+  "ticket_update",
+  "ticket_move",
+  "ticket_comment",
+  "ticket_dispatch",
 ];
 
 /**

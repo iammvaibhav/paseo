@@ -131,6 +131,122 @@ const ItsaplanProjectSchema = z.object({
 });
 export type ItsaplanProject = z.infer<typeof ItsaplanProjectSchema>;
 
+// --- Read-only import surface (tickets/import-itsaplan.ts) ---
+
+// One row of GET /projects: the projects the API key's user is a member of.
+const ItsaplanProjectListItemSchema = z.object({
+  id: z.number(),
+  key: z.string(),
+  name: z.string(),
+  description: z.string().nullable().optional(),
+  createdAt: z.string().optional(),
+});
+export type ItsaplanProjectListItem = z.infer<typeof ItsaplanProjectListItemSchema>;
+
+const ItsaplanIssueTypeSchema = z.object({ id: z.number(), name: z.string() });
+export type ItsaplanIssueType = z.infer<typeof ItsaplanIssueTypeSchema>;
+
+// A project member or an AI agent's bot user (`kind: "agent"`).
+const ItsaplanAssigneeCandidateSchema = z.object({
+  userId: z.string(),
+  name: z.string().optional(),
+  username: z.string().nullable().optional(),
+  kind: z.string().optional(),
+});
+export type ItsaplanAssigneeCandidate = z.infer<typeof ItsaplanAssigneeCandidateSchema>;
+
+// The parts of the GET /projects/:key scaffold the import reads.
+const ItsaplanProjectSetupSchema = z.object({
+  columns: z.array(ItsaplanColumnSchema).default([]),
+  issueTypes: z.array(ItsaplanIssueTypeSchema).default([]),
+  assignees: z.array(ItsaplanAssigneeCandidateSchema).default([]),
+});
+export type ItsaplanProjectSetup = z.infer<typeof ItsaplanProjectSetupSchema>;
+
+// The full issue row (IssueResponse). GET /issues/:id carries the same fields;
+// ItsaplanIssueSchema above keeps only what the bridge reads.
+const ItsaplanIssueRecordSchema = ItsaplanIssueSchema.omit({ links: true }).extend({
+  parentId: z.number().nullable().optional(),
+  typeId: z.number().nullable().optional(),
+  priority: z.string().nullable().optional(),
+  startDate: z.string().nullable().optional(),
+  dueDate: z.string().nullable().optional(),
+  position: z.number().optional(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  archivedAt: z.string().nullable().optional(),
+});
+export type ItsaplanIssueRecord = z.infer<typeof ItsaplanIssueRecordSchema>;
+
+// A relation as a board issue carries it: how it reads from that issue
+// (`blocked_by` = this issue is blocked by `issueId`) and the other end.
+const ItsaplanBoardIssueLinkSchema = z.object({
+  id: z.number(),
+  relation: z.enum(["blocks", "blocked_by", "relates", "duplicates", "duplicated_by"]),
+  issueId: z.number(),
+});
+type ItsaplanBoardIssueLink = z.infer<typeof ItsaplanBoardIssueLinkSchema>;
+
+const ItsaplanBoardResponseSchema = z.object({
+  issues: z.array(
+    ItsaplanIssueRecordSchema.extend({ links: z.array(ItsaplanBoardIssueLinkSchema).default([]) }),
+  ),
+});
+
+function normalizeBoardIssueLink(issueId: number, link: ItsaplanBoardIssueLink): ItsaplanIssueLink {
+  switch (link.relation) {
+    case "blocked_by":
+      return { id: link.id, kind: "blocks", sourceIssueId: link.issueId, targetIssueId: issueId };
+    case "duplicated_by":
+      return {
+        id: link.id,
+        kind: "duplicates",
+        sourceIssueId: link.issueId,
+        targetIssueId: issueId,
+      };
+    default:
+      return {
+        id: link.id,
+        kind: link.relation,
+        sourceIssueId: issueId,
+        targetIssueId: link.issueId,
+      };
+  }
+}
+
+// One entry of an issue feed: a comment or a change-log row (`kind`).
+const ItsaplanFeedItemSchema = z.object({
+  id: z.number(),
+  kind: z.string(),
+  replyToId: z.number().nullable().optional(),
+  actorUserId: z.string().nullable().optional(),
+  actorName: z.string().nullable().optional(),
+  body: z.string().nullable().optional(),
+  createdAt: z.string(),
+});
+export type ItsaplanFeedItem = z.infer<typeof ItsaplanFeedItemSchema>;
+
+const ItsaplanFeedPageSchema = z.object({
+  items: z.array(ItsaplanFeedItemSchema),
+  nextCursor: z.object({ ts: z.string(), id: z.number() }).nullable(),
+});
+
+const ItsaplanInitiativeRecordSchema = ItsaplanInitiativeSchema.extend({
+  status: z.string(),
+  priority: z.string().nullable().optional(),
+  startDate: z.string().nullable().optional(),
+  targetDate: z.string().nullable().optional(),
+  position: z.number().optional(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+export type ItsaplanInitiativeRecord = z.infer<typeof ItsaplanInitiativeRecordSchema>;
+
+const ItsaplanInitiativePageSchema = z.object({
+  items: z.array(ItsaplanInitiativeRecordSchema),
+  total: z.number(),
+});
+
 /**
  * Live GET /projects/:key returns a nested scaffold (`{ project, columns, labels }`),
  * not a flat project. POST /projects still returns the flat row. Both shapes
@@ -420,6 +536,96 @@ export class ItsaplanClient {
       ItsaplanProjectScaffoldSchema,
     );
     return scaffold.labels;
+  }
+
+  // --- Read-only import surface (tickets/import-itsaplan.ts) ---
+
+  async listProjects(): Promise<ItsaplanProjectListItem[]> {
+    return this.request("GET", "/projects", undefined, z.array(ItsaplanProjectListItemSchema));
+  }
+
+  /** Columns, issue types and assignable users of one project (GET /projects/:key). */
+  async getProjectSetup(projectKey: string): Promise<ItsaplanProjectSetup> {
+    return this.request(
+      "GET",
+      `/projects/${encodeURIComponent(projectKey)}`,
+      undefined,
+      ItsaplanProjectSetupSchema,
+    );
+  }
+
+  /**
+   * Every active issue of a project, with the relations between them in the
+   * stored row shape. The board payload puts a relation on both of its
+   * issues; it is returned once. Relations to archived issues are not in
+   * this payload: read them with `listIssueLinks` on the archived issue.
+   */
+  async listBoardIssues(
+    projectKey: string,
+  ): Promise<{ issues: ItsaplanIssueRecord[]; links: ItsaplanIssueLink[] }> {
+    const board = await this.request(
+      "GET",
+      `/projects/${encodeURIComponent(projectKey)}/issues/board`,
+      undefined,
+      ItsaplanBoardResponseSchema,
+    );
+    const links = new Map<number, ItsaplanIssueLink>();
+    const issues = board.issues.map(({ links: issueLinks, ...issue }) => {
+      for (const link of issueLinks) {
+        if (!links.has(link.id)) {
+          links.set(link.id, normalizeBoardIssueLink(issue.id, link));
+        }
+      }
+      return issue;
+    });
+    return { issues, links: Array.from(links.values()) };
+  }
+
+  async listArchivedIssues(projectKey: string): Promise<ItsaplanIssueRecord[]> {
+    return this.request(
+      "GET",
+      `/projects/${encodeURIComponent(projectKey)}/issues/archived`,
+      undefined,
+      z.array(ItsaplanIssueRecordSchema),
+    );
+  }
+
+  /**
+   * One page of an issue feed, newest first; the replies of a comment come on
+   * the page of their thread. `cursor` is the `nextCursor` of the previous
+   * page (opaque), null for the first page; `nextCursor` is null on the last.
+   */
+  async listIssueFeedPage(
+    issueId: number,
+    cursor: string | null,
+  ): Promise<{ items: ItsaplanFeedItem[]; nextCursor: string | null }> {
+    const query = new URLSearchParams({ limit: "100" });
+    if (cursor) {
+      query.set("cursor", cursor);
+    }
+    const page = await this.request(
+      "GET",
+      `/issues/${issueId}/feed?${query.toString()}`,
+      undefined,
+      ItsaplanFeedPageSchema,
+    );
+    return {
+      items: page.items,
+      nextCursor: page.nextCursor ? JSON.stringify(page.nextCursor) : null,
+    };
+  }
+
+  /** One 1-based page of at most 100 initiatives, in manual position order. */
+  async listInitiativesPage(
+    projectKey: string,
+    page: number,
+  ): Promise<{ items: ItsaplanInitiativeRecord[]; total: number }> {
+    return this.request(
+      "GET",
+      `/projects/${encodeURIComponent(projectKey)}/initiatives?page=${page}&pageSize=100`,
+      undefined,
+      ItsaplanInitiativePageSchema,
+    );
   }
 
   async createLabel(

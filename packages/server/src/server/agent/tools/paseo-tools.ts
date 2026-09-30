@@ -114,6 +114,7 @@ import {
 import { registerBrowserTools } from "../../browser-tools/tools.js";
 import type { BrowserToolsBroker } from "../../browser-tools/broker.js";
 import { buildPeerUnreachableError, type PeerManager } from "../../peers/peer-manager.js";
+import { registerTicketTools, type TicketToolsBackend } from "../../tickets/tools.js";
 import { MissionControlSearchMatchSchema } from "@getpaseo/protocol/mission-control/types";
 import type { MissionControlProposalSpawnPlan } from "@getpaseo/protocol/mission-control/types";
 import { MissionControlMetaPlanSchema } from "@getpaseo/protocol/mission-control/types";
@@ -211,6 +212,12 @@ export interface PaseoToolHostDependencies {
       agentId: string,
     ) => Promise<{ issueId: number; url: string } | { error: string }>;
   } | null;
+  /**
+   * Native tickets board for the Commander ticket tools, resolved per call
+   * (local on the board host, else the board-host peer). Absent → no ticket
+   * tools.
+   */
+  resolveTicketTools?: (() => TicketToolsBackend) | null;
   paseoToolPolicy?: ProviderPaseoToolsPolicy;
   paseoHome?: string;
   worktreesRoot?: string;
@@ -6553,6 +6560,10 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       return tool.handler(args, context);
     },
   );
+
+  if (isCommanderCaller && options.resolveTicketTools) {
+    registerTicketTools({ registerTool, resolveBackend: options.resolveTicketTools });
+  }
 
   registerTool(
     "fleet_recall",

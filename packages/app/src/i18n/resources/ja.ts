@@ -1977,6 +1977,7 @@ export const ja: TranslationResources = {
     retry: "Retry",
   },
 
+  tickets: en.tickets,
   serviceUrl: {
     title: "サービスURLを開く",
     message: "{{url}}を開きますか？",

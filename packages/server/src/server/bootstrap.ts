@@ -186,6 +186,16 @@ import { runIdentityBackfill } from "./mission-control/backfill.js";
 import { MAX_WEBHOOK_BODY_BYTES, WebhookService } from "./webhook/service.js";
 import { createWebhookRouteHandler } from "./webhook/route.js";
 import {
+  isServingTickets,
+  openTickets,
+  type TicketService,
+  type TicketsDelegatedHandlers,
+  type TicketsHost,
+  type TicketStore,
+} from "./tickets/index.js";
+import { ItsaplanTicketImporter } from "./tickets/import-itsaplan.js";
+import { startTicketFleet } from "./tickets/fleet.js";
+import {
   attachItsaplanProjectSync,
   createItsaplanResyncRouteHandler,
   createItsaplanWebhookRouteHandler,
@@ -746,6 +756,11 @@ export interface PaseoDaemon {
   scriptRuntimeStore: WorkspaceScriptRuntimeStore;
   browserToolsBroker: BrowserToolsBroker;
   missionControlService?: MissionControlService;
+  // Native tickets; null when node:sqlite is missing.
+  ticketService: TicketService | null;
+  ticketStore: TicketStore | null;
+  isTicketsBoardHost(): boolean;
+  ticketsHandlers: TicketsDelegatedHandlers;
   start(): Promise<void>;
   stop(): Promise<void>;
   getListenTarget(): ListenTarget | null;
@@ -2594,6 +2609,85 @@ export async function createPaseoDaemon(
   });
   webhookIngress.setHandler(createWebhookRouteHandler(webhookService, logger));
 
+  // ---- Native tickets (ServerCore). Every host opens the store; only the
+  // board host (the designated Commander host, same rule as the itsaplan
+  // sync host) serves tickets.* and advertises features.tickets. The fleet
+  // and itsaplan-import blocks below fill `ticketsHandlers`; sessions read
+  // its slots at call time.
+  const ticketsRuntime = await openTickets({ paseoHome: config.paseoHome, logger });
+  const ticketStore: TicketStore | null = ticketsRuntime?.store ?? null;
+  const ticketService: TicketService | null = ticketsRuntime?.service ?? null;
+  const ticketsHandlers: TicketsDelegatedHandlers = {};
+  const ticketsBoardHostName = (): string | null =>
+    centralMissionControlConfig.get().commanderHost?.trim() || null;
+  const ticketsHost: TicketsHost = {
+    service: ticketService,
+    isBoardHost: isThisHostTheItsaplanSyncHost,
+    boardHostName: ticketsBoardHostName,
+    handlers: ticketsHandlers,
+  };
+  const isTicketsBoardHost = (): boolean => isServingTickets(ticketsHost);
+  ticketService?.onChange((change) => {
+    wsServer?.broadcast(wrapSessionMessage({ type: "tickets.changed", ...change }));
+  });
+  // ---- end native tickets (ServerCore)
+
+  // ---- itsaplan → native tickets import (Importer). Read-only copy of the
+  // itsaplan server in central config; tickets.import.itsaplan.request
+  // triggers it on the board host.
+  if (ticketStore && ticketService) {
+    const itsaplanTicketImporter = new ItsaplanTicketImporter({
+      ticketStore,
+      ticketService,
+      getConfig: getItsaplanConfig,
+      projectStore: itsaplanProjectStore,
+      agentStorage,
+      missionControl: missionControlService,
+      serverId,
+      logger,
+    });
+    ticketsHandlers.importItsaplan = () => itsaplanTicketImporter.run();
+  }
+  // ---- end itsaplan import (Importer)
+
+  // ---- Native tickets fleet (ServerFleet). Every host reports its
+  // ticket-linked agents to the board host; the board host moves tickets on
+  // those reports and wakes the Commander on user board actions. Commander
+  // delivery is the same machinery primitive the itsaplan bridge uses.
+  const ticketFleet = startTicketFleet({
+    logger,
+    serverId,
+    agentManager,
+    agentStorage,
+    missionControl: missionControlService,
+    service: ticketService,
+    isBoardHost: isTicketsBoardHost,
+    boardHostName: ticketsBoardHostName,
+    peerManager,
+    deliverMachineryPrompt: async ({ prompt, images }) => {
+      const commanderId = await missionControlService.getCommanderAgentId();
+      if (!commanderId) {
+        return false;
+      }
+      await dispatchLocalPromptMode({
+        agentManager,
+        agentStorage,
+        agentId: commanderId,
+        prompt,
+        ...(images.length > 0 ? { images } : {}),
+        mode: "steer",
+        classification: "machinery",
+        replaceOrigin: "machinery",
+        recordStopOrigin: (id, origin) => missionControlService.recordStopOrigin(id, origin),
+        logger,
+      });
+      return true;
+    },
+  });
+  ticketsHandlers.runReport = (report) => ticketFleet.reportRun(report);
+  ticketsHandlers.dispatch = (input) => ticketFleet.dispatch(input);
+  // ---- end native tickets fleet (ServerFleet)
+
   logger.info({ elapsed: elapsed() }, "Loading persisted agent registry");
   const persistedRecords = await agentStorage.list();
   logger.info(
@@ -2663,6 +2757,7 @@ export async function createPaseoDaemon(
     itsaplanTicketize: {
       ticketizeAgent: (agentId) => itsaplanBridge.ticketizeAgent(agentId),
     },
+    resolveTicketTools: ticketFleet.resolveToolsBackend,
     verifierDispatcher,
     serverId,
     hostAlias: missionControlHostAlias,
@@ -3000,6 +3095,7 @@ export async function createPaseoDaemon(
               workspaceLabelService,
               (workspaceId) => itsaplanBridge?.handleWorkspaceArchived(workspaceId),
               warmWorktreePool,
+              ticketsHost,
             );
             pluginRuntime.bindPaseoSessionHost(wsServer);
             await pluginRuntime.start();
@@ -3067,6 +3163,7 @@ export async function createPaseoDaemon(
     itsaplanReconcileService.stop();
     itsaplanChatRunner.stop();
     itsaplanBridge.stop();
+    ticketFleet.stop();
     unsubscribeItsaplanProjectSync();
     scriptHealthMonitor.stop();
     idleCloseOmpService.stop();
@@ -3092,6 +3189,7 @@ export async function createPaseoDaemon(
       await wsServer.close();
     }
     transcriptSearch?.stop();
+    ticketStore?.close();
     await serviceProxy.stopStandalone();
     // Force-drop remaining sockets so httpServer.close() resolves promptly.
     // We've already closed wsServer (which sent ws-layer close frames) and
@@ -3119,6 +3217,10 @@ export async function createPaseoDaemon(
     scriptRuntimeStore,
     browserToolsBroker,
     missionControlService,
+    ticketService,
+    ticketStore,
+    isTicketsBoardHost,
+    ticketsHandlers,
     start,
     stop,
     getListenTarget: () => boundListenTarget,

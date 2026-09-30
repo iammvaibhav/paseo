@@ -2000,6 +2000,7 @@ export const ptBR: TranslationResources = {
     retry: "Retry",
   },
 
+  tickets: en.tickets,
   serviceUrl: {
     title: "Abrir URL do serviço",
     message: "Abrir {{url}}?",

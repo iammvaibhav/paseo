@@ -4,15 +4,21 @@ import type { StoredAgentRecord } from "../agent/agent-storage.js";
 import {
   findInProgressColumn,
   ITSAPLAN_READY_FOR_REVIEW_COLUMN_NAME,
+  ItsaplanApiError,
   ItsaplanClient,
   type ItsaplanColumn,
 } from "./client.js";
 import type { ItsaplanCentralConfig, ItsaplanProjectStore } from "./projects.js";
 import { getItsaplanIssueIdFromLabels } from "./bridge.js";
 
+type ReconcileAgentRecord = Pick<StoredAgentRecord, "id" | "labels" | "updatedAt" | "archivedAt">;
+
 export interface ItsaplanReconcileAgentStorage {
-  list(): Promise<Pick<StoredAgentRecord, "id" | "labels" | "updatedAt">[]>;
+  list(): Promise<ReconcileAgentRecord[]>;
 }
+
+// Upper bound of the sweep interval after repeated rate limits.
+const MAX_SWEEP_INTERVAL_MS = 10 * 60_000;
 
 export interface ItsaplanReconcileMissionControl {
   getLifecycleBucket(agentId: string): Promise<LifecycleBucket>;
@@ -71,6 +77,12 @@ function projectKeyFromIdentifier(identifier: string | undefined): string | null
  * never the reverse. Column moves are strictly forward (Todo -> In Progress
  * -> Ready to review); a ticket already at or past its truth-implied column,
  * or already Done/Cancelled (user-owned, terminal), is left untouched.
+ *
+ * An issue whose latest attempt is archived is history, not drift: the sweep
+ * skips it. Without this skip, every archived attempt cost two requests per
+ * sweep and the fleet flooded itsaplan into rate limits. A 429 ends the
+ * sweep and doubles the delay to the next one (up to 10 minutes); a sweep
+ * without a 429 resets the delay.
  */
 export class ItsaplanReconcileService {
   private readonly agentStorage: ItsaplanReconcileAgentStorage;
@@ -78,7 +90,10 @@ export class ItsaplanReconcileService {
   private readonly projectStore: ItsaplanProjectStore;
   private readonly getConfig: () => ItsaplanCentralConfig | null;
   private readonly logger: Logger;
-  private readonly intervalMs: number;
+  private readonly baseIntervalMs: number;
+  private intervalMs: number;
+  private started = false;
+  private sweepInFlight = false;
   private timer: NodeJS.Timeout | null = null;
 
   constructor(options: ItsaplanReconcileOptions) {
@@ -87,24 +102,50 @@ export class ItsaplanReconcileService {
     this.projectStore = options.projectStore;
     this.getConfig = options.getConfig;
     this.logger = options.logger.child({ module: "itsaplan", component: "reconcile" });
-    this.intervalMs = options.intervalMs ?? 60_000;
+    this.baseIntervalMs = options.intervalMs ?? 60_000;
+    this.intervalMs = this.baseIntervalMs;
+  }
+
+  /** Delay from the end of one sweep to the start of the next. */
+  get nextSweepDelayMs(): number {
+    return this.intervalMs;
   }
 
   start(): void {
-    if (this.timer) {
+    if (this.started) {
       return;
     }
-    this.timer = setInterval(() => {
-      void this.runSweep();
-    }, this.intervalMs);
-    this.timer.unref?.();
+    this.started = true;
+    // A sweep still in flight from before stop() schedules the next one.
+    if (!this.sweepInFlight) {
+      this.scheduleSweep();
+    }
   }
 
   stop(): void {
+    this.started = false;
     if (this.timer) {
-      clearInterval(this.timer);
+      clearTimeout(this.timer);
       this.timer = null;
     }
+  }
+
+  private scheduleSweep(): void {
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      this.sweepInFlight = true;
+      void this.runSweep()
+        .catch((error: unknown) => {
+          this.logger.error({ err: error }, "itsaplan.reconcile.sweep_failed");
+        })
+        .finally(() => {
+          this.sweepInFlight = false;
+          if (this.started) {
+            this.scheduleSweep();
+          }
+        });
+    }, this.intervalMs);
+    this.timer.unref?.();
   }
 
   async runSweep(): Promise<void> {
@@ -112,7 +153,7 @@ export class ItsaplanReconcileService {
     if (!config) {
       return;
     }
-    const groups = new Map<string, Pick<StoredAgentRecord, "id" | "labels" | "updatedAt">[]>();
+    const groups = new Map<string, ReconcileAgentRecord[]>();
     for (const record of await this.agentStorage.list()) {
       const issueId = getItsaplanIssueIdFromLabels(record.labels);
       if (!issueId) {
@@ -126,28 +167,40 @@ export class ItsaplanReconcileService {
       }
     }
     for (const [issueId, group] of groups) {
+      // One ticket can have N agent attempts (ADR 0002); the most recently
+      // updated attempt is this issue's current execution truth.
+      const latest = group.reduce((newest, candidate) =>
+        candidate.updatedAt > newest.updatedAt ? candidate : newest,
+      );
+      if (latest.archivedAt) {
+        continue;
+      }
       try {
-        await this.reconcileIssue(issueId, group, config);
+        await this.reconcileIssue(issueId, latest, config);
       } catch (error) {
+        if (error instanceof ItsaplanApiError && error.status === 429) {
+          this.intervalMs = Math.min(this.intervalMs * 2, MAX_SWEEP_INTERVAL_MS);
+          this.logger.warn(
+            { issueId, nextSweepDelayMs: this.intervalMs },
+            "itsaplan.reconcile.rate_limited",
+          );
+          return;
+        }
         this.logger.error({ err: error, issueId }, "itsaplan.reconcile.issue_failed");
       }
     }
+    this.intervalMs = this.baseIntervalMs;
   }
 
   private async reconcileIssue(
     issueId: string,
-    group: readonly Pick<StoredAgentRecord, "id" | "labels" | "updatedAt">[],
+    latest: ReconcileAgentRecord,
     config: ItsaplanCentralConfig,
   ): Promise<void> {
     const numericIssueId = Number(issueId);
     if (!Number.isFinite(numericIssueId)) {
       return;
     }
-    // One ticket can have N agent attempts (ADR 0002); the most recently
-    // updated attempt is this issue's current execution truth.
-    const latest = group.reduce((newest, candidate) =>
-      candidate.updatedAt > newest.updatedAt ? candidate : newest,
-    );
     const bucket = await this.missionControl.getLifecycleBucket(latest.id);
     const truthRank = bucket === "ready" || bucket === "done" ? 2 : 1;
 

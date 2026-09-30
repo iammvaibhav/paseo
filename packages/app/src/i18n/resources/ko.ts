@@ -1968,6 +1968,7 @@ export const ko: TranslationResources = {
     retry: "Retry",
   },
 
+  tickets: en.tickets,
   serviceUrl: {
     title: "서비스 URL 열기",
     message: "{{url}}을(를) 열까요?",

@@ -45,6 +45,7 @@ import {
   type SessionRuntimeMetrics,
 } from "./session.js";
 import type { WarmWorktreePool } from "./warm-worktree-pool.js";
+import { isServingTickets, type TicketsHost } from "./tickets/session.js";
 import type { HubRelationshipManagement } from "./hub/relationship-controller.js";
 import { WorkspaceSetupRuntime } from "./workspace-setup-runtime.js";
 import type { HubExecutionAgents } from "./hub/daemon-executions.js";
@@ -630,6 +631,7 @@ export class VoiceAssistantWebSocketServer {
   private readonly orchestrationSkills: SessionOptions["orchestrationSkills"];
   private readonly onWorkspaceArchived?: (workspaceId: string) => void | Promise<void>;
   private readonly warmWorktreePool?: WarmWorktreePool;
+  private ticketsHost!: TicketsHost | null;
 
   private async validateCompletedCreation(snapshot: CreationSnapshot): Promise<void> {
     if (snapshot.workspace && snapshot.kind === "workspace") {
@@ -701,6 +703,7 @@ export class VoiceAssistantWebSocketServer {
     workspaceLabelService?: WorkspaceLabelService,
     onWorkspaceArchived?: (workspaceId: string) => void | Promise<void>,
     warmWorktreePool?: WarmWorktreePool,
+    ticketsHost?: TicketsHost | null,
   ) {
     this.onWorkspaceArchived = onWorkspaceArchived;
     this.logger = logger.child({ module: "websocket-server" });
@@ -757,6 +760,7 @@ export class VoiceAssistantWebSocketServer {
       getDaemonTcpHost,
       serviceProxyPublicBaseUrl,
       resolveScriptHealth,
+      ticketsHost,
     });
     if (!providerSnapshotManager) {
       throw new Error("providerSnapshotManager is required");
@@ -827,6 +831,7 @@ export class VoiceAssistantWebSocketServer {
     getDaemonTcpHost: (() => string | null) | undefined;
     serviceProxyPublicBaseUrl: string | null | undefined;
     resolveScriptHealth: ((hostname: string) => ScriptHealthState | null) | undefined;
+    ticketsHost: TicketsHost | null | undefined;
   }): void {
     this.speech = params.speech ?? null;
     this.terminalManager = params.terminalManager ?? null;
@@ -863,6 +868,7 @@ export class VoiceAssistantWebSocketServer {
     this.getDaemonTcpHost = params.getDaemonTcpHost ?? null;
     this.serviceProxyPublicBaseUrl = params.serviceProxyPublicBaseUrl ?? null;
     this.resolveScriptHealth = params.resolveScriptHealth ?? null;
+    this.ticketsHost = params.ticketsHost ?? null;
   }
 
   private createWebSocketServer(
@@ -1534,6 +1540,7 @@ export class VoiceAssistantWebSocketServer {
       warmWorktreePool: this.warmWorktreePool,
       pluginRuntime: this.pluginRuntime,
       orchestrationSkills: this.orchestrationSkills,
+      tickets: this.ticketsHost,
       mcpBaseUrl: this.mcpBaseUrl,
       stt: () => this.speech?.resolveStt() ?? null,
       sttLanguage: this.speech?.resolveSttLanguage() ?? "en",
@@ -1836,6 +1843,10 @@ export class VoiceAssistantWebSocketServer {
         // answer cards, Commander clarify/post_answer tools). App gates the
         // new card renderings once on this flag.
         missionControlV4: true,
+        // Native tickets. True only on the board host (the Commander host)
+        // with node:sqlite loaded; evaluated per server_info because the
+        // Commander designation can move.
+        tickets: isServingTickets(this.ticketsHost),
         // COMPAT(worktreeRestore): keep through 2027-01-11 for clients older than v0.1.105.
         worktreeRestore: true,
         // COMPAT(workspaceRecovery): added in v0.1.105, remove after 2027-01-11 once daemon floor >= v0.1.105.

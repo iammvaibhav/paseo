@@ -4,6 +4,7 @@ import {
   FolderPlus,
   GitBranch,
   Import,
+  Kanban,
   Radar,
   Server,
   Settings,
@@ -84,6 +85,7 @@ import {
   buildWebhooksRoute,
 } from "@/utils/host-routes";
 import { openHostOverview } from "@/navigation/settings-navigation";
+import { buildTicketsRoute } from "@/tickets/routes";
 import { SidebarAgentListSkeleton } from "./sidebar-agent-list-skeleton";
 import { SidebarCalloutSlot } from "./sidebar-callout-slot";
 import { SidebarWorkspaceList } from "./sidebar-workspace-list";
@@ -97,6 +99,7 @@ interface SidebarLabels {
   settings: string;
   searchHosts: string;
   itsaplan: string;
+  tickets: string;
   missionControl: string;
   webhooks: string;
   closeSidebar: string;
@@ -130,6 +133,8 @@ interface SidebarSharedProps {
   handleOpenHostSettings: (serverId: string) => void;
   /** Any connected host advertises features.missionControl — gates the row. */
   hasMissionControl: boolean;
+  /** A known host advertises features.tickets (the Commander host) — gates the row. */
+  hasTickets: boolean;
   /** Two-segment badge: working + ready-for-review counts across all hosts. */
   missionControlBadges: readonly SidebarHeaderRowBadgeSegment[];
 }
@@ -141,6 +146,7 @@ interface MobileSidebarProps extends SidebarSharedProps {
   closeSidebar: () => void;
   handleViewWebhooksNavigate: () => void;
   handleViewItsaplanNavigate: () => void;
+  handleViewTicketsNavigate: () => void;
   handleViewMissionControlNavigate: () => void;
 }
 
@@ -149,6 +155,7 @@ interface DesktopSidebarProps extends SidebarSharedProps {
   active: boolean;
   handleViewWebhooks: () => void;
   handleViewItsaplan: () => void;
+  handleViewTickets: () => void;
   handleViewMissionControl: () => void;
 }
 
@@ -245,6 +252,10 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
     router.push(buildItsaplanRoute());
   }, []);
 
+  const handleViewTicketsNavigate = useCallback(() => {
+    router.push(buildTicketsRoute());
+  }, []);
+
   const handleViewMissionControlNavigate = useCallback(() => {
     router.push(buildMissionControlRoute());
   }, []);
@@ -252,6 +263,11 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
   const hosts = useHosts();
   const hostServerIds = useMemo(() => hosts.map((host) => host.serverId), [hosts]);
   const missionControlFeatureMap = useHostFeatureMap(hostServerIds, "missionControl");
+  const ticketsFeatureMap = useHostFeatureMap(hostServerIds, "tickets");
+  const hasTickets = useMemo(
+    () => hosts.some((host) => ticketsFeatureMap.get(host.serverId) === true),
+    [hosts, ticketsFeatureMap],
+  );
   const hostConnectionStatuses = useHostRuntimeConnectionStatuses(hostServerIds);
   const hasMissionControl = useMemo(
     () =>
@@ -288,6 +304,7 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
       settings: t("sidebar.actions.settings"),
       searchHosts: t("sidebar.host.searchPlaceholder"),
       itsaplan: t("sidebar.sections.itsaplan"),
+      tickets: t("tickets.nav.label"),
       missionControl: t("sidebar.sections.missionControl"),
       webhooks: t("sidebar.sections.webhooks"),
       closeSidebar: t("sidebar.actions.closeSidebar"),
@@ -317,6 +334,7 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
     handleRefresh,
     labels,
     hasMissionControl,
+    hasTickets,
     missionControlBadges,
   };
 
@@ -337,6 +355,7 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
             handleOpenHostSettings={handleOpenHostSettingsMobile}
             handleViewWebhooksNavigate={handleViewWebhooksNavigate}
             handleViewItsaplanNavigate={handleViewItsaplanNavigate}
+            handleViewTicketsNavigate={handleViewTicketsNavigate}
             handleViewMissionControlNavigate={handleViewMissionControlNavigate}
           />
         </RetainedPanelActivity>
@@ -359,6 +378,7 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
           handleOpenHostSettings={handleOpenHostSettingsDesktop}
           handleViewWebhooks={handleViewWebhooksNavigate}
           handleViewItsaplan={handleViewItsaplanNavigate}
+          handleViewTickets={handleViewTicketsNavigate}
           handleViewMissionControl={handleViewMissionControlNavigate}
         />
       </RetainedPanelActivity>
@@ -670,9 +690,11 @@ function MobileSidebar({
   insetsBottom,
   closeSidebar,
   hasMissionControl,
+  hasTickets,
   missionControlBadges,
   handleViewWebhooksNavigate,
   handleViewItsaplanNavigate,
+  handleViewTicketsNavigate,
   handleViewMissionControlNavigate,
 }: MobileSidebarProps) {
   const hasActiveHostFilter = useSidebarViewStore((state) => state.hostFilters.length > 0);
@@ -680,6 +702,7 @@ function MobileSidebar({
   const pathname = usePathname();
   const isWebhooksActive = pathname.includes("/webhooks");
   const isItsaplanActive = pathname.includes("/itsaplan");
+  const isTicketsActive = pathname === "/tickets" || pathname.startsWith("/tickets/");
   const isMissionControlActive = pathname.includes("/mission-control");
   const { gesture: closeGesture, gestureRef: closeGestureRef } = useCloseAgentListGesture();
 
@@ -692,6 +715,11 @@ function MobileSidebar({
     closeSidebar();
     handleViewItsaplanNavigate();
   }, [closeSidebar, handleViewItsaplanNavigate]);
+
+  const handleViewTickets = useCallback(() => {
+    closeSidebar();
+    handleViewTicketsNavigate();
+  }, [closeSidebar, handleViewTicketsNavigate]);
 
   const handleViewMissionControl = useCallback(() => {
     closeSidebar();
@@ -729,6 +757,16 @@ function MobileSidebar({
             testID="sidebar-itsaplan"
             variant="compact"
           />
+          {hasTickets ? (
+            <SidebarHeaderRow
+              icon={Kanban}
+              label={labels.tickets}
+              onPress={handleViewTickets}
+              isActive={isTicketsActive}
+              testID="sidebar-tickets"
+              variant="compact"
+            />
+          ) : null}
           {hasMissionControl ? (
             <SidebarHeaderRow
               icon={Radar}
@@ -854,9 +892,11 @@ function DesktopSidebar({
   insetsTop,
   active,
   hasMissionControl,
+  hasTickets,
   missionControlBadges,
   handleViewWebhooks,
   handleViewItsaplan,
+  handleViewTickets,
   handleViewMissionControl,
 }: DesktopSidebarProps) {
   const ownsTopLeft = useOwnsWindowChromeCorner("top-left");
@@ -865,6 +905,7 @@ function DesktopSidebar({
   const pathname = usePathname();
   const isWebhooksActive = pathname.includes("/webhooks");
   const isItsaplanActive = pathname.includes("/itsaplan");
+  const isTicketsActive = pathname === "/tickets" || pathname.startsWith("/tickets/");
   const isMissionControlActive = pathname.includes("/mission-control");
   const sidebarWidth = usePanelStore((state) => state.sidebarWidth);
   const setSidebarWidth = usePanelStore((state) => state.setSidebarWidth);
@@ -982,6 +1023,16 @@ function DesktopSidebar({
               testID="sidebar-itsaplan"
               variant="compact"
             />
+            {hasTickets ? (
+              <SidebarHeaderRow
+                icon={Kanban}
+                label={labels.tickets}
+                onPress={handleViewTickets}
+                isActive={isTicketsActive}
+                testID="sidebar-tickets"
+                variant="compact"
+              />
+            ) : null}
             {hasMissionControl ? (
               <SidebarHeaderRow
                 icon={Radar}

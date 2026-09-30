@@ -78,6 +78,7 @@ import {
   WebhookTestResponseSchema,
   WebhookConfigResponseSchema,
 } from "./webhook/rpc-schemas.js";
+import { TICKETS_INBOUND_SCHEMAS, TICKETS_OUTBOUND_SCHEMAS } from "./tickets/rpc-schemas.js";
 import {
   MissionControlEventsFetchRequestSchema,
   MissionControlEventsFetchResponseSchema,
@@ -3564,6 +3565,9 @@ export const SessionEventSubscriptionSchema = z.enum([
   "activity_log",
   "hub.execution.agent.update",
   "hub.execution.agent.stream",
+  // Native tickets push. Subscribe only on a host that advertises features.tickets:
+  // an older daemon rejects an unknown event name.
+  "tickets.changed",
 ]);
 export type SessionEventSubscription = z.infer<typeof SessionEventSubscriptionSchema>;
 export const SessionEventsSetSubscriptionRequestSchema = z.object({
@@ -3813,6 +3817,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   WebhookUpdateRequestSchema,
   WebhookTestRequestSchema,
   WebhookConfigRequestSchema,
+  ...TICKETS_INBOUND_SCHEMAS,
   LoopRunRequestSchema,
   LoopListRequestSchema,
   LoopInspectRequestSchema,
@@ -4152,6 +4157,10 @@ export const ServerInfoStatusPayloadSchema = z
         // Mission Control v3 (review lifecycle, approval gate, central config).
         // Added 2026-08-08; app gates the v3 screen once on this flag.
         missionControlV3: z.boolean().optional(),
+        // Native tickets (board, initiatives) served by this daemon. True only on
+        // the board host (the Commander host). Added 2026-09-30; the app picks
+        // the host advertising it.
+        tickets: z.boolean().optional(),
         // Mission Control v4 (card grammar): meta-kind proposals, clarification
         // + answer cards, the Commander clarify/post_answer tools. Added
         // 2026-08-09; app gates the new card renderings once on this flag.
@@ -7551,6 +7560,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   WebhookUpdateResponseSchema,
   WebhookTestResponseSchema,
   WebhookConfigResponseSchema,
+  ...TICKETS_OUTBOUND_SCHEMAS,
   LoopRunResponseSchema,
   LoopListResponseSchema,
   LoopInspectResponseSchema,

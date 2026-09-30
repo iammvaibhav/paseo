@@ -1962,6 +1962,7 @@ export const ar: TranslationResources = {
     retry: "Retry",
   },
 
+  tickets: en.tickets,
   serviceUrl: {
     title: "افتح الخدمة URL",
     message: "افتح{{url}}؟",

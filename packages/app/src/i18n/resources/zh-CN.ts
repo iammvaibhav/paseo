@@ -1936,6 +1936,7 @@ export const zhCN: TranslationResources = {
     retry: "Retry",
   },
 
+  tickets: en.tickets,
   serviceUrl: {
     title: "打开服务 URL",
     message: "打开 {{url}}？",

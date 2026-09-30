@@ -18,6 +18,13 @@ interface FakeColumn {
   stateType: string;
 }
 
+interface FakeServerControl {
+  // Every request as "<METHOD> <path>", in arrival order.
+  requests: string[];
+  // When true, every request is answered 429.
+  rateLimited: boolean;
+}
+
 function startFakeItsaplanServer(
   apiKey: string,
   issue: {
@@ -28,6 +35,7 @@ function startFakeItsaplanServer(
     assigneeUserId: string | null;
   },
   columns: FakeColumn[],
+  control: FakeServerControl,
 ) {
   let nextColumnId = 900;
   const server: Server = createServer((req, res) => {
@@ -46,6 +54,11 @@ function startFakeItsaplanServer(
       }
       const url = new URL(req.url ?? "/", "http://localhost");
       const path = url.pathname;
+      control.requests.push(`${req.method} ${path}`);
+      if (control.rateLimited) {
+        send(429, { error: "rate limited" });
+        return;
+      }
       if (req.method === "GET" && path === `/issues/${issue.id}`) {
         send(200, {
           ...issue,
@@ -101,8 +114,9 @@ function agentRecord(
   id: string,
   issueId: number,
   updatedAt: string,
-): Pick<StoredAgentRecord, "id" | "labels" | "updatedAt"> {
-  return { id, labels: { [ITSAPLAN_ISSUE_LABEL_KEY]: String(issueId) }, updatedAt };
+  archivedAt: string | null = null,
+): Pick<StoredAgentRecord, "id" | "labels" | "updatedAt" | "archivedAt"> {
+  return { id, labels: { [ITSAPLAN_ISSUE_LABEL_KEY]: String(issueId) }, updatedAt, archivedAt };
 }
 
 describe("ItsaplanReconcileService", () => {
@@ -123,6 +137,7 @@ describe("ItsaplanReconcileService", () => {
   let paseoHome: string;
   let bucket: LifecycleBucket;
   let missionControl: ItsaplanReconcileMissionControl;
+  let control: FakeServerControl;
 
   beforeEach(async () => {
     issue = {
@@ -139,7 +154,8 @@ describe("ItsaplanReconcileService", () => {
       { id: 4, projectId: PROJECT_ID, name: "Done", stateType: "completed" },
       { id: 5, projectId: PROJECT_ID, name: "Canceled", stateType: "canceled" },
     ];
-    server = startFakeItsaplanServer("itp_key", issue, columns);
+    control = { requests: [], rateLimited: false };
+    server = startFakeItsaplanServer("itp_key", issue, columns, control);
     handle = await listen(server);
     config = {
       baseUrl: handle.baseUrl,
@@ -166,7 +182,7 @@ describe("ItsaplanReconcileService", () => {
   });
 
   function service(
-    agents: Pick<StoredAgentRecord, "id" | "labels" | "updatedAt">[],
+    agents: Pick<StoredAgentRecord, "id" | "labels" | "updatedAt" | "archivedAt">[],
   ): ItsaplanReconcileService {
     return new ItsaplanReconcileService({
       agentStorage: { list: async () => agents },
@@ -243,5 +259,58 @@ describe("ItsaplanReconcileService", () => {
     });
     await inertService.runSweep();
     expect(issue.columnId).toBe(2);
+  });
+
+  test("skips an issue whose latest agent attempt is archived", async () => {
+    bucket = "running";
+    await service([
+      agentRecord("agent-live", ISSUE_ID, "2026-01-01T00:00:00.000Z"),
+      agentRecord(
+        "agent-archived",
+        ISSUE_ID,
+        "2026-01-02T00:00:00.000Z",
+        "2026-01-03T00:00:00.000Z",
+      ),
+    ]).runSweep();
+    expect(control.requests).toEqual([]);
+    expect(issue.columnId).toBe(2);
+  });
+
+  test("still reconciles an issue when only an older attempt is archived", async () => {
+    bucket = "running";
+    await service([
+      agentRecord(
+        "agent-archived",
+        ISSUE_ID,
+        "2026-01-01T00:00:00.000Z",
+        "2026-01-01T12:00:00.000Z",
+      ),
+      agentRecord("agent-live", ISSUE_ID, "2026-01-02T00:00:00.000Z"),
+    ]).runSweep();
+    expect(issue.columnId).toBe(3);
+  });
+
+  test("a 429 ends the sweep and doubles the next delay up to 10 minutes; a clean sweep resets it", async () => {
+    bucket = "running";
+    control.rateLimited = true;
+    const reconcile = service([
+      agentRecord("agent-1", ISSUE_ID, "2026-01-01T00:00:00.000Z"),
+      agentRecord("agent-2", 6, "2026-01-01T00:00:00.000Z"),
+    ]);
+
+    await reconcile.runSweep();
+    expect(control.requests).toEqual([`GET /issues/${ISSUE_ID}`]);
+    const delays = [reconcile.nextSweepDelayMs];
+    for (let sweep = 0; sweep < 4; sweep += 1) {
+      await reconcile.runSweep();
+      delays.push(reconcile.nextSweepDelayMs);
+    }
+    expect(delays).toEqual([120_000, 240_000, 480_000, 600_000, 600_000]);
+
+    // Issue 6 is unknown to the fake server (404): an error, not a rate limit.
+    control.rateLimited = false;
+    await reconcile.runSweep();
+    expect(reconcile.nextSweepDelayMs).toBe(60_000);
+    expect(issue.columnId).toBe(3);
   });
 });

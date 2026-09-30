@@ -11,10 +11,12 @@ import { buildTerminalsQueryKey } from "@/screens/workspace/terminals/state";
 import { daemonConfigQueryKey } from "@/data/daemon-config";
 import { daemonPairingOfferQueryKey } from "@/data/daemon-pairing";
 import { providersSnapshotQueryKey } from "@/data/providers-snapshot";
+import { ticketBoardsQueryKey, ticketListQueryKey } from "@/tickets/query-keys";
 import {
   checkoutDiffPushRoute,
   invalidateServerDataQueriesAfterReconnect,
   mountServerDataPushRouter,
+  ticketsPushRoute,
   workspaceTerminalsPushRoute,
 } from "@/data/push-router";
 
@@ -29,12 +31,14 @@ type SubscribeCheckoutDiffResponseMessage = Extract<
 >;
 type StatusMessage = Extract<SessionOutboundMessage, { type: "status" }>;
 type TerminalsChangedMessage = Extract<SessionOutboundMessage, { type: "terminals_changed" }>;
+type TicketsChangedMessage = Extract<SessionOutboundMessage, { type: "tickets.changed" }>;
 type RouterMessage =
   | ProvidersSnapshotUpdateMessage
   | CheckoutDiffUpdateMessage
   | SubscribeCheckoutDiffResponseMessage
   | StatusMessage
   | TerminalsChangedMessage
+  | TicketsChangedMessage
   | { type: "mission_control_event"; event: MissionControlEvent };
 type RouterMessageType = RouterMessage["type"];
 type RouterHandler = (message: RouterMessage) => void;
@@ -54,6 +58,8 @@ const daemonConfig: MutableDaemonConfig = {
 function createFakeClient(config: { rejectCheckoutDiffSubscribe?: boolean } = {}): {
   client: RouterClient;
   emit: <K extends RouterMessageType>(message: Extract<RouterMessage, { type: K }>) => void;
+  observeEventsCalls: string[][];
+  releasedEventCalls: string[][];
   subscribeCheckoutDiffCalls: Array<{
     cwd: string;
     compare: { mode: "uncommitted" | "base"; baseRef?: string; ignoreWhitespace?: boolean };
@@ -70,6 +76,7 @@ function createFakeClient(config: { rejectCheckoutDiffSubscribe?: boolean } = {}
     status: [],
     terminals_changed: [],
     mission_control_event: [],
+    "tickets.changed": [],
   };
   const subscribeCheckoutDiffCalls: Array<{
     cwd: string;
@@ -79,6 +86,8 @@ function createFakeClient(config: { rejectCheckoutDiffSubscribe?: boolean } = {}
   const unsubscribeCheckoutDiffCalls: string[] = [];
   const subscribeTerminalCalls: Array<{ cwd: string; workspaceId?: string }> = [];
   const unsubscribeTerminalCalls: Array<{ cwd: string; workspaceId?: string }> = [];
+  const observeEventsCalls: string[][] = [];
+  const releasedEventCalls: string[][] = [];
 
   function on<K extends RouterMessageType>(
     type: K,
@@ -144,12 +153,21 @@ function createFakeClient(config: { rejectCheckoutDiffSubscribe?: boolean } = {}
       async getProvidersSnapshot() {
         throw new Error("Unexpected snapshot pull");
       },
-      observeEvents: () =>
-        observe(
-          { subscriptionId: "events", requestId: "events", events: [] },
-          ["status", "providers_snapshot_update"],
-          () => {},
-        ),
+      observeEvents: (events) => {
+        observeEventsCalls.push([...events]);
+        const types: RouterMessageType[] = events.includes("tickets.changed")
+          ? ["tickets.changed"]
+          : ["status", "providers_snapshot_update"];
+        return observe(
+          {
+            subscriptionId: `events-${observeEventsCalls.length}`,
+            requestId: "events",
+            events: [],
+          },
+          types,
+          () => releasedEventCalls.push([...events]),
+        );
+      },
       observeCheckoutDiff(cwd, compare) {
         const subscriptionId = `server-diff-${subscribeCheckoutDiffCalls.length + 1}`;
         subscribeCheckoutDiffCalls.push({ cwd, compare, subscriptionId });
@@ -188,6 +206,8 @@ function createFakeClient(config: { rejectCheckoutDiffSubscribe?: boolean } = {}
       },
     },
     emit,
+    observeEventsCalls,
+    releasedEventCalls,
     subscribeCheckoutDiffCalls,
     unsubscribeCheckoutDiffCalls,
     subscribeTerminalCalls,
@@ -319,6 +339,42 @@ describe("server data push router", () => {
         generatedAt: "2026-01-01T00:00:00.000Z",
         requestId: "providers_snapshot_update",
       });
+  });
+
+  it("holds tickets.changed only while a tickets query is active and refetches that host", () => {
+    const queryClient = new QueryClient();
+    const fake = createFakeClient();
+    const serverId = "server-1";
+    const listKey = ticketListQueryKey(serverId, null);
+    const otherHostKey = ticketBoardsQueryKey("server-2");
+    queryClient.setQueryData(listKey, { tickets: [], revision: 1 });
+    queryClient.setQueryData(otherHostKey, []);
+    const unmount = mountServerDataPushRouter({ client: fake.client, queryClient, serverId });
+    expect(fake.observeEventsCalls).not.toContainEqual(["tickets.changed"]);
+
+    const observer = new QueryObserver(queryClient, {
+      queryKey: listKey,
+      queryFn: skipToken,
+      enabled: false,
+      meta: ticketsPushRoute({ enabled: true, serverId }),
+    });
+    const unsubscribeObserver = observer.subscribe(() => undefined);
+    expect(fake.observeEventsCalls).toContainEqual(["tickets.changed"]);
+
+    fake.emit({
+      type: "tickets.changed",
+      revision: 2,
+      boardIds: [],
+      ticketIds: [],
+      initiativeIds: [],
+    });
+    expect(queryClient.getQueryState(listKey)?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(otherHostKey)?.isInvalidated).toBe(false);
+
+    unsubscribeObserver();
+    expect(fake.releasedEventCalls).toContainEqual(["tickets.changed"]);
+    unmount();
+    queryClient.clear();
   });
 
   it("subscribes active checkout diff queries and writes matching diff events", () => {

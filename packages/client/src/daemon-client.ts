@@ -1130,6 +1130,19 @@ type CorrelatedResponsePayloads = {
 type CorrelatedResponsePayload<TType extends CorrelatedResponseType> =
   CorrelatedResponsePayloads[TType];
 
+type TicketsRequestMessage = Extract<SessionInboundMessage, { type: `tickets.${string}.request` }>;
+type TicketsRequestType = TicketsRequestMessage["type"];
+export type TicketsRequestParams<TType extends TicketsRequestType> = Omit<
+  Extract<TicketsRequestMessage, { type: TType }>,
+  "type" | "requestId"
+>;
+type TicketsResponseType<TType extends TicketsRequestType> = TType extends `${infer Prefix}.request`
+  ? Extract<`${Prefix}.response`, CorrelatedResponseType>
+  : never;
+export type TicketsResponsePayload<TType extends TicketsRequestType> = CorrelatedResponsePayload<
+  TicketsResponseType<TType>
+>;
+
 export class DaemonConnectionError extends Error {
   constructor(
     message: string,
@@ -6757,6 +6770,26 @@ export class DaemonClient {
       message: { type: "mission_control.config.get.request" },
       responseType: "mission_control.config.get.response",
     });
+  }
+
+  /**
+   * Native tickets RPC (docs/rpc-namespacing.md pairs). `type` is any
+   * `tickets.*.request`; the matching `.response` payload is returned. The
+   * payload carries `error` (null on success) — callers decide whether an
+   * error throws. Only the board host serves these.
+   */
+  async ticketsRequest<TType extends TicketsRequestType>(
+    type: TType,
+    params: TicketsRequestParams<TType>,
+    options: { requestId?: string; timeout?: number } = {},
+  ): Promise<TicketsResponsePayload<TType>> {
+    const responseType = type.replace(/\.request$/, ".response") as TicketsResponseType<TType>;
+    return this.sendCorrelatedSessionRequest({
+      requestId: options.requestId,
+      message: { ...params, type },
+      responseType,
+      timeout: options.timeout,
+    }) as Promise<TicketsResponsePayload<TType>>;
   }
 
   /**

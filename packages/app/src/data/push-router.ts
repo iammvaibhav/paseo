@@ -19,6 +19,7 @@ import {
   providersSnapshotQueryKey,
   providersSnapshotQueryRoot,
 } from "@/data/providers-snapshot";
+import { ticketsQueryRoot } from "@/tickets/query-keys";
 
 type ProvidersSnapshotUpdateMessage = Extract<
   SessionOutboundMessage,
@@ -66,7 +67,13 @@ interface WorkspaceTerminalsRegistration extends WorkspaceTerminalsRoute {
   subscription: OwnedSubscription<TerminalsChangedMessage["payload"]>;
 }
 
-type ServerDataRoute = CheckoutDiffRoute | WorkspaceTerminalsRoute;
+interface TicketsRoute {
+  domain: "tickets";
+  enabled: boolean;
+  serverId: string;
+}
+
+type ServerDataRoute = CheckoutDiffRoute | WorkspaceTerminalsRoute | TicketsRoute;
 
 export interface ServerDataQueryMeta extends Record<string, unknown> {
   serverData: ServerDataRoute;
@@ -143,6 +150,12 @@ const RECONNECT_REPAIR_POLICIES: ReconnectRepairPolicy[] = [
       });
     },
   },
+  {
+    domain: "tickets",
+    invalidate: ({ queryClient, serverId }) => {
+      void queryClient.invalidateQueries({ queryKey: ticketsQueryRoot(serverId) });
+    },
+  },
 ];
 
 export function checkoutDiffPushRoute(input: {
@@ -179,6 +192,17 @@ export function workspaceTerminalsPushRoute(input: {
       ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
     },
   };
+}
+
+/**
+ * Tickets queries declare this route, so the router holds the tickets.changed
+ * stream only for the board host and only while a tickets surface is open.
+ */
+export function ticketsPushRoute(input: {
+  enabled: boolean;
+  serverId: string;
+}): ServerDataQueryMeta {
+  return { serverData: { domain: "tickets", enabled: input.enabled, serverId: input.serverId } };
 }
 
 export function invalidateServerDataQueriesAfterReconnect(input: {
@@ -231,6 +255,37 @@ export function mountServerDataPushRouter(input: PushRouterInput): () => void {
   const activeCheckoutDiffSubscriptions = new Map<string, CheckoutDiffRegistration>();
   const activeTerminalSubscriptions = new Map<string, WorkspaceTerminalsRegistration>();
   let disposed = false;
+  let ticketsSubscription: OwnedSubscription<unknown> | null = null;
+
+  function reconcileTicketsSubscription(wanted: boolean): void {
+    if (wanted === (ticketsSubscription !== null)) {
+      return;
+    }
+    if (!wanted) {
+      void ticketsSubscription?.release().catch(console.error);
+      ticketsSubscription = null;
+      return;
+    }
+    const subscription = input.client.observeEvents(["tickets.changed"]);
+    ticketsSubscription = subscription;
+    subscription.subscribe({
+      snapshot: () => {},
+      update: (message) => {
+        // Refetch every active tickets query of this host: one changed ticket
+        // also moves derived fields (blocker counts, sub-task progress) of others.
+        if (message.type === "tickets.changed") {
+          void input.queryClient.invalidateQueries({ queryKey: ticketsQueryRoot(input.serverId) });
+        }
+      },
+      error: (error) => {
+        if (ticketsSubscription === subscription) ticketsSubscription = null;
+        console.error("[server-data] observeEvents tickets.changed failed", {
+          serverId: input.serverId,
+          error,
+        });
+      },
+    });
+  }
 
   function reconcileSubscriptions(
     fallbackActive: ActiveServerDataSubscriptions = {
@@ -244,6 +299,7 @@ export function mountServerDataPushRouter(input: PushRouterInput): () => void {
 
     const desiredCheckoutDiffSubscriptions = new Map<string, CheckoutDiffRoute>();
     const desiredTerminalSubscriptions = new Map<string, WorkspaceTerminalsRoute>();
+    let wantsTickets = false;
     for (const query of input.queryClient.getQueryCache().getAll()) {
       const route = getActiveServerDataRoute(query, input.serverId, {
         checkoutDiff: fallbackActive.checkoutDiff,
@@ -254,6 +310,10 @@ export function mountServerDataPushRouter(input: PushRouterInput): () => void {
       }
       if (route.domain === "checkoutDiff") {
         desiredCheckoutDiffSubscriptions.set(route.subscriptionId, route);
+        continue;
+      }
+      if (route.domain === "tickets") {
+        wantsTickets = true;
         continue;
       }
       desiredTerminalSubscriptions.set(workspaceTerminalSubscriptionKey(route), route);
@@ -280,6 +340,7 @@ export function mountServerDataPushRouter(input: PushRouterInput): () => void {
           message: { type: "terminals_changed", payload },
         }),
     });
+    reconcileTicketsSubscription(wantsTickets);
   }
 
   const unsubscribeQueryCache = input.queryClient.getQueryCache().subscribe((event) => {
@@ -324,6 +385,8 @@ export function mountServerDataPushRouter(input: PushRouterInput): () => void {
   return () => {
     disposed = true;
     unsubscribeQueryCache();
+    void ticketsSubscription?.release().catch(console.error);
+    ticketsSubscription = null;
     void events.release().catch(console.error);
     for (const current of activeCheckoutDiffSubscriptions.values()) {
       void current.subscription.release().catch(console.error);
@@ -617,7 +680,13 @@ function readServerDataRoute(value: Record<string, unknown>): ServerDataRoute | 
   const enabled = value.enabled;
   const serverId = value.serverId;
   const cwd = value.cwd;
-  if (typeof enabled !== "boolean" || typeof serverId !== "string" || typeof cwd !== "string") {
+  if (typeof enabled !== "boolean" || typeof serverId !== "string") {
+    return null;
+  }
+  if (domain === "tickets") {
+    return { domain, enabled, serverId };
+  }
+  if (typeof cwd !== "string") {
     return null;
   }
 

@@ -2000,6 +2000,7 @@ export const ru: TranslationResources = {
     retry: "Retry",
   },
 
+  tickets: en.tickets,
   serviceUrl: {
     title: "Открыть URL сервиса",
     message: "Открыть {{url}}?",

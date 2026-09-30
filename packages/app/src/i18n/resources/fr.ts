@@ -2020,6 +2020,7 @@ export const fr: TranslationResources = {
     retry: "Retry",
   },
 
+  tickets: en.tickets,
   serviceUrl: {
     title: "Service ouvertURL",
     message: "Ouvrir{{url}}?",

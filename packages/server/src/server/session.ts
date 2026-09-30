@@ -193,6 +193,7 @@ import {
 } from "./session/checkout/git-metadata-generator.js";
 import { WebhookSession } from "./session/webhook/webhook-session.js";
 import type { WebhookService } from "./webhook/service.js";
+import { TicketsSession, type TicketsHost } from "./tickets/session.js";
 import type { PeerManager } from "./peers/peer-manager.js";
 import type { MissionControlService } from "./mission-control/service.js";
 import {
@@ -528,6 +529,8 @@ export interface SessionOptions {
   filesystem?: SessionFileSystem;
   scheduleService: ScheduleService;
   webhookService?: WebhookService | null;
+  // Native tickets; null/absent = this daemon has no tickets wiring.
+  tickets?: TicketsHost | null;
   peerManager?: PeerManager | null;
   missionControlService?: MissionControlService | null;
   transcriptSearch?: TranscriptSearchService | null;
@@ -933,6 +936,7 @@ export class Session {
   private readonly checkoutSession: CheckoutSession;
   private readonly scheduleSession: ScheduleSession;
   private readonly webhookSession: WebhookSession;
+  private readonly ticketsSession: TicketsSession;
   private readonly peerManager: PeerManager | null;
   private readonly missionControlService: MissionControlService | null;
   private readonly transcriptSearch: TranscriptSearchService | null;
@@ -1129,6 +1133,11 @@ export class Session {
     });
     this.webhookSession = customSessions.webhookSession;
     this.plannotatorSession = customSessions.plannotatorSession;
+    this.ticketsSession = new TicketsSession({
+      emit: (msg) => this.emit(msg),
+      host: orNull(options.tickets),
+      logger: this.sessionLogger,
+    });
     this.peerManager = orNull(peerManager);
     this.missionControlService = orNull(missionControlService);
     this.transcriptSearch = orNull(transcriptSearch);
@@ -2561,6 +2570,7 @@ export class Session {
     (msg) => this.dispatchPluginMessage(msg),
     (msg) => this.dispatchTerminalMessage(msg),
     (msg) => this.dispatchScheduleMessage(msg),
+    (msg) => this.ticketsSession.dispatch(msg),
     (msg) => this.dispatchPlannotatorMessage(msg),
     (msg) => this.dispatchMissionControlPeersMessage(msg),
     (msg) => this.dispatchMissionControlEventsMessage(msg),
@@ -10672,6 +10682,7 @@ function sessionEventCategory(message: SessionOutboundMessage): SessionEventSubs
     case "activity_log":
     case "hub.execution.agent.update":
     case "hub.execution.agent.stream":
+    case "tickets.changed":
       return message.type;
     case "status":
       switch (message.payload.status) {
