@@ -1,15 +1,13 @@
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { providerUsagePushRoute } from "@/data/push-router";
 import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
 import { useSessionStore } from "@/stores/session-store";
 import { providerUsageCopy } from "./copy";
-import type { ProviderUsageSnapshot, ProviderUsageView } from "./types";
+import { providerUsageQueryKey } from "./query-key";
+import type { ProviderUsageView } from "./types";
 
 export const PROVIDER_USAGE_STALE_TIME_MS = 5 * 60 * 1000;
-
-export function providerUsageQueryKey(serverId: string | null | undefined) {
-  return ["providerUsage", serverId ?? ""] as const;
-}
 
 export function useProviderUsage(serverId: string | null | undefined): {
   view: ProviderUsageView;
@@ -23,8 +21,10 @@ export function useProviderUsage(serverId: string | null | undefined): {
   const supportsProviderUsage = useSessionStore(
     (state) => state.sessions[serverId ?? ""]?.serverInfo?.features?.providerUsageList === true,
   );
+  // COMPAT(providerUsageEventSubscription): added 2026-09-30, remove gate after 2027-03-30.
   const supportsProviderUsagePush = useSessionStore(
-    (state) => state.sessions[serverId ?? ""]?.serverInfo?.features?.providerUsagePush === true,
+    (state) =>
+      state.sessions[serverId ?? ""]?.serverInfo?.features?.providerUsageEventSubscription === true,
   );
   const queryKey = useMemo(() => providerUsageQueryKey(serverId), [serverId]);
   const canFetch = Boolean(serverId && client && isConnected && supportsProviderUsage);
@@ -40,24 +40,21 @@ export function useProviderUsage(serverId: string | null | undefined): {
 
   // Not hover-gated: the cache is warm before a popover opens, so a freshly created
   // agent tab renders plan usage on the first hover instead of a loading line.
+  // The daemon refreshes usage on its own schedule; the push route folds those
+  // pushes into this cache entry so open popovers update without a round trip.
   const query = useQuery({
     queryKey,
     queryFn,
     enabled: canFetch,
+    meta: providerUsagePushRoute({
+      enabled: canFetch && supportsProviderUsagePush,
+      serverId: serverId ?? "",
+    }),
     staleTime: PROVIDER_USAGE_STALE_TIME_MS,
     refetchOnMount: true,
     refetchOnReconnect: false,
     refetchOnWindowFocus: false,
   });
-
-  useEffect(() => {
-    if (!client || !canFetch || !supportsProviderUsagePush) return;
-    // The daemon refreshes usage on its own schedule; fold pushes into the same cache
-    // entry the query owns so open popovers update without a round trip.
-    return client.on("provider.usage.updated", (message) => {
-      queryClient.setQueryData<ProviderUsageSnapshot>(queryKey, message.payload);
-    });
-  }, [canFetch, client, queryClient, queryKey, supportsProviderUsagePush]);
 
   const refresh = useCallback(async () => {
     if (!canFetch) return;

@@ -289,17 +289,36 @@ export class DaemonConnection {
         new WebSocket(targetUrl, opts?.protocols, { headers: opts?.headers }),
       reconnect: { enabled: true },
     });
-    this.client.on("mission_control_event", (msg) => {
-      this.handleEvent(msg.event);
-    });
+    this.events = null;
   }
 
   async connect() {
     await this.client.connect();
+    // COMPAT(missionControlEventSubscription): added 2026-09-30, remove gate after 2027-03-30.
+    if (
+      this.client.getLastServerInfoMessage()?.features?.missionControlEventSubscription !== true
+    ) {
+      console.error(
+        "[voice] this daemon cannot deliver mission_control_event pushes; update the host for announcements",
+      );
+      return this;
+    }
+    // Owned-subscription daemons deliver the push only to a subscribed socket; the
+    // subscription restores itself after a reconnect.
+    this.events = this.client.observeEvents(["mission_control_event"]);
+    this.events.subscribe({
+      snapshot: () => {},
+      update: (msg) => {
+        if (msg.type === "mission_control_event") this.handleEvent(msg.event);
+      },
+      error: (err) => console.error(`[voice] mission_control_event subscription failed: ${err}`),
+    });
+    await this.events.ready;
     return this;
   }
 
   async close() {
+    await this.events?.release();
     await this.client.close();
   }
 

@@ -1,11 +1,12 @@
 import { describe, expect, test, vi } from "vitest";
 import pino from "pino";
+import { CLIENT_CAPS } from "@getpaseo/protocol/client-capabilities";
 import { Session } from "./session.js";
 import type { StoredAgentRecord } from "./agent/agent-storage.js";
 import type { MissionControlService } from "./mission-control/service.js";
 import type { ManagedAgent } from "./agent/agent-manager.js";
 import { deriveLifecycleBucket } from "@getpaseo/protocol/agent-state-bucket";
-import type { SessionInboundMessage, SessionOutboundMessage } from "./messages.js";
+import type { SessionOutboundMessage } from "./messages.js";
 import {
   asAgentManager,
   asAgentStorage,
@@ -231,11 +232,29 @@ function createHarness(options: TestHarnessOptions) {
     tts: null,
   });
 
+  // agent_update is delivered only to agent-directory subscribers; a bare
+  // emit never reaches owned-subscription sockets.
+  async function subscribeToAgentDirectory(): Promise<{ source: object; subscriptionId: string }> {
+    const source = {};
+    session.updateClientCapabilities({ [CLIENT_CAPS.ownedSubscriptions]: true }, source);
+    await session.handleMessage(
+      { type: "fetch_agents_request", requestId: "subscribe-agents", subscribe: {} },
+      source,
+    );
+    const response = emitted.find((msg) => msg.type === "fetch_agents_response");
+    const subscriptionId =
+      response?.type === "fetch_agents_response" ? response.payload.subscriptionId : undefined;
+    if (!subscriptionId) throw new Error("fetch_agents_request did not open a subscription");
+    emitted.length = 0;
+    return { source, subscriptionId };
+  }
+
   return {
     session,
     emitted,
     getStored: () => stored,
     mockMissionControlService,
+    subscribeToAgentDirectory,
   };
 }
 
@@ -277,39 +296,42 @@ describe("Ready to review lifecycle stability on user view (Aria defect)", () =>
       attentionReason: "finished", // legacy latch on disk
     });
 
-    const { session, emitted, getStored } = createHarness({
+    const { session, emitted, getStored, subscribeToAgentDirectory } = createHarness({
       storedRecord: record,
       reviewState: "ready",
     });
+    const { source, subscriptionId } = await subscribeToAgentDirectory();
 
     // User opens the workspace containing Aria -> clear workspace attention runs
-    await session.handleMessage({
-      type: "workspace.clear_attention.request",
-      workspaceId: "ws-aria",
-      requestId: "req-clear-aria",
-    } as SessionInboundMessage);
+    await session.handleMessage(
+      {
+        type: "workspace.clear_attention.request",
+        workspaceId: "ws-aria",
+        requestId: "req-clear-aria",
+      },
+      source,
+    );
 
     // Attention flag is acknowledged and cleared on disk
     expect(getStored().requiresAttention).toBe(false);
     expect(getStored().attentionReason).toBeNull();
 
-    // Emitted agent_update reflects cleared attention but keeps bucket: "ready"
-    const agentUpdate = emitted.find(
-      (msg) =>
-        msg.type === "agent_update" &&
-        msg.payload.kind === "upsert" &&
-        msg.payload.agent.id === "agent-aria-2",
-    );
-    expect(agentUpdate).toBeDefined();
-    if (
-      agentUpdate &&
-      agentUpdate.type === "agent_update" &&
-      agentUpdate.payload.kind === "upsert"
-    ) {
-      expect(agentUpdate.payload.agent.requiresAttention).toBe(false);
-      expect(agentUpdate.payload.agent.attentionReason).toBeNull();
-      expect(agentUpdate.payload.agent.bucket).toBe("ready");
-    }
+    // Directory subscribers see cleared attention but the bucket stays "ready"
+    const agentUpdates = emitted
+      .filter((msg) => msg.type === "agent_update")
+      .map((msg) => msg.payload);
+    expect(agentUpdates).toEqual([
+      expect.objectContaining({
+        subscriptionId,
+        kind: "upsert",
+        agent: expect.objectContaining({
+          id: "agent-aria-2",
+          requiresAttention: false,
+          attentionReason: null,
+          bucket: "ready",
+        }),
+      }),
+    ]);
   });
 
   test("clear_agent_attention returns the agent with bucket ready", async () => {
@@ -396,36 +418,39 @@ describe("Genuine attention cases retain correct buckets and clear properly", ()
       attentionReason: "error",
     });
 
-    const { session, emitted, getStored } = createHarness({
+    const { session, emitted, getStored, subscribeToAgentDirectory } = createHarness({
       storedRecord: record,
       reviewState: "none",
     });
+    const { source, subscriptionId } = await subscribeToAgentDirectory();
 
-    await session.handleMessage({
-      type: "workspace.clear_attention.request",
-      workspaceId: "ws-aria",
-      requestId: "req-clear-err",
-    });
+    await session.handleMessage(
+      {
+        type: "workspace.clear_attention.request",
+        workspaceId: "ws-aria",
+        requestId: "req-clear-err",
+      },
+      source,
+    );
 
     expect(getStored().requiresAttention).toBe(false);
     expect(getStored().attentionReason).toBeNull();
 
-    const agentUpdate = emitted.find(
-      (msg) =>
-        msg.type === "agent_update" &&
-        msg.payload.kind === "upsert" &&
-        msg.payload.agent.id === "agent-err-1",
-    );
-    expect(agentUpdate).toBeDefined();
-    if (
-      agentUpdate &&
-      agentUpdate.type === "agent_update" &&
-      agentUpdate.payload.kind === "upsert"
-    ) {
-      expect(agentUpdate.payload.agent.requiresAttention).toBe(false);
-      // Because lastStatus is still "error", bucket stays "needs_you"
-      expect(agentUpdate.payload.agent.bucket).toBe("needs_you");
-    }
+    // Because lastStatus is still "error", bucket stays "needs_you"
+    const agentUpdates = emitted
+      .filter((msg) => msg.type === "agent_update")
+      .map((msg) => msg.payload);
+    expect(agentUpdates).toEqual([
+      expect.objectContaining({
+        subscriptionId,
+        kind: "upsert",
+        agent: expect.objectContaining({
+          id: "agent-err-1",
+          requiresAttention: false,
+          bucket: "needs_you",
+        }),
+      }),
+    ]);
   });
 
   test("a user-stopped agent lands in done and viewing it preserves bucket done", async () => {

@@ -957,6 +957,8 @@ export type MissionControlSearchResponse = z.infer<typeof MissionControlSearchRe
 // Server → client push on every new mission control event. Not a request/response pair.
 export const MissionControlEventMessageSchema = z.object({
   type: z.literal("mission_control_event"),
+  // Owned delivery stamps the receiving event subscription (the message has no payload).
+  subscriptionId: z.string().optional(),
   event: MissionControlEventSchema,
 });
 export type MissionControlEventMessage = z.infer<typeof MissionControlEventMessageSchema>;
@@ -1519,4 +1521,52 @@ export const MissionControlToolsExecuteResponseSchema = z.object({
 });
 export type MissionControlToolsExecuteResponse = z.infer<
   typeof MissionControlToolsExecuteResponseSchema
+>;
+
+// ============================================================================
+// Pending inbox (Quarterdeck Decide / Review): one per-host read over stored
+// state — the approval index, the review-state store, and the event store —
+// so the inbox never depends on a proposal or verdict event still sitting in
+// the client's fetched event page. No model call. Gated on
+// server_info.features.missionControlInbox.
+// ============================================================================
+
+export const MissionControlInboxFetchRequestSchema = z.object({
+  type: z.literal("mission_control.inbox.fetch.request"),
+  requestId: z.string(),
+});
+export type MissionControlInboxFetchRequest = z.infer<typeof MissionControlInboxFetchRequestSchema>;
+
+export const MissionControlInboxReviewFactSchema = z.object({
+  agentId: z.string(),
+  // reviewState of the agent (store.getReviewState); only "ready" rows are returned.
+  reviewState: z.literal("ready"),
+  // Newest verifier verdict of the CURRENT run that did not resolve the item
+  // (a verdict card without stateOnly); absent when none.
+  insufficientVerdict: z.object({ summary: z.string(), at: z.string() }).optional(),
+  // Distinct proofs attached during the current run (report_status / summarizer).
+  proofCount: z.number().int(),
+  // paseo.parent-agent-id names the Commander, or paseo.commander-adopted-at is set.
+  dispatched: z.boolean(),
+  // When reviewState became "ready" (ISO).
+  readyAt: z.string(),
+});
+export type MissionControlInboxReviewFact = z.infer<typeof MissionControlInboxReviewFactSchema>;
+
+export const MissionControlInboxFetchResponseSchema = z.object({
+  type: z.literal("mission_control.inbox.fetch.response"),
+  payload: z.object({
+    requestId: z.string(),
+    // Every proposal in the approval index with status "pending" and not
+    // verboseOnly, oldest first (newest last).
+    pendingProposals: z.array(MissionControlProposalSchema),
+    // Commander host only: the Commander's clarification cards newer than the
+    // Commander's lastUserMessageAt (the answer arrives as a user message),
+    // oldest first. Empty elsewhere.
+    openClarifications: z.array(MissionControlEventSchema),
+    review: z.array(MissionControlInboxReviewFactSchema),
+  }),
+});
+export type MissionControlInboxFetchResponse = z.infer<
+  typeof MissionControlInboxFetchResponseSchema
 >;

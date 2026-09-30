@@ -272,6 +272,17 @@ function collectRunProofs(runEvents: MissionControlEvent[]): MissionControlRunPr
   return proofs;
 }
 
+/** Distinct proofs across events (the run record's content key), uncapped. */
+export function countDistinctProofs(events: readonly MissionControlEvent[]): number {
+  const seenProofs = new Set<string>();
+  for (const event of events) {
+    for (const proof of event.proof ?? []) {
+      seenProofs.add(proofKey(toRunProof(proof)));
+    }
+  }
+  return seenProofs.size;
+}
+
 /** Workspace/project attribution frozen into the record at assembly time. */
 function placementRecordFields(
   placement: MissionControlRunPlacement | null,

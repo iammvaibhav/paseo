@@ -6251,18 +6251,43 @@ describe("agent config setters", () => {
 });
 
 describe("unavailable provider agent handling", () => {
-  test("refresh_agent_request succeeds and emits stored snapshot when provider is unavailable", async () => {
-    const messages: unknown[] = [];
+  test("refresh_agent_request succeeds and publishes the stored snapshot to directory subscribers when provider is unavailable", async () => {
+    const messages: SessionOutboundMessage[] = [];
     const agentRecord = {
       id: "agent-unavailable-1",
       provider: "claude",
       cwd: "/tmp/test-repo",
+      workspaceId: "workspace-unavailable",
       createdAt: "2026-04-16T00:00:00.000Z",
       updatedAt: "2026-04-16T00:00:00.000Z",
       lastStatus: "closed",
     };
+    const workspace = {
+      workspaceId: "workspace-unavailable",
+      projectId: "project-unavailable",
+      cwd: "/tmp/test-repo",
+      kind: "directory" as const,
+      displayName: "Test repo",
+      title: null,
+      branch: null,
+      baseBranch: null,
+      createdAt: "2026-04-16T00:00:00.000Z",
+      updatedAt: "2026-04-16T00:00:00.000Z",
+      archivedAt: null,
+    };
+    const project = {
+      projectId: "project-unavailable",
+      rootPath: "/tmp/test-repo",
+      kind: "non_git" as const,
+      displayName: "Test repo",
+      customName: null,
+      createdAt: "2026-04-16T00:00:00.000Z",
+      updatedAt: "2026-04-16T00:00:00.000Z",
+      archivedAt: null,
+    };
     const agentStorage = {
       get: vi.fn().mockResolvedValue(agentRecord),
+      list: vi.fn().mockResolvedValue([]),
       upsert: vi.fn().mockResolvedValue(undefined),
     };
     const providerSnapshotManager = {
@@ -6285,17 +6310,44 @@ describe("unavailable provider agent handling", () => {
       providerSnapshotManager,
       agentManager,
       messages,
+      workspaceRegistry: {
+        get: vi.fn().mockResolvedValue(workspace),
+        list: vi.fn().mockResolvedValue([workspace]),
+      },
+      projectRegistry: {
+        get: vi.fn().mockResolvedValue(project),
+        list: vi.fn().mockResolvedValue([project]),
+      },
     });
 
-    await session.handleMessage({
-      type: "refresh_agent_request",
-      agentId: "agent-unavailable-1",
-      requestId: "req-refresh-unavail",
-    });
+    const source = {};
+    session.updateClientCapabilities({ [CLIENT_CAPS.ownedSubscriptions]: true }, source);
+    await session.handleMessage(
+      { type: "fetch_agents_request", requestId: "subscribe-agents", subscribe: {} },
+      source,
+    );
+    const response = messages.find((m) => m.type === "fetch_agents_response");
+    const subscriptionId =
+      response?.type === "fetch_agents_response" ? response.payload.subscriptionId : undefined;
+    expect(subscriptionId).toEqual(expect.any(String));
+    messages.splice(0);
 
-    const updateMsg = messages.find((m) => m.type === "agent_update");
-    expect(updateMsg).toBeDefined();
-    expect(updateMsg.payload.agent.providerUnavailable).toBe(true);
+    await session.handleMessage(
+      {
+        type: "refresh_agent_request",
+        agentId: "agent-unavailable-1",
+        requestId: "req-refresh-unavail",
+      },
+      source,
+    );
+
+    expect(messages.filter((m) => m.type === "agent_update").map((m) => m.payload)).toEqual([
+      expect.objectContaining({
+        subscriptionId,
+        kind: "upsert",
+        agent: expect.objectContaining({ id: "agent-unavailable-1", providerUnavailable: true }),
+      }),
+    ]);
 
     const statusMsg = messages.find((m) => m.type === "status");
     expect(statusMsg).toEqual({

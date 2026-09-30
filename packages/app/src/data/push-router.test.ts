@@ -12,10 +12,15 @@ import { daemonConfigQueryKey } from "@/data/daemon-config";
 import { daemonPairingOfferQueryKey } from "@/data/daemon-pairing";
 import { providersSnapshotQueryKey } from "@/data/providers-snapshot";
 import { ticketBoardsQueryKey, ticketListQueryKey } from "@/tickets/query-keys";
+import { missionControlEventsQueryKey } from "@/data/mission-control-events";
+import { missionControlInstructionsQueryKey } from "@/data/mission-control-instructions";
+import { providerUsageQueryKey } from "@/provider-usage/query-key";
 import {
   checkoutDiffPushRoute,
   invalidateServerDataQueriesAfterReconnect,
+  missionControlEventsPushRoute,
   mountServerDataPushRouter,
+  providerUsagePushRoute,
   ticketsPushRoute,
   workspaceTerminalsPushRoute,
 } from "@/data/push-router";
@@ -32,6 +37,10 @@ type SubscribeCheckoutDiffResponseMessage = Extract<
 type StatusMessage = Extract<SessionOutboundMessage, { type: "status" }>;
 type TerminalsChangedMessage = Extract<SessionOutboundMessage, { type: "terminals_changed" }>;
 type TicketsChangedMessage = Extract<SessionOutboundMessage, { type: "tickets.changed" }>;
+type ProviderUsageUpdatedMessage = Extract<
+  SessionOutboundMessage,
+  { type: "provider.usage.updated" }
+>;
 type RouterMessage =
   | ProvidersSnapshotUpdateMessage
   | CheckoutDiffUpdateMessage
@@ -39,6 +48,7 @@ type RouterMessage =
   | StatusMessage
   | TerminalsChangedMessage
   | TicketsChangedMessage
+  | ProviderUsageUpdatedMessage
   | { type: "mission_control_event"; event: MissionControlEvent };
 type RouterMessageType = RouterMessage["type"];
 type RouterHandler = (message: RouterMessage) => void;
@@ -77,6 +87,7 @@ function createFakeClient(config: { rejectCheckoutDiffSubscribe?: boolean } = {}
     terminals_changed: [],
     mission_control_event: [],
     "tickets.changed": [],
+    "provider.usage.updated": [],
   };
   const subscribeCheckoutDiffCalls: Array<{
     cwd: string;
@@ -155,9 +166,15 @@ function createFakeClient(config: { rejectCheckoutDiffSubscribe?: boolean } = {}
       },
       observeEvents: (events) => {
         observeEventsCalls.push([...events]);
-        const types: RouterMessageType[] = events.includes("tickets.changed")
-          ? ["tickets.changed"]
-          : ["status", "providers_snapshot_update"];
+        const streams = events.flatMap((event) =>
+          event === "tickets.changed" ||
+          event === "mission_control_event" ||
+          event === "provider.usage.updated"
+            ? [event]
+            : [],
+        );
+        const types: RouterMessageType[] =
+          streams.length > 0 ? streams : ["status", "providers_snapshot_update"];
         return observe(
           {
             subscriptionId: `events-${observeEventsCalls.length}`,
@@ -373,6 +390,93 @@ describe("server data push router", () => {
 
     unsubscribeObserver();
     expect(fake.releasedEventCalls).toContainEqual(["tickets.changed"]);
+    unmount();
+    queryClient.clear();
+  });
+
+  it("holds mission_control_event only while a feed query declares it and marks that host dirty", () => {
+    const queryClient = new QueryClient();
+    const fake = createFakeClient();
+    const serverId = "server-1";
+    const eventsKey = missionControlEventsQueryKey(serverId);
+    const instructionsKey = missionControlInstructionsQueryKey(serverId);
+    const otherHostKey = missionControlEventsQueryKey("server-2");
+    queryClient.setQueryData(eventsKey, []);
+    queryClient.setQueryData(instructionsKey, []);
+    queryClient.setQueryData(otherHostKey, []);
+    const unmount = mountServerDataPushRouter({ client: fake.client, queryClient, serverId });
+
+    const disabled = new QueryObserver(queryClient, {
+      queryKey: eventsKey,
+      queryFn: skipToken,
+      enabled: false,
+      meta: missionControlEventsPushRoute({ enabled: false, serverId }),
+    });
+    const unsubscribeDisabled = disabled.subscribe(() => undefined);
+    expect(fake.observeEventsCalls).not.toContainEqual(["mission_control_event"]);
+    unsubscribeDisabled();
+
+    const observer = new QueryObserver(queryClient, {
+      queryKey: eventsKey,
+      queryFn: skipToken,
+      enabled: false,
+      meta: missionControlEventsPushRoute({ enabled: true, serverId }),
+    });
+    const unsubscribeObserver = observer.subscribe(() => undefined);
+    expect(fake.observeEventsCalls).toContainEqual(["mission_control_event"]);
+
+    fake.emit({
+      type: "mission_control_event",
+      event: {
+        id: "mce_1",
+        ts: "2026-09-30T00:00:00.000Z",
+        agentId: "agent-1",
+        agentTitle: "Worker",
+        kind: "finished",
+        source: "system",
+        severity: "info",
+        headline: "Finished",
+      },
+    });
+    expect(queryClient.getQueryState(eventsKey)?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(instructionsKey)?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(otherHostKey)?.isInvalidated).toBe(false);
+
+    unsubscribeObserver();
+    expect(fake.releasedEventCalls).toContainEqual(["mission_control_event"]);
+    unmount();
+    queryClient.clear();
+  });
+
+  it("writes provider.usage.updated into the usage query while it is observed", () => {
+    const queryClient = new QueryClient();
+    const fake = createFakeClient();
+    const serverId = "server-1";
+    const usageKey = providerUsageQueryKey(serverId);
+    queryClient.setQueryData(usageKey, { fetchedAt: "2026-09-30T00:00:00.000Z", providers: [] });
+    const unmount = mountServerDataPushRouter({ client: fake.client, queryClient, serverId });
+    expect(fake.observeEventsCalls).not.toContainEqual(["provider.usage.updated"]);
+
+    const observer = new QueryObserver(queryClient, {
+      queryKey: usageKey,
+      queryFn: skipToken,
+      enabled: false,
+      meta: providerUsagePushRoute({ enabled: true, serverId }),
+    });
+    const unsubscribeObserver = observer.subscribe(() => undefined);
+    expect(fake.observeEventsCalls).toContainEqual(["provider.usage.updated"]);
+
+    const pushed = { fetchedAt: "2026-09-30T00:05:00.000Z", providers: [] };
+    fake.emit({ type: "provider.usage.updated", payload: pushed });
+    expect(queryClient.getQueryData(usageKey)).toEqual(pushed);
+
+    unsubscribeObserver();
+    expect(fake.releasedEventCalls).toContainEqual(["provider.usage.updated"]);
+    fake.emit({
+      type: "provider.usage.updated",
+      payload: { fetchedAt: "2026-09-30T00:10:00.000Z", providers: [] },
+    });
+    expect(queryClient.getQueryData(usageKey)).toEqual(pushed);
     unmount();
     queryClient.clear();
   });

@@ -300,6 +300,9 @@ export const TicketsRunReportResponseSchema = response("tickets.run.report.respo
  */
 export const TicketsChangedMessageSchema = z.object({
   type: z.literal("tickets.changed"),
+  // Event-push delivery stamps the owning subscription (session event
+  // subscriptions); absent on broadcast delivery and from older daemons.
+  subscriptionId: z.string().optional(),
   revision: z.number(),
   boardIds: z.array(z.string()),
   ticketIds: z.array(z.string()),

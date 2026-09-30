@@ -5,6 +5,8 @@ import {
   fetchMissionControlEvents,
   missionControlEventsQueryKey,
 } from "@/data/mission-control-events";
+import { missionControlEventsPushRoute } from "@/data/push-router";
+import { useHostFeatureMap } from "@/runtime/host-features";
 import {
   getHostRuntimeStore,
   useHostRuntimeConnectionStatuses,
@@ -112,6 +114,8 @@ export function useAggregatedMissionControlEvents(options?: {
   const runtime = getHostRuntimeStore();
   const serverIds = useMemo(() => hosts.map((host) => host.serverId), [hosts]);
   const connectionStatuses = useHostRuntimeConnectionStatuses(serverIds);
+  // COMPAT(missionControlEventSubscription): added 2026-09-30, remove gate after 2027-03-30.
+  const pushSubscribable = useHostFeatureMap(serverIds, "missionControlEventSubscription");
 
   const hostQueries = useFetchQueries(
     hosts.map((host) => ({
@@ -124,6 +128,10 @@ export function useAggregatedMissionControlEvents(options?: {
         return fetchMissionControlEvents({ client, limit: DEFAULT_EVENT_FETCH_LIMIT });
       },
       enabled: enabled && connectionStatuses.get(host.serverId) === "online",
+      meta: missionControlEventsPushRoute({
+        enabled: enabled && pushSubscribable.get(host.serverId) === true,
+        serverId: host.serverId,
+      }),
       staleTimeMs: EVENTS_STALE_TIME_MS,
       dataShape: "list",
     })),

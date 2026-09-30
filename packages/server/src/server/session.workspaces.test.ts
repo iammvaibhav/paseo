@@ -1699,7 +1699,7 @@ test("archive emits an authoritative agent_update upsert for subscribed clients"
   });
 });
 
-test("workspace clear attention clears stored-only agents and responds", async () => {
+test("workspace clear attention clears stored-only agents for a modern directory subscriber", async () => {
   const emitted: SessionOutboundMessage[] = [];
   const workspace = createPersistedWorkspaceRecord({
     workspaceId: REPO_CWD,
@@ -1721,6 +1721,7 @@ test("workspace clear attention clears stored-only agents and responds", async (
   let storedRecord = makeStoredAgent({
     id: "stored-agent-1",
     cwd: REPO_CWD,
+    workspaceId: REPO_CWD,
     updatedAt: "2026-03-30T15:00:00.000Z",
     requiresAttention: true,
     attentionReason: "finished",
@@ -1749,11 +1750,24 @@ test("workspace clear attention clears stored-only agents and responds", async (
     }),
   ];
 
-  await session.handleMessage({
-    type: "workspace.clear_attention.request",
-    workspaceId: workspace.workspaceId,
-    requestId: "req-1",
-  });
+  const source = {};
+  session.updateClientCapabilities({ [CLIENT_CAPS.ownedSubscriptions]: true }, source);
+  await session.handleMessage(
+    { type: "fetch_agents_request", requestId: "agents", subscribe: {} },
+    source,
+  );
+  const subscriptionId = findByType(emitted, "fetch_agents_response").payload.subscriptionId;
+  expect(subscriptionId).toEqual(expect.any(String));
+  emitted.length = 0;
+
+  await session.handleMessage(
+    {
+      type: "workspace.clear_attention.request",
+      workspaceId: workspace.workspaceId,
+      requestId: "req-1",
+    },
+    source,
+  );
 
   expect(storedRecord.requiresAttention).toBe(false);
   expect(storedRecord.attentionReason).toBeNull();
@@ -1765,11 +1779,13 @@ test("workspace clear attention clears stored-only agents and responds", async (
     success: true,
     error: null,
   });
-  const agentUpdate = findByType(emitted, "agent_update");
-  expect(agentUpdate.payload.kind).toBe("upsert");
-  if (agentUpdate.payload.kind === "upsert") {
-    expect(agentUpdate.payload.agent.requiresAttention).toBe(false);
-  }
+  expect(filterByType(emitted, "agent_update").map((message) => message.payload)).toEqual([
+    expect.objectContaining({
+      subscriptionId,
+      kind: "upsert",
+      agent: expect.objectContaining({ id: storedRecord.id, requiresAttention: false }),
+    }),
+  ]);
 });
 
 test("workspace clear attention responds with an error instead of timing out", async () => {
@@ -6552,8 +6568,10 @@ test("buildWorkspaceDescriptorMap computes statusEnteredAt from runtime agent fi
     expect(descriptor.statusEnteredAt).toBe(updatedAt);
   }
 
-  // 3. A root agent that is still initializing does not make the workspace
-  // look like it is actively working.
+  // 3. A root agent that is still initializing makes the workspace read as
+  // running: the canonical lifecycle bucket counts lifecycle
+  // running/initializing as running (docs/specs/mc-robustness/01-lifecycle-bucket.md),
+  // the same derivation the app sidebar and Mission Control board use.
   {
     const { session, workspace } = setupSession();
     const updatedAt = "2026-05-12T09:45:00.000Z";
@@ -6566,7 +6584,7 @@ test("buildWorkspaceDescriptorMap computes statusEnteredAt from runtime agent fi
       }),
     ];
     const descriptor = await buildDescriptor(session, workspace.workspaceId);
-    expect(descriptor.status).toBe("done");
+    expect(descriptor.status).toBe("running");
     expect(descriptor.statusEnteredAt).toBe(updatedAt);
   }
 

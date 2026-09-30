@@ -3,6 +3,7 @@ import type { Query, QueryCacheNotifyEvent, QueryClient, QueryKey } from "@tanst
 import type {
   ListTerminalsResponse,
   MutableDaemonConfig,
+  SessionEventSubscription,
   SessionOutboundMessage,
 } from "@getpaseo/protocol/messages";
 import { agentCommandsQueryRoot } from "@/hooks/agent-commands-query";
@@ -19,6 +20,7 @@ import {
   providersSnapshotQueryKey,
   providersSnapshotQueryRoot,
 } from "@/data/providers-snapshot";
+import { providerUsageQueryKey } from "@/provider-usage/query-key";
 import { ticketsQueryRoot } from "@/tickets/query-keys";
 
 type ProvidersSnapshotUpdateMessage = Extract<
@@ -67,13 +69,61 @@ interface WorkspaceTerminalsRegistration extends WorkspaceTerminalsRoute {
   subscription: OwnedSubscription<TerminalsChangedMessage["payload"]>;
 }
 
-interface TicketsRoute {
-  domain: "tickets";
+type EventStreamDomain = "tickets" | "missionControlEvents" | "providerUsage";
+
+/** A query that needs one connection event stream held while it is observed. */
+interface EventStreamRoute {
+  domain: EventStreamDomain;
   enabled: boolean;
   serverId: string;
 }
 
-type ServerDataRoute = CheckoutDiffRoute | WorkspaceTerminalsRoute | TicketsRoute;
+type ServerDataRoute = CheckoutDiffRoute | WorkspaceTerminalsRoute | EventStreamRoute;
+
+interface EventStream {
+  event: SessionEventSubscription;
+  apply(input: {
+    message: SessionOutboundMessage;
+    queryClient: QueryClient;
+    serverId: string;
+  }): void;
+}
+
+// Owned-subscription daemons deliver these pushes only to a socket subscribed to them.
+const EVENT_STREAMS: Record<EventStreamDomain, EventStream> = {
+  tickets: {
+    event: "tickets.changed",
+    apply: ({ message, queryClient, serverId }) => {
+      // Refetch every active tickets query of this host: one changed ticket
+      // also moves derived fields (blocker counts, sub-task progress) of others.
+      if (message.type === "tickets.changed") {
+        void queryClient.invalidateQueries({ queryKey: ticketsQueryRoot(serverId) });
+      }
+    },
+  },
+  missionControlEvents: {
+    event: "mission_control_event",
+    apply: ({ message, queryClient, serverId }) => {
+      if (message.type !== "mission_control_event") return;
+      // The feed refetches from the per-host store; a push only marks this host dirty.
+      void queryClient.invalidateQueries({ queryKey: missionControlEventsQueryKey(serverId) });
+      // M8 instruction ledger: a citing card closes a row, so the ledger
+      // refreshes with the same push that refreshes the feed.
+      void queryClient.invalidateQueries({
+        queryKey: missionControlInstructionsQueryKey(serverId),
+      });
+    },
+  },
+  providerUsage: {
+    event: "provider.usage.updated",
+    apply: ({ message, queryClient, serverId }) => {
+      if (message.type === "provider.usage.updated") {
+        const { subscriptionId: _subscriptionId, ...snapshot } = message.payload;
+        queryClient.setQueryData(providerUsageQueryKey(serverId), snapshot);
+      }
+    },
+  },
+};
 
 export interface ServerDataQueryMeta extends Record<string, unknown> {
   serverData: ServerDataRoute;
@@ -205,6 +255,30 @@ export function ticketsPushRoute(input: {
   return { serverData: { domain: "tickets", enabled: input.enabled, serverId: input.serverId } };
 }
 
+/** Mission Control feed queries hold the mission_control_event stream while a feed is open. */
+export function missionControlEventsPushRoute(input: {
+  enabled: boolean;
+  serverId: string;
+}): ServerDataQueryMeta {
+  return {
+    serverData: {
+      domain: "missionControlEvents",
+      enabled: input.enabled,
+      serverId: input.serverId,
+    },
+  };
+}
+
+/** Provider usage queries hold the provider.usage.updated stream while usage is shown. */
+export function providerUsagePushRoute(input: {
+  enabled: boolean;
+  serverId: string;
+}): ServerDataQueryMeta {
+  return {
+    serverData: { domain: "providerUsage", enabled: input.enabled, serverId: input.serverId },
+  };
+}
+
 export function invalidateServerDataQueriesAfterReconnect(input: {
   queryClient: QueryClient;
   serverId: string;
@@ -255,36 +329,34 @@ export function mountServerDataPushRouter(input: PushRouterInput): () => void {
   const activeCheckoutDiffSubscriptions = new Map<string, CheckoutDiffRegistration>();
   const activeTerminalSubscriptions = new Map<string, WorkspaceTerminalsRegistration>();
   let disposed = false;
-  let ticketsSubscription: OwnedSubscription<unknown> | null = null;
+  const eventStreamSubscriptions = new Map<EventStreamDomain, OwnedSubscription<unknown>>();
 
-  function reconcileTicketsSubscription(wanted: boolean): void {
-    if (wanted === (ticketsSubscription !== null)) {
-      return;
+  function reconcileEventStreams(wanted: ReadonlySet<EventStreamDomain>): void {
+    for (const [domain, subscription] of eventStreamSubscriptions) {
+      if (wanted.has(domain)) continue;
+      eventStreamSubscriptions.delete(domain);
+      void subscription.release().catch(console.error);
     }
-    if (!wanted) {
-      void ticketsSubscription?.release().catch(console.error);
-      ticketsSubscription = null;
-      return;
+    for (const domain of wanted) {
+      if (eventStreamSubscriptions.has(domain)) continue;
+      const stream = EVENT_STREAMS[domain];
+      const subscription = input.client.observeEvents([stream.event]);
+      eventStreamSubscriptions.set(domain, subscription);
+      subscription.subscribe({
+        snapshot: () => {},
+        update: (message) =>
+          stream.apply({ message, queryClient: input.queryClient, serverId: input.serverId }),
+        error: (error) => {
+          if (eventStreamSubscriptions.get(domain) === subscription) {
+            eventStreamSubscriptions.delete(domain);
+          }
+          console.error(`[server-data] observeEvents ${stream.event} failed`, {
+            serverId: input.serverId,
+            error,
+          });
+        },
+      });
     }
-    const subscription = input.client.observeEvents(["tickets.changed"]);
-    ticketsSubscription = subscription;
-    subscription.subscribe({
-      snapshot: () => {},
-      update: (message) => {
-        // Refetch every active tickets query of this host: one changed ticket
-        // also moves derived fields (blocker counts, sub-task progress) of others.
-        if (message.type === "tickets.changed") {
-          void input.queryClient.invalidateQueries({ queryKey: ticketsQueryRoot(input.serverId) });
-        }
-      },
-      error: (error) => {
-        if (ticketsSubscription === subscription) ticketsSubscription = null;
-        console.error("[server-data] observeEvents tickets.changed failed", {
-          serverId: input.serverId,
-          error,
-        });
-      },
-    });
   }
 
   function reconcileSubscriptions(
@@ -299,7 +371,7 @@ export function mountServerDataPushRouter(input: PushRouterInput): () => void {
 
     const desiredCheckoutDiffSubscriptions = new Map<string, CheckoutDiffRoute>();
     const desiredTerminalSubscriptions = new Map<string, WorkspaceTerminalsRoute>();
-    let wantsTickets = false;
+    const wantedEventStreams = new Set<EventStreamDomain>();
     for (const query of input.queryClient.getQueryCache().getAll()) {
       const route = getActiveServerDataRoute(query, input.serverId, {
         checkoutDiff: fallbackActive.checkoutDiff,
@@ -312,11 +384,11 @@ export function mountServerDataPushRouter(input: PushRouterInput): () => void {
         desiredCheckoutDiffSubscriptions.set(route.subscriptionId, route);
         continue;
       }
-      if (route.domain === "tickets") {
-        wantsTickets = true;
+      if (route.domain === "workspaceTerminals") {
+        desiredTerminalSubscriptions.set(workspaceTerminalSubscriptionKey(route), route);
         continue;
       }
-      desiredTerminalSubscriptions.set(workspaceTerminalSubscriptionKey(route), route);
+      wantedEventStreams.add(route.domain);
     }
 
     reconcileCheckoutDiffSubscriptions({
@@ -340,7 +412,7 @@ export function mountServerDataPushRouter(input: PushRouterInput): () => void {
           message: { type: "terminals_changed", payload },
         }),
     });
-    reconcileTicketsSubscription(wantsTickets);
+    reconcileEventStreams(wantedEventStreams);
   }
 
   const unsubscribeQueryCache = input.queryClient.getQueryCache().subscribe((event) => {
@@ -385,8 +457,10 @@ export function mountServerDataPushRouter(input: PushRouterInput): () => void {
   return () => {
     disposed = true;
     unsubscribeQueryCache();
-    void ticketsSubscription?.release().catch(console.error);
-    ticketsSubscription = null;
+    for (const subscription of eventStreamSubscriptions.values()) {
+      void subscription.release().catch(console.error);
+    }
+    eventStreamSubscriptions.clear();
     void events.release().catch(console.error);
     for (const current of activeCheckoutDiffSubscriptions.values()) {
       void current.subscription.release().catch(console.error);
@@ -683,7 +757,7 @@ function readServerDataRoute(value: Record<string, unknown>): ServerDataRoute | 
   if (typeof enabled !== "boolean" || typeof serverId !== "string") {
     return null;
   }
-  if (domain === "tickets") {
+  if (domain === "tickets" || domain === "missionControlEvents" || domain === "providerUsage") {
     return { domain, enabled, serverId };
   }
   if (typeof cwd !== "string") {

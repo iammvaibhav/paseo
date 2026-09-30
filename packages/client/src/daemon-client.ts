@@ -741,6 +741,10 @@ type MissionControlToolsExecutePayload = Extract<
   SessionOutboundMessage,
   { type: "mission_control.tools.execute.response" }
 >["payload"];
+type MissionControlInboxFetchPayload = Extract<
+  SessionOutboundMessage,
+  { type: "mission_control.inbox.fetch.response" }
+>["payload"];
 export type FetchAgentTimelinePayload = FetchAgentTimelineResponseMessage["payload"];
 export type AgentForkContextPayload = AgentForkContextResponseMessage["payload"];
 
@@ -6635,6 +6639,23 @@ export class DaemonClient {
         type: "mission_control.context.fetch.request",
       },
       responseType: "mission_control.context.fetch.response",
+    });
+  }
+
+  /**
+   * The host's pending inbox over stored state: pending proposals, the
+   * Commander's open clarifications (Commander host only), and review facts
+   * for ready agents.
+   */
+  async missionControlInboxFetch(requestId?: string): Promise<MissionControlInboxFetchPayload> {
+    // COMPAT(missionControlInbox): added 2026-09-30, remove gate after 2027-03-30.
+    if (this.lastServerInfoMessage?.features?.missionControlInbox !== true) {
+      throw new Error("Update the host to read the Mission Control inbox.");
+    }
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: { type: "mission_control.inbox.fetch.request" },
+      responseType: "mission_control.inbox.fetch.response",
     });
   }
 

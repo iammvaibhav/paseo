@@ -136,6 +136,8 @@ Max 3 concurrent sessions per session manager; port pool `19432–19463`.
 | `plannotator.session.stop.request` / `.response`  | client ↔ daemon        |
 | `plannotator.session.event`                       | daemon → client (push) |
 
+Owned-subscription clients receive `plannotator.session.event` only through `observeEvents(["plannotator.session.event"])`, on hosts advertising `features.plannotatorEventSubscription`. The workspace screen holds it while Plannotator is available.
+
 Stdout decision shapes (annotate `--json`, v0.22):
 
 - `{"decision":"approved"}`

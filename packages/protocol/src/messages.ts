@@ -134,6 +134,8 @@ import {
   MissionControlPeerTimelineResponseSchema,
   MissionControlToolsExecuteRequestSchema,
   MissionControlToolsExecuteResponseSchema,
+  MissionControlInboxFetchRequestSchema,
+  MissionControlInboxFetchResponseSchema,
 } from "./mission-control/types.js";
 export {
   MissionControlEventSchema,
@@ -192,6 +194,12 @@ export {
   MissionControlToolsExecuteResponseSchema,
   type MissionControlToolsExecuteRequest,
   type MissionControlToolsExecuteResponse,
+  MissionControlInboxFetchRequestSchema,
+  MissionControlInboxFetchResponseSchema,
+  MissionControlInboxReviewFactSchema,
+  type MissionControlInboxFetchRequest,
+  type MissionControlInboxFetchResponse,
+  type MissionControlInboxReviewFact,
 } from "./mission-control/types.js";
 import {
   LoopRunRequestSchema,
@@ -495,6 +503,7 @@ const AgentModeSchema: z.ZodType<AgentMode> = z.object({
   description: z.string().optional(),
   icon: z.string().optional(),
   colorTier: z.string().optional(),
+  isUnattended: z.boolean().optional(),
 });
 
 const ProviderStatusSchema: z.ZodType<ProviderStatus> = z.enum([
@@ -3568,6 +3577,13 @@ export const SessionEventSubscriptionSchema = z.enum([
   // Native tickets push. Subscribe only on a host that advertises features.tickets:
   // an older daemon rejects an unknown event name.
   "tickets.changed",
+  // Unsolicited pushes that owned-subscription clients only receive once subscribed.
+  // Subscribe only on a host that advertises the paired server_info feature
+  // (missionControlEventSubscription, providerUsageEventSubscription,
+  // plannotatorEventSubscription): an older daemon rejects an unknown event name.
+  "mission_control_event",
+  "provider.usage.updated",
+  "plannotator.session.event",
 ]);
 export type SessionEventSubscription = z.infer<typeof SessionEventSubscriptionSchema>;
 export const SessionEventsSetSubscriptionRequestSchema = z.object({
@@ -3852,6 +3868,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   MissionControlTagMessageRequestSchema,
   MissionControlPeerTimelineRequestSchema,
   MissionControlToolsExecuteRequestSchema,
+  MissionControlInboxFetchRequestSchema,
 ]);
 
 export type SessionInboundMessage = z.infer<typeof SessionInboundMessageSchema>;
@@ -4165,6 +4182,10 @@ export const ServerInfoStatusPayloadSchema = z
         // + answer cards, the Commander clarify/post_answer tools. Added
         // 2026-08-09; app gates the new card renderings once on this flag.
         missionControlV4: z.boolean().optional(),
+        // COMPAT(missionControlInbox): added 2026-09-30, remove gate after 2027-03-30.
+        // mission_control.inbox.fetch (pending proposals, open clarifications,
+        // review facts) is served; Quarterdeck gates its per-host inbox on it.
+        missionControlInbox: z.boolean().optional(),
         // COMPAT(commitsList): added in v0.1.110, remove gate after 2027-01-16.
         commitsList: z.boolean().optional(),
         // COMPAT(commitBaseClassification): added in v0.2.0, remove gate after 2027-01-23.
@@ -4184,6 +4205,16 @@ export const ServerInfoStatusPayloadSchema = z
         selectiveAgentTimeline: z.boolean().optional(),
         explicitEventSubscriptions: z.boolean().optional(),
         ownedSubscriptions: z.boolean().optional(),
+        // COMPAT(missionControlEventSubscription): added 2026-09-30, remove gate after 2027-03-30.
+        // session.events accepts "mission_control_event"; owned-subscription clients
+        // receive the push only after subscribing to it.
+        missionControlEventSubscription: z.boolean().optional(),
+        // COMPAT(providerUsageEventSubscription): added 2026-09-30, remove gate after 2027-03-30.
+        // session.events accepts "provider.usage.updated".
+        providerUsageEventSubscription: z.boolean().optional(),
+        // COMPAT(plannotatorEventSubscription): added 2026-09-30, remove gate after 2027-03-30.
+        // session.events accepts "plannotator.session.event".
+        plannotatorEventSubscription: z.boolean().optional(),
         // COMPAT(canonicalSubmittedPrompts): added in v0.2.6, remove gate after 2027-01-30.
         canonicalSubmittedPrompts: z.boolean().optional(),
         // COMPAT(agentTurnIdentity): accept peers that observed pre-release v0.2.6 through 2027-01-31.
@@ -6821,9 +6852,12 @@ export const ProviderUsageListResponseMessageSchema = z.object({
 
 // Daemon push of refreshed usage; additive (v0.4.0), feature-gated via
 // server_info `providerUsagePush`. Same providers shape as provider.usage.list.response.
+// Owned-subscription clients receive it only through the "provider.usage.updated"
+// session event (server_info `providerUsageEventSubscription`).
 export const ProviderUsageUpdatedMessageSchema = z.object({
   type: z.literal("provider.usage.updated"),
   payload: z.object({
+    subscriptionId: z.string().optional(),
     fetchedAt: z.string(),
     providers: z.array(ProviderUsageSchema),
   }),
@@ -7596,6 +7630,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   MissionControlTagMessageResponseSchema,
   MissionControlPeerTimelineResponseSchema,
   MissionControlToolsExecuteResponseSchema,
+  MissionControlInboxFetchResponseSchema,
   DaemonUpdateProgressMessageSchema,
   DaemonUpdateResponseSchema,
 ]);

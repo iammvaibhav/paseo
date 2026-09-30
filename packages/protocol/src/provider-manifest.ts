@@ -12,11 +12,7 @@ export interface AgentModeVisuals {
   colorTier: AgentModeColorTier;
 }
 
-export type AgentProviderModeDefinition = Omit<AgentMode, "icon" | "colorTier"> &
-  AgentModeVisuals & {
-    // Marks the provider's most-permissioned no-prompt mode. Selecting it means tools run without approval; the runtime mechanism is provider-specific.
-    isUnattended?: boolean;
-  };
+export type AgentProviderModeDefinition = Omit<AgentMode, "icon" | "colorTier"> & AgentModeVisuals;
 
 // TODO: `modes` should not be static. Providers (especially ACP) report their
 // own modes at runtime via session/new. We should fetch modes from the provider

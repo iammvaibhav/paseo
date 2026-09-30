@@ -60,11 +60,14 @@ export const PlannotatorSessionStopResponseSchema = z.object({
 
 /**
  * Server → client push when a session ends (submit, approve, dismiss, or kill).
- * Not a request/response pair.
+ * Not a request/response pair. Owned-subscription clients receive it only through
+ * the "plannotator.session.event" session event (server_info
+ * `plannotatorEventSubscription`).
  */
 export const PlannotatorSessionEventSchema = z.object({
   type: z.literal("plannotator.session.event"),
   payload: z.object({
+    subscriptionId: z.string().optional(),
     sessionId: z.string(),
     kind: PlannotatorSessionKindSchema,
     path: z.string().optional(),

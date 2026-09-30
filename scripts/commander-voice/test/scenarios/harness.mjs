@@ -633,19 +633,30 @@ export function hasNoSpokenIds(text) {
 /** Find the first event of a kind from the live mission-control feed. */
 export function waitForEvent(client, pred, { timeoutMs = 60_000 } = {}) {
   const { promise, resolve, reject } = Promise.withResolvers();
+  // Owned-subscription daemons push mission_control_event only to a subscribed socket.
+  const events = client.observeEvents(["mission_control_event"]);
+  const finish = () => {
+    clearTimeout(timer);
+    void events.release().catch(() => undefined);
+  };
   const timer = setTimeout(() => {
-    unsubscribe();
+    finish();
     reject(new Error(`timed out waiting for mission-control event (${timeoutMs}ms)`));
   }, timeoutMs);
-  const handler = (msg) => {
-    const event = msg?.event;
-    if (event && pred(event)) {
-      clearTimeout(timer);
-      unsubscribe();
-      resolve(event);
-    }
-  };
-  const unsubscribe = client.on("mission_control_event", handler);
+  events.subscribe({
+    snapshot: () => {},
+    update: (msg) => {
+      const event = msg?.type === "mission_control_event" ? msg.event : null;
+      if (event && pred(event)) {
+        finish();
+        resolve(event);
+      }
+    },
+    error: (err) => {
+      finish();
+      reject(err);
+    },
+  });
   // A no-op catch keeps a caller that abandons the promise (scenario setup
   // threw) from crashing the process on the timeout rejection.
   promise.catch(() => undefined);

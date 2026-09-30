@@ -261,6 +261,13 @@ The shared ownership boundary only tracks source and lifetime. Releasing a subsc
 its teardown; reconnect creates new server IDs for surviving client handles. See
 [protocol compatibility](protocol-compatibility.md) for the legacy boundary.
 
+A daemon push that is neither a reply nor mapped to an event category never reaches a modern
+socket: `Session.emit` falls through to the connection-wide send, and the send boundary drops it
+for lack of provenance without logging. An unsolicited push needs a `SessionEventSubscriptionSchema`
+name mapped in `sessionEventCategory` (`packages/server/src/server/session.ts`), a paired
+`server_info.features` flag, and a client that subscribes with `observeEvents` on hosts
+advertising that flag. Older daemons reject unknown event names.
+
 **Top-level WS envelopes** are `hello`, `recording_state`, `ping`/`pong`, and `session` (which wraps the rich union of session messages).
 
 Client liveness checks use the top-level JSON `ping`/`pong` envelope, not a session RPC or RFC6455 control ping. Current clients ping every 10 seconds, beginning one interval after connecting. The first ping claims an application-ownership lease for that physical socket, all later inbound activity renews it, and the daemon forcibly terminates the socket if the lease expires. A legacy or raw socket that never sends an application ping never enters this lease and is not closed for omitting one. Session RPC timeouts are operation failures, not proof that the socket is dead. A subscription bootstrap timeout closes its source to clear any unknown server-owned registration; the failed handle is released before other surviving handles reconnect.

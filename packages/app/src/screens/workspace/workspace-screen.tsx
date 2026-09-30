@@ -1708,6 +1708,12 @@ function WorkspaceScreenContent({
   const plannotatorAvailable = useSessionStore(
     (state) => state.sessions[normalizedServerId]?.serverInfo?.features?.plannotator === true,
   );
+  // COMPAT(plannotatorEventSubscription): added 2026-09-30, remove gate after 2027-03-30.
+  const plannotatorEventsSubscribable = useSessionStore(
+    (state) =>
+      state.sessions[normalizedServerId]?.serverInfo?.features?.plannotatorEventSubscription ===
+      true,
+  );
   const supportsProvidersSnapshot = useSessionStore(
     (state) => state.sessions[normalizedServerId]?.serverInfo?.features?.providersSnapshot === true,
   );
@@ -1999,28 +2005,44 @@ function WorkspaceScreenContent({
   );
 
   useEffect(() => {
-    if (!client || !plannotatorAvailable) {
+    if (!client || !plannotatorAvailable || !plannotatorEventsSubscribable) {
       return;
     }
-    return client.on("plannotator.session.event", (message) => {
-      void handlePlannotatorSessionEvent({
-        serverId: normalizedServerId,
-        event: message.payload as PlannotatorSessionEventPayload,
-        feedbackMode: appSettings.plannotatorFeedbackMode,
-        sendAgentMessage: async (agentId, text) => {
-          await client.sendAgentMessage(agentId, text);
-        },
-        toast: {
-          show: (msg) => toast.show(msg),
-          error: (msg) => toast.error(msg),
-        },
-      });
+    // The daemon delivers session-end pushes only to a socket subscribed to them.
+    const observation = client.observeEvents(["plannotator.session.event"]);
+    observation.subscribe({
+      snapshot: () => {},
+      update: (message) => {
+        if (message.type !== "plannotator.session.event") return;
+        void handlePlannotatorSessionEvent({
+          serverId: normalizedServerId,
+          event: message.payload as PlannotatorSessionEventPayload,
+          feedbackMode: appSettings.plannotatorFeedbackMode,
+          sendAgentMessage: async (agentId, text) => {
+            await client.sendAgentMessage(agentId, text);
+          },
+          toast: {
+            show: (msg) => toast.show(msg),
+            error: (msg) => toast.error(msg),
+          },
+        });
+      },
+      error: (error) => {
+        console.error("[plannotator] observeEvents failed", {
+          serverId: normalizedServerId,
+          error,
+        });
+      },
     });
+    return () => {
+      void observation.release().catch(console.error);
+    };
   }, [
     appSettings.plannotatorFeedbackMode,
     client,
     normalizedServerId,
     plannotatorAvailable,
+    plannotatorEventsSubscribable,
     toast,
   ]);
 

@@ -1843,6 +1843,8 @@ export class VoiceAssistantWebSocketServer {
         // answer cards, Commander clarify/post_answer tools). App gates the
         // new card renderings once on this flag.
         missionControlV4: true,
+        // COMPAT(missionControlInbox): added 2026-09-30, remove gate after 2027-03-30.
+        missionControlInbox: true,
         // Native tickets. True only on the board host (the Commander host)
         // with node:sqlite loaded; evaluated per server_info because the
         // Commander designation can move.
@@ -1905,6 +1907,12 @@ export class VoiceAssistantWebSocketServer {
         // COMPAT(selectiveAgentTimeline): added in v0.1.106, remove after 2027-01-12.
         selectiveAgentTimeline: true,
         explicitEventSubscriptions: true,
+        // COMPAT(missionControlEventSubscription): added 2026-09-30, remove gate after 2027-03-30.
+        missionControlEventSubscription: true,
+        // COMPAT(providerUsageEventSubscription): added 2026-09-30, remove gate after 2027-03-30.
+        providerUsageEventSubscription: true,
+        // COMPAT(plannotatorEventSubscription): added 2026-09-30, remove gate after 2027-03-30.
+        plannotatorEventSubscription: true,
         // COMPAT(canonicalSubmittedPrompts): added in v0.2.6, remove gate after 2027-01-30.
         canonicalSubmittedPrompts: true,
         // COMPAT(stableProjectIdentity): added in v0.1.109, remove gate after 2027-01-15.

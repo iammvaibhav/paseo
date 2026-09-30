@@ -86,6 +86,12 @@ import {
   type HindsightRecallMatch,
   type HindsightRecallResult,
 } from "./hindsight.js";
+import {
+  buildMissionControlInbox,
+  type InboxAgentIdentity,
+  type InboxInput,
+  type MissionControlInbox,
+} from "./inbox.js";
 
 const STALL_SWEEP_INTERVAL_MS = 30_000;
 const DAILY_PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000;
@@ -1995,6 +2001,53 @@ export class MissionControlService {
 
   onProposalChange(listener: (proposal: MissionControlProposal) => void): () => void {
     return this.approvals.onProposalChange(listener);
+  }
+
+  /**
+   * The host's pending inbox (mission_control.inbox.fetch) over stored
+   * state: the approval index, the review-state store, and the retained
+   * events. No model call. Clarifications are the local Commander's only;
+   * the dispatch marker resolves the fleet Commander (a peer asks the
+   * commander host, like the lifecycle classification does).
+   */
+  async fetchInbox(): Promise<MissionControlInbox> {
+    const localCommanderId = await this.resolveCommanderAgentId();
+    const fleetCommanderAgentId = localCommanderId ?? (await this.resolveFleetCommanderAgentId());
+    const reviewStates = this.store.getReviewStates();
+    const agents = new Map<string, InboxAgentIdentity>();
+    for (const [agentId, record] of reviewStates) {
+      if (record.reviewState !== "ready") {
+        continue;
+      }
+      const live = this.agentManager.getAgent(agentId);
+      const stored = await this.agentStorage.get(agentId).catch(() => null);
+      if (!live && !stored) {
+        continue;
+      }
+      agents.set(agentId, {
+        labels: live?.labels ?? stored?.labels ?? {},
+        internal: live?.internal ?? stored?.internal === true,
+        archived: Boolean(stored?.archivedAt),
+      });
+    }
+    let localCommander: InboxInput["localCommander"] = null;
+    if (localCommanderId) {
+      // Live registration inherits the stored value, so a live agent is authoritative.
+      const live = this.agentManager.getAgent(localCommanderId);
+      const lastUserMessageAt = live
+        ? (live.lastUserMessageAt?.toISOString() ?? null)
+        : ((await this.agentStorage.get(localCommanderId).catch(() => null))?.lastUserMessageAt ??
+          null);
+      localCommander = { agentId: localCommanderId, lastUserMessageAt };
+    }
+    return buildMissionControlInbox({
+      proposals: this.approvals.listProposals(),
+      events: this.store.fetchEvents({ includeSuperseded: true }),
+      reviewStates,
+      agents,
+      localCommander,
+      fleetCommanderAgentId,
+    });
   }
 
   // ==========================================================================

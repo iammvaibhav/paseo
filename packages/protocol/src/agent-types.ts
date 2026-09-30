@@ -67,6 +67,8 @@ export interface AgentMode {
   description?: string;
   icon?: string;
   colorTier?: string;
+  // Marks the provider's most-permissioned no-prompt mode. Selecting it means tools run without approval; the runtime mechanism is provider-specific.
+  isUnattended?: boolean;
 }
 
 export type ProviderStatus = "ready" | "loading" | "error" | "unavailable";

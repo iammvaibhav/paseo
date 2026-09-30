@@ -750,12 +750,12 @@ function buildFirstAgentContext(
  * `<paseo-system>` context pack titled the workspace on every spawn).
  */
 function resolveWorkspacePromptTitle(
-  labels: Record<string, string>,
+  labels: Record<string, string> | undefined,
   hostName: string,
   hostAlias: string | null,
   firstAgentContext: FirstAgentContext,
 ): string | null {
-  if (labels[MISSION_CONTROL_LABEL_KEY] === MISSION_CONTROL_LABEL_VALUE) {
+  if (labels?.[MISSION_CONTROL_LABEL_KEY] === MISSION_CONTROL_LABEL_VALUE) {
     return commanderHomeWorkspaceTitle(hostName, hostAlias);
   }
   return resolveFirstAgentPromptTitle(firstAgentContext);
@@ -2307,14 +2307,12 @@ export class Session {
   }
 
   private isProviderVisibleToClient(provider: string): boolean {
-    if (
-      this.supports(CLIENT_CAPS.allProviders) ||
-      clientSupportsAllProviders(
-        this.delivery.currentSource
-          ? (this.clientSources.get(this.delivery.currentSource)?.appVersion ?? null)
-          : this.appVersion,
-      )
-    ) {
+    // Like supportsForSource: a source without registered metadata (e.g. the
+    // delivery default source) inherits the session-level client identity.
+    const source = this.delivery.currentSource;
+    const sourceMetadata = source ? this.clientSources.get(source) : undefined;
+    const appVersion = sourceMetadata ? sourceMetadata.appVersion : this.appVersion;
+    if (this.supports(CLIENT_CAPS.allProviders) || clientSupportsAllProviders(appVersion)) {
       return true;
     }
     return LEGACY_PROVIDER_IDS.has(provider);
@@ -2644,6 +2642,8 @@ export class Session {
         return this.handleMissionControlEventsFetchRequest(msg);
       case "mission_control.events.ack.request":
         return this.handleMissionControlEventsAckRequest(msg);
+      case "mission_control.inbox.fetch.request":
+        return this.handleMissionControlInboxFetchRequest(msg);
       default:
         return undefined;
     }
@@ -2671,6 +2671,20 @@ export class Session {
     this.emit({
       type: "mission_control.events.ack.response",
       payload: { requestId: msg.requestId },
+    });
+  }
+
+  private async handleMissionControlInboxFetchRequest(
+    msg: Extract<SessionInboundMessage, { type: "mission_control.inbox.fetch.request" }>,
+  ): Promise<void> {
+    const inbox = (await this.missionControlService?.fetchInbox()) ?? {
+      pendingProposals: [],
+      openClarifications: [],
+      review: [],
+    };
+    this.emit({
+      type: "mission_control.inbox.fetch.response",
+      payload: { requestId: msg.requestId, ...inbox },
     });
   }
 
@@ -6173,18 +6187,8 @@ export class Session {
             "Refreshing stored agent snapshot without unavailable provider runtime",
           );
           await this.seedUnavailableProviderTimeline(agentId, record);
-          const storedPayload = this.buildStoredAgentPayload(record, registeredProviderIds);
-          await this.attachLifecycleBucket(storedPayload);
-          this.emit({
-            type: "agent_update",
-            payload: {
-              kind: "upsert",
-              agent: storedPayload,
-              project: record.workspaceId
-                ? await this.buildProjectPlacementForWorkspaceId(record.workspaceId)
-                : null,
-            },
-          });
+          // Directory subscribers own agent_update delivery; a bare emit never reaches modern sockets.
+          await this.agentUpdates.emitStoredRecord(record);
           const timelineSize = this.agentManager.getTimeline(agentId).length;
           if (requestId) {
             this.emit({
@@ -9392,17 +9396,8 @@ export class Session {
             attentionTimestamp: null,
           };
           await this.agentStorage.upsert(nextRecord);
-          const agent = this.buildStoredAgentPayload(nextRecord);
-          await this.attachLifecycleBucket(agent);
-          const project = await this.buildProjectPlacementForWorkspace(workspace);
-          this.emit({
-            type: "agent_update",
-            payload: {
-              kind: "upsert",
-              agent,
-              project,
-            },
-          });
+          // Directory subscribers own agent_update delivery; a bare emit never reaches modern sockets.
+          await this.agentUpdates.emitStoredRecord(nextRecord);
           clearedAgentIds.push(agentId);
         }
 
@@ -10683,20 +10678,29 @@ function sessionEventCategory(message: SessionOutboundMessage): SessionEventSubs
     case "hub.execution.agent.update":
     case "hub.execution.agent.stream":
     case "tickets.changed":
+    case "mission_control_event":
+    case "provider.usage.updated":
+    case "plannotator.session.event":
       return message.type;
     case "status":
-      switch (message.payload.status) {
-        case "server_info":
-          return "status.server_info";
-        case "daemon_config_changed":
-          return "status.daemon_config_changed";
-        case "plugin_catalog_changed":
-          return "status.plugin_catalog_changed";
-        case "plugin_settings_changed":
-          return "status.plugin_settings_changed";
-        default:
-          return null;
-      }
+      return statusEventCategory(message.payload);
+    default:
+      return null;
+  }
+}
+
+function statusEventCategory(
+  payload: Extract<SessionOutboundMessage, { type: "status" }>["payload"],
+): SessionEventSubscription | null {
+  switch (payload.status) {
+    case "server_info":
+      return "status.server_info";
+    case "daemon_config_changed":
+      return "status.daemon_config_changed";
+    case "plugin_catalog_changed":
+      return "status.plugin_catalog_changed";
+    case "plugin_settings_changed":
+      return "status.plugin_settings_changed";
     default:
       return null;
   }
