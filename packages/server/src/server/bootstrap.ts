@@ -193,10 +193,16 @@ import {
   type TicketsHost,
   type TicketStore,
 } from "./tickets/index.js";
+import {
+  isServingNotes,
+  openNotes,
+  type NotesHost,
+  type NoteService,
+  type NoteStore,
+} from "./notes/index.js";
 import { ItsaplanTicketImporter } from "./tickets/import-itsaplan.js";
 import { startTicketFleet } from "./tickets/fleet.js";
 import {
-  attachItsaplanProjectSync,
   createItsaplanResyncRouteHandler,
   createItsaplanWebhookRouteHandler,
   ItsaplanBridge,
@@ -2631,6 +2637,22 @@ export async function createPaseoDaemon(
     wsServer?.broadcast(wrapSessionMessage({ type: "tickets.changed", ...change }));
   });
   // ---- end native tickets (ServerCore)
+  // ---- Native notes (ServerCore). Every host opens the store; only the
+  // notes host (the designated Commander host, same rule as the tickets
+  // board host) serves notes.* and advertises features.notes.
+  const notesRuntime = await openNotes({ paseoHome: config.paseoHome, logger });
+  const noteStore: NoteStore | null = notesRuntime?.store ?? null;
+  const noteService: NoteService | null = notesRuntime?.service ?? null;
+  const notesHost: NotesHost = {
+    service: noteService,
+    isNotesHost: isThisHostTheItsaplanSyncHost,
+    notesHostName: ticketsBoardHostName,
+  };
+  const isNotesHost = (): boolean => isServingNotes(notesHost);
+  noteService?.onChange((change) => {
+    wsServer?.broadcast(wrapSessionMessage({ type: "notes.changed", ...change }));
+  });
+  // ---- end native notes (ServerCore)
 
   // ---- itsaplan → native tickets import (Importer). Read-only copy of the
   // itsaplan server in central config; tickets.import.itsaplan.request

@@ -46,6 +46,7 @@ import {
 } from "./session.js";
 import type { WarmWorktreePool } from "./warm-worktree-pool.js";
 import { isServingTickets, type TicketsHost } from "./tickets/session.js";
+import { isServingNotes, type NotesHost } from "./notes/session.js";
 import type { HubRelationshipManagement } from "./hub/relationship-controller.js";
 import { WorkspaceSetupRuntime } from "./workspace-setup-runtime.js";
 import type { HubExecutionAgents } from "./hub/daemon-executions.js";
@@ -632,6 +633,7 @@ export class VoiceAssistantWebSocketServer {
   private readonly onWorkspaceArchived?: (workspaceId: string) => void | Promise<void>;
   private readonly warmWorktreePool?: WarmWorktreePool;
   private ticketsHost!: TicketsHost | null;
+  private notesHost!: NotesHost | null;
 
   private async validateCompletedCreation(snapshot: CreationSnapshot): Promise<void> {
     if (snapshot.workspace && snapshot.kind === "workspace") {
@@ -704,6 +706,7 @@ export class VoiceAssistantWebSocketServer {
     onWorkspaceArchived?: (workspaceId: string) => void | Promise<void>,
     warmWorktreePool?: WarmWorktreePool,
     ticketsHost?: TicketsHost | null,
+    notesHost?: NotesHost | null,
   ) {
     this.onWorkspaceArchived = onWorkspaceArchived;
     this.logger = logger.child({ module: "websocket-server" });
@@ -832,6 +835,7 @@ export class VoiceAssistantWebSocketServer {
     serviceProxyPublicBaseUrl: string | null | undefined;
     resolveScriptHealth: ((hostname: string) => ScriptHealthState | null) | undefined;
     ticketsHost: TicketsHost | null | undefined;
+    notesHost: NotesHost | null | undefined;
   }): void {
     this.speech = params.speech ?? null;
     this.terminalManager = params.terminalManager ?? null;
@@ -867,8 +871,8 @@ export class VoiceAssistantWebSocketServer {
     this.getDaemonTcpPort = params.getDaemonTcpPort ?? null;
     this.getDaemonTcpHost = params.getDaemonTcpHost ?? null;
     this.serviceProxyPublicBaseUrl = params.serviceProxyPublicBaseUrl ?? null;
-    this.resolveScriptHealth = params.resolveScriptHealth ?? null;
     this.ticketsHost = params.ticketsHost ?? null;
+    this.notesHost = params.notesHost ?? null;
   }
 
   private createWebSocketServer(
