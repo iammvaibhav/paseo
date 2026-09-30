@@ -4,11 +4,12 @@
 # Local workflow (fork-based):
 #   1. Require a committed tree: commit uncommitted work yourself, or pass
 #      PASEO_DEPLOY_COMMIT_MESSAGE=... to commit it with that subject
-#   2. Fetch upstream, mirror origin/main ← upstream/main (fast-forward)
-#   3. Merge upstream/main into the custom branch; on conflict deploy STOPS and
-#      leaves the merge in progress for the caller to resolve, then re-run
-#   4. Push the branch to origin (iammvaibhav/paseo fork)
-#   5. In parallel (after the push):
+#   2. Only with PASEO_DEPLOY_MERGE_UPSTREAM=1: fetch upstream, mirror
+#      origin/main ← upstream/main (fast-forward) and merge upstream/main into
+#      the custom branch; on conflict deploy STOPS and leaves the merge in
+#      progress for the caller to resolve, then re-run. Default: no upstream I/O.
+#   3. Push the branch to origin (iammvaibhav/paseo fork)
+#   4. In parallel (after the push):
 #        - each remote host (git pull + build + daemon + code-server)
 #        - local daemon (build server first, then restart) + local code-server
 #        - desktop app build/install
@@ -57,6 +58,7 @@
 #   PASEO_SKIP_OMP_PLUGINS=1          # skip installing plugins/* into ~/.omp on every host
 #   PASEO_SKIP_COMMANDER_VOICE=1      # skip Commander Voice node deploy everywhere
 #   PASEO_SKIP_VERCEL=1               # skip publishing the web app to Vercel
+#   PASEO_DEPLOY_MERGE_UPSTREAM=1     # also fetch + merge upstream/main (off by default)
 #   PASEO_VERCEL_PROJECT=paseo-web    # Vercel project that serves the web app
 #   VERCEL_TOKEN=...                  # Vercel deploy token (read from
 #                                     #   ~/.paseo/deploy.env; unset = skip)
@@ -130,6 +132,9 @@ MACBOOK_PASEO_HOME="${PASEO_MACBOOK_PASEO_HOME:-\$HOME/.paseo}"
 # This script never authors git history. No model writes a commit subject and no
 # model resolves a merge conflict: both stop the deploy so the caller decides.
 DEPLOY_COMMIT_MESSAGE="${PASEO_DEPLOY_COMMIT_MESSAGE:-}"
+# Upstream merges are occasional and deliberate: a routine deploy ships the
+# branch as committed, so an upstream change can never break or block it.
+MERGE_UPSTREAM="${PASEO_DEPLOY_MERGE_UPSTREAM:-0}"
 
 # Desktop install targets for this personal fork. Paseo.app keeps the dock and
 # Spotlight identity. Paseo (Orig).app is replaced with the currently installed
@@ -365,7 +370,7 @@ EOF
 }
 
 ensure_fork_remotes() {
-  if ! git -C "$ROOT_DIR" remote | grep -qx "$UPSTREAM_REMOTE"; then
+  if [[ "$MERGE_UPSTREAM" == "1" ]] && ! git -C "$ROOT_DIR" remote | grep -qx "$UPSTREAM_REMOTE"; then
     die "Missing git remote '$UPSTREAM_REMOTE'. Add getpaseo/paseo as upstream first."
   fi
   local origin_url
@@ -420,8 +425,12 @@ sync_local_git() {
   if merge_in_progress; then
     die "a merge is already in progress in $ROOT_DIR — finish it (resolve, git add -A, git commit --no-edit), then re-run deploy"
   fi
-  log "Fetching $UPSTREAM_REMOTE and $ORIGIN_REMOTE"
-  git -C "$ROOT_DIR" fetch "$UPSTREAM_REMOTE" --prune
+  if [[ "$MERGE_UPSTREAM" == "1" ]]; then
+    log "Fetching $UPSTREAM_REMOTE and $ORIGIN_REMOTE"
+    git -C "$ROOT_DIR" fetch "$UPSTREAM_REMOTE" --prune
+  else
+    log "Fetching $ORIGIN_REMOTE (upstream merge off; set PASEO_DEPLOY_MERGE_UPSTREAM=1 to merge)"
+  fi
   git -C "$ROOT_DIR" fetch "$ORIGIN_REMOTE" --prune
 
   if ! git -C "$ROOT_DIR" show-ref --verify --quiet "refs/heads/$BRANCH"; then
@@ -438,8 +447,10 @@ sync_local_git() {
     fi
     log "Local $BRANCH already up to date with $ORIGIN_REMOTE/$BRANCH"
   fi
-  update_origin_main
-  merge_upstream
+  if [[ "$MERGE_UPSTREAM" == "1" ]]; then
+    update_origin_main
+    merge_upstream
+  fi
   log "Pushing $BRANCH to $ORIGIN_REMOTE (force-with-lease)"
   git -C "$ROOT_DIR" push --force-with-lease "$ORIGIN_REMOTE" "$BRANCH"
 }
@@ -2164,8 +2175,9 @@ print_help() {
 Paseo deploy — sync the custom fork branch and deploy across local + remote hosts.
 
 Usage:
-  ./scripts/deploy.sh                 Full run: merge upstream, push, build +
-                                      restart daemon, deploy code-server.
+  ./scripts/deploy.sh                 Full run: push, build + restart daemon,
+                                      deploy code-server. No upstream merge
+                                      unless PASEO_DEPLOY_MERGE_UPSTREAM=1.
                                       Requires a committed tree (see
                                       PASEO_DEPLOY_COMMIT_MESSAGE).
   ./scripts/deploy.sh -h | --help     Show this help.
@@ -2183,11 +2195,11 @@ What a full run does (local Mac):
   0. Self-detaches into a new session (unless PASEO_DEPLOY_FOREGROUND=1) and writes
      durable logs under ~/.paseo/deploy-logs/ (latest.log → current run)
   1. Require a committed tree (or commit it with PASEO_DEPLOY_COMMIT_MESSAGE)
-  2. Fetch upstream, fast-forward origin/main to upstream/main
-  3. Merge $UPSTREAM_REMOTE/main into '$BRANCH' (on conflict: stop, leave the merge
-     in progress, and print the resolve-then-re-run steps)
-  4. Push branch to $ORIGIN_REMOTE
-  5. Post-push in parallel: each remote host, local daemon restart (+ server build first),
+  2. Only with PASEO_DEPLOY_MERGE_UPSTREAM=1: fetch upstream, fast-forward origin/main
+     to upstream/main, and merge $UPSTREAM_REMOTE/main into '$BRANCH' (on conflict:
+     stop, leave the merge in progress, and print the resolve-then-re-run steps)
+  3. Push branch to $ORIGIN_REMOTE
+  4. Post-push in parallel: each remote host, local daemon restart (+ server build first),
      local code-server, and desktop app build/install to $DESKTOP_APP then relaunch
      (desktop via the MacBook ssh job when deploying from iammvaibhav)
 Then remotes are ${REMOTE_HOSTS[*]} (each gets its own parallel job).
@@ -2214,6 +2226,7 @@ Scope flags (set to 1 unless noted):
   PASEO_SKIP_OMP_PLUGINS         Skip installing plugins/* into ~/.omp/plugins on every host
   PASEO_SKIP_COMMANDER_VOICE     Skip Commander Voice node deploy everywhere
   PASEO_SKIP_VERCEL              Skip publishing the web app to Vercel
+  PASEO_DEPLOY_MERGE_UPSTREAM    Also fetch and merge $UPSTREAM_REMOTE/main (off by default)
   PASEO_VERCEL_PROJECT           Vercel project for the web app (default: paseo-web)
   PASEO_BUILD_DESKTOP=0            Skip the desktop app build (built by default)
   PASEO_DESKTOP_ONLY=1             ONLY desktop: local build on macOS; commit/push +
