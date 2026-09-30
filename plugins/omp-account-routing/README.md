@@ -6,10 +6,16 @@ omp rotates multiple OAuth accounts per provider by usage headroom with
 per-session stickiness. This extension adds the missing control: which account
 a project uses, and how accounts fall back.
 
-Enforcement is the native session pin (`AuthStorage.pinSessionOAuthAccount`),
+Enforcement is the native session pin (`AuthStorage.sessions.pin`),
 keyed on the session id that request-time key resolution uses. OAuth refresh,
 broker proxying, usage attribution, and the `/session` account picker all keep
 working. **No `routing:` config → the extension is a no-op.**
+
+Requires omp 18.3.0 or later. That release split `AuthStorage` into
+sub-APIs (`oauth`, `sessions`, …) and removed the flat methods that earlier
+versions of this plugin called (`listOAuthAccounts`, `pinSessionOAuthAccount`).
+On an older omp, every prompt logs `account-routing: apply failed` and routing
+does nothing.
 
 ## Install
 
@@ -126,7 +132,7 @@ lands on the next eligible one.
   refresh still happens through the broker on omp's normal path.
 - **The `/session` account picker keeps working.** An earlier version enforced
   with a runtime API-key override (`setRuntimeApiKey`); that made omp report
-  auth as `--api-key`, return an empty `listOAuthAccounts`, and refuse manual
+  auth as `--api-key`, return an empty account list, and refuse manual
   pinning. Pinning avoids all three.
 - **Config wins over manual pins.** A pin you set via `/session` is re-applied
   from config on the next prompt. Change the config (or set `strategy: off`) to

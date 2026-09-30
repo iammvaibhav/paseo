@@ -9,13 +9,13 @@
  *   - host config   ~/.omp/agent/account-routing.yml     (alias → account map, defaults)
  *   - project config .omp/account-routing.yml            (per-provider strategy/order/enabled)
  *
- * Enforcement uses the native session pin (`AuthStorage.pinSessionOAuthAccount`)
+ * Enforcement uses the native session pin (`AuthStorage.sessions.pin`)
  * keyed on the session manager's session id — the id request-time key
  * resolution uses for a normally-booted session (`AgentSession.sessionId` →
  * `#activeProviderSessionId()` falls through to it). OAuth refresh, broker
  * proxying, usage attribution and the `/session` account UI all keep working.
  * A runtime API-key override would enforce too, but it makes omp report auth as
- * `--api-key`, empties `listOAuthAccounts`, and blocks manual pinning — so it is
+ * `--api-key`, empties `oauth.accounts`, and blocks manual pinning — so it is
  * deliberately NOT used. No config → no-op.
  *
  * Known gap: `omp -p` (print mode), `/fresh`, and `/reset` mint a fresh
@@ -313,7 +313,7 @@ async function orderByWeeklyExpiry(
 		}
 
 		try {
-			const access = await auth.getOAuthAccessByCredentialId(provider, account.credentialId);
+			const access = await auth.oauth.accessById(provider, account.credentialId);
 			if (!access?.ok) return resolved;
 			const response = await fetch(GROK_BUILD_BILLING_URL, {
 				headers: {
@@ -411,7 +411,7 @@ async function fetchAntigravityWindows(
 
 	try {
 		// omp owns the credential and the refresh lease; only borrow the access token.
-		const access = await auth.getOAuthAccessByCredentialId(provider, credentialId);
+		const access = await auth.oauth.accessById(provider, credentialId);
 		if (!access?.ok || !access.projectId) return undefined;
 
 		const fetchStartTime = Date.now();
@@ -631,9 +631,9 @@ function pinAccount(
 	// Session-sticky pin. `sessionId` must be the session manager's id: that is
 	// what `AgentSession.sessionId` (#activeProviderSessionId) resolves to for a
 	// normally-booted session, which is the id request-time key resolution uses.
-	const ok = auth.pinSessionOAuthAccount(provider, sessionId, target.credentialId);
+	const ok = auth.sessions.pin(provider, sessionId, target.credentialId);
 	if (!ok) {
-		// pinSessionOAuthAccount refuses while an explicit --api-key / config
+		// `sessions.pin` refuses while an explicit --api-key / config
 		// apiKey override owns the provider. That override is deliberate, so
 		// leave it alone.
 		pi.logger.warn(
@@ -642,7 +642,7 @@ function pinAccount(
 		return;
 	}
 	pinned.set(`${provider}:${sessionId}`, target.credentialId);
-	const identity = auth.getOAuthAccountIdentity(provider, sessionId);
+	const identity = auth.oauth.identity(provider, sessionId);
 	const who = identity?.email ?? identity?.accountId ?? "";
 	pi.logger.info(
 		`account-routing: pinned ${provider} -> ${target.label} (#${target.credentialId}${who ? `, ${who}` : ""})`,
@@ -686,7 +686,7 @@ async function applyRouting(
 		for (const [provider, routing] of Object.entries(config.routing)) {
 			if (targetProvider && provider !== targetProvider) continue;
 			if (!routing || routing.strategy === "off") continue;
-			const stored = auth.listOAuthAccounts(provider);
+			const stored = auth.oauth.accounts(provider);
 			if (!stored || stored.length === 0) continue;
 			let resolved = resolveOrder(routing, config.accounts, stored);
 			if (resolved.length === 0) continue;
@@ -705,7 +705,7 @@ async function applyRouting(
 			) {
 				const existing = resolved.find(account => account.credentialId === current);
 				if (existing) {
-					auth.pinSessionOAuthAccount(provider, sessionId, existing.credentialId);
+					auth.sessions.pin(provider, sessionId, existing.credentialId);
 					continue;
 				}
 			}
@@ -776,7 +776,7 @@ export default function ompAccountRoutingExtension(pi: ExtensionAPI): void {
 			const config = loadRoutingConfig(getAgentDir());
 			const routing = config.routing?.["google-antigravity"];
 			if (!routing || routing.strategy === "off") return;
-			const stored = lastAuthStorage.listOAuthAccounts("google-antigravity");
+			const stored = lastAuthStorage.oauth.accounts("google-antigravity");
 			if (!stored || stored.length === 0) return;
 			const resolved = resolveOrder(routing, config.accounts, stored);
 			if (resolved.length === 0) return;

@@ -268,12 +268,14 @@ describe("orderByWeeklyDeadline", () => {
 
 	function createFakeAuth(): AuthStorage {
 		return {
-			async getOAuthAccessByCredentialId(_provider: string, credentialId: number) {
-				return {
-					ok: true,
-					accessToken: `token-${credentialId}`,
-					projectId: `proj-${credentialId}`,
-				};
+			oauth: {
+				async accessById(_provider: string, credentialId: number) {
+					return {
+						ok: true,
+						accessToken: `token-${credentialId}`,
+						projectId: `proj-${credentialId}`,
+					};
+				},
 			},
 		} as unknown as AuthStorage;
 	}
@@ -673,22 +675,26 @@ describe("ompAccountRoutingExtension mid-session switching", () => {
 		ompAccountRoutingExtension(mockPi);
 
 		const authStorage = {
-			listOAuthAccounts: (_provider: string) => [
-				{ credentialId: 1, email: "iammvaibhav@gmail.com" },
-				{ credentialId: 2, email: "vaibhavcoolm@gmail.com" },
-			],
-			pinSessionOAuthAccount: (_provider: string, _sessionId: string, credId: number) => {
-				pinnedCredentialId = credId;
-				return true;
+			oauth: {
+				accounts: (_provider: string) => [
+					{ credentialId: 1, email: "iammvaibhav@gmail.com" },
+					{ credentialId: 2, email: "vaibhavcoolm@gmail.com" },
+				],
+				identity: (_provider: string, _sessionId: string) => ({
+					email: pinnedCredentialId === 1 ? "personal@example.com" : "personal2@example.com",
+				}),
+				accessById: async (_provider: string, credentialId: number) => ({
+					ok: true,
+					accessToken: `token-${credentialId}`,
+					projectId: `proj-${credentialId}`,
+				}),
 			},
-			getOAuthAccountIdentity: (_provider: string, _sessionId: string) => ({
-				email: pinnedCredentialId === 1 ? "personal@example.com" : "personal2@example.com",
-			}),
-			getOAuthAccessByCredentialId: async (_provider: string, credentialId: number) => ({
-				ok: true,
-				accessToken: `token-${credentialId}`,
-				projectId: `proj-${credentialId}`,
-			}),
+			sessions: {
+				pin: (_provider: string, _sessionId: string, credId: number) => {
+					pinnedCredentialId = credId;
+					return true;
+				},
+			},
 		};
 
 		const ctx = {
@@ -777,23 +783,27 @@ describe("ompAccountRoutingExtension mid-session switching", () => {
 		});
 
 		const authStorage = {
-			listOAuthAccounts: (provider: string) => {
-				if (provider !== "google-antigravity") return [];
-				return [
-					{ credentialId: 1, email: "iammvaibhav@gmail.com" },
-					{ credentialId: 2, email: "vaibhavcoolm@gmail.com" },
-				];
+			oauth: {
+				accounts: (provider: string) => {
+					if (provider !== "google-antigravity") return [];
+					return [
+						{ credentialId: 1, email: "iammvaibhav@gmail.com" },
+						{ credentialId: 2, email: "vaibhavcoolm@gmail.com" },
+					];
+				},
+				identity: () => ({ email: "personal@example.com" }),
+				accessById: async (_provider: string, credentialId: number) => ({
+					ok: true,
+					accessToken: `token-${credentialId}`,
+					projectId: `proj-${credentialId}`,
+				}),
 			},
-			pinSessionOAuthAccount: (provider: string, _sessionId: string, credId: number) => {
-				if (provider === "google-antigravity") pinnedCredentialId = credId;
-				return true;
+			sessions: {
+				pin: (provider: string, _sessionId: string, credId: number) => {
+					if (provider === "google-antigravity") pinnedCredentialId = credId;
+					return true;
+				},
 			},
-			getOAuthAccountIdentity: () => ({ email: "personal@example.com" }),
-			getOAuthAccessByCredentialId: async (_provider: string, credentialId: number) => ({
-				ok: true,
-				accessToken: `token-${credentialId}`,
-				projectId: `proj-${credentialId}`,
-			}),
 		};
 
 		const ctx = {
@@ -904,24 +914,28 @@ describe("ompAccountRoutingExtension mid-session switching", () => {
 			},
 		});
 		const authStorage = {
-			listOAuthAccounts: (provider: string) => {
-				if (provider !== "google-antigravity") return [];
-				return [
-					{ credentialId: 1, email: "iammvaibhav@gmail.com" },
-					{ credentialId: 2, email: "vaibhavcoolm@gmail.com" },
-					{ credentialId: 3, email: "vaibhav.maheshwari@ambient.ai" },
-				];
+			oauth: {
+				accounts: (provider: string) => {
+					if (provider !== "google-antigravity") return [];
+					return [
+						{ credentialId: 1, email: "iammvaibhav@gmail.com" },
+						{ credentialId: 2, email: "vaibhavcoolm@gmail.com" },
+						{ credentialId: 3, email: "vaibhav.maheshwari@ambient.ai" },
+					];
+				},
+				identity: () => ({ email: "personal@example.com" }),
+				accessById: async (_provider: string, credentialId: number) => ({
+					ok: true,
+					accessToken: `token-${credentialId}`,
+					projectId: `proj-${credentialId}`,
+				}),
 			},
-			pinSessionOAuthAccount: (provider: string, _sessionId: string, credId: number) => {
-				if (provider === "google-antigravity") pinnedCredentialId = credId;
-				return true;
+			sessions: {
+				pin: (provider: string, _sessionId: string, credId: number) => {
+					if (provider === "google-antigravity") pinnedCredentialId = credId;
+					return true;
+				},
 			},
-			getOAuthAccountIdentity: () => ({ email: "personal@example.com" }),
-			getOAuthAccessByCredentialId: async (_provider: string, credentialId: number) => ({
-				ok: true,
-				accessToken: `token-${credentialId}`,
-				projectId: `proj-${credentialId}`,
-			}),
 		};
 
 		const ctx = {
@@ -1024,24 +1038,28 @@ describe("ompAccountRoutingExtension mid-session switching", () => {
 		ompAccountRoutingExtension(mockPi);
 
 		const authStorage = {
-			listOAuthAccounts: (provider: string) => {
-				if (provider !== "cursor") return [];
-				return [
-					{ credentialId: 10, email: "iammvaibhav@gmail.com" },
-					{ credentialId: 20, email: "vaibhavcoolm@gmail.com" },
-					{ credentialId: 30, email: "vaibhav.maheshwari@ambient.ai" },
-				];
+			oauth: {
+				accounts: (provider: string) => {
+					if (provider !== "cursor") return [];
+					return [
+						{ credentialId: 10, email: "iammvaibhav@gmail.com" },
+						{ credentialId: 20, email: "vaibhavcoolm@gmail.com" },
+						{ credentialId: 30, email: "vaibhav.maheshwari@ambient.ai" },
+					];
+				},
+				identity: () => ({ email: "personal@example.com" }),
+				accessById: async (_provider: string, credentialId: number) => ({
+					ok: true,
+					accessToken: `token-${credentialId}`,
+					projectId: `proj-${credentialId}`,
+				}),
 			},
-			pinSessionOAuthAccount: (provider: string, _sessionId: string, credId: number) => {
-				if (provider === "cursor") pinnedCredentialId = credId;
-				return true;
+			sessions: {
+				pin: (provider: string, _sessionId: string, credId: number) => {
+					if (provider === "cursor") pinnedCredentialId = credId;
+					return true;
+				},
 			},
-			getOAuthAccountIdentity: () => ({ email: "personal@example.com" }),
-			getOAuthAccessByCredentialId: async (_provider: string, credentialId: number) => ({
-				ok: true,
-				accessToken: `token-${credentialId}`,
-				projectId: `proj-${credentialId}`,
-			}),
 		};
 
 		const ctx = {
@@ -1123,24 +1141,28 @@ routing:
 		ompAccountRoutingExtension(mockPi);
 
 		const authStorage = {
-			listOAuthAccounts: (provider: string) => {
-				if (provider === "cursor") {
+			oauth: {
+				accounts: (provider: string) => {
+					if (provider === "cursor") {
+						return [
+							{ credentialId: 101, email: "cursor1@example.com" },
+							{ credentialId: 102, email: "cursor2@example.com" },
+						];
+					}
 					return [
-						{ credentialId: 101, email: "cursor1@example.com" },
-						{ credentialId: 102, email: "cursor2@example.com" },
+						{ credentialId: 1, email: "user1@example.com" },
+						{ credentialId: 2, email: "user2@example.com" },
 					];
-				}
-				return [
-					{ credentialId: 1, email: "user1@example.com" },
-					{ credentialId: 2, email: "user2@example.com" },
-				];
+				},
+				identity: () => null,
+				accessById: async () => null,
 			},
-			pinSessionOAuthAccount: (provider: string, _sessionId: string, credId: number) => {
-				pinnedMap.set(provider, credId);
-				return true;
+			sessions: {
+				pin: (provider: string, _sessionId: string, credId: number) => {
+					pinnedMap.set(provider, credId);
+					return true;
+				},
 			},
-			getOAuthAccountIdentity: () => null,
-			getOAuthAccessByCredentialId: async () => null,
 		};
 
 		const ctx = {
