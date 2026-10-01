@@ -157,6 +157,51 @@ describe("plugin timeline rows", () => {
   });
 });
 
+describe("ai review decision rows", () => {
+  it("appends one compact row per request and replaces it on repeat", () => {
+    const first = reduceStreamUpdate(
+      [],
+      {
+        type: "timeline",
+        provider: "codex",
+        item: {
+          type: "ai_review_decision",
+          requestId: "req-1",
+          decision: "escalate",
+          reason: "Needs a human look.",
+          toolName: "shell",
+        },
+      },
+      new Date(1),
+    );
+    expect(first).toHaveLength(1);
+    expect(first[0]).toMatchObject({
+      kind: "ai_review_decision",
+      id: "ai_review_decision:req-1",
+      decision: "escalate",
+      toolName: "shell",
+    });
+    expect(streamTimelineItemIdentity(first[0] as StreamItem)).toBe("ai_review_decision:req-1");
+
+    const second = reduceStreamUpdate(
+      first,
+      {
+        type: "timeline",
+        provider: "codex",
+        item: {
+          type: "ai_review_decision",
+          requestId: "req-1",
+          decision: "allow",
+          reason: "Safe read.",
+        },
+      },
+      new Date(2),
+    );
+    expect(second).toHaveLength(1);
+    expect(second[0]).toMatchObject({ kind: "ai_review_decision", decision: "allow" });
+  });
+});
+
 describe("user message identity", () => {
   it("replaces provisional optimistic turn membership with canonical membership", () => {
     const optimistic = createUserMessage({

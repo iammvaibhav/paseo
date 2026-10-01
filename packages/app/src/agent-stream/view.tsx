@@ -36,6 +36,7 @@ import {
   ToolCall,
   TodoListCard,
   CompactionMarker,
+  AiReviewDecision,
   MessageOuterSpacingProvider,
   type InlinePathTarget,
 } from "@/components/message";
@@ -1006,6 +1007,14 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
                 status={item.status}
                 trigger={item.trigger}
                 preTokens={item.preTokens}
+              />
+            );
+          case "ai_review_decision":
+            return (
+              <AiReviewDecision
+                decision={item.decision}
+                toolName={item.toolName}
+                reason={item.reason}
               />
             );
 

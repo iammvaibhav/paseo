@@ -74,6 +74,8 @@ export function estimateStreamItemHeight(item: StreamItem): number {
       return 88;
     case "compaction":
       return 72;
+    case "ai_review_decision":
+      return 40;
     default:
       return 120;
   }

@@ -33,6 +33,7 @@ interface SupportedMutableConfigPatch {
   pluginsEnabled?: boolean;
   plugins?: MutableDaemonConfig["plugins"];
   missionControl?: MutableDaemonConfig["missionControl"];
+  aiReviewer?: MutableDaemonConfig["aiReviewer"];
   ompIdleCloseAfterSeconds?: MutableDaemonConfig["ompIdleCloseAfterSeconds"];
   composerPreferences?: MutableDaemonConfig["composerPreferences"];
 }
@@ -291,6 +292,7 @@ function pickExtendedPatchFields(patch: MutableDaemonConfigPatch): SupportedMuta
   if (patch.pluginsEnabled !== undefined) out.pluginsEnabled = patch.pluginsEnabled;
   if (patch.plugins !== undefined) out.plugins = patch.plugins;
   if (patch.missionControl !== undefined) out.missionControl = patch.missionControl;
+  if (patch.aiReviewer !== undefined) out.aiReviewer = patch.aiReviewer;
   if (patch.ompIdleCloseAfterSeconds !== undefined) {
     out.ompIdleCloseAfterSeconds = patch.ompIdleCloseAfterSeconds;
   }
@@ -610,6 +612,7 @@ function mergeMutablePatchIntoPersistedConfig(params: {
     ...(patch.pluginsEnabled !== undefined ? { pluginsEnabled: patch.pluginsEnabled } : {}),
     ...(patch.plugins !== undefined ? { plugins: patch.plugins } : {}),
     ...(patch.missionControl !== undefined ? { missionControl: patch.missionControl } : {}),
+    ...(patch.aiReviewer !== undefined ? { aiReviewer: patch.aiReviewer } : {}),
     ...(daemon ? { daemon } : { daemon: undefined }),
     ...(agents ? { agents } : { agents: undefined }),
   } as PersistedConfig;

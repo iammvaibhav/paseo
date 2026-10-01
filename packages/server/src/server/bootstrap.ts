@@ -746,6 +746,7 @@ export interface PaseoDaemonConfig {
     }>;
   };
   missionControl?: PersistedConfig["missionControl"];
+  aiReviewer?: PersistedConfig["aiReviewer"];
   providerOverrides?: Record<string, ProviderOverride>;
   log?: PersistedConfig["log"];
   onLifecycleIntent?: (intent: DaemonLifecycleIntent) => void;
@@ -864,6 +865,7 @@ function createInitialMutableDaemonConfig(config: PaseoDaemonConfig): MutableDae
     enableTerminalAgentHooks: config.enableTerminalAgentHooks ?? false,
     appendSystemPrompt: config.appendSystemPrompt ?? "",
     ...(config.missionControl ? { missionControl: config.missionControl } : {}),
+    ...(config.aiReviewer ? { aiReviewer: config.aiReviewer } : {}),
     pluginsEnabled: config.pluginsEnabled ?? false,
     plugins: config.plugins ?? {},
     skills: { selection: config.skillSelection },
@@ -1439,6 +1441,8 @@ export async function createPaseoDaemon(
     mcpAuthToken: agentMcpAuthToken,
     resolvePaseoToolPolicy: (provider) =>
       resolvePaseoToolPolicy(provider, daemonConfigStore.get().providers),
+    aiReviewerCapability: true,
+    getAiReviewerConfig: () => daemonConfigStore.get().aiReviewer,
     logger,
   });
   const syncPluginProviders = () => {

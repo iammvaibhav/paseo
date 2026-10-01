@@ -188,6 +188,13 @@ const ThemedLoadingSpinner = withUnistyles(LoadingSpinner);
 const ThemedNotificationInfo = withUnistyles(Info);
 const ThemedNotificationWarning = withUnistyles(TriangleAlertIcon);
 const ThemedNotificationError = withUnistyles(XCircle);
+const ThemedCheck = withUnistyles(Check);
+const ThemedXCircle = withUnistyles(XCircle);
+const ThemedInfo = withUnistyles(Info);
+
+const statusSuccessColorMapping = (theme: Theme) => ({ color: theme.colors.statusSuccess });
+const statusDangerColorMapping = (theme: Theme) => ({ color: theme.colors.statusDanger });
+const statusWarningColorMapping = (theme: Theme) => ({ color: theme.colors.statusWarning });
 
 const foregroundColorMapping = (theme: Theme) => ({ color: theme.colors.foreground });
 const foregroundMutedColorMapping = (theme: Theme) => ({
@@ -2401,6 +2408,67 @@ const compactionStylesheet = StyleSheet.create((theme) => ({
     color: theme.colors.foregroundMuted,
   },
 }));
+
+export interface AiReviewDecisionProps {
+  decision: "allow" | "deny" | "escalate";
+  toolName?: string;
+  reason: string;
+}
+
+const aiReviewDecisionStyles = StyleSheet.create((theme) => ({
+  container: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[2],
+    paddingVertical: theme.spacing[1.5],
+    paddingHorizontal: theme.spacing[4],
+  },
+  text: {
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.sm,
+    flexShrink: 0,
+  },
+  reason: {
+    color: theme.colors.foreground,
+    fontSize: theme.fontSize.sm,
+    flexShrink: 1,
+  },
+}));
+
+function resolveAiReviewVisuals(decision: "allow" | "deny" | "escalate"): {
+  Icon: typeof ThemedCheck;
+  mapping: typeof statusSuccessColorMapping;
+  label: string;
+} {
+  if (decision === "allow") {
+    return { Icon: ThemedCheck, mapping: statusSuccessColorMapping, label: "Allowed" };
+  }
+  if (decision === "deny") {
+    return { Icon: ThemedXCircle, mapping: statusDangerColorMapping, label: "Denied" };
+  }
+  return { Icon: ThemedInfo, mapping: statusWarningColorMapping, label: "Escalated" };
+}
+
+export const AiReviewDecision = memo(function AiReviewDecision({
+  decision,
+  toolName,
+  reason,
+}: AiReviewDecisionProps) {
+  const { Icon, mapping, label } = resolveAiReviewVisuals(decision);
+
+  return (
+    <View style={aiReviewDecisionStyles.container} testID="ai-review-decision-row">
+      <Icon size={14} uniProps={mapping} />
+      <Text style={aiReviewDecisionStyles.text} numberOfLines={1}>
+        {label}
+        {toolName ? ` · ${toolName}` : ""}
+      </Text>
+      <Text style={aiReviewDecisionStyles.reason} numberOfLines={1} ellipsizeMode="tail">
+        {reason}
+      </Text>
+    </View>
+  );
+});
 
 export const CompactionMarker = memo(function CompactionMarker({
   status,

@@ -718,6 +718,7 @@ export function resolveConfigFromPersisted(
     agentProviderSettings: extractAgentProviderSettings(providerOverrides),
     providerCatalogRefreshTimeoutMs: persisted.agents?.catalogRefreshTimeoutMs,
     metadataGeneration: persisted.agents?.metadataGeneration,
+    aiReviewer: persisted.aiReviewer,
     missionControl: persisted.missionControl,
     providerOverrides,
     log: resolveLogConfigFromEnv(env, persisted),
