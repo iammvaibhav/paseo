@@ -5824,6 +5824,7 @@ export class Session {
           git,
           labels: resolvedIntent.intent.labels,
           env,
+          ...(msg.orchestrator === true ? { orchestrator: true } : {}),
           provisionalTitle,
           firstAgentContext,
           buildSessionConfig: (sessionConfig, gitOptions, legacyWorktreeName, ctx) =>

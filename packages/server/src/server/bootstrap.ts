@@ -173,6 +173,7 @@ import type { ComposerPreferences } from "@getpaseo/protocol/composer-preference
 import { CommanderSnapshotInjector } from "./mission-control/commander-snapshot.js";
 import { CentralMissionControlConfigStore } from "./mission-control/config.js";
 import { createMissionControlPresenceSource } from "./mission-control/presence.js";
+import { AgentManagerOrchestratorDispatcher } from "./agent/orchestrator/dispatcher.js";
 import { MissionControlVerifierDispatcher } from "./mission-control/verifier.js";
 import {
   commanderHomeCwd,
@@ -1956,6 +1957,7 @@ export async function createPaseoDaemon(
   // fall back to the hostname only when no alias is set.
   let missionControlService: MissionControlService;
   const missionControlHostAlias = daemonConfigStore.get().missionControl?.hostAlias?.trim() || null;
+  const orchestratorDispatcher = new AgentManagerOrchestratorDispatcher(agentManager, logger);
   const verifierDispatcher = new MissionControlVerifierDispatcher({
     logger,
     agentManager,
@@ -2759,6 +2761,7 @@ export async function createPaseoDaemon(
     },
     resolveTicketTools: ticketFleet.resolveToolsBackend,
     verifierDispatcher,
+    orchestratorDispatcher,
     serverId,
     hostAlias: missionControlHostAlias,
     paseoToolPolicy:

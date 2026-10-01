@@ -131,6 +131,7 @@ import {
   resolveMetaTargetHost,
   type SplitMetaToolArgs,
 } from "../../mission-control/fleet-meta.js";
+import type { ResolvedMetaTarget } from "../../mission-control/meta-actions.js";
 import {
   MISSION_CONTROL_LABEL_KEY,
   MISSION_CONTROL_LABEL_VALUE,
@@ -167,6 +168,11 @@ import type {
   PaseoToolExecutionContext,
   PaseoToolResult,
 } from "./types.js";
+import type {
+  OrchestratorDispatcher,
+  OrchestratorProposePlanInput,
+  OrchestratorTaskUpdateInput,
+} from "../orchestrator/dispatcher.js";
 import type { ProviderPaseoToolsPolicy } from "@getpaseo/protocol/provider-config";
 import { isPaseoToolEnabled } from "../paseo-tool-policy.js";
 
@@ -259,6 +265,12 @@ export interface PaseoToolHostDependencies {
   verifierDispatcher?: MissionControlVerifierDispatcher | null;
   fleetIdIndex?: FleetIdIndex | null;
   logger: Logger;
+  /**
+   * Orchestrator dispatcher (daemon-owned plan state, permission bridge,
+   * timeline rows). Absent → no orchestrator tools. Present + the caller is a
+   * live orchestrator agent → exposes propose_plan/orchestrator_task_update.
+   */
+  orchestratorDispatcher?: OrchestratorDispatcher | null;
 }
 
 function parseTimestamp(value: string | null | undefined): number {
@@ -1284,6 +1296,28 @@ function buildCatalogFleetIdIndex(
   });
 }
 
+// Fleet-tool host normalization: "local", this daemon's own serverId /
+// hostname / hostAlias (case-insensitive trim) all route to the LOCAL branch
+// of a fleet tool; a peer name routes to the peer client. One shared resolver
+// with the meta executor and the spawn executor — never a second fleet map
+// interpretation.
+function isFleetLocalTargetHelper(
+  host: string,
+  resolve: (host: string) => ResolvedMetaTarget,
+): boolean {
+  const resolved = resolve(host);
+  return resolved.ok && resolved.kind === "local";
+}
+
+function catalogHostsMatch(
+  hostA: string,
+  hostB: string,
+  isLocal: (host: string) => boolean,
+): boolean {
+  if (isLocal(hostA) && isLocal(hostB)) return true;
+  return hostA.trim().toLowerCase() === hostB.trim().toLowerCase();
+}
+
 /** The caller agent's voice context (null when the caller is not a voice
  * session or no resolver is wired). */
 function resolveCatalogCallerContext(
@@ -1291,6 +1325,198 @@ function resolveCatalogCallerContext(
   resolveCallerContext: ((callerAgentId: string) => VoiceCallerContext | null) | undefined,
 ): VoiceCallerContext | null {
   return callerAgentId ? (resolveCallerContext?.(callerAgentId) ?? null) : null;
+}
+
+type OrchestratorToolRegistrar = (
+  name: string,
+  config: PaseoToolConfig,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Tool handlers are schema-validated at registration boundaries.
+  handler: (input: any, context: PaseoToolExecutionContext) => Promise<PaseoToolResult>,
+) => void;
+
+interface CommanderGate {
+  isCommanderCaller: boolean;
+  runCommanderGatedAction: (action: {
+    toolName: string;
+    toolInput: unknown;
+    classify?: (toolInput: unknown) => "normal" | "destructive";
+    buildProposal: (toolInput: unknown) => Promise<ProposalCreateInput> | ProposalCreateInput;
+  }) => Promise<{ ok: true; proposal: MissionControlProposal } | { ok: false; error: string }>;
+}
+
+// M4 approval-gate wrap point for mutating Commander tools (spawn, send,
+// meta): ask mode holds the card pending, auto mode approves and records,
+// destructive classification always asks. Non-Commander callers are untouched.
+function buildCommanderGate(deps: {
+  callerLabels: Record<string, string> | undefined;
+  missionControlService: PaseoToolHostDependencies["missionControlService"];
+  logWarn: (obj: unknown, msg: string) => void;
+}): CommanderGate {
+  const { callerLabels, missionControlService, logWarn } = deps;
+  const isCommanderCaller =
+    callerLabels?.[MISSION_CONTROL_LABEL_KEY] === MISSION_CONTROL_LABEL_VALUE;
+  const runCommanderGatedAction: CommanderGate["runCommanderGatedAction"] = async (action) => {
+    const { toolName, toolInput, classify, buildProposal } = action;
+    if (!isCommanderCaller) {
+      return { ok: false, error: `${toolName} requires a Commander caller` };
+    }
+    if (!missionControlService) {
+      return { ok: false, error: "Mission Control is not enabled on this host" };
+    }
+    try {
+      const proposalInput = await buildProposal(toolInput);
+      const proposal = await missionControlService.approvals.createProposal({
+        ...proposalInput,
+        classification: classify?.(toolInput) ?? proposalInput.classification ?? "normal",
+      });
+      return { ok: true, proposal };
+    } catch (error) {
+      logWarn(
+        { err: error, component: "approvals", tool: toolName },
+        "mission_control.commander_gated_action_failed",
+      );
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  };
+  return { isCommanderCaller, runCommanderGatedAction };
+}
+
+function registerProposePlanTool(
+  registerTool: OrchestratorToolRegistrar,
+  orchestratorDispatcher: OrchestratorDispatcher,
+  callerAgentId: string,
+): void {
+  registerTool(
+    "propose_plan",
+    {
+      title: "Propose plan",
+      description:
+        "Propose an execution plan for user approval. Validates the task " +
+        "DAG (unique ids, existing dependencies, no cycles), stores the plan, " +
+        "and pauses the turn until the user approves, edits briefs, or rejects.",
+      inputSchema: {
+        title: z.string().trim().min(1).describe("Plan title."),
+        maxParallel: z
+          .number()
+          .int()
+          .positive()
+          .optional()
+          .describe("Maximum parallel tasks (default 4)."),
+        tasks: z
+          .array(
+            z.object({
+              id: z.string().trim().min(1).describe("Task id, unique within the plan."),
+              title: z.string().trim().min(1).describe("Task title."),
+              brief: z.string().optional().describe("Closed brief for the worker sub-agent."),
+              files: z.array(z.string()).optional().describe("Files in scope."),
+              dependsOn: z.array(z.string()).optional().describe("Task ids this task depends on."),
+              model: z.string().optional().describe("Preferred model for this task."),
+            }),
+          )
+          .min(1)
+          .describe("Tasks in the plan."),
+      },
+      outputSchema: {
+        planId: z.string(),
+        version: z.number(),
+        approved: z.boolean(),
+        edited: z.boolean().optional(),
+        rejected: z.boolean().optional(),
+      },
+    },
+    async (input: {
+      title: string;
+      maxParallel?: number;
+      tasks: Array<{
+        id: string;
+        title: string;
+        brief?: string;
+        files?: string[];
+        dependsOn?: string[];
+        model?: string;
+      }>;
+    }) => {
+      const result = await orchestratorDispatcher.proposePlan(callerAgentId, {
+        title: input.title,
+        ...(input.maxParallel !== undefined ? { maxParallel: input.maxParallel } : {}),
+        tasks: input.tasks,
+      } satisfies OrchestratorProposePlanInput);
+      return {
+        content: [],
+        structuredContent: ensureValidJson(result),
+      };
+    },
+  );
+}
+
+function registerTaskUpdateTool(
+  registerTool: OrchestratorToolRegistrar,
+  orchestratorDispatcher: OrchestratorDispatcher,
+  callerAgentId: string,
+): void {
+  registerTool(
+    "orchestrator_task_update",
+    {
+      title: "Update orchestrator task",
+      description:
+        "Update a task in the approved plan: link its child agent " +
+        "(childAgentId) and/or move its status. Emits the next plan version.",
+      inputSchema: {
+        taskId: z.string().trim().min(1).describe("Task id within the current plan."),
+        status: z
+          .enum([
+            "pending",
+            "ready",
+            "running",
+            "completed",
+            "failed",
+            "blocked",
+            "skipped",
+            "canceled",
+          ])
+          .optional()
+          .describe("New task status."),
+        childAgentId: z.string().optional().describe("Linked child agent id."),
+      },
+      outputSchema: {
+        version: z.number(),
+      },
+    },
+    async (input: OrchestratorTaskUpdateInput) => {
+      const result = await orchestratorDispatcher.updateTask(callerAgentId, {
+        taskId: input.taskId,
+        ...(input.status !== undefined ? { status: input.status } : {}),
+        ...(input.childAgentId !== undefined ? { childAgentId: input.childAgentId } : {}),
+      });
+      return {
+        content: [],
+        structuredContent: ensureValidJson(result),
+      };
+    },
+  );
+}
+
+// Orchestrator tools: exposed only to live orchestrator agents (orchestrator
+// start flag). propose_plan validates the DAG, stores version 1, emits a
+// plugin plan row, then blocks until the user approves/edits/rejects through
+// the daemon-owned OrchestratorPlanApproval permission.
+// orchestrator_task_update applies a status/child-agent transition and emits
+// the next plan version.
+function registerOrchestratorTools(deps: {
+  registerTool: OrchestratorToolRegistrar;
+  orchestratorDispatcher: OrchestratorDispatcher | null;
+  callerAgentId: string | undefined;
+}): void {
+  const { registerTool, orchestratorDispatcher, callerAgentId } = deps;
+  if (
+    orchestratorDispatcher === null ||
+    callerAgentId === undefined ||
+    !orchestratorDispatcher.isOrchestratorAgent(callerAgentId)
+  ) {
+    return;
+  }
+  registerProposePlanTool(registerTool, orchestratorDispatcher, callerAgentId);
+  registerTaskUpdateTool(registerTool, orchestratorDispatcher, callerAgentId);
 }
 
 export function createPaseoToolCatalog(options: PaseoToolHostDependencies): PaseoToolCatalog {
@@ -1316,93 +1542,35 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
   // identifier the UI still resolves). Never the raw hostname — results and
   // the model's echo of them must read as fleet aliases, not machine names.
   const hostLabel = options.hostAlias?.trim() || "local";
-  // Fleet-tool host normalization: "local", this daemon's own serverId /
-  // hostname / hostAlias (case-insensitive trim — the world snapshot teaches
-  // the Commander the aliases) all route to the LOCAL branch of a fleet tool;
-  // a peer name routes to the peer client. One shared resolver with the meta
-  // executor and the spawn executor (resolveMetaTargetHost) — never a second
-  // fleet map interpretation.
-  const isFleetLocalTarget = (host: string): boolean => {
-    const resolved = resolveMetaTargetHost(
-      { serverId: serverId ?? "", hostAlias: options.hostAlias, peerManager: peerManager ?? null },
-      host,
+  const isFleetLocalTarget = (host: string): boolean =>
+    isFleetLocalTargetHelper(host, (h) =>
+      resolveMetaTargetHost(
+        {
+          serverId: serverId ?? "",
+          hostAlias: options.hostAlias,
+          peerManager: peerManager ?? null,
+        },
+        h,
+      ),
     );
-    return resolved.ok && resolved.kind === "local";
-  };
-  const hostsMatch = (hostA: string, hostB: string): boolean => {
-    if (isFleetLocalTarget(hostA) && isFleetLocalTarget(hostB)) {
-      return true;
-    }
-    return hostA.trim().toLowerCase() === hostB.trim().toLowerCase();
-  };
+  const hostsMatch = (hostA: string, hostB: string): boolean =>
+    catalogHostsMatch(hostA, hostB, isFleetLocalTarget);
   const fleetIdIndex = options.fleetIdIndex ?? buildCatalogFleetIdIndex(options, hostLabel);
   const childLogger = logger.child({ module: "agent", component: "paseo-tool-catalog" });
   const callerContext = resolveCatalogCallerContext(callerAgentId, resolveCallerContext);
 
-  /**
-   * Ask-mode gate for Commander actions (user decision: everything is gated in
-   * ask mode except the status-ask nudge). The Commander is the ONLY
-   * mission-control machinery that drives the fleet spawn/send tools, so its
-   * fleet_create_agent and fleet_send_prompt calls route through the approval
-   * gate as proposals (kind "spawn"/"send", origin "commander"). Auto mode
-   * sends immediately via the approvals module; non-Commander callers
-   * (workers spawning subagents) are untouched.
-   */
-  const isCommanderCaller =
-    callerLabels?.[MISSION_CONTROL_LABEL_KEY] === MISSION_CONTROL_LABEL_VALUE;
-
-  /**
-   * M4: the single approval-gate wrap point for mutating Commander tools.
-   * Every side-effectful Commander action (spawn, send, meta — fleet_create_agent,
-   * fleet_send_prompt, fleet_meta) routes its Commander-caller path through
-   * here: the tool declares itself mutating by supplying a proposal payload
-   * builder, and the gate decides — ask mode holds the card pending, auto
-   * mode approves and records, and destructive classification always asks
-   * (the existing approvals predicate). Non-Commander callers are untouched
-   * (workers spawning subagents use the plain create_agent path). Returns the
-   * resolved proposal so the caller can describe the outcome (pending vs
-   * sent); { ok: false } when the caller is not the Commander or Mission
-   * Control is not enabled.
-   */
-  const runCommanderGatedAction = async (action: {
-    /** Tool name for error messages (e.g. "fleet_meta"). */
-    toolName: string;
-    /** The parsed tool input, forwarded to classify + buildProposal. */
-    toolInput: unknown;
-    /**
-     * Destructive classification hook. Defaults to "normal"; a tool that can
-     * destroy fleet state (fleet_meta archive actions) classifies here so
-     * the gate always asks, even in auto mode. The returned classification
-     * is authoritative over the builder's.
-     */
-    classify?: (toolInput: unknown) => "normal" | "destructive";
-    /** Build the ProposalCreateInput the gate decides on. */
-    buildProposal: (toolInput: unknown) => Promise<ProposalCreateInput> | ProposalCreateInput;
-  }): Promise<{ ok: true; proposal: MissionControlProposal } | { ok: false; error: string }> => {
-    const { toolName, toolInput, classify, buildProposal } = action;
-    if (!isCommanderCaller) {
-      return { ok: false, error: `${toolName} requires a Commander caller` };
-    }
-    if (!missionControlService) {
-      return { ok: false, error: "Mission Control is not enabled on this host" };
-    }
-    try {
-      const proposalInput = await buildProposal(toolInput);
-      const proposal = await missionControlService.approvals.createProposal({
-        ...proposalInput,
-        // The tool's destructive classification (when it declares one) is
-        // authoritative; otherwise the builder's classification stands.
-        classification: classify?.(toolInput) ?? proposalInput.classification ?? "normal",
-      });
-      return { ok: true, proposal };
-    } catch (error) {
-      childLogger.warn(
-        { err: error, component: "approvals", tool: toolName },
-        "mission_control.commander_gated_action_failed",
-      );
-      return { ok: false, error: error instanceof Error ? error.message : String(error) };
-    }
-  };
+  // Ask-mode gate for Commander actions: the Commander is the only
+  // mission-control machinery driving fleet spawn/send tools, so its
+  // fleet_create_agent and fleet_send_prompt calls route through the approval
+  // gate as proposals. Auto mode sends immediately; non-Commander callers
+  // (workers spawning subagents) are untouched.
+  const gate = buildCommanderGate({
+    callerLabels,
+    missionControlService,
+    logWarn: childLogger.warn.bind(childLogger),
+  });
+  const isCommanderCaller = gate.isCommanderCaller;
+  const runCommanderGatedAction = gate.runCommanderGatedAction;
 
   /**
    * 04 — the shared Commander-caller path for the 11 split meta tools (and
@@ -7277,6 +7445,9 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       };
     },
   );
+
+  const orchestratorDispatcher = options.orchestratorDispatcher ?? null;
+  registerOrchestratorTools({ registerTool, orchestratorDispatcher, callerAgentId });
 
   // Verifier-only tools: exposed only to sessions of Mission Control verifier
   // agents (paseo.mission-control=verifier). contact_worker routes through the

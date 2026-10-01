@@ -122,6 +122,8 @@ export function toStoredAgentRecord(
     ...(titleAutoDerived !== undefined ? { titleAutoDerived } : {}),
     ...(agent.name !== undefined ? { name: agent.name } : {}),
     ...(agent.shortDescription !== undefined ? { shortDescription: agent.shortDescription } : {}),
+    ...(agent.orchestrator === true ? { orchestrator: true } : {}),
+    ...(agent.orchestratorPlan ? { orchestratorPlan: agent.orchestratorPlan } : {}),
     labels: agent.labels,
     lastStatus: agent.lifecycle,
     lastModeId: agent.currentModeId ?? config?.modeId ?? null,
@@ -175,6 +177,7 @@ export function toAgentPayload(
     title: options?.title ?? null,
     ...(agent.name !== undefined ? { name: agent.name } : {}),
     ...(agent.shortDescription !== undefined ? { shortDescription: agent.shortDescription } : {}),
+    ...(agent.orchestrator === true ? { orchestrator: true } : {}),
     labels: agent.labels,
   };
 
@@ -246,6 +249,7 @@ function buildStoredAgentOptionalFields(
     ...(runtimeInfo ? { runtimeInfo } : {}),
     ...(record.name !== undefined ? { name: record.name } : {}),
     ...(record.shortDescription !== undefined ? { shortDescription: record.shortDescription } : {}),
+    ...(record.orchestrator === true ? { orchestrator: true } : {}),
     ...(bucket ? { bucket } : {}),
     ...(providerAvailable ? {} : { providerUnavailable: true }),
   };

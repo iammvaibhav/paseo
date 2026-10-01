@@ -2030,6 +2030,7 @@ export const CreateAgentRequestMessageSchema = z.object({
   outputSchema: z.record(z.string(), z.unknown()).optional(),
   images: z.array(ImageAttachmentSchema).optional(),
   attachments: AgentAttachmentsSchema,
+  git: GitSetupOptionsSchema.optional(),
   worktree: CreateAgentWorktreeTargetSchema.optional(),
   autoArchive: z.boolean().optional(),
   labels: z.record(z.string(), z.string()).default({}),
@@ -2722,6 +2723,8 @@ const CheckoutCommitSchema = z.object({
   isOnRemote: z.boolean(), // false = local-only (unpushed)
   // COMPAT(commitBaseClassification): added in v0.2.0, remove optional after 2027-01-23.
   isOnBase: z.boolean().optional(),
+  // COMPAT(commitParents): added in v0.10.0, remove optional after 2027-04-01.
+  parents: z.array(z.string()).optional(),
   files: z.array(CheckoutCommitFileSchema),
 });
 
@@ -4196,6 +4199,8 @@ export const ServerInfoStatusPayloadSchema = z
         commitsList: z.boolean().optional(),
         // COMPAT(commitBaseClassification): added in v0.2.0, remove gate after 2027-01-23.
         commitBaseClassification: z.boolean().optional(),
+        // COMPAT(commitParents): added in v0.10.0, remove gate after 2027-04-01.
+        commitParents: z.boolean().optional(),
         // COMPAT(providerRemoval): added in v0.1.105, drop the gate when floor >= v0.1.105.
         providerRemoval: z.boolean().optional(),
         // COMPAT(importSessionWorkspaceTarget): added in v0.1.110, remove gate after 2027-01-16.
@@ -4265,6 +4270,37 @@ export const ServerInfoStatusPayloadSchema = z
     hostname: payload.hostname ?? null,
     version: payload.version ?? null,
   }));
+// Orchestrator plan schemas
+// COMPAT(orchestrator): added 2026-09-30, remove gate after 2027-03-30.
+export const OrchestratorTaskStatusSchema = z.enum([
+  "pending",
+  "ready",
+  "running",
+  "completed",
+  "failed",
+  "blocked",
+  "skipped",
+  "canceled",
+]);
+
+export const OrchestratorPlanTaskSchema = z.object({
+  id: z.string().min(1),
+  title: z.string().min(1),
+  brief: z.string().default(""),
+  files: z.array(z.string()).default([]),
+  dependsOn: z.array(z.string()).default([]),
+  model: z.string().optional(),
+  childAgentId: z.string().optional(),
+  status: OrchestratorTaskStatusSchema.default("pending"),
+});
+
+export const OrchestratorPlanSchema = z.object({
+  planId: z.string().min(1),
+  version: z.number().int().positive(),
+  title: z.string().min(1),
+  maxParallel: z.number().int().positive().default(4),
+  tasks: z.array(OrchestratorPlanTaskSchema),
+});
 
 export const StatusMessageSchema = z.object({
   type: z.literal("status"),

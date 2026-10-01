@@ -417,6 +417,9 @@ export interface CreateAgentRequestOptions extends AgentConfigOverrides {
   worktreeName?: string;
   requestId?: string;
   labels?: Record<string, string>;
+  // Orchestrator start option (normal agents only, never the Commander).
+  // COMPAT(orchestrator): added 2026-09-30, remove gate after 2027-03-30.
+  orchestrator?: boolean;
 }
 
 export interface CreateWorkspaceRequestOptions {
@@ -3027,6 +3030,7 @@ export class DaemonClient {
       ...(options.labels && Object.keys(options.labels).length > 0
         ? { labels: options.labels }
         : {}),
+      ...(options.orchestrator === true ? { orchestrator: true } : {}),
     });
 
     const status = await this.sendRequest({
