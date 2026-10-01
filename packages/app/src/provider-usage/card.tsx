@@ -25,7 +25,20 @@ const ThemedProviderUsageIcon = withUnistyles(ProviderUsageIcon);
 const mutedIconColor = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 
 function statusText(usage: ProviderUsage): string | null {
-  if (usage.status === "available") return null;
+  if (usage.status === "available") {
+    // COMPAT(fastProviderUsage): headroom tone from the daemon (or the local
+    // headroom hook) surfaces here; the bar tones below stay per-window.
+    if (usage.headroomTone === "exhausted") {
+      return usage.resetCountdown ? `Exhausted · ${usage.resetCountdown}` : "Exhausted";
+    }
+    if (usage.headroomTone === "low") {
+      return usage.headroomPercent != null
+        ? `Running low · ${Math.round(usage.headroomPercent)}% left`
+        : "Running low";
+    }
+    if (usage.headroomTone === "checking") return "Checking…";
+    return null;
+  }
   return usage.status === "error" ? "Error" : "Unavailable";
 }
 
@@ -64,11 +77,18 @@ export function ProviderUsageCard({
   const dotStyle = useMemo(
     () => [
       styles.statusDot,
-      usage.status === "available" && styles.statusDotAvailable,
-      usage.status === "error" && styles.statusDotError,
+      usage.status === "available" &&
+        (usage.headroomTone === "low" ? styles.statusDotLow : styles.statusDotAvailable),
+      (usage.status === "error" || usage.headroomTone === "exhausted") && styles.statusDotError,
     ],
-    [usage.status],
+    [usage.status, usage.headroomTone],
   );
+  let alternativeHint: string | null = null;
+  if (usage.bestAlternativeAccountName && usage.headroomTone !== "ready") {
+    alternativeHint = `Try ${usage.bestAlternativeAccountName}`;
+  } else if (usage.isBestAlternative === true) {
+    alternativeHint = "Best available";
+  }
 
   return (
     <View style={containerStyle}>
@@ -140,6 +160,12 @@ export function ProviderUsageCard({
         </View>
       ) : null}
 
+      {alternativeHint ? (
+        <Text style={styles.alternative} numberOfLines={1}>
+          {alternativeHint}
+        </Text>
+      ) : null}
+
       {footer ? (
         <Text style={styles.footer} numberOfLines={1}>
           {footer}
@@ -208,6 +234,9 @@ const styles = StyleSheet.create((theme) => ({
   statusDotAvailable: {
     backgroundColor: theme.colors.statusSuccess,
   },
+  statusDotLow: {
+    backgroundColor: theme.colors.statusWarning,
+  },
   statusDotError: {
     backgroundColor: theme.colors.statusDanger,
   },
@@ -242,6 +271,10 @@ const styles = StyleSheet.create((theme) => ({
   },
   footer: {
     color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.sm,
+  },
+  alternative: {
+    color: theme.colors.statusWarning,
     fontSize: theme.fontSize.sm,
   },
 }));

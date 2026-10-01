@@ -2106,6 +2106,9 @@ export const ProviderUsageListRequestMessageSchema = z.object({
   requestId: z.string(),
   // Optional so old clients keep working; new clients set true on explicit refresh.
   forceRefresh: z.boolean().optional(),
+  // COMPAT(fastProviderUsage): added 2026-09-30, remove gate after 2027-03-30.
+  // Scope refresh/response to one provider; absent means every provider.
+  providerId: z.string().optional(),
 });
 
 export const ResumeAgentRequestMessageSchema = z.object({
@@ -4135,6 +4138,11 @@ export const ServerInfoStatusPayloadSchema = z
         providerUsageList: z.boolean().optional(),
         // Daemon pushes refreshed usage via provider.usage.updated. Added in v0.4.0.
         providerUsagePush: z.boolean().optional(),
+        // COMPAT(fastProviderUsage): added 2026-09-30, remove gate after 2027-03-30.
+        // Daemon serves cached provider-usage snapshots instantly on
+        // provider.usage.list.request and refreshes each provider independently in
+        // the background, pushing per-provider provider.usage.updated events.
+        fastProviderUsage: z.boolean().optional(),
         // COMPAT(agentDetach): added in v0.1.98, remove gate after 2026-12-19 once daemon floor >= v0.1.98.
         agentDetach: z.boolean().optional(),
         // COMPAT(agentThinkingUpdate): added in v0.2.4, remove gate after 2027-01-28.
@@ -6839,6 +6847,18 @@ export const ProviderUsageSchema = z.object({
   balances: z.array(ProviderUsageBalanceSchema).optional(),
   details: z.array(ProviderUsageDetailSchema).optional(),
   error: z.string().nullable().optional(),
+  // COMPAT(fastProviderUsage): added 2026-09-30, remove gate after 2027-03-30.
+  // Daemon-computed headroom for the tightest window: remaining percent
+  // (0-100), tone, reset countdown label, and the best switch hint when this
+  // account is low or exhausted. Clients recompute locally every 30 s against
+  // resetsAt; these fields seed the first render and serve clients without
+  // local timers.
+  headroomTone: z.enum(["ready", "low", "exhausted", "checking", "unknown"]).optional(),
+  headroomPercent: z.number().nullable().optional(),
+  resetCountdown: z.string().nullable().optional(),
+  isBestAlternative: z.boolean().optional(),
+  bestAlternativeAccountId: z.string().nullable().optional(),
+  bestAlternativeAccountName: z.string().nullable().optional(),
 });
 
 export const ProviderUsageListResponseMessageSchema = z.object({
@@ -6860,6 +6880,9 @@ export const ProviderUsageUpdatedMessageSchema = z.object({
     subscriptionId: z.string().optional(),
     fetchedAt: z.string(),
     providers: z.array(ProviderUsageSchema),
+    // COMPAT(fastProviderUsage): added 2026-09-30, remove gate after 2027-03-30.
+    // Present on per-provider pushes: names the provider that just refreshed.
+    providerId: z.string().optional(),
   }),
 });
 

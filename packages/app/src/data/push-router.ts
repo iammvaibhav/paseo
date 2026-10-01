@@ -80,6 +80,17 @@ interface EventStreamRoute {
 
 type ServerDataRoute = CheckoutDiffRoute | WorkspaceTerminalsRoute | EventStreamRoute;
 
+// COMPAT(fastProviderUsage): stable identity for one usage card across full and
+// per-provider pushes. Matches the daemon's providerCardKey in
+// packages/server/src/services/quota-fetcher/service.ts.
+function providerUsageCardKey(usage: {
+  providerId: string;
+  groupId?: string | null;
+  accountEmail?: string | null;
+}): string {
+  return `${usage.providerId}:${usage.groupId ?? ""}:${usage.accountEmail ?? ""}`;
+}
+
 interface EventStream {
   event: SessionEventSubscription;
   apply(input: {
@@ -118,8 +129,22 @@ const EVENT_STREAMS: Record<EventStreamDomain, EventStream> = {
     event: "provider.usage.updated",
     apply: ({ message, queryClient, serverId }) => {
       if (message.type === "provider.usage.updated") {
-        const { subscriptionId: _subscriptionId, ...snapshot } = message.payload;
-        queryClient.setQueryData(providerUsageQueryKey(serverId), snapshot);
+        // COMPAT(fastProviderUsage): per-provider pushes carry only the cards
+        // that just refreshed. Merge by (providerId, groupId, accountEmail) so
+        // a fast provider never wipes a sibling that is still refreshing.
+        queryClient.setQueryData(providerUsageQueryKey(serverId), (current) => {
+          const { subscriptionId: _subscriptionId, ...snapshot } = message.payload;
+          const previous = (current as { fetchedAt?: string; providers?: unknown[] } | undefined)
+            ?.providers;
+          if (!Array.isArray(previous)) return snapshot;
+          const fresh = snapshot.providers;
+          if (!Array.isArray(fresh) || fresh.length === 0) return snapshot;
+          const freshKeys = new Set(fresh.map((usage) => providerUsageCardKey(usage)));
+          const merged = (previous as typeof fresh).filter(
+            (usage) => !freshKeys.has(providerUsageCardKey(usage)),
+          );
+          return { ...snapshot, providers: [...merged, ...fresh] };
+        });
       }
     },
   },
