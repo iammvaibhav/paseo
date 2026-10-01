@@ -220,7 +220,7 @@ export const steps = [
       const delivered = await pollUntil(
         async () => {
           const timeline = await ctx.host().client.fetchAgentTimeline(run.agentId, { limit: 100 });
-          const items = timeline.items ?? timeline.timeline ?? [];
+          const items = timeline.entries ?? [];
           return items.find(
             (item) =>
               JSON.stringify(item).includes(thread.id) && JSON.stringify(item).includes("send me"),
