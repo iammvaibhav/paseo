@@ -24,8 +24,8 @@ async function createMockAgent(ctx, { title }) {
   return agent.id;
 }
 
-async function automation(client, method, params = {}) {
-  const payload = await client[method](params);
+async function automation(client, method, params) {
+  const payload = await client[method](...(params === undefined ? [] : [params]));
   if (payload.error !== null && payload.error !== undefined) {
     throw new Error(`${method} failed: ${payload.error}`);
   }
