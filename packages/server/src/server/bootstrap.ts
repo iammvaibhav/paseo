@@ -185,6 +185,7 @@ import { AgentNamingService } from "./mission-control/naming.js";
 import { runIdentityBackfill } from "./mission-control/backfill.js";
 import { MAX_WEBHOOK_BODY_BYTES, WebhookService } from "./webhook/service.js";
 import { createWebhookRouteHandler } from "./webhook/route.js";
+import { AutomationService } from "./automation/service.js";
 import {
   isServingTickets,
   openTickets,
@@ -206,6 +207,7 @@ import {
 } from "./notes/index.js";
 import { ItsaplanTicketImporter } from "./tickets/import-itsaplan.js";
 import { startTicketFleet } from "./tickets/fleet.js";
+import { openDocThreads, type DocThreadsHost } from "./doc-threads/index.js";
 import {
   attachItsaplanProjectSync,
   createItsaplanResyncRouteHandler,
@@ -774,6 +776,7 @@ export interface PaseoDaemon {
   ticketStore: TicketStore | null;
   isTicketsBoardHost(): boolean;
   ticketsHandlers: TicketsDelegatedHandlers;
+  docThreadsHost: DocThreadsHost | null;
   // Native notes; null when node:sqlite is missing.
   noteService: NoteService | null;
   noteStore: NoteStore | null;
@@ -1174,6 +1177,7 @@ export async function createPaseoDaemon(
     appBaseUrl = typeof value === "string" ? value : "https://app.paseo.sh";
   });
   let wsServer: VoiceAssistantWebSocketServer | null = null;
+  let automationService: AutomationService | null = null;
   let serviceProxyListenTarget: ListenTarget | null = null;
   const scriptHealthMonitor = new ScriptHealthMonitor({
     serviceProxy,
@@ -2650,6 +2654,16 @@ export async function createPaseoDaemon(
   ticketService?.onChange((change) => {
     wsServer?.broadcast(wrapSessionMessage({ type: "tickets.changed", ...change }));
   });
+  const docThreadsRuntime = await openDocThreads({
+    paseoHome: config.paseoHome,
+    logger,
+    agentStorage,
+    agentManager,
+  });
+  const docThreadsHost = docThreadsRuntime?.host ?? null;
+  docThreadsRuntime?.host.service?.onChange((change) => {
+    wsServer?.broadcast(wrapSessionMessage({ type: "doc_threads.changed", ...change }));
+  });
   // ---- end native tickets (ServerCore)
   // ---- Native notes (ServerCore). Every host opens the store; only the
   // notes host (the designated Commander host, same rule as the tickets
@@ -2815,6 +2829,7 @@ export async function createPaseoDaemon(
     resolveTicketTools: ticketFleet.resolveToolsBackend,
     resolveNoteTools,
     verifierDispatcher,
+    resolveDocThreads: docThreadsHost?.service ? () => docThreadsHost.service! : null,
     serverId,
     hostAlias: missionControlHostAlias,
     paseoToolPolicy:
@@ -3078,6 +3093,30 @@ export async function createPaseoDaemon(
               logger.info("Daemon password authentication enabled");
             }
 
+            // ---- Automations facade (unified schedules/webhooks/poll triggers).
+            // Owns poll records + the poll loop; schedule/webhook kinds delegate.
+            // Built here so the service instance is in hand for the wsServer call below.
+            let automationRevision = 0;
+            automationService = new AutomationService({
+              paseoHome: config.paseoHome,
+              logger,
+              scheduleService,
+              webhookService,
+              onChanged: (change) => {
+                automationRevision += 1;
+                wsServer?.broadcast(
+                  wrapSessionMessage({
+                    type: "automations.changed",
+                    automationId: change.automationId,
+                    kind: change.kind,
+                    revision: automationRevision,
+                  }),
+                );
+              },
+            });
+            automationService.start();
+            // ---- end automations
+
             wsServer = new VoiceAssistantWebSocketServer(
               httpServer,
               logger,
@@ -3152,8 +3191,10 @@ export async function createPaseoDaemon(
               workspaceLabelService,
               (workspaceId) => itsaplanBridge?.handleWorkspaceArchived(workspaceId),
               warmWorktreePool,
+              docThreadsHost,
               ticketsHost,
               notesHost,
+              { ticketsHost, automationService },
             );
             pluginRuntime.bindPaseoSessionHost(wsServer);
             await pluginRuntime.start();
@@ -3238,6 +3279,7 @@ export async function createPaseoDaemon(
     await missionControlService.stop().catch(() => undefined);
 
     await warmWorktreePool.stop().catch(() => undefined);
+    await automationService?.stop().catch(() => undefined);
     await scheduleService.stop().catch(() => undefined);
     baseCheckoutSyncService.stop();
     await peerManager?.close().catch(() => undefined);
@@ -3280,6 +3322,7 @@ export async function createPaseoDaemon(
     ticketStore,
     isTicketsBoardHost,
     ticketsHandlers,
+    docThreadsHost,
     noteService,
     noteStore,
     isNotesHost,

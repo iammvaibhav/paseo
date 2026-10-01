@@ -17,6 +17,7 @@ import type { ProjectRegistry, WorkspaceRegistry } from "./workspace-registry.js
 import type { ProjectUpdate } from "./workspace-reconciliation-service.js";
 import type { ScheduleService } from "./schedule/service.js";
 import type { WebhookService } from "./webhook/service.js";
+import type { AutomationService } from "./automation/service.js";
 import type { PeerManager } from "./peers/peer-manager.js";
 import type { MissionControlService } from "./mission-control/service.js";
 import type { TranscriptSearchService } from "./search/service.js";
@@ -45,9 +46,10 @@ import {
   type SessionRuntimeMetrics,
 } from "./session.js";
 import type { WarmWorktreePool } from "./warm-worktree-pool.js";
-import { isServingTickets, type TicketsHost } from "./tickets/session.js";
 import { isServingNotes, type NotesHost } from "./notes/session.js";
 import type { HubRelationshipManagement } from "./hub/relationship-controller.js";
+import { isServingDocThreads, type DocThreadsHost } from "./doc-threads/session.js";
+import { isServingTickets, type TicketsHost } from "./tickets/session.js";
 import { WorkspaceSetupRuntime } from "./workspace-setup-runtime.js";
 import type { HubExecutionAgents } from "./hub/daemon-executions.js";
 import type { AgentProvider } from "./agent/agent-sdk-types.js";
@@ -575,6 +577,7 @@ export class VoiceAssistantWebSocketServer {
   private readonly workspaceLabelService: WorkspaceLabelService | null;
   private readonly scheduleService: ScheduleService;
   private readonly webhookService: WebhookService | null;
+  private automationService: AutomationService | null = null;
   private readonly checkoutDiffManager: CheckoutDiffManager;
   private readonly github: ForgeService;
   private readonly workspaceGitService: WorkspaceGitService;
@@ -632,6 +635,7 @@ export class VoiceAssistantWebSocketServer {
   private readonly orchestrationSkills: SessionOptions["orchestrationSkills"];
   private readonly onWorkspaceArchived?: (workspaceId: string) => void | Promise<void>;
   private readonly warmWorktreePool?: WarmWorktreePool;
+  private docThreadsHost!: DocThreadsHost | null;
   private ticketsHost!: TicketsHost | null;
   private notesHost!: NotesHost | null;
 
@@ -654,6 +658,7 @@ export class VoiceAssistantWebSocketServer {
     }
   }
 
+  // oxlint-disable-next-line complexity
   constructor(
     server: HTTPServer,
     logger: pino.Logger,
@@ -705,8 +710,13 @@ export class VoiceAssistantWebSocketServer {
     workspaceLabelService?: WorkspaceLabelService,
     onWorkspaceArchived?: (workspaceId: string) => void | Promise<void>,
     warmWorktreePool?: WarmWorktreePool,
+    docThreadsHost?: DocThreadsHost | null,
     ticketsHost?: TicketsHost | null,
     notesHost?: NotesHost | null,
+    websocketServices?: {
+      ticketsHost?: TicketsHost | null;
+      automationService?: AutomationService | null;
+    },
   ) {
     this.onWorkspaceArchived = onWorkspaceArchived;
     this.logger = logger.child({ module: "websocket-server" });
@@ -763,8 +773,10 @@ export class VoiceAssistantWebSocketServer {
       getDaemonTcpHost,
       serviceProxyPublicBaseUrl,
       resolveScriptHealth,
-      ticketsHost,
+      docThreadsHost,
+      ticketsHost: websocketServices?.ticketsHost ?? ticketsHost,
       notesHost,
+      automationService: websocketServices?.automationService,
     });
     if (!providerSnapshotManager) {
       throw new Error("providerSnapshotManager is required");
@@ -837,7 +849,9 @@ export class VoiceAssistantWebSocketServer {
     getDaemonTcpHost: (() => string | null) | undefined;
     serviceProxyPublicBaseUrl: string | null | undefined;
     resolveScriptHealth: ((hostname: string) => ScriptHealthState | null) | undefined;
+    docThreadsHost?: DocThreadsHost | null | undefined;
     ticketsHost: TicketsHost | null | undefined;
+    automationService?: AutomationService | null;
     notesHost: NotesHost | null | undefined;
   }): void {
     this.speech = params.speech ?? null;
@@ -874,7 +888,12 @@ export class VoiceAssistantWebSocketServer {
     this.getDaemonTcpPort = params.getDaemonTcpPort ?? null;
     this.getDaemonTcpHost = params.getDaemonTcpHost ?? null;
     this.serviceProxyPublicBaseUrl = params.serviceProxyPublicBaseUrl ?? null;
+    this.resolveScriptHealth = params.resolveScriptHealth ?? null;
+    this.docThreadsHost = params.docThreadsHost ?? null;
     this.ticketsHost = params.ticketsHost ?? null;
+    if (params.automationService !== undefined) {
+      this.automationService = params.automationService;
+    }
     this.notesHost = params.notesHost ?? null;
   }
 
@@ -1536,6 +1555,7 @@ export class VoiceAssistantWebSocketServer {
       directorySync: this.directorySync,
       scheduleService: this.scheduleService,
       webhookService: this.webhookService,
+      automationService: this.automationService,
       peerManager: this.peerManager,
       missionControlService: this.missionControlService,
       transcriptSearch: this.transcriptSearch,
@@ -1547,6 +1567,7 @@ export class VoiceAssistantWebSocketServer {
       warmWorktreePool: this.warmWorktreePool,
       pluginRuntime: this.pluginRuntime,
       orchestrationSkills: this.orchestrationSkills,
+      docThreads: this.docThreadsHost,
       tickets: this.ticketsHost,
       notes: this.notesHost,
       mcpBaseUrl: this.mcpBaseUrl,
@@ -1853,6 +1874,9 @@ export class VoiceAssistantWebSocketServer {
         missionControlV4: true,
         // COMPAT(missionControlInbox): added 2026-09-30, remove gate after 2027-03-30.
         missionControlInbox: true,
+        // Doc threads are available on any host with node:sqlite and owned agents.
+        docThreads: isServingDocThreads(this.docThreadsHost),
+        docThreadsEventSubscription: isServingDocThreads(this.docThreadsHost),
         // Native notes. True only on the notes host (the Commander host)
         // with node:sqlite loaded; evaluated per server_info because the
         // Commander designation can move.
@@ -1929,6 +1953,11 @@ export class VoiceAssistantWebSocketServer {
         providerUsageEventSubscription: true,
         // COMPAT(plannotatorEventSubscription): added 2026-09-30, remove gate after 2027-03-30.
         plannotatorEventSubscription: true,
+        // Automations (unified schedules/webhooks/GitHub/Linear poll triggers).
+        // Added 2026-09-30; the app gates the Automations screen once on it.
+        automations: this.automationService !== null,
+        // COMPAT(automationEventSubscription): added 2026-09-30, remove gate after 2027-03-30.
+        automationEventSubscription: this.automationService !== null,
         // COMPAT(canonicalSubmittedPrompts): added in v0.2.6, remove gate after 2027-01-30.
         canonicalSubmittedPrompts: true,
         // COMPAT(stableProjectIdentity): added in v0.1.109, remove gate after 2027-01-15.

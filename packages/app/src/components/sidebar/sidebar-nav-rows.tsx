@@ -17,11 +17,7 @@ import { useSidebarNavItems } from "@/sidebar-nav/use-sidebar-nav-items";
 import { useKeyboardShortcutsStore } from "@/stores/keyboard-shortcuts-store";
 import { useActiveWorkspaceSelection } from "@/stores/navigation-active-workspace-store";
 import { useWorkspace } from "@/stores/session-store-hooks";
-import {
-  buildNewWorkspaceRoute,
-  buildSchedulesRoute,
-  buildSessionsRoute,
-} from "@/utils/host-routes";
+import { buildNewWorkspaceRoute, buildSessionsRoute } from "@/utils/host-routes";
 
 interface SidebarNavRowProps {
   onBeforeNavigate?: () => void;
@@ -155,7 +151,7 @@ function SidebarSchedulesRow({ onBeforeNavigate }: SidebarNavRowProps) {
   const pathname = usePathname();
   const handlePress = useCallback(() => {
     onBeforeNavigate?.();
-    router.push(buildSchedulesRoute());
+    router.push("/automations");
   }, [onBeforeNavigate]);
 
   return (
@@ -163,8 +159,8 @@ function SidebarSchedulesRow({ onBeforeNavigate }: SidebarNavRowProps) {
       icon={CalendarClock}
       label={t(builtinSidebarNavLabelKey("schedules"))}
       onPress={handlePress}
-      isActive={pathname.includes("/schedules")}
-      testID="sidebar-schedules"
+      isActive={pathname.includes("/automations")}
+      testID="sidebar-automations"
       variant="compact"
     />
   );

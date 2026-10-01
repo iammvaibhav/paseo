@@ -115,6 +115,8 @@ import { registerBrowserTools } from "../../browser-tools/tools.js";
 import type { BrowserToolsBroker } from "../../browser-tools/broker.js";
 import { buildPeerUnreachableError, type PeerManager } from "../../peers/peer-manager.js";
 import { registerTicketTools, type TicketToolsBackend } from "../../tickets/tools.js";
+import { registerDocThreadTools } from "../../doc-threads/tools.js";
+import type { DocThreadsService } from "../../doc-threads/service.js";
 import { registerNoteTools, type NoteToolsBackend } from "../../notes/tools.js";
 import { MissionControlSearchMatchSchema } from "@getpaseo/protocol/mission-control/types";
 import type { MissionControlProposalSpawnPlan } from "@getpaseo/protocol/mission-control/types";
@@ -219,6 +221,7 @@ export interface PaseoToolHostDependencies {
    * tools.
    */
   resolveTicketTools?: (() => TicketToolsBackend) | null;
+  resolveDocThreads?: (() => DocThreadsService) | null;
   /**
    * Native notes for the Commander note tools, resolved per call
    * (local on the notes host, else the notes-host peer). Absent → no note
@@ -1375,6 +1378,23 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
    */
   const isCommanderCaller =
     callerLabels?.[MISSION_CONTROL_LABEL_KEY] === MISSION_CONTROL_LABEL_VALUE;
+  /**
+   * Threaded file comments: every agent gets reply_to_thread, list_threads
+   * and comment_on_file, scoped to the calling agent. Kept out of the
+   * catalog body so createPaseoToolCatalog stays under the complexity budget.
+   */
+  const registerDocThreadToolsIfAvailable = (input: {
+    registerTool: typeof registerTool;
+    resolveDocThreads: PaseoToolHostDependencies["resolveDocThreads"];
+    callerAgentId: string | undefined;
+  }): void => {
+    if (!input.resolveDocThreads) return;
+    registerDocThreadTools({
+      registerTool: input.registerTool,
+      resolveService: input.resolveDocThreads,
+      callerAgentId: input.callerAgentId,
+    });
+  };
 
   /**
    * M4: the single approval-gate wrap point for mutating Commander tools.
@@ -6589,6 +6609,11 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
   if (isCommanderCaller) {
     registerNativeBoardTools(registerTool, options);
   }
+  registerDocThreadToolsIfAvailable({
+    registerTool,
+    resolveDocThreads: options.resolveDocThreads,
+    callerAgentId,
+  });
 
   registerTool(
     "fleet_recall",

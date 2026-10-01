@@ -78,8 +78,16 @@ import {
   WebhookTestResponseSchema,
   WebhookConfigResponseSchema,
 } from "./webhook/rpc-schemas.js";
+import {
+  AUTOMATION_INBOUND_SCHEMAS,
+  AUTOMATION_OUTBOUND_SCHEMAS,
+} from "./automation/rpc-schemas.js";
 import { NOTES_INBOUND_SCHEMAS, NOTES_OUTBOUND_SCHEMAS } from "./notes/rpc-schemas.js";
 import { TICKETS_INBOUND_SCHEMAS, TICKETS_OUTBOUND_SCHEMAS } from "./tickets/rpc-schemas.js";
+import {
+  DOC_THREADS_INBOUND_SCHEMAS,
+  DOC_THREADS_OUTBOUND_SCHEMAS,
+} from "./doc-threads/rpc-schemas.js";
 import {
   MissionControlEventsFetchRequestSchema,
   MissionControlEventsFetchResponseSchema,
@@ -3610,6 +3618,13 @@ export const SessionEventSubscriptionSchema = z.enum([
   "mission_control_event",
   "provider.usage.updated",
   "plannotator.session.event",
+  // Owned-subscription push for Automations CRUD/run changes. Subscribe only
+  // on a host that advertises features.automations: an older daemon rejects
+  // an unknown event name.
+  "automations.changed",
+  // Doc threads push. Subscribe only on a host that advertises
+  // features.docThreadsEventSubscription: an older daemon rejects an unknown event name.
+  "doc_threads.changed",
 ]);
 export type SessionEventSubscription = z.infer<typeof SessionEventSubscriptionSchema>;
 export const SessionEventsSetSubscriptionRequestSchema = z.object({
@@ -3861,6 +3876,8 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   WebhookConfigRequestSchema,
   ...NOTES_INBOUND_SCHEMAS,
   ...TICKETS_INBOUND_SCHEMAS,
+  ...AUTOMATION_INBOUND_SCHEMAS,
+  ...DOC_THREADS_INBOUND_SCHEMAS,
   LoopRunRequestSchema,
   LoopListRequestSchema,
   LoopInspectRequestSchema,
@@ -4069,6 +4086,12 @@ export const ServerInfoStatusPayloadSchema = z
         // COMPAT(workspaceRequestReceipts): added in v0.8.0; remove gate after 2027-03-07.
         workspaceRequestReceipts: z.boolean().optional(),
         creationLifecycle: z.boolean().optional(),
+        // COMPAT(docThreads): added 2026-10-01, remove gate after 2027-04-01.
+        // Daemon serves doc_threads.* RPCs for agents it owns.
+        docThreads: z.boolean().optional(),
+        // COMPAT(docThreadsEventSubscription): added 2026-10-01, remove gate after 2027-04-01.
+        // session.events accepts "doc_threads.changed".
+        docThreadsEventSubscription: z.boolean().optional(),
         // COMPAT(hubAgentRpc): added in v0.8.0; remove gate after 2027-03-05.
         hubAgentRpc: z.boolean().optional(),
         providersSnapshot: z.boolean().optional(),
@@ -4222,6 +4245,12 @@ export const ServerInfoStatusPayloadSchema = z
         // mission_control.inbox.fetch (pending proposals, open clarifications,
         // review facts) is served; Quarterdeck gates its per-host inbox on it.
         missionControlInbox: z.boolean().optional(),
+        // Automations (unified schedules/webhooks/GitHub/Linear poll triggers).
+        // Added 2026-09-30; the app gates the Automations screen once on it.
+        automations: z.boolean().optional(),
+        // COMPAT(automationEventSubscription): added 2026-09-30, remove gate after 2027-03-30.
+        // session.events accepts "automations.changed".
+        automationEventSubscription: z.boolean().optional(),
         // COMPAT(commitsList): added in v0.1.110, remove gate after 2027-01-16.
         commitsList: z.boolean().optional(),
         // COMPAT(commitBaseClassification): added in v0.2.0, remove gate after 2027-01-23.
@@ -7651,6 +7680,8 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   WebhookConfigResponseSchema,
   ...NOTES_OUTBOUND_SCHEMAS,
   ...TICKETS_OUTBOUND_SCHEMAS,
+  ...AUTOMATION_OUTBOUND_SCHEMAS,
+  ...DOC_THREADS_OUTBOUND_SCHEMAS,
   LoopRunResponseSchema,
   LoopListResponseSchema,
   LoopInspectResponseSchema,
