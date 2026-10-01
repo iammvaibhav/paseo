@@ -99,6 +99,7 @@ import {
   AssistantFileLinkResolverProvider,
   normalizeInlinePathTarget,
 } from "@/assistant-file-links";
+import type { AssistantTurnSourceContext } from "@/components/message";
 import {
   createWorkspaceFileTabTarget,
   normalizeWorkspaceFileLocation,
@@ -177,6 +178,7 @@ function renderStreamItemWithTurnFooter(input: {
   onForkAssistantTurn?: AssistantTurnForkHandler;
   onJumpToUserMessage?: (itemId: string) => void;
   includeTurnFooter: boolean;
+  sourceContext?: AssistantTurnSourceContext;
 }): ReactNode {
   if (!input.content) {
     return null;
@@ -192,6 +194,7 @@ function renderStreamItemWithTurnFooter(input: {
       supportsTimelineCursor={input.supportsTimelineCursor}
       onForkAssistantTurn={input.onForkAssistantTurn}
       onJumpToUserMessage={input.onJumpToUserMessage}
+      sourceContext={input.sourceContext}
     />
   ) : null;
   const content = (
@@ -1036,6 +1039,15 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
 
     const bottomTurnFooterHost = streamLayout.auxiliaryTurnFooter;
 
+    const sourceContext = useMemo(
+      () => ({
+        agentId,
+        serverId: context.serverId ?? serverId,
+        cwd: context.cwd,
+        projectKey: context.projectPlacement?.projectKey,
+      }),
+      [agentId, serverId, context],
+    );
     const renderStreamItem = useCallback(
       (layoutItem: StreamLayoutItem) => {
         const content = renderStreamItemContent(layoutItem);
@@ -1047,6 +1059,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
           onForkAssistantTurn: turnChrome.suppressTurnActions ? undefined : handleForkAssistantTurn,
           onJumpToUserMessage: jumpToUserMessage,
           includeTurnFooter: turnChrome.includeTurnFooter,
+          sourceContext,
         });
       },
       [
@@ -1057,6 +1070,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         renderStreamItemContent,
         streamRenderStrategy,
         supportsAgentForkContextCursor,
+        sourceContext,
       ],
     );
 
@@ -1089,6 +1103,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
             onJumpToUserMessage={jumpToUserMessage}
             onForkInFlightTurn={turnChrome.suppressTurnActions ? undefined : handleForkInFlightTurn}
             density={turnChrome.density}
+            sourceContext={sourceContext}
           />
         ) : null,
       [
@@ -1103,6 +1118,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         bottomTurnFooterHost,
         streamRenderStrategy,
         supportsAgentForkContextCursor,
+        sourceContext,
       ],
     );
     const renderModel = useMemo<AgentStreamRenderModel>(() => {

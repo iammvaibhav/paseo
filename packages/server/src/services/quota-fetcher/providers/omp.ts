@@ -22,8 +22,10 @@ import {
   windowFromUsedPct,
 } from "../usage.js";
 const execFileAsync = promisify(execFile);
+// COMPAT(fastProviderUsage): sqlite reads are local and instant; the OMP usage
+// CLI spawns a full runtime — keep both inside the ~6 s per-provider budget.
 const OMP_SQLITE_TIMEOUT_MS = 2_000;
-const OMP_USAGE_TIMEOUT_MS = 20_000;
+const OMP_USAGE_TIMEOUT_MS = 6_000;
 const CURSOR_USAGE_URL =
   "https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage";
 // AGY's Models & Quota screen uses this Cloud Code Assist endpoint. OMP's
@@ -881,6 +883,9 @@ async function queryOmpAuthCredentials(
   dbPath: string,
   logger: Logger,
 ): Promise<RawAuthCredentialRow[]> {
+  // COMPAT(fastProviderUsage): node:sqlite is the fast path — a single
+  // read-only open, no subprocess. The sqlite3 CLI fallback stays for hosts
+  // whose daemon runtime lacks node:sqlite.
   try {
     const sqliteSpecifier: string = "node:sqlite";
     const sqlite = (await import(sqliteSpecifier)) as unknown as NodeSqliteModule;

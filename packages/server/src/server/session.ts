@@ -194,6 +194,7 @@ import {
 import { WebhookSession } from "./session/webhook/webhook-session.js";
 import type { WebhookService } from "./webhook/service.js";
 import { TicketsSession, type TicketsHost } from "./tickets/session.js";
+import { NotesSession, type NotesHost } from "./notes/session.js";
 import type { PeerManager } from "./peers/peer-manager.js";
 import type { MissionControlService } from "./mission-control/service.js";
 import {
@@ -531,6 +532,8 @@ export interface SessionOptions {
   webhookService?: WebhookService | null;
   // Native tickets; null/absent = this daemon has no tickets wiring.
   tickets?: TicketsHost | null;
+  // Native notes; null/absent = this daemon has no notes wiring.
+  notes?: NotesHost | null;
   peerManager?: PeerManager | null;
   missionControlService?: MissionControlService | null;
   transcriptSearch?: TranscriptSearchService | null;
@@ -937,6 +940,7 @@ export class Session {
   private readonly scheduleSession: ScheduleSession;
   private readonly webhookSession: WebhookSession;
   private readonly ticketsSession: TicketsSession;
+  private readonly notesSession: NotesSession;
   private readonly peerManager: PeerManager | null;
   private readonly missionControlService: MissionControlService | null;
   private readonly transcriptSearch: TranscriptSearchService | null;
@@ -1136,6 +1140,11 @@ export class Session {
     this.ticketsSession = new TicketsSession({
       emit: (msg) => this.emit(msg),
       host: orNull(options.tickets),
+      logger: this.sessionLogger,
+    });
+    this.notesSession = new NotesSession({
+      emit: (msg) => this.emit(msg),
+      host: orNull(options.notes),
       logger: this.sessionLogger,
     });
     this.peerManager = orNull(peerManager);
@@ -2569,6 +2578,7 @@ export class Session {
     (msg) => this.dispatchTerminalMessage(msg),
     (msg) => this.dispatchScheduleMessage(msg),
     (msg) => this.ticketsSession.dispatch(msg),
+    (msg) => this.notesSession.dispatch(msg),
     (msg) => this.dispatchPlannotatorMessage(msg),
     (msg) => this.dispatchMissionControlPeersMessage(msg),
     (msg) => this.dispatchMissionControlEventsMessage(msg),
@@ -10678,6 +10688,7 @@ function sessionEventCategory(message: SessionOutboundMessage): SessionEventSubs
     case "hub.execution.agent.update":
     case "hub.execution.agent.stream":
     case "tickets.changed":
+    case "notes.changed":
     case "mission_control_event":
     case "provider.usage.updated":
     case "plannotator.session.event":

@@ -426,6 +426,8 @@ export type PaseoProviderDiagnosticResult = ProviderDiagnosticResponseMessage["p
 export type PaseoProviderUsageResult = ProviderUsageListResponseMessage["payload"];
 export interface PaseoProviderUsageOptions {
   requestId?: string;
+  forceRefresh?: boolean;
+  providerId?: string;
 }
 
 export interface PaseoProviderListOptions {

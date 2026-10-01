@@ -46,6 +46,7 @@ import {
 } from "./session.js";
 import type { WarmWorktreePool } from "./warm-worktree-pool.js";
 import { isServingTickets, type TicketsHost } from "./tickets/session.js";
+import { isServingNotes, type NotesHost } from "./notes/session.js";
 import type { HubRelationshipManagement } from "./hub/relationship-controller.js";
 import { WorkspaceSetupRuntime } from "./workspace-setup-runtime.js";
 import type { HubExecutionAgents } from "./hub/daemon-executions.js";
@@ -632,6 +633,7 @@ export class VoiceAssistantWebSocketServer {
   private readonly onWorkspaceArchived?: (workspaceId: string) => void | Promise<void>;
   private readonly warmWorktreePool?: WarmWorktreePool;
   private ticketsHost!: TicketsHost | null;
+  private notesHost!: NotesHost | null;
 
   private async validateCompletedCreation(snapshot: CreationSnapshot): Promise<void> {
     if (snapshot.workspace && snapshot.kind === "workspace") {
@@ -704,6 +706,7 @@ export class VoiceAssistantWebSocketServer {
     onWorkspaceArchived?: (workspaceId: string) => void | Promise<void>,
     warmWorktreePool?: WarmWorktreePool,
     ticketsHost?: TicketsHost | null,
+    notesHost?: NotesHost | null,
   ) {
     this.onWorkspaceArchived = onWorkspaceArchived;
     this.logger = logger.child({ module: "websocket-server" });
@@ -761,6 +764,7 @@ export class VoiceAssistantWebSocketServer {
       serviceProxyPublicBaseUrl,
       resolveScriptHealth,
       ticketsHost,
+      notesHost,
     });
     if (!providerSnapshotManager) {
       throw new Error("providerSnapshotManager is required");
@@ -776,6 +780,8 @@ export class VoiceAssistantWebSocketServer {
     this.providerUsageService = new ProviderUsageService({
       logger: this.logger,
       onUsageRefreshed: (result) => this.broadcastProviderUsageUpdated(result),
+      onProviderRefreshed: (result) =>
+        this.broadcastProviderUsageUpdated(result, result.providerId),
       isFetcherEnabled: (fetcher) => {
         const agentProviderIds = fetcher.agentProviderIds ?? [fetcher.providerId];
         return agentProviderIds.some((id) => this.providerSnapshotManager.isProviderEnabled(id));
@@ -832,6 +838,7 @@ export class VoiceAssistantWebSocketServer {
     serviceProxyPublicBaseUrl: string | null | undefined;
     resolveScriptHealth: ((hostname: string) => ScriptHealthState | null) | undefined;
     ticketsHost: TicketsHost | null | undefined;
+    notesHost: NotesHost | null | undefined;
   }): void {
     this.speech = params.speech ?? null;
     this.terminalManager = params.terminalManager ?? null;
@@ -867,8 +874,8 @@ export class VoiceAssistantWebSocketServer {
     this.getDaemonTcpPort = params.getDaemonTcpPort ?? null;
     this.getDaemonTcpHost = params.getDaemonTcpHost ?? null;
     this.serviceProxyPublicBaseUrl = params.serviceProxyPublicBaseUrl ?? null;
-    this.resolveScriptHealth = params.resolveScriptHealth ?? null;
     this.ticketsHost = params.ticketsHost ?? null;
+    this.notesHost = params.notesHost ?? null;
   }
 
   private createWebSocketServer(
@@ -1541,6 +1548,7 @@ export class VoiceAssistantWebSocketServer {
       pluginRuntime: this.pluginRuntime,
       orchestrationSkills: this.orchestrationSkills,
       tickets: this.ticketsHost,
+      notes: this.notesHost,
       mcpBaseUrl: this.mcpBaseUrl,
       stt: () => this.speech?.resolveStt() ?? null,
       sttLanguage: this.speech?.resolveSttLanguage() ?? "en",
@@ -1845,6 +1853,10 @@ export class VoiceAssistantWebSocketServer {
         missionControlV4: true,
         // COMPAT(missionControlInbox): added 2026-09-30, remove gate after 2027-03-30.
         missionControlInbox: true,
+        // Native notes. True only on the notes host (the Commander host)
+        // with node:sqlite loaded; evaluated per server_info because the
+        // Commander designation can move.
+        notes: isServingNotes(this.notesHost),
         // Native tickets. True only on the board host (the Commander host)
         // with node:sqlite loaded; evaluated per server_info because the
         // Commander designation can move.
@@ -1859,6 +1871,8 @@ export class VoiceAssistantWebSocketServer {
         providerUsageList: true,
         // Daemon pushes refreshed usage via provider.usage.updated. Added in v0.4.0.
         providerUsagePush: true,
+        // COMPAT(fastProviderUsage): added 2026-09-30, remove gate after 2027-03-30.
+        fastProviderUsage: true,
         // COMPAT(agentDetach): added in v0.1.98, remove gate after 2026-12-19 once daemon floor >= v0.1.98.
         agentDetach: true,
         // COMPAT(agentThinkingUpdate): added in v0.2.4, remove gate after 2027-01-28.
@@ -1895,6 +1909,8 @@ export class VoiceAssistantWebSocketServer {
         commitsList: true,
         // COMPAT(commitBaseClassification): added in v0.2.0, remove gate after 2027-01-23.
         commitBaseClassification: true,
+        // COMPAT(commitParents): added in v0.10.0, remove gate after 2027-04-01.
+        commitParents: true,
         // COMPAT(providerRemoval): added in v0.1.105, drop the gate when floor >= v0.1.105.
         providerRemoval: true,
         // COMPAT(importSessionWorkspaceTarget): added in v0.1.110, remove gate after 2027-01-16.
@@ -1984,13 +2000,17 @@ export class VoiceAssistantWebSocketServer {
     this.broadcast(this.createDaemonConfigChangedMessage(config));
   }
 
-  private broadcastProviderUsageUpdated(result: ProviderUsageListResult): void {
+  private broadcastProviderUsageUpdated(
+    result: ProviderUsageListResult,
+    providerId?: string,
+  ): void {
     this.broadcast(
       wrapSessionMessage({
         type: "provider.usage.updated",
         payload: {
           fetchedAt: result.fetchedAt,
           providers: result.providers,
+          ...(providerId ? { providerId } : {}),
         },
       }),
     );
