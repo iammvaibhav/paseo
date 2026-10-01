@@ -18,6 +18,7 @@ import { useComposerKeyboardScope } from "@/composer/keyboard-scope";
 import { useComposerControlLayout } from "@/composer/agent-controls/layout-context";
 import { AgentControlTrigger } from "@/composer/agent-controls/control";
 import { useSessionStore } from "@/stores/session-store";
+import { useHostFeature } from "@/runtime/host-features";
 import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
 import {
   mergeProviderPreferencesWithScope,
@@ -74,6 +75,14 @@ export interface AgentModeControlValue {
   onSelectMode: (modeId: string) => void;
   disabled?: boolean;
 }
+
+export const AI_REVIEW_AGENT_MODE: AgentMode = {
+  id: "ai-review",
+  label: "AI review",
+  description: "Routes eligible permission requests through the host AI reviewer.",
+  icon: "ShieldCheck",
+  colorTier: "moderate",
+};
 
 function normalizeSearchQuery(value: string): string {
   return value.trim().toLowerCase();
@@ -268,11 +277,23 @@ export function useLiveAgentModeControl(
       };
     }),
   );
-  const availableModes = useStoreWithEqualityFn(
+  const rawAvailableModes = useStoreWithEqualityFn(
     useSessionStore,
     (state) => state.sessions[serverId]?.agents?.get(agentId)?.availableModes ?? EMPTY_MODES,
     compareAvailableModes,
   );
+  const supportsAiReviewer = useHostFeature(serverId, "aiReviewer");
+  const availableModes = useMemo(() => {
+    let modes = rawAvailableModes;
+    if (supportsAiReviewer) {
+      if (modes.length > 0 && !modes.some((m) => m.id === "ai-review")) {
+        modes = [...modes, AI_REVIEW_AGENT_MODE];
+      }
+    } else {
+      modes = modes.filter((m) => m.id !== "ai-review");
+    }
+    return modes;
+  }, [rawAvailableModes, supportsAiReviewer]);
   const client = useSessionStore((state) => state.sessions[serverId]?.client ?? null);
   const { updatePreferences } = useFormPreferences(serverId);
   const toast = useToast();
