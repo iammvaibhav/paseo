@@ -129,7 +129,8 @@ export const steps = [
         inspected.automation?.poll?.hasToken === false,
         "poll automation reports hasToken=false without a secret",
       );
-      const status = await automation(client, "automationStatus");
+      const status = await client.automationStatus();
+      ctx.expect(status.error === null, `automationStatus has no error, got ${status.error}`);
       ctx.expect(
         typeof status.claimsDurable === "boolean",
         `status reports claimsDurable, got ${status.claimsDurable}`,
