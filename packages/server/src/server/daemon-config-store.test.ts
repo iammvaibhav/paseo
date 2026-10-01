@@ -98,6 +98,30 @@ describe("DaemonConfigStore", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+  test("merges partial aiReviewer patches with persisted settings", () => {
+    const paseoHome = mkdtempSync(path.join(tmpdir(), "paseo-daemon-config-store-"));
+    tempDirs.push(paseoHome);
+    const store = new DaemonConfigStore(paseoHome, {
+      relay: { enabled: false },
+      mcp: { injectIntoAgents: false },
+      browserTools: { enabled: false },
+      providers: {},
+      metadataGeneration: { providers: [] },
+      autoArchiveAfterMerge: false,
+      enableTerminalAgentHooks: false,
+      appendSystemPrompt: "",
+      ompIdleCloseAfterSeconds: 1800,
+      aiReviewer: { enabled: false, provider: "codex", model: "gpt-review" },
+    });
+
+    store.patch({ aiReviewer: { enabled: true } });
+
+    expect(loadPersistedConfig(paseoHome).aiReviewer).toEqual({
+      enabled: true,
+      provider: "codex",
+      model: "gpt-review",
+    });
+  });
 
   test("patch persists relay state and emits its field change", () => {
     const paseoHome = mkdtempSync(path.join(tmpdir(), "paseo-daemon-config-store-"));
