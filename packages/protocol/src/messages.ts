@@ -1091,6 +1091,9 @@ export const AgentSnapshotPayloadSchema = z.object({
   name: z.string().optional(),
   shortDescription: z.string().optional(),
   labels: z.record(z.string(), z.string()).default({}),
+  // Orchestrator start option: persisted at create time, echoed on snapshots.
+  // COMPAT(orchestrator): added 2026-09-30, remove gate after 2027-03-30.
+  orchestrator: z.boolean().optional(),
   requiresAttention: z.boolean().optional(),
   attentionReason: z.enum(["finished", "error", "permission"]).nullable().optional(),
   attentionTimestamp: z.string().nullable().optional(),
@@ -2027,10 +2030,13 @@ export const CreateAgentRequestMessageSchema = z.object({
   outputSchema: z.record(z.string(), z.unknown()).optional(),
   images: z.array(ImageAttachmentSchema).optional(),
   attachments: AgentAttachmentsSchema,
-  git: GitSetupOptionsSchema.optional(),
   worktree: CreateAgentWorktreeTargetSchema.optional(),
   autoArchive: z.boolean().optional(),
   labels: z.record(z.string(), z.string()).default({}),
+  // Orchestrator start option (normal agents only, never the Commander).
+  // COMPAT(orchestrator): added 2026-09-30, remove gate after 2027-03-30.
+  // Absent/false = default "Do the task". Old daemons/clients ignore it.
+  orchestrator: z.boolean().optional(),
   requestId: z.string(),
 });
 
@@ -4247,6 +4253,9 @@ export const ServerInfoStatusPayloadSchema = z
         // project-anchored base workspaces (ADR 0001), gating app UI that
         // opens a base workspace from the project row.
         baseWorkspace: z.boolean().optional(),
+        // COMPAT(orchestrator): added 2026-09-30, remove gate after 2027-03-30.
+        // Orchestrator start option + propose_plan tool + plan graph rendering.
+        orchestrator: z.boolean().optional(),
       })
       .optional(),
   })
