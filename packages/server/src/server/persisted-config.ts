@@ -173,6 +173,16 @@ const FeatureWebUiSchema = z
   })
   .strict();
 
+// Optional per-host AI permission reviewer (disabled unless explicitly enabled).
+const AiReviewerConfigSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    provider: z.string().optional(),
+    model: z.string().optional(),
+    policy: z.string().optional(),
+  })
+  .strict();
+
 // COMPAT(missionControlV3): summarizer/autopilot judgment machinery was
 // removed with v3. The schemas stay accepted so pre-v3 config files keep
 // parsing; nothing reads them anymore.
@@ -455,6 +465,7 @@ export const PersistedConfigSchema = z
       .optional(),
 
     missionControl: MissionControlConfigSchema.optional(),
+    aiReviewer: AiReviewerConfigSchema.optional(),
 
     log: LogConfigSchema.optional(),
   })

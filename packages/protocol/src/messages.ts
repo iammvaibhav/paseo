@@ -348,6 +348,15 @@ const MutableMissionControlAutopilotConfigSchema = z
     maxNudgesPerAgent: z.number().optional(),
   })
   .passthrough();
+const MutableAiReviewerConfigSchema = z
+  .object({
+    // Disabled by default. The fixed denylist is daemon-owned and never configurable.
+    enabled: z.boolean().optional(),
+    provider: z.string().optional(),
+    model: z.string().optional(),
+    policy: z.string().optional(),
+  })
+  .passthrough();
 const MutableMissionControlConfigSchema = z
   .object({
     // v3 per-host keys: only these two belong in the daemon config. Everything
@@ -438,6 +447,7 @@ export const MutableDaemonConfigSchema = z
     ompIdleCloseAfterSeconds: z.number().int().min(0).optional(),
     terminalProfiles: z.array(TerminalProfileSchema).optional(),
     missionControl: MutableMissionControlConfigSchema.optional(),
+    aiReviewer: MutableAiReviewerConfigSchema.optional(),
     agentProfiles: z.array(AgentProfileSchema).optional(),
     visibleModels: z.array(z.string()).optional(),
     composerPreferences: ComposerPreferencesSchema.optional(),
@@ -463,6 +473,7 @@ export const MutableDaemonConfigPatchSchema = z
     ompIdleCloseAfterSeconds: z.number().int().min(0).optional(),
     terminalProfiles: z.array(TerminalProfileSchema).optional(),
     missionControl: MutableMissionControlConfigSchema.partial().optional(),
+    aiReviewer: MutableAiReviewerConfigSchema.partial().optional(),
     agentProfiles: z.array(AgentProfileSchema).optional(),
     visibleModels: z.array(z.string()).optional(),
     composerPreferences: ComposerPreferencesSchema.optional(),
@@ -969,8 +980,14 @@ export const AgentTimelineItemPayloadSchema: z.ZodType<AgentTimelineItem, unknow
     version: z.number(),
     data: JsonWireValueSchema,
   }),
+  z.object({
+    type: z.literal("ai_review_decision"),
+    requestId: z.string(),
+    decision: z.enum(["allow", "deny", "escalate"]),
+    reason: z.string(),
+    toolName: z.string().optional(),
+  }),
 ]);
-
 export const AgentStreamEventPayloadSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("thread_started"),
@@ -4230,6 +4247,8 @@ export const ServerInfoStatusPayloadSchema = z
         // COMPAT(missionControl): added in v0.3.x, drop the gate when floor includes mission control.
         missionControl: z.boolean().optional(),
         // COMPAT(fsEntryOps): added in v0.3.0, remove gate after 2027-02-08.
+        // COMPAT(aiReviewer): added 2026-09-30; remove gate after 2027-03-30.
+        aiReviewer: z.boolean().optional(),
         fsEntryOps: z.boolean().optional(),
         // COMPAT(fsEntryDuplicate): added in v0.3.0, remove gate after 2027-02-09.
         fsEntryDuplicate: z.boolean().optional(),

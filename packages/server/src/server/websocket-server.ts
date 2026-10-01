@@ -1923,6 +1923,8 @@ export class VoiceAssistantWebSocketServer {
         // Advertised when the plannotator binary is on PATH / ~/.local/bin.
         plannotator: this.plannotatorAvailable === true,
         missionControl: true,
+        // COMPAT(aiReviewer): added 2026-09-30; remove gate after 2027-03-30.
+        aiReviewer: true,
         // COMPAT(projectCustomIcon): added in v0.2.0, remove after 2027-01-20.
         projectCustomIcon: true,
         // COMPAT(fsEntryOps): added in v0.3.0, remove gate after 2027-02-08.
