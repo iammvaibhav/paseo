@@ -107,6 +107,8 @@ import {
   AI_REVIEW_MODE,
   AI_REVIEW_MODE_ID,
   AI_REVIEW_TIMEOUT_MS,
+  AI_REVIEWER_LABEL,
+  AI_REVIEWER_MAX_CONCURRENT,
   createModelAiReviewer,
   isAlwaysEscalate,
   permissionToolInput,
@@ -585,6 +587,9 @@ export interface AgentManagerOptions {
   getAiReviewerConfig?: () => AiReviewerConfig | undefined;
   aiReviewerCapability?: boolean;
   aiReviewTimeoutMs?: number;
+  aiReviewMaxConcurrent?: number;
+  aiReviewerCwd?: string;
+  aiReviewerReadOnlyModeId?: string;
   logger: Logger;
 }
 
@@ -1191,6 +1196,8 @@ export class AgentManager {
   private aiReviewTimeoutMs: number = AI_REVIEW_TIMEOUT_MS;
   private readonly aiReviewAgents = new Set<string>();
   private readonly aiReviewInFlight = new Set<string>();
+  private aiReviewActiveCount = 0;
+  private aiReviewMaxConcurrent: number = AI_REVIEWER_MAX_CONCURRENT;
 
   private static resolveRescueTimeouts(
     options: AgentManagerOptions,
@@ -1248,28 +1255,42 @@ export class AgentManager {
       this.aiReviewer = options.aiReviewer;
     } else {
       this.aiReviewer = createModelAiReviewer({
+        reviewerCwd: options.aiReviewerCwd,
+        readOnlyModeId: options.aiReviewerReadOnlyModeId,
         createAgent: (config) =>
           this.createAgent(
             {
               provider: config.provider,
               cwd: config.cwd,
               ...(config.model ? { model: config.model } : {}),
+              ...(config.modeId ? { modeId: config.modeId } : {}),
+              ...(config.toolAllowlist ? { toolAllowlist: config.toolAllowlist } : {}),
               title: config.title ?? null,
               internal: true,
             },
             undefined,
-            { workspaceId: undefined, persistSession: false },
+            {
+              workspaceId: undefined,
+              persistSession: false,
+              labels: { [AI_REVIEWER_LABEL]: "true" },
+            },
           ).then((agent) => ({ id: agent.id })),
         runAgent: (agentId, prompt) =>
           this.runAgent(agentId, prompt).then((result) => ({ finalText: result.finalText })),
+        cancelAgentRun: (agentId) => this.cancelAgentRun(agentId),
         closeAgent: (agentId) => this.closeAgent(agentId),
         deleteAgentState: (agentId) => this.deleteAgentState(agentId),
         callStructuredModel: getStructuredAgentResponse,
+        logger: this.logger,
       });
     }
     this.getAiReviewerConfig = options.getAiReviewerConfig;
     this.aiReviewerCapability = options.aiReviewerCapability ?? options.aiReviewer !== undefined;
     this.aiReviewTimeoutMs = options.aiReviewTimeoutMs ?? AI_REVIEW_TIMEOUT_MS;
+    this.aiReviewMaxConcurrent = Math.max(
+      1,
+      options.aiReviewMaxConcurrent ?? AI_REVIEWER_MAX_CONCURRENT,
+    );
   }
 
   private configurePaseoTools(options: AgentManagerOptions): void {
@@ -6277,7 +6298,13 @@ export class AgentManager {
       this.aiReviewAgents.has(agent.id) ||
       agent.currentModeId === AI_REVIEW_MODE_ID ||
       agent.config.modeId === AI_REVIEW_MODE_ID;
-    if (isAiReviewMode && this.aiReviewer && this.getAiReviewerConfig?.()?.enabled) {
+    if (
+      event.request.kind === "tool" &&
+      !this.daemonPermissionHandlers.has(event.request.id) &&
+      isAiReviewMode &&
+      this.aiReviewer &&
+      this.getAiReviewerConfig?.()?.enabled
+    ) {
       this.trackBackgroundTask(this.reviewPermission(agent, event.request));
     }
   }
@@ -6293,7 +6320,23 @@ export class AgentManager {
     if (!config?.enabled) {
       return;
     }
-
+    if (this.aiReviewActiveCount >= this.aiReviewMaxConcurrent) {
+      if (agent.pendingPermissions.has(request.id)) {
+        this.recordAndDispatchTimelineItem(
+          agent.id,
+          {
+            type: "ai_review_decision",
+            requestId: request.id,
+            decision: "escalate",
+            reason: "AI reviewer concurrency limit reached; escalating to user.",
+            toolName: request.name,
+          },
+          agent.provider,
+        );
+      }
+      return;
+    }
+    this.aiReviewActiveCount += 1;
     this.aiReviewInFlight.add(request.id);
     try {
       const rows = this.timelineStore.getRows(agent.id);
@@ -6321,37 +6364,19 @@ export class AgentManager {
         cwd: agent.cwd,
         gitDiffStat,
       };
+      const decision = await this.resolveAiReviewDecision(context, config);
 
-      let decision: AiReviewDecision;
-      if (isAlwaysEscalate(context)) {
-        decision = {
-          decision: "escalate",
-          reason:
-            "Action matches the fixed denylist of destructive or sensitive operations; escalating to user.",
-        };
-      } else {
-        try {
-          decision = await withAiReviewTimeout(
-            this.aiReviewer.review(context, config),
-            this.aiReviewTimeoutMs,
-          );
-        } catch (error) {
-          decision = {
-            decision: "escalate",
-            reason:
-              error instanceof Error
-                ? `AI reviewer failed (${error.message}); escalating to user.`
-                : "AI reviewer error; escalating to user.",
-          };
-        }
-      }
-
-      // Check if request is still pending
+      // Check if request is still pending.
       if (!agent.pendingPermissions.has(request.id)) {
         return;
       }
 
-      // Record timeline item for all outcomes
+      if (decision.decision === "allow") {
+        await this.respondToPermission(agent.id, request.id, { behavior: "allow" });
+      } else if (decision.decision === "deny") {
+        await this.respondToPermission(agent.id, request.id, { behavior: "deny" });
+      }
+
       this.recordAndDispatchTimelineItem(
         agent.id,
         {
@@ -6363,12 +6388,6 @@ export class AgentManager {
         },
         agent.provider,
       );
-
-      if (decision.decision === "allow") {
-        await this.respondToPermission(agent.id, request.id, { behavior: "allow" });
-      } else if (decision.decision === "deny") {
-        await this.respondToPermission(agent.id, request.id, { behavior: "deny" });
-      }
     } catch (error) {
       this.logger.warn(
         { err: error, agentId: agent.id, requestId: request.id },
@@ -6376,6 +6395,40 @@ export class AgentManager {
       );
     } finally {
       this.aiReviewInFlight.delete(request.id);
+      this.aiReviewActiveCount -= 1;
+    }
+  }
+
+  private async resolveAiReviewDecision(
+    context: AiReviewContext,
+    config: AiReviewerConfig,
+  ): Promise<AiReviewDecision> {
+    if (!this.aiReviewer) {
+      return {
+        decision: "escalate",
+        reason: "AI reviewer unavailable; escalating to user.",
+      };
+    }
+    if (isAlwaysEscalate(context)) {
+      return {
+        decision: "escalate",
+        reason:
+          "Action matches the fixed denylist of destructive or sensitive operations; escalating to user.",
+      };
+    }
+    try {
+      return await withAiReviewTimeout(
+        this.aiReviewer.review(context, config),
+        this.aiReviewTimeoutMs,
+      );
+    } catch (error) {
+      return {
+        decision: "escalate",
+        reason:
+          error instanceof Error
+            ? `AI reviewer failed (${error.message}); escalating to user.`
+            : "AI reviewer error; escalating to user.",
+      };
     }
   }
 
@@ -7046,17 +7099,25 @@ export class AgentManager {
       // after normalization so the contract fields pass through untouched.
       storedConfig = { ...storedConfig, ...commanderContract };
     }
-    const paseoToolPolicy = this.paseoToolsEnabled
-      ? this.resolvePaseoToolPolicy(storedConfig.provider)
-      : { enabled: false };
+    const isReviewer = labels?.[AI_REVIEWER_LABEL] === "true";
+    let paseoToolPolicy: ProviderPaseoToolsPolicy | undefined;
+    if (isReviewer) {
+      // AI reviewer sessions NEVER get Paseo MCP tools or injected servers.
+      paseoToolPolicy = { enabled: false };
+    } else if (this.paseoToolsEnabled) {
+      paseoToolPolicy = this.resolvePaseoToolPolicy(storedConfig.provider);
+    } else {
+      paseoToolPolicy = { enabled: false };
+    }
+    const reviewerMcpBaseUrl =
+      !isReviewer && this.paseoToolsEnabled && isPaseoToolPolicyEnabled(paseoToolPolicy)
+        ? this.mcpBaseUrl
+        : null;
     const launchConfig = this.applyDaemonAppendSystemPrompt(
       withRuntimePaseoMcpServer({
         config: storedConfig,
         agentId,
-        mcpBaseUrl:
-          this.paseoToolsEnabled && isPaseoToolPolicyEnabled(paseoToolPolicy)
-            ? this.mcpBaseUrl
-            : null,
+        mcpBaseUrl: reviewerMcpBaseUrl,
         mcpAuthToken: this.mcpAuthToken,
       }),
       labels ?? {},

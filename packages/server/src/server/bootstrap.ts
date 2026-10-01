@@ -1417,6 +1417,8 @@ export async function createPaseoDaemon(
   // startAgentRun; the injector gates itself by commander labels and is a
   // no-op until constructed.
   let commanderSnapshotInjector: CommanderSnapshotInjector | null = null;
+  const aiReviewerCwd = path.join(config.paseoHome, "ai-reviewer");
+  mkdirSync(aiReviewerCwd, { recursive: true });
   const agentManager: AgentManager = new AgentManager({
     pluginLifecycle: pluginRuntime,
     clients: initialAgentManagerState.clients,
@@ -1446,6 +1448,8 @@ export async function createPaseoDaemon(
       resolvePaseoToolPolicy(provider, daemonConfigStore.get().providers),
     aiReviewerCapability: true,
     getAiReviewerConfig: () => daemonConfigStore.get().aiReviewer,
+    aiReviewerCwd,
+    aiReviewerReadOnlyModeId: "plan",
     logger,
   });
   const syncPluginProviders = () => {

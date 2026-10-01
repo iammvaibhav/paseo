@@ -612,7 +612,9 @@ function mergeMutablePatchIntoPersistedConfig(params: {
     ...(patch.pluginsEnabled !== undefined ? { pluginsEnabled: patch.pluginsEnabled } : {}),
     ...(patch.plugins !== undefined ? { plugins: patch.plugins } : {}),
     ...(patch.missionControl !== undefined ? { missionControl: patch.missionControl } : {}),
-    ...(patch.aiReviewer !== undefined ? { aiReviewer: patch.aiReviewer } : {}),
+    ...(patch.aiReviewer !== undefined
+      ? { aiReviewer: { ...persisted.aiReviewer, ...patch.aiReviewer } }
+      : {}),
     ...(daemon ? { daemon } : { daemon: undefined }),
     ...(agents ? { agents } : { agents: undefined }),
   } as PersistedConfig;
