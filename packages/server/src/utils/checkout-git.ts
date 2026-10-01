@@ -2534,7 +2534,7 @@ const COMMIT_RECORD_SEPARATOR = "\x1e";
 // Record-separated, NUL-field-separated so arbitrary subject text stays parseable.
 // `%x1e`/`%x00` are git placeholders (literal text in the arg, real bytes in the
 // output) — passing actual NUL bytes as a process arg is rejected by Node.
-const COMMIT_LOG_FORMAT = "%x1e%H%x00%h%x00%an%x00%aI%x00%s";
+const COMMIT_LOG_FORMAT = "%x1e%H%x00%h%x00%an%x00%aI%x00%s%x00%P";
 
 type CheckoutCommitFileStatus = NonNullable<CheckoutCommitFile["status"]>;
 
@@ -2544,6 +2544,7 @@ interface ParsedCheckoutCommit {
   authorName: string;
   authorDate: string;
   subject: string;
+  parents: string[];
   files: CheckoutCommitFile[];
 }
 
@@ -2637,6 +2638,8 @@ function parseCheckoutCommitRecords(stdout: string): ParsedCheckoutCommit[] {
     if (!sha) {
       continue;
     }
+    const parentsRaw = (fields[5] ?? "").trim();
+    const parents = parentsRaw ? parentsRaw.split(/\s+/) : [];
 
     const stats = new Map<string, { additions: number; deletions: number }>();
     const statuses = new Map<string, CheckoutCommitFileStatus>();
@@ -2669,6 +2672,7 @@ function parseCheckoutCommitRecords(stdout: string): ParsedCheckoutCommit[] {
       authorName: fields[2] ?? "",
       authorDate: (fields[3] ?? "").trim(),
       subject: fields[4] ?? "",
+      parents,
       files,
     });
   }
@@ -2808,6 +2812,7 @@ export async function listCheckoutCommits({
     authorDate: record.authorDate,
     isOnRemote: !unpushedShas.has(record.sha),
     isOnBase: !workspaceShas.has(record.sha),
+    parents: record.parents,
     files: record.files,
   }));
 

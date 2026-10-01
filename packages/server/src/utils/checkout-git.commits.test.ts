@@ -340,4 +340,37 @@ describe("listCheckoutCommits", () => {
       { path: "README.md", additions: 1, deletions: 0, status: "modified" },
     ]);
   });
+
+  it("populates parents array with parent commit shas for root, single-parent, and merge commits", async () => {
+    const { repoDir } = initRepoOnMain();
+    git(["checkout", "-b", "feature"], repoDir);
+    commitFile(repoDir, "feature.txt", "feature\n", "Add feature");
+    git(["checkout", "main"], repoDir);
+    commitFile(repoDir, "main.txt", "main\n", "Advance main");
+    git(["merge", "--no-ff", "feature", "-m", "Merge feature"], repoDir);
+
+    const { commits } = await listCheckoutCommits({ cwd: repoDir });
+
+    expect(commits.map((entry) => entry.subject)).toEqual([
+      "Merge feature",
+      "Advance main",
+      "Add feature",
+      "initial",
+    ]);
+
+    const mergeCommit = commits[0]!;
+    const advanceCommit = commits[1]!;
+    const featureCommit = commits[2]!;
+    const initialCommit = commits[3]!;
+
+    // Initial commit is a root commit (zero parents)
+    expect(initialCommit.parents).toEqual([]);
+
+    // Single-parent commits
+    expect(featureCommit.parents).toEqual([initialCommit.sha]);
+    expect(advanceCommit.parents).toEqual([initialCommit.sha]);
+
+    // Merge commit has two parents (first parent is Advance main, second parent is Add feature)
+    expect(mergeCommit.parents).toEqual([advanceCommit.sha, featureCommit.sha]);
+  });
 });

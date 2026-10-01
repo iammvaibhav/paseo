@@ -780,6 +780,8 @@ export class VoiceAssistantWebSocketServer {
     this.providerUsageService = new ProviderUsageService({
       logger: this.logger,
       onUsageRefreshed: (result) => this.broadcastProviderUsageUpdated(result),
+      onProviderRefreshed: (result) =>
+        this.broadcastProviderUsageUpdated(result, result.providerId),
       isFetcherEnabled: (fetcher) => {
         const agentProviderIds = fetcher.agentProviderIds ?? [fetcher.providerId];
         return agentProviderIds.some((id) => this.providerSnapshotManager.isProviderEnabled(id));
@@ -1869,6 +1871,8 @@ export class VoiceAssistantWebSocketServer {
         providerUsageList: true,
         // Daemon pushes refreshed usage via provider.usage.updated. Added in v0.4.0.
         providerUsagePush: true,
+        // COMPAT(fastProviderUsage): added 2026-09-30, remove gate after 2027-03-30.
+        fastProviderUsage: true,
         // COMPAT(agentDetach): added in v0.1.98, remove gate after 2026-12-19 once daemon floor >= v0.1.98.
         agentDetach: true,
         // COMPAT(agentThinkingUpdate): added in v0.2.4, remove gate after 2027-01-28.
@@ -1905,6 +1909,8 @@ export class VoiceAssistantWebSocketServer {
         commitsList: true,
         // COMPAT(commitBaseClassification): added in v0.2.0, remove gate after 2027-01-23.
         commitBaseClassification: true,
+        // COMPAT(commitParents): added in v0.10.0, remove gate after 2027-04-01.
+        commitParents: true,
         // COMPAT(providerRemoval): added in v0.1.105, drop the gate when floor >= v0.1.105.
         providerRemoval: true,
         // COMPAT(importSessionWorkspaceTarget): added in v0.1.110, remove gate after 2027-01-16.
@@ -1992,13 +1998,17 @@ export class VoiceAssistantWebSocketServer {
     this.broadcast(this.createDaemonConfigChangedMessage(config));
   }
 
-  private broadcastProviderUsageUpdated(result: ProviderUsageListResult): void {
+  private broadcastProviderUsageUpdated(
+    result: ProviderUsageListResult,
+    providerId?: string,
+  ): void {
     this.broadcast(
       wrapSessionMessage({
         type: "provider.usage.updated",
         payload: {
           fetchedAt: result.fetchedAt,
           providers: result.providers,
+          ...(providerId ? { providerId } : {}),
         },
       }),
     );
