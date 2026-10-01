@@ -510,7 +510,8 @@ function sanitizeMetadataArray(value: unknown): AgentMetadata[] | undefined {
   return sanitized.length > 0 ? sanitized : undefined;
 }
 
-type UsageNumericField = Exclude<keyof AgentUsage, never>;
+// Numeric AgentUsage fields. `model` is a string, handled separately below.
+type UsageNumericField = Exclude<keyof AgentUsage, "model">;
 
 function assignFiniteNumber(
   source: { [key: string]: JsonValue },
@@ -534,15 +535,22 @@ function sanitizeUsage(value: unknown): AgentUsage | undefined {
   const fields: UsageNumericField[] = [
     "inputTokens",
     "cachedInputTokens",
+    "cacheWriteTokens",
     "outputTokens",
     "totalCostUsd",
     "contextWindowMaxTokens",
     "contextWindowUsedTokens",
+    "durationMs",
   ];
   for (const field of fields) {
     if (!assignFiniteNumber(sanitized, result, field)) {
       return undefined;
     }
+  }
+  const rawModel = sanitized.model;
+  if (rawModel !== undefined && rawModel !== null) {
+    if (typeof rawModel !== "string") return undefined;
+    result.model = rawModel;
   }
   return Object.keys(result).length ? result : undefined;
 }

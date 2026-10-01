@@ -994,10 +994,16 @@ export function toAgentUsage(tokenUsage: unknown): AgentUsage | undefined {
     usage.modelContextWindow,
   );
   const contextWindowUsedTokens = firstPositiveFiniteNumber(last?.total_tokens, last?.totalTokens);
+  const cacheWriteTokens = firstPositiveFiniteNumber(
+    last?.cacheWriteInputTokens,
+    last?.cache_write_input_tokens,
+  );
   return {
     inputTokens: typeof last?.inputTokens === "number" ? last.inputTokens : undefined,
     cachedInputTokens:
       typeof last?.cachedInputTokens === "number" ? last.cachedInputTokens : undefined,
+    // Turn-metrics: cache-write field names vary across app-server versions.
+    ...(cacheWriteTokens !== undefined ? { cacheWriteTokens } : {}),
     outputTokens: typeof last?.outputTokens === "number" ? last.outputTokens : undefined,
     ...(contextWindowMaxTokens !== undefined ? { contextWindowMaxTokens } : {}),
     ...(contextWindowUsedTokens !== undefined ? { contextWindowUsedTokens } : {}),

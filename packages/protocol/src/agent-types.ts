@@ -190,11 +190,21 @@ export interface AgentRunOptions {
 
 export interface AgentUsage {
   inputTokens?: number;
+  // Cache READ tokens (Anthropic cache_read_input_tokens, ACP cachedReadTokens).
   cachedInputTokens?: number;
+  // Cache creation/write tokens (Anthropic cache_creation_input_tokens, ACP
+  // cachedWriteTokens, OpenCode tokens.cache.write, omp tokens.cacheWrite). Absent
+  // when the provider does not report it — never zero-fill.
+  cacheWriteTokens?: number;
   outputTokens?: number;
   totalCostUsd?: number;
   contextWindowMaxTokens?: number;
   contextWindowUsedTokens?: number;
+  // Daemon-measured wall clock for the turn (turn start → terminal stream event),
+  // stamped by AgentManager so figures are comparable across providers.
+  durationMs?: number;
+  // Model of record at turn completion (runtimeInfo.model ?? config.model).
+  model?: string | null;
 }
 
 export const TOOL_CALL_ICON_NAMES = [

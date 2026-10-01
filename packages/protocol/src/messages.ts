@@ -626,10 +626,15 @@ const AgentCapabilityFlagsSchema: z.ZodType<AgentCapabilityFlags> = z
 const AgentUsageSchema: z.ZodType<AgentUsage> = z.object({
   inputTokens: z.number().optional(),
   cachedInputTokens: z.number().optional(),
+  // COMPAT(turnMetricsCacheWrite): added 2026-09-30, additive; optional forever.
+  cacheWriteTokens: z.number().optional(),
   outputTokens: z.number().optional(),
   totalCostUsd: z.number().optional(),
   contextWindowMaxTokens: z.number().optional(),
   contextWindowUsedTokens: z.number().optional(),
+  // COMPAT(turnMetricsDurationModel): added 2026-09-30, additive; optional forever.
+  durationMs: z.number().optional(),
+  model: z.string().nullable().optional(),
 });
 
 const McpStdioServerConfigSchema = z.object({
@@ -4135,6 +4140,9 @@ export const ServerInfoStatusPayloadSchema = z
         providerUsageList: z.boolean().optional(),
         // Daemon pushes refreshed usage via provider.usage.updated. Added in v0.4.0.
         providerUsagePush: z.boolean().optional(),
+        // COMPAT(turnMetrics): added 2026-09-30, additive; optional forever.
+        // Per-turn metrics on turn_completed.usage + fetch_agent_timeline entries.
+        turnMetrics: z.boolean().optional(),
         // COMPAT(agentDetach): added in v0.1.98, remove gate after 2026-12-19 once daemon floor >= v0.1.98.
         agentDetach: z.boolean().optional(),
         // COMPAT(agentThinkingUpdate): added in v0.2.4, remove gate after 2027-01-28.
@@ -5133,6 +5141,9 @@ export const AgentTimelineEntryPayloadSchema = z.object({
   seqEnd: z.number().int().nonnegative(),
   sourceSeqRanges: z.array(AgentTimelineSeqRangeSchema),
   collapsed: z.array(z.enum(["assistant_merge", "reasoning_merge", "tool_lifecycle", "identity"])),
+  // COMPAT(turnMetricsEntry): added 2026-09-30, additive; optional forever.
+  // Per-turn metrics record for entry.turnId, attached by the daemon when known.
+  metrics: AgentUsageSchema.optional(),
 });
 
 export const FetchAgentTimelineResponseMessageSchema = z.object({

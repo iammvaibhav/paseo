@@ -2322,6 +2322,7 @@ describe("ClaudeAgentSession context window usage", () => {
       expect(result.usage).toEqual({
         inputTokens: 9_000,
         cachedInputTokens: 700,
+        cacheWriteTokens: 300,
         outputTokens: 400,
         totalCostUsd: 0.25,
         contextWindowMaxTokens: 200_000,
@@ -2478,6 +2479,7 @@ describe("ClaudeAgentSession context window usage", () => {
       expect(result.usage).toEqual({
         inputTokens: 4,
         cachedInputTokens: 16_999,
+        cacheWriteTokens: 17_252,
         outputTokens: 171,
         totalCostUsd: 0.25,
         contextWindowMaxTokens: 200_000,
@@ -2521,6 +2523,8 @@ describe("ClaudeAgentSession context window usage", () => {
       const result = await session.run("turn");
 
       expect(result.usage).toEqual({
+        cacheWriteTokens: 500,
+
         inputTokens: 5_000,
         cachedInputTokens: 600,
         outputTokens: 700,

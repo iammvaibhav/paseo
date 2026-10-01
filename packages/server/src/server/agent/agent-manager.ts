@@ -135,6 +135,49 @@ type TimeoutResult = "completed" | "timed_out";
  * may omit context fill. Full replacement made the context meter vanish as soon
  * as the agent went idle.
  */
+
+/**
+ * Turn-metrics: stamp daemon-measured wall clock + model of record onto the
+ * completed turn's usage. Duration runs from the manager opening the turn to
+ * the terminal stream event, so figures are comparable across providers.
+ * Creates a usage object when the provider reported none.
+ */
+export function stampTurnCompletionUsage(input: {
+  usage: AgentUsage | undefined;
+  startedAt: Date | null;
+  model: string | null;
+}): AgentUsage | undefined {
+  const durationMs =
+    input.startedAt != null ? Math.max(0, Date.now() - input.startedAt.getTime()) : undefined;
+  if (input.usage === undefined) {
+    if (durationMs === undefined && input.model == null) return undefined;
+    return {
+      ...(durationMs !== undefined ? { durationMs } : {}),
+      ...(input.model != null ? { model: input.model } : {}),
+    };
+  }
+  return {
+    ...input.usage,
+    ...(durationMs !== undefined ? { durationMs } : {}),
+    ...(input.model != null && input.usage.model == null ? { model: input.model } : {}),
+  };
+}
+
+/**
+ * Turn-metrics: persist the completed turn's usage on the assistant timeline
+ * row for the turn. Row-attached (not a side map) so metrics survive daemon
+ * restarts with the persisted session transcript.
+ */
+function attachTurnMetricsToRow(
+  timelineStore: InMemoryAgentTimelineStore,
+  agentId: string,
+  turnId: string,
+  usage: AgentUsage,
+): void {
+  const updated = timelineStore.updateRowMetrics(agentId, turnId, usage);
+  if (!updated) return;
+}
+
 function mergeAgentUsage(
   previous: AgentUsage | undefined,
   next: AgentUsage | undefined,
@@ -5619,6 +5662,22 @@ export class AgentManager {
       "agent.manager.turn.completed",
     );
     if (terminalDisposition === "stale") return;
+    // Turn-metrics: stamp daemon-measured duration + model of record — but only
+    // when this completion closes the tracked active turn. Autonomous
+    // completions for untracked turnIds must pass usage through untouched so
+    // merged lastUsage keeps its provider-reported shape.
+    const closesTrackedTurn =
+      agent.activeTurnId != null && eventTurnId != null && agent.activeTurnId === eventTurnId;
+    if (closesTrackedTurn) {
+      event.usage = stampTurnCompletionUsage({
+        usage: event.usage,
+        startedAt: agent.activeTurnStartedAt,
+        model: agent.runtimeInfo?.model ?? agent.config.model ?? null,
+      });
+    }
+    if (eventTurnId && event.usage) {
+      attachTurnMetricsToRow(this.timelineStore, agent.id, eventTurnId, event.usage);
+    }
     // Field-by-field merge: turn_completed may omit context fill that
     // usage_updated already provided; if usage is absent, keep lastUsage.
     agent.lastUsage = mergeAgentUsage(agent.lastUsage, event.usage);

@@ -1957,9 +1957,15 @@ class ClaudeContextUsageState {
       if (!message.usage) {
         return undefined;
       }
+      const cacheWriteTokens = message.usage.cache_creation_input_tokens;
       const usage: AgentUsage = {
         inputTokens: message.usage.input_tokens,
         cachedInputTokens: message.usage.cache_read_input_tokens,
+        // Turn-metrics: report cache creation tokens under the shared
+        // cacheWriteTokens field; omitted when zero/absent (never zero-fill).
+        ...(typeof cacheWriteTokens === "number" && cacheWriteTokens > 0
+          ? { cacheWriteTokens }
+          : {}),
         outputTokens: message.usage.output_tokens,
         totalCostUsd: message.total_cost_usd,
       };

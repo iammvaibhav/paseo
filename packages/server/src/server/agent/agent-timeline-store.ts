@@ -4,7 +4,7 @@ import {
   selectProjectedTimelinePage,
   type ProjectedTimelineRow,
 } from "./timeline-projection.js";
-import type { AgentTimelineItem } from "./agent-sdk-types.js";
+import type { AgentTimelineItem, AgentUsage } from "./agent-sdk-types.js";
 import type {
   AgentTimelineFetchOptions,
   AgentTimelineFetchResult,
@@ -47,6 +47,7 @@ export class InMemoryAgentTimelineStore {
         ...(row.providerMessageId !== undefined
           ? { providerMessageId: row.providerMessageId }
           : {}),
+        ...(row.metrics !== undefined ? { metrics: row.metrics } : {}),
       })) ?? this.buildRowsFromItems(options?.items ?? [], options?.nextSeq ?? 1, timestamp);
     const nextSeq = committed.reduce(
       (next, row) => Math.max(next, row.seq + 1),
@@ -189,7 +190,12 @@ export class InMemoryAgentTimelineStore {
   append(
     agentId: string,
     item: AgentTimelineItem,
-    options?: { timestamp?: string; providerMessageId?: string; turnId?: string },
+    options?: {
+      timestamp?: string;
+      providerMessageId?: string;
+      turnId?: string;
+      metrics?: AgentUsage;
+    },
   ): AgentTimelineRow {
     const state = this.requireState(agentId);
     const row: AgentTimelineRow = {
@@ -198,11 +204,30 @@ export class InMemoryAgentTimelineStore {
       item,
       ...(options?.turnId ? { turnId: options.turnId } : {}),
       ...(options?.providerMessageId ? { providerMessageId: options.providerMessageId } : {}),
+      ...(options?.metrics !== undefined ? { metrics: options.metrics } : {}),
     };
     state.nextSeq += 1;
     state.committed.push(row);
     state.projection.append(row);
     return cloneRow(row);
+  }
+
+  updateRowMetrics(agentId: string, turnId: string, metrics: AgentUsage): AgentTimelineRow | null {
+    const state = this.requireState(agentId);
+    // Turn-metrics: stamp the LAST row of the turn (the assistant entry that
+    // closes it), not the first match — a turn holds user + tool rows too.
+    const row = state.committed.findLast(
+      (candidate) => candidate.turnId === turnId && candidate.item.type === "assistant_message",
+    );
+    if (!row) return null;
+    const updated = { ...row, metrics };
+    state.committed = state.committed.map((candidate) =>
+      candidate.seq === row.seq ? updated : candidate,
+    );
+    const rebuilt = new TimelineProjection();
+    for (const candidate of state.committed) rebuilt.append(candidate);
+    state.projection = rebuilt;
+    return cloneRow(updated);
   }
 
   getLastItem(agentId: string): AgentTimelineItem | null {

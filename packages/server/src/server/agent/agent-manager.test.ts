@@ -166,6 +166,7 @@ class RecordingTimelineStore implements AgentTimelineStore {
       this.memory.append(agentId, row.item, {
         timestamp: row.timestamp,
         turnId: row.turnId,
+        ...(row.metrics !== undefined ? { metrics: row.metrics } : {}),
       });
     }
   }

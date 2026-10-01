@@ -1,4 +1,4 @@
-import type { AgentTimelineItem, ToolCallDetail } from "./agent-sdk-types.js";
+import type { AgentTimelineItem, AgentUsage, ToolCallDetail } from "./agent-sdk-types.js";
 import { timelineItemIdentity } from "@getpaseo/protocol/timeline-identity";
 
 import type { AgentTimelineRow } from "./agent-timeline-store-types.js";
@@ -21,6 +21,9 @@ export interface TimelineProjectionEntry {
   item: AgentTimelineItem;
   turnId?: string;
   providerMessageId?: string;
+  // Turn-metrics: per-turn usage record carried from the source row. Preserved
+  // across assistant/reasoning merges so history-loaded turns keep metrics.
+  metrics?: AgentUsage;
   timestamp: string;
   seqStart: number;
   seqEnd: number;
@@ -123,6 +126,8 @@ function makeCanonicalEntries(rows: readonly AgentTimelineRow[]): WorkingEntry[]
       timestamp: row.timestamp,
       ...(row.turnId ? { turnId: row.turnId } : {}),
       ...(row.providerMessageId ? { providerMessageId: row.providerMessageId } : {}),
+      // Turn-metrics: carry the per-turn record onto the projected entry.
+      ...(row.metrics !== undefined ? { metrics: row.metrics } : {}),
       seqStart: row.seq,
       seqEnd: row.seq,
       sourceSeqRanges: [{ startSeq: row.seq, endSeq: row.seq }],
@@ -229,6 +234,8 @@ function mergeReasoningChunks(entries: readonly WorkingEntry[]): WorkingEntry[] 
         type: "reasoning",
         text: `${previousReasoning.text}${entryReasoning.text}`,
       },
+      // Turn-metrics: keep the newest per-turn record on the merged entry.
+      metrics: entry.metrics ?? previous.metrics,
       timestamp: entry.timestamp,
       seqEnd: entry.seqEnd,
       sourceSeqRanges: mergeSeqRanges(previous.sourceSeqRanges, entry.sourceSeqRanges),
@@ -281,6 +288,8 @@ function mergeAssistantChunks(entries: readonly WorkingEntry[]): WorkingEntry[] 
         text: `${previousAssistant.text}${entryAssistant.text}`,
         ...(previousAssistant.messageId ? { messageId: previousAssistant.messageId } : {}),
       },
+      // Turn-metrics: keep the newest per-turn record on the merged entry.
+      metrics: entry.metrics ?? previous.metrics,
       timestamp: entry.timestamp,
       seqEnd: entry.seqEnd,
       sourceSeqRanges: mergeSeqRanges(previous.sourceSeqRanges, entry.sourceSeqRanges),

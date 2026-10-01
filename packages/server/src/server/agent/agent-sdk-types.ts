@@ -241,10 +241,17 @@ export interface SteerActiveTurnOptions extends AgentSteerOptions {
 export interface AgentUsage {
   inputTokens?: number;
   cachedInputTokens?: number;
+  // Cache creation/write tokens. Mirrors the protocol AgentUsage field; absent
+  // when the provider does not report it — never zero-fill.
+  cacheWriteTokens?: number;
   outputTokens?: number;
   totalCostUsd?: number;
   contextWindowMaxTokens?: number;
   contextWindowUsedTokens?: number;
+  // Daemon-measured wall clock for the turn, stamped by AgentManager.
+  durationMs?: number;
+  // Model of record at turn completion (runtimeInfo.model ?? config.model).
+  model?: string | null;
 }
 
 export const TOOL_CALL_ICON_NAMES = [

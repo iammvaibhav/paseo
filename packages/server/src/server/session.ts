@@ -63,7 +63,7 @@ import {
   supportsDiskTimeline,
   tryReadProviderTimelineFromDisk,
 } from "./agent/provider-disk-history.js";
-import type { AgentTimelineItem } from "./agent/agent-sdk-types.js";
+import type { AgentTimelineItem, AgentUsage } from "./agent/agent-sdk-types.js";
 import {
   sendPromptToAgent,
   startAgentRun,
@@ -9692,6 +9692,7 @@ export class Session {
                 seqEnd: entry.seqEnd,
                 sourceSeqRanges: entry.sourceSeqRanges,
                 turnId: undefined as string | undefined,
+                metrics: undefined as AgentUsage | undefined,
                 collapsed: (
                   source
                     ? this.supportsForSource(CLIENT_CAPS.reasoningMergeEnum, source)
@@ -9701,6 +9702,10 @@ export class Session {
                   : entry.collapsed.filter((value) => value !== "reasoning_merge"),
               };
               payloadEntry.turnId = entry.turnId;
+              // Turn-metrics: per-turn record carried on the projected entry.
+              if (entry.metrics !== undefined) {
+                payloadEntry.metrics = entry.metrics;
+              }
               return payloadEntry;
             }),
             error: null,

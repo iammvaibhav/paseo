@@ -1859,6 +1859,8 @@ export class VoiceAssistantWebSocketServer {
         providerUsageList: true,
         // Daemon pushes refreshed usage via provider.usage.updated. Added in v0.4.0.
         providerUsagePush: true,
+        // COMPAT(turnMetrics): added 2026-09-30, additive; optional forever.
+        turnMetrics: true,
         // COMPAT(agentDetach): added in v0.1.98, remove gate after 2026-12-19 once daemon floor >= v0.1.98.
         agentDetach: true,
         // COMPAT(agentThinkingUpdate): added in v0.2.4, remove gate after 2027-01-28.

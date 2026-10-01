@@ -702,6 +702,9 @@ export function mapACPUsage(usage: Usage | null | undefined): AgentUsage | undef
     inputTokens: usage.inputTokens ?? undefined,
     outputTokens: usage.outputTokens ?? undefined,
     cachedInputTokens: usage.cachedReadTokens ?? undefined,
+    // Turn-metrics: ACP also reports cache-write tokens; absent on servers
+    // that do not track cache (never zero-fill).
+    cacheWriteTokens: usage.cachedWriteTokens ?? undefined,
   };
 }
 
