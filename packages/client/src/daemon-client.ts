@@ -1134,6 +1134,22 @@ type CorrelatedResponsePayloads = {
 type CorrelatedResponsePayload<TType extends CorrelatedResponseType> =
   CorrelatedResponsePayloads[TType];
 
+type DocThreadsRequestMessage = Extract<
+  SessionInboundMessage,
+  { type: `doc_threads.${string}.request` }
+>;
+type DocThreadsRequestType = DocThreadsRequestMessage["type"];
+export type DocThreadsRequestParams<TType extends DocThreadsRequestType> = Omit<
+  Extract<DocThreadsRequestMessage, { type: TType }>,
+  "type" | "requestId"
+>;
+type DocThreadsResponseType<TType extends DocThreadsRequestType> =
+  TType extends `${infer Prefix}.request`
+    ? Extract<`${Prefix}.response`, CorrelatedResponseType>
+    : never;
+export type DocThreadsResponsePayload<TType extends DocThreadsRequestType> =
+  CorrelatedResponsePayload<DocThreadsResponseType<TType>>;
+
 type TicketsRequestMessage = Extract<SessionInboundMessage, { type: `tickets.${string}.request` }>;
 type TicketsRequestType = TicketsRequestMessage["type"];
 export type TicketsRequestParams<TType extends TicketsRequestType> = Omit<
@@ -6791,6 +6807,26 @@ export class DaemonClient {
       message: { type: "mission_control.config.get.request" },
       responseType: "mission_control.config.get.response",
     });
+  }
+
+  /**
+   * Threaded file comments RPC (docs/rpc-namespacing.md pairs). `type` is any
+   * `doc_threads.*.request`; the matching `.response` payload is returned. The
+   * payload carries `error` (null on success) — callers decide whether an
+   * error throws. Only the agent's host serves these.
+   */
+  async docThreadsRequest<TType extends DocThreadsRequestType>(
+    type: TType,
+    params: DocThreadsRequestParams<TType>,
+    options: { requestId?: string; timeout?: number } = {},
+  ): Promise<DocThreadsResponsePayload<TType>> {
+    const responseType = type.replace(/\.request$/, ".response") as DocThreadsResponseType<TType>;
+    return this.sendCorrelatedSessionRequest({
+      requestId: options.requestId,
+      message: { ...params, type },
+      responseType,
+      timeout: options.timeout,
+    }) as Promise<DocThreadsResponsePayload<TType>>;
   }
 
   /**

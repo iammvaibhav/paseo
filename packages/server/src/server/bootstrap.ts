@@ -195,6 +195,7 @@ import {
 } from "./tickets/index.js";
 import { ItsaplanTicketImporter } from "./tickets/import-itsaplan.js";
 import { startTicketFleet } from "./tickets/fleet.js";
+import { openDocThreads, type DocThreadsHost } from "./doc-threads/index.js";
 import {
   attachItsaplanProjectSync,
   createItsaplanResyncRouteHandler,
@@ -761,6 +762,7 @@ export interface PaseoDaemon {
   ticketStore: TicketStore | null;
   isTicketsBoardHost(): boolean;
   ticketsHandlers: TicketsDelegatedHandlers;
+  docThreadsHost: DocThreadsHost | null;
   start(): Promise<void>;
   stop(): Promise<void>;
   getListenTarget(): ListenTarget | null;
@@ -2630,6 +2632,16 @@ export async function createPaseoDaemon(
   ticketService?.onChange((change) => {
     wsServer?.broadcast(wrapSessionMessage({ type: "tickets.changed", ...change }));
   });
+  const docThreadsRuntime = await openDocThreads({
+    paseoHome: config.paseoHome,
+    logger,
+    agentStorage,
+    agentManager,
+  });
+  const docThreadsHost = docThreadsRuntime?.host ?? null;
+  docThreadsRuntime?.host.service?.onChange((change) => {
+    wsServer?.broadcast(wrapSessionMessage({ type: "doc_threads.changed", ...change }));
+  });
   // ---- end native tickets (ServerCore)
 
   // ---- itsaplan → native tickets import (Importer). Read-only copy of the
@@ -2759,6 +2771,7 @@ export async function createPaseoDaemon(
     },
     resolveTicketTools: ticketFleet.resolveToolsBackend,
     verifierDispatcher,
+    resolveDocThreads: docThreadsHost?.service ? () => docThreadsHost.service! : null,
     serverId,
     hostAlias: missionControlHostAlias,
     paseoToolPolicy:
@@ -3095,6 +3108,7 @@ export async function createPaseoDaemon(
               workspaceLabelService,
               (workspaceId) => itsaplanBridge?.handleWorkspaceArchived(workspaceId),
               warmWorktreePool,
+              docThreadsHost,
               ticketsHost,
             );
             pluginRuntime.bindPaseoSessionHost(wsServer);
@@ -3221,6 +3235,7 @@ export async function createPaseoDaemon(
     ticketStore,
     isTicketsBoardHost,
     ticketsHandlers,
+    docThreadsHost,
     start,
     stop,
     getListenTarget: () => boundListenTarget,

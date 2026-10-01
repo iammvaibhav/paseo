@@ -45,8 +45,9 @@ import {
   type SessionRuntimeMetrics,
 } from "./session.js";
 import type { WarmWorktreePool } from "./warm-worktree-pool.js";
-import { isServingTickets, type TicketsHost } from "./tickets/session.js";
 import type { HubRelationshipManagement } from "./hub/relationship-controller.js";
+import { isServingDocThreads, type DocThreadsHost } from "./doc-threads/session.js";
+import { isServingTickets, type TicketsHost } from "./tickets/session.js";
 import { WorkspaceSetupRuntime } from "./workspace-setup-runtime.js";
 import type { HubExecutionAgents } from "./hub/daemon-executions.js";
 import type { AgentProvider } from "./agent/agent-sdk-types.js";
@@ -631,6 +632,7 @@ export class VoiceAssistantWebSocketServer {
   private readonly orchestrationSkills: SessionOptions["orchestrationSkills"];
   private readonly onWorkspaceArchived?: (workspaceId: string) => void | Promise<void>;
   private readonly warmWorktreePool?: WarmWorktreePool;
+  private docThreadsHost!: DocThreadsHost | null;
   private ticketsHost!: TicketsHost | null;
 
   private async validateCompletedCreation(snapshot: CreationSnapshot): Promise<void> {
@@ -703,6 +705,7 @@ export class VoiceAssistantWebSocketServer {
     workspaceLabelService?: WorkspaceLabelService,
     onWorkspaceArchived?: (workspaceId: string) => void | Promise<void>,
     warmWorktreePool?: WarmWorktreePool,
+    docThreadsHost?: DocThreadsHost | null,
     ticketsHost?: TicketsHost | null,
   ) {
     this.onWorkspaceArchived = onWorkspaceArchived;
@@ -760,6 +763,7 @@ export class VoiceAssistantWebSocketServer {
       getDaemonTcpHost,
       serviceProxyPublicBaseUrl,
       resolveScriptHealth,
+      docThreadsHost,
       ticketsHost,
     });
     if (!providerSnapshotManager) {
@@ -831,6 +835,7 @@ export class VoiceAssistantWebSocketServer {
     getDaemonTcpHost: (() => string | null) | undefined;
     serviceProxyPublicBaseUrl: string | null | undefined;
     resolveScriptHealth: ((hostname: string) => ScriptHealthState | null) | undefined;
+    docThreadsHost?: DocThreadsHost | null | undefined;
     ticketsHost: TicketsHost | null | undefined;
   }): void {
     this.speech = params.speech ?? null;
@@ -868,6 +873,7 @@ export class VoiceAssistantWebSocketServer {
     this.getDaemonTcpHost = params.getDaemonTcpHost ?? null;
     this.serviceProxyPublicBaseUrl = params.serviceProxyPublicBaseUrl ?? null;
     this.resolveScriptHealth = params.resolveScriptHealth ?? null;
+    this.docThreadsHost = params.docThreadsHost ?? null;
     this.ticketsHost = params.ticketsHost ?? null;
   }
 
@@ -1540,6 +1546,7 @@ export class VoiceAssistantWebSocketServer {
       warmWorktreePool: this.warmWorktreePool,
       pluginRuntime: this.pluginRuntime,
       orchestrationSkills: this.orchestrationSkills,
+      docThreads: this.docThreadsHost,
       tickets: this.ticketsHost,
       mcpBaseUrl: this.mcpBaseUrl,
       stt: () => this.speech?.resolveStt() ?? null,
@@ -1845,6 +1852,9 @@ export class VoiceAssistantWebSocketServer {
         missionControlV4: true,
         // COMPAT(missionControlInbox): added 2026-09-30, remove gate after 2027-03-30.
         missionControlInbox: true,
+        // Doc threads are available on any host with node:sqlite and owned agents.
+        docThreads: isServingDocThreads(this.docThreadsHost),
+        docThreadsEventSubscription: isServingDocThreads(this.docThreadsHost),
         // Native tickets. True only on the board host (the Commander host)
         // with node:sqlite loaded; evaluated per server_info because the
         // Commander designation can move.
