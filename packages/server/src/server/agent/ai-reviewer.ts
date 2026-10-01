@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { z } from "zod";
 import type { AgentPermissionRequest } from "./agent-sdk-types.js";
+import type { getStructuredAgentResponse as structuredAgentResponse } from "./agent-response-loop.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -128,6 +129,71 @@ export function withAiReviewTimeout<T>(
       timer.unref?.();
     }),
   ]);
+}
+
+export interface ModelBackedAiReviewerDeps {
+  createAgent: (config: {
+    provider: string;
+    model?: string;
+    cwd: string;
+    title?: string | null;
+    internal?: boolean;
+  }) => Promise<{ id: string }>;
+  runAgent: (agentId: string, prompt: string) => Promise<{ finalText: string }>;
+  closeAgent: (agentId: string) => Promise<void>;
+  deleteAgentState: (agentId: string) => Promise<void>;
+  callStructuredModel: typeof structuredAgentResponse;
+  logger?: { warn: (obj: object, msg?: string) => void };
+}
+
+/**
+ * Build an AiReviewer that makes a one-shot structured model call through the
+ * daemon's existing provider layer: a short-lived internal, non-persisted
+ * agent session plus getStructuredAgentResponse's JSON-schema retry loop
+ * (the same mechanism used by git-metadata-generator for commit messages,
+ * without its provider-fallback list — the reviewer must call exactly the
+ * configured provider+model). Any failure throws so AgentManager escalates.
+ * getStructuredAgentResponse is injected to keep this module's static import
+ * graph free of the agent-manager cycle (agent-response-loop imports the
+ * AgentManager type).
+ */
+export function createModelAiReviewer(deps: ModelBackedAiReviewerDeps): AiReviewer {
+  return {
+    async review(input: AiReviewContext, config: AiReviewerConfig): Promise<AiReviewDecision> {
+      const provider = config.provider?.trim();
+      if (!provider) throw new Error("AI reviewer provider is not configured");
+      const prompt = buildAiReviewerPrompt(input, config.policy ?? "");
+      const cwd = input.cwd && input.cwd.length > 0 ? input.cwd : process.cwd();
+      const agent = await deps.createAgent({
+        provider,
+        ...(config.model?.trim() ? { model: config.model.trim() } : {}),
+        cwd,
+        title: "AI permission review",
+        internal: true,
+      });
+      try {
+        const caller = async (nextPrompt: string): Promise<string> => {
+          const result = await deps.runAgent(agent.id, nextPrompt);
+          return result.finalText;
+        };
+        return await deps.callStructuredModel<AiReviewDecision>({
+          caller,
+          prompt,
+          schema: AiReviewDecisionSchema,
+          maxRetries: 1,
+          schemaName: "AiReviewDecision",
+        });
+      } finally {
+        try {
+          await deps.closeAgent(agent.id);
+        } catch {
+          // ignore cleanup errors
+        } finally {
+          await deps.deleteAgentState(agent.id).catch(() => undefined);
+        }
+      }
+    },
+  };
 }
 
 export interface DefaultAiReviewerOptions {

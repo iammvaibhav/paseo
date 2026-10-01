@@ -105,7 +105,7 @@ import {
   AI_REVIEW_MODE,
   AI_REVIEW_MODE_ID,
   AI_REVIEW_TIMEOUT_MS,
-  createDefaultAiReviewer,
+  createModelAiReviewer,
   isAlwaysEscalate,
   permissionToolInput,
   readGitDiffStat,
@@ -115,6 +115,7 @@ import {
   type AiReviewer,
   type AiReviewerConfig,
 } from "./ai-reviewer.js";
+import { getStructuredAgentResponse } from "./agent-response-loop.js";
 
 const RELOAD_SESSION_CLOSE_TIMEOUT_MS = 3_000;
 const INTERRUPT_SESSION_TIMEOUT_MS = 2_000;
@@ -1104,7 +1105,29 @@ export class AgentManager {
   }
 
   private configureAiReviewer(options: AgentManagerOptions): void {
-    this.aiReviewer = options.aiReviewer ?? createDefaultAiReviewer();
+    if (options.aiReviewer) {
+      this.aiReviewer = options.aiReviewer;
+    } else {
+      this.aiReviewer = createModelAiReviewer({
+        createAgent: (config) =>
+          this.createAgent(
+            {
+              provider: config.provider,
+              cwd: config.cwd,
+              ...(config.model ? { model: config.model } : {}),
+              title: config.title ?? null,
+              internal: true,
+            },
+            undefined,
+            { workspaceId: undefined, persistSession: false },
+          ).then((agent) => ({ id: agent.id })),
+        runAgent: (agentId, prompt) =>
+          this.runAgent(agentId, prompt).then((result) => ({ finalText: result.finalText })),
+        closeAgent: (agentId) => this.closeAgent(agentId),
+        deleteAgentState: (agentId) => this.deleteAgentState(agentId),
+        callStructuredModel: getStructuredAgentResponse,
+      });
+    }
     this.getAiReviewerConfig = options.getAiReviewerConfig;
     this.aiReviewerCapability = options.aiReviewerCapability ?? options.aiReviewer !== undefined;
     this.aiReviewTimeoutMs = options.aiReviewTimeoutMs ?? AI_REVIEW_TIMEOUT_MS;

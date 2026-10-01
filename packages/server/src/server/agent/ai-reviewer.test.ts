@@ -4,11 +4,13 @@ import {
   AI_REVIEW_DENYLIST,
   buildAiReviewerPrompt,
   createDefaultAiReviewer,
+  createModelAiReviewer,
   isAlwaysEscalate,
   parseAiReviewDecision,
   withAiReviewTimeout,
   type AiReviewContext,
 } from "./ai-reviewer.js";
+import { getStructuredAgentResponse } from "./agent-response-loop.js";
 
 function context(command: string): AiReviewContext {
   return {
@@ -112,5 +114,80 @@ describe("createDefaultAiReviewer", () => {
       decision: "allow",
       reason: "safe",
     });
+  });
+});
+
+describe("createModelAiReviewer", () => {
+  test("calls the configured provider+model and parses strict JSON", async () => {
+    const created: Array<{ provider: string; model?: string; internal?: boolean }> = [];
+    const reviewer = createModelAiReviewer({
+      createAgent: (config) => {
+        created.push(config);
+        return Promise.resolve({ id: "review-1" });
+      },
+      runAgent: () => Promise.resolve({ finalText: '{"decision":"deny","reason":"risky"}' }),
+      closeAgent: () => Promise.resolve(),
+      deleteAgentState: () => Promise.resolve(),
+      callStructuredModel: getStructuredAgentResponse,
+    });
+    const decision = await reviewer.review(context("echo hi"), {
+      enabled: true,
+      provider: "mock",
+      model: "ten-second-stream",
+    });
+    expect(decision).toEqual({ decision: "deny", reason: "risky" });
+    expect(created).toEqual([
+      expect.objectContaining({ provider: "mock", model: "ten-second-stream", internal: true }),
+    ]);
+  });
+
+  test("throws without a configured provider so the caller escalates", async () => {
+    const reviewer = createModelAiReviewer({
+      createAgent: () => Promise.resolve({ id: "review-1" }),
+      runAgent: () => Promise.resolve({ finalText: "{}" }),
+      closeAgent: () => Promise.resolve(),
+      deleteAgentState: () => Promise.resolve(),
+      callStructuredModel: getStructuredAgentResponse,
+    });
+    await expect(reviewer.review(context("echo hi"), { enabled: true })).rejects.toThrow(
+      /provider is not configured/i,
+    );
+  });
+
+  test("cleans up the ephemeral review session after the call", async () => {
+    const closed: string[] = [];
+    const deleted: string[] = [];
+    const reviewer = createModelAiReviewer({
+      createAgent: () => Promise.resolve({ id: "review-1" }),
+      runAgent: () => Promise.resolve({ finalText: '{"decision":"allow","reason":"safe"}' }),
+      closeAgent: (agentId) => {
+        closed.push(agentId);
+        return Promise.resolve();
+      },
+      deleteAgentState: (agentId) => {
+        deleted.push(agentId);
+        return Promise.resolve();
+      },
+      callStructuredModel: getStructuredAgentResponse,
+    });
+    await reviewer.review(context("echo hi"), { enabled: true, provider: "mock" });
+    expect(closed).toEqual(["review-1"]);
+    expect(deleted).toEqual(["review-1"]);
+  });
+
+  test("a timeout surfaces as a failure so the manager escalates", async () => {
+    const reviewer = createModelAiReviewer({
+      createAgent: () => Promise.resolve({ id: "review-1" }),
+      runAgent: () => new Promise<{ finalText: string }>(() => {}),
+      closeAgent: () => Promise.resolve(),
+      deleteAgentState: () => Promise.resolve(),
+      callStructuredModel: getStructuredAgentResponse,
+    });
+    await expect(
+      withAiReviewTimeout(
+        reviewer.review(context("echo hi"), { enabled: true, provider: "mock" }),
+        20,
+      ),
+    ).rejects.toThrow(/timed out/i);
   });
 });
