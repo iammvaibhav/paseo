@@ -2716,6 +2716,8 @@ const CheckoutCommitSchema = z.object({
   isOnRemote: z.boolean(), // false = local-only (unpushed)
   // COMPAT(commitBaseClassification): added in v0.2.0, remove optional after 2027-01-23.
   isOnBase: z.boolean().optional(),
+  // COMPAT(commitParents): added in v0.10.0, remove optional after 2027-04-01.
+  parents: z.array(z.string()).optional(),
   files: z.array(CheckoutCommitFileSchema),
 });
 
@@ -4190,6 +4192,8 @@ export const ServerInfoStatusPayloadSchema = z
         commitsList: z.boolean().optional(),
         // COMPAT(commitBaseClassification): added in v0.2.0, remove gate after 2027-01-23.
         commitBaseClassification: z.boolean().optional(),
+        // COMPAT(commitParents): added in v0.10.0, remove gate after 2027-04-01.
+        commitParents: z.boolean().optional(),
         // COMPAT(providerRemoval): added in v0.1.105, drop the gate when floor >= v0.1.105.
         providerRemoval: z.boolean().optional(),
         // COMPAT(importSessionWorkspaceTarget): added in v0.1.110, remove gate after 2027-01-16.
