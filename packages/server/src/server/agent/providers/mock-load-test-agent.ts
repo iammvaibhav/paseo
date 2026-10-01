@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
 import type { Logger } from "pino";
 import type {
   AgentCapabilityFlags,
@@ -29,6 +32,7 @@ import type {
   SteerResult,
   ToolCallDetail,
   ToolCallTimelineItem,
+  ImportedTimelineEntry,
 } from "../agent-sdk-types.js";
 import { importSessionFromPersistence } from "../provider-session-import.js";
 import { getAgentProviderDefinition } from "@getpaseo/protocol/provider-manifest";
@@ -45,6 +49,40 @@ function getPositiveFeatureInteger(value: unknown): number {
 }
 const ONE_PIXEL_PNG_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl4Kj8AAAAASUVORK5CYII=";
+
+export function resolveMockSessionFile(sessionId: string): string {
+  const base = process.env.PASEO_HOME
+    ? path.join(process.env.PASEO_HOME, "mock-sessions")
+    : path.join(os.tmpdir(), "paseo-mock-sessions");
+  return path.join(base, `${sessionId}.jsonl`);
+}
+
+export function readMockTimelineFromDisk(input: {
+  sessionId: string;
+}): ImportedTimelineEntry[] | null {
+  const file = resolveMockSessionFile(input.sessionId);
+  if (!fs.existsSync(file)) {
+    return null;
+  }
+  try {
+    const content = fs.readFileSync(file, "utf8");
+    const items: ImportedTimelineEntry[] = [];
+    for (const line of content.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      const event = JSON.parse(trimmed);
+      if (event.type === "timeline") {
+        items.push({
+          item: event.item,
+          ...(event.timestamp ? { timestamp: event.timestamp } : {}),
+        });
+      }
+    }
+    return items.length > 0 ? items : null;
+  } catch {
+    return null;
+  }
+}
 
 // A 480x200 line plot, so the eval detail renderer has a real image to lay out.
 const EVAL_PLOT_PNG_BASE64 =
@@ -866,6 +904,7 @@ export class MockLoadTestAgentSession implements AgentSession {
     this.remainingSteerFailures = getPositiveFeatureInteger(
       options.config.featureValues?.mockSteerAmbiguousFailures,
     );
+    this.loadHistoryFromDisk();
   }
 
   async run(prompt: AgentPromptInput, options?: AgentRunOptions): Promise<AgentRunResult> {
@@ -1873,8 +1912,50 @@ export class MockLoadTestAgentSession implements AgentSession {
     }
   }
 
+  private loadHistoryFromDisk(): void {
+    const file = resolveMockSessionFile(this.id);
+    if (!fs.existsSync(file)) return;
+    try {
+      const content = fs.readFileSync(file, "utf8");
+      for (const line of content.split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        this.history.push(JSON.parse(trimmed));
+      }
+    } catch {
+      // ignore read errors
+    }
+  }
+
+  private appendHistoryToDisk(event: AgentStreamEvent): void {
+    try {
+      const file = resolveMockSessionFile(this.id);
+      const dir = path.dirname(file);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      fs.appendFileSync(file, JSON.stringify(event) + "\n", "utf8");
+    } catch {
+      // ignore write errors
+    }
+  }
+
+  private syncHistoryToDisk(): void {
+    try {
+      const file = resolveMockSessionFile(this.id);
+      const dir = path.dirname(file);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      fs.writeFileSync(file, this.history.map((e) => JSON.stringify(e)).join("\n") + "\n", "utf8");
+    } catch {
+      // ignore write errors
+    }
+  }
+
   private remember(event: AgentStreamEvent): void {
     this.history.push(event);
+    this.appendHistoryToDisk(event);
   }
 
   private keepFirstUserMessageHistory(): void {
@@ -1887,6 +1968,7 @@ export class MockLoadTestAgentSession implements AgentSession {
     }
     this.history.length = 0;
     this.history.push(...nextHistory);
+    this.syncHistoryToDisk();
   }
 
   private clearTurnTimer(turn: ActiveTurn): void {

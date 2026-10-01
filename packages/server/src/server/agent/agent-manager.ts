@@ -183,21 +183,33 @@ function stampCompletionBeforeTerminalClear(
   });
 }
 
+export const MAX_STORED_TURN_METRICS = 500;
+
 /**
- * Turn-metrics: persist the completed turn's usage on the assistant timeline
- * row for the turn. Row-attached (not a side map) so metrics survive daemon
- * restarts with the persisted session transcript.
+ * Turn-metrics: record turn metrics into a bounded FIFO map keyed by matchKey
+ * (assistant messageId, falling back to turnId). When size exceeds maxEntries,
+ * the oldest entry is evicted.
  */
-function attachTurnMetricsToRow(
-  timelineStore: InMemoryAgentTimelineStore,
-  agentId: string,
-  turnId: string,
-  usage: AgentUsage,
+export function recordTurnMetrics(
+  map: Map<string, AgentUsage>,
+  matchKey: string,
+  metrics: AgentUsage,
+  maxEntries = MAX_STORED_TURN_METRICS,
 ): void {
-  const updated = timelineStore.updateRowMetrics(agentId, turnId, usage);
-  if (!updated) return;
+  if (map.has(matchKey)) {
+    map.delete(matchKey);
+  }
+  map.set(matchKey, metrics);
+  while (map.size > maxEntries) {
+    const oldestKey = map.keys().next().value;
+    if (oldestKey === undefined) break;
+    map.delete(oldestKey);
+  }
 }
 
+/**
+ * Merge agent usage snapshots field by field, keeping the latest values.
+ */
 function mergeAgentUsage(
   previous: AgentUsage | undefined,
   next: AgentUsage | undefined,
@@ -647,6 +659,10 @@ interface ManagedAgentBase {
   activeTurnId: string | null;
   activeTurnStartedAt: Date | null;
   lastUsage?: AgentUsage;
+  // Turn-metrics: bounded per-agent map (matchKey -> metrics) of completed turns.
+  // Persisted with the stored record so post-restart fetches/rebuilds can
+  // re-attach metrics to assistant timeline rows.
+  turnMetrics: Map<string, AgentUsage>;
   lastError?: string;
   attention: AttentionState;
   foregroundTurnWaiters: Set<ForegroundTurnWaiter>;
@@ -911,6 +927,22 @@ function applyLabelPatch(
   }
   return nextLabels;
 }
+function resolveTurnMetricsFromOptions(
+  turnMetrics: Map<string, AgentUsage> | Record<string, AgentUsage> | undefined,
+): Map<string, AgentUsage> {
+  if (!turnMetrics) return new Map();
+  return turnMetrics instanceof Map ? new Map(turnMetrics) : new Map(Object.entries(turnMetrics));
+}
+
+function resolveRegistrationTimestamps(
+  options: { createdAt?: Date; updatedAt?: Date } | undefined,
+  now: Date,
+): { createdAt: Date; updatedAt: Date } {
+  return {
+    createdAt: options?.createdAt ?? now,
+    updatedAt: options?.updatedAt ?? now,
+  };
+}
 
 function buildExplicitTimelineSeedForRegister(
   now: Date,
@@ -995,6 +1027,7 @@ interface RegisterSessionOptions {
   historyPrimed?: boolean;
   lastUsage?: AgentUsage;
   lastError?: string;
+  turnMetrics?: Map<string, AgentUsage> | Record<string, AgentUsage>;
   attention?: AttentionState;
   /**
    * Bringing a known agent back, rather than starting a new one. Installing the
@@ -1060,6 +1093,7 @@ export class AgentManager {
   private readonly inFlightAgentCloses = new Map<string, Promise<void>>();
   private readonly reloadedSessionCloses = new WeakMap<AgentSession, Promise<void>>();
   private readonly lifecycleMutationTails = new Map<string, Promise<void>>();
+  private readonly turnMetricsCache = new Map<string, Map<string, AgentUsage>>();
   private readonly agentStreamCoalescer: AgentStreamCoalescer;
   private mcpBaseUrl: string | null;
   private readonly mcpAuthToken: string | null;
@@ -1636,11 +1670,40 @@ export class AgentManager {
     });
   }
 
+  initStoredTurnMetrics(agentId: string, recordMetrics?: Record<string, AgentUsage>): void {
+    if (recordMetrics) {
+      this.turnMetricsCache.set(agentId, new Map(Object.entries(recordMetrics)));
+    }
+  }
+
+  reAttachTurnMetrics(
+    agentId: string,
+    fallbackMetrics?: Map<string, AgentUsage> | Record<string, AgentUsage>,
+  ): { attachedCount: number; droppedKeys: string[] } | null {
+    if (!this.timelineStore.has(agentId)) {
+      return null;
+    }
+    const live = this.agents.get(agentId);
+    let metrics = live?.turnMetrics;
+    if (!metrics && fallbackMetrics) {
+      metrics =
+        fallbackMetrics instanceof Map ? fallbackMetrics : new Map(Object.entries(fallbackMetrics));
+    }
+    if (!metrics) {
+      metrics = this.turnMetricsCache.get(agentId);
+    }
+    if (!metrics || metrics.size === 0) {
+      return { attachedCount: 0, droppedKeys: [] };
+    }
+    return this.timelineStore.reAttachMetrics(agentId, metrics);
+  }
+
   fetchTimeline(id: string, options?: AgentTimelineFetchOptions): AgentTimelineFetchResult {
     // Allow timeline fetch after disk-seed even when the provider process is not live yet.
     if (!this.timelineStore.has(id)) {
       this.requireAgent(id);
     }
+    this.reAttachTurnMetrics(id);
     return this.timelineStore.fetch(id, options);
   }
 
@@ -1667,6 +1730,7 @@ export class AgentManager {
         entry.timestamp ? { timestamp: entry.timestamp } : undefined,
       );
     }
+    this.reAttachTurnMetrics(agentId);
     return items.length > 0;
   }
 
@@ -2179,6 +2243,7 @@ export class AgentManager {
     const preservedLastUsage = existing.lastUsage;
     const preservedLastError = existing.lastError;
     const preservedAttention = existing.attention;
+    const preservedTurnMetrics = new Map(existing.turnMetrics);
     const handle = existing.persistence;
     const provider = handle?.provider ?? existing.provider;
     const client = this.requireClient(provider);
@@ -2252,6 +2317,7 @@ export class AgentManager {
         lastUsage: preservedLastUsage,
         lastError: preservedLastError,
         attention: preservedAttention,
+        turnMetrics: preservedTurnMetrics,
         restoring: true,
       });
     } catch (error) {
@@ -2570,6 +2636,7 @@ export class AgentManager {
         lastUserMessageAt: record.lastUserMessageAt ? new Date(record.lastUserMessageAt) : null,
         lastUsage: undefined,
         lastError: record.lastError ?? undefined,
+        turnMetrics: new Map(Object.entries(record.turnMetrics ?? {})),
         attention,
         internal: record.internal,
         labels: record.labels,
@@ -4608,10 +4675,16 @@ export class AgentManager {
       // A restored agent must keep its stored timestamps when the caller did
       // not pass explicit ones (live bug: registration stamped idle agents
       // with the restore time, so every dormant board row read the same age).
-      const restoredRegistrationOptions =
-        existingRecord === null || existingRecord === undefined
+      const restoredRegistrationOptions: RegisterSessionOptions = {
+        ...(existingRecord === null || existingRecord === undefined
           ? options
-          : this.inheritStoredTimestampsForRestore(existingRecord, options);
+          : this.inheritStoredTimestampsForRestore(existingRecord, options)),
+        turnMetrics:
+          options?.turnMetrics ??
+          (existingRecord?.turnMetrics
+            ? new Map(Object.entries(existingRecord.turnMetrics))
+            : undefined),
+      };
       const managed = this.buildManagedAgentForRegister({
         resolvedAgentId,
         session,
@@ -4626,7 +4699,11 @@ export class AgentManager {
 
       this.assertAcceptingAgentRegistrations();
       this.agents.set(resolvedAgentId, managed);
+      this.turnMetricsCache.set(resolvedAgentId, managed.turnMetrics);
       registered = true;
+      if (managed.turnMetrics.size > 0) {
+        this.timelineStore.reAttachMetrics(resolvedAgentId, managed.turnMetrics);
+      }
       // Initialize previousStatus to track transitions
       this.previousStatuses.set(resolvedAgentId, managed.lifecycle);
       await this.refreshRuntimeInfo(managed, { emit: false });
@@ -4751,6 +4828,7 @@ export class AgentManager {
           historyPrimed?: boolean;
           lastUsage?: AgentUsage;
           lastError?: string;
+          turnMetrics?: Map<string, AgentUsage> | Record<string, AgentUsage>;
           attention?: AttentionState;
           persistence?: AgentPersistenceHandle;
           workspaceId?: string;
@@ -4773,8 +4851,8 @@ export class AgentManager {
       config,
       runtimeInfo: undefined,
       lifecycle: "initializing",
-      createdAt: options?.createdAt ?? now,
-      updatedAt: options?.updatedAt ?? now,
+      createdAt: resolveRegistrationTimestamps(options, now).createdAt,
+      updatedAt: resolveRegistrationTimestamps(options, now).updatedAt,
       availableModes: [],
       currentModeId: null,
       pendingPermissions: new Map<string, AgentPermissionRequest>(),
@@ -4796,6 +4874,7 @@ export class AgentManager {
       lastUserMessageAt: options?.lastUserMessageAt ?? null,
       lastUsage: options?.lastUsage,
       lastError: options?.lastError,
+      turnMetrics: resolveTurnMetricsFromOptions(options?.turnMetrics),
       attention: resolveInitialAttention(options?.attention),
       internal: config.internal ?? false,
       labels: options?.labels ?? {},
@@ -5207,6 +5286,7 @@ export class AgentManager {
         });
       }
     }
+    this.reAttachTurnMetrics(agent.id);
     this.touchUpdatedAt(agent);
     this.emitState(agent);
   }
@@ -5261,6 +5341,7 @@ export class AgentManager {
       throw error;
     }
     agent.historyPrimed = true;
+    this.reAttachTurnMetrics(agent.id);
 
     if (typeof broadcast !== "function" || !broadcast()) {
       return;
@@ -5695,7 +5776,13 @@ export class AgentManager {
     // the active-turn state is cleared. Attach the (possibly stamped) usage
     // to the turn's assistant row for restart-surviving timeline metrics.
     if (eventTurnId && event.usage) {
-      attachTurnMetricsToRow(this.timelineStore, agent.id, eventTurnId, event.usage);
+      const assistantRow = this.timelineStore.updateRowMetrics(agent.id, eventTurnId, event.usage);
+      const matchKey =
+        assistantRow?.item.type === "assistant_message" && assistantRow.item.messageId
+          ? assistantRow.item.messageId
+          : eventTurnId;
+      recordTurnMetrics(agent.turnMetrics, matchKey, event.usage);
+      this.turnMetricsCache.set(agent.id, agent.turnMetrics);
     }
     // Field-by-field merge: turn_completed may omit context fill that
     // usage_updated already provided; if usage is absent, keep lastUsage.

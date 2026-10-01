@@ -79,6 +79,25 @@ const STORED_AGENT_SCHEMA = z.object({
     .optional(),
   features: z.array(AgentFeatureSchema).optional(),
   persistence: PERSISTENCE_HANDLE_SCHEMA,
+  // Turn-metrics: bounded per-agent map (matchKey → metrics) written atomically
+  // with the agent record. Survives restarts when provider history is rebuilt
+  // without metrics. Additive; optional.
+  turnMetrics: z
+    .record(
+      z.string(),
+      z.object({
+        inputTokens: z.number().optional(),
+        cachedInputTokens: z.number().optional(),
+        cacheWriteTokens: z.number().optional(),
+        outputTokens: z.number().optional(),
+        totalCostUsd: z.number().optional(),
+        contextWindowMaxTokens: z.number().optional(),
+        contextWindowUsedTokens: z.number().optional(),
+        durationMs: z.number().optional(),
+        model: z.string().nullable().optional(),
+      }),
+    )
+    .optional(),
   lastError: z.string().nullable().optional(),
   requiresAttention: z.boolean().optional(),
   attentionReason: z.enum(["finished", "error", "permission"]).nullable().optional(),

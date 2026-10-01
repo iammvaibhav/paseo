@@ -212,12 +212,20 @@ export class InMemoryAgentTimelineStore {
     return cloneRow(row);
   }
 
-  updateRowMetrics(agentId: string, turnId: string, metrics: AgentUsage): AgentTimelineRow | null {
+  updateRowMetrics(
+    agentId: string,
+    matchKey: string,
+    metrics: AgentUsage,
+  ): AgentTimelineRow | null {
     const state = this.requireState(agentId);
     // Turn-metrics: stamp the LAST row of the turn (the assistant entry that
     // closes it), not the first match — a turn holds user + tool rows too.
     const row = state.committed.findLast(
-      (candidate) => candidate.turnId === turnId && candidate.item.type === "assistant_message",
+      (candidate) =>
+        candidate.item.type === "assistant_message" &&
+        (candidate.turnId === matchKey ||
+          candidate.item.messageId === matchKey ||
+          candidate.providerMessageId === matchKey),
     );
     if (!row) return null;
     const updated = { ...row, metrics };
@@ -228,6 +236,51 @@ export class InMemoryAgentTimelineStore {
     for (const candidate of state.committed) rebuilt.append(candidate);
     state.projection = rebuilt;
     return cloneRow(updated);
+  }
+
+  /**
+   * Turn-metrics: re-attach persisted turn metrics onto assistant timeline rows
+   * by matchKey (assistant messageId, falling back to turnId / providerMessageId).
+   * Returns counts of attached rows and keys that had no matching row (dropped).
+   */
+  reAttachMetrics(
+    agentId: string,
+    metricsMap: Map<string, AgentUsage> | Record<string, AgentUsage>,
+  ): { attachedCount: number; droppedKeys: string[] } {
+    const state = this.requireState(agentId);
+    const map = metricsMap instanceof Map ? metricsMap : new Map(Object.entries(metricsMap));
+    let attachedCount = 0;
+    const matchedKeys = new Set<string>();
+    const updatedSeqs = new Map<number, AgentUsage>();
+
+    for (const [key, metrics] of map.entries()) {
+      const row = state.committed.findLast(
+        (candidate) =>
+          candidate.item.type === "assistant_message" &&
+          (candidate.turnId === key ||
+            candidate.item.messageId === key ||
+            candidate.providerMessageId === key),
+      );
+      if (row) {
+        matchedKeys.add(key);
+        updatedSeqs.set(row.seq, metrics);
+        attachedCount += 1;
+      }
+    }
+
+    const droppedKeys = Array.from(map.keys()).filter((k) => !matchedKeys.has(k));
+
+    if (updatedSeqs.size > 0) {
+      state.committed = state.committed.map((candidate) => {
+        const metrics = updatedSeqs.get(candidate.seq);
+        return metrics !== undefined ? { ...candidate, metrics } : candidate;
+      });
+      const rebuilt = new TimelineProjection();
+      for (const candidate of state.committed) rebuilt.append(candidate);
+      state.projection = rebuilt;
+    }
+
+    return { attachedCount, droppedKeys };
   }
 
   getLastItem(agentId: string): AgentTimelineItem | null {

@@ -12,6 +12,7 @@ import type { ImportedTimelineEntry } from "./agent-sdk-types.js";
 import { readClaudeTimelineFromDisk } from "./providers/claude-history.js";
 import { readGrokTimelineFromDisk } from "./providers/grok-history.js";
 import { readOmpTimelineFromDisk } from "./providers/omp/omp-history.js";
+import { readMockTimelineFromDisk } from "./providers/mock-load-test-agent.js";
 
 export interface DiskHistorySource {
   provider: string;
@@ -19,6 +20,22 @@ export interface DiskHistorySource {
   sessionId: string;
   /** Absolute native session path when the provider stores one (OMP/Pi). */
   nativeHandle?: string;
+}
+async function tryReadOmpDiskTimeline(
+  nativeHandle: string | undefined,
+  sessionId: string,
+  logger?: Logger,
+): Promise<ImportedTimelineEntry[] | null> {
+  const sessionFile = typeof nativeHandle === "string" ? nativeHandle.trim() : "";
+  if (!sessionFile) {
+    return null;
+  }
+  try {
+    return await readOmpTimelineFromDisk({ sessionFile, logger });
+  } catch (error) {
+    logger?.warn({ err: error, sessionId, provider: "omp" }, "OMP disk history read failed");
+    return null;
+  }
 }
 
 export async function tryReadProviderTimelineFromDisk(
@@ -28,19 +45,10 @@ export async function tryReadProviderTimelineFromDisk(
   const { provider, cwd, sessionId, nativeHandle } = source;
 
   if (provider === "omp") {
-    const sessionFile = typeof nativeHandle === "string" ? nativeHandle.trim() : "";
-    if (!sessionFile) {
-      return null;
-    }
-    try {
-      return await readOmpTimelineFromDisk({
-        sessionFile,
-        logger: options?.logger,
-      });
-    } catch (error) {
-      options?.logger?.warn({ err: error, sessionId, provider }, "OMP disk history read failed");
-      return null;
-    }
+    return tryReadOmpDiskTimeline(nativeHandle, sessionId, options?.logger);
+  }
+  if (provider === "mock") {
+    return readMockTimelineFromDisk({ sessionId });
   }
 
   if (!cwd || !sessionId) {
@@ -66,5 +74,5 @@ export async function tryReadProviderTimelineFromDisk(
 }
 
 export function supportsDiskTimeline(provider: string): boolean {
-  return provider === "grok" || provider === "claude" || provider === "omp";
+  return provider === "grok" || provider === "claude" || provider === "omp" || provider === "mock";
 }

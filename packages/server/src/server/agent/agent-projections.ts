@@ -131,6 +131,11 @@ export function toStoredAgentRecord(
     persistence,
     lastError: agent.lastError ?? undefined,
     ...attention,
+    // Turn-metrics: bounded per-agent map (matchKey → metrics) persisted with
+    // the record so metrics survive restarts when provider history is rebuilt.
+    ...(sanitizeTurnMetrics(agent.turnMetrics) !== undefined
+      ? { turnMetrics: sanitizeTurnMetrics(agent.turnMetrics) }
+      : {}),
     internal: options?.internal,
     owner: agent.owner,
   } satisfies StoredAgentRecord;
@@ -553,6 +558,21 @@ function sanitizeUsage(value: unknown): AgentUsage | undefined {
     result.model = rawModel;
   }
   return Object.keys(result).length ? result : undefined;
+}
+function sanitizeTurnMetrics(
+  turnMetrics: Map<string, AgentUsage> | Record<string, AgentUsage> | undefined,
+): Record<string, AgentUsage> | undefined {
+  if (!turnMetrics) return undefined;
+  const entries = turnMetrics instanceof Map ? turnMetrics.entries() : Object.entries(turnMetrics);
+  const result: Record<string, AgentUsage> = {};
+  for (const [key, usage] of entries) {
+    if (!key || typeof key !== "string") continue;
+    const sanitized = sanitizeUsage(usage);
+    if (sanitized) {
+      result[key] = sanitized;
+    }
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
 }
 
 function sanitizeRuntimeInfo(

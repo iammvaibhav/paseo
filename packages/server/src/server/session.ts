@@ -6138,6 +6138,9 @@ export class Session {
     if (this.agentManager.hasTimeline(agentId)) {
       return;
     }
+    if (record.turnMetrics) {
+      this.agentManager.initStoredTurnMetrics(agentId, record.turnMetrics);
+    }
     const seeded = await this.agentManager.seedTimelineForRehydrate(agentId, async () => {
       const sessionId = record.persistence?.sessionId;
       if (sessionId && supportsDiskTimeline(record.provider)) {
@@ -6155,6 +6158,7 @@ export class Session {
       }
       return null;
     });
+    this.agentManager.reAttachTurnMetrics(agentId);
     if (!seeded && !this.agentManager.hasTimeline(agentId)) {
       this.agentManager.seedTimelineFromItems(agentId, []);
     }
@@ -9557,6 +9561,9 @@ export class Session {
       throw new Error(`Agent not found: ${agentId}`);
     }
 
+    if (record.turnMetrics) {
+      this.agentManager.initStoredTurnMetrics(agentId, record.turnMetrics);
+    }
     const registeredProviderIds = new Set(this.agentManager.getRegisteredProviderIds());
     const providerAvailable = isStoredAgentProviderAvailable(record, registeredProviderIds);
 
@@ -9588,6 +9595,7 @@ export class Session {
       }
       return diskItems;
     });
+    this.agentManager.reAttachTurnMetrics(agentId);
 
     // History-only answer when we already have a timeline, or when the provider
     // is gone and we can only surface the stored agent snapshot.
