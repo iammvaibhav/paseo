@@ -426,6 +426,8 @@ export const ar: TranslationResources = {
       forkUnavailable: "حدّث المضيف لاستخدام هذا.",
       forkMissingWorkspace: "هذا الوكيل ليس في مساحة عمل.",
       forkFailed: "فشل تفريع المحادثة",
+      secondOpinion: "Second opinion",
+      noOtherModels: "No other models available",
       jumpToUserMessage: "الانتقال إلى رسالة المستخدم",
       openFile: "افتح الملف",
       copied: "منقول",

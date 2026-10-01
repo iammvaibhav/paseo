@@ -1265,6 +1265,9 @@ export function processTimelineResponse(
   // ------------------------------------------------------------------
   // Convert entries to timeline units
   // ------------------------------------------------------------------
+  // Turn-metrics: carry per-turn metrics from fetch entries into hydrated
+  // events; hydrateStreamState stamps them onto assistant items via
+  // reduceStreamUpdate's timeline path (see types/stream.ts).
   const timelineUnits = selectEntriesOwnedByTimelinePage(payload).map((entry) => ({
     seq: entry.seqStart,
     seqEnd: entry.seqEnd,
@@ -1277,6 +1280,7 @@ export function processTimelineResponse(
       provider: entry.provider,
       item: entry.item,
       ...(entry.turnId ? { turnId: entry.turnId } : {}),
+      ...("metrics" in entry && entry.metrics ? { metrics: entry.metrics } : {}),
     } as AgentStreamEventPayload,
     timestamp: new Date(entry.timestamp),
   }));

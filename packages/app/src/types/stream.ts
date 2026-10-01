@@ -1,6 +1,7 @@
 import type {
   AgentProvider,
   AgentTimelineItem,
+  AgentUsage,
   JsonValue,
   ToolCallDetail,
 } from "@getpaseo/protocol/agent-types";
@@ -745,6 +746,12 @@ export interface AssistantMessageItem {
   voiceMirrorKind?: VoiceMirrorKind;
   text: string;
   timestamp: Date;
+  /**
+   * Turn-metrics: per-turn usage record attached when the daemon reports
+   * turn_completed for this turn (or timeline fetch carries entry metrics).
+   * Absent on old daemons and for turns without reported usage.
+   */
+  metrics?: AgentUsage;
   /** Display-only fields, assigned after source-item plugin transforms. */
   blockGroupId?: string;
   blockIndex?: number;
@@ -993,6 +1000,8 @@ function appendAssistantMessage(
   reservedItemIds?: ReadonlySet<string>,
   timelineCursor?: TimelinePosition,
   voiceMirrorKind?: VoiceMirrorKind,
+  turnId?: string,
+  metrics?: AgentUsage,
 ): StreamItem[] {
   const { chunk, hasContent } = normalizeChunk(text);
   if (!chunk) {
@@ -1006,6 +1015,8 @@ function appendAssistantMessage(
       text: `${last.text}${chunk}`,
       timestamp,
       ...(timelineCursor ? { timelineCursor } : {}),
+      ...(turnId !== undefined ? { turnId } : {}),
+      ...(metrics !== undefined ? { metrics } : {}),
     };
     return [...state.slice(0, -1), updated];
   }
@@ -1019,6 +1030,8 @@ function appendAssistantMessage(
       text: `${secondLast.text}${chunk}`,
       timestamp,
       ...(timelineCursor ? { timelineCursor } : {}),
+      ...(turnId !== undefined ? { turnId } : {}),
+      ...(metrics !== undefined ? { metrics } : {}),
     };
     return [...state.slice(0, -2), updated, last];
   }
@@ -1033,8 +1046,10 @@ function appendAssistantMessage(
     kind: "assistant_message",
     id: entryId,
     ...(messageId ? { messageId } : {}),
+    ...(turnId !== undefined ? { turnId } : {}),
     ...(timelineCursor ? { timelineCursor } : {}),
     ...(voiceMirrorKind ? { voiceMirrorKind } : {}),
+    ...(metrics !== undefined ? { metrics } : {}),
     text: chunk,
     timestamp,
   };
@@ -1602,6 +1617,10 @@ function reduceTimelineEvent(
           reservedItemIds,
           timelineCursor,
           item.voiceMirrorKind,
+          event.turnId,
+          "metrics" in event && event.metrics !== undefined
+            ? (event.metrics as AgentUsage)
+            : undefined,
         ),
       );
     case "reasoning":
@@ -1660,6 +1679,34 @@ function reduceTimelineEvent(
 }
 
 /**
+ * Turn-metrics: stamp the completed turn's usage onto assistant messages of
+ * that turn (matched by turnId, falling back to the latest assistant run when
+ * the event carries no turnId). Unknown fields stay hidden downstream.
+ */
+export function attachTurnCompletionMetrics(
+  state: StreamItem[],
+  event: Extract<AgentStreamEventPayload, { type: "turn_completed" }>,
+): StreamItem[] {
+  const usage = event.usage;
+  if (!usage) return state;
+  const turnId = event.turnId;
+  if (turnId !== undefined) {
+    return state.map((item) => {
+      if (item.kind !== "assistant_message" || item.turnId !== turnId) return item;
+      return { ...item, metrics: usage };
+    });
+  }
+  // No turnId: attribute to the trailing assistant run only.
+  let lastAssistant = -1;
+  for (let i = state.length - 1; i >= 0; i--) {
+    if (state[i]?.kind !== "assistant_message") break;
+    lastAssistant = i;
+  }
+  if (lastAssistant < 0) return state;
+  return state.map((item, i) => (i >= lastAssistant ? { ...item, metrics: usage } : item));
+}
+
+/**
  * Reduce a single AgentManager stream event into the UI timeline
  */
 export function reduceStreamUpdate(
@@ -1684,13 +1731,14 @@ export function reduceStreamUpdate(
       );
     case "thread_started":
     case "turn_started":
-    case "turn_completed":
     case "turn_failed":
     case "turn_canceled":
     case "permission_requested":
     case "permission_resolved":
     case "attention_required":
       return finalizeActiveThoughts(state);
+    case "turn_completed":
+      return attachTurnCompletionMetrics(finalizeActiveThoughts(state), event);
     default:
       return state;
   }

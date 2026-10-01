@@ -424,6 +424,8 @@ export const en = {
       forkUnavailable: "Update the host to use this.",
       forkMissingWorkspace: "This agent is not in a workspace.",
       forkFailed: "Failed to fork chat",
+      secondOpinion: "Second opinion",
+      noOtherModels: "No other models available",
       jumpToUserMessage: "Jump to user message",
       openFile: "Open file",
       copied: "Copied",

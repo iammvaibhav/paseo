@@ -1,3 +1,6 @@
+import type { AgentUsage } from "@getpaseo/protocol/agent-types";
+import { formatTurnMetricsLine } from "@/agent-stream/turn-metrics";
+import { SecondOpinionMenu, type SecondOpinionMenuProps } from "@/components/second-opinion-menu";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { TaskListRow } from "@/components/task-list-row";
 import {
@@ -631,6 +634,10 @@ interface AssistantTurnFooterProps {
   durationMs?: number | null;
   onFork?: (target: AssistantForkTarget) => Promise<void> | void;
   onJumpToUserMessage?: () => void;
+  metrics?: AgentUsage;
+  turnMetricsEnabled?: boolean;
+  onSecondOpinion?: SecondOpinionMenuProps;
+  model?: string | null;
 }
 
 const assistantTurnFooterStylesheet = StyleSheet.create((theme) => ({
@@ -676,6 +683,10 @@ export const AssistantTurnFooter = memo(function AssistantTurnFooter({
   durationMs,
   onFork,
   onJumpToUserMessage,
+  metrics,
+  turnMetricsEnabled = false,
+  onSecondOpinion,
+  model,
 }: AssistantTurnFooterProps) {
   const [hovered, setHovered] = useState(false);
   const [pressedReveal, setPressedReveal] = useState(false);
@@ -690,6 +701,15 @@ export const AssistantTurnFooter = memo(function AssistantTurnFooter({
     };
   }, []);
 
+  const metricsLine = useMemo(() => {
+    if (!turnMetricsEnabled) return null;
+    const mergedMetrics = metrics?.model || !model ? metrics : { ...metrics, model };
+    return formatTurnMetricsLine({
+      metrics: mergedMetrics,
+      fallbackDurationMs: durationMs,
+    });
+  }, [turnMetricsEnabled, metrics, model, durationMs]);
+
   const durationLabel = useMemo(
     () =>
       durationMs !== undefined && durationMs !== null
@@ -702,8 +722,8 @@ export const AssistantTurnFooter = memo(function AssistantTurnFooter({
     [completedAt],
   );
 
-  const primaryLabel = durationLabel || timestampLabel;
-  const canSwap = Boolean(durationLabel && timestampLabel);
+  const primaryLabel = metricsLine || durationLabel || timestampLabel;
+  const canSwap = Boolean((metricsLine || durationLabel) && timestampLabel);
   const showTimestamp = canSwap && (isWeb ? hovered : pressedReveal);
 
   const handleHoverIn = useCallback(() => setHovered(true), []);
@@ -738,21 +758,30 @@ export const AssistantTurnFooter = memo(function AssistantTurnFooter({
         <JumpToUserMessageButton onPress={onJumpToUserMessage} />
       ) : null}
       {canFork ? <AssistantForkMenu onFork={handleFork} /> : null}
+      {onSecondOpinion ? (
+        <SecondOpinionMenu
+          serverId={onSecondOpinion.serverId}
+          currentProvider={onSecondOpinion.currentProvider}
+          currentModel={onSecondOpinion.currentModel}
+          cwd={onSecondOpinion.cwd}
+          onSecondOpinion={onSecondOpinion.onSecondOpinion}
+        />
+      ) : null}
       {primaryLabel ? (
         <Pressable
           onPress={handlePress}
           onHoverIn={handleHoverIn}
           onHoverOut={handleHoverOut}
           accessibilityRole={canSwap ? "button" : undefined}
-          accessibilityLabel={canSwap ? `${durationLabel}, ended ${timestampLabel}` : primaryLabel}
+          accessibilityLabel={canSwap ? `${primaryLabel}, ended ${timestampLabel}` : primaryLabel}
         >
           <View style={assistantTurnFooterStylesheet.labelWrapper}>
             {/* Sizer reserves space for whichever label is longer so the
                 container width is stable across hover transitions. */}
-            <Text style={assistantTurnFooterStylesheet.labelSizer} aria-hidden>
+            <Text style={assistantTurnFooterStylesheet.labelSizer} aria-hidden numberOfLines={1}>
               {primaryLabel.length >= timestampLabel.length ? primaryLabel : timestampLabel}
             </Text>
-            <Text style={assistantTurnFooterStylesheet.labelOverlay}>
+            <Text style={assistantTurnFooterStylesheet.labelOverlay} numberOfLines={1}>
               {showTimestamp ? timestampLabel : primaryLabel}
             </Text>
           </View>

@@ -1,3 +1,5 @@
+import type { AgentUsage } from "@getpaseo/protocol/agent-types";
+import { collectTurnEditedFiles } from "./turn-metrics";
 import React, { memo, useCallback, useMemo, type ReactNode } from "react";
 import { View } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
@@ -44,8 +46,14 @@ export type AssistantTurnForkHandler = (input: {
   target: AssistantForkTarget;
   boundary: AssistantTurnForkBoundary;
 }) => Promise<void> | void;
+export type AssistantTurnSecondOpinionHandler = (input: {
+  target: { provider: string; model: string };
+  boundary: AssistantTurnForkBoundary;
+  userMessage?: string;
+  assistantText?: string;
+  editedFiles?: string[];
+}) => Promise<void> | void;
 export type JumpToUserMessageHandler = (itemId: string) => void;
-
 /**
  * Fork handler for the turn that is still streaming. It deliberately takes no
  * boundary: `selectForkContextRows` projects the entire timeline when neither
@@ -68,6 +76,13 @@ export const TurnFooter = memo(function TurnFooter({
   onJumpToUserMessage,
   onForkInFlightTurn,
   density = "comfortable",
+  supportsTurnMetrics,
+  canSecondOpinion,
+  onSecondOpinionAssistantTurn,
+  serverId,
+  agentProvider,
+  agentModel,
+  agentCwd,
 }: {
   isRunning: boolean;
   inFlightTurnStartedAt: Date | null;
@@ -78,6 +93,13 @@ export const TurnFooter = memo(function TurnFooter({
   onJumpToUserMessage?: JumpToUserMessageHandler;
   onForkInFlightTurn?: InFlightTurnForkHandler;
   density?: TurnFooterDensity;
+  supportsTurnMetrics?: boolean;
+  canSecondOpinion?: boolean;
+  onSecondOpinionAssistantTurn?: AssistantTurnSecondOpinionHandler;
+  serverId?: string;
+  agentProvider?: string;
+  agentModel?: string | null;
+  agentCwd?: string | null;
 }) {
   // Compact grid tiles must not keep the live elapsed row or the completed
   // 3-dot/fork chrome. Hide the whole footer, not just the fork control.
@@ -107,6 +129,14 @@ export const TurnFooter = memo(function TurnFooter({
       supportsTimelineCursor={supportsTimelineCursor}
       onForkAssistantTurn={onForkAssistantTurn}
       onJumpToUserMessage={onJumpToUserMessage}
+      supportsTurnMetrics={supportsTurnMetrics}
+      canSecondOpinion={canSecondOpinion}
+      onSecondOpinionAssistantTurn={onSecondOpinionAssistantTurn}
+      serverId={serverId}
+      agentProvider={agentProvider}
+      agentModel={agentModel}
+      agentCwd={agentCwd}
+      metrics={host.metrics}
     />
   );
 });
@@ -119,6 +149,14 @@ export const CompletedTurnFooterRow = memo(function CompletedTurnFooterRow({
   supportsTimelineCursor,
   onForkAssistantTurn,
   onJumpToUserMessage,
+  supportsTurnMetrics,
+  canSecondOpinion,
+  onSecondOpinionAssistantTurn,
+  serverId,
+  agentProvider,
+  agentModel,
+  agentCwd,
+  metrics,
 }: {
   strategy: TurnContentStrategy;
   items: StreamItem[];
@@ -127,6 +165,14 @@ export const CompletedTurnFooterRow = memo(function CompletedTurnFooterRow({
   supportsTimelineCursor: boolean;
   onForkAssistantTurn?: AssistantTurnForkHandler;
   onJumpToUserMessage?: JumpToUserMessageHandler;
+  supportsTurnMetrics?: boolean;
+  canSecondOpinion?: boolean;
+  onSecondOpinionAssistantTurn?: AssistantTurnSecondOpinionHandler;
+  serverId?: string;
+  agentProvider?: string;
+  agentModel?: string | null;
+  agentCwd?: string | null;
+  metrics?: AgentUsage;
 }) {
   return (
     <TurnFooterRow>
@@ -138,6 +184,14 @@ export const CompletedTurnFooterRow = memo(function CompletedTurnFooterRow({
         supportsTimelineCursor={supportsTimelineCursor}
         onForkAssistantTurn={onForkAssistantTurn}
         onJumpToUserMessage={onJumpToUserMessage}
+        supportsTurnMetrics={supportsTurnMetrics}
+        canSecondOpinion={canSecondOpinion}
+        onSecondOpinionAssistantTurn={onSecondOpinionAssistantTurn}
+        serverId={serverId}
+        agentProvider={agentProvider}
+        agentModel={agentModel}
+        agentCwd={agentCwd}
+        metrics={metrics}
       />
     </TurnFooterRow>
   );
@@ -204,6 +258,14 @@ function CompletedTurnFooter({
   supportsTimelineCursor,
   onForkAssistantTurn,
   onJumpToUserMessage,
+  supportsTurnMetrics = false,
+  canSecondOpinion = false,
+  onSecondOpinionAssistantTurn,
+  serverId,
+  agentProvider,
+  agentModel,
+  agentCwd,
+  metrics: explicitMetrics,
 }: {
   strategy: TurnContentStrategy;
   items: StreamItem[];
@@ -212,7 +274,21 @@ function CompletedTurnFooter({
   supportsTimelineCursor: boolean;
   onForkAssistantTurn?: AssistantTurnForkHandler;
   onJumpToUserMessage?: JumpToUserMessageHandler;
+  supportsTurnMetrics?: boolean;
+  canSecondOpinion?: boolean;
+  onSecondOpinionAssistantTurn?: AssistantTurnSecondOpinionHandler;
+  serverId?: string;
+  agentProvider?: string;
+  agentModel?: string | null;
+  agentCwd?: string | null;
+  metrics?: AgentUsage;
 }) {
+  const assistantItem = items[startIndex];
+  const metrics =
+    explicitMetrics ??
+    (assistantItem && assistantItem.kind === "assistant_message"
+      ? assistantItem.metrics
+      : undefined);
   const getContent = useCallback(
     () =>
       collectAssistantResponseContentForStreamRenderStrategy({
@@ -251,16 +327,74 @@ function CompletedTurnFooter({
     }
     onJumpToUserMessage(precedingUserMessage.id);
   }, [onJumpToUserMessage, precedingUserMessage]);
+
+  const handleSecondOpinion = useCallback(
+    async (target: { provider: string; model: string }) => {
+      if (!boundary || !onSecondOpinionAssistantTurn) return;
+      const assistantText = getContent();
+      const userMessage = precedingUserMessage?.text;
+      const editedFiles = collectTurnEditedFiles({
+        items,
+        startIndex,
+        getNeighborIndex: strategy.getNeighborIndex,
+      });
+      await onSecondOpinionAssistantTurn({
+        target,
+        boundary,
+        userMessage,
+        assistantText,
+        editedFiles,
+      });
+    },
+    [
+      boundary,
+      onSecondOpinionAssistantTurn,
+      getContent,
+      precedingUserMessage?.text,
+      items,
+      startIndex,
+      strategy.getNeighborIndex,
+    ],
+  );
+
+  const secondOpinionProps = useMemo(
+    () =>
+      canSecondOpinion && boundary && onSecondOpinionAssistantTurn && serverId
+        ? {
+            serverId,
+            currentProvider: agentProvider,
+            currentModel: metrics?.model ?? agentModel ?? null,
+            cwd: agentCwd,
+            onSecondOpinion: handleSecondOpinion,
+          }
+        : undefined,
+    [
+      agentCwd,
+      agentModel,
+      agentProvider,
+      boundary,
+      canSecondOpinion,
+      handleSecondOpinion,
+      metrics?.model,
+      onSecondOpinionAssistantTurn,
+      serverId,
+    ],
+  );
+
   return (
     <View style={stylesheet.turnFooterSlot}>
       <AssistantTurnFooter
         getContent={getContent}
         completedAt={timing?.completedAt}
         durationMs={timing?.durationMs}
+        metrics={metrics}
+        model={agentModel}
+        turnMetricsEnabled={supportsTurnMetrics}
         onFork={boundary && onForkAssistantTurn ? handleFork : undefined}
         onJumpToUserMessage={
           precedingUserMessage && onJumpToUserMessage ? handleJumpToUserMessage : undefined
         }
+        onSecondOpinion={secondOpinionProps}
       />
     </View>
   );

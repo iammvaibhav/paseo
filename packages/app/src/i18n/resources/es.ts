@@ -432,6 +432,8 @@ export const es: TranslationResources = {
       forkUnavailable: "Actualiza el host para usar esto.",
       forkMissingWorkspace: "Este agente no está en un espacio de trabajo.",
       forkFailed: "No se pudo bifurcar el chat",
+      secondOpinion: "Second opinion",
+      noOtherModels: "No other models available",
       jumpToUserMessage: "Ir al mensaje del usuario",
       openFile: "Abrir archivo",
       copied: "Copiado",

@@ -426,6 +426,8 @@ export const zhCN: TranslationResources = {
       forkUnavailable: "请更新主机以使用此功能。",
       forkMissingWorkspace: "此 Agent 不在工作区中。",
       forkFailed: "分叉聊天失败",
+      secondOpinion: "Second opinion",
+      noOtherModels: "No other models available",
       jumpToUserMessage: "跳转到用户消息",
       openFile: "打开文件",
       copied: "已复制",
