@@ -1162,6 +1162,18 @@ type TicketsResponseType<TType extends TicketsRequestType> = TType extends `${in
 export type TicketsResponsePayload<TType extends TicketsRequestType> = CorrelatedResponsePayload<
   TicketsResponseType<TType>
 >;
+type NotesRequestMessage = Extract<SessionInboundMessage, { type: `notes.${string}.request` }>;
+type NotesRequestType = NotesRequestMessage["type"];
+export type NotesRequestParams<TType extends NotesRequestType> = Omit<
+  Extract<NotesRequestMessage, { type: TType }>,
+  "type" | "requestId"
+>;
+type NotesResponseType<TType extends NotesRequestType> = TType extends `${infer Prefix}.request`
+  ? Extract<`${Prefix}.response`, CorrelatedResponseType>
+  : never;
+export type NotesResponsePayload<TType extends NotesRequestType> = CorrelatedResponsePayload<
+  NotesResponseType<TType>
+>;
 
 export class DaemonConnectionError extends Error {
   constructor(
@@ -5741,12 +5753,14 @@ export class DaemonClient {
   async listProviderUsage(options?: {
     requestId?: string;
     forceRefresh?: boolean;
+    providerId?: string;
   }): Promise<ProviderUsageListPayload> {
     return this.sendNamespacedCorrelatedSessionRequest({
       requestId: options?.requestId,
       message: {
         type: "provider.usage.list.request",
         ...(options?.forceRefresh ? { forceRefresh: true } : {}),
+        ...(options?.providerId ? { providerId: options.providerId } : {}),
       },
     });
   }
@@ -6847,6 +6861,29 @@ export class DaemonClient {
       responseType,
       timeout: options.timeout,
     }) as Promise<TicketsResponsePayload<TType>>;
+  }
+
+  /**
+   * Native notes RPC (docs/rpc-namespacing.md pairs). `type` is any
+   * `notes.*.request`; the matching `.response` payload is returned. The
+   * payload carries `error` (null on success) — callers decide whether an
+   * error throws. Only the notes host serves these.
+   */
+  async notesRequest<TType extends NotesRequestType & string>(
+    type: TType,
+    params: NotesRequestParams<TType>,
+    options: { requestId?: string; timeout?: number } = {},
+  ): Promise<NotesResponsePayload<TType>> {
+    const responseType = (type as string).replace(
+      /\.request$/,
+      ".response",
+    ) as NotesResponseType<TType>;
+    return this.sendCorrelatedSessionRequest({
+      requestId: options.requestId,
+      message: { ...params, type },
+      responseType,
+      timeout: options.timeout,
+    }) as Promise<NotesResponsePayload<TType>>;
   }
 
   /**

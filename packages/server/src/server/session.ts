@@ -195,6 +195,7 @@ import { WebhookSession } from "./session/webhook/webhook-session.js";
 import type { WebhookService } from "./webhook/service.js";
 import { TicketsSession, type TicketsHost } from "./tickets/session.js";
 import { DocThreadsSession, type DocThreadsHost } from "./doc-threads/session.js";
+import { NotesSession, type NotesHost } from "./notes/session.js";
 import type { PeerManager } from "./peers/peer-manager.js";
 import type { MissionControlService } from "./mission-control/service.js";
 import {
@@ -534,6 +535,8 @@ export interface SessionOptions {
   docThreads?: DocThreadsHost | null;
   // Native tickets; null/absent = this daemon has no tickets wiring.
   tickets?: TicketsHost | null;
+  // Native notes; null/absent = this daemon has no notes wiring.
+  notes?: NotesHost | null;
   peerManager?: PeerManager | null;
   missionControlService?: MissionControlService | null;
   transcriptSearch?: TranscriptSearchService | null;
@@ -940,8 +943,9 @@ export class Session {
   private readonly scheduleSession: ScheduleSession;
   private readonly webhookSession: WebhookSession;
   private readonly docThreadsSession: DocThreadsSession;
-  private readonly peerManager: PeerManager | null;
   private readonly ticketsSession: TicketsSession;
+  private readonly notesSession: NotesSession;
+  private readonly peerManager: PeerManager | null;
   private readonly missionControlService: MissionControlService | null;
   private readonly transcriptSearch: TranscriptSearchService | null;
   private readonly warmWorktreePool?: WarmWorktreePool;
@@ -1145,6 +1149,11 @@ export class Session {
     this.ticketsSession = new TicketsSession({
       emit: (msg) => this.emit(msg),
       host: orNull(options.tickets),
+      logger: this.sessionLogger,
+    });
+    this.notesSession = new NotesSession({
+      emit: (msg) => this.emit(msg),
+      host: orNull(options.notes),
       logger: this.sessionLogger,
     });
     this.peerManager = orNull(peerManager);
@@ -2579,6 +2588,7 @@ export class Session {
     (msg) => this.dispatchScheduleMessage(msg),
     (msg) => this.docThreadsSession.dispatch(msg),
     (msg) => this.ticketsSession.dispatch(msg),
+    (msg) => this.notesSession.dispatch(msg),
     (msg) => this.dispatchPlannotatorMessage(msg),
     (msg) => this.dispatchMissionControlPeersMessage(msg),
     (msg) => this.dispatchMissionControlEventsMessage(msg),
@@ -10672,16 +10682,17 @@ function isValidGitHubRepoSegment(value: string): boolean {
   return /^[A-Za-z0-9._-]+$/u.test(value);
 }
 
-function sessionEventCategory(message: SessionOutboundMessage): SessionEventSubscription | null {
-  switch (message.type) {
+/** Owned-push events whose outbound type is its own subscription name. */
+function passthroughEventCategory(
+  type: SessionOutboundMessage["type"],
+): SessionEventSubscription | null {
+  switch (type) {
     case "project.update":
     case "providers_snapshot_update":
     case "agent_attention_required":
     case "agent_permission_request":
     case "agent_permission_resolved":
     case "checkout_status_update":
-    case "doc_threads.changed":
-      return message.type;
     case "script_status_update":
     case "workspace_setup_progress":
     case "agent.provider_subagents.update":
@@ -10690,15 +10701,22 @@ function sessionEventCategory(message: SessionOutboundMessage): SessionEventSubs
     case "hub.execution.agent.update":
     case "hub.execution.agent.stream":
     case "tickets.changed":
+    case "notes.changed":
+    case "doc_threads.changed":
     case "mission_control_event":
     case "provider.usage.updated":
     case "plannotator.session.event":
-      return message.type;
-    case "status":
-      return statusEventCategory(message.payload);
+      return type;
     default:
       return null;
   }
+}
+
+function sessionEventCategory(message: SessionOutboundMessage): SessionEventSubscription | null {
+  const passthrough = passthroughEventCategory(message.type);
+  if (passthrough) return passthrough;
+  if (message.type === "status") return statusEventCategory(message.payload);
+  return null;
 }
 
 function statusEventCategory(

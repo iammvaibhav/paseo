@@ -22,6 +22,7 @@ import {
 } from "@/data/providers-snapshot";
 import { providerUsageQueryKey } from "@/provider-usage/query-key";
 import { ticketsQueryRoot } from "@/tickets/query-keys";
+import { notesQueryRoot } from "@/notes/query-keys";
 
 type ProvidersSnapshotUpdateMessage = Extract<
   SessionOutboundMessage,
@@ -69,7 +70,7 @@ interface WorkspaceTerminalsRegistration extends WorkspaceTerminalsRoute {
   subscription: OwnedSubscription<TerminalsChangedMessage["payload"]>;
 }
 
-type EventStreamDomain = "tickets" | "missionControlEvents" | "providerUsage";
+type EventStreamDomain = "notes" | "tickets" | "missionControlEvents" | "providerUsage";
 
 /** A query that needs one connection event stream held while it is observed. */
 interface EventStreamRoute {
@@ -79,6 +80,17 @@ interface EventStreamRoute {
 }
 
 type ServerDataRoute = CheckoutDiffRoute | WorkspaceTerminalsRoute | EventStreamRoute;
+
+// COMPAT(fastProviderUsage): stable identity for one usage card across full and
+// per-provider pushes. Matches the daemon's providerCardKey in
+// packages/server/src/services/quota-fetcher/service.ts.
+function providerUsageCardKey(usage: {
+  providerId: string;
+  groupId?: string | null;
+  accountEmail?: string | null;
+}): string {
+  return `${usage.providerId}:${usage.groupId ?? ""}:${usage.accountEmail ?? ""}`;
+}
 
 interface EventStream {
   event: SessionEventSubscription;
@@ -91,6 +103,14 @@ interface EventStream {
 
 // Owned-subscription daemons deliver these pushes only to a socket subscribed to them.
 const EVENT_STREAMS: Record<EventStreamDomain, EventStream> = {
+  notes: {
+    event: "notes.changed",
+    apply: ({ message, queryClient, serverId }) => {
+      if (message.type === "notes.changed") {
+        void queryClient.invalidateQueries({ queryKey: notesQueryRoot(serverId) });
+      }
+    },
+  },
   tickets: {
     event: "tickets.changed",
     apply: ({ message, queryClient, serverId }) => {
@@ -118,8 +138,22 @@ const EVENT_STREAMS: Record<EventStreamDomain, EventStream> = {
     event: "provider.usage.updated",
     apply: ({ message, queryClient, serverId }) => {
       if (message.type === "provider.usage.updated") {
-        const { subscriptionId: _subscriptionId, ...snapshot } = message.payload;
-        queryClient.setQueryData(providerUsageQueryKey(serverId), snapshot);
+        // COMPAT(fastProviderUsage): per-provider pushes carry only the cards
+        // that just refreshed. Merge by (providerId, groupId, accountEmail) so
+        // a fast provider never wipes a sibling that is still refreshing.
+        queryClient.setQueryData(providerUsageQueryKey(serverId), (current) => {
+          const { subscriptionId: _subscriptionId, ...snapshot } = message.payload;
+          const previous = (current as { fetchedAt?: string; providers?: unknown[] } | undefined)
+            ?.providers;
+          if (!Array.isArray(previous)) return snapshot;
+          const fresh = snapshot.providers;
+          if (!Array.isArray(fresh) || fresh.length === 0) return snapshot;
+          const freshKeys = new Set(fresh.map((usage) => providerUsageCardKey(usage)));
+          const merged = (previous as typeof fresh).filter(
+            (usage) => !freshKeys.has(providerUsageCardKey(usage)),
+          );
+          return { ...snapshot, providers: [...merged, ...fresh] };
+        });
       }
     },
   },
@@ -206,6 +240,12 @@ const RECONNECT_REPAIR_POLICIES: ReconnectRepairPolicy[] = [
       void queryClient.invalidateQueries({ queryKey: ticketsQueryRoot(serverId) });
     },
   },
+  {
+    domain: "notes",
+    invalidate: ({ queryClient, serverId }) => {
+      void queryClient.invalidateQueries({ queryKey: notesQueryRoot(serverId) });
+    },
+  },
 ];
 
 export function checkoutDiffPushRoute(input: {
@@ -253,6 +293,13 @@ export function ticketsPushRoute(input: {
   serverId: string;
 }): ServerDataQueryMeta {
   return { serverData: { domain: "tickets", enabled: input.enabled, serverId: input.serverId } };
+}
+/**
+ * Notes queries declare this route, so the router holds the notes.changed
+ * stream only for the notes host and only while a notes surface is open.
+ */
+export function notesPushRoute(input: { enabled: boolean; serverId: string }): ServerDataQueryMeta {
+  return { serverData: { domain: "notes", enabled: input.enabled, serverId: input.serverId } };
 }
 
 /** Mission Control feed queries hold the mission_control_event stream while a feed is open. */
@@ -757,7 +804,12 @@ function readServerDataRoute(value: Record<string, unknown>): ServerDataRoute | 
   if (typeof enabled !== "boolean" || typeof serverId !== "string") {
     return null;
   }
-  if (domain === "tickets" || domain === "missionControlEvents" || domain === "providerUsage") {
+  if (
+    domain === "notes" ||
+    domain === "tickets" ||
+    domain === "missionControlEvents" ||
+    domain === "providerUsage"
+  ) {
     return { domain, enabled, serverId };
   }
   if (typeof cwd !== "string") {
