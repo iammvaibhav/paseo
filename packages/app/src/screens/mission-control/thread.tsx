@@ -23,6 +23,7 @@ import {
   TodoListCard,
   ToolCall,
   UserMessage,
+  AiReviewDecision,
 } from "@/components/message";
 import { type BottomAnchorRouteRequest } from "@/agent-stream/bottom-anchor-controller";
 import { AnchoredList } from "@/agent-stream/anchored-list";
@@ -261,6 +262,10 @@ function CommanderMessageRow({
       return verbose ? (
         <CompactionMarker status={item.status} trigger={item.trigger} preTokens={item.preTokens} />
       ) : null;
+    case "ai_review_decision":
+      return (
+        <AiReviewDecision decision={item.decision} toolName={item.toolName} reason={item.reason} />
+      );
     default:
       return null;
   }

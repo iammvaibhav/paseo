@@ -42,6 +42,7 @@ import {
   Scissors,
   MicVocal,
   FileSymlink,
+  NotebookPen,
 } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
@@ -124,6 +125,10 @@ import {
   type MarkdownCopyInlineTag,
 } from "@/assistant-selection-copy/markup";
 import { capAssistantMessageForRender, getUtf8ByteLength } from "./assistant-message-render-limit";
+import { useToast } from "@/contexts/toast-context";
+import { useNotesHost } from "@/notes/use-notes-host";
+import { useNoteMutations } from "@/notes/queries";
+import { deriveNoteTitle } from "@/notes/mentions";
 export type { InlinePathTarget } from "@/assistant-file-links";
 export type { AssistantForkTarget };
 
@@ -183,6 +188,13 @@ const ThemedLoadingSpinner = withUnistyles(LoadingSpinner);
 const ThemedNotificationInfo = withUnistyles(Info);
 const ThemedNotificationWarning = withUnistyles(TriangleAlertIcon);
 const ThemedNotificationError = withUnistyles(XCircle);
+const ThemedCheck = withUnistyles(Check);
+const ThemedXCircle = withUnistyles(XCircle);
+const ThemedInfo = withUnistyles(Info);
+
+const statusSuccessColorMapping = (theme: Theme) => ({ color: theme.colors.statusSuccess });
+const statusDangerColorMapping = (theme: Theme) => ({ color: theme.colors.statusDanger });
+const statusWarningColorMapping = (theme: Theme) => ({ color: theme.colors.statusWarning });
 
 const foregroundColorMapping = (theme: Theme) => ({ color: theme.colors.foreground });
 const foregroundMutedColorMapping = (theme: Theme) => ({
@@ -625,12 +637,20 @@ export const UserMessage = memo(function UserMessage({
   );
 });
 
+export interface AssistantTurnSourceContext {
+  agentId?: string;
+  serverId?: string;
+  cwd?: string;
+  projectKey?: string;
+}
+
 interface AssistantTurnFooterProps {
   getContent: () => string;
   completedAt?: Date;
   durationMs?: number | null;
   onFork?: (target: AssistantForkTarget) => Promise<void> | void;
   onJumpToUserMessage?: () => void;
+  sourceContext?: AssistantTurnSourceContext;
 }
 
 const assistantTurnFooterStylesheet = StyleSheet.create((theme) => ({
@@ -676,6 +696,7 @@ export const AssistantTurnFooter = memo(function AssistantTurnFooter({
   durationMs,
   onFork,
   onJumpToUserMessage,
+  sourceContext,
 }: AssistantTurnFooterProps) {
   const [hovered, setHovered] = useState(false);
   const [pressedReveal, setPressedReveal] = useState(false);
@@ -732,6 +753,11 @@ export const AssistantTurnFooter = memo(function AssistantTurnFooter({
     <View style={assistantTurnFooterStylesheet.container}>
       <TurnCopyButton
         getContent={getContent}
+        containerStyle={assistantTurnFooterStylesheet.copyButton}
+      />
+      <SaveAsNoteButton
+        getContent={getContent}
+        sourceContext={sourceContext}
         containerStyle={assistantTurnFooterStylesheet.copyButton}
       />
       {canJumpToUserMessage && onJumpToUserMessage ? (
@@ -1148,6 +1174,91 @@ export const TurnCopyButton = memo(function TurnCopyButton({
           <Check size={ICON_SIZE.sm} color={iconColor} />
         ) : (
           <Copy size={ICON_SIZE.sm} color={iconColor} />
+        );
+      }}
+    </Pressable>
+  );
+});
+interface SaveAsNoteButtonProps {
+  getContent: () => string;
+  sourceContext?: AssistantTurnSourceContext;
+  containerStyle?: StyleProp<ViewStyle>;
+}
+
+export const SaveAsNoteButton = memo(function SaveAsNoteButton({
+  getContent,
+  sourceContext,
+  containerStyle,
+}: SaveAsNoteButtonProps) {
+  const { t } = useTranslation();
+  const { status } = useNotesHost();
+  const mutations = useNoteMutations();
+  const toast = useToast();
+  const [saved, setSaved] = useState(false);
+  const [pending, setPending] = useState(false);
+  const saveTimeoutRef = useRef<NodeJS.Timeout | number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      clearTimeout(saveTimeoutRef.current ?? undefined);
+    };
+  }, []);
+
+  const handleSave = useCallback(async () => {
+    if (pending) return;
+    const content = getContent();
+    if (!content.trim()) return;
+    setPending(true);
+    try {
+      const title = deriveNoteTitle(content);
+      await mutations.upsertNote({
+        title,
+        body: content,
+        ...(sourceContext?.agentId ? { sourceAgentId: sourceContext.agentId } : {}),
+        ...(sourceContext?.serverId ? { sourceHost: sourceContext.serverId } : {}),
+        ...(sourceContext?.cwd ? { sourceCwd: sourceContext.cwd } : {}),
+        ...(sourceContext?.projectKey ? { sourceProjectKey: sourceContext.projectKey } : {}),
+      });
+      setSaved(true);
+      toast.show(t("notes.saveAsNote.saved"));
+      clearTimeout(saveTimeoutRef.current ?? undefined);
+      saveTimeoutRef.current = setTimeout(() => {
+        setSaved(false);
+        saveTimeoutRef.current = null;
+      }, 1500);
+    } catch (error) {
+      toast.error(
+        t("notes.saveAsNote.failed", {
+          message: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    } finally {
+      setPending(false);
+    }
+  }, [getContent, mutations, pending, sourceContext, t, toast]);
+
+  if (status !== "ready") {
+    return null;
+  }
+
+  const pressableStyle = [turnCopyButtonStylesheet.container, containerStyle];
+
+  return (
+    <Pressable
+      onPress={handleSave}
+      style={pressableStyle}
+      accessibilityRole="button"
+      accessibilityLabel={saved ? t("notes.saveAsNote.saved") : t("notes.saveAsNote.label")}
+      testID="turn-save-as-note"
+    >
+      {({ hovered }) => {
+        const iconColor = hovered
+          ? turnCopyButtonStylesheet.iconHoveredColor.color
+          : turnCopyButtonStylesheet.iconColor.color;
+        return saved ? (
+          <Check size={ICON_SIZE.sm} color={iconColor} />
+        ) : (
+          <NotebookPen size={ICON_SIZE.sm} color={iconColor} />
         );
       }}
     </Pressable>
@@ -2297,6 +2408,67 @@ const compactionStylesheet = StyleSheet.create((theme) => ({
     color: theme.colors.foregroundMuted,
   },
 }));
+
+export interface AiReviewDecisionProps {
+  decision: "allow" | "deny" | "escalate";
+  toolName?: string;
+  reason: string;
+}
+
+const aiReviewDecisionStyles = StyleSheet.create((theme) => ({
+  container: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[2],
+    paddingVertical: theme.spacing[1.5],
+    paddingHorizontal: theme.spacing[4],
+  },
+  text: {
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.sm,
+    flexShrink: 0,
+  },
+  reason: {
+    color: theme.colors.foreground,
+    fontSize: theme.fontSize.sm,
+    flexShrink: 1,
+  },
+}));
+
+function resolveAiReviewVisuals(decision: "allow" | "deny" | "escalate"): {
+  Icon: typeof ThemedCheck;
+  mapping: typeof statusSuccessColorMapping;
+  label: string;
+} {
+  if (decision === "allow") {
+    return { Icon: ThemedCheck, mapping: statusSuccessColorMapping, label: "Allowed" };
+  }
+  if (decision === "deny") {
+    return { Icon: ThemedXCircle, mapping: statusDangerColorMapping, label: "Denied" };
+  }
+  return { Icon: ThemedInfo, mapping: statusWarningColorMapping, label: "Escalated" };
+}
+
+export const AiReviewDecision = memo(function AiReviewDecision({
+  decision,
+  toolName,
+  reason,
+}: AiReviewDecisionProps) {
+  const { Icon, mapping, label } = resolveAiReviewVisuals(decision);
+
+  return (
+    <View style={aiReviewDecisionStyles.container} testID="ai-review-decision-row">
+      <Icon size={14} uniProps={mapping} />
+      <Text style={aiReviewDecisionStyles.text} numberOfLines={1}>
+        {label}
+        {toolName ? ` · ${toolName}` : ""}
+      </Text>
+      <Text style={aiReviewDecisionStyles.reason} numberOfLines={1} ellipsizeMode="tail">
+        {reason}
+      </Text>
+    </View>
+  );
+});
 
 export const CompactionMarker = memo(function CompactionMarker({
   status,

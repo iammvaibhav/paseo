@@ -76,6 +76,7 @@ import { ICON_SIZE } from "@/styles/theme";
 import type { Theme } from "@/styles/theme";
 import { getProviderIcon } from "@/components/provider-icons";
 import { BrowserToolsOptInCard } from "./browser-tools-card";
+import { AiReviewerSection } from "./ai-reviewer-section";
 import { restartDaemonFromSettings, updateDaemonFromSettings } from "./daemon-lifecycle";
 
 const ThemedRestart = withUnistyles(RotateCw);
@@ -388,6 +389,8 @@ export function HostSettingsPage({
       <SettingsSection title="Mission Control">
         <MissionControlCard serverId={serverId} />
       </SettingsSection>
+
+      <AiReviewerSection serverId={serverId} />
 
       {isLocalDaemon ? <LocalDaemonSection /> : null}
 

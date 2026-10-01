@@ -12,6 +12,8 @@ import {
   type ProviderSelectorProvider,
 } from "@/provider-selection/provider-selection";
 import { filterSelectableModels } from "@/provider-selection/model-catalog";
+import { useHostFeature } from "@/runtime/host-features";
+import { AI_REVIEW_AGENT_MODE } from "@/composer/agent-controls/mode-control";
 import { OptimisticFormPreferences } from "@/create-agent-preferences/optimistic-preferences";
 import { applyAgentProfilePreferences } from "@/create-agent-preferences/preferences";
 import { useProvidersSnapshot } from "./use-providers-snapshot";
@@ -279,7 +281,18 @@ export function useAgentFormState(options: UseAgentFormStateOptions): UseAgentFo
   const allProviderModels = snapshotAllProviderModels;
   const modelSelectorProviders = snapshotModelSelectorProviders;
   const availableModels = snapshotSelectedProviderModels;
-  const modeOptions = snapshotSelectedProviderModes;
+  const supportsAiReviewer = useHostFeature(serverId, "aiReviewer");
+  const modeOptions = useMemo(() => {
+    let modes = snapshotSelectedProviderModes;
+    if (supportsAiReviewer) {
+      if (modes.length > 0 && !modes.some((m) => m.id === "ai-review")) {
+        modes = [...modes, AI_REVIEW_AGENT_MODE];
+      }
+    } else {
+      modes = modes.filter((m) => m.id !== "ai-review");
+    }
+    return modes;
+  }, [snapshotSelectedProviderModes, supportsAiReviewer]);
   const isModelSelectionLoading =
     resolution.status === "pending" || snapshotIsLoading || selectedProviderIsLoading;
   const isAllModelsLoading = isModelSelectionLoading;

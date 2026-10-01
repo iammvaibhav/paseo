@@ -1205,6 +1205,22 @@ type CorrelatedResponsePayloads = {
 type CorrelatedResponsePayload<TType extends CorrelatedResponseType> =
   CorrelatedResponsePayloads[TType];
 
+type DocThreadsRequestMessage = Extract<
+  SessionInboundMessage,
+  { type: `doc_threads.${string}.request` }
+>;
+type DocThreadsRequestType = DocThreadsRequestMessage["type"];
+export type DocThreadsRequestParams<TType extends DocThreadsRequestType> = Omit<
+  Extract<DocThreadsRequestMessage, { type: TType }>,
+  "type" | "requestId"
+>;
+type DocThreadsResponseType<TType extends DocThreadsRequestType> =
+  TType extends `${infer Prefix}.request`
+    ? Extract<`${Prefix}.response`, CorrelatedResponseType>
+    : never;
+export type DocThreadsResponsePayload<TType extends DocThreadsRequestType> =
+  CorrelatedResponsePayload<DocThreadsResponseType<TType>>;
+
 type TicketsRequestMessage = Extract<SessionInboundMessage, { type: `tickets.${string}.request` }>;
 type TicketsRequestType = TicketsRequestMessage["type"];
 export type TicketsRequestParams<TType extends TicketsRequestType> = Omit<
@@ -1216,6 +1232,18 @@ type TicketsResponseType<TType extends TicketsRequestType> = TType extends `${in
   : never;
 export type TicketsResponsePayload<TType extends TicketsRequestType> = CorrelatedResponsePayload<
   TicketsResponseType<TType>
+>;
+type NotesRequestMessage = Extract<SessionInboundMessage, { type: `notes.${string}.request` }>;
+type NotesRequestType = NotesRequestMessage["type"];
+export type NotesRequestParams<TType extends NotesRequestType> = Omit<
+  Extract<NotesRequestMessage, { type: TType }>,
+  "type" | "requestId"
+>;
+type NotesResponseType<TType extends NotesRequestType> = TType extends `${infer Prefix}.request`
+  ? Extract<`${Prefix}.response`, CorrelatedResponseType>
+  : never;
+export type NotesResponsePayload<TType extends NotesRequestType> = CorrelatedResponsePayload<
+  NotesResponseType<TType>
 >;
 
 export class DaemonConnectionError extends Error {
@@ -5796,12 +5824,14 @@ export class DaemonClient {
   async listProviderUsage(options?: {
     requestId?: string;
     forceRefresh?: boolean;
+    providerId?: string;
   }): Promise<ProviderUsageListPayload> {
     return this.sendNamespacedCorrelatedSessionRequest({
       requestId: options?.requestId,
       message: {
         type: "provider.usage.list.request",
         ...(options?.forceRefresh ? { forceRefresh: true } : {}),
+        ...(options?.providerId ? { providerId: options.providerId } : {}),
       },
     });
   }
@@ -6949,6 +6979,26 @@ export class DaemonClient {
   }
 
   /**
+   * Threaded file comments RPC (docs/rpc-namespacing.md pairs). `type` is any
+   * `doc_threads.*.request`; the matching `.response` payload is returned. The
+   * payload carries `error` (null on success) — callers decide whether an
+   * error throws. Only the agent's host serves these.
+   */
+  async docThreadsRequest<TType extends DocThreadsRequestType>(
+    type: TType,
+    params: DocThreadsRequestParams<TType>,
+    options: { requestId?: string; timeout?: number } = {},
+  ): Promise<DocThreadsResponsePayload<TType>> {
+    const responseType = type.replace(/\.request$/, ".response") as DocThreadsResponseType<TType>;
+    return this.sendCorrelatedSessionRequest({
+      requestId: options.requestId,
+      message: { ...params, type },
+      responseType,
+      timeout: options.timeout,
+    }) as Promise<DocThreadsResponsePayload<TType>>;
+  }
+
+  /**
    * Native tickets RPC (docs/rpc-namespacing.md pairs). `type` is any
    * `tickets.*.request`; the matching `.response` payload is returned. The
    * payload carries `error` (null on success) — callers decide whether an
@@ -6966,6 +7016,29 @@ export class DaemonClient {
       responseType,
       timeout: options.timeout,
     }) as Promise<TicketsResponsePayload<TType>>;
+  }
+
+  /**
+   * Native notes RPC (docs/rpc-namespacing.md pairs). `type` is any
+   * `notes.*.request`; the matching `.response` payload is returned. The
+   * payload carries `error` (null on success) — callers decide whether an
+   * error throws. Only the notes host serves these.
+   */
+  async notesRequest<TType extends NotesRequestType & string>(
+    type: TType,
+    params: NotesRequestParams<TType>,
+    options: { requestId?: string; timeout?: number } = {},
+  ): Promise<NotesResponsePayload<TType>> {
+    const responseType = (type as string).replace(
+      /\.request$/,
+      ".response",
+    ) as NotesResponseType<TType>;
+    return this.sendCorrelatedSessionRequest({
+      requestId: options.requestId,
+      message: { ...params, type },
+      responseType,
+      timeout: options.timeout,
+    }) as Promise<NotesResponsePayload<TType>>;
   }
 
   /**

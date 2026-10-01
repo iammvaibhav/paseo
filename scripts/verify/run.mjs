@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createRequire } from "node:module";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
@@ -12,7 +13,7 @@ import { promisify } from "node:util";
 import { DaemonClient } from "../../packages/client/dist/daemon-client.js";
 import { buildConnectSnippet } from "./lib/connect-snippet.mjs";
 import { discoverCodeServer } from "./lib/paths.mjs";
-
+import { resolveSupervisorScript } from "./lib/daemon.mjs";
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const WORKTREE_ROOT = path.resolve(__dirname, "../..");
@@ -203,10 +204,8 @@ async function runFallbackStackUp(options = {}) {
   const cacheDir = path.join(WORKTREE_ROOT, ".dev/verify/.node-compile-cache");
   await fsp.mkdir(cacheDir, { recursive: true });
 
-  const supervisorScript = path.join(
-    WORKTREE_ROOT,
-    "packages/server/dist/scripts/supervisor-entrypoint.js",
-  );
+  const supervisorScript = resolveSupervisorScript(WORKTREE_ROOT);
+  const supervisorArgs = [supervisorScript];
   const hostHome = path.join(runDir, "hosts/commander");
   const logFile = path.join(hostHome, "daemon.log");
   const logFd = fs.openSync(logFile, "a");
@@ -232,26 +231,41 @@ async function runFallbackStackUp(options = {}) {
     PASEO_NODE_INSPECT: "0",
     PASEO_LOG_LEVEL: "warn",
     NODE_COMPILE_CACHE: cacheDir,
+    NODE_OPTIONS: (() => {
+      try {
+        const tsxLoader = createRequire(
+          path.join(WORKTREE_ROOT, "packages", "server", "package.json"),
+        ).resolve("tsx");
+        return (
+          `--import=${tsxLoader}` + (process.env.NODE_OPTIONS ? ` ${process.env.NODE_OPTIONS}` : "")
+        );
+      } catch {
+        return process.env.NODE_OPTIONS ?? "";
+      }
+    })(),
   };
-
   if (password) {
     env.PASEO_PASSWORD = password;
   }
 
   const startTime = Date.now();
-  const child = spawn(process.execPath, [supervisorScript], {
+  const child = spawn(process.execPath, supervisorArgs, {
     cwd: WORKTREE_ROOT,
     env,
     detached: true,
     stdio: ["ignore", logFd, logFd],
   });
 
-  const pidFile = path.join(hostHome, "paseo.pid");
-  let port = null;
-
   for (let i = 0; i < 60; i++) {
     if (fs.existsSync(pidFile)) {
-      port = await readPortFromPidFile(pidFile);
+      try {
+        const payload = JSON.parse(fs.readFileSync(pidFile, "utf8"));
+        const listen = String(payload.listen ?? "");
+        const match = listen.match(/^(.*?):(\d+)$/);
+        if (match) {
+          port = Number(match[2]);
+        }
+      } catch {}
     }
 
     if (port) {

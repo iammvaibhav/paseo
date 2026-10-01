@@ -24,6 +24,7 @@ import {
   LiveElapsed,
   STREAM_METADATA_FONT_SIZE,
   type AssistantForkTarget,
+  type AssistantTurnSourceContext,
 } from "@/components/message";
 import type { TurnFooterHost } from "./layout";
 import { AssistantForkMenu } from "@/components/assistant-fork-menu";
@@ -68,6 +69,7 @@ export const TurnFooter = memo(function TurnFooter({
   onJumpToUserMessage,
   onForkInFlightTurn,
   density = "comfortable",
+  sourceContext,
 }: {
   isRunning: boolean;
   inFlightTurnStartedAt: Date | null;
@@ -78,6 +80,7 @@ export const TurnFooter = memo(function TurnFooter({
   onJumpToUserMessage?: JumpToUserMessageHandler;
   onForkInFlightTurn?: InFlightTurnForkHandler;
   density?: TurnFooterDensity;
+  sourceContext?: AssistantTurnSourceContext;
 }) {
   // Compact grid tiles must not keep the live elapsed row or the completed
   // 3-dot/fork chrome. Hide the whole footer, not just the fork control.
@@ -107,6 +110,7 @@ export const TurnFooter = memo(function TurnFooter({
       supportsTimelineCursor={supportsTimelineCursor}
       onForkAssistantTurn={onForkAssistantTurn}
       onJumpToUserMessage={onJumpToUserMessage}
+      sourceContext={sourceContext}
     />
   );
 });
@@ -119,6 +123,7 @@ export const CompletedTurnFooterRow = memo(function CompletedTurnFooterRow({
   supportsTimelineCursor,
   onForkAssistantTurn,
   onJumpToUserMessage,
+  sourceContext,
 }: {
   strategy: TurnContentStrategy;
   items: StreamItem[];
@@ -127,6 +132,7 @@ export const CompletedTurnFooterRow = memo(function CompletedTurnFooterRow({
   supportsTimelineCursor: boolean;
   onForkAssistantTurn?: AssistantTurnForkHandler;
   onJumpToUserMessage?: JumpToUserMessageHandler;
+  sourceContext?: AssistantTurnSourceContext;
 }) {
   return (
     <TurnFooterRow>
@@ -138,6 +144,7 @@ export const CompletedTurnFooterRow = memo(function CompletedTurnFooterRow({
         supportsTimelineCursor={supportsTimelineCursor}
         onForkAssistantTurn={onForkAssistantTurn}
         onJumpToUserMessage={onJumpToUserMessage}
+        sourceContext={sourceContext}
       />
     </TurnFooterRow>
   );
@@ -204,6 +211,7 @@ function CompletedTurnFooter({
   supportsTimelineCursor,
   onForkAssistantTurn,
   onJumpToUserMessage,
+  sourceContext,
 }: {
   strategy: TurnContentStrategy;
   items: StreamItem[];
@@ -212,6 +220,7 @@ function CompletedTurnFooter({
   supportsTimelineCursor: boolean;
   onForkAssistantTurn?: AssistantTurnForkHandler;
   onJumpToUserMessage?: JumpToUserMessageHandler;
+  sourceContext?: AssistantTurnSourceContext;
 }) {
   const getContent = useCallback(
     () =>
@@ -261,6 +270,7 @@ function CompletedTurnFooter({
         onJumpToUserMessage={
           precedingUserMessage && onJumpToUserMessage ? handleJumpToUserMessage : undefined
         }
+        sourceContext={sourceContext}
       />
     </View>
   );

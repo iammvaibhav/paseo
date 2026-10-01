@@ -46,8 +46,10 @@ import {
   type SessionRuntimeMetrics,
 } from "./session.js";
 import type { WarmWorktreePool } from "./warm-worktree-pool.js";
-import { isServingTickets, type TicketsHost } from "./tickets/session.js";
+import { isServingNotes, type NotesHost } from "./notes/session.js";
 import type { HubRelationshipManagement } from "./hub/relationship-controller.js";
+import { isServingDocThreads, type DocThreadsHost } from "./doc-threads/session.js";
+import { isServingTickets, type TicketsHost } from "./tickets/session.js";
 import { WorkspaceSetupRuntime } from "./workspace-setup-runtime.js";
 import type { HubExecutionAgents } from "./hub/daemon-executions.js";
 import type { AgentProvider } from "./agent/agent-sdk-types.js";
@@ -633,7 +635,9 @@ export class VoiceAssistantWebSocketServer {
   private readonly orchestrationSkills: SessionOptions["orchestrationSkills"];
   private readonly onWorkspaceArchived?: (workspaceId: string) => void | Promise<void>;
   private readonly warmWorktreePool?: WarmWorktreePool;
+  private docThreadsHost!: DocThreadsHost | null;
   private ticketsHost!: TicketsHost | null;
+  private notesHost!: NotesHost | null;
 
   private async validateCompletedCreation(snapshot: CreationSnapshot): Promise<void> {
     if (snapshot.workspace && snapshot.kind === "workspace") {
@@ -706,6 +710,9 @@ export class VoiceAssistantWebSocketServer {
     workspaceLabelService?: WorkspaceLabelService,
     onWorkspaceArchived?: (workspaceId: string) => void | Promise<void>,
     warmWorktreePool?: WarmWorktreePool,
+    docThreadsHost?: DocThreadsHost | null,
+    ticketsHost?: TicketsHost | null,
+    notesHost?: NotesHost | null,
     websocketServices?: {
       ticketsHost?: TicketsHost | null;
       automationService?: AutomationService | null;
@@ -766,7 +773,9 @@ export class VoiceAssistantWebSocketServer {
       getDaemonTcpHost,
       serviceProxyPublicBaseUrl,
       resolveScriptHealth,
-      ticketsHost: websocketServices?.ticketsHost,
+      docThreadsHost,
+      ticketsHost: websocketServices?.ticketsHost ?? ticketsHost,
+      notesHost,
       automationService: websocketServices?.automationService,
     });
     if (!providerSnapshotManager) {
@@ -783,6 +792,8 @@ export class VoiceAssistantWebSocketServer {
     this.providerUsageService = new ProviderUsageService({
       logger: this.logger,
       onUsageRefreshed: (result) => this.broadcastProviderUsageUpdated(result),
+      onProviderRefreshed: (result) =>
+        this.broadcastProviderUsageUpdated(result, result.providerId),
       isFetcherEnabled: (fetcher) => {
         const agentProviderIds = fetcher.agentProviderIds ?? [fetcher.providerId];
         return agentProviderIds.some((id) => this.providerSnapshotManager.isProviderEnabled(id));
@@ -838,8 +849,10 @@ export class VoiceAssistantWebSocketServer {
     getDaemonTcpHost: (() => string | null) | undefined;
     serviceProxyPublicBaseUrl: string | null | undefined;
     resolveScriptHealth: ((hostname: string) => ScriptHealthState | null) | undefined;
+    docThreadsHost?: DocThreadsHost | null | undefined;
     ticketsHost: TicketsHost | null | undefined;
     automationService?: AutomationService | null;
+    notesHost: NotesHost | null | undefined;
   }): void {
     this.speech = params.speech ?? null;
     this.terminalManager = params.terminalManager ?? null;
@@ -876,10 +889,12 @@ export class VoiceAssistantWebSocketServer {
     this.getDaemonTcpHost = params.getDaemonTcpHost ?? null;
     this.serviceProxyPublicBaseUrl = params.serviceProxyPublicBaseUrl ?? null;
     this.resolveScriptHealth = params.resolveScriptHealth ?? null;
+    this.docThreadsHost = params.docThreadsHost ?? null;
     this.ticketsHost = params.ticketsHost ?? null;
     if (params.automationService !== undefined) {
       this.automationService = params.automationService;
     }
+    this.notesHost = params.notesHost ?? null;
   }
 
   private createWebSocketServer(
@@ -1552,7 +1567,9 @@ export class VoiceAssistantWebSocketServer {
       warmWorktreePool: this.warmWorktreePool,
       pluginRuntime: this.pluginRuntime,
       orchestrationSkills: this.orchestrationSkills,
+      docThreads: this.docThreadsHost,
       tickets: this.ticketsHost,
+      notes: this.notesHost,
       mcpBaseUrl: this.mcpBaseUrl,
       stt: () => this.speech?.resolveStt() ?? null,
       sttLanguage: this.speech?.resolveSttLanguage() ?? "en",
@@ -1857,6 +1874,13 @@ export class VoiceAssistantWebSocketServer {
         missionControlV4: true,
         // COMPAT(missionControlInbox): added 2026-09-30, remove gate after 2027-03-30.
         missionControlInbox: true,
+        // Doc threads are available on any host with node:sqlite and owned agents.
+        docThreads: isServingDocThreads(this.docThreadsHost),
+        docThreadsEventSubscription: isServingDocThreads(this.docThreadsHost),
+        // Native notes. True only on the notes host (the Commander host)
+        // with node:sqlite loaded; evaluated per server_info because the
+        // Commander designation can move.
+        notes: isServingNotes(this.notesHost),
         // Native tickets. True only on the board host (the Commander host)
         // with node:sqlite loaded; evaluated per server_info because the
         // Commander designation can move.
@@ -1871,6 +1895,8 @@ export class VoiceAssistantWebSocketServer {
         providerUsageList: true,
         // Daemon pushes refreshed usage via provider.usage.updated. Added in v0.4.0.
         providerUsagePush: true,
+        // COMPAT(fastProviderUsage): added 2026-09-30, remove gate after 2027-03-30.
+        fastProviderUsage: true,
         // COMPAT(agentDetach): added in v0.1.98, remove gate after 2026-12-19 once daemon floor >= v0.1.98.
         agentDetach: true,
         // COMPAT(agentThinkingUpdate): added in v0.2.4, remove gate after 2027-01-28.
@@ -1907,6 +1933,8 @@ export class VoiceAssistantWebSocketServer {
         commitsList: true,
         // COMPAT(commitBaseClassification): added in v0.2.0, remove gate after 2027-01-23.
         commitBaseClassification: true,
+        // COMPAT(commitParents): added in v0.10.0, remove gate after 2027-04-01.
+        commitParents: true,
         // COMPAT(providerRemoval): added in v0.1.105, drop the gate when floor >= v0.1.105.
         providerRemoval: true,
         // COMPAT(importSessionWorkspaceTarget): added in v0.1.110, remove gate after 2027-01-16.
@@ -1940,6 +1968,8 @@ export class VoiceAssistantWebSocketServer {
         // Advertised when the plannotator binary is on PATH / ~/.local/bin.
         plannotator: this.plannotatorAvailable === true,
         missionControl: true,
+        // COMPAT(aiReviewer): added 2026-09-30; remove gate after 2027-03-30.
+        aiReviewer: true,
         // COMPAT(projectCustomIcon): added in v0.2.0, remove after 2027-01-20.
         projectCustomIcon: true,
         // COMPAT(fsEntryOps): added in v0.3.0, remove gate after 2027-02-08.
@@ -1999,13 +2029,17 @@ export class VoiceAssistantWebSocketServer {
     this.broadcast(this.createDaemonConfigChangedMessage(config));
   }
 
-  private broadcastProviderUsageUpdated(result: ProviderUsageListResult): void {
+  private broadcastProviderUsageUpdated(
+    result: ProviderUsageListResult,
+    providerId?: string,
+  ): void {
     this.broadcast(
       wrapSessionMessage({
         type: "provider.usage.updated",
         payload: {
           fetchedAt: result.fetchedAt,
           providers: result.providers,
+          ...(providerId ? { providerId } : {}),
         },
       }),
     );

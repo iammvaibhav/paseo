@@ -155,6 +155,14 @@ const StoredTimelineItemSchema = z.discriminatedUnion("kind", [
   }),
   z.strictObject({
     ...TimelineItemBaseShape,
+    kind: z.literal("ai_review_decision"),
+    requestId: z.string(),
+    decision: z.enum(["allow", "deny", "escalate"]),
+    reason: z.string(),
+    toolName: z.string().optional(),
+  }),
+  z.strictObject({
+    ...TimelineItemBaseShape,
     kind: z.literal("tool_call"),
     provider: AgentProviderSchema,
     item: AgentTimelineItemPayloadSchema.refine((item) => item.type === "tool_call"),
@@ -462,6 +470,15 @@ function serializeTimelineItem(item: StreamItem): StoredTimelineItem | null {
         ...(item.trigger ? { trigger: item.trigger } : {}),
         ...(item.preTokens !== undefined ? { preTokens: item.preTokens } : {}),
       };
+    case "ai_review_decision":
+      return {
+        ...base,
+        kind: item.kind,
+        requestId: item.requestId,
+        decision: item.decision,
+        reason: item.reason,
+        ...(item.toolName ? { toolName: item.toolName } : {}),
+      };
     case "tool_call":
       if (item.payload.source !== "agent") return null;
       return {
@@ -543,6 +560,15 @@ function deserializeBuiltinTimelineItem(
         sourceType: item.sourceType,
         level: item.level,
         message: item.message,
+      };
+    case "ai_review_decision":
+      return {
+        ...base,
+        kind: item.kind,
+        requestId: item.requestId,
+        decision: item.decision,
+        reason: item.reason,
+        ...(item.toolName ? { toolName: item.toolName } : {}),
       };
     case "compaction":
       return {
