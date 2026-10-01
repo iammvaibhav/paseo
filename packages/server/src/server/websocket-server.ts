@@ -17,6 +17,7 @@ import type { ProjectRegistry, WorkspaceRegistry } from "./workspace-registry.js
 import type { ProjectUpdate } from "./workspace-reconciliation-service.js";
 import type { ScheduleService } from "./schedule/service.js";
 import type { WebhookService } from "./webhook/service.js";
+import type { AutomationService } from "./automation/service.js";
 import type { PeerManager } from "./peers/peer-manager.js";
 import type { MissionControlService } from "./mission-control/service.js";
 import type { TranscriptSearchService } from "./search/service.js";
@@ -574,6 +575,7 @@ export class VoiceAssistantWebSocketServer {
   private readonly workspaceLabelService: WorkspaceLabelService | null;
   private readonly scheduleService: ScheduleService;
   private readonly webhookService: WebhookService | null;
+  private automationService: AutomationService | null = null;
   private readonly checkoutDiffManager: CheckoutDiffManager;
   private readonly github: ForgeService;
   private readonly workspaceGitService: WorkspaceGitService;
@@ -652,6 +654,7 @@ export class VoiceAssistantWebSocketServer {
     }
   }
 
+  // oxlint-disable-next-line complexity
   constructor(
     server: HTTPServer,
     logger: pino.Logger,
@@ -703,7 +706,10 @@ export class VoiceAssistantWebSocketServer {
     workspaceLabelService?: WorkspaceLabelService,
     onWorkspaceArchived?: (workspaceId: string) => void | Promise<void>,
     warmWorktreePool?: WarmWorktreePool,
-    ticketsHost?: TicketsHost | null,
+    websocketServices?: {
+      ticketsHost?: TicketsHost | null;
+      automationService?: AutomationService | null;
+    },
   ) {
     this.onWorkspaceArchived = onWorkspaceArchived;
     this.logger = logger.child({ module: "websocket-server" });
@@ -760,7 +766,8 @@ export class VoiceAssistantWebSocketServer {
       getDaemonTcpHost,
       serviceProxyPublicBaseUrl,
       resolveScriptHealth,
-      ticketsHost,
+      ticketsHost: websocketServices?.ticketsHost,
+      automationService: websocketServices?.automationService,
     });
     if (!providerSnapshotManager) {
       throw new Error("providerSnapshotManager is required");
@@ -832,6 +839,7 @@ export class VoiceAssistantWebSocketServer {
     serviceProxyPublicBaseUrl: string | null | undefined;
     resolveScriptHealth: ((hostname: string) => ScriptHealthState | null) | undefined;
     ticketsHost: TicketsHost | null | undefined;
+    automationService?: AutomationService | null;
   }): void {
     this.speech = params.speech ?? null;
     this.terminalManager = params.terminalManager ?? null;
@@ -869,6 +877,9 @@ export class VoiceAssistantWebSocketServer {
     this.serviceProxyPublicBaseUrl = params.serviceProxyPublicBaseUrl ?? null;
     this.resolveScriptHealth = params.resolveScriptHealth ?? null;
     this.ticketsHost = params.ticketsHost ?? null;
+    if (params.automationService !== undefined) {
+      this.automationService = params.automationService;
+    }
   }
 
   private createWebSocketServer(
@@ -1529,6 +1540,7 @@ export class VoiceAssistantWebSocketServer {
       directorySync: this.directorySync,
       scheduleService: this.scheduleService,
       webhookService: this.webhookService,
+      automationService: this.automationService,
       peerManager: this.peerManager,
       missionControlService: this.missionControlService,
       transcriptSearch: this.transcriptSearch,
@@ -1913,6 +1925,11 @@ export class VoiceAssistantWebSocketServer {
         providerUsageEventSubscription: true,
         // COMPAT(plannotatorEventSubscription): added 2026-09-30, remove gate after 2027-03-30.
         plannotatorEventSubscription: true,
+        // Automations (unified schedules/webhooks/GitHub/Linear poll triggers).
+        // Added 2026-09-30; the app gates the Automations screen once on it.
+        automations: this.automationService !== null,
+        // COMPAT(automationEventSubscription): added 2026-09-30, remove gate after 2027-03-30.
+        automationEventSubscription: this.automationService !== null,
         // COMPAT(canonicalSubmittedPrompts): added in v0.2.6, remove gate after 2027-01-30.
         canonicalSubmittedPrompts: true,
         // COMPAT(stableProjectIdentity): added in v0.1.109, remove gate after 2027-01-15.

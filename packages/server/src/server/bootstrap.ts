@@ -185,6 +185,7 @@ import { AgentNamingService } from "./mission-control/naming.js";
 import { runIdentityBackfill } from "./mission-control/backfill.js";
 import { MAX_WEBHOOK_BODY_BYTES, WebhookService } from "./webhook/service.js";
 import { createWebhookRouteHandler } from "./webhook/route.js";
+import { AutomationService } from "./automation/service.js";
 import {
   isServingTickets,
   openTickets,
@@ -1156,6 +1157,7 @@ export async function createPaseoDaemon(
     appBaseUrl = typeof value === "string" ? value : "https://app.paseo.sh";
   });
   let wsServer: VoiceAssistantWebSocketServer | null = null;
+  let automationService: AutomationService | null = null;
   let serviceProxyListenTarget: ListenTarget | null = null;
   const scriptHealthMonitor = new ScriptHealthMonitor({
     serviceProxy,
@@ -3021,6 +3023,30 @@ export async function createPaseoDaemon(
               logger.info("Daemon password authentication enabled");
             }
 
+            // ---- Automations facade (unified schedules/webhooks/poll triggers).
+            // Owns poll records + the poll loop; schedule/webhook kinds delegate.
+            // Built here so the service instance is in hand for the wsServer call below.
+            let automationRevision = 0;
+            automationService = new AutomationService({
+              paseoHome: config.paseoHome,
+              logger,
+              scheduleService,
+              webhookService,
+              onChanged: (change) => {
+                automationRevision += 1;
+                wsServer?.broadcast(
+                  wrapSessionMessage({
+                    type: "automations.changed",
+                    automationId: change.automationId,
+                    kind: change.kind,
+                    revision: automationRevision,
+                  }),
+                );
+              },
+            });
+            automationService.start();
+            // ---- end automations
+
             wsServer = new VoiceAssistantWebSocketServer(
               httpServer,
               logger,
@@ -3095,7 +3121,7 @@ export async function createPaseoDaemon(
               workspaceLabelService,
               (workspaceId) => itsaplanBridge?.handleWorkspaceArchived(workspaceId),
               warmWorktreePool,
-              ticketsHost,
+              { ticketsHost, automationService },
             );
             pluginRuntime.bindPaseoSessionHost(wsServer);
             await pluginRuntime.start();
@@ -3180,6 +3206,7 @@ export async function createPaseoDaemon(
     await missionControlService.stop().catch(() => undefined);
 
     await warmWorktreePool.stop().catch(() => undefined);
+    await automationService?.stop().catch(() => undefined);
     await scheduleService.stop().catch(() => undefined);
     baseCheckoutSyncService.stop();
     await peerManager?.close().catch(() => undefined);

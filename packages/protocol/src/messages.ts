@@ -78,6 +78,10 @@ import {
   WebhookTestResponseSchema,
   WebhookConfigResponseSchema,
 } from "./webhook/rpc-schemas.js";
+import {
+  AUTOMATION_INBOUND_SCHEMAS,
+  AUTOMATION_OUTBOUND_SCHEMAS,
+} from "./automation/rpc-schemas.js";
 import { TICKETS_INBOUND_SCHEMAS, TICKETS_OUTBOUND_SCHEMAS } from "./tickets/rpc-schemas.js";
 import {
   MissionControlEventsFetchRequestSchema,
@@ -3584,6 +3588,10 @@ export const SessionEventSubscriptionSchema = z.enum([
   "mission_control_event",
   "provider.usage.updated",
   "plannotator.session.event",
+  // Owned-subscription push for Automations CRUD/run changes. Subscribe only
+  // on a host that advertises features.automations: an older daemon rejects
+  // an unknown event name.
+  "automations.changed",
 ]);
 export type SessionEventSubscription = z.infer<typeof SessionEventSubscriptionSchema>;
 export const SessionEventsSetSubscriptionRequestSchema = z.object({
@@ -3834,6 +3842,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   WebhookTestRequestSchema,
   WebhookConfigRequestSchema,
   ...TICKETS_INBOUND_SCHEMAS,
+  ...AUTOMATION_INBOUND_SCHEMAS,
   LoopRunRequestSchema,
   LoopListRequestSchema,
   LoopInspectRequestSchema,
@@ -4186,6 +4195,12 @@ export const ServerInfoStatusPayloadSchema = z
         // mission_control.inbox.fetch (pending proposals, open clarifications,
         // review facts) is served; Quarterdeck gates its per-host inbox on it.
         missionControlInbox: z.boolean().optional(),
+        // Automations (unified schedules/webhooks/GitHub/Linear poll triggers).
+        // Added 2026-09-30; the app gates the Automations screen once on it.
+        automations: z.boolean().optional(),
+        // COMPAT(automationEventSubscription): added 2026-09-30, remove gate after 2027-03-30.
+        // session.events accepts "automations.changed".
+        automationEventSubscription: z.boolean().optional(),
         // COMPAT(commitsList): added in v0.1.110, remove gate after 2027-01-16.
         commitsList: z.boolean().optional(),
         // COMPAT(commitBaseClassification): added in v0.2.0, remove gate after 2027-01-23.
@@ -7595,6 +7610,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   WebhookTestResponseSchema,
   WebhookConfigResponseSchema,
   ...TICKETS_OUTBOUND_SCHEMAS,
+  ...AUTOMATION_OUTBOUND_SCHEMAS,
   LoopRunResponseSchema,
   LoopListResponseSchema,
   LoopInspectResponseSchema,

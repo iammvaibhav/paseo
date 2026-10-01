@@ -193,6 +193,8 @@ import {
 } from "./session/checkout/git-metadata-generator.js";
 import { WebhookSession } from "./session/webhook/webhook-session.js";
 import type { WebhookService } from "./webhook/service.js";
+import { AutomationSession } from "./automation/session.js";
+import type { AutomationService } from "./automation/service.js";
 import { TicketsSession, type TicketsHost } from "./tickets/session.js";
 import type { PeerManager } from "./peers/peer-manager.js";
 import type { MissionControlService } from "./mission-control/service.js";
@@ -529,6 +531,7 @@ export interface SessionOptions {
   filesystem?: SessionFileSystem;
   scheduleService: ScheduleService;
   webhookService?: WebhookService | null;
+  automationService?: AutomationService | null;
   // Native tickets; null/absent = this daemon has no tickets wiring.
   tickets?: TicketsHost | null;
   peerManager?: PeerManager | null;
@@ -936,6 +939,7 @@ export class Session {
   private readonly checkoutSession: CheckoutSession;
   private readonly scheduleSession: ScheduleSession;
   private readonly webhookSession: WebhookSession;
+  private readonly automationSession: AutomationSession;
   private readonly ticketsSession: TicketsSession;
   private readonly peerManager: PeerManager | null;
   private readonly missionControlService: MissionControlService | null;
@@ -1133,6 +1137,11 @@ export class Session {
     });
     this.webhookSession = customSessions.webhookSession;
     this.plannotatorSession = customSessions.plannotatorSession;
+    this.automationSession = new AutomationSession({
+      host: { emit: (msg) => this.emit(msg) },
+      service: () => orNull(options.automationService),
+      logger: this.sessionLogger,
+    });
     this.ticketsSession = new TicketsSession({
       emit: (msg) => this.emit(msg),
       host: orNull(options.tickets),
@@ -2569,6 +2578,7 @@ export class Session {
     (msg) => this.dispatchTerminalMessage(msg),
     (msg) => this.dispatchScheduleMessage(msg),
     (msg) => this.ticketsSession.dispatch(msg),
+    (msg) => this.automationSession.dispatch(msg),
     (msg) => this.dispatchPlannotatorMessage(msg),
     (msg) => this.dispatchMissionControlPeersMessage(msg),
     (msg) => this.dispatchMissionControlEventsMessage(msg),
@@ -10681,6 +10691,7 @@ function sessionEventCategory(message: SessionOutboundMessage): SessionEventSubs
     case "mission_control_event":
     case "provider.usage.updated":
     case "plannotator.session.event":
+    case "automations.changed":
       return message.type;
     case "status":
       return statusEventCategory(message.payload);

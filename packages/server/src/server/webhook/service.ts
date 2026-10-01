@@ -343,68 +343,82 @@ export class WebhookService {
 
   // ---- Internals -----------------------------------------------------------
 
+  /** Agent-launch entry shared with poll automations (AutomationService). */
+  async launchTarget(input: {
+    target: WebhookTarget;
+    prompt: string;
+    labels: Record<string, string>;
+    onAgentId: (agentId: string, workspaceId: string | null) => Promise<void>;
+  }): Promise<{ agentId: string; workspaceId: string | null }> {
+    if (input.target.type === "agent") {
+      const record = await this.agentStorage.get(input.target.agentId);
+      if (!record || record.archivedAt) {
+        throw new Error(`Target agent ${input.target.agentId} is gone`);
+      }
+      const agent = await ensureAgentLoaded(input.target.agentId, {
+        agentManager: this.agentManager,
+        agentStorage: this.agentStorage,
+        logger: this.logger,
+      });
+      if (this.agentManager.hasInFlightRun(agent.id)) {
+        throw new Error(`Target agent ${agent.id} already has an active run`);
+      }
+      await input.onAgentId(agent.id, null);
+      // Fire-and-forget: do not block on the run completing.
+      void this.agentManager.runAgent(agent.id, input.prompt).catch((error) => {
+        this.logger.error({ err: error, agentId: agent.id }, "Webhook agent run failed");
+      });
+      return { agentId: agent.id, workspaceId: null };
+    }
+
+    const config = input.target.config;
+    await assertCwdDirectory(config.cwd);
+    const workspace = await this.createRunWorkspace(config, input.prompt);
+    const runConfig = { ...config, cwd: workspace.cwd };
+    const created = await this.createAgent({
+      kind: "mcp",
+      provider: formatProviderModel(runConfig.provider, runConfig.model),
+      config: buildAgentConfig(runConfig),
+      cwd: workspace.cwd,
+      workspaceId: workspace.workspaceId,
+      initialPrompt: input.prompt,
+      title: resolveTitle(config.title ?? null, input.prompt),
+      labels: input.labels,
+      mode: config.modeId,
+      thinking: config.thinkingOptionId,
+      features: config.featureValues,
+      unattended: true,
+      promptFailure: "return-error",
+      background: true,
+      notifyOnFinish: false,
+    });
+    await input.onAgentId(created.snapshot.id, workspace.workspaceId);
+    // Surface the workspace only now that its agent exists, so the client
+    // opens a single (agent) tab instead of seeding an empty composer first.
+    await this.emitWorkspaceUpdatesForWorkspaceIds([workspace.workspaceId]);
+    if (created.initialPromptError) {
+      throw created.initialPromptError;
+    }
+    return { agentId: created.snapshot.id, workspaceId: workspace.workspaceId };
+  }
+
   private async launch(
     webhook: StoredWebhook,
     prompt: string,
     deliveryRecordId: string,
   ): Promise<void> {
     try {
-      if (webhook.target.type === "agent") {
-        const record = await this.agentStorage.get(webhook.target.agentId);
-        if (!record || record.archivedAt) {
-          throw new Error(`Target agent ${webhook.target.agentId} is gone`);
-        }
-        const agent = await ensureAgentLoaded(webhook.target.agentId, {
-          agentManager: this.agentManager,
-          agentStorage: this.agentStorage,
-          logger: this.logger,
-        });
-        if (this.agentManager.hasInFlightRun(agent.id)) {
-          throw new Error(`Target agent ${agent.id} already has an active run`);
-        }
-        await this.patchDelivery(webhook.id, deliveryRecordId, { agentId: agent.id });
-        // Fire-and-forget: do not block on the run completing.
-        void this.agentManager.runAgent(agent.id, prompt).catch((error) => {
-          this.logger.error({ err: error, agentId: agent.id }, "Webhook agent run failed");
-        });
-        await this.markFired(webhook.id);
-        return;
-      }
-
-      const config = webhook.target.config;
-      await assertCwdDirectory(config.cwd);
-      const workspace = await this.createRunWorkspace(config, prompt);
-      const runConfig = { ...config, cwd: workspace.cwd };
-      const created = await this.createAgent({
-        kind: "mcp",
-        provider: formatProviderModel(runConfig.provider, runConfig.model),
-        config: buildAgentConfig(runConfig),
-        cwd: workspace.cwd,
-        workspaceId: workspace.workspaceId,
-        initialPrompt: prompt,
-        title: resolveTitle(config.title ?? null, prompt),
+      const launched = await this.launchTarget({
+        target: webhook.target,
+        prompt,
         labels: {
           "paseo.webhook-id": webhook.id,
           "paseo.webhook-delivery": deliveryRecordId,
         },
-        mode: config.modeId,
-        thinking: config.thinkingOptionId,
-        features: config.featureValues,
-        unattended: true,
-        promptFailure: "return-error",
-        background: true,
-        notifyOnFinish: false,
+        onAgentId: (agentId, workspaceId) =>
+          this.patchDelivery(webhook.id, deliveryRecordId, { agentId, workspaceId }),
       });
-      await this.patchDelivery(webhook.id, deliveryRecordId, {
-        agentId: created.snapshot.id,
-        workspaceId: workspace.workspaceId,
-      });
-      // Surface the workspace only now that its agent exists, so the client
-      // opens a single (agent) tab instead of seeding an empty composer first.
-      await this.emitWorkspaceUpdatesForWorkspaceIds([workspace.workspaceId]);
-      if (created.initialPromptError) {
-        throw created.initialPromptError;
-      }
+      void launched;
       await this.markFired(webhook.id);
     } catch (error) {
       await this.patchDelivery(webhook.id, deliveryRecordId, {

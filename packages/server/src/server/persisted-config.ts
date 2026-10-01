@@ -456,6 +456,17 @@ export const PersistedConfigSchema = z
 
     missionControl: MissionControlConfigSchema.optional(),
 
+    // Automations: Linear API key fallback + default poll cadence. Strict
+    // schema keeps unknown keys out; an older daemon never sees this file
+    // section because only the new daemon writes it.
+    automations: z
+      .object({
+        linearApiKey: z.string().trim().min(1).optional(),
+        defaultPollIntervalSec: z.number().int().positive().optional(),
+      })
+      .strict()
+      .optional(),
+
     log: LogConfigSchema.optional(),
   })
   .strict();
