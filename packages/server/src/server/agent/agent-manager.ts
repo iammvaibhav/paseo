@@ -162,6 +162,26 @@ export function stampTurnCompletionUsage(input: {
     ...(input.model != null && input.usage.model == null ? { model: input.model } : {}),
   };
 }
+/**
+ * Turn-metrics: stamp daemon-measured duration + model of record onto a live
+ * turn_completed BEFORE the terminal application clears the tracked active
+ * turn. Only when this completion closes the tracked turn; autonomous
+ * completions for untracked turnIds pass usage through untouched.
+ */
+function stampCompletionBeforeTerminalClear(
+  agent: ActiveManagedAgent,
+  event: AgentStreamEvent,
+  eventTurnId: string | undefined,
+  fromHistory: boolean,
+): void {
+  if (fromHistory || event.type !== "turn_completed" || eventTurnId == null) return;
+  if (agent.activeTurnId == null || agent.activeTurnId !== eventTurnId) return;
+  event.usage = stampTurnCompletionUsage({
+    usage: event.usage,
+    startedAt: agent.activeTurnStartedAt,
+    model: agent.runtimeInfo?.model ?? agent.config.model ?? null,
+  });
+}
 
 /**
  * Turn-metrics: persist the completed turn's usage on the assistant timeline
@@ -199,6 +219,12 @@ function mergeAgentUsage(
   if (next.contextWindowUsedTokens !== undefined) {
     merged.contextWindowUsedTokens = next.contextWindowUsedTokens;
   }
+  // Turn-metrics: durationMs + model ride on every merge so provider usage
+  // snapshots that omit them (context-fill updates, turn_completed without a
+  // tracked turn) do not drop the per-turn record from merged lastUsage.
+  if (next.cacheWriteTokens !== undefined) merged.cacheWriteTokens = next.cacheWriteTokens;
+  if (next.durationMs !== undefined) merged.durationMs = next.durationMs;
+  if (next.model !== undefined) merged.model = next.model;
   return merged;
 }
 
@@ -5343,6 +5369,9 @@ export class AgentManager {
       this.agentStreamCoalescer.flushFor(agent.id);
     }
 
+    // Turn-metrics: stamp daemon-measured duration + model of record BEFORE
+    // the terminal application below clears the tracked active turn.
+    stampCompletionBeforeTerminalClear(agent, event, eventTurnId, options?.fromHistory === true);
     let terminalDisposition: ActiveTurnTerminalDisposition = "untracked";
     if (isTurnTerminalEvent(event)) {
       terminalDisposition = this.applyActiveTurnTerminal(
@@ -5662,19 +5691,9 @@ export class AgentManager {
       "agent.manager.turn.completed",
     );
     if (terminalDisposition === "stale") return;
-    // Turn-metrics: stamp daemon-measured duration + model of record — but only
-    // when this completion closes the tracked active turn. Autonomous
-    // completions for untracked turnIds must pass usage through untouched so
-    // merged lastUsage keeps its provider-reported shape.
-    const closesTrackedTurn =
-      agent.activeTurnId != null && eventTurnId != null && agent.activeTurnId === eventTurnId;
-    if (closesTrackedTurn) {
-      event.usage = stampTurnCompletionUsage({
-        usage: event.usage,
-        startedAt: agent.activeTurnStartedAt,
-        model: agent.runtimeInfo?.model ?? agent.config.model ?? null,
-      });
-    }
+    // Turn-metrics: completion usage is stamped at handleStreamEvent before
+    // the active-turn state is cleared. Attach the (possibly stamped) usage
+    // to the turn's assistant row for restart-surviving timeline metrics.
     if (eventTurnId && event.usage) {
       attachTurnMetricsToRow(this.timelineStore, agent.id, eventTurnId, event.usage);
     }
