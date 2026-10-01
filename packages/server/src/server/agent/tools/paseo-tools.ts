@@ -115,6 +115,7 @@ import { registerBrowserTools } from "../../browser-tools/tools.js";
 import type { BrowserToolsBroker } from "../../browser-tools/broker.js";
 import { buildPeerUnreachableError, type PeerManager } from "../../peers/peer-manager.js";
 import { registerTicketTools, type TicketToolsBackend } from "../../tickets/tools.js";
+import { registerNoteTools, type NoteToolsBackend } from "../../notes/tools.js";
 import { MissionControlSearchMatchSchema } from "@getpaseo/protocol/mission-control/types";
 import type { MissionControlProposalSpawnPlan } from "@getpaseo/protocol/mission-control/types";
 import { MissionControlMetaPlanSchema } from "@getpaseo/protocol/mission-control/types";
@@ -218,6 +219,12 @@ export interface PaseoToolHostDependencies {
    * tools.
    */
   resolveTicketTools?: (() => TicketToolsBackend) | null;
+  /**
+   * Native notes for the Commander note tools, resolved per call
+   * (local on the notes host, else the notes-host peer). Absent → no note
+   * tools.
+   */
+  resolveNoteTools?: (() => NoteToolsBackend) | null;
   paseoToolPolicy?: ProviderPaseoToolsPolicy;
   paseoHome?: string;
   worktreesRoot?: string;
@@ -1291,6 +1298,24 @@ function resolveCatalogCallerContext(
   resolveCallerContext: ((callerAgentId: string) => VoiceCallerContext | null) | undefined,
 ): VoiceCallerContext | null {
   return callerAgentId ? (resolveCallerContext?.(callerAgentId) ?? null) : null;
+}
+
+/** Native board + notes tools for the Commander; the notes host rides the tickets gate. */
+function registerNativeBoardTools(
+  registerTool: (
+    name: string,
+    config: PaseoToolConfig,
+    handler: (input: unknown, context: PaseoToolExecutionContext) => Promise<PaseoToolResult>,
+  ) => void,
+  options: Pick<PaseoToolHostDependencies, "resolveTicketTools" | "resolveNoteTools">,
+): void {
+  if (!options.resolveTicketTools) {
+    return;
+  }
+  registerTicketTools({ registerTool, resolveBackend: options.resolveTicketTools });
+  if (options.resolveNoteTools) {
+    registerNoteTools({ registerTool, resolveBackend: options.resolveNoteTools });
+  }
 }
 
 export function createPaseoToolCatalog(options: PaseoToolHostDependencies): PaseoToolCatalog {
@@ -6561,8 +6586,8 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     },
   );
 
-  if (isCommanderCaller && options.resolveTicketTools) {
-    registerTicketTools({ registerTool, resolveBackend: options.resolveTicketTools });
+  if (isCommanderCaller) {
+    registerNativeBoardTools(registerTool, options);
   }
 
   registerTool(

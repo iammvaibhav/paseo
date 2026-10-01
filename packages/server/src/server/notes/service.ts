@@ -178,14 +178,6 @@ export class NoteService {
     return row !== undefined;
   }
 
-  private requireDetail(noteId: string): NoteDetail {
-    const detail = this.store.getDetail(noteId);
-    if (!detail) {
-      throw new NotesError("not_found", `Note ${noteId} not found`);
-    }
-    return detail;
-  }
-
   private detailOf(db: SqliteDatabase, noteId: string): NoteDetail {
     const row = db.prepare("SELECT * FROM notes WHERE id = ?").get(noteId);
     if (!row) {
@@ -303,12 +295,7 @@ export class NoteService {
       const nextTitle = rawTitle === "" ? deriveNoteTitle(nextBody) : rawTitle.slice(0, TITLE_MAX);
       const nextTags =
         input.tags === undefined ? JSON.parse(text(row, "tags_json")) : normalizeTags(input.tags);
-      const assignments: string[] = [
-        "title = ?",
-        "body = ?",
-        "tags_json = ?",
-        "updated_at = ?",
-      ];
+      const assignments: string[] = ["title = ?", "body = ?", "tags_json = ?", "updated_at = ?"];
       const params: unknown[] = [nextTitle, nextBody, JSON.stringify(nextTags), nowIso()];
       for (const [column, value] of [
         ["source_agent_id", input.sourceAgentId],
@@ -352,7 +339,7 @@ export class NoteService {
     }
   }
 
-  addImage(noteId: string, upload: ImageUpload): NoteDetail {
+  addImage(noteId: string, upload: ImageUpload): { detail: NoteDetail; imageId: string } {
     if (upload.dataBase64.length > MAX_IMAGE_BYTES) {
       throw new NotesError("too_large", "Image exceeds 20 MB");
     }
@@ -381,7 +368,7 @@ export class NoteService {
       mutation.noteIds.push(noteId);
       return this.detailOf(db, noteId);
     });
-    return detail;
+    return { detail, imageId };
   }
 
   async writeImageFile(storagePath: string, bytes: Buffer): Promise<void> {

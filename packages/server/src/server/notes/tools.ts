@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { DaemonClient, NotesRequestParams } from "@getpaseo/client/internal/daemon-client";
-import type { NoteDetail } from "@getpaseo/protocol/notes/types";
+import type { NoteDetail, NoteSummary } from "@getpaseo/protocol/notes/types";
 import { ensureValidJson } from "../json-utils.js";
 import type {
   PaseoToolConfig,
@@ -51,6 +51,20 @@ export class NotesPeerRequestError extends Error {
     super(message);
     this.name = "NotesPeerRequestError";
     this.requestType = requestType;
+  }
+}
+
+export class NotesHostUnavailableError extends Error {
+  readonly notesHostName: string | null;
+
+  constructor(notesHostName: string | null) {
+    super(
+      notesHostName === null
+        ? "Notes are off: no Commander host is designated"
+        : `Notes live on the Commander host (${notesHostName}), which is not reachable`,
+    );
+    this.name = "NotesHostUnavailableError";
+    this.notesHostName = notesHostName;
   }
 }
 
@@ -124,7 +138,7 @@ const NoteSlugSchema = z
   .string()
   .trim()
   .min(1)
-  .describe("Note slug from note_list, e.g. \"deploy-checklist\".");
+  .describe('Note slug from note_list, e.g. "deploy-checklist".');
 
 const NoteListInputSchema = z.object({
   query: z.string().trim().min(1).optional().describe("Substring match over slug, title and body."),
@@ -145,7 +159,12 @@ const NoteWriteInputSchema = z.object({
   body: z.string().max(1_000_000).describe("Markdown body."),
   tags: z.array(z.string()).max(20).optional().describe("Tags; normalized lowercase."),
   sourceCwd: z.string().trim().min(1).optional().describe("Project directory the note belongs to."),
-  sourceProjectKey: z.string().trim().min(1).optional().describe("Paseo project key the note belongs to."),
+  sourceProjectKey: z
+    .string()
+    .trim()
+    .min(1)
+    .optional()
+    .describe("Paseo project key the note belongs to."),
 });
 
 function toolResult(data: unknown): PaseoToolResult {
@@ -186,7 +205,8 @@ export function registerNoteTools(options: RegisterNoteToolsOptions): void {
     "note_read",
     {
       title: "Read a note",
-      description: "Read one note by slug: full markdown body, tags and source. Read-only; never approval-gated.",
+      description:
+        "Read one note by slug: full markdown body, tags and source. Read-only; never approval-gated.",
       inputSchema: NoteReadInputSchema.shape,
     },
     async (raw) => {

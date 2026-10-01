@@ -6836,7 +6836,10 @@ export class DaemonClient {
     params: NotesRequestParams<TType>,
     options: { requestId?: string; timeout?: number } = {},
   ): Promise<NotesResponsePayload<TType>> {
-    const responseType = (type as string).replace(/\.request$/, ".response") as NotesResponseType<TType>;
+    const responseType = (type as string).replace(
+      /\.request$/,
+      ".response",
+    ) as NotesResponseType<TType>;
     return this.sendCorrelatedSessionRequest({
       requestId: options.requestId,
       message: { ...params, type },

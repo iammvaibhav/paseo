@@ -2,12 +2,7 @@ import { randomBytes } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import type { Logger } from "pino";
-import type {
-  Note,
-  NoteDetail,
-  NoteImage,
-  NoteSummary,
-} from "@getpaseo/protocol/notes/types";
+import type { Note, NoteDetail, NoteImage, NoteSummary } from "@getpaseo/protocol/notes/types";
 import { tryLoadNodeSqlite, type SqliteDatabase } from "../search/sqlite.js";
 
 export type NotesIdPrefix = "nte" | "nim";
@@ -292,7 +287,9 @@ export class NoteStore {
     query: string,
     filter: { tag?: string; projectKey?: string; limit: number },
   ): NoteSummary[] {
-    const clauses: string[] = ["(slug LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\' OR body LIKE ? ESCAPE '\\')"];
+    const clauses: string[] = [
+      "(slug LIKE ? ESCAPE '\\' OR title LIKE ? ESCAPE '\\' OR body LIKE ? ESCAPE '\\')",
+    ];
     const like = `%${query.replace(/[\\%_]/g, (char) => `\\${char}`)}%`;
     const params: unknown[] = [like, like, like];
     if (filter.tag !== undefined) {
@@ -343,7 +340,9 @@ export class NoteStore {
     return row !== undefined;
   }
 
-  getImageFile(imageId: string): { fileName: string; mimeType: string; storagePath: string } | null {
+  getImageFile(
+    imageId: string,
+  ): { fileName: string; mimeType: string; storagePath: string } | null {
     const row = this.db.prepare("SELECT * FROM note_images WHERE id = ?").get(imageId);
     if (!row) {
       return null;

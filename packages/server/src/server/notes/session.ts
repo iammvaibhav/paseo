@@ -89,6 +89,37 @@ export class NotesSession {
   }
 
   private async handleRequest(request: NotesRequest): Promise<void> {
+    if (request.type.startsWith("notes.image.")) {
+      return this.handleImageRequest(
+        request as Extract<NotesRequest, { type: `notes.image.${string}.request` }>,
+      );
+    }
+    return this.handleNoteRequest(
+      request as Extract<
+        NotesRequest,
+        {
+          type:
+            | "notes.list.request"
+            | "notes.get.request"
+            | "notes.upsert.request"
+            | "notes.delete.request";
+        }
+      >,
+    );
+  }
+
+  private async handleNoteRequest(
+    request: Extract<
+      NotesRequest,
+      {
+        type:
+          | "notes.list.request"
+          | "notes.get.request"
+          | "notes.upsert.request"
+          | "notes.delete.request";
+      }
+    >,
+  ): Promise<void> {
     const requestId = request.requestId;
     switch (request.type) {
       case "notes.list.request": {
@@ -151,15 +182,25 @@ export class NotesSession {
         });
         return;
       }
+      default:
+        return unhandled(request);
+    }
+  }
+
+  private async handleImageRequest(
+    request: Extract<NotesRequest, { type: `notes.image.${string}.request` }>,
+  ): Promise<void> {
+    const requestId = request.requestId;
+    switch (request.type) {
       case "notes.image.add.request": {
         const result = await this.attempt(request, async ({ service }) => {
           const bytes = Buffer.from(request.dataBase64, "base64");
-          const detail = service.addImage(request.noteId, {
+          const { imageId } = service.addImage(request.noteId, {
             fileName: request.fileName,
             mimeType: request.mimeType,
             dataBase64: bytes,
           });
-          await service.writeImageFile(detail.images[detail.images.length - 1]?.id ?? "", bytes);
+          await service.writeImageFile(imageId, bytes);
           return service.getNote({ noteId: request.noteId });
         });
         this.emit({

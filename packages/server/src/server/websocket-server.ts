@@ -764,6 +764,7 @@ export class VoiceAssistantWebSocketServer {
       serviceProxyPublicBaseUrl,
       resolveScriptHealth,
       ticketsHost,
+      notesHost,
     });
     if (!providerSnapshotManager) {
       throw new Error("providerSnapshotManager is required");
@@ -1545,6 +1546,7 @@ export class VoiceAssistantWebSocketServer {
       pluginRuntime: this.pluginRuntime,
       orchestrationSkills: this.orchestrationSkills,
       tickets: this.ticketsHost,
+      notes: this.notesHost,
       mcpBaseUrl: this.mcpBaseUrl,
       stt: () => this.speech?.resolveStt() ?? null,
       sttLanguage: this.speech?.resolveSttLanguage() ?? "en",
@@ -1849,6 +1851,10 @@ export class VoiceAssistantWebSocketServer {
         missionControlV4: true,
         // COMPAT(missionControlInbox): added 2026-09-30, remove gate after 2027-03-30.
         missionControlInbox: true,
+        // Native notes. True only on the notes host (the Commander host)
+        // with node:sqlite loaded; evaluated per server_info because the
+        // Commander designation can move.
+        notes: isServingNotes(this.notesHost),
         // Native tickets. True only on the board host (the Commander host)
         // with node:sqlite loaded; evaluated per server_info because the
         // Commander designation can move.

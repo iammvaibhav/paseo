@@ -194,15 +194,20 @@ import {
   type TicketStore,
 } from "./tickets/index.js";
 import {
+  createLocalNoteToolsBackend,
+  createPeerNoteToolsBackend,
   isServingNotes,
+  NotesHostUnavailableError,
   openNotes,
   type NotesHost,
   type NoteService,
   type NoteStore,
+  type NoteToolsBackend,
 } from "./notes/index.js";
 import { ItsaplanTicketImporter } from "./tickets/import-itsaplan.js";
 import { startTicketFleet } from "./tickets/fleet.js";
 import {
+  attachItsaplanProjectSync,
   createItsaplanResyncRouteHandler,
   createItsaplanWebhookRouteHandler,
   ItsaplanBridge,
@@ -216,6 +221,7 @@ import {
   type ItsaplanCentralConfig,
 } from "./itsaplan/index.js";
 import { PeerManager } from "./peers/peer-manager.js";
+import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { TunnelManager } from "./tunnel/manager.js";
 import { DaemonConfigStore, type MutableDaemonConfig } from "./daemon-config-store.js";
 import { createOrchestrationSkills } from "./orchestration-skills/index.js";
@@ -767,6 +773,10 @@ export interface PaseoDaemon {
   ticketStore: TicketStore | null;
   isTicketsBoardHost(): boolean;
   ticketsHandlers: TicketsDelegatedHandlers;
+  // Native notes; null when node:sqlite is missing.
+  noteService: NoteService | null;
+  noteStore: NoteStore | null;
+  isNotesHost(): boolean;
   start(): Promise<void>;
   stop(): Promise<void>;
   getListenTarget(): ListenTarget | null;
@@ -2652,6 +2662,25 @@ export async function createPaseoDaemon(
   noteService?.onChange((change) => {
     wsServer?.broadcast(wrapSessionMessage({ type: "notes.changed", ...change }));
   });
+  const localNoteTools = noteService ? createLocalNoteToolsBackend({ service: noteService }) : null;
+  const resolveNotesHostClient = (): DaemonClient => {
+    const designated = ticketsBoardHostName();
+    const peerName = designated === null ? null : peerManager.resolvePeerName(designated);
+    if (peerName !== null && peerManager.getPeerStatus(peerName)?.state === "online") {
+      const client = peerManager.getPeerClient(peerName);
+      if (client !== null) {
+        return client;
+      }
+    }
+    throw new NotesHostUnavailableError(designated);
+  };
+  const peerNoteTools = createPeerNoteToolsBackend(resolveNotesHostClient);
+  const resolveNoteTools = (): NoteToolsBackend => {
+    if (localNoteTools !== null && isNotesHost()) {
+      return localNoteTools;
+    }
+    return peerNoteTools;
+  };
   // ---- end native notes (ServerCore)
 
   // ---- itsaplan → native tickets import (Importer). Read-only copy of the
@@ -2780,6 +2809,7 @@ export async function createPaseoDaemon(
       ticketizeAgent: (agentId) => itsaplanBridge.ticketizeAgent(agentId),
     },
     resolveTicketTools: ticketFleet.resolveToolsBackend,
+    resolveNoteTools,
     verifierDispatcher,
     serverId,
     hostAlias: missionControlHostAlias,
@@ -2819,6 +2849,7 @@ export async function createPaseoDaemon(
       const agentMcpServer = await createAgentMcpServer(
         createAgentToolHostDependencies({
           callerAgentId,
+          callerLabels: callerAgentId ? agentManager.getAgent(callerAgentId)?.labels : undefined,
           paseoToolPolicy: callerAgentId
             ? agentManager.getPaseoToolPolicy(callerAgentId)
             : undefined,
@@ -3118,6 +3149,7 @@ export async function createPaseoDaemon(
               (workspaceId) => itsaplanBridge?.handleWorkspaceArchived(workspaceId),
               warmWorktreePool,
               ticketsHost,
+              notesHost,
             );
             pluginRuntime.bindPaseoSessionHost(wsServer);
             await pluginRuntime.start();
@@ -3212,6 +3244,7 @@ export async function createPaseoDaemon(
     }
     transcriptSearch?.stop();
     ticketStore?.close();
+    noteStore?.close();
     await serviceProxy.stopStandalone();
     // Force-drop remaining sockets so httpServer.close() resolves promptly.
     // We've already closed wsServer (which sent ws-layer close frames) and
@@ -3243,6 +3276,9 @@ export async function createPaseoDaemon(
     ticketStore,
     isTicketsBoardHost,
     ticketsHandlers,
+    noteService,
+    noteStore,
+    isNotesHost,
     start,
     stop,
     getListenTarget: () => boundListenTarget,

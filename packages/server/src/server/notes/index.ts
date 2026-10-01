@@ -31,3 +31,10 @@ export {
 } from "./service.js";
 export { NoteStore, newNoteId, notePreview } from "./store.js";
 export { NotesSession, isServingNotes, type NotesHost } from "./session.js";
+export {
+  createLocalNoteToolsBackend,
+  createPeerNoteToolsBackend,
+  NotesHostUnavailableError,
+  registerNoteTools,
+  type NoteToolsBackend,
+} from "./tools.js";
