@@ -200,6 +200,11 @@ export const ja: TranslationResources = {
       title_mr: "イシューまたはMRを添付",
     },
   },
+  startOption: {
+    title: "開始オプション",
+    doTask: "タスクを実行",
+    orchestrator: "オーケストレーター",
+  },
   agentControls: {
     provider: {
       fallback: "プロバイダー",
@@ -250,6 +255,13 @@ export const ja: TranslationResources = {
       implement: "実装",
       question: "どのように続けますか？",
       proposedPlan: "提案されたプラン",
+      approve: "承認",
+      reject: "拒否",
+      editBriefs: "ブリーフを編集",
+      cancelEdit: "キャンセル",
+      childAgent: "子エージェント",
+      filesCount: "{{count}}ファイル",
+      dependsOn: "依存先",
     },
   },
   agentPanel: {

@@ -121,6 +121,7 @@ export async function submitDraftCreateRequest(input: {
   // Set when this draft was opened by "fork chat into a new tab": the daemon
   // creates the agent by forking the source session instead of from scratch.
   forkSource?: WorkspaceDraftForkSource;
+  orchestrator?: boolean;
   composerState: {
     selectedProvider: string | null;
     selectedMode: string;
@@ -133,11 +134,65 @@ export async function submitDraftCreateRequest(input: {
   selectModelMessage: string;
   forkFailedMessage: string;
 }): Promise<{ agentId: string | null; result: AgentSnapshotPayload }> {
+  const { attempt, text, images, attachments } = input;
+  const submit = resolveDraftSubmitTarget(input);
+  const imagesData = await encodeImages(images);
+  const attachmentsArray = Array.isArray(attachments) ? attachments : undefined;
+  if (submit.kind === "fork") {
+    return await submitDraftForkRequest({
+      attempt,
+      text,
+      images: imagesData,
+      attachments: attachmentsArray,
+      client: submit.client,
+      forkSource: submit.forkSource,
+      config: submit.config,
+      forkFailedMessage: input.forkFailedMessage,
+    });
+  }
+  const result = await submit.client.createAgent({
+    config: submit.config,
+    workspaceId: submit.workspaceId,
+    ...(text ? { initialPrompt: text } : {}),
+    ...(input.orchestrator === true ? { orchestrator: true } : {}),
+    clientMessageId: attempt.clientMessageId,
+    ...(imagesData && imagesData.length > 0 ? { images: imagesData } : {}),
+    ...(attachmentsArray && attachmentsArray.length > 0 ? { attachments: attachmentsArray } : {}),
+  });
+  return { agentId: result.id, result };
+}
+
+function resolveDraftSubmitTarget(input: {
+  cwd: string;
+  client: WorkspaceDraftSubmitClient | null;
+  workspaceDirectory: string | null;
+  workspaceId: string | null;
+  autoSubmitConfig: WorkspaceDraftAutoSubmitConfig | null;
+  forkSource?: WorkspaceDraftForkSource;
+  composerState: {
+    selectedProvider: string | null;
+    selectedMode: string;
+    modeOptions: readonly { id: string }[];
+    effectiveModelId: string | null;
+    effectiveThinkingOptionId: string | null;
+    featureValues: Record<string, unknown> | undefined;
+  };
+  hostDisconnectedMessage: string;
+  selectModelMessage: string;
+}):
+  | {
+      kind: "fork";
+      client: WorkspaceDraftSubmitClient;
+      forkSource: WorkspaceDraftForkSource;
+      config: AgentSessionConfig;
+    }
+  | {
+      kind: "create";
+      client: WorkspaceDraftSubmitClient;
+      workspaceId: string;
+      config: AgentSessionConfig;
+    } {
   const {
-    attempt,
-    text,
-    images,
-    attachments,
     cwd,
     client,
     workspaceDirectory,
@@ -146,13 +201,11 @@ export async function submitDraftCreateRequest(input: {
     forkSource,
     composerState,
   } = input;
-
   invariant(workspaceDirectory, "Workspace directory is required");
   invariant(workspaceId, "Workspace id is required");
   if (!client) {
     throw new Error(input.hostDisconnectedMessage);
   }
-
   const provider = autoSubmitConfig?.provider ?? composerState.selectedProvider;
   if (!provider) {
     throw new Error(input.selectModelMessage);
@@ -171,34 +224,10 @@ export async function submitDraftCreateRequest(input: {
       autoSubmitConfig?.thinkingOptionId ?? (composerState.effectiveThinkingOptionId || undefined),
     featureValues: autoSubmitConfig?.featureValues ?? composerState.featureValues,
   });
-
-  const imagesData = await encodeImages(images);
-  const attachmentsArray = Array.isArray(attachments) ? attachments : undefined;
   if (forkSource) {
-    return await submitDraftForkRequest({
-      attempt,
-      text,
-      images: imagesData,
-      attachments: attachmentsArray,
-      client,
-      forkSource,
-      config,
-      forkFailedMessage: input.forkFailedMessage,
-    });
+    return { kind: "fork", client, forkSource, config };
   }
-  const result = await client.createAgent({
-    config,
-    workspaceId,
-    ...(text ? { initialPrompt: text } : {}),
-    clientMessageId: attempt.clientMessageId,
-    ...(imagesData && imagesData.length > 0 ? { images: imagesData } : {}),
-    ...(attachmentsArray && attachmentsArray.length > 0 ? { attachments: attachmentsArray } : {}),
-  });
-
-  return {
-    agentId: result.id,
-    result,
-  };
+  return { kind: "create", client, workspaceId, config };
 }
 
 /**

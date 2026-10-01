@@ -198,6 +198,11 @@ export const zhCN: TranslationResources = {
       title_mr: "附加 issue 或 MR",
     },
   },
+  startOption: {
+    title: "启动选项",
+    doTask: "执行任务",
+    orchestrator: "编排器",
+  },
   agentControls: {
     provider: {
       fallback: "Provider",
@@ -248,6 +253,13 @@ export const zhCN: TranslationResources = {
       implement: "实施",
       question: "你想如何继续？",
       proposedPlan: "建议计划",
+      approve: "批准",
+      reject: "拒绝",
+      editBriefs: "编辑简报",
+      cancelEdit: "取消",
+      childAgent: "子智能体",
+      filesCount: "{{count}} 个文件",
+      dependsOn: "依赖于",
     },
   },
   agentPanel: {

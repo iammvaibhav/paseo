@@ -198,6 +198,11 @@ export const ko: TranslationResources = {
       title_mr: "이슈 또는 MR 첨부",
     },
   },
+  startOption: {
+    title: "시작 옵션",
+    doTask: "작업 수행",
+    orchestrator: "오케스트레이터",
+  },
   agentControls: {
     provider: {
       fallback: "프로바이더",
@@ -248,6 +253,13 @@ export const ko: TranslationResources = {
       implement: "구현",
       question: "어떻게 진행할까요?",
       proposedPlan: "제안된 계획",
+      approve: "승인",
+      reject: "거부",
+      editBriefs: "브리프 편집",
+      cancelEdit: "취소",
+      childAgent: "하위 에이전트",
+      filesCount: "{{count}}개 파일",
+      dependsOn: "의존 대상",
     },
   },
   agentPanel: {

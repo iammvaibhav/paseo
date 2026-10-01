@@ -194,6 +194,11 @@ export const en = {
       title_mr: "Attach issue or MR",
     },
   },
+  startOption: {
+    title: "Start option",
+    doTask: "Do the task",
+    orchestrator: "Orchestrator",
+  },
   agentControls: {
     provider: {
       fallback: "Provider",
@@ -244,6 +249,13 @@ export const en = {
       implement: "Implement",
       question: "How would you like to proceed?",
       proposedPlan: "Proposed plan",
+      approve: "Approve",
+      reject: "Reject",
+      editBriefs: "Edit briefs",
+      cancelEdit: "Cancel",
+      childAgent: "Child agent",
+      filesCount: "{{count}} files",
+      dependsOn: "Depends on",
     },
   },
   agentPanel: {

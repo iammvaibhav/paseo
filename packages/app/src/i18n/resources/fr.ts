@@ -202,6 +202,11 @@ export const fr: TranslationResources = {
       title_mr: "Joindre le problème ou MR",
     },
   },
+  startOption: {
+    title: "Option de démarrage",
+    doTask: "Faire la tâche",
+    orchestrator: "Orchestrateur",
+  },
   agentControls: {
     provider: {
       fallback: "Fournisseur",
@@ -252,6 +257,13 @@ export const fr: TranslationResources = {
       implement: "Mettre en œuvre",
       question: "Comment souhaitez-vous procéder?",
       proposedPlan: "Plan proposé",
+      approve: "Approuver",
+      reject: "Rejeter",
+      editBriefs: "Modifier les briefs",
+      cancelEdit: "Annuler",
+      childAgent: "Agent secondaire",
+      filesCount: "{{count}} fichiers",
+      dependsOn: "Dépend de",
     },
   },
   agentPanel: {
