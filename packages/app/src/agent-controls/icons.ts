@@ -47,6 +47,7 @@ export function getAgentModeIcon(
   modeId: string,
   providerDefinitions: AgentProviderDefinition[],
 ): AgentControlIcon {
+  if (modeId === "ai-review") return ShieldCheck;
   const icon = getModeVisuals(provider, modeId, providerDefinitions)?.icon;
   return (icon ? MODE_ICONS[icon] : undefined) ?? Bot;
 }
@@ -56,6 +57,7 @@ export function getAgentModeOptionIcon(
   modeId: string,
   providerDefinitions: AgentProviderDefinition[],
 ): AgentControlIcon | undefined {
+  if (modeId === "ai-review") return ShieldCheck;
   const icon = getModeVisuals(provider, modeId, providerDefinitions)?.icon;
   return icon ? MODE_ICONS[icon] : undefined;
 }

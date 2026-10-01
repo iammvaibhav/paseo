@@ -78,7 +78,16 @@ import {
   WebhookTestResponseSchema,
   WebhookConfigResponseSchema,
 } from "./webhook/rpc-schemas.js";
+import {
+  AUTOMATION_INBOUND_SCHEMAS,
+  AUTOMATION_OUTBOUND_SCHEMAS,
+} from "./automation/rpc-schemas.js";
+import { NOTES_INBOUND_SCHEMAS, NOTES_OUTBOUND_SCHEMAS } from "./notes/rpc-schemas.js";
 import { TICKETS_INBOUND_SCHEMAS, TICKETS_OUTBOUND_SCHEMAS } from "./tickets/rpc-schemas.js";
+import {
+  DOC_THREADS_INBOUND_SCHEMAS,
+  DOC_THREADS_OUTBOUND_SCHEMAS,
+} from "./doc-threads/rpc-schemas.js";
 import {
   MissionControlEventsFetchRequestSchema,
   MissionControlEventsFetchResponseSchema,
@@ -348,6 +357,15 @@ const MutableMissionControlAutopilotConfigSchema = z
     maxNudgesPerAgent: z.number().optional(),
   })
   .passthrough();
+const MutableAiReviewerConfigSchema = z
+  .object({
+    // Disabled by default. The fixed denylist is daemon-owned and never configurable.
+    enabled: z.boolean().optional(),
+    provider: z.string().optional(),
+    model: z.string().optional(),
+    policy: z.string().optional(),
+  })
+  .passthrough();
 const MutableMissionControlConfigSchema = z
   .object({
     // v3 per-host keys: only these two belong in the daemon config. Everything
@@ -438,6 +456,7 @@ export const MutableDaemonConfigSchema = z
     ompIdleCloseAfterSeconds: z.number().int().min(0).optional(),
     terminalProfiles: z.array(TerminalProfileSchema).optional(),
     missionControl: MutableMissionControlConfigSchema.optional(),
+    aiReviewer: MutableAiReviewerConfigSchema.optional(),
     agentProfiles: z.array(AgentProfileSchema).optional(),
     visibleModels: z.array(z.string()).optional(),
     composerPreferences: ComposerPreferencesSchema.optional(),
@@ -463,6 +482,7 @@ export const MutableDaemonConfigPatchSchema = z
     ompIdleCloseAfterSeconds: z.number().int().min(0).optional(),
     terminalProfiles: z.array(TerminalProfileSchema).optional(),
     missionControl: MutableMissionControlConfigSchema.partial().optional(),
+    aiReviewer: MutableAiReviewerConfigSchema.partial().optional(),
     agentProfiles: z.array(AgentProfileSchema).optional(),
     visibleModels: z.array(z.string()).optional(),
     composerPreferences: ComposerPreferencesSchema.optional(),
@@ -969,8 +989,14 @@ export const AgentTimelineItemPayloadSchema: z.ZodType<AgentTimelineItem, unknow
     version: z.number(),
     data: JsonWireValueSchema,
   }),
+  z.object({
+    type: z.literal("ai_review_decision"),
+    requestId: z.string(),
+    decision: z.enum(["allow", "deny", "escalate"]),
+    reason: z.string(),
+    toolName: z.string().optional(),
+  }),
 ]);
-
 export const AgentStreamEventPayloadSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("thread_started"),
@@ -2113,6 +2139,9 @@ export const ProviderUsageListRequestMessageSchema = z.object({
   requestId: z.string(),
   // Optional so old clients keep working; new clients set true on explicit refresh.
   forceRefresh: z.boolean().optional(),
+  // COMPAT(fastProviderUsage): added 2026-09-30, remove gate after 2027-03-30.
+  // Scope refresh/response to one provider; absent means every provider.
+  providerId: z.string().optional(),
 });
 
 export const ResumeAgentRequestMessageSchema = z.object({
@@ -3583,6 +3612,9 @@ export const SessionEventSubscriptionSchema = z.enum([
   "activity_log",
   "hub.execution.agent.update",
   "hub.execution.agent.stream",
+  // Native notes push. Subscribe only on a host that advertises features.notes:
+  // an older daemon rejects an unknown event name.
+  "notes.changed",
   // Native tickets push. Subscribe only on a host that advertises features.tickets:
   // an older daemon rejects an unknown event name.
   "tickets.changed",
@@ -3593,6 +3625,13 @@ export const SessionEventSubscriptionSchema = z.enum([
   "mission_control_event",
   "provider.usage.updated",
   "plannotator.session.event",
+  // Owned-subscription push for Automations CRUD/run changes. Subscribe only
+  // on a host that advertises features.automations: an older daemon rejects
+  // an unknown event name.
+  "automations.changed",
+  // Doc threads push. Subscribe only on a host that advertises
+  // features.docThreadsEventSubscription: an older daemon rejects an unknown event name.
+  "doc_threads.changed",
 ]);
 export type SessionEventSubscription = z.infer<typeof SessionEventSubscriptionSchema>;
 export const SessionEventsSetSubscriptionRequestSchema = z.object({
@@ -3842,7 +3881,10 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   WebhookUpdateRequestSchema,
   WebhookTestRequestSchema,
   WebhookConfigRequestSchema,
+  ...NOTES_INBOUND_SCHEMAS,
   ...TICKETS_INBOUND_SCHEMAS,
+  ...AUTOMATION_INBOUND_SCHEMAS,
+  ...DOC_THREADS_INBOUND_SCHEMAS,
   LoopRunRequestSchema,
   LoopListRequestSchema,
   LoopInspectRequestSchema,
@@ -4051,6 +4093,12 @@ export const ServerInfoStatusPayloadSchema = z
         // COMPAT(workspaceRequestReceipts): added in v0.8.0; remove gate after 2027-03-07.
         workspaceRequestReceipts: z.boolean().optional(),
         creationLifecycle: z.boolean().optional(),
+        // COMPAT(docThreads): added 2026-10-01, remove gate after 2027-04-01.
+        // Daemon serves doc_threads.* RPCs for agents it owns.
+        docThreads: z.boolean().optional(),
+        // COMPAT(docThreadsEventSubscription): added 2026-10-01, remove gate after 2027-04-01.
+        // session.events accepts "doc_threads.changed".
+        docThreadsEventSubscription: z.boolean().optional(),
         // COMPAT(hubAgentRpc): added in v0.8.0; remove gate after 2027-03-05.
         hubAgentRpc: z.boolean().optional(),
         providersSnapshot: z.boolean().optional(),
@@ -4144,6 +4192,11 @@ export const ServerInfoStatusPayloadSchema = z
         providerUsageList: z.boolean().optional(),
         // Daemon pushes refreshed usage via provider.usage.updated. Added in v0.4.0.
         providerUsagePush: z.boolean().optional(),
+        // COMPAT(fastProviderUsage): added 2026-09-30, remove gate after 2027-03-30.
+        // Daemon serves cached provider-usage snapshots instantly on
+        // provider.usage.list.request and refreshes each provider independently in
+        // the background, pushing per-provider provider.usage.updated events.
+        fastProviderUsage: z.boolean().optional(),
         // COMPAT(agentDetach): added in v0.1.98, remove gate after 2026-12-19 once daemon floor >= v0.1.98.
         agentDetach: z.boolean().optional(),
         // COMPAT(agentThinkingUpdate): added in v0.2.4, remove gate after 2027-01-28.
@@ -4183,6 +4236,10 @@ export const ServerInfoStatusPayloadSchema = z
         // Mission Control v3 (review lifecycle, approval gate, central config).
         // Added 2026-08-08; app gates the v3 screen once on this flag.
         missionControlV3: z.boolean().optional(),
+        // Native notes served by this daemon. True only on the notes host
+        // (the Commander host). Added 2026-09-30; the app picks the host
+        // advertising it.
+        notes: z.boolean().optional(),
         // Native tickets (board, initiatives) served by this daemon. True only on
         // the board host (the Commander host). Added 2026-09-30; the app picks
         // the host advertising it.
@@ -4195,6 +4252,12 @@ export const ServerInfoStatusPayloadSchema = z
         // mission_control.inbox.fetch (pending proposals, open clarifications,
         // review facts) is served; Quarterdeck gates its per-host inbox on it.
         missionControlInbox: z.boolean().optional(),
+        // Automations (unified schedules/webhooks/GitHub/Linear poll triggers).
+        // Added 2026-09-30; the app gates the Automations screen once on it.
+        automations: z.boolean().optional(),
+        // COMPAT(automationEventSubscription): added 2026-09-30, remove gate after 2027-03-30.
+        // session.events accepts "automations.changed".
+        automationEventSubscription: z.boolean().optional(),
         // COMPAT(commitsList): added in v0.1.110, remove gate after 2027-01-16.
         commitsList: z.boolean().optional(),
         // COMPAT(commitBaseClassification): added in v0.2.0, remove gate after 2027-01-23.
@@ -4241,6 +4304,8 @@ export const ServerInfoStatusPayloadSchema = z
         // COMPAT(missionControl): added in v0.3.x, drop the gate when floor includes mission control.
         missionControl: z.boolean().optional(),
         // COMPAT(fsEntryOps): added in v0.3.0, remove gate after 2027-02-08.
+        // COMPAT(aiReviewer): added 2026-09-30; remove gate after 2027-03-30.
+        aiReviewer: z.boolean().optional(),
         fsEntryOps: z.boolean().optional(),
         // COMPAT(fsEntryDuplicate): added in v0.3.0, remove gate after 2027-02-09.
         fsEntryDuplicate: z.boolean().optional(),
@@ -6884,6 +6949,18 @@ export const ProviderUsageSchema = z.object({
   balances: z.array(ProviderUsageBalanceSchema).optional(),
   details: z.array(ProviderUsageDetailSchema).optional(),
   error: z.string().nullable().optional(),
+  // COMPAT(fastProviderUsage): added 2026-09-30, remove gate after 2027-03-30.
+  // Daemon-computed headroom for the tightest window: remaining percent
+  // (0-100), tone, reset countdown label, and the best switch hint when this
+  // account is low or exhausted. Clients recompute locally every 30 s against
+  // resetsAt; these fields seed the first render and serve clients without
+  // local timers.
+  headroomTone: z.enum(["ready", "low", "exhausted", "checking", "unknown"]).optional(),
+  headroomPercent: z.number().nullable().optional(),
+  resetCountdown: z.string().nullable().optional(),
+  isBestAlternative: z.boolean().optional(),
+  bestAlternativeAccountId: z.string().nullable().optional(),
+  bestAlternativeAccountName: z.string().nullable().optional(),
 });
 
 export const ProviderUsageListResponseMessageSchema = z.object({
@@ -6905,6 +6982,9 @@ export const ProviderUsageUpdatedMessageSchema = z.object({
     subscriptionId: z.string().optional(),
     fetchedAt: z.string(),
     providers: z.array(ProviderUsageSchema),
+    // COMPAT(fastProviderUsage): added 2026-09-30, remove gate after 2027-03-30.
+    // Present on per-provider pushes: names the provider that just refreshed.
+    providerId: z.string().optional(),
   }),
 });
 
@@ -7639,7 +7719,10 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   WebhookUpdateResponseSchema,
   WebhookTestResponseSchema,
   WebhookConfigResponseSchema,
+  ...NOTES_OUTBOUND_SCHEMAS,
   ...TICKETS_OUTBOUND_SCHEMAS,
+  ...AUTOMATION_OUTBOUND_SCHEMAS,
+  ...DOC_THREADS_OUTBOUND_SCHEMAS,
   LoopRunResponseSchema,
   LoopListResponseSchema,
   LoopInspectResponseSchema,

@@ -1975,6 +1975,7 @@ export const ar: TranslationResources = {
   },
 
   tickets: en.tickets,
+  notes: en.notes,
   serviceUrl: {
     title: "افتح الخدمة URL",
     message: "افتح{{url}}؟",

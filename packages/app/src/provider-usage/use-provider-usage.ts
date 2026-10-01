@@ -33,9 +33,11 @@ export function useProviderUsage(serverId: string | null | undefined): {
     if (!client) {
       throw new Error(providerUsageCopy.clientUnavailable);
     }
-    // Always force the daemon past its 5m cache so tooltip/settings refreshes
-    // return live provider limits instead of a stale server snapshot.
-    return client.listProviderUsage({ forceRefresh: true });
+    // COMPAT(fastProviderUsage): stale-while-revalidate. Render the cached
+    // snapshot instantly; the daemon revalidates stale providers in the
+    // background and streams per-provider pushes. Explicit refreshes still
+    // force the daemon past its cache.
+    return client.listProviderUsage({});
   }, [client]);
 
   // Not hover-gated: the cache is warm before a popover opens, so a freshly created
@@ -51,21 +53,21 @@ export function useProviderUsage(serverId: string | null | undefined): {
       serverId: serverId ?? "",
     }),
     staleTime: PROVIDER_USAGE_STALE_TIME_MS,
-    refetchOnMount: true,
+    refetchOnMount: false,
     refetchOnReconnect: false,
     refetchOnWindowFocus: false,
   });
 
   const refresh = useCallback(async () => {
-    if (!canFetch) return;
+    if (!canFetch || !client) return;
     // Keep showing cached data while a forced refetch is in flight.
     await queryClient.invalidateQueries({ queryKey });
     await queryClient.fetchQuery({
       queryKey,
-      queryFn,
+      queryFn: () => client.listProviderUsage({ forceRefresh: true }),
       staleTime: PROVIDER_USAGE_STALE_TIME_MS,
     });
-  }, [canFetch, queryClient, queryFn, queryKey]);
+  }, [canFetch, client, queryClient, queryKey]);
 
   const view = useMemo<ProviderUsageView>(() => {
     if (!serverId || !client || !isConnected) {

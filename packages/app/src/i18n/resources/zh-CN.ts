@@ -1949,6 +1949,7 @@ export const zhCN: TranslationResources = {
   },
 
   tickets: en.tickets,
+  notes: en.notes,
   serviceUrl: {
     title: "打开服务 URL",
     message: "打开 {{url}}？",

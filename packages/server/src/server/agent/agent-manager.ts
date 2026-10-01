@@ -103,6 +103,21 @@ import {
 } from "./provider-subagents/store.js";
 import { withTimeout } from "../../utils/promise-timeout.js";
 import { extractAttention } from "../persistence-hooks.js";
+import {
+  AI_REVIEW_MODE,
+  AI_REVIEW_MODE_ID,
+  AI_REVIEW_TIMEOUT_MS,
+  createModelAiReviewer,
+  isAlwaysEscalate,
+  permissionToolInput,
+  readGitDiffStat,
+  withAiReviewTimeout,
+  type AiReviewContext,
+  type AiReviewDecision,
+  type AiReviewer,
+  type AiReviewerConfig,
+} from "./ai-reviewer.js";
+import { getStructuredAgentResponse } from "./agent-response-loop.js";
 
 const RELOAD_SESSION_CLOSE_TIMEOUT_MS = 3_000;
 const INTERRUPT_SESSION_TIMEOUT_MS = 2_000;
@@ -485,6 +500,10 @@ export interface AgentManagerOptions {
     provider: AgentProvider;
     cwd: string;
   }) => Promise<string | undefined>;
+  aiReviewer?: AiReviewer;
+  getAiReviewerConfig?: () => AiReviewerConfig | undefined;
+  aiReviewerCapability?: boolean;
+  aiReviewTimeoutMs?: number;
   logger: Logger;
 }
 
@@ -1063,6 +1082,12 @@ export class AgentManager {
     string,
     Array<{ text: string; classification: AgentTimelineUserMessageClassification; at: number }>
   >();
+  private aiReviewer?: AiReviewer;
+  private getAiReviewerConfig?: () => AiReviewerConfig | undefined;
+  private aiReviewerCapability = false;
+  private aiReviewTimeoutMs: number = AI_REVIEW_TIMEOUT_MS;
+  private readonly aiReviewAgents = new Set<string>();
+  private readonly aiReviewInFlight = new Set<string>();
 
   private static resolveRescueTimeouts(
     options: AgentManagerOptions,
@@ -1112,11 +1137,51 @@ export class AgentManager {
       providerDefinitions: options.providerDefinitions ?? {},
       clients: options.clients ?? {},
     });
+    this.configureAiReviewer(options);
+  }
+
+  private configureAiReviewer(options: AgentManagerOptions): void {
+    if (options.aiReviewer) {
+      this.aiReviewer = options.aiReviewer;
+    } else {
+      this.aiReviewer = createModelAiReviewer({
+        createAgent: (config) =>
+          this.createAgent(
+            {
+              provider: config.provider,
+              cwd: config.cwd,
+              ...(config.model ? { model: config.model } : {}),
+              title: config.title ?? null,
+              internal: true,
+            },
+            undefined,
+            { workspaceId: undefined, persistSession: false },
+          ).then((agent) => ({ id: agent.id })),
+        runAgent: (agentId, prompt) =>
+          this.runAgent(agentId, prompt).then((result) => ({ finalText: result.finalText })),
+        closeAgent: (agentId) => this.closeAgent(agentId),
+        deleteAgentState: (agentId) => this.deleteAgentState(agentId),
+        callStructuredModel: getStructuredAgentResponse,
+      });
+    }
+    this.getAiReviewerConfig = options.getAiReviewerConfig;
+    this.aiReviewerCapability = options.aiReviewerCapability ?? options.aiReviewer !== undefined;
+    this.aiReviewTimeoutMs = options.aiReviewTimeoutMs ?? AI_REVIEW_TIMEOUT_MS;
   }
 
   private configurePaseoTools(options: AgentManagerOptions): void {
     this.paseoToolsEnabled = options.paseoToolsEnabled ?? true;
     this.paseoToolCatalogFactory = options.paseoToolCatalogFactory ?? null;
+  }
+
+  private augmentAvailableModes(modes: AgentMode[]): AgentMode[] {
+    if (!this.aiReviewerCapability) {
+      return modes;
+    }
+    if (modes.some((m) => m.id === AI_REVIEW_MODE_ID)) {
+      return modes;
+    }
+    return [...modes, AI_REVIEW_MODE];
   }
 
   registerClient(provider: AgentProvider, client: AgentClient): void {
@@ -2560,6 +2625,24 @@ export class AgentManager {
 
   async setAgentMode(agentId: string, modeId: string): Promise<AgentProviderNotice | null> {
     const agent = this.requireSessionAgent(agentId);
+    if (modeId === AI_REVIEW_MODE_ID) {
+      if (!this.aiReviewerCapability) {
+        throw new Error("AI reviewer is unavailable on this host");
+      }
+      this.aiReviewAgents.add(agentId);
+      agent.config.modeId = modeId;
+      agent.currentModeId = modeId;
+      if (agent.runtimeInfo) {
+        agent.runtimeInfo = { ...agent.runtimeInfo, modeId };
+      }
+      this.refreshSessionPersistence(agent);
+      await this.persistSnapshot(agent);
+      this.touchUpdatedAt(agent);
+      this.emitState(agent);
+      return null;
+    }
+
+    this.aiReviewAgents.delete(agentId);
     const notice = (await agent.session.setMode(modeId)) ?? null;
     await this.drainSessionEvents(agentId);
     const currentMode = (await agent.session.getCurrentMode()) ?? modeId;
@@ -2569,6 +2652,7 @@ export class AgentManager {
     if (agent.runtimeInfo) {
       agent.runtimeInfo = { ...agent.runtimeInfo, modeId: currentMode };
     }
+    this.refreshSessionPersistence(agent);
     this.touchUpdatedAt(agent);
     this.emitState(agent);
     return notice;
@@ -4615,6 +4699,11 @@ export class AgentManager {
       this.assertAcceptingAgentRegistrations();
       this.agents.set(resolvedAgentId, managed);
       registered = true;
+      if (existingRecord?.lastModeId === AI_REVIEW_MODE_ID || config.modeId === AI_REVIEW_MODE_ID) {
+        this.aiReviewAgents.add(resolvedAgentId);
+        managed.currentModeId = AI_REVIEW_MODE_ID;
+        managed.config.modeId = AI_REVIEW_MODE_ID;
+      }
       // Initialize previousStatus to track transitions
       this.previousStatuses.set(resolvedAgentId, managed.lifecycle);
       await this.refreshRuntimeInfo(managed, { emit: false });
@@ -4749,6 +4838,9 @@ export class AgentManager {
       | undefined;
   }): ActiveManagedAgent {
     const { resolvedAgentId, session, config, now, durableTimelineHasRows, options } = params;
+    if (config.modeId === AI_REVIEW_MODE_ID) {
+      this.aiReviewAgents.add(resolvedAgentId);
+    }
     return {
       id: resolvedAgentId,
       provider: config.provider,
@@ -4813,6 +4905,8 @@ export class AgentManager {
     this.agentStreamCoalescer.flushAndDiscard(agent.id);
     this.agents.delete(agent.id);
     this.previousStatuses.delete(agent.id);
+    this.aiReviewAgents.delete(agent.id);
+    this.aiReviewInFlight.delete(agent.id);
     if (agent.unsubscribeSession) {
       agent.unsubscribeSession();
       agent.unsubscribeSession = null;
@@ -5044,15 +5138,20 @@ export class AgentManager {
   ): Promise<void> {
     try {
       const modes = await agent.session.getAvailableModes();
-      agent.availableModes = modes;
+      agent.availableModes = this.augmentAvailableModes(modes);
     } catch {
       agent.availableModes = [];
     }
 
     try {
-      agent.currentModeId = await agent.session.getCurrentMode();
+      if (this.aiReviewAgents.has(agent.id) || agent.config.modeId === AI_REVIEW_MODE_ID) {
+        this.aiReviewAgents.add(agent.id);
+        agent.currentModeId = AI_REVIEW_MODE_ID;
+      } else {
+        agent.currentModeId = await agent.session.getCurrentMode();
+      }
     } catch {
-      agent.currentModeId = null;
+      agent.currentModeId = this.aiReviewAgents.has(agent.id) ? AI_REVIEW_MODE_ID : null;
     }
 
     try {
@@ -5083,6 +5182,9 @@ export class AgentManager {
         newInfo.sessionId !== agent.runtimeInfo?.sessionId ||
         newInfo.modeId !== agent.runtimeInfo?.modeId;
       agent.runtimeInfo = newInfo;
+      if (this.aiReviewAgents.has(agent.id) && newInfo.modeId) {
+        newInfo.modeId = AI_REVIEW_MODE_ID;
+      }
       if (!agent.persistence && newInfo.sessionId) {
         agent.persistence = attachPersistenceCwd(
           { provider: agent.provider, sessionId: newInfo.sessionId },
@@ -5489,10 +5591,12 @@ export class AgentManager {
         this.emitState(agent);
         return undefined;
       case "mode_changed":
-        agent.currentModeId = event.currentModeId;
-        agent.availableModes = event.availableModes;
+        agent.availableModes = this.augmentAvailableModes(event.availableModes);
+        agent.currentModeId = this.aiReviewAgents.has(agent.id)
+          ? AI_REVIEW_MODE_ID
+          : event.currentModeId;
         if (agent.runtimeInfo) {
-          agent.runtimeInfo = { ...agent.runtimeInfo, modeId: event.currentModeId };
+          agent.runtimeInfo = { ...agent.runtimeInfo, modeId: agent.currentModeId };
         }
         flags.shouldDispatchEvent = false;
         this.emitState(agent);
@@ -5951,6 +6055,110 @@ export class AgentManager {
       this.broadcastAgentAttention(agent, "permission");
     }
     this.emitState(agent);
+    const isAiReviewMode =
+      this.aiReviewAgents.has(agent.id) ||
+      agent.currentModeId === AI_REVIEW_MODE_ID ||
+      agent.config.modeId === AI_REVIEW_MODE_ID;
+    if (isAiReviewMode && this.aiReviewer && this.getAiReviewerConfig?.()?.enabled) {
+      this.trackBackgroundTask(this.reviewPermission(agent, event.request));
+    }
+  }
+
+  private async reviewPermission(
+    agent: ActiveManagedAgent,
+    request: AgentPermissionRequest,
+  ): Promise<void> {
+    if (!this.aiReviewer || this.aiReviewInFlight.has(request.id)) {
+      return;
+    }
+    const config = this.getAiReviewerConfig?.();
+    if (!config?.enabled) {
+      return;
+    }
+
+    this.aiReviewInFlight.add(request.id);
+    try {
+      const rows = this.timelineStore.getRows(agent.id);
+      const goal =
+        getFirstUserMessageTextFromRows(rows) || agent.config.title || agent.shortDescription || "";
+      const recentTurnSummary =
+        rows
+          .slice(-6)
+          .map((r) => {
+            if (r.item.type === "user_message") return `User: ${r.item.text}`;
+            if (r.item.type === "assistant_message") return `Assistant: ${r.item.text}`;
+            if (r.item.type === "tool_call") return `Tool: ${r.item.name} (${r.item.status})`;
+            return r.item.type;
+          })
+          .join("\n") || "(no recent activity)";
+      const toolName = request.name || (request.detail?.type === "shell" ? "shell" : "unknown");
+      const toolInput = permissionToolInput(request);
+      const gitDiffStat = await readGitDiffStat(agent.cwd);
+
+      const context: AiReviewContext = {
+        goal,
+        recentTurnSummary,
+        toolName,
+        toolInput,
+        cwd: agent.cwd,
+        gitDiffStat,
+      };
+
+      let decision: AiReviewDecision;
+      if (isAlwaysEscalate(context)) {
+        decision = {
+          decision: "escalate",
+          reason:
+            "Action matches the fixed denylist of destructive or sensitive operations; escalating to user.",
+        };
+      } else {
+        try {
+          decision = await withAiReviewTimeout(
+            this.aiReviewer.review(context, config),
+            this.aiReviewTimeoutMs,
+          );
+        } catch (error) {
+          decision = {
+            decision: "escalate",
+            reason:
+              error instanceof Error
+                ? `AI reviewer failed (${error.message}); escalating to user.`
+                : "AI reviewer error; escalating to user.",
+          };
+        }
+      }
+
+      // Check if request is still pending
+      if (!agent.pendingPermissions.has(request.id)) {
+        return;
+      }
+
+      // Record timeline item for all outcomes
+      this.recordAndDispatchTimelineItem(
+        agent.id,
+        {
+          type: "ai_review_decision",
+          requestId: request.id,
+          decision: decision.decision,
+          reason: decision.reason,
+          toolName: context.toolName,
+        },
+        agent.provider,
+      );
+
+      if (decision.decision === "allow") {
+        await this.respondToPermission(agent.id, request.id, { behavior: "allow" });
+      } else if (decision.decision === "deny") {
+        await this.respondToPermission(agent.id, request.id, { behavior: "deny" });
+      }
+    } catch (error) {
+      this.logger.warn(
+        { err: error, agentId: agent.id, requestId: request.id },
+        "Unexpected error in reviewPermission",
+      );
+    } finally {
+      this.aiReviewInFlight.delete(request.id);
+    }
   }
 
   private onStreamPermissionResolved(params: {
@@ -6636,6 +6844,10 @@ export class AgentManager {
       labels ?? {},
       orchestrator === true,
     );
+    if (storedConfig.modeId === AI_REVIEW_MODE_ID) {
+      const { modeId: _strippedModeId, ...rest } = launchConfig;
+      return { storedConfig, launchConfig: { ...rest }, paseoToolPolicy };
+    }
     return { storedConfig, launchConfig, paseoToolPolicy };
   }
 

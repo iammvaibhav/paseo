@@ -493,6 +493,7 @@ export class ProviderCatalogSession {
     try {
       const usage = await this.providerUsageService.listUsage({
         forceRefresh: msg.forceRefresh === true,
+        providerId: msg.providerId,
       });
       this.host.emit({
         type: "provider.usage.list.response",

@@ -2013,6 +2013,7 @@ export const ptBR: TranslationResources = {
   },
 
   tickets: en.tickets,
+  notes: en.notes,
   serviceUrl: {
     title: "Abrir URL do serviço",
     message: "Abrir {{url}}?",

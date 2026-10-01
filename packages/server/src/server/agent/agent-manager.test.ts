@@ -10810,6 +10810,557 @@ test("respondToPermission emits refreshed state before permission_resolved", asy
   expect(resolvedIndex).toBeGreaterThan(refreshedStateIndex);
 });
 
+test("ai-review mode auto-allows permission when stub reviewer approves", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-ai-review-allow-"));
+  const storagePath = join(workdir, "agents");
+  const storage = new AgentStorage(storagePath, logger);
+
+  class AiReviewPermissionSession extends TestAgentSession {
+    private resolved: string[] = [];
+    override async respondToPermission(requestId: string): Promise<void> {
+      this.resolved.push(requestId);
+      this.pushEvent({
+        type: "permission_resolved",
+        provider: this.provider,
+        requestId,
+        resolution: { behavior: "allow" },
+      });
+    }
+    getResolved(): string[] {
+      return this.resolved;
+    }
+  }
+
+  class AiReviewPermissionClient extends TestAgentClient {
+    session: AiReviewPermissionSession | null = null;
+    override async createSession(config: AgentSessionConfig): Promise<AgentSession> {
+      this.session = new AiReviewPermissionSession(config);
+      return this.session;
+    }
+  }
+
+  const client = new AiReviewPermissionClient();
+  const manager = new AgentManager({
+    clients: { codex: client },
+    registry: storage,
+    logger,
+    aiReviewerCapability: true,
+    getAiReviewerConfig: () => ({ enabled: true }),
+    aiReviewer: {
+      review: () => Promise.resolve({ decision: "allow", reason: "safe command" }),
+    },
+    idFactory: () => "00000000-0000-4000-8000-000000000141",
+  });
+
+  const snapshot = await manager.createAgent(
+    { provider: "codex", cwd: workdir, modeId: "ai-review" },
+    undefined,
+    { workspaceId: undefined },
+  );
+  expect(snapshot.currentModeId).toBe("ai-review");
+
+  const agent = manager.getAgent(snapshot.id);
+  expect(agent?.availableModes.some((m) => m.id === "ai-review")).toBe(true);
+
+  const request = {
+    id: "perm-ai-allow-1",
+    provider: "codex" as const,
+    name: "bash",
+    kind: "tool" as const,
+    title: "Run echo",
+    detail: { type: "shell", command: "echo hello" },
+    actions: [
+      { id: "allow", label: "Allow", behavior: "allow" as const },
+      { id: "deny", label: "Deny", behavior: "deny" as const },
+    ],
+  };
+  agent!.pendingPermissions.set(request.id, request as never);
+  client.session!.pushEvent({
+    type: "permission_requested",
+    provider: "codex",
+    request: request as never,
+  });
+
+  await manager.flush();
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    if (manager.getTimeline(snapshot.id).some((item) => item.type === "ai_review_decision")) break;
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, 10);
+    await promise;
+  }
+  await manager.flush();
+
+  expect(client.session!.getResolved()).toContain("perm-ai-allow-1");
+  const timeline = manager.getTimeline(snapshot.id);
+  const decision = timeline.find((item) => item.type === "ai_review_decision");
+  expect(decision).toMatchObject({ decision: "allow", requestId: "perm-ai-allow-1" });
+});
+
+test("ai-review default reviewer calls the configured provider+model through an ephemeral session", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-ai-review-default-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+
+  class ReviewSession extends TestAgentSession {
+    resolved: string[] = [];
+    override async startTurn(): Promise<{ turnId: string }> {
+      const turn = await super.startTurn();
+      this.pushEvent({
+        type: "timeline",
+        provider: this.provider,
+        turnId: turn.turnId,
+        item: {
+          type: "assistant_message",
+          text: '{"decision":"deny","reason":"risky"}',
+          messageId: `review-${turn.turnId}`,
+        },
+      });
+      return turn;
+    }
+    override async respondToPermission(requestId: string): Promise<void> {
+      this.resolved.push(requestId);
+    }
+  }
+  class ReviewClient extends TestAgentClient {
+    reviewSession: ReviewSession | null = null;
+    workerSession: (TestAgentSession & { resolved: string[] }) | null = null;
+    override async createSession(config: AgentSessionConfig): Promise<AgentSession> {
+      if (config.internal) {
+        this.reviewSession = new ReviewSession(config);
+        return this.reviewSession;
+      }
+      const session = new (class extends TestAgentSession {
+        resolved: string[] = [];
+        override async respondToPermission(requestId: string): Promise<void> {
+          this.resolved.push(requestId);
+        }
+      })(config);
+      this.workerSession = session;
+      return session;
+    }
+  }
+  const client = new ReviewClient();
+  let nextId = 0;
+  const ids = [
+    "00000000-0000-4000-8000-000000000148",
+    "00000000-0000-4000-8000-000000000149",
+    "00000000-0000-4000-8000-000000000150",
+  ];
+  const manager = new AgentManager({
+    clients: { codex: client },
+    registry: storage,
+    logger,
+    aiReviewerCapability: true,
+    getAiReviewerConfig: () => ({ enabled: true, provider: "codex", model: "gpt-5.4-mini" }),
+    idFactory: () => ids[nextId++ % ids.length]!,
+  });
+
+  const snapshot = await manager.createAgent(
+    { provider: "codex", cwd: workdir, modeId: "ai-review" },
+    undefined,
+    { workspaceId: undefined },
+  );
+  const workerId = snapshot.id;
+  const agent = manager.getAgent(workerId)!;
+  const request = {
+    id: "perm-ai-default-1",
+    provider: "codex" as const,
+    name: "bash",
+    kind: "tool" as const,
+    title: "Run echo",
+    detail: { type: "shell", command: "echo hello" },
+    actions: [
+      { id: "allow", label: "Allow", behavior: "allow" as const },
+      { id: "deny", label: "Deny", behavior: "deny" as const },
+    ],
+  };
+  agent.pendingPermissions.set(request.id, request as never);
+  client.workerSession!.pushEvent({
+    type: "permission_requested",
+    provider: "codex",
+    request: request as never,
+  });
+
+  await manager.flush();
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (manager.getTimeline(workerId).some((item) => item.type === "ai_review_decision")) break;
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, 10);
+    await promise;
+  }
+  await manager.flush();
+
+  expect(client.reviewSession).not.toBeNull();
+  expect(manager.getTimeline(workerId)).toContainEqual(
+    expect.objectContaining({ type: "ai_review_decision", decision: "deny" }),
+  );
+  expect(client.workerSession!.resolved ?? []).toContain("perm-ai-default-1");
+});
+
+test("ai-review denylist escalates and leaves permission pending", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-ai-review-deny-"));
+  const storagePath = join(workdir, "agents");
+  const storage = new AgentStorage(storagePath, logger);
+
+  class DenySession extends TestAgentSession {
+    resolved: string[] = [];
+    override async respondToPermission(requestId: string): Promise<void> {
+      this.resolved.push(requestId);
+    }
+  }
+  class DenyClient extends TestAgentClient {
+    session: DenySession | null = null;
+    override async createSession(config: AgentSessionConfig): Promise<AgentSession> {
+      this.session = new DenySession(config);
+      return this.session;
+    }
+  }
+  const client = new DenyClient();
+  let reviewerCalls = 0;
+  const manager = new AgentManager({
+    clients: { codex: client },
+    registry: storage,
+    logger,
+    aiReviewerCapability: true,
+    getAiReviewerConfig: () => ({ enabled: true }),
+    aiReviewer: {
+      review: () => {
+        reviewerCalls += 1;
+        return Promise.resolve({ decision: "allow", reason: "should not reach" });
+      },
+    },
+    idFactory: () => "00000000-0000-4000-8000-000000000142",
+  });
+
+  const snapshot = await manager.createAgent(
+    { provider: "codex", cwd: workdir, modeId: "ai-review" },
+    undefined,
+    { workspaceId: undefined },
+  );
+  const agent = manager.getAgent(snapshot.id)!;
+  const request = {
+    id: "perm-ai-deny-1",
+    provider: "codex" as const,
+    name: "bash",
+    kind: "tool" as const,
+    title: "Run destructive",
+    detail: { type: "shell", command: "rm -rf /tmp/victim" },
+    actions: [
+      { id: "allow", label: "Allow", behavior: "allow" as const },
+      { id: "deny", label: "Deny", behavior: "deny" as const },
+    ],
+  };
+  agent.pendingPermissions.set(request.id, request as never);
+  client.session!.pushEvent({
+    type: "permission_requested",
+    provider: "codex",
+    request: request as never,
+  });
+
+  await manager.flush();
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    if (manager.getTimeline(snapshot.id).some((item) => item.type === "ai_review_decision")) break;
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, 10);
+    await promise;
+  }
+  await manager.flush();
+
+  expect(reviewerCalls).toBe(0);
+  expect(client.session!.resolved).toHaveLength(0);
+  expect(manager.getAgent(snapshot.id)?.pendingPermissions.has("perm-ai-deny-1")).toBe(true);
+  const timeline = manager.getTimeline(snapshot.id);
+  const decision = timeline.find((item) => item.type === "ai_review_decision");
+  expect(decision).toMatchObject({ decision: "escalate", requestId: "perm-ai-deny-1" });
+});
+
+test("ai-review reviewer deny auto-denies permission", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-ai-review-denyflow-"));
+  const storagePath = join(workdir, "agents");
+  const storage = new AgentStorage(storagePath, logger);
+  class FlowSession extends TestAgentSession {
+    resolved: string[] = [];
+    override async respondToPermission(requestId: string): Promise<void> {
+      this.resolved.push(requestId);
+      this.pushEvent({
+        type: "permission_resolved",
+        provider: this.provider,
+        requestId,
+        resolution: { behavior: "deny" },
+      });
+    }
+  }
+  class FlowClient extends TestAgentClient {
+    session: FlowSession | null = null;
+    override async createSession(config: AgentSessionConfig): Promise<AgentSession> {
+      this.session = new FlowSession(config);
+      return this.session;
+    }
+  }
+  const client = new FlowClient();
+  const manager = new AgentManager({
+    clients: { codex: client },
+    registry: storage,
+    logger,
+    aiReviewerCapability: true,
+    getAiReviewerConfig: () => ({ enabled: true }),
+    aiReviewer: {
+      review: () => Promise.resolve({ decision: "deny", reason: "risky" }),
+    },
+    idFactory: () => "00000000-0000-4000-8000-000000000143",
+  });
+  const snapshot = await manager.createAgent(
+    { provider: "codex", cwd: workdir, modeId: "ai-review" },
+    undefined,
+    { workspaceId: undefined },
+  );
+  const agent = manager.getAgent(snapshot.id)!;
+  const request = {
+    id: "perm-ai-denyflow-1",
+    provider: "codex" as const,
+    name: "bash",
+    kind: "tool" as const,
+    title: "Run echo",
+    detail: { type: "shell", command: "echo ok" },
+    actions: [
+      { id: "allow", label: "Allow", behavior: "allow" as const },
+      { id: "deny", label: "Deny", behavior: "deny" as const },
+    ],
+  };
+  agent.pendingPermissions.set(request.id, request as never);
+  client.session!.pushEvent({
+    type: "permission_requested",
+    provider: "codex",
+    request: request as never,
+  });
+  await manager.flush();
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    if (manager.getTimeline(snapshot.id).some((item) => item.type === "ai_review_decision")) break;
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, 10);
+    await promise;
+  }
+  await manager.flush();
+  expect(client.session!.resolved).toContain("perm-ai-denyflow-1");
+  const timeline = manager.getTimeline(snapshot.id);
+  expect(timeline.find((item) => item.type === "ai_review_decision")).toMatchObject({
+    decision: "deny",
+  });
+});
+
+test("ai-review reviewer error escalates and leaves permission pending", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-ai-review-error-"));
+  const storagePath = join(workdir, "agents");
+  const storage = new AgentStorage(storagePath, logger);
+  class ErrorSession extends TestAgentSession {
+    resolved: string[] = [];
+    override async respondToPermission(requestId: string): Promise<void> {
+      this.resolved.push(requestId);
+    }
+  }
+  class ErrorClient extends TestAgentClient {
+    session: ErrorSession | null = null;
+    override async createSession(config: AgentSessionConfig): Promise<AgentSession> {
+      this.session = new ErrorSession(config);
+      return this.session;
+    }
+  }
+  const client = new ErrorClient();
+  const manager = new AgentManager({
+    clients: { codex: client },
+    registry: storage,
+    logger,
+    aiReviewerCapability: true,
+    getAiReviewerConfig: () => ({ enabled: true }),
+    aiReviewer: {
+      review: () => Promise.reject(new Error("reviewer exploded")),
+    },
+    idFactory: () => "00000000-0000-4000-8000-000000000144",
+  });
+  const snapshot = await manager.createAgent(
+    { provider: "codex", cwd: workdir, modeId: "ai-review", title: "error test" },
+    undefined,
+    { workspaceId: undefined },
+  );
+  const agent = manager.getAgent(snapshot.id)!;
+  const request = {
+    id: "perm-ai-error-1",
+    provider: "codex" as const,
+    name: "bash",
+    kind: "tool" as const,
+    title: "Run echo",
+    detail: { type: "shell", command: "echo slow" },
+    actions: [
+      { id: "allow", label: "Allow", behavior: "allow" as const },
+      { id: "deny", label: "Deny", behavior: "deny" as const },
+    ],
+  };
+  agent.pendingPermissions.set(request.id, request as never);
+  client.session!.pushEvent({
+    type: "permission_requested",
+    provider: "codex",
+    request: request as never,
+  });
+  await manager.flush();
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    if (manager.getTimeline(snapshot.id).some((item) => item.type === "ai_review_decision")) break;
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, 10);
+    await promise;
+  }
+  await manager.flush();
+  const timeline = manager.getTimeline(snapshot.id);
+  expect(timeline.find((item) => item.type === "ai_review_decision")).toMatchObject({
+    decision: "escalate",
+  });
+  expect(client.session!.resolved).toHaveLength(0);
+  expect(manager.getAgent(snapshot.id)?.pendingPermissions.has("perm-ai-error-1")).toBe(true);
+});
+
+test("ai-review reviewer timeout escalates and leaves permission pending", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-ai-review-timeout-"));
+  const storagePath = join(workdir, "agents");
+  const storage = new AgentStorage(storagePath, logger);
+  class TimeoutSession extends TestAgentSession {
+    resolved: string[] = [];
+    override async respondToPermission(requestId: string): Promise<void> {
+      this.resolved.push(requestId);
+    }
+  }
+  class TimeoutClient extends TestAgentClient {
+    session: TimeoutSession | null = null;
+    override async createSession(config: AgentSessionConfig): Promise<AgentSession> {
+      this.session = new TimeoutSession(config);
+      return this.session;
+    }
+  }
+  const client = new TimeoutClient();
+  const manager = new AgentManager({
+    clients: { codex: client },
+    registry: storage,
+    logger,
+    aiReviewerCapability: true,
+    getAiReviewerConfig: () => ({ enabled: true }),
+    aiReviewTimeoutMs: 50,
+    aiReviewer: {
+      review: () => new Promise<{ decision: "allow"; reason: string }>(() => {}),
+    },
+    idFactory: () => "00000000-0000-4000-8000-000000000145",
+  });
+  const snapshot = await manager.createAgent(
+    { provider: "codex", cwd: workdir, modeId: "ai-review" },
+    undefined,
+    { workspaceId: undefined },
+  );
+  const agent = manager.getAgent(snapshot.id)!;
+  const request = {
+    id: "perm-ai-timeout-1",
+    provider: "codex" as const,
+    name: "bash",
+    kind: "tool" as const,
+    title: "Run echo",
+    detail: { type: "shell", command: "echo slow" },
+    actions: [
+      { id: "allow", label: "Allow", behavior: "allow" as const },
+      { id: "deny", label: "Deny", behavior: "deny" as const },
+    ],
+  };
+  agent.pendingPermissions.set(request.id, request as never);
+  client.session!.pushEvent({
+    type: "permission_requested",
+    provider: "codex",
+    request: request as never,
+  });
+  await manager.flush();
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    if (manager.getTimeline(snapshot.id).some((item) => item.type === "ai_review_decision")) break;
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, 50);
+    await promise;
+  }
+  await manager.flush();
+  const timeline = manager.getTimeline(snapshot.id);
+  const decision = timeline.find((item) => item.type === "ai_review_decision");
+  expect(decision).toMatchObject({
+    decision: "escalate",
+    requestId: "perm-ai-timeout-1",
+    reason: expect.stringMatching(/timed out/i),
+  });
+  expect(client.session!.resolved).toHaveLength(0);
+  expect(manager.getAgent(snapshot.id)?.pendingPermissions.has("perm-ai-timeout-1")).toBe(true);
+});
+
+test("setAgentMode switches into and out of ai-review without touching the provider session", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-ai-review-modeswitch-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  class ModeSession extends TestAgentSession {
+    setModeCalls = 0;
+    currentMode: string | null = "build";
+    override async getAvailableModes() {
+      return [
+        { id: "build", label: "Build" },
+        { id: "plan", label: "Plan" },
+      ];
+    }
+    override async getCurrentMode() {
+      return this.currentMode;
+    }
+    override async setMode(): Promise<void> {
+      this.setModeCalls += 1;
+    }
+  }
+  class ModeClient extends TestAgentClient {
+    session: ModeSession | null = null;
+    override async createSession(config: AgentSessionConfig): Promise<AgentSession> {
+      this.session = new ModeSession(config);
+      return this.session;
+    }
+  }
+  const client = new ModeClient();
+  const manager = new AgentManager({
+    clients: { codex: client },
+    registry: storage,
+    logger,
+    aiReviewerCapability: true,
+    getAiReviewerConfig: () => ({ enabled: true }),
+    aiReviewer: { review: () => Promise.resolve({ decision: "allow", reason: "safe" }) },
+    idFactory: () => "00000000-0000-4000-8000-000000000146",
+  });
+  const snapshot = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+    workspaceId: undefined,
+  });
+  expect(manager.getAgent(snapshot.id)?.availableModes.some((m) => m.id === "ai-review")).toBe(
+    true,
+  );
+  await manager.setAgentMode(snapshot.id, "ai-review");
+  expect(manager.getAgent(snapshot.id)?.currentModeId).toBe("ai-review");
+  expect(client.session!.setModeCalls).toBe(0);
+  const storedAfterEnter = await storage.get(manager.getAgent(snapshot.id)!.id);
+  expect(storedAfterEnter?.lastModeId).toBe("ai-review");
+  await manager.setAgentMode(snapshot.id, "build");
+  expect(client.session!.setModeCalls).toBe(1);
+  expect(manager.getAgent(snapshot.id)?.currentModeId).toBe("build");
+});
+
+test("setAgentMode rejects ai-review when the host lacks reviewer capability", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-ai-review-nocap-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const manager = new AgentManager({
+    clients: { codex: new TestAgentClient() },
+    registry: storage,
+    logger,
+    idFactory: () => "00000000-0000-4000-8000-000000000147",
+  });
+  const snapshot = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+    workspaceId: undefined,
+  });
+  expect(manager.getAgent(snapshot.id)?.availableModes.some((m) => m.id === "ai-review")).toBe(
+    false,
+  );
+  await expect(manager.setAgentMode(snapshot.id, "ai-review")).rejects.toThrow(
+    "AI reviewer is unavailable on this host",
+  );
+});
+
 test("close during in-flight stream does not clear persistence sessionId", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-test-"));
   const storagePath = join(workdir, "agents");

@@ -150,6 +150,8 @@ import type {
 } from "@getpaseo/protocol/mission-control/types";
 import { isRelayClientWebSocketUrl } from "@getpaseo/protocol/daemon-endpoints";
 import type { WebhookAuth, WebhookFilter, WebhookTarget } from "@getpaseo/protocol/webhook/types";
+import type { AutomationKind, AutomationTarget } from "@getpaseo/protocol/automation/types";
+import type { ScheduleCadence } from "@getpaseo/protocol/schedule/types";
 import {
   asUint8Array,
   decodeFileTransferFrame,
@@ -640,6 +642,34 @@ type WebhookConfigPayload = Extract<
   SessionOutboundMessage,
   { type: "webhook/config/response" }
 >["payload"];
+type AutomationListPayload = Extract<
+  SessionOutboundMessage,
+  { type: "automation.list.response" }
+>["payload"];
+type AutomationCreatePayload = Extract<
+  SessionOutboundMessage,
+  { type: "automation.create.response" }
+>["payload"];
+type AutomationInspectPayload = Extract<
+  SessionOutboundMessage,
+  { type: "automation.inspect.response" }
+>["payload"];
+type AutomationUpdatePayload = Extract<
+  SessionOutboundMessage,
+  { type: "automation.update.response" }
+>["payload"];
+type AutomationDeletePayload = Extract<
+  SessionOutboundMessage,
+  { type: "automation.delete.response" }
+>["payload"];
+type AutomationRunPayload = Extract<
+  SessionOutboundMessage,
+  { type: "automation.run.response" }
+>["payload"];
+type AutomationStatusPayload = Extract<
+  SessionOutboundMessage,
+  { type: "automation.status.response" }
+>["payload"];
 type MissionControlEventsFetchPayload = Extract<
   SessionOutboundMessage,
   { type: "mission_control.events.fetch.response" }
@@ -1044,6 +1074,47 @@ export interface TestWebhookOptions {
   samplePayload?: string;
   requestId?: string;
 }
+export interface AutomationOptions {
+  requestId?: string;
+}
+export interface AutomationCreateOptions extends AutomationOptions {
+  name?: string | null;
+  kind: AutomationKind;
+  target: AutomationTarget;
+  promptTemplate: string;
+  schedule?: { cadence: ScheduleCadence };
+  webhook?: { auth?: WebhookAuth | null; filter?: WebhookFilter | null };
+  poll?: {
+    repos?: string[];
+    events?: string[];
+    labels?: string[];
+    actors?: string[];
+    pollIntervalSec?: number;
+    token?: string;
+  };
+}
+export interface AutomationRefOptions extends AutomationOptions {
+  id: string;
+}
+export interface AutomationUpdateOptions extends AutomationRefOptions {
+  name?: string | null;
+  enabled?: boolean;
+  target?: AutomationTarget;
+  promptTemplate?: string;
+  schedule?: { cadence: ScheduleCadence };
+  webhook?: { auth?: WebhookAuth | null; filter?: WebhookFilter | null };
+  poll?: {
+    repos?: string[];
+    events?: string[];
+    labels?: string[];
+    actors?: string[];
+    pollIntervalSec?: number;
+    token?: string | null;
+  };
+}
+export interface AutomationRunOptions extends AutomationRefOptions {
+  samplePayload?: string;
+}
 export interface RenameBranchInput {
   cwd: string;
   branch: string;
@@ -1137,6 +1208,22 @@ type CorrelatedResponsePayloads = {
 type CorrelatedResponsePayload<TType extends CorrelatedResponseType> =
   CorrelatedResponsePayloads[TType];
 
+type DocThreadsRequestMessage = Extract<
+  SessionInboundMessage,
+  { type: `doc_threads.${string}.request` }
+>;
+type DocThreadsRequestType = DocThreadsRequestMessage["type"];
+export type DocThreadsRequestParams<TType extends DocThreadsRequestType> = Omit<
+  Extract<DocThreadsRequestMessage, { type: TType }>,
+  "type" | "requestId"
+>;
+type DocThreadsResponseType<TType extends DocThreadsRequestType> =
+  TType extends `${infer Prefix}.request`
+    ? Extract<`${Prefix}.response`, CorrelatedResponseType>
+    : never;
+export type DocThreadsResponsePayload<TType extends DocThreadsRequestType> =
+  CorrelatedResponsePayload<DocThreadsResponseType<TType>>;
+
 type TicketsRequestMessage = Extract<SessionInboundMessage, { type: `tickets.${string}.request` }>;
 type TicketsRequestType = TicketsRequestMessage["type"];
 export type TicketsRequestParams<TType extends TicketsRequestType> = Omit<
@@ -1148,6 +1235,18 @@ type TicketsResponseType<TType extends TicketsRequestType> = TType extends `${in
   : never;
 export type TicketsResponsePayload<TType extends TicketsRequestType> = CorrelatedResponsePayload<
   TicketsResponseType<TType>
+>;
+type NotesRequestMessage = Extract<SessionInboundMessage, { type: `notes.${string}.request` }>;
+type NotesRequestType = NotesRequestMessage["type"];
+export type NotesRequestParams<TType extends NotesRequestType> = Omit<
+  Extract<NotesRequestMessage, { type: TType }>,
+  "type" | "requestId"
+>;
+type NotesResponseType<TType extends NotesRequestType> = TType extends `${infer Prefix}.request`
+  ? Extract<`${Prefix}.response`, CorrelatedResponseType>
+  : never;
+export type NotesResponsePayload<TType extends NotesRequestType> = CorrelatedResponsePayload<
+  NotesResponseType<TType>
 >;
 
 export class DaemonConnectionError extends Error {
@@ -5729,12 +5828,14 @@ export class DaemonClient {
   async listProviderUsage(options?: {
     requestId?: string;
     forceRefresh?: boolean;
+    providerId?: string;
   }): Promise<ProviderUsageListPayload> {
     return this.sendNamespacedCorrelatedSessionRequest({
       requestId: options?.requestId,
       message: {
         type: "provider.usage.list.request",
         ...(options?.forceRefresh ? { forceRefresh: true } : {}),
+        ...(options?.providerId ? { providerId: options.providerId } : {}),
       },
     });
   }
@@ -6517,6 +6618,90 @@ export class DaemonClient {
     });
   }
 
+  async automationList(requestId?: string): Promise<AutomationListPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: { type: "automation.list.request", requestId: requestId ?? crypto.randomUUID() },
+      responseType: "automation.list.response",
+    });
+  }
+  async automationCreate(options: AutomationCreateOptions): Promise<AutomationCreatePayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: options.requestId,
+      message: {
+        type: "automation.create.request",
+        requestId: options.requestId ?? crypto.randomUUID(),
+        name: options.name,
+        kind: options.kind,
+        target: options.target,
+        promptTemplate: options.promptTemplate,
+        schedule: options.schedule,
+        webhook: options.webhook,
+        poll: options.poll,
+      },
+      responseType: "automation.create.response",
+    });
+  }
+  async automationInspect(options: AutomationRefOptions): Promise<AutomationInspectPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: options.requestId,
+      message: {
+        type: "automation.inspect.request",
+        requestId: options.requestId ?? crypto.randomUUID(),
+        automationId: options.id,
+      },
+      responseType: "automation.inspect.response",
+    });
+  }
+  async automationUpdate(options: AutomationUpdateOptions): Promise<AutomationUpdatePayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: options.requestId,
+      message: {
+        type: "automation.update.request",
+        requestId: options.requestId ?? crypto.randomUUID(),
+        automationId: options.id,
+        name: options.name,
+        enabled: options.enabled,
+        target: options.target,
+        promptTemplate: options.promptTemplate,
+        schedule: options.schedule,
+        webhook: options.webhook,
+        poll: options.poll,
+      },
+      responseType: "automation.update.response",
+    });
+  }
+  async automationDelete(options: AutomationRefOptions): Promise<AutomationDeletePayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: options.requestId,
+      message: {
+        type: "automation.delete.request",
+        requestId: options.requestId ?? crypto.randomUUID(),
+        automationId: options.id,
+      },
+      responseType: "automation.delete.response",
+    });
+  }
+  async automationRun(options: AutomationRunOptions): Promise<AutomationRunPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId: options.requestId,
+      message: {
+        type: "automation.run.request",
+        requestId: options.requestId ?? crypto.randomUUID(),
+        automationId: options.id,
+        samplePayload: options.samplePayload,
+      },
+      responseType: "automation.run.response",
+    });
+  }
+  async automationStatus(requestId?: string): Promise<AutomationStatusPayload> {
+    return this.sendCorrelatedSessionRequest({
+      requestId,
+      message: { type: "automation.status.request", requestId: requestId ?? crypto.randomUUID() },
+      responseType: "automation.status.response",
+    });
+  }
+
   async webhookCreate(options: CreateWebhookOptions): Promise<WebhookCreatePayload> {
     return this.sendCorrelatedSessionRequest({
       requestId: options.requestId,
@@ -6798,6 +6983,26 @@ export class DaemonClient {
   }
 
   /**
+   * Threaded file comments RPC (docs/rpc-namespacing.md pairs). `type` is any
+   * `doc_threads.*.request`; the matching `.response` payload is returned. The
+   * payload carries `error` (null on success) — callers decide whether an
+   * error throws. Only the agent's host serves these.
+   */
+  async docThreadsRequest<TType extends DocThreadsRequestType>(
+    type: TType,
+    params: DocThreadsRequestParams<TType>,
+    options: { requestId?: string; timeout?: number } = {},
+  ): Promise<DocThreadsResponsePayload<TType>> {
+    const responseType = type.replace(/\.request$/, ".response") as DocThreadsResponseType<TType>;
+    return this.sendCorrelatedSessionRequest({
+      requestId: options.requestId,
+      message: { ...params, type },
+      responseType,
+      timeout: options.timeout,
+    }) as Promise<DocThreadsResponsePayload<TType>>;
+  }
+
+  /**
    * Native tickets RPC (docs/rpc-namespacing.md pairs). `type` is any
    * `tickets.*.request`; the matching `.response` payload is returned. The
    * payload carries `error` (null on success) — callers decide whether an
@@ -6815,6 +7020,29 @@ export class DaemonClient {
       responseType,
       timeout: options.timeout,
     }) as Promise<TicketsResponsePayload<TType>>;
+  }
+
+  /**
+   * Native notes RPC (docs/rpc-namespacing.md pairs). `type` is any
+   * `notes.*.request`; the matching `.response` payload is returned. The
+   * payload carries `error` (null on success) — callers decide whether an
+   * error throws. Only the notes host serves these.
+   */
+  async notesRequest<TType extends NotesRequestType & string>(
+    type: TType,
+    params: NotesRequestParams<TType>,
+    options: { requestId?: string; timeout?: number } = {},
+  ): Promise<NotesResponsePayload<TType>> {
+    const responseType = (type as string).replace(
+      /\.request$/,
+      ".response",
+    ) as NotesResponseType<TType>;
+    return this.sendCorrelatedSessionRequest({
+      requestId: options.requestId,
+      message: { ...params, type },
+      responseType,
+      timeout: options.timeout,
+    }) as Promise<NotesResponsePayload<TType>>;
   }
 
   /**

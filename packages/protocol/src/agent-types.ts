@@ -447,7 +447,14 @@ export type AgentTimelineItem =
       message: string;
     }
   | CompactionTimelineItem
-  | PluginTimelineItem;
+  | PluginTimelineItem
+  | {
+      type: "ai_review_decision";
+      requestId: string;
+      decision: "allow" | "deny" | "escalate";
+      reason: string;
+      toolName?: string;
+    };
 
 export type AgentStreamEvent =
   | { type: "thread_started"; sessionId: string; provider: AgentProvider }

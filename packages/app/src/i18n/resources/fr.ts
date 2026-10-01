@@ -2033,6 +2033,7 @@ export const fr: TranslationResources = {
   },
 
   tickets: en.tickets,
+  notes: en.notes,
   serviceUrl: {
     title: "Service ouvertURL",
     message: "Ouvrir{{url}}?",

@@ -2383,6 +2383,94 @@ export const en = {
       createAndDispatch: "Create and dispatch",
     },
   },
+  notes: {
+    nav: {
+      label: "Notes",
+    },
+    common: {
+      errors: {
+        hostUnavailable: "The Commander host is not connected",
+        emptyResponse: "The Commander host sent an empty response",
+      },
+    },
+    list: {
+      title: "Notes",
+      searchPlaceholder: "Search notes",
+      newNote: "New note",
+      retry: "Try again",
+      states: {
+        connecting: "Connecting to the Commander host...",
+        noNotesHost: {
+          title: "No Commander host connected",
+          description:
+            "Notes live on the Mission Control Commander host. Connect to that host, or choose a Commander host in Mission Control settings.",
+        },
+        offline: {
+          title: "{{host}} is offline",
+          description: "Notes live on the Commander host. They appear again when it reconnects.",
+        },
+        offlineUnknown: {
+          title: "No host is online",
+          description: "Notes live on the Commander host. They appear when it connects.",
+        },
+        loadFailed: "Unable to load notes: {{message}}",
+        empty: {
+          title: "No notes yet",
+          description: "Capture the first note, or save one from a chat.",
+        },
+        noMatches: {
+          title: "No matching notes",
+          description: "Try a different search or filter.",
+        },
+      },
+      filters: {
+        tag: "Tag",
+        allTags: "All tags",
+        project: "Project",
+        allProjects: "All projects",
+      },
+    },
+    detail: {
+      titleLabel: "Note title",
+      titlePlaceholder: "Note title",
+      bodyLabel: "Note body",
+      bodyPlaceholder: "Write the note in Markdown",
+      tagsLabel: "Tags",
+      tagsPlaceholder: "tag-one, tag-two",
+      write: "Write",
+      preview: "Preview",
+      emptyPreview: "Nothing to preview",
+      save: "Save",
+      saving: "Saving...",
+      delete: "Delete",
+      deleting: "Deleting...",
+      deleteTitle: "Delete note?",
+      deleteMessage: 'Delete "{{title}}"? This cannot be undone.',
+      deleteConfirm: "Delete",
+      cancel: "Cancel",
+      fromChat: "From chat",
+      addToChat: "Add to chat",
+      addedToChat: "Added to the chat",
+      noChat: "Open a chat first",
+      sourceAgent: "From {{agent}}",
+      states: {
+        loadFailed: "Unable to load the note",
+        notFound: "Note not found",
+      },
+      errors: {
+        save: "Unable to save the note: {{message}}",
+        delete: "Unable to delete the note: {{message}}",
+      },
+    },
+    saveAsNote: {
+      label: "Save as note",
+      saved: "Saved to notes",
+      failed: "Unable to save the note: {{message}}",
+    },
+    mentions: {
+      noNotes: "No notes",
+    },
+  },
 
   serviceUrl: {
     title: "Open service URL",

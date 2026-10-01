@@ -1990,6 +1990,7 @@ export const ja: TranslationResources = {
   },
 
   tickets: en.tickets,
+  notes: en.notes,
   serviceUrl: {
     title: "サービスURLを開く",
     message: "{{url}}を開きますか？",

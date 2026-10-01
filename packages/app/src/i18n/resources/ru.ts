@@ -2013,6 +2013,7 @@ export const ru: TranslationResources = {
   },
 
   tickets: en.tickets,
+  notes: en.notes,
   serviceUrl: {
     title: "Открыть URL сервиса",
     message: "Открыть {{url}}?",

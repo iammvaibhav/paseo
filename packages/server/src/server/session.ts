@@ -193,7 +193,11 @@ import {
 } from "./session/checkout/git-metadata-generator.js";
 import { WebhookSession } from "./session/webhook/webhook-session.js";
 import type { WebhookService } from "./webhook/service.js";
+import { AutomationSession } from "./automation/session.js";
+import type { AutomationService } from "./automation/service.js";
 import { TicketsSession, type TicketsHost } from "./tickets/session.js";
+import { DocThreadsSession, type DocThreadsHost } from "./doc-threads/session.js";
+import { NotesSession, type NotesHost } from "./notes/session.js";
 import type { PeerManager } from "./peers/peer-manager.js";
 import type { MissionControlService } from "./mission-control/service.js";
 import {
@@ -529,8 +533,13 @@ export interface SessionOptions {
   filesystem?: SessionFileSystem;
   scheduleService: ScheduleService;
   webhookService?: WebhookService | null;
+  automationService?: AutomationService | null;
+  // Threaded file comments; null/absent = this daemon has no doc-thread wiring.
+  docThreads?: DocThreadsHost | null;
   // Native tickets; null/absent = this daemon has no tickets wiring.
   tickets?: TicketsHost | null;
+  // Native notes; null/absent = this daemon has no notes wiring.
+  notes?: NotesHost | null;
   peerManager?: PeerManager | null;
   missionControlService?: MissionControlService | null;
   transcriptSearch?: TranscriptSearchService | null;
@@ -936,7 +945,10 @@ export class Session {
   private readonly checkoutSession: CheckoutSession;
   private readonly scheduleSession: ScheduleSession;
   private readonly webhookSession: WebhookSession;
+  private readonly automationSession: AutomationSession;
+  private readonly docThreadsSession: DocThreadsSession;
   private readonly ticketsSession: TicketsSession;
+  private readonly notesSession: NotesSession;
   private readonly peerManager: PeerManager | null;
   private readonly missionControlService: MissionControlService | null;
   private readonly transcriptSearch: TranscriptSearchService | null;
@@ -1133,9 +1145,24 @@ export class Session {
     });
     this.webhookSession = customSessions.webhookSession;
     this.plannotatorSession = customSessions.plannotatorSession;
+    this.automationSession = new AutomationSession({
+      host: { emit: (msg) => this.emit(msg) },
+      service: () => orNull(options.automationService),
+      logger: this.sessionLogger,
+    });
+    this.docThreadsSession = new DocThreadsSession({
+      emit: (msg) => this.emit(msg),
+      host: orNull(options.docThreads),
+      logger: this.sessionLogger,
+    });
     this.ticketsSession = new TicketsSession({
       emit: (msg) => this.emit(msg),
       host: orNull(options.tickets),
+      logger: this.sessionLogger,
+    });
+    this.notesSession = new NotesSession({
+      emit: (msg) => this.emit(msg),
+      host: orNull(options.notes),
       logger: this.sessionLogger,
     });
     this.peerManager = orNull(peerManager);
@@ -2568,7 +2595,10 @@ export class Session {
     (msg) => this.dispatchPluginMessage(msg),
     (msg) => this.dispatchTerminalMessage(msg),
     (msg) => this.dispatchScheduleMessage(msg),
+    (msg) => this.docThreadsSession.dispatch(msg),
     (msg) => this.ticketsSession.dispatch(msg),
+    (msg) => this.automationSession.dispatch(msg),
+    (msg) => this.notesSession.dispatch(msg),
     (msg) => this.dispatchPlannotatorMessage(msg),
     (msg) => this.dispatchMissionControlPeersMessage(msg),
     (msg) => this.dispatchMissionControlEventsMessage(msg),
@@ -10663,31 +10693,41 @@ function isValidGitHubRepoSegment(value: string): boolean {
   return /^[A-Za-z0-9._-]+$/u.test(value);
 }
 
+/** Owned-push events whose outbound type is its own subscription name. */
+const PASSTHROUGH_EVENT_CATEGORIES: Record<string, true> = {
+  "project.update": true,
+  providers_snapshot_update: true,
+  agent_attention_required: true,
+  agent_permission_request: true,
+  agent_permission_resolved: true,
+  checkout_status_update: true,
+  script_status_update: true,
+  workspace_setup_progress: true,
+  "agent.provider_subagents.update": true,
+  terminal_attention_required: true,
+  activity_log: true,
+  "hub.execution.agent.update": true,
+  "hub.execution.agent.stream": true,
+  "tickets.changed": true,
+  "notes.changed": true,
+  "doc_threads.changed": true,
+  mission_control_event: true,
+  "provider.usage.updated": true,
+  "plannotator.session.event": true,
+  "automations.changed": true,
+};
+function passthroughEventCategory(
+  type: SessionOutboundMessage["type"],
+): SessionEventSubscription | null {
+  if (PASSTHROUGH_EVENT_CATEGORIES[type] !== true) return null;
+  return type as SessionEventSubscription;
+}
+
 function sessionEventCategory(message: SessionOutboundMessage): SessionEventSubscription | null {
-  switch (message.type) {
-    case "project.update":
-    case "providers_snapshot_update":
-    case "agent_attention_required":
-    case "agent_permission_request":
-    case "agent_permission_resolved":
-    case "checkout_status_update":
-    case "script_status_update":
-    case "workspace_setup_progress":
-    case "agent.provider_subagents.update":
-    case "terminal_attention_required":
-    case "activity_log":
-    case "hub.execution.agent.update":
-    case "hub.execution.agent.stream":
-    case "tickets.changed":
-    case "mission_control_event":
-    case "provider.usage.updated":
-    case "plannotator.session.event":
-      return message.type;
-    case "status":
-      return statusEventCategory(message.payload);
-    default:
-      return null;
-  }
+  const passthrough = passthroughEventCategory(message.type);
+  if (passthrough) return passthrough;
+  if (message.type === "status") return statusEventCategory(message.payload);
+  return null;
 }
 
 function statusEventCategory(

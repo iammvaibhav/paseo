@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import http from "node:http";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { getNodeCompileCacheDir, getWorktreeRoot } from "./paths.mjs";
 
@@ -83,7 +84,15 @@ export function buildDaemonEnv({
   // info (not warn): itsaplan bridge proof lines (itsaplan.project.mapped / existing_adopted) log at info.
   env.PASEO_LOG_LEVEL = "info";
   env.NODE_COMPILE_CACHE = getNodeCompileCacheDir(worktreeRoot);
-
+  try {
+    const tsxLoader = createRequire(
+      path.join(worktreeRoot, "packages", "server", "package.json"),
+    ).resolve("tsx");
+    env.NODE_OPTIONS =
+      `--import=${tsxLoader}` + (process.env.NODE_OPTIONS ? ` ${process.env.NODE_OPTIONS}` : "");
+  } catch {
+    // Leave NODE_OPTIONS untouched; node falls back to bare "tsx" specifier.
+  }
   return env;
 }
 
@@ -118,8 +127,7 @@ export function spawnDaemonHost({
   });
 
   const script = resolveSupervisorScript(worktreeRoot);
-  const args = script.endsWith(".ts") ? ["--import", "tsx", script] : [script];
-
+  const args = [script];
   const child = spawn(process.execPath, args, {
     detached: true,
     stdio: ["ignore", logFd, logFd],

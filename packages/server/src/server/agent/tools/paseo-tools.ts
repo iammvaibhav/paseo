@@ -115,6 +115,9 @@ import { registerBrowserTools } from "../../browser-tools/tools.js";
 import type { BrowserToolsBroker } from "../../browser-tools/broker.js";
 import { buildPeerUnreachableError, type PeerManager } from "../../peers/peer-manager.js";
 import { registerTicketTools, type TicketToolsBackend } from "../../tickets/tools.js";
+import { registerDocThreadTools } from "../../doc-threads/tools.js";
+import type { DocThreadsService } from "../../doc-threads/service.js";
+import { registerNoteTools, type NoteToolsBackend } from "../../notes/tools.js";
 import { MissionControlSearchMatchSchema } from "@getpaseo/protocol/mission-control/types";
 import type { MissionControlProposalSpawnPlan } from "@getpaseo/protocol/mission-control/types";
 import { MissionControlMetaPlanSchema } from "@getpaseo/protocol/mission-control/types";
@@ -224,6 +227,13 @@ export interface PaseoToolHostDependencies {
    * tools.
    */
   resolveTicketTools?: (() => TicketToolsBackend) | null;
+  resolveDocThreads?: (() => DocThreadsService) | null;
+  /**
+   * Native notes for the Commander note tools, resolved per call
+   * (local on the notes host, else the notes-host peer). Absent → no note
+   * tools.
+   */
+  resolveNoteTools?: (() => NoteToolsBackend) | null;
   paseoToolPolicy?: ProviderPaseoToolsPolicy;
   paseoHome?: string;
   worktreesRoot?: string;
@@ -1518,6 +1528,23 @@ function registerOrchestratorTools(deps: {
   registerProposePlanTool(registerTool, orchestratorDispatcher, callerAgentId);
   registerTaskUpdateTool(registerTool, orchestratorDispatcher, callerAgentId);
 }
+/** Native board + notes tools for the Commander; the notes host rides the tickets gate. */
+function registerNativeBoardTools(
+  registerTool: (
+    name: string,
+    config: PaseoToolConfig,
+    handler: (input: unknown, context: PaseoToolExecutionContext) => Promise<PaseoToolResult>,
+  ) => void,
+  options: Pick<PaseoToolHostDependencies, "resolveTicketTools" | "resolveNoteTools">,
+): void {
+  if (!options.resolveTicketTools) {
+    return;
+  }
+  registerTicketTools({ registerTool, resolveBackend: options.resolveTicketTools });
+  if (options.resolveNoteTools) {
+    registerNoteTools({ registerTool, resolveBackend: options.resolveNoteTools });
+  }
+}
 
 export function createPaseoToolCatalog(options: PaseoToolHostDependencies): PaseoToolCatalog {
   const {
@@ -1571,6 +1598,23 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
   });
   const isCommanderCaller = gate.isCommanderCaller;
   const runCommanderGatedAction = gate.runCommanderGatedAction;
+  /**
+   * Threaded file comments: every agent gets reply_to_thread, list_threads
+   * and comment_on_file, scoped to the calling agent. Kept out of the
+   * catalog body so createPaseoToolCatalog stays under the complexity budget.
+   */
+  const registerDocThreadToolsIfAvailable = (input: {
+    registerTool: typeof registerTool;
+    resolveDocThreads: PaseoToolHostDependencies["resolveDocThreads"];
+    callerAgentId: string | undefined;
+  }): void => {
+    if (!input.resolveDocThreads) return;
+    registerDocThreadTools({
+      registerTool: input.registerTool,
+      resolveService: input.resolveDocThreads,
+      callerAgentId: input.callerAgentId,
+    });
+  };
 
   /**
    * 04 — the shared Commander-caller path for the 11 split meta tools (and
@@ -6729,9 +6773,14 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     },
   );
 
-  if (isCommanderCaller && options.resolveTicketTools) {
-    registerTicketTools({ registerTool, resolveBackend: options.resolveTicketTools });
+  if (isCommanderCaller) {
+    registerNativeBoardTools(registerTool, options);
   }
+  registerDocThreadToolsIfAvailable({
+    registerTool,
+    resolveDocThreads: options.resolveDocThreads,
+    callerAgentId,
+  });
 
   registerTool(
     "fleet_recall",
