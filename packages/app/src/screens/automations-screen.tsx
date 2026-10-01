@@ -1,4 +1,3 @@
-/* oxlint-disable no-nested-ternary, complexity, react-perf */
 import { useCallback, useEffect, useMemo, useState, type ReactElement } from "react";
 import { ScrollView, Text, View } from "react-native";
 import { useIsFocused } from "@react-navigation/native";
@@ -14,13 +13,22 @@ import { ALL_HOSTS_OPTION_ID } from "@/components/hosts/host-picker";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { ScheduleFormSheet } from "@/components/schedules/schedule-form-sheet";
 import { WebhookFormSheet } from "@/components/webhooks/webhook-form-sheet";
-import { useAutomations, type AggregatedAutomation } from "@/hooks/use-automations";
+import {
+  useAutomations,
+  type AggregatedAutomation,
+  type AutomationHostError,
+} from "@/hooks/use-automations";
 import { getHostRuntimeStore, useHosts } from "@/runtime/host-runtime";
 import { router } from "expo-router";
 import { buildHostAgentDetailRoute } from "@/utils/host-routes";
 import { useAggregatedAgents, type AggregatedAgent } from "@/hooks/use-aggregated-agents";
 import type { HostProfile } from "@/types/host-connection";
 import type { AutomationKind } from "@getpaseo/protocol/automation/types";
+import type { AutomationRunSummary } from "@getpaseo/protocol/automation/types";
+import {
+  resolveAutomationsScreenBodyState,
+  type AutomationsScreenBodyState,
+} from "./automations-screen-state";
 
 interface AutomationClient {
   automationCreate: (input: {
@@ -72,6 +80,10 @@ const FILTER_OPTIONS: { value: AutomationKind | "all"; label: string }[] = [
   ...KIND_OPTIONS,
 ];
 
+// Shared empty ref so the filter memo below only re-evaluates when loaded data
+// actually changes, instead of on every render.
+const EMPTY_AUTOMATIONS: AggregatedAutomation[] = [];
+
 export function AutomationsScreen(): ReactElement {
   const isFocused = useIsFocused();
   if (!isFocused) return <View style={styles.container} />;
@@ -83,7 +95,7 @@ function AutomationsScreenContent(): ReactElement {
     useAutomations();
   const hosts = useHosts();
   const { agents } = useAggregatedAgents({ includeArchived: true });
-  const automations = loadState.status === "loaded" ? loadState.data : [];
+  const automations = loadState.status === "loaded" ? loadState.data : EMPTY_AUTOMATIONS;
   const [selectedHost, setSelectedHost] = useState(ALL_HOSTS_OPTION_ID);
   const [kindFilter, setKindFilter] = useState<AutomationKind | "all">("all");
   const [form, setForm] = useState<FormState>({ mode: "closed" });
@@ -106,6 +118,7 @@ function AutomationsScreenContent(): ReactElement {
       ),
     [automations, kindFilter, selectedHost],
   );
+  const bodyState = resolveAutomationsScreenBodyState({ loadState, isError });
   const closeForm = useCallback(() => setForm({ mode: "closed" }), []);
   const openCreate = useCallback(
     (kind: AutomationKind = "schedule") => setForm({ mode: "create", kind }),
@@ -114,6 +127,15 @@ function AutomationsScreenContent(): ReactElement {
   const openEdit = useCallback(
     (automation: AggregatedAutomation) => setForm({ mode: "edit", automation }),
     [],
+  );
+  const handleCreatePress = useCallback(() => {
+    openCreate();
+  }, [openCreate]);
+  const handleChangeKind = useCallback(
+    (kind: AutomationKind) => {
+      if (form.mode === "create") setForm({ mode: "create", kind });
+    },
+    [form],
   );
 
   if (hasKnownHost && !hasSupportedHost) {
@@ -131,74 +153,140 @@ function AutomationsScreenContent(): ReactElement {
   return (
     <View style={styles.container}>
       <MenuHeader title="Automations" />
-      <View style={styles.toolbar}>
-        {hosts.length > 1 ? (
-          <HostFilter
-            hosts={hosts}
-            selectedHost={selectedHost}
-            onSelectHost={setSelectedHost}
-            triggerTestID="automations-host-filter"
-          />
-        ) : null}
-        <SegmentedControl
-          value={kindFilter}
-          options={FILTER_OPTIONS}
-          onValueChange={setKindFilter}
-          testID="automations-kind-filter"
-        />
-        <Button
-          variant="outline"
-          size="sm"
-          leftIcon={Plus}
-          onPress={() => openCreate()}
-          testID="automations-new"
-        >
-          New automation
-        </Button>
-      </View>
-      {loadState.status !== "loaded" ? (
-        <View style={styles.centered}>
-          <LoadingSpinner size="large" color={styles.icon.color} />
-        </View>
-      ) : isError ? (
-        <View style={styles.centered}>
-          <Text style={styles.message}>Unable to load automations</Text>
-          <Button variant="ghost" onPress={refetch} testID="automations-retry">
-            Try again
-          </Button>
-        </View>
-      ) : (
-        <ScrollView contentContainerStyle={styles.list} testID="automations-list">
-          {hostErrors.map((error) => (
-            <Text key={error.serverId} style={styles.error}>
-              {error.serverName}: Could not load automations
-            </Text>
-          ))}
-          {visible.length === 0 ? (
-            <View style={styles.centered}>
-              <Text style={styles.title}>No automations</Text>
-              <Text style={styles.message}>Create a schedule, webhook, or event trigger.</Text>
-            </View>
-          ) : (
-            visible.map((automation) => (
-              <AutomationRow
-                key={`${automation.serverId}:${automation.id}`}
-                automation={automation}
-                onEdit={openEdit}
-              />
-            ))
-          )}
-        </ScrollView>
-      )}
+      <AutomationsToolbar
+        showHostFilter={hosts.length > 1}
+        hosts={hosts}
+        selectedHost={selectedHost}
+        onSelectHost={setSelectedHost}
+        kindFilter={kindFilter}
+        onKindFilterChange={setKindFilter}
+        onCreatePress={handleCreatePress}
+      />
+      <AutomationsScreenBody
+        bodyState={bodyState}
+        hostErrors={hostErrors}
+        rows={visible}
+        onRetry={refetch}
+        onEdit={openEdit}
+      />
       <AutomationForm
         form={form}
         hosts={hosts}
         agents={agents}
         onClose={closeForm}
-        onChangeKind={(kind) => {
-          if (form.mode === "create") setForm({ mode: "create", kind });
-        }}
+        onChangeKind={handleChangeKind}
       />
+    </View>
+  );
+}
+
+function AutomationsToolbar({
+  showHostFilter,
+  hosts,
+  selectedHost,
+  onSelectHost,
+  kindFilter,
+  onKindFilterChange,
+  onCreatePress,
+}: {
+  showHostFilter: boolean;
+  hosts: HostProfile[];
+  selectedHost: string;
+  onSelectHost: (serverId: string) => void;
+  kindFilter: AutomationKind | "all";
+  onKindFilterChange: (value: AutomationKind | "all") => void;
+  onCreatePress: () => void;
+}): ReactElement {
+  return (
+    <View style={styles.toolbar}>
+      {showHostFilter ? (
+        <HostFilter
+          hosts={hosts}
+          selectedHost={selectedHost}
+          onSelectHost={onSelectHost}
+          triggerTestID="automations-host-filter"
+        />
+      ) : null}
+      <SegmentedControl
+        value={kindFilter}
+        options={FILTER_OPTIONS}
+        onValueChange={onKindFilterChange}
+        testID="automations-kind-filter"
+      />
+      <Button
+        variant="outline"
+        size="sm"
+        leftIcon={Plus}
+        onPress={onCreatePress}
+        testID="automations-new"
+      >
+        New automation
+      </Button>
+    </View>
+  );
+}
+
+function AutomationsScreenBody({
+  bodyState,
+  hostErrors,
+  rows,
+  onRetry,
+  onEdit,
+}: {
+  bodyState: AutomationsScreenBodyState;
+  hostErrors: AutomationHostError[];
+  rows: AggregatedAutomation[];
+  onRetry: () => void;
+  onEdit: (automation: AggregatedAutomation) => void;
+}): ReactElement {
+  if (bodyState.kind === "loading") {
+    return (
+      <View style={styles.centered}>
+        <LoadingSpinner size="large" color={styles.icon.color} />
+      </View>
+    );
+  }
+
+  if (bodyState.kind === "load-error") {
+    return (
+      <View style={styles.centered}>
+        <Text style={styles.message}>Unable to load automations</Text>
+        <Button variant="ghost" onPress={onRetry} testID="automations-retry">
+          Try again
+        </Button>
+      </View>
+    );
+  }
+
+  return (
+    <ScrollView contentContainerStyle={styles.list} testID="automations-list">
+      <AutomationHostErrorsBanner errors={hostErrors} />
+      {rows.length === 0 ? (
+        <View style={styles.centered}>
+          <Text style={styles.title}>No automations</Text>
+          <Text style={styles.message}>Create a schedule, webhook, or event trigger.</Text>
+        </View>
+      ) : (
+        rows.map((automation) => (
+          <AutomationRow
+            key={`${automation.serverId}:${automation.id}`}
+            automation={automation}
+            onEdit={onEdit}
+          />
+        ))
+      )}
+    </ScrollView>
+  );
+}
+
+function AutomationHostErrorsBanner({ errors }: { errors: AutomationHostError[] }): ReactElement {
+  return (
+    <View>
+      {errors.map((error) => (
+        <Text key={error.serverId} style={styles.error}>
+          {error.serverName}: Could not load automations
+        </Text>
+      ))}
     </View>
   );
 }
@@ -211,42 +299,26 @@ function AutomationRow({
   onEdit: (automation: AggregatedAutomation) => void;
 }): ReactElement {
   const latest = automation.recentRuns[0];
+  const title = automation.name || `${automation.kind} automation`;
+  const stateLabel = automation.enabled ? "Enabled" : "Paused";
+  const handleEdit = useCallback(() => {
+    onEdit(automation);
+  }, [onEdit, automation]);
   return (
     <View style={styles.row} testID={`automation-row-${automation.id}`}>
       <View style={styles.rowMain}>
         <View style={styles.rowTitle}>
           <KindIcon kind={automation.kind} />
-          <Text style={styles.name}>{automation.name || `${automation.kind} automation`}</Text>
+          <Text style={styles.name}>{title}</Text>
         </View>
         <Text style={styles.meta}>
-          {automation.serverName} · {automation.enabled ? "Enabled" : "Paused"}
+          {automation.serverName} · {stateLabel}
         </Text>
         <Text style={styles.template} numberOfLines={2}>
           {automation.promptTemplate}
         </Text>
         {latest ? (
-          <View style={styles.run}>
-            <Text
-              style={styles.meta}
-            >{`Last run: ${latest.status} · ${new Date(latest.startedAt).toLocaleString()}`}</Text>
-            {latest.agentId ? (
-              <Button
-                variant="ghost"
-                size="sm"
-                onPress={() =>
-                  router.push(
-                    buildHostAgentDetailRoute(
-                      automation.serverId,
-                      latest.agentId!,
-                      latest.workspaceId ?? undefined,
-                    ),
-                  )
-                }
-              >
-                Open agent
-              </Button>
-            ) : null}
-          </View>
+          <AutomationLatestRun automation={automation} run={latest} />
         ) : (
           <Text style={styles.meta}>No runs yet</Text>
         )}
@@ -254,7 +326,7 @@ function AutomationRow({
       <Button
         variant="ghost"
         size="sm"
-        onPress={() => onEdit(automation)}
+        onPress={handleEdit}
         testID={`automation-edit-${automation.id}`}
       >
         Edit
@@ -263,15 +335,42 @@ function AutomationRow({
   );
 }
 
+function AutomationLatestRun({
+  automation,
+  run,
+}: {
+  automation: AggregatedAutomation;
+  run: AutomationRunSummary;
+}): ReactElement {
+  const handleOpenAgent = useCallback(() => {
+    if (!run.agentId) return;
+    router.push(
+      buildHostAgentDetailRoute(automation.serverId, run.agentId, run.workspaceId ?? undefined),
+    );
+  }, [automation.serverId, run.agentId, run.workspaceId]);
+  return (
+    <View style={styles.run}>
+      <Text
+        style={styles.meta}
+      >{`Last run: ${run.status} · ${new Date(run.startedAt).toLocaleString()}`}</Text>
+      {run.agentId ? (
+        <Button variant="ghost" size="sm" onPress={handleOpenAgent}>
+          Open agent
+        </Button>
+      ) : null}
+    </View>
+  );
+}
+
+const KIND_ICONS = {
+  schedule: CalendarClock,
+  webhook: Webhook,
+  github: Github,
+  linear: GitBranch,
+} as const;
+
 function KindIcon({ kind }: { kind: AutomationKind }): ReactElement {
-  const Icon =
-    kind === "schedule"
-      ? CalendarClock
-      : kind === "webhook"
-        ? Webhook
-        : kind === "github"
-          ? Github
-          : GitBranch;
+  const Icon = KIND_ICONS[kind];
   return <Icon size={16} color={styles.icon.color} />;
 }
 
@@ -323,6 +422,159 @@ function AutomationForm({
   );
 }
 
+interface PollSubmitInput {
+  serverId: string | undefined;
+  targetAgent: AggregatedAgent | undefined;
+  form: CreateFormState | EditFormState;
+  existing: AggregatedAutomation | null;
+  name: string;
+  template: string;
+  repos: string;
+  labels: string;
+  onClose: () => void;
+}
+
+function defaultPollEvents(
+  existing: AggregatedAutomation | null,
+  form: CreateFormState | EditFormState,
+): string[] {
+  if (existing?.poll?.events) return existing.poll.events;
+  const provider = form.mode === "create" ? form.kind : existing?.kind;
+  return [provider === "linear" ? "issue_created" : "issue_opened"];
+}
+
+function usePollAutomationSubmit(input: PollSubmitInput): {
+  busy: boolean;
+  save: () => Promise<void>;
+} {
+  const [busy, setBusy] = useState(false);
+  const save = useCallback(async () => {
+    if (!input.serverId || !input.targetAgent || !input.template.trim()) return;
+    setBusy(true);
+    try {
+      const client = getHostRuntimeStore().getClient(input.serverId) as
+        | AutomationClient
+        | null
+        | undefined;
+      if (!client) return;
+      const target = { type: "agent", agentId: input.targetAgent.id } as const;
+      const poll = {
+        repos: splitList(input.repos),
+        labels: splitList(input.labels),
+        actors: [],
+        events: defaultPollEvents(input.existing, input.form),
+        pollIntervalSec: 300,
+      };
+      if (input.existing) {
+        await client.automationUpdate({
+          automationId: input.existing.id,
+          name: input.name.trim() || null,
+          target,
+          promptTemplate: input.template.trim(),
+          poll,
+        });
+      } else if (input.form.mode === "create") {
+        await client.automationCreate({
+          name: input.name.trim() || null,
+          kind: input.form.kind,
+          target,
+          promptTemplate: input.template.trim(),
+          poll,
+        });
+      }
+      input.onClose();
+    } finally {
+      setBusy(false);
+    }
+  }, [input]);
+  return { busy, save };
+}
+
+function PollAutomationFields({
+  form,
+  showKindPicker,
+  showLabels,
+  showAgentWarning,
+  name,
+  onNameChange,
+  template,
+  onTemplateChange,
+  repos,
+  onReposChange,
+  labels,
+  onLabelsChange,
+  onChangeKind,
+}: {
+  form: CreateFormState | EditFormState;
+  showKindPicker: boolean;
+  showLabels: boolean;
+  showAgentWarning: boolean;
+  name: string;
+  onNameChange: (value: string) => void;
+  template: string;
+  onTemplateChange: (value: string) => void;
+  repos: string;
+  onReposChange: (value: string) => void;
+  labels: string;
+  onLabelsChange: (value: string) => void;
+  onChangeKind: (kind: AutomationKind) => void;
+}): ReactElement {
+  return (
+    <>
+      {showKindPicker ? (
+        <SegmentedControl
+          value={form.mode === "create" ? form.kind : "github"}
+          options={KIND_OPTIONS}
+          onValueChange={onChangeKind}
+          testID="automation-trigger-kind"
+        />
+      ) : null}
+      <Field label="Name">
+        <FormTextInput
+          initialValue={name}
+          onChangeText={onNameChange}
+          size="sm"
+          testID="automation-name"
+        />
+      </Field>
+      <Field label="Prompt template">
+        <FormTextInput
+          initialValue={template}
+          onChangeText={onTemplateChange}
+          size="sm"
+          multiline
+          testID="automation-prompt"
+        />
+      </Field>
+      <Field label={providerLabel(form)}>
+        <FormTextInput
+          initialValue={repos}
+          onChangeText={onReposChange}
+          size="sm"
+          placeholder="owner/repo, another/repo"
+          testID="automation-repos"
+        />
+      </Field>
+      {showLabels ? (
+        <Field label="Labels">
+          <FormTextInput
+            initialValue={labels}
+            onChangeText={onLabelsChange}
+            size="sm"
+            placeholder="bug, urgent"
+            testID="automation-labels"
+          />
+        </Field>
+      ) : null}
+      {showAgentWarning ? (
+        <Text style={styles.error}>
+          Create an agent on this host before adding an event trigger.
+        </Text>
+      ) : null}
+    </>
+  );
+}
+
 function PollAutomationSheet({
   form,
   hosts,
@@ -343,112 +595,53 @@ function PollAutomationSheet({
   );
   const [repos, setRepos] = useState(existing?.poll?.repos.join(", ") ?? "");
   const [labels, setLabels] = useState(existing?.poll?.labels.join(", ") ?? "");
-  const [busy, setBusy] = useState(false);
   const serverId = existing?.serverId ?? hosts[0]?.serverId;
   const targetAgent = agents.find((agent) => agent.serverId === serverId);
-  const header: SheetHeader = { title: existing ? "Edit automation" : "New automation" };
-
-  const save = async () => {
-    if (!serverId || !targetAgent || !template.trim()) return;
-    setBusy(true);
-    try {
-      const client = getHostRuntimeStore().getClient(serverId) as
-        | AutomationClient
-        | null
-        | undefined;
-      if (!client) return;
-      const target = { type: "agent", agentId: targetAgent.id } as const;
-      const provider = form.mode === "create" ? form.kind : existing?.kind;
-      const poll = {
-        repos: splitList(repos),
-        labels: splitList(labels),
-        actors: [],
-        events: existing?.poll?.events ?? [
-          provider === "linear" ? "issue_created" : "issue_opened",
-        ],
-        pollIntervalSec: 300,
-      };
-      if (existing) {
-        await client.automationUpdate({
-          automationId: existing.id,
-          name: name.trim() || null,
-          target,
-          promptTemplate: template.trim(),
-          poll,
-        });
-      } else if (form.mode === "create") {
-        await client.automationCreate({
-          name: name.trim() || null,
-          kind: form.kind,
-          target,
-          promptTemplate: template.trim(),
-          poll,
-        });
-      }
-      onClose();
-    } finally {
-      setBusy(false);
-    }
-  };
+  const header = useMemo<SheetHeader>(
+    () => ({ title: existing ? "Edit automation" : "New automation" }),
+    [existing],
+  );
+  const { busy, save } = usePollAutomationSubmit({
+    serverId,
+    targetAgent,
+    form,
+    existing,
+    name,
+    template,
+    repos,
+    labels,
+    onClose,
+  });
+  const handleSavePress = useCallback(() => {
+    void save();
+  }, [save]);
+  const showKindPicker = !existing;
+  const showLabels = form.mode === "create" && form.kind === "github";
+  const canSave = Boolean(targetAgent) && template.trim().length > 0;
 
   return (
     <AdaptiveModalSheet visible header={header} onClose={onClose}>
       <ScrollView contentContainerStyle={styles.form}>
-        {!existing ? (
-          <SegmentedControl
-            value={form.mode === "create" ? form.kind : "github"}
-            options={KIND_OPTIONS}
-            onValueChange={onChangeKind}
-            testID="automation-trigger-kind"
-          />
-        ) : null}
-        <Field label="Name">
-          <FormTextInput
-            initialValue={name}
-            onChangeText={setName}
-            size="sm"
-            testID="automation-name"
-          />
-        </Field>
-        <Field label="Prompt template">
-          <FormTextInput
-            initialValue={template}
-            onChangeText={setTemplate}
-            size="sm"
-            multiline
-            testID="automation-prompt"
-          />
-        </Field>
-        <Field label={providerLabel(form)}>
-          <FormTextInput
-            initialValue={repos}
-            onChangeText={setRepos}
-            size="sm"
-            placeholder="owner/repo, another/repo"
-            testID="automation-repos"
-          />
-        </Field>
-        {form.mode === "create" && form.kind === "github" ? (
-          <Field label="Labels">
-            <FormTextInput
-              initialValue={labels}
-              onChangeText={setLabels}
-              size="sm"
-              placeholder="bug, urgent"
-              testID="automation-labels"
-            />
-          </Field>
-        ) : null}
-        {!targetAgent ? (
-          <Text style={styles.error}>
-            Create an agent on this host before adding an event trigger.
-          </Text>
-        ) : null}
+        <PollAutomationFields
+          form={form}
+          showKindPicker={showKindPicker}
+          showLabels={showLabels}
+          showAgentWarning={!targetAgent}
+          name={name}
+          onNameChange={setName}
+          template={template}
+          onTemplateChange={setTemplate}
+          repos={repos}
+          onReposChange={setRepos}
+          labels={labels}
+          onLabelsChange={setLabels}
+          onChangeKind={onChangeKind}
+        />
         <Button
           variant="default"
-          onPress={() => void save()}
+          onPress={handleSavePress}
           loading={busy}
-          disabled={!targetAgent || !template.trim()}
+          disabled={!canSave}
           testID="automation-save"
         >
           Save automation

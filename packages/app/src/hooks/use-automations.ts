@@ -1,4 +1,3 @@
-/* oxlint-disable no-nested-ternary */
 import { useMemo } from "react";
 import { useFetchQuery } from "@/data/query";
 import {
@@ -24,7 +23,21 @@ export type AutomationAggregateLoadState =
   | { status: "loading" }
   | { status: "loaded"; data: AggregatedAutomation[] };
 
-export function useAutomations() {
+// Shared empty ref so consumers can depend on it in hooks without
+// re-evaluating every render.
+const EMPTY_AUTOMATION_HOST_ERRORS: AutomationHostError[] = [];
+
+export interface UseAutomationsResult {
+  loadState: AutomationAggregateLoadState;
+  hostErrors: AutomationHostError[];
+  isError: boolean;
+  refetch: () => void;
+  isRefetching: boolean;
+  hasSupportedHost: boolean;
+  hasKnownHost: boolean;
+}
+
+export function useAutomations(): UseAutomationsResult {
   const hosts = useHosts();
   const runtime = getHostRuntimeStore();
   const hostInputs = useMemo<AutomationHostInput[]>(
@@ -61,9 +74,11 @@ export function useAutomations() {
   return {
     loadState,
     hostErrors:
-      query.data?.status === "loaded" ? query.data.hostErrors : ([] as AutomationHostError[]),
+      query.data?.status === "loaded" ? query.data.hostErrors : EMPTY_AUTOMATION_HOST_ERRORS,
     isError: query.isError,
-    refetch: () => void query.refetch(),
+    refetch: () => {
+      void query.refetch();
+    },
     isRefetching: query.isRefetching,
     hasSupportedHost: serverIds.some((serverId) => featureMap.get(serverId) === true),
     hasKnownHost: serverIds.some((serverId) => featureMap.get(serverId) !== undefined),
