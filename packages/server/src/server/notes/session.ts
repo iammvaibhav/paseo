@@ -1,5 +1,6 @@
 import type pino from "pino";
 import type { SessionInboundMessage, SessionOutboundMessage } from "@getpaseo/protocol/messages";
+import { newNoteId } from "./store.js";
 import { NotesError, type NoteService } from "./service.js";
 
 type NotesRequest = Extract<SessionInboundMessage, { type: `notes.${string}.request` }>;
@@ -195,13 +196,23 @@ export class NotesSession {
       case "notes.image.add.request": {
         const result = await this.attempt(request, async ({ service }) => {
           const bytes = Buffer.from(request.dataBase64, "base64");
-          const { imageId } = service.addImage(request.noteId, {
-            fileName: request.fileName,
-            mimeType: request.mimeType,
-            dataBase64: bytes,
-          });
+          const imageId = newNoteId("nim");
           await service.writeImageFile(imageId, bytes);
-          return service.getNote({ noteId: request.noteId });
+          try {
+            const { detail } = service.addImage(
+              request.noteId,
+              {
+                fileName: request.fileName,
+                mimeType: request.mimeType,
+                dataBase64: bytes,
+              },
+              imageId,
+            );
+            return detail;
+          } catch (error) {
+            await service.removeImageFiles([imageId]);
+            throw error;
+          }
         });
         this.emit({
           type: "notes.image.add.response",

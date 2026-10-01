@@ -95,6 +95,35 @@ describe("deleteNote", () => {
   });
 });
 
+describe("note images", () => {
+  it("writes the image file atomically and reads it back", async () => {
+    const note = service.upsertNote({ title: "Pic", body: "x" });
+    const bytes = Buffer.from("fake-png-bytes");
+    await service.writeImageFile("nim_test123", bytes);
+    const { imageId } = service.addImage(
+      note.id,
+      { fileName: "shot.png", mimeType: "image/png", dataBase64: bytes },
+      "nim_test123",
+    );
+    const { bytes: readBack } = service.readImage(imageId);
+    expect(Buffer.compare(await readBack, bytes)).toBe(0);
+  });
+
+  it("leaves no orphan file when the row commit fails", async () => {
+    const bytes = Buffer.from("orphan-bytes");
+    await service.writeImageFile("nim_orphan", bytes);
+    expect(() =>
+      service.addImage(
+        "nte_missing",
+        { fileName: "shot.png", mimeType: "image/png", dataBase64: bytes },
+        "nim_orphan",
+      ),
+    ).toThrow(NotesError);
+    await service.removeImageFiles(["nim_orphan"]);
+    expect(() => service.readImage("nim_orphan")).toThrow(NotesError);
+  });
+});
+
 describe("deriveNoteTitle", () => {
   it("prefers headings and skips fences", () => {
     expect(deriveNoteTitle("# Hello\nbody")).toBe("Hello");

@@ -35,4 +35,31 @@ describe("AutomationClaimStore", () => {
     expect(store.claim("auto-1", "k", 1)).toBe(true);
     expect(store.claim("auto-1", "k", 1)).toBe(false);
   });
+
+  it("prunes claims outside the retention window in memory", async () => {
+    const store = new (AutomationClaimStore as unknown as {
+      new (db: null): AutomationClaimStore;
+    })(null);
+    expect(store.claim("auto-1", "old", 100)).toBe(true);
+    expect(store.claim("auto-1", "new", 900)).toBe(true);
+    store.pruneOlderThan(500);
+    // The pruned key is claimable again; the retained key is still claimed.
+    expect(store.claim("auto-1", "old", 1000)).toBe(true);
+    expect(store.claim("auto-1", "new", 1000)).toBe(false);
+  });
+
+  it("prunes durable claims outside the retention window", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "paseo-automation-claims-"));
+    const store = await AutomationClaimStore.open({
+      dbPath: join(dir, "claims.db"),
+      execMkdir: (path: string) => mkdir(path, { recursive: true }).then(() => undefined),
+      dirname,
+      logger: logger(),
+    });
+    expect(store.claim("auto-1", "old", 100)).toBe(true);
+    expect(store.claim("auto-1", "new", 900)).toBe(true);
+    store.pruneOlderThan(500);
+    expect(store.claim("auto-1", "old", 1000)).toBe(true);
+    expect(store.claim("auto-1", "new", 1000)).toBe(false);
+  });
 });

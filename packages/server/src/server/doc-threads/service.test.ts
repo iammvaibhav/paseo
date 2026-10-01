@@ -6,7 +6,13 @@ import type { DocThread, DocThreadAnchor } from "@getpaseo/protocol/doc-threads/
 import { createTestLogger } from "../../test-utils/test-logger.js";
 import { DocThreadsError, DocThreadsService, type DocThreadChangedEvent } from "./service.js";
 import { DocThreadStore, newDocThreadId } from "./store.js";
-import { DocThreadsSession, formatDocThreadPrompt, type DocThreadsHost } from "./session.js";
+import {
+  DocThreadsSession,
+  formatDocThreadPrompt,
+  SEND_ALL_CLIENT_TIMEOUT_MS,
+  SEND_ALL_IDLE_WAIT_MS,
+  type DocThreadsHost,
+} from "./session.js";
 import { registerDocThreadTools } from "./tools.js";
 import type { PaseoToolDefinition } from "../agent/tools/types.js";
 import type { AgentManager } from "../agent/agent-manager.js";
@@ -502,6 +508,56 @@ describe("DocThreadsSession RPCs & Prompt Formatting", () => {
     expect(resp.payload.error).toBeNull();
     expect(runsStarted).toHaveLength(1);
     expect(inFlightRuns).toBe(0);
+  });
+
+  it("deduplicates a repeated send_all for the same threads", async () => {
+    const emitted: SessionOutboundMessage[] = [];
+    let runsStarted = 0;
+    const thread = await service.createThread({
+      cwd: "/repo",
+      agentId: "ag-1",
+      path: "dup.ts",
+      anchor: { quote: "dup", startLine: 1, endLine: 1 },
+      body: "Same comment twice",
+    });
+    const mockAgentManager = {
+      hasInFlightRun: () => false,
+      getAgent: () => ({ provider: "codex" }),
+      tryRunOutOfBand: () => {
+        runsStarted += 1;
+        return true;
+      },
+    } as unknown as AgentManager;
+    const session = new DocThreadsSession({
+      emit: (msg) => emitted.push(msg),
+      host: {
+        service,
+        delivery: {
+          agentManager: mockAgentManager,
+          agentStorage: {} as unknown as AgentStorage,
+          logger: createTestLogger(),
+        },
+      },
+      logger: createTestLogger(),
+    });
+    const send = (requestId: string) =>
+      session.dispatch({
+        type: "doc_threads.send_all.request",
+        requestId,
+        cwd: "/repo",
+        agentId: "ag-1",
+        threadIds: [thread.id],
+      });
+    await send("dup-1");
+    await send("dup-2");
+    expect(runsStarted).toBe(1);
+    expect(emitted).toHaveLength(2);
+    expect(emitted[1]?.type).toBe("doc_threads.send_all.response");
+  });
+  it("bounds the send_all idle wait below the 60 s client timeout", () => {
+    expect(SEND_ALL_CLIENT_TIMEOUT_MS).toBe(60_000);
+    expect(SEND_ALL_IDLE_WAIT_MS).toBe(25_000);
+    expect(SEND_ALL_IDLE_WAIT_MS).toBeLessThan(SEND_ALL_CLIENT_TIMEOUT_MS);
   });
 });
 

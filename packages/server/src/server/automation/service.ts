@@ -45,6 +45,7 @@ const MAX_RECENT_RUNS_LIST = 5;
 const MAX_RECENT_RUNS_INSPECT = 50;
 const POLL_ITEM_LIMIT = 50;
 const LINEAR_FRESHNESS_MS = 24 * 60 * 60 * 1000;
+const CLAIM_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 export interface AutomationServiceOptions {
   paseoHome: string;
@@ -201,6 +202,7 @@ export class AutomationService {
 
   start(): void {
     if (this.pollTimer) return;
+    void this.seedEnabledBaselines();
     const timer = setInterval(() => {
       void this.pollTick().catch((error) => {
         this.logger.error({ err: error }, "Automation poll tick failed");
@@ -208,6 +210,17 @@ export class AutomationService {
     }, MIN_POLL_INTERVAL_SEC * 1000);
     (timer as unknown as { unref?: () => void }).unref?.();
     this.pollTimer = timer;
+  }
+
+  private async seedEnabledBaselines(): Promise<void> {
+    const claims = await this.claims;
+    claims.pruneOlderThan(this.now().getTime() - CLAIM_RETENTION_MS);
+    for (const { record } of await this.polls.list()) {
+      if (!record.enabled) continue;
+      await this.seedBaseline(record).catch((error) => {
+        this.logger.warn({ err: error, automationId: record.id }, "Poll baseline seed failed");
+      });
+    }
   }
 
   async stop(): Promise<void> {
@@ -420,7 +433,7 @@ export class AutomationService {
       ...(input.webhook?.auth !== undefined ? { auth: input.webhook.auth } : {}),
       ...(input.webhook?.filter !== undefined ? { filter: input.webhook.filter } : {}),
     });
-    void updated;
+    if (!updated) return null;
     this.onChanged({ automationId, kind: "webhook" });
     return this.inspect(automationId);
   }
@@ -556,6 +569,8 @@ export class AutomationService {
     if (this.pollInFlight) return;
     this.pollInFlight = true;
     try {
+      const claims = await this.claims;
+      claims.pruneOlderThan(now.getTime() - CLAIM_RETENTION_MS);
       const polls = await this.polls.list();
       for (const { record } of polls) {
         if (!record.enabled) continue;
@@ -734,8 +749,8 @@ export class AutomationService {
     const out: Array<{ repo: string; item: GithubPollItem }> = [];
     for (const repo of repos) {
       const [issues, prs] = await Promise.all([
-        listGithubIssues(repo, { cwd: this.paseoHome, token }, POLL_ITEM_LIMIT).catch(() => []),
-        listGithubPrs(repo, { cwd: this.paseoHome, token }, POLL_ITEM_LIMIT).catch(() => []),
+        listGithubIssues(repo, { cwd: this.paseoHome, token }, POLL_ITEM_LIMIT),
+        listGithubPrs(repo, { cwd: this.paseoHome, token }, POLL_ITEM_LIMIT),
       ]);
       for (const issue of issues) {
         out.push({

@@ -321,6 +321,29 @@ describe("orchestrator_task_update and child-failure rule", () => {
     }
   });
 
+  test("concurrent task updates serialize with no lost versions", async () => {
+    const h = await createHarness();
+    try {
+      await approvedPlan(h);
+      const [first, second] = await Promise.all([
+        h.dispatcher.updateTask(h.orchId, {
+          taskId: "a",
+          status: "running",
+          childAgentId: "child-1",
+        }),
+        h.dispatcher.updateTask(h.orchId, { taskId: "b", status: "running" }),
+      ]);
+      const versions = [first.version, second.version].sort((x, y) => x - y);
+      expect(versions).toEqual([2, 3]);
+      const plan = h.manager.getOrchestratorPlan(h.orchId);
+      expect(plan?.version).toBe(3);
+      expect(plan?.tasks.find((t) => t.id === "a")?.status).toBe("running");
+      expect(plan?.tasks.find((t) => t.id === "b")?.status).toBe("running");
+    } finally {
+      await h.cleanup();
+    }
+  });
+
   test("a failed child fails its running task and bumps the version", async () => {
     const h = await createHarness();
     try {
@@ -371,6 +394,28 @@ describe("orchestrator_task_update and child-failure rule", () => {
         await h.manager.closeAgent(child.id).catch(() => undefined);
       }
     } finally {
+      await h.cleanup();
+    }
+  });
+
+  test("a failed child fails the stored task of an unloaded orchestrator", async () => {
+    const h = await createHarness();
+    try {
+      await approvedPlan(h);
+      await h.dispatcher.updateTask(h.orchId, {
+        taskId: "a",
+        status: "running",
+        childAgentId: "child-1",
+      });
+      await h.manager.flush();
+      await h.storage.flush();
+      await h.manager.closeAgent(h.orchId);
+      await h.manager.handleChildAgentFailure("child-1");
+      const stored = await h.storage.get(h.orchId);
+      expect(stored?.orchestratorPlan?.tasks.find((t) => t.id === "a")?.status).toBe("failed");
+      expect(stored?.orchestratorPlan?.version).toBe(3);
+    } finally {
+      await h.manager.closeAgent(h.orchId).catch(() => undefined);
       await h.cleanup();
     }
   });

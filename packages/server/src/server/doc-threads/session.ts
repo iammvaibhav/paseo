@@ -59,6 +59,12 @@ function formatDocThreadPrompt(threads: DocThreadRecord[]): string {
 
 export { formatDocThreadPrompt };
 
+// send_all waits for the agent to go idle, then delivers. The bound stays
+// well under the 60 s client RPC timeout so the client never times out while
+// the daemon still delivers (a retry would then deliver twice).
+export const SEND_ALL_IDLE_WAIT_MS = 25_000;
+export const SEND_ALL_CLIENT_TIMEOUT_MS = 60_000;
+
 export interface DocThreadsSessionOptions {
   emit(message: SessionOutboundMessage): void;
   host: DocThreadsHost | null;
@@ -69,6 +75,10 @@ export class DocThreadsSession {
   private readonly emit: (message: SessionOutboundMessage) => void;
   private readonly host: DocThreadsHost | null;
   private readonly logger: pino.Logger;
+  private readonly sendAllTails = new Map<string, Promise<void>>();
+  private readonly recentlySent = new Map<string, number>();
+  private static readonly SEND_DEDUPE_WINDOW_MS = 60_000;
+  private static readonly SEND_DEDUPE_MAX_KEYS = 500;
 
   constructor(options: DocThreadsSessionOptions) {
     this.emit = options.emit;
@@ -154,40 +164,64 @@ export class DocThreadsSession {
   private async handleSendAll(
     request: Extract<DocThreadsRequest, { type: "doc_threads.send_all.request" }>,
   ) {
-    const result = await this.attempt(async (service) => {
-      if (!this.host)
-        throw new DocThreadsError("invalid", "Doc threads are unavailable on this host");
-      const threads = await service.threadsForSend(request);
-      const prompt = buildAgentPrompt(formatDocThreadPrompt(threads));
-      // Queue semantics, like dispatchMode "queue" (Session.waitForAgentIdle):
-      // wait for idle, then stream without replacing. Bounded so the RPC
-      // never hangs; a still-busy agent surfaces as an error the UI can retry.
-      const deadline = Date.now() + 60_000;
-      while (
-        this.host.delivery.agentManager.hasInFlightRun(request.agentId) &&
-        Date.now() < deadline
-      ) {
-        await new Promise((resolve) => setTimeout(resolve, 250));
-      }
-      if (this.host.delivery.agentManager.hasInFlightRun(request.agentId)) {
-        throw new DocThreadsError("invalid", `Agent ${request.agentId} is still busy`);
-      }
-      await startAgentRun(
-        this.host.delivery.agentManager,
-        request.agentId,
-        prompt,
-        this.host.delivery.logger,
-        { replaceRunning: false },
-      );
-      service.markSent(
-        threads.map((thread) => thread.id),
-        request.agentId,
-      );
-      return true;
-    });
-    this.emit({
-      type: "doc_threads.send_all.response",
-      payload: { requestId: request.requestId, error: result.error, sent: result.value === true },
-    });
+    const agentKey = request.agentId;
+    const prior = this.sendAllTails.get(agentKey) ?? Promise.resolve();
+    const work: Promise<void> = prior
+      .catch(() => undefined)
+      .then(async () => {
+        const result = await this.attempt(async (service) => {
+          if (!this.host)
+            throw new DocThreadsError("invalid", "Doc threads are unavailable on this host");
+          const threads = await service.threadsForSend(request);
+          const ids = threads.map((thread) => thread.id).sort();
+          const dedupeKey = `${agentKey}:${ids.join(",")}`;
+          const lastSent = this.recentlySent.get(dedupeKey);
+          if (
+            lastSent !== undefined &&
+            Date.now() - lastSent < DocThreadsSession.SEND_DEDUPE_WINDOW_MS
+          ) {
+            return false;
+          }
+          const prompt = buildAgentPrompt(formatDocThreadPrompt(threads));
+          const deadline = Date.now() + SEND_ALL_IDLE_WAIT_MS;
+          while (
+            this.host.delivery.agentManager.hasInFlightRun(request.agentId) &&
+            Date.now() < deadline
+          ) {
+            await new Promise((resolve) => setTimeout(resolve, 250));
+          }
+          if (this.host.delivery.agentManager.hasInFlightRun(request.agentId)) {
+            throw new DocThreadsError("invalid", `Agent ${request.agentId} is still busy`);
+          }
+          await startAgentRun(
+            this.host.delivery.agentManager,
+            request.agentId,
+            prompt,
+            this.host.delivery.logger,
+            { replaceRunning: false },
+          );
+          this.recentlySent.set(dedupeKey, Date.now());
+          if (this.recentlySent.size > DocThreadsSession.SEND_DEDUPE_MAX_KEYS) {
+            const cutoff = Date.now() - DocThreadsSession.SEND_DEDUPE_WINDOW_MS;
+            for (const [sentKey, sentAt] of this.recentlySent) {
+              if (sentAt < cutoff) this.recentlySent.delete(sentKey);
+            }
+          }
+          service.markSent(ids, request.agentId);
+          return true;
+        });
+        this.emit({
+          type: "doc_threads.send_all.response",
+          payload: {
+            requestId: request.requestId,
+            error: result.error,
+            sent: result.value === true,
+          },
+        });
+        return undefined;
+      });
+    this.sendAllTails.set(agentKey, work);
+    await work;
+    if (this.sendAllTails.get(agentKey) === work) this.sendAllTails.delete(agentKey);
   }
 }

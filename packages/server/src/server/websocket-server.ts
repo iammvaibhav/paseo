@@ -1,3 +1,4 @@
+import type { ZodError } from "zod";
 import { stat } from "node:fs/promises";
 import type { CreationSnapshot } from "@getpaseo/protocol/messages";
 import { CreationService } from "./creation/index.js";
@@ -29,6 +30,7 @@ import {
   type WorkspaceSetupSnapshot,
   type WSHelloMessage,
   type WSInboundMessage,
+  SessionInboundMessageSchema,
   WSInboundMessageSchema,
   type ServerCapabilityState,
   type ServerCapabilities,
@@ -556,6 +558,17 @@ function requireWebSocketServices(params: {
 /**
  * WebSocket server that only accepts sockets + parses/forwards messages to the session layer.
  */
+export function formatInboundValidationError(error: ZodError): string {
+  const issue = error.issues[0];
+  if (!issue) return "Invalid message";
+  const field = issue.path.length > 0 ? issue.path.join(".") : "message";
+  return `Invalid message: field ${field} ${issue.message}`;
+}
+export function isKnownInboundRequestType(requestType: string): boolean {
+  return SessionInboundMessageSchema.options.some(
+    (schema) => schema.shape.type.value === requestType,
+  );
+}
 export class VoiceAssistantWebSocketServer {
   private readonly logger: pino.Logger;
   private readonly wss: WebSocketServer;
@@ -2217,11 +2230,10 @@ export class VoiceAssistantWebSocketServer {
     );
     await connection.session.cleanup();
   }
-
   private handleInvalidInboundMessage(args: {
     ws: WebSocketLike;
     parsed: unknown;
-    parsedMessage: { success: false; error: { message: string } } & Record<string, unknown>;
+    parsedMessage: { success: false; error: ZodError } & Record<string, unknown>;
     pendingConnection: PendingConnection | undefined;
     activeConnection: SessionConnection | undefined;
     log: pino.Logger;
@@ -2245,10 +2257,8 @@ export class VoiceAssistantWebSocketServer {
     const requestInfo = extractRequestInfoFromUnknownWsInbound(parsed);
     const isUnknownSchema =
       requestInfo?.requestId != null &&
-      typeof parsed === "object" &&
-      parsed != null &&
-      "type" in parsed &&
-      (parsed as { type?: unknown }).type === "session";
+      requestInfo.requestType !== undefined &&
+      !isKnownInboundRequestType(requestInfo.requestType);
 
     log.warn(
       {
@@ -2264,7 +2274,7 @@ export class VoiceAssistantWebSocketServer {
       ...requestInfo,
       error: isUnknownSchema
         ? `Unknown request, try upgrading the daemon (currently v${this.daemonVersion})`
-        : `Invalid message: ${parsedMessage.error.message}`,
+        : formatInboundValidationError(parsedMessage.error as ZodError),
       code: isUnknownSchema ? "unknown_schema" : "invalid_message",
     });
   }

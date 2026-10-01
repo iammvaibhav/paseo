@@ -5051,10 +5051,11 @@ export class AgentManager {
     cancelReason: string,
   ): ManagedAgentClosed {
     this.agentStreamCoalescer.flushAndDiscard(agent.id);
+    this.deleteDaemonPermissionHandlers(agent.id);
+    this.turnMetricsCache.delete(agent.id);
     this.agents.delete(agent.id);
     this.previousStatuses.delete(agent.id);
     this.aiReviewAgents.delete(agent.id);
-    this.aiReviewInFlight.delete(agent.id);
     if (agent.unsubscribeSession) {
       agent.unsubscribeSession();
       agent.unsubscribeSession = null;
@@ -5087,6 +5088,7 @@ export class AgentManager {
   private discardRetainedAgentState(agentId: string): void {
     this.timelineStore.delete(agentId);
     this.paseoToolPolicies.delete(agentId);
+    this.turnMetricsCache.delete(agentId);
     for (const event of this.providerSubagents.deleteParent(agentId)) {
       this.dispatch({ type: "provider_subagent", event });
     }
@@ -5304,9 +5306,24 @@ export class AgentManager {
 
     try {
       const pending = agent.session.getPendingPermissions();
-      agent.pendingPermissions = new Map(pending.map((request) => [request.id, request]));
+      const merged = new Map(pending.map((request) => [request.id, request]));
+      // Daemon-owned permissions (e.g. OrchestratorPlanApproval) live only in
+      // pendingPermissions: the provider session never saw them. Re-add them
+      // so answering a provider permission cannot drop a pending plan approval.
+      for (const [id, request] of agent.pendingPermissions) {
+        if (this.daemonPermissionHandlers.has(id) && !merged.has(id)) {
+          merged.set(id, request);
+        }
+      }
+      agent.pendingPermissions = merged;
     } catch {
-      agent.pendingPermissions.clear();
+      // The provider map is unavailable; keep only daemon-owned entries so a
+      // failed refresh cannot drop a pending plan approval either.
+      const retained = new Map<string, AgentPermissionRequest>();
+      for (const [id, request] of agent.pendingPermissions) {
+        if (this.daemonPermissionHandlers.has(id)) retained.set(id, request);
+      }
+      agent.pendingPermissions = retained;
     }
 
     this.syncFeaturesFromSession(agent);
@@ -6151,6 +6168,14 @@ export class AgentManager {
     this.emitState(agent);
   }
 
+  private deleteDaemonPermissionHandlers(agentId: string): void {
+    const agent = this.agents.get(agentId);
+    if (!agent) return;
+    for (const requestId of agent.pendingPermissions.keys()) {
+      this.daemonPermissionHandlers.delete(requestId);
+    }
+  }
+
   async handleChildAgentFailure(failedChildAgentId: string): Promise<void> {
     for (const [, orchestrator] of this.agents) {
       if (orchestrator.session === null) continue;
@@ -6176,6 +6201,34 @@ export class AgentManager {
         version: plan.version,
         data: JSON.parse(JSON.stringify(plan)) as PluginTimelineItem["data"],
       });
+    }
+    await this.failStoredOrchestratorTasks(failedChildAgentId);
+  }
+
+  private async failStoredOrchestratorTasks(failedChildAgentId: string): Promise<void> {
+    if (!this.registry) return;
+    const records = await this.registry.list();
+    for (const record of records) {
+      if (record.orchestrator !== true || !record.orchestratorPlan) continue;
+      if (this.agents.has(record.id)) continue;
+      const tasksToFail = record.orchestratorPlan.tasks.filter(
+        (t) =>
+          t.childAgentId === failedChildAgentId && (t.status === "running" || t.status === "ready"),
+      );
+      if (tasksToFail.length === 0) continue;
+      const plan: OrchestratorPlan = JSON.parse(
+        JSON.stringify(record.orchestratorPlan),
+      ) as OrchestratorPlan;
+      for (const task of plan.tasks) {
+        if (
+          task.childAgentId === failedChildAgentId &&
+          (task.status === "running" || task.status === "ready")
+        ) {
+          task.status = "failed";
+        }
+      }
+      plan.version += 1;
+      await this.registry.upsert({ ...record, orchestratorPlan: plan });
     }
   }
 

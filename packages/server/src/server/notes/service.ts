@@ -1,4 +1,4 @@
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import type { Logger } from "pino";
 import type { SessionInboundMessage } from "@getpaseo/protocol/messages";
@@ -339,7 +339,11 @@ export class NoteService {
     }
   }
 
-  addImage(noteId: string, upload: ImageUpload): { detail: NoteDetail; imageId: string } {
+  addImage(
+    noteId: string,
+    upload: ImageUpload,
+    imageId = newNoteId("nim"),
+  ): { detail: NoteDetail; imageId: string } {
     if (upload.dataBase64.length > MAX_IMAGE_BYTES) {
       throw new NotesError("too_large", "Image exceeds 20 MB");
     }
@@ -347,7 +351,6 @@ export class NoteService {
     if (!IMAGE_EXTENSIONS.has(extension)) {
       throw new NotesError("invalid", `Image extension .${extension} is not supported`);
     }
-    const imageId = newNoteId("nim");
     const createdAt = nowIso();
     const detail = this.commit((db, mutation) => {
       if (!db.prepare("SELECT id FROM notes WHERE id = ?").get(noteId)) {
@@ -373,7 +376,21 @@ export class NoteService {
 
   async writeImageFile(storagePath: string, bytes: Buffer): Promise<void> {
     await mkdir(this.store.assetsDirectory, { recursive: true });
-    await writeFile(this.store.imagePath(storagePath), bytes);
+    const destination = this.store.imagePath(storagePath);
+    const temporary = `${destination}.${process.pid}.${Date.now()}.tmp`;
+    try {
+      const file = await open(temporary, "w", 0o600);
+      try {
+        await file.writeFile(bytes);
+        await file.sync();
+      } finally {
+        await file.close();
+      }
+      await rename(temporary, destination);
+    } catch (error) {
+      await rm(temporary, { force: true });
+      throw error;
+    }
   }
 
   readImage(imageId: string): { image: NoteImage; bytes: Promise<Buffer> } {

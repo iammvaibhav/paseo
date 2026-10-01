@@ -13159,3 +13159,65 @@ test("concurrent native restores run once before resuming the same agent", async
     rmSync(workdir, { recursive: true, force: true });
   }
 });
+
+test("refreshSessionState keeps daemon-owned permissions alongside provider ones", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-daemon-perms-"));
+  const manager = new AgentManager({ clients: { codex: new TestAgentClient() }, logger });
+  let agentId: string | null = null;
+  try {
+    const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+      workspaceId: undefined,
+    });
+    agentId = agent.id;
+    // Unchecked casts: AgentManager internals under test; no validator exists.
+    const internals = manager as unknown as {
+      agents: Map<string, { session: AgentSession }>;
+      refreshSessionState: (a: unknown) => Promise<void>;
+    };
+    const live = internals.agents.get(agentId);
+    if (!live?.session) throw new Error("expected a live session");
+    const providerPerm = { id: "provider-1", provider: "codex", name: "Read", kind: "tool" };
+    live.session.getPendingPermissions = () => [providerPerm] as never;
+    manager.requestDaemonPermission(
+      agentId,
+      { id: "daemon-1", provider: "codex", name: "OrchestratorPlanApproval", kind: "plan" },
+      async () => undefined,
+    );
+    live.session.getPendingPermissions = () => [providerPerm] as never;
+    await internals.refreshSessionState(live);
+    expect(
+      manager
+        .getPendingPermissions(agentId)
+        .map((p) => p.id)
+        .sort(),
+    ).toEqual(["daemon-1", "provider-1"]);
+    live.session.getPendingPermissions = () => [];
+    await internals.refreshSessionState(live);
+    expect(manager.getPendingPermissions(agentId).map((p) => p.id)).toEqual(["daemon-1"]);
+  } finally {
+    if (agentId) await manager.closeAgent(agentId).catch(() => undefined);
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
+test("closing an agent evicts its turn-metrics cache entry", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-metrics-evict-"));
+  const manager = new AgentManager({ clients: { codex: new TestAgentClient() }, logger });
+  let agentId: string | null = null;
+  try {
+    const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+      workspaceId: undefined,
+    });
+    agentId = agent.id;
+    manager.initStoredTurnMetrics(agentId, { "turn-1": { inputTokens: 1 } });
+    const cache = (manager as unknown as { turnMetricsCache: Map<string, unknown> })
+      .turnMetricsCache;
+    expect(cache.has(agentId)).toBe(true);
+    await manager.closeAgent(agentId);
+    expect(cache.has(agentId)).toBe(false);
+    agentId = null;
+  } finally {
+    if (agentId) await manager.closeAgent(agentId).catch(() => undefined);
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});

@@ -12,7 +12,8 @@ const CLAIMS_DDL = `CREATE TABLE IF NOT EXISTS automation_event_claims (
 
 export class AutomationClaimStore {
   private readonly db: SqliteDatabase | null;
-  private readonly memory = new Set<string>();
+  private readonly memory = new Map<string, number>();
+  private static readonly MAX_CLAIMS = 10_000;
 
   private constructor(db: SqliteDatabase | null) {
     this.db = db;
@@ -46,7 +47,8 @@ export class AutomationClaimStore {
     if (!this.db) {
       const key = `${automationId}:${eventKey}`;
       if (this.memory.has(key)) return false;
-      this.memory.add(key);
+      this.memory.set(key, nowMs);
+      this.evictExcessMemory();
       return true;
     }
     const result = this.db
@@ -57,11 +59,44 @@ export class AutomationClaimStore {
     return Number(result.changes) === 1;
   }
 
+  /** Remove claims outside the exactly-once retention window and cap size. */
+  pruneOlderThan(cutoffMs: number): void {
+    if (!this.db) {
+      for (const [key, createdAt] of this.memory) {
+        if (createdAt < cutoffMs) this.memory.delete(key);
+      }
+      this.evictExcessMemory();
+      return;
+    }
+    this.db.prepare("DELETE FROM automation_event_claims WHERE created_at < ?").run(cutoffMs);
+    const excess = this.db
+      .prepare(
+        "SELECT automation_id, event_key FROM automation_event_claims " +
+          "ORDER BY created_at ASC LIMIT -1 OFFSET ?",
+      )
+      .all(AutomationClaimStore.MAX_CLAIMS) as Array<{
+      automation_id: string;
+      event_key: string;
+    }>;
+    const remove = this.db.prepare(
+      "DELETE FROM automation_event_claims WHERE automation_id = ? AND event_key = ?",
+    );
+    for (const row of excess) remove.run(row.automation_id, row.event_key);
+  }
+
+  private evictExcessMemory(): void {
+    if (this.memory.size <= AutomationClaimStore.MAX_CLAIMS) return;
+    const oldest = [...this.memory.entries()]
+      .sort((a, b) => a[1] - b[1])
+      .slice(0, this.memory.size - AutomationClaimStore.MAX_CLAIMS);
+    for (const [key] of oldest) this.memory.delete(key);
+  }
+
   dropAutomation(automationId: string): void {
     if (!this.db) {
       const prefix = `${automationId}:`;
       const doomed: string[] = [];
-      for (const key of this.memory) {
+      for (const key of this.memory.keys()) {
         if (key.startsWith(prefix)) doomed.push(key);
       }
       for (const key of doomed) this.memory.delete(key);

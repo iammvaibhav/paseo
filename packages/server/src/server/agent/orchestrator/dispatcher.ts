@@ -79,10 +79,25 @@ function planJson(plan: OrchestratorPlan): PluginTimelineItem["data"] {
  * next plan version.
  */
 export class AgentManagerOrchestratorDispatcher implements OrchestratorDispatcher {
+  private readonly planMutationTails = new Map<string, Promise<unknown>>();
+
   constructor(
     private readonly agentManager: OrchestratorDispatcherManager,
     private readonly logger: Logger,
   ) {}
+
+  private async planMutation<T>(agentId: string, mutation: () => Promise<T>): Promise<T> {
+    const prior = this.planMutationTails.get(agentId) ?? Promise.resolve();
+    const next = prior.catch(() => undefined).then(mutation);
+    this.planMutationTails.set(agentId, next);
+    try {
+      return await next;
+    } finally {
+      if (this.planMutationTails.get(agentId) === next) {
+        this.planMutationTails.delete(agentId);
+      }
+    }
+  }
 
   isOrchestratorAgent(callerAgentId: string): boolean {
     return this.agentManager.getAgent(callerAgentId)?.orchestrator === true;
@@ -176,30 +191,40 @@ export class AgentManagerOrchestratorDispatcher implements OrchestratorDispatche
     input: OrchestratorTaskUpdateInput,
   ): Promise<{ version: number; plan: OrchestratorPlan }> {
     this.requireOrchestratorAgent(callerAgentId);
-    const current = this.agentManager.getOrchestratorPlan(callerAgentId);
-    if (!current) {
-      throw new Error("No orchestrator plan: call propose_plan first");
-    }
-    const next = clonePlan(current);
-    applyTaskUpdate(next, input);
-    next.version = current.version + 1;
-    await this.agentManager.setOrchestratorPlan(callerAgentId, clonePlan(next));
-    await this.agentManager.appendTimelineItem(callerAgentId, {
-      type: "plugin",
-      id: next.planId,
-      pluginId: "orchestrator",
-      kind: "plan",
-      version: next.version,
-      data: planJson(next),
+    return this.planMutation(callerAgentId, async () => {
+      const current = this.agentManager.getOrchestratorPlan(callerAgentId);
+      if (!current) throw new Error("No orchestrator plan: call propose_plan first");
+      const next = clonePlan(current);
+      applyTaskUpdate(next, input);
+      next.version = current.version + 1;
+      await this.agentManager.setOrchestratorPlan(callerAgentId, clonePlan(next));
+      await this.agentManager.appendTimelineItem(callerAgentId, {
+        type: "plugin",
+        id: next.planId,
+        pluginId: "orchestrator",
+        kind: "plan",
+        version: next.version,
+        data: planJson(next),
+      });
+      this.logger.debug(
+        { agentId: callerAgentId, taskId: input.taskId },
+        "orchestrator task updated",
+      );
+      return { version: next.version, plan: clonePlan(next) };
     });
-    this.logger.debug(
-      { agentId: callerAgentId, taskId: input.taskId },
-      "orchestrator task updated",
-    );
-    return { version: next.version, plan: clonePlan(next) };
   }
 
   private async applyBriefEdits(
+    callerAgentId: string,
+    planId: string,
+    updatedInput: Extract<AgentPermissionResponse, { behavior: "allow" }>["updatedInput"],
+  ): Promise<boolean> {
+    return this.planMutation(callerAgentId, async () =>
+      this.applyBriefEditsUnlocked(callerAgentId, planId, updatedInput),
+    );
+  }
+
+  private async applyBriefEditsUnlocked(
     callerAgentId: string,
     planId: string,
     updatedInput: Extract<AgentPermissionResponse, { behavior: "allow" }>["updatedInput"],

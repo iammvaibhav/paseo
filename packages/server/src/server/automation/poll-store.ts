@@ -127,17 +127,19 @@ export class PollAutomationStore {
   }
 
   async delete(id: string): Promise<void> {
-    await this.ensureDirs();
-    try {
-      await rm(this.filePath(id), { force: true });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
-    try {
-      await rm(this.secretPath(id), { force: true });
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
+    await this.serialize(id, async () => {
+      await this.ensureDirs();
+      try {
+        await rm(this.filePath(id), { force: true });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+      try {
+        await rm(this.secretPath(id), { force: true });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    });
   }
 
   private async setToken(id: string, token: string | null): Promise<void> {
