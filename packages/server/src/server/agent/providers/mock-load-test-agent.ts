@@ -313,6 +313,12 @@ interface MockQuestionPromptRequest {
 function shouldEmitPlanApprovalPrompt(prompt: AgentPromptInput): boolean {
   return /emit\s+(?:a\s+)?synthetic\s+plan\s+approval/i.test(promptToText(prompt));
 }
+function parsePermissionRequestPrompt(prompt: AgentPromptInput): { command: string } | null {
+  const text = promptToText(prompt);
+  const match = /emit\s+(?:a\s+)?permission\s+request(?:\s+for\s+(.*))?/i.exec(text);
+  if (!match) return null;
+  return { command: match[1]?.trim() || "echo test" };
+}
 
 function shouldEmitTurnFailure(prompt: AgentPromptInput): boolean {
   return /emit\s+(?:a\s+)?synthetic\s+turn\s+failure/i.test(promptToText(prompt));
@@ -959,6 +965,7 @@ export class MockLoadTestAgentSession implements AgentSession {
     const structuredBranchName = parseStructuredBranchNamePrompt(prompt);
     const settledAssistantImageMarkdown = parseSettledAssistantImageMarkdown(prompt);
     const steeringReplayShape = parseSteeringReplayShape(prompt);
+    const permissionRequestPrompt = parsePermissionRequestPrompt(prompt);
     const scheduleTurn = () => {
       if (shouldEmitTurnFailure(prompt)) {
         this.scheduleFailedTurn(turn);
@@ -974,6 +981,8 @@ export class MockLoadTestAgentSession implements AgentSession {
         this.scheduleSettledAssistantTurn(turn, settledAssistantImageMarkdown);
       } else if (shouldEmitPlanApprovalPrompt(prompt)) {
         this.schedulePlanApprovalTurn(turn);
+      } else if (permissionRequestPrompt) {
+        this.scheduleCommandPermissionTurn(turn, permissionRequestPrompt.command);
       } else if (questionPrompt) {
         this.scheduleQuestionPromptTurn(turn, questionPrompt);
       } else if (largePayload) {
@@ -1343,6 +1352,42 @@ export class MockLoadTestAgentSession implements AgentSession {
       this.emitPlanApprovalTurn(turn);
     }, 0);
     turn.timer.unref?.();
+  }
+  private scheduleCommandPermissionTurn(turn: ActiveTurn, command: string): void {
+    turn.timer = setTimeout(() => {
+      this.emitCommandPermissionTurn(turn, command);
+    }, 0);
+    turn.timer.unref?.();
+  }
+
+  private emitCommandPermissionTurn(turn: ActiveTurn, command: string): void {
+    if (this.activeTurn !== turn) return;
+    this.clearTurnTimer(turn);
+    this.emitTurnStarted(turn);
+
+    const request: AgentPermissionRequest = {
+      id: `mock-perm-${turn.turnId}`,
+      provider: this.provider,
+      name: "bash",
+      kind: "tool",
+      title: "Command Execution",
+      detail: {
+        type: "shell",
+        command,
+      },
+      actions: [
+        { id: "allow", label: "Allow", behavior: "allow" },
+        { id: "deny", label: "Deny", behavior: "deny" },
+      ],
+    };
+
+    this.pendingPermissions.set(request.id, request);
+    this.emit({
+      type: "permission_requested",
+      provider: this.provider,
+      request,
+      turnId: turn.turnId,
+    });
   }
 
   private scheduleQuestionPromptTurn(

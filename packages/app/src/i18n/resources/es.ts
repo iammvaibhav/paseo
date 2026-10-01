@@ -200,6 +200,11 @@ export const es: TranslationResources = {
       title_mr: "Adjuntar problema o MR",
     },
   },
+  startOption: {
+    title: "Opción de inicio",
+    doTask: "Hacer la tarea",
+    orchestrator: "Orquestador",
+  },
   agentControls: {
     provider: {
       fallback: "Proveedor",
@@ -250,6 +255,13 @@ export const es: TranslationResources = {
       implement: "Implementar",
       question: "¿Cómo le gustaría proceder?",
       proposedPlan: "Plan propuesto",
+      approve: "Aprobar",
+      reject: "Rechazar",
+      editBriefs: "Editar resúmenes",
+      cancelEdit: "Cancelar",
+      childAgent: "Agente secundario",
+      filesCount: "{{count}} archivos",
+      dependsOn: "Depende de",
     },
   },
   agentPanel: {
@@ -2018,6 +2030,7 @@ export const es: TranslationResources = {
   },
 
   tickets: en.tickets,
+  notes: en.notes,
   serviceUrl: {
     title: "Servicio abiertoURL",
     message: "¿Abrir{{url}}?",

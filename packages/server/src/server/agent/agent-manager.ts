@@ -17,10 +17,11 @@ import {
   PARENT_AGENT_ID_LABEL,
 } from "@getpaseo/protocol/agent-labels";
 import type { Logger } from "pino";
-import type { ProviderOptions, ToolPolicy } from "@getpaseo/protocol/agent-types";
+import type { OrchestratorPlan, ProviderOptions, ToolPolicy } from "@getpaseo/protocol/agent-types";
 import type { ProviderPaseoToolsPolicy } from "@getpaseo/protocol/provider-config";
 import { z } from "zod";
 import type { TerminalManager } from "../../terminal/terminal-manager.js";
+import { buildOrchestratorSystemPrompt } from "./orchestrator/prompt.js";
 import { buildSelfReportSystemPrompt } from "../mission-control/self-report.js";
 
 import {
@@ -48,6 +49,7 @@ import {
   type SteerResult,
   type AgentStreamEvent,
   type AgentTimelineItem,
+  type PluginTimelineItem,
   type AgentTimelineUserMessageClassification,
   type AgentUsage,
   type AgentRuntimeInfo,
@@ -101,6 +103,21 @@ import {
 } from "./provider-subagents/store.js";
 import { withTimeout } from "../../utils/promise-timeout.js";
 import { extractAttention } from "../persistence-hooks.js";
+import {
+  AI_REVIEW_MODE,
+  AI_REVIEW_MODE_ID,
+  AI_REVIEW_TIMEOUT_MS,
+  createModelAiReviewer,
+  isAlwaysEscalate,
+  permissionToolInput,
+  readGitDiffStat,
+  withAiReviewTimeout,
+  type AiReviewContext,
+  type AiReviewDecision,
+  type AiReviewer,
+  type AiReviewerConfig,
+} from "./ai-reviewer.js";
+import { getStructuredAgentResponse } from "./agent-response-loop.js";
 
 const RELOAD_SESSION_CLOSE_TIMEOUT_MS = 3_000;
 const INTERRUPT_SESSION_TIMEOUT_MS = 2_000;
@@ -471,6 +488,11 @@ export interface CreateAgentOptions {
   env?: Record<string, string>;
   persistSession?: boolean;
   initialTitle?: string | null;
+  // Orchestrator start option (normal agents only). Stamped at creation,
+  // persisted on the record, echoed on snapshots.
+  orchestrator?: boolean;
+  // Orchestrator plan state restored from persistence. Not stamped by clients.
+  orchestratorPlan?: OrchestratorPlan | null;
   // undefined is an explicit decision: the agent never appears in the sidebar.
   workspaceId: string | undefined;
   owner?: AgentOwner;
@@ -559,6 +581,10 @@ export interface AgentManagerOptions {
     provider: AgentProvider;
     cwd: string;
   }) => Promise<string | undefined>;
+  aiReviewer?: AiReviewer;
+  getAiReviewerConfig?: () => AiReviewerConfig | undefined;
+  aiReviewerCapability?: boolean;
+  aiReviewTimeoutMs?: number;
   logger: Logger;
 }
 
@@ -687,6 +713,15 @@ interface ManagedAgentBase {
    * summarizer pass. Optional, mirrors the stored record field.
    */
   shortDescription?: string;
+  /**
+   * Orchestrator start option (normal agents only; never the Commander).
+   * Stamped at creation from the create request, persisted on the record,
+   * echoed on snapshots. True only — absent/false = default task mode.
+   */
+  orchestrator?: boolean;
+  // Orchestrator plan state (daemon-owned). Held in-memory and persisted on
+  // the stored record. True orchestrator agents only.
+  orchestratorPlan?: OrchestratorPlan | null;
   /**
    * Set when title was auto-derived from prompt rather than explicitly set.
    */
@@ -944,6 +979,17 @@ function resolveRegistrationTimestamps(
   };
 }
 
+function orchestratorStamp(options?: {
+  orchestrator?: boolean;
+  orchestratorPlan?: OrchestratorPlan | null;
+}): { orchestrator?: true; orchestratorPlan?: OrchestratorPlan } {
+  if (options?.orchestrator !== true && !options?.orchestratorPlan) return {};
+  return {
+    ...(options?.orchestrator === true ? { orchestrator: true as const } : {}),
+    ...(options?.orchestratorPlan ? { orchestratorPlan: options.orchestratorPlan } : {}),
+  };
+}
+
 function buildExplicitTimelineSeedForRegister(
   now: Date,
   options:
@@ -1037,6 +1083,11 @@ interface RegisterSessionOptions {
   initialTitle?: string | null;
   initialPrompt?: string;
   name?: string;
+  // Orchestrator start option, stamped at creation and carried through
+  // resume/reload via the stored record (true only).
+  orchestrator?: boolean;
+  // Orchestrator plan state restored from persistence. Not client-supplied.
+  orchestratorPlan?: OrchestratorPlan | null;
   publishWhenReady?: boolean;
   workspaceId?: string;
   owner?: AgentOwner;
@@ -1100,6 +1151,10 @@ export class AgentManager {
   private paseoToolsEnabled = true;
   private paseoToolCatalogFactory: PaseoToolCatalogFactory | null = null;
   private readonly paseoToolPolicies = new Map<string, ProviderPaseoToolsPolicy | undefined>();
+  private readonly daemonPermissionHandlers = new Map<
+    string,
+    (response: AgentPermissionResponse) => Promise<AgentPermissionResult | void>
+  >();
   private readonly resolvePaseoToolPolicy: (
     provider: AgentProvider,
   ) => ProviderPaseoToolsPolicy | undefined;
@@ -1130,6 +1185,12 @@ export class AgentManager {
     string,
     Array<{ text: string; classification: AgentTimelineUserMessageClassification; at: number }>
   >();
+  private aiReviewer?: AiReviewer;
+  private getAiReviewerConfig?: () => AiReviewerConfig | undefined;
+  private aiReviewerCapability = false;
+  private aiReviewTimeoutMs: number = AI_REVIEW_TIMEOUT_MS;
+  private readonly aiReviewAgents = new Set<string>();
+  private readonly aiReviewInFlight = new Set<string>();
 
   private static resolveRescueTimeouts(
     options: AgentManagerOptions,
@@ -1179,11 +1240,51 @@ export class AgentManager {
       providerDefinitions: options.providerDefinitions ?? {},
       clients: options.clients ?? {},
     });
+    this.configureAiReviewer(options);
+  }
+
+  private configureAiReviewer(options: AgentManagerOptions): void {
+    if (options.aiReviewer) {
+      this.aiReviewer = options.aiReviewer;
+    } else {
+      this.aiReviewer = createModelAiReviewer({
+        createAgent: (config) =>
+          this.createAgent(
+            {
+              provider: config.provider,
+              cwd: config.cwd,
+              ...(config.model ? { model: config.model } : {}),
+              title: config.title ?? null,
+              internal: true,
+            },
+            undefined,
+            { workspaceId: undefined, persistSession: false },
+          ).then((agent) => ({ id: agent.id })),
+        runAgent: (agentId, prompt) =>
+          this.runAgent(agentId, prompt).then((result) => ({ finalText: result.finalText })),
+        closeAgent: (agentId) => this.closeAgent(agentId),
+        deleteAgentState: (agentId) => this.deleteAgentState(agentId),
+        callStructuredModel: getStructuredAgentResponse,
+      });
+    }
+    this.getAiReviewerConfig = options.getAiReviewerConfig;
+    this.aiReviewerCapability = options.aiReviewerCapability ?? options.aiReviewer !== undefined;
+    this.aiReviewTimeoutMs = options.aiReviewTimeoutMs ?? AI_REVIEW_TIMEOUT_MS;
   }
 
   private configurePaseoTools(options: AgentManagerOptions): void {
     this.paseoToolsEnabled = options.paseoToolsEnabled ?? true;
     this.paseoToolCatalogFactory = options.paseoToolCatalogFactory ?? null;
+  }
+
+  private augmentAvailableModes(modes: AgentMode[]): AgentMode[] {
+    if (!this.aiReviewerCapability) {
+      return modes;
+    }
+    if (modes.some((m) => m.id === AI_REVIEW_MODE_ID)) {
+      return modes;
+    }
+    return [...modes, AI_REVIEW_MODE];
   }
 
   registerClient(provider: AgentProvider, client: AgentClient): void {
@@ -1859,6 +1960,7 @@ export class AgentManager {
       resolvedAgentId,
       options.labels,
       options?.env,
+      options.orchestrator,
     );
     const prepareMs = Date.now() - prepareStartedAt;
     this.requireEnabledProvider(storedConfig.provider);
@@ -1896,6 +1998,7 @@ export class AgentManager {
         initialPrompt: options.initialPrompt,
         name: options.name,
         workspaceId: options.workspaceId,
+        ...orchestratorStamp(options),
         owner: options.owner,
         historyPrimed: true,
       });
@@ -2027,6 +2130,8 @@ export class AgentManager {
       lastUserMessageAt?: Date | null;
       labels?: Record<string, string>;
       workspaceId?: string;
+      orchestrator?: boolean;
+      orchestratorPlan?: OrchestratorPlan | null;
       owner?: AgentOwner;
       /** Provisional title for a freshly created agent (e.g. a fork); ignored when a stored record already has one. */
       initialTitle?: string | null;
@@ -2061,6 +2166,8 @@ export class AgentManager {
       lastUserMessageAt?: Date | null;
       labels?: Record<string, string>;
       workspaceId?: string;
+      orchestrator?: boolean;
+      orchestratorPlan?: OrchestratorPlan | null;
       owner?: AgentOwner;
       initialTitle?: string | null;
       attention?: AttentionState;
@@ -2082,6 +2189,8 @@ export class AgentManager {
       mergedConfig,
       resolvedAgentId,
       options?.labels,
+      undefined,
+      options?.orchestrator,
     );
 
     // Decide residency from durable state inside the lifecycle lane. A loader may
@@ -2256,6 +2365,8 @@ export class AgentManager {
       refreshConfig,
       agentId,
       existing.labels,
+      undefined,
+      existing.orchestrator,
     );
     const hadPreviousPaseoToolPolicy = this.paseoToolPolicies.has(agentId);
     const previousPaseoToolPolicy = this.paseoToolPolicies.get(agentId);
@@ -2309,6 +2420,7 @@ export class AgentManager {
       return this.registerSession(session, storedConfig, agentId, {
         labels: existing.labels,
         workspaceId: existing.workspaceId,
+        ...orchestratorStamp(existing),
         owner: existing.owner,
         createdAt: existing.createdAt,
         updatedAt: existing.updatedAt,
@@ -2588,6 +2700,9 @@ export class AgentManager {
   }
 
   private async fireAgentArchived(agentId: string): Promise<void> {
+    await this.handleChildAgentArchived(agentId).catch((error) => {
+      this.logger.warn({ err: error, agentId }, "orchestrator child archive handling failed");
+    });
     const callback = this.onAgentArchived;
     if (!callback) {
       return;
@@ -2646,6 +2761,24 @@ export class AgentManager {
 
   async setAgentMode(agentId: string, modeId: string): Promise<AgentProviderNotice | null> {
     const agent = this.requireSessionAgent(agentId);
+    if (modeId === AI_REVIEW_MODE_ID) {
+      if (!this.aiReviewerCapability) {
+        throw new Error("AI reviewer is unavailable on this host");
+      }
+      this.aiReviewAgents.add(agentId);
+      agent.config.modeId = modeId;
+      agent.currentModeId = modeId;
+      if (agent.runtimeInfo) {
+        agent.runtimeInfo = { ...agent.runtimeInfo, modeId };
+      }
+      this.refreshSessionPersistence(agent);
+      await this.persistSnapshot(agent);
+      this.touchUpdatedAt(agent);
+      this.emitState(agent);
+      return null;
+    }
+
+    this.aiReviewAgents.delete(agentId);
     const notice = (await agent.session.setMode(modeId)) ?? null;
     await this.drainSessionEvents(agentId);
     const currentMode = (await agent.session.getCurrentMode()) ?? modeId;
@@ -2655,6 +2788,7 @@ export class AgentManager {
     if (agent.runtimeInfo) {
       agent.runtimeInfo = { ...agent.runtimeInfo, modeId: currentMode };
     }
+    this.refreshSessionPersistence(agent);
     this.touchUpdatedAt(agent);
     this.emitState(agent);
     return notice;
@@ -4065,7 +4199,13 @@ export class AgentManager {
     agent.inFlightPermissionResponses.add(requestId);
 
     try {
-      const result = await agent.session.respondToPermission(requestId, response);
+      // Daemon-owned permissions (e.g. OrchestratorPlanApproval) bypass the
+      // provider session's pending map: it never saw them. Handle internally.
+      const daemonHandler = this.daemonPermissionHandlers.get(requestId);
+      const result =
+        daemonHandler !== undefined
+          ? await daemonHandler(response)
+          : await agent.session.respondToPermission(requestId, response);
       agent.pendingPermissions.delete(requestId);
 
       try {
@@ -4086,6 +4226,7 @@ export class AgentManager {
 
       return result;
     } finally {
+      this.daemonPermissionHandlers.delete(requestId);
       agent.inFlightPermissionResponses.delete(requestId);
       agent.bufferedPermissionResolutions.delete(requestId);
     }
@@ -4704,6 +4845,11 @@ export class AgentManager {
       if (managed.turnMetrics.size > 0) {
         this.timelineStore.reAttachMetrics(resolvedAgentId, managed.turnMetrics);
       }
+      if (existingRecord?.lastModeId === AI_REVIEW_MODE_ID || config.modeId === AI_REVIEW_MODE_ID) {
+        this.aiReviewAgents.add(resolvedAgentId);
+        managed.currentModeId = AI_REVIEW_MODE_ID;
+        managed.config.modeId = AI_REVIEW_MODE_ID;
+      }
       // Initialize previousStatus to track transitions
       this.previousStatuses.set(resolvedAgentId, managed.lifecycle);
       await this.refreshRuntimeInfo(managed, { emit: false });
@@ -4832,11 +4978,16 @@ export class AgentManager {
           attention?: AttentionState;
           persistence?: AgentPersistenceHandle;
           workspaceId?: string;
+          orchestrator?: boolean;
+          orchestratorPlan?: OrchestratorPlan | null;
           owner?: AgentOwner;
         }
       | undefined;
   }): ActiveManagedAgent {
     const { resolvedAgentId, session, config, now, durableTimelineHasRows, options } = params;
+    if (config.modeId === AI_REVIEW_MODE_ID) {
+      this.aiReviewAgents.add(resolvedAgentId);
+    }
     return {
       id: resolvedAgentId,
       provider: config.provider,
@@ -4877,6 +5028,7 @@ export class AgentManager {
       turnMetrics: resolveTurnMetricsFromOptions(options?.turnMetrics),
       attention: resolveInitialAttention(options?.attention),
       internal: config.internal ?? false,
+      ...orchestratorStamp(options),
       labels: options?.labels ?? {},
     } as ActiveManagedAgent;
   }
@@ -4901,6 +5053,8 @@ export class AgentManager {
     this.agentStreamCoalescer.flushAndDiscard(agent.id);
     this.agents.delete(agent.id);
     this.previousStatuses.delete(agent.id);
+    this.aiReviewAgents.delete(agent.id);
+    this.aiReviewInFlight.delete(agent.id);
     if (agent.unsubscribeSession) {
       agent.unsubscribeSession();
       agent.unsubscribeSession = null;
@@ -5132,15 +5286,20 @@ export class AgentManager {
   ): Promise<void> {
     try {
       const modes = await agent.session.getAvailableModes();
-      agent.availableModes = modes;
+      agent.availableModes = this.augmentAvailableModes(modes);
     } catch {
       agent.availableModes = [];
     }
 
     try {
-      agent.currentModeId = await agent.session.getCurrentMode();
+      if (this.aiReviewAgents.has(agent.id) || agent.config.modeId === AI_REVIEW_MODE_ID) {
+        this.aiReviewAgents.add(agent.id);
+        agent.currentModeId = AI_REVIEW_MODE_ID;
+      } else {
+        agent.currentModeId = await agent.session.getCurrentMode();
+      }
     } catch {
-      agent.currentModeId = null;
+      agent.currentModeId = this.aiReviewAgents.has(agent.id) ? AI_REVIEW_MODE_ID : null;
     }
 
     try {
@@ -5171,6 +5330,9 @@ export class AgentManager {
         newInfo.sessionId !== agent.runtimeInfo?.sessionId ||
         newInfo.modeId !== agent.runtimeInfo?.modeId;
       agent.runtimeInfo = newInfo;
+      if (this.aiReviewAgents.has(agent.id) && newInfo.modeId) {
+        newInfo.modeId = AI_REVIEW_MODE_ID;
+      }
       if (!agent.persistence && newInfo.sessionId) {
         agent.persistence = attachPersistenceCwd(
           { provider: agent.provider, sessionId: newInfo.sessionId },
@@ -5582,10 +5744,12 @@ export class AgentManager {
         this.emitState(agent);
         return undefined;
       case "mode_changed":
-        agent.currentModeId = event.currentModeId;
-        agent.availableModes = event.availableModes;
+        agent.availableModes = this.augmentAvailableModes(event.availableModes);
+        agent.currentModeId = this.aiReviewAgents.has(agent.id)
+          ? AI_REVIEW_MODE_ID
+          : event.currentModeId;
         if (agent.runtimeInfo) {
-          agent.runtimeInfo = { ...agent.runtimeInfo, modeId: event.currentModeId };
+          agent.runtimeInfo = { ...agent.runtimeInfo, modeId: agent.currentModeId };
         }
         flags.shouldDispatchEvent = false;
         this.emitState(agent);
@@ -5861,6 +6025,9 @@ export class AgentManager {
       );
     }
     this.resolvePendingPermissionsForAgent(agent, event.provider, options, "Turn failed");
+    this.handleChildAgentFailure(agent.id).catch((error) =>
+      this.logger.warn({ error, agentId: agent.id }, "orchestrator child failure handling failed"),
+    );
     if (!isForegroundEvent && !agent.activeForegroundTurnId) {
       this.emitState(agent);
     }
@@ -5961,6 +6128,79 @@ export class AgentManager {
     agent.lifecycle = "running";
     this.emitState(agent);
   }
+  // Orchestrator plan state accessors (daemon-owned).
+  //
+  getOrchestratorPlan(agentId: string): OrchestratorPlan | null {
+    const agent = this.requireAgent(agentId);
+    return agent.orchestratorPlan ?? null;
+  }
+
+  async setOrchestratorPlan(agentId: string, plan: OrchestratorPlan | null): Promise<void> {
+    const agent = this.requireAgent(agentId);
+    agent.orchestratorPlan = plan;
+    this.touchUpdatedAt(agent);
+    await this.persistSnapshot(agent);
+  }
+
+  async clearDaemonPermission(agentId: string, requestId: string): Promise<void> {
+    const agent = this.requireAgent(agentId);
+    this.daemonPermissionHandlers.delete(requestId);
+    agent.pendingPermissions.delete(requestId);
+    this.touchUpdatedAt(agent);
+    await this.persistSnapshot(agent);
+    this.emitState(agent);
+  }
+
+  async handleChildAgentFailure(failedChildAgentId: string): Promise<void> {
+    for (const [, orchestrator] of this.agents) {
+      if (orchestrator.session === null) continue;
+      if (orchestrator.orchestrator !== true || !orchestrator.orchestratorPlan) continue;
+      const plan: OrchestratorPlan = JSON.parse(
+        JSON.stringify(orchestrator.orchestratorPlan),
+      ) as OrchestratorPlan;
+      const tasksToFail = plan.tasks.filter(
+        (t) =>
+          t.childAgentId === failedChildAgentId && (t.status === "running" || t.status === "ready"),
+      );
+      if (tasksToFail.length === 0) continue;
+      for (const t of tasksToFail) {
+        t.status = "failed";
+      }
+      plan.version += 1;
+      await this.setOrchestratorPlan(orchestrator.id, plan);
+      await this.appendTimelineItem(orchestrator.id, {
+        type: "plugin",
+        id: plan.planId,
+        pluginId: "orchestrator",
+        kind: "plan",
+        version: plan.version,
+        data: JSON.parse(JSON.stringify(plan)) as PluginTimelineItem["data"],
+      });
+    }
+  }
+
+  async handleChildAgentArchived(archivedChildAgentId: string): Promise<void> {
+    await this.handleChildAgentFailure(archivedChildAgentId);
+  }
+
+  requestDaemonPermission(
+    agentId: string,
+    request: AgentPermissionRequest,
+    handler: (response: AgentPermissionResponse) => Promise<AgentPermissionResult | void>,
+  ): void {
+    const agent = this.requireSessionAgent(agentId);
+    this.daemonPermissionHandlers.set(request.id, handler);
+    this.onStreamPermissionRequested(agent, {
+      type: "permission_requested",
+      provider: request.provider,
+      request,
+    });
+    this.dispatchStream(agentId, {
+      type: "permission_requested",
+      provider: request.provider,
+      request,
+    });
+  }
 
   private onStreamPermissionRequested(
     agent: ActiveManagedAgent,
@@ -5980,6 +6220,110 @@ export class AgentManager {
       this.broadcastAgentAttention(agent, "permission");
     }
     this.emitState(agent);
+    const isAiReviewMode =
+      this.aiReviewAgents.has(agent.id) ||
+      agent.currentModeId === AI_REVIEW_MODE_ID ||
+      agent.config.modeId === AI_REVIEW_MODE_ID;
+    if (isAiReviewMode && this.aiReviewer && this.getAiReviewerConfig?.()?.enabled) {
+      this.trackBackgroundTask(this.reviewPermission(agent, event.request));
+    }
+  }
+
+  private async reviewPermission(
+    agent: ActiveManagedAgent,
+    request: AgentPermissionRequest,
+  ): Promise<void> {
+    if (!this.aiReviewer || this.aiReviewInFlight.has(request.id)) {
+      return;
+    }
+    const config = this.getAiReviewerConfig?.();
+    if (!config?.enabled) {
+      return;
+    }
+
+    this.aiReviewInFlight.add(request.id);
+    try {
+      const rows = this.timelineStore.getRows(agent.id);
+      const goal =
+        getFirstUserMessageTextFromRows(rows) || agent.config.title || agent.shortDescription || "";
+      const recentTurnSummary =
+        rows
+          .slice(-6)
+          .map((r) => {
+            if (r.item.type === "user_message") return `User: ${r.item.text}`;
+            if (r.item.type === "assistant_message") return `Assistant: ${r.item.text}`;
+            if (r.item.type === "tool_call") return `Tool: ${r.item.name} (${r.item.status})`;
+            return r.item.type;
+          })
+          .join("\n") || "(no recent activity)";
+      const toolName = request.name || (request.detail?.type === "shell" ? "shell" : "unknown");
+      const toolInput = permissionToolInput(request);
+      const gitDiffStat = await readGitDiffStat(agent.cwd);
+
+      const context: AiReviewContext = {
+        goal,
+        recentTurnSummary,
+        toolName,
+        toolInput,
+        cwd: agent.cwd,
+        gitDiffStat,
+      };
+
+      let decision: AiReviewDecision;
+      if (isAlwaysEscalate(context)) {
+        decision = {
+          decision: "escalate",
+          reason:
+            "Action matches the fixed denylist of destructive or sensitive operations; escalating to user.",
+        };
+      } else {
+        try {
+          decision = await withAiReviewTimeout(
+            this.aiReviewer.review(context, config),
+            this.aiReviewTimeoutMs,
+          );
+        } catch (error) {
+          decision = {
+            decision: "escalate",
+            reason:
+              error instanceof Error
+                ? `AI reviewer failed (${error.message}); escalating to user.`
+                : "AI reviewer error; escalating to user.",
+          };
+        }
+      }
+
+      // Check if request is still pending
+      if (!agent.pendingPermissions.has(request.id)) {
+        return;
+      }
+
+      // Record timeline item for all outcomes
+      this.recordAndDispatchTimelineItem(
+        agent.id,
+        {
+          type: "ai_review_decision",
+          requestId: request.id,
+          decision: decision.decision,
+          reason: decision.reason,
+          toolName: context.toolName,
+        },
+        agent.provider,
+      );
+
+      if (decision.decision === "allow") {
+        await this.respondToPermission(agent.id, request.id, { behavior: "allow" });
+      } else if (decision.decision === "deny") {
+        await this.respondToPermission(agent.id, request.id, { behavior: "deny" });
+      }
+    } catch (error) {
+      this.logger.warn(
+        { err: error, agentId: agent.id, requestId: request.id },
+        "Unexpected error in reviewPermission",
+      );
+    } finally {
+      this.aiReviewInFlight.delete(request.id);
+    }
   }
 
   private onStreamPermissionResolved(params: {
@@ -6636,6 +6980,7 @@ export class AgentManager {
     agentId: string,
     labels?: Record<string, string>,
     env?: Record<string, string>,
+    orchestrator?: boolean,
   ): Promise<PreparedSessionConfig> {
     let storedConfig = await this.normalizeConfig(stripInternalPaseoMcpServer(config), { env });
     const commanderContract = this.resolveCommanderLaunchContract
@@ -6662,13 +7007,19 @@ export class AgentManager {
         mcpAuthToken: this.mcpAuthToken,
       }),
       labels ?? {},
+      orchestrator === true,
     );
+    if (storedConfig.modeId === AI_REVIEW_MODE_ID) {
+      const { modeId: _strippedModeId, ...rest } = launchConfig;
+      return { storedConfig, launchConfig: { ...rest }, paseoToolPolicy };
+    }
     return { storedConfig, launchConfig, paseoToolPolicy };
   }
 
   private applyDaemonAppendSystemPrompt(
     config: AgentSessionConfig,
     labels: Record<string, string>,
+    orchestrator?: boolean,
   ): AgentSessionConfig {
     const next = { ...config };
     delete next.daemonAppendSystemPrompt;
@@ -6676,7 +7027,12 @@ export class AgentManager {
       labels,
       this.missionControlSelfReportEnabled,
     );
-    const daemonAppendSystemPrompt = [this.appendSystemPrompt.trim(), selfReportPrompt]
+    const orchestratorPrompt = orchestrator === true ? buildOrchestratorSystemPrompt() : "";
+    const daemonAppendSystemPrompt = [
+      this.appendSystemPrompt.trim(),
+      selfReportPrompt,
+      orchestratorPrompt,
+    ]
       .filter((part): part is string => Boolean(part))
       .join("\n\n");
 

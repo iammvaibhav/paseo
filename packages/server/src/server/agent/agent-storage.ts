@@ -4,7 +4,7 @@ import { z } from "zod";
 import type { Logger } from "pino";
 
 import { writeJsonFileAtomic } from "../atomic-file.js";
-import { AgentFeatureSchema, AgentStatusSchema } from "../messages.js";
+import { AgentFeatureSchema, AgentStatusSchema, OrchestratorPlanSchema } from "../messages.js";
 import { toStoredAgentRecord } from "./agent-projections.js";
 import type { ManagedAgent } from "./agent-manager.js";
 import type { AgentSessionConfig } from "./agent-sdk-types.js";
@@ -63,6 +63,11 @@ const STORED_AGENT_SCHEMA = z.object({
   // the last assistant message (deterministic, no LLM). Additive; absent on
   // agent-written descriptions.
   shortDescriptionAutoDerived: z.boolean().optional(),
+  // Orchestrator start option (normal agents only; never the Commander).
+  // COMPAT(orchestrator): added 2026-09-30, remove gate after 2027-03-30.
+  // Absent on records written by older daemons; treated as false.
+  orchestrator: z.boolean().optional(),
+  orchestratorPlan: OrchestratorPlanSchema.optional(),
   labels: z.record(z.string(), z.string()).default({}),
   lastStatus: AgentStatusSchema.default("closed"),
   lastModeId: z.string().nullable().optional(),

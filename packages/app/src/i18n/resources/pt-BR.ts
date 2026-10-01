@@ -199,6 +199,11 @@ export const ptBR: TranslationResources = {
       title_mr: "Anexar issue ou MR",
     },
   },
+  startOption: {
+    title: "Opção de início",
+    doTask: "Fazer a tarefa",
+    orchestrator: "Orquestrador",
+  },
   agentControls: {
     provider: {
       fallback: "Provedor",
@@ -249,6 +254,13 @@ export const ptBR: TranslationResources = {
       implement: "Implementar",
       question: "Como você quer prosseguir?",
       proposedPlan: "Plano proposto",
+      approve: "Aprovar",
+      reject: "Rejeitar",
+      editBriefs: "Editar resumos",
+      cancelEdit: "Cancelar",
+      childAgent: "Agente secundário",
+      filesCount: "{{count}} arquivos",
+      dependsOn: "Depende de",
     },
   },
   agentPanel: {
@@ -2003,6 +2015,7 @@ export const ptBR: TranslationResources = {
   },
 
   tickets: en.tickets,
+  notes: en.notes,
   serviceUrl: {
     title: "Abrir URL do serviço",
     message: "Abrir {{url}}?",

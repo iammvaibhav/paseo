@@ -173,6 +173,7 @@ import type { ComposerPreferences } from "@getpaseo/protocol/composer-preference
 import { CommanderSnapshotInjector } from "./mission-control/commander-snapshot.js";
 import { CentralMissionControlConfigStore } from "./mission-control/config.js";
 import { createMissionControlPresenceSource } from "./mission-control/presence.js";
+import { AgentManagerOrchestratorDispatcher } from "./agent/orchestrator/dispatcher.js";
 import { MissionControlVerifierDispatcher } from "./mission-control/verifier.js";
 import {
   commanderHomeCwd,
@@ -185,6 +186,7 @@ import { AgentNamingService } from "./mission-control/naming.js";
 import { runIdentityBackfill } from "./mission-control/backfill.js";
 import { MAX_WEBHOOK_BODY_BYTES, WebhookService } from "./webhook/service.js";
 import { createWebhookRouteHandler } from "./webhook/route.js";
+import { AutomationService } from "./automation/service.js";
 import {
   isServingTickets,
   openTickets,
@@ -193,8 +195,20 @@ import {
   type TicketsHost,
   type TicketStore,
 } from "./tickets/index.js";
+import {
+  createLocalNoteToolsBackend,
+  createPeerNoteToolsBackend,
+  isServingNotes,
+  NotesHostUnavailableError,
+  openNotes,
+  type NotesHost,
+  type NoteService,
+  type NoteStore,
+  type NoteToolsBackend,
+} from "./notes/index.js";
 import { ItsaplanTicketImporter } from "./tickets/import-itsaplan.js";
 import { startTicketFleet } from "./tickets/fleet.js";
+import { openDocThreads, type DocThreadsHost } from "./doc-threads/index.js";
 import {
   attachItsaplanProjectSync,
   createItsaplanResyncRouteHandler,
@@ -210,6 +224,7 @@ import {
   type ItsaplanCentralConfig,
 } from "./itsaplan/index.js";
 import { PeerManager } from "./peers/peer-manager.js";
+import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { TunnelManager } from "./tunnel/manager.js";
 import { DaemonConfigStore, type MutableDaemonConfig } from "./daemon-config-store.js";
 import { createOrchestrationSkills } from "./orchestration-skills/index.js";
@@ -733,6 +748,7 @@ export interface PaseoDaemonConfig {
     }>;
   };
   missionControl?: PersistedConfig["missionControl"];
+  aiReviewer?: PersistedConfig["aiReviewer"];
   providerOverrides?: Record<string, ProviderOverride>;
   log?: PersistedConfig["log"];
   onLifecycleIntent?: (intent: DaemonLifecycleIntent) => void;
@@ -761,6 +777,11 @@ export interface PaseoDaemon {
   ticketStore: TicketStore | null;
   isTicketsBoardHost(): boolean;
   ticketsHandlers: TicketsDelegatedHandlers;
+  docThreadsHost: DocThreadsHost | null;
+  // Native notes; null when node:sqlite is missing.
+  noteService: NoteService | null;
+  noteStore: NoteStore | null;
+  isNotesHost(): boolean;
   start(): Promise<void>;
   stop(): Promise<void>;
   getListenTarget(): ListenTarget | null;
@@ -846,6 +867,7 @@ function createInitialMutableDaemonConfig(config: PaseoDaemonConfig): MutableDae
     enableTerminalAgentHooks: config.enableTerminalAgentHooks ?? false,
     appendSystemPrompt: config.appendSystemPrompt ?? "",
     ...(config.missionControl ? { missionControl: config.missionControl } : {}),
+    ...(config.aiReviewer ? { aiReviewer: config.aiReviewer } : {}),
     pluginsEnabled: config.pluginsEnabled ?? false,
     plugins: config.plugins ?? {},
     skills: { selection: config.skillSelection },
@@ -1156,6 +1178,7 @@ export async function createPaseoDaemon(
     appBaseUrl = typeof value === "string" ? value : "https://app.paseo.sh";
   });
   let wsServer: VoiceAssistantWebSocketServer | null = null;
+  let automationService: AutomationService | null = null;
   let serviceProxyListenTarget: ListenTarget | null = null;
   const scriptHealthMonitor = new ScriptHealthMonitor({
     serviceProxy,
@@ -1421,6 +1444,8 @@ export async function createPaseoDaemon(
     mcpAuthToken: agentMcpAuthToken,
     resolvePaseoToolPolicy: (provider) =>
       resolvePaseoToolPolicy(provider, daemonConfigStore.get().providers),
+    aiReviewerCapability: true,
+    getAiReviewerConfig: () => daemonConfigStore.get().aiReviewer,
     logger,
   });
   const syncPluginProviders = () => {
@@ -1956,6 +1981,7 @@ export async function createPaseoDaemon(
   // fall back to the hostname only when no alias is set.
   let missionControlService: MissionControlService;
   const missionControlHostAlias = daemonConfigStore.get().missionControl?.hostAlias?.trim() || null;
+  const orchestratorDispatcher = new AgentManagerOrchestratorDispatcher(agentManager, logger);
   const verifierDispatcher = new MissionControlVerifierDispatcher({
     logger,
     agentManager,
@@ -2630,7 +2656,52 @@ export async function createPaseoDaemon(
   ticketService?.onChange((change) => {
     wsServer?.broadcast(wrapSessionMessage({ type: "tickets.changed", ...change }));
   });
+  const docThreadsRuntime = await openDocThreads({
+    paseoHome: config.paseoHome,
+    logger,
+    agentStorage,
+    agentManager,
+  });
+  const docThreadsHost = docThreadsRuntime?.host ?? null;
+  docThreadsRuntime?.host.service?.onChange((change) => {
+    wsServer?.broadcast(wrapSessionMessage({ type: "doc_threads.changed", ...change }));
+  });
   // ---- end native tickets (ServerCore)
+  // ---- Native notes (ServerCore). Every host opens the store; only the
+  // notes host (the designated Commander host, same rule as the tickets
+  // board host) serves notes.* and advertises features.notes.
+  const notesRuntime = await openNotes({ paseoHome: config.paseoHome, logger });
+  const noteStore: NoteStore | null = notesRuntime?.store ?? null;
+  const noteService: NoteService | null = notesRuntime?.service ?? null;
+  const notesHost: NotesHost = {
+    service: noteService,
+    isNotesHost: isThisHostTheItsaplanSyncHost,
+    notesHostName: ticketsBoardHostName,
+  };
+  const isNotesHost = (): boolean => isServingNotes(notesHost);
+  noteService?.onChange((change) => {
+    wsServer?.broadcast(wrapSessionMessage({ type: "notes.changed", ...change }));
+  });
+  const localNoteTools = noteService ? createLocalNoteToolsBackend({ service: noteService }) : null;
+  const resolveNotesHostClient = (): DaemonClient => {
+    const designated = ticketsBoardHostName();
+    const peerName = designated === null ? null : peerManager.resolvePeerName(designated);
+    if (peerName !== null && peerManager.getPeerStatus(peerName)?.state === "online") {
+      const client = peerManager.getPeerClient(peerName);
+      if (client !== null) {
+        return client;
+      }
+    }
+    throw new NotesHostUnavailableError(designated);
+  };
+  const peerNoteTools = createPeerNoteToolsBackend(resolveNotesHostClient);
+  const resolveNoteTools = (): NoteToolsBackend => {
+    if (localNoteTools !== null && isNotesHost()) {
+      return localNoteTools;
+    }
+    return peerNoteTools;
+  };
+  // ---- end native notes (ServerCore)
 
   // ---- itsaplan → native tickets import (Importer). Read-only copy of the
   // itsaplan server in central config; tickets.import.itsaplan.request
@@ -2758,7 +2829,10 @@ export async function createPaseoDaemon(
       ticketizeAgent: (agentId) => itsaplanBridge.ticketizeAgent(agentId),
     },
     resolveTicketTools: ticketFleet.resolveToolsBackend,
+    resolveNoteTools,
     verifierDispatcher,
+    orchestratorDispatcher,
+    resolveDocThreads: docThreadsHost?.service ? () => docThreadsHost.service! : null,
     serverId,
     hostAlias: missionControlHostAlias,
     paseoToolPolicy:
@@ -2797,6 +2871,7 @@ export async function createPaseoDaemon(
       const agentMcpServer = await createAgentMcpServer(
         createAgentToolHostDependencies({
           callerAgentId,
+          callerLabels: callerAgentId ? agentManager.getAgent(callerAgentId)?.labels : undefined,
           paseoToolPolicy: callerAgentId
             ? agentManager.getPaseoToolPolicy(callerAgentId)
             : undefined,
@@ -3021,6 +3096,30 @@ export async function createPaseoDaemon(
               logger.info("Daemon password authentication enabled");
             }
 
+            // ---- Automations facade (unified schedules/webhooks/poll triggers).
+            // Owns poll records + the poll loop; schedule/webhook kinds delegate.
+            // Built here so the service instance is in hand for the wsServer call below.
+            let automationRevision = 0;
+            automationService = new AutomationService({
+              paseoHome: config.paseoHome,
+              logger,
+              scheduleService,
+              webhookService,
+              onChanged: (change) => {
+                automationRevision += 1;
+                wsServer?.broadcast(
+                  wrapSessionMessage({
+                    type: "automations.changed",
+                    automationId: change.automationId,
+                    kind: change.kind,
+                    revision: automationRevision,
+                  }),
+                );
+              },
+            });
+            automationService.start();
+            // ---- end automations
+
             wsServer = new VoiceAssistantWebSocketServer(
               httpServer,
               logger,
@@ -3095,7 +3194,10 @@ export async function createPaseoDaemon(
               workspaceLabelService,
               (workspaceId) => itsaplanBridge?.handleWorkspaceArchived(workspaceId),
               warmWorktreePool,
+              docThreadsHost,
               ticketsHost,
+              notesHost,
+              { ticketsHost, automationService },
             );
             pluginRuntime.bindPaseoSessionHost(wsServer);
             await pluginRuntime.start();
@@ -3180,6 +3282,7 @@ export async function createPaseoDaemon(
     await missionControlService.stop().catch(() => undefined);
 
     await warmWorktreePool.stop().catch(() => undefined);
+    await automationService?.stop().catch(() => undefined);
     await scheduleService.stop().catch(() => undefined);
     baseCheckoutSyncService.stop();
     await peerManager?.close().catch(() => undefined);
@@ -3190,6 +3293,7 @@ export async function createPaseoDaemon(
     }
     transcriptSearch?.stop();
     ticketStore?.close();
+    noteStore?.close();
     await serviceProxy.stopStandalone();
     // Force-drop remaining sockets so httpServer.close() resolves promptly.
     // We've already closed wsServer (which sent ws-layer close frames) and
@@ -3221,6 +3325,10 @@ export async function createPaseoDaemon(
     ticketStore,
     isTicketsBoardHost,
     ticketsHandlers,
+    docThreadsHost,
+    noteService,
+    noteStore,
+    isNotesHost,
     start,
     stop,
     getListenTarget: () => boundListenTarget,

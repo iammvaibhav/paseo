@@ -215,6 +215,9 @@ describe("ProviderUsageService", () => {
           status: "available",
           planLabel: "GLM coding plan",
           fetchedAt: "2026-06-19T00:00:00.000Z",
+          headroomTone: "ready",
+          headroomPercent: 77,
+          resetCountdown: null,
           windows: [
             {
               id: "biweekly",
@@ -257,11 +260,38 @@ describe("ProviderUsageService", () => {
     const first = await service.listUsage();
     now += 30_000;
     const cached = await service.listUsage();
-    const refreshed = await service.listUsage({ forceRefresh: true });
+    // forceRefresh serves the cached snapshot instantly and revalidates in the
+    // background; the fresh card streams in via the per-provider push.
+    const providerUpdates: { providers: { windows: { usedPct?: number | null }[] }[] }[] = [];
+    const refresher = new ProviderUsageService({
+      logger: createLogger(),
+      now: () => now,
+      cacheTtlMs: 60_000,
+      onProviderRefreshed: (result) => {
+        providerUpdates.push(result);
+      },
+      fetchers: [
+        {
+          providerId: "claude",
+          displayName: "Claude",
+          fetchUsage: async () => ({
+            providerId: "claude",
+            displayName: "Claude",
+            status: "available",
+            planLabel: "Max 20x",
+            windows: [{ id: "session", label: "Session", usedPct: 99 }],
+          }),
+        },
+      ],
+    });
+    await refresher.listUsage();
+    const refreshed = await refresher.listUsage({ forceRefresh: true });
 
-    expect(calls).toBe(2);
+    expect(calls).toBe(1);
     expect(cached).toBe(first);
-    expect(refreshed.providers[0]?.windows[0]?.usedPct).toBe(2);
+    expect(refreshed.providers[0]?.windows[0]?.usedPct).toBe(99);
+    await vi.waitFor(() => expect(providerUpdates).toHaveLength(1));
+    expect(providerUpdates[0]?.providers[0]?.windows[0]?.usedPct).toBe(99);
   });
 
   it("deduplicates concurrent cache misses", async () => {
@@ -437,6 +467,9 @@ describe("ProviderUsageService", () => {
           planLabel: "Max 20x",
           windows: [],
           fetchedAt: "2026-06-19T00:00:00.000Z",
+          headroomTone: "unknown",
+          headroomPercent: null,
+          resetCountdown: null,
         },
       ],
     });
@@ -482,6 +515,10 @@ describe("ProviderUsageService", () => {
           balances: [],
           details: [],
           error: "Claude auth expired",
+          fetchedAt: "2026-06-19T00:00:00.000Z",
+          headroomTone: "unknown",
+          headroomPercent: null,
+          resetCountdown: null,
         },
         {
           providerId: "codex",
@@ -489,6 +526,9 @@ describe("ProviderUsageService", () => {
           status: "available",
           planLabel: "Pro 20x",
           fetchedAt: "2026-06-19T00:00:00.000Z",
+          headroomTone: "ready",
+          headroomPercent: 71,
+          resetCountdown: null,
           windows: [{ id: "weekly", label: "Weekly", usedPct: 29 }],
         },
       ],

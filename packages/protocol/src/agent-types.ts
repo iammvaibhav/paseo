@@ -388,6 +388,39 @@ export interface PluginTimelineItem {
   data: JsonValue;
 }
 
+// Orchestrator mode (normal agents; never the Commander). Plan DAG carried in
+// `input.plan` of the `OrchestratorPlanApproval` permission request and in the
+// `data` of `plugin` timeline rows (`pluginId: "orchestrator"`, `kind: "plan"`).
+// COMPAT(orchestrator): added 2026-09-30, remove gate after 2027-03-30.
+export type OrchestratorTaskStatus =
+  | "pending"
+  | "ready"
+  | "running"
+  | "completed"
+  | "failed"
+  | "blocked"
+  | "skipped"
+  | "canceled";
+
+export interface OrchestratorPlanTask {
+  id: string;
+  title: string;
+  brief: string;
+  files: string[];
+  dependsOn: string[];
+  model?: string;
+  childAgentId?: string;
+  status: OrchestratorTaskStatus;
+}
+
+export interface OrchestratorPlan {
+  planId: string;
+  version: number;
+  title: string;
+  maxParallel: number;
+  tasks: OrchestratorPlanTask[];
+}
+
 export interface AgentTaskItem {
   text: string;
   completed: boolean;
@@ -424,7 +457,14 @@ export type AgentTimelineItem =
       message: string;
     }
   | CompactionTimelineItem
-  | PluginTimelineItem;
+  | PluginTimelineItem
+  | {
+      type: "ai_review_decision";
+      requestId: string;
+      decision: "allow" | "deny" | "escalate";
+      reason: string;
+      toolName?: string;
+    };
 
 export type AgentStreamEvent =
   | { type: "thread_started"; sessionId: string; provider: AgentProvider }

@@ -83,6 +83,9 @@ export interface CreateAgentFromSessionInput {
   attachments?: AgentAttachment[];
   git?: GitSetupOptions;
   labels: Record<string, string>;
+  // Orchestrator start option (normal agents only). Stamped onto the agent at
+  // registration, persisted, echoed on snapshots.
+  orchestrator?: boolean;
   env?: Record<string, string>;
   provisionalTitle: string | null;
   firstAgentContext: FirstAgentContext;
@@ -306,6 +309,7 @@ async function resolveSessionCreateAgent(
       initialPrompt: trimmedPrompt,
       env: input.env,
       initialTitle: input.provisionalTitle,
+      ...(input.orchestrator === true ? { orchestrator: true } : {}),
       // A legacy git/worktreeName worktree creates a fresh workspace, so the
       // agent belongs to that workspace, not the source one. createdWorkspaceId
       // is the freshly created worktree's workspace.

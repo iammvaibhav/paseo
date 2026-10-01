@@ -87,6 +87,7 @@ export type StreamItem =
   | TodoListItem
   | NotificationItem
   | CompactionItem
+  | AiReviewDecisionItem
   | PluginTimelineStreamItem;
 
 export type UserMessageImageAttachment = AttachmentMetadata;
@@ -841,6 +842,18 @@ export interface CompactionItem {
   preTokens?: number;
 }
 
+export interface AiReviewDecisionItem {
+  kind: "ai_review_decision";
+  id: string;
+  timelineCursor?: TimelinePosition;
+  turnId?: string;
+  timestamp: Date;
+  requestId: string;
+  decision: "allow" | "deny" | "escalate";
+  reason: string;
+  toolName?: string;
+}
+
 export interface PluginTimelineStreamItem {
   kind: "plugin";
   id: string;
@@ -1116,6 +1129,7 @@ export function streamTimelineItemIdentity(item: StreamItem): string | null {
     });
   }
   if (item.kind === "plugin") return `${item.pluginId}/${item.pluginItemId}`;
+  if (item.kind === "ai_review_decision") return `ai_review_decision:${item.requestId}`;
   return null;
 }
 
@@ -1574,6 +1588,32 @@ function reduceTimelineCompaction(
   return [...state, compaction];
 }
 
+function appendAiReviewDecision(
+  state: StreamItem[],
+  item: Extract<AgentTimelineItem, { type: "ai_review_decision" }>,
+  timestamp: Date,
+  timelineCursor?: TimelinePosition,
+  turnId?: string,
+): StreamItem[] {
+  const nextItem: AiReviewDecisionItem = {
+    kind: "ai_review_decision",
+    id: `ai_review_decision:${item.requestId}`,
+    requestId: item.requestId,
+    decision: item.decision,
+    reason: item.reason,
+    ...(item.toolName ? { toolName: item.toolName } : {}),
+    ...(timelineCursor ? { timelineCursor } : {}),
+    ...(turnId ? { turnId } : {}),
+    timestamp,
+  };
+  const identity = streamTimelineItemIdentity(nextItem);
+  const index = identity ? findExistingTimelineIdentityIndex(state, identity) : -1;
+  if (index < 0) return [...state, nextItem];
+  const next = [...state];
+  next[index] = nextItem;
+  return next;
+}
+
 function reduceTimelineEvent(
   state: StreamItem[],
   event: Extract<AgentStreamEventPayload, { type: "timeline" }>,
@@ -1668,6 +1708,10 @@ function reduceTimelineEvent(
     case "compaction":
       return finalizeActiveThoughts(
         reduceTimelineCompaction(state, item, timestamp, timelineCursor),
+      );
+    case "ai_review_decision":
+      return finalizeActiveThoughts(
+        appendAiReviewDecision(state, item, timestamp, timelineCursor, event.turnId),
       );
     case "plugin":
       return finalizeActiveThoughts(
@@ -1856,6 +1900,8 @@ function getEventItemKind(event: AgentStreamEventPayload): StreamItem["kind"] | 
     case "error":
     case "notification":
       return "notification";
+    case "ai_review_decision":
+      return "ai_review_decision";
     case "plugin":
       return "plugin";
     default:

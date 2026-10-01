@@ -200,6 +200,11 @@ export const ru: TranslationResources = {
       title_mr: "Прикрепить задачу или MR",
     },
   },
+  startOption: {
+    title: "Вариант запуска",
+    doTask: "Выполнить задачу",
+    orchestrator: "Оркестратор",
+  },
   agentControls: {
     provider: {
       fallback: "Провайдер",
@@ -250,6 +255,13 @@ export const ru: TranslationResources = {
       implement: "Реализовать",
       question: "Как бы вы хотели продолжить?",
       proposedPlan: "Предлагаемый план",
+      approve: "Одобрить",
+      reject: "Отклонить",
+      editBriefs: "Изменить брифы",
+      cancelEdit: "Отмена",
+      childAgent: "Дочерний агент",
+      filesCount: "{{count}} файлов",
+      dependsOn: "Зависит от",
     },
   },
   agentPanel: {
@@ -2003,6 +2015,7 @@ export const ru: TranslationResources = {
   },
 
   tickets: en.tickets,
+  notes: en.notes,
   serviceUrl: {
     title: "Открыть URL сервиса",
     message: "Открыть {{url}}?",

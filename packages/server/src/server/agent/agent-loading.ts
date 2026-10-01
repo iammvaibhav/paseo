@@ -114,7 +114,12 @@ export async function ensureAgentLoaded(
         // launch-context catalog build sees the caller labels (verifier/
         // Commander tools are label-gated: a resumed verifier session must
         // keep contact_worker/submit_verdict).
-        { ...extractTimestamps(record), attention: extractAttention(record) },
+        {
+          ...extractTimestamps(record),
+          attention: extractAttention(record),
+          ...(record.orchestrator === true ? { orchestrator: true } : {}),
+          ...(record.orchestratorPlan ? { orchestratorPlan: record.orchestratorPlan } : {}),
+        },
         record.archivedAt ? { purpose: "history" } : undefined,
       );
       deps.logger.info({ agentId, provider: record.provider }, "Agent resumed from persistence");
@@ -131,6 +136,8 @@ export async function ensureAgentLoaded(
       snapshot = await deps.agentManager.createAgent(config, agentId, {
         labels: record.labels,
         workspaceId: record.workspaceId,
+        ...(record.orchestrator === true ? { orchestrator: true } : {}),
+        ...(record.orchestratorPlan ? { orchestratorPlan: record.orchestratorPlan } : {}),
         owner: record.owner,
       });
       deps.logger.info({ agentId, provider: record.provider }, "Agent created from stored config");

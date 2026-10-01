@@ -873,11 +873,14 @@ function AppWithSidebar({ children }: { children: ReactNode }) {
       pathname === "/new" ||
       pathname === "/sessions" ||
       pathname === "/schedules" ||
+      pathname === "/automations" ||
       pathname === "/mission-control" ||
       pathname === "/itsaplan" ||
       pathname === "/webhooks" ||
       pathname === "/tickets" ||
       pathname.startsWith("/tickets/") ||
+      pathname === "/notes" ||
+      pathname.startsWith("/notes/") ||
       routeHasKnownHost);
 
   return <AppContainer chromeEnabled={shouldShowAppChrome}>{children}</AppContainer>;
@@ -909,6 +912,7 @@ function RootStack() {
         <Stack.Screen name="new" />
         <Stack.Screen name="open-project" />
         <Stack.Screen name="sessions" />
+        <Stack.Screen name="automations" />
         <Stack.Screen name="schedules" />
         <Stack.Screen name="itsaplan" />
         <Stack.Screen name="mission-control" />
@@ -916,6 +920,7 @@ function RootStack() {
         <Stack.Screen name="tickets/index" />
         <Stack.Screen name="tickets/initiatives/index" />
         <Stack.Screen name="tickets/initiatives/[initiativeId]" />
+        <Stack.Screen name="notes/index" />
         <Stack.Screen name="pair-scan" />
       </Stack.Protected>
       <Stack.Screen name="h/[serverId]" />

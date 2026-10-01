@@ -26,6 +26,7 @@ import {
   LiveElapsed,
   STREAM_METADATA_FONT_SIZE,
   type AssistantForkTarget,
+  type AssistantTurnSourceContext,
 } from "@/components/message";
 import type { TurnFooterHost } from "./layout";
 import { AssistantForkMenu } from "@/components/assistant-fork-menu";
@@ -83,6 +84,7 @@ export const TurnFooter = memo(function TurnFooter({
   agentProvider,
   agentModel,
   agentCwd,
+  sourceContext,
 }: {
   isRunning: boolean;
   inFlightTurnStartedAt: Date | null;
@@ -100,6 +102,7 @@ export const TurnFooter = memo(function TurnFooter({
   agentProvider?: string;
   agentModel?: string | null;
   agentCwd?: string | null;
+  sourceContext?: AssistantTurnSourceContext;
 }) {
   // Compact grid tiles must not keep the live elapsed row or the completed
   // 3-dot/fork chrome. Hide the whole footer, not just the fork control.
@@ -137,6 +140,7 @@ export const TurnFooter = memo(function TurnFooter({
       agentModel={agentModel}
       agentCwd={agentCwd}
       metrics={host.metrics}
+      sourceContext={sourceContext}
     />
   );
 });
@@ -157,6 +161,7 @@ export const CompletedTurnFooterRow = memo(function CompletedTurnFooterRow({
   agentModel,
   agentCwd,
   metrics,
+  sourceContext,
 }: {
   strategy: TurnContentStrategy;
   items: StreamItem[];
@@ -173,6 +178,7 @@ export const CompletedTurnFooterRow = memo(function CompletedTurnFooterRow({
   agentModel?: string | null;
   agentCwd?: string | null;
   metrics?: AgentUsage;
+  sourceContext?: AssistantTurnSourceContext;
 }) {
   return (
     <TurnFooterRow>
@@ -192,6 +198,7 @@ export const CompletedTurnFooterRow = memo(function CompletedTurnFooterRow({
         agentModel={agentModel}
         agentCwd={agentCwd}
         metrics={metrics}
+        sourceContext={sourceContext}
       />
     </TurnFooterRow>
   );
@@ -266,6 +273,7 @@ function CompletedTurnFooter({
   agentModel,
   agentCwd,
   metrics: explicitMetrics,
+  sourceContext,
 }: {
   strategy: TurnContentStrategy;
   items: StreamItem[];
@@ -282,6 +290,7 @@ function CompletedTurnFooter({
   agentModel?: string | null;
   agentCwd?: string | null;
   metrics?: AgentUsage;
+  sourceContext?: AssistantTurnSourceContext;
 }) {
   const assistantItem = items[startIndex];
   const metrics =
@@ -395,6 +404,7 @@ function CompletedTurnFooter({
           precedingUserMessage && onJumpToUserMessage ? handleJumpToUserMessage : undefined
         }
         onSecondOpinion={secondOpinionProps}
+        sourceContext={sourceContext}
       />
     </View>
   );
