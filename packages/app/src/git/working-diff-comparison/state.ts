@@ -9,6 +9,9 @@ export interface WorkingDiffComparisonOverride {
 
 export interface WorkingDiffComparisonState {
   overrides: Record<string, WorkingDiffComparisonOverride>;
+  // A picked comparison base is a separate decision from the mode: it outlives dirty-state
+  // expiry and mode flips. Keyed per checkout, so another workspace never inherits it.
+  baseRefs: Record<string, string>;
 }
 
 export interface WorkingDiffCheckoutIdentity {
@@ -38,6 +41,7 @@ export function selectWorkingDiffComparisonInState(
   },
 ): WorkingDiffComparisonState {
   return {
+    ...state,
     overrides: {
       ...state.overrides,
       [workingDiffComparisonKey(input)]: {
@@ -81,5 +85,28 @@ export function expireWorkingDiffComparisonsInState(
 
   const overrides = { ...state.overrides };
   for (const key of staleKeys) delete overrides[key];
-  return { overrides };
+  return { ...state, overrides };
+}
+
+export function selectWorkingDiffBaseRefInState(
+  state: WorkingDiffComparisonState,
+  input: WorkingDiffCheckoutIdentity & { baseRef: string | null },
+): WorkingDiffComparisonState {
+  const key = workingDiffComparisonKey(input);
+  const baseRef = input.baseRef?.trim();
+  if (!baseRef) {
+    if (!(key in state.baseRefs)) return state;
+    const baseRefs = { ...state.baseRefs };
+    delete baseRefs[key];
+    return { ...state, baseRefs };
+  }
+  if (state.baseRefs[key] === baseRef) return state;
+  return { ...state, baseRefs: { ...state.baseRefs, [key]: baseRef } };
+}
+
+export function resolveWorkingDiffBaseRefFromState(
+  state: WorkingDiffComparisonState,
+  input: WorkingDiffCheckoutIdentity,
+): string | null {
+  return state.baseRefs[workingDiffComparisonKey(input)] ?? null;
 }

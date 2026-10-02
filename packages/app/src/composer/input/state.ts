@@ -49,14 +49,31 @@ interface StopRealtimeVoiceContext {
 interface SendActionContext {
   defaultSendBehavior: SendBehavior;
   isAgentRunning: boolean;
+  /**
+   * The draft invokes a provider command that runs against the live turn
+   * instead of starting one (OMP /steer, /compact, …). Queueing one delivers it
+   * after the turn it was meant to affect, so it always sends.
+   */
+  sendsOutOfBand: boolean;
   onQueue: ((payload: MessagePayload) => void) | undefined;
   handleSendMessage: () => void;
+  /**
+   * Sends the draft with dispatchMode "steer": the daemon delivers it against
+   * the live turn (native OMP live-steer) instead of starting a new one.
+   */
+  handleSteerSendMessage: () => void;
   handleQueueMessage: () => void;
 }
 
 interface DictationTranscriptContext {
   value: string;
   defaultSendBehavior: SendBehavior;
+  /**
+   * The draft invokes a provider command that runs against the live turn
+   * instead of starting one (OMP /steer, /compact, …), so an auto-sent
+   * transcript must bypass the queue exactly like a manual send does.
+   */
+  sendsOutOfBand: boolean;
   isAgentRunning: boolean;
   onQueue: ((payload: MessagePayload) => void) | undefined;
   onSubmit: (payload: MessagePayload) => void;
@@ -78,7 +95,12 @@ export function applyDictationTranscript(text: string, ctx: DictationTranscriptC
 
   ctx.replaceText(nextValue);
 
-  if (ctx.defaultSendBehavior === "queue" && ctx.isAgentRunning && ctx.onQueue) {
+  if (
+    ctx.defaultSendBehavior !== "interrupt" &&
+    !ctx.sendsOutOfBand &&
+    ctx.isAgentRunning &&
+    ctx.onQueue
+  ) {
     ctx.onQueue({ text: nextValue, attachments: ctx.attachments, cwd: ctx.cwd });
     ctx.replaceText("");
     return;
@@ -89,6 +111,12 @@ export function applyDictationTranscript(text: string, ctx: DictationTranscriptC
     attachments: ctx.attachments,
     cwd: ctx.cwd,
     forceSend: ctx.isAgentRunning || undefined,
+    // Spoken input follows the selected send behavior: with Steer selected and
+    // the agent mid-turn, the transcript rides along with the live turn.
+    dispatchMode:
+      ctx.defaultSendBehavior === "steer" && ctx.isAgentRunning && !ctx.sendsOutOfBand
+        ? "steer"
+        : undefined,
   });
 }
 
@@ -118,7 +146,11 @@ export function computeCanStartDictation(input: {
 }
 
 export function runDefaultSendAction(ctx: SendActionContext): void {
-  if (ctx.defaultSendBehavior === "queue" && ctx.isAgentRunning && ctx.onQueue) {
+  if (ctx.defaultSendBehavior === "interrupt") {
+    ctx.handleSendMessage();
+    return;
+  }
+  if (!ctx.sendsOutOfBand && ctx.isAgentRunning && ctx.onQueue) {
     ctx.handleQueueMessage();
     return;
   }
@@ -126,13 +158,17 @@ export function runDefaultSendAction(ctx: SendActionContext): void {
 }
 
 export function runAlternateSendAction(ctx: SendActionContext): void {
-  if (ctx.defaultSendBehavior === "queue") {
-    ctx.handleSendMessage();
+  if (ctx.defaultSendBehavior === "interrupt" && !ctx.sendsOutOfBand) {
+    if (ctx.isAgentRunning && ctx.onQueue) {
+      ctx.handleQueueMessage();
+      return;
+    }
+  }
+  if (!ctx.sendsOutOfBand && ctx.isAgentRunning) {
+    ctx.handleSteerSendMessage();
     return;
   }
-  if (ctx.isAgentRunning && ctx.onQueue) {
-    ctx.handleQueueMessage();
-  }
+  ctx.handleSendMessage();
 }
 
 export function runMessageInputKeyboardAction(

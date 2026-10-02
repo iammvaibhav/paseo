@@ -1,9 +1,16 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { subscribeToRelativeTimeTick, type TickResolution } from "@/utils/relative-time-ticker";
-import { describeCompactTimeAgo } from "@/utils/time";
+import {
+  describeCompactTimeAgo,
+  formatCompactTimeAgo,
+  formatTimeAgo,
+  type RelativeTimeResolution,
+} from "@/utils/time";
+
+type TimeAgoFormatter = (date: Date) => string;
 
 /**
- * A compact relative timestamp that keeps itself current.
+ * Shared engine behind live relative timestamps.
  *
  * Call this from the smallest component that renders the text. The state lives there, so a tick
  * re-renders one `<Text>` and nothing above it — the row, the list, and the sidebar are never
@@ -17,9 +24,18 @@ import { describeCompactTimeAgo } from "@/utils/time";
  * - **The tier follows the label.** As a timestamp ages the label changes more slowly, so the
  *   subscription moves to a slower tier; past a week it unsubscribes for good, because a date
  *   never changes again.
+ *
+ * The formatter is injected so the same clock serves both wordings: prose
+ * (`useLiveTimeAgo` → "5m ago") and compact (`useCompactTimeAgo` → "5m"). The
+ * resolution always comes from `describeCompactTimeAgo`, whose unit boundaries
+ * match both — the prose formatter's sub-minute labels ("just now", "47s ago")
+ * are served by the minute tier with at most one minute of staleness, the same
+ * honesty tradeoff the compact "now" makes.
  */
-export function useCompactTimeAgo(date: Date | null): string {
-  const [label, setLabel] = useState(() => (date ? describeCompactTimeAgo(date).label : ""));
+function useRelativeTimeLabel(date: Date | null, format: TimeAgoFormatter): string {
+  const formatRef = useRef(format);
+  formatRef.current = format;
+  const [label, setLabel] = useState(() => (date ? format(date) : ""));
 
   // Keyed on the instant, not the Date object: the store parses a fresh Date on every payload, so
   // depending on identity would tear down and rebuild the subscription for an unchanged time.
@@ -32,18 +48,29 @@ export function useCompactTimeAgo(date: Date | null): string {
     }
 
     const source = new Date(time);
-    let current = describeCompactTimeAgo(source);
-    setLabel(current.label);
+    let current = formatRef.current(source);
+    let currentResolution: RelativeTimeResolution = describeCompactTimeAgo(source).resolution;
+    setLabel(current);
 
     let unsubscribe: (() => void) | null = null;
 
     const handleTick = () => {
-      const next = describeCompactTimeAgo(source);
-      if (next.label !== current.label) {
-        setLabel(next.label);
+      const next = formatRef.current(source);
+      if (next !== current) {
+        setLabel(next);
       }
-      if (next.resolution !== current.resolution) {
+      const resolution = describeCompactTimeAgo(source).resolution;
+      if (resolution === "static") {
+        // Aged into the absolute-date range: the label can never change again,
+        // so leave the ticking tiers for good.
+        current = next;
+        unsubscribe?.();
+        unsubscribe = null;
+        return;
+      }
+      if (resolution !== currentResolution) {
         // Aged into a slower tier — or out of them entirely.
+        currentResolution = resolution;
         current = next;
         unsubscribe?.();
         unsubscribe = null;
@@ -54,8 +81,8 @@ export function useCompactTimeAgo(date: Date | null): string {
     };
 
     const attach = () => {
-      if (current.resolution === "static") return;
-      unsubscribe = subscribeToRelativeTimeTick(current.resolution as TickResolution, handleTick);
+      if (currentResolution === "static") return;
+      unsubscribe = subscribeToRelativeTimeTick(currentResolution as TickResolution, handleTick);
     };
 
     attach();
@@ -65,4 +92,14 @@ export function useCompactTimeAgo(date: Date | null): string {
   }, [time]);
 
   return label;
+}
+
+/** Compact relative timestamp ("now", "5m", "2h", "3d", "Jan 15"). */
+export function useCompactTimeAgo(date: Date | null): string {
+  return useRelativeTimeLabel(date, formatCompactTimeAgo);
+}
+
+/** Prose relative timestamp ("just now", "5m ago", "2h ago", "3d ago", "Jan 15"). */
+export function useLiveTimeAgo(date: Date | null): string {
+  return useRelativeTimeLabel(date, formatTimeAgo);
 }

@@ -1896,6 +1896,8 @@ class ClaudeContextUsageState {
   private streamRequestInputTokens: number | undefined;
   private streamRequestOutputTokens: number | undefined;
   private compactedContextWindowUsedTokens: number | undefined;
+  /** Last accurate context fill; survives turn boundaries when the result omits used tokens. */
+  private lastKnownContextWindowUsedTokens: number | undefined;
   private completedResultTurns = 0;
 
   constructor(initialContextWindowMaxTokens?: number) {
@@ -1955,9 +1957,15 @@ class ClaudeContextUsageState {
       if (!message.usage) {
         return undefined;
       }
+      const cacheWriteTokens = message.usage.cache_creation_input_tokens;
       const usage: AgentUsage = {
         inputTokens: message.usage.input_tokens,
         cachedInputTokens: message.usage.cache_read_input_tokens,
+        // Turn-metrics: report cache creation tokens under the shared
+        // cacheWriteTokens field; omitted when zero/absent (never zero-fill).
+        ...(typeof cacheWriteTokens === "number" && cacheWriteTokens > 0
+          ? { cacheWriteTokens }
+          : {}),
         outputTokens: message.usage.output_tokens,
         totalCostUsd: message.total_cost_usd,
       };
@@ -1972,10 +1980,17 @@ class ClaudeContextUsageState {
       const activeResultUsageTokens =
         readActiveUsageTokens(message.usage) ??
         (this.completedResultTurns === 0 ? readLegacyResultUsageTokens(message.usage) : undefined);
+      // Prefer live stream / active iteration / compact post-tokens. Fall back to the last
+      // known fill so turn_completed does not drop context usage after idle (regression from
+      // removing getContextUsage probes in #1701).
       const usedTokens =
-        this.streamUsedTokens() ?? activeResultUsageTokens ?? this.compactedContextWindowUsedTokens;
+        this.streamUsedTokens() ??
+        activeResultUsageTokens ??
+        this.compactedContextWindowUsedTokens ??
+        this.lastKnownContextWindowUsedTokens;
       if (usedTokens !== undefined) {
         usage.contextWindowUsedTokens = usedTokens;
+        this.lastKnownContextWindowUsedTokens = usedTokens;
       }
       return usage;
     } finally {
@@ -1996,6 +2011,7 @@ class ClaudeContextUsageState {
   }
 
   private createUsageUpdatedEvent(contextWindowUsedTokens: number): AgentStreamEvent {
+    this.lastKnownContextWindowUsedTokens = contextWindowUsedTokens;
     const usage: AgentUsage = {
       contextWindowUsedTokens,
     };
@@ -2013,6 +2029,9 @@ class ClaudeContextUsageState {
     this.streamRequestInputTokens = undefined;
     this.streamRequestOutputTokens = undefined;
     this.compactedContextWindowUsedTokens = postTokens;
+    if (postTokens !== undefined) {
+      this.lastKnownContextWindowUsedTokens = postTokens;
+    }
     const usage: AgentUsage = {};
     if (this.contextWindowMaxTokens !== undefined) {
       usage.contextWindowMaxTokens = this.contextWindowMaxTokens;

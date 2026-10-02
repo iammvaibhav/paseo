@@ -245,7 +245,13 @@ describe("mutable provider config owner", () => {
       await vi.waitFor(() => expect(catalogResolvers).toHaveLength(1));
       expect(events).toEqual([]);
 
-      store.patch({ providers: { codex: { enabled: true, label: "Reloaded Codex" } } });
+      // A catalog-affecting field (command) must accompany the label change: a
+      // cosmetic-only edit no longer invalidates an in-flight/ready catalog.
+      store.patch({
+        providers: {
+          codex: { enabled: true, label: "Reloaded Codex", command: ["mock-codex"] },
+        },
+      });
       expect(events).toEqual(["loading:none"]);
       await vi.waitFor(() => expect(catalogResolvers).toHaveLength(2));
 

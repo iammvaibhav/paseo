@@ -8,7 +8,7 @@ import {
   ALL_HOSTS_OPTION_ID,
   getHostPickerLabel,
   HostPicker,
-  HostStatusDotSlot,
+  HostGlyphSlot,
 } from "@/components/hosts/host-picker";
 
 const ThemedServer = withUnistyles(Server);
@@ -85,7 +85,7 @@ export function HostFilter({
           {selectedHost === ALL_HOSTS_OPTION_ID ? (
             <ThemedServer size={14} uniProps={mutedColorMapping} />
           ) : (
-            <HostStatusDotSlot serverId={selectedHost} />
+            <HostGlyphSlot serverId={selectedHost} label={selectedHostLabel} />
           )}
           <Text style={styles.filterTriggerText} numberOfLines={1}>
             {selectedHostLabel}

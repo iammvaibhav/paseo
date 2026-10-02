@@ -39,7 +39,7 @@ export function getOverlayRoot(): HTMLElement {
 
 export const WEB_SURFACE_PLANE = {
   browser: 0,
-  overlay: 1,
+  overlay: 100,
 } as const;
 
 export const OVERLAY_Z = {

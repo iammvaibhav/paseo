@@ -14,6 +14,7 @@ import type {
   AgentResumeSessionOptions,
   AgentSession,
   AgentSessionConfig,
+  AgentStreamEvent,
 } from "./agent-sdk-types.js";
 import { createTestAgentClients } from "../test-utils/fake-agent-client.js";
 
@@ -75,6 +76,116 @@ test("loads archived records for history and active records with the interactive
       manager.closeAgent(archivedId).catch(() => undefined),
       manager.closeAgent(activeId).catch(() => undefined),
     ]);
+    await manager.flush().catch(() => undefined);
+    await storage.flush().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("restores provider subagents from history after a daemon restart resume", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "agent-loading-subagents-"));
+  const logger = createTestLogger();
+  const storage = new AgentStorage(path.join(root, "agents"), logger);
+  const agentId = "00000000-0000-4000-8000-000000000303";
+
+  class ProviderChildHistorySession implements AgentSession {
+    readonly provider = "codex" as const;
+    readonly capabilities = {
+      supportsStreaming: false,
+      supportsSessionPersistence: true,
+      supportsSessionListing: true,
+      supportsDynamicModes: false,
+      supportsMcpServers: false,
+      supportsReasoningStream: false,
+      supportsToolInvocations: false,
+    } as const;
+    constructor(private readonly cwd: string) {}
+    async run() {
+      return { sessionId: agentId, finalText: "", timeline: [] };
+    }
+    async startTurn() {
+      return { turnId: "turn-1" };
+    }
+    subscribe() {
+      return () => undefined;
+    }
+    async *streamHistory(): AsyncGenerator<AgentStreamEvent> {
+      yield {
+        type: "provider_subagent",
+        provider: "codex",
+        event: {
+          type: "upsert",
+          id: "restored-child",
+          title: "Restored child",
+          status: "completed",
+        },
+      };
+    }
+    async getRuntimeInfo() {
+      return { provider: this.provider, sessionId: agentId, model: null, modeId: null };
+    }
+    async getAvailableModes() {
+      return [];
+    }
+    async getCurrentMode() {
+      return null;
+    }
+    async setMode() {}
+    getPendingPermissions() {
+      return [];
+    }
+    async respondToPermission() {}
+    describePersistence() {
+      return { provider: this.provider, sessionId: "codex-session-1" };
+    }
+    async interrupt() {}
+    async close() {}
+  }
+
+  const client: AgentClient = {
+    provider: "codex",
+    capabilities: {
+      supportsStreaming: false,
+      supportsSessionPersistence: true,
+      supportsSessionListing: true,
+      supportsDynamicModes: false,
+      supportsMcpServers: false,
+      supportsReasoningStream: false,
+      supportsToolInvocations: false,
+    },
+    createSession: async (config: AgentSessionConfig): Promise<AgentSession> =>
+      new ProviderChildHistorySession(config.cwd),
+    resumeSession: async (
+      _handle: AgentPersistenceHandle,
+      overrides?: Partial<AgentSessionConfig>,
+    ): Promise<AgentSession> => new ProviderChildHistorySession(overrides?.cwd ?? root),
+    fetchCatalog: async () => ({ models: [], modes: [] }),
+    isAvailable: async () => true,
+  };
+  const manager = new AgentManager({
+    clients: { codex: client },
+    registry: storage,
+    logger,
+  });
+
+  try {
+    await manager.createAgent({ provider: "codex", cwd: root }, agentId, {
+      workspaceId: "workspace-active",
+    });
+    await manager.closeAgent(agentId);
+
+    await ensureAgentLoaded(agentId, { agentManager: manager, agentStorage: storage, logger });
+
+    expect(manager.listProviderSubagents(agentId)).toEqual([
+      expect.objectContaining({
+        id: "restored-child",
+        parentAgentId: agentId,
+        title: "Restored child",
+        status: "completed",
+      }),
+    ]);
+  } finally {
+    await manager.closeAgent(agentId).catch(() => undefined);
     await manager.flush().catch(() => undefined);
     await storage.flush().catch(() => undefined);
     await rm(root, { recursive: true, force: true });

@@ -375,6 +375,7 @@ describe("DirectorySync session readiness", () => {
     store.updateSessionServerInfo(serverId, {
       serverId,
       hostname: null,
+      missionControlHostAlias: null,
       version: "test",
       features: { workspaceMultiplicity: true },
     });
@@ -430,6 +431,7 @@ describe("DirectorySync session readiness", () => {
       serverId,
       hostname: null,
       version: "test",
+      missionControlHostAlias: null,
       features: { workspaceMultiplicity: true },
     });
 
@@ -450,6 +452,7 @@ describe("DirectorySync session readiness", () => {
       serverId,
       hostname: null,
       version: "test",
+      missionControlHostAlias: null,
       features: { workspaceMultiplicity: true },
     });
 
@@ -537,6 +540,7 @@ describe("DirectorySync session readiness", () => {
       serverId,
       hostname: null,
       version: "test",
+      missionControlHostAlias: null,
       features: { workspaceMultiplicity: true },
     });
 
@@ -617,6 +621,7 @@ describe("DirectorySync session readiness", () => {
       serverId,
       hostname: null,
       version: "test",
+      missionControlHostAlias: null,
       features: { workspaceMultiplicity: true, directorySync: true },
     });
 
@@ -678,6 +683,7 @@ describe("DirectorySync session readiness", () => {
       serverId,
       hostname: null,
       version: "test",
+      missionControlHostAlias: null,
       features: { workspaceMultiplicity: true, directorySync: true },
     });
 
@@ -814,6 +820,7 @@ describe("DirectorySync session readiness", () => {
       serverId,
       hostname: null,
       version: "test",
+      missionControlHostAlias: null,
       features: { directorySync: true, workspaceMultiplicity: true },
     });
 
@@ -867,6 +874,7 @@ describe("DirectorySync session readiness", () => {
       serverId,
       hostname: null,
       version: "test",
+      missionControlHostAlias: null,
       features: { directorySync: true, workspaceMultiplicity: true },
     });
 
@@ -901,6 +909,7 @@ describe("DirectorySync session readiness", () => {
     store.updateSessionServerInfo(serverId, {
       serverId,
       hostname: null,
+      missionControlHostAlias: null,
       version: "test",
       features: { workspaceMultiplicity: true },
     });
@@ -919,6 +928,7 @@ describe("DirectorySync session readiness", () => {
     store.updateSessionServerInfo(serverId, {
       serverId,
       hostname: null,
+      missionControlHostAlias: null,
       version: "test",
       features: { workspaceMultiplicity: true, projectList: true },
     });
@@ -993,6 +1003,7 @@ describe("DirectorySync session readiness", () => {
       serverId,
       hostname: null,
       version: "test",
+      missionControlHostAlias: null,
       features: { workspaceMultiplicity: true, projectList: true, directorySync: true },
     });
     client.projectResult = {
@@ -1068,6 +1079,7 @@ describe("DirectorySync session readiness", () => {
     store.updateSessionServerInfo(serverId, {
       serverId,
       hostname: null,
+      missionControlHostAlias: null,
       version: "test",
       features: { workspaceMultiplicity: true },
     });
@@ -1137,6 +1149,7 @@ describe("DirectorySync session readiness", () => {
     store.updateSessionServerInfo(serverId, {
       serverId,
       hostname: null,
+      missionControlHostAlias: null,
       version: "test",
       features: { workspaceMultiplicity: true },
     });
@@ -1258,6 +1271,7 @@ it("fills every cached workspace beneath live updates received during the SQLite
   useSessionStore.getState().updateSessionServerInfo(serverId, {
     serverId,
     hostname: null,
+    missionControlHostAlias: null,
     version: "test",
     features: { workspaceMultiplicity: true },
   });
@@ -1267,11 +1281,12 @@ it("fills every cached workspace beneath live updates received during the SQLite
   holdRead(async () => {
     if (updated) return;
     updated = true;
+    const { createdAt: _createdAt, ...cached } = workspaces[0]!;
     client.emit({
       type: "workspace_update",
       payload: {
         kind: "upsert",
-        workspace: { ...workspaces[0], name: "Live", activityAt: null, statusEnteredAt: null },
+        workspace: { ...cached, name: "Live", activityAt: null, statusEnteredAt: null },
       },
     });
   });

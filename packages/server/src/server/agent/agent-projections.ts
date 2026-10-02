@@ -1,3 +1,5 @@
+import type { LifecycleBucket } from "@getpaseo/protocol/agent-state-bucket";
+import { getItsaplanIssueIdFromLabels, ITSAPLAN_ISSUE_LABEL_KEY } from "../itsaplan/bridge.js";
 import type {
   AgentListItemPayload,
   AgentSnapshotPayload,
@@ -17,7 +19,7 @@ import type {
   AgentUsage,
   ImportableProviderSession,
 } from "./agent-sdk-types.js";
-import type { ManagedAgent } from "./agent-manager.js";
+import type { ManagedAgent, AttentionState } from "./agent-manager.js";
 import type { JsonValue } from "../json-utils.js";
 import {
   isStoredAgentProviderAvailable,
@@ -28,6 +30,7 @@ export type { ManagedAgent };
 
 interface ProjectionOptions {
   title?: string | null;
+  titleAutoDerived?: boolean;
   createdAt?: string;
   internal?: boolean;
 }
@@ -42,15 +45,28 @@ function normalizeThinkingOptionId(value: string | null | undefined): string | n
   return normalized.length > 0 ? normalized : null;
 }
 
-function normalizeLabels(labels: Record<string, unknown> | undefined): Record<string, string> {
-  if (!labels) {
+export function normalizeLabels(
+  labels: Record<string, unknown> | undefined | null,
+): Record<string, string> {
+  if (!labels || typeof labels !== "object") {
     return {};
   }
-  return Object.fromEntries(
-    Object.entries(labels).filter(
-      (entry): entry is [string, string] => typeof entry[1] === "string",
-    ),
-  );
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(labels)) {
+    if (value === null || value === undefined) {
+      continue;
+    }
+    if (typeof value === "string") {
+      result[key] = value;
+    } else if (typeof value === "number" || typeof value === "boolean") {
+      result[key] = String(value);
+    }
+  }
+  const issueId = getItsaplanIssueIdFromLabels(result);
+  if (issueId && !result[ITSAPLAN_ISSUE_LABEL_KEY]) {
+    result[ITSAPLAN_ISSUE_LABEL_KEY] = issueId;
+  }
+  return result;
 }
 
 export function resolveEffectiveThinkingOptionId(options: {
@@ -63,6 +79,24 @@ export function resolveEffectiveThinkingOptionId(options: {
   }
   return normalizeThinkingOptionId(options.configuredThinkingOptionId);
 }
+function buildStoredAttentionState(attention: AttentionState): {
+  requiresAttention: boolean;
+  attentionReason: "finished" | "error" | "permission" | null;
+  attentionTimestamp: string | null;
+} {
+  if (!attention.requiresAttention) {
+    return {
+      requiresAttention: false,
+      attentionReason: null,
+      attentionTimestamp: null,
+    };
+  }
+  return {
+    requiresAttention: true,
+    attentionReason: attention.attentionReason,
+    attentionTimestamp: attention.attentionTimestamp.toISOString(),
+  };
+}
 
 export function toStoredAgentRecord(
   agent: ManagedAgent,
@@ -72,6 +106,8 @@ export function toStoredAgentRecord(
   const config = buildSerializableConfig(agent.config);
   const persistence = sanitizePersistenceHandle(agent.persistence);
   const runtimeInfo = sanitizeRuntimeInfo(agent.runtimeInfo);
+  const attention = buildStoredAttentionState(agent.attention);
+  const titleAutoDerived = options?.titleAutoDerived ?? agent.titleAutoDerived;
 
   return {
     id: agent.id,
@@ -83,6 +119,11 @@ export function toStoredAgentRecord(
     lastActivityAt: agent.updatedAt.toISOString(),
     lastUserMessageAt: agent.lastUserMessageAt ? agent.lastUserMessageAt.toISOString() : null,
     title: options?.title ?? null,
+    ...(titleAutoDerived !== undefined ? { titleAutoDerived } : {}),
+    ...(agent.name !== undefined ? { name: agent.name } : {}),
+    ...(agent.shortDescription !== undefined ? { shortDescription: agent.shortDescription } : {}),
+    ...(agent.orchestrator === true ? { orchestrator: true } : {}),
+    ...(agent.orchestratorPlan ? { orchestratorPlan: agent.orchestratorPlan } : {}),
     labels: agent.labels,
     lastStatus: agent.lifecycle,
     lastModeId: agent.currentModeId ?? config?.modeId ?? null,
@@ -91,11 +132,12 @@ export function toStoredAgentRecord(
     features: normalizeFeatures(agent.features),
     persistence,
     lastError: agent.lastError ?? undefined,
-    requiresAttention: agent.attention.requiresAttention,
-    attentionReason: agent.attention.requiresAttention ? agent.attention.attentionReason : null,
-    attentionTimestamp: agent.attention.requiresAttention
-      ? agent.attention.attentionTimestamp.toISOString()
-      : null,
+    ...attention,
+    // Turn-metrics: bounded per-agent map (matchKey → metrics) persisted with
+    // the record so metrics survive restarts when provider history is rebuilt.
+    ...(sanitizeTurnMetrics(agent.turnMetrics) !== undefined
+      ? { turnMetrics: sanitizeTurnMetrics(agent.turnMetrics) }
+      : {}),
     internal: options?.internal,
     owner: agent.owner,
   } satisfies StoredAgentRecord;
@@ -138,6 +180,9 @@ export function toAgentPayload(
     pendingPermissions: sanitizePendingPermissions(agent.pendingPermissions),
     persistence: projectPersistenceHandleForWire(agent.persistence),
     title: options?.title ?? null,
+    ...(agent.name !== undefined ? { name: agent.name } : {}),
+    ...(agent.shortDescription !== undefined ? { shortDescription: agent.shortDescription } : {}),
+    ...(agent.orchestrator === true ? { orchestrator: true } : {}),
     labels: agent.labels,
   };
 
@@ -195,9 +240,30 @@ function buildStoredPersistenceHandle(
   return toAgentPersistenceHandle(validProviders, record.persistence);
 }
 
+/** Optional payload fields that depend on record/state presence — kept out of
+ * the main builder so its shape stays readable and its cyclomatic complexity
+ * in check. Each spread contributes a key only when present. */
+function buildStoredAgentOptionalFields(
+  record: StoredAgentRecord,
+  runtimeInfo: AgentRuntimeInfo | undefined,
+  providerAvailable: boolean,
+  bucket?: LifecycleBucket,
+): Partial<AgentSnapshotPayload> {
+  return {
+    ...(record.workspaceId ? { workspaceId: record.workspaceId } : {}),
+    ...(runtimeInfo ? { runtimeInfo } : {}),
+    ...(record.name !== undefined ? { name: record.name } : {}),
+    ...(record.shortDescription !== undefined ? { shortDescription: record.shortDescription } : {}),
+    ...(record.orchestrator === true ? { orchestrator: true } : {}),
+    ...(bucket ? { bucket } : {}),
+    ...(providerAvailable ? {} : { providerUnavailable: true }),
+  };
+}
+
 export function buildStoredAgentPayload(
   record: StoredAgentRecord,
   validProviders: Iterable<AgentProvider>,
+  bucket?: LifecycleBucket,
 ): AgentSnapshotPayload {
   const defaultCapabilities = {
     supportsStreaming: false,
@@ -225,14 +291,12 @@ export function buildStoredAgentPayload(
     id: record.id,
     provider: record.provider,
     cwd: record.cwd,
-    ...(record.workspaceId ? { workspaceId: record.workspaceId } : {}),
     model: record.config?.model ?? null,
     thinkingOptionId: record.config?.thinkingOptionId ?? null,
     effectiveThinkingOptionId: resolveEffectiveThinkingOptionId({
       runtimeInfo,
       configuredThinkingOptionId: record.config?.thinkingOptionId ?? null,
     }),
-    ...(runtimeInfo ? { runtimeInfo } : {}),
     createdAt: createdAt.toISOString(),
     updatedAt: updatedAt.toISOString(),
     lastUserMessageAt: lastUserMessageAt ? lastUserMessageAt.toISOString() : null,
@@ -248,7 +312,7 @@ export function buildStoredAgentPayload(
     attentionTimestamp: record.attentionTimestamp ?? null,
     archivedAt: record.archivedAt ?? null,
     labels: normalizeLabels(record.labels),
-    ...(providerAvailable ? {} : { providerUnavailable: true }),
+    ...buildStoredAgentOptionalFields(record, runtimeInfo, providerAvailable, bucket),
   };
 }
 
@@ -271,6 +335,14 @@ export function toAgentListItemPayload(agent: AgentSnapshotPayload): AgentListIt
     attentionReason: agent.attentionReason ?? null,
     attentionTimestamp: agent.attentionTimestamp ?? null,
     labels: agent.labels,
+    // Mission Control roster restore: the list tool's rows carry the same
+    // identity fields as the snapshot (additive; absent on old payloads).
+    ...(agent.workspaceId ? { workspaceId: agent.workspaceId } : {}),
+    ...(agent.name !== undefined ? { name: agent.name } : {}),
+    ...(agent.shortDescription !== undefined ? { description: agent.shortDescription } : {}),
+    // Canonical lifecycle bucket restored from the snapshot (computed on the
+    // daemon that owns the agent; absent on old daemons — degrade).
+    ...(agent.bucket ? { bucket: agent.bucket } : {}),
     ...(agent.providerUnavailable ? { providerUnavailable: true } : {}),
   };
 }
@@ -321,6 +393,12 @@ function buildSerializableConfig(config: AgentSessionConfig): SerializableAgentC
   }
   if (config.systemPrompt) {
     serializable.systemPrompt = config.systemPrompt;
+  }
+  if (config.systemPromptMode) {
+    serializable.systemPromptMode = config.systemPromptMode;
+  }
+  if (config.toolAllowlist?.length) {
+    serializable.toolAllowlist = config.toolAllowlist;
   }
   if (config.mcpServers) {
     serializable.mcpServers = config.mcpServers;
@@ -441,7 +519,8 @@ function sanitizeMetadataArray(value: unknown): AgentMetadata[] | undefined {
   return sanitized.length > 0 ? sanitized : undefined;
 }
 
-type UsageNumericField = Exclude<keyof AgentUsage, never>;
+// Numeric AgentUsage fields. `model` is a string, handled separately below.
+type UsageNumericField = Exclude<keyof AgentUsage, "model">;
 
 function assignFiniteNumber(
   source: { [key: string]: JsonValue },
@@ -465,17 +544,39 @@ function sanitizeUsage(value: unknown): AgentUsage | undefined {
   const fields: UsageNumericField[] = [
     "inputTokens",
     "cachedInputTokens",
+    "cacheWriteTokens",
     "outputTokens",
     "totalCostUsd",
     "contextWindowMaxTokens",
     "contextWindowUsedTokens",
+    "durationMs",
   ];
   for (const field of fields) {
     if (!assignFiniteNumber(sanitized, result, field)) {
       return undefined;
     }
   }
+  const rawModel = sanitized.model;
+  if (rawModel !== undefined && rawModel !== null) {
+    if (typeof rawModel !== "string") return undefined;
+    result.model = rawModel;
+  }
   return Object.keys(result).length ? result : undefined;
+}
+function sanitizeTurnMetrics(
+  turnMetrics: Map<string, AgentUsage> | Record<string, AgentUsage> | undefined,
+): Record<string, AgentUsage> | undefined {
+  if (!turnMetrics) return undefined;
+  const entries = turnMetrics instanceof Map ? turnMetrics.entries() : Object.entries(turnMetrics);
+  const result: Record<string, AgentUsage> = {};
+  for (const [key, usage] of entries) {
+    if (!key || typeof key !== "string") continue;
+    const sanitized = sanitizeUsage(usage);
+    if (sanitized) {
+      result[key] = sanitized;
+    }
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
 }
 
 function sanitizeRuntimeInfo(

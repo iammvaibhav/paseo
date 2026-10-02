@@ -1,0 +1,14 @@
+[Unit]
+Description=Paseo Commander Voice (Gemini Live relay for the Mission Control composer)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/commander-voice-run.sh
+Restart=on-failure
+RestartSec=3
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target

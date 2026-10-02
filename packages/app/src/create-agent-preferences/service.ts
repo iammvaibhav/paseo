@@ -43,6 +43,23 @@ export class CreateAgentPreferencesService {
     return operation;
   }
 
+  /**
+   * Replace the in-memory preferences with a host's composerPreferences blob
+   * (daemon wins over the local cache on connect / daemon change). Waits for
+   * any in-flight local update so a just-persisted write cannot be clobbered
+   * mid-flight, then mirrors the daemon value into local storage so the two
+   * never drift. The daemon blob arrives as the protocol ComposerPreferences
+   * shape, so it is parsed (leniently) at the boundary.
+   */
+  async hydrate(preferences: unknown): Promise<FormPreferences> {
+    await this.writeQueue;
+    const parsed = parseFormPreferences(preferences);
+    this.preferences = parsed;
+    this.isLoaded = true;
+    await this.storage.write(parsed);
+    return this.preferences;
+  }
+
   private async applyQueuedUpdate(
     previousWrite: Promise<void>,
     update: FormPreferenceUpdate,

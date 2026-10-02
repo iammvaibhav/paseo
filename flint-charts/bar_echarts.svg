@@ -1,0 +1,43 @@
+<svg width="774" height="547.8" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" baseProfile="full" viewBox="0 0 774 547.8">
+<rect width="774" height="547.8" x="0" y="0" fill="#ffffff"></rect>
+<path d="M86 416.5L736 416.5" fill="none" pointer-events="visible" stroke="#dbdee4" class="zr0-cls-0"></path>
+<path d="M86 321.5L736 321.5" fill="none" pointer-events="visible" stroke="#dbdee4" class="zr0-cls-0"></path>
+<path d="M86 226.5L736 226.5" fill="none" pointer-events="visible" stroke="#dbdee4" class="zr0-cls-0"></path>
+<path d="M86 131.5L736 131.5" fill="none" pointer-events="visible" stroke="#dbdee4" class="zr0-cls-0"></path>
+<path d="M86 36.5L736 36.5" fill="none" pointer-events="visible" stroke="#dbdee4" class="zr0-cls-0"></path>
+<text dominant-baseline="central" text-anchor="middle" style="font-size:12px;font-family:sans-serif;" y="-6" transform="matrix(0,-1,1,0,41,226)" fill="#54555a">allocation</text>
+<text dominant-baseline="central" text-anchor="middle" style="font-size:12px;font-family:sans-serif;" y="6" transform="translate(411 517.34)" fill="#54555a">sector</text>
+<path d="M86 416.5L736 416.5" fill="none" pointer-events="visible" stroke="#54555a" stroke-linecap="round" class="zr0-cls-0"></path>
+<path d="M151.5 416L151.5 421" fill="none" pointer-events="visible" stroke="#54555a" class="zr0-cls-0"></path>
+<path d="M281.5 416L281.5 421" fill="none" pointer-events="visible" stroke="#54555a" class="zr0-cls-0"></path>
+<path d="M411.5 416L411.5 421" fill="none" pointer-events="visible" stroke="#54555a" class="zr0-cls-0"></path>
+<path d="M541.5 416L541.5 421" fill="none" pointer-events="visible" stroke="#54555a" class="zr0-cls-0"></path>
+<path d="M671.5 416L671.5 421" fill="none" pointer-events="visible" stroke="#54555a" class="zr0-cls-0"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:sans-serif;" transform="translate(78 416)" fill="#54555a">0</text>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:sans-serif;" transform="translate(78 321)" fill="#54555a">10</text>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:sans-serif;" transform="translate(78 226)" fill="#54555a">20</text>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:sans-serif;" transform="translate(78 131)" fill="#54555a">30</text>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:sans-serif;" transform="translate(78 36)" fill="#54555a">40</text>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:sans-serif;" transform="matrix(0,-1,1,0,151,424)" fill="#54555a">Technology</text>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:sans-serif;" transform="matrix(0,-1,1,0,281,424)" fill="#54555a">Financials</text>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:sans-serif;" transform="matrix(0,-1,1,0,411,424)" fill="#54555a">Healthcare</text>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:sans-serif;" xml:space="preserve" transform="matrix(0,-1,1,0,541,424)" fill="#54555a">Consumer Disc.</text>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:sans-serif;" transform="matrix(0,-1,1,0,671,424)" fill="#54555a">Energy</text>
+<path d="M92.5 416l117 0l0 -380l-117 0Z" fill="#5470c6" ecmeta_series_index="0" ecmeta_data_index="0" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M222.5 416l117 0l0 -190l-117 0Z" fill="#5470c6" ecmeta_series_index="0" ecmeta_data_index="1" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M352.5 416l117 0l0 -142.5l-117 0Z" fill="#5470c6" ecmeta_series_index="0" ecmeta_data_index="2" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M482.5 416l117 0l0 -142.5l-117 0Z" fill="#5470c6" ecmeta_series_index="0" ecmeta_data_index="3" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<path d="M612.5 416l117 0l0 -95l-117 0Z" fill="#5470c6" ecmeta_series_index="0" ecmeta_data_index="4" ecmeta_ssr_type="chart" class="zr0-cls-1"></path>
+<style ><![CDATA[
+.zr0-cls-0:hover {
+pointer-events:none;
+}
+.zr0-cls-1:hover {
+cursor:pointer;
+fill:rgba(92,123,217,1);
+}
+
+]]>
+
+</style>
+</svg>

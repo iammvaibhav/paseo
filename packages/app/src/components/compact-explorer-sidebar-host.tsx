@@ -9,13 +9,18 @@ import {
 } from "@/components/compact-explorer-sidebar";
 import { useOpenFileExplorerGesture } from "@/mobile-panels/gestures";
 import { useIsMobilePanelActive } from "@/mobile-panels/provider";
-import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
+import { useHostRuntimeClient, useHostRuntimeIsConnected, useHosts } from "@/runtime/host-runtime";
 import { usePanelStore } from "@/stores/panel-store";
 import { useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
 import type { WorkspaceTabTarget } from "@/workspace-tabs/model";
 import { useWorkspaceCheckoutStatus } from "@/screens/workspace/use-workspace-checkout-status";
 import { openWorkspaceFileFromExplorer } from "@/screens/workspace/workspace-file-open-command";
-import { isWeb } from "@/constants/platform";
+import { getIsElectron, isWeb } from "@/constants/platform";
+import { normalizeWorkspaceFileLocation } from "@/workspace/file-open";
+import {
+  openHostFileInBrowserEditor,
+  tryOpenFileInBrowserEditor,
+} from "@/workspace/open-file-in-browser-editor";
 import { DiffDocumentWorkspaceCacheProvider } from "@/git/diff-document/workspace-cache";
 import {
   resolveCompactExplorerSidebarHostModel,
@@ -130,11 +135,60 @@ export function CompactExplorerSidebarHost({
       isGit: model.isGit,
     });
   }, [model, openCompactFileExplorer]);
+  const hosts = useHosts();
+  const browserEditorUrl = useMemo(() => {
+    if (!model?.serverId) {
+      return null;
+    }
+    return hosts.find((entry) => entry.serverId === model.serverId)?.browserEditorUrl ?? null;
+  }, [hosts, model?.serverId]);
 
-  const handleOpenFile = useCallback(
+  const handleOpenDiff = useMemo(() => {
+    if (!getIsElectron() || !browserEditorUrl || !model?.persistenceKey || !model.workspaceRoot) {
+      return undefined;
+    }
+    return (filePath: string, baseRef: string | null) => {
+      const location = normalizeWorkspaceFileLocation({ path: filePath });
+      if (!location) {
+        return;
+      }
+      tryOpenFileInBrowserEditor({
+        browserEditorUrl,
+        workspaceDirectory: model.workspaceRoot,
+        workspaceKey: model.persistenceKey,
+        location,
+        mode: "diff",
+        baseRef,
+        workspaceTabs: [],
+        openWorkspaceTabFocused: (target) =>
+          openWorkspaceTabInFocusedPane(model.persistenceKey, target),
+        navigateToTabId: (tabId) => focusWorkspaceTab(model.persistenceKey, tabId),
+      });
+    };
+  }, [browserEditorUrl, focusWorkspaceTab, model, openWorkspaceTabInFocusedPane]);
+
+  const handleOpenHostFile = useCallback(
     (filePath: string) => {
       if (!model) {
         return;
+      }
+      if (getIsElectron() && browserEditorUrl && model.workspaceRoot) {
+        const opened = openHostFileInBrowserEditor({
+          browserEditorUrl,
+          workspaceDirectory: model.workspaceRoot,
+          workspaceKey: model.persistenceKey,
+          absolutePath: filePath,
+          workspaceTabs: [],
+          openWorkspaceTabFocused: (target) =>
+            openWorkspaceTabInFocusedPane(model.persistenceKey, target),
+          navigateToTabId: (tabId) => focusWorkspaceTab(model.persistenceKey, tabId),
+        });
+        if (opened) {
+          if (presentation === "overlay") {
+            showMobileAgent();
+          }
+          return;
+        }
       }
       openWorkspaceFileFromExplorer({
         filePath,
@@ -145,7 +199,57 @@ export function CompactExplorerSidebarHost({
         focusWorkspaceTab,
       });
     },
-    [focusWorkspaceTab, model, openWorkspaceTabInFocusedPane, presentation, showMobileAgent],
+    [
+      browserEditorUrl,
+      focusWorkspaceTab,
+      model,
+      openWorkspaceTabInFocusedPane,
+      presentation,
+      showMobileAgent,
+    ],
+  );
+
+  const handleOpenFile = useCallback(
+    (filePath: string) => {
+      if (!model) {
+        return;
+      }
+      const location = normalizeWorkspaceFileLocation({ path: filePath });
+      if (getIsElectron() && browserEditorUrl && location && model.workspaceRoot) {
+        const opened = tryOpenFileInBrowserEditor({
+          browserEditorUrl,
+          workspaceDirectory: model.workspaceRoot,
+          workspaceKey: model.persistenceKey,
+          location,
+          workspaceTabs: [],
+          openWorkspaceTabFocused: (target) =>
+            openWorkspaceTabInFocusedPane(model.persistenceKey, target),
+          navigateToTabId: (tabId) => focusWorkspaceTab(model.persistenceKey, tabId),
+        });
+        if (opened) {
+          if (presentation === "overlay") {
+            showMobileAgent();
+          }
+          return;
+        }
+      }
+      openWorkspaceFileFromExplorer({
+        filePath,
+        persistenceKey: model.persistenceKey,
+        closeExplorerAfterOpen: presentation === "overlay",
+        showMobileAgent,
+        openWorkspaceTabInFocusedPane,
+        focusWorkspaceTab,
+      });
+    },
+    [
+      browserEditorUrl,
+      focusWorkspaceTab,
+      model,
+      openWorkspaceTabInFocusedPane,
+      presentation,
+      showMobileAgent,
+    ],
   );
 
   const handleContainerLayout = useCallback((event: LayoutChangeEvent) => {
@@ -165,6 +269,8 @@ export function CompactExplorerSidebarHost({
             persistenceKey={model.persistenceKey}
             containerWidth={containerWidth}
             onOpenFile={handleOpenFile}
+            onOpenDiff={handleOpenDiff}
+            onOpenHostFile={handleOpenHostFile}
           />
         ) : (
           <CompactExplorerSidebar
@@ -173,6 +279,8 @@ export function CompactExplorerSidebarHost({
             workspaceRoot={model.workspaceRoot}
             isGit={model.isGit}
             onOpenFile={handleOpenFile}
+            onOpenDiff={handleOpenDiff}
+            onOpenHostFile={handleOpenHostFile}
           />
         )}
       </DiffDocumentWorkspaceCacheProvider>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PaseoConfigRawSchema, PaseoConfigSchema } from "@getpaseo/protocol/paseo-config-schema";
+import { PaseoConfigRawSchema, PaseoConfigSchema } from "./paseo-config-schema.js";
 
 describe("paseo config schema", () => {
   it("parses an empty config without metadata generation", () => {
@@ -79,6 +79,46 @@ describe("paseo config schema", () => {
       worktree: {
         setup: [],
         teardown: ["npm run clean"],
+      },
+    });
+  });
+
+  it("parses worktree warmPool including the source ref", () => {
+    expect(
+      PaseoConfigSchema.parse({
+        worktree: {
+          warmPool: {
+            enabled: true,
+            targetIdle: 2,
+            baseRef: "vaibhav/customizations",
+          },
+        },
+      }),
+    ).toEqual({
+      worktree: {
+        setup: [],
+        teardown: [],
+        warmPool: {
+          enabled: true,
+          targetIdle: 2,
+          baseRef: "vaibhav/customizations",
+        },
+      },
+    });
+  });
+
+  it("drops an empty warmPool baseRef", () => {
+    expect(
+      PaseoConfigSchema.parse({
+        worktree: {
+          warmPool: { baseRef: "  " },
+        },
+      }),
+    ).toEqual({
+      worktree: {
+        setup: [],
+        teardown: [],
+        warmPool: {},
       },
     });
   });
@@ -211,6 +251,46 @@ describe("paseo config schema", () => {
       metadataGeneration: {
         branchName: {},
       },
+    });
+  });
+
+  it("parses commander instructions object with instructions and instructionsFile", () => {
+    const config = {
+      commander: {
+        instructions: "Use opencode-zen/ox-alpha-free model.",
+        instructionsFile: "./COMMANDER.md",
+      },
+    };
+
+    expect(PaseoConfigSchema.parse(config)).toEqual({
+      commander: {
+        instructions: "Use opencode-zen/ox-alpha-free model.",
+        instructionsFile: "./COMMANDER.md",
+      },
+    });
+    expect(PaseoConfigRawSchema.parse(config)).toEqual(config);
+  });
+
+  it("parses top-level commanderInstructions shortcut", () => {
+    const config = {
+      commanderInstructions: "Direct project instructions for commander.",
+    };
+
+    expect(PaseoConfigSchema.parse(config)).toEqual({
+      commanderInstructions: "Direct project instructions for commander.",
+    });
+    expect(PaseoConfigRawSchema.parse(config)).toEqual(config);
+  });
+
+  it("falls back to an empty commander config when instructions has an invalid type", () => {
+    expect(
+      PaseoConfigSchema.parse({
+        commander: {
+          instructions: 42,
+        },
+      }),
+    ).toEqual({
+      commander: {},
     });
   });
 });

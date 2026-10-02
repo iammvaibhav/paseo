@@ -1710,13 +1710,85 @@ describe("ClaudeAgentClient.listImportableSessions", () => {
   });
 });
 
+interface QueryFactoryForTurnsOptions {
+  getContextUsage?: ReturnType<typeof vi.fn>;
+  model?: string;
+}
+
+/**
+ * Streams one canned batch of SDK messages per submitted prompt, the way the real
+ * Claude query replays a turn back into the session.
+ */
+function createQueryFactoryForTurns(
+  turns: Array<Array<Record<string, unknown>>>,
+  options?: QueryFactoryForTurnsOptions,
+) {
+  return vi.fn(({ prompt }: { prompt: AsyncIterable<unknown> }) => {
+    const queuedMessages: Array<Record<string, unknown>> = [];
+    const waiters: Array<() => void> = [];
+    let turnIndex = 0;
+    const closedRef = { value: false };
+    const getContextUsage = options?.getContextUsage ?? vi.fn(async () => undefined);
+
+    function wakeNextWaiter() {
+      const waiter = waiters.shift();
+      waiter?.();
+    }
+
+    function enqueue(message: Record<string, unknown>) {
+      queuedMessages.push(message);
+      wakeNextWaiter();
+    }
+
+    void (async () => {
+      for await (const _ of prompt) {
+        const turnMessages = turns[turnIndex] ?? [];
+        turnIndex += 1;
+        for (const message of turnMessages) {
+          enqueue(message);
+        }
+      }
+      closedRef.value = true;
+      wakeNextWaiter();
+    })();
+
+    return {
+      next: vi.fn(async () => {
+        while (queuedMessages.length === 0 && !closedRef.value) {
+          const { promise, resolve } = Promise.withResolvers<void>();
+          waiters.push(resolve);
+          await promise;
+        }
+        if (queuedMessages.length === 0) {
+          return { done: true, value: undefined };
+        }
+        return { done: false, value: queuedMessages.shift() };
+      }),
+      interrupt: vi.fn(async () => undefined),
+      return: vi.fn(async () => {
+        closedRef.value = true;
+        wakeNextWaiter();
+        return undefined;
+      }),
+      close: vi.fn(() => {
+        closedRef.value = true;
+        wakeNextWaiter();
+      }),
+      setPermissionMode: vi.fn(async () => undefined),
+      setModel: vi.fn(async () => undefined),
+      getContextUsage,
+      supportedModels: vi.fn(async () => []),
+      supportedCommands: vi.fn(async () => []),
+      rewindFiles: vi.fn(async () => ({ canRewind: true })),
+      [Symbol.asyncIterator]() {
+        return this;
+      },
+    };
+  });
+}
+
 describe("ClaudeAgentSession context window usage", () => {
   const logger = createTestLogger();
-
-  interface QueryFactoryForTurnsOptions {
-    getContextUsage?: ReturnType<typeof vi.fn>;
-    model?: string;
-  }
 
   async function createSessionForTest(): Promise<TestClaudeSession> {
     const client = new ClaudeAgentClient({ logger, resolveBinary: async () => "/test/claude/bin" });
@@ -1795,74 +1867,6 @@ describe("ClaudeAgentSession context window usage", () => {
       events.push(event);
     }
     return events;
-  }
-
-  function createQueryFactoryForTurns(
-    turns: Array<Array<Record<string, unknown>>>,
-    options?: QueryFactoryForTurnsOptions,
-  ) {
-    return vi.fn(({ prompt }: { prompt: AsyncIterable<unknown> }) => {
-      const queuedMessages: Array<Record<string, unknown>> = [];
-      const waiters: Array<() => void> = [];
-      let turnIndex = 0;
-      const closedRef = { value: false };
-      const getContextUsage = options?.getContextUsage ?? vi.fn(async () => undefined);
-
-      function wakeNextWaiter() {
-        const waiter = waiters.shift();
-        waiter?.();
-      }
-
-      function enqueue(message: Record<string, unknown>) {
-        queuedMessages.push(message);
-        wakeNextWaiter();
-      }
-
-      void (async () => {
-        for await (const _ of prompt) {
-          const turnMessages = turns[turnIndex] ?? [];
-          turnIndex += 1;
-          for (const message of turnMessages) {
-            enqueue(message);
-          }
-        }
-        closedRef.value = true;
-        wakeNextWaiter();
-      })();
-
-      return {
-        next: vi.fn(async () => {
-          while (queuedMessages.length === 0 && !closedRef.value) {
-            await new Promise<void>((resolve) => {
-              waiters.push(resolve);
-            });
-          }
-          if (queuedMessages.length === 0) {
-            return { done: true, value: undefined };
-          }
-          return { done: false, value: queuedMessages.shift() };
-        }),
-        interrupt: vi.fn(async () => undefined),
-        return: vi.fn(async () => {
-          closedRef.value = true;
-          wakeNextWaiter();
-          return undefined;
-        }),
-        close: vi.fn(() => {
-          closedRef.value = true;
-          wakeNextWaiter();
-        }),
-        setPermissionMode: vi.fn(async () => undefined),
-        setModel: vi.fn(async () => undefined),
-        getContextUsage,
-        supportedModels: vi.fn(async () => []),
-        supportedCommands: vi.fn(async () => []),
-        rewindFiles: vi.fn(async () => ({ canRewind: true })),
-        [Symbol.asyncIterator]() {
-          return this;
-        },
-      };
-    });
   }
 
   function createInitMessage(sessionId = "session-1"): Record<string, unknown> {
@@ -2318,6 +2322,7 @@ describe("ClaudeAgentSession context window usage", () => {
       expect(result.usage).toEqual({
         inputTokens: 9_000,
         cachedInputTokens: 700,
+        cacheWriteTokens: 300,
         outputTokens: 400,
         totalCostUsd: 0.25,
         contextWindowMaxTokens: 200_000,
@@ -2474,6 +2479,7 @@ describe("ClaudeAgentSession context window usage", () => {
       expect(result.usage).toEqual({
         inputTokens: 4,
         cachedInputTokens: 16_999,
+        cacheWriteTokens: 17_252,
         outputTokens: 171,
         totalCostUsd: 0.25,
         contextWindowMaxTokens: 200_000,
@@ -2517,6 +2523,8 @@ describe("ClaudeAgentSession context window usage", () => {
       const result = await session.run("turn");
 
       expect(result.usage).toEqual({
+        cacheWriteTokens: 500,
+
         inputTokens: 5_000,
         cachedInputTokens: 600,
         outputTokens: 700,
@@ -2529,7 +2537,7 @@ describe("ClaudeAgentSession context window usage", () => {
     }
   });
 
-  test("does not use aggregate result totals after the first result turn", async () => {
+  test("retains last known context fill when a later result has no stream usage", async () => {
     const session = await createSessionForTurns([
       [
         createInitMessage(),
@@ -2562,12 +2570,15 @@ describe("ClaudeAgentSession context window usage", () => {
         contextWindowMaxTokens: 200_000,
         contextWindowUsedTokens: 175,
       });
+      // Second turn has no stream/message_start, so we must not invent used tokens from
+      // accumulated result.usage — but we do keep the last accurate fill from turn 1.
       expect(secondTurn.usage).toEqual({
         inputTokens: 1_000,
         cachedInputTokens: 200,
         outputTokens: 300,
         totalCostUsd: 0.1,
         contextWindowMaxTokens: 200_000,
+        contextWindowUsedTokens: 175,
       });
     } finally {
       await session.close();
@@ -2817,7 +2828,7 @@ describe("ClaudeAgentSession context window usage", () => {
     }
   });
 
-  test("starting a new turn clears interrupted compact usage", async () => {
+  test("starting a new turn keeps last known compact context fill", async () => {
     const session = await createSessionForTurns([
       [
         createSuccessResult({
@@ -2853,20 +2864,16 @@ describe("ClaudeAgentSession context window usage", () => {
         expect.objectContaining({
           type: "turn_completed",
           provider: "claude",
-          usage: expect.objectContaining({
+          usage: {
             inputTokens: 0,
             cachedInputTokens: 0,
             outputTokens: 0,
             totalCostUsd: 0.04,
-          }),
+            contextWindowMaxTokens: 200_000,
+            contextWindowUsedTokens: 704,
+          },
         }),
       );
-      expect(
-        events.some(
-          (event) =>
-            event.type === "turn_completed" && event.usage.contextWindowUsedTokens !== undefined,
-        ),
-      ).toBe(false);
     } finally {
       await session.close();
     }

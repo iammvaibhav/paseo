@@ -21,6 +21,7 @@ export interface PaneContextValue {
   retargetCurrentTab: (target: WorkspaceTabTarget) => void;
   setCurrentTabState: (state: JsonValue) => void;
   openFileInWorkspace: (request: WorkspaceFileOpenRequest) => void;
+  openDiffInBrowserEditor?: (path: string, baseRef: string | null) => void;
   openImportSheet: () => void;
 }
 

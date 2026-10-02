@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
 import type { Logger } from "pino";
 import type {
   AgentCapabilityFlags,
@@ -29,6 +32,7 @@ import type {
   SteerResult,
   ToolCallDetail,
   ToolCallTimelineItem,
+  ImportedTimelineEntry,
 } from "../agent-sdk-types.js";
 import { importSessionFromPersistence } from "../provider-session-import.js";
 import { getAgentProviderDefinition } from "@getpaseo/protocol/provider-manifest";
@@ -45,6 +49,63 @@ function getPositiveFeatureInteger(value: unknown): number {
 }
 const ONE_PIXEL_PNG_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl4Kj8AAAAASUVORK5CYII=";
+
+export function resolveMockSessionFile(sessionId: string): string {
+  const base = process.env.PASEO_HOME
+    ? path.join(process.env.PASEO_HOME, "mock-sessions")
+    : path.join(os.tmpdir(), "paseo-mock-sessions");
+  return path.join(base, `${sessionId}.jsonl`);
+}
+
+export function readMockTimelineFromDisk(input: {
+  sessionId: string;
+}): ImportedTimelineEntry[] | null {
+  const file = resolveMockSessionFile(input.sessionId);
+  if (!fs.existsSync(file)) {
+    return null;
+  }
+  try {
+    const content = fs.readFileSync(file, "utf8");
+    const items: ImportedTimelineEntry[] = [];
+    for (const line of content.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      const event = JSON.parse(trimmed);
+      if (event.type === "timeline") {
+        items.push({
+          item: event.item,
+          ...(event.timestamp ? { timestamp: event.timestamp } : {}),
+        });
+      }
+    }
+    return items.length > 0 ? items : null;
+  } catch {
+    return null;
+  }
+}
+
+// A 480x200 line plot, so the eval detail renderer has a real image to lay out.
+const EVAL_PLOT_PNG_BASE64 =
+  "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";
 
 const CAPABILITIES: AgentCapabilityFlags = {
   supportsStreaming: true,
@@ -252,6 +313,12 @@ interface MockQuestionPromptRequest {
 function shouldEmitPlanApprovalPrompt(prompt: AgentPromptInput): boolean {
   return /emit\s+(?:a\s+)?synthetic\s+plan\s+approval/i.test(promptToText(prompt));
 }
+function parsePermissionRequestPrompt(prompt: AgentPromptInput): { command: string } | null {
+  const text = promptToText(prompt);
+  const match = /emit\s+(?:a\s+)?permission\s+request(?:\s+for\s+(.*))?/i.exec(text);
+  if (!match) return null;
+  return { command: match[1]?.trim() || "echo test" };
+}
 
 function shouldEmitTurnFailure(prompt: AgentPromptInput): boolean {
   return /emit\s+(?:a\s+)?synthetic\s+turn\s+failure/i.test(promptToText(prompt));
@@ -406,6 +473,69 @@ function parseLargeAgentStreamPayloadPrompt(
   return {
     bytes: Math.min(bytes, 1_000_000),
     kind: kindValue,
+  };
+}
+
+function shouldEmitEvalToolCall(prompt: AgentPromptInput): boolean {
+  return /emit an eval tool call/i.test(promptToText(prompt));
+}
+function shouldEmitHubToolCall(prompt: AgentPromptInput): boolean {
+  return /emit (?:a )?hub tool call/i.test(promptToText(prompt));
+}
+
+/**
+ * A realistic Oh My Pi `eval` result. The tool has no canonical detail type, so
+ * the daemon forwards the provider envelope inside `unknown`; the app
+ * recognizes the notebook shape and renders a cell per entry. Covers the three
+ * things only this payload carries: `display()` values that never reach the
+ * text output, an inline image, and a failed cell.
+ */
+function buildEvalToolCallDetails(): Record<string, unknown> {
+  return {
+    language: "python",
+    languages: ["python"],
+    jsonOutputs: [["@getpaseo/app", "@getpaseo/protocol"]],
+    images: [{ type: "image", data: EVAL_PLOT_PNG_BASE64, mimeType: "image/png" }],
+    notice: "Ruby backend is disabled; ran the python kernel instead.",
+    cells: [
+      {
+        index: 0,
+        title: "load config",
+        language: "python",
+        code: [
+          "import json",
+          "from pathlib import Path",
+          "",
+          'data = json.loads(Path("package.json").read_text())',
+          'display(sorted(data["dependencies"])[:2])',
+          "print(f\"{len(data['dependencies'])} dependencies\")",
+        ].join("\n"),
+        output: "2 dependencies",
+        status: "complete",
+        exitCode: 0,
+        durationMs: 128,
+      },
+      {
+        index: 1,
+        title: "plot latency",
+        language: "python",
+        code: "plt.plot(latencies)\nplt.show()",
+        output: "(displayed 1 image; no text output)",
+        status: "complete",
+        exitCode: 0,
+        durationMs: 1840,
+      },
+      {
+        index: 2,
+        language: "python",
+        code: 'raise RuntimeError("kernel is busy")',
+        output:
+          'Traceback (most recent call last):\n  File "<cell>", line 1\nRuntimeError: kernel is busy',
+        status: "error",
+        exitCode: 1,
+        durationMs: 12,
+      },
+    ],
   };
 }
 
@@ -780,6 +910,7 @@ export class MockLoadTestAgentSession implements AgentSession {
     this.remainingSteerFailures = getPositiveFeatureInteger(
       options.config.featureValues?.mockSteerAmbiguousFailures,
     );
+    this.loadHistoryFromDisk();
   }
 
   async run(prompt: AgentPromptInput, options?: AgentRunOptions): Promise<AgentRunResult> {
@@ -834,6 +965,7 @@ export class MockLoadTestAgentSession implements AgentSession {
     const structuredBranchName = parseStructuredBranchNamePrompt(prompt);
     const settledAssistantImageMarkdown = parseSettledAssistantImageMarkdown(prompt);
     const steeringReplayShape = parseSteeringReplayShape(prompt);
+    const permissionRequestPrompt = parsePermissionRequestPrompt(prompt);
     const scheduleTurn = () => {
       if (shouldEmitTurnFailure(prompt)) {
         this.scheduleFailedTurn(turn);
@@ -849,12 +981,18 @@ export class MockLoadTestAgentSession implements AgentSession {
         this.scheduleSettledAssistantTurn(turn, settledAssistantImageMarkdown);
       } else if (shouldEmitPlanApprovalPrompt(prompt)) {
         this.schedulePlanApprovalTurn(turn);
+      } else if (permissionRequestPrompt) {
+        this.scheduleCommandPermissionTurn(turn, permissionRequestPrompt.command);
       } else if (questionPrompt) {
         this.scheduleQuestionPromptTurn(turn, questionPrompt);
       } else if (largePayload) {
         this.scheduleLargePayloadTurn(turn, largePayload);
       } else if (stress) {
         this.scheduleStressTurn(turn, stress);
+      } else if (shouldEmitEvalToolCall(prompt)) {
+        this.scheduleEvalToolCallTurn(turn);
+      } else if (shouldEmitHubToolCall(prompt)) {
+        this.scheduleHubToolCallTurn(turn);
       } else {
         this.schedule(turn, 0);
       }
@@ -1143,6 +1281,19 @@ export class MockLoadTestAgentSession implements AgentSession {
     turn.timer.unref?.();
   }
 
+  private scheduleEvalToolCallTurn(turn: ActiveTurn): void {
+    turn.timer = setTimeout(() => {
+      this.emitEvalToolCallTurn(turn);
+    }, 0);
+    turn.timer.unref?.();
+  }
+  private scheduleHubToolCallTurn(turn: ActiveTurn): void {
+    turn.timer = setTimeout(() => {
+      this.emitHubToolCallTurn(turn);
+    }, 0);
+    turn.timer.unref?.();
+  }
+
   private scheduleSteeringReplayTurn(turn: ActiveTurn, shape: SteeringReplayShape): void {
     turn.timer = setTimeout(() => {
       if (this.activeTurn !== turn) return;
@@ -1201,6 +1352,42 @@ export class MockLoadTestAgentSession implements AgentSession {
       this.emitPlanApprovalTurn(turn);
     }, 0);
     turn.timer.unref?.();
+  }
+  private scheduleCommandPermissionTurn(turn: ActiveTurn, command: string): void {
+    turn.timer = setTimeout(() => {
+      this.emitCommandPermissionTurn(turn, command);
+    }, 0);
+    turn.timer.unref?.();
+  }
+
+  private emitCommandPermissionTurn(turn: ActiveTurn, command: string): void {
+    if (this.activeTurn !== turn) return;
+    this.clearTurnTimer(turn);
+    this.emitTurnStarted(turn);
+
+    const request: AgentPermissionRequest = {
+      id: `mock-perm-${turn.turnId}`,
+      provider: this.provider,
+      name: "bash",
+      kind: "tool",
+      title: "Command Execution",
+      detail: {
+        type: "shell",
+        command,
+      },
+      actions: [
+        { id: "allow", label: "Allow", behavior: "allow" },
+        { id: "deny", label: "Deny", behavior: "deny" },
+      ],
+    };
+
+    this.pendingPermissions.set(request.id, request);
+    this.emit({
+      type: "permission_requested",
+      provider: this.provider,
+      request,
+      turnId: turn.turnId,
+    });
   }
 
   private scheduleQuestionPromptTurn(
@@ -1362,6 +1549,155 @@ export class MockLoadTestAgentSession implements AgentSession {
       provider: this.provider,
       request,
       turnId: turn.turnId,
+    });
+  }
+
+  private emitEvalToolCallTurn(turn: ActiveTurn): void {
+    if (this.activeTurn !== turn) {
+      return;
+    }
+
+    this.clearTurnTimer(turn);
+    this.emitTurnStarted(turn);
+
+    const callId = `${turn.turnId}:eval`;
+    const args = {
+      language: "py",
+      code: 'import json\nprint(json.dumps({"ok": True}))',
+      title: "load config",
+    };
+    this.emitTimeline(
+      turn.turnId,
+      createToolCall({
+        callId,
+        name: "eval",
+        status: "running",
+        detail: { type: "unknown", input: args, output: null },
+      }),
+    );
+    this.emitTimeline(
+      turn.turnId,
+      createToolCall({
+        callId,
+        name: "eval",
+        status: "completed",
+        detail: {
+          type: "unknown",
+          input: args,
+          output: {
+            content: [{ type: "text", text: "2 dependencies" }],
+            details: buildEvalToolCallDetails(),
+            isError: false,
+          },
+        },
+      }),
+    );
+
+    this.activeTurn = null;
+    const usage = {
+      inputTokens: 1,
+      outputTokens: 1,
+      contextWindowUsedTokens: 1,
+      contextWindowMaxTokens: 128_000,
+    };
+    this.emit({
+      type: "turn_completed",
+      provider: this.provider,
+      turnId: turn.turnId,
+      usage,
+    });
+    turn.resolve({
+      sessionId: this.id,
+      finalText: "Emitted a synthetic eval tool call",
+      usage,
+      timeline: [],
+      canceled: false,
+    });
+  }
+  private emitHubToolCallTurn(turn: ActiveTurn): void {
+    if (this.activeTurn !== turn) {
+      return;
+    }
+
+    this.clearTurnTimer(turn);
+    this.emitTurnStarted(turn);
+
+    // Spurious empty fence that Gemini/models emit right before tool calls
+    this.emitTimeline(turn.turnId, {
+      type: "assistant_message",
+      text: "```",
+      messageId: turn.assistantMessageId,
+    });
+
+    const callId = `${turn.turnId}:hub`;
+    const args = {
+      op: "wait",
+      ids: ["bg_14"],
+      timeoutMs: 60000,
+    };
+    const output = {
+      content: [
+        {
+          type: "text",
+          text: "## Still Running (1)\n\n- `bg_14` [bash] — pnpm run build:daemon-web-ui",
+        },
+      ],
+      details: {
+        op: "wait",
+        jobs: [
+          {
+            id: "bg_14",
+            type: "bash",
+            status: "running",
+            label: "pnpm run build:daemon-web-ui",
+            durationMs: 69362,
+          },
+        ],
+      },
+    };
+
+    this.emitTimeline(
+      turn.turnId,
+      createToolCall({
+        callId,
+        name: "hub",
+        status: "running",
+        detail: { type: "unknown", input: args, output: null },
+      }),
+    );
+    this.emitTimeline(
+      turn.turnId,
+      createToolCall({
+        callId,
+        name: "hub",
+        status: "completed",
+        detail: {
+          type: "unknown",
+          input: args,
+          output,
+        },
+      }),
+    );
+
+    this.activeTurn = null;
+    const usage = {
+      inputTokens: 1,
+      outputTokens: 1,
+      contextWindowUsedTokens: 1,
+      contextWindowMaxTokens: 128_000,
+    };
+    this.emit({
+      type: "turn_completed",
+      provider: this.provider,
+      turnId: turn.turnId,
+      usage,
+    });
+    turn.resolve({
+      sessionId: this.id,
+      finalText: "Emitted a synthetic hub tool call",
+      usage,
+      timeline: [],
+      canceled: false,
     });
   }
 
@@ -1621,8 +1957,50 @@ export class MockLoadTestAgentSession implements AgentSession {
     }
   }
 
+  private loadHistoryFromDisk(): void {
+    const file = resolveMockSessionFile(this.id);
+    if (!fs.existsSync(file)) return;
+    try {
+      const content = fs.readFileSync(file, "utf8");
+      for (const line of content.split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        this.history.push(JSON.parse(trimmed));
+      }
+    } catch {
+      // ignore read errors
+    }
+  }
+
+  private appendHistoryToDisk(event: AgentStreamEvent): void {
+    try {
+      const file = resolveMockSessionFile(this.id);
+      const dir = path.dirname(file);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      fs.appendFileSync(file, JSON.stringify(event) + "\n", "utf8");
+    } catch {
+      // ignore write errors
+    }
+  }
+
+  private syncHistoryToDisk(): void {
+    try {
+      const file = resolveMockSessionFile(this.id);
+      const dir = path.dirname(file);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      fs.writeFileSync(file, this.history.map((e) => JSON.stringify(e)).join("\n") + "\n", "utf8");
+    } catch {
+      // ignore write errors
+    }
+  }
+
   private remember(event: AgentStreamEvent): void {
     this.history.push(event);
+    this.appendHistoryToDisk(event);
   }
 
   private keepFirstUserMessageHistory(): void {
@@ -1635,6 +2013,7 @@ export class MockLoadTestAgentSession implements AgentSession {
     }
     this.history.length = 0;
     this.history.push(...nextHistory);
+    this.syncHistoryToDisk();
   }
 
   private clearTurnTimer(turn: ActiveTurn): void {

@@ -7,6 +7,7 @@ import {
   DEFAULT_CLIENT_SETTINGS,
   DEFAULT_CODE_FONT_SIZE,
   DEFAULT_CONTENT_FONT_SIZE,
+  DEFAULT_AGENT_GRID_FONT_SIZE,
   DEFAULT_UI_BASE_FONT_SIZE,
   defaultUiBaseFontSize,
   defaultContentFontSize,
@@ -310,6 +311,38 @@ describe("loadAppSettingsFromStorage", () => {
     const result = await loadAppSettingsFromStorage(deps);
 
     expect(result.workspaceTitleSource).toBe("branch");
+  });
+
+  it("loads the configured default file opener", async () => {
+    const deps = makeDeps({
+      storage: createInMemoryKeyValueStorage({
+        [APP_SETTINGS_KEY]: JSON.stringify({ defaultFileOpener: "plannotator" }),
+      }),
+    });
+
+    const result = await loadAppSettingsFromStorage(deps);
+
+    expect(result.defaultFileOpener).toBe("plannotator");
+  });
+
+  it("migrates the previous markdown Plannotator switch", async () => {
+    const enabledDeps = makeDeps({
+      storage: createInMemoryKeyValueStorage({
+        [APP_SETTINGS_KEY]: JSON.stringify({ openMarkdownInPlannotator: true }),
+      }),
+    });
+    const disabledDeps = makeDeps({
+      storage: createInMemoryKeyValueStorage({
+        [APP_SETTINGS_KEY]: JSON.stringify({ openMarkdownInPlannotator: false }),
+      }),
+    });
+
+    await expect(loadAppSettingsFromStorage(enabledDeps)).resolves.toMatchObject({
+      defaultFileOpener: "plannotator",
+    });
+    await expect(loadAppSettingsFromStorage(disabledDeps)).resolves.toMatchObject({
+      defaultFileOpener: "vscode-web",
+    });
   });
 
   it("drops an unknown workspace title source back to title", async () => {
@@ -780,6 +813,31 @@ describe("appearance settings", () => {
     expect((await loadAppSettingsFromStorage(bogus)).contentFontSize).toBe(
       DEFAULT_CONTENT_FONT_SIZE,
     );
+  });
+
+  it("defaults Agent Grid size independently of content size and clamps it", async () => {
+    const missing = makeDeps({
+      storage: createInMemoryKeyValueStorage({
+        [APP_SETTINGS_KEY]: JSON.stringify({ contentFontSize: 18 }),
+      }),
+    });
+    const missingResult = await loadAppSettingsFromStorage(missing);
+    expect(missingResult.contentFontSize).toBe(18);
+    expect(missingResult.agentGridFontSize).toBe(DEFAULT_AGENT_GRID_FONT_SIZE);
+
+    const high = makeDeps({
+      storage: createInMemoryKeyValueStorage({
+        [APP_SETTINGS_KEY]: JSON.stringify({ agentGridFontSize: 999 }),
+      }),
+    });
+    expect((await loadAppSettingsFromStorage(high)).agentGridFontSize).toBe(21);
+
+    const low = makeDeps({
+      storage: createInMemoryKeyValueStorage({
+        [APP_SETTINGS_KEY]: JSON.stringify({ agentGridFontSize: 8 }),
+      }),
+    });
+    expect((await loadAppSettingsFromStorage(low)).agentGridFontSize).toBe(10);
   });
 
   it.each([

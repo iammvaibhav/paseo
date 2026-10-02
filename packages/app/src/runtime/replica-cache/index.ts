@@ -155,6 +155,14 @@ const StoredTimelineItemSchema = z.discriminatedUnion("kind", [
   }),
   z.strictObject({
     ...TimelineItemBaseShape,
+    kind: z.literal("ai_review_decision"),
+    requestId: z.string(),
+    decision: z.enum(["allow", "deny", "escalate"]),
+    reason: z.string(),
+    toolName: z.string().optional(),
+  }),
+  z.strictObject({
+    ...TimelineItemBaseShape,
     kind: z.literal("tool_call"),
     provider: AgentProviderSchema,
     item: AgentTimelineItemPayloadSchema.refine((item) => item.type === "tool_call"),
@@ -249,6 +257,7 @@ const StoredAgentSnapshotSchema = z.strictObject({
   requiresAttention: z.boolean().optional(),
   attentionReason: z.enum(["finished", "error", "permission"]).nullable().optional(),
   attentionTimestamp: IsoDateSchema.nullable().optional(),
+  bucket: z.enum(["needs_you", "running", "ready", "done", "idle"]).nullable().optional(),
   archivedAt: IsoDateSchema.nullable().optional(),
 });
 
@@ -461,6 +470,15 @@ function serializeTimelineItem(item: StreamItem): StoredTimelineItem | null {
         ...(item.trigger ? { trigger: item.trigger } : {}),
         ...(item.preTokens !== undefined ? { preTokens: item.preTokens } : {}),
       };
+    case "ai_review_decision":
+      return {
+        ...base,
+        kind: item.kind,
+        requestId: item.requestId,
+        decision: item.decision,
+        reason: item.reason,
+        ...(item.toolName ? { toolName: item.toolName } : {}),
+      };
     case "tool_call":
       if (item.payload.source !== "agent") return null;
       return {
@@ -543,6 +561,15 @@ function deserializeBuiltinTimelineItem(
         level: item.level,
         message: item.message,
       };
+    case "ai_review_decision":
+      return {
+        ...base,
+        kind: item.kind,
+        requestId: item.requestId,
+        decision: item.decision,
+        reason: item.reason,
+        ...(item.toolName ? { toolName: item.toolName } : {}),
+      };
     case "compaction":
       return {
         ...base,
@@ -574,6 +601,29 @@ function deserializeBuiltinTimelineItem(
       };
     }
   }
+}
+
+function serializeAgentCapabilities(capabilities: Agent["capabilities"]) {
+  return {
+    supportsStreaming: capabilities.supportsStreaming,
+    supportsSessionPersistence: capabilities.supportsSessionPersistence,
+    ...(capabilities.supportsSessionListing !== undefined
+      ? { supportsSessionListing: capabilities.supportsSessionListing }
+      : {}),
+    supportsDynamicModes: capabilities.supportsDynamicModes,
+    supportsMcpServers: capabilities.supportsMcpServers,
+    supportsReasoningStream: capabilities.supportsReasoningStream,
+    supportsToolInvocations: capabilities.supportsToolInvocations,
+    ...(capabilities.supportsRewindConversation !== undefined
+      ? { supportsRewindConversation: capabilities.supportsRewindConversation }
+      : {}),
+    ...(capabilities.supportsRewindFiles !== undefined
+      ? { supportsRewindFiles: capabilities.supportsRewindFiles }
+      : {}),
+    ...(capabilities.supportsRewindBoth !== undefined
+      ? { supportsRewindBoth: capabilities.supportsRewindBoth }
+      : {}),
+  };
 }
 
 function serializeProjectPlacement(agent: Agent): StoredAgent["projectPlacement"] {
@@ -609,36 +659,21 @@ function serializeAgent(agent: Agent): StoredAgent {
           },
         }
       : {}),
-    capabilities: {
-      supportsStreaming: agent.capabilities.supportsStreaming,
-      supportsSessionPersistence: agent.capabilities.supportsSessionPersistence,
-      ...(agent.capabilities.supportsSessionListing !== undefined
-        ? { supportsSessionListing: agent.capabilities.supportsSessionListing }
-        : {}),
-      supportsDynamicModes: agent.capabilities.supportsDynamicModes,
-      supportsMcpServers: agent.capabilities.supportsMcpServers,
-      supportsReasoningStream: agent.capabilities.supportsReasoningStream,
-      supportsToolInvocations: agent.capabilities.supportsToolInvocations,
-      ...(agent.capabilities.supportsRewindConversation !== undefined
-        ? { supportsRewindConversation: agent.capabilities.supportsRewindConversation }
-        : {}),
-      ...(agent.capabilities.supportsRewindFiles !== undefined
-        ? { supportsRewindFiles: agent.capabilities.supportsRewindFiles }
-        : {}),
-      ...(agent.capabilities.supportsRewindBoth !== undefined
-        ? { supportsRewindBoth: agent.capabilities.supportsRewindBoth }
-        : {}),
-    },
+    capabilities: serializeAgentCapabilities(agent.capabilities),
     currentModeId: agent.currentModeId,
     availableModes: [],
     pendingPermissions: [],
     persistence: null,
     ...(agent.lastError ? { lastError: agent.lastError } : {}),
     title: agent.title,
+    ...(agent.name ? { name: agent.name } : {}),
+    ...(agent.shortDescription ? { shortDescription: agent.shortDescription } : {}),
     labels: agent.labels,
     requiresAttention: agent.requiresAttention ?? false,
     attentionReason: agent.attentionReason ?? null,
     attentionTimestamp: agent.attentionTimestamp?.toISOString() ?? null,
+    ...(agent.stoppedBy ? { stoppedBy: agent.stoppedBy } : {}),
+    ...(agent.bucket ? { bucket: agent.bucket } : {}),
     archivedAt: agent.archivedAt?.toISOString() ?? null,
   };
   return {
@@ -650,7 +685,12 @@ function serializeAgent(agent: Agent): StoredAgent {
 }
 
 function deserializeAgent(serverId: string, stored: StoredAgent): Agent {
-  const normalized = normalizeAgentSnapshot(stored.snapshot, serverId);
+  // `bucket` is persisted as nullable, but the snapshot payload treats absence
+  // as `undefined` — coerce so a cached null does not become an invalid bucket.
+  const normalized = normalizeAgentSnapshot(
+    { ...stored.snapshot, bucket: stored.snapshot.bucket ?? undefined },
+    serverId,
+  );
   let turn = normalized.turn;
   if (stored.turn?.phase === "idle") turn = { phase: "idle", cancellationRequestId: null };
   if (stored.turn?.phase === "open") {
@@ -687,6 +727,8 @@ function serializeWorkspace(workspace: WorkspaceDescriptor): StoredWorkspace {
     labels: workspace.labels,
     status: workspace.status,
     statusEnteredAt: workspace.statusEnteredAt?.toISOString() ?? null,
+    // Replica cache deliberately drops activity timestamps — they churn and
+    // blow the size budget without helping cold-start restore.
     activityAt: null,
     archivingAt: workspace.archivingAt,
     diffStat: workspace.diffStat,

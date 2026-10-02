@@ -1,4 +1,5 @@
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
+import { SegmentedControl } from "@/components/ui/segmented-control";
 import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { Pressable, View } from "react-native";
@@ -8,10 +9,14 @@ import { FOOTER_HEIGHT } from "@/constants/layout";
 import { useVoiceTelemetry } from "@/contexts/voice-context";
 import { VolumeMeter } from "./volume-meter";
 
+type VoiceSendBehavior = "interrupt" | "queue";
+
 interface RealtimeVoiceOverlayProps {
   isMuted: boolean;
   isSwitching: boolean;
+  sendBehavior: VoiceSendBehavior;
   onToggleMute: () => void;
+  onSendBehaviorChange: (sendBehavior: VoiceSendBehavior) => void | Promise<void>;
   onStop: () => void;
 }
 
@@ -21,7 +26,9 @@ const OVERLAY_VERTICAL_PADDING = (FOOTER_HEIGHT - OVERLAY_BUTTON_SIZE) / 2;
 export function RealtimeVoiceOverlay({
   isMuted,
   isSwitching,
+  sendBehavior,
   onToggleMute,
+  onSendBehaviorChange,
   onStop,
 }: RealtimeVoiceOverlayProps) {
   const { theme } = useUnistyles();
@@ -30,8 +37,7 @@ export function RealtimeVoiceOverlay({
   const muteButtonStyle = useMemo(
     () => [
       styles.actionButton,
-      styles.muteButton,
-      isMuted ? styles.muteButtonMuted : undefined,
+      isMuted ? styles.muteButtonMuted : styles.muteButton,
       isSwitching ? styles.buttonDisabled : undefined,
     ],
     [isMuted, isSwitching],
@@ -40,6 +46,20 @@ export function RealtimeVoiceOverlay({
     () => [styles.actionButton, styles.stopButton, isSwitching ? styles.buttonDisabled : undefined],
     [isSwitching],
   );
+  const sendBehaviorOptions = useMemo(
+    () => [
+      {
+        value: "interrupt" as const,
+        label: t("settings.general.defaultSend.options.interrupt"),
+      },
+      {
+        value: "queue" as const,
+        label: t("settings.general.defaultSend.options.queue"),
+      },
+    ],
+    [t],
+  );
+
   return (
     <View style={styles.container}>
       <View style={styles.meterContainer}>
@@ -48,6 +68,15 @@ export function RealtimeVoiceOverlay({
           isMuted={isMuted}
           isSpeaking={isSpeaking}
           orientation="horizontal"
+        />
+      </View>
+
+      <View style={styles.modeContainer}>
+        <SegmentedControl
+          size="sm"
+          value={sendBehavior}
+          onValueChange={onSendBehaviorChange}
+          options={sendBehaviorOptions}
         />
       </View>
 
@@ -96,45 +125,39 @@ const styles = StyleSheet.create((theme) => ({
     flexDirection: "row",
     alignItems: "center",
     width: "100%",
-    height: FOOTER_HEIGHT,
-    borderRadius: theme.borderRadius["2xl"],
-    justifyContent: "space-between",
-    paddingHorizontal: theme.spacing[4],
+    minHeight: FOOTER_HEIGHT,
     paddingVertical: OVERLAY_VERTICAL_PADDING,
-    backgroundColor: theme.colors.surface1,
-    borderWidth: theme.borderWidth[1],
-    borderColor: theme.colors.border,
+    gap: theme.spacing[2],
   },
   meterContainer: {
     flex: 1,
-    alignItems: "center",
+    minWidth: 0,
     justifyContent: "center",
+  },
+  modeContainer: {
+    flexShrink: 0,
   },
   actionsContainer: {
     flexDirection: "row",
     alignItems: "center",
-    gap: theme.spacing[2],
+    gap: theme.spacing[1],
+    flexShrink: 0,
   },
   actionButton: {
     width: OVERLAY_BUTTON_SIZE,
     height: OVERLAY_BUTTON_SIZE,
-    borderRadius: theme.borderRadius.full,
+    borderRadius: OVERLAY_BUTTON_SIZE / 2,
     alignItems: "center",
     justifyContent: "center",
   },
   muteButton: {
-    backgroundColor: theme.colors.surface0,
-    borderWidth: theme.borderWidth[1],
-    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.muted,
   },
   muteButtonMuted: {
-    backgroundColor: theme.colors.palette.red[600],
-    borderColor: theme.colors.palette.red[800],
+    backgroundColor: theme.colors.destructive,
   },
   stopButton: {
-    backgroundColor: theme.colors.palette.red[600],
-    borderWidth: theme.borderWidth[1],
-    borderColor: theme.colors.palette.red[800],
+    backgroundColor: theme.colors.destructive,
   },
   buttonDisabled: {
     opacity: 0.5,

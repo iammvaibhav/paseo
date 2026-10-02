@@ -38,6 +38,8 @@ export interface SidebarStatusWorkspacePlacement extends SidebarWorkspacePlaceme
 export interface SidebarWorkspaceEntry extends SidebarStatusWorkspacePlacement {
   workspaceDirectory: string;
   workspaceDirectoryLabel: string;
+  activityAt: Date | null;
+  createdAt: Date | null;
   // Raw user-set title (null when the name is derived from branch/directory).
   // Prefills the rename input and signals whether a reset is available.
   title: string | null;
@@ -56,6 +58,7 @@ export interface SidebarWorkspaceEntry extends SidebarStatusWorkspacePlacement {
 
 export interface SidebarProjectEntry {
   viewKey: string;
+  projectKey?: string | null;
   projectName: string;
   projectKind: WorkspaceStructureProject["projectKind"];
   iconWorkingDir: string;
@@ -171,6 +174,8 @@ export function createSidebarWorkspaceEntry(input: {
     currentBranch: normalizeCurrentBranch(input.workspace.gitRuntime?.currentBranch),
     statusBucket: effectiveStatus.status,
     statusEnteredAt: effectiveStatus.enteredAt,
+    activityAt: input.workspace.activityAt ?? null,
+    createdAt: input.workspace.createdAt ?? null,
     archivingAt: input.workspace.archivingAt,
     diffStat: input.workspace.diffStat,
     prHint: selectPrHintFromStatus(
@@ -453,6 +458,7 @@ export function buildSidebarProjectsFromHostProjects(input: {
 
   return input.projects.map((project) => ({
     viewKey: project.viewKey,
+    projectKey: project.projectKey ?? null,
     projectName: project.projectName,
     projectKind: project.projectKind,
     iconWorkingDir: project.iconWorkingDir,

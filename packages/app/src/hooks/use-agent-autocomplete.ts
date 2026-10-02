@@ -27,6 +27,16 @@ import {
   findActiveFileMention,
   type FileMentionRange,
 } from "@/utils/file-mention-autocomplete";
+import {
+  applyNoteMentionReplacement,
+  deriveNotePickerDetail,
+  findActiveNoteMention,
+  type NoteMentionRange,
+} from "@/notes/mentions";
+import { useHostFeatureMap } from "@/runtime/host-features";
+import { useHosts } from "@/runtime/host-runtime";
+import { useNoteList } from "@/notes/queries";
+import type { NoteSummary } from "@getpaseo/protocol/notes/types";
 
 interface UseAgentAutocompleteInput {
   userInput: string;
@@ -63,6 +73,11 @@ type AgentAutocompleteOption =
       type: "workspace_entry";
       entryPath: string;
       mention: FileMentionRange;
+    })
+  | (AutocompleteOption & {
+      type: "note_mention";
+      slug: string;
+      mention: NoteMentionRange;
     });
 
 interface AgentAutocompleteResult {
@@ -81,6 +96,7 @@ interface AgentAutocompleteSnapshot {
   text: string;
   slashCommand: SlashCommandRange | null;
   fileMention: FileMentionRange | null;
+  noteMention: NoteMentionRange | null;
 }
 
 function resolveAgentAutocompleteSnapshot(input: {
@@ -89,21 +105,26 @@ function resolveAgentAutocompleteSnapshot(input: {
   cursorIndex: number;
   activeSlashCommand: SlashCommandRange | null;
   activeFileMention: FileMentionRange | null;
+  activeNoteMention: NoteMentionRange | null;
+  hasNotes: boolean;
 }): AgentAutocompleteSnapshot {
   if (!input.input) {
     return {
       text: input.userInput,
       slashCommand: input.activeSlashCommand,
       fileMention: input.activeFileMention,
+      noteMention: input.activeNoteMention,
     };
   }
 
   const text = input.input.text;
   const cursorIndex = input.input.selection.start;
+  const noteMention = input.hasNotes ? findActiveNoteMention({ text, cursorIndex }) : null;
   return {
     text,
     slashCommand: findActiveSlashCommand({ text, cursorIndex }),
-    fileMention: findActiveFileMention({ text, cursorIndex }),
+    fileMention: noteMention ? null : findActiveFileMention({ text, cursorIndex }),
+    noteMention,
   };
 }
 
@@ -192,7 +213,7 @@ function mapCommandToOption(entry: AvailableCommand, t: TFunction): AgentAutocom
   };
 }
 
-type AutocompleteMode = "command" | "file" | null;
+type AutocompleteMode = "command" | "file" | "note" | null;
 
 interface BuildAutocompleteOptionsInput {
   isVisible: boolean;
@@ -204,6 +225,9 @@ interface BuildAutocompleteOptionsInput {
   activeSlashCommand: SlashCommandRange | null;
   activeFileMention: FileMentionRange | null;
   fileSuggestions: DirectorySuggestionEntry[];
+  activeNoteMention: NoteMentionRange | null;
+  noteFilterQuery: string;
+  notes: readonly NoteSummary[];
   t: TFunction;
 }
 
@@ -256,14 +280,38 @@ function buildCommandAutocompleteOptions(input: BuildAutocompleteOptionsInput) {
       mention: activeFileMention,
     }));
   }
+  const activeNoteMention = input.activeNoteMention;
+  if (input.mode === "note" && activeNoteMention) {
+    const query = input.noteFilterQuery.toLowerCase();
+    const filtered = input.notes.filter(
+      (note) =>
+        note.slug.toLowerCase().includes(query) ||
+        note.title.toLowerCase().includes(query) ||
+        note.tags.some((tag) => tag.toLowerCase().includes(query)),
+    );
+    const ordered = orderAutocompleteOptions(filtered);
+    return ordered.map((note) => ({
+      type: "note_mention" as const,
+      id: `note:${note.slug}`,
+      label: `@note/${note.slug}`,
+      description: note.title,
+      detail: deriveNotePickerDetail(note),
+      slug: note.slug,
+      mention: activeNoteMention,
+    }));
+  }
 
   return [];
 }
 
 function resolveAutocompleteMode(args: {
+  showNoteAutocomplete: boolean;
   showFileAutocomplete: boolean;
   showCommandAutocomplete: boolean;
 }): AutocompleteMode {
+  if (args.showNoteAutocomplete) {
+    return "note";
+  }
   if (args.showFileAutocomplete) {
     return "file";
   }
@@ -278,7 +326,11 @@ function resolveAutocompleteIsVisible(args: {
   canLoadCommands: boolean;
   serverId: string;
   autocompleteCwd: string;
+  hasNotes: boolean;
 }): boolean {
+  if (args.mode === "note") {
+    return args.hasNotes;
+  }
   if (args.mode === "command") {
     return args.canLoadCommands;
   }
@@ -304,8 +356,12 @@ function resolveAutocompleteIsLoading(args: {
   isCommandsLoading: boolean;
   fileSuggestionsIsPending: boolean;
   fileSuggestionsIsLoading: boolean;
+  isNotesLoading: boolean;
   optionsLength: number;
 }): boolean {
+  if (args.mode === "note") {
+    return args.isNotesLoading && args.optionsLength === 0;
+  }
   if (args.mode === "command") {
     return args.isCommandsLoading && args.optionsLength === 0;
   }
@@ -337,6 +393,17 @@ function resolveAutocompleteErrorMessage(args: {
   return undefined;
 }
 
+function resolveNoteAutocomplete(input: {
+  userInput: string;
+  cursorIndex: number;
+  hasNotes: boolean;
+}): { activeNoteMention: NoteMentionRange | null; noteFilterQuery: string } {
+  const activeNoteMention = input.hasNotes
+    ? findActiveNoteMention({ text: input.userInput, cursorIndex: input.cursorIndex })
+    : null;
+  return { activeNoteMention, noteFilterQuery: activeNoteMention?.query ?? "" };
+}
+
 export function useAgentAutocomplete(input: UseAgentAutocompleteInput): AgentAutocompleteResult {
   const { t } = useTranslation();
   const {
@@ -363,13 +430,29 @@ export function useAgentAutocomplete(input: UseAgentAutocompleteInput): AgentAut
   const showCommandAutocomplete = activeSlashCommand !== null;
   const commandFilterQuery = activeSlashCommand?.query ?? "";
 
+  const hosts = useHosts();
+  const hostServerIds = useMemo(() => hosts.map((host) => host.serverId), [hosts]);
+  const notesFeature = useHostFeatureMap(hostServerIds, "notes");
+  const hasNotes = useMemo(
+    () => hosts.some((host) => notesFeature.get(host.serverId) === true),
+    [hosts, notesFeature],
+  );
+
+  const { activeNoteMention, noteFilterQuery } = useMemo(
+    () => resolveNoteAutocomplete({ userInput, cursorIndex, hasNotes }),
+    [cursorIndex, hasNotes, userInput],
+  );
+  const showNoteAutocomplete = activeNoteMention !== null;
+
   const activeFileMention = useMemo(
     () =>
-      findActiveFileMention({
-        text: userInput,
-        cursorIndex,
-      }),
-    [cursorIndex, userInput],
+      showNoteAutocomplete
+        ? null
+        : findActiveFileMention({
+            text: userInput,
+            cursorIndex,
+          }),
+    [cursorIndex, showNoteAutocomplete, userInput],
   );
   const showFileAutocomplete = activeFileMention !== null;
   const fileFilterQuery = activeFileMention?.query ?? "";
@@ -402,12 +485,23 @@ export function useAgentAutocomplete(input: UseAgentAutocompleteInput): AgentAut
   const client = useHostRuntimeClient(serverId);
   const isConnected = useHostRuntimeIsConnected(serverId);
 
-  const mode = resolveAutocompleteMode({ showFileAutocomplete, showCommandAutocomplete });
+  const noteListFilters = useMemo(
+    () => (showNoteAutocomplete && noteFilterQuery ? { query: noteFilterQuery } : {}),
+    [noteFilterQuery, showNoteAutocomplete],
+  );
+  const { notes, isLoading: isNotesLoading } = useNoteList(noteListFilters);
+
+  const mode = resolveAutocompleteMode({
+    showNoteAutocomplete,
+    showFileAutocomplete,
+    showCommandAutocomplete,
+  });
   const canShowAutocomplete = resolveAutocompleteIsVisible({
     mode,
     canLoadCommands,
     serverId,
     autocompleteCwd,
+    hasNotes,
   });
 
   const {
@@ -469,6 +563,9 @@ export function useAgentAutocomplete(input: UseAgentAutocompleteInput): AgentAut
         pluginCommands: pluginClientSlashCommands,
         activeSlashCommand,
         fileSuggestions: fileSuggestionsQuery.data ?? [],
+        activeNoteMention,
+        noteFilterQuery,
+        notes,
         isDraftContext,
         isVisible,
         mode,
@@ -484,6 +581,9 @@ export function useAgentAutocomplete(input: UseAgentAutocompleteInput): AgentAut
       isDraftContext,
       isVisible,
       mode,
+      activeNoteMention,
+      noteFilterQuery,
+      notes,
       t,
     ],
   );
@@ -497,6 +597,8 @@ export function useAgentAutocomplete(input: UseAgentAutocompleteInput): AgentAut
         cursorIndex,
         activeSlashCommand,
         activeFileMention,
+        activeNoteMention,
+        hasNotes,
       });
       const selectedIsCommand =
         selected.type === "client_command" ||
@@ -529,6 +631,17 @@ export function useAgentAutocomplete(input: UseAgentAutocompleteInput): AgentAut
         onAutocompleteApplied?.();
         return;
       }
+      if (selected.type === "note_mention") {
+        if (!current.noteMention) return;
+        const nextInput = applyNoteMentionReplacement({
+          text: current.text,
+          mention: current.noteMention,
+          slug: selected.slug,
+        });
+        setUserInput(nextInput);
+        onAutocompleteApplied?.();
+        return;
+      }
 
       if (!current.fileMention) return;
       const nextInput = applyFileMentionReplacement({
@@ -547,7 +660,9 @@ export function useAgentAutocomplete(input: UseAgentAutocompleteInput): AgentAut
       userInput,
       cursorIndex,
       activeFileMention,
+      activeNoteMention,
       activeSlashCommand,
+      hasNotes,
     ],
   );
 
@@ -557,10 +672,17 @@ export function useAgentAutocomplete(input: UseAgentAutocompleteInput): AgentAut
     [onSelectOption],
   );
 
+  let autocompleteQuery = fileFilterQuery;
+  if (mode === "command") {
+    autocompleteQuery = commandFilterQuery;
+  } else if (mode === "note") {
+    autocompleteQuery = noteFilterQuery;
+  }
+
   const { selectedIndex, onKeyPress } = useAutocomplete({
     isVisible,
     options,
-    query: mode === "command" ? commandFilterQuery : fileFilterQuery,
+    query: autocompleteQuery,
     onSelectOption: selectOptionFromKeyPress,
     onEscape:
       mode === "command" && activeSlashCommand?.position === "start"
@@ -574,6 +696,7 @@ export function useAgentAutocomplete(input: UseAgentAutocompleteInput): AgentAut
     fileSuggestionsIsPending: fileSuggestionsQuery.isPending,
     fileSuggestionsIsLoading: fileSuggestionsQuery.isLoading,
     optionsLength: options.length,
+    isNotesLoading,
   });
   const errorMessage = resolveAutocompleteErrorMessage({
     mode,
@@ -583,13 +706,15 @@ export function useAgentAutocomplete(input: UseAgentAutocompleteInput): AgentAut
     t,
   });
 
-  const loadingText =
-    mode === "file"
-      ? t("agentAutocomplete.searchingWorkspace")
-      : t("agentAutocomplete.loadingCommands");
-  const emptyText =
-    mode === "file" ? t("agentAutocomplete.noFiles") : t("agentAutocomplete.noCommands");
-
+  let loadingText = t("agentAutocomplete.loadingCommands");
+  let emptyText = t("agentAutocomplete.noCommands");
+  if (mode === "note") {
+    loadingText = t("notes.list.states.connecting");
+    emptyText = t("notes.mentions.noNotes");
+  } else if (mode === "file") {
+    loadingText = t("agentAutocomplete.searchingWorkspace");
+    emptyText = t("agentAutocomplete.noFiles");
+  }
   return {
     isVisible,
     options,

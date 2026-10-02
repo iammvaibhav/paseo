@@ -46,6 +46,12 @@ interface LsToolInput {
   path?: string;
   limit?: number;
 }
+interface WebSearchToolInput {
+  query?: string;
+  i?: string;
+  search_query?: string;
+  q?: string;
+}
 
 interface OmpToolResultObject {
   output?: string;
@@ -116,6 +122,11 @@ interface OmpLsToolCall {
   toolName: "ls";
   args: LsToolInput;
 }
+interface OmpWebSearchToolCall {
+  kind: "web_search";
+  toolName: string;
+  args: WebSearchToolInput;
+}
 
 interface OmpUnknownToolCall {
   kind: "unknown";
@@ -131,6 +142,7 @@ export type OmpTrackedToolCall =
   | OmpFindToolCall
   | OmpGrepToolCall
   | OmpLsToolCall
+  | OmpWebSearchToolCall
   | OmpUnknownToolCall;
 
 interface ToolCallOutputSummary {
@@ -235,6 +247,14 @@ const LsToolInputSchema: z.ZodType<LsToolInput> = z.object({
   path: z.string().optional(),
   limit: z.number().optional(),
 });
+const WebSearchToolInputSchema: z.ZodType<WebSearchToolInput> = z
+  .object({
+    query: z.string().optional(),
+    i: z.string().optional(),
+    search_query: z.string().optional(),
+    q: z.string().optional(),
+  })
+  .passthrough();
 
 export function parseToolResult(rawResult: unknown): OmpToolResult {
   const parsed = OmpToolResultSchema.safeParse(rawResult);
@@ -344,6 +364,20 @@ export function mapToolDetail(
       return mapGrepToolDetail(toolCall.args, parsedResult);
     case "ls":
       return mapLsToolDetail(toolCall.args, parsedResult);
+    case "web_search": {
+      const query =
+        toolCall.args.query ??
+        toolCall.args.search_query ??
+        toolCall.args.q ??
+        toolCall.args.i ??
+        "";
+      return {
+        type: "search",
+        query,
+        toolName: "web_search",
+        content: extractTextFromToolResult(parsedResult),
+      };
+    }
     default:
       return {
         type: "unknown",
@@ -434,7 +468,16 @@ function parseEditToolArgs(rawArgs: unknown): OmpTrackedToolCall {
   return { kind: "unknown", toolName: "edit", args: rawArgs ?? null };
 }
 
-type SimpleToolKind = "bash" | "read" | "write" | "find" | "grep" | "ls";
+type SimpleToolKind =
+  | "bash"
+  | "read"
+  | "write"
+  | "find"
+  | "grep"
+  | "ls"
+  | "web_search"
+  | "websearch"
+  | "web-search";
 const SIMPLE_TOOL_SCHEMAS: {
   [K in SimpleToolKind]: { safeParse: (data: unknown) => { success: boolean; data?: unknown } };
 } = {
@@ -444,6 +487,9 @@ const SIMPLE_TOOL_SCHEMAS: {
   find: FindToolInputSchema,
   grep: GrepToolInputSchema,
   ls: LsToolInputSchema,
+  web_search: WebSearchToolInputSchema,
+  websearch: WebSearchToolInputSchema,
+  "web-search": WebSearchToolInputSchema,
 };
 
 function mapFindToolDetail(args: FindToolInput, result: OmpToolResult): ToolCallDetail {

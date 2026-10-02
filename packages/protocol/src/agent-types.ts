@@ -67,6 +67,8 @@ export interface AgentMode {
   description?: string;
   icon?: string;
   colorTier?: string;
+  // Marks the provider's most-permissioned no-prompt mode. Selecting it means tools run without approval; the runtime mechanism is provider-specific.
+  isUnattended?: boolean;
 }
 
 export type ProviderStatus = "ready" | "loading" | "error" | "unavailable";
@@ -188,11 +190,21 @@ export interface AgentRunOptions {
 
 export interface AgentUsage {
   inputTokens?: number;
+  // Cache READ tokens (Anthropic cache_read_input_tokens, ACP cachedReadTokens).
   cachedInputTokens?: number;
+  // Cache creation/write tokens (Anthropic cache_creation_input_tokens, ACP
+  // cachedWriteTokens, OpenCode tokens.cache.write, omp tokens.cacheWrite). Absent
+  // when the provider does not report it — never zero-fill.
+  cacheWriteTokens?: number;
   outputTokens?: number;
   totalCostUsd?: number;
   contextWindowMaxTokens?: number;
   contextWindowUsedTokens?: number;
+  // Daemon-measured wall clock for the turn (turn start → terminal stream event),
+  // stamped by AgentManager so figures are comparable across providers.
+  durationMs?: number;
+  // Model of record at turn completion (runtimeInfo.model ?? config.model).
+  model?: string | null;
 }
 
 export const TOOL_CALL_ICON_NAMES = [
@@ -351,6 +363,22 @@ export interface CompactionTimelineItem {
   preTokens?: number;
 }
 
+/**
+ * Who originated a user-role timeline row. Machinery delivers prompts into an
+ * agent's own chat (stall status-ask nudges, Commander/Verifier directions)
+ * and marks the row at the source so the agent chat can render it distinctly.
+ * Absent = "instruction" (a visible prompt) — real user messages and legacy
+ * rows are never hidden.
+ */
+export type AgentTimelineUserMessageClassification = "machinery" | "instruction";
+
+/**
+ * M9 voice dialogue mirror marker on timeline rows appended by the voice
+ * mirror RPC. "qa" = pure Q&A (the app hides the row unless verbose);
+ * "dispatch" = the turn asked the fleet to do something (visible).
+ */
+export type AgentTimelineVoiceMirrorKind = "qa" | "dispatch";
+
 export interface PluginTimelineItem {
   type: "plugin";
   id: string;
@@ -358,6 +386,39 @@ export interface PluginTimelineItem {
   kind: string;
   version: number;
   data: JsonValue;
+}
+
+// Orchestrator mode (normal agents; never the Commander). Plan DAG carried in
+// `input.plan` of the `OrchestratorPlanApproval` permission request and in the
+// `data` of `plugin` timeline rows (`pluginId: "orchestrator"`, `kind: "plan"`).
+// COMPAT(orchestrator): added 2026-09-30, remove gate after 2027-03-30.
+export type OrchestratorTaskStatus =
+  | "pending"
+  | "ready"
+  | "running"
+  | "completed"
+  | "failed"
+  | "blocked"
+  | "skipped"
+  | "canceled";
+
+export interface OrchestratorPlanTask {
+  id: string;
+  title: string;
+  brief: string;
+  files: string[];
+  dependsOn: string[];
+  model?: string;
+  childAgentId?: string;
+  status: OrchestratorTaskStatus;
+}
+
+export interface OrchestratorPlan {
+  planId: string;
+  version: number;
+  title: string;
+  maxParallel: number;
+  tasks: OrchestratorPlanTask[];
 }
 
 export interface AgentTaskItem {
@@ -369,8 +430,23 @@ export interface AgentTaskItem {
 }
 
 export type AgentTimelineItem =
-  | { type: "user_message"; text: string; messageId?: string; clientMessageId?: string }
-  | { type: "assistant_message"; text: string; messageId?: string }
+  | {
+      type: "user_message";
+      text: string;
+      messageId?: string;
+      clientMessageId?: string;
+      classification?: AgentTimelineUserMessageClassification;
+      voiceMirrorKind?: AgentTimelineVoiceMirrorKind;
+      // Native images for this user row (composer paste / ticket dispatch).
+      // Optional so older daemons still parse timeline rows.
+      images?: Array<{ data: string; mimeType: string }>;
+    }
+  | {
+      type: "assistant_message";
+      text: string;
+      messageId?: string;
+      voiceMirrorKind?: AgentTimelineVoiceMirrorKind;
+    }
   | { type: "reasoning"; text: string }
   | ToolCallTimelineItem
   | { type: "todo"; items: AgentTaskItem[] }
@@ -381,7 +457,14 @@ export type AgentTimelineItem =
       message: string;
     }
   | CompactionTimelineItem
-  | PluginTimelineItem;
+  | PluginTimelineItem
+  | {
+      type: "ai_review_decision";
+      requestId: string;
+      decision: "allow" | "deny" | "escalate";
+      reason: string;
+      toolName?: string;
+    };
 
 export type AgentStreamEvent =
   | { type: "thread_started"; sessionId: string; provider: AgentProvider }
@@ -516,6 +599,8 @@ export interface AgentSessionConfig {
    * Mapped by each provider to its native instruction field.
    */
   systemPrompt?: string;
+  systemPromptMode?: "append" | "replace";
+  toolAllowlist?: string[];
   modeId?: string;
   model?: string;
   thinkingOptionId?: string;

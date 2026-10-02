@@ -12,6 +12,7 @@ import {
   FetchAgentTimelineResponseMessageSchema,
   SessionInboundMessageSchema,
   SessionOutboundMessageSchema,
+  type SessionEventSubscription,
   type SessionOutboundMessage,
 } from "@getpaseo/protocol/messages";
 import { Session, type SessionOptions } from "./session.js";
@@ -355,9 +356,11 @@ describe("wire compatibility", () => {
             projectDisplayName: "Favorite project",
             projectCustomName: "Favorite project",
             projectCustomIconRevision: null,
+            projectDescription: null,
             projectIconRevision: "automatic:none:v1",
             projectRootPath: "/tmp/project",
             projectKind: "git",
+            baseWorkspaceId: null,
           },
         },
       },
@@ -639,5 +642,69 @@ test("setup progress is adapted per socket without changing the canonical snapsh
     },
   ]);
   expect(message.payload.status).toBe("blocked");
+  await session.cleanup();
+});
+
+test.each<SessionOutboundMessage>([
+  {
+    type: "mission_control_event",
+    event: {
+      id: "mce_1",
+      ts: "2026-09-30T00:00:00.000Z",
+      agentId: "agent-1",
+      agentTitle: "Worker",
+      kind: "finished",
+      source: "system",
+      severity: "info",
+      headline: "Finished",
+    },
+  },
+  {
+    type: "provider.usage.updated",
+    payload: { fetchedAt: "2026-09-30T00:00:00.000Z", providers: [] },
+  },
+  {
+    type: "plannotator.session.event",
+    payload: { sessionId: "plan-1", kind: "annotate", path: "/tmp/plan.md", event: "closed" },
+  },
+])("$type reaches only its owned subscribers and every legacy socket", async (message) => {
+  const legacy = {};
+  const subscribed = {};
+  const other = {};
+  const delivered = new Map<object, SessionOutboundMessage[]>();
+  const session = createSessionForWireCompatTest({
+    onMessageToSource: (source, sent) =>
+      delivered.set(source, [...(delivered.get(source) ?? []), sent]),
+  });
+  session.updateClientCapabilities({ owned_subscriptions: false }, legacy);
+  const subscriptionIds = new Map<object, string | undefined>();
+  const subscribers: Array<[object, SessionEventSubscription[]]> = [
+    [subscribed, [message.type as SessionEventSubscription]],
+    [other, ["tickets.changed"]],
+  ];
+  for (const [source, events] of subscribers) {
+    session.updateClientCapabilities({ owned_subscriptions: true }, source);
+    await session.handleMessage(
+      { type: "session.events.set_subscription.request", requestId: "events", events },
+      source,
+    );
+    const response = delivered.get(source)?.[0];
+    if (response?.type !== "session.events.set_subscription.response")
+      throw new Error(`expected a subscription response, got ${response?.type}`);
+    subscriptionIds.set(source, response.payload.subscriptionId);
+  }
+  delivered.clear();
+
+  session.publish(message);
+
+  const subscriptionId = subscriptionIds.get(subscribed);
+  expect(subscriptionId).toEqual(expect.any(String));
+  expect(delivered.get(subscribed)).toEqual([
+    "payload" in message
+      ? { ...message, payload: { ...message.payload, subscriptionId } }
+      : { ...message, subscriptionId },
+  ]);
+  expect(delivered.get(other)).toBeUndefined();
+  expect(delivered.get(legacy)).toEqual([message]);
   await session.cleanup();
 });

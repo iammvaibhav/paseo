@@ -109,6 +109,24 @@ describe("OMP tool call mapper", () => {
       log: "done\ntranscript: /tmp/omp-task-static/Explore.jsonl",
     });
   });
+  test("maps web_search call to search tool detail", () => {
+    expect(
+      mapOmpToolDetail(
+        parseToolArgs("web_search", {
+          i: "Search benchmarks",
+          query: "Gemini 3.6 Flash vs DeepSeek",
+        }),
+        parseToolResult({
+          content: [{ type: "text", text: "Found benchmark results" }],
+        }),
+      ),
+    ).toEqual({
+      type: "search",
+      query: "Gemini 3.6 Flash vs DeepSeek",
+      toolName: "web_search",
+      content: "Found benchmark results",
+    });
+  });
 
   test("falls back to shared unknown detail for unmapped tools", () => {
     expect(mapOmpToolDetail(parseToolArgs("lsp", { op: "hover" }), null)).toEqual({

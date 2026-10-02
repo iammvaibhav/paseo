@@ -86,6 +86,7 @@ function historyEntry(input: {
   title?: string | null;
   archivedAt?: string | null;
   searchScore?: number;
+  searchSnippet?: string;
 }): FetchAgentHistoryEntry {
   return {
     agent: {
@@ -136,6 +137,7 @@ function historyEntry(input: {
       },
     },
     ...(input.searchScore === undefined ? {} : { searchScore: input.searchScore }),
+    ...(input.searchSnippet === undefined ? {} : { searchSnippet: input.searchSnippet }),
   };
 }
 
@@ -311,10 +313,35 @@ describe("fetchAgentHistoryPage", () => {
     });
 
     expect(client.calls[0]?.search).toBe("stripe");
-    expect(page.agents.map((agent) => agent.id)).toEqual(["match"]);
+    expect(page.searchScoreByAgentKey).toEqual({ "server-1:match": 1000 });
   });
 
-  it("keeps sessions with the same id on different hosts and sorts by recency", async () => {
+  it("keeps a transcript snippet keyed by server and agent", async () => {
+    const client = createClient([
+      historyPayload({
+        entries: [
+          historyEntry({
+            id: "match",
+            cwd: "/tmp/a",
+            updatedAt: "2026-08-01T00:00:00.000Z",
+            searchScore: 1000,
+            searchSnippet: "opened the stripe webhook",
+          }),
+        ],
+      }),
+    ]);
+    const page = await fetchAgentHistoryPage({
+      client,
+      serverId: "server-1",
+      cursor: null,
+      search: "stripe",
+    });
+    expect(page.searchSnippetsByAgentKey).toEqual({
+      "server-1:match": "opened the stripe webhook",
+    });
+  });
+
+  it("keeps per-host scores apart when two hosts issue the same agent id", async () => {
     const sharedId = "collision";
     const serverAClient = createClient([
       historyPayload({
@@ -352,9 +379,13 @@ describe("fetchAgentHistoryPage", () => {
       search: "match",
     });
 
+    expect(page.searchScoreByAgentKey).toEqual({
+      "server-a:collision": 4000,
+      "server-b:collision": 1000,
+    });
     expect(page.agents.map((agent) => agent.title)).toEqual([
-      "Weak match on A",
       "Strong match on B",
+      "Weak match on A",
     ]);
   });
 
@@ -391,8 +422,9 @@ describe("fetchAgentHistoryPage", () => {
     });
   });
 
-  it("preserves every matching row when merging complete host pages", async () => {
-    // Each host owns its cursor; merging must not discard rows already consumed.
+  it("reports truncation when two complete host pages overflow the merge", async () => {
+    // Neither host is locally truncated; together they exceed what the merged
+    // list can show, and the footer has to say so.
     const buildHost = (serverId: string, count: number) =>
       createClient([
         historyPayload({
@@ -417,8 +449,8 @@ describe("fetchAgentHistoryPage", () => {
       search: "match",
     });
 
-    expect(page.isSearchTruncated).toBe(false);
-    expect(page.agents).toHaveLength(300);
+    expect(page.isSearchTruncated).toBe(true);
+    expect(page.agents).toHaveLength(200);
   });
 
   it("names the host that failed instead of quietly shortening the list", async () => {
@@ -510,7 +542,7 @@ describe("fetchAgentHistoryPage", () => {
       }),
     ).toEqual([{ serverId: "server-b", serverName: "Linux box" }]);
   });
-  it("orders searched history chronologically regardless of match strength", async () => {
+  it("orders a searched all-host page by relevance instead of recency", async () => {
     const serverAClient = createClient([
       historyPayload({
         entries: [
@@ -548,8 +580,8 @@ describe("fetchAgentHistoryPage", () => {
     });
 
     expect(page.agents.map((agent) => agent.id)).toEqual([
-      "newer-weak-match",
       "older-strong-match",
+      "newer-weak-match",
     ]);
   });
 
@@ -583,7 +615,6 @@ describe("fetchAgentHistoryPage", () => {
         { serverId: "server-b", serverLabel: "Linux box", client: serverBClient },
       ] satisfies AgentHistoryHost[],
       cursorByServerId: { "server-b": "cursor-b" },
-      search: "match",
     });
 
     expect(page.agents.map((agent) => agent.id)).toEqual(["next-b"]);
@@ -592,7 +623,6 @@ describe("fetchAgentHistoryPage", () => {
       {
         sort: [{ key: "updated_at", direction: "desc" }],
         page: { limit: 200, cursor: "cursor-b" },
-        search: "match",
       } satisfies FetchAgentHistoryOptions,
     ]);
   });

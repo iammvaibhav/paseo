@@ -76,8 +76,8 @@ interface ShortcutWhen {
   terminal?: false;
   /** false = disabled when command center is open */
   commandCenter?: false;
-  /** Allowed focus scope or scopes */
-  focusScope?: KeyboardFocusScope | readonly KeyboardFocusScope[];
+  /** Exact focus scope match */
+  focusScope?: KeyboardFocusScope;
 }
 
 type ShortcutPayloadDef =
@@ -156,6 +156,9 @@ export const SHORTCUT_HELP_ROW_ORDER: Record<ShortcutSectionId, readonly string[
   general: [
     "toggle-command-center",
     "search-files",
+    // The escape hatch is a variant of the row above, not a headline shortcut;
+    // the two primary entries lead the section.
+    "toggle-command-center-from-guest",
     "show-shortcuts",
     "toggle-settings",
     "cycle-theme",
@@ -234,6 +237,7 @@ const SHORTCUT_HELP_LABEL_KEYS: Record<string, string> = {
   "workspace-terminal-new": "settings.shortcuts.help.newTerminal",
   "search-files": "settings.shortcuts.help.searchFiles",
   "toggle-command-center": "settings.shortcuts.help.toggleCommandCenter",
+  "toggle-command-center-from-guest": "settings.shortcuts.help.toggleCommandCenterFromGuest",
   "show-shortcuts": "settings.shortcuts.help.showKeyboardShortcuts",
   "toggle-left-sidebar": "settings.shortcuts.help.toggleLeftSidebar",
   "toggle-right-sidebar": "settings.shortcuts.help.toggleRightSidebar",
@@ -245,7 +249,6 @@ const SHORTCUT_HELP_LABEL_KEYS: Record<string, string> = {
   "cycle-agent-mode": "settings.shortcuts.help.cycleAgentMode",
   "voice-toggle": "settings.shortcuts.help.toggleVoiceMode",
   "dictation-toggle": "settings.shortcuts.help.startStopDictation",
-  "agent-interrupt": "settings.shortcuts.help.interruptAgent",
   "voice-mute-toggle": "settings.shortcuts.help.muteUnmuteVoiceMode",
 };
 
@@ -883,6 +886,38 @@ const SHORTCUT_BINDINGS: readonly ShortcutBinding[] = [
     },
   },
 
+  // Escape hatch out of an embedded guest (itsaplan, VS Code Web). Cmd+K inside
+  // one belongs to that app's own palette, so there is otherwise no way to reach
+  // Paseo's without first clicking out of the frame. A binding with no
+  // `when.focusScope` is published to guests by the browser keyboard policy
+  // (desktop/browser/shortcuts.ts builds it with focusScope "browser") and
+  // forwarded to the host by guest-preload, so this works from inside the frame.
+  // Shift is what keeps it distinct: the guest never sees Cmd+K taken away, and
+  // it cannot be typed by accident the way a bare Esc sequence could — Esc is
+  // load-bearing for closing the guest's own dialogs.
+  {
+    id: "command-center-toggle-from-guest-mac",
+    action: "command-center.toggle",
+    combo: "Cmd+Shift+K",
+    when: { mac: true },
+    help: {
+      id: "toggle-command-center-from-guest",
+      section: "general",
+      label: "Toggle command center from an embedded app",
+    },
+  },
+  {
+    id: "command-center-toggle-from-guest-non-mac",
+    action: "command-center.toggle",
+    combo: "Ctrl+Shift+K",
+    when: { mac: false, terminal: false },
+    help: {
+      id: "toggle-command-center-from-guest",
+      section: "general",
+      label: "Toggle command center from an embedded app",
+    },
+  },
+
   // --- Keyboard shortcuts dialog ---
   {
     id: "shortcuts-dialog-toggle-question-mark",
@@ -1138,10 +1173,9 @@ const SHORTCUT_BINDINGS: readonly ShortcutBinding[] = [
   {
     id: "agent-interrupt",
     action: "agent.interrupt",
-    combo: "Escape",
-    when: { commandCenter: false, focusScope: ["message-input", "other"] },
-    preventDefault: false,
-    stopPropagation: false,
+    // No default combo: Escape must never stop the running agent. The action
+    // stays rebindable from Settings -> Keyboard shortcuts.
+    combo: "",
     help: {
       id: "agent-interrupt",
       section: "agent-input",
@@ -1312,14 +1346,7 @@ export function matchesKeyboardShortcutContext(
   }
   if (when.terminal === false && context.focusScope === "terminal") return false;
   if (when.commandCenter === false && context.commandCenterOpen) return false;
-  if (
-    when.focusScope !== undefined &&
-    !(typeof when.focusScope === "string"
-      ? context.focusScope === when.focusScope
-      : when.focusScope.includes(context.focusScope))
-  ) {
-    return false;
-  }
+  if (when.focusScope !== undefined && context.focusScope !== when.focusScope) return false;
   return true;
 }
 

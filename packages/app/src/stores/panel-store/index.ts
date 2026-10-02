@@ -7,17 +7,26 @@ import {
   resolveExplorerTabForCheckout,
   type ExplorerTab,
 } from "../explorer-tab-memory";
+import { setSelectedSubmoduleEntry } from "../explorer-submodule-memory";
 import { type ExplorerCheckoutContext } from "../explorer-checkout-context";
 import {
   buildOpenFileExplorerPatch,
   buildToggleFileExplorerPatch,
+  clampBoardRailWidth,
   clampTreeRailWidth,
+  clampInspectorWidth,
   clampSidebarWidth,
+  DEFAULT_BOARD_RAIL_WIDTH,
   DEFAULT_TREE_RAIL_WIDTH,
+  DEFAULT_INSPECTOR_WIDTH,
   DEFAULT_SIDEBAR_WIDTH,
+  MAX_BOARD_RAIL_WIDTH,
   MAX_TREE_RAIL_WIDTH,
+  MAX_INSPECTOR_WIDTH,
   MAX_SIDEBAR_WIDTH,
+  MIN_BOARD_RAIL_WIDTH,
   MIN_TREE_RAIL_WIDTH,
+  MIN_INSPECTOR_WIDTH,
   MIN_SIDEBAR_WIDTH,
   migratePanelState,
   PanelPersistedStateSchema,
@@ -48,6 +57,14 @@ export {
   MAX_SIDEBAR_WIDTH,
   MIN_TREE_RAIL_WIDTH,
   MIN_SIDEBAR_WIDTH,
+  DEFAULT_BOARD_RAIL_WIDTH,
+  MIN_BOARD_RAIL_WIDTH,
+  MAX_BOARD_RAIL_WIDTH,
+  clampBoardRailWidth,
+  DEFAULT_INSPECTOR_WIDTH,
+  MIN_INSPECTOR_WIDTH,
+  MAX_INSPECTOR_WIDTH,
+  clampInspectorWidth,
   clampTreeRailWidth,
   selectIsAgentListOpen,
   selectIsCompactFileExplorerOpen,
@@ -65,6 +82,7 @@ export interface PanelState {
   // File explorer settings (shared between mobile/desktop)
   explorerTab: ExplorerTab;
   explorerTabByCheckout: Record<string, ExplorerTab>;
+  selectedSubmoduleByCheckout: Record<string, string>;
   expandedPathsByWorkspace: Record<string, string[]>;
   // Changes-view folder tree. Inverted semantics vs the fields above:
   // this stores COLLAPSED directory paths (empty = all folders expanded), keyed
@@ -76,6 +94,10 @@ export interface PanelState {
   explorerSortOption: SortOption;
   explorerShowHiddenFiles: boolean;
   treeRailWidth: number;
+  boardRailWidth: number;
+  inspectorWidth: number;
+  /** Mission Control board rail collapsed (persisted). */
+  boardRailCollapsed: boolean;
   // File panel's tree rail. The changes panel keeps its own flag in
   // `useChangesPreferences`; the two rails open and close independently.
   fileTreeVisible: boolean;
@@ -98,6 +120,11 @@ export interface PanelState {
   // File explorer settings actions
   setExplorerTab: (tab: ExplorerTab) => void;
   setExplorerTabForCheckout: (params: ExplorerCheckoutContext & { tab: ExplorerTab }) => void;
+  setSelectedSubmoduleForCheckout: (params: {
+    serverId: string;
+    cwd: string;
+    submodulePath: string | null;
+  }) => void;
   setExpandedPathsForWorkspace: (workspaceKey: string, paths: ExpandedPathsUpdate) => void;
   setDiffCollapsedFoldersForWorkspace: (workspaceKey: string, dirPaths: string[]) => void;
   setCollapsedFilePathsForWorkspace: (workspaceKey: string, paths: string[]) => void;
@@ -106,6 +133,10 @@ export interface PanelState {
   setExplorerSortOption: (option: SortOption) => void;
   toggleExplorerShowHiddenFiles: () => void;
   setTreeRailWidth: (width: number) => void;
+  setBoardRailWidth: (width: number) => void;
+  setInspectorWidth: (width: number) => void;
+  setBoardRailCollapsed: (collapsed: boolean) => void;
+  toggleBoardRailCollapsed: () => void;
   toggleFileTreeVisible: () => void;
 }
 
@@ -134,6 +165,7 @@ export const usePanelStore = create<PanelState>()(
       // File explorer defaults
       explorerTab: "changes",
       explorerTabByCheckout: {},
+      selectedSubmoduleByCheckout: {},
       expandedPathsByWorkspace: {},
       diffCollapsedFoldersByWorkspace: {},
       collapsedFilePathsByWorkspace: {},
@@ -141,6 +173,9 @@ export const usePanelStore = create<PanelState>()(
       explorerSortOption: "name",
       explorerShowHiddenFiles: true,
       treeRailWidth: DEFAULT_TREE_RAIL_WIDTH,
+      boardRailWidth: DEFAULT_BOARD_RAIL_WIDTH,
+      inspectorWidth: DEFAULT_INSPECTOR_WIDTH,
+      boardRailCollapsed: false,
       fileTreeVisible: true,
 
       toggleFocusMode: () =>
@@ -244,6 +279,13 @@ export const usePanelStore = create<PanelState>()(
           }
           return nextState;
         }),
+      setSelectedSubmoduleForCheckout: (params) =>
+        set((state) => {
+          const next = setSelectedSubmoduleEntry(state.selectedSubmoduleByCheckout, params);
+          return next === state.selectedSubmoduleByCheckout
+            ? state
+            : { selectedSubmoduleByCheckout: next };
+        }),
       setExpandedPathsForWorkspace: (workspaceKey, paths) =>
         set((state) => {
           const currentPaths = state.expandedPathsByWorkspace[workspaceKey] ?? ["."];
@@ -279,6 +321,11 @@ export const usePanelStore = create<PanelState>()(
           }),
         })),
       setSidebarWidth: (width) => set({ sidebarWidth: clampSidebarWidth(width) }),
+      setBoardRailWidth: (width) => set({ boardRailWidth: clampBoardRailWidth(width) }),
+      setInspectorWidth: (width) => set({ inspectorWidth: clampInspectorWidth(width) }),
+      setBoardRailCollapsed: (collapsed) => set({ boardRailCollapsed: collapsed }),
+      toggleBoardRailCollapsed: () =>
+        set((state) => ({ boardRailCollapsed: !state.boardRailCollapsed })),
       setExplorerSortOption: (option) => set({ explorerSortOption: option }),
       toggleExplorerShowHiddenFiles: () =>
         set((state) => ({ explorerShowHiddenFiles: !state.explorerShowHiddenFiles })),
@@ -294,6 +341,7 @@ export const usePanelStore = create<PanelState>()(
         desktop: state.desktop,
         explorerTab: state.explorerTab,
         explorerTabByCheckout: state.explorerTabByCheckout,
+        selectedSubmoduleByCheckout: state.selectedSubmoduleByCheckout,
         expandedPathsByWorkspace: state.expandedPathsByWorkspace,
         diffCollapsedFoldersByWorkspace: state.diffCollapsedFoldersByWorkspace,
         collapsedFilePathsByWorkspace: state.collapsedFilePathsByWorkspace,
@@ -301,6 +349,9 @@ export const usePanelStore = create<PanelState>()(
         explorerSortOption: state.explorerSortOption,
         explorerShowHiddenFiles: state.explorerShowHiddenFiles,
         treeRailWidth: state.treeRailWidth,
+        boardRailWidth: state.boardRailWidth,
+        inspectorWidth: state.inspectorWidth,
+        boardRailCollapsed: state.boardRailCollapsed,
         fileTreeVisible: state.fileTreeVisible,
       }),
     },

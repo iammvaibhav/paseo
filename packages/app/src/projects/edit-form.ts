@@ -9,17 +9,19 @@ export type ProjectIconIntent = ProjectIconSource | { type: "url"; url: string }
 /** The RPCs one submit has to issue. A null field is a field the user left alone. */
 export interface ProjectEditSubmission {
   rename: { customName: string | null } | null;
+  description: { description: string | null } | null;
   icon: ProjectIconIntent | null;
 }
 
 export interface ProjectEditFormError {
   /** Which field the failure belongs under. */
-  scope: "name" | "icon";
+  scope: "name" | "icon" | "description";
   message: string;
 }
 
 export interface ProjectEditFormState {
   name: string;
+  description: string;
   /** The image the icon tile renders, null for the derived letter fallback. */
   previewDataUri: string | null;
   pickedFileName: string | null;
@@ -36,6 +38,7 @@ export interface ProjectEditFormModel {
   getState: () => ProjectEditFormState;
   subscribe: (listener: () => void) => () => void;
   setName: (name: string) => void;
+  setDescription: (description: string) => void;
   setImageUrl: (url: string) => void;
   setPickedImage: (image: { fileName: string; mimeType: string; data: string }) => void;
   useAutomaticIcon: () => void;
@@ -47,6 +50,8 @@ export interface ProjectEditFormSnapshot {
   projectName: string;
   /** The override in effect, null while the project uses its derived name. */
   projectCustomName: string | null;
+  /** The description on screen today, null when the project has none. */
+  projectDescription: string | null;
   hasCustomIcon: boolean;
   /** The icon the project renders today, custom or derived. */
   currentIconDataUri: string | null;
@@ -62,6 +67,7 @@ interface PickedImage {
 
 export function openProjectEditForm(snapshot: ProjectEditFormSnapshot): ProjectEditFormModel {
   let name = snapshot.projectCustomName ?? "";
+  let description = snapshot.projectDescription ?? "";
   let urlText = "";
   let picked: PickedImage | null = null;
   let iconChoice: IconChoice = "unchanged";
@@ -73,6 +79,12 @@ export function openProjectEditForm(snapshot: ProjectEditFormSnapshot): ProjectE
     const trimmed = name.trim();
     const customName = trimmed.length === 0 ? null : trimmed;
     return customName === snapshot.projectCustomName ? null : { customName };
+  }
+
+  function deriveDescription(): ProjectEditSubmission["description"] {
+    const trimmed = description.trim();
+    const next = trimmed.length === 0 ? null : trimmed;
+    return next === snapshot.projectDescription ? null : { description: next };
   }
 
   function deriveIcon(): ProjectIconIntent | null {
@@ -100,16 +112,21 @@ export function openProjectEditForm(snapshot: ProjectEditFormSnapshot): ProjectE
   }
 
   function deriveState(): ProjectEditFormState {
-    const submission = { rename: deriveRename(), icon: deriveIcon() };
+    const submission = {
+      rename: deriveRename(),
+      description: deriveDescription(),
+      icon: deriveIcon(),
+    };
     const willBeCustom = submission.icon
       ? submission.icon.type !== "automatic"
       : snapshot.hasCustomIcon;
     return {
       name,
+      description,
       previewDataUri: derivePreview(),
       pickedFileName: iconChoice === "upload" ? (picked?.fileName ?? null) : null,
       canUseAutomatic: willBeCustom,
-      canSubmit: Boolean(submission.rename || submission.icon),
+      canSubmit: Boolean(submission.rename || submission.description || submission.icon),
       error,
       urlResetKey,
       submission,
@@ -131,6 +148,11 @@ export function openProjectEditForm(snapshot: ProjectEditFormSnapshot): ProjectE
     },
     setName: (nextName) => {
       name = nextName;
+      error = null;
+      publish();
+    },
+    setDescription: (nextDescription) => {
+      description = nextDescription;
       error = null;
       publish();
     },

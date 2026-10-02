@@ -1,4 +1,5 @@
 import { i18n } from "@/i18n/i18next";
+import type { MessageDispatchMode } from "@/composer/types";
 
 export type AgentInputSubmitResult = "noop" | "queued" | "submitted" | "failed";
 
@@ -9,10 +10,20 @@ export interface AgentInputSubmitActionInput<TAttachment> {
   allowEmptySubmit?: boolean;
   submitBehavior?: "clear" | "preserve-and-lock";
   forceSend?: boolean;
+  /**
+   * Wire delivery semantics for the submitted message. With "steer" the
+   * daemon delivers the prompt against the live turn instead of starting a
+   * new one; absent means interrupt.
+   */
+  dispatchMode?: MessageDispatchMode;
   isAgentRunning: boolean;
   canSubmit: boolean;
   queueMessage: (input: { message: string; attachments: TAttachment[] }) => void;
-  submitMessage: (input: { message: string; attachments: TAttachment[] }) => Promise<void>;
+  submitMessage: (input: {
+    message: string;
+    attachments: TAttachment[];
+    dispatchMode?: MessageDispatchMode;
+  }) => Promise<void>;
   clearDraft: (lifecycle: "sent" | "abandoned") => void;
   setUserInput: (text: string) => void;
   setAttachments: (attachments: TAttachment[]) => void;
@@ -60,7 +71,11 @@ export async function submitAgentInput<TAttachment>(
   input.setIsProcessing(true);
 
   try {
-    await input.submitMessage({ message: trimmedMessage, attachments });
+    await input.submitMessage({
+      message: trimmedMessage,
+      attachments,
+      ...(input.dispatchMode ? { dispatchMode: input.dispatchMode } : {}),
+    });
     input.clearDraft("sent");
     input.setIsProcessing(false);
     return "submitted";

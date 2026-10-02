@@ -1,0 +1,344 @@
+import { describe, expect, it } from "vitest";
+import {
+  cleanProviderUsageDisplayName,
+  groupProviderUsage,
+  hostStatusText,
+  mergeProviderUsageReports,
+  summarizeHostStatus,
+  type HostProviderUsageReport,
+} from "./sidebar-menu-data";
+import type { ProviderUsage } from "./types";
+
+function usage(
+  partial: Partial<ProviderUsage> & Pick<ProviderUsage, "providerId" | "displayName">,
+): ProviderUsage {
+  return {
+    status: "available",
+    planLabel: null,
+    windows: [],
+    balances: [],
+    details: [],
+    error: null,
+    ...partial,
+  };
+}
+
+function readyReport(
+  serverId: string,
+  fetchedAt: string,
+  providers: ProviderUsage[],
+  enabledProviderIds: readonly string[] | null,
+  isRefreshing = false,
+  snapshotError: string | null = null,
+): HostProviderUsageReport {
+  return {
+    serverId,
+    enabledProviderIds,
+    snapshotError,
+    view: {
+      kind: "ready",
+      payload: { fetchedAt, providers },
+      isRefreshing,
+    },
+  };
+}
+
+describe("mergeProviderUsageReports", () => {
+  it("deduplicates an account across hosts and keeps its freshest provider payload", () => {
+    const older = usage({
+      providerId: "omp-grok:one@example.com",
+      groupId: "omp-grok",
+      accountEmail: "one@example.com",
+      displayName: "old",
+      fetchedAt: "2026-08-18T07:00:00.000Z",
+    });
+    const fresher = usage({
+      providerId: "another-host-id",
+      groupId: "omp-grok",
+      accountEmail: "one@example.com",
+      displayName: "fresh",
+      fetchedAt: "2026-08-18T07:30:00.000Z",
+    });
+
+    const merged = mergeProviderUsageReports([
+      readyReport("host-a", "2026-08-18T08:00:00.000Z", [older], ["omp"]),
+      readyReport("host-b", "2026-08-18T07:45:00.000Z", [fresher], ["omp"]),
+    ]);
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0]?.displayName).toBe("fresh");
+  });
+
+  it("normalizes an old-daemon OMP card and deduplicates it against native metadata", () => {
+    const oldDaemon = usage({
+      providerId: "omp-codex:a@b",
+      displayName: "OMP · Codex — a@b",
+      fetchedAt: "2026-08-18T09:00:00.000Z",
+    });
+    const native = usage({
+      providerId: "omp-codex",
+      groupId: "omp-codex",
+      accountEmail: "a@b",
+      displayName: "OMP · Codex — a@b",
+      fetchedAt: "2026-08-18T08:00:00.000Z",
+      planLabel: "native",
+    });
+
+    const merged = mergeProviderUsageReports([
+      readyReport("old-host", "2026-08-18T09:00:00.000Z", [oldDaemon], ["omp"]),
+      readyReport("new-host", "2026-08-18T08:00:00.000Z", [native], ["omp"]),
+    ]);
+
+    expect(merged).toEqual([
+      expect.objectContaining({
+        providerId: "omp-codex",
+        groupId: "omp-codex",
+        accountEmail: "a@b",
+        displayName: "Codex",
+        planLabel: "native",
+      }),
+    ]);
+  });
+
+  it("filters native cards by the provider enabled on their host", () => {
+    const claude = usage({ providerId: "claude", displayName: "Claude" });
+    const codex = usage({ providerId: "codex", displayName: "Codex" });
+
+    const merged = mergeProviderUsageReports([
+      readyReport("host-a", "2026-08-18T08:00:00.000Z", [claude, codex], ["codex"]),
+    ]);
+
+    expect(merged.map((entry) => entry.providerId)).toEqual(["codex"]);
+  });
+
+  it("drops retired SuperGrok and bare-omp cards emitted by stale daemons", () => {
+    const superGrok = usage({
+      providerId: "omp",
+      displayName: "SuperGrok",
+      accountEmail: "user@example.com",
+    });
+    const grokBuild = usage({
+      providerId: "omp-grok-build:user@example.com",
+      groupId: "omp-grok-build",
+      displayName: "Grok Build",
+      accountEmail: "user@example.com",
+    });
+
+    const merged = mergeProviderUsageReports([
+      readyReport("host-a", "2026-08-18T08:00:00.000Z", [superGrok, grokBuild], ["omp"]),
+    ]);
+
+    expect(merged.map((entry) => entry.providerId)).toEqual(["omp-grok-build:user@example.com"]);
+  });
+
+  it("holds back every card from a host until its provider snapshot is loaded", () => {
+    const heldOmp = usage({
+      providerId: "omp-codex:a@b",
+      displayName: "Codex — a@b",
+    });
+    const visibleOmp = usage({
+      providerId: "omp-grok:c@d",
+      displayName: "Grok — c@d",
+    });
+
+    const merged = mergeProviderUsageReports([
+      readyReport("host-a", "2026-08-18T08:00:00.000Z", [heldOmp], null),
+      readyReport("host-b", "2026-08-18T08:00:00.000Z", [visibleOmp], ["omp"]),
+    ]);
+
+    expect(merged.map((entry) => entry.providerId)).toEqual(["omp-grok:c@d"]);
+  });
+
+  it("prefers a richer 4-window direct-API card over a fresher 3-window CLI-shaped card", () => {
+    const cliShaped = usage({
+      providerId: "omp-antigravity",
+      groupId: "omp-antigravity",
+      accountEmail: "user@example.com",
+      displayName: "Antigravity",
+      fetchedAt: "2026-08-18T08:00:00.000Z",
+      windows: [
+        { id: "google:daily", label: "Usage (Google)", usedPct: 10, remainingPct: 90 },
+        { id: "openai:daily", label: "Usage (OpenAI)", usedPct: 20, remainingPct: 80 },
+        { id: "anthropic:daily", label: "Usage (Anthropic)", usedPct: 30, remainingPct: 70 },
+      ],
+    });
+    const direct = usage({
+      providerId: "omp-antigravity",
+      groupId: "omp-antigravity",
+      accountEmail: "user@example.com",
+      displayName: "Antigravity",
+      fetchedAt: "2026-08-18T07:00:00.000Z",
+      windows: [
+        { id: "gemini-weekly", label: "Gemini · Weekly Limit", usedPct: 5, remainingPct: 95 },
+        { id: "gemini-5h", label: "Gemini · Five Hour Limit", usedPct: 1, remainingPct: 99 },
+        { id: "3p-weekly", label: "Claude/GPT · Weekly Limit", usedPct: 1, remainingPct: 99 },
+        { id: "3p-5h", label: "Claude/GPT · Five Hour Limit", usedPct: 0, remainingPct: 100 },
+      ],
+    });
+
+    const merged = mergeProviderUsageReports([
+      readyReport("host-cli", "2026-08-18T08:00:00.000Z", [cliShaped], ["omp"]),
+      readyReport("host-direct", "2026-08-18T07:00:00.000Z", [direct], ["omp"]),
+    ]);
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0]?.windows).toHaveLength(4);
+    expect(merged[0]?.windows?.map((window) => window.id)).toEqual([
+      "gemini-5h",
+      "gemini-weekly",
+      "3p-5h",
+      "3p-weekly",
+    ]);
+    // The richer card is kept even though the CLI-shaped card was fetched later.
+    expect(merged[0]?.fetchedAt).toBe("2026-08-18T07:00:00.000Z");
+  });
+
+  it("prefers a clean 4-window direct-API card over a fresher 6-window CLI card with duplicates", () => {
+    const rawCliWithDuplicates = usage({
+      providerId: "omp-antigravity",
+      groupId: "omp-antigravity",
+      accountEmail: "user@example.com",
+      displayName: "Antigravity",
+      fetchedAt: "2026-08-18T09:00:00.000Z",
+      windows: [
+        { id: "1", label: "Gemini", usedPct: 38, remainingPct: 62 },
+        { id: "2", label: "Gemini", usedPct: 26, remainingPct: 74 },
+        { id: "3", label: "Claude & GPT (shared)", usedPct: 0, remainingPct: 100 },
+        { id: "4", label: "Claude & GPT (shared)", usedPct: 0, remainingPct: 100 },
+        { id: "5", label: "Claude & GPT (shared)", usedPct: 0, remainingPct: 100 },
+        { id: "6", label: "Claude & GPT (shared)", usedPct: 0, remainingPct: 100 },
+      ],
+    });
+    const direct = usage({
+      providerId: "omp-antigravity",
+      groupId: "omp-antigravity",
+      accountEmail: "user@example.com",
+      displayName: "Antigravity",
+      fetchedAt: "2026-08-18T08:00:00.000Z",
+      windows: [
+        { id: "gw", label: "Gemini · Weekly Limit Remaining", usedPct: 39, remainingPct: 61 },
+        { id: "g5", label: "Gemini · Five Hour Limit Remaining", usedPct: 0, remainingPct: 100 },
+        { id: "cw", label: "Claude/GPT · Weekly Limit Remaining", usedPct: 6, remainingPct: 94 },
+        {
+          id: "c5",
+          label: "Claude/GPT · Five Hour Limit Remaining",
+          usedPct: 18,
+          remainingPct: 82,
+        },
+      ],
+    });
+
+    const merged = mergeProviderUsageReports([
+      readyReport("host-cli", "2026-08-18T09:00:00.000Z", [rawCliWithDuplicates], ["omp"]),
+      readyReport("host-direct", "2026-08-18T08:00:00.000Z", [direct], ["omp"]),
+    ]);
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0]?.windows).toHaveLength(4);
+    expect(merged[0]?.windows?.map((w) => w.label)).toEqual([
+      "Gemini · Five Hour Limit Remaining",
+      "Gemini · Weekly Limit Remaining",
+      "Claude/GPT · Five Hour Limit Remaining",
+      "Claude/GPT · Weekly Limit Remaining",
+    ]);
+    expect(merged[0]?.fetchedAt).toBe("2026-08-18T08:00:00.000Z");
+  });
+
+  it("keeps refreshing cache and responsive-host data when another host fails", () => {
+    const accountOneOld = usage({
+      providerId: "grok",
+      groupId: "grok",
+      accountEmail: "one@example.com",
+      displayName: "old",
+    });
+    const accountOneFresh = {
+      ...accountOneOld,
+      displayName: "fresh",
+    };
+    const accountTwo = usage({
+      providerId: "grok",
+      groupId: "grok",
+      accountEmail: "two@example.com",
+      displayName: "second account",
+    });
+
+    const merged = mergeProviderUsageReports([
+      readyReport("host-a", "2026-08-18T07:00:00.000Z", [accountOneOld, accountTwo], ["grok"]),
+      readyReport("host-b", "2026-08-18T08:00:00.000Z", [accountOneFresh], ["grok"], true),
+      {
+        serverId: "host-c",
+        enabledProviderIds: [],
+        snapshotError: null,
+        view: { kind: "error", message: "offline" },
+      },
+    ]);
+
+    expect(merged.map((entry) => entry.displayName)).toEqual(["fresh", "second account"]);
+    expect(merged[0]?.fetchedAt).toBe("2026-08-18T08:00:00.000Z");
+  });
+});
+
+describe("provider usage groups", () => {
+  it("cleans defensive OMP and email decoration and sorts chips by label", () => {
+    const grok = usage({
+      providerId: "omp-grok:one@example.com",
+      groupId: "omp-grok",
+      accountEmail: "one@example.com",
+      displayName: "OMP · Grok Build — one@example.com",
+    });
+    const claude = usage({ providerId: "claude", displayName: "Claude" });
+
+    expect(cleanProviderUsageDisplayName(grok)).toBe("Grok Build");
+    expect(groupProviderUsage([grok, claude]).map(({ id, label }) => ({ id, label }))).toEqual([
+      { id: "claude", label: "Claude" },
+      { id: "omp-grok", label: "Grok Build" },
+    ]);
+  });
+});
+
+describe("summarizeHostStatus", () => {
+  it("counts a ready host with a failed snapshot as failed, not loading", () => {
+    const reports = new Map<string, HostProviderUsageReport>([
+      ["host-a", readyReport("host-a", "2026-08-18T08:00:00.000Z", [], ["omp"])],
+      [
+        "host-b",
+        readyReport("host-b", "2026-08-18T08:00:00.000Z", [], null, false, "snapshot timeout"),
+      ],
+    ]);
+    expect(summarizeHostStatus(["host-a", "host-b"], reports)).toEqual({
+      loading: 0,
+      refreshing: 0,
+      failed: 1,
+    });
+  });
+
+  it("counts a ready host with a pending snapshot as loading", () => {
+    const reports = new Map<string, HostProviderUsageReport>([
+      ["host-a", readyReport("host-a", "2026-08-18T08:00:00.000Z", [], null)],
+    ]);
+    expect(summarizeHostStatus(["host-a"], reports)).toEqual({
+      loading: 1,
+      refreshing: 0,
+      failed: 0,
+    });
+  });
+
+  it("counts missing reports and refreshing hosts", () => {
+    const reports = new Map<string, HostProviderUsageReport>([
+      ["host-a", readyReport("host-a", "2026-08-18T08:00:00.000Z", [], ["omp"], true)],
+    ]);
+    expect(summarizeHostStatus(["host-a", "host-b"], reports)).toEqual({
+      loading: 1,
+      refreshing: 1,
+      failed: 0,
+    });
+  });
+
+  it("formats the status text", () => {
+    expect(hostStatusText({ loading: 1, refreshing: 0, failed: 0 })).toBe("1 host still loading");
+    expect(hostStatusText({ loading: 0, refreshing: 1, failed: 2 })).toBe(
+      "1 host refreshing · 2 hosts failed",
+    );
+    expect(hostStatusText({ loading: 0, refreshing: 0, failed: 0 })).toBeNull();
+  });
+});

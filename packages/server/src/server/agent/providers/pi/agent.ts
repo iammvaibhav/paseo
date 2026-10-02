@@ -120,12 +120,14 @@ const PI_HANDLED_BUILTIN_SLASH_COMMANDS: AgentSlashCommand[] = [
     description: "Manually compact the session context",
     argumentHint: "[instructions]",
     kind: "command",
+    delivery: "out_of_band",
   },
   {
     name: "autocompact",
     description: "Toggle automatic context compaction",
     argumentHint: "[on|off|toggle]",
     kind: "command",
+    delivery: "out_of_band",
   },
 ];
 
@@ -150,6 +152,7 @@ function mapPiSlashCommands(
       description: command.description ?? command.source,
       argumentHint: knownCommand?.argumentHint ?? "",
       kind: mapPiCommandKind(command.source),
+      ...(knownCommand?.delivery ? { delivery: knownCommand.delivery } : {}),
     });
   }
   return [...mappedCommands.values()];

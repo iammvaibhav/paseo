@@ -32,6 +32,17 @@ export function getStreamItemMessageId(item: StreamItem): string {
   return item.kind === "assistant_message" ? (item.blockGroupId ?? item.id) : item.id;
 }
 
+/** Message id for a stream row, or the row id when the value is only row-shaped. */
+export function readStreamMessageId(item: unknown): string | undefined {
+  if (typeof item !== "object" || item === null || !("id" in item) || typeof item.id !== "string") {
+    return undefined;
+  }
+  if (!("kind" in item)) {
+    return item.id;
+  }
+  return getStreamItemMessageId(item as StreamItem);
+}
+
 /**
  * A block is reusable only when it still stands for the same source state. Text and
  * turn are what the reader sees; cursor and timestamp are what the timeline reads back

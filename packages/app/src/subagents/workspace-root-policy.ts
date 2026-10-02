@@ -13,5 +13,12 @@ export function isWorkspaceRootAgent(
 
   const workspaceId = normalizeWorkspaceOpaqueId(agent.workspaceId);
   const parentWorkspaceId = normalizeWorkspaceOpaqueId(parentAgent?.workspaceId);
-  return Boolean(workspaceId && parentWorkspaceId && workspaceId !== parentWorkspaceId);
+  // Parent record not on this host — a Mission Control worker dispatched by a
+  // Commander running elsewhere. Nesting cannot be established, and assuming
+  // it hid the agent from its own workspace entirely. An agent we cannot
+  // prove is nested is a root agent.
+  if (!parentWorkspaceId) {
+    return true;
+  }
+  return Boolean(workspaceId && workspaceId !== parentWorkspaceId);
 }

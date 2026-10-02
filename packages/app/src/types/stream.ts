@@ -1,6 +1,7 @@
 import type {
   AgentProvider,
   AgentTimelineItem,
+  AgentUsage,
   JsonValue,
   ToolCallDetail,
 } from "@getpaseo/protocol/agent-types";
@@ -8,6 +9,7 @@ import { timelineItemIdentity } from "@getpaseo/protocol/timeline-identity";
 import type { AgentAttachment, AgentStreamEventPayload } from "@getpaseo/protocol/messages";
 import type { AttachmentMetadata } from "@/attachments/types";
 import { extractTaskEntriesFromToolCall } from "../utils/tool-call-parsers";
+import { convertIrcMessageToTimelineToolCall, isIrcMessageText } from "@/utils/irc-message";
 
 /**
  * Simple hash function for deterministic ID generation
@@ -85,20 +87,49 @@ export type StreamItem =
   | TodoListItem
   | NotificationItem
   | CompactionItem
+  | AiReviewDecisionItem
   | PluginTimelineStreamItem;
 
 export type UserMessageImageAttachment = AttachmentMetadata;
+
+/** Native image payload from a daemon timeline row (ticket dispatch / spawn). */
+export interface NativeTimelineImage {
+  data: string;
+  mimeType: string;
+}
+
+export type UserMessageImage = UserMessageImageAttachment | NativeTimelineImage;
+
+/**
+ * Who originated a user-role row in the agent's own chat. "machinery" rows
+ * (stall status-ask nudges) render as a muted one-line placeholder in
+ * verbose mode only; "instruction" (Commander direction changes, Verifier
+ * proof demands) and absent rows render as a normal user message — a user
+ * must always see what the agent was told.
+ */
+export type UserMessageClassification = "machinery" | "instruction";
+
+/**
+ * M9 voice dialogue mirror marker on user/assistant rows appended by the
+ * voice mirror RPC. "qa" = pure Q&A (the chat hides the row unless verbose);
+ * "dispatch" = the turn asked the fleet to do something (visible).
+ */
+export type VoiceMirrorKind = "qa" | "dispatch";
 
 export interface UserMessageItem {
   kind: "user_message";
   id: string;
   clientMessageId?: string;
+  // Provider message id, when the provider exposes one. Distinct from `id`,
+  // which falls back to a synthetic timeline id.
   messageId?: string;
   turnId?: string;
   timelineCursor?: TimelinePosition;
+  classification?: UserMessageClassification;
+  voiceMirrorKind?: VoiceMirrorKind;
   text: string;
   timestamp: Date;
-  images?: UserMessageImageAttachment[];
+  images?: UserMessageImage[];
   attachments?: AgentAttachment[];
 }
 
@@ -108,9 +139,11 @@ export interface UserMessageInput {
   messageId?: string;
   turnId?: string;
   timelineCursor?: TimelinePosition;
+  classification?: UserMessageClassification;
+  voiceMirrorKind?: VoiceMirrorKind;
   text: string;
   timestamp: Date;
-  images?: UserMessageImageAttachment[];
+  images?: UserMessageImage[];
   attachments?: AgentAttachment[];
 }
 
@@ -126,6 +159,8 @@ export function createUserMessage(input: UserMessageInput): UserMessageItem {
     ...(input.messageId ? { messageId: input.messageId } : {}),
     ...(input.turnId ? { turnId: input.turnId } : {}),
     ...(input.timelineCursor ? { timelineCursor: input.timelineCursor } : {}),
+    ...(input.classification ? { classification: input.classification } : {}),
+    ...(input.voiceMirrorKind ? { voiceMirrorKind: input.voiceMirrorKind } : {}),
     text: input.text,
     timestamp: input.timestamp,
     ...(input.images && input.images.length > 0 ? { images: input.images } : {}),
@@ -266,6 +301,7 @@ function produceUserMessage(
     existing.clientMessageId === merged.clientMessageId &&
     existing.messageId === merged.messageId &&
     existing.timelineCursor === merged.timelineCursor &&
+    existing.classification === merged.classification &&
     existing.text === merged.text &&
     existing.timestamp === merged.timestamp &&
     existing.images === merged.images &&
@@ -708,8 +744,15 @@ export interface AssistantMessageItem {
   messageId?: string;
   turnId?: string;
   timelineCursor?: TimelinePosition;
+  voiceMirrorKind?: VoiceMirrorKind;
   text: string;
   timestamp: Date;
+  /**
+   * Turn-metrics: per-turn usage record attached when the daemon reports
+   * turn_completed for this turn (or timeline fetch carries entry metrics).
+   * Absent on old daemons and for turns without reported usage.
+   */
+  metrics?: AgentUsage;
   /** Display-only fields, assigned after source-item plugin transforms. */
   blockGroupId?: string;
   blockIndex?: number;
@@ -797,6 +840,18 @@ export interface CompactionItem {
   status: "loading" | "completed";
   trigger?: "auto" | "manual";
   preTokens?: number;
+}
+
+export interface AiReviewDecisionItem {
+  kind: "ai_review_decision";
+  id: string;
+  timelineCursor?: TimelinePosition;
+  turnId?: string;
+  timestamp: Date;
+  requestId: string;
+  decision: "allow" | "deny" | "escalate";
+  reason: string;
+  toolName?: string;
 }
 
 export interface PluginTimelineStreamItem {
@@ -890,6 +945,9 @@ function appendUserMessage(
   clientMessageId?: string,
   timelineCursor?: TimelinePosition,
   turnId?: string,
+  classification?: UserMessageClassification,
+  voiceMirrorKind?: VoiceMirrorKind,
+  images?: UserMessageImage[],
 ): StreamItem[] {
   const { chunk, hasContent } = normalizeChunk(text);
   if (!hasContent) {
@@ -903,10 +961,47 @@ function appendUserMessage(
     messageId,
     timelineCursor,
     turnId,
+    classification,
+    voiceMirrorKind,
     text: chunk,
     timestamp,
+    ...(images && images.length > 0 ? { images } : {}),
   });
   return upsertUserMessage(state, nextItem);
+}
+
+/** True when the chunk extends the trailing assistant row: same message id
+ * (or no message id) and not a discrete voice-mirror turn. Narrows `last`
+ * to an assistant row when true. */
+function canCoalesceAssistantChunk(
+  last: StreamItem | undefined,
+  voiceMirrorKind: VoiceMirrorKind | undefined,
+  messageId: string | undefined,
+): last is AssistantMessageItem {
+  return (
+    last?.kind === "assistant_message" &&
+    !voiceMirrorKind &&
+    (messageId === undefined || last.messageId === messageId)
+  );
+}
+
+/** True when a live chunk extends an assistant row one further back, past a
+ * submitted user row that followed it during interrupt. Narrows `secondLast`
+ * to an assistant row when true. */
+function canExtendAssistantAcrossUserRow(
+  last: StreamItem | undefined,
+  secondLast: StreamItem | undefined,
+  source: StreamUpdateSource,
+  voiceMirrorKind: VoiceMirrorKind | undefined,
+  messageId: string | undefined,
+): secondLast is AssistantMessageItem {
+  return (
+    source === "live" &&
+    !voiceMirrorKind &&
+    last?.kind === "user_message" &&
+    secondLast?.kind === "assistant_message" &&
+    (messageId === undefined || secondLast.messageId === messageId)
+  );
 }
 
 function appendAssistantMessage(
@@ -917,6 +1012,9 @@ function appendAssistantMessage(
   messageId?: string,
   reservedItemIds?: ReadonlySet<string>,
   timelineCursor?: TimelinePosition,
+  voiceMirrorKind?: VoiceMirrorKind,
+  turnId?: string,
+  metrics?: AgentUsage,
 ): StreamItem[] {
   const { chunk, hasContent } = normalizeChunk(text);
   if (!chunk) {
@@ -924,16 +1022,14 @@ function appendAssistantMessage(
   }
 
   const last = state[state.length - 1];
-  const shouldAppendToLast =
-    last &&
-    last.kind === "assistant_message" &&
-    (messageId === undefined || last.messageId === messageId);
-  if (shouldAppendToLast) {
+  if (canCoalesceAssistantChunk(last, voiceMirrorKind, messageId)) {
     const updated: AssistantMessageItem = {
       ...last,
       text: `${last.text}${chunk}`,
       timestamp,
       ...(timelineCursor ? { timelineCursor } : {}),
+      ...(turnId !== undefined ? { turnId } : {}),
+      ...(metrics !== undefined ? { metrics } : {}),
     };
     return [...state.slice(0, -1), updated];
   }
@@ -941,17 +1037,14 @@ function appendAssistantMessage(
   // A submitted user row can follow the streaming assistant during interrupt.
   // In that case, look one row further back for the assistant to extend.
   const secondLast = state[state.length - 2];
-  if (
-    source === "live" &&
-    last?.kind === "user_message" &&
-    secondLast?.kind === "assistant_message" &&
-    (messageId === undefined || secondLast.messageId === messageId)
-  ) {
+  if (canExtendAssistantAcrossUserRow(last, secondLast, source, voiceMirrorKind, messageId)) {
     const updated: AssistantMessageItem = {
       ...secondLast,
       text: `${secondLast.text}${chunk}`,
       timestamp,
       ...(timelineCursor ? { timelineCursor } : {}),
+      ...(turnId !== undefined ? { turnId } : {}),
+      ...(metrics !== undefined ? { metrics } : {}),
     };
     return [...state.slice(0, -2), updated, last];
   }
@@ -966,7 +1059,10 @@ function appendAssistantMessage(
     kind: "assistant_message",
     id: entryId,
     ...(messageId ? { messageId } : {}),
+    ...(turnId !== undefined ? { turnId } : {}),
     ...(timelineCursor ? { timelineCursor } : {}),
+    ...(voiceMirrorKind ? { voiceMirrorKind } : {}),
+    ...(metrics !== undefined ? { metrics } : {}),
     text: chunk,
     timestamp,
   };
@@ -1033,6 +1129,7 @@ export function streamTimelineItemIdentity(item: StreamItem): string | null {
     });
   }
   if (item.kind === "plugin") return `${item.pluginId}/${item.pluginItemId}`;
+  if (item.kind === "ai_review_decision") return `ai_review_decision:${item.requestId}`;
   return null;
 }
 
@@ -1491,6 +1588,32 @@ function reduceTimelineCompaction(
   return [...state, compaction];
 }
 
+function appendAiReviewDecision(
+  state: StreamItem[],
+  item: Extract<AgentTimelineItem, { type: "ai_review_decision" }>,
+  timestamp: Date,
+  timelineCursor?: TimelinePosition,
+  turnId?: string,
+): StreamItem[] {
+  const nextItem: AiReviewDecisionItem = {
+    kind: "ai_review_decision",
+    id: `ai_review_decision:${item.requestId}`,
+    requestId: item.requestId,
+    decision: item.decision,
+    reason: item.reason,
+    ...(item.toolName ? { toolName: item.toolName } : {}),
+    ...(timelineCursor ? { timelineCursor } : {}),
+    ...(turnId ? { turnId } : {}),
+    timestamp,
+  };
+  const identity = streamTimelineItemIdentity(nextItem);
+  const index = identity ? findExistingTimelineIdentityIndex(state, identity) : -1;
+  if (index < 0) return [...state, nextItem];
+  const next = [...state];
+  next[index] = nextItem;
+  return next;
+}
+
 function reduceTimelineEvent(
   state: StreamItem[],
   event: Extract<AgentStreamEventPayload, { type: "timeline" }>,
@@ -1512,9 +1635,18 @@ function reduceTimelineEvent(
           item.clientMessageId,
           timelineCursor,
           event.turnId,
+          item.classification,
+          item.voiceMirrorKind,
+          item.images,
         ),
       );
     case "assistant_message":
+      if (isIrcMessageText(item.text)) {
+        const toolItem = convertIrcMessageToTimelineToolCall(item.text, item.messageId);
+        return finalizeActiveThoughts(
+          reduceTimelineToolCall(state, event, toolItem, timestamp, timelineCursor),
+        );
+      }
       return finalizeActiveThoughts(
         appendAssistantMessage(
           state,
@@ -1524,6 +1656,11 @@ function reduceTimelineEvent(
           item.messageId,
           reservedItemIds,
           timelineCursor,
+          item.voiceMirrorKind,
+          event.turnId,
+          "metrics" in event && event.metrics !== undefined
+            ? (event.metrics as AgentUsage)
+            : undefined,
         ),
       );
     case "reasoning":
@@ -1572,6 +1709,10 @@ function reduceTimelineEvent(
       return finalizeActiveThoughts(
         reduceTimelineCompaction(state, item, timestamp, timelineCursor),
       );
+    case "ai_review_decision":
+      return finalizeActiveThoughts(
+        appendAiReviewDecision(state, item, timestamp, timelineCursor, event.turnId),
+      );
     case "plugin":
       return finalizeActiveThoughts(
         appendPluginTimelineItem(state, item, timestamp, timelineCursor),
@@ -1579,6 +1720,34 @@ function reduceTimelineEvent(
     default:
       return state;
   }
+}
+
+/**
+ * Turn-metrics: stamp the completed turn's usage onto assistant messages of
+ * that turn (matched by turnId, falling back to the latest assistant run when
+ * the event carries no turnId). Unknown fields stay hidden downstream.
+ */
+export function attachTurnCompletionMetrics(
+  state: StreamItem[],
+  event: Extract<AgentStreamEventPayload, { type: "turn_completed" }>,
+): StreamItem[] {
+  const usage = event.usage;
+  if (!usage) return state;
+  const turnId = event.turnId;
+  if (turnId !== undefined) {
+    return state.map((item) => {
+      if (item.kind !== "assistant_message" || item.turnId !== turnId) return item;
+      return { ...item, metrics: usage };
+    });
+  }
+  // No turnId: attribute to the trailing assistant run only.
+  let lastAssistant = -1;
+  for (let i = state.length - 1; i >= 0; i--) {
+    if (state[i]?.kind !== "assistant_message") break;
+    lastAssistant = i;
+  }
+  if (lastAssistant < 0) return state;
+  return state.map((item, i) => (i >= lastAssistant ? { ...item, metrics: usage } : item));
 }
 
 /**
@@ -1606,13 +1775,14 @@ export function reduceStreamUpdate(
       );
     case "thread_started":
     case "turn_started":
-    case "turn_completed":
     case "turn_failed":
     case "turn_canceled":
     case "permission_requested":
     case "permission_resolved":
     case "attention_required":
       return finalizeActiveThoughts(state);
+    case "turn_completed":
+      return attachTurnCompletionMetrics(finalizeActiveThoughts(state), event);
     default:
       return state;
   }
@@ -1730,6 +1900,8 @@ function getEventItemKind(event: AgentStreamEventPayload): StreamItem["kind"] | 
     case "error":
     case "notification":
       return "notification";
+    case "ai_review_decision":
+      return "ai_review_decision";
     case "plugin":
       return "plugin";
     default:
@@ -1882,6 +2054,8 @@ function applyCanonicalUserMessageEvent(params: {
     messageId: event.item.messageId,
     clientMessageId: event.item.clientMessageId,
     turnId: event.turnId,
+    classification: event.item.classification,
+    voiceMirrorKind: event.item.voiceMirrorKind,
     timelineCursor,
     text: normalized.chunk,
     timestamp,

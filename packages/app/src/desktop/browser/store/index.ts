@@ -7,6 +7,7 @@ import {
   applyBrowserPatch,
   BrowserIndexStateSchema,
   type BrowserIndexState,
+  type BrowserChromeMode,
   type BrowserRecord,
   type BrowserRecordPatch,
   type BrowserViewport,
@@ -18,21 +19,78 @@ import {
   trimNonEmpty,
 } from "./state";
 
+export type { BrowserChromeMode, BrowserRecord, BrowserViewport } from "./state";
 export {
   createFixedBrowserViewport,
+  isChromeLessMode,
+  isPersistentEmbeddedChrome,
+  resolveBrowserChromeMode,
   RESPONSIVE_BROWSER_VIEWPORT,
-  type BrowserRecord,
-  type BrowserViewport,
 } from "./state";
 
+export interface BrowserNavigationRequest {
+  url: string;
+  requestId: number;
+}
+
+/**
+ * A request to open a file in place inside an already-loaded VS Code Web
+ * (code-server) webview, via the paseo-bridge extension — no full reload.
+ * Consumed by the Electron browser pane, which relays it to the guest page.
+ */
+export interface BrowserBridgeOpenRequest {
+  path: string;
+  line: number | null;
+  column: number | null;
+  /** `diff` opens VS Code's diff editor for the file instead of the file. */
+  mode: "file" | "diff";
+  /** Diff left side. Null diffs the working tree against HEAD. */
+  baseRef: string | null;
+  /** Only the BrowserPane mounted for this workspace may consume the request. */
+  targetWorkspaceKey: string | null;
+  /**
+   * URL to fall back to (via a normal reload) when the bridge is unreachable —
+   * e.g. the code-server window is still cold or the extension has not started.
+   */
+  fallbackUrl: string | null;
+  requestId: number;
+}
+
 interface BrowserStoreState extends BrowserIndexState {
-  createBrowser: (input?: { initialUrl?: string }) => string;
+  navigationRequestByBrowserId: Record<string, BrowserNavigationRequest>;
+  bridgeOpenRequestByBrowserId: Record<string, BrowserBridgeOpenRequest>;
+  createBrowser: (input?: {
+    browserId?: string;
+    initialUrl?: string;
+    chrome?: BrowserChromeMode;
+  }) => string;
   updateBrowser: (browserId: string, patch: BrowserRecordPatch) => void;
   setBrowserViewport: (browserId: string, viewport: BrowserViewport) => void;
   removeBrowser: (browserId: string) => void;
+  requestNavigation: (browserId: string, url: string) => void;
+  clearNavigationRequest: (browserId: string, requestId: number) => void;
+  requestBridgeOpen: (
+    browserId: string,
+    input: {
+      path: string;
+      line?: number | null;
+      column?: number | null;
+      mode?: "file" | "diff";
+      baseRef?: string | null;
+      fallbackUrl?: string | null;
+      targetWorkspaceKey?: string | null;
+    },
+  ) => void;
+  clearBridgeOpenRequest: (browserId: string, requestId: number) => void;
 }
 
-function createBrowserId(): string {
+function normalizePositiveInteger(value: number | null | undefined): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? Math.floor(value)
+    : null;
+}
+
+export function createBrowserId(): string {
   let browserId: string;
   if (typeof globalThis.crypto?.randomUUID === "function") {
     browserId = globalThis.crypto.randomUUID();
@@ -47,11 +105,16 @@ export const useBrowserStore = create<BrowserStoreState>()(
   persist(
     (set) => ({
       browsersById: {},
+      navigationRequestByBrowserId: {},
+      bridgeOpenRequestByBrowserId: {},
       createBrowser: (input) => {
-        const browserId = createBrowserId();
+        const browserId = input?.browserId
+          ? BrowserAutomationBrowserIdSchema.parse(input.browserId)
+          : createBrowserId();
         const record = createBrowserRecord({
           browserId,
           initialUrl: input?.initialUrl,
+          chrome: input?.chrome,
           now: Date.now(),
         });
 
@@ -71,7 +134,91 @@ export const useBrowserStore = create<BrowserStoreState>()(
         set((state) => applyBrowserPatch(state, browserId, { viewport }));
       },
       removeBrowser: (browserId) => {
-        set((state) => removeBrowserFromIndex(state, browserId));
+        set((state) => {
+          const nextRequests = { ...state.navigationRequestByBrowserId };
+          delete nextRequests[browserId];
+          const nextBridgeRequests = { ...state.bridgeOpenRequestByBrowserId };
+          delete nextBridgeRequests[browserId];
+          return {
+            ...removeBrowserFromIndex(state, browserId),
+            navigationRequestByBrowserId: nextRequests,
+            bridgeOpenRequestByBrowserId: nextBridgeRequests,
+          };
+        });
+      },
+      requestNavigation: (browserId, url) => {
+        const normalizedBrowserId = trimNonEmpty(browserId);
+        const normalizedUrl = normalizeBrowserUrl(url);
+        if (!normalizedBrowserId) {
+          return;
+        }
+        set((state) => {
+          const previous = state.navigationRequestByBrowserId[normalizedBrowserId];
+          return {
+            navigationRequestByBrowserId: {
+              ...state.navigationRequestByBrowserId,
+              [normalizedBrowserId]: {
+                url: normalizedUrl,
+                requestId: (previous?.requestId ?? 0) + 1,
+              },
+            },
+          };
+        });
+      },
+      clearNavigationRequest: (browserId, requestId) => {
+        const normalizedBrowserId = trimNonEmpty(browserId);
+        if (!normalizedBrowserId) {
+          return;
+        }
+        set((state) => {
+          const current = state.navigationRequestByBrowserId[normalizedBrowserId];
+          if (!current || current.requestId !== requestId) {
+            return state;
+          }
+          const nextRequests = { ...state.navigationRequestByBrowserId };
+          delete nextRequests[normalizedBrowserId];
+          return { navigationRequestByBrowserId: nextRequests };
+        });
+      },
+      requestBridgeOpen: (browserId, input) => {
+        const normalizedBrowserId = trimNonEmpty(browserId);
+        const path = trimNonEmpty(input.path);
+        if (!normalizedBrowserId || !path) {
+          return;
+        }
+        set((state) => {
+          const previous = state.bridgeOpenRequestByBrowserId[normalizedBrowserId];
+          return {
+            bridgeOpenRequestByBrowserId: {
+              ...state.bridgeOpenRequestByBrowserId,
+              [normalizedBrowserId]: {
+                path,
+                line: normalizePositiveInteger(input.line),
+                column: normalizePositiveInteger(input.column),
+                mode: input.mode === "diff" ? "diff" : "file",
+                baseRef: trimNonEmpty(input.baseRef),
+                fallbackUrl: trimNonEmpty(input.fallbackUrl),
+                targetWorkspaceKey: trimNonEmpty(input.targetWorkspaceKey),
+                requestId: (previous?.requestId ?? 0) + 1,
+              },
+            },
+          };
+        });
+      },
+      clearBridgeOpenRequest: (browserId, requestId) => {
+        const normalizedBrowserId = trimNonEmpty(browserId);
+        if (!normalizedBrowserId) {
+          return;
+        }
+        set((state) => {
+          const current = state.bridgeOpenRequestByBrowserId[normalizedBrowserId];
+          if (!current || current.requestId !== requestId) {
+            return state;
+          }
+          const nextRequests = { ...state.bridgeOpenRequestByBrowserId };
+          delete nextRequests[normalizedBrowserId];
+          return { bridgeOpenRequestByBrowserId: nextRequests };
+        });
       },
     }),
     {
@@ -94,7 +241,11 @@ export function getBrowserRecord(browserId: string): BrowserRecord | null {
   return useBrowserStore.getState().browsersById[normalizedBrowserId] ?? null;
 }
 
-export function createWorkspaceBrowser(input?: { initialUrl?: string }): {
+export function createWorkspaceBrowser(input?: {
+  browserId?: string;
+  initialUrl?: string;
+  chrome?: BrowserChromeMode;
+}): {
   browserId: string;
   url: string;
 } {

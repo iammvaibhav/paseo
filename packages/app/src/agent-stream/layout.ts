@@ -1,3 +1,4 @@
+import type { AgentUsage } from "@getpaseo/protocol/agent-types";
 import type { TurnTiming } from "@/timeline/turn-time";
 import type { StreamItem } from "@/types/stream";
 import { getAssistantBlockSpacing, getGapBetweenStreamItems } from "./spacing";
@@ -11,6 +12,7 @@ export interface TurnFooterHost {
   items: StreamItem[];
   timing?: TurnTiming;
   startIndex: number;
+  metrics?: AgentUsage;
 }
 
 export interface StreamLayoutItem {
@@ -69,11 +71,13 @@ function createTurnFooterHost(input: {
   index: number;
   timingByAssistantId: Map<string, TurnTiming>;
 }): TurnFooterHost {
+  const assistantItem = input.item.kind === "assistant_message" ? input.item : null;
   return {
     itemId: input.item.id,
     items: input.items,
     timing: input.timingByAssistantId.get(input.item.id),
     startIndex: input.index,
+    metrics: assistantItem?.metrics,
   };
 }
 
@@ -245,7 +249,8 @@ function areTurnFooterHostsEqual(
     left.itemId === right.itemId &&
     left.timing === right.timing &&
     left.startIndex === right.startIndex &&
-    left.items === right.items
+    left.items === right.items &&
+    left.metrics === right.metrics
   );
 }
 

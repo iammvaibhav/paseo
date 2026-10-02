@@ -52,6 +52,33 @@ export async function setOmpHostTools(
   return await runtimeSession.setHostTools(serializeOmpHostTools(catalog));
 }
 
+/**
+ * True when `registered` already contains exactly the tool names `catalog`
+ * would serialize (order-independent). Lets a pool-eligible create skip
+ * re-registering a pooled process's host tools when the pool seeded it with
+ * the same (always-unfiltered) catalog at fill time.
+ */
+export function paseoToolNamesMatch(
+  registered: ReadonlySet<string> | null,
+  catalog: PaseoToolCatalog | undefined,
+): boolean {
+  if (!registered) {
+    return !catalog;
+  }
+  if (!catalog) {
+    return registered.size === 0;
+  }
+  if (registered.size !== catalog.tools.size) {
+    return false;
+  }
+  for (const name of catalog.tools.keys()) {
+    if (!registered.has(name)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 export function handleOmpHostToolRuntimeEvent(
   event: unknown,
   input: {
