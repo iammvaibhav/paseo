@@ -200,11 +200,6 @@ export const ru: TranslationResources = {
       title_mr: "Прикрепить задачу или MR",
     },
   },
-  startOption: {
-    title: "Вариант запуска",
-    doTask: "Выполнить задачу",
-    orchestrator: "Оркестратор",
-  },
   agentControls: {
     provider: {
       fallback: "Провайдер",

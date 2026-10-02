@@ -199,11 +199,6 @@ export const ptBR: TranslationResources = {
       title_mr: "Anexar issue ou MR",
     },
   },
-  startOption: {
-    title: "Opção de início",
-    doTask: "Fazer a tarefa",
-    orchestrator: "Orquestrador",
-  },
   agentControls: {
     provider: {
       fallback: "Provedor",

@@ -200,11 +200,6 @@ export const ja: TranslationResources = {
       title_mr: "イシューまたはMRを添付",
     },
   },
-  startOption: {
-    title: "開始オプション",
-    doTask: "タスクを実行",
-    orchestrator: "オーケストレーター",
-  },
   agentControls: {
     provider: {
       fallback: "プロバイダー",

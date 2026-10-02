@@ -200,11 +200,6 @@ export const es: TranslationResources = {
       title_mr: "Adjuntar problema o MR",
     },
   },
-  startOption: {
-    title: "Opción de inicio",
-    doTask: "Hacer la tarea",
-    orchestrator: "Orquestador",
-  },
   agentControls: {
     provider: {
       fallback: "Proveedor",

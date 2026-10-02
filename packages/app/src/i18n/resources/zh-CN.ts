@@ -198,11 +198,6 @@ export const zhCN: TranslationResources = {
       title_mr: "附加 issue 或 MR",
     },
   },
-  startOption: {
-    title: "启动选项",
-    doTask: "执行任务",
-    orchestrator: "编排器",
-  },
   agentControls: {
     provider: {
       fallback: "Provider",

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import { Keyboard, ScrollView, StyleSheet as RNStyleSheet, Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
 import { StyleSheet } from "react-native-unistyles";
@@ -56,7 +56,6 @@ import {
   type WorkspaceDraftTabSetup,
 } from "@/workspace-tabs/model";
 import { openWorkspaceChanges } from "@/workspace-tabs/open-supporting-view";
-import { StartOptionToggle, type StartOption } from "@/components/start-option-toggle";
 import { useSettings } from "@/hooks/use-settings";
 
 const EMPTY_PENDING_PERMISSIONS = new Map();
@@ -249,10 +248,6 @@ export function WorkspaceDraftAgentTab({
       preferenceScope,
     },
   });
-  const [startOption, setStartOption] = useState<StartOption>("task");
-  const handleSelectStartOption = useCallback((next: StartOption) => {
-    setStartOption(next);
-  }, []);
   const composerState = draftInput.composerState;
   if (!composerState) {
     throw new Error("Workspace draft composer state is required");
@@ -395,7 +390,6 @@ export function WorkspaceDraftAgentTab({
         client,
         workspaceDirectory: draftWorkingDirectory,
         workspaceId: workspaceFields?.id ?? null,
-        orchestrator: startOption === "orchestrator",
         autoSubmitConfig,
         ...(forkSource ? { forkSource } : {}),
         composerState,
@@ -591,14 +585,6 @@ export function WorkspaceDraftAgentTab({
           )}
         </View>
 
-        <View style={styles.startOptionRow}>
-          <StartOptionToggle
-            serverId={serverId}
-            value={startOption}
-            onValueChange={handleSelectStartOption}
-            disabled={isSubmitting}
-          />
-        </View>
         <View style={inputAreaWrapperStyle} onLayout={onInputAreaLayout}>
           {importPillPress ? (
             <View style={styles.importPillRow}>
@@ -685,10 +671,6 @@ const styles = StyleSheet.create((theme) => ({
     width: "100%",
     maxWidth: MAX_CONTENT_WIDTH,
     flexDirection: "row",
-  },
-  startOptionRow: {
-    alignItems: "center",
-    paddingBottom: theme.spacing[2],
   },
   errorContainer: {
     marginTop: theme.spacing[2],

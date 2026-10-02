@@ -194,11 +194,6 @@ export const en = {
       title_mr: "Attach issue or MR",
     },
   },
-  startOption: {
-    title: "Start option",
-    doTask: "Do the task",
-    orchestrator: "Orchestrator",
-  },
   agentControls: {
     provider: {
       fallback: "Provider",

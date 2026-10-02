@@ -198,11 +198,6 @@ export const ar: TranslationResources = {
       title_mr: "إرفاق المشكلة أو MR",
     },
   },
-  startOption: {
-    title: "خيار البدء",
-    doTask: "تنفيذ المهمة",
-    orchestrator: "منسق",
-  },
   agentControls: {
     provider: {
       fallback: "مزود",

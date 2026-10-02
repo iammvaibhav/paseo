@@ -121,7 +121,6 @@ export async function submitDraftCreateRequest(input: {
   // Set when this draft was opened by "fork chat into a new tab": the daemon
   // creates the agent by forking the source session instead of from scratch.
   forkSource?: WorkspaceDraftForkSource;
-  orchestrator?: boolean;
   composerState: {
     selectedProvider: string | null;
     selectedMode: string;
@@ -154,7 +153,6 @@ export async function submitDraftCreateRequest(input: {
     config: submit.config,
     workspaceId: submit.workspaceId,
     ...(text ? { initialPrompt: text } : {}),
-    ...(input.orchestrator === true ? { orchestrator: true } : {}),
     clientMessageId: attempt.clientMessageId,
     ...(imagesData && imagesData.length > 0 ? { images: imagesData } : {}),
     ...(attachmentsArray && attachmentsArray.length > 0 ? { attachments: attachmentsArray } : {}),

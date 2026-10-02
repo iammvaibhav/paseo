@@ -202,11 +202,6 @@ export const fr: TranslationResources = {
       title_mr: "Joindre le problème ou MR",
     },
   },
-  startOption: {
-    title: "Option de démarrage",
-    doTask: "Faire la tâche",
-    orchestrator: "Orchestrateur",
-  },
   agentControls: {
     provider: {
       fallback: "Fournisseur",

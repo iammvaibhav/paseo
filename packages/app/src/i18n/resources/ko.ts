@@ -198,11 +198,6 @@ export const ko: TranslationResources = {
       title_mr: "이슈 또는 MR 첨부",
     },
   },
-  startOption: {
-    title: "시작 옵션",
-    doTask: "작업 수행",
-    orchestrator: "오케스트레이터",
-  },
   agentControls: {
     provider: {
       fallback: "프로바이더",

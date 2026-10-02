@@ -11,7 +11,6 @@ export interface WorkspaceDraftAgentRequest {
   clientMessageId: string;
   images?: UserMessageImageAttachment[];
   attachments?: CreateAgentRequestMessage["attachments"];
-  orchestrator?: boolean;
 }
 
 /**
@@ -28,7 +27,6 @@ export async function requestWorkspaceDraftAgent(
     workspaceId: request.workspaceId,
     clientMessageId: request.clientMessageId,
     ...(request.text ? { initialPrompt: request.text } : {}),
-    ...(request.orchestrator === true ? { orchestrator: true } : {}),
     ...(images && images.length > 0 ? { images } : {}),
     ...(request.attachments && request.attachments.length > 0
       ? { attachments: request.attachments }
