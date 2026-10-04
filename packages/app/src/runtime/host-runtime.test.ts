@@ -928,6 +928,41 @@ describe("HostRuntimeController", () => {
     expect(controller.getSnapshot().client).toBe(activeClient as unknown as DaemonClient);
   });
 
+  it("fails over to a reachable relay when the live direct connection stays down", async () => {
+    useHostRuntimeClock();
+    const host = makeHost({ preferredConnectionId: "direct:lan:6767" });
+    const clients: FakeDaemonClient[] = [];
+    const latencies: Record<string, number | Error> = {
+      "direct:lan:6767": 18,
+      "relay:relay.paseo.sh:443": 60,
+    };
+    const controller = new HostRuntimeController({
+      host,
+      deps: makeDeps(latencies, clients),
+    });
+
+    await controller.start({ autoProbe: false });
+    expect(controller.getSnapshot().activeConnectionId).toBe("direct:lan:6767");
+    const directClient = controller.getSnapshot().client as unknown as FakeDaemonClient;
+    // The last heartbeat before the path died still reports a fast RTT.
+    directClient.heartbeatReportsRtt(18);
+
+    latencies["direct:lan:6767"] = new Error("direct path unreachable");
+    directClient.setConnectionState({ status: "disconnected", reason: "network lost" });
+    expect(controller.getSnapshot().connectionStatus).not.toBe("online");
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    await controller.runProbeCycleNow();
+
+    const snapshot = controller.getSnapshot();
+    expect(snapshot.probeByConnectionId.get("direct:lan:6767")).toEqual({
+      status: "unavailable",
+      latencyMs: null,
+    });
+    expect(snapshot.activeConnectionId).toBe("relay:relay.paseo.sh:443");
+    expect(snapshot.connectionStatus).toBe("online");
+  });
+
   it("rejects probes that resolve to a different server id", async () => {
     const host = makeHost({
       serverId: "srv_old",

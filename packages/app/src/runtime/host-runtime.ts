@@ -1134,6 +1134,23 @@ export class HostRuntimeController {
             shouldCloseClient = shouldCloseClient && !activated;
 
             if (activeClient) {
+              // The probe cycle does not open a probe client for the active connection.
+              // If the active client is disconnected, report it unavailable, so that the
+              // cycle can switch to a different connection that is reachable.
+              const state = activeClient.getConnectionState();
+              if (state.status === "disconnected" || state.status === "disposed") {
+                probeByConnectionId.set(connection.id, {
+                  status: "unavailable",
+                  latencyMs: null,
+                });
+                publishProbeState();
+                return;
+              }
+              // While the client connects again, its last heartbeat RTT is stale.
+              // Keep the probe pending.
+              if (state.status !== "connected") {
+                return;
+              }
               const rttMs = activeClient.getLastLivenessRttMs();
               if (!this.isCurrentProbeRequest(requestVersion)) {
                 return;
