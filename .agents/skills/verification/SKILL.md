@@ -162,7 +162,7 @@ node scripts/verify/run.mjs <check-name> --up --proof
 # Keep stack running after check completion for manual inspection
 node scripts/verify/run.mjs <check-name> --up --keep
 
-# Reachable stack on WireGuard VPN IP (for MacBook inspection)
+# Reachable stack on NetBird VPN IP (for MacBook inspection)
 node scripts/verify/run.mjs <check-name> --up --reachable
 
 # Run without daemon password authentication

@@ -130,7 +130,7 @@ export interface AppSettings {
   /** How to deliver Plannotator feedback to the linked agent. */
   plannotatorFeedbackMode: PlannotatorFeedbackMode;
   /**
-   * Origin the sidebar itsaplan embed loads (e.g. `https://10.7.0.1:8443`).
+   * Origin the sidebar itsaplan embed loads (e.g. `https://dev.netbird.cloud:8443`).
    * Empty derives it from the host profile like a Plannotator embed.
    */
   itsaplanOrigin: string;

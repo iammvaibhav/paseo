@@ -29,9 +29,9 @@
 #   macOS (MacBook)   — as before: local = MacBook (daemon + desktop build/install),
 #                       remotes = blrofc3 + iammvaibhav.
 #   Linux (iammvaibhav) — local = iammvaibhav (daemon restart + nudge + services),
-#                       remotes = blrofc3 (WireGuard). The MacBook is a full
+#                       remotes = blrofc3 (NetBird). The MacBook is a full
 #                       target driven over ssh (PASEO_MACBOOK_HOST, default
-#                       "macbook" = 10.7.0.2): git-sync the checkout, rebuild the
+#                       "macbook" = macbook.netbird.cloud): git-sync the checkout, rebuild the
 #                       server packages, restart its ~/.paseo daemon (snapshot +
 #                       nudge, same contract as a remote), then build → backup
 #                       Paseo.app as Paseo (Orig).app → quit → replace → relaunch.
@@ -496,7 +496,7 @@ daemon_path_env() {
   printf '%s' "${HOME}/.local/bin:${PATH}"
 }
 
-# Read configured daemon listen (e.g. 127.0.0.1:6767 or a Tailscale IP).
+# Read configured daemon listen (e.g. 127.0.0.1:6767 or a NetBird IP).
 daemon_listen_from_home() {
   local home="$1"
   local listen=""
@@ -519,7 +519,7 @@ try {
 }
 
 # Health probe URLs for a home: configured listen + loopback:port.
-# blrofc3 binds Tailscale only — loopback alone falsely fails.
+# blrofc3 binds NetBird IP only — loopback alone falsely fails.
 daemon_health_urls() {
   local home="$1"
   local listen port primary secondary
@@ -800,7 +800,7 @@ deploy_local_code_server() {
   fi
   # iammvaibhav orchestrator (Linux): this machine IS iammvaibhav, and the MacBook
   # desktop opens VS Code Web at http://iammvaibhav:8765. "local" would bind
-  # 127.0.0.1 only and break that — deploy the iammvaibhav config (WireGuard bind).
+  # 127.0.0.1 only and break that — deploy the iammvaibhav config (NetBird bind).
   local host_kind="local"
   if [[ "$IS_MAC_ORCHESTRATOR" != "1" ]]; then
     host_kind="iammvaibhav"
@@ -1073,7 +1073,7 @@ restore_daemon_web_ui_bundle() {
 
 # --- MacBook job (iammvaibhav orchestrator) -----------------------------------
 # The desktop app builds only on macOS, so when deploy runs from iammvaibhav the
-# MacBook is driven over ssh (WireGuard 10.7.0.2; ssh alias "macbook"). The job is
+# MacBook is driven over ssh (NetBird; ssh alias "macbook"). The job is
 # reachability-gated and NEVER fails the deploy: if the MacBook is down, or its
 # checkout is dirty/diverged, iammvaibhav + remotes still deploy.
 #
@@ -1859,7 +1859,7 @@ except Exception:
         secondary="\$primary"
         ;;
       *)
-        # Tailscale/WireGuard-only binds (e.g. blrofc3 100.x:6767): primary is
+        # NetBird-only binds (e.g. blrofc3 100.x:6767): primary is
         # the real bind; secondary loopback often fails and must not be the only probe.
         primary="http://\${listen}/api/health"
         secondary="http://127.0.0.1:\${port}/api/health"
@@ -1895,7 +1895,7 @@ except Exception:
   fi
 
   # Detached restart via built CLI (not npx tsx). Require a NEW pid + health on
-  # configured listen and/or loopback:port (Tailscale-only binds fail on 127.0.0.1).
+  # configured listen and/or loopback:port (NetBird-only binds fail on 127.0.0.1).
   restart_log="/tmp/paseo-daemon-restart-remote-\$\$.log"
   : >"\$restart_log"
   old_pid="\$(read_daemon_pid "\$PASEO_HOME")"

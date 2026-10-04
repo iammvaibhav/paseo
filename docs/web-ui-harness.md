@@ -51,15 +51,15 @@ explicit `Origin`.
 ## Browser tool: --bootstrap
 
 An agent's `browser_*` tabs are resident webviews inside the **user's desktop
-app**, on another machine. Addresses differ from there: this host's WireGuard
-`10.7.0.x` may be unreachable and `127.0.0.1:6767` is that machine's own daemon.
+app**, on another machine. Addresses differ from there: this host's NetBird
+`100.123.x.x` may be unreachable and `127.0.0.1:6767` is that machine's own daemon.
 `--bootstrap` resolves the addresses that work _from there_ and prints the
 `localStorage` seed to paste into `browser_evaluate`.
 
 It never assumes an address. Candidates come from this config, from
 `--address srv_x=host:port`, and from the vantage machine's own `peers[]` (which
-is how the MacBook knows us as `10.7.0.1` and blrofc3 as its Tailscale
-address). Each candidate is probed **from the vantage** over ssh and accepted
+is how the MacBook knows us as `dev.netbird.cloud` and blrofc3 as
+`work.netbird.cloud`). Each candidate is probed **from the vantage** over ssh and accepted
 only when the `serverId` matches, because `127.0.0.1:6767` answers everywhere
 and would silently point a peer's entry at the wrong daemon. `--vantage`
 overrides the auto-detected machine; reachable ssh is the proxy for "the browser
@@ -95,7 +95,7 @@ A registry entry only connects when its `serverId` matches the daemon behind the
 endpoint, and a peer's id exists nowhere on this machine. Ask the daemon:
 
 ```bash
-curl -s -H "Authorization: Bearer $PASEO_PASSWORD" http://10.7.0.4:6767/api/status
+curl -s -H "Authorization: Bearer $PASEO_PASSWORD" http://work.netbird.cloud:6767/api/status
 # {"status":"server_info","serverId":"srv_...","hostname":"blrofc3",...}
 ```
 

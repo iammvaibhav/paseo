@@ -4,9 +4,9 @@
 //
 // Why this exists: the agent-browser tabs available to an agent belong to the
 // user's DESKTOP app, which runs on another machine. Its Chromium loads that
-// machine's 127.0.0.1 and cannot reach this host's WireGuard peers, so seeding
+// machine's 127.0.0.1 and cannot reach this host's NetBird peers, so seeding
 // a host registry there connects nothing. This script runs Chromium HERE, where
-// 10.7.0.x is reachable, and exposes it over CDP.
+// 100.123.x.x is reachable, and exposes it over CDP.
 //
 // Host discovery is dynamic. A registry entry only connects when its serverId
 // matches the daemon behind the endpoint, and that id is not in any local file
@@ -253,8 +253,8 @@ async function resolveHost(target) {
 }
 
 // Which addresses to try for a host, best first. A peer's address is not the
-// same from every machine — blrofc3 is 10.7.0.4 over WireGuard from this host
-// and 100.105.100.71 over Tailscale from the MacBook — so candidates are
+// same from every machine — peers use NetBird, e.g. blrofc3 is
+// work.netbird.cloud (100.123.36.124) — so candidates are
 // probed rather than assumed, and only an answer whose serverId MATCHES is
 // accepted. Without that check `127.0.0.1:6767` "works" everywhere and
 // silently points a peer's registry entry at the local daemon.
@@ -316,8 +316,8 @@ async function probeFrom(vantage, address, password) {
 }
 
 // How the vantage machine itself reaches these daemons. Its own peers config is
-// the authority for that: the MacBook lists iammvaibhav as 10.7.0.1 and blrofc3
-// as its Tailscale address, neither of which this host would guess.
+// the authority for that: the MacBook lists iammvaibhav as dev.netbird.cloud
+// and blrofc3 as work.netbird.cloud, neither of which this host would guess.
 async function vantagePeerCandidates(vantage) {
   if (vantage === "local") return [];
   const { execFile } = await import("node:child_process");

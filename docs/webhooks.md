@@ -73,7 +73,7 @@ and ensures the funnel process is up on every deploy (see below).
   does the operator grant and starts the funnel automatically (idempotent). Publishes to the
   **public internet** under the tailnet domain — confirm that is acceptable on a corporate
   tailnet; admins can revoke. Enable manually with:
-  `tailscale funnel --bg http://<daemon-listen-addr>` (e.g. `http://100.105.100.71:6767`).
+  `tailscale funnel --bg http://<daemon-listen-addr>` (e.g. `http://100.123.36.124:6767`).
 - **`cloudflared`** — for personal machines with a domain. Cloudflare's free tier is fine;
   the domain is the only cost. Quick tunnels (`*.trycloudflare.com`) are intentionally not
   used for registered hooks because their URL changes on every restart.

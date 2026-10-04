@@ -138,7 +138,7 @@ export function resolveCommanderModel() {
 /**
  * Resolve reachable VPN IPv4 address:
  * 1. PASEO_VERIFY_REACHABLE_HOST env
- * 2. First non-loopback IPv4 address on an interface matching wg*
+ * 2. First non-loopback IPv4 address on an interface matching wt*
  * Fails if neither exists.
  */
 export function resolveReachableIp() {
@@ -148,7 +148,7 @@ export function resolveReachableIp() {
   }
   const ifaces = os.networkInterfaces();
   for (const [name, addrs] of Object.entries(ifaces)) {
-    if (name.startsWith("wg") && Array.isArray(addrs)) {
+    if (name.startsWith("wt") && Array.isArray(addrs)) {
       for (const addr of addrs) {
         if (addr.family === "IPv4" && !addr.internal && addr.address) {
           return addr.address;
@@ -157,7 +157,7 @@ export function resolveReachableIp() {
     }
   }
   throw new Error(
-    "No WireGuard interface (wg*) with an IPv4 address found. Set PASEO_VERIFY_REACHABLE_HOST=<ip> to specify reachable IP.",
+    "No NetBird interface (wt*) with an IPv4 address found. Set PASEO_VERIFY_REACHABLE_HOST=<ip> to specify reachable IP.",
   );
 }
 

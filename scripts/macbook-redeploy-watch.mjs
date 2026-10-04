@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Deploy to the MacBook as soon as it comes back on the tunnel.
 //
-// The MacBook is a laptop behind NAT: its WireGuard endpoint goes stale while it
+// The MacBook is a laptop behind NAT: its NetBird endpoint goes stale while it
 // sleeps, and nothing this host sends can bring the tunnel up — only the MacBook
 // re-initiates. So its deploy job is reachability-gated and reports success by
 // skipping, which is how it silently sat 3 commits behind while every other host

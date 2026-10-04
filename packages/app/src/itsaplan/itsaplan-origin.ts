@@ -25,7 +25,7 @@ export interface ItsaplanEmbedInput {
   isLocalDaemon: boolean;
   /**
    * Per-device override configured in Settings → General ("itsaplan URL"),
-   * e.g. `https://10.7.0.1:8443`. Empty/unset falls back to deriving the origin
+   * e.g. `https://dev.netbird.cloud:8443`. Empty/unset falls back to deriving the origin
    * from the host the way Plannotator resolves its embed host.
    */
   configuredOrigin?: string | null;

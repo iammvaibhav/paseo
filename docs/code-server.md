@@ -4,11 +4,11 @@ Paseo's desktop **Open → VS Code Web** entry opens the current workspace folde
 
 ## URLs used in this fork
 
-| Host                      | Bind                  | URL to put in Settings → host → **VS Code Web URL** |
-| ------------------------- | --------------------- | --------------------------------------------------- |
-| Local Mac                 | `127.0.0.1:8765`      | `http://127.0.0.1:8765`                             |
-| `blrofc3` (Tailscale)     | `100.105.100.71:8765` | `http://blrofc3:8765`                               |
-| `iammvaibhav` (WireGuard) | `10.7.0.1:8765`       | `http://iammvaibhav:8765`                           |
+| Host                    | Bind                  | URL to put in Settings → host → **VS Code Web URL** |
+| ----------------------- | --------------------- | --------------------------------------------------- |
+| Local Mac               | `127.0.0.1:8765`      | `http://127.0.0.1:8765`                             |
+| `blrofc3` (NetBird)     | `100.123.36.124:8765` | `http://work.netbird.cloud:8765`                    |
+| `iammvaibhav` (NetBird) | `100.123.178.38:8765` | `http://dev.netbird.cloud:8765`                     |
 
 `blrofc3` / `iammvaibhav` must resolve on the Mac (they already do via `/etc/hosts` or mDNS in this setup). Auth is `none` because the listeners are VPN/loopback-only.
 

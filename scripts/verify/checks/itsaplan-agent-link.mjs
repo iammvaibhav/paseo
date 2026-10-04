@@ -10,7 +10,7 @@ export const meta = {
 const ISSUE_PATH = "/project/PASEO/issue/8";
 
 function liveItsaplanOrigin() {
-  return process.env.ITSAPLAN_WEB_ORIGIN || "http://10.7.0.1:3001";
+  return process.env.ITSAPLAN_WEB_ORIGIN || "http://100.123.178.38:3001";
 }
 
 function liveItsaplanLogin() {
