@@ -42,12 +42,15 @@ export function toIsoStringOrNull(timestampMs: number): string | null {
   return Number.isFinite(date.getTime()) ? date.toISOString() : null;
 }
 
-export async function withProviderTimeout<T>(promise: Promise<T>): Promise<T> {
+export async function withProviderTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs = PROVIDER_HTTP_TIMEOUT_MS,
+): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(
-      () => reject(new Error(`Provider usage fetch timed out after ${PROVIDER_HTTP_TIMEOUT_MS}ms`)),
-      PROVIDER_HTTP_TIMEOUT_MS,
+      () => reject(new Error(`Provider usage fetch timed out after ${timeoutMs}ms`)),
+      timeoutMs,
     );
     timer.unref?.();
   });

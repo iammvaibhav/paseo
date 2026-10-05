@@ -203,6 +203,11 @@ Grok Build has its own built-in source, `plugins/grok-build-usage-source`. It li
 appear too, one account per listed login. Each fetch resolves the login by identity again,
 because `--account N` follows OMP's stored order, and lets `omp token` refresh an expired token.
 
+OMP-held logins for every other provider come from `plugins/omp-usage-source`, which reads one
+`omp usage --json` run per refresh and reports each report in it as an account. Use it instead of
+the upstream sources' `omp` store on hosts behind the OMP auth broker: those sources read the
+`agent.db` token copy, which the broker never refreshes, so they report the login as expired.
+
 ### Plan Usage (fork quota fetcher)
 
 This fork also keeps its own Plan Usage surface beside the upstream usage window. It does not use usage sources: `provider.usage.list.request` is answered by the quota fetcher below, not by the usage-source registry's legacy path, and the upstream window reads `usage.list_reports.request`.

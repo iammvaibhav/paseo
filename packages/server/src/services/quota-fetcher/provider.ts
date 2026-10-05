@@ -7,6 +7,8 @@ export interface ProviderUsageFetcher {
   readonly providerId: string;
   readonly displayName: string;
   readonly agentProviderIds?: readonly string[];
+  /** Whole-fetch budget; defaults to the shared per-provider budget in usage.ts. */
+  readonly fetchTimeoutMs?: number;
   /**
    * One fetcher may expand into multiple usage cards (e.g. OMP multi-provider auth).
    * Return a single card or an array of cards.

@@ -1157,7 +1157,32 @@ if [[ "\$RESTART_DAEMON" == "1" ]]; then
   pnpm run build:server
   log "Building daemon web UI"
   pnpm run build:daemon-web-ui
+fi
 
+# The MacBook runs agents like any other host, so it needs the same plugins.
+# Outside the daemon gate: plugins are read when an omp process starts, so this
+# is useful even on a desktop-only run.
+if [[ '${PASEO_SKIP_OMP_PLUGINS:-0}' != "1" ]]; then
+  log "Installing omp plugins"
+  bash plugins/install.sh macbook || log "  Warning: omp plugin install failed on the MacBook"
+fi
+
+desktop_failed=0
+if [[ "\$BUILD_DESKTOP" != "0" ]]; then
+  log "Building + installing desktop app (PASEO_DESKTOP_ONLY=1, foreground)"
+  (
+    export PASEO_DESKTOP_ONLY=1
+    export PASEO_DEPLOY_FOREGROUND=1
+    export PASEO_DESKTOP_APP="\$DESKTOP_APP"
+    export PASEO_DESKTOP_ORIG_APP="\$DESKTOP_ORIG_APP"
+    ./scripts/deploy.sh
+  ) || desktop_failed=1
+fi
+
+# The MacBook supervisor runs the daemon worker out of the installed Paseo.app,
+# so the restart comes after the install: restarting first relaunches the
+# previous bundle's code.
+if [[ "\$RESTART_DAEMON" == "1" ]]; then
   # Self-wake nudge: snapshot running agents BEFORE the daemon stops, then nudge
   # them after it is healthy so each one resumes without a human. Never fatal.
   nudge_file=""
@@ -1182,7 +1207,11 @@ if [[ "\$RESTART_DAEMON" == "1" ]]; then
 
   # restart-local-daemon.sh is the macOS-safe path: built CLI, new session,
   # NEW pid + /api/health, detached \`daemon start\` recovery on failure.
+  # \`daemon restart\` talks to the running daemon, so it needs the password.
+  # The orchestrator's nudge password skips sourcing deploy.env above, so
+  # PASEO_PASSWORD can be unset here even when the nudge has one.
   log "Restarting MacBook daemon (\$PASEO_HOME)"
+  PASEO_PASSWORD="\${PASEO_PASSWORD:-\${PASEO_NUDGE_PASSWORD:-}}" \
   PASEO_LOCAL_HOME="\$PASEO_HOME" ./scripts/restart-local-daemon.sh
 
   if [[ -n "\$nudge_file" ]]; then
@@ -1193,21 +1222,9 @@ if [[ "\$RESTART_DAEMON" == "1" ]]; then
   fi
 fi
 
-# The MacBook runs agents like any other host, so it needs the same plugins.
-# Outside the daemon gate: plugins are read when an omp process starts, so this
-# is useful even on a desktop-only run.
-if [[ '${PASEO_SKIP_OMP_PLUGINS:-0}' != "1" ]]; then
-  log "Installing omp plugins"
-  bash plugins/install.sh macbook || log "  Warning: omp plugin install failed on the MacBook"
-fi
-
-if [[ "\$BUILD_DESKTOP" != "0" ]]; then
-  log "Building + installing desktop app (PASEO_DESKTOP_ONLY=1, foreground)"
-  export PASEO_DESKTOP_ONLY=1
-  export PASEO_DEPLOY_FOREGROUND=1
-  export PASEO_DESKTOP_APP="\$DESKTOP_APP"
-  export PASEO_DESKTOP_ORIG_APP="\$DESKTOP_ORIG_APP"
-  ./scripts/deploy.sh
+if [[ "\$desktop_failed" == "1" ]]; then
+  log "Desktop build/install failed on the MacBook"
+  exit 1
 fi
 EOF
 }
