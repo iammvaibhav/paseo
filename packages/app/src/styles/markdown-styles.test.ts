@@ -160,11 +160,5 @@ describe("createMarkdownStyles", () => {
       borderBottomLeftRadius: 0,
     });
     expect(styles.paragraph.marginBottom).toBe(darkTheme.spacing[3]);
-    expect(styles.paragraph.color).toBe(darkTheme.colors.foreground);
-    expect(styles.text.color).toBe(darkTheme.colors.foreground);
-    expect(styles.textgroup.color).toBe(darkTheme.colors.foreground);
-    expect(styles.strong.color).toBe(darkTheme.colors.foreground);
-    expect(styles.em.color).toBe(darkTheme.colors.foreground);
-    expect(styles.list_item.color).toBe(darkTheme.colors.foreground);
   });
 });

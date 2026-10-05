@@ -100,6 +100,8 @@ export interface DesktopMenuBridge {
 export interface DesktopWindowChromeUpdate {
   backgroundColor?: string;
   trafficLightOffsetY?: number;
+  /** macOS: show the sidebar vibrancy material behind a transparent page. */
+  vibrancy?: boolean;
 }
 
 export interface DesktopWindowBridge {

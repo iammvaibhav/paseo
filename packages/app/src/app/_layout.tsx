@@ -561,12 +561,12 @@ function AppContainer({ children, chromeEnabled: chromeEnabledOverride }: AppCon
           presentation={explorerSidebarPresentation === "dock" ? "dock" : "overlay"}
         >
           <WindowChromeRegion corners={chromeEnabled ? "both" : appChromeLayout.contentCorners}>
-            <View style={flexStyle}>{children}</View>
+            <View style={layoutStyles.contentFill}>{children}</View>
           </WindowChromeRegion>
         </CompactExplorerSidebarHost>
       ) : (
         <WindowChromeRegion corners={appChromeLayout.contentCorners}>
-          <View style={flexStyle}>{children}</View>
+          <View style={layoutStyles.contentFill}>{children}</View>
         </WindowChromeRegion>
       )}
     </View>
@@ -685,17 +685,24 @@ function ProvidersWrapper({ children }: { children: ReactNode }) {
 function DesktopWindowControlsSync() {
   const { isLoading } = useAppSettings();
   const { theme } = useUnistyles();
-  const surface0 = theme.colors.surface0;
+  const surfaceApp = theme.colors.surfaceApp;
 
   useEffect(() => {
     if (isLoading || isNative) return;
+    // A cleared app surface means the theme wants the window's vibrancy behind it, so the
+    // window and the page body must be transparent too.
+    const glass = surfaceApp === "transparent";
+    const pageBackground = glass ? "transparent" : "";
+    document.documentElement.style.backgroundColor = pageBackground;
+    document.body.style.backgroundColor = pageBackground;
     void updateDesktopWindowChrome({
-      backgroundColor: surface0,
+      backgroundColor: glass ? "#00000000" : surfaceApp,
+      vibrancy: glass,
       trafficLightOffsetY: -4,
     }).catch((error) => {
       console.warn("[DesktopWindow] Failed to update window controls overlay", error);
     });
-  }, [isLoading, surface0]);
+  }, [isLoading, surfaceApp]);
 
   return null;
 }
@@ -1025,7 +1032,11 @@ export default function RootLayout() {
 const layoutStyles = StyleSheet.create((theme) => ({
   surfaceFill: {
     flex: 1,
-    backgroundColor: theme.colors.surface0,
+    backgroundColor: theme.colors.surfaceApp,
+  },
+  contentFill: {
+    flex: 1,
+    backgroundColor: theme.colors.surfaceContent,
   },
   windowSidebarToggle: {
     position: "absolute",

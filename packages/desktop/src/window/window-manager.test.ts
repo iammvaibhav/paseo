@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   applyMacWindowControlsUpdate,
+  applyMacWindowVibrancy,
   DEFAULT_WINDOW_HEIGHT,
   DEFAULT_WINDOW_WIDTH,
   getMainWindowChromeOptions,
@@ -67,6 +68,39 @@ describe("window-manager", () => {
       expect(readWindowChromeUpdate({ trafficLightOffsetY: 1.5 })).toEqual({
         trafficLightOffsetY: 1.5,
       });
+    });
+
+    it("keeps an explicit vibrancy off so the renderer can clear it", () => {
+      expect(readWindowChromeUpdate({ vibrancy: false })).toEqual({ vibrancy: false });
+      expect(readWindowChromeUpdate({ vibrancy: "sidebar" })).toBeNull();
+    });
+  });
+
+  describe("applyMacWindowVibrancy", () => {
+    it("sets the sidebar material on macOS and clears it when turned off", () => {
+      const setVibrancy = vi.fn();
+      applyMacWindowVibrancy({
+        win: { setVibrancy },
+        update: { vibrancy: true },
+        platform: "darwin",
+      });
+      applyMacWindowVibrancy({
+        win: { setVibrancy },
+        update: { vibrancy: false },
+        platform: "darwin",
+      });
+      expect(setVibrancy.mock.calls).toEqual([["sidebar"], [null]]);
+    });
+
+    it("leaves the window alone off macOS or when the update says nothing", () => {
+      const setVibrancy = vi.fn();
+      applyMacWindowVibrancy({
+        win: { setVibrancy },
+        update: { vibrancy: true },
+        platform: "linux",
+      });
+      applyMacWindowVibrancy({ win: { setVibrancy }, update: {}, platform: "darwin" });
+      expect(setVibrancy).not.toHaveBeenCalled();
     });
   });
 

@@ -29,6 +29,7 @@ export type WindowTheme = "light" | "dark";
 export interface WindowChromeUpdate {
   backgroundColor?: string;
   trafficLightOffsetY?: number;
+  vibrancy?: boolean;
 }
 
 export function readWindowTheme(input: unknown): WindowTheme | null {
@@ -120,14 +121,16 @@ export function readWindowChromeUpdate(input: unknown): WindowChromeUpdate | nul
   const candidate = input as Record<string, unknown>;
   const backgroundColor = readOverlayColor(candidate.backgroundColor);
   const trafficLightOffsetY = readTrafficLightOffsetY(candidate.trafficLightOffsetY);
+  const vibrancy = typeof candidate.vibrancy === "boolean" ? candidate.vibrancy : null;
 
-  if (backgroundColor === null && trafficLightOffsetY === null) {
+  if (backgroundColor === null && trafficLightOffsetY === null && vibrancy === null) {
     return null;
   }
 
   return {
     ...(backgroundColor !== null ? { backgroundColor } : {}),
     ...(trafficLightOffsetY !== null ? { trafficLightOffsetY } : {}),
+    ...(vibrancy !== null ? { vibrancy } : {}),
   };
 }
 
@@ -143,6 +146,20 @@ export function applyMacWindowControlsUpdate(input: {
     x: MAC_TRAFFIC_LIGHT_POSITION.x,
     y: MAC_TRAFFIC_LIGHT_POSITION.y + input.update.trafficLightOffsetY,
   });
+}
+
+/**
+ * The sidebar material only shows through where the page is transparent, so the renderer
+ * turns it on together with a transparent background color and off with an opaque one.
+ */
+export function applyMacWindowVibrancy(input: {
+  win: Pick<BrowserWindow, "setVibrancy">;
+  update: WindowChromeUpdate;
+  platform?: NodeJS.Platform;
+}): void {
+  if ((input.platform ?? process.platform) !== "darwin") return;
+  if (input.update.vibrancy === undefined) return;
+  input.win.setVibrancy(input.update.vibrancy ? "sidebar" : null);
 }
 
 export function registerWindowManager(input: { mode: DesktopWindowChromeMode }): void {
@@ -204,6 +221,7 @@ export function registerWindowManager(input: { mode: DesktopWindowChromeMode }):
       return;
     }
 
+    applyMacWindowVibrancy({ win, update: nextUpdate });
     if (nextUpdate.backgroundColor) {
       win.setBackgroundColor(nextUpdate.backgroundColor);
     }

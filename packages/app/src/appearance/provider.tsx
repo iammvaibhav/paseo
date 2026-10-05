@@ -14,7 +14,13 @@ import {
   usePluginThemeCatalog,
   type PluginThemeOption,
 } from "@/plugins/themes";
-import { PLUGIN_THEME_NAMES, PLUGIN_THEME_PREFERENCE, THEME_TO_UNISTYLES } from "@/styles/theme";
+import {
+  GLASS_THEME_NAME,
+  PLUGIN_THEME_NAMES,
+  PLUGIN_THEME_PREFERENCE,
+  THEME_TO_UNISTYLES,
+} from "@/styles/theme";
+import { getIsElectronMac } from "@/constants/platform";
 import { applyAppearance } from "./apply";
 
 interface ContributedThemes {
@@ -47,6 +53,11 @@ function applyTheme({ preference, contributedTheme }: ApplyThemeInput): void {
   }
 
   UnistylesRuntime.setAdaptiveThemes(false);
+  // Mono gets the window's sidebar vibrancy only where the window can provide it.
+  if (builtInPreference === "mono" && getIsElectronMac()) {
+    UnistylesRuntime.setTheme(GLASS_THEME_NAME);
+    return;
+  }
   UnistylesRuntime.setTheme(THEME_TO_UNISTYLES[builtInPreference]);
 }
 

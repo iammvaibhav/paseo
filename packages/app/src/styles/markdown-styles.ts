@@ -30,7 +30,7 @@ export function createMarkdownStyles(theme: Theme) {
 
     body: {
       ...webSelectableTextStyle,
-      color: theme.colors.foreground,
+      color: theme.colors.foregroundProse,
       fontSize: theme.fontSize.content,
       // Prose line-height scales with the content size, not the
       // code-size-coupled lineHeight.diff token used by code/diff surfaces.
@@ -40,9 +40,10 @@ export function createMarkdownStyles(theme: Theme) {
       width: "100%" as const,
     },
 
+    // Leaf text takes its color from the block around it (paragraph, heading, cell),
+    // so prose and headings can use different tones.
     text: {
       ...webSelectableTextStyle,
-      color: theme.colors.foreground,
       flexShrink: 1,
       minWidth: 0,
       overflowWrap: "anywhere" as const,
@@ -50,11 +51,10 @@ export function createMarkdownStyles(theme: Theme) {
 
     textgroup: {
       ...webSelectableTextStyle,
-      color: theme.colors.foreground,
     },
 
     paragraph: {
-      color: theme.colors.foreground,
+      color: theme.colors.foregroundProse,
       marginTop: 0,
       marginBottom: theme.spacing[3],
       flexWrap: "wrap" as const,
@@ -72,42 +72,42 @@ export function createMarkdownStyles(theme: Theme) {
 
     heading1: {
       ...webSelectableTextStyle,
-      fontSize: contentHeadingSize(theme.fontSize.content, "4xl"),
+      fontSize: contentHeadingSize(theme.fontSize.content, "2xl"),
       fontWeight: theme.fontWeight.semibold,
       color: theme.colors.foreground,
       marginTop: theme.spacing[6],
       marginBottom: theme.spacing[3],
-      lineHeight: contentHeadingLineHeight(theme.fontSize.content, "4xl"),
+      lineHeight: contentHeadingLineHeight(theme.fontSize.content, "2xl"),
     },
 
     heading2: {
       ...webSelectableTextStyle,
-      fontSize: contentHeadingSize(theme.fontSize.content, "3xl"),
+      fontSize: contentHeadingSize(theme.fontSize.content, "xl"),
       fontWeight: theme.fontWeight.semibold,
       color: theme.colors.foreground,
       marginTop: theme.spacing[6],
       marginBottom: theme.spacing[3],
-      lineHeight: contentHeadingLineHeight(theme.fontSize.content, "3xl"),
+      lineHeight: contentHeadingLineHeight(theme.fontSize.content, "xl"),
     },
 
     heading3: {
       ...webSelectableTextStyle,
-      fontSize: contentHeadingSize(theme.fontSize.content, "2xl"),
+      fontSize: contentHeadingSize(theme.fontSize.content, "lg"),
       fontWeight: theme.fontWeight.semibold,
       color: theme.colors.foreground,
       marginTop: theme.spacing[4],
       marginBottom: theme.spacing[2],
-      lineHeight: contentHeadingLineHeight(theme.fontSize.content, "2xl"),
+      lineHeight: contentHeadingLineHeight(theme.fontSize.content, "lg"),
     },
 
     heading4: {
       ...webSelectableTextStyle,
-      fontSize: contentHeadingSize(theme.fontSize.content, "xl"),
+      fontSize: contentHeadingSize(theme.fontSize.content, "lg"),
       fontWeight: theme.fontWeight.semibold,
       color: theme.colors.foreground,
       marginTop: theme.spacing[4],
       marginBottom: theme.spacing[2],
-      lineHeight: contentHeadingLineHeight(theme.fontSize.content, "xl"),
+      lineHeight: contentHeadingLineHeight(theme.fontSize.content, "lg"),
     },
 
     heading5: {
@@ -180,7 +180,7 @@ export function createMarkdownStyles(theme: Theme) {
       ...webSelectableTextStyle,
       backgroundColor: theme.colors.surface2,
       color: theme.colors.foreground,
-      paddingHorizontal: theme.spacing[1],
+      paddingHorizontal: theme.spacing[1.5],
       paddingVertical: 2,
       borderRadius: theme.borderRadius.md,
       borderWidth: 0,
@@ -290,7 +290,7 @@ export function createMarkdownStyles(theme: Theme) {
     },
 
     list_item: {
-      color: theme.colors.foreground,
+      color: theme.colors.foregroundProse,
       marginBottom: theme.spacing[1],
       flexDirection: "row" as const,
       alignItems: "flex-start" as const,
@@ -298,13 +298,13 @@ export function createMarkdownStyles(theme: Theme) {
     },
 
     bullet_list_content: {
-      color: theme.colors.foreground,
+      color: theme.colors.foregroundProse,
       flex: 1,
       flexShrink: 1,
     },
 
     ordered_list_content: {
-      color: theme.colors.foreground,
+      color: theme.colors.foregroundProse,
       flex: 1,
       flexShrink: 1,
     },

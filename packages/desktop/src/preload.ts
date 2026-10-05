@@ -65,8 +65,11 @@ contextBridge.exposeInMainWorld("paseoDesktop", {
       setFullscreen: (fullscreen: boolean) =>
         ipcRenderer.invoke("paseo:window:setFullscreen", fullscreen),
       isFullscreen: () => ipcRenderer.invoke("paseo:window:isFullscreen"),
-      updateChrome: (update: { backgroundColor?: string; trafficLightOffsetY?: number }) =>
-        ipcRenderer.invoke("paseo:window:updateChrome", update),
+      updateChrome: (update: {
+        backgroundColor?: string;
+        trafficLightOffsetY?: number;
+        vibrancy?: boolean;
+      }) => ipcRenderer.invoke("paseo:window:updateChrome", update),
       onResized: (handler: EventHandler): (() => void) => {
         const listener = (_ipcEvent: Electron.IpcRendererEvent, payload: unknown) => {
           handler(payload);

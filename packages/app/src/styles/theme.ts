@@ -203,7 +203,21 @@ const darkStatusDotColors = {
   statusDotRunning: "#5caaf6",
 };
 
-export interface LightThemeConfig {
+// Optional component tones. A theme sets one only to move that surface off the token it
+// otherwise uses; the builders fall back to that token, so existing themes keep their look.
+interface ComponentToneConfig {
+  /** User message bubble fill. Defaults to surface3. */
+  surfaceUserMessage?: string;
+  /** Assistant prose (paragraphs, list items). Defaults to foreground. */
+  foregroundProse?: string;
+  /** Lines between sidebar groups. Defaults to border. */
+  sidebarDivider?: string;
+  /** The composer send button. Defaults to accent / accentForeground. */
+  primaryAction?: string;
+  primaryActionForeground?: string;
+}
+
+export interface LightThemeConfig extends ComponentToneConfig {
   surface0: string;
   surface1: string;
   surface2: string;
@@ -256,11 +270,20 @@ export function buildLightSemanticColors(tint: LightThemeConfig) {
     surfaceSidebarHover: tint.surface1,
     surfaceSidebarSelected: tint.surface3,
     surfaceWorkspace: tint.surface0,
+    // The window root and the main content pane. A glass theme clears the root so the
+    // window's vibrancy shows behind the sidebar, and paints the content pane instead.
+    surfaceApp: tint.surface0,
+    surfaceContent: "transparent",
+    surfaceUserMessage: tint.surfaceUserMessage ?? tint.surface3,
     interactionHighlight: "rgba(0, 0, 0, 0.06)",
 
     foreground: tint.foreground,
+    foregroundProse: tint.foregroundProse ?? tint.foreground,
     foregroundMuted: tint.foregroundMuted,
     foregroundExtraMuted: tint.foregroundExtraMuted,
+    sidebarDivider: tint.sidebarDivider ?? tint.border,
+    primaryAction: tint.primaryAction ?? tint.accent,
+    primaryActionForeground: tint.primaryActionForeground ?? tint.accentForeground ?? tint.surface0,
 
     border: tint.border,
     borderAccent: tint.borderAccent,
@@ -333,7 +356,7 @@ const lightSemanticColors = buildLightSemanticColors({
 // Dark theme variant builder
 // ---------------------------------------------------------------------------
 
-export interface DarkThemeConfig {
+export interface DarkThemeConfig extends ComponentToneConfig {
   surface0: string;
   surface1: string;
   surface2: string;
@@ -386,11 +409,18 @@ export function buildDarkSemanticColors(tint: DarkThemeConfig) {
     surfaceSidebarHover: tint.surface1,
     surfaceSidebarSelected: tint.surface2,
     surfaceWorkspace: tint.surface1,
+    surfaceApp: tint.surface0,
+    surfaceContent: "transparent",
+    surfaceUserMessage: tint.surfaceUserMessage ?? tint.surface3,
     interactionHighlight: "rgba(255, 255, 255, 0.08)",
 
     foreground,
+    foregroundProse: tint.foregroundProse ?? foreground,
     foregroundMuted: tint.foregroundMuted,
     foregroundExtraMuted: tint.foregroundExtraMuted,
+    sidebarDivider: tint.sidebarDivider ?? tint.border,
+    primaryAction: tint.primaryAction ?? tint.accent,
+    primaryActionForeground: tint.primaryActionForeground ?? tint.accentForeground ?? "#ffffff",
 
     border: tint.border,
     borderAccent: tint.borderAccent,
@@ -542,25 +572,32 @@ const ghosttyDarkColors = buildDarkSemanticColors({
 });
 
 // Mono — neutral gray with no tint and a blue accent, after the MonoCode desktop app.
-// Separators sit close to the surface so groups read through spacing, not lines.
+// Values are MonoCode's ink-over-background mixes flattened onto #171717: borders are 7% ink,
+// selection 10%, idle labels 55%, prose 78%. Sidebar groups separate by spacing, not lines,
+// and the send button is a white key rather than an accent fill.
 const monoDarkColors = buildDarkSemanticColors({
   surface0: "#171717",
-  surface1: "#1c1c1c",
-  surface2: "#252525",
-  surface3: "#383838",
+  surface1: "#1e1e1e",
+  surface2: "#2a2a2a",
+  surface3: "#3a3a3a",
   surface4: "#4d4d4d",
   surfaceDiffEmpty: "#1f1f1f",
-  surfaceSidebar: "#131313",
+  surfaceSidebar: "#141414",
+  surfaceUserMessage: "#2c2c2c",
   foreground: "#ebebeb",
-  foregroundMuted: "#a3a3a3",
-  foregroundExtraMuted: "#737373",
+  foregroundProse: "#c9c9c9",
+  foregroundMuted: "#8c8c8c",
+  foregroundExtraMuted: "#636363",
   border: "#262626",
-  borderAccent: "#303030",
+  borderAccent: "#2e2e2e",
+  sidebarDivider: "transparent",
   accent: "#1f7ce0", // hsl(211 76% 50%): white label text clears 4:1 on the fill
   accentBright: "#6aaef8",
+  primaryAction: "#f5f5f5",
+  primaryActionForeground: "#171717",
   destructive: "#c44a4a",
-  terminalBlack: "#131313",
-  terminalBrightBlack: "#383838",
+  terminalBlack: "#141414",
+  terminalBrightBlack: "#3a3a3a",
 });
 
 export const SPACING = {
@@ -721,6 +758,19 @@ export const darkClaudeTheme = buildDarkTheme(claudeDarkColors);
 export const darkGhosttyTheme = buildDarkTheme(ghosttyDarkColors);
 export const darkMonoTheme = buildDarkTheme(monoDarkColors);
 
+// Mono on a macOS window with sidebar vibrancy. Only the desktop app on macOS selects it
+// (see appearance/provider.tsx): anywhere else the cleared root would show the page body.
+// Sidebar fills are translucent ink so hover and selection stay legible over any wallpaper.
+export const GLASS_THEME_NAME = "darkMonoGlass";
+export const darkMonoGlassTheme = buildDarkTheme({
+  ...monoDarkColors,
+  surfaceApp: "transparent",
+  surfaceContent: monoDarkColors.surface0,
+  surfaceSidebar: "rgba(20, 20, 20, 0.62)",
+  surfaceSidebarHover: "rgba(255, 255, 255, 0.06)",
+  surfaceSidebarSelected: "rgba(255, 255, 255, 0.10)",
+});
+
 // Pure black — zero-luminance background with high-contrast surfaces.
 const pureBlackDarkColors = buildDarkSemanticColors({
   surface0: "#000000",
@@ -872,6 +922,7 @@ type RegisteredThemes = {
 } & {
   pluginLight: typeof lightTheme;
   pluginDark: typeof darkTheme;
+  darkMonoGlass: typeof darkMonoGlassTheme;
 };
 
 export const THEME_TO_UNISTYLES = Object.fromEntries(
@@ -888,6 +939,7 @@ export const REGISTERED_THEMES = {
   ),
   [PLUGIN_THEME_NAMES.light]: lightTheme,
   [PLUGIN_THEME_NAMES.dark]: darkTheme,
+  [GLASS_THEME_NAME]: darkMonoGlassTheme,
 } as RegisteredThemes;
 
 export function getNextThemePreference(current: ThemePreference): ThemePreference {

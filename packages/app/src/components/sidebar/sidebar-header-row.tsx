@@ -170,10 +170,10 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing[2],
     // Match the sidebar workspace-row shape (height, padding, radius) so the
     // compact header entries sit tight against the workspace list below.
-    minHeight: 36,
-    paddingVertical: theme.spacing[2],
+    minHeight: 32,
+    paddingVertical: theme.spacing[1.5],
     paddingHorizontal: theme.spacing[3],
-    borderRadius: theme.borderRadius.lg,
+    borderRadius: theme.borderRadius.md,
   },
   // Compact header entries (New workspace / History) sit tighter than the
   // workspace-row shape the base button mirrors.

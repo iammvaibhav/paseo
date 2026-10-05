@@ -1219,7 +1219,7 @@ const styles = StyleSheet.create((theme) => ({
     gap: 2,
     paddingBottom: theme.spacing[1.5],
     borderBottomWidth: 1,
-    borderBottomColor: theme.colors.border,
+    borderBottomColor: theme.colors.sidebarDivider,
   },
   sidebarHeaderGroupBelowChrome: {
     paddingTop: 0,
@@ -1318,7 +1318,7 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing[2],
     paddingVertical: theme.spacing[3],
     borderTopWidth: 1,
-    borderTopColor: theme.colors.border,
+    borderTopColor: theme.colors.sidebarDivider,
   },
   footerIconRow: {
     flexDirection: "row",
