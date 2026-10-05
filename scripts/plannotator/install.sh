@@ -60,7 +60,14 @@ ensure_binary() {
     args+=(--version="$PLANNOTATOR_VERSION")
   fi
 
-  curl -fsSL "$INSTALL_URL" | bash -s -- "${args[@]}"
+  # Download first: piping into bash lets the installer exit before curl has
+  # written everything, and pipefail then reports curl's write error (exit 23)
+  # for an install that succeeded.
+  local installer
+  installer="$(mktemp)"
+  curl -fsSL "$INSTALL_URL" -o "$installer"
+  bash "$installer" "${args[@]}"
+  rm -f "$installer"
 
   if [[ ! -x "$BIN" ]]; then
     # Upstream may install elsewhere on PATH; try to locate and copy.
