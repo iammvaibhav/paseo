@@ -1,16 +1,12 @@
 import {
   useCallback,
-  useEffect,
-  useMemo,
-  useRef,
   useState,
   type PropsWithChildren,
   type ReactElement,
   type ReactNode,
 } from "react";
-import { Dimensions, Pressable, Text, View, type GestureResponderEvent } from "react-native";
+import { Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
-import { FadeIn, FadeOut } from "react-native-reanimated";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import {
   Check,
@@ -25,21 +21,16 @@ import { getForgePresentation, normalizeForge } from "@/git/forge";
 import { ForgeBrandIcon } from "@/git/forge-icon";
 import type { Theme } from "@/styles/theme";
 import { DiffStat } from "@/components/diff-stat";
-import { createPortal } from "react-dom";
-import { Portal } from "@gorhom/portal";
-import { useBottomSheetModalInternal } from "@gorhom/bottom-sheet";
-import type { PrHint } from "@/git/use-pr-status-query";
+import { Pressable } from "react-native";
+import type { GestureResponderEvent } from "react-native";
 import type { SidebarWorkspaceEntry } from "@/hooks/use-sidebar-workspaces-list";
+import type { PrHint } from "@/git/use-pr-status-query";
 import { openExternalUrl } from "@/utils/open-external-url";
 import { copyToClipboard } from "@/utils/copy-to-clipboard";
-import { OVERLAY_Z, getOverlayRoot } from "@/lib/overlay-root";
 import { PrBadge } from "@/components/sidebar-workspace-list";
-import { useHoverSafeZone } from "@/hooks/use-hover-safe-zone";
 import { useIsCompactFormFactor } from "@/constants/layout";
-import { FloatingSurface } from "@/components/ui/floating";
-import { isWeb } from "@/constants/platform";
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { useHosts } from "@/runtime/host-runtime";
-import { useSessionStore } from "@/stores/session-store";
 import {
   COUNTED_CHECK_PRESENTATIONS,
   countCheckPresentations,
@@ -48,6 +39,9 @@ import {
 import { formatCheckPresentationCountsLabel } from "@/git/check-presentation-copy";
 import { CheckPresentationIcon, getCheckPresentationTone } from "@/git/check-presentation.view";
 import { buildForgeChecksUrl } from "@/git/forge-url";
+import { useSessionStore } from "@/stores/session-store";
+
+const HOVER_CARD_WIDTH = 260;
 
 /**
  * The workspace's project description (the description field that exists:
@@ -70,54 +64,6 @@ function useWorkspaceProjectDescription(workspace: SidebarWorkspaceEntry): strin
   });
 }
 
-interface Rect {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
-function measureElement(element: View): Promise<Rect> {
-  return new Promise((resolve) => {
-    element.measureInWindow((x, y, width, height) => {
-      resolve({ x, y, width, height });
-    });
-  });
-}
-
-function computeHoverCardPosition({
-  triggerRect,
-  contentSize,
-  displayArea,
-  offset,
-}: {
-  triggerRect: Rect;
-  contentSize: { width: number; height: number };
-  displayArea: Rect;
-  offset: number;
-}): { x: number; y: number } {
-  let x = triggerRect.x + triggerRect.width + offset;
-  let y = triggerRect.y;
-
-  // If it overflows right, try left
-  if (x + contentSize.width > displayArea.width - 8) {
-    x = triggerRect.x - contentSize.width - offset;
-  }
-
-  // Constrain to screen
-  const padding = 8;
-  x = Math.max(padding, Math.min(displayArea.width - contentSize.width - padding, x));
-  y = Math.max(
-    displayArea.y + padding,
-    Math.min(displayArea.y + displayArea.height - contentSize.height - padding, y),
-  );
-
-  return { x, y };
-}
-
-const HOVER_GRACE_MS = 100;
-const HOVER_CARD_WIDTH = 260;
-
 interface WorkspaceHoverCardProps {
   workspace: SidebarWorkspaceEntry;
   prHint: PrHint | null;
@@ -132,189 +78,40 @@ export function WorkspaceHoverCard({
   disabled = false,
   children,
 }: PropsWithChildren<WorkspaceHoverCardProps>): ReactNode {
+  const { t } = useTranslation();
   const isCompact = useIsCompactFormFactor();
 
-  if (!isWeb || isCompact) {
+  if (isCompact) {
     return children;
   }
 
   return (
-    <WorkspaceHoverCardDesktop
-      workspace={workspace}
-      prHint={prHint}
-      isDragging={isDragging}
-      disabled={disabled}
-    >
-      {children}
-    </WorkspaceHoverCardDesktop>
-  );
-}
-
-function WorkspaceHoverCardDesktop({
-  workspace,
-  prHint,
-  isDragging,
-  disabled = false,
-  children,
-}: PropsWithChildren<WorkspaceHoverCardProps>): ReactElement {
-  const triggerRef = useRef<View>(null);
-  const contentRef = useRef<View>(null);
-  const [open, setOpen] = useState(false);
-  const graceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const triggerHoveredRef = useRef(false);
-
-  const clearGraceTimer = useCallback(() => {
-    if (graceTimerRef.current) {
-      clearTimeout(graceTimerRef.current);
-      graceTimerRef.current = null;
-    }
-  }, []);
-
-  const scheduleClose = useCallback(() => {
-    if (graceTimerRef.current) return;
-    graceTimerRef.current = setTimeout(() => {
-      graceTimerRef.current = null;
-      setOpen(false);
-    }, HOVER_GRACE_MS);
-  }, []);
-
-  const handleTriggerEnter = useCallback(() => {
-    triggerHoveredRef.current = true;
-    clearGraceTimer();
-    if (!isDragging && !disabled) {
-      setOpen(true);
-    }
-  }, [clearGraceTimer, disabled, isDragging]);
-
-  const handleTriggerLeave = useCallback(() => {
-    triggerHoveredRef.current = false;
-    scheduleClose();
-  }, [scheduleClose]);
-
-  // While open, the safe zone covers trigger + content + the bridge between
-  // them. Close only fires when the pointer leaves the safe zone; re-entering
-  // it (including the bridge) cancels the pending close.
-  useHoverSafeZone({
-    enabled: open,
-    triggerRef,
-    contentRef,
-    onEnterSafeZone: clearGraceTimer,
-    onLeaveSafeZone: scheduleClose,
-  });
-
-  // Close while another row interaction owns attention.
-  useEffect(() => {
-    if (isDragging || disabled) {
-      clearGraceTimer();
-      setOpen(false);
-    }
-  }, [clearGraceTimer, disabled, isDragging]);
-
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      clearGraceTimer();
-    };
-  }, [clearGraceTimer]);
-
-  return (
-    <View
-      ref={triggerRef}
-      collapsable={false}
-      onPointerEnter={handleTriggerEnter}
-      onPointerLeave={handleTriggerLeave}
-    >
-      {children}
-      {open ? (
-        <WorkspaceHoverCardContent
-          workspace={workspace}
-          prHint={prHint}
-          triggerRef={triggerRef}
-          contentRef={contentRef}
-        />
-      ) : null}
-    </View>
+    <HoverCard disabled={isDragging || disabled}>
+      <HoverCardTrigger>{children}</HoverCardTrigger>
+      <HoverCardContent
+        placement="right"
+        role="menu"
+        accessibilityLabel={t("workspace.hoverCard.scriptsAccessibility")}
+        testID="workspace-hover-card"
+        style={styles.card}
+      >
+        <WorkspaceHoverCardContent workspace={workspace} prHint={prHint} />
+      </HoverCardContent>
+    </HoverCard>
   );
 }
 
 function WorkspaceHoverCardContent({
   workspace,
   prHint,
-  triggerRef,
-  contentRef,
 }: {
   workspace: SidebarWorkspaceEntry;
   prHint: PrHint | null;
-  triggerRef: React.RefObject<View | null>;
-  contentRef: React.RefObject<View | null>;
-}): ReactElement | null {
+}): ReactElement {
   const { t } = useTranslation();
   const projectDescription = useWorkspaceProjectDescription(workspace);
-  const bottomSheetInternal = useBottomSheetModalInternal(true);
-  const [triggerRect, setTriggerRect] = useState<Rect | null>(null);
-  const [contentSize, setContentSize] = useState<{ width: number; height: number } | null>(null);
-  const [position, setPosition] = useState<{ x: number; y: number } | null>(null);
-
-  // Measure trigger — same pattern as tooltip.tsx
-  useEffect(() => {
-    if (!triggerRef.current) return;
-
-    let cancelled = false;
-    measureElement(triggerRef.current).then((rect) => {
-      if (cancelled) return;
-      setTriggerRect(rect);
-      return;
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [triggerRef]);
-
-  // Compute position when both measurements are available
-  useEffect(() => {
-    if (!triggerRect || !contentSize) return;
-    const { width: screenWidth, height: screenHeight } = Dimensions.get("window");
-    const displayArea = { x: 0, y: 0, width: screenWidth, height: screenHeight };
-    const result = computeHoverCardPosition({
-      triggerRect,
-      contentSize,
-      displayArea,
-      offset: 4,
-    });
-    setPosition(result);
-  }, [triggerRect, contentSize]);
-
-  const handleLayout = useCallback(
-    (event: { nativeEvent: { layout: { width: number; height: number } } }) => {
-      const { width, height } = event.nativeEvent.layout;
-      setContentSize({ width, height });
-    },
-    [],
-  );
-
-  const frameStyle = useMemo(
-    () => ({
-      position: "absolute" as const,
-      top: position?.y ?? -9999,
-      left: position?.x ?? -9999,
-    }),
-    [position?.x, position?.y],
-  );
-
-  const surface = (
-    <FloatingSurface
-      ref={contentRef}
-      entering={FadeIn.duration(80)}
-      exiting={FadeOut.duration(80)}
-      collapsable={false}
-      onLayout={handleLayout}
-      accessibilityRole="menu"
-      accessibilityLabel={t("workspace.hoverCard.scriptsAccessibility")}
-      testID="workspace-hover-card"
-      style={styles.card}
-      frameStyle={frameStyle}
-    >
+  return (
+    <>
       <View style={styles.cardHeader}>
         <Text style={styles.cardTitle} testID="hover-card-workspace-name">
           {workspace.name}
@@ -364,24 +161,7 @@ function WorkspaceHoverCardContent({
           <ChecksSummaryPressable checks={prHint.checks} url={prHint.url} forge={prHint.forge} />
         </>
       ) : null}
-    </FloatingSurface>
-  );
-
-  if (!isWeb || typeof document === "undefined") {
-    return (
-      <Portal hostName={bottomSheetInternal?.hostName}>
-        <View pointerEvents="box-none" style={styles.portalOverlay}>
-          {surface}
-        </View>
-      </Portal>
-    );
-  }
-
-  return createPortal(
-    <View pointerEvents="box-none" style={styles.portalOverlay}>
-      {surface}
-    </View>,
-    getOverlayRoot(),
+    </>
   );
 }
 
@@ -602,14 +382,6 @@ function checksSummaryPressableStyle({ hovered = false }: { pressed: boolean; ho
 }
 
 const styles = StyleSheet.create((theme) => ({
-  portalOverlay: {
-    position: "absolute",
-    top: 0,
-    right: 0,
-    bottom: 0,
-    left: 0,
-    zIndex: OVERLAY_Z.tooltip,
-  },
   card: {
     backgroundColor: theme.colors.surface1,
     borderWidth: 1,
@@ -622,7 +394,6 @@ const styles = StyleSheet.create((theme) => ({
     shadowOpacity: 0.2,
     shadowRadius: 8,
     elevation: 8,
-    zIndex: OVERLAY_Z.tooltip,
   },
   cardHeader: {
     flexDirection: "row",
@@ -638,8 +409,6 @@ const styles = StyleSheet.create((theme) => ({
     flex: 1,
     minWidth: 0,
   },
-  // The project description under the workspace name: secondary text, wrapped
-  // up to three lines, same horizontal rhythm as the header and info rows.
   cardDescription: {
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.xs,

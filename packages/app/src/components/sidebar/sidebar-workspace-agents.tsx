@@ -2,7 +2,7 @@ import { useCallback, useMemo } from "react";
 import { Pressable, Text, View, type PressableStateCallbackType } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { useTranslation } from "react-i18next";
-import { useLiveTimeAgo } from "@/hooks/use-compact-time-ago";
+import { useTimeAgo } from "@/hooks/use-time-ago";
 import type { SidebarWorkspaceEntry } from "@/hooks/use-sidebar-workspaces-list";
 import type { SidebarAgentEntry } from "@/hooks/use-sidebar-workspace-agents";
 import { navigateToAgent } from "@/utils/navigate-to-agent";
@@ -118,7 +118,7 @@ function SidebarAgentRow({
   // The visible timestamp follows the active sort so the order always explains itself:
   // sorted by activity the rows say how long ago each agent last worked, sorted by
   // creation the rows say when each was created.
-  const timeAgo = useLiveTimeAgo(agentsSort === "created" ? agent.createdAt : agent.lastActivityAt);
+  const timeAgo = useTimeAgo(agentsSort === "created" ? agent.createdAt : agent.lastActivityAt);
   const title = agent.title ?? agent.name ?? t("agentList.fallbackTitle");
   const handlePress = useCallback(() => {
     navigateToAgent({

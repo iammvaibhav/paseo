@@ -1,7 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DaemonServerInfo } from "@/stores/session-store";
-import type { AudioEngine } from "@/voice/audio-engine-types";
+import type { AudioEngine } from "@/audio";
 import { createVoiceRuntime, type VoiceSessionAdapter } from "@/voice/voice-runtime";
+import { REALTIME_VOICE_VAD_CONFIG } from "@/voice/realtime-voice-config";
+
+const CUE_MIME_TYPE = "audio/pcm;rate=16000;bits=16";
+const THINKING_TONE_MIN_SILENCE_MS = 1500;
+const SEGMENT_MIME_TYPE = "audio/pcm;rate=24000;bits=16";
 
 function createAudioEngineMock(): AudioEngine {
   return {
@@ -51,7 +56,6 @@ function createServerInfo(): DaemonServerInfo {
   return {
     serverId: "server-1",
     hostname: "host",
-    missionControlHostAlias: null,
     version: "1.0.0",
     capabilities: {
       voice: {
@@ -245,7 +249,7 @@ describe("voice runtime", () => {
 
   it("leaves playback phase unchanged after assistant playback while the turn is still active", async () => {
     const adapter = createSessionAdapter();
-    const { runtime } = createRuntime();
+    const { runtime, engine } = createRuntime();
     runtime.registerSession(adapter);
 
     await runtime.startVoice("server-1", "agent-1");
@@ -254,9 +258,11 @@ describe("voice runtime", () => {
     runtime.onAssistantAudioFinished("server-1");
 
     expect(runtime.getSnapshot().phase).toBe("waiting");
+    await vi.advanceTimersByTimeAsync(THINKING_TONE_MIN_SILENCE_MS);
+    expect(engine.play).toHaveBeenCalled();
   });
 
-  it("does not play a thinking tone while waiting for the agent turn", async () => {
+  it("starts the thinking tone once the wait for a reply outlasts an inter-segment gap", async () => {
     const adapter = createSessionAdapter();
     const { runtime, engine } = createRuntime();
     runtime.registerSession(adapter);
@@ -265,38 +271,132 @@ describe("voice runtime", () => {
     runtime.onTurnEvent("server-1", "agent-1", "turn_started");
 
     expect(runtime.getSnapshot().phase).toBe("waiting");
+    await vi.advanceTimersByTimeAsync(THINKING_TONE_MIN_SILENCE_MS - 1);
     expect(engine.play).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(1);
+    expect(engine.play).toHaveBeenCalled();
   });
 
-  it("interrupts assistant playback when server speech is detected while waiting", async () => {
+  it("does not restart the thinking tone from local detection jitter while waiting", async () => {
     const adapter = createSessionAdapter();
-    const { runtime, engine } = createRuntime();
+    let resolvePlay!: (duration: number) => void;
+    const engine = createAudioEngineMock();
+    vi.mocked(engine.play).mockImplementation(
+      () =>
+        new Promise<number>((resolve) => {
+          resolvePlay = resolve;
+        }),
+    );
+    const { runtime } = createRuntime({ engine });
     runtime.registerSession(adapter);
 
     await runtime.startVoice("server-1", "agent-1");
     runtime.onTurnEvent("server-1", "agent-1", "turn_started");
+
+    expect(runtime.getSnapshot().phase).toBe("waiting");
+    await vi.advanceTimersByTimeAsync(THINKING_TONE_MIN_SILENCE_MS);
+    expect(engine.play).toHaveBeenCalledTimes(1);
+    vi.mocked(engine.stop).mockClear();
+    vi.mocked(engine.clearQueue).mockClear();
+
+    runtime.handleCaptureVolume(REALTIME_VOICE_VAD_CONFIG.volumeThreshold + 0.05);
+    runtime.handleCaptureVolume(0);
+
+    expect(engine.stop).not.toHaveBeenCalled();
+    expect(engine.clearQueue).not.toHaveBeenCalled();
+    expect(engine.play).toHaveBeenCalledTimes(1);
+
+    runtime.onServerSpeechStateChanged("server-1", true);
+
+    expect(engine.stop).not.toHaveBeenCalled();
+    expect(engine.clearQueue).not.toHaveBeenCalled();
+    expect(vi.mocked(engine.play).mock.calls[0][1]?.aborted).toBe(true);
+
+    resolvePlay(0.1);
+  });
+
+  it("does not interrupt assistant playback on speech in queue mode", async () => {
+    const adapter = createSessionAdapter();
+    const { runtime, engine } = createRuntime();
+    runtime.registerSession(adapter);
+
+    await runtime.startVoice("server-1", "agent-1", { sendBehavior: "queue" });
     runtime.onAssistantAudioStarted("server-1");
     vi.mocked(engine.stop).mockClear();
     vi.mocked(engine.clearQueue).mockClear();
 
     runtime.onServerSpeechStateChanged("server-1", true);
 
-    expect(engine.stop).toHaveBeenCalledTimes(1);
-    expect(engine.clearQueue).toHaveBeenCalledTimes(1);
+    expect(engine.stop).not.toHaveBeenCalled();
+    expect(engine.clearQueue).not.toHaveBeenCalled();
+    expect(runtime.getTelemetrySnapshot().isSpeaking).toBe(true);
+    expect(adapter.setVoiceMode).toHaveBeenCalledWith(true, "agent-1", {
+      sendBehavior: "queue",
+    });
   });
 
-  it("returns to listening after assistant playback once the turn is complete", async () => {
+  it("does not play the thinking tone in the gap between two segments of one reply", async () => {
     const adapter = createSessionAdapter();
-    const { runtime } = createRuntime();
+    const engine = createAudioEngineMock();
+    const played: string[] = [];
+    vi.mocked(engine.play).mockImplementation(async (source: { type: string }) => {
+      played.push(source.type);
+      return 0.1;
+    });
+    const { runtime } = createRuntime({ engine });
     runtime.registerSession(adapter);
 
     await runtime.startVoice("server-1", "agent-1");
     runtime.onTurnEvent("server-1", "agent-1", "turn_started");
+
+    runtime.handleAudioOutput(
+      "server-1",
+      createAudioPayload({
+        id: "seg-1-chunk-0",
+        groupId: "seg-1",
+        chunkIndex: 0,
+        isLastChunk: true,
+      }),
+    );
+    await vi.waitFor(() => {
+      expect(runtime.getSnapshot().phase).toBe("waiting");
+    });
+
+    await vi.advanceTimersByTimeAsync(400);
+
+    runtime.handleAudioOutput(
+      "server-1",
+      createAudioPayload({
+        id: "seg-2-chunk-0",
+        groupId: "seg-2",
+        chunkIndex: 0,
+        isLastChunk: true,
+      }),
+    );
+    await vi.waitFor(() => {
+      expect(played).toContain(SEGMENT_MIME_TYPE);
+    });
+
+    const replyStart = played.indexOf(SEGMENT_MIME_TYPE);
+    expect(replyStart).toBeGreaterThanOrEqual(0);
+    expect(played.slice(replyStart).filter((type) => type === CUE_MIME_TYPE)).toEqual([]);
+  });
+
+  it("returns to listening after assistant playback once the turn is complete", async () => {
+    const adapter = createSessionAdapter();
+    const { runtime, engine } = createRuntime();
+    runtime.registerSession(adapter);
+
+    await runtime.startVoice("server-1", "agent-1");
+    runtime.onTurnEvent("server-1", "agent-1", "turn_started");
+    await vi.advanceTimersByTimeAsync(THINKING_TONE_MIN_SILENCE_MS);
     runtime.onAssistantAudioStarted("server-1");
     runtime.onTurnEvent("server-1", "agent-1", "turn_completed");
     runtime.onAssistantAudioFinished("server-1");
 
     expect(runtime.getSnapshot().phase).toBe("listening");
+    expect(engine.play).toHaveBeenCalled();
   });
 
   it("keeps local volume alone non-authoritative for playback interruption", async () => {
@@ -350,26 +450,6 @@ describe("voice runtime", () => {
     expect(engine.clearQueue).toHaveBeenCalled();
     expect(adapter.setAssistantAudioPlaying).toHaveBeenCalledWith(false);
     expect(runtime.getTelemetrySnapshot().isSpeaking).toBe(true);
-  });
-
-  it("does not interrupt assistant playback on speech in queue mode", async () => {
-    const adapter = createSessionAdapter();
-    const { runtime, engine } = createRuntime();
-    runtime.registerSession(adapter);
-
-    await runtime.startVoice("server-1", "agent-1", { sendBehavior: "queue" });
-    runtime.onAssistantAudioStarted("server-1");
-    vi.mocked(engine.stop).mockClear();
-    vi.mocked(engine.clearQueue).mockClear();
-
-    runtime.onServerSpeechStateChanged("server-1", true);
-
-    expect(engine.stop).not.toHaveBeenCalled();
-    expect(engine.clearQueue).not.toHaveBeenCalled();
-    expect(runtime.getTelemetrySnapshot().isSpeaking).toBe(true);
-    expect(adapter.setVoiceMode).toHaveBeenCalledWith(true, "agent-1", {
-      sendBehavior: "queue",
-    });
   });
 
   it("drops queued voice chunks that arrive after server speech interrupts playback", async () => {

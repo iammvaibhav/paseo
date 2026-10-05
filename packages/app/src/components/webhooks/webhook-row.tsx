@@ -10,7 +10,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { StatusBadge } from "@/components/ui/status-badge";
-import { getProviderIcon } from "@/components/provider-icons";
+import { useProviderIcon } from "@/components/provider-icons";
 import { isNative } from "@/constants/platform";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { settingsStyles } from "@/styles/settings";
@@ -86,12 +86,12 @@ function buildMeta(
 }
 
 /** Small provider glyph. Reads the icon color off a StyleSheet object so the
- * dynamic component (getProviderIcon) stays compliant without useUnistyles. */
+ * dynamic component (useProviderIcon) stays compliant without useUnistyles. */
 function ProviderGlyph({ provider }: { provider: string | null }): ReactElement | null {
+  const Icon = useProviderIcon(provider ?? "");
   if (!provider) {
     return null;
   }
-  const Icon = getProviderIcon(provider);
   return <Icon size={PROVIDER_ICON_SIZE} color={styles.providerIcon.color} />;
 }
 

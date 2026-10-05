@@ -6,32 +6,6 @@ const path = require("path");
 const projectRoot = __dirname;
 const appNodeModulesRoot = path.resolve(projectRoot, "node_modules");
 const appSrcRoot = path.resolve(projectRoot, "src");
-// In a git worktree the shared node_modules resolve @getpaseo/relay to the source checkout, so
-// relay sources can live outside this checkout. Match both roots for the .js -> .ts rewrite.
-const relaySrcRoots = Array.from(
-  new Set(
-    [path.resolve(projectRoot, "../relay/src"), linkedRelaySrcRoot()].filter(
-      (root) => root !== null,
-    ),
-  ),
-);
-
-function linkedRelaySrcRoot() {
-  const candidates = [path.resolve(projectRoot, "../../node_modules/@getpaseo/relay")];
-  try {
-    if (fs.existsSync(appNodeModulesRoot)) {
-      const real = fs.realpathSync(appNodeModulesRoot);
-      candidates.push(path.resolve(real, "../../relay"));
-    }
-  } catch {}
-  for (const candidate of candidates) {
-    try {
-      const resolved = path.join(fs.realpathSync(candidate), "src");
-      if (fs.existsSync(resolved)) return resolved;
-    } catch {}
-  }
-  return null;
-}
 const isFdroidBuild = process.env.PASEO_FDROID_BUILD === "1";
 const fdroidModuleOverrides = {
   "expo-camera": path.resolve(appSrcRoot, "fdroid/expo-camera.tsx"),
@@ -135,20 +109,6 @@ function resolveWithCustomWebOverlay(context, moduleName, platform) {
 config.resolver.resolveRequest = (context, moduleName, platform) => {
   if (isFdroidBuild && platform === "android" && fdroidModuleOverrides[moduleName]) {
     return resolveWithCustomWebOverlay(context, fdroidModuleOverrides[moduleName], platform);
-  }
-
-  const origin = context.originModulePath;
-  if (
-    origin &&
-    moduleName.endsWith(".js") &&
-    (relaySrcRoots.some((root) => origin.startsWith(root)) ||
-      origin.includes(`${path.sep}packages${path.sep}relay${path.sep}src${path.sep}`))
-  ) {
-    const tsModuleName = moduleName.replace(/\.js$/, ".ts");
-    const candidatePath = path.resolve(path.dirname(origin), tsModuleName);
-    if (fs.existsSync(candidatePath)) {
-      return resolveWithCustomWebOverlay(context, tsModuleName, platform);
-    }
   }
 
   return resolveWithCustomWebOverlay(context, moduleName, platform);

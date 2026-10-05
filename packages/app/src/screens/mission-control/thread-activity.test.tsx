@@ -154,7 +154,6 @@ vi.mock("lucide-react-native", () => ({
 }));
 
 vi.mock("@/constants/layout", () => ({
-  MAX_CONTENT_WIDTH: 640,
   useIsCompactFormFactor: () => false,
 }));
 

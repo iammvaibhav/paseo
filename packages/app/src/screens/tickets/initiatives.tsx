@@ -10,7 +10,6 @@ import { MenuHeader } from "@/components/headers/menu-header";
 import { Button } from "@/components/ui/button";
 import { mutedIconColorMapping } from "@/components/ui/icon-color";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
-import { MAX_CONTENT_WIDTH } from "@/constants/layout";
 import { ICON_SIZE } from "@/styles/theme";
 import { useInitiatives, useTicketBoards } from "@/tickets/queries";
 import { buildTicketInitiativeRoute, buildTicketsRoute } from "@/tickets/routes";
@@ -283,7 +282,7 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: "space-between",
     gap: theme.spacing[3],
     width: "100%",
-    maxWidth: MAX_CONTENT_WIDTH,
+    maxWidth: theme.contentMaxWidth,
     alignSelf: "center",
   },
   scroll: {
@@ -298,7 +297,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   reading: {
     width: "100%",
-    maxWidth: MAX_CONTENT_WIDTH,
+    maxWidth: theme.contentMaxWidth,
     alignSelf: "center",
   },
 }));

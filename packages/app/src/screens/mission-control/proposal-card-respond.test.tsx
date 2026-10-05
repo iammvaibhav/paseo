@@ -69,8 +69,8 @@ vi.mock("@/runtime/host-runtime", () => ({
 vi.mock("@/contexts/toast-context", () => ({
   useToast: () => ({ error: toastErrorMock }),
 }));
-vi.mock("@/hooks/use-compact-time-ago", () => ({
-  useLiveTimeAgo: () => "just now",
+vi.mock("@/hooks/use-time-ago", () => ({
+  useTimeAgo: () => "just now",
 }));
 vi.mock("@/components/host-glyph", () => ({
   HostGlyph: ({ label, size, testID }: { label: string; size: string; testID: string }) => (

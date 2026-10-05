@@ -7,6 +7,7 @@ on:
       - "CHANGELOG.md"
       - "public-docs/**"
       - "packages/website/**"
+      - "packages/protocol/**"
       - "package.json"
       - "pnpm-lock.yaml"
       - "patches/**"
@@ -30,6 +31,9 @@ jobs:
 
       - name: Install dependencies
         run: node scripts/pnpm-retry.mjs install --frozen-lockfile
+
+      - name: Build protocol
+        run: pnpm run build:protocol
 
       - name: Typecheck
         run: pnpm --filter @getpaseo/website run typecheck

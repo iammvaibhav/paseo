@@ -538,7 +538,7 @@ export const AgentGridDraftTile = memo(function AgentGridDraftTile({
           clearDraft={chatDraft.clear}
           autoFocus={true}
           autoFocusKey={draftId}
-          commandDraftConfig={chatDraft.composerState?.commandDraftConfig}
+          commandDraft={chatDraft.composerState?.commandDraft}
           agentControls={chatDraft.composerState?.agentControls}
         />
       </View>

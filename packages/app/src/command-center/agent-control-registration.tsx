@@ -13,7 +13,7 @@ import {
   PlanModeIcon,
   ThinkingIcon,
 } from "@/agent-controls/icons";
-import { getProviderIcon } from "@/components/provider-icons";
+import { useProviderIcons } from "@/components/provider-icons";
 import {
   filterHiddenProviderModelRows,
   getAllProviderModelRows,
@@ -109,6 +109,7 @@ export function useAgentControlCommandCenterActions(input: {
       }),
     [hiddenKeys, models.providers, models.selectedModelId, models.selectedProvider],
   );
+  const getProviderIcon = useProviderIcons(controls.serverId);
   const actions = useMemo(
     () =>
       buildAgentControlContributions({
@@ -117,8 +118,7 @@ export function useAgentControlCommandCenterActions(input: {
         provider: controls.provider ?? null,
         labels: buildAgentControlContributionLabels(t),
         icons: {
-          provider: (provider) =>
-            getCommandCenterIcon(getProviderIcon(provider, controls.serverId)),
+          provider: (provider) => getCommandCenterIcon(getProviderIcon(provider)),
           thinking: getCommandCenterIcon(ThinkingIcon),
           planMode: getCommandCenterIcon(PlanModeIcon),
           mode: (modeId) =>
@@ -150,6 +150,7 @@ export function useAgentControlCommandCenterActions(input: {
         },
       }),
     [
+      getProviderIcon,
       controls.ownerKey,
       controls.provider,
       controls.providerDefinitions,

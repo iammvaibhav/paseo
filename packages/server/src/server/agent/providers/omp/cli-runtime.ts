@@ -1,5 +1,7 @@
+import { createExternalProcessEnv } from "../../../paseo-env.js";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import type { Logger } from "pino";
+import { z } from "zod";
 
 import type { ProviderRuntimeSettings } from "../../provider-launch-config.js";
 import {
@@ -26,6 +28,7 @@ import {
   OmpPromptAckSchema,
   OmpRpcCommandSchema,
   OmpRuntimeEventSchema,
+  parseOmpRuntimeEvent,
   OmpSessionStateSchema,
   OmpSessionStatsSchema,
   OmpSwitchSessionResultSchema,
@@ -82,6 +85,7 @@ export class OmpCliRuntime implements OmpRuntime {
       runtimeSettings: this.options.runtimeSettings,
       session: input,
     });
+    launch.env = createExternalProcessEnv(globalThis.process.env, launch.env ?? {});
     const [command, ...args] = launch.argv;
     const processLaunch: JsonlRpcLaunch = {
       command,
@@ -106,7 +110,12 @@ export class OmpCliRuntime implements OmpRuntime {
         requestTimeoutMs: this.options.requestTimeoutMs,
       });
       input.signal?.throwIfAborted();
-      return new OmpCliRuntimeSession(process, this.commandsRpcName, this.options.logger);
+      return new OmpCliRuntimeSession(
+        process,
+        this.commandsRpcName,
+        launch.env,
+        this.options.logger,
+      );
     } catch (error) {
       const startupError = error instanceof Error ? error : new Error(String(error));
       await process.close(startupError);
@@ -124,12 +133,13 @@ class OmpCliRuntimeSession implements OmpRuntimeSession {
   constructor(
     private readonly process: JsonlRpcProcess,
     private readonly commandsRpcName: "get_available_commands",
+    private readonly launchEnvironment: Record<string, string>,
     private readonly logger: Logger,
   ) {
     process.onMessage((message) => {
-      const event = OmpRuntimeEventSchema.safeParse(message);
-      if (event.success) {
-        this.emit(event.data);
+      const event = parseOmpRuntimeEvent(message);
+      if (event) {
+        this.emit(event);
         return;
       }
       // A frame the daemon's schema rejects is dropped here with no other
@@ -140,8 +150,8 @@ class OmpCliRuntimeSession implements OmpRuntimeSession {
         {
           frameType: typeof message.type === "string" ? message.type : "<non-string type>",
           frameKeys: Object.keys(message).slice(0, 12),
-          issue: event.error.issues
-            ?.slice(0, 3)
+          issue: OmpRuntimeEventSchema.safeParse(message)
+            .error?.issues?.slice(0, 3)
             .map((issue) => `${issue.path.join(".")}: ${issue.message}`),
         },
         "omp.rpc.schema_drop",
@@ -150,6 +160,10 @@ class OmpCliRuntimeSession implements OmpRuntimeSession {
     process.onExit(({ error }) => {
       this.emit({ type: "process_exit", error: error.message });
     });
+  }
+
+  get environment(): Record<string, string> {
+    return this.launchEnvironment;
   }
 
   onEvent(callback: (event: OmpRuntimeEvent) => void): () => void {
@@ -193,11 +207,16 @@ class OmpCliRuntimeSession implements OmpRuntimeSession {
   private static readonly ABORT_TIMEOUT_MS = 1_000;
 
   async abort(timeoutMs = OmpCliRuntimeSession.ABORT_TIMEOUT_MS): Promise<void> {
-    await this.request({ type: "abort" }, timeoutMs);
+    await this.requestStopWork({ type: "abort" }, timeoutMs);
   }
 
   async getState(): Promise<OmpSessionState> {
     return OmpSessionStateSchema.parse(await this.request({ type: "get_state" }));
+  }
+
+  async setFastMode(enabled: boolean): Promise<{ enabled: boolean; active: boolean }> {
+    const result = await this.request({ type: "set_fast_mode", enabled });
+    return z.object({ enabled: z.boolean(), active: z.boolean() }).parse(result);
   }
 
   async getMessages(): Promise<OmpAgentMessage[]> {
@@ -335,8 +354,11 @@ class OmpCliRuntimeSession implements OmpRuntimeSession {
     return data.messages ?? [];
   }
 
-  steer(message: string, images?: Array<{ type: "image"; data: string; mimeType: string }>): void {
-    this.process.send({ type: "steer", message, ...(images?.length ? { images } : {}) });
+  async steer(
+    message: string,
+    images?: Array<{ type: "image"; data: string; mimeType: string }>,
+  ): Promise<void> {
+    await this.request({ type: "steer", message, ...(images?.length ? { images } : {}) });
   }
 
   followUp(
@@ -373,6 +395,10 @@ class OmpCliRuntimeSession implements OmpRuntimeSession {
 
   private request(command: OmpRpcCommand, timeoutMs?: number | null): Promise<unknown> {
     return this.process.request(OmpRpcCommandSchema.parse(command), timeoutMs);
+  }
+
+  private requestStopWork(command: OmpRpcCommand, timeoutMs?: number | null): Promise<void> {
+    return this.process.requestStopWork(OmpRpcCommandSchema.parse(command), timeoutMs);
   }
 
   private emit(event: OmpRuntimeEvent): void {

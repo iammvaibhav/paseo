@@ -18,7 +18,6 @@ import { Button } from "@/components/ui/button";
 import { mutedIconColorMapping } from "@/components/ui/icon-color";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { SegmentedControl, type SegmentedControlOption } from "@/components/ui/segmented-control";
-import { MAX_CONTENT_WIDTH } from "@/constants/layout";
 import { useToast } from "@/contexts/toast-context";
 import { ICON_SIZE } from "@/styles/theme";
 import {
@@ -467,7 +466,7 @@ const styles = StyleSheet.create((theme) => ({
   },
   reading: {
     width: "100%",
-    maxWidth: MAX_CONTENT_WIDTH,
+    maxWidth: theme.contentMaxWidth,
     alignSelf: "center",
   },
   // The lanes carry their own horizontal padding, so only the gap under the tab bar is set here.

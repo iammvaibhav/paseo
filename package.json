@@ -1,6 +1,6 @@
 {
   "name": "paseo",
-  "version": "0.9.0",
+  "version": "0.11.0-beta.4",
   "private": true,
   "description": "Paseo: voice-controlled development environment for local AI coding agents",
   "keywords": [
@@ -53,7 +53,7 @@
     "watch:protocol": "pnpm --filter @getpaseo/protocol run watch",
     "watch:client": "tsc -p packages/client/tsconfig.json --watch --preserveWatchOutput",
     "typecheck": "pnpm --if-present -r --no-bail run typecheck",
-    "typecheck:server": "pnpm --filter @getpaseo/relay run typecheck && pnpm --filter @getpaseo/protocol run typecheck && pnpm --filter @getpaseo/client run typecheck && pnpm --filter @getpaseo/server run typecheck && pnpm --filter @getpaseo/cli run typecheck",
+    "typecheck:server": "pnpm --filter @getpaseo/relay run typecheck && pnpm --filter @getpaseo/protocol run typecheck && pnpm --filter @getpaseo/client run typecheck && pnpm --filter @getpaseo/builtin-plugins run typecheck && pnpm --filter @getpaseo/server run typecheck && pnpm --filter @getpaseo/cli run typecheck",
     "test": "pnpm --if-present -r run test",
     "format": "oxfmt .",
     "format:files": "oxfmt",

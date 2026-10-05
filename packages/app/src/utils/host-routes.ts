@@ -558,6 +558,10 @@ export function buildWebhooksRoute() {
   return "/webhooks" as const;
 }
 
+export function buildUsageRoute() {
+  return "/usage" as const;
+}
+
 export function buildOpenProjectRoute() {
   return "/open-project" as const;
 }
@@ -623,7 +627,10 @@ export const SETTINGS_SECTION_SLUGS = [
   "general",
   "mission-control",
   "appearance",
-  "layout",
+  "sidebar",
+  "chat",
+  "terminal",
+  "browser",
   "editor",
   "shortcuts",
   "integrations",

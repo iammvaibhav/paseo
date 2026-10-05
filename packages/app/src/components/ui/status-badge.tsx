@@ -9,9 +9,27 @@ interface StatusBadgeProps {
   variant?: StatusBadgeVariant;
   leading?: ReactNode;
   testID?: string;
+  /** `xs` fits beside a line of `sm` text: the same label on tighter padding. */
+  size?: "sm" | "xs";
 }
 
-export function StatusBadge({ label, variant = "muted", leading, testID }: StatusBadgeProps) {
+export function StatusBadge({
+  label,
+  variant = "muted",
+  leading,
+  size = "sm",
+  testID,
+}: StatusBadgeProps) {
+  const pillStyle = useMemo(
+    () => [
+      styles.pill,
+      size === "xs" && styles.pillXs,
+      variant === "success" && styles.pillSuccess,
+      variant === "warning" && styles.pillWarning,
+      variant === "error" && styles.pillError,
+    ],
+    [size, variant],
+  );
   const textStyle = useMemo(
     () => [
       styles.pillText,
@@ -23,7 +41,7 @@ export function StatusBadge({ label, variant = "muted", leading, testID }: Statu
   );
 
   return (
-    <View style={styles.pill} testID={testID}>
+    <View style={pillStyle} testID={testID}>
       {leading}
       <Text style={textStyle}>{label}</Text>
     </View>
@@ -41,6 +59,22 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.surface3,
     paddingHorizontal: theme.spacing[2],
     paddingVertical: 3,
+  },
+  pillXs: {
+    paddingHorizontal: theme.spacing[1.5],
+    paddingVertical: 1,
+  },
+  pillSuccess: {
+    backgroundColor: theme.colors.statusSuccessTint,
+    borderColor: "transparent",
+  },
+  pillWarning: {
+    backgroundColor: theme.colors.statusWarningTint,
+    borderColor: "transparent",
+  },
+  pillError: {
+    backgroundColor: theme.colors.statusDangerTint,
+    borderColor: "transparent",
   },
   pillText: {
     fontSize: theme.fontSize.sm,

@@ -6,7 +6,7 @@ import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import type { TicketColumn, TicketSummary } from "@getpaseo/protocol/tickets/types";
 import { mutedIconColorMapping } from "@/components/ui/icon-color";
 import { StatusBadge } from "@/components/ui/status-badge";
-import { useCompactTimeAgo } from "@/hooks/use-compact-time-ago";
+import { useCompactTimeAgo } from "@/hooks/use-time-ago";
 import type { Theme } from "@/styles/theme";
 import { AssigneeAvatar } from "./assignee-avatar";
 import { PriorityIcon } from "./priority-icon";

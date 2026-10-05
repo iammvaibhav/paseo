@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState, type ReactElement } from "react";
 import { ScrollView, Text, View } from "react-native";
 import { useIsFocused } from "@react-navigation/native";
-import { CalendarClock, Github, GitBranch, Plus, Webhook } from "lucide-react-native";
+import { CalendarClock, GitBranch, Plus, Webhook } from "lucide-react-native";
+import { getForgeIconComponent } from "@/git/forge-icon";
 import { StyleSheet } from "react-native-unistyles";
 import { MenuHeader } from "@/components/headers/menu-header";
 import { Button } from "@/components/ui/button";
@@ -365,7 +366,7 @@ function AutomationLatestRun({
 const KIND_ICONS = {
   schedule: CalendarClock,
   webhook: Webhook,
-  github: Github,
+  github: getForgeIconComponent("github"),
   linear: GitBranch,
 } as const;
 

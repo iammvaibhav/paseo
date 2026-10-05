@@ -11,7 +11,7 @@ import { encodeOmpSessionDirName } from "./warm-pool.js";
  *
  * Why it must be carried at all: an OMP resume handle is an absolute path to a
  * `.jsonl` transcript on the source host (`persistence.nativeHandle`). After a
- * move, `resolveOmpSessionFile` cannot find that path on the target, falls back
+ * move, `locateOmpSessionFile` cannot find that path on the target, falls back
  * to a basename search that only accepts files over 2000 bytes, and
  * `ensureResumableSessionFile` then writes a fresh header — so the agent
  * resumes with an empty conversation. Losing the transcript silently is worse

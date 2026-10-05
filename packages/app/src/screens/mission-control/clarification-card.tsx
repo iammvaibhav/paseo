@@ -10,7 +10,7 @@ import { dispatchComposerAgentMessage } from "@/composer/actions";
 import { createMessageSubmissionWriter } from "@/composer/submission/writer";
 import { encodeImages } from "@/utils/encode-images";
 import { HostGlyph } from "@/components/host-glyph";
-import { useLiveTimeAgo } from "@/hooks/use-compact-time-ago";
+import { useTimeAgo } from "@/hooks/use-time-ago";
 import { resolveSessionAgent } from "@/utils/agent-snapshots";
 import { useSessionStore } from "@/stores/session-store";
 import { useMissionControlCentralConfig } from "@/mission-control/central-config";
@@ -47,7 +47,7 @@ export function ClarificationCard({
   const agentTitle = event.agentTitle;
   const agentChipLabel = hideAgentNames ? agentTitle : (liveAgent?.name ?? event.agentTitle);
   const timestamp = new Date(event.ts);
-  const timeAgo = useLiveTimeAgo(timestamp);
+  const timeAgo = useTimeAgo(timestamp);
   const handleOpenAgent = useCallback(() => {
     useInspectorStore.getState().openInspectorAgent({
       serverId: event.serverId,
