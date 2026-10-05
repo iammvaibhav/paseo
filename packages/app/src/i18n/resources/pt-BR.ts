@@ -2438,6 +2438,7 @@ export const ptBR: TranslationResources = {
         options: {
           light: "Claro",
           dark: "Escuro",
+          mono: "Mono",
           zinc: "Zinc",
           midnight: "Midnight",
           claude: "Claude",

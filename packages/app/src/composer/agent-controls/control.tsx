@@ -95,6 +95,7 @@ export const AgentControlTrigger = forwardRef<View, AgentControlTriggerProps>(
 );
 
 const styles = StyleSheet.create((theme) => ({
+  // Outline chip, the same shell as CombinedModelSelector's trigger beside it.
   toolbarControl: {
     height: 28,
     minWidth: 0,
@@ -103,7 +104,9 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     gap: theme.spacing[1],
     paddingHorizontal: theme.spacing[2],
-    borderRadius: theme.borderRadius["2xl"],
+    borderRadius: theme.borderRadius.md,
+    borderWidth: theme.borderWidth[1],
+    borderColor: theme.colors.borderAccent,
     backgroundColor: "transparent",
   },
   toolbarIconOnly: {

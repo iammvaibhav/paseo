@@ -2232,7 +2232,9 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: "transparent",
     gap: theme.spacing[1],
     paddingHorizontal: theme.spacing[2],
-    borderRadius: theme.borderRadius["2xl"],
+    borderRadius: theme.borderRadius.md,
+    borderWidth: theme.borderWidth[1],
+    borderColor: theme.colors.borderAccent,
   },
   modelControl: {
     minWidth: 0,
@@ -2251,7 +2253,9 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: 0,
     flexShrink: 0,
     backgroundColor: "transparent",
-    borderRadius: theme.borderRadius.full,
+    borderRadius: theme.borderRadius.md,
+    borderWidth: theme.borderWidth[1],
+    borderColor: theme.colors.borderAccent,
   },
   modeBadgeHovered: {
     backgroundColor: theme.colors.surface2,

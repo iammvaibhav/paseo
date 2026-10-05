@@ -2455,6 +2455,7 @@ export const es: TranslationResources = {
         options: {
           light: "Luz",
           dark: "Oscuro",
+          mono: "Mono",
           zinc: "Zinc",
           midnight: "Medianoche",
           claude: "claudio",

@@ -541,6 +541,28 @@ const ghosttyDarkColors = buildDarkSemanticColors({
   terminalBrightBlack: "#4a4f5e",
 });
 
+// Mono — neutral gray with no tint and a blue accent, after the MonoCode desktop app.
+// Separators sit close to the surface so groups read through spacing, not lines.
+const monoDarkColors = buildDarkSemanticColors({
+  surface0: "#171717",
+  surface1: "#1c1c1c",
+  surface2: "#252525",
+  surface3: "#383838",
+  surface4: "#4d4d4d",
+  surfaceDiffEmpty: "#1f1f1f",
+  surfaceSidebar: "#131313",
+  foreground: "#ebebeb",
+  foregroundMuted: "#a3a3a3",
+  foregroundExtraMuted: "#737373",
+  border: "#262626",
+  borderAccent: "#303030",
+  accent: "#1f7ce0", // hsl(211 76% 50%): white label text clears 4:1 on the fill
+  accentBright: "#6aaef8",
+  destructive: "#c44a4a",
+  terminalBlack: "#131313",
+  terminalBrightBlack: "#383838",
+});
+
 export const SPACING = {
   0: 0,
   0.5: 2,
@@ -697,6 +719,7 @@ export const darkZincTheme = buildDarkTheme(zincDarkColors);
 export const darkMidnightTheme = buildDarkTheme(midnightDarkColors);
 export const darkClaudeTheme = buildDarkTheme(claudeDarkColors);
 export const darkGhosttyTheme = buildDarkTheme(ghosttyDarkColors);
+export const darkMonoTheme = buildDarkTheme(monoDarkColors);
 
 // Pure black — zero-luminance background with high-contrast surfaces.
 const pureBlackDarkColors = buildDarkSemanticColors({
@@ -775,6 +798,13 @@ export const THEME_OPTIONS = [
     swatch: "#2D8B62",
   },
   { name: "auto", group: "primary" },
+  {
+    name: "mono",
+    group: "variant",
+    unistylesName: "darkMono",
+    theme: darkMonoTheme,
+    swatch: "#459bf7",
+  },
   {
     name: "zinc",
     group: "variant",

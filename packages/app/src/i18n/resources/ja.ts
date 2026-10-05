@@ -2413,6 +2413,7 @@ export const ja: TranslationResources = {
         options: {
           light: "ライト",
           dark: "ダーク",
+          mono: "Mono",
           zinc: "Zinc",
           midnight: "Midnight",
           claude: "Claude",

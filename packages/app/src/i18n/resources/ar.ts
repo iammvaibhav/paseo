@@ -2397,6 +2397,7 @@ export const ar: TranslationResources = {
         options: {
           light: "ضوء",
           dark: "مظلم",
+          mono: "Mono",
           zinc: "الزنك",
           midnight: "منتصف الليل",
           claude: "كلود",

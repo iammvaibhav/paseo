@@ -2405,6 +2405,7 @@ export const ko: TranslationResources = {
         options: {
           light: "라이트",
           dark: "다크",
+          mono: "Mono",
           zinc: "Zinc",
           midnight: "Midnight",
           claude: "Claude",

@@ -2460,6 +2460,7 @@ export const fr: TranslationResources = {
         options: {
           light: "Lumière",
           dark: "Sombre",
+          mono: "Mono",
           zinc: "Zinc",
           midnight: "Minuit",
           claude: "Claude",

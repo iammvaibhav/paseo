@@ -73,27 +73,21 @@ export function createMarkdownStyles(theme: Theme) {
     heading1: {
       ...webSelectableTextStyle,
       fontSize: contentHeadingSize(theme.fontSize.content, "4xl"),
-      fontWeight: theme.fontWeight.bold,
+      fontWeight: theme.fontWeight.semibold,
       color: theme.colors.foreground,
       marginTop: theme.spacing[6],
       marginBottom: theme.spacing[3],
       lineHeight: contentHeadingLineHeight(theme.fontSize.content, "4xl"),
-      borderBottomWidth: 1,
-      borderBottomColor: theme.colors.border,
-      paddingBottom: theme.spacing[2],
     },
 
     heading2: {
       ...webSelectableTextStyle,
       fontSize: contentHeadingSize(theme.fontSize.content, "3xl"),
-      fontWeight: theme.fontWeight.bold,
+      fontWeight: theme.fontWeight.semibold,
       color: theme.colors.foreground,
       marginTop: theme.spacing[6],
       marginBottom: theme.spacing[3],
       lineHeight: contentHeadingLineHeight(theme.fontSize.content, "3xl"),
-      borderBottomWidth: 1,
-      borderBottomColor: theme.colors.border,
-      paddingBottom: theme.spacing[2],
     },
 
     heading3: {
@@ -238,29 +232,31 @@ export function createMarkdownStyles(theme: Theme) {
     // TABLES
     // =========================================================================
 
+    // One frame around the whole table, with faint row dividers and no column lines.
+    // `overflow: hidden` clips the row fills to the rounded frame, and the negative
+    // tbody margin hides the last row's divider under the frame's bottom edge.
     table: {
       borderWidth: 1,
       borderColor: theme.colors.border,
-      borderRadius: theme.borderRadius.md,
+      borderRadius: theme.borderRadius.lg,
+      backgroundColor: theme.colors.surface1,
+      overflow: "hidden" as const,
       marginVertical: theme.spacing[3],
     },
 
-    thead: {
-      backgroundColor: theme.colors.surface2,
-    },
+    thead: {},
 
-    tbody: {},
+    tbody: {
+      marginBottom: -1,
+    },
 
     th: {
       ...webSelectableTextStyle,
-      padding: theme.spacing[2],
-      borderBottomWidth: 1,
-      borderRightWidth: 1,
-      borderColor: theme.colors.border,
-      backgroundColor: theme.colors.surface2,
-      fontWeight: theme.fontWeight.semibold,
+      paddingVertical: theme.spacing[2],
+      paddingHorizontal: theme.spacing[3],
+      fontWeight: theme.fontWeight.medium,
       color: theme.colors.foreground,
-      fontSize: theme.fontSize.content,
+      fontSize: theme.fontSize.base,
       textAlign: "left" as const,
     },
 
@@ -272,11 +268,10 @@ export function createMarkdownStyles(theme: Theme) {
 
     td: {
       ...webSelectableTextStyle,
-      padding: theme.spacing[2],
-      borderRightWidth: 1,
-      borderColor: theme.colors.border,
+      paddingVertical: theme.spacing[2],
+      paddingHorizontal: theme.spacing[3],
       color: theme.colors.foreground,
-      fontSize: theme.fontSize.content,
+      fontSize: theme.fontSize.base,
       flex: 1,
     },
 
