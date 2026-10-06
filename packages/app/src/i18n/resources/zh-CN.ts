@@ -2111,7 +2111,18 @@ export const zhCN: TranslationResources = {
       one: "调用了 Paseo {{count}} 次",
       other: "调用了 Paseo {{count}} 次",
     },
-    and: "并",
+    thoughts: {
+      one: "思考了 {{count}} 次",
+      other: "思考了 {{count}} 次",
+    },
+    fetches: {
+      one: "获取了 {{count}} 个页面",
+      other: "获取了 {{count}} 个页面",
+    },
+    failed: {
+      one: "{{count}} 个失败",
+      other: "{{count}} 个失败",
+    },
   },
   renameModal: {
     rename: "重命名",

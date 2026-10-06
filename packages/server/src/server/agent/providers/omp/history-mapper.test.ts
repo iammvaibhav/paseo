@@ -729,10 +729,15 @@ describe("OMP history mapper", () => {
           provider: "grok-build",
           hash: "fe5824b3b43cd59f64a2f3e839db78f01b13fde85463dc5f329455dd0bdbf28e",
         },
+        { type: "service_tier_change", id: "tier", parentId: "pin-active", serviceTier: "auto" },
+        { type: "ttsr_injection", id: "ttsr", parentId: "tier", injectedRules: ["rule"] },
+        { type: "model_usage", id: "usage", parentId: "ttsr", role: "tiny", usage: {} },
+        { type: "branch_summary", id: "branch", parentId: "usage", fromId: "tier", summary: "" },
+        { type: "compaction", id: "compact", parentId: "branch", summary: "compacted" },
         {
           type: "future_control",
           id: "unknown-active",
-          parentId: "pin-active",
+          parentId: "compact",
           secret: "must not stringify",
         },
         {

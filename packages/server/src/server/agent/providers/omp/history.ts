@@ -447,6 +447,15 @@ function isControlEntryType(type: string): boolean {
     // (e.g. omp-account-routing). Carries only provider + credential hash,
     // never conversation content.
     type === "credential_pin" ||
+    // Session bookkeeping omp writes beside the conversation: service tier and
+    // rule-injection markers, per-call usage of helper models, the summary stub
+    // left by a discarded branch, and compaction checkpoints. None is a turn the
+    // user wrote or the agent said.
+    type === "service_tier_change" ||
+    type === "ttsr_injection" ||
+    type === "model_usage" ||
+    type === "branch_summary" ||
+    type === "compaction" ||
     type.startsWith("tool_execution_")
   );
 }

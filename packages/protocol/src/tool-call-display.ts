@@ -124,7 +124,10 @@ function buildFleetListAgentsDisplay(toolOutput: Record<string, unknown> | null)
   const agents = toolOutput?.agents;
   const count = Array.isArray(agents) ? agents.length : null;
   return {
-    displayName: count !== null ? `Checked fleet roster · ${count} agents` : "Checked fleet roster",
+    displayName:
+      count !== null
+        ? `Checked fleet roster · ${count} ${count === 1 ? "agent" : "agents"}`
+        : "Checked fleet roster",
   };
 }
 
@@ -167,7 +170,8 @@ function buildTagMessageDisplay(toolInput: Record<string, unknown> | null): Deta
   const agentIds = toolInput?.agentIds;
   const count = Array.isArray(agentIds) ? agentIds.length : null;
   return {
-    displayName: count !== null ? `Tagged ${count} agents` : "Tagged agents",
+    displayName:
+      count !== null ? `Tagged ${count} ${count === 1 ? "agent" : "agents"}` : "Tagged agents",
   };
 }
 
@@ -302,7 +306,7 @@ function buildCanonicalDetailDisplay(input: ToolCallDisplayInput): DetailDisplay
       };
     case "plain_text":
       return {
-        summary: input.detail.label,
+        summary: input.detail.label ?? firstLine(input.detail.text),
       };
     case "plan":
       return {
@@ -321,19 +325,7 @@ function buildEvalSummary(detail: ToolCallDisplayInput["detail"]): string | unde
   if (detail.type !== "unknown" || !isRecord(detail.input)) {
     return undefined;
   }
-  const title = readString(detail.input.title);
-  if (title) {
-    return title;
-  }
-  const code = readString(detail.input.code);
-  const firstLine = code
-    ?.split("\n")
-    .find((line) => line.trim().length > 0)
-    ?.trim();
-  if (!firstLine) {
-    return undefined;
-  }
-  return firstLine.length > 120 ? `${firstLine.slice(0, 120)}...` : firstLine;
+  return readString(detail.input.title) ?? firstLine(readString(detail.input.code));
 }
 
 // Oh My Pi's `hub` is the agent-coordination and process-supervision tool
@@ -424,6 +416,36 @@ function buildHubSummary(detail: ToolCallDisplayInput["detail"]): string | undef
   return summarizeHubOp(readHubFields(detail.input));
 }
 
+// The first non-blank line, cut to one row.
+function firstLine(text: string | undefined): string | undefined {
+  const line = text
+    ?.split("\n")
+    .find((candidate) => candidate.trim().length > 0)
+    ?.trim();
+  if (!line) {
+    return undefined;
+  }
+  return line.length > 120 ? `${line.slice(0, 120)}...` : line;
+}
+
+// Tools without a canonical detail still say what they touched. omp tools carry a
+// short intent (`i`); others name a path. Either beats a bare tool name.
+function buildGenericUnknownSummary(input: ToolCallDisplayInput): string | undefined {
+  if (input.detail.type !== "unknown" || !isRecord(input.detail.input)) {
+    return undefined;
+  }
+  const args = input.detail.input;
+  return (
+    readString(args.headline) ??
+    readString(args.i) ??
+    readString(args.path) ??
+    readString(args.file_path) ??
+    readString(args.filePath) ??
+    readString(args.url) ??
+    readString(args.query)
+  );
+}
+
 function buildUnknownDetailOverride(input: ToolCallDisplayInput): DetailDisplay {
   const lowerName = input.name.trim().toLowerCase();
   if (lowerName === "eval") {
@@ -468,7 +490,7 @@ function buildUnknownDetailOverride(input: ToolCallDisplayInput): DetailDisplay 
       summary: input.detail.type === "plain_text" ? readString(input.detail.label) : undefined,
     };
   }
-  return {};
+  return { summary: buildGenericUnknownSummary(input) };
 }
 
 export function buildToolCallDisplayModel(input: ToolCallDisplayInput): ToolCallDisplayModel {
@@ -480,7 +502,13 @@ export function buildToolCallDisplayModel(input: ToolCallDisplayInput): ToolCall
     unknownDetailOverride.displayName ??
     canonicalDisplay.displayName ??
     humanizeToolName(input.name);
-  const summary = unknownDetailOverride.summary ?? canonicalDisplay.summary;
+  const rawSummary = unknownDetailOverride.summary ?? canonicalDisplay.summary;
+  // "Browser browser", "Eval eval": a summary that only repeats the tool name says nothing.
+  const summary =
+    rawSummary !== undefined &&
+    humanizeToolName(rawSummary).toLowerCase() !== displayName.toLowerCase()
+      ? rawSummary
+      : undefined;
   const errorText = input.status === "failed" ? formatErrorText(input.error) : undefined;
 
   return {

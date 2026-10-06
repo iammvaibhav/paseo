@@ -38,6 +38,49 @@ describe("shared tool-call display mapping", () => {
     });
   });
 
+  it("summarizes an unknown tool by its stated intent, a report by its headline", () => {
+    const intent = buildToolCallDisplayModel({
+      name: "browser_navigate",
+      status: "completed",
+      error: null,
+      detail: { type: "unknown", input: { browserId: "b1", i: "Opening the app" }, output: null },
+    });
+    const report = buildToolCallDisplayModel({
+      name: "report_status",
+      status: "completed",
+      error: null,
+      detail: {
+        type: "unknown",
+        input: { status: "completed", headline: "Fix landed", i: "Reporting" },
+        output: null,
+      },
+    });
+
+    expect(intent).toEqual({ displayName: "Browser navigate", summary: "Opening the app" });
+    expect(report).toEqual({ displayName: "Report status", summary: "Fix landed" });
+  });
+
+  it("shows the first text line of an unlabeled note and hides a label that repeats the name", () => {
+    const note = buildToolCallDisplayModel({
+      name: "launch-completion",
+      status: "completed",
+      error: null,
+      detail: {
+        type: "plain_text",
+        text: "\nSupervised process web failed with exit code 7.\nmore",
+      },
+    });
+    const echo = buildToolCallDisplayModel({
+      name: "browser",
+      status: "completed",
+      error: null,
+      detail: { type: "plain_text", label: "browser" },
+    });
+
+    expect(note.summary).toBe("Supervised process web failed with exit code 7.");
+    expect(echo).toEqual({ displayName: "Browser" });
+  });
+
   it("uses sub-agent detail for task label and description", () => {
     const display = buildToolCallDisplayModel({
       name: "task",

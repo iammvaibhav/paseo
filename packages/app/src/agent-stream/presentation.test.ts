@@ -363,7 +363,7 @@ describe("stream presentation through installed plugins", () => {
       head: [],
       transform: installedTransform(installProbe("tool_call", 'item.name === "bash"')),
     });
-    expect(result.groupsByHostId.get(result.tail[0]!.id)?.run.calls).toEqual(calls.slice(0, 2));
+    expect(result.groupsByHostId.get(result.tail[0]!.id)?.run.items).toEqual(calls.slice(0, 2));
     expect(pluginData(rows(result))).toEqual([
       {
         callId: "call-3",

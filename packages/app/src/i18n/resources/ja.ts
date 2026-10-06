@@ -2154,7 +2154,18 @@ export const ja: TranslationResources = {
       one: "Paseoを{{count}}回呼び出し",
       other: "Paseoを{{count}}回呼び出し",
     },
-    and: "および",
+    thoughts: {
+      one: "{{count}}回思考",
+      other: "{{count}}回思考",
+    },
+    fetches: {
+      one: "{{count}}ページを取得",
+      other: "{{count}}ページを取得",
+    },
+    failed: {
+      one: "{{count}}件失敗",
+      other: "{{count}}件失敗",
+    },
   },
   renameModal: {
     rename: "名前を変更",

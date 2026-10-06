@@ -2197,7 +2197,18 @@ export const fr: TranslationResources = {
       one: "a appelé Paseo {{count}} fois",
       other: "a appelé Paseo {{count}} fois",
     },
-    and: "et",
+    thoughts: {
+      one: "a réfléchi {{count}} fois",
+      other: "a réfléchi {{count}} fois",
+    },
+    fetches: {
+      one: "a récupéré {{count}} page",
+      other: "a récupéré {{count}} pages",
+    },
+    failed: {
+      one: "{{count}} en échec",
+      other: "{{count}} en échec",
+    },
   },
   renameModal: {
     rename: "Rebaptiser",

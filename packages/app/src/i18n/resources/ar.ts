@@ -2138,7 +2138,18 @@ export const ar: TranslationResources = {
       one: "استدعى Paseo {{count}} مرة",
       other: "استدعى Paseo {{count}} مرات",
     },
-    and: "و",
+    thoughts: {
+      one: "فكّر {{count}} مرة",
+      other: "فكّر {{count}} مرات",
+    },
+    fetches: {
+      one: "جلب {{count}} صفحة",
+      other: "جلب {{count}} صفحات",
+    },
+    failed: {
+      one: "فشل {{count}}",
+      other: "فشل {{count}}",
+    },
   },
   renameModal: {
     rename: "إعادة تسمية",

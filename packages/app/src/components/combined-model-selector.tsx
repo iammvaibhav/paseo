@@ -291,7 +291,6 @@ const styles = StyleSheet.create((theme) => ({
   mobileBrowserContent: {
     paddingHorizontal: 0,
   },
-  // Outline chip, the same shell as the composer's AgentControlTrigger.
   trigger: {
     height: 28,
     minWidth: 0,
@@ -301,9 +300,7 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: "transparent",
     gap: theme.spacing[1],
     paddingHorizontal: theme.spacing[2],
-    borderRadius: theme.borderRadius.md,
-    borderWidth: theme.borderWidth[1],
-    borderColor: theme.colors.borderAccent,
+    borderRadius: theme.borderRadius["2xl"],
   },
   triggerHovered: {
     backgroundColor: theme.colors.surface2,
@@ -331,12 +328,10 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.base,
     fontWeight: theme.fontWeight.normal,
   },
-  // A caller-rendered trigger draws its own shell, so drop the chip outline.
   customTriggerWrapper: {
     paddingHorizontal: 0,
     paddingVertical: 0,
     height: "auto",
-    borderWidth: 0,
   },
   triggerFill: {
     alignSelf: "stretch",
@@ -345,7 +340,6 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "stretch",
     backgroundColor: "transparent",
     borderRadius: 0,
-    borderWidth: 0,
   },
   sheetLoadingState: {
     minHeight: 160,

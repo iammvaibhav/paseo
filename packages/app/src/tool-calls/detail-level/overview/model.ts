@@ -5,12 +5,15 @@ const DIRECT_PASEO_TOOL_PREFIX = "paseo_";
 const DIRECT_SEARCH_TOOL_SUFFIX_PATTERN = /(?:^|[_.:/])(?:web_search|llm_context)$/;
 
 export interface OverviewSummary {
+  thoughtCount: number;
   editedFileCount: number;
   commandCount: number;
   readFileCount: number;
   searchCount: number;
+  fetchCount: number;
   otherToolCount: number;
   paseoCallCount: number;
+  failedCount: number;
 }
 
 export interface OverviewToolCallGroup {
@@ -30,17 +33,28 @@ function isSearchCall(name: string): boolean {
 
 export function buildOverviewGroup(run: ToolCallRun): OverviewToolCallGroup {
   const editedFiles = new Set<string>();
-  const readFiles = new Set<string>();
   let isLoading = false;
+  let thoughtCount = 0;
+  let readFileCount = 0;
   let commandCount = 0;
   let searchCount = 0;
+  let fetchCount = 0;
   let otherToolCount = 0;
   let paseoCallCount = 0;
+  let failedCount = 0;
 
-  for (const call of run.calls) {
-    const descriptor = describeToolCall(call);
+  for (const item of run.items) {
+    if (item.kind === "thought") {
+      thoughtCount += 1;
+      isLoading ||= item.status === "loading";
+      continue;
+    }
+    const descriptor = describeToolCall(item);
     const normalizedName = descriptor.name.trim().toLowerCase();
     isLoading ||= descriptor.status === "running" || descriptor.status === "executing";
+    if (descriptor.status === "failed") {
+      failedCount += 1;
+    }
     if (isPaseoCall(descriptor.name, normalizedName)) {
       paseoCallCount += 1;
     } else if (descriptor.detail.type === "edit" || descriptor.detail.type === "write") {
@@ -48,7 +62,9 @@ export function buildOverviewGroup(run: ToolCallRun): OverviewToolCallGroup {
     } else if (descriptor.detail.type === "shell") {
       commandCount += 1;
     } else if (descriptor.detail.type === "read") {
-      readFiles.add(descriptor.detail.filePath);
+      readFileCount += 1;
+    } else if (descriptor.detail.type === "fetch") {
+      fetchCount += 1;
     } else if (descriptor.detail.type === "search" || isSearchCall(normalizedName)) {
       searchCount += 1;
     } else {
@@ -56,18 +72,20 @@ export function buildOverviewGroup(run: ToolCallRun): OverviewToolCallGroup {
     }
   }
 
-  const summary = {
-    editedFileCount: editedFiles.size,
-    commandCount,
-    readFileCount: readFiles.size,
-    searchCount,
-    otherToolCount,
-    paseoCallCount,
-  };
   return {
     mode: "overview",
     run,
     isLoading,
-    summary,
+    summary: {
+      thoughtCount,
+      editedFileCount: editedFiles.size,
+      commandCount,
+      readFileCount,
+      searchCount,
+      fetchCount,
+      otherToolCount,
+      paseoCallCount,
+      failedCount,
+    },
   };
 }

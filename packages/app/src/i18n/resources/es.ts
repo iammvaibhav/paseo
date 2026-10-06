@@ -2191,7 +2191,18 @@ export const es: TranslationResources = {
       one: "llamó a Paseo {{count}} vez",
       other: "llamó a Paseo {{count}} veces",
     },
-    and: "y",
+    thoughts: {
+      one: "pensó {{count}} vez",
+      other: "pensó {{count}} veces",
+    },
+    fetches: {
+      one: "obtuvo {{count}} página",
+      other: "obtuvo {{count}} páginas",
+    },
+    failed: {
+      one: "{{count}} falló",
+      other: "{{count}} fallaron",
+    },
   },
   renameModal: {
     rename: "Rebautizar",

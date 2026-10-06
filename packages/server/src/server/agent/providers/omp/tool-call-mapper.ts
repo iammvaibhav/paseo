@@ -86,7 +86,8 @@ function mapOmpExtendedToolDetail(
     const args = isRecord(toolCall.args) ? toolCall.args : {};
     return {
       type: "search",
-      query: firstString(args.pattern, args.pat, args.query) ?? toolCall.toolName,
+      // omp's glob takes its pattern as `path` (e.g. `src/**/*.ts`).
+      query: firstString(args.pattern, args.pat, args.query, args.path) ?? toolCall.toolName,
       ...(toolCall.toolName === "glob" ? { toolName: "glob" as const } : {}),
       content: extractTextFromToolResult(result),
     };
@@ -149,8 +150,11 @@ function mapOmpOpaqueToolDetail(
     const args = isRecord(toolCall.args) ? toolCall.args : {};
     const action = firstString(args.action, args.op, args.operation, args.command);
     const target = firstString(args.name, args.goal, args.path, args.query, args.id, args.report);
+    // omp tools state their intent in `i`; it reads better than the bare tool name.
     const label =
-      [action, target].filter(Boolean).join(" ") || toolCall.toolName.replaceAll("_", " ");
+      [action, target].filter(Boolean).join(" ") ||
+      firstString(args.title, args.i) ||
+      toolCall.toolName.replaceAll("_", " ");
     return { type: "plain_text", label, text: extractTextFromToolResult(result) };
   }
   return null;

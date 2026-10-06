@@ -2634,7 +2634,18 @@ export const en = {
       one: "called Paseo {{count}} time",
       other: "called Paseo {{count}} times",
     },
-    and: "and",
+    thoughts: {
+      one: "thought {{count}} time",
+      other: "thought {{count}} times",
+    },
+    fetches: {
+      one: "fetched {{count}} page",
+      other: "fetched {{count}} pages",
+    },
+    failed: {
+      one: "{{count}} failed",
+      other: "{{count}} failed",
+    },
   },
   renameModal: {
     rename: "Rename",

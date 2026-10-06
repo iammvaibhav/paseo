@@ -2176,7 +2176,18 @@ export const ptBR: TranslationResources = {
       one: "chamou o Paseo {{count}} vez",
       other: "chamou o Paseo {{count}} vezes",
     },
-    and: "e",
+    thoughts: {
+      one: "pensou {{count}} vez",
+      other: "pensou {{count}} vezes",
+    },
+    fetches: {
+      one: "buscou {{count}} página",
+      other: "buscou {{count}} páginas",
+    },
+    failed: {
+      one: "{{count}} falhou",
+      other: "{{count}} falharam",
+    },
   },
   renameModal: {
     rename: "Renomear",

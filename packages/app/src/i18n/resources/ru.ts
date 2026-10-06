@@ -2177,7 +2177,18 @@ export const ru: TranslationResources = {
       one: "выполнен {{count}} вызов Paseo",
       other: "выполнены вызовы Paseo ({{count}})",
     },
-    and: "и",
+    thoughts: {
+      one: "размышлял {{count}} раз",
+      other: "размышлял {{count}} раз",
+    },
+    fetches: {
+      one: "загружена {{count}} страница",
+      other: "загружено страниц: {{count}}",
+    },
+    failed: {
+      one: "{{count}} с ошибкой",
+      other: "{{count}} с ошибкой",
+    },
   },
   renameModal: {
     rename: "Переименовать",

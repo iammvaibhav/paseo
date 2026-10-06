@@ -2144,7 +2144,18 @@ export const ko: TranslationResources = {
       one: "Paseo를 {{count}}회 호출함",
       other: "Paseo를 {{count}}회 호출함",
     },
-    and: "그리고",
+    thoughts: {
+      one: "{{count}}번 생각함",
+      other: "{{count}}번 생각함",
+    },
+    fetches: {
+      one: "{{count}}개 페이지 가져옴",
+      other: "{{count}}개 페이지 가져옴",
+    },
+    failed: {
+      one: "{{count}}개 실패",
+      other: "{{count}}개 실패",
+    },
   },
   renameModal: {
     rename: "이름 변경",

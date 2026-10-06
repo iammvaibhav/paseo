@@ -480,11 +480,12 @@ function mapWriteToolDetail(args: WriteToolInput, result: OmpToolResult): ToolCa
     };
   }
 
-  // A write to `xd://` runs a tool, not a file write. Name the invoked tool while it runs.
+  // A write to `xd://` runs a tool, not a file write. Its content is the tool's JSON
+  // arguments; label the row with their stated intent, else the invoked tool's name.
   if (args.path.startsWith("xd://")) {
     return {
       type: "plain_text",
-      label: args.path.slice("xd://".length).split(/[/?#]/, 1)[0],
+      label: readXdToolIntent(args.content) ?? args.path.slice("xd://".length).split(/[/?#]/, 1)[0],
       text: extractTextFromToolResult(result),
     };
   }
@@ -494,6 +495,20 @@ function mapWriteToolDetail(args: WriteToolInput, result: OmpToolResult): ToolCa
     filePath: args.path,
     content: args.content,
   };
+}
+
+function readXdToolIntent(content: string): string | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    return undefined;
+  }
+  if (!parsed || typeof parsed !== "object" || !("i" in parsed)) {
+    return undefined;
+  }
+  const intent = parsed.i;
+  return typeof intent === "string" && intent.trim() ? intent.trim() : undefined;
 }
 
 function resolveToolCallOutput(result: OmpToolResult): ToolCallOutputSummary {
