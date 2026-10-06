@@ -732,7 +732,8 @@ function ScrollablePlainTextSection({ text, ds }: { text: string; ds: DetailStyl
         showsVerticalScrollIndicator
       >
         <Text selectable style={styles.plainText}>
-          {text}
+          {/* Models end thoughts with runs of blank lines; they would render as dead space. */}
+          {text.replace(/^\s*\n/, "").trimEnd()}
         </Text>
       </ScrollView>
     </View>
