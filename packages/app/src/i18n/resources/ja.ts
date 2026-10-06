@@ -1342,8 +1342,6 @@ export const ja: TranslationResources = {
       search: "検索",
       schedules: "スケジュール",
       missionControl: "Mission Control",
-      missionControlNeedsYou: "対応が必要",
-      missionControlReady: "レビュー待ち",
       itsaplan: "itsaplan",
       webhooks: "Webhooks",
     },

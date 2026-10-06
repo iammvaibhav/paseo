@@ -69,12 +69,8 @@ import {
   type SidebarViewMode,
   useSidebarViewStore,
 } from "@/stores/sidebar-view-store";
-import {
-  SidebarHeaderRow,
-  type SidebarHeaderRowBadgeSegment,
-} from "@/components/sidebar/sidebar-header-row";
+import { SidebarHeaderRow } from "@/components/sidebar/sidebar-header-row";
 import { useHostRuntimeConnectionStatuses, useHosts } from "@/runtime/host-runtime";
-import { useMissionControlLifecycle } from "@/mission-control/use-mission-control-lifecycle";
 import { PluginSidebarItem } from "@/plugins/sidebar-items";
 import { builtinSidebarNavLabelKey } from "@/sidebar-nav/model";
 import { useSidebarNavItems } from "@/sidebar-nav/use-sidebar-nav-items";
@@ -151,7 +147,6 @@ interface SidebarSharedProps {
   /** A known host advertises features.notes (the Commander host) — gates the row. */
   hasNotes: boolean;
   /** Two-segment badge: working + ready-for-review counts across all hosts. */
-  missionControlBadges: readonly SidebarHeaderRowBadgeSegment[];
 }
 
 interface MobileSidebarProps extends SidebarSharedProps {
@@ -303,24 +298,6 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
       ),
     [hostConnectionStatuses, hosts, missionControlFeatureMap],
   );
-  const { counts } = useMissionControlLifecycle({ enabled: hasMissionControl });
-  const missionControlBadges = useMemo(
-    (): SidebarHeaderRowBadgeSegment[] => [
-      {
-        count: counts.needsYou,
-        label: t("sidebar.sections.missionControlNeedsYou"),
-        testID: "sidebar-mission-control-badge-needs-you",
-        tone: "attention",
-      },
-      {
-        count: counts.ready,
-        label: t("sidebar.sections.missionControlReady"),
-        testID: "sidebar-mission-control-badge-ready",
-        tone: "success",
-      },
-    ],
-    [counts.needsYou, counts.ready, t],
-  );
   const labels = useMemo(
     (): SidebarLabels => ({
       addProject: t("sidebar.actions.addProject"),
@@ -362,7 +339,6 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
     hasMissionControl,
     hasTickets,
     hasNotes,
-    missionControlBadges,
   };
 
   if (isCompactLayout) {
@@ -721,7 +697,6 @@ function MobileSidebar({
   hasMissionControl,
   hasTickets,
   hasNotes,
-  missionControlBadges,
   handleViewWebhooksNavigate,
   handleViewItsaplanNavigate,
   handleViewTicketsNavigate,
@@ -822,7 +797,6 @@ function MobileSidebar({
               isActive={isMissionControlActive}
               testID="sidebar-mission-control"
               variant="compact"
-              badgeSegments={missionControlBadges}
             />
           ) : null}
           <SidebarHeaderRow
@@ -945,7 +919,6 @@ function DesktopSidebar({
   hasMissionControl,
   hasTickets,
   hasNotes,
-  missionControlBadges,
   handleViewWebhooks,
   handleViewItsaplan,
   handleViewTickets,
@@ -1105,7 +1078,6 @@ function DesktopSidebar({
                 isActive={isMissionControlActive}
                 testID="sidebar-mission-control"
                 variant="compact"
-                badgeSegments={missionControlBadges}
               />
             ) : null}
             <SidebarHeaderRow

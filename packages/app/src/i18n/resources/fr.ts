@@ -1374,8 +1374,6 @@ export const fr: TranslationResources = {
       search: "Rechercher",
       schedules: "Planifications",
       missionControl: "Mission Control",
-      missionControlNeedsYou: "Nécessite votre attention",
-      missionControlReady: "Prêts pour révision",
       itsaplan: "itsaplan",
       webhooks: "Webhooks",
     },

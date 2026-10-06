@@ -1356,8 +1356,6 @@ export const ru: TranslationResources = {
       search: "Поиск",
       schedules: "Расписания",
       missionControl: "Mission Control",
-      missionControlNeedsYou: "Требует внимания",
-      missionControlReady: "Готовы к проверке",
       itsaplan: "itsaplan",
       webhooks: "Webhooks",
     },

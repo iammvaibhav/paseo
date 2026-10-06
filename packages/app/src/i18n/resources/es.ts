@@ -1373,8 +1373,6 @@ export const es: TranslationResources = {
       search: "Buscar",
       schedules: "Horarios",
       missionControl: "Mission Control",
-      missionControlNeedsYou: "Necesita tu atención",
-      missionControlReady: "Listos para revisión",
       itsaplan: "itsaplan",
       webhooks: "Webhooks",
     },

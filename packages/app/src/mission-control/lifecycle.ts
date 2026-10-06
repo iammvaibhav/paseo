@@ -510,26 +510,3 @@ export function groupLifecycleRows(
   }
   return groups;
 }
-
-export interface LifecycleCounts {
-  needsYou: number;
-  working: number;
-  ready: number;
-  done: number;
-}
-
-export function countLifecycle(rows: readonly LifecycleRow[]): LifecycleCounts {
-  const counts: LifecycleCounts = { needsYou: 0, working: 0, ready: 0, done: 0 };
-  for (const row of rows) {
-    if (row.bucket === "needs_you") {
-      counts.needsYou += 1;
-    } else if (row.bucket === "running") {
-      counts.working += 1;
-    } else if (row.bucket === "ready") {
-      counts.ready += 1;
-    } else if (row.bucket === "done") {
-      counts.done += 1;
-    }
-  }
-  return counts;
-}

@@ -10,12 +10,10 @@ import {
 import type { MissionControlEvent } from "@getpaseo/protocol/mission-control/types";
 import {
   DEFAULT_RETENTION_DAYS,
-  countLifecycle,
   deriveAgentLifecycle,
   groupLifecycleRows,
   toLifecycleRow,
   type LifecycleBucketGroup,
-  type LifecycleCounts,
   type LifecycleRow,
 } from "./lifecycle";
 
@@ -36,7 +34,6 @@ export interface MissionControlLifecycleResult {
   rows: LifecycleRow[];
   /** Non-empty bucket sections in board order, already sorted + filtered. */
   groups: LifecycleBucketGroup[];
-  counts: LifecycleCounts;
   isLoading: boolean;
   isInitialLoad: boolean;
   isRevalidating: boolean;
@@ -160,7 +157,6 @@ export function useMissionControlLifecycle(
     prevGroupsRef.current = stableGroups;
     return stableGroups;
   }, [rows, showAll]);
-  const counts = useMemo(() => countLifecycle(rows), [rows]);
 
   const isLoading = agentsResult.isLoading || eventsResult.isLoading;
   const hasAnyData = rows.length > 0;
@@ -170,7 +166,6 @@ export function useMissionControlLifecycle(
   return {
     rows,
     groups,
-    counts,
     isLoading,
     isInitialLoad,
     isRevalidating,

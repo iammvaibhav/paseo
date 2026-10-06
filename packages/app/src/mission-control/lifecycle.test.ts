@@ -7,7 +7,6 @@ import type {
 } from "@getpaseo/protocol/mission-control/types";
 import {
   DEFAULT_RETENTION_DAYS,
-  countLifecycle,
   deriveAgentLifecycle,
   groupLifecycleRows,
   lifecycleRowVisible,
@@ -808,33 +807,6 @@ describe("groupLifecycleRows", () => {
     expect(groupLifecycleRows([dormantRow], true).map((group) => group.bucket)).toEqual([
       "dormant",
     ]);
-  });
-
-  it("counts working and ready agents", () => {
-    const working = makeAgent({ id: "w", status: "running" });
-    const ready = makeAgent({ id: "r", requiresAttention: true, attentionReason: "finished" });
-    const done = makeAgent({ id: "d" });
-    const counts = countLifecycle([
-      { ...derive(working, []), agent: working, sortTime: 0 },
-      {
-        ...derive(ready, [makeEvent({ kind: "finished", headline: "Finished" })]),
-        agent: ready,
-        sortTime: 0,
-      },
-      {
-        ...derive(done, [
-          makeEvent({
-            kind: "verdict",
-            source: "system",
-            headline: "Marked done",
-            detail: "Marked done",
-          }),
-        ]),
-        agent: done,
-        sortTime: 0,
-      },
-    ]);
-    expect(counts).toEqual({ needsYou: 0, working: 1, ready: 1, done: 1 });
   });
 });
 

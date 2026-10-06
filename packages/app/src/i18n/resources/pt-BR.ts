@@ -1363,8 +1363,6 @@ export const ptBR: TranslationResources = {
       search: "Buscar",
       schedules: "Agendamentos",
       missionControl: "Mission Control",
-      missionControlNeedsYou: "Precisa de você",
-      missionControlReady: "Prontos para revisão",
       itsaplan: "itsaplan",
       webhooks: "Webhooks",
     },

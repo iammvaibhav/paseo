@@ -1341,8 +1341,6 @@ export const en = {
       search: "Search",
       schedules: "Schedules",
       missionControl: "Mission Control",
-      missionControlNeedsYou: "Needs you",
-      missionControlReady: "Ready for review",
       itsaplan: "itsaplan",
       webhooks: "Webhooks",
     },

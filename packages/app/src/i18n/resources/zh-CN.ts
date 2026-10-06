@@ -1319,8 +1319,6 @@ export const zhCN: TranslationResources = {
       search: "搜索",
       schedules: "计划",
       missionControl: "Mission Control",
-      missionControlNeedsYou: "需要你处理",
-      missionControlReady: "待审查",
       itsaplan: "itsaplan",
       webhooks: "Webhooks",
     },

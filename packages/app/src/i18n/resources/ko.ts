@@ -1330,8 +1330,6 @@ export const ko: TranslationResources = {
       search: "검색",
       schedules: "일정",
       missionControl: "Mission Control",
-      missionControlNeedsYou: "조치 필요",
-      missionControlReady: "검토 대기",
       itsaplan: "itsaplan",
       webhooks: "Webhooks",
     },

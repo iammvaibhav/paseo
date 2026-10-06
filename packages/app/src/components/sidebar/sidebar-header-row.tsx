@@ -17,19 +17,6 @@ import type { ShortcutKey } from "@/utils/format-shortcut";
 const foregroundColorMapping = (theme: Theme) => ({ color: theme.colors.foreground });
 const foregroundMutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 
-export interface SidebarHeaderRowBadgeSegment {
-  /** Count shown in the pill; zero-count segments are omitted entirely. */
-  count: number;
-  /** Accessibility label for the segment. */
-  label: string;
-  testID: string;
-  /**
-   * Status-token family for the chip (spec: same tokens as the board
-   * buckets — needs-you = attention, ready-for-review = success).
-   */
-  tone: "attention" | "success";
-}
-
 type SidebarHeaderRowVariant = "header" | "compact" | "inline";
 
 export type SidebarRowIcon = ComponentType<{ size: number; color: string }>;
@@ -59,10 +46,6 @@ interface SidebarHeaderRowProps {
    */
   trailing?: ReactNode;
   rowRef?: Ref<View>;
-  /** Optional count pills rendered right-aligned (e.g. Mission Control's
-   * working / ready-for-review split). Zero-count segments are omitted;
-   * both segments show when both are nonzero. */
-  badgeSegments?: readonly SidebarHeaderRowBadgeSegment[];
 }
 
 export function SidebarHeaderRow({
@@ -77,7 +60,6 @@ export function SidebarHeaderRow({
   shortcutKeys = null,
   trailing,
   rowRef,
-  badgeSegments,
 }: SidebarHeaderRowProps) {
   const [isHovered, setIsHovered] = useState(false);
   const handlePointerEnter = useCallback(() => setIsHovered(true), []);
@@ -86,7 +68,7 @@ export function SidebarHeaderRow({
   const isHighlighted = isHovered || isActive;
   const iconSize = variant === "header" ? ICON_SIZE.md : ICON_SIZE.sm;
 
-  const right = resolveTrailing({ trailing, shortcutKeys, isHovered, badgeSegments });
+  const right = resolveTrailing({ trailing, shortcutKeys, isHovered });
 
   return (
     <View ref={rowRef} collapsable={false} style={getContainerStyle(variant)}>
@@ -126,45 +108,15 @@ export function SidebarHeaderRow({
   );
 }
 
-/** The right slot: an explicit trailing node, the hover shortcut, then count badges. */
+/** The right slot: an explicit trailing node, else the hover shortcut. */
 function resolveTrailing(input: {
   trailing: ReactNode | undefined;
   shortcutKeys: ShortcutKey[][] | null;
   isHovered: boolean;
-  badgeSegments: readonly SidebarHeaderRowBadgeSegment[] | undefined;
 }): ReactNode {
   if (input.trailing != null) return input.trailing;
   if (input.shortcutKeys && input.isHovered) return <Shortcut chord={input.shortcutKeys} />;
-  if (input.badgeSegments?.some((segment) => segment.count > 0)) {
-    return <SidebarHeaderRowBadges segments={input.badgeSegments} />;
-  }
   return null;
-}
-
-function SidebarHeaderRowBadges({
-  segments,
-}: {
-  segments: readonly SidebarHeaderRowBadgeSegment[];
-}) {
-  return (
-    <View style={styles.countBadges}>
-      {segments
-        .filter((segment) => segment.count > 0)
-        .map((segment) => (
-          <View
-            key={segment.testID}
-            style={[
-              styles.countBadge,
-              segment.tone === "attention" ? styles.countBadgeAttention : styles.countBadgeSuccess,
-            ]}
-            accessibilityLabel={`${segment.count} ${segment.label}`}
-            testID={segment.testID}
-          >
-            <Text style={styles.countBadgeText}>{segment.count}</Text>
-          </View>
-        ))}
-    </View>
-  );
 }
 
 const SELECTED_STATE = { selected: true } as const;
@@ -230,30 +182,6 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     gap: theme.spacing[1],
     paddingRight: theme.spacing[2],
-  },
-  countBadges: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: theme.spacing[1],
-  },
-  countBadge: {
-    width: theme.spacing[4],
-    height: theme.spacing[4],
-    borderRadius: theme.borderRadius.full,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  countBadgeAttention: {
-    backgroundColor: theme.colors.statusDanger,
-  },
-  countBadgeSuccess: {
-    backgroundColor: theme.colors.statusSuccess,
-  },
-  countBadgeText: {
-    fontSize: theme.fontSize.xs,
-    lineHeight: theme.spacing[4],
-    fontWeight: theme.fontWeight.normal,
-    color: theme.colors.palette.white,
   },
 }));
 
