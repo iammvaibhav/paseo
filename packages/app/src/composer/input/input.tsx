@@ -2040,16 +2040,24 @@ const styles = StyleSheet.create((theme: Theme) => ({
   inputWrapper: {
     flexShrink: 1,
     flexDirection: "column",
-    gap: theme.spacing[2],
+    gap: theme.spacing[3],
     backgroundColor: theme.colors.surface1,
     borderWidth: theme.borderWidth[1],
     borderColor: theme.colors.borderAccent,
-    borderRadius: theme.borderRadius.xl,
-    paddingVertical: {
+    borderRadius: theme.borderRadius["2xl"],
+    paddingTop: {
+      xs: theme.spacing[2],
+      md: theme.spacing[4],
+    },
+    // The button row bleeds 6px horizontally, so match its corner inset at the bottom.
+    paddingBottom: {
       xs: theme.spacing[2],
       md: theme.spacing[3],
     },
-    paddingHorizontal: theme.spacing[3],
+    paddingHorizontal: {
+      xs: theme.spacing[3],
+      md: theme.spacing[4],
+    },
     ...(isWeb
       ? {
           transitionProperty: "border-color",
@@ -2149,7 +2157,7 @@ const styles = StyleSheet.create((theme: Theme) => ({
   sendButton: {
     width: 28,
     height: 28,
-    borderRadius: theme.borderRadius.md,
+    borderRadius: theme.borderRadius.full,
     backgroundColor: theme.colors.primaryAction,
     alignItems: "center",
     justifyContent: "center",
@@ -2159,6 +2167,7 @@ const styles = StyleSheet.create((theme: Theme) => ({
     width: "auto",
     minWidth: 28,
     paddingHorizontal: theme.spacing[3],
+    borderRadius: theme.borderRadius.full,
   },
   sendButtonLabel: {
     fontSize: theme.fontSize.base,

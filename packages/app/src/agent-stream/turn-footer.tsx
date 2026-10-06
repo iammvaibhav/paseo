@@ -3,7 +3,6 @@ import { collectTurnEditedFiles } from "./turn-metrics";
 import React, { memo, useCallback, useMemo, type ReactNode } from "react";
 import { View } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { MAX_CONTENT_WIDTH } from "@/constants/layout";
 import { type Theme } from "@/styles/theme";
 import {
   TURN_FOOTER_BOTTOM_SPACING,
@@ -418,7 +417,7 @@ function TurnFooterRow({ children }: { children: ReactNode }) {
 const stylesheet = StyleSheet.create((theme) => ({
   streamItemWrapper: {
     width: "100%",
-    maxWidth: MAX_CONTENT_WIDTH,
+    maxWidth: theme.contentMaxWidth,
     // Web flex parents often ignore alignSelf centering; match the composer.
     marginHorizontal: "auto",
     alignSelf: "center",

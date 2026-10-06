@@ -4,7 +4,7 @@ import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { useTranslation } from "react-i18next";
 import { MessageSquare } from "lucide-react-native";
 import { HostGlyph } from "@/components/host-glyph";
-import { useLiveTimeAgo } from "@/hooks/use-compact-time-ago";
+import { useTimeAgo } from "@/hooks/use-time-ago";
 import { resolveSessionAgent } from "@/utils/agent-snapshots";
 import { useSessionStore } from "@/stores/session-store";
 import { useMissionControlCentralConfig } from "@/mission-control/central-config";
@@ -34,7 +34,7 @@ export function AnswerCard({ event, position = "only" }: AnswerCardProps): React
   const agentTitle = event.agentTitle;
   const agentChipLabel = hideAgentNames ? agentTitle : (liveAgent?.name ?? agentTitle);
   const timestamp = new Date(event.ts);
-  const timeAgo = useLiveTimeAgo(timestamp);
+  const timeAgo = useTimeAgo(timestamp);
 
   if (!answer) {
     return null;

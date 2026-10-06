@@ -63,8 +63,13 @@ interface OmpToolResultObject {
   details?: OmpToolResultDetails;
 }
 
+interface OmpToolResultStructuredError {
+  message: string;
+}
+
 interface OmpToolResultDetails {
   diff?: string;
+  error?: string | OmpToolResultStructuredError;
   mode?: string;
   xdev?: unknown;
 }
@@ -166,9 +171,17 @@ const OmpToolResultContentSchema = z.union([
   OmpToolResultUnknownContentSchema,
 ]);
 
+// OMP's own tools report a string error; Paseo host tools (browser_*) report
+// a structured `{ code, message, retryable }` error.
+const OmpToolResultErrorSchema = z.union([
+  z.string(),
+  z.object({ message: z.string() }).passthrough(),
+]);
+
 const OmpToolResultDetailsSchema = z
   .object({
     diff: z.string().optional(),
+    error: OmpToolResultErrorSchema.optional(),
   })
   .passthrough();
 
@@ -290,6 +303,41 @@ export function extractTextFromToolResult(result: OmpToolResult): string | undef
   return textParts.length > 0 ? textParts.join("\n") : undefined;
 }
 
+export function toolFailureMessage(result: OmpToolResult): string {
+  const error = result && typeof result !== "string" ? result.details?.error : undefined;
+  const errorMessage = typeof error === "string" ? error : error?.message;
+  if (errorMessage) {
+    return errorMessage.split("\n", 1)[0].slice(0, 240);
+  }
+  const output = extractTextFromToolResult(result);
+  const exitMessage = output?.match(/(?:Command|Process) exited with code \d+/i)?.[0];
+  if (exitMessage) return exitMessage;
+  const firstLine = output
+    ?.split("\n")
+    .find((line) => line.trim())
+    ?.trim();
+  if (firstLine) return firstLine.slice(0, 240);
+  if (result && typeof result !== "string") {
+    const code = result.exitCode ?? result.code;
+    if (typeof code === "number") return `Tool exited with code ${code}`;
+  }
+  return "Tool call failed";
+}
+
+export function isOmpToolFailure(
+  toolCall: OmpTrackedToolCall,
+  result: OmpToolResult,
+  isError: boolean,
+): boolean {
+  return (
+    isError ||
+    (toolCall.toolName === "web_search" &&
+      result !== null &&
+      typeof result !== "string" &&
+      typeof result.details?.error === "string")
+  );
+}
+
 export function parseToolArgs(toolName: string, rawArgs: unknown): OmpTrackedToolCall {
   if (toolName === "edit") {
     return parseEditToolArgs(rawArgs);
@@ -309,6 +357,12 @@ export function parseToolArgs(toolName: string, rawArgs: unknown): OmpTrackedToo
 }
 
 export function resolveToolCallName(toolCall: OmpTrackedToolCall, result?: OmpToolResult): string {
+  if (
+    (toolCall.kind === "read" || toolCall.kind === "write") &&
+    toolCall.args.path.startsWith("xd://")
+  ) {
+    return toolCall.args.path.slice("xd://".length).split(/[/?#]/, 1)[0] || toolCall.toolName;
+  }
   if (toolCall.kind === "write" && result && typeof result !== "string") {
     const xdev = XdevExecuteDetailsSchema.safeParse(result.details?.xdev);
     if (xdev.success) {
@@ -336,13 +390,7 @@ export function mapToolDetail(
       };
     }
     case "read":
-      return {
-        type: "read",
-        filePath: toolCall.args.path,
-        content: extractTextFromToolResult(parsedResult),
-        offset: toolCall.args.offset,
-        limit: toolCall.args.limit,
-      };
+      return mapReadToolDetail(toolCall, parsedResult);
     case "edit": {
       const firstEdit = toolCall.args.edits[0];
       const unifiedDiff =
@@ -387,6 +435,30 @@ export function mapToolDetail(
   }
 }
 
+function mapReadToolDetail(
+  toolCall: Extract<OmpTrackedToolCall, { kind: "read" }>,
+  result: OmpToolResult,
+): ToolCallDetail {
+  const { path } = toolCall.args;
+  if (path.startsWith("xd://")) {
+    return {
+      type: "plain_text",
+      label: resolveToolCallName(toolCall),
+      text: extractTextFromToolResult(result),
+    };
+  }
+  if (/^https?:\/\//.test(path)) {
+    return { type: "fetch", url: path, result: extractTextFromToolResult(result) };
+  }
+  return {
+    type: "read",
+    filePath: path,
+    content: extractTextFromToolResult(result),
+    offset: toolCall.args.offset,
+    limit: toolCall.args.limit,
+  };
+}
+
 function mapWriteToolDetail(args: WriteToolInput, result: OmpToolResult): ToolCallDetail {
   if (result && typeof result !== "string" && result.details && "xdev" in result.details) {
     const xdev = XdevExecuteDetailsSchema.safeParse(result.details.xdev);
@@ -405,6 +477,15 @@ function mapWriteToolDetail(args: WriteToolInput, result: OmpToolResult): ToolCa
       type: "unknown",
       input: args,
       output: result,
+    };
+  }
+
+  // A write to `xd://` runs a tool, not a file write. Name the invoked tool while it runs.
+  if (args.path.startsWith("xd://")) {
+    return {
+      type: "plain_text",
+      label: args.path.slice("xd://".length).split(/[/?#]/, 1)[0],
+      text: extractTextFromToolResult(result),
     };
   }
 

@@ -2,7 +2,7 @@
 
 Paseo is a mobile app for monitoring and controlling your local AI coding agents from anywhere. Your dev environment, in your pocket. Connects directly to your actual development environment — your code stays on your machine.
 
-**Supported agents:** Claude Code, Codex, GitHub Copilot, OpenCode, and Pi.
+**Supported agents:** Claude Code, Codex, GitHub Copilot, OpenCode, Pi, Antigravity, and Muse Code.
 
 ## Repository map
 
@@ -285,7 +285,7 @@ script, so never land by hand while another land is in progress. Env overrides:
 **Orchestrator modes** (auto-detected by `uname -s`):
 
 - **MacBook (macOS)** — as before: local = MacBook (daemon restart + desktop build/install), remotes = `blrofc3` + `iammvaibhav`.
-- **iammvaibhav (Linux)** — the current home of the migrated `paseo` project. Local = iammvaibhav (daemon build/restart + nudge + services); remotes = `blrofc3` (NetBird); the **MacBook is a full job** (`job-macbook`): deploy ssh's to it (alias `macbook` = `macbook.netbird.cloud`), git-syncs the checkout (non-clobbering: dirty/diverged → skip), rebuilds the server packages, **restarts its `~/.paseo` daemon** (snapshot + nudge, same contract as a remote), then builds → copies the installed `Paseo.app` to `Paseo (Orig).app` → quit → replace → relaunch `Paseo.app`. The job is reachability-gated and **never fatal** during a full deploy. `PASEO_DESKTOP_ONLY=1` from Linux commits and pushes the local branch, then requires this MacBook job to succeed (app only — no daemon restart).
+- **iammvaibhav (Linux)** — the current home of the migrated `paseo` project. Local = iammvaibhav (daemon build/restart + nudge + services); remotes = `blrofc3` (NetBird); the **MacBook is a full job** (`job-macbook`): deploy ssh's to it (alias `macbook` = `macbook.netbird.cloud`), git-syncs the checkout (non-clobbering: dirty/diverged → skip), rebuilds the server packages, builds → copies the installed `Paseo.app` to `Paseo (Orig).app` → quit → replace → relaunch `Paseo.app`, then **restarts its `~/.paseo` daemon** (snapshot + nudge, same contract as a remote). The restart comes last because the MacBook supervisor runs the daemon worker out of the installed `Paseo.app`; restarting before the install relaunches the previous bundle. The job is reachability-gated and **never fatal** during a full deploy. `PASEO_DESKTOP_ONLY=1` from Linux commits and pushes the local branch, then requires this MacBook job to succeed (app only — no daemon restart).
 - **The MacBook daemon restarts with every deploy**, like every other host. It used to be skipped so `paseo-dev` agents survived the migration; a daemon that never restarts serves stale code silently (on 2026-08-24 it ran 3.5-day-old mission-control behavior while its checkout and `dist` were current). `PASEO_SKIP_MACBOOK_DAEMON=1` skips only the restart for one run; `PASEO_SKIP_MACBOOK=1` skips the host entirely.
 
 #### Agents MUST treat deploy as fire-and-forget

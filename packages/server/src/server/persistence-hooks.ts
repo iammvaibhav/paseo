@@ -75,7 +75,10 @@ export function buildConfigOverrides(record: StoredAgentRecord): Partial<AgentSe
   return stripInternalPaseoMcpServer({
     provider: record.provider,
     cwd: record.cwd,
-    modeId: nullableToUndefined(config?.modeId),
+    // lastModeId is the last live mode — it also covers provider-side switches
+    // (ACP current_mode_update, in-session commands) that never reach
+    // record.config.modeId.
+    modeId: record.lastModeId ?? nullableToUndefined(config?.modeId),
     model: nullableToUndefined(config?.model),
     thinkingOptionId: nullableToUndefined(config?.thinkingOptionId),
     featureValues: nullableToUndefined(config?.featureValues),

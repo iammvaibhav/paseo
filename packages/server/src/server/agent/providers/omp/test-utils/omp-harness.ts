@@ -20,7 +20,7 @@ import {
   type OmpProviderIdleScheduler,
 } from "../agent.js";
 import type { OmpUsagePollScheduler } from "../usage-poller.js";
-import type { OmpAgentMessage, OmpRpcSlashCommand } from "../rpc-types.js";
+import type { OmpAgentMessage, OmpRpcSlashCommand, OmpRuntimeEvent } from "../rpc-types.js";
 import { FakeOmp } from "./fake-omp.js";
 
 const CWD = "/tmp/paseo-omp-agent-test";
@@ -88,15 +88,25 @@ export class OmpHarness {
       usagePollScheduler?: OmpUsagePollScheduler;
       runtimeSettings?: OmpAgentClientOptions["runtimeSettings"];
       logger?: OmpAgentClientOptions["logger"];
+      providerIdleDeadlineMs?: number;
+      runtimeEnv?: Record<string, string>;
+      warmPool?: boolean;
     } = {},
   ) {
     this.client = new OmpAgentClient({
       logger: options.logger ?? pino({ level: "silent" }),
       runtime: this.omp,
-      runtimeSettings: options.runtimeSettings,
+      runtimeSettings: options.runtimeEnv
+        ? {
+            ...options.runtimeSettings,
+            env: { ...options.runtimeSettings?.env, ...options.runtimeEnv },
+          }
+        : options.runtimeSettings,
       providerIdleScheduler: options.providerIdleScheduler,
       noTurnScheduler: options.noTurnScheduler,
       usagePollScheduler: options.usagePollScheduler,
+      providerIdleDeadlineMs: options.providerIdleDeadlineMs,
+      warmPool: options.warmPool,
     });
   }
 
@@ -126,10 +136,11 @@ export class OmpHarness {
   async start(
     config: Partial<AgentSessionConfig> = {},
     paseoTools?: PaseoToolCatalog,
+    env?: Record<string, string>,
   ): Promise<void> {
     const session = await this.client.createSession(
       { provider: "omp", cwd: CWD, ...config },
-      paseoTools ? { paseoTools } : undefined,
+      paseoTools || env ? { paseoTools, env } : undefined,
     );
     if (!(session instanceof OmpAgentSession)) {
       throw new Error("OMP client returned a non-OMP session");
@@ -220,6 +231,20 @@ export class OmpHarness {
 
   capabilities() {
     return this.client.capabilities;
+  }
+
+  persistence() {
+    return this.requireSession().describePersistence();
+  }
+
+  async replayHistory(handle: AgentPersistenceHandle): Promise<AgentStreamEvent[]> {
+    const session = await this.client.resumeSession(handle, undefined, undefined, {
+      purpose: "history",
+    });
+    const events: AgentStreamEvent[] = [];
+    for await (const event of session.streamHistory()) events.push(event);
+    await session.close();
+    return events;
   }
 
   async runPrompt(
@@ -396,6 +421,14 @@ export class OmpHarness {
     return await run;
   }
 
+  async runPromptWithoutTurnOnNextRuntime(input: string, requestId: string): Promise<unknown> {
+    const session = this.requireSession();
+    this.omp.queueSessionSetup((runtime) => {
+      runtime.promptAck = { requestId, agentInvoked: false };
+    });
+    return await session.run(input);
+  }
+
   async runPromptWithoutTurn(input: string): Promise<unknown> {
     const session = this.requireSession();
     this.omp.latestSession().promptAck = { agentInvoked: false };
@@ -429,6 +462,31 @@ export class OmpHarness {
       agentInvoked: false,
     });
     return { completed: () => isCompleted, completion };
+  }
+
+  async runPromptRejectedBeforeAgentRuns(
+    input: string,
+    error: string,
+    order: "result after ack" | "result before ack",
+  ): Promise<unknown> {
+    const session = this.requireSession();
+    const runtime = this.omp.latestSession();
+    runtime.promptAck = { requestId: "prompt-rejected" };
+    const rejection = {
+      type: "prompt_result",
+      id: "prompt-rejected",
+      agentInvoked: false,
+      status: "error",
+      sessionSettled: true,
+      error: { message: error, retryable: false },
+    } as const;
+    const promptStarted = runtime.nextPrompt();
+    const run = session.run(input);
+    if (order === "result before ack") runtime.emit(rejection);
+    await promptStarted;
+    await waitForImmediate();
+    if (order === "result after ack") runtime.emit(rejection);
+    return await run;
   }
 
   async runPromptAfterCorrelatedTrueResult(
@@ -585,6 +643,10 @@ export class OmpHarness {
     this.omp.latestSession().requestToolApproval(input);
   }
 
+  emit(event: OmpRuntimeEvent): void {
+    this.omp.latestSession().emit(event);
+  }
+
   pendingPermissions() {
     return this.requireSession().getPendingPermissions();
   }
@@ -616,6 +678,36 @@ export class OmpHarness {
     return await this.requireSession().setMode(modeId);
   }
 
+  currentMode() {
+    return this.requireSession().getCurrentMode();
+  }
+
+  runtimeLaunches() {
+    return this.omp.recordedLaunches;
+  }
+
+  runtimeSessions() {
+    return this.omp.allSessions();
+  }
+
+  processExit(error: string): void {
+    this.omp.latestSession().emit({ type: "process_exit", error });
+  }
+
+  failNextStart(error: Error): void {
+    this.omp.failNextStart(error);
+  }
+
+  turnFailures(): string[] {
+    return this.events.flatMap((event) => (event.type === "turn_failed" ? [event.error] : []));
+  }
+
+  threadStartedSessionIds(): string[] {
+    return this.events.flatMap((event) =>
+      event.type === "thread_started" ? [event.sessionId] : [],
+    );
+  }
+
   async rewind(messageId: string, restoredPrompt: string): Promise<void> {
     this.omp.latestSession().branchResponse = { text: restoredPrompt };
     await this.requireSession().revertConversation({ messageId });
@@ -635,6 +727,15 @@ export class OmpHarness {
     const result = await this.requireSession().startTurn(message);
     await promptStarted;
     return result;
+  }
+
+  async startTurn(message: string): Promise<void> {
+    await this.requireSession().startTurn(message);
+    await waitForImmediate();
+  }
+
+  startTurnDetached(message: string) {
+    return this.requireSession().startTurn(message);
   }
 
   async interrupt(): Promise<void> {
@@ -677,6 +778,10 @@ export class OmpHarness {
 
   canceledTurnCount(): number {
     return this.events.filter((event) => event.type === "turn_canceled").length;
+  }
+
+  usageSession() {
+    return this.requireSession().usageSession();
   }
 
   async close(): Promise<void> {

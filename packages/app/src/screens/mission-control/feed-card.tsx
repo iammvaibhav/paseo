@@ -34,7 +34,7 @@ import { isVerboseOnlyProposalEvent, ProposalCard } from "./proposal-card";
 import { resolveCardEventAgentServerId } from "./event-inspector-target";
 import { ClarificationCard } from "./clarification-card";
 import { AnswerCard } from "./answer-card";
-import { useLiveTimeAgo } from "@/hooks/use-compact-time-ago";
+import { useTimeAgo } from "@/hooks/use-time-ago";
 import { ProofSections } from "./proofs/proof-sections";
 import { HostGlyph } from "@/components/host-glyph";
 export type FeedCardEvent = MissionControlEvent & {
@@ -275,8 +275,8 @@ function FeedCardMetaRow({
   timestamp: Date;
 }): ReactElement {
   // Live relative time: the shared ticker re-renders ONLY this label as it
-  // ages (see useLiveTimeAgo), never the card or the list.
-  const timeAgo = useLiveTimeAgo(timestamp);
+  // ages (see useTimeAgo), never the card or the list.
+  const timeAgo = useTimeAgo(timestamp);
   return (
     <View style={styles.metaRow}>
       {/* Chip is chrome, not a nested button — the open control wraps this

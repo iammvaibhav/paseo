@@ -3,6 +3,7 @@ import { constants as fsConstants, type Dirent } from "node:fs";
 import { copyFile, open, readdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
+import { existsSync } from "node:fs";
 
 import type {
   ImportableProviderSession,
@@ -12,8 +13,7 @@ import type { ProviderRuntimeSettings } from "../../provider-launch-config.js";
 import { createRealpathAwarePathMatcher } from "../../../../utils/path.js";
 
 const OMP_CONFIG_DIR_NAME = ".omp";
-const OMP_AGENT_DIR_ENV = "OMP_AGENT_DIR";
-const OMP_SESSION_DIR_ENV = "OMP_SESSION_DIR";
+const OMP_SESSION_DIR_ENV = "PI_CODING_AGENT_SESSION_DIR";
 // Import listing intentionally bounds header parsing to this window. Sessions
 // with unusually large preambles may omit their first-prompt preview.
 const HEAD_BYTES = 64 * 1024;
@@ -103,12 +103,66 @@ export async function listOmpImportableSessions(
   );
 }
 
+/**
+ * Reads the model/thinking config of an OMP session for import.
+ *
+ * `handle` is either an absolute path to the session `.jsonl` (what the
+ * importable-sessions list hands back) or a bare OMP session id (what
+ * `paseo import <id>` supplies). Ids are resolved against the configured
+ * sessions directory; an unresolvable handle yields `{}`.
+ */
 export async function readOmpImportSessionConfig(
-  filePath: string,
+  handle: string,
+  options: OmpSessionDescriptorOptions = {},
 ): Promise<OmpImportSessionConfig> {
+  const filePath = await resolveOmpSessionFile(handle, options);
+  if (!filePath) return {};
   const descriptor = await readOmpSessionDescriptor(filePath);
   if (!descriptor) return {};
   return toOmpImportSessionConfig(descriptor);
+}
+
+/**
+ * Resolves an import handle to a session file path. Returns the handle itself
+ * when it already names a readable file; otherwise searches the sessions
+ * directory for a file whose header `id` matches.
+ */
+export async function resolveOmpSessionFile(
+  handle: string,
+  options: OmpSessionDescriptorOptions = {},
+): Promise<string | null> {
+  const trimmed = handle.trim();
+  if (!trimmed) return null;
+  if (await isReadableFile(trimmed)) return trimmed;
+
+  const sessionsDir = await resolveOmpSessionsDir(options);
+  const files = await walkJsonlFiles(sessionsDir);
+  // OMP names session files `<timestamp>_<id>.jsonl`; try those first so the
+  // common case opens a single file instead of scanning the directory.
+  const nameSuffix = `_${trimmed}.jsonl`;
+  const byName = files.filter((file) => path.basename(file).endsWith(nameSuffix));
+  for (const file of byName) {
+    if (await headerSessionIdMatches(file, trimmed)) return file;
+  }
+  const rest = byName.length > 0 ? files.filter((file) => !byName.includes(file)) : files;
+  for (const file of rest) {
+    if (await headerSessionIdMatches(file, trimmed)) return file;
+  }
+  return null;
+}
+
+async function isReadableFile(filePath: string): Promise<boolean> {
+  try {
+    return (await stat(filePath)).isFile();
+  } catch {
+    return false;
+  }
+}
+
+async function headerSessionIdMatches(filePath: string, sessionId: string): Promise<boolean> {
+  const headChunk = await readHeadChunk(filePath);
+  if (!headChunk) return false;
+  return parseSessionHeaderFromChunk(headChunk)?.sessionId === sessionId;
 }
 
 /**
@@ -117,7 +171,7 @@ export async function readOmpImportSessionConfig(
  * of inventing a path the provider would not find again.
  */
 export async function resolveOmpSessionsDir(options: OmpSessionDescriptorOptions): Promise<string> {
-  const env = options.env ?? process.env;
+  const env = { ...(options.env ?? process.env), ...options.runtimeSettings?.env };
   const homeDir = options.homeDir ?? homedir();
   const baseDir = options.cwd ?? process.cwd();
 
@@ -125,10 +179,9 @@ export async function resolveOmpSessionsDir(options: OmpSessionDescriptorOptions
     return resolveConfigPath(options.sessionDir, { baseDir, homeDir });
   }
 
-  const agentDir = resolveOmpAgentDir({ runtimeSettings: options.runtimeSettings, env, homeDir });
+  const agentDir = resolveOmpAgentDir({ env, homeDir });
 
-  const envSessionDir =
-    options.runtimeSettings?.env?.[OMP_SESSION_DIR_ENV] ?? env[OMP_SESSION_DIR_ENV];
+  const envSessionDir = env[OMP_SESSION_DIR_ENV];
   if (envSessionDir?.trim()) {
     return resolveConfigPath(envSessionDir, { baseDir, homeDir });
   }
@@ -141,24 +194,50 @@ export async function resolveOmpSessionsDir(options: OmpSessionDescriptorOptions
     return resolveConfigPath(settingsSessionDir, { baseDir, homeDir });
   }
 
+  return resolveOmpDefaultSessionsDir(env, agentDir);
+}
+
+function resolveOmpDefaultSessionsDir(env: NodeJS.ProcessEnv, agentDir: string): string {
+  const profile = resolveOmpProfile(env);
+  const xdgDataHome = env.XDG_DATA_HOME;
+  if (
+    xdgDataHome &&
+    (process.platform === "linux" || process.platform === "darwin") &&
+    (profile || !env.PI_CODING_AGENT_DIR?.trim())
+  ) {
+    const xdgRoot = path.join(xdgDataHome, "omp", ...(profile ? ["profiles", profile] : []));
+    if (existsSync(xdgRoot)) return path.join(xdgRoot, "sessions");
+  }
   return path.join(agentDir, "sessions");
 }
 
-function resolveOmpAgentDir(input: {
-  runtimeSettings?: ProviderRuntimeSettings;
-  env: NodeJS.ProcessEnv;
-  homeDir: string;
-}): string {
-  const envAgentDir =
-    input.runtimeSettings?.env?.[OMP_AGENT_DIR_ENV] ?? input.env[OMP_AGENT_DIR_ENV];
-  if (envAgentDir?.trim()) {
-    return resolveConfigPath(envAgentDir, {
-      baseDir: process.cwd(),
-      homeDir: input.homeDir,
-    });
+function resolveOmpAgentDir(input: { env: NodeJS.ProcessEnv; homeDir: string }): string {
+  const env = input.env;
+  const profile = resolveOmpProfile(env);
+  if (!profile) {
+    const configured = env.PI_CODING_AGENT_DIR;
+    if (configured?.trim()) {
+      return resolveConfigPath(configured, { baseDir: process.cwd(), homeDir: input.homeDir });
+    }
   }
+  const configRoot = path.join(input.homeDir, env.PI_CONFIG_DIR || OMP_CONFIG_DIR_NAME);
+  const profileRoot = profile ? path.join(configRoot, "profiles", profile) : configRoot;
+  return path.join(profileRoot, "agent");
+}
 
-  return path.join(input.homeDir, OMP_CONFIG_DIR_NAME, "agent");
+function resolveOmpProfile(env: NodeJS.ProcessEnv): string | undefined {
+  const profile = (env.OMP_PROFILE !== undefined ? env.OMP_PROFILE : env.PI_PROFILE)?.trim();
+  if (!profile || profile === "default") return undefined;
+  if (
+    profile === "." ||
+    profile === ".." ||
+    profile.endsWith(".") ||
+    !/^[a-z0-9][a-z0-9._-]{0,63}$/.test(profile) ||
+    /^(?:CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9])(?:\..*)?$/i.test(profile)
+  ) {
+    throw new Error(`Invalid OMP profile "${profile}"`);
+  }
+  return profile;
 }
 
 async function readConfiguredSessionDir(input: {
@@ -541,7 +620,7 @@ export interface CloneOmpSessionFileOptions {
  * directory, using omp's own session naming convention (`<stamp>_<uuid>.jsonl`).
  * Used to fork an agent without touching the source's session file: the copy
  * owns the fork's history, and omp appends to it from then on. The source file
- * must already exist; callers resolve it first (see {@link resolveOmpSessionFile}).
+ * must already exist; callers resolve it first (see {@link locateOmpSessionFile}).
  *
  * When `targetUserTurnCount` is specified and the session has more turns, the
  * active entry chain is sliced to that turn count. Otherwise, the clone asks
@@ -757,7 +836,7 @@ function parseSessionFileName(sessionFile: string): { sessionId: string; created
  * unresolved it is a *relative path*: omp mints an empty session beside the cwd and
  * the agent opens blank while its real transcript sits untouched on disk.
  */
-export async function resolveOmpSessionFile(
+export async function locateOmpSessionFile(
   sessionFile: string,
   options?: { homeDir?: string },
 ): Promise<string> {

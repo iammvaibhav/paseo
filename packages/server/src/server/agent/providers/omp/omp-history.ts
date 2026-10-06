@@ -10,7 +10,7 @@ import pino from "pino";
 
 import type { ImportedTimelineEntry } from "../../agent-sdk-types.js";
 import { streamOmpHistory } from "./history.js";
-import { resolveOmpSessionFile } from "./session-descriptor.js";
+import { locateOmpSessionFile } from "./session-descriptor.js";
 
 const silentLogger = pino({ level: "silent" });
 
@@ -29,7 +29,7 @@ export async function readOmpTimelineFromDisk(input: {
   if (!rawFile) {
     return null;
   }
-  const sessionFile = await resolveOmpSessionFile(rawFile);
+  const sessionFile = await locateOmpSessionFile(rawFile);
 
   try {
     const items: ImportedTimelineEntry[] = [];

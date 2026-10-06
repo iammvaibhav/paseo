@@ -255,7 +255,7 @@ export class ProviderUsageService {
     const fetchedAt = new Date(this.now()).toISOString();
     let cards: ProviderUsage[];
     try {
-      const value = await withProviderTimeout(fetcher.fetchUsage());
+      const value = await withProviderTimeout(fetcher.fetchUsage(), fetcher.fetchTimeoutMs);
       cards = this.normalizeCards(value, fetchedAt);
     } catch (error) {
       this.logger.debug(
@@ -290,7 +290,9 @@ export class ProviderUsageService {
   private async fetchFreshUsage(nowMs: number): Promise<ProviderUsageListResult> {
     const activeFetchers = this.fetchers.filter((fetcher) => this.isFetcherEnabled(fetcher));
     const settled = await Promise.allSettled(
-      activeFetchers.map((fetcher) => withProviderTimeout(fetcher.fetchUsage())),
+      activeFetchers.map((fetcher) =>
+        withProviderTimeout(fetcher.fetchUsage(), fetcher.fetchTimeoutMs),
+      ),
     );
     const fetchedAt = new Date(nowMs).toISOString();
     const providers: ProviderUsage[] = [];

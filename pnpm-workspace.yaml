@@ -1,4 +1,5 @@
 packages:
+  - "plugins"
   - "packages/expo-two-way-audio"
   - "packages/highlight"
   - "packages/plugin"
@@ -16,6 +17,7 @@ allowBuilds:
   electron-winstaller: true
   esbuild: true
   lefthook: true
+  msgpackr-extract: false
   node-pty: true
   unrs-resolver: true
   workerd: true
@@ -30,6 +32,7 @@ minimumReleaseAgeExclude:
   - "@getpaseo/protocol@0.8.0-beta.1"
   - "@getpaseo/relay@0.8.0-beta.1"
   - electron@44.2.0
+  - lucide-react-native@1.50.0
 minimumReleaseAgeStrict: false
 
 overrides:

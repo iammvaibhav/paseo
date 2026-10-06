@@ -9,7 +9,7 @@ import type { AgentMetadata, AgentPromptInput, AgentSessionConfig } from "./agen
 import type { AgentStorage, StoredAgentRecord } from "./agent-storage.js";
 import { resolveCreateAgentTitles } from "./create-agent-title.js";
 import { buildAgentPrompt } from "./prompt-attachments.js";
-import { cloneOmpSessionFile, resolveOmpSessionFile } from "./providers/omp/session-descriptor.js";
+import { cloneOmpSessionFile, locateOmpSessionFile } from "./providers/omp/session-descriptor.js";
 import type { AgentAttachment } from "../messages.js";
 
 export interface ForkAgentBoundary {
@@ -164,9 +164,9 @@ async function tryNativeSessionFork(params: {
     return null;
   }
 
-  // resolveOmpSessionFile finds the real file when the handle is a stub or
+  // locateOmpSessionFile finds the real file when the handle is a stub or
   // stale path; a file that still cannot be resolved has no durable session.
-  const resolvedFile = await resolveOmpSessionFile(handle.nativeHandle);
+  const resolvedFile = await locateOmpSessionFile(handle.nativeHandle);
   const fileStat = await stat(resolvedFile).catch(() => null);
   if (!fileStat?.isFile() || fileStat.size === 0) {
     return null;

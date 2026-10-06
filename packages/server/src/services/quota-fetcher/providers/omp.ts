@@ -1239,6 +1239,9 @@ export class OmpQuotaProvider implements ProviderUsageFetcher {
   readonly providerId = "omp";
   readonly agentProviderIds: readonly string[] = ["omp"];
   readonly displayName = "OMP";
+  // `omp usage --json`, the Grok Build token calls and the Cursor and
+  // Antigravity hops run in sequence; together they take ~7s on a warm host.
+  readonly fetchTimeoutMs = 20_000;
 
   private readonly logger: Logger;
   private readonly fetchApi: ProviderApiFetch;

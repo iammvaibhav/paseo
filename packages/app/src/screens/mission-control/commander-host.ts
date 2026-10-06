@@ -11,7 +11,7 @@ export interface CommanderHostInfo {
 export type HostInfoByServerId = Record<string, CommanderHostInfo>;
 
 interface HostInfoSource {
-  serverInfo: { hostname: string | null; missionControlHostAlias: string | null } | null;
+  serverInfo: { hostname: string | null; missionControlHostAlias?: string | null } | null;
 }
 
 /**

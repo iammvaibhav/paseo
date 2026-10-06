@@ -11,7 +11,7 @@ import {
 } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import type { TicketColumn, TicketSummary } from "@getpaseo/protocol/tickets/types";
-import { useCompactTimeAgo } from "@/hooks/use-compact-time-ago";
+import { useCompactTimeAgo } from "@/hooks/use-time-ago";
 import { SPACING } from "@/styles/theme";
 import type { BoardLane } from "./board-model";
 import { AssigneeAvatar } from "./components/assignee-avatar";

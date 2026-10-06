@@ -78,7 +78,7 @@ import {
   type ScrollAnchor,
   type VisibleRowRect,
 } from "./board-items";
-import { useCompactTimeAgo } from "@/hooks/use-compact-time-ago";
+import { useCompactTimeAgo } from "@/hooks/use-time-ago";
 import { copyToClipboard } from "@/utils/copy-to-clipboard";
 import { openAgentFromHistory } from "@/workspace/open-agent-from-history";
 import {

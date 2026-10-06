@@ -6,7 +6,7 @@ import { HostGlyph } from "@/components/host-glyph";
 import { StatusRing } from "@/components/status-ring";
 import { ContextMenu, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { isWeb } from "@/constants/platform";
-import { useCompactTimeAgo } from "@/hooks/use-compact-time-ago";
+import { useCompactTimeAgo } from "@/hooks/use-time-ago";
 import { useLiveDuration } from "@/hooks/use-live-duration";
 import { rowActivityMs, rowRunningStartedMs, type LifecycleRow } from "@/mission-control/lifecycle";
 import { buildMissionControlRoute } from "@/utils/host-routes";

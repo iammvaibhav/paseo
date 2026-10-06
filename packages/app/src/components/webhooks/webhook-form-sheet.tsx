@@ -25,7 +25,7 @@ import { createControlGeometry, type FieldControlSize } from "@/components/ui/co
 import { Field, FormTextInput } from "@/components/ui/form-field";
 import { SegmentedControl } from "@/components/ui/segmented-control";
 import { Switch } from "@/components/ui/switch";
-import { getProviderIcon } from "@/components/provider-icons";
+import { useProviderIcon } from "@/components/provider-icons";
 import {
   SelectField,
   SelectFieldTrigger,
@@ -1243,10 +1243,10 @@ function ThinkingOptionItem({
 }
 
 function ProviderGlyph({ provider }: { provider: string | null }): ReactElement | null {
+  const Icon = useProviderIcon(provider ?? "");
   if (!provider) {
     return null;
   }
-  const Icon = getProviderIcon(provider);
   return <Icon size={16} color={styles.providerIcon.color} />;
 }
 

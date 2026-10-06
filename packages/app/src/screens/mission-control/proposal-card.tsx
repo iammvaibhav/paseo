@@ -14,7 +14,7 @@ import { useSessionStore } from "@/stores/session-store";
 import { getHostRuntimeStore } from "@/runtime/host-runtime";
 import { useToast } from "@/contexts/toast-context";
 import { HostGlyph } from "@/components/host-glyph";
-import { useLiveTimeAgo } from "@/hooks/use-compact-time-ago";
+import { useTimeAgo } from "@/hooks/use-time-ago";
 import {
   deriveProposalCardIdentity,
   resolveAgentIdentityAcrossSessions,
@@ -405,7 +405,7 @@ export function ProposalCard({
   const timestamp = new Date(event.ts);
   // Live relative time via the shared ticker; the label ages in place without
   // re-rendering the card or the list.
-  const timeAgo = useLiveTimeAgo(timestamp);
+  const timeAgo = useTimeAgo(timestamp);
 
   const respond = useCallback(
     async (action: "approve" | "deny", editedMessage?: string, reason?: string) => {
