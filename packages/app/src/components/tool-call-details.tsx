@@ -57,7 +57,6 @@ interface DetailStyles {
   scrollAreaFillStyle: StyleProp<ViewStyle>;
   scrollAreaStyle: StyleProp<ViewStyle>;
   jsonScrollCombined: StyleProp<ViewStyle>;
-  jsonScrollErrorCombined: StyleProp<ViewStyle>;
   fullBleedContainerStyle: StyleProp<ViewStyle>;
   loadingContainerStyle: StyleProp<ViewStyle>;
   resolvedMaxHeight: number | undefined;
@@ -122,7 +121,6 @@ function useDetailStyles(
     [resolvedMaxHeight],
   );
   const jsonScrollCombined = styles.jsonScroll;
-  const jsonScrollErrorCombined = [styles.jsonScroll, styles.jsonScrollError];
   const fullBleedContainerStyle = useMemo(
     () => [
       isFullBleed ? styles.fullBleedContainer : styles.paddedContainer,
@@ -142,7 +140,6 @@ function useDetailStyles(
     scrollAreaFillStyle,
     scrollAreaStyle,
     jsonScrollCombined,
-    jsonScrollErrorCombined,
     fullBleedContainerStyle,
     loadingContainerStyle,
     resolvedMaxHeight,
@@ -1086,7 +1083,7 @@ function ErrorSection({ errorText, ds }: { errorText: string; ds: DetailStyles }
       <ScrollView
         horizontal
         nestedScrollEnabled
-        style={ds.jsonScrollErrorCombined}
+        style={ds.jsonScrollCombined}
         contentContainerStyle={styles.jsonContent}
         showsHorizontalScrollIndicator={true}
       >
@@ -1191,10 +1188,7 @@ const styles = StyleSheet.create((theme) => {
       flexDirection: "row",
       alignItems: "center",
       gap: theme.spacing[2],
-      paddingHorizontal: theme.spacing[3],
-      paddingVertical: theme.spacing[2],
-      borderBottomWidth: theme.borderWidth[1],
-      borderBottomColor: theme.colors.border,
+      paddingTop: theme.spacing[2],
     },
     groupHeaderText: {
       color: theme.colors.foregroundMuted,
@@ -1251,7 +1245,7 @@ const styles = StyleSheet.create((theme) => {
     plainText: {
       fontFamily: theme.fontFamily.ui,
       fontSize: theme.fontSize.base,
-      color: theme.colors.foreground,
+      color: theme.colors.foregroundMuted,
       lineHeight: 22,
       overflowWrap: "anywhere",
     },
@@ -1292,14 +1286,10 @@ const styles = StyleSheet.create((theme) => {
       paddingHorizontal: insets.padding,
       paddingVertical: insets.padding,
     },
-    scrollArea: {
-      borderWidth: theme.borderWidth[1],
-      borderColor: theme.colors.border,
-      borderRadius: theme.borderRadius.base,
-      backgroundColor: theme.colors.surface2,
-    },
+    // Plain text and raw output read as text under the row's label, not as a boxed panel.
+    scrollArea: {},
     scrollContent: {
-      padding: insets.padding,
+      paddingVertical: theme.spacing[1],
     },
     scrollText: {
       fontFamily: theme.fontFamily.mono,
@@ -1427,17 +1417,9 @@ const styles = StyleSheet.create((theme) => {
       color: theme.colors.foreground,
       lineHeight: 18,
     },
-    jsonScroll: {
-      borderWidth: theme.borderWidth[1],
-      borderColor: theme.colors.border,
-      borderRadius: theme.borderRadius.base,
-      backgroundColor: theme.colors.surface2,
-    },
-    jsonScrollError: {
-      borderColor: theme.colors.destructive,
-    },
+    jsonScroll: {},
     jsonContent: {
-      padding: insets.padding,
+      paddingVertical: theme.spacing[1],
     },
     errorText: {
       color: theme.colors.destructive,

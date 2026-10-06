@@ -1046,7 +1046,6 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     const renderToolRunGroup = useCallback(
       (group: ToolCallDetailGroup, isLastInSequence: boolean) => {
         const expanded = isToolCallGroupExpanded(group);
-        const lastIndex = group.run.items.length - 1;
         return (
           <OverviewToolCallGroupView
             group={group}
@@ -1055,13 +1054,13 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
             onExpandedChange={setToolCallGroupExpanded}
           >
             {expanded
-              ? group.run.items.map((member, index) => (
+              ? group.run.items.map((member) => (
                   <React.Fragment key={member.id}>
                     {member.kind === "thought"
-                      ? renderThoughtSlot(member, index === lastIndex)
+                      ? renderThoughtSlot(member, false)
                       : renderSingleToolCallItem(
                           member,
-                          index === lastIndex,
+                          false,
                           GROUPED_TOOL_CALL_DETAIL_MAX_HEIGHT,
                         )}
                   </React.Fragment>

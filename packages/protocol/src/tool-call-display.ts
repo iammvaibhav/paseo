@@ -270,7 +270,7 @@ function buildCanonicalDetailDisplay(input: ToolCallDisplayInput): DetailDisplay
   switch (input.detail.type) {
     case "shell":
       return {
-        displayName: "Shell",
+        displayName: "Run",
         summary: input.detail.command,
       };
     case "read":
@@ -481,7 +481,7 @@ function buildUnknownDetailOverride(input: ToolCallDisplayInput): DetailDisplay 
   }
   if (input.detail.type === "unknown" && lowerName === "thinking") {
     return {
-      displayName: "Thinking",
+      displayName: "Thought process",
     };
   }
   if (lowerName === "terminal") {

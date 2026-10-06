@@ -15,7 +15,7 @@ describe("tool-call-display", () => {
     });
 
     expect(display).toEqual({
-      displayName: "Shell",
+      displayName: "Run",
       summary: "npm test",
     });
   });

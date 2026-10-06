@@ -1291,6 +1291,9 @@ export const SaveAsNoteButton = memo(function SaveAsNoteButton({
   );
 });
 
+// Icon box (22) plus its right gap (4): where a badge's label starts, past its padding.
+export const EXPANDABLE_BADGE_ICON_SLOT = 26;
+
 const expandableBadgeStylesheet = StyleSheet.create((theme) => ({
   container: {
     marginHorizontal: -13,
@@ -1301,12 +1304,11 @@ const expandableBadgeStylesheet = StyleSheet.create((theme) => ({
   containerLastInSequence: {
     marginBottom: theme.spacing[4],
   },
+  // Flat rows: no box, no border, no fill when open. A row reads by its icon and label;
+  // hover and open only lift the label color.
   pressable: {
-    borderRadius: theme.borderRadius.lg,
-    borderWidth: theme.borderWidth[1],
-    borderColor: "transparent",
     paddingHorizontal: theme.spacing[2],
-    paddingVertical: theme.spacing[1],
+    paddingVertical: theme.spacing[1.5],
     overflow: "hidden",
   },
   pressablePressed: {
@@ -1323,12 +1325,12 @@ const expandableBadgeStylesheet = StyleSheet.create((theme) => ({
     overflow: "hidden",
   },
   iconBadge: {
-    width: 22,
-    height: 22,
+    width: EXPANDABLE_BADGE_ICON_SLOT - 4,
+    height: EXPANDABLE_BADGE_ICON_SLOT - 4,
     borderRadius: 11,
     alignItems: "center",
     justifyContent: "center",
-    marginRight: theme.spacing[1],
+    marginRight: 4,
     backgroundColor: "transparent",
   },
   label: {
@@ -1376,29 +1378,24 @@ const expandableBadgeStylesheet = StyleSheet.create((theme) => ({
     width: 14,
     height: 14,
   },
+  // Open details hang under the label, past the icon slot (pressable padding + icon + gap).
   detailWrapper: {
-    borderBottomLeftRadius: theme.borderRadius.lg,
-    borderBottomRightRadius: theme.borderRadius.lg,
-    borderWidth: theme.borderWidth[1],
-    borderTopWidth: 0,
-    borderColor: theme.colors.border,
-    padding: 0,
+    paddingLeft: theme.spacing[2] + EXPANDABLE_BADGE_ICON_SLOT,
+    paddingRight: theme.spacing[2],
+    paddingTop: theme.spacing[1],
+    paddingBottom: theme.spacing[1],
     gap: 0,
     flexShrink: 1,
     minWidth: 0,
     overflow: "hidden",
     ...(isWeb ? { cursor: "auto" as const, userSelect: "text" as const } : {}),
   },
-  pressableExpanded: {
-    backgroundColor: theme.colors.surface1,
-  },
-  pressableExpandedAttached: {
-    borderColor: theme.colors.border,
-    borderBottomLeftRadius: 0,
-    borderBottomRightRadius: 0,
-  },
-  detailWrapperBorderless: {
-    borderWidth: 0,
+  // A nested list (a tool group's steps) draws its own rail, so it starts at the row edge.
+  detailWrapperNested: {
+    paddingLeft: 0,
+    paddingRight: 0,
+    paddingTop: 0,
+    paddingBottom: theme.spacing[1],
   },
   shimmerOverlay: {
     position: "absolute",
@@ -2616,7 +2613,8 @@ interface ExpandableBadgeProps {
   isError?: boolean;
   isLastInSequence?: boolean;
   disableOuterSpacing?: boolean;
-  borderlessWhenExpanded?: boolean;
+  /** The details are a nested list of rows, not content to indent under the label. */
+  nestedDetails?: boolean;
   testID?: string;
 }
 
@@ -2979,7 +2977,7 @@ export const ExpandableBadge = memo(function ExpandableBadge({
   isError = false,
   isLastInSequence = false,
   disableOuterSpacing,
-  borderlessWhenExpanded = false,
+  nestedDetails = false,
   testID,
 }: ExpandableBadgeProps) {
   const resolvedDisableOuterSpacing = useDisableOuterSpacing(disableOuterSpacing);
@@ -3149,18 +3147,16 @@ export const ExpandableBadge = memo(function ExpandableBadge({
     () => [
       expandableBadgeStylesheet.pressable,
       isPressed && isInteractive ? expandableBadgeStylesheet.pressablePressed : null,
-      isExpanded && expandableBadgeStylesheet.pressableExpanded,
-      isExpanded && !borderlessWhenExpanded && expandableBadgeStylesheet.pressableExpandedAttached,
     ],
-    [borderlessWhenExpanded, isExpanded, isInteractive, isPressed],
+    [isInteractive, isPressed],
   );
 
   const detailWrapperStyle = useMemo(
     () => [
       expandableBadgeStylesheet.detailWrapper,
-      borderlessWhenExpanded && expandableBadgeStylesheet.detailWrapperBorderless,
+      nestedDetails && expandableBadgeStylesheet.detailWrapperNested,
     ],
-    [borderlessWhenExpanded],
+    [nestedDetails],
   );
 
   const accessibilityState = useMemo(
@@ -3300,7 +3296,7 @@ function areExpandableBadgePropsEqual(previous: ExpandableBadgeProps, next: Expa
   if (previous.isError !== next.isError) return false;
   if (previous.isLastInSequence !== next.isLastInSequence) return false;
   if (previous.disableOuterSpacing !== next.disableOuterSpacing) return false;
-  if (previous.borderlessWhenExpanded !== next.borderlessWhenExpanded) return false;
+  if (previous.nestedDetails !== next.nestedDetails) return false;
   if (previous.testID !== next.testID) return false;
   if (previous.onToggle !== next.onToggle) return false;
   if (previous.onOpenFile !== next.onOpenFile) return false;
