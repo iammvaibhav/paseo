@@ -1,4 +1,5 @@
 import { Platform } from "react-native";
+import type { SurfaceBackdrop } from "@/styles/surface-backdrop";
 import { darkHighlightColors, lightHighlightColors } from "@getpaseo/highlight";
 
 export const baseColors = {
@@ -774,13 +775,23 @@ const darkShadow = {
  * be a wash: they read through to whatever is under them.
  */
 export interface GlassTreatment {
-  /** Menus, popovers, tooltips, dialogs, toasts: lighter than the pane so they stand out. */
+  /**
+   * Menus, popovers, tooltips, dialogs, toasts: lighter than the pane so they stand out.
+   * No `backdrop-filter` here: on a macOS window with vibrancy, any element with one makes
+   * Chromium composite the whole window opaque while it is on screen.
+   */
   floating: string;
+  /** A floating surface in its active or pressed state. */
+  floatingRaised: string;
   floatingBorder: string;
-  /** Web `backdrop-filter` under floating surfaces, so the content under them blurs. */
-  floatingBackdropFilter: string;
   /** Surfaces that must hide what scrolls under them, such as sticky headers. */
   cover: string;
+  /**
+   * What a translucent fill looks like once composited over the window, for trailing-action
+   * scrims. A scrim repaints the row's fill over the label, and a translucent fill painted twice
+   * shows as a lighter band, so the scrim paints this opaque estimate instead.
+   */
+  scrim: Record<SurfaceBackdrop, string>;
 }
 
 export function buildDarkTheme(semanticColors: ReturnType<typeof buildDarkSemanticColors>) {
@@ -822,19 +833,28 @@ export const darkMonoGlassTheme = {
     surface4: "rgba(255, 255, 255, 0.16)",
     surfaceDiffEmpty: "rgba(255, 255, 255, 0.025)",
     surfaceSidebar: "transparent",
-    surfaceSidebarHover: "rgba(255, 255, 255, 0.06)",
-    surfaceSidebarSelected: "rgba(255, 255, 255, 0.09)",
+    // Opaque: sidebar rows carry trailing actions whose scrim must match the row exactly.
+    surfaceSidebarHover: "#262626",
+    surfaceSidebarSelected: "#2e2e2e",
     surfaceWorkspace: "transparent",
     surfacePane: "transparent",
     surfaceUserMessage: "rgba(255, 255, 255, 0.09)",
-    popover: "rgba(52, 52, 52, 0.62)",
+    popover: "rgba(44, 44, 44, 0.9)",
   }),
   glass: {
-    floating: "rgba(52, 52, 52, 0.62)",
+    floating: "rgba(44, 44, 44, 0.9)",
+    floatingRaised: "rgba(58, 58, 58, 0.92)",
     floatingBorder: "rgba(255, 255, 255, 0.1)",
-    floatingBackdropFilter: "blur(24px) saturate(1.6)",
     cover: "rgba(28, 28, 28, 0.94)",
-  },
+    scrim: {
+      surface0: "#1b1b1b",
+      surface1: "#222222",
+      surface2: "#282828",
+      surfaceSidebar: "#1c1c1c",
+      surfaceSidebarHover: "#262626",
+      surfaceSidebarSelected: "#2e2e2e",
+    },
+  } satisfies GlassTreatment,
 };
 
 interface GlassFloatingStyle {
@@ -845,12 +865,10 @@ interface GlassFloatingStyle {
 /** Floating-surface fill for a glass theme; empty for opaque themes, which keep their own fill. */
 export function glassFloatingStyle(theme: Theme): GlassFloatingStyle {
   if (!theme.glass) return {};
-  // `backdropFilter` is a web style key react-native's style types do not declare.
   return {
     backgroundColor: theme.glass.floating,
     borderColor: theme.glass.floatingBorder,
-    backdropFilter: theme.glass.floatingBackdropFilter,
-  } as GlassFloatingStyle;
+  };
 }
 
 // Pure black — zero-luminance background with high-contrast surfaces.

@@ -296,7 +296,9 @@ New status pills use `<StatusBadge>`. Identity, shortcut, and interactive link b
 The desktop app on macOS renders the Mono theme as `darkMonoGlass` (`packages/app/src/styles/theme.ts`): translucent tints over the window vibrancy. Translucent fills stack, so the theme follows three rules, and new surfaces must too.
 
 - **Region fills are clear.** `surface0`, `surfaceSidebar`, `surfacePane`, and `surfaceWorkspace` are `transparent`. Only the window root (`surfaceApp`) and the content pane (`surfaceContent`) paint tints. Do not paint `surface0` as an ink color (text on a filled chip); use `background`, which stays opaque.
-- **Raised fills are washes.** `surface1`…`surface4` and `surfaceUserMessage` are white washes, so the composer, code blocks, tables, cards, and row fills read lighter than the pane.
-- **Floating and covering surfaces opt in.** Menus, popovers, tooltips, dialogs, and toasts spread `glassFloatingStyle(theme)` after their fill: a lighter tint with a backdrop blur. Surfaces that must hide what scrolls under them (sticky diff headers, full-screen backdrops) use `theme.glass.cover`.
+- **Raised fills are washes.** `surface1`…`surface4` and `surfaceUserMessage` are white washes, so the composer, code blocks, tables, cards, and row fills read lighter than the pane. Sidebar hover and selected fills stay opaque so their trailing-action scrims match exactly.
+- **Floating and covering surfaces opt in.** Anything drawn over other content (menus, popovers, tooltips, dialogs, toasts, the pills over the transcript) spreads `glassFloatingStyle(theme)` after its fill: a lighter, denser tint. Surfaces that must hide what scrolls under them (sticky diff headers, full-screen backdrops) use `theme.glass.cover`. Scrims and status-ring knockouts paint `theme.glass.scrim`, an opaque estimate of the composited fill.
+
+Never use CSS `backdrop-filter` in the glass theme. While any element with one is on screen, Chromium composites the whole macOS window opaque and the vibrancy disappears. The window vibrancy is the only blur; it is `NSVisualEffectView`, not macOS 26 Liquid Glass, which Electron does not expose to web content.
 
 Mermaid's color parser hangs on `rgba()`, so the diagram takes its glass colors as 8-digit hex (`packages/app/src/components/mermaid-diagram.web.tsx`).

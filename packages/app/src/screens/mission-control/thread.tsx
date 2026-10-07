@@ -13,7 +13,7 @@ import { Platform, Pressable, Text, View } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { ChevronDown } from "lucide-react-native";
-import type { Theme } from "@/styles/theme";
+import { glassFloatingStyle, type Theme } from "@/styles/theme";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { containsLeakedToolMarkup } from "./answer-card-display";
 import {
@@ -788,6 +788,7 @@ const styles = StyleSheet.create((theme) => ({
     gap: theme.spacing[1],
     borderRadius: 999,
     backgroundColor: theme.colors.surface2,
+    ...glassFloatingStyle(theme),
     borderWidth: theme.borderWidth[1],
     borderColor: theme.colors.accent,
     paddingHorizontal: theme.spacing[3],
