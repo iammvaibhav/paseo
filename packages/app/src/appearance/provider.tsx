@@ -25,7 +25,7 @@ import {
   PLUGIN_THEME_PREFERENCE,
   THEME_TO_UNISTYLES,
 } from "@/styles/theme";
-import { getIsElectronMac } from "@/constants/platform";
+import { isGlassThemePreference } from "./glass";
 import { applyAppearance } from "./apply";
 
 interface ContributedThemes {
@@ -59,7 +59,7 @@ function applyTheme({ preference, contributedTheme }: ApplyThemeInput): void {
 
   UnistylesRuntime.setAdaptiveThemes(false);
   // Mono gets the window's sidebar vibrancy only where the window can provide it.
-  if (builtInPreference === "mono" && getIsElectronMac()) {
+  if (isGlassThemePreference(builtInPreference)) {
     UnistylesRuntime.setTheme(GLASS_THEME_NAME);
     return;
   }

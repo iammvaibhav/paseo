@@ -25,6 +25,7 @@ import {
   MIN_AGENT_GRID_VISIBLE_COUNT,
   MAX_AGENT_GRID_VISIBLE_COUNT,
 } from "@/hooks/use-settings/storage";
+import { isGlassThemePreference } from "@/appearance/glass";
 import { useContributedThemes } from "@/appearance/provider";
 import { Button } from "@/components/ui/button";
 import {
@@ -59,7 +60,7 @@ import {
   type GlassTuning,
   type Theme,
 } from "@/styles/theme";
-import { getIsElectronMac, isNative } from "@/constants/platform";
+import { isNative } from "@/constants/platform";
 import type { PluginThemeOption } from "@/plugins/themes";
 import { settingsStyles } from "@/styles/settings";
 import { AppearancePreview } from "./appearance-preview";
@@ -631,7 +632,7 @@ export function AppearanceSection() {
   } = useContributedThemes();
   const showInterfaceFontFamilyRow = !isNative;
   // Glass only exists where the window provides vibrancy: Mono in the macOS desktop app.
-  const showGlassSection = settings.theme === "mono" && getIsElectronMac();
+  const showGlassSection = isGlassThemePreference(settings.theme);
   const handleGlassTuningChange = useCallback(
     (knob: keyof GlassTuning, value: number) => {
       void updateSettings({ glassTuning: { ...settings.glassTuning, [knob]: value } });
