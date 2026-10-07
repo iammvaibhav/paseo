@@ -95,6 +95,7 @@ function ChangesPanel() {
     tabId,
     target,
     openPreferredTarget,
+    openFileInWorkspace,
     openTargetToSide,
     openDiffInBrowserEditor,
   } = usePaneContext();
@@ -121,13 +122,18 @@ function ChangesPanel() {
     });
   const submodulePrefix = selectedSubmodule ? `${selectedSubmodule}/` : "";
 
+  // With VS Code Web (signalled by its diff opener) a plain open goes there too;
+  // otherwise it is a Paseo file tab placed by the diffs side-pane preference.
   const handleOpenFile = useCallback(
-    (path: string) =>
-      openPreferredTarget(
-        { kind: "file", path: path.startsWith("/") ? path : `${submodulePrefix}${path}` },
-        isTree ? "diffs" : "diffFiles",
-      ),
-    [isTree, openPreferredTarget, submodulePrefix],
+    (path: string) => {
+      const filePath = path.startsWith("/") ? path : `${submodulePrefix}${path}`;
+      if (openDiffInBrowserEditor) {
+        openFileInWorkspace({ location: { path: filePath }, disposition: "preferred" });
+        return;
+      }
+      openPreferredTarget({ kind: "file", path: filePath }, isTree ? "diffs" : "diffFiles");
+    },
+    [isTree, openDiffInBrowserEditor, openFileInWorkspace, openPreferredTarget, submodulePrefix],
   );
   const handleOpenDiff = useCallback(
     (path: string, baseRef: string | null) =>

@@ -6,7 +6,30 @@
   "description": "Opens files in the running code-server window on request from the Paseo app, without reloading the page.",
   "publisher": "paseo",
   "main": "./extension.js",
-  "contributes": {},
+  "contributes": {
+    "commands": [
+      {
+        "command": "paseo.downloadFile",
+        "title": "Download..."
+      }
+    ],
+    "menus": {
+      "editor/title/context": [
+        {
+          "command": "paseo.downloadFile",
+          "when": "resourceScheme == vscode-remote || resourceScheme == file",
+          "group": "1_cutcopypaste@99"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "workbench.action.files.openFile",
+        "key": "ctrl+o",
+        "mac": "cmd+o"
+      }
+    ]
+  },
   "activationEvents": [
     "onStartupFinished"
   ],

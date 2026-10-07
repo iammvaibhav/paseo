@@ -24,7 +24,12 @@ export type ShortcutCallbackName = "toggle-agent-list" | "toggle-both-sidebars" 
 
 export type ShortcutAction =
   | { kind: "none" }
-  | { kind: "dispatch"; action: KeyboardActionDefinition }
+  | {
+      kind: "dispatch";
+      action: KeyboardActionDefinition;
+      /** Runs when no handler takes the action. */
+      fallback?: ShortcutAction;
+    }
   | { kind: "navigate-workspace"; serverId: string; workspaceId: string }
   | { kind: "navigate-last-workspace" }
   | { kind: "router-replace"; route: string }
@@ -211,7 +216,12 @@ export function routeKeyboardShortcut(
       return { kind: "command-center-toggle", nextOpen: !ctx.commandCenterOpen };
     case "command-center.files":
       if (parseHostWorkspaceRouteFromPathname(ctx.pathname)) {
-        return { kind: "command-center-toggle", nextOpen: true, scope: "files" };
+        // A host with VS Code Web takes Search files into VS Code's Quick Open.
+        return {
+          kind: "dispatch",
+          action: { id: "workspace.editor.quick-open", scope: "workspace" },
+          fallback: { kind: "command-center-toggle", nextOpen: true, scope: "files" },
+        };
       }
       return dispatch({ id: "workspace.project.pick", scope: "workspace" });
     case "shortcuts.dialog.toggle":

@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { Image } from "react-native";
 import { Globe } from "lucide-react-native";
+import { useRetainedPanelActive } from "@/components/retained-panel";
 import invariant from "tiny-invariant";
 import { BrowserPane } from "@/desktop/browser/pane";
 import { usePaneContext, usePaneFocus } from "@/panels/pane-context";
@@ -82,7 +83,8 @@ function useBrowserPanelDescriptor(target: {
 
 function BrowserPanel() {
   const { serverId, workspaceId, target } = usePaneContext();
-  const { focusPane, isInteractive } = usePaneFocus();
+  const { focusPane, isInteractive, isWorkspaceFocused } = usePaneFocus();
+  const isVisibleTab = useRetainedPanelActive();
   const cwd = useWorkspaceDirectory(serverId, workspaceId);
   invariant(target.kind === "browser", "BrowserPanel requires browser target");
   return (
@@ -92,10 +94,11 @@ function BrowserPanel() {
       workspaceId={workspaceId}
       cwd={cwd}
       isInteractive={isInteractive}
-      // Must be tab-focused, not merely workspace-focused: persistent VS Code
-      // webviews are position:fixed and would otherwise stay painted over other
-      // tabs (including Plannotator) while retained off-screen.
-      isWorkspaceActive={isInteractive}
+      // The visible tab of its pane, not the focused pane: persistent VS Code
+      // webviews are position:fixed, so a retained hidden tab must not paint, but
+      // a visible one must stay shown (and keep taking bridge opens) while the
+      // chat or explorer pane next to it has focus.
+      isWorkspaceActive={isWorkspaceFocused && isVisibleTab}
       onFocusPane={focusPane}
     />
   );

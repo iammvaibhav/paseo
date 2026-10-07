@@ -80,6 +80,7 @@ import { useFileDownload } from "@/hooks/use-file-download";
 import { useFileExplorerActions } from "@/hooks/use-file-explorer-actions";
 import { useIsLocalDaemon } from "@/hooks/use-is-local-daemon";
 import { buildWorkspaceExplorerStateKey } from "@/hooks/use-file-explorer-actions";
+import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
 import { usePanelStore, type ExpandedPathsUpdate, type SortOption } from "@/stores/panel-store";
 import { buildAbsoluteExplorerPath } from "@/utils/explorer-paths";
 import { isHiddenExplorerPath } from "@/file-explorer/visibility";
@@ -430,20 +431,23 @@ interface HierarchySegment {
 function computeDirectoryHierarchy(currentPath: string, workspaceRoot: string): HierarchySegment[] {
   const normCurrent = currentPath.replace(/\\/g, "/").replace(/\/+$/, "") || "/";
   const normWorkspace = workspaceRoot.replace(/\\/g, "/").replace(/\/+$/, "") || "/";
+  // A folder opened from a `~/…` chat link: only the host can expand `~`, so the
+  // chain starts at `~` instead of `/`.
+  const rootPath = normCurrent === "~" || normCurrent.startsWith("~/") ? "~" : "/";
 
   const hierarchy: HierarchySegment[] = [
     {
-      path: "/",
-      label: "/",
+      path: rootPath,
+      label: rootPath,
       isRoot: true,
-      isWorkspace: normWorkspace === "/",
-      isCurrent: normCurrent === "/",
+      isWorkspace: normWorkspace === rootPath,
+      isCurrent: normCurrent === rootPath,
     },
   ];
 
-  if (normCurrent !== "/") {
-    const parts = normCurrent.split("/").filter(Boolean);
-    let cumulative = "";
+  if (normCurrent !== rootPath) {
+    const parts = normCurrent.slice(rootPath.length).split("/").filter(Boolean);
+    let cumulative = rootPath === "/" ? "" : rootPath;
     for (const part of parts) {
       cumulative = `${cumulative}/${part}`;
       hierarchy.push({
@@ -568,24 +572,34 @@ export function FileExplorerPane({
   const { t } = useTranslation();
   const client = useSessionStore((state) => state.sessions[serverId]?.client ?? null);
   const isCompact = useIsCompactFormFactor();
-  const [browseRoot, setBrowseRoot] = useState<string | null>(null);
+  const browseRootKey =
+    (workspaceId ? buildWorkspaceTabPersistenceKey({ serverId, workspaceId }) : null) ??
+    `${serverId}:${workspaceRoot}`;
+  const browseRoot = usePanelStore(
+    (state) => state.explorerBrowseRootByWorkspace[browseRootKey] ?? null,
+  );
+  const setExplorerBrowseRoot = usePanelStore((state) => state.setExplorerBrowseRoot);
+  const setBrowseRoot = useCallback(
+    (root: string | null) => setExplorerBrowseRoot(browseRootKey, root),
+    [browseRootKey, setExplorerBrowseRoot],
+  );
   const effectiveRoot = useMemo(() => {
     return (browseRoot?.trim() || workspaceRoot.trim()).replace(/\\/g, "/");
   }, [browseRoot, workspaceRoot]);
 
-  useEffect(() => {
-    setBrowseRoot(null);
-  }, [workspaceRoot]);
-
   const normalizedWorkspaceRoot = effectiveRoot;
   const isBrowsingCustomRoot = effectiveRoot !== workspaceRoot.trim().replace(/\\/g, "/");
+  // Outside the workspace root the explorer state is keyed by the folder, not by
+  // the workspace. Every reader and writer must use the same scope, or listings
+  // land under one key while the tree reads the other and shows nothing.
+  const explorerScopeWorkspaceId = isBrowsingCustomRoot ? null : workspaceId;
   const workspaceStateKey = useMemo(
     () =>
       buildWorkspaceExplorerStateKey({
-        workspaceId: isBrowsingCustomRoot ? null : workspaceId,
+        workspaceId: explorerScopeWorkspaceId,
         workspaceRoot: normalizedWorkspaceRoot,
       }),
-    [isBrowsingCustomRoot, normalizedWorkspaceRoot, workspaceId],
+    [explorerScopeWorkspaceId, normalizedWorkspaceRoot],
   );
   const hasWorkspaceScope = Boolean(workspaceStateKey && normalizedWorkspaceRoot);
   const explorerState = useSessionStore((state) =>
@@ -603,7 +617,7 @@ export function FileExplorerPane({
     selectExplorerEntry,
   } = useFileExplorerActions({
     serverId,
-    workspaceId,
+    workspaceId: explorerScopeWorkspaceId,
     workspaceRoot: normalizedWorkspaceRoot,
   });
   const toast = useToast();
@@ -627,7 +641,7 @@ export function FileExplorerPane({
   const [pendingEdit, setPendingEdit] = useState<ExplorerPendingEdit | null>(null);
   const downloadFile = useFileDownload({
     serverId,
-    workspaceId,
+    workspaceId: explorerScopeWorkspaceId,
     workspaceRoot: normalizedWorkspaceRoot,
   });
   const sortOption = usePanelStore((state) => state.explorerSortOption);

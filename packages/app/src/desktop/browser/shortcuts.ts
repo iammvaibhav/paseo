@@ -26,6 +26,10 @@ export interface BrowserShortcutInput extends KeyboardShortcutInput {
 export interface BrowserKeyboardPolicy {
   menuPrefixes: BrowserShortcutPrefix[];
   prefixes: BrowserShortcutPrefix[];
+  /** Origins of the hosts' VS Code Web pages. */
+  editorOrigins: string[];
+  /** Shortcuts a VS Code Web page keeps for itself instead of crossing to Paseo. */
+  editorPrefixes: BrowserShortcutPrefix[];
 }
 
 interface BrowserShortcutPolicyInput {
@@ -33,7 +37,18 @@ interface BrowserShortcutPolicyInput {
   chordState?: ChordState;
   isMac: boolean;
   isDesktop: boolean;
+  editorOrigins?: readonly string[];
 }
+
+/**
+ * Paseo actions VS Code has a native twin for, which win while VS Code has focus:
+ * Search files (Cmd+P → VS Code's Quick Open) and Open project (Cmd+O → VS Code's
+ * Open File path browser).
+ */
+const EDITOR_NATIVE_ACTIONS: Record<string, true> = {
+  "command-center.files": true,
+  "agent.new": true,
+};
 
 export function shouldPublishBrowserShortcutPolicy(input: {
   isBrowserInput: boolean;
@@ -207,5 +222,15 @@ export function buildBrowserKeyboardPolicy(
       menuPrefixes.push(closeWindowGuard);
     }
   }
-  return { menuPrefixes, prefixes };
+  const editorPrefixes = buildBrowserShortcutPrefixes({
+    ...input,
+    bindings: input.bindings.filter((binding) => EDITOR_NATIVE_ACTIONS[binding.action] === true),
+    chordState: undefined,
+  });
+  return {
+    menuPrefixes,
+    prefixes,
+    editorOrigins: [...(input.editorOrigins ?? [])],
+    editorPrefixes,
+  };
 }

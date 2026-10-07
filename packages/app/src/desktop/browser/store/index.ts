@@ -56,9 +56,24 @@ export interface BrowserBridgeOpenRequest {
   requestId: number;
 }
 
+/** VS Code commands the paseo-bridge extension runs on request. */
+export type BrowserBridgeCommand = "quickOpen" | "openFile";
+
+/**
+ * A request to run a VS Code command (Quick Open, the Open File path browser)
+ * inside the VS Code Web webview, via the paseo-bridge extension.
+ */
+export interface BrowserBridgeCommandRequest {
+  command: BrowserBridgeCommand;
+  /** Only the BrowserPane mounted for this workspace may consume the request. */
+  targetWorkspaceKey: string | null;
+  requestId: number;
+}
+
 interface BrowserStoreState extends BrowserIndexState {
   navigationRequestByBrowserId: Record<string, BrowserNavigationRequest>;
   bridgeOpenRequestByBrowserId: Record<string, BrowserBridgeOpenRequest>;
+  bridgeCommandRequestByBrowserId: Record<string, BrowserBridgeCommandRequest>;
   createBrowser: (input?: {
     browserId?: string;
     initialUrl?: string;
@@ -82,6 +97,11 @@ interface BrowserStoreState extends BrowserIndexState {
     },
   ) => void;
   clearBridgeOpenRequest: (browserId: string, requestId: number) => void;
+  requestBridgeCommand: (
+    browserId: string,
+    input: { command: BrowserBridgeCommand; targetWorkspaceKey?: string | null },
+  ) => void;
+  clearBridgeCommandRequest: (browserId: string, requestId: number) => void;
 }
 
 function normalizePositiveInteger(value: number | null | undefined): number | null {
@@ -107,6 +127,7 @@ export const useBrowserStore = create<BrowserStoreState>()(
       browsersById: {},
       navigationRequestByBrowserId: {},
       bridgeOpenRequestByBrowserId: {},
+      bridgeCommandRequestByBrowserId: {},
       createBrowser: (input) => {
         const browserId = input?.browserId
           ? BrowserAutomationBrowserIdSchema.parse(input.browserId)
@@ -139,10 +160,13 @@ export const useBrowserStore = create<BrowserStoreState>()(
           delete nextRequests[browserId];
           const nextBridgeRequests = { ...state.bridgeOpenRequestByBrowserId };
           delete nextBridgeRequests[browserId];
+          const nextCommandRequests = { ...state.bridgeCommandRequestByBrowserId };
+          delete nextCommandRequests[browserId];
           return {
             ...removeBrowserFromIndex(state, browserId),
             navigationRequestByBrowserId: nextRequests,
             bridgeOpenRequestByBrowserId: nextBridgeRequests,
+            bridgeCommandRequestByBrowserId: nextCommandRequests,
           };
         });
       },
@@ -218,6 +242,40 @@ export const useBrowserStore = create<BrowserStoreState>()(
           const nextRequests = { ...state.bridgeOpenRequestByBrowserId };
           delete nextRequests[normalizedBrowserId];
           return { bridgeOpenRequestByBrowserId: nextRequests };
+        });
+      },
+      requestBridgeCommand: (browserId, input) => {
+        const normalizedBrowserId = trimNonEmpty(browserId);
+        if (!normalizedBrowserId) {
+          return;
+        }
+        set((state) => {
+          const previous = state.bridgeCommandRequestByBrowserId[normalizedBrowserId];
+          return {
+            bridgeCommandRequestByBrowserId: {
+              ...state.bridgeCommandRequestByBrowserId,
+              [normalizedBrowserId]: {
+                command: input.command,
+                targetWorkspaceKey: trimNonEmpty(input.targetWorkspaceKey),
+                requestId: (previous?.requestId ?? 0) + 1,
+              },
+            },
+          };
+        });
+      },
+      clearBridgeCommandRequest: (browserId, requestId) => {
+        const normalizedBrowserId = trimNonEmpty(browserId);
+        if (!normalizedBrowserId) {
+          return;
+        }
+        set((state) => {
+          const current = state.bridgeCommandRequestByBrowserId[normalizedBrowserId];
+          if (!current || current.requestId !== requestId) {
+            return state;
+          }
+          const nextRequests = { ...state.bridgeCommandRequestByBrowserId };
+          delete nextRequests[normalizedBrowserId];
+          return { bridgeCommandRequestByBrowserId: nextRequests };
         });
       },
     }),

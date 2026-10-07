@@ -8,6 +8,7 @@ const {
   createRequestHandler,
   hasDiffTab,
   parseOpenPayload,
+  parseJsonc,
   restoreEditorSession,
   selectBrokerTargets,
 } = require("./extension.js");
@@ -57,6 +58,110 @@ test("parseOpenPayload normalizes fields", () => {
   assert.deepEqual(
     parseOpenPayload(JSON.stringify({ path: "/a", mode: "diff", baseRef: " master " })),
     { path: "/a", line: null, column: null, mode: "diff", baseRef: "master" },
+  );
+});
+
+test("parseOpenPayload expands ~ to the host home, and only a leading ~/", () => {
+  const home = require("node:os").homedir();
+  const parse = (target) => parseOpenPayload(JSON.stringify({ path: target })).path;
+  assert.equal(parse("~/.omp/agent/config.yml"), `${home}/.omp/agent/config.yml`);
+  assert.equal(parse("~"), home);
+  assert.equal(parse("/srv/~/x"), "/srv/~/x");
+  assert.equal(parse("~other/x"), "~other/x");
+});
+
+test("POST /open on a directory reveals it in the Explorer instead of opening it", async () => {
+  const revealed = [];
+  let openedFile = false;
+  const handler = createRequestHandler({
+    fileExists: () => true,
+    isDirectory: (target) => target === "/repo/src",
+    revealFolder: async (target) => {
+      revealed.push(target);
+    },
+    openFile: async () => {
+      openedFile = true;
+    },
+    saveSession: async () => {},
+  });
+  const res = await runHandler(
+    handler,
+    mockReq({ method: "POST", url: "/open", body: JSON.stringify({ path: "/repo/src" }) }),
+  );
+  assert.equal(res.status, 200);
+  assert.deepEqual(revealed, ["/repo/src"]);
+  assert.equal(openedFile, false);
+});
+
+test("POST /command runs only the allowlisted commands", async () => {
+  const ran = [];
+  const handler = createRequestHandler({
+    runCommand: (command) => {
+      ran.push(command);
+    },
+  });
+  const send = (command) =>
+    runHandler(
+      handler,
+      mockReq({
+        method: "POST",
+        url: "/command",
+        body: JSON.stringify({ folder: "/repo", command }),
+      }),
+    );
+  assert.equal((await send("quickOpen")).status, 200);
+  assert.equal((await send("openFile")).status, 200);
+  assert.equal((await send("workbench.action.terminal.new")).status, 400);
+  assert.equal((await send("toString")).status, 400);
+  assert.deepEqual(ran, ["quickOpen", "openFile"]);
+});
+
+test("parseJsonc reads settings files: comments, trailing commas, look-alikes in strings", () => {
+  const text = `{
+    // line comment
+    "a": "http://x/y", /* block */
+    "b": ",}",
+    "c": [1, 2,],
+    "[python]": { "editor.tabSize": 4, },
+  }`;
+  assert.deepEqual(parseJsonc(text), {
+    a: "http://x/y",
+    b: ",}",
+    c: [1, 2],
+    "[python]": { "editor.tabSize": 4 },
+  });
+});
+
+test("broker routes a switch to the window of its workspace file, newest first", async () => {
+  const calls = [];
+  const registration = (id, port, workspaceFile, startedAt) => [
+    id,
+    { id, port, folders: ["/root", "/repo/a"], workspaceFile, startedAt, lastSeen: 10_000 },
+  ];
+  const handler = createBrokerHandler({
+    registrations: new Map([
+      registration("folder-window", 9001, null, 300),
+      registration("old", 9002, "/ws/paseo.code-workspace", 100),
+      registration("new", 9003, "/ws/paseo.code-workspace", 200),
+    ]),
+    now: () => 10_000,
+    forward: async (input) => {
+      calls.push(input);
+      return { status: 200, body: JSON.stringify({ ok: true }) };
+    },
+  });
+  const response = await runHandler(
+    handler,
+    mockReq({
+      method: "POST",
+      url: "/broker/switch",
+      body: JSON.stringify({ folder: "/repo/b", workspaceFile: "/ws/paseo.code-workspace" }),
+    }),
+  );
+  assert.equal(response.status, 200);
+  assert.deepEqual(
+    calls.map((call) => [call.port, call.route]),
+    [[9003, "/switch"]],
   );
 });
 

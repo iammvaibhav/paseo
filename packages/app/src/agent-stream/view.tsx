@@ -77,6 +77,8 @@ import { estimateStreamItemHeight } from "./web-virtualization";
 import { ChatOutlineRail } from "@/agent-stream/chat-outline/rail";
 import { useChatOutline } from "@/agent-stream/chat-outline/use-chat-outline";
 import { getHostRuntimeStore } from "@/runtime/host-runtime";
+import { usePanelStore } from "@/stores/panel-store";
+import { useDesktopBrowserEditorUrl } from "@/workspace/use-desktop-browser-editor-url";
 import { useHostFeature, useHostFeatures } from "@/runtime/host-features";
 import { planTimelineTailFetch } from "@/timeline/timeline-sync-plan";
 import { isPaseoSystemMessage, PaseoSystemRow } from "@/screens/mission-control/paseo-system-row";
@@ -559,6 +561,25 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       setToolCallGroupPins(new Map());
     }, [agentId]);
 
+    const opensInBrowserEditor = useDesktopBrowserEditorUrl(resolvedServerId) !== null;
+
+    // A link without an extension may name a folder. Only the host can tell.
+    const isHostDirectory = useStableEvent(async (path: string): Promise<boolean> => {
+      if (!client) {
+        return false;
+      }
+      const isWorkspaceRelative = !path.startsWith("/") && !path.startsWith("~");
+      try {
+        await client.listDirectory(
+          isWorkspaceRelative ? workspaceRoot : path,
+          isWorkspaceRelative ? path : ".",
+        );
+        return true;
+      } catch {
+        return false;
+      }
+    });
+
     const handleInlinePathPress = useStableEvent(
       (target: InlinePathTarget, disposition: OpenFileDisposition) => {
         if (!target.path) {
@@ -569,10 +590,50 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         if (!normalized) {
           return;
         }
+        const workspaceKey = buildWorkspaceTabPersistenceKey({
+          serverId: resolvedServerId,
+          workspaceId: context.workspaceId ?? "",
+        });
+        const openFilesSidebar = () =>
+          openExplorerSidebarView({
+            isCompact: isMobile,
+            workspaceKey,
+            checkout: {
+              serverId: resolvedServerId,
+              cwd: context.cwd,
+              isGit: context.projectPlacement?.checkout?.isGit ?? true,
+            },
+            view: "files",
+          });
 
-        if (normalized.file) {
+        // Inside the workspace a folder goes to VS Code's Explorer when the host
+        // has VS Code Web; any folder outside it opens in the Files sidebar.
+        const openFolder = (folderPath: string) => {
+          const isInsideWorkspace = !folderPath.startsWith("/") && !folderPath.startsWith("~");
+          if (isInsideWorkspace && opensInBrowserEditor && onOpenWorkspaceFile) {
+            onOpenWorkspaceFile({ location: { path: folderPath }, disposition });
+            return;
+          }
+          if (isInsideWorkspace) {
+            void requestDirectoryListing(folderPath, {
+              recordHistory: false,
+              setCurrentPath: false,
+            });
+          } else if (workspaceKey) {
+            usePanelStore.getState().setExplorerBrowseRoot(workspaceKey, folderPath);
+          }
+          openFilesSidebar();
+        };
+
+        const filePath = normalized.file;
+        if (!filePath) {
+          openFolder(normalized.directory);
+          return;
+        }
+
+        const openFile = () => {
           const location = normalizeWorkspaceFileLocation({
-            path: normalized.file,
+            path: filePath,
             lineStart: target.lineStart,
             lineEnd: target.lineEnd,
           });
@@ -591,45 +652,31 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
               target: createWorkspaceFileTabTarget(location),
             });
           }
-
+          // VS Code takes focus for its own open; revealing the file in the
+          // Files sidebar too would pull it back.
+          if (opensInBrowserEditor) {
+            return;
+          }
           void requestDirectoryListing(normalized.directory, {
             recordHistory: false,
             setCurrentPath: false,
           });
-          selectExplorerEntry(normalized.file);
-          openExplorerSidebarView({
-            isCompact: isMobile,
-            workspaceKey: buildWorkspaceTabPersistenceKey({
-              serverId: resolvedServerId,
-              workspaceId: context.workspaceId ?? "",
-            }),
-            checkout: {
-              serverId: resolvedServerId,
-              cwd: context.cwd,
-              isGit: context.projectPlacement?.checkout?.isGit ?? true,
-            },
-            view: "files",
-          });
+          selectExplorerEntry(filePath);
+          openFilesSidebar();
+        };
+
+        const lastSegment = filePath.slice(filePath.lastIndexOf("/") + 1);
+        if (target.lineStart || lastSegment.includes(".")) {
+          openFile();
           return;
         }
-
-        void requestDirectoryListing(normalized.directory, {
-          recordHistory: false,
-          setCurrentPath: false,
-        });
-
-        openExplorerSidebarView({
-          isCompact: isMobile,
-          workspaceKey: buildWorkspaceTabPersistenceKey({
-            serverId: resolvedServerId,
-            workspaceId: context.workspaceId ?? "",
-          }),
-          checkout: {
-            serverId: resolvedServerId,
-            cwd: context.cwd,
-            isGit: context.projectPlacement?.checkout?.isGit ?? true,
-          },
-          view: "files",
+        void isHostDirectory(filePath).then((isDirectory) => {
+          if (isDirectory) {
+            openFolder(filePath);
+          } else {
+            openFile();
+          }
+          return undefined;
         });
       },
     );

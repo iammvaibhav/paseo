@@ -5,7 +5,9 @@ const crypto = require("node:crypto");
 const { execFile } = require("node:child_process");
 
 const HOST = "127.0.0.1";
-const BROKER_PORT = 8766;
+// The trial instance in multiroot-trial.sh sets its own so it never registers
+// with the live code-server's broker.
+const BROKER_PORT = Number(process.env.PASEO_BRIDGE_BROKER_PORT) || 8766;
 const OPEN_TIMEOUT_MS = 2500;
 // Must stay under REQUEST_TIMEOUT_MS: the broker gives up on the worker first.
 const DIFF_TIMEOUT_MS = 3000;
@@ -88,6 +90,14 @@ function positiveIntegerOrNull(value) {
   return Number.isInteger(value) && value > 0 ? value : null;
 }
 
+// Chat links and typed paths use `~`; only this host knows what it expands to.
+function expandHomePath(target, homeDir = require("node:os").homedir()) {
+  if (target === "~") {
+    return homeDir;
+  }
+  return target.startsWith("~/") ? path.join(homeDir, target.slice(2)) : target;
+}
+
 function parseOpenPayload(body) {
   let parsed;
   try {
@@ -95,7 +105,7 @@ function parseOpenPayload(body) {
   } catch {
     return { error: "invalid json" };
   }
-  const filePath = typeof parsed.path === "string" ? parsed.path.trim() : "";
+  const filePath = typeof parsed.path === "string" ? expandHomePath(parsed.path.trim()) : "";
   if (!filePath) {
     return { error: "missing path" };
   }
@@ -116,6 +126,24 @@ function parseOpenPayload(body) {
   return payload;
 }
 
+/** App-facing command names → the VS Code commands they run. Nothing else runs. */
+const BRIDGE_COMMANDS = {
+  quickOpen: "workbench.action.quickOpen",
+  openFile: "workbench.action.files.openFile",
+};
+
+function parseCommandPayload(body) {
+  const parsed = parseFolderPayload(body);
+  if (parsed.error) {
+    return parsed;
+  }
+  const command = JSON.parse(body).command;
+  if (!Object.hasOwn(BRIDGE_COMMANDS, command)) {
+    return { error: "unknown command" };
+  }
+  return { ...parsed, command };
+}
+
 function parseFolderPayload(body) {
   let parsed;
   try {
@@ -128,6 +156,18 @@ function parseFolderPayload(body) {
     return { error: "missing folder" };
   }
   return { path: folder, folder };
+}
+
+function parseSwitchPayload(body) {
+  const parsed = parseFolderPayload(body);
+  if (parsed.error) {
+    return parsed;
+  }
+  const workspaceFile = JSON.parse(body).workspaceFile;
+  if (typeof workspaceFile !== "string" || !workspaceFile.trim()) {
+    return { error: "missing workspaceFile" };
+  }
+  return { ...parsed, folder: expandHomePath(parsed.folder), workspaceFile: workspaceFile.trim() };
 }
 
 function parseRegistrationPayload(body) {
@@ -149,6 +189,10 @@ function parseRegistrationPayload(body) {
       ? parsed.folders.filter((folder) => typeof folder === "string" && folder.trim())
       : [],
     focused: parsed.focused === true,
+    workspaceFile:
+      typeof parsed.workspaceFile === "string" && parsed.workspaceFile.trim()
+        ? parsed.workspaceFile.trim()
+        : null,
     startedAt: Number.isFinite(parsed.startedAt) ? parsed.startedAt : 0,
     sequence: Number.isFinite(parsed.sequence) ? parsed.sequence : 0,
   };
@@ -336,6 +380,24 @@ async function closeAllEditors() {
   await vscode.commands.executeCommand("workbench.action.closeAllEditors");
 }
 
+// Shows the folder in VS Code's Explorer (which also makes the sidebar visible).
+async function revealFolderWithTimeout(folderPath) {
+  const vscode = require("vscode");
+  await withTimeout(
+    vscode.commands.executeCommand("revealInExplorer", vscode.Uri.file(folderPath)),
+    "revealInExplorer timed out",
+  );
+}
+
+// Not awaited: Quick Open and the Open File dialog settle only when the user
+// closes them, which would hold the request open past every timeout.
+function runBridgeCommand(command) {
+  const vscode = require("vscode");
+  Promise.resolve(vscode.commands.executeCommand(BRIDGE_COMMANDS[command])).catch((error) => {
+    writeLog(`command ${command} FAILED: ${String(error?.message ?? error)}`);
+  });
+}
+
 function editorSessionStorageKey(folder) {
   const digest = crypto.createHash("sha256").update(path.resolve(folder)).digest("hex");
   return `paseoBridge.editorSession.v${SESSION_VERSION}.${digest}`;
@@ -389,9 +451,14 @@ async function restoreEditorSession(session, vscode = require("vscode")) {
   return { restored, failed };
 }
 
+// In a multi-root window (opened from a `.code-workspace` file) folder 0 is the
+// fixed root that keeps the window alive across switches and the project is the
+// last folder; a plain folder window has just the one.
 function currentWorkspaceFolder() {
   const vscode = require("vscode");
-  return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ?? null;
+  const folders = vscode.workspace.workspaceFolders ?? [];
+  const project = vscode.workspace.workspaceFile ? folders.at(-1) : folders[0];
+  return project?.uri.fsPath ?? null;
 }
 
 async function persistCurrentEditorSession(folder) {
@@ -447,6 +514,136 @@ async function restoreSavedEditorSession(folder) {
   }
 }
 
+/**
+ * Swaps the project folder of a multi-root window in place: no page reload, no
+ * new extension host. Folder 0 (the fixed root) never changes, because changing
+ * the first workspace folder restarts every extension. The project's editor
+ * tabs are saved and restored the same way a reload would.
+ */
+async function switchProjectFolder(nextFolder) {
+  const vscode = require("vscode");
+  if (!vscode.workspace.workspaceFile) {
+    throw new Error("switch needs a multi-root (.code-workspace) window");
+  }
+  const started = Date.now();
+  const folders = vscode.workspace.workspaceFolders ?? [];
+  const previous = folders.length > 1 ? currentWorkspaceFolder() : null;
+  if (previous && path.resolve(previous) === path.resolve(nextFolder)) {
+    return { switched: false, ms: 0, restored: 0 };
+  }
+  if (previous) {
+    await persistCurrentEditorSession(previous);
+  }
+  restoringSession = true;
+  try {
+    await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+    let subscription = null;
+    const changed = new Promise((resolve) => {
+      subscription = vscode.workspace.onDidChangeWorkspaceFolders(resolve);
+    });
+    const accepted = vscode.workspace.updateWorkspaceFolders(1, Math.max(0, folders.length - 1), {
+      uri: vscode.Uri.file(nextFolder),
+    });
+    try {
+      if (!accepted) {
+        throw new Error("updateWorkspaceFolders rejected the change");
+      }
+      await withTimeout(changed, "workspace folder change timed out", 10_000);
+    } finally {
+      subscription?.dispose();
+    }
+    await mirrorProjectSettings(nextFolder);
+  } finally {
+    restoringSession = false;
+  }
+  const restored = await restoreSavedEditorSession(nextFolder);
+  return { switched: true, ms: Date.now() - started, restored: restored.restored };
+}
+
+const MIRRORED_SETTINGS_KEY = "paseoBridge.mirroredProjectSettingKeys";
+
+/**
+ * A multi-root window applies only resource-scoped settings from a folder's
+ * `.vscode/settings.json`; window-scoped ones (and some extension settings) are
+ * ignored there. Copying the project's file into the workspace settings applies
+ * all of it, as it would in a plain folder window. Only keys this bridge copied
+ * are ever removed again.
+ */
+async function mirrorProjectSettings(folder) {
+  const vscode = require("vscode");
+  let settings = {};
+  try {
+    settings = parseJsonc(fs.readFileSync(path.join(folder, ".vscode", "settings.json"), "utf8"));
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      writeLog(`settings mirror: unreadable settings in ${folder}: ${error?.message ?? error}`);
+    }
+  }
+  const config = vscode.workspace.getConfiguration();
+  const target = vscode.ConfigurationTarget.Workspace;
+  const previousKeys = extensionContext?.workspaceState.get(MIRRORED_SETTINGS_KEY) ?? [];
+  const updates = [
+    ...previousKeys.filter((key) => !Object.hasOwn(settings, key)).map((key) => [key, undefined]),
+    ...Object.entries(settings),
+  ];
+  for (const [key, value] of updates) {
+    try {
+      await config.update(key, value, target);
+    } catch (error) {
+      // Settings of an extension that is not installed cannot be written.
+      writeLog(`settings mirror: skipped ${key}: ${error?.message ?? error}`);
+    }
+  }
+  await extensionContext?.workspaceState.update(MIRRORED_SETTINGS_KEY, Object.keys(settings));
+}
+
+/** JSON with comments and trailing commas, the format of VS Code settings files. */
+function parseJsonc(text) {
+  let out = "";
+  let inString = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (inString) {
+      out += char;
+      if (char === "\\") {
+        index += 1;
+        out += text[index] ?? "";
+      } else if (char === '"') {
+        inString = false;
+      }
+    } else if (char === '"') {
+      inString = true;
+      out += char;
+    } else if (char === "/" && text[index + 1] === "/") {
+      while (index < text.length && text[index] !== "\n") index += 1;
+      out += "\n";
+    } else if (char === "/" && text[index + 1] === "*") {
+      const end = text.indexOf("*/", index + 2);
+      index = end < 0 ? text.length : end + 1;
+    } else if (char === ",") {
+      // Drop a trailing comma: one followed only by blanks/comments and a closer.
+      if (!/^(\s|\/\/[^\n]*\n|\/\*[\s\S]*?\*\/)*[}\]]/.test(text.slice(index + 1))) {
+        out += char;
+      }
+    } else {
+      out += char;
+    }
+  }
+  return JSON.parse(out);
+}
+
+async function handleWorkerSwitch({ res, parsed, switchFolder, log }) {
+  try {
+    const result = await switchFolder(parsed.folder);
+    log(`worker switch OK folder=${parsed.folder} ms=${result.ms} restored=${result.restored}`);
+    sendJson(res, 200, { ok: true, ...result });
+  } catch (error) {
+    const message = String(error?.message ?? error);
+    log(`worker switch FAILED folder=${parsed.folder}: ${message}`);
+    sendJson(res, 500, { ok: false, error: message });
+  }
+}
+
 async function handleWorkerCloseAll({ res, parsed, closeEditors, saveSession, log }) {
   try {
     await closeEditors();
@@ -460,25 +657,27 @@ async function handleWorkerCloseAll({ res, parsed, closeEditors, saveSession, lo
   }
 }
 
-async function handleWorkerOpen({ res, parsed, openFile, openDiff, fileExists, saveSession, log }) {
+async function handleWorkerOpen({ res, parsed, deps, log }) {
   log(
     `worker ${parsed.mode} path=${parsed.path} line=${parsed.line ?? "-"} col=${parsed.column ?? "-"} base=${parsed.baseRef ?? "-"}`,
   );
   // Opening a path that does not exist would leave VS Code showing an empty
   // editor named after it, and the caller retrying with a `?payload` reload
   // makes that phantom editor survive. Report it instead.
-  if (!fileExists(parsed.path)) {
+  if (!deps.fileExists(parsed.path)) {
     log(`worker ${parsed.mode} MISSING path=${parsed.path}`);
     sendJson(res, 404, { ok: false, error: "file not found" });
     return;
   }
   try {
     if (parsed.mode === "diff") {
-      await openDiff(parsed.path, parsed.baseRef ?? null);
+      await deps.openDiff(parsed.path, parsed.baseRef ?? null);
+    } else if (deps.isDirectory(parsed.path)) {
+      await deps.revealFolder(parsed.path);
     } else {
-      await openFile(parsed.path, parsed.line, parsed.column);
+      await deps.openFile(parsed.path, parsed.line, parsed.column);
     }
-    await saveSession(parsed.folder);
+    await deps.saveSession(parsed.folder);
     log(`worker ${parsed.mode} OK path=${parsed.path}`);
     sendJson(res, 200, { ok: true });
   } catch (error) {
@@ -505,13 +704,24 @@ async function handleWorkerRestore({ res, parsed, restoreSession, log }) {
 function createRequestHandler({
   openFile = openFileWithTimeout,
   openDiff = openDiffWithTimeout,
+  revealFolder = revealFolderWithTimeout,
+  runCommand = runBridgeCommand,
   fileExists = (target) => fs.existsSync(target),
+  isDirectory = (target) => fs.statSync(target, { throwIfNoEntry: false })?.isDirectory() === true,
   closeEditors = closeAllEditors,
   saveSession = persistCurrentEditorSession,
   restoreSession = restoreSavedEditorSession,
+  switchFolder = switchProjectFolder,
   acceptsPayload = () => true,
   log = writeLog,
 } = {}) {
+  const parsersByRoute = {
+    "/open": parseOpenPayload,
+    "/close-all": parseFolderPayload,
+    "/restore": parseFolderPayload,
+    "/command": parseCommandPayload,
+    "/switch": parseSwitchPayload,
+  };
   return async (req, res) => {
     if (req.method === "OPTIONS") {
       sendOptions(res);
@@ -521,17 +731,14 @@ function createRequestHandler({
       sendJson(res, 200, { ok: true, service: "paseo-bridge-worker", workerId });
       return;
     }
-    const isOpen = req.method === "POST" && req.url === "/open";
-    const isCloseAll = req.method === "POST" && req.url === "/close-all";
-    const isRestore = req.method === "POST" && req.url === "/restore";
-    if (!isOpen && !isCloseAll && !isRestore) {
+    const parsePayload = req.method === "POST" ? parsersByRoute[req.url] : undefined;
+    if (!parsePayload) {
       sendJson(res, 404, { ok: false, error: "not found" });
       return;
     }
     let parsed;
     try {
-      const body = await readBody(req);
-      parsed = isOpen ? parseOpenPayload(body) : parseFolderPayload(body);
+      parsed = parsePayload(await readBody(req));
     } catch (error) {
       sendJson(res, 400, { ok: false, error: String(error?.message ?? error) });
       return;
@@ -545,20 +752,41 @@ function createRequestHandler({
       sendJson(res, 409, { ok: false, error: "workspace folder mismatch" });
       return;
     }
-    if (isCloseAll) {
-      await handleWorkerCloseAll({ res, parsed, closeEditors, saveSession, log });
-      return;
+    switch (req.url) {
+      case "/close-all":
+        await handleWorkerCloseAll({ res, parsed, closeEditors, saveSession, log });
+        return;
+      case "/restore":
+        await handleWorkerRestore({ res, parsed, restoreSession, log });
+        return;
+      case "/command":
+        log(`worker command ${parsed.command} folder=${parsed.folder}`);
+        runCommand(parsed.command);
+        sendJson(res, 200, { ok: true });
+        return;
+      case "/switch":
+        await handleWorkerSwitch({ res, parsed, switchFolder, log });
+        return;
+      default:
+        await handleWorkerOpen({
+          res,
+          parsed,
+          deps: { openFile, openDiff, revealFolder, fileExists, isDirectory, saveSession },
+          log,
+        });
     }
-    if (isRestore) {
-      await handleWorkerRestore({ res, parsed, restoreSession, log });
-      return;
-    }
-    await handleWorkerOpen({ res, parsed, openFile, openDiff, fileExists, saveSession, log });
   };
 }
 
 function workerAcceptsPayload(payload) {
-  const folders = currentRegistration().folders;
+  const registration = currentRegistration();
+  if (payload.workspaceFile) {
+    return (
+      registration.workspaceFile !== null &&
+      path.resolve(registration.workspaceFile) === path.resolve(payload.workspaceFile)
+    );
+  }
+  const folders = registration.folders;
   if (payload.folder) {
     return folders.some((folder) => path.resolve(folder) === path.resolve(payload.folder));
   }
@@ -571,25 +799,33 @@ function pathIsInside(root, candidate) {
 }
 
 function selectBrokerTargets(registrations, payload, now = Date.now()) {
-  const scored = Array.from(registrations.values())
-    .filter((registration) => now - registration.lastSeen <= REGISTRATION_TTL_MS)
-    .map((registration) => {
-      const exactFolder =
-        payload.folder &&
-        registration.folders.some(
-          (folder) => path.resolve(folder) === path.resolve(payload.folder),
-        );
-      const containsFile = registration.folders.some((folder) =>
-        pathIsInside(folder, payload.path),
-      );
-      let folderScore = 0;
-      if (exactFolder) {
-        folderScore = 2;
-      } else if (containsFile) {
-        folderScore = 1;
-      }
-      return Object.assign({}, registration, { folderScore });
-    });
+  const live = Array.from(registrations.values()).filter(
+    (registration) => now - registration.lastSeen <= REGISTRATION_TTL_MS,
+  );
+  // A switch targets the window by its workspace file: the folder it is about
+  // to show is not in any window yet.
+  if (payload.workspaceFile) {
+    return live
+      .filter(
+        (registration) =>
+          registration.workspaceFile &&
+          path.resolve(registration.workspaceFile) === path.resolve(payload.workspaceFile),
+      )
+      .sort((left, right) => right.startedAt - left.startedAt);
+  }
+  const scored = live.map((registration) => {
+    const exactFolder =
+      payload.folder &&
+      registration.folders.some((folder) => path.resolve(folder) === path.resolve(payload.folder));
+    const containsFile = registration.folders.some((folder) => pathIsInside(folder, payload.path));
+    let folderScore = 0;
+    if (exactFolder) {
+      folderScore = 2;
+    } else if (containsFile) {
+      folderScore = 1;
+    }
+    return Object.assign({}, registration, { folderScore });
+  });
   const eligible = scored.filter((registration) =>
     payload.folder ? registration.folderScore === 2 : registration.folderScore === 1,
   );
@@ -784,6 +1020,34 @@ function createBrokerHandler({
       });
       return;
     }
+    if (req.method === "POST" && req.url === "/broker/switch") {
+      await handleBrokerOpen({
+        req,
+        res,
+        registrations,
+        now,
+        forward,
+        log,
+        parsePayload: parseSwitchPayload,
+        workerRoute: "/switch",
+        action: "switch",
+      });
+      return;
+    }
+    if (req.method === "POST" && req.url === "/broker/command") {
+      await handleBrokerOpen({
+        req,
+        res,
+        registrations,
+        now,
+        forward,
+        log,
+        parsePayload: parseCommandPayload,
+        workerRoute: "/command",
+        action: "command",
+      });
+      return;
+    }
     sendJson(res, 404, { ok: false, error: "not found" });
   };
 }
@@ -794,6 +1058,7 @@ function currentRegistration(sequence = registrationSequence) {
     id: workerId,
     port: workerPort,
     folders: (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath),
+    workspaceFile: vscode.workspace.workspaceFile?.fsPath ?? null,
     focused: vscode.window.state.focused,
     startedAt: workerStartedAt,
     sequence,
@@ -893,6 +1158,50 @@ function activate(context) {
     vscode.window.tabGroups.onDidChangeTabGroups(scheduleSessionPersistence),
     vscode.window.onDidChangeActiveTextEditor(scheduleSessionPersistence),
   ];
+  context.subscriptions.push(
+    vscode.commands.registerCommand("paseo.downloadFile", downloadFileToBrowser),
+  );
+  if (vscode.workspace.workspaceFile) {
+    const project = currentWorkspaceFolder();
+    if (project && (vscode.workspace.workspaceFolders?.length ?? 0) > 1) {
+      void mirrorProjectSettings(project);
+    }
+    const watcher = vscode.workspace.createFileSystemWatcher("**/.vscode/settings.json");
+    const remirror = (uri) => {
+      const current = currentWorkspaceFolder();
+      if (current && path.dirname(path.dirname(uri.fsPath)) === path.resolve(current)) {
+        void mirrorProjectSettings(current);
+      }
+    };
+    context.subscriptions.push(
+      watcher,
+      watcher.onDidChange(remirror),
+      watcher.onDidCreate(remirror),
+      watcher.onDidDelete(remirror),
+    );
+  }
+}
+
+/**
+ * Download for an editor tab (images included). VS Code only offers Download in
+ * the Explorer context menu, and `explorer.download` takes no argument: it acts
+ * on the Explorer selection. Revealing the file selects it first, which only
+ * works for a file inside a workspace folder.
+ */
+async function downloadFileToBrowser(uri) {
+  const vscode = require("vscode");
+  const target = uri ?? vscode.window.tabGroups.activeTabGroup?.activeTab?.input?.uri;
+  if (!target) {
+    return;
+  }
+  if (!vscode.workspace.getWorkspaceFolder(target)) {
+    void vscode.window.showInformationMessage(
+      "Download... works for files inside the workspace. For this file, use Download in Paseo's Files sidebar.",
+    );
+    return;
+  }
+  await vscode.commands.executeCommand("revealInExplorer", target);
+  await vscode.commands.executeCommand("explorer.download");
 }
 
 function deactivate() {
@@ -934,6 +1243,7 @@ module.exports = {
   activate,
   createBrokerHandler,
   createRequestHandler,
+  parseJsonc,
   captureEditorSession,
   deactivate,
   hasDiffTab,
