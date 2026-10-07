@@ -58,7 +58,7 @@ const styles = StyleSheet.create((theme) => ({
     right: 0,
     bottom: 0,
     zIndex: 1,
-    backgroundColor: theme.colors.background,
+    backgroundColor: theme.colors.surfacePane,
   },
   inactive: {
     opacity: 0,

@@ -188,12 +188,12 @@ describe("dictation transcript behavior", () => {
     ]);
   });
 
-  it("queues an auto-sent transcript when agent is running and steer is selected", () => {
+  it("queues an auto-sent transcript when agent is running and queue is selected", () => {
     const actions: string[] = [];
 
     applyDictationTranscript("spoken prompt", {
       value: "typed context",
-      defaultSendBehavior: "steer",
+      defaultSendBehavior: "queue",
       isAgentRunning: true,
       sendsOutOfBand: false,
       onQueue: (payload) => actions.push(`queue:${payload.text}`),
@@ -279,7 +279,7 @@ describe("composer send behavior", () => {
     expect(alternateAction.calls).toEqual(["queue"]);
   });
 
-  it("uses Enter to queue and Mod+Enter to steer when steer is selected and agent is running", () => {
+  it("uses Enter to steer and Mod+Enter to queue when steer is selected and agent is running", () => {
     const defaultAction = actions();
     runDefaultSendAction({
       defaultSendBehavior: "steer",
@@ -302,8 +302,8 @@ describe("composer send behavior", () => {
       handleQueueMessage: alternateAction.handleQueueMessage,
     });
 
-    expect(defaultAction.calls).toEqual(["queue"]);
-    expect(alternateAction.calls).toEqual(["steer"]);
+    expect(defaultAction.calls).toEqual(["steer"]);
+    expect(alternateAction.calls).toEqual(["queue"]);
   });
 
   it("uses Enter to queue and Mod+Enter to steer when queue is selected and agent is running", () => {

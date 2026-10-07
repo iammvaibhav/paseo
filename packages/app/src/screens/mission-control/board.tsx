@@ -34,7 +34,7 @@ import {
   ExternalLink,
   Square,
 } from "lucide-react-native";
-import type { Theme } from "@/styles/theme";
+import { glassFloatingStyle, type Theme } from "@/styles/theme";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { Switch } from "@/components/ui/switch";
@@ -1108,6 +1108,7 @@ const styles = StyleSheet.create((theme) => ({
     borderWidth: theme.borderWidth[1],
     borderColor: theme.colors.border,
     ...theme.shadow.sm,
+    ...glassFloatingStyle(theme),
   },
   identityPopoverTitle: {
     fontFamily: theme.fontFamily.ui,

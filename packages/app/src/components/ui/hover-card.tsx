@@ -23,6 +23,7 @@ import {
 import { FloatingSurface } from "@/components/ui/floating";
 import { isWeb } from "@/constants/platform";
 import { useHoverSafeZone } from "@/hooks/use-hover-safe-zone";
+import { glassFloatingStyle } from "@/styles/theme";
 import {
   computePosition,
   measureElement,
@@ -401,5 +402,6 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: theme.borderRadius.xl,
     ...theme.shadow.md,
     zIndex: 1000,
+    ...glassFloatingStyle(theme),
   },
 }));

@@ -847,7 +847,7 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.foregroundMuted,
   },
   submitSpinner: {
-    color: theme.colors.surface0,
+    color: theme.colors.background,
   },
   emptyContainer: {
     flex: 1,

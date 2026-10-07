@@ -1,3 +1,4 @@
+import { installGlassFrostFilter } from "@/styles/glass-frost-filter";
 import "@/styles/unistyles";
 import { BottomSheetModalProvider } from "@gorhom/bottom-sheet";
 import { PortalProvider } from "@gorhom/portal";
@@ -576,7 +577,7 @@ function AppContainer({ children, chromeEnabled: chromeEnabledOverride }: AppCon
   // Native panel gesture hosts outlive appearance keys, like native navigators.
   // Their tracked styles update in place; web numeric styles still need remounting.
   const surface = (
-    <View style={layoutStyles.surfaceFill}>
+    <View style={layoutStyles.fill}>
       {workspaceChrome}
       <AppearanceStyleBoundary>
         {!isCompactLayout && appChromeLayout.sidebarToggleOwner === "window" ? (
@@ -661,7 +662,7 @@ function MobileGestureWrapper({
 
   return (
     <GestureDetector gesture={openGesture} touchAction={MOBILE_WEB_GESTURE_TOUCH_ACTION}>
-      <View collapsable={false} style={layoutStyles.surfaceFill}>
+      <View collapsable={false} style={layoutStyles.fill}>
         {children}
       </View>
     </GestureDetector>
@@ -686,13 +687,14 @@ function DesktopWindowControlsSync() {
   const { isLoading } = useAppSettings();
   const { theme } = useUnistyles();
   const surfaceApp = theme.colors.surfaceApp;
+  const glass = theme.glass !== null;
 
   useEffect(() => {
     if (isLoading || isNative) return;
-    // A cleared app surface means the theme wants the window's vibrancy behind it, so the
-    // window and the page body must be transparent too.
-    const glass = surfaceApp === "transparent";
+    // A glass theme paints translucent tints over the window's vibrancy, so the window and the
+    // page body must be transparent too.
     const pageBackground = glass ? "transparent" : "";
+    if (glass) installGlassFrostFilter();
     document.documentElement.style.backgroundColor = pageBackground;
     document.body.style.backgroundColor = pageBackground;
     void updateDesktopWindowChrome({
@@ -702,7 +704,7 @@ function DesktopWindowControlsSync() {
     }).catch((error) => {
       console.warn("[DesktopWindow] Failed to update window controls overlay", error);
     });
-  }, [isLoading, surfaceApp]);
+  }, [glass, isLoading, surfaceApp]);
 
   return null;
 }
@@ -1025,9 +1027,14 @@ export default function RootLayout() {
 }
 
 const layoutStyles = StyleSheet.create((theme) => ({
+  // Only the root paints the app surface. A glass theme's surface is translucent, so a second
+  // layer of it would darken the window.
   surfaceFill: {
     flex: 1,
     backgroundColor: theme.colors.surfaceApp,
+  },
+  fill: {
+    flex: 1,
   },
   contentFill: {
     flex: 1,

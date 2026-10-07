@@ -288,3 +288,22 @@ New status pills use `<StatusBadge>`. Identity, shortcut, and interactive link b
 | Trigger-anchored menu                               | `packages/app/src/components/ui/dropdown-menu.tsx` (used in `sidebar-workspace-list.tsx`, theme picker)                                                                                                                                                                                                  |
 | Right-click / long-press menu                       | `packages/app/src/components/ui/context-menu.tsx` (used in `sidebar-workspace-list.tsx`)                                                                                                                                                                                                                 |
 | Headers (back, screen, menu)                        | `packages/app/src/components/headers/back-header.tsx`, `screen-header.tsx`, `menu-header.tsx`                                                                                                                                                                                                            |
+
+---
+
+## 16. Glass (Mono on macOS)
+
+The desktop app on macOS renders the Mono theme as `darkMonoGlass` (`packages/app/src/styles/theme.ts`): translucent tints over the window vibrancy. Translucent fills stack, so the theme follows three rules, and new surfaces must too.
+
+- **Region fills are clear.** `surface0`, `surfaceSidebar`, `surfacePane`, and `surfaceWorkspace` are `transparent`. Only the window root (`surfaceApp`) and the content pane (`surfaceContent`) paint tints. Do not paint `surface0` as an ink color (text on a filled chip); use `background`, which stays opaque.
+- **Raised fills are washes.** `surface1`…`surface4` and `surfaceUserMessage` are white washes, so the composer, code blocks, tables, cards, and row fills read lighter than the pane. Sidebar hover and selected fills stay opaque so their trailing-action scrims match exactly.
+- **Floating and covering surfaces opt in.** Transient surfaces over content (menus, popovers, tooltips, hover cards, dialogs, toasts) spread `glassFloatingStyle(theme)` after their fill: a lighter tint with the content under it frosted. Overlays that stay mounted over content (the composer pills, the scroll-to-bottom button) spread `glassOverlayStyle(theme)`: the same tint, dense, no frost. Surfaces that must hide what scrolls under them (sticky diff headers, full-screen backdrops) use `theme.glass.cover`. Scrims and status-ring knockouts paint `theme.glass.scrim`, an opaque estimate of the composited fill.
+
+The frost is `backdrop-filter: url(#paseo-glass-frost)`, an SVG filter (`packages/app/src/styles/glass-frost-filter.ts`); a plain `blur()` darkens where the page behind is transparent. Two window facts make it work:
+
+- Any `backdrop-filter` on screen stops Chromium from compositing the frame as CoreAnimation layers, and the whole frame is drawn into one surface. That surface is translucent only if the window was created with `vibrancy`; `setVibrancy` later adds the material but not the translucency. So the main window is created with `vibrancy` (`packages/desktop/src/window/window-manager.ts`), and without it any frost turns the window black.
+- The same fallback is slower, so keep `backdrop-filter` off anything that stays on screen. Use `glassOverlayStyle` there.
+
+The window is `NSVisualEffectView` vibrancy, not macOS 26 Liquid Glass, which Electron does not expose to web content. The investigation is in electron/electron#39529 and Chromium's `ca_layer_overlay.cc` (`kCALayerFailedRenderPassBackdropFilters`).
+
+Mermaid's color parser hangs on `rgba()`, so the diagram takes its glass colors as 8-digit hex (`packages/app/src/components/mermaid-diagram.web.tsx`).

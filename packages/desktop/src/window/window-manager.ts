@@ -52,13 +52,27 @@ export function getMainWindowChromeOptions(input: {
   mode: DesktopWindowChromeMode;
 }): Pick<
   Electron.BrowserWindowConstructorOptions,
-  "titleBarStyle" | "trafficLightPosition" | "frame" | "titleBarOverlay" | "autoHideMenuBar"
+  | "titleBarStyle"
+  | "trafficLightPosition"
+  | "frame"
+  | "titleBarOverlay"
+  | "autoHideMenuBar"
+  | "visualEffectState"
+  | "vibrancy"
 > {
   if (input.mode === "native-mac") {
     return {
       titleBarStyle: "hidden",
       titleBarOverlay: true,
       trafficLightPosition: MAC_TRAFFIC_LIGHT_POSITION,
+      // Keep the glass theme's vibrancy translucent when the window is not focused. By default
+      // macOS swaps it for a flat grey material on inactive windows.
+      visualEffectState: "active",
+      // Electron makes the compositor translucent only when the window is created with
+      // vibrancy; `setVibrancy` later adds the material but leaves the compositor opaque. The
+      // glass theme's frosted menus need a translucent compositor, or the window renders over
+      // black while one is open. The renderer removes the material again for opaque themes.
+      vibrancy: "sidebar",
     };
   }
 

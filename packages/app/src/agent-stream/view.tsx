@@ -1,3 +1,4 @@
+import { ToolCallImageSourceProvider } from "@/tool-calls/image-source-context";
 import { ChatFind, ChatFindExpansion } from "@/agent-stream/chat-find";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import React, {
@@ -503,6 +504,10 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     );
 
     const workspaceRoot = context.cwd?.trim() || "";
+    const toolCallImageSource = useMemo(
+      () => ({ client, serverId: resolvedServerId, workspaceRoot }),
+      [client, resolvedServerId, workspaceRoot],
+    );
     const estimateStreamRowHeight = useCallback(
       (item: StreamItem) =>
         estimateStreamItemHeight({
@@ -1011,7 +1016,11 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     );
 
     const renderThoughtSlot = useCallback(
-      (item: Extract<StreamItem, { kind: "thought" }>, isLastInSequence: boolean) => (
+      (
+        item: Extract<StreamItem, { kind: "thought" }>,
+        isLastInSequence: boolean,
+        autoExpanded?: boolean,
+      ) => (
         <ThoughtSlot
           itemId={item.id}
           onInlineDetailsExpandedChangeByItemId={setInlineDetailsExpanded}
@@ -1019,6 +1028,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
           status={item.status}
           isLastInSequence={isLastInSequence}
           defaultExpanded={autoExpandReasoning}
+          autoExpanded={autoExpanded}
         />
       ),
       [autoExpandReasoning, setInlineDetailsExpanded],
@@ -1029,6 +1039,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         item: Extract<StreamItem, { kind: "tool_call" }>,
         isLastInSequence: boolean,
         maxDetailHeight?: number,
+        autoExpanded?: boolean,
       ) => {
         const { payload } = item;
 
@@ -1063,6 +1074,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
               isLastInSequence={isLastInSequence}
               onOpenFilePath={handleToolCallOpenFile}
               maxDetailHeight={maxDetailHeight}
+              autoExpanded={autoExpanded}
             />
           );
         }
@@ -1079,6 +1091,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
             isLastInSequence={isLastInSequence}
             onOpenFilePath={handleToolCallOpenFile}
             maxDetailHeight={maxDetailHeight}
+            autoExpanded={autoExpanded}
           />
         );
       },
@@ -1093,6 +1106,11 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     const renderToolRunGroup = useCallback(
       (group: ToolCallDetailGroup, isLastInSequence: boolean) => {
         const expanded = isToolCallGroupExpanded(group);
+        // While the run is live, the step it is on shows its details and every earlier
+        // step folds; the whole group folds once the run ends (reply text or turn end).
+        const liveItemId = group.run.isSealed ? null : group.run.items.at(-1)?.id;
+        const autoExpandedFor = (id: string) =>
+          liveItemId === null ? undefined : id === liveItemId;
         return (
           <OverviewToolCallGroupView
             group={group}
@@ -1104,11 +1122,12 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
               ? group.run.items.map((member) => (
                   <React.Fragment key={member.id}>
                     {member.kind === "thought"
-                      ? renderThoughtSlot(member, false)
+                      ? renderThoughtSlot(member, false, autoExpandedFor(member.id))
                       : renderSingleToolCallItem(
                           member,
                           false,
                           GROUPED_TOOL_CALL_DETAIL_MAX_HEIGHT,
+                          autoExpandedFor(member.id),
                         )}
                   </React.Fragment>
                 ))
@@ -1125,12 +1144,18 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     );
 
     // A group's host row is whichever item ended the run, so a thought can host one too.
+    // A thought outside a group (no tool call in its run yet) is the live step while it
+    // streams, so it shows open until it finishes.
     const renderThoughtItem = useCallback(
       (layoutItem: StreamLayoutItem, item: Extract<StreamItem, { kind: "thought" }>) => {
         const group = getToolCallGroup(item.id);
         return group
           ? renderToolRunGroup(group, layoutItem.isLastInToolSequence)
-          : renderThoughtSlot(item, layoutItem.isLastInToolSequence);
+          : renderThoughtSlot(
+              item,
+              layoutItem.isLastInToolSequence,
+              item.status === "loading" ? true : undefined,
+            );
       },
       [getToolCallGroup, renderThoughtSlot, renderToolRunGroup],
     );
@@ -1469,44 +1494,46 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         revealLoadedMessage={revealLoadedHistory}
         visibleMessageIds={visibleMessageIds}
       >
-        <ToolCallSheetProvider>
-          <AssistantSelectionCopySurface style={stylesheet.container} selectionAsk={selectionAsk}>
-            <MessageOuterSpacingProvider disableOuterSpacing>
-              <AnchoredList
-                strategy={streamRenderStrategy}
-                viewportRef={viewportRef}
-                forceShowScrollToBottom={isTimelineDetached}
-                bottomOverlayControlClearance={bottomOverlayControlClearance}
-                onScrollToBottomPress={scrollToBottom}
-                agentId={agentId}
-                segments={renderModel.segments}
-                historyRowRevision={historyRowRevision}
-                liveHeadRowRevision={toolCallGroupDisplayState}
-                boundary={boundary}
-                renderers={renderers}
-                listEmptyComponent={listEmptyComponent}
-                routeBottomAnchorRequest={routeBottomAnchorRequest}
-                isAuthoritativeHistoryReady={isAuthoritativeHistoryReady}
-                onReadingPositionChange={handleReadingPositionChange}
-                onNearHistoryStart={loadOlder}
-                isLoadingOlderHistory={isLoadingOlder}
-                hasOlderHistory={hasOlder}
-                olderHistoryProgressKey={progressKey}
-                scrollEnabled={streamScrollEnabled}
-                listStyle={stylesheet.list}
-                baseListContentContainerStyle={stylesheet.listContentContainer}
-                forwardListContentContainerStyle={stylesheet.forwardListContentContainer}
-                keyExtractor={streamItemKeyExtractor}
-                estimateItemSize={estimateStreamRowHeight}
+        <ToolCallImageSourceProvider value={toolCallImageSource}>
+          <ToolCallSheetProvider>
+            <AssistantSelectionCopySurface style={stylesheet.container} selectionAsk={selectionAsk}>
+              <MessageOuterSpacingProvider disableOuterSpacing>
+                <AnchoredList
+                  strategy={streamRenderStrategy}
+                  viewportRef={viewportRef}
+                  forceShowScrollToBottom={isTimelineDetached}
+                  bottomOverlayControlClearance={bottomOverlayControlClearance}
+                  onScrollToBottomPress={scrollToBottom}
+                  agentId={agentId}
+                  segments={renderModel.segments}
+                  historyRowRevision={historyRowRevision}
+                  liveHeadRowRevision={toolCallGroupDisplayState}
+                  boundary={boundary}
+                  renderers={renderers}
+                  listEmptyComponent={listEmptyComponent}
+                  routeBottomAnchorRequest={routeBottomAnchorRequest}
+                  isAuthoritativeHistoryReady={isAuthoritativeHistoryReady}
+                  onReadingPositionChange={handleReadingPositionChange}
+                  onNearHistoryStart={loadOlder}
+                  isLoadingOlderHistory={isLoadingOlder}
+                  hasOlderHistory={hasOlder}
+                  olderHistoryProgressKey={progressKey}
+                  scrollEnabled={streamScrollEnabled}
+                  listStyle={stylesheet.list}
+                  baseListContentContainerStyle={stylesheet.listContentContainer}
+                  forwardListContentContainerStyle={stylesheet.forwardListContentContainer}
+                  keyExtractor={streamItemKeyExtractor}
+                  estimateItemSize={estimateStreamRowHeight}
+                />
+              </MessageOuterSpacingProvider>
+              <ChatOutlineRail
+                prompts={chatOutline.prompts}
+                activePrompt={chatOutline.activePrompt}
+                onJumpToPrompt={chatOutline.jumpToPrompt}
               />
-            </MessageOuterSpacingProvider>
-            <ChatOutlineRail
-              prompts={chatOutline.prompts}
-              activePrompt={chatOutline.activePrompt}
-              onJumpToPrompt={chatOutline.jumpToPrompt}
-            />
-          </AssistantSelectionCopySurface>
-        </ToolCallSheetProvider>
+            </AssistantSelectionCopySurface>
+          </ToolCallSheetProvider>
+        </ToolCallImageSourceProvider>
       </ChatFind>
     );
   },
@@ -1653,6 +1680,7 @@ interface ThoughtSlotProps {
   status: Extract<StreamItem, { kind: "thought" }>["status"];
   isLastInSequence: boolean;
   defaultExpanded: boolean;
+  autoExpanded?: boolean;
 }
 
 // Reasoning text is paced the same way assistant text is; see @/hooks/use-revealed-text.
@@ -1663,6 +1691,7 @@ function ThoughtSlot({
   status,
   isLastInSequence,
   defaultExpanded,
+  autoExpanded,
 }: ThoughtSlotProps) {
   const revealedText = useRevealedText(text, status === "ready" ? "complete" : "streaming");
   return (
@@ -1674,6 +1703,7 @@ function ThoughtSlot({
       status={status === "ready" ? "completed" : "executing"}
       isLastInSequence={isLastInSequence}
       defaultExpanded={defaultExpanded}
+      autoExpanded={autoExpanded}
       forceInline={defaultExpanded}
     />
   );
@@ -2019,7 +2049,7 @@ function PermissionRequestCard({
 const stylesheet = StyleSheet.create((theme) => ({
   container: {
     flex: 1,
-    backgroundColor: theme.colors.surface0,
+    backgroundColor: theme.colors.surfacePane,
   },
   contentWrapper: {
     width: "100%",

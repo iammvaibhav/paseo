@@ -132,7 +132,7 @@ const ThemedCheckIcon = withUnistyles(Check);
 const ThemedCircleAlert = withUnistyles(CircleAlert);
 const mutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 const needsInputAlertMapping = (theme: Theme) => ({
-  color: theme.colors.surface0,
+  color: theme.colors.background,
   fill: getStatusDotColor({ theme, bucket: "needs_input" }) ?? undefined,
 });
 

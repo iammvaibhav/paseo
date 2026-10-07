@@ -1,4 +1,6 @@
 import { Platform } from "react-native";
+import { GLASS_FROST_FILTER_ID } from "@/styles/glass-frost-filter";
+import type { SurfaceBackdrop } from "@/styles/surface-backdrop";
 import { darkHighlightColors, lightHighlightColors } from "@getpaseo/highlight";
 
 export const baseColors = {
@@ -288,6 +290,9 @@ export function buildLightSemanticColors(tint: LightThemeConfig) {
     // window's vibrancy shows behind the sidebar, and paints the content pane instead.
     surfaceApp: tint.surface0,
     surfaceContent: "transparent",
+    // Screens and workspace panes inside the content pane. A glass theme clears them so the
+    // content pane's tint shows through.
+    surfacePane: tint.surface0,
     surfaceUserMessage: tint.surfaceUserMessage ?? tint.surface3,
     interactionHighlight: "rgba(0, 0, 0, 0.06)",
 
@@ -426,6 +431,7 @@ export function buildDarkSemanticColors(tint: DarkThemeConfig) {
     surfaceWorkspace: tint.surface1,
     surfaceApp: tint.surface0,
     surfaceContent: "transparent",
+    surfacePane: tint.surface0,
     surfaceUserMessage: tint.surfaceUserMessage ?? tint.surface3,
     interactionHighlight: "rgba(255, 255, 255, 0.08)",
 
@@ -761,6 +767,44 @@ const darkShadow = {
   },
 } as const;
 
+/**
+ * How a glass theme paints over the macOS window vibrancy. Opaque themes have none.
+ *
+ * Inside a glass theme the region fills (`surface0`, `surfaceSidebar`, the pane surfaces) are
+ * cleared, so the window root and the content pane carry the only tints, and the raised fills
+ * (`surface1`…`surface4`) are light washes. Surfaces that float over content or cover it cannot
+ * be a wash: they read through to whatever is under them.
+ */
+export interface GlassTreatment {
+  /**
+   * Transient surfaces over content (menus, popovers, tooltips, hover cards, dialogs, toasts):
+   * lighter than the pane so they stand out, with the content under them frosted.
+   */
+  floating: string;
+  /**
+   * The frost under `floating`: the SVG filter in `styles/glass-frost-filter.ts`. A plain
+   * `blur()` darkens where the page behind is transparent.
+   */
+  floatingBackdropFilter: string;
+  floatingBorder: string;
+  /**
+   * Overlays that stay mounted over content (composer pills, the scroll-to-bottom button).
+   * Dense instead of frosted: while any `backdrop-filter` is on screen, Chromium composites the
+   * whole frame on the slower non-CoreAnimation path, so it must stay off long-lived elements.
+   */
+  overlay: string;
+  /** An `overlay` in its active or pressed state. */
+  overlayRaised: string;
+  /** Surfaces that must hide what scrolls under them, such as sticky headers. */
+  cover: string;
+  /**
+   * What a translucent fill looks like once composited over the window, for trailing-action
+   * scrims. A scrim repaints the row's fill over the label, and a translucent fill painted twice
+   * shows as a lighter band, so the scrim paints this opaque estimate instead.
+   */
+  scrim: Record<SurfaceBackdrop, string>;
+}
+
 export function buildDarkTheme(semanticColors: ReturnType<typeof buildDarkSemanticColors>) {
   return {
     colorScheme: "dark" as const,
@@ -770,6 +814,7 @@ export function buildDarkTheme(semanticColors: ReturnType<typeof buildDarkSemant
       syntax: darkHighlightColors,
     },
     shadow: darkShadow,
+    glass: null as GlassTreatment | null,
     ...commonTheme,
   } as const;
 }
@@ -782,19 +827,76 @@ export const darkGhosttyTheme = buildDarkTheme(ghosttyDarkColors);
 export const darkMonoTheme = buildDarkTheme(monoDarkColors);
 
 // Mono on a macOS window with sidebar vibrancy. Only the desktop app on macOS selects it
-// (see appearance/provider.tsx): anywhere else the cleared root would show the page body.
-// Only the sidebar's own surface is translucent. Hover and selected row fills stay opaque:
-// trailing-action scrims and badge knockouts paint the row's fill over the row to hide what is
-// under them, and a translucent fill painted twice shows as a lighter band instead.
+// (see appearance/provider.tsx): anywhere else the cleared fills would show the page body.
+// The window root carries the sidebar tint and the content pane adds its own over it, so the
+// chat reads denser than the sidebar. Every region fill inside is cleared and the raised fills
+// are white washes, so nothing stacks into an opaque block. See `GlassTreatment`.
 export const GLASS_THEME_NAME = "darkMonoGlass";
-export const darkMonoGlassTheme = buildDarkTheme({
-  ...monoDarkColors,
-  surfaceApp: "transparent",
-  surfaceContent: monoDarkColors.surface0,
-  surfaceSidebar: "rgba(20, 20, 20, 0.62)",
-  surfaceSidebarHover: "#262626",
-  surfaceSidebarSelected: "#2e2e2e",
-});
+export const darkMonoGlassTheme = {
+  ...buildDarkTheme({
+    ...monoDarkColors,
+    surfaceApp: "rgba(20, 20, 20, 0.45)",
+    surfaceContent: "rgba(23, 23, 23, 0.7)",
+    surface0: "transparent",
+    surface1: "rgba(255, 255, 255, 0.045)",
+    surface2: "rgba(255, 255, 255, 0.08)",
+    surface3: "rgba(255, 255, 255, 0.12)",
+    surface4: "rgba(255, 255, 255, 0.16)",
+    surfaceDiffEmpty: "rgba(255, 255, 255, 0.025)",
+    surfaceSidebar: "transparent",
+    // Opaque: sidebar rows carry trailing actions whose scrim must match the row exactly.
+    surfaceSidebarHover: "#262626",
+    surfaceSidebarSelected: "#2e2e2e",
+    surfaceWorkspace: "transparent",
+    surfacePane: "transparent",
+    surfaceUserMessage: "rgba(255, 255, 255, 0.09)",
+    popover: "rgba(58, 58, 58, 0.42)",
+  }),
+  glass: {
+    floating: "rgba(58, 58, 58, 0.42)",
+    floatingBackdropFilter: `url(#${GLASS_FROST_FILTER_ID})`,
+    floatingBorder: "rgba(255, 255, 255, 0.12)",
+    overlay: "rgba(46, 46, 46, 0.95)",
+    overlayRaised: "rgba(60, 60, 60, 0.96)",
+    cover: "rgba(28, 28, 28, 0.94)",
+    scrim: {
+      surface0: "#1b1b1b",
+      surface1: "#222222",
+      surface2: "#282828",
+      surfaceSidebar: "#1c1c1c",
+      surfaceSidebarHover: "#262626",
+      surfaceSidebarSelected: "#2e2e2e",
+    },
+  } satisfies GlassTreatment,
+};
+
+interface GlassFloatingStyle {
+  backgroundColor?: string;
+  borderColor?: string;
+}
+
+/**
+ * Frosted fill for a transient floating surface in a glass theme; empty for opaque themes, which
+ * keep their own fill. Only for surfaces that close again: see `GlassTreatment.overlay`.
+ */
+export function glassFloatingStyle(theme: Theme): GlassFloatingStyle {
+  if (!theme.glass) return {};
+  // `backdropFilter` is a web style key react-native's style types do not declare.
+  return {
+    backgroundColor: theme.glass.floating,
+    borderColor: theme.glass.floatingBorder,
+    backdropFilter: theme.glass.floatingBackdropFilter,
+  } as GlassFloatingStyle;
+}
+
+/** Dense fill for a glass overlay that stays mounted over content; empty for opaque themes. */
+export function glassOverlayStyle(theme: Theme): GlassFloatingStyle {
+  if (!theme.glass) return {};
+  return {
+    backgroundColor: theme.glass.overlay,
+    borderColor: theme.glass.floatingBorder,
+  };
+}
 
 // Pure black — zero-luminance background with high-contrast surfaces.
 const pureBlackDarkColors = buildDarkSemanticColors({
@@ -848,6 +950,7 @@ export function buildLightTheme(semanticColors: ReturnType<typeof buildLightSema
       syntax: lightHighlightColors,
     },
     shadow: lightShadow,
+    glass: null as GlassTreatment | null,
     ...commonTheme,
   } as const;
 }
