@@ -30,7 +30,9 @@ PORT="${PASEO_VSCODE_TRIAL_PORT:-8775}"
 BROKER_PORT="${PASEO_VSCODE_TRIAL_BROKER_PORT:-8776}"
 UNIT="paseo-vscode-trial"
 WORKSPACE_FILE="${TRIAL_HOME}/paseo.code-workspace"
-ROOT_DIR="${TRIAL_HOME}/root"
+# The fixed first folder: config shortcuts that install.sh (run by deploy.sh)
+# maintains on every host. An empty folder works too.
+ROOT_DIR="${HOME}/.paseo/vscode/root"
 
 live_bind_host() {
   local config="${HOME}/.config/code-server/config.yaml"
@@ -72,10 +74,6 @@ seed_user_data() {
       -exec cp -R {} "${TRIAL_HOME}/extensions/" \;
     touch "${TRIAL_HOME}/extensions/.seeded"
   fi
-  cat >"${ROOT_DIR}/README.md" <<'EOF'
-Fixed first folder of the Paseo VS Code trial window. It stays put so that
-switching the project (the second folder) never restarts the extension host.
-EOF
 }
 
 write_workspace_file() {
@@ -87,7 +85,7 @@ write_workspace_file() {
   cat >"$WORKSPACE_FILE" <<EOF
 {
   "folders": [
-    { "path": "${ROOT_DIR}", "name": "paseo" },
+    { "path": "${ROOT_DIR}", "name": "⚙ configs" },
     { "path": "${project}" }
   ],
   "settings": {}

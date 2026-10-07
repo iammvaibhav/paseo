@@ -4124,6 +4124,32 @@ export class DaemonClient {
     }
   }
 
+  /**
+   * Exposes a port on the daemon's loopback to this client and returns the proxy port on
+   * the daemon's address. Gate on `server_info.features.pagePortProxy`.
+   */
+  async openPageProxy(port: number): Promise<number> {
+    const requestId = this.createRequestId();
+    const message = SessionInboundMessageSchema.parse({
+      type: "page.proxy.open.request",
+      requestId,
+      port,
+    });
+    const payload = await this.sendRequest({
+      requestId,
+      message,
+      timeout: 15_000,
+      select: (msg) =>
+        msg.type === "page.proxy.open.response" && msg.payload.requestId === requestId
+          ? msg.payload
+          : null,
+    });
+    if (payload.error || !payload.proxyPort) {
+      throw new Error(payload.error ?? "Failed to open page proxy");
+    }
+    return payload.proxyPort;
+  }
+
   async startPlannotatorSession(input: {
     kind: "annotate" | "review";
     /** File to annotate; required for annotate, unused for review. */

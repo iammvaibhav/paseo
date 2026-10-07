@@ -114,6 +114,7 @@ import {
 import { CLIENT_CAPS } from "@getpaseo/protocol/client-capabilities";
 
 import type { BrowserToolsBroker } from "./browser-tools/broker.js";
+import type { PagePortProxy } from "./page-tools/port-proxy.js";
 import type { DaemonRuntimeConfig } from "./session/daemon/daemon-session.js";
 import { resolvePlannotatorBinary } from "../services/plannotator/resolve-binary.js";
 import { DirectorySyncService } from "./directory-sync/index.js";
@@ -641,6 +642,7 @@ export class VoiceAssistantWebSocketServer {
   private unsubscribeDaemonConfigChange: (() => void) | null = null;
   private unsubscribeTerminalActivity: (() => void) | null = null;
   private readonly browserToolsBroker: BrowserToolsBroker | null;
+  private readonly pagePortProxy: PagePortProxy | null;
   private readonly hubRelationships: HubRelationshipManagement | null;
   private readonly peerManager: PeerManager | null;
   private readonly missionControlService: MissionControlService | null;
@@ -736,6 +738,7 @@ export class VoiceAssistantWebSocketServer {
     websocketServices?: {
       ticketsHost?: TicketsHost | null;
       automationService?: AutomationService | null;
+      pagePortProxy?: PagePortProxy | null;
     },
   ) {
     this.onWorkspaceArchived = onWorkspaceArchived;
@@ -749,6 +752,7 @@ export class VoiceAssistantWebSocketServer {
     this.credentialSource = auth;
     this.daemonRuntimeConfig = daemonRuntimeConfig;
     this.browserToolsBroker = browserToolsBroker ?? null;
+    this.pagePortProxy = websocketServices?.pagePortProxy ?? null;
     this.hubRelationships = hubRelationships ?? null;
     this.peerManager = peerManager ?? null;
     this.missionControlService = missionControlService ?? null;
@@ -1566,6 +1570,16 @@ export class VoiceAssistantWebSocketServer {
   private createSocketSession(options: SocketSessionOptions): Session {
     return new Session({
       browserToolsBroker: this.browserToolsBroker,
+      pagePortProxy: this.pagePortProxy,
+      resolveSourcePeer: (source) => {
+        const identity = source ? this.socketIdentities.get(source as WebSocketLike) : undefined;
+        return identity
+          ? {
+              transport: identity.transport,
+              ...(identity.remoteAddress ? { remoteAddress: identity.remoteAddress } : {}),
+            }
+          : null;
+      },
       clientId: options.clientId,
       appVersion: options.appVersion,
       clientCapabilities: options.clientCapabilities,
@@ -2124,6 +2138,8 @@ export class VoiceAssistantWebSocketServer {
         baseWorkspace: true,
         // COMPAT(orchestrator): added 2026-09-30, remove gate after 2027-03-30.
         orchestrator: true,
+        // COMPAT(pagePortProxy): added 2026-10-07, remove gate after 2027-04-07.
+        ...(this.pagePortProxy ? { pagePortProxy: true } : {}),
       },
     };
   }

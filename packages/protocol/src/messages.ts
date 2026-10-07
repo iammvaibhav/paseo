@@ -230,6 +230,7 @@ import {
   PlannotatorSessionStopResponseSchema,
   PlannotatorSessionEventSchema,
 } from "./plannotator/rpc-schemas.js";
+import { PageProxyOpenRequestSchema, PageProxyOpenResponseSchema } from "./page/rpc-schemas.js";
 import {
   BROWSER_AUTOMATION_COMMAND_NAMES,
   BrowserAutomationExecuteRequestSchema,
@@ -3918,6 +3919,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   LoopStopRequestSchema,
   PlannotatorSessionStartRequestSchema,
   PlannotatorSessionStopRequestSchema,
+  PageProxyOpenRequestSchema,
   MissionControlEventsFetchRequestSchema,
   MissionControlEventsAckRequestSchema,
   MissionControlPeersListRequestSchema,
@@ -4357,6 +4359,9 @@ export const ServerInfoStatusPayloadSchema = z
         // COMPAT(orchestrator): added 2026-09-30, remove gate after 2027-03-30.
         // Orchestrator start option + propose_plan tool + plan graph rendering.
         orchestrator: z.boolean().optional(),
+        // COMPAT(pagePortProxy): added 2026-10-07, remove gate after 2027-04-07.
+        // Daemon serves page.proxy.open.* so a show_page localhost URL reaches the reader.
+        pagePortProxy: z.boolean().optional(),
       })
       .optional(),
   })
@@ -7815,6 +7820,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   LoopStopResponseSchema,
   PlannotatorSessionStartResponseSchema,
   PlannotatorSessionStopResponseSchema,
+  PageProxyOpenResponseSchema,
   PlannotatorSessionEventSchema,
   MissionControlEventsFetchResponseSchema,
   MissionControlEventsAckResponseSchema,

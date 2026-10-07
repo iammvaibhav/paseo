@@ -1,4 +1,8 @@
 import type { ToolCallDetail } from "@getpaseo/protocol/agent-types";
+import {
+  getPaseoToolLeafName,
+  normalizeToolName,
+} from "@getpaseo/protocol/tool-name-normalization";
 import type { StreamItem, ThoughtItem, ToolCallItem } from "@/types/stream";
 
 export interface ToolCallDescriptor {
@@ -75,11 +79,21 @@ export function isStatusReportToolCall(item: ToolCallItem): boolean {
   return item.payload.source === "agent" && item.payload.data.name === "report_status";
 }
 
+/**
+ * `show_page` puts a page in the reply, so it renders as the page and never folds into a
+ * run. Claude spells it `mcp__paseo__show_page`, Codex `paseo.show_page`, omp `show_page`.
+ */
+export function isShowPageToolCall(item: ToolCallItem): boolean {
+  if (item.payload.source !== "agent") return false;
+  const { name } = item.payload.data;
+  return (getPaseoToolLeafName(name) ?? normalizeToolName(name)) === "show_page";
+}
+
 function isGroupableItem(item: StreamItem): item is ToolRunItem {
   if (item.kind === "thought") {
     return true;
   }
-  if (item.kind !== "tool_call" || isStatusReportToolCall(item)) {
+  if (item.kind !== "tool_call" || isStatusReportToolCall(item) || isShowPageToolCall(item)) {
     return false;
   }
   const descriptor = describeToolCall(item);

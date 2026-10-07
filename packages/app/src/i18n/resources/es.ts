@@ -430,6 +430,16 @@ export const es: TranslationResources = {
       viewSource: "Ver fuente",
       viewDiagram: "Ver diagrama",
     },
+    page: {
+      building: "Creando página…",
+      fullSize: "Tamaño completo",
+      close: "Cerrar",
+      openInBrowser: "Abrir en el navegador",
+      needsDirect:
+        "Para mostrar una página de localhost se necesita una conexión directa con este host.",
+      updateHost: "Actualiza este host para mostrar sus páginas de localhost.",
+      failed: "No se pudo mostrar la página.",
+    },
     actions: {
       copyCode: "Copiar código",
       copyTurn: "Copiar turno",

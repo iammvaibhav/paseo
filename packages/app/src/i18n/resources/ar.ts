@@ -424,6 +424,15 @@ export const ar: TranslationResources = {
       viewSource: "عرض المصدر",
       viewDiagram: "عرض المخطط",
     },
+    page: {
+      building: "جارٍ إنشاء الصفحة…",
+      fullSize: "الحجم الكامل",
+      close: "إغلاق",
+      openInBrowser: "فتح في المتصفح",
+      needsDirect: "عرض صفحة localhost يتطلب اتصالًا مباشرًا بهذا المضيف.",
+      updateHost: "حدّث هذا المضيف لعرض صفحات localhost الخاصة به.",
+      failed: "تعذّر عرض الصفحة.",
+    },
     actions: {
       copyCode: "نسخ الرمز",
       copyTurn: "نسخ بدوره",

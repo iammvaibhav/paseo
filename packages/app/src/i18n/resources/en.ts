@@ -422,6 +422,15 @@ export const en = {
       viewSource: "View source",
       viewDiagram: "View diagram",
     },
+    page: {
+      building: "Building page…",
+      fullSize: "Full size",
+      close: "Close",
+      openInBrowser: "Open in browser",
+      needsDirect: "Showing a localhost page needs a direct connection to this host.",
+      updateHost: "Update this host to show its localhost pages.",
+      failed: "The page could not be shown.",
+    },
     actions: {
       copyCode: "Copy code",
       copyTurn: "Copy turn",
