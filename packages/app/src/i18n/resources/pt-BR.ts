@@ -2541,6 +2541,7 @@ export const ptBR: TranslationResources = {
         codeSizeHint: "Usado em código, diffs e saída do terminal",
         codeSizeAccessibility: "Tamanho da fonte de código",
       },
+      glass: en.settings.appearance.glass,
       layout: {
         title: "Layout",
         contentWidth: "Largura do conteúdo",

@@ -155,6 +155,7 @@ describe("window-manager", () => {
         titleBarOverlay: true,
         trafficLightPosition: { x: 16, y: 14 },
         visualEffectState: "active",
+        vibrancy: "sidebar",
       });
     });
   });

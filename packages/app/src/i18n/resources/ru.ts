@@ -2547,6 +2547,7 @@ export const ru: TranslationResources = {
         codeSizeHint: "Используется для кода, диффов и вывода терминала",
         codeSizeAccessibility: "Размер шрифта кода",
       },
+      glass: en.settings.appearance.glass,
       layout: {
         title: "Макет",
         contentWidth: "Ширина содержимого",

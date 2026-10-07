@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { darkHighlightColors, resolveSyntaxColors } from "@getpaseo/highlight";
-import { DEFAULT_UI_FONT_STACK, REGISTERED_THEMES } from "@/styles/theme";
+import { DEFAULT_GLASS_TUNING, DEFAULT_UI_FONT_STACK, REGISTERED_THEMES } from "@/styles/theme";
 import { applyAppearance, type AppearanceInput } from "./apply";
 
 // Override the global react-native-unistyles mock (vitest.setup.ts) so that
@@ -71,6 +71,7 @@ function makeInput(overrides: Partial<AppearanceInput> = {}): AppearanceInput {
     codeFontSize: 12,
     contentMaxWidth: 820,
     syntaxTheme: "one",
+    glassTuning: DEFAULT_GLASS_TUNING,
     ...overrides,
   };
 }

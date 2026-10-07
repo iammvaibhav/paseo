@@ -93,7 +93,17 @@ ipcRenderer.on(POLICY_CHANNEL, (_event, value: BrowserKeyboardPolicyPayload) => 
     return;
   }
   browserId = value.browserId;
-  policy = value.prefixes;
+  // A VS Code Web page keeps the editor-native shortcuts (Quick Open, Open
+  // File): forwarding them would open Paseo's version over VS Code's own.
+  // Kept inline: this sandboxed preload cannot import runtime modules.
+  const isEditorPage =
+    Array.isArray(value.editorOrigins) && value.editorOrigins.includes(window.location.origin);
+  const editorKeys = new Set(
+    isEditorPage && Array.isArray(value.editorPrefixes)
+      ? value.editorPrefixes.map((prefix) => JSON.stringify(prefix))
+      : [],
+  );
+  policy = value.prefixes.filter((prefix) => !editorKeys.has(JSON.stringify(prefix)));
 });
 
 ipcRenderer.send(POLICY_REQUEST_CHANNEL);

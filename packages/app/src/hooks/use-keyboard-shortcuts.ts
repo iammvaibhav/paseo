@@ -34,6 +34,8 @@ import { keyboardShortcutsAvailable } from "@/keyboard/availability";
 import { getDesktopHost, isElectronRuntime } from "@/desktop/host";
 import { isImeComposingKeyboardEvent } from "@/utils/keyboard-ime";
 import { buildOpenProjectRoute } from "@/utils/host-routes";
+import { useHosts } from "@/runtime/host-runtime";
+import { collectBrowserEditorOrigins } from "@/workspace/browser-editor-url";
 import { hasActiveWebOverlay } from "@/lib/overlay-root";
 import {
   type ActiveWorkspaceSelection,
@@ -77,6 +79,10 @@ export function useKeyboardShortcuts({
   const activeWorkspaceSelection = useActiveWorkspaceSelection();
   const keyboardWorkspaceSelectionRef = useRef<ActiveWorkspaceSelection | null>(null);
 
+  const hosts = useHosts();
+  const editorOriginsKey = collectBrowserEditorOrigins(
+    hosts.map((host) => host.browserEditorUrl),
+  ).join("\n");
   const publishBrowserShortcutPolicy = useCallback(
     (chordState?: ChordState) => {
       const policy =
@@ -86,11 +92,12 @@ export function useKeyboardShortcuts({
               chordState,
               isMac,
               isDesktop: isDesktopApp,
+              editorOrigins: editorOriginsKey ? editorOriginsKey.split("\n") : [],
             })
-          : { menuPrefixes: [], prefixes: [] };
+          : { menuPrefixes: [], prefixes: [], editorOrigins: [], editorPrefixes: [] };
       void getDesktopHost()?.browser?.setShortcutPolicy?.(policy);
     },
-    [bindings, enabled, isDesktopApp, isMac, shortcutsAvailable],
+    [bindings, editorOriginsKey, enabled, isDesktopApp, isMac, shortcutsAvailable],
   );
 
   useEffect(() => {
@@ -166,7 +173,12 @@ export function useKeyboardShortcuts({
       case "none":
         return false;
       case "dispatch":
-        return keyboardActionDispatcher.dispatch(action.action);
+        if (keyboardActionDispatcher.dispatch(action.action)) {
+          return true;
+        }
+        return action.fallback
+          ? performShortcutAction(action.fallback, event, browserFocusRestoreElement)
+          : false;
       case "navigate-workspace":
         keyboardWorkspaceSelectionRef.current = {
           serverId: action.serverId,

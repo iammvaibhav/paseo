@@ -4,7 +4,10 @@ import {
   DEFAULT_UI_FONT_STACK,
   DEFAULT_MONO_FONT_STACK,
   FONT_SIZE,
+  GLASS_THEME_NAME,
   REGISTERED_THEMES,
+  resolveGlassColors,
+  type GlassTuning,
   type Theme,
 } from "@/styles/theme";
 import { applyRootUiFont } from "./apply-root-font";
@@ -19,6 +22,7 @@ export interface AppearanceInput {
   codeFontSize: number; // already clamped
   contentMaxWidth: number; // already clamped, default resolved
   syntaxTheme: SyntaxThemeId;
+  glassTuning: GlassTuning;
 }
 
 /**
@@ -65,6 +69,7 @@ export function applyAppearance(input: AppearanceInput): void {
   const ui = input.uiFontFamily.trim() || DEFAULT_UI_FONT_STACK;
   const mono = input.monoFontFamily.trim() || DEFAULT_MONO_FONT_STACK;
   const diffLineHeight = Math.round(input.codeFontSize * 1.5); // couple to code size
+  const glass = resolveGlassColors(input.glassTuning);
   const activeTheme = UnistylesRuntime.themeName;
   // Unistyles web emits after each registry patch. Updating the mounted theme
   // first ensures subscribers receive its new numeric tokens in this render;
@@ -92,13 +97,27 @@ export function applyAppearance(input: AppearanceInput): void {
           colors: { ...t.colors, syntax: resolveSyntaxColors(input.syntaxTheme, t.colorScheme) },
         };
       }
+      const syntax = resolveSyntaxColors(input.syntaxTheme, t.colorScheme);
+      // The glass tuning only replaces values derived from the defaults, so repeated applies
+      // never compound.
+      if (key === GLASS_THEME_NAME) {
+        return {
+          ...t,
+          fontFamily,
+          fontSize,
+          lineHeight,
+          contentMaxWidth: input.contentMaxWidth,
+          colors: { ...t.colors, ...glass.colors, syntax },
+          glass: glass.glass,
+        };
+      }
       return {
         ...t,
         fontFamily,
         fontSize,
         lineHeight,
         contentMaxWidth: input.contentMaxWidth,
-        colors: { ...t.colors, syntax: resolveSyntaxColors(input.syntaxTheme, t.colorScheme) },
+        colors: { ...t.colors, syntax },
       };
     });
   }

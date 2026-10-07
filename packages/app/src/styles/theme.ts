@@ -1,4 +1,5 @@
 import { Platform } from "react-native";
+import { GLASS_FROST_FILTER_ID } from "@/styles/glass-frost-filter";
 import type { SurfaceBackdrop } from "@/styles/surface-backdrop";
 import { darkHighlightColors, lightHighlightColors } from "@getpaseo/highlight";
 
@@ -776,14 +777,24 @@ const darkShadow = {
  */
 export interface GlassTreatment {
   /**
-   * Menus, popovers, tooltips, dialogs, toasts: lighter than the pane so they stand out, and
-   * dense because nothing blurs what is under them. Do not add `backdrop-filter`: while any
-   * element with one is on screen, Chromium drops the window's vibrancy and the window goes dark.
+   * Transient surfaces over content (menus, popovers, tooltips, hover cards, dialogs, toasts):
+   * lighter than the pane so they stand out, with the content under them frosted.
    */
   floating: string;
-  /** A floating surface in its active or pressed state. */
-  floatingRaised: string;
+  /**
+   * The frost under `floating`: the SVG filter in `styles/glass-frost-filter.ts`. A plain
+   * `blur()` darkens where the page behind is transparent.
+   */
+  floatingBackdropFilter: string;
   floatingBorder: string;
+  /**
+   * Overlays that stay mounted over content (composer pills, the scroll-to-bottom button).
+   * Dense instead of frosted: while any `backdrop-filter` is on screen, Chromium composites the
+   * whole frame on the slower non-CoreAnimation path, so it must stay off long-lived elements.
+   */
+  overlay: string;
+  /** An `overlay` in its active or pressed state. */
+  overlayRaised: string;
   /** Surfaces that must hide what scrolls under them, such as sticky headers. */
   cover: string;
   /**
@@ -821,40 +832,86 @@ export const darkMonoTheme = buildDarkTheme(monoDarkColors);
 // chat reads denser than the sidebar. Every region fill inside is cleared and the raised fills
 // are white washes, so nothing stacks into an opaque block. See `GlassTreatment`.
 export const GLASS_THEME_NAME = "darkMonoGlass";
+/**
+ * The user-tunable strengths of the glass theme, in percent (Settings → Appearance → Glass).
+ * The chat area sits over the window, so its tint adds to `window`: it always reads denser
+ * than the sidebar.
+ */
+export interface GlassTuning {
+  /** Tint over the window vibrancy; the sidebar shows only this. */
+  window: number;
+  /** Extra tint over the chat and editor area. */
+  chat: number;
+  /** Menus, popovers, tooltips, hover cards (frosted). */
+  floating: number;
+  /** Composer pills and other overlays that stay over the transcript (not frosted). */
+  overlay: number;
+  /** Strength of the light washes on code blocks, tables, composer, and user messages. */
+  panels: number;
+}
+
+export const DEFAULT_GLASS_TUNING: GlassTuning = {
+  window: 45,
+  chat: 70,
+  floating: 42,
+  overlay: 95,
+  panels: 100,
+};
+
+function glassAlpha(percent: number, scale = 1): number {
+  return Math.round(Math.min(Math.max(percent / 100, 0), 1) * scale * 1000) / 1000;
+}
+
+/** The colors a glass tuning changes. Applied over the registered glass theme at runtime. */
+export function resolveGlassColors(tuning: GlassTuning) {
+  const wash = (alpha: number) => `rgba(255, 255, 255, ${glassAlpha(tuning.panels, alpha)})`;
+  const floating = `rgba(58, 58, 58, ${glassAlpha(tuning.floating)})`;
+  return {
+    colors: {
+      surfaceApp: `rgba(20, 20, 20, ${glassAlpha(tuning.window)})`,
+      surfaceContent: `rgba(23, 23, 23, ${glassAlpha(tuning.chat)})`,
+      surface1: wash(0.045),
+      surface2: wash(0.08),
+      surface3: wash(0.12),
+      surface4: wash(0.16),
+      surfaceDiffEmpty: wash(0.025),
+      surfaceUserMessage: wash(0.09),
+      popover: floating,
+    },
+    glass: {
+      floating,
+      floatingBackdropFilter: `url(#${GLASS_FROST_FILTER_ID})`,
+      floatingBorder: "rgba(255, 255, 255, 0.12)",
+      overlay: `rgba(46, 46, 46, ${glassAlpha(tuning.overlay)})`,
+      overlayRaised: `rgba(60, 60, 60, ${glassAlpha(tuning.overlay, 1.01)})`,
+      cover: "rgba(28, 28, 28, 0.94)",
+      scrim: {
+        surface0: "#1b1b1b",
+        surface1: "#222222",
+        surface2: "#282828",
+        surfaceSidebar: "#1c1c1c",
+        surfaceSidebarHover: "#262626",
+        surfaceSidebarSelected: "#2e2e2e",
+      },
+    } satisfies GlassTreatment,
+  };
+}
+
+const defaultGlassColors = resolveGlassColors(DEFAULT_GLASS_TUNING);
+
 export const darkMonoGlassTheme = {
   ...buildDarkTheme({
     ...monoDarkColors,
-    surfaceApp: "rgba(20, 20, 20, 0.45)",
-    surfaceContent: "rgba(23, 23, 23, 0.7)",
+    ...defaultGlassColors.colors,
     surface0: "transparent",
-    surface1: "rgba(255, 255, 255, 0.045)",
-    surface2: "rgba(255, 255, 255, 0.08)",
-    surface3: "rgba(255, 255, 255, 0.12)",
-    surface4: "rgba(255, 255, 255, 0.16)",
-    surfaceDiffEmpty: "rgba(255, 255, 255, 0.025)",
     surfaceSidebar: "transparent",
     // Opaque: sidebar rows carry trailing actions whose scrim must match the row exactly.
     surfaceSidebarHover: "#262626",
     surfaceSidebarSelected: "#2e2e2e",
     surfaceWorkspace: "transparent",
     surfacePane: "transparent",
-    surfaceUserMessage: "rgba(255, 255, 255, 0.09)",
-    popover: "rgba(46, 46, 46, 0.95)",
   }),
-  glass: {
-    floating: "rgba(46, 46, 46, 0.95)",
-    floatingRaised: "rgba(60, 60, 60, 0.96)",
-    floatingBorder: "rgba(255, 255, 255, 0.1)",
-    cover: "rgba(28, 28, 28, 0.94)",
-    scrim: {
-      surface0: "#1b1b1b",
-      surface1: "#222222",
-      surface2: "#282828",
-      surfaceSidebar: "#1c1c1c",
-      surfaceSidebarHover: "#262626",
-      surfaceSidebarSelected: "#2e2e2e",
-    },
-  } satisfies GlassTreatment,
+  glass: defaultGlassColors.glass,
 };
 
 interface GlassFloatingStyle {
@@ -862,11 +919,25 @@ interface GlassFloatingStyle {
   borderColor?: string;
 }
 
-/** Floating-surface fill for a glass theme; empty for opaque themes, which keep their own fill. */
+/**
+ * Frosted fill for a transient floating surface in a glass theme; empty for opaque themes, which
+ * keep their own fill. Only for surfaces that close again: see `GlassTreatment.overlay`.
+ */
 export function glassFloatingStyle(theme: Theme): GlassFloatingStyle {
   if (!theme.glass) return {};
+  // `backdropFilter` is a web style key react-native's style types do not declare.
   return {
     backgroundColor: theme.glass.floating,
+    borderColor: theme.glass.floatingBorder,
+    backdropFilter: theme.glass.floatingBackdropFilter,
+  } as GlassFloatingStyle;
+}
+
+/** Dense fill for a glass overlay that stays mounted over content; empty for opaque themes. */
+export function glassOverlayStyle(theme: Theme): GlassFloatingStyle {
+  if (!theme.glass) return {};
+  return {
+    backgroundColor: theme.glass.overlay,
     borderColor: theme.glass.floatingBorder,
   };
 }

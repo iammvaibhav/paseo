@@ -1,5 +1,5 @@
 import { StyleSheet } from "react-native-unistyles";
-import { glassFloatingStyle, SPACING } from "@/styles/theme";
+import { glassOverlayStyle, SPACING } from "@/styles/theme";
 
 export const COMPOSER_PILL_CLEARANCE = {
   compact: SPACING[2],
@@ -38,10 +38,10 @@ export const composerPillStyles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.borderAccent,
     backgroundColor: theme.colors.surface1,
     // The pills float over the transcript's tail, so a glass theme's wash would show it through.
-    ...glassFloatingStyle(theme),
+    ...glassOverlayStyle(theme),
   },
   bodyActive: {
-    backgroundColor: theme.glass?.floatingRaised ?? theme.colors.surface2,
+    backgroundColor: theme.glass?.overlayRaised ?? theme.colors.surface2,
   },
   label: {
     fontSize: theme.fontSize.sm,

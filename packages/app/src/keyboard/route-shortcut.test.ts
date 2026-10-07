@@ -376,10 +376,14 @@ describe("routeKeyboardShortcut — callbacks and pickers", () => {
 });
 
 describe("routeKeyboardShortcut — toggle dialogs", () => {
-  it("opens the command center scoped to files from a workspace", () => {
+  it("offers Search files to VS Code first and falls back to the files command center", () => {
     expect(
       routeKeyboardShortcut({ action: "command-center.files", payload: null }, makeCtx()),
-    ).toEqual<ShortcutAction>({ kind: "command-center-toggle", nextOpen: true, scope: "files" });
+    ).toEqual<ShortcutAction>({
+      kind: "dispatch",
+      action: { id: "workspace.editor.quick-open", scope: "workspace" },
+      fallback: { kind: "command-center-toggle", nextOpen: true, scope: "files" },
+    });
   });
 
   it("leaves the file-search shortcut to the project-picker host outside a workspace", () => {

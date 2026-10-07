@@ -17,10 +17,7 @@ import { useWorkspaceCheckoutStatus } from "@/screens/workspace/use-workspace-ch
 import { openWorkspaceFileFromExplorer } from "@/screens/workspace/workspace-file-open-command";
 import { getIsElectron, isWeb } from "@/constants/platform";
 import { normalizeWorkspaceFileLocation } from "@/workspace/file-open";
-import {
-  openHostFileInBrowserEditor,
-  tryOpenFileInBrowserEditor,
-} from "@/workspace/open-file-in-browser-editor";
+import { tryOpenFileInBrowserEditor } from "@/workspace/open-file-in-browser-editor";
 import { DiffDocumentWorkspaceCacheProvider } from "@/git/diff-document/workspace-cache";
 import {
   resolveCompactExplorerSidebarHostModel,
@@ -167,48 +164,6 @@ export function CompactExplorerSidebarHost({
     };
   }, [browserEditorUrl, focusWorkspaceTab, model, openWorkspaceTabInFocusedPane]);
 
-  const handleOpenHostFile = useCallback(
-    (filePath: string) => {
-      if (!model) {
-        return;
-      }
-      if (getIsElectron() && browserEditorUrl && model.workspaceRoot) {
-        const opened = openHostFileInBrowserEditor({
-          browserEditorUrl,
-          workspaceDirectory: model.workspaceRoot,
-          workspaceKey: model.persistenceKey,
-          absolutePath: filePath,
-          workspaceTabs: [],
-          openWorkspaceTabFocused: (target) =>
-            openWorkspaceTabInFocusedPane(model.persistenceKey, target),
-          navigateToTabId: (tabId) => focusWorkspaceTab(model.persistenceKey, tabId),
-        });
-        if (opened) {
-          if (presentation === "overlay") {
-            showMobileAgent();
-          }
-          return;
-        }
-      }
-      openWorkspaceFileFromExplorer({
-        filePath,
-        persistenceKey: model.persistenceKey,
-        closeExplorerAfterOpen: presentation === "overlay",
-        showMobileAgent,
-        openWorkspaceTabInFocusedPane,
-        focusWorkspaceTab,
-      });
-    },
-    [
-      browserEditorUrl,
-      focusWorkspaceTab,
-      model,
-      openWorkspaceTabInFocusedPane,
-      presentation,
-      showMobileAgent,
-    ],
-  );
-
   const handleOpenFile = useCallback(
     (filePath: string) => {
       if (!model) {
@@ -270,7 +225,6 @@ export function CompactExplorerSidebarHost({
             containerWidth={containerWidth}
             onOpenFile={handleOpenFile}
             onOpenDiff={handleOpenDiff}
-            onOpenHostFile={handleOpenHostFile}
           />
         ) : (
           <CompactExplorerSidebar
@@ -280,7 +234,6 @@ export function CompactExplorerSidebarHost({
             isGit={model.isGit}
             onOpenFile={handleOpenFile}
             onOpenDiff={handleOpenDiff}
-            onOpenHostFile={handleOpenHostFile}
           />
         )}
       </DiffDocumentWorkspaceCacheProvider>

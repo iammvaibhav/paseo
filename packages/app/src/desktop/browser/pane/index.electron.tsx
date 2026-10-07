@@ -10,6 +10,10 @@ import {
   createElement,
 } from "react";
 import { createPortal } from "react-dom";
+import {
+  buildBrowserEditorGlassScript,
+  type BrowserEditorGlassPalette,
+} from "./browser-editor-glass.electron";
 import { Pressable, Text, View, type StyleProp, type ViewStyle } from "react-native";
 import {
   EditingTextInput as TextInput,
@@ -54,6 +58,7 @@ import { WORKSPACE_SECONDARY_HEADER_HEIGHT } from "@/constants/layout";
 import { getOverlayRoot } from "@/lib/overlay-root";
 import {
   buildBridgeCloseAllPath,
+  buildBridgeCommandPath,
   buildBridgeOpenPath,
   buildBridgeRestorePath,
 } from "@/workspace/browser-editor-url";
@@ -76,6 +81,7 @@ import {
   ensurePersistentBrowserWebview,
   hidePersistentBrowserWebview,
   isBrowserWebviewDomReady,
+  isMainFrameDocumentNavigation,
   isResidentBrowserWebviewReady,
   prepareBrowserWebview,
   presentBrowserWebview,
@@ -318,6 +324,17 @@ function buildBrowserAttachmentScopeKey(input: {
   });
 }
 
+function applyBrowserEditorGlass(
+  webview: ElectronWebview,
+  palette: BrowserEditorGlassPalette | null,
+): void {
+  executeWebviewJavaScript(webview, buildBrowserEditorGlassScript(palette)).catch(
+    (error: unknown) => {
+      console.warn("[browser-pane] failed to apply VS Code glass", error);
+    },
+  );
+}
+
 function executeWebviewJavaScript(webview: ElectronWebview, code: string): Promise<unknown> {
   if (!webview.isConnected) {
     return Promise.resolve(null);
@@ -347,13 +364,44 @@ const SESSION_RESTORE_PENDING_ATTRIBUTE = "data-paseo-session-restore-pending";
 const SESSION_RESTORED_URL_ATTRIBUTE = "data-paseo-session-restored-url";
 
 /**
- * Builds a guest-page script that asks the paseo-bridge code-server extension to
- * open a file in place (no reload). The fetch is same-origin (reached through
- * code-server's `/proxy/<port>/` reverse proxy). Resolves to a small status object
- * — `{ ok, status }` on a response, `{ ok: false, error }` on a network failure —
- * so the caller can log why it failed and fall back when the bridge is absent.
- * Every value is JSON-encoded, so paths cannot break out of the script.
+ * Guest-page script that POSTs one payload to a paseo-bridge route (open, run a
+ * command). The fetch is same-origin, through code-server's `/proxy/<port>/`
+ * reverse proxy, and resolves to `{ ok, status }` or `{ ok: false, error }` so
+ * the caller can log why it failed. Every value is JSON-encoded, so paths cannot
+ * break out of the script. A window that is still booting has no registered
+ * extension host yet (503, or no listener), so it retries for a while: falling
+ * back right away reloads the whole workbench, and a `~` path has no reload
+ * fallback at all.
  */
+function buildBridgePostScript(route: string, payload: Record<string, unknown>): string {
+  return `(async () => {
+    const payload = ${JSON.stringify(payload)};
+    const folder = new URL(window.location.href).searchParams.get("folder");
+    if (folder) payload.folder = folder;
+    const deadline = Date.now() + 15000;
+    let last = { ok: false, error: "bridge unavailable" };
+    while (Date.now() < deadline) {
+      try {
+        const r = await fetch(${JSON.stringify(route)}, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const body = await r.json().catch(() => null);
+        // Only a bridge reply carries a boolean "ok". code-server's proxy answers
+        // 500 with its own page while nothing listens on the broker port yet.
+        const fromBridge = body !== null && typeof body.ok === "boolean";
+        last = { ...(fromBridge ? body : {}), ok: r.ok === true, status: r.status };
+        if (fromBridge && r.status !== 503) return last;
+      } catch (e) {
+        last = { ok: false, error: String(e && e.message ? e.message : e) };
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    return last;
+  })()`;
+}
+
 function buildBridgeOpenScript(input: {
   path: string;
   line: number | null;
@@ -361,36 +409,13 @@ function buildBridgeOpenScript(input: {
   mode: "file" | "diff";
   baseRef: string | null;
 }): string {
-  const payload = {
+  return buildBridgePostScript(buildBridgeOpenPath(), {
     path: input.path,
     ...(input.line ? { line: input.line } : {}),
     ...(input.column ? { column: input.column } : {}),
     ...(input.mode === "diff" ? { mode: "diff" } : {}),
     ...(input.baseRef ? { baseRef: input.baseRef } : {}),
-  };
-  return `(async () => {
-    const payload = ${JSON.stringify(payload)};
-    const folder = new URL(window.location.href).searchParams.get("folder");
-    if (folder) payload.folder = folder;
-    let lastError = null;
-    for (let attempt = 0; attempt < 3; attempt += 1) {
-      try {
-        const r = await fetch(${JSON.stringify(buildBridgeOpenPath())}, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-        if (r.status !== 503 || attempt === 2) {
-          return { ok: r.ok === true, status: r.status };
-        }
-      } catch (e) {
-        lastError = String(e && e.message ? e.message : e);
-        if (attempt === 2) return { ok: false, error: lastError };
-      }
-      await new Promise((resolve) => setTimeout(resolve, 150));
-    }
-    return { ok: false, error: lastError || "bridge unavailable" };
-  })()`;
+  });
 }
 
 function buildBridgeCloseAllScript(): string {
@@ -411,29 +436,7 @@ function buildBridgeCloseAllScript(): string {
 }
 
 function buildBridgeRestoreScript(): string {
-  return `(async () => {
-    const folder = new URL(window.location.href).searchParams.get("folder");
-    if (!folder) return { ok: false, error: "missing folder" };
-    for (let attempt = 0; attempt < 50; attempt += 1) {
-      try {
-        const r = await fetch(${JSON.stringify(buildBridgeRestorePath())}, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ folder }),
-        });
-        if (r.status !== 503 || attempt === 49) {
-          const body = await r.json().catch(() => ({}));
-          return { ok: r.ok === true, status: r.status, ...body };
-        }
-      } catch (e) {
-        if (attempt === 49) {
-          return { ok: false, error: String(e && e.message ? e.message : e) };
-        }
-      }
-      await new Promise((resolve) => setTimeout(resolve, 200));
-    }
-    return { ok: false, error: "bridge unavailable" };
-  })()`;
+  return buildBridgePostScript(buildBridgeRestorePath(), {});
 }
 
 function browserEditorFolder(url: string): string | null {
@@ -789,6 +792,21 @@ export function BrowserPane({
   const chromeMode = browser?.chrome ?? "full";
   const showChrome = chromeMode === "full";
   const usePersistentWebview = chromeMode === "embedded";
+  // VS Code Web joins the glass theme; other pages keep their own backgrounds.
+  const browserEditorGlass = useMemo<BrowserEditorGlassPalette | null>(
+    () =>
+      usePersistentWebview && theme.glass
+        ? {
+            overlay: theme.glass.overlay,
+            cover: theme.glass.cover,
+            activeTab: theme.colors.surface2,
+            inactiveActiveTab: theme.colors.surface1,
+            input: theme.colors.surface2,
+          }
+        : null,
+    [usePersistentWebview, theme.glass, theme.colors.surface1, theme.colors.surface2],
+  );
+  const browserEditorGlassRef = useRef(browserEditorGlass);
   const updateBrowser = useBrowserStore((state) => state.updateBrowser);
   const navigationRequest = useBrowserStore(
     (state) => state.navigationRequestByBrowserId[browserId] ?? null,
@@ -798,6 +816,10 @@ export function BrowserPane({
     (state) => state.bridgeOpenRequestByBrowserId[browserId] ?? null,
   );
   const clearBridgeOpenRequest = useBrowserStore((state) => state.clearBridgeOpenRequest);
+  const bridgeCommandRequest = useBrowserStore(
+    (state) => state.bridgeCommandRequestByBrowserId[browserId] ?? null,
+  );
+  const clearBridgeCommandRequest = useBrowserStore((state) => state.clearBridgeCommandRequest);
   const setBrowserViewport = useBrowserStore((state) => state.setBrowserViewport);
   const browserViewport = browser?.viewport ?? RESPONSIVE_BROWSER_VIEWPORT;
   const browserViewportRef = useRef(browserViewport);
@@ -809,12 +831,31 @@ export function BrowserPane({
   const webviewHostRef = useRef<HTMLDivElement | null>(null);
   const webviewClipRef = useRef<HTMLElement | null>(null);
   const domReadyRef = useRef(false);
+  useEffect(() => {
+    browserEditorGlassRef.current = browserEditorGlass;
+    const webview = webviewRef.current;
+    if (webview && domReadyRef.current) applyBrowserEditorGlass(webview, browserEditorGlass);
+  }, [browserEditorGlass]);
   const urlInputRef = useRef<EditingTextInputHandle | null>(null);
   const initialUrlRef = useRef(browser?.url ?? "https://example.com");
   const browserIdRef = useRef(browserId);
   browserIdRef.current = browserId;
   const browserRef = useRef(browser);
   browserRef.current = browser;
+  const onFocusPaneRef = useRef(onFocusPane);
+  onFocusPaneRef.current = onFocusPane;
+  // Moves keyboard focus into the guest page and its pane, the same as a click
+  // into the webview.
+  const focusGuestWebview = useCallback((webview: ElectronWebview) => {
+    onFocusPaneRef.current?.();
+    webview.focus?.();
+    const focusBrowser = getDesktopHost()?.browser?.focus;
+    if (typeof focusBrowser === "function") {
+      void focusBrowser(browserIdRef.current).catch((error) => {
+        console.error("[browser-webview] focus failed", error);
+      });
+    }
+  }, []);
   const pendingNavigationUrlRef = useRef<string | null>(null);
   const annotationMarkersRef = useRef<BrowserAnnotationMarker[]>([]);
   const [selectorMode, setSelectorMode] = useState<"annotate" | "screenshot" | null>(null);
@@ -968,6 +1009,9 @@ export function BrowserPane({
     webviewRef.current = webview;
     domReadyRef.current =
       isBrowserWebviewDomReady(webview) || isResidentBrowserWebviewReady(webview);
+    // A persistent webview may have finished loading before this pane mounted, so `dom-ready`
+    // will not fire again for it.
+    if (domReadyRef.current) applyBrowserEditorGlass(webview, browserEditorGlassRef.current);
     if (!persistentWebview && !residentWebview) {
       prepareBrowserWebview(webview, {
         browserId,
@@ -1003,11 +1047,16 @@ export function BrowserPane({
     }
 
     const handleStartLoading = () => {
-      webview.removeAttribute(SESSION_RESTORED_URL_ATTRIBUTE);
-      domReadyRef.current = false;
       selectorControllerRef.current?.stopForWebview(webview);
       updateBrowser(browserId, { isLoading: true, lastError: null });
       syncNavigationState({ syncUrl: false });
+    };
+    const handleStartNavigation = (event: Event) => {
+      if (!isMainFrameDocumentNavigation(event)) {
+        return;
+      }
+      webview.removeAttribute(SESSION_RESTORED_URL_ATTRIBUTE);
+      domReadyRef.current = false;
     };
     const handleStopLoading = () => {
       updateBrowser(browserId, { isLoading: false });
@@ -1086,19 +1135,14 @@ export function BrowserPane({
       if (persistentWebview) {
         restoreBrowserEditorSession(webview, browserRef.current?.url);
       }
+      applyBrowserEditorGlass(webview, browserEditorGlassRef.current);
     };
     const handleWebviewFocus = () => {
-      onFocusPane?.();
-      webview.focus?.();
-      const focusBrowser = getDesktopHost()?.browser?.focus;
-      if (typeof focusBrowser === "function") {
-        void focusBrowser(browserIdRef.current).catch((error) => {
-          console.error("[browser-webview] focus failed", error);
-        });
-      }
+      focusGuestWebview(webview);
     };
 
     webview.addEventListener("did-start-loading", handleStartLoading);
+    webview.addEventListener("did-start-navigation", handleStartNavigation);
     webview.addEventListener("did-stop-loading", handleStopLoading);
     webview.addEventListener("will-navigate", handleWillNavigate);
     webview.addEventListener("did-navigate", handleNavigate);
@@ -1132,6 +1176,7 @@ export function BrowserPane({
     return () => {
       sizeObserver?.disconnect();
       webview.removeEventListener("did-start-loading", handleStartLoading);
+      webview.removeEventListener("did-start-navigation", handleStartNavigation);
       webview.removeEventListener("did-stop-loading", handleStopLoading);
       webview.removeEventListener("will-navigate", handleWillNavigate);
       webview.removeEventListener("did-navigate", handleNavigate);
@@ -1266,6 +1311,28 @@ export function BrowserPane({
     showChrome,
   ]);
 
+  // Waits for the webview to attach and emit dom-ready before a bridge call: a
+  // freshly opened or adopted tab, or a cold code-server boot, is not ready at
+  // once, and giving up too early turns an in-place open into a reload.
+  const waitForBridgeWebview = useCallback(
+    async (isCancelled: () => boolean): Promise<ElectronWebview | null> => {
+      const deadline = Date.now() + 20000;
+      while (Date.now() < deadline && !isCancelled()) {
+        const webview = webviewRef.current;
+        if (
+          isBridgeWebviewReady(webview, domReadyRef.current, showChrome, webviewHostRef.current)
+        ) {
+          return webview;
+        }
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, 150);
+        });
+      }
+      return null;
+    },
+    [showChrome],
+  );
+
   useEffect(() => {
     if (!bridgeOpenRequest) {
       return;
@@ -1294,34 +1361,11 @@ export function BrowserPane({
     };
 
     void (async () => {
-      // Wait for the webview to attach + emit dom-ready before asking the guest
-      // to fetch the bridge — a freshly opened/adopted tab or a cold code-server
-      // boot isn't ready immediately. Falling back too early causes a reload.
-      const deadline = Date.now() + 20000;
-      while (Date.now() < deadline) {
-        if (cancelled) {
-          return;
-        }
-        const currentWebview = webviewRef.current;
-        if (
-          isBridgeWebviewReady(
-            currentWebview,
-            domReadyRef.current,
-            showChrome,
-            webviewHostRef.current,
-          )
-        ) {
-          break;
-        }
-        await new Promise<void>((resolve) => {
-          setTimeout(resolve, 150);
-        });
-      }
+      const webview = await waitForBridgeWebview(() => cancelled);
       if (cancelled) {
         return;
       }
-      const webview = webviewRef.current;
-      if (!isBridgeWebviewReady(webview, domReadyRef.current, showChrome, webviewHostRef.current)) {
+      if (!webview) {
         // Never became ready — load the file the classic way (may reload).
         runFallback("webview-not-ready");
         return;
@@ -1345,6 +1389,7 @@ export function BrowserPane({
       );
       if (result.ok === true) {
         clearBridgeOpenRequest(browserId, requestId);
+        focusGuestWebview(webview);
         return;
       }
       if (result.status === 404) {
@@ -1366,10 +1411,56 @@ export function BrowserPane({
     browserId,
     bridgeOpenRequest,
     clearBridgeOpenRequest,
+    focusGuestWebview,
     isWorkspaceActive,
     navigate,
     showChrome,
     t,
+    waitForBridgeWebview,
+    workspaceKey,
+  ]);
+
+  useEffect(() => {
+    if (!bridgeCommandRequest || (!showChrome && !isWorkspaceActive)) {
+      return;
+    }
+    const { command, requestId, targetWorkspaceKey } = bridgeCommandRequest;
+    if (targetWorkspaceKey && targetWorkspaceKey !== workspaceKey) {
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const webview = await waitForBridgeWebview(() => cancelled);
+      if (cancelled) {
+        return;
+      }
+      clearBridgeCommandRequest(browserId, requestId);
+      if (!webview) {
+        console.warn(`[paseo-bridge] command ${command} skipped: webview not ready`);
+        return;
+      }
+      // Focus first: VS Code puts Quick Open in the focused window, and keys
+      // typed right after the shortcut must land in it.
+      focusGuestWebview(webview);
+      const result = ((await executeWebviewJavaScript(
+        webview,
+        buildBridgePostScript(buildBridgeCommandPath(), { command }),
+      ).catch(() => null)) ?? {}) as BridgeOpenResult;
+      console.log(
+        `[paseo-bridge] command ${command} ok=${result.ok} status=${result.status ?? "-"} error=${result.error ?? "-"}`,
+      );
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    browserId,
+    bridgeCommandRequest,
+    clearBridgeCommandRequest,
+    focusGuestWebview,
+    isWorkspaceActive,
+    showChrome,
+    waitForBridgeWebview,
     workspaceKey,
   ]);
 

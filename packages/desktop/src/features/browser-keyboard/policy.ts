@@ -14,6 +14,10 @@ export interface BrowserShortcutPrefix {
 export interface BrowserKeyboardPolicy {
   menuPrefixes: BrowserShortcutPrefix[];
   prefixes: BrowserShortcutPrefix[];
+  /** Origins of the hosts' VS Code Web pages. */
+  editorOrigins: string[];
+  /** Shortcuts a VS Code Web page keeps for itself instead of crossing to Paseo. */
+  editorPrefixes: BrowserShortcutPrefix[];
 }
 
 export interface BrowserShortcutInput {
@@ -104,7 +108,13 @@ export function parseBrowserKeyboardPolicy(value: unknown): BrowserKeyboardPolic
   }
   const menuPrefixes = parsePrefixes(value.menuPrefixes);
   const prefixes = parsePrefixes(value.prefixes);
-  return menuPrefixes && prefixes ? { menuPrefixes, prefixes } : null;
+  const editorPrefixes = parsePrefixes(value.editorPrefixes ?? []);
+  const editorOrigins = Array.isArray(value.editorOrigins)
+    ? value.editorOrigins.filter((origin): origin is string => typeof origin === "string")
+    : [];
+  return menuPrefixes && prefixes && editorPrefixes
+    ? { menuPrefixes, prefixes, editorOrigins, editorPrefixes }
+    : null;
 }
 
 export function parseBrowserShortcutInput(value: unknown): BrowserShortcutInput | null {

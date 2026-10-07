@@ -2565,6 +2565,7 @@ export const fr: TranslationResources = {
         codeSizeHint: "Utilisée pour le code, les diffs et la sortie du terminal",
         codeSizeAccessibility: "Taille de la police du code",
       },
+      glass: en.settings.appearance.glass,
       layout: {
         title: "Mise en page",
         contentWidth: "Largeur du contenu",

@@ -192,6 +192,26 @@ describe("buildBrowserKeyboardPolicy", () => {
     });
   });
 
+  it("leaves only Search files and Open project to VS Code pages, following user rebinds", () => {
+    const keyOf = (prefix: { code: string; meta: boolean; control: boolean; shift: boolean }) =>
+      `${prefix.meta ? "Meta+" : ""}${prefix.control ? "Ctrl+" : ""}${prefix.shift ? "Shift+" : ""}${prefix.code}`;
+    const defaults = buildBrowserKeyboardPolicy({
+      bindings: buildEffectiveBindings({}),
+      isMac: true,
+      isDesktop: true,
+      editorOrigins: ["http://dev.netbird.cloud:8765"],
+    });
+    expect(defaults.editorOrigins).toEqual(["http://dev.netbird.cloud:8765"]);
+    expect(defaults.editorPrefixes.map(keyOf).sort()).toEqual(["Meta+KeyO", "Meta+KeyP"]);
+
+    const rebound = buildBrowserKeyboardPolicy({
+      bindings: buildEffectiveBindings({ "workspace-project-pick-cmd-p-mac": "Cmd+Shift+F" }),
+      isMac: true,
+      isDesktop: true,
+    });
+    expect(rebound.editorPrefixes.map(keyOf).sort()).toEqual(["Meta+KeyO", "Meta+Shift+KeyF"]);
+  });
+
   it("does not publish plain browser keys", () => {
     const bindings = buildEffectiveBindings({});
     const policy = buildBrowserKeyboardPolicy({ bindings, isMac: false, isDesktop: true });

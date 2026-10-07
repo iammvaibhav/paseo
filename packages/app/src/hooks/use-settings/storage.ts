@@ -21,7 +21,9 @@ import {
 import { isNative } from "@/constants/platform";
 import {
   DEFAULT_CONTENT_MAX_WIDTH,
+  DEFAULT_GLASS_TUNING,
   FONT_SIZE,
+  type GlassTuning,
   PLUGIN_THEME_PREFERENCE,
   THEME_OPTIONS,
   type ThemePreference,
@@ -125,6 +127,8 @@ export interface AppSettings {
   /** Max width of chat and markdown content in px; null follows the current default. */
   contentMaxWidth: number | null;
   syntaxTheme: SyntaxThemeId; // default "one"
+  /** Glass theme strengths in percent (macOS desktop app with Mono). */
+  glassTuning: GlassTuning;
   workspaceTitleSource: WorkspaceTitleSource;
   sidebarWorkspaceTrailing: SidebarWorkspaceTrailing;
   sidebarWorkspaceSort: SidebarWorkspaceSort;
@@ -200,6 +204,7 @@ export const DEFAULT_CLIENT_SETTINGS: AppSettings = {
   agentGridHoverComposer: false,
   contentMaxWidth: null,
   syntaxTheme: "one",
+  glassTuning: DEFAULT_GLASS_TUNING,
   workspaceTitleSource: "title",
   sidebarWorkspaceTrailing: "timestamp",
   sidebarWorkspaceSort: "manual",
@@ -307,6 +312,15 @@ const StoredAppSettingsSchema = z
       .or(clampedNumber(MIN_CONTENT_MAX_WIDTH, MAX_CONTENT_MAX_WIDTH))
       .catch(null),
     syntaxTheme: z.string().refine(isSyntaxThemeId).catch("one"),
+    glassTuning: z
+      .object({
+        window: clampedNumber(0, 100).catch(DEFAULT_GLASS_TUNING.window),
+        chat: clampedNumber(0, 100).catch(DEFAULT_GLASS_TUNING.chat),
+        floating: clampedNumber(0, 100).catch(DEFAULT_GLASS_TUNING.floating),
+        overlay: clampedNumber(0, 100).catch(DEFAULT_GLASS_TUNING.overlay),
+        panels: clampedNumber(0, 300).catch(DEFAULT_GLASS_TUNING.panels),
+      })
+      .catch(DEFAULT_GLASS_TUNING),
     workspaceTitleSource: z.enum(["title", "branch"]).catch("title"),
     sidebarWorkspaceTrailing: z.enum(["diff", "timestamp", "none"]).catch("timestamp"),
     sidebarWorkspaceSort: z.enum(["manual", "activity", "created"]).catch("manual"),

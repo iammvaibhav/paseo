@@ -1,5 +1,10 @@
 import { getIsElectron } from "@/constants/platform";
-import { createWorkspaceBrowser, getBrowserRecord, useBrowserStore } from "@/desktop/browser/store";
+import {
+  type BrowserBridgeCommand,
+  createWorkspaceBrowser,
+  getBrowserRecord,
+  useBrowserStore,
+} from "@/desktop/browser/store";
 import type { WorkspaceTabTarget } from "@/workspace-tabs/model";
 import { buildBrowserEditorUrl } from "@/workspace/browser-editor-url";
 import { resolveWorkspaceFilePaths, type WorkspaceFileLocation } from "@/workspace/file-open";
@@ -30,14 +35,6 @@ export interface OpenFileInBrowserEditorInput extends BrowserEditorTabActions {
   baseRef?: string | null;
 }
 
-export interface OpenHostFileInBrowserEditorInput extends BrowserEditorTabActions {
-  browserEditorUrl: string;
-  workspaceDirectory: string;
-  /** Absolute host path of the file to open. */
-  absolutePath: string;
-  line?: number | null;
-}
-
 /**
  * Reveal the host's single persistent VS Code Web tab (folder view). Adopts the
  * warm webview so it appears instantly; reopening after close reuses the same
@@ -59,111 +56,94 @@ export function openBrowserEditorTab(input: OpenBrowserEditorTabInput): boolean 
 }
 
 /**
- * Open a workspace file in the host's VS Code Web (code-server) browser tab.
- * Returns true when handled; false when the caller should use the default
- * in-app file tab.
+ * Open a file or folder in the host's VS Code Web (code-server) browser tab: a
+ * workspace path, any absolute host path, or a `~/…` path (the bridge expands
+ * `~` on the host). Folders are revealed in VS Code's Explorer. Returns true when
+ * handled; false when the caller should use the default in-app file tab.
  */
 export function tryOpenFileInBrowserEditor(input: OpenFileInBrowserEditorInput): boolean {
   if (!getIsElectron()) {
     return false;
   }
 
-  const resolved = resolveWorkspaceFilePaths({
-    path: input.location.path,
-    workspaceRoot: input.workspaceDirectory,
-  });
-  if (!resolved) {
+  const path = input.location.path.trim();
+  const isHomePath = path === "~" || path.startsWith("~/");
+  const absolutePath = isHomePath
+    ? path
+    : resolveWorkspaceFilePaths({ path, workspaceRoot: input.workspaceDirectory })?.absolutePath;
+  if (!absolutePath) {
     return false;
   }
 
-  return openFileInBrowserEditorCore({
-    browserEditorUrl: input.browserEditorUrl,
-    folderPath: input.workspaceDirectory,
-    workspaceKey: input.workspaceKey,
-    absolutePath: resolved.absolutePath,
-    line: input.location.lineStart ?? null,
-    mode: input.mode ?? "file",
-    baseRef: input.baseRef ?? null,
-    workspaceTabs: input.workspaceTabs,
-    openWorkspaceTabFocused: input.openWorkspaceTabFocused,
-    navigateToTabId: input.navigateToTabId,
-  });
-}
-
-/**
- * Open an arbitrary host file (from the host file browser) in VS Code Web.
- * The file may live outside any workspace folder — the bridge opens it by
- * absolute path.
- */
-export function openHostFileInBrowserEditor(input: OpenHostFileInBrowserEditorInput): boolean {
-  if (!getIsElectron()) {
-    return false;
-  }
-
-  return openFileInBrowserEditorCore({
-    browserEditorUrl: input.browserEditorUrl,
-    // Host files can live anywhere, but the one persistent editor must remain
-    // rooted at the active workspace. The bridge can open an absolute path
-    // outside that root without changing folders.
-    folderPath: input.workspaceDirectory,
-    workspaceKey: input.workspaceKey,
-    absolutePath: input.absolutePath,
-    line: input.line ?? null,
-    workspaceTabs: input.workspaceTabs,
-    openWorkspaceTabFocused: input.openWorkspaceTabFocused,
-    navigateToTabId: input.navigateToTabId,
-  });
-}
-
-function openFileInBrowserEditorCore(
-  input: BrowserEditorTabActions & {
-    browserEditorUrl: string;
-    folderPath: string;
-    absolutePath: string;
-    line: number | null;
-    mode?: "file" | "diff";
-    baseRef?: string | null;
-  },
-): boolean {
-  // Fallback URL: a classic ?folder=&payload= open, used only when the bridge is
-  // unreachable / times out (the pane reloads to it so the file still opens).
-  const fileUrl = buildBrowserEditorUrl({
-    baseUrl: input.browserEditorUrl,
-    folderPath: input.folderPath,
-    filePath: input.absolutePath,
-    line: input.line,
-    column: 1,
-  });
-  if (!fileUrl) {
-    return false;
-  }
   const folderUrl = buildBrowserEditorUrl({
     baseUrl: input.browserEditorUrl,
-    folderPath: input.folderPath,
+    folderPath: input.workspaceDirectory,
   });
-
-  const instance = ensureBrowserEditorInstance({
-    browserEditorUrl: input.browserEditorUrl,
-    folderUrl: folderUrl ?? fileUrl,
-  });
+  // Fallback URL: a classic ?folder=&payload= open, used only when the bridge is
+  // unreachable / times out (the pane reloads to it so the file still opens).
+  // A `~` path has no URL form: only the host can expand it.
+  const fileUrl = isHomePath
+    ? null
+    : buildBrowserEditorUrl({
+        baseUrl: input.browserEditorUrl,
+        folderPath: input.workspaceDirectory,
+        filePath: absolutePath,
+        line: input.location.lineStart ?? null,
+        column: 1,
+      });
+  const instance = folderUrl
+    ? ensureBrowserEditorInstance({ browserEditorUrl: input.browserEditorUrl, folderUrl })
+    : null;
   if (!instance) {
     return false;
   }
 
   const mode = input.mode ?? "file";
   console.log(
-    `[paseo-bridge] ${mode} browserId=${instance.browserId} path=${input.absolutePath} base=${input.baseRef ?? "-"}`,
+    `[paseo-bridge] ${mode} browserId=${instance.browserId} path=${absolutePath} base=${input.baseRef ?? "-"}`,
   );
   revealBrowserEditor(instance, input);
   useBrowserStore.getState().requestBridgeOpen(instance.browserId, {
-    path: input.absolutePath,
-    line: input.line,
+    path: absolutePath,
+    line: input.location.lineStart ?? null,
     column: 1,
     mode,
     baseRef: input.baseRef ?? null,
     // A bridge too old to know about `mode` opens the plain file, so the reload
     // fallback matching that is the honest one for a diff request too.
     fallbackUrl: fileUrl,
+    targetWorkspaceKey: input.workspaceKey,
+  });
+  return true;
+}
+
+/**
+ * Show the host's VS Code tab, focus it, and run a VS Code command in it (Quick
+ * Open, the Open File path browser). Returns true when handled.
+ */
+export function runBrowserEditorCommand(
+  input: BrowserEditorTabActions & {
+    browserEditorUrl: string;
+    workspaceDirectory: string;
+    command: BrowserBridgeCommand;
+  },
+): boolean {
+  if (!getIsElectron()) {
+    return false;
+  }
+  const folderUrl = buildBrowserEditorUrl({
+    baseUrl: input.browserEditorUrl,
+    folderPath: input.workspaceDirectory,
+  });
+  const instance = folderUrl
+    ? ensureBrowserEditorInstance({ browserEditorUrl: input.browserEditorUrl, folderUrl })
+    : null;
+  if (!instance) {
+    return false;
+  }
+  revealBrowserEditor(instance, input);
+  useBrowserStore.getState().requestBridgeCommand(instance.browserId, {
+    command: input.command,
     targetWorkspaceKey: input.workspaceKey,
   });
   return true;

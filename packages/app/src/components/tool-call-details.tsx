@@ -170,31 +170,25 @@ function ShellDetailSection({ command, output, ds }: ShellDetailProps) {
   const normalizedCommand = command.replace(/\n+$/, "");
   const commandOutput = (output ?? "").replace(/^\n+/, "");
   const hasOutput = commandOutput.length > 0;
+  // Laid out like a file read: plain lines on the row's own surface, no boxed block.
   return (
     <View style={ds.sectionFillStyle}>
-      <View style={ds.codeBlockFillStyle}>
-        <ScrollView
-          style={ds.codeVerticalScrollStyle}
-          contentContainerStyle={styles.codeVerticalContent}
-          nestedScrollEnabled
-          showsVerticalScrollIndicator
-        >
-          <ScrollView
-            horizontal
-            nestedScrollEnabled
-            showsHorizontalScrollIndicator
-            contentContainerStyle={styles.codeHorizontalContent}
-          >
-            <View style={styles.codeLine} dataSet={CODE_SURFACE_DATASET}>
-              <Text selectable style={styles.scrollText}>
-                <Text style={styles.shellPrompt}>$ </Text>
-                {normalizedCommand}
-                {hasOutput ? `\n\n${commandOutput}` : ""}
-              </Text>
-            </View>
-          </ScrollView>
+      <ScrollView
+        style={ds.scrollAreaFillStyle}
+        contentContainerStyle={styles.scrollContent}
+        nestedScrollEnabled
+        showsVerticalScrollIndicator
+      >
+        <ScrollView horizontal nestedScrollEnabled showsHorizontalScrollIndicator>
+          <View dataSet={CODE_SURFACE_DATASET}>
+            <Text selectable style={styles.scrollText}>
+              <Text style={styles.shellPrompt}>$ </Text>
+              {normalizedCommand}
+              {hasOutput ? `\n\n${commandOutput}` : ""}
+            </Text>
+          </View>
         </ScrollView>
-      </View>
+      </ScrollView>
     </View>
   );
 }

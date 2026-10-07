@@ -25,11 +25,7 @@ vi.mock("@/workspace/preload-browser-editor", () => ({
 import { getIsElectron } from "@/constants/platform";
 import { createWorkspaceBrowser, getBrowserRecord, useBrowserStore } from "@/desktop/browser/store";
 import { ensureBrowserEditorInstance } from "@/workspace/preload-browser-editor";
-import {
-  openBrowserEditorTab,
-  openHostFileInBrowserEditor,
-  tryOpenFileInBrowserEditor,
-} from "./open-file-in-browser-editor";
+import { openBrowserEditorTab, tryOpenFileInBrowserEditor } from "./open-file-in-browser-editor";
 
 beforeEach(() => {
   vi.mocked(getIsElectron).mockReturnValue(true);
@@ -177,30 +173,37 @@ describe("tryOpenFileInBrowserEditor", () => {
   });
 });
 
-describe("openHostFileInBrowserEditor", () => {
-  it("opens an absolute host file via the bridge on the persistent instance", () => {
+describe("tryOpenFileInBrowserEditor outside the workspace", () => {
+  const open = (path: string) => {
     const requestBridgeOpen = vi.fn();
     vi.mocked(useBrowserStore.getState).mockReturnValue({ requestBridgeOpen } as never);
+    const opened = tryOpenFileInBrowserEditor({
+      browserEditorUrl: "http://blrofc3:8765",
+      workspaceDirectory: "/repo",
+      workspaceKey: "server-1:workspace-1",
+      location: { path },
+      workspaceTabs: [],
+      openWorkspaceTabFocused: vi.fn(() => "tab-1"),
+      navigateToTabId: vi.fn(),
+    });
+    return { opened, request: requestBridgeOpen.mock.calls[0]?.[1] };
+  };
 
-    expect(
-      openHostFileInBrowserEditor({
-        browserEditorUrl: "http://blrofc3:8765",
-        workspaceDirectory: "/repo",
-        absolutePath: "/etc/hosts",
-        workspaceKey: "server-1:workspace-1",
-        workspaceTabs: [],
-        openWorkspaceTabFocused: vi.fn(() => "tab-1"),
-        navigateToTabId: vi.fn(),
-      }),
-    ).toBe(true);
-
-    expect(ensureBrowserEditorInstance).toHaveBeenCalledWith({
+  it("opens an absolute host path in the editor that stays rooted at the workspace", () => {
+    const { opened, request } = open("/etc/hosts");
+    expect(opened).toBe(true);
+    expect(ensureBrowserEditorInstance).toHaveBeenLastCalledWith({
       browserEditorUrl: "http://blrofc3:8765",
       folderUrl: "http://blrofc3:8765/?folder=%2Frepo",
     });
-    expect(requestBridgeOpen).toHaveBeenCalledWith(
-      "vscode-web-1",
-      expect.objectContaining({ path: "/etc/hosts" }),
+    expect(request).toEqual(expect.objectContaining({ path: "/etc/hosts" }));
+  });
+
+  it("passes a ~ path through for the host to expand, with no reload fallback", () => {
+    const { opened, request } = open("~/.omp/agent/config.yml");
+    expect(opened).toBe(true);
+    expect(request).toEqual(
+      expect.objectContaining({ path: "~/.omp/agent/config.yml", fallbackUrl: null }),
     );
   });
 });
