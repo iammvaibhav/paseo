@@ -28,6 +28,8 @@ import { extensionFromPath, highlightToKeyedLines } from "@/utils/highlight-cach
 import { parseEvalToolCallDetail, type EvalCell, type EvalDetailModel } from "@/utils/eval-detail";
 import { parseWebSearchToolCallDetail, type WebSearchDetailModel } from "@/utils/web-search-detail";
 import { parseHubToolCallDetail, type HubDetailModel } from "@/utils/hub-detail";
+import { parsePreviewPageToolCallDetail } from "@/utils/preview-page-detail";
+import { PreviewPageDetail } from "./preview-page-detail";
 import { HighlightedLines } from "./highlighted-content";
 import { DiffViewer } from "./diff-viewer";
 import { getCodeInsets } from "./code-insets";
@@ -1153,6 +1155,10 @@ export function ToolCallDetailsContent({
     [detail, toolName],
   );
   const hubModel = useMemo(() => parseHubToolCallDetail(detail, toolName), [detail, toolName]);
+  const previewPageModel = useMemo(
+    () => parsePreviewPageToolCallDetail(detail, toolName),
+    [detail, toolName],
+  );
   const ds = useDetailStyles(
     detail,
     resolvedMaxHeight,
@@ -1160,6 +1166,21 @@ export function ToolCallDetailsContent({
     evalModel !== null || webSearchModel !== null || hubModel !== null,
   );
   const diffLines = useDiffLines(detail);
+
+  if (previewPageModel) {
+    return (
+      <View style={ds.fullBleedContainerStyle}>
+        <PreviewPageDetail model={previewPageModel} />
+        {previewPageModel.html ? (
+          <View style={styles.section}>
+            <Text style={styles.previewSourceTitle}>{t("toolCallDetails.previewPage.source")}</Text>
+            <ScrollableTextSection content={previewPageModel.html} ds={ds} filePath="page.html" />
+          </View>
+        ) : null}
+        {errorText ? <ErrorSection errorText={errorText} ds={ds} /> : null}
+      </View>
+    );
+  }
 
   const sections: ReactNode[] = buildDetailSections(
     toolName,
@@ -1228,6 +1249,11 @@ const styles = StyleSheet.create((theme) => {
       paddingVertical: theme.spacing[4],
       borderBottomWidth: theme.borderWidth[1],
       borderBottomColor: theme.colors.border,
+    },
+    previewSourceTitle: {
+      fontSize: theme.fontSize.sm,
+      fontWeight: theme.fontWeight.medium,
+      color: theme.colors.foregroundMuted,
     },
     paseoSectionTitle: {
       color: theme.colors.foreground,

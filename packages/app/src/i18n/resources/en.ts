@@ -2615,6 +2615,15 @@ export const en = {
     subAgentActivity: "Sub-agent activity",
     input: "Input",
     output: "Output",
+    previewPage: {
+      width: "{{width}} px wide",
+      pageHeight: "page {{height}} px tall",
+      captured: "screenshot cut at {{height}} px",
+      openScreenshot: "Open screenshot",
+      console: "Console ({{count}})",
+      noConsole: "Nothing logged",
+      source: "Page source",
+    },
   },
   toolCallGroup: {
     editedFiles: {
