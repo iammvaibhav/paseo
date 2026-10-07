@@ -1,5 +1,4 @@
 import { Platform } from "react-native";
-import { GLASS_FROST_FILTER_ID } from "@/styles/glass-frost-filter";
 import type { SurfaceBackdrop } from "@/styles/surface-backdrop";
 import { darkHighlightColors, lightHighlightColors } from "@getpaseo/highlight";
 
@@ -776,13 +775,12 @@ const darkShadow = {
  * be a wash: they read through to whatever is under them.
  */
 export interface GlassTreatment {
-  /** Menus, popovers, tooltips, dialogs, toasts: lighter than the pane so they stand out. */
-  floating: string;
   /**
-   * The frost under floating surfaces. Must reference the SVG filter in
-   * `styles/glass-frost-filter.ts`; a plain `blur()` misrenders on a window with vibrancy.
+   * Menus, popovers, tooltips, dialogs, toasts: lighter than the pane so they stand out, and
+   * dense because nothing blurs what is under them. Do not add `backdrop-filter`: while any
+   * element with one is on screen, Chromium drops the window's vibrancy and the window goes dark.
    */
-  floatingBackdropFilter: string;
+  floating: string;
   /** A floating surface in its active or pressed state. */
   floatingRaised: string;
   floatingBorder: string;
@@ -841,12 +839,11 @@ export const darkMonoGlassTheme = {
     surfaceWorkspace: "transparent",
     surfacePane: "transparent",
     surfaceUserMessage: "rgba(255, 255, 255, 0.09)",
-    popover: "rgba(46, 46, 46, 0.72)",
+    popover: "rgba(46, 46, 46, 0.95)",
   }),
   glass: {
-    floating: "rgba(46, 46, 46, 0.72)",
-    floatingBackdropFilter: `url(#${GLASS_FROST_FILTER_ID})`,
-    floatingRaised: "rgba(60, 60, 60, 0.8)",
+    floating: "rgba(46, 46, 46, 0.95)",
+    floatingRaised: "rgba(60, 60, 60, 0.96)",
     floatingBorder: "rgba(255, 255, 255, 0.1)",
     cover: "rgba(28, 28, 28, 0.94)",
     scrim: {
@@ -868,12 +865,10 @@ interface GlassFloatingStyle {
 /** Floating-surface fill for a glass theme; empty for opaque themes, which keep their own fill. */
 export function glassFloatingStyle(theme: Theme): GlassFloatingStyle {
   if (!theme.glass) return {};
-  // `backdropFilter` is a web style key react-native's style types do not declare.
   return {
     backgroundColor: theme.glass.floating,
     borderColor: theme.glass.floatingBorder,
-    backdropFilter: theme.glass.floatingBackdropFilter,
-  } as GlassFloatingStyle;
+  };
 }
 
 // Pure black — zero-luminance background with high-contrast surfaces.
