@@ -607,7 +607,7 @@ function writeProjectIntoWorkspace(projectFolder, { swapFolder }) {
   for (const key of extensionContext?.workspaceState.get(MIRRORED_SETTINGS_KEY) ?? []) {
     delete settings[key];
   }
-  Object.assign(settings, projectSettings);
+  Object.assign(settings, resolveProjectFolderVariables(projectSettings, projectFolder));
   const next = {
     ...workspace,
     folders: swapFolder ? [workspace.folders[0], { path: projectFolder }] : workspace.folders,
@@ -626,6 +626,34 @@ function mirrorProjectSettings(folder) {
   } catch (error) {
     writeLog(`settings mirror FAILED for ${folder}: ${error?.message ?? error}`);
   }
+}
+
+/**
+ * Rewrites `${workspaceFolder}` (and its deprecated alias `${workspaceRoot}`)
+ * and `${workspaceFolderBasename}` in copied project settings to the project
+ * itself. In the project's own folder settings they mean that folder; copied
+ * into workspace settings of a two-folder window they are ambiguous, and
+ * extensions resolve them against the first folder (the fixed root) or not at
+ * all. Scoped `${workspaceFolder:name}` is already unambiguous and stays.
+ */
+function resolveProjectFolderVariables(value, projectFolder) {
+  if (typeof value === "string") {
+    return value
+      .replace(/\$\{(?:workspaceFolder|workspaceRoot)\}/g, projectFolder)
+      .replace(/\$\{workspaceFolderBasename\}/g, path.basename(projectFolder));
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => resolveProjectFolderVariables(item, projectFolder));
+  }
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [
+        key,
+        resolveProjectFolderVariables(item, projectFolder),
+      ]),
+    );
+  }
+  return value;
 }
 
 /** JSON with comments and trailing commas, the format of VS Code settings files. */
@@ -1277,6 +1305,7 @@ module.exports = {
   createBrokerHandler,
   createRequestHandler,
   parseJsonc,
+  resolveProjectFolderVariables,
   captureEditorSession,
   deactivate,
   hasDiffTab,
