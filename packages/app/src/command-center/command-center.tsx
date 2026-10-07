@@ -12,7 +12,7 @@ import {
 } from "react-native";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Check, ChevronRight, Folder, X } from "lucide-react-native";
+import { Check, ChevronRight, Folder, FolderTree, X } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { BottomSheetFlatList, type BottomSheetFlatListMethods } from "@gorhom/bottom-sheet";
 import { AgentStatusDot } from "@/components/agent-status-dot";
@@ -42,6 +42,7 @@ import {
   type CommandCenterScope,
 } from "@/stores/keyboard-shortcuts-store";
 import { navigateToWorkspace } from "@/stores/navigation-active-workspace-store";
+import { revealProjectInSidebar } from "@/stores/sidebar-reveal-store";
 import { useKeyboardActionDispatcher } from "@/keyboard/keyboard-action-dispatcher-context";
 import {
   clearCommandCenterFocusRestoreElement,
@@ -64,6 +65,7 @@ import {
   type CommandCenterAgentResult,
   type CommandCenterFileResult,
   type CommandCenterListRow,
+  type CommandCenterProjectResult,
   type CommandCenterResult,
   type CommandCenterResultSection,
   type CommandCenterSearchFields,
@@ -79,6 +81,9 @@ const ThemedTextInput = withUnistyles(TextInput, (theme) => ({
   placeholderTextColor: theme.colors.foregroundMuted,
 }));
 const ThemedFolder = withUnistyles(Folder, (theme) => ({ color: theme.colors.foregroundMuted }));
+const ThemedFolderTree = withUnistyles(FolderTree, (theme) => ({
+  color: theme.colors.foregroundMuted,
+}));
 const ThemedCheck = withUnistyles(Check, (theme) => ({ color: theme.colors.foreground }));
 const ThemedChevronRight = withUnistyles(ChevronRight, (theme) => ({
   color: theme.colors.foregroundMuted,
@@ -116,6 +121,17 @@ function compareWorkspacesByTitle(
   return titleDelta || left.subtitle.localeCompare(right.subtitle);
 }
 
+function compareProjectsByTitle(
+  left: CommandCenterProjectResult,
+  right: CommandCenterProjectResult,
+): number {
+  return left.title.localeCompare(right.title, undefined, { numeric: true, sensitivity: "base" });
+}
+
+function projectSearchFields(result: CommandCenterProjectResult): CommandCenterSearchFields {
+  return { visible: [result.title, result.subtitle], hidden: [] };
+}
+
 /** `cwd` is not rendered, so a path match must never outrank a match on text the user can see. */
 function agentSearchFields(result: CommandCenterAgentResult): CommandCenterSearchFields {
   return { visible: [result.title, result.subtitle], hidden: [result.agent.cwd] };
@@ -130,6 +146,7 @@ function agentSearchFields(result: CommandCenterAgentResult): CommandCenterSearc
  * now refresh when agents or projects change rather than on every keystroke.
  */
 function useBuiltInRows(open: boolean): {
+  projects: CommandCenterProjectResult[];
   workspaces: CommandCenterWorkspaceResult[];
   agents: CommandCenterAgentResult[];
 } {
@@ -137,9 +154,26 @@ function useBuiltInRows(open: boolean): {
   const { agents } = useAggregatedAgents({ demand: open });
   const { projects } = useProjects({ enabled: open });
   const showHost = useHosts().length > 1;
+  const isCompact = useIsCompactFormFactor();
 
   return useMemo(() => {
-    if (!open) return { workspaces: [], agents: [] };
+    if (!open) return { projects: [], workspaces: [], agents: [] };
+    const projectRows = projects
+      .map<CommandCenterProjectResult>((project) => ({
+        kind: "project",
+        id: `project:${project.viewKey}`,
+        title: project.projectCustomName || project.projectName,
+        subtitle: joinSubtitleParts([
+          showHost ? project.hosts.map((host) => host.serverName).join(", ") : null,
+          t(
+            `shell.commandCenter.projectWorkspaces.${project.totalWorkspaceCount === 1 ? "one" : "other"}`,
+            { count: project.totalWorkspaceCount },
+          ),
+        ]),
+        // Focus goes back to where it was: revealing a project does not navigate anywhere.
+        run: () => revealProjectInSidebar({ projectViewKey: project.viewKey, isCompact }),
+      }))
+      .sort(compareProjectsByTitle);
     const allWorkspaces: CommandCenterWorkspaceResult[] = [];
     for (const project of projects) {
       for (const host of project.hosts) {
@@ -189,8 +223,8 @@ function useBuiltInRows(open: boolean): {
         };
       })
       .sort((left, right) => sortAgents(left.agent, right.agent));
-    return { workspaces: allWorkspaces, agents: agentRows };
-  }, [agents, open, projects, showHost, t]);
+    return { projects: projectRows, workspaces: allWorkspaces, agents: agentRows };
+  }, [agents, isCompact, open, projects, showHost, t]);
 }
 
 function useBuiltInSections(open: boolean, query: string): CommandCenterResultSection[] {
@@ -200,6 +234,18 @@ function useBuiltInSections(open: boolean, query: string): CommandCenterResultSe
   return useMemo(() => {
     if (!open) return [];
     return [
+      {
+        id: "projects",
+        band: PINNED_SECTION_BAND,
+        rank: 1,
+        title: t("shell.commandCenter.projects"),
+        results: filterAndRankBuiltInResults(
+          rows.projects,
+          query,
+          projectSearchFields,
+          compareProjectsByTitle,
+        ),
+      },
       {
         id: "workspaces",
         band: PINNED_SECTION_BAND,
@@ -407,6 +453,7 @@ const ResultRow = memo(function ResultRow({ result, active, onSelect }: ResultRo
       styles.row,
       (result.kind === "agent" ||
         result.kind === "workspace" ||
+        result.kind === "project" ||
         (result.kind === "contribution" &&
           result.contribution.presentation.kind === "action" &&
           Boolean(result.contribution.presentation.subtitle))) &&
@@ -473,6 +520,25 @@ function ResultContent({ result }: { result: CommandCenterResult }) {
               {result.title}
             </Text>
             <Text style={styles.subtitle} numberOfLines={1} testID="command-center-agent-subtitle">
+              {result.subtitle}
+            </Text>
+          </View>
+        </View>
+      </View>
+    );
+  }
+  if (result.kind === "project") {
+    return (
+      <View style={styles.rowContent} testID={`command-center-${result.id}`}>
+        <View style={styles.rowMain}>
+          <View style={styles.iconSlot}>
+            <ThemedFolderTree size={16} strokeWidth={2.2} />
+          </View>
+          <View style={styles.textContent}>
+            <Text style={styles.title} numberOfLines={1}>
+              {result.title}
+            </Text>
+            <Text style={styles.subtitle} numberOfLines={1}>
               {result.subtitle}
             </Text>
           </View>

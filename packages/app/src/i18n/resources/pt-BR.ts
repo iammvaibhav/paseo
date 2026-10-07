@@ -85,6 +85,8 @@ export const ptBR: TranslationResources = {
       close: "Fechar menu",
     },
     commandCenter: {
+      projects: "Projetos",
+      projectWorkspaces: en.shell.commandCenter.projectWorkspaces,
       placeholder: "Buscar comandos, arquivos, espaços de trabalho e agentes...",
       filePlaceholder: "Pesquisar arquivos...",
       searchingFiles: "Pesquisando arquivos...",
