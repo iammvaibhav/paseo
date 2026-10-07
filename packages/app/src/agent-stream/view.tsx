@@ -1989,7 +1989,7 @@ function PermissionRequestCard({
 const stylesheet = StyleSheet.create((theme) => ({
   container: {
     flex: 1,
-    backgroundColor: theme.colors.surface0,
+    backgroundColor: theme.colors.surfacePane,
   },
   contentWrapper: {
     width: "100%",

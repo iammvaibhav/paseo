@@ -288,6 +288,9 @@ export function buildLightSemanticColors(tint: LightThemeConfig) {
     // window's vibrancy shows behind the sidebar, and paints the content pane instead.
     surfaceApp: tint.surface0,
     surfaceContent: "transparent",
+    // Screens and workspace panes inside the content pane. A glass theme clears them so the
+    // content pane's tint shows through.
+    surfacePane: tint.surface0,
     surfaceUserMessage: tint.surfaceUserMessage ?? tint.surface3,
     interactionHighlight: "rgba(0, 0, 0, 0.06)",
 
@@ -426,6 +429,7 @@ export function buildDarkSemanticColors(tint: DarkThemeConfig) {
     surfaceWorkspace: tint.surface1,
     surfaceApp: tint.surface0,
     surfaceContent: "transparent",
+    surfacePane: tint.surface0,
     surfaceUserMessage: tint.surfaceUserMessage ?? tint.surface3,
     interactionHighlight: "rgba(255, 255, 255, 0.08)",
 
@@ -783,15 +787,19 @@ export const darkMonoTheme = buildDarkTheme(monoDarkColors);
 
 // Mono on a macOS window with sidebar vibrancy. Only the desktop app on macOS selects it
 // (see appearance/provider.tsx): anywhere else the cleared root would show the page body.
-// Only the sidebar's own surface is translucent. Hover and selected row fills stay opaque:
-// trailing-action scrims and badge knockouts paint the row's fill over the row to hide what is
-// under them, and a translucent fill painted twice shows as a lighter band instead.
+// The sidebar and the content pane paint translucent tints over the vibrancy; the screens and
+// workspace surfaces inside the pane are cleared so the pane tint shows through.
+// Hover and selected row fills stay opaque: trailing-action scrims and badge knockouts paint the
+// row's fill over the row to hide what is under them, and a translucent fill painted twice shows
+// as a lighter band instead.
 export const GLASS_THEME_NAME = "darkMonoGlass";
 export const darkMonoGlassTheme = buildDarkTheme({
   ...monoDarkColors,
   surfaceApp: "transparent",
-  surfaceContent: monoDarkColors.surface0,
-  surfaceSidebar: "rgba(20, 20, 20, 0.62)",
+  surfaceWorkspace: "transparent",
+  surfacePane: "transparent",
+  surfaceContent: "rgba(23, 23, 23, 0.72)",
+  surfaceSidebar: "rgba(20, 20, 20, 0.42)",
   surfaceSidebarHover: "#262626",
   surfaceSidebarSelected: "#2e2e2e",
 });

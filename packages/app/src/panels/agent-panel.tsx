@@ -1881,11 +1881,11 @@ const animatedStaticStyles = RNStyleSheet.create({
 const styles = StyleSheet.create((theme) => ({
   root: {
     flex: 1,
-    backgroundColor: theme.colors.surface0,
+    backgroundColor: theme.colors.surfacePane,
   },
   container: {
     flex: 1,
-    backgroundColor: theme.colors.surface0,
+    backgroundColor: theme.colors.surfacePane,
   },
   contentContainer: {
     flex: 1,

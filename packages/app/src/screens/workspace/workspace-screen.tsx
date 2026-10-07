@@ -4842,7 +4842,7 @@ const styles = StyleSheet.create((theme) => ({
   content: {
     flex: 1,
     minHeight: 0,
-    backgroundColor: theme.colors.surface0,
+    backgroundColor: theme.colors.surfacePane,
     position: "relative",
   },
   mobileMountedTabSlot: {

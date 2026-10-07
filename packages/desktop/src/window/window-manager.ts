@@ -52,13 +52,21 @@ export function getMainWindowChromeOptions(input: {
   mode: DesktopWindowChromeMode;
 }): Pick<
   Electron.BrowserWindowConstructorOptions,
-  "titleBarStyle" | "trafficLightPosition" | "frame" | "titleBarOverlay" | "autoHideMenuBar"
+  | "titleBarStyle"
+  | "trafficLightPosition"
+  | "frame"
+  | "titleBarOverlay"
+  | "autoHideMenuBar"
+  | "visualEffectState"
 > {
   if (input.mode === "native-mac") {
     return {
       titleBarStyle: "hidden",
       titleBarOverlay: true,
       trafficLightPosition: MAC_TRAFFIC_LIGHT_POSITION,
+      // Keep the glass theme's vibrancy translucent when the window is not focused. By default
+      // macOS swaps it for a flat grey material on inactive windows.
+      visualEffectState: "active",
     };
   }
 

@@ -69,7 +69,7 @@ export function ScreenHeader({
 
 const styles = StyleSheet.create((theme) => ({
   header: {
-    backgroundColor: theme.colors.surface0,
+    backgroundColor: theme.colors.surfacePane,
   },
   inner: {},
   row: {
