@@ -783,15 +783,17 @@ export const darkMonoTheme = buildDarkTheme(monoDarkColors);
 
 // Mono on a macOS window with sidebar vibrancy. Only the desktop app on macOS selects it
 // (see appearance/provider.tsx): anywhere else the cleared root would show the page body.
-// Sidebar fills are translucent ink so hover and selection stay legible over any wallpaper.
+// Only the sidebar's own surface is translucent. Hover and selected row fills stay opaque:
+// trailing-action scrims and badge knockouts paint the row's fill over the row to hide what is
+// under them, and a translucent fill painted twice shows as a lighter band instead.
 export const GLASS_THEME_NAME = "darkMonoGlass";
 export const darkMonoGlassTheme = buildDarkTheme({
   ...monoDarkColors,
   surfaceApp: "transparent",
   surfaceContent: monoDarkColors.surface0,
   surfaceSidebar: "rgba(20, 20, 20, 0.62)",
-  surfaceSidebarHover: "rgba(255, 255, 255, 0.06)",
-  surfaceSidebarSelected: "rgba(255, 255, 255, 0.10)",
+  surfaceSidebarHover: "#262626",
+  surfaceSidebarSelected: "#2e2e2e",
 });
 
 // Pure black — zero-luminance background with high-contrast surfaces.
