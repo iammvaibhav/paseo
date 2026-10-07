@@ -10,6 +10,7 @@ import {
   createElement,
 } from "react";
 import { createPortal } from "react-dom";
+import { buildBrowserEditorGlassScript } from "./browser-editor-glass.electron";
 import { Pressable, Text, View, type StyleProp, type ViewStyle } from "react-native";
 import {
   EditingTextInput as TextInput,
@@ -316,6 +317,14 @@ function buildBrowserAttachmentScopeKey(input: {
     workspaceId: input.workspaceId,
     cwd: input.cwd,
   });
+}
+
+function applyBrowserEditorGlass(webview: ElectronWebview, glass: boolean): void {
+  executeWebviewJavaScript(webview, buildBrowserEditorGlassScript(glass)).catch(
+    (error: unknown) => {
+      console.warn("[browser-pane] failed to apply VS Code glass", error);
+    },
+  );
 }
 
 function executeWebviewJavaScript(webview: ElectronWebview, code: string): Promise<unknown> {
@@ -789,6 +798,9 @@ export function BrowserPane({
   const chromeMode = browser?.chrome ?? "full";
   const showChrome = chromeMode === "full";
   const usePersistentWebview = chromeMode === "embedded";
+  // VS Code Web joins the glass theme; other pages keep their own backgrounds.
+  const browserEditorGlass = usePersistentWebview && theme.glass !== null;
+  const browserEditorGlassRef = useRef(browserEditorGlass);
   const updateBrowser = useBrowserStore((state) => state.updateBrowser);
   const navigationRequest = useBrowserStore(
     (state) => state.navigationRequestByBrowserId[browserId] ?? null,
@@ -809,6 +821,11 @@ export function BrowserPane({
   const webviewHostRef = useRef<HTMLDivElement | null>(null);
   const webviewClipRef = useRef<HTMLElement | null>(null);
   const domReadyRef = useRef(false);
+  useEffect(() => {
+    browserEditorGlassRef.current = browserEditorGlass;
+    const webview = webviewRef.current;
+    if (webview && domReadyRef.current) applyBrowserEditorGlass(webview, browserEditorGlass);
+  }, [browserEditorGlass]);
   const urlInputRef = useRef<EditingTextInputHandle | null>(null);
   const initialUrlRef = useRef(browser?.url ?? "https://example.com");
   const browserIdRef = useRef(browserId);
@@ -1086,6 +1103,7 @@ export function BrowserPane({
       if (persistentWebview) {
         restoreBrowserEditorSession(webview, browserRef.current?.url);
       }
+      applyBrowserEditorGlass(webview, browserEditorGlassRef.current);
     };
     const handleWebviewFocus = () => {
       onFocusPane?.();
