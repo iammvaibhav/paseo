@@ -27,6 +27,7 @@ SCRIPTS_DIR="${CODE_SERVER_SCRIPTS_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" &&
 BIN="${HOME}/.local/bin/code-server"
 CONFIG_DIR="${HOME}/.config/code-server"
 USER_DIR="${HOME}/.local/share/code-server/User"
+VSCODE_ROOT_DIR="${HOME}/.paseo/vscode/root"
 
 log() {
   printf '[code-server] %s\n' "$*"
@@ -119,6 +120,29 @@ deploy_files() {
     log "Wrote ${USER_DIR}/settings.json from ${settings_src}"
   fi
   log "Wrote ${CONFIG_DIR}/config.yaml"
+}
+
+# Fixed first folder of the multi-root VS Code window (docs/code-server.md,
+# "Instant project switching"): shortcuts to config files edited often. Keep
+# targets small: VS Code watches, searches, and follows symlinks into this
+# folder. Every top-level symlink here is owned by this list, so removing an
+# entry below removes it from each host on the next deploy.
+deploy_vscode_root() {
+  mkdir -p "$VSCODE_ROOT_DIR"
+  find "$VSCODE_ROOT_DIR" -mindepth 1 -maxdepth 1 -type l -delete
+  local name target
+  while IFS='|' read -r name target; do
+    if [[ -e "$target" ]]; then
+      ln -s "$target" "${VSCODE_ROOT_DIR}/${name}"
+    else
+      log "VS Code root: skipping ${name} (${target} missing on this host)"
+    fi
+  done <<EOF
+omp-config.yml|${HOME}/.omp/agent/config.yml
+omp-agents|${HOME}/.omp/agent/agents
+account-routing.yml|${HOME}/.omp/agent/account-routing.yml
+EOF
+  log "VS Code root at ${VSCODE_ROOT_DIR}: $(ls "$VSCODE_ROOT_DIR" | tr '\n' ' ')"
 }
 
 deploy_extension() {
@@ -377,6 +401,7 @@ main() {
   require_host_kind
   ensure_binary
   deploy_files
+  deploy_vscode_root
   deploy_extension
   deploy_language_extensions
   case "$(uname -s)" in
