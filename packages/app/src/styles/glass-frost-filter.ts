@@ -8,7 +8,7 @@
  */
 export const GLASS_FROST_FILTER_ID = "paseo-glass-frost";
 
-const FILTER_MARKUP = `
+export const GLASS_FROST_FILTER_MARKUP = `
 <svg xmlns="http://www.w3.org/2000/svg" width="0" height="0" aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden">
   <filter id="${GLASS_FROST_FILTER_ID}" x="-50%" y="-50%" width="200%" height="200%" color-interpolation-filters="sRGB">
     <feComponentTransfer in="SourceGraphic" result="opaque">
@@ -20,7 +20,7 @@ const FILTER_MARKUP = `
     <feGaussianBlur in="alphaWide" stdDeviation="14" edgeMode="duplicate" result="alphaSoft"/>
     <feComposite in="blurred" in2="alphaSoft" operator="in" result="clipped"/>
     <feComponentTransfer in="clipped">
-      <feFuncA type="linear" slope="1.8"/>
+      <feFuncA type="linear" slope="1.4"/>
     </feComponentTransfer>
   </filter>
 </svg>`;
@@ -29,7 +29,7 @@ const FILTER_MARKUP = `
 export function installGlassFrostFilter(): void {
   if (typeof document === "undefined" || document.getElementById(GLASS_FROST_FILTER_ID)) return;
   const host = document.createElement("div");
-  host.innerHTML = FILTER_MARKUP;
+  host.innerHTML = GLASS_FROST_FILTER_MARKUP;
   const svg = host.firstElementChild;
   if (svg) document.body.appendChild(svg);
 }

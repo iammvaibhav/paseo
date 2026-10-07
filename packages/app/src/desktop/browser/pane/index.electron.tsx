@@ -985,6 +985,9 @@ export function BrowserPane({
     webviewRef.current = webview;
     domReadyRef.current =
       isBrowserWebviewDomReady(webview) || isResidentBrowserWebviewReady(webview);
+    // A persistent webview may have finished loading before this pane mounted, so `dom-ready`
+    // will not fire again for it.
+    if (domReadyRef.current) applyBrowserEditorGlass(webview, browserEditorGlassRef.current);
     if (!persistentWebview && !residentWebview) {
       prepareBrowserWebview(webview, {
         browserId,
