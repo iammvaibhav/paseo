@@ -422,6 +422,15 @@ export const en = {
       viewSource: "View source",
       viewDiagram: "View diagram",
     },
+    page: {
+      building: "Building page…",
+      fullSize: "Full size",
+      close: "Close",
+      openInBrowser: "Open in browser",
+      needsDirect: "Showing a localhost page needs a direct connection to this host.",
+      updateHost: "Update this host to show its localhost pages.",
+      failed: "The page could not be shown.",
+    },
     actions: {
       copyCode: "Copy code",
       copyTurn: "Copy turn",
@@ -3102,6 +3111,26 @@ export const en = {
         fontSize: "Tile font size",
         fontSizeHint:
           "Used for chat text in Mission Control Agent Grid tiles, separate from the full agent pane",
+      },
+      glass: {
+        title: "Glass",
+        hint: "How much the window shows through. 0% is clear, 100% is solid. Only the Mono theme in the macOS app uses glass.",
+        window: "Window tint",
+        windowHint: "Tint over the whole window. The sidebars show only this.",
+        chat: "Chat area tint",
+        chatHint:
+          "Added over the window tint in the chat and VS Code area, so it is always denser than the sidebar.",
+        floating: "Menus and popovers",
+        floatingHint:
+          "Tint of menus, popovers, tooltips and hover cards. Content under them is frosted.",
+        overlay: "Floating bars",
+        overlayHint: "Tint of the composer pills and the scroll-to-bottom button. Not frosted.",
+        panels: "Panel brightness",
+        panelsHint:
+          "Strength of the light fill on code blocks, tables, the composer and your messages (100% is the default).",
+        accessibility: "{{name}} in percent",
+        reset: "Reset",
+        resetAccessibility: "Reset {{name}} to default",
       },
       layout: {
         title: "Layout",

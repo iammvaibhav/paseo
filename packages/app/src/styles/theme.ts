@@ -832,42 +832,86 @@ export const darkMonoTheme = buildDarkTheme(monoDarkColors);
 // chat reads denser than the sidebar. Every region fill inside is cleared and the raised fills
 // are white washes, so nothing stacks into an opaque block. See `GlassTreatment`.
 export const GLASS_THEME_NAME = "darkMonoGlass";
+/**
+ * The user-tunable strengths of the glass theme, in percent (Settings → Appearance → Glass).
+ * The chat area sits over the window, so its tint adds to `window`: it always reads denser
+ * than the sidebar.
+ */
+export interface GlassTuning {
+  /** Tint over the window vibrancy; the sidebar shows only this. */
+  window: number;
+  /** Extra tint over the chat and editor area. */
+  chat: number;
+  /** Menus, popovers, tooltips, hover cards (frosted). */
+  floating: number;
+  /** Composer pills and other overlays that stay over the transcript (not frosted). */
+  overlay: number;
+  /** Strength of the light washes on code blocks, tables, composer, and user messages. */
+  panels: number;
+}
+
+export const DEFAULT_GLASS_TUNING: GlassTuning = {
+  window: 45,
+  chat: 70,
+  floating: 42,
+  overlay: 95,
+  panels: 100,
+};
+
+function glassAlpha(percent: number, scale = 1): number {
+  return Math.round(Math.min(Math.max(percent / 100, 0), 1) * scale * 1000) / 1000;
+}
+
+/** The colors a glass tuning changes. Applied over the registered glass theme at runtime. */
+export function resolveGlassColors(tuning: GlassTuning) {
+  const wash = (alpha: number) => `rgba(255, 255, 255, ${glassAlpha(tuning.panels, alpha)})`;
+  const floating = `rgba(58, 58, 58, ${glassAlpha(tuning.floating)})`;
+  return {
+    colors: {
+      surfaceApp: `rgba(20, 20, 20, ${glassAlpha(tuning.window)})`,
+      surfaceContent: `rgba(23, 23, 23, ${glassAlpha(tuning.chat)})`,
+      surface1: wash(0.045),
+      surface2: wash(0.08),
+      surface3: wash(0.12),
+      surface4: wash(0.16),
+      surfaceDiffEmpty: wash(0.025),
+      surfaceUserMessage: wash(0.09),
+      popover: floating,
+    },
+    glass: {
+      floating,
+      floatingBackdropFilter: `url(#${GLASS_FROST_FILTER_ID})`,
+      floatingBorder: "rgba(255, 255, 255, 0.12)",
+      overlay: `rgba(46, 46, 46, ${glassAlpha(tuning.overlay)})`,
+      overlayRaised: `rgba(60, 60, 60, ${glassAlpha(tuning.overlay, 1.01)})`,
+      cover: "rgba(28, 28, 28, 0.94)",
+      scrim: {
+        surface0: "#1b1b1b",
+        surface1: "#222222",
+        surface2: "#282828",
+        surfaceSidebar: "#1c1c1c",
+        surfaceSidebarHover: "#262626",
+        surfaceSidebarSelected: "#2e2e2e",
+      },
+    } satisfies GlassTreatment,
+  };
+}
+
+const defaultGlassColors = resolveGlassColors(DEFAULT_GLASS_TUNING);
+
 export const darkMonoGlassTheme = {
   ...buildDarkTheme({
     ...monoDarkColors,
-    surfaceApp: "rgba(20, 20, 20, 0.45)",
-    surfaceContent: "rgba(23, 23, 23, 0.7)",
+    ...defaultGlassColors.colors,
     surface0: "transparent",
-    surface1: "rgba(255, 255, 255, 0.045)",
-    surface2: "rgba(255, 255, 255, 0.08)",
-    surface3: "rgba(255, 255, 255, 0.12)",
-    surface4: "rgba(255, 255, 255, 0.16)",
-    surfaceDiffEmpty: "rgba(255, 255, 255, 0.025)",
     surfaceSidebar: "transparent",
     // Opaque: sidebar rows carry trailing actions whose scrim must match the row exactly.
     surfaceSidebarHover: "#262626",
     surfaceSidebarSelected: "#2e2e2e",
     surfaceWorkspace: "transparent",
     surfacePane: "transparent",
-    surfaceUserMessage: "rgba(255, 255, 255, 0.09)",
-    popover: "rgba(58, 58, 58, 0.42)",
   }),
-  glass: {
-    floating: "rgba(58, 58, 58, 0.42)",
-    floatingBackdropFilter: `url(#${GLASS_FROST_FILTER_ID})`,
-    floatingBorder: "rgba(255, 255, 255, 0.12)",
-    overlay: "rgba(46, 46, 46, 0.95)",
-    overlayRaised: "rgba(60, 60, 60, 0.96)",
-    cover: "rgba(28, 28, 28, 0.94)",
-    scrim: {
-      surface0: "#1b1b1b",
-      surface1: "#222222",
-      surface2: "#282828",
-      surfaceSidebar: "#1c1c1c",
-      surfaceSidebarHover: "#262626",
-      surfaceSidebarSelected: "#2e2e2e",
-    },
-  } satisfies GlassTreatment,
+  glass: defaultGlassColors.glass,
 };
 
 interface GlassFloatingStyle {

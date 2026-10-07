@@ -76,7 +76,7 @@ export function splitMarkdownBlocks(text: string): string[] {
 }
 
 function getStructuralBlankLines(text: string, lines: string[]): Set<number> {
-  const blankLines = new Set<number>();
+  const blankLines = getDetailsBlankLines(lines);
   for (const token of markdownBlockParser.parse(text, {})) {
     if (token.level !== 0 || !token.map) {
       continue;
@@ -86,6 +86,42 @@ function getStructuralBlankLines(text: string, lines: string[]): Set<number> {
       if (lines[index]?.trim().length === 0) {
         blankLines.add(index);
       }
+    }
+  }
+  return blankLines;
+}
+
+const FENCE_OPEN_RE = /^ {0,3}(`{3,}|~{3,})/;
+const INLINE_CODE_RE = /(`+)[^`]*?\1/g;
+const DETAILS_OPEN_RE = /<details(?:\s[^>]*)?>/gi;
+const DETAILS_CLOSE_RE = /<\/details\s*>/gi;
+
+/**
+ * markdown-it ends an HTML block at the first blank line, so a `<details>` element whose
+ * body has paragraphs would split into blocks that each render alone: the summary, the
+ * body, and a stray `</details>`. Blank lines inside an open element stay in its block.
+ * An element still open at the end (a streaming reply) keeps the rest in one block.
+ */
+function getDetailsBlankLines(lines: string[]): Set<number> {
+  const blankLines = new Set<number>();
+  let depth = 0;
+  let fence: string | null = null;
+  for (const [index, line] of lines.entries()) {
+    const fenceMarker = FENCE_OPEN_RE.exec(line)?.[1] ?? null;
+    if (fence !== null) {
+      if (fenceMarker && fenceMarker[0] === fence[0] && fenceMarker.length >= fence.length) {
+        fence = null;
+      }
+    } else if (fenceMarker) {
+      fence = fenceMarker;
+    } else {
+      const code = line.replace(INLINE_CODE_RE, "");
+      depth +=
+        (code.match(DETAILS_OPEN_RE)?.length ?? 0) - (code.match(DETAILS_CLOSE_RE)?.length ?? 0);
+      depth = Math.max(depth, 0);
+    }
+    if (depth > 0 && line.trim().length === 0) {
+      blankLines.add(index);
     }
   }
   return blankLines;

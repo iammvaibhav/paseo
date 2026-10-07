@@ -10,7 +10,10 @@ import {
   createElement,
 } from "react";
 import { createPortal } from "react-dom";
-import { buildBrowserEditorGlassScript } from "./browser-editor-glass.electron";
+import {
+  buildBrowserEditorGlassScript,
+  type BrowserEditorGlassPalette,
+} from "./browser-editor-glass.electron";
 import { Pressable, Text, View, type StyleProp, type ViewStyle } from "react-native";
 import {
   EditingTextInput as TextInput,
@@ -321,8 +324,11 @@ function buildBrowserAttachmentScopeKey(input: {
   });
 }
 
-function applyBrowserEditorGlass(webview: ElectronWebview, glass: boolean): void {
-  executeWebviewJavaScript(webview, buildBrowserEditorGlassScript(glass)).catch(
+function applyBrowserEditorGlass(
+  webview: ElectronWebview,
+  palette: BrowserEditorGlassPalette | null,
+): void {
+  executeWebviewJavaScript(webview, buildBrowserEditorGlassScript(palette)).catch(
     (error: unknown) => {
       console.warn("[browser-pane] failed to apply VS Code glass", error);
     },
@@ -787,7 +793,19 @@ export function BrowserPane({
   const showChrome = chromeMode === "full";
   const usePersistentWebview = chromeMode === "embedded";
   // VS Code Web joins the glass theme; other pages keep their own backgrounds.
-  const browserEditorGlass = usePersistentWebview && theme.glass !== null;
+  const browserEditorGlass = useMemo<BrowserEditorGlassPalette | null>(
+    () =>
+      usePersistentWebview && theme.glass
+        ? {
+            overlay: theme.glass.overlay,
+            cover: theme.glass.cover,
+            activeTab: theme.colors.surface2,
+            inactiveActiveTab: theme.colors.surface1,
+            input: theme.colors.surface2,
+          }
+        : null,
+    [usePersistentWebview, theme.glass, theme.colors.surface1, theme.colors.surface2],
+  );
   const browserEditorGlassRef = useRef(browserEditorGlass);
   const updateBrowser = useBrowserStore((state) => state.updateBrowser);
   const navigationRequest = useBrowserStore(

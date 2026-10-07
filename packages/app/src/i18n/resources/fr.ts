@@ -431,6 +431,15 @@ export const fr: TranslationResources = {
       viewSource: "Afficher la source",
       viewDiagram: "Afficher le diagramme",
     },
+    page: {
+      building: "Création de la page…",
+      fullSize: "Taille réelle",
+      close: "Fermer",
+      openInBrowser: "Ouvrir dans le navigateur",
+      needsDirect: "Afficher une page localhost nécessite une connexion directe à cet hôte.",
+      updateHost: "Mettez à jour cet hôte pour afficher ses pages localhost.",
+      failed: "Impossible d’afficher la page.",
+    },
     actions: {
       copyCode: "Copier le code",
       copyTurn: "Copier le tour",
@@ -2556,6 +2565,7 @@ export const fr: TranslationResources = {
         codeSizeHint: "Utilisée pour le code, les diffs et la sortie du terminal",
         codeSizeAccessibility: "Taille de la police du code",
       },
+      glass: en.settings.appearance.glass,
       layout: {
         title: "Mise en page",
         contentWidth: "Largeur du contenu",

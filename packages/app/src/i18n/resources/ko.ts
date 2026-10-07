@@ -426,6 +426,15 @@ export const ko: TranslationResources = {
       viewSource: "소스 보기",
       viewDiagram: "다이어그램 보기",
     },
+    page: {
+      building: "페이지 생성 중…",
+      fullSize: "전체 크기",
+      close: "닫기",
+      openInBrowser: "브라우저에서 열기",
+      needsDirect: "localhost 페이지를 표시하려면 이 호스트에 직접 연결해야 합니다.",
+      updateHost: "localhost 페이지를 표시하려면 이 호스트를 업데이트하세요.",
+      failed: "페이지를 표시할 수 없습니다.",
+    },
     actions: {
       copyCode: "코드 복사",
       copyTurn: "턴 복사",
@@ -2499,6 +2508,7 @@ export const ko: TranslationResources = {
         codeSizeHint: "코드, diff 및 터미널 출력에 사용됩니다",
         codeSizeAccessibility: "코드 글꼴 크기",
       },
+      glass: en.settings.appearance.glass,
       layout: {
         title: "레이아웃",
         contentWidth: "콘텐츠 너비",

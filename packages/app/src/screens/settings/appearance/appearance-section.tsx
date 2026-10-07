@@ -49,15 +49,17 @@ import {
   DEFAULT_THEME_PREFERENCE,
 } from "@/hooks/use-settings";
 import {
+  DEFAULT_GLASS_TUNING,
   DEFAULT_MONO_FONT_STACK,
   DEFAULT_UI_FONT_STACK,
   ICON_SIZE,
   PLUGIN_THEME_PREFERENCE,
   THEME_OPTIONS,
   THEME_SWATCHES,
+  type GlassTuning,
   type Theme,
 } from "@/styles/theme";
-import { isNative } from "@/constants/platform";
+import { getIsElectronMac, isNative } from "@/constants/platform";
 import type { PluginThemeOption } from "@/plugins/themes";
 import { settingsStyles } from "@/styles/settings";
 import { AppearancePreview } from "./appearance-preview";
@@ -452,6 +454,77 @@ function ContentWidthRow({ value, onChange }: ContentWidthRowProps) {
 }
 
 // ---------------------------------------------------------------------------
+// Glass strengths: percent fields (commit on blur/submit) + reset to the default
+// ---------------------------------------------------------------------------
+
+type GlassKnob = keyof GlassTuning;
+
+const GLASS_KNOBS: readonly GlassKnob[] = ["window", "chat", "floating", "overlay", "panels"];
+
+interface GlassPercentRowProps {
+  knob: GlassKnob;
+  value: number;
+  withBorder: boolean;
+  onChange: (knob: GlassKnob, value: number) => void;
+}
+
+function GlassPercentRow({ knob, value, withBorder, onChange }: GlassPercentRowProps) {
+  const { t } = useTranslation();
+  const name = t(`settings.appearance.glass.${knob}`);
+  const max = knob === "panels" ? 300 : 100;
+  const defaultValue = DEFAULT_GLASS_TUNING[knob];
+  // The field is uncontrolled, so a saved or reset value is written into it directly.
+  const input = useRef<EditingTextInputHandle>(null);
+
+  useEffect(() => {
+    input.current?.replaceText(String(value));
+  }, [value]);
+
+  const commit = useCallback(() => {
+    const parsed = parseClampedFontSize(input.current?.getText(), { min: 0, max });
+    const next = parsed ?? value;
+    input.current?.replaceText(String(next));
+    if (next !== value) onChange(knob, next);
+  }, [knob, max, onChange, value]);
+
+  const reset = useCallback(() => onChange(knob, defaultValue), [defaultValue, knob, onChange]);
+
+  return (
+    <View style={withBorder ? styles.rowWithBorder : settingsStyles.row}>
+      <View style={settingsStyles.rowContent}>
+        <Text style={settingsStyles.rowTitle}>{name}</Text>
+        <Text style={settingsStyles.rowHint}>{t(`settings.appearance.glass.${knob}Hint`)}</Text>
+      </View>
+      <View style={styles.sizeField}>
+        {value === defaultValue ? null : (
+          <Button
+            variant="ghost"
+            size="sm"
+            onPress={reset}
+            accessibilityLabel={t("settings.appearance.glass.resetAccessibility", { name })}
+          >
+            {t("settings.appearance.glass.reset")}
+          </Button>
+        )}
+        <TextInput
+          ref={input}
+          initialValue={String(value)}
+          onBlur={commit}
+          onSubmitEditing={commit}
+          keyboardType="number-pad"
+          inputMode="numeric"
+          selectTextOnFocus
+          style={styles.widthInput}
+          accessibilityLabel={t("settings.appearance.glass.accessibility", { name })}
+          testID={`settings-appearance-glass-${knob}`}
+        />
+        <Text style={styles.unit}>%</Text>
+      </View>
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Syntax highlight theme picker (commits immediately)
 // ---------------------------------------------------------------------------
 
@@ -550,6 +623,14 @@ export function AppearanceSection() {
     select: selectPluginTheme,
   } = useContributedThemes();
   const showInterfaceFontFamilyRow = !isNative;
+  // Glass only exists where the window provides vibrancy: Mono in the macOS desktop app.
+  const showGlassSection = settings.theme === "mono" && getIsElectronMac();
+  const handleGlassTuningChange = useCallback(
+    (knob: keyof GlassTuning, value: number) => {
+      void updateSettings({ glassTuning: { ...settings.glassTuning, [knob]: value } });
+    },
+    [settings.glassTuning, updateSettings],
+  );
   const uiFontPlaceholder = resolveDefaultStackPlaceholder(t, DEFAULT_UI_FONT_STACK);
   const monoFontPlaceholder = resolveDefaultStackPlaceholder(t, DEFAULT_MONO_FONT_STACK);
 
@@ -846,6 +927,25 @@ export function AppearanceSection() {
         </View>
       </SettingsSection>
 
+      {showGlassSection ? (
+        <SettingsSection title={t("settings.appearance.glass.title")}>
+          <Text style={[settingsStyles.rowHint, styles.sectionHint]}>
+            {t("settings.appearance.glass.hint")}
+          </Text>
+          <View style={settingsStyles.card}>
+            {GLASS_KNOBS.map((knob, index) => (
+              <GlassPercentRow
+                key={knob}
+                knob={knob}
+                value={settings.glassTuning[knob]}
+                withBorder={index > 0}
+                onChange={handleGlassTuningChange}
+              />
+            ))}
+          </View>
+        </SettingsSection>
+      ) : null}
+
       <SettingsSection title={t("settings.appearance.layout.title")}>
         <View style={settingsStyles.card}>
           <ContentWidthRow
@@ -867,6 +967,9 @@ export function AppearanceSection() {
 }
 
 const styles = StyleSheet.create((theme) => ({
+  sectionHint: {
+    marginBottom: theme.spacing[2],
+  },
   preview: {
     marginTop: theme.spacing[4],
   },

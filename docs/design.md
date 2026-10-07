@@ -306,4 +306,6 @@ The frost is `backdrop-filter: url(#paseo-glass-frost)`, an SVG filter (`package
 
 The window is `NSVisualEffectView` vibrancy, not macOS 26 Liquid Glass, which Electron does not expose to web content. The investigation is in electron/electron#39529 and Chromium's `ca_layer_overlay.cc` (`kCALayerFailedRenderPassBackdropFilters`).
 
+The strengths are user settings (Settings → Appearance → Glass, `glassTuning`): window tint, chat area tint, menus and popovers, floating bars, and panel brightness. `resolveGlassColors` turns them into the colors above; `applyAppearance` patches them into the registered glass theme, and VS Code Web takes its fills from the same theme.
+
 Mermaid's color parser hangs on `rgba()`, so the diagram takes its glass colors as 8-digit hex (`packages/app/src/components/mermaid-diagram.web.tsx`).

@@ -429,6 +429,15 @@ export const ru: TranslationResources = {
       viewSource: "Показать исходный код",
       viewDiagram: "Показать диаграмму",
     },
+    page: {
+      building: "Создание страницы…",
+      fullSize: "Полный размер",
+      close: "Закрыть",
+      openInBrowser: "Открыть в браузере",
+      needsDirect: "Для страницы localhost нужно прямое подключение к этому хосту.",
+      updateHost: "Обновите этот хост, чтобы показывать его страницы localhost.",
+      failed: "Не удалось показать страницу.",
+    },
     actions: {
       copyCode: "Скопировать код",
       copyTurn: "Скопировать ответ",
@@ -2538,6 +2547,7 @@ export const ru: TranslationResources = {
         codeSizeHint: "Используется для кода, диффов и вывода терминала",
         codeSizeAccessibility: "Размер шрифта кода",
       },
+      glass: en.settings.appearance.glass,
       layout: {
         title: "Макет",
         contentWidth: "Ширина содержимого",

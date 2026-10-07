@@ -65,6 +65,7 @@ import {
   createMathRenderRules,
   type MarkdownStyles,
 } from "@/components/markdown/renderer";
+import { containsDetailsElement } from "@/components/markdown/html-ish";
 import type { TaskActivity, TodoEntry, UserMessageImage } from "@/types/stream";
 import { persistAttachmentFromBytes } from "@/attachments/service";
 import { createPreviewAttachmentId } from "@/attachments/utils";
@@ -1435,7 +1436,7 @@ const MemoizedMarkdownBlock = React.memo(function MemoizedMarkdownBlock({
   return (
     <MarkdownRenderer
       text={text}
-      enableHtmlish={false}
+      enableHtmlish={containsDetailsElement(text)}
       rules={rules}
       markdownit={parser}
       onLinkPress={onLinkPress}

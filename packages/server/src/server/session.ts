@@ -1,5 +1,6 @@
 import { searchTimeline } from "./agent/chat-search/index.js";
 import type { BrowserToolsBroker } from "./browser-tools/broker.js";
+import type { PagePortProxy } from "./page-tools/port-proxy.js";
 import { BrowserAutomationHostCapabilitySchema } from "@getpaseo/protocol/browser-automation/capabilities";
 import type {
   SessionEventSubscription,
@@ -510,8 +511,16 @@ function createWebhookAndPlannotatorSessions(input: {
 // Stub types for features under development (modules not yet available)
 type AgentMcpTransportFactory = () => Promise<unknown>;
 
+export interface SessionSourcePeer {
+  transport: "direct" | "relay" | "hub";
+  remoteAddress?: string;
+}
+
 export interface SessionOptions {
   browserToolsBroker?: BrowserToolsBroker | null;
+  pagePortProxy?: Pick<PagePortProxy, "open"> | null;
+  /** How the socket that sent a request reached the daemon. */
+  resolveSourcePeer?: (source?: object) => SessionSourcePeer | null;
   clientId: string;
   permissions: readonly DaemonPermission[];
   appVersion?: string | null;
@@ -864,6 +873,8 @@ export class Session {
       ),
   );
   private readonly browserToolsBroker: SessionOptions["browserToolsBroker"];
+  private readonly pagePortProxy: Pick<PagePortProxy, "open"> | null;
+  private readonly resolveSourcePeer: (source?: object) => SessionSourcePeer | null;
   private readonly clientId: string;
   private readonly authorization: SessionAuthorization;
   private appVersion: string | null;
@@ -1045,6 +1056,8 @@ export class Session {
       getWebSocketRuntimeMetrics,
     } = options;
     this.browserToolsBroker = options.browserToolsBroker;
+    this.pagePortProxy = options.pagePortProxy ?? null;
+    this.resolveSourcePeer = options.resolveSourcePeer ?? (() => null);
     this.clientId = clientId;
     this.authorization = new SessionAuthorization(permissions);
     this.appVersion = appVersion ?? null;
@@ -2600,6 +2613,7 @@ export class Session {
     (msg: SessionInboundMessage, source?: object) => Promise<void> | undefined
   > = [
     (msg, source) => this.dispatchSubscriptionMessage(msg, source),
+    (msg, source) => this.dispatchPageProxyMessage(msg, source),
     (msg, source) => this.dispatchCreationMessage(msg, source),
     (msg) => this.dispatchVoiceAndControlMessage(msg),
     (msg, source) => this.dispatchAgentRewindMessage(msg, source),
@@ -2651,6 +2665,35 @@ export class Session {
         return;
       }
     }
+  }
+
+  private dispatchPageProxyMessage(
+    msg: SessionInboundMessage,
+    source?: object,
+  ): Promise<void> | undefined {
+    if (msg.type !== "page.proxy.open.request") return undefined;
+    const respond = (payload: { proxyPort: number | null; error: string | null }) =>
+      this.emit({
+        type: "page.proxy.open.response",
+        payload: { requestId: msg.requestId, ...payload },
+      });
+    const peer = this.resolveSourcePeer(source);
+    if (!this.pagePortProxy) {
+      respond({ proxyPort: null, error: "This host does not proxy page ports" });
+      return Promise.resolve();
+    }
+    if (peer?.transport !== "direct" || !peer.remoteAddress) {
+      respond({
+        proxyPort: null,
+        error: "A localhost page needs a direct connection to this host, not the relay",
+      });
+      return Promise.resolve();
+    }
+    return this.pagePortProxy.open({ port: msg.port, clientAddress: peer.remoteAddress }).then(
+      (proxyPort) => respond({ proxyPort, error: null }),
+      (error: unknown) =>
+        respond({ proxyPort: null, error: getErrorMessageOr(error, "Failed to open page proxy") }),
+    );
   }
 
   private dispatchPlannotatorMessage(msg: SessionInboundMessage): Promise<void> | undefined {

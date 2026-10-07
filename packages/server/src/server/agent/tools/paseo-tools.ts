@@ -115,6 +115,8 @@ import {
 } from "../../worktree/commands.js";
 import { registerBrowserTools } from "../../browser-tools/tools.js";
 import type { BrowserToolsBroker } from "../../browser-tools/broker.js";
+import { registerPageTools } from "../../page-tools/tools.js";
+import type { PagePreviewBrowser } from "../../page-tools/preview-browser.js";
 import { buildPeerUnreachableError, type PeerManager } from "../../peers/peer-manager.js";
 import { registerTicketTools, type TicketToolsBackend } from "../../tickets/tools.js";
 import { registerDocThreadTools } from "../../doc-threads/tools.js";
@@ -216,6 +218,8 @@ export interface PaseoToolHostDependencies {
   ) => Promise<string>;
   browserToolsEnabled?: boolean;
   browserToolsBroker?: BrowserToolsBroker | null;
+  /** Daemon-side headless browser for `preview_page`; page tools are absent without it. */
+  pagePreviewBrowser?: PagePreviewBrowser | null;
   peerManager?: PeerManager | null;
   missionControlService?: MissionControlService | null;
   itsaplanTicketize?: {
@@ -2527,6 +2531,10 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       callerAgentId,
       resolveCallerAgent,
     });
+  }
+
+  if (options.pagePreviewBrowser) {
+    registerPageTools({ registerTool, previewBrowser: options.pagePreviewBrowser });
   }
 
   registerTool(

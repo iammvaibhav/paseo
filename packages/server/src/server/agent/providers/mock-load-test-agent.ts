@@ -862,6 +862,25 @@ function getConfiguredAssistantResponses(value: unknown): string[] {
     : [];
 }
 
+function isTimelineItemLike(value: unknown): value is AgentTimelineItem {
+  return (
+    Boolean(value) &&
+    typeof value === "object" &&
+    typeof (value as Record<string, unknown>).type === "string"
+  );
+}
+
+/**
+ * `mockTimelineTurns`: one array of timeline items per prompt, emitted as written. Lets a
+ * check put exact tool calls and replies in a transcript without a model.
+ */
+function getConfiguredTimelineTurns(value: unknown): AgentTimelineItem[][] {
+  if (!Array.isArray(value)) return [];
+  return value.every((turn) => Array.isArray(turn) && turn.every(isTimelineItemLike))
+    ? value.map((turn: AgentTimelineItem[]) => [...turn])
+    : [];
+}
+
 export class MockLoadTestAgentSession implements AgentSession {
   readonly provider: AgentProvider = MOCK_LOAD_TEST_PROVIDER_ID;
   readonly capabilities = CAPABILITIES;
@@ -878,6 +897,7 @@ export class MockLoadTestAgentSession implements AgentSession {
   private modelId: string | null;
   private readonly assistantResponse: string | null;
   private readonly assistantResponses: string[];
+  private readonly timelineTurns: AgentTimelineItem[][];
   private readonly streamingAssistantResponse: string | null;
   private readonly streamingAssistantIntervalMs: number;
   private readonly rewindError: string | null;
@@ -893,6 +913,9 @@ export class MockLoadTestAgentSession implements AgentSession {
       typeof options.config.featureValues?.mockAssistantResponse === "string"
         ? options.config.featureValues.mockAssistantResponse
         : null;
+    this.timelineTurns = getConfiguredTimelineTurns(
+      options.config.featureValues?.mockTimelineTurns,
+    );
     this.assistantResponses = getConfiguredAssistantResponses(
       options.config.featureValues?.mockAssistantResponses,
     );
@@ -999,6 +1022,8 @@ export class MockLoadTestAgentSession implements AgentSession {
           turn,
           (this.assistantResponses.shift() ?? this.assistantResponse)!,
         );
+      } else if (this.timelineTurns.length > 0 && !structuredBranchName) {
+        this.scheduleScriptedTimelineTurn(turn, this.timelineTurns.shift()!);
       } else if (structuredBranchName) {
         this.scheduleSettledAssistantTurn(turn, JSON.stringify(structuredBranchName));
       } else if (settledAssistantImageMarkdown) {
@@ -1454,6 +1479,25 @@ export class MockLoadTestAgentSession implements AgentSession {
       turn.timer.unref?.();
     };
     turn.timer = setTimeout(emitNext, 0);
+    turn.timer.unref?.();
+  }
+
+  private scheduleScriptedTimelineTurn(turn: ActiveTurn, items: AgentTimelineItem[]): void {
+    turn.timer = setTimeout(() => {
+      if (this.activeTurn !== turn) return;
+      this.clearTurnTimer(turn);
+      this.emitTurnStarted(turn);
+      for (const item of items) {
+        this.emitTimeline(
+          turn.turnId,
+          item.type === "assistant_message" && !item.messageId
+            ? { ...item, messageId: turn.assistantMessageId }
+            : item,
+        );
+      }
+      const last = items.findLast((item) => item.type === "assistant_message");
+      this.finishTurnWithText(turn, last?.type === "assistant_message" ? last.text : "");
+    }, 0);
     turn.timer.unref?.();
   }
 

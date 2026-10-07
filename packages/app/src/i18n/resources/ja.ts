@@ -430,6 +430,15 @@ export const ja: TranslationResources = {
       viewSource: "ソースを表示",
       viewDiagram: "図を表示",
     },
+    page: {
+      building: "ページを作成中…",
+      fullSize: "フルサイズ",
+      close: "閉じる",
+      openInBrowser: "ブラウザで開く",
+      needsDirect: "localhost のページを表示するには、このホストへの直接接続が必要です。",
+      updateHost: "localhost のページを表示するには、このホストを更新してください。",
+      failed: "ページを表示できませんでした。",
+    },
     actions: {
       copyCode: "コードをコピー",
       copyTurn: "ターンをコピー",
@@ -2508,6 +2517,7 @@ export const ja: TranslationResources = {
         codeSizeHint: "コード、差分、ターミナル出力に使用されます",
         codeSizeAccessibility: "コードフォントサイズ",
       },
+      glass: en.settings.appearance.glass,
       layout: {
         title: "レイアウト",
         contentWidth: "コンテンツ幅",
