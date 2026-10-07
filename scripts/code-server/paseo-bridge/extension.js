@@ -526,75 +526,106 @@ async function switchProjectFolder(nextFolder) {
     throw new Error("switch needs a multi-root (.code-workspace) window");
   }
   const started = Date.now();
+  // Per-phase milliseconds, returned and logged: a slow switch says where.
+  const phases = {};
+  let mark = started;
+  const lap = (name) => {
+    const now = Date.now();
+    phases[name] = now - mark;
+    mark = now;
+  };
   const folders = vscode.workspace.workspaceFolders ?? [];
   const previous = folders.length > 1 ? currentWorkspaceFolder() : null;
   if (previous && path.resolve(previous) === path.resolve(nextFolder)) {
-    return { switched: false, ms: 0, restored: 0 };
+    return { switched: false, ms: 0, restored: 0, phases };
   }
   if (previous) {
     await persistCurrentEditorSession(previous);
   }
+  lap("save");
   restoringSession = true;
   try {
     await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+    lap("closeEditors");
     let subscription = null;
     const changed = new Promise((resolve) => {
       subscription = vscode.workspace.onDidChangeWorkspaceFolders(resolve);
     });
-    const accepted = vscode.workspace.updateWorkspaceFolders(1, Math.max(0, folders.length - 1), {
-      uri: vscode.Uri.file(nextFolder),
-    });
     try {
-      if (!accepted) {
-        throw new Error("updateWorkspaceFolders rejected the change");
-      }
+      writeProjectIntoWorkspace(nextFolder, { swapFolder: true });
       await withTimeout(changed, "workspace folder change timed out", 10_000);
     } finally {
       subscription?.dispose();
     }
-    await mirrorProjectSettings(nextFolder);
+    lap("swapFolderAndSettings");
   } finally {
     restoringSession = false;
   }
   const restored = await restoreSavedEditorSession(nextFolder);
-  return { switched: true, ms: Date.now() - started, restored: restored.restored };
+  lap("restoreTabs");
+  return { switched: true, ms: Date.now() - started, restored: restored.restored, phases };
 }
 
 const MIRRORED_SETTINGS_KEY = "paseoBridge.mirroredProjectSettingKeys";
 
 /**
- * A multi-root window applies only resource-scoped settings from a folder's
- * `.vscode/settings.json`; window-scoped ones (and some extension settings) are
- * ignored there. Copying the project's file into the workspace settings applies
- * all of it, as it would in a plain folder window. Only keys this bridge copied
- * are ever removed again.
+ * Writes the project into the window's `.code-workspace` file in one write:
+ * optionally the project folder (folder 1; folder 0 never changes), and the
+ * project's `.vscode/settings.json` copied into the workspace settings.
+ *
+ * Why the copy: a multi-root window applies only resource-scoped settings from
+ * a folder's own settings file and ignores window-scoped ones (and some
+ * extension settings). In the workspace settings all of it applies, as in a
+ * plain folder window. Only keys this bridge copied are ever removed again.
+ *
+ * Why one direct write: `updateWorkspaceFolders` and every
+ * `WorkspaceConfiguration.update` each rewrite and reload the workspace file
+ * (150–450 ms apiece, measured), so a switch cost one cycle per settings key.
+ * VS Code watches the file and applies folders and settings from it together.
  */
-async function mirrorProjectSettings(folder) {
+function writeProjectIntoWorkspace(projectFolder, { swapFolder }) {
   const vscode = require("vscode");
-  let settings = {};
+  const workspacePath = vscode.workspace.workspaceFile?.fsPath;
+  if (!workspacePath) {
+    throw new Error("no .code-workspace file for this window");
+  }
+  let projectSettings = {};
   try {
-    settings = parseJsonc(fs.readFileSync(path.join(folder, ".vscode", "settings.json"), "utf8"));
+    projectSettings = parseJsonc(
+      fs.readFileSync(path.join(projectFolder, ".vscode", "settings.json"), "utf8"),
+    );
   } catch (error) {
     if (error?.code !== "ENOENT") {
-      writeLog(`settings mirror: unreadable settings in ${folder}: ${error?.message ?? error}`);
+      writeLog(
+        `settings mirror: unreadable settings in ${projectFolder}: ${error?.message ?? error}`,
+      );
     }
   }
-  const config = vscode.workspace.getConfiguration();
-  const target = vscode.ConfigurationTarget.Workspace;
-  const previousKeys = extensionContext?.workspaceState.get(MIRRORED_SETTINGS_KEY) ?? [];
-  const updates = [
-    ...previousKeys.filter((key) => !Object.hasOwn(settings, key)).map((key) => [key, undefined]),
-    ...Object.entries(settings),
-  ];
-  for (const [key, value] of updates) {
-    try {
-      await config.update(key, value, target);
-    } catch (error) {
-      // Settings of an extension that is not installed cannot be written.
-      writeLog(`settings mirror: skipped ${key}: ${error?.message ?? error}`);
-    }
+  const current = fs.readFileSync(workspacePath, "utf8");
+  const workspace = parseJsonc(current);
+  const settings = { ...workspace.settings };
+  for (const key of extensionContext?.workspaceState.get(MIRRORED_SETTINGS_KEY) ?? []) {
+    delete settings[key];
   }
-  await extensionContext?.workspaceState.update(MIRRORED_SETTINGS_KEY, Object.keys(settings));
+  Object.assign(settings, projectSettings);
+  const next = {
+    ...workspace,
+    folders: swapFolder ? [workspace.folders[0], { path: projectFolder }] : workspace.folders,
+    settings,
+  };
+  const text = `${JSON.stringify(next, null, 2)}\n`;
+  if (text !== current) {
+    fs.writeFileSync(workspacePath, text);
+  }
+  void extensionContext?.workspaceState.update(MIRRORED_SETTINGS_KEY, Object.keys(projectSettings));
+}
+
+function mirrorProjectSettings(folder) {
+  try {
+    writeProjectIntoWorkspace(folder, { swapFolder: false });
+  } catch (error) {
+    writeLog(`settings mirror FAILED for ${folder}: ${error?.message ?? error}`);
+  }
 }
 
 /** JSON with comments and trailing commas, the format of VS Code settings files. */
@@ -635,7 +666,9 @@ function parseJsonc(text) {
 async function handleWorkerSwitch({ res, parsed, switchFolder, log }) {
   try {
     const result = await switchFolder(parsed.folder);
-    log(`worker switch OK folder=${parsed.folder} ms=${result.ms} restored=${result.restored}`);
+    log(
+      `worker switch OK folder=${parsed.folder} ms=${result.ms} restored=${result.restored} phases=${JSON.stringify(result.phases ?? {})}`,
+    );
     sendJson(res, 200, { ok: true, ...result });
   } catch (error) {
     const message = String(error?.message ?? error);
