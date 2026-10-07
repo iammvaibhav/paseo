@@ -3114,12 +3114,15 @@ export const en = {
       },
       glass: {
         title: "Glass",
-        hint: "How much the window shows through. 0% is clear, 100% is solid. Only the Mono theme in the macOS app uses glass.",
-        window: "Window tint",
+        hint: "Opacity sets how much the desktop shows through (0% is clear, 100% is solid). Darkness sets how dark the tint is. Only the Mono theme in the macOS app uses glass.",
+        window: "Window opacity",
         windowHint: "Tint over the whole window. The sidebars show only this.",
-        chat: "Chat area tint",
+        chat: "Chat area opacity",
         chatHint:
           "Added over the window tint in the chat and VS Code area, so it is always denser than the sidebar.",
+        darkness: "Tint darkness",
+        darknessHint:
+          "How dark the window and chat tints are, without changing their opacity. 100% is black.",
         floating: "Menus and popovers",
         floatingHint:
           "Tint of menus, popovers, tooltips and hover cards. Content under them is frosted.",
