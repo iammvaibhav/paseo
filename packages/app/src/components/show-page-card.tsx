@@ -17,11 +17,19 @@ import { openExternalUrl } from "@/utils/open-external-url";
 
 const PAGE_MAX_HEIGHT = 2000;
 
+/** A page published from a file: the markup lives on the agent's host under this id. */
+interface StoredPageSource {
+  kind: "stored";
+  pageId: string | null;
+}
+
 interface ShowPageInput {
   title: string;
-  source: PageSource;
+  source: PageSource | StoredPageSource;
   height: number | null;
 }
+
+const PAGE_ID_RE = /\bpg_[0-9a-f]{24}\b/;
 
 function readShowPageInput(detail: ToolCallDetail): ShowPageInput | null {
   if (detail.type !== "unknown" || !detail.input || typeof detail.input !== "object") {
@@ -37,7 +45,52 @@ function readShowPageInput(detail: ToolCallDetail): ShowPageInput | null {
   if (typeof input.url === "string" && /^https?:\/\//i.test(input.url)) {
     return { title, source: { kind: "url", url: input.url }, height };
   }
+  if (typeof input.path === "string") {
+    // Providers shape tool results differently (text content, details, JSON); the id is in
+    // the result text in every shape.
+    const pageId = PAGE_ID_RE.exec(JSON.stringify(detail.output ?? null))?.[0] ?? null;
+    return { title, source: { kind: "stored", pageId }, height };
+  }
   return null;
+}
+
+// Stored pages are content-addressed, so a fetched page never changes.
+const storedPageCache = new Map<string, string>();
+
+function useStoredPage(serverId: string, pageId: string | null, active: boolean): ResolvedSource {
+  const { t } = useTranslation();
+  const client = useHostRuntimeSnapshot(serverId)?.client ?? null;
+  const key = `${serverId}\u0000${pageId ?? ""}`;
+  const cached = storedPageCache.get(key);
+  const [loaded, setLoaded] = useState<{ key: string; result: ResolvedSource } | null>(null);
+
+  useEffect(() => {
+    if (!active || !pageId || !client || cached !== undefined) return;
+    let cancelled = false;
+    const load = async () => {
+      let result: ResolvedSource;
+      try {
+        const html = await client.getPageContent(pageId);
+        storedPageCache.set(key, html);
+        result = { state: "ready", source: { kind: "html", html } };
+      } catch (error) {
+        result = {
+          state: "error",
+          message: error instanceof Error ? error.message : t("message.page.failed"),
+        };
+      }
+      if (!cancelled) setLoaded({ key, result });
+    };
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [active, cached, client, key, pageId, t]);
+
+  if (!active) return { state: "pending" };
+  if (!pageId) return { state: "error", message: t("message.page.failed") };
+  if (cached !== undefined) return { state: "ready", source: { kind: "html", html: cached } };
+  return loaded?.key === key ? loaded.result : { state: "pending" };
 }
 
 const LOOPBACK_HOSTS: Record<string, true> = {
@@ -158,6 +211,23 @@ function mapPageTokens(theme: Theme) {
   return { themeJson: JSON.stringify(buildPageThemeTokens(theme)) };
 }
 
+/** Stored pages come from the page store, the rest from the input (localhost URLs proxied). */
+function usePageSource(
+  serverId: string,
+  source: ShowPageInput["source"] | null,
+  shown: boolean,
+): ResolvedSource {
+  const stored = source?.kind === "stored" ? source : null;
+  const direct = source && source.kind !== "stored" ? source : null;
+  const storedPage = useStoredPage(serverId, stored?.pageId ?? null, shown && stored !== null);
+  const directPage = useResolvedSource(serverId, shown ? direct : null);
+  return stored === null ? directPage : storedPage;
+}
+
+function defaultMaxHeight(input: ShowPageInput | null): number {
+  return input?.source.kind === "url" ? PAGE_URL_DEFAULT_HEIGHT : PAGE_MAX_HEIGHT;
+}
+
 function ShowPageCardImpl({
   detail,
   status,
@@ -174,7 +244,7 @@ function ShowPageCardImpl({
   // rejected call (its html was not markup) shows a note, never its input as a page.
   const complete = status !== "running";
   const shown = status === "completed";
-  const resolved = useResolvedSource(serverId, shown ? (input?.source ?? null) : null);
+  const resolved = usePageSource(serverId, input?.source ?? null, shown);
   const [fullSize, setFullSize] = useState(false);
   const openFullSize = useCallback(() => setFullSize(true), []);
   const closeFullSize = useCallback(() => setFullSize(false), []);
@@ -189,8 +259,7 @@ function ShowPageCardImpl({
 
   if (!tokens) return null;
   const title = input?.title ?? "Page";
-  const maxHeight =
-    input?.height ?? (input?.source.kind === "url" ? PAGE_URL_DEFAULT_HEIGHT : PAGE_MAX_HEIGHT);
+  const maxHeight = input?.height ?? defaultMaxHeight(input);
   const note = pageNote({ complete, shown, resolved, t });
   const body =
     note === null && resolved.state === "ready" ? (

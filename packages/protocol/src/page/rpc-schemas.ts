@@ -23,3 +23,19 @@ export const PageProxyOpenResponseSchema = z.object({
 
 export type PageProxyOpenRequest = z.infer<typeof PageProxyOpenRequestSchema>;
 export type PageProxyOpenResponse = z.infer<typeof PageProxyOpenResponseSchema>;
+
+/** Reads a page an agent published from a file (`show_page` with `path`). */
+export const PageContentGetRequestSchema = z.object({
+  type: z.literal("page.content.get.request"),
+  requestId: z.string(),
+  pageId: z.string(),
+});
+
+export const PageContentGetResponseSchema = z.object({
+  type: z.literal("page.content.get.response"),
+  payload: z.object({
+    requestId: z.string(),
+    html: z.string().nullable(),
+    error: z.string().nullable(),
+  }),
+});

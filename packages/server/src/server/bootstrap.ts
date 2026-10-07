@@ -235,6 +235,7 @@ import { BrowserToolsBroker } from "./browser-tools/broker.js";
 import { DaemonConfigBrowserToolsPolicy } from "./browser-tools/policy.js";
 import { PagePreviewBrowser } from "./page-tools/preview-browser.js";
 import { PagePortProxy } from "./page-tools/port-proxy.js";
+import { PageStore } from "./page-tools/page-store.js";
 import { WorkspaceGitServiceImpl, type WorkspaceGitService } from "./workspace-git-service.js";
 import { resolveWorkspaceIdForPath } from "./resolve-workspace-id-for-path.js";
 import {
@@ -1132,6 +1133,7 @@ export async function createPaseoDaemon(
   const browserToolsPolicy = new DaemonConfigBrowserToolsPolicy(daemonConfigStore);
   const browserToolsBroker = new BrowserToolsBroker({});
   const pagePreviewBrowser = new PagePreviewBrowser(logger.child({ module: "page-preview" }));
+  const pageStore = new PageStore(config.paseoHome);
   const pagePortProxy = new PagePortProxy({
     logger: logger.child({ module: "page-proxy" }),
     getBindHost: () => (listenTarget.type === "tcp" ? listenTarget.host : "127.0.0.1"),
@@ -2858,6 +2860,7 @@ export async function createPaseoDaemon(
     browserToolsEnabled: browserToolsPolicy.isEnabled(),
     browserToolsBroker,
     pagePreviewBrowser,
+    pageStore,
     peerManager,
     missionControlService,
     itsaplanTicketize: {
@@ -3233,7 +3236,7 @@ export async function createPaseoDaemon(
               docThreadsHost,
               ticketsHost,
               notesHost,
-              { ticketsHost, automationService, pagePortProxy },
+              { ticketsHost, automationService, pagePortProxy, pageStore },
             );
             pluginRuntime.bindPaseoSessionHost(wsServer);
             await pluginRuntime.start();

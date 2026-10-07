@@ -4124,6 +4124,29 @@ export class DaemonClient {
     }
   }
 
+  /** The markup of a page an agent published from a file (`show_page` with `path`). */
+  async getPageContent(pageId: string): Promise<string> {
+    const requestId = this.createRequestId();
+    const message = SessionInboundMessageSchema.parse({
+      type: "page.content.get.request",
+      requestId,
+      pageId,
+    });
+    const payload = await this.sendRequest({
+      requestId,
+      message,
+      timeout: 15_000,
+      select: (msg) =>
+        msg.type === "page.content.get.response" && msg.payload.requestId === requestId
+          ? msg.payload
+          : null,
+    });
+    if (payload.error || payload.html === null) {
+      throw new Error(payload.error ?? "Page not found");
+    }
+    return payload.html;
+  }
+
   /**
    * Exposes a port on the daemon's loopback to this client and returns the proxy port on
    * the daemon's address. Gate on `server_info.features.pagePortProxy`.

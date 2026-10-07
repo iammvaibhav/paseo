@@ -230,7 +230,12 @@ import {
   PlannotatorSessionStopResponseSchema,
   PlannotatorSessionEventSchema,
 } from "./plannotator/rpc-schemas.js";
-import { PageProxyOpenRequestSchema, PageProxyOpenResponseSchema } from "./page/rpc-schemas.js";
+import {
+  PageContentGetRequestSchema,
+  PageContentGetResponseSchema,
+  PageProxyOpenRequestSchema,
+  PageProxyOpenResponseSchema,
+} from "./page/rpc-schemas.js";
 import {
   BROWSER_AUTOMATION_COMMAND_NAMES,
   BrowserAutomationExecuteRequestSchema,
@@ -3920,6 +3925,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   PlannotatorSessionStartRequestSchema,
   PlannotatorSessionStopRequestSchema,
   PageProxyOpenRequestSchema,
+  PageContentGetRequestSchema,
   MissionControlEventsFetchRequestSchema,
   MissionControlEventsAckRequestSchema,
   MissionControlPeersListRequestSchema,
@@ -7821,6 +7827,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   PlannotatorSessionStartResponseSchema,
   PlannotatorSessionStopResponseSchema,
   PageProxyOpenResponseSchema,
+  PageContentGetResponseSchema,
   PlannotatorSessionEventSchema,
   MissionControlEventsFetchResponseSchema,
   MissionControlEventsAckResponseSchema,

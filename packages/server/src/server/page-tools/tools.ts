@@ -1,9 +1,12 @@
+import { readFile, stat } from "node:fs/promises";
+import path from "node:path";
 import { z } from "zod";
 import type {
   PaseoToolConfig,
   PaseoToolExecutionContext,
   PaseoToolResult,
 } from "../agent/tools/types.js";
+import type { PageStore } from "./page-store.js";
 import type { PagePreviewBrowser } from "./preview-browser.js";
 
 export interface RegisterPageToolsOptions {
@@ -12,7 +15,11 @@ export interface RegisterPageToolsOptions {
     config: PaseoToolConfig,
     handler: (input: TInput, context: PaseoToolExecutionContext) => Promise<PaseoToolResult>,
   ) => void;
-  previewBrowser: Pick<PagePreviewBrowser, "capture">;
+  /** The page tools are registered only when both are present. */
+  previewBrowser: Pick<PagePreviewBrowser, "capture"> | null | undefined;
+  pageStore: Pick<PageStore, "save"> | null | undefined;
+  /** The calling agent's working directory, for relative page paths. */
+  resolveCallerCwd: () => string | null;
 }
 
 export const PAGE_HTML_MAX_LENGTH = 512_000;
@@ -41,23 +48,36 @@ const PAGE_RULES = [
   "Links open in the reader's browser; window.open and popups are routed there too.",
 ];
 
+const PagePathSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .describe(
+    "Path to an HTML file on this machine, absolute or relative to your working directory. Paseo reads it, so you never repeat the markup in a tool call.",
+  );
+
+const PageUrlSchema = z
+  .string()
+  .url()
+  .regex(/^https?:\/\//i, "url must use http or https");
+
+function countSources(input: { html?: string; url?: string; path?: string }): number {
+  return Number(Boolean(input.html)) + Number(Boolean(input.url)) + Number(Boolean(input.path));
+}
+
 const ShowPageInputSchema = z
   .object({
     title: z.string().trim().min(1).max(120).describe("Short name for the page."),
+    path: PagePathSchema.optional(),
     html: z
       .string()
       .min(1)
       .max(PAGE_HTML_MAX_LENGTH)
       .optional()
-      .describe("A self-contained HTML document or fragment. Give exactly one of html or url."),
-    url: z
-      .string()
-      .url()
-      .regex(/^https?:\/\//i, "url must use http or https")
-      .optional()
-      .describe(
-        "An http(s) URL to embed instead of HTML, such as an app you started (http://localhost:5173). A localhost URL means this daemon's machine; Paseo proxies it to the reader. Give exactly one of html or url.",
-      ),
+      .describe("The page markup itself, for a small page you write once."),
+    url: PageUrlSchema.optional().describe(
+      "An http(s) URL to embed instead of HTML, such as an app you started (http://localhost:5173). A localhost URL means this daemon's machine; Paseo proxies it to the reader.",
+    ),
     height: z
       .number()
       .int()
@@ -68,18 +88,15 @@ const ShowPageInputSchema = z
         `Frame height cap in CSS pixels, ${PAGE_MIN_HEIGHT}-${PAGE_MAX_HEIGHT}. HTML pages size to their content when omitted; content taller than the cap scrolls inside the frame. URL pages default to 640.`,
       ),
   })
-  .refine((input) => Number(Boolean(input.html)) + Number(Boolean(input.url)) === 1, {
-    message: "show_page requires exactly one of html or url",
+  .refine((input) => countSources(input) === 1, {
+    message: "show_page requires exactly one of path, html, or url",
   });
 
 const PreviewPageInputSchema = z
   .object({
+    path: PagePathSchema.optional(),
     html: z.string().min(1).max(PAGE_HTML_MAX_LENGTH).optional(),
-    url: z
-      .string()
-      .url()
-      .regex(/^https?:\/\//i, "url must use http or https")
-      .optional(),
+    url: PageUrlSchema.optional(),
     width: z
       .number()
       .int()
@@ -94,21 +111,58 @@ const PreviewPageInputSchema = z
       .optional()
       .describe("Theme to preview. Defaults to dark."),
   })
-  .refine((input) => Number(Boolean(input.html)) + Number(Boolean(input.url)) === 1, {
-    message: "preview_page requires exactly one of html or url",
+  .refine((input) => countSources(input) === 1, {
+    message: "preview_page requires exactly one of path, html, or url",
   });
 
 const HTML_TAG_RE = /<[a-z!][^>]*>/i;
 
+function errorResult(message: string): PaseoToolResult {
+  return {
+    content: [{ type: "text", text: message }],
+    isError: true,
+    structuredContent: { ok: false, message },
+  };
+}
+
+/** Reads a page file, or returns the error the agent should see. */
+async function readPageFile(
+  filePath: string,
+  cwd: string | null,
+): Promise<{ html: string } | { error: string }> {
+  const resolved = path.isAbsolute(filePath)
+    ? filePath
+    : path.resolve(cwd ?? process.cwd(), filePath);
+  let html: string;
+  try {
+    const info = await stat(resolved);
+    if (!info.isFile()) return { error: `${resolved} is not a file.` };
+    if (info.size > PAGE_HTML_MAX_LENGTH) {
+      return {
+        error: `${resolved} is ${info.size} bytes; pages are limited to ${PAGE_HTML_MAX_LENGTH}.`,
+      };
+    }
+    html = await readFile(resolved, "utf8");
+  } catch (error) {
+    return {
+      error: `Could not read ${resolved}: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+  return HTML_TAG_RE.test(html) ? { html } : { error: `${resolved} holds no HTML tag.` };
+}
+
 export function registerPageTools(options: RegisterPageToolsOptions): void {
+  const { previewBrowser, pageStore } = options;
+  if (!previewBrowser || !pageStore) return;
   options.registerTool(
     "show_page",
     {
       title: "Show page",
       description: [
         "Show an interactive HTML page inline in this chat, in the reply, above your final text. Use it when the answer needs interaction (filter, sort, tabs, hover), a table of more than 15 rows, a many-attribute comparison, a gallery, a mockup, a dashboard, or a running app (url). Prefer markdown, mermaid, or a flint fence for anything simpler.",
-        "Check the page first with preview_page. The reader already sees the page, so the text reply must not announce it, describe where it is, or restate it: add only what the page does not show.",
-        "Call show_page as its own tool call. The reader's app renders the page from that call, so a call made from inside eval, a script, or a subagent never reaches the chat. Put the full markup in html: a file path or a shell expression such as $(cat page.html) is not expanded.",
+        "Workflow: write the page to a file, check it with preview_page({ path }), fix and re-check, then show_page({ title, path }). The file is read when you call, so you never paste the markup into a tool call; later edits to the file do not change a page already shown. Use html only for a small page you write once.",
+        "Call show_page as its own tool call. The reader's app renders the page from that call, so a call made from inside eval, a script, or a subagent never reaches the chat.",
+        "The reader already sees the page, so the text reply must not announce it, describe where it is, or restate it: add only what the page does not show.",
         ...PAGE_RULES,
         `Good libraries: ${PAGE_LIBRARIES.join("; ")}. Avoid CSS frameworks that paint their own page background (Pico, Bootstrap, DaisyUI defaults).`,
       ].join("\n"),
@@ -116,25 +170,27 @@ export function registerPageTools(options: RegisterPageToolsOptions): void {
       outputSchema: {
         ok: z.boolean(),
         message: z.string(),
+        pageId: z.string().optional(),
       },
     },
     async (input: z.infer<typeof ShowPageInputSchema>) => {
       if (input.html !== undefined && !HTML_TAG_RE.test(input.html)) {
-        const message =
-          "html holds no HTML tag, so the reader would see it as plain text. Pass the page markup itself in html, not a file path or a command such as $(cat page.html), and call show_page directly, not from eval.";
-        return {
-          content: [{ type: "text", text: message }],
-          isError: true,
-          structuredContent: { ok: false, message },
-        };
+        return errorResult(
+          "html holds no HTML tag, so the reader would see it as plain text. Pass a file with path, or the markup itself in html; a shell expression such as $(cat page.html) is not expanded.",
+        );
       }
+      const shown =
+        "The page is shown in the chat above your reply. Do not describe or restate it; add only what it does not show.";
+      if (input.path === undefined) {
+        return { content: [], structuredContent: { ok: true, message: shown } };
+      }
+      const page = await readPageFile(input.path, options.resolveCallerCwd());
+      if ("error" in page) return errorResult(page.error);
+      const pageId = await pageStore.save(page.html);
+      // The reader's app finds the id in this text whatever shape the provider gives results.
       return {
-        content: [],
-        structuredContent: {
-          ok: true,
-          message:
-            "The page is shown in the chat above your reply. Do not describe or restate it; add only what it does not show.",
-        },
+        content: [{ type: "text", text: `Shown page ${pageId}. ${shown}` }],
+        structuredContent: { ok: true, message: shown, pageId },
       };
     },
   );
@@ -144,14 +200,20 @@ export function registerPageTools(options: RegisterPageToolsOptions): void {
     {
       title: "Preview page",
       description: [
-        "Render an HTML page (or an http(s) URL reachable from this machine) in Paseo's headless browser and get back a PNG screenshot, contentHeight (the height the page needs at this width), and its console output, including uncaught errors with stacks. Use it to check and fix a page before show_page; console.log is a fine way to report your own checks.",
+        "Render an HTML page (a file path, the markup, or an http(s) URL reachable from this machine) in Paseo's headless browser and get back a PNG screenshot, contentHeight (the height the page needs at this width), and its console output, including uncaught errors with stacks. Use it to check and fix a page before show_page; console.log is a fine way to report your own checks. Prefer path: edit the file and preview again without repeating the markup.",
         "The page gets the same kit and theme variables as show_page. The first preview on a machine may report that Paseo is installing its preview browser; call again a minute later.",
       ].join("\n"),
       inputSchema: PreviewPageInputSchema,
     },
     async (input: z.infer<typeof PreviewPageInputSchema>) => {
-      const result = await options.previewBrowser.capture({
-        ...(input.html ? { html: input.html } : {}),
+      let html = input.html;
+      if (input.path !== undefined) {
+        const page = await readPageFile(input.path, options.resolveCallerCwd());
+        if ("error" in page) return errorResult(page.error);
+        html = page.html;
+      }
+      const result = await previewBrowser.capture({
+        ...(html ? { html } : {}),
         ...(input.url ? { url: input.url } : {}),
         width: input.width ?? PAGE_DEFAULT_PREVIEW_WIDTH,
         appearance: input.appearance ?? "dark",
