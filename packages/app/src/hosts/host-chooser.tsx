@@ -26,6 +26,7 @@ import {
 import { useHosts } from "@/runtime/host-runtime";
 import { orderHostsLocalFirst, type HostProfile } from "@/types/host-connection";
 import { buildSettingsAddHostRoute } from "@/utils/host-routes";
+import { glassFloatingStyle } from "@/styles/theme";
 
 type HostFilter = (host: HostProfile) => boolean;
 type HostChoiceHandler = (serverId: string) => void | Promise<void>;
@@ -305,6 +306,7 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.surface0,
     overflow: "hidden",
     ...theme.shadow.lg,
+    ...glassFloatingStyle(theme),
   },
   header: {
     gap: theme.spacing[3],

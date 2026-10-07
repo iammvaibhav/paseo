@@ -27,13 +27,19 @@ function TrailingActionScrimSvg({ gradientId, color }: { gradientId: string; col
 
 const ThemedTrailingActionScrimSvg = withUnistyles(TrailingActionScrimSvg);
 
+// A glass theme's fills are translucent, so painting the row's fill again over the label would
+// show as a lighter band. There the scrim blurs the label out under a fading mask instead.
+function scrimColor(theme: Theme, color: string): { color: string } {
+  return { color: theme.glass ? "transparent" : color };
+}
+
 const backdropColorMappings: Record<SurfaceBackdrop, (theme: Theme) => { color: string }> = {
-  surface0: (theme) => ({ color: theme.colors.surface0 }),
-  surface1: (theme) => ({ color: theme.colors.surface1 }),
-  surface2: (theme) => ({ color: theme.colors.surface2 }),
-  surfaceSidebar: (theme) => ({ color: theme.colors.surfaceSidebar }),
-  surfaceSidebarHover: (theme) => ({ color: theme.colors.surfaceSidebarHover }),
-  surfaceSidebarSelected: (theme) => ({ color: theme.colors.surfaceSidebarSelected }),
+  surface0: (theme) => scrimColor(theme, theme.colors.surface0),
+  surface1: (theme) => scrimColor(theme, theme.colors.surface1),
+  surface2: (theme) => scrimColor(theme, theme.colors.surface2),
+  surfaceSidebar: (theme) => scrimColor(theme, theme.colors.surfaceSidebar),
+  surfaceSidebarHover: (theme) => scrimColor(theme, theme.colors.surfaceSidebarHover),
+  surfaceSidebarSelected: (theme) => scrimColor(theme, theme.colors.surfaceSidebarSelected),
 };
 
 /** Fades trailing content into the surface beneath an absolutely overlaid action. */
@@ -56,12 +62,22 @@ export function TrailingActionScrim({
   );
 }
 
-const styles = StyleSheet.create({
+const GLASS_SCRIM_MASK = `linear-gradient(to right, transparent 0%, #000 ${SCRIM_SOLID_OFFSET})`;
+
+const styles = StyleSheet.create((theme) => ({
   scrim: {
     position: "absolute",
     top: 0,
     bottom: 0,
     right: 0,
     width: SCRIM_WIDTH,
+    // Web-only style keys that react-native's ViewStyle does not declare.
+    ...((theme.glass
+      ? {
+          backdropFilter: "blur(6px)",
+          maskImage: GLASS_SCRIM_MASK,
+          WebkitMaskImage: GLASS_SCRIM_MASK,
+        }
+      : {}) as object),
   },
-});
+}));

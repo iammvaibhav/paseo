@@ -1,3 +1,4 @@
+import { ToolCallImageSourceProvider } from "@/tool-calls/image-source-context";
 import { ChatFind, ChatFindExpansion } from "@/agent-stream/chat-find";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import React, {
@@ -501,6 +502,10 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     );
 
     const workspaceRoot = context.cwd?.trim() || "";
+    const toolCallImageSource = useMemo(
+      () => ({ client, serverId: resolvedServerId, workspaceRoot }),
+      [client, resolvedServerId, workspaceRoot],
+    );
     const estimateStreamRowHeight = useCallback(
       (item: StreamItem) =>
         estimateStreamItemHeight({
@@ -1442,44 +1447,46 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         revealLoadedMessage={revealLoadedHistory}
         visibleMessageIds={visibleMessageIds}
       >
-        <ToolCallSheetProvider>
-          <AssistantSelectionCopySurface style={stylesheet.container} selectionAsk={selectionAsk}>
-            <MessageOuterSpacingProvider disableOuterSpacing>
-              <AnchoredList
-                strategy={streamRenderStrategy}
-                viewportRef={viewportRef}
-                forceShowScrollToBottom={isTimelineDetached}
-                bottomOverlayControlClearance={bottomOverlayControlClearance}
-                onScrollToBottomPress={scrollToBottom}
-                agentId={agentId}
-                segments={renderModel.segments}
-                historyRowRevision={historyRowRevision}
-                liveHeadRowRevision={toolCallGroupDisplayState}
-                boundary={boundary}
-                renderers={renderers}
-                listEmptyComponent={listEmptyComponent}
-                routeBottomAnchorRequest={routeBottomAnchorRequest}
-                isAuthoritativeHistoryReady={isAuthoritativeHistoryReady}
-                onReadingPositionChange={handleReadingPositionChange}
-                onNearHistoryStart={loadOlder}
-                isLoadingOlderHistory={isLoadingOlder}
-                hasOlderHistory={hasOlder}
-                olderHistoryProgressKey={progressKey}
-                scrollEnabled={streamScrollEnabled}
-                listStyle={stylesheet.list}
-                baseListContentContainerStyle={stylesheet.listContentContainer}
-                forwardListContentContainerStyle={stylesheet.forwardListContentContainer}
-                keyExtractor={streamItemKeyExtractor}
-                estimateItemSize={estimateStreamRowHeight}
+        <ToolCallImageSourceProvider value={toolCallImageSource}>
+          <ToolCallSheetProvider>
+            <AssistantSelectionCopySurface style={stylesheet.container} selectionAsk={selectionAsk}>
+              <MessageOuterSpacingProvider disableOuterSpacing>
+                <AnchoredList
+                  strategy={streamRenderStrategy}
+                  viewportRef={viewportRef}
+                  forceShowScrollToBottom={isTimelineDetached}
+                  bottomOverlayControlClearance={bottomOverlayControlClearance}
+                  onScrollToBottomPress={scrollToBottom}
+                  agentId={agentId}
+                  segments={renderModel.segments}
+                  historyRowRevision={historyRowRevision}
+                  liveHeadRowRevision={toolCallGroupDisplayState}
+                  boundary={boundary}
+                  renderers={renderers}
+                  listEmptyComponent={listEmptyComponent}
+                  routeBottomAnchorRequest={routeBottomAnchorRequest}
+                  isAuthoritativeHistoryReady={isAuthoritativeHistoryReady}
+                  onReadingPositionChange={handleReadingPositionChange}
+                  onNearHistoryStart={loadOlder}
+                  isLoadingOlderHistory={isLoadingOlder}
+                  hasOlderHistory={hasOlder}
+                  olderHistoryProgressKey={progressKey}
+                  scrollEnabled={streamScrollEnabled}
+                  listStyle={stylesheet.list}
+                  baseListContentContainerStyle={stylesheet.listContentContainer}
+                  forwardListContentContainerStyle={stylesheet.forwardListContentContainer}
+                  keyExtractor={streamItemKeyExtractor}
+                  estimateItemSize={estimateStreamRowHeight}
+                />
+              </MessageOuterSpacingProvider>
+              <ChatOutlineRail
+                prompts={chatOutline.prompts}
+                activePrompt={chatOutline.activePrompt}
+                onJumpToPrompt={chatOutline.jumpToPrompt}
               />
-            </MessageOuterSpacingProvider>
-            <ChatOutlineRail
-              prompts={chatOutline.prompts}
-              activePrompt={chatOutline.activePrompt}
-              onJumpToPrompt={chatOutline.jumpToPrompt}
-            />
-          </AssistantSelectionCopySurface>
-        </ToolCallSheetProvider>
+            </AssistantSelectionCopySurface>
+          </ToolCallSheetProvider>
+        </ToolCallImageSourceProvider>
       </ChatFind>
     );
   },

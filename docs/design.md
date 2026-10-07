@@ -288,3 +288,15 @@ New status pills use `<StatusBadge>`. Identity, shortcut, and interactive link b
 | Trigger-anchored menu                               | `packages/app/src/components/ui/dropdown-menu.tsx` (used in `sidebar-workspace-list.tsx`, theme picker)                                                                                                                                                                                                  |
 | Right-click / long-press menu                       | `packages/app/src/components/ui/context-menu.tsx` (used in `sidebar-workspace-list.tsx`)                                                                                                                                                                                                                 |
 | Headers (back, screen, menu)                        | `packages/app/src/components/headers/back-header.tsx`, `screen-header.tsx`, `menu-header.tsx`                                                                                                                                                                                                            |
+
+---
+
+## 16. Glass (Mono on macOS)
+
+The desktop app on macOS renders the Mono theme as `darkMonoGlass` (`packages/app/src/styles/theme.ts`): translucent tints over the window vibrancy. Translucent fills stack, so the theme follows three rules, and new surfaces must too.
+
+- **Region fills are clear.** `surface0`, `surfaceSidebar`, `surfacePane`, and `surfaceWorkspace` are `transparent`. Only the window root (`surfaceApp`) and the content pane (`surfaceContent`) paint tints. Do not paint `surface0` as an ink color (text on a filled chip); use `background`, which stays opaque.
+- **Raised fills are washes.** `surface1`…`surface4` and `surfaceUserMessage` are white washes, so the composer, code blocks, tables, cards, and row fills read lighter than the pane.
+- **Floating and covering surfaces opt in.** Menus, popovers, tooltips, dialogs, and toasts spread `glassFloatingStyle(theme)` after their fill: a lighter tint with a backdrop blur. Surfaces that must hide what scrolls under them (sticky diff headers, full-screen backdrops) use `theme.glass.cover`.
+
+Mermaid's color parser hangs on `rgba()`, so the diagram takes its glass colors as 8-digit hex (`packages/app/src/components/mermaid-diagram.web.tsx`).

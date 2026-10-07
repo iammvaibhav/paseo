@@ -12,7 +12,7 @@ import {
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { useTranslation } from "react-i18next";
 import { File, Folder } from "lucide-react-native";
-import type { Theme } from "@/styles/theme";
+import { glassFloatingStyle, type Theme } from "@/styles/theme";
 import { getAutocompleteScrollOffset } from "./autocomplete-utils";
 
 export interface AutocompleteOption {
@@ -300,6 +300,7 @@ const styles = StyleSheet.create((theme: Theme) => ({
     paddingHorizontal: theme.spacing[3],
     paddingVertical: theme.spacing[3],
     ...theme.shadow.md,
+    ...glassFloatingStyle(theme),
   },
   detailLabel: {
     color: theme.colors.foreground,
@@ -325,6 +326,7 @@ const styles = StyleSheet.create((theme: Theme) => ({
     borderRadius: theme.borderRadius.lg,
     overflow: "hidden",
     ...theme.shadow.md,
+    ...glassFloatingStyle(theme),
   },
   scrollView: {
     flexGrow: 0,

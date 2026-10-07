@@ -765,6 +765,24 @@ const darkShadow = {
   },
 } as const;
 
+/**
+ * How a glass theme paints over the macOS window vibrancy. Opaque themes have none.
+ *
+ * Inside a glass theme the region fills (`surface0`, `surfaceSidebar`, the pane surfaces) are
+ * cleared, so the window root and the content pane carry the only tints, and the raised fills
+ * (`surface1`…`surface4`) are light washes. Surfaces that float over content or cover it cannot
+ * be a wash: they read through to whatever is under them.
+ */
+export interface GlassTreatment {
+  /** Menus, popovers, tooltips, dialogs, toasts: lighter than the pane so they stand out. */
+  floating: string;
+  floatingBorder: string;
+  /** Web `backdrop-filter` under floating surfaces, so the content under them blurs. */
+  floatingBackdropFilter: string;
+  /** Surfaces that must hide what scrolls under them, such as sticky headers. */
+  cover: string;
+}
+
 export function buildDarkTheme(semanticColors: ReturnType<typeof buildDarkSemanticColors>) {
   return {
     colorScheme: "dark" as const,
@@ -774,6 +792,7 @@ export function buildDarkTheme(semanticColors: ReturnType<typeof buildDarkSemant
       syntax: darkHighlightColors,
     },
     shadow: darkShadow,
+    glass: null as GlassTreatment | null,
     ...commonTheme,
   } as const;
 }
@@ -786,23 +805,53 @@ export const darkGhosttyTheme = buildDarkTheme(ghosttyDarkColors);
 export const darkMonoTheme = buildDarkTheme(monoDarkColors);
 
 // Mono on a macOS window with sidebar vibrancy. Only the desktop app on macOS selects it
-// (see appearance/provider.tsx): anywhere else the cleared root would show the page body.
-// The sidebar and the content pane paint translucent tints over the vibrancy; the screens and
-// workspace surfaces inside the pane are cleared so the pane tint shows through.
-// Hover and selected row fills stay opaque: trailing-action scrims and badge knockouts paint the
-// row's fill over the row to hide what is under them, and a translucent fill painted twice shows
-// as a lighter band instead.
+// (see appearance/provider.tsx): anywhere else the cleared fills would show the page body.
+// The window root carries the sidebar tint and the content pane adds its own over it, so the
+// chat reads denser than the sidebar. Every region fill inside is cleared and the raised fills
+// are white washes, so nothing stacks into an opaque block. See `GlassTreatment`.
 export const GLASS_THEME_NAME = "darkMonoGlass";
-export const darkMonoGlassTheme = buildDarkTheme({
-  ...monoDarkColors,
-  surfaceApp: "transparent",
-  surfaceWorkspace: "transparent",
-  surfacePane: "transparent",
-  surfaceContent: "rgba(23, 23, 23, 0.72)",
-  surfaceSidebar: "rgba(20, 20, 20, 0.42)",
-  surfaceSidebarHover: "#262626",
-  surfaceSidebarSelected: "#2e2e2e",
-});
+export const darkMonoGlassTheme = {
+  ...buildDarkTheme({
+    ...monoDarkColors,
+    surfaceApp: "rgba(20, 20, 20, 0.45)",
+    surfaceContent: "rgba(23, 23, 23, 0.7)",
+    surface0: "transparent",
+    surface1: "rgba(255, 255, 255, 0.045)",
+    surface2: "rgba(255, 255, 255, 0.08)",
+    surface3: "rgba(255, 255, 255, 0.12)",
+    surface4: "rgba(255, 255, 255, 0.16)",
+    surfaceDiffEmpty: "rgba(255, 255, 255, 0.025)",
+    surfaceSidebar: "transparent",
+    surfaceSidebarHover: "rgba(255, 255, 255, 0.06)",
+    surfaceSidebarSelected: "rgba(255, 255, 255, 0.09)",
+    surfaceWorkspace: "transparent",
+    surfacePane: "transparent",
+    surfaceUserMessage: "rgba(255, 255, 255, 0.09)",
+    popover: "rgba(52, 52, 52, 0.62)",
+  }),
+  glass: {
+    floating: "rgba(52, 52, 52, 0.62)",
+    floatingBorder: "rgba(255, 255, 255, 0.1)",
+    floatingBackdropFilter: "blur(24px) saturate(1.6)",
+    cover: "rgba(28, 28, 28, 0.94)",
+  },
+};
+
+interface GlassFloatingStyle {
+  backgroundColor?: string;
+  borderColor?: string;
+}
+
+/** Floating-surface fill for a glass theme; empty for opaque themes, which keep their own fill. */
+export function glassFloatingStyle(theme: Theme): GlassFloatingStyle {
+  if (!theme.glass) return {};
+  // `backdropFilter` is a web style key react-native's style types do not declare.
+  return {
+    backgroundColor: theme.glass.floating,
+    borderColor: theme.glass.floatingBorder,
+    backdropFilter: theme.glass.floatingBackdropFilter,
+  } as GlassFloatingStyle;
+}
 
 // Pure black — zero-luminance background with high-contrast surfaces.
 const pureBlackDarkColors = buildDarkSemanticColors({
@@ -856,6 +905,7 @@ export function buildLightTheme(semanticColors: ReturnType<typeof buildLightSema
       syntax: lightHighlightColors,
     },
     shadow: lightShadow,
+    glass: null as GlassTreatment | null,
     ...commonTheme,
   } as const;
 }

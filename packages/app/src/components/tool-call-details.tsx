@@ -1,3 +1,5 @@
+import { AssistantMarkdownImage } from "@/components/assistant-markdown-image";
+import { useToolCallImageSource } from "@/tool-calls/image-source-context";
 import React, { useMemo, type ReactNode } from "react";
 import {
   View,
@@ -1046,16 +1048,7 @@ function buildDetailSections(
     ];
   }
   if (detail.type === "read") {
-    if (!detail.content) return [];
-    return [
-      <ScrollableTextSection
-        key="read"
-        content={detail.content}
-        ds={ds}
-        filePath={detail.filePath}
-        startLine={detail.offset ?? 1}
-      />,
-    ];
+    return buildReadSections(detail, ds);
   }
   if (detail.type === "search") {
     return buildSearchSections(detail, ds);
@@ -1074,6 +1067,45 @@ function buildDetailSections(
     return buildPaseoUnknownSections(toolName, detail) ?? buildUnknownSections(detail, ds, t);
   }
   return [];
+}
+
+function buildReadSections(
+  detail: Extract<ToolCallDetail, { type: "read" }>,
+  ds: DetailStyles,
+): ReactNode[] {
+  if (IMAGE_FILE_PATTERN.test(detail.filePath)) {
+    return [<ReadImageSection key="read-image" filePath={detail.filePath} />];
+  }
+  if (!detail.content) return [];
+  return [
+    <ScrollableTextSection
+      key="read"
+      content={detail.content}
+      ds={ds}
+      filePath={detail.filePath}
+      startLine={detail.offset ?? 1}
+    />,
+  ];
+}
+
+const IMAGE_FILE_PATTERN = /\.(png|jpe?g|gif|webp|bmp|avif)$/i;
+
+/** A read of an image file shows the image itself, loaded from the agent's host. */
+function ReadImageSection({ filePath }: { filePath: string }) {
+  const source = useToolCallImageSource();
+  return (
+    <View style={styles.readImage}>
+      <AssistantMarkdownImage
+        source={filePath}
+        occurrenceKey={`tool-read:${filePath}`}
+        alt={filePath}
+        hasLeadingContent={false}
+        client={source?.client}
+        serverId={source?.serverId}
+        workspaceRoot={source?.workspaceRoot}
+      />
+    </View>
+  );
 }
 
 function ErrorSection({ errorText, ds }: { errorText: string; ds: DetailStyles }) {
@@ -1238,6 +1270,9 @@ const styles = StyleSheet.create((theme) => {
     },
     section: {
       gap: theme.spacing[2],
+    },
+    readImage: {
+      maxWidth: 480,
     },
     fillHeight: {
       flex: 1,

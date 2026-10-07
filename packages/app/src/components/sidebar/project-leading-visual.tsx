@@ -54,7 +54,7 @@ const foregroundMutedColorMapping = (theme: Theme) => ({
   color: theme.colors.foregroundMuted,
 });
 const needsInputColorMapping = (theme: Theme) => ({
-  color: theme.colors.surface0,
+  color: theme.colors.background,
   fill: getStatusDotColor({ theme, bucket: "needs_input" }) ?? undefined,
 });
 

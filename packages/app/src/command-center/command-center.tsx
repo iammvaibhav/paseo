@@ -70,6 +70,7 @@ import {
   type CommandCenterWorkspaceResult,
 } from "./results";
 import { useWorkspaceFileSearch } from "./workspace-file-search";
+import { glassFloatingStyle } from "@/styles/theme";
 
 const ThemedBottomSheetTextInput = withUnistyles(TextInput, (theme) => ({
   placeholderTextColor: theme.colors.foregroundMuted,
@@ -862,6 +863,7 @@ const styles = StyleSheet.create((theme) => ({
     overflow: "hidden",
     backgroundColor: theme.colors.surface0,
     ...theme.shadow.lg,
+    ...glassFloatingStyle(theme),
   },
   header: {
     paddingHorizontal: theme.spacing[4],

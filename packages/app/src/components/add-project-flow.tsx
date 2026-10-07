@@ -93,7 +93,7 @@ import { useHostFeatureMap } from "@/runtime/host-features";
 import { useSessionStore } from "@/stores/session-store";
 import { useRecommendedProjectPaths } from "@/stores/session-store-hooks";
 import type { AddProjectFlowRequest } from "@/stores/add-project-flow-store";
-import type { Theme } from "@/styles/theme";
+import { glassFloatingStyle, type Theme } from "@/styles/theme";
 import { shortenPath } from "@/utils/shorten-path";
 import { buildNewWorkspaceRoute, buildSettingsAddHostRoute } from "@/utils/host-routes";
 
@@ -987,6 +987,7 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.surface0,
     overflow: "hidden",
     ...theme.shadow.lg,
+    ...glassFloatingStyle(theme),
   },
   header: {
     flexShrink: 0,
