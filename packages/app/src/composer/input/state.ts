@@ -96,7 +96,7 @@ export function applyDictationTranscript(text: string, ctx: DictationTranscriptC
   ctx.replaceText(nextValue);
 
   if (
-    ctx.defaultSendBehavior !== "interrupt" &&
+    ctx.defaultSendBehavior === "queue" &&
     !ctx.sendsOutOfBand &&
     ctx.isAgentRunning &&
     ctx.onQueue
@@ -145,26 +145,31 @@ export function computeCanStartDictation(input: {
   );
 }
 
+// Enter (and the send button) follows the selected send behavior while the agent works:
+// interrupt replaces the turn, steer rides the live turn, queue waits for the turn to end.
+// An idle agent, or an out-of-band command, always just sends.
 export function runDefaultSendAction(ctx: SendActionContext): void {
-  if (ctx.defaultSendBehavior === "interrupt") {
-    ctx.handleSendMessage();
-    return;
-  }
-  if (!ctx.sendsOutOfBand && ctx.isAgentRunning && ctx.onQueue) {
-    ctx.handleQueueMessage();
-    return;
-  }
-  ctx.handleSendMessage();
-}
-
-export function runAlternateSendAction(ctx: SendActionContext): void {
-  if (ctx.defaultSendBehavior === "interrupt" && !ctx.sendsOutOfBand) {
-    if (ctx.isAgentRunning && ctx.onQueue) {
+  if (ctx.isAgentRunning && !ctx.sendsOutOfBand) {
+    if (ctx.defaultSendBehavior === "steer") {
+      ctx.handleSteerSendMessage();
+      return;
+    }
+    if (ctx.defaultSendBehavior === "queue" && ctx.onQueue) {
       ctx.handleQueueMessage();
       return;
     }
   }
-  if (!ctx.sendsOutOfBand && ctx.isAgentRunning) {
+  ctx.handleSendMessage();
+}
+
+// Mod+Enter is the other non-destructive choice: queue when the default interrupts or
+// steers, steer when the default queues.
+export function runAlternateSendAction(ctx: SendActionContext): void {
+  if (ctx.isAgentRunning && !ctx.sendsOutOfBand) {
+    if (ctx.defaultSendBehavior !== "queue" && ctx.onQueue) {
+      ctx.handleQueueMessage();
+      return;
+    }
     ctx.handleSteerSendMessage();
     return;
   }

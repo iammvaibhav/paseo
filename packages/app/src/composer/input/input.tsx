@@ -1050,6 +1050,7 @@ interface SendButtonStateInput {
   defaultSendBehavior: SendBehavior;
   sendsOutOfBand: boolean;
   isAgentRunning: boolean;
+  canQueue: boolean;
 }
 
 interface SendButtonStateOutput {
@@ -1063,7 +1064,11 @@ function computeSendButtonState(input: SendButtonStateInput): SendButtonStateOut
     input.isSubmitLoading && typeof input.onSubmitLoadingPress === "function";
   const isSendButtonDisabled =
     input.disabled || (!canPressLoadingButton && (input.isSubmitDisabled || input.isSubmitLoading));
-  const defaultActionQueues = false;
+  const defaultActionQueues =
+    input.defaultSendBehavior === "queue" &&
+    input.isAgentRunning &&
+    !input.sendsOutOfBand &&
+    input.canQueue;
   return { canPressLoadingButton, isSendButtonDisabled, defaultActionQueues };
 }
 
@@ -1654,14 +1659,6 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
       handleSteerSendMessage,
     ]);
 
-    const handleButtonSendAction = useCallback(() => {
-      if (isAgentRunning && !sendsOutOfBand) {
-        handleSteerSendMessage();
-        return;
-      }
-      handleSendMessage();
-    }, [handleSendMessage, handleSteerSendMessage, isAgentRunning, sendsOutOfBand]);
-
     const handleAlternateSendAction = useCallback(() => {
       runAlternateSendAction({
         defaultSendBehavior,
@@ -1755,6 +1752,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
         defaultSendBehavior,
         sendsOutOfBand,
         isAgentRunning,
+        canQueue: Boolean(onQueue),
       });
     useIosHardwareKeyboardSubmit({
       isEnabled: isInputFocused && !isSendButtonDisabled,
@@ -1991,7 +1989,7 @@ export const MessageInput = forwardRef<MessageInputRef, MessageInputProps>(
                 shouldShow
                 canPressLoadingButton={canPressLoadingButton}
                 onSubmitLoadingPress={onSubmitLoadingPress}
-                onDefaultSendAction={handleButtonSendAction}
+                onDefaultSendAction={handleDefaultSendAction}
                 isSendButtonDisabled={isSendButtonDisabled}
                 submitAccessibilityLabel={submitAccessibilityLabel}
                 sendButtonCombinedStyle={sendButtonCombinedStyle}
