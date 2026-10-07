@@ -2114,6 +2114,7 @@ export const ar: TranslationResources = {
     },
   },
   toolCallDetails: {
+    previewPage: en.toolCallDetails.previewPage,
     error: "خطأ",
     empty: "لا توجد تفاصيل إضافية متاحة",
     subAgentActivity: "نشاط الوكيل الفرعي",

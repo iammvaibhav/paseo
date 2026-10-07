@@ -2087,6 +2087,7 @@ export const zhCN: TranslationResources = {
     },
   },
   toolCallDetails: {
+    previewPage: en.toolCallDetails.previewPage,
     error: "错误",
     empty: "没有可用的更多详情",
     subAgentActivity: "Sub-agent 活动",

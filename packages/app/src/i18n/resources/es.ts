@@ -2168,6 +2168,7 @@ export const es: TranslationResources = {
     },
   },
   toolCallDetails: {
+    previewPage: en.toolCallDetails.previewPage,
     error: "Error",
     empty: "No hay detalles adicionales disponibles",
     subAgentActivity: "Actividad de subagente",
