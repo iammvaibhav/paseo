@@ -1131,7 +1131,8 @@ BUILD_DESKTOP='${PASEO_BUILD_DESKTOP:-1}'
 PASEO_NUDGE_URL='${PASEO_NUDGE_URL:-}'
 PASEO_NUDGE_PASSWORD='${PASEO_NUDGE_PASSWORD:-${PASEO_PASSWORD:-}}'
 # Fleet omp lockstep: the orchestrator sets OMP_TARGET_VERSION from its own
-# `omp update`; the token rides the heredoc like the passwords above.
+# omp update; the token rides the heredoc like the passwords above. (No backticks
+# in this unquoted heredoc: they would run on the orchestrator.)
 OMP_TARGET_VERSION='${OMP_TARGET_VERSION:-}'
 OMP_SKIP_UPDATE='${PASEO_SKIP_OMP_UPDATE:-0}'
 GITHUB_TOKEN='${GITHUB_TOKEN:-${GH_TOKEN:-}}'
@@ -1801,7 +1802,7 @@ PASEO_NUDGE_PASSWORD='${PASEO_NUDGE_PASSWORD:-${PASEO_PASSWORD:-}}'
 # time, so the remote voice node authenticates instead of being locked out.
 PASEO_PASSWORD='${PASEO_PASSWORD:-}'
 # Fleet omp lockstep: the orchestrator sets OMP_TARGET_VERSION from its own
-# `omp update`; the token rides the heredoc through the same channel.
+# omp update; the token rides the heredoc through the same channel.
 OMP_TARGET_VERSION='${OMP_TARGET_VERSION:-}'
 OMP_SKIP_UPDATE='${PASEO_SKIP_OMP_UPDATE:-0}'
 GITHUB_TOKEN='${GITHUB_TOKEN:-${GH_TOKEN:-}}'
@@ -2334,7 +2335,7 @@ Usage:
 
 Takes no positional arguments; behavior is controlled by env variables.
 
-Orchestrator (auto-detected by `uname -s`):
+Orchestrator (auto-detected by \`uname -s\`):
   macOS (MacBook)     local = MacBook (daemon + desktop build/install),
                       remotes = blrofc3 + iammvaibhav.
   Linux (iammvaibhav) local = iammvaibhav (daemon + services),
@@ -2375,7 +2376,7 @@ Scope flags (set to 1 unless noted):
   PASEO_SKIP_STALL_CRON          Skip installing the stall-check cron entry on every host
   PASEO_SKIP_OMP_PLUGINS         Skip installing plugins/* into ~/.omp/plugins on every host
   PASEO_SKIP_COMMANDER_VOICE     Skip Commander Voice node deploy everywhere
-  PASEO_SKIP_OMP_UPDATE          Skip `omp update` everywhere (fleet keeps current versions;
+  PASEO_SKIP_OMP_UPDATE          Skip \`omp update\` everywhere (fleet keeps current versions;
                                    OMP_TARGET_VERSION is still read from the local omp)
   PASEO_SKIP_PROD                Skip the prod omp services deploy (auth broker + proxy)
   PASEO_PROD_HOST                ssh alias for the prod omp host (default: prod)
