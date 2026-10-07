@@ -316,6 +316,7 @@ const StoredAppSettingsSchema = z
       .object({
         window: clampedNumber(0, 100).catch(DEFAULT_GLASS_TUNING.window),
         chat: clampedNumber(0, 100).catch(DEFAULT_GLASS_TUNING.chat),
+        darkness: clampedNumber(0, 100).catch(DEFAULT_GLASS_TUNING.darkness),
         floating: clampedNumber(0, 100).catch(DEFAULT_GLASS_TUNING.floating),
         overlay: clampedNumber(0, 100).catch(DEFAULT_GLASS_TUNING.overlay),
         panels: clampedNumber(0, 300).catch(DEFAULT_GLASS_TUNING.panels),

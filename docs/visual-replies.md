@@ -28,6 +28,8 @@ Two Paseo MCP tools (`packages/server/src/server/page-tools/`):
 
 The page rules, the kit API, and the library list are in the `show_page` tool description, not the system prompt, so they cost tokens only when an agent uses the tool.
 
+The client renders a page from the `show_page` call in the transcript. A call made from inside omp `eval`, a script, or a subagent is recorded as that outer tool, so nothing renders; the tool description tells agents to call it directly. `show_page` also rejects `html` that holds no tag (a file path or `$(cat page.html)`), and the card shows a note instead of rendering a rejected call.
+
 ### The kit
 
 `buildPageDocument` (`packages/protocol/src/page/kit.ts`) puts the kit first in the page head: `--paseo-*` CSS variables, base styles, helper classes, and a script that reports the content height, routes links and `window.open` to the host, applies live theme updates, and exposes `paseo.chart(el, spec)`. `paseo.chart` loads pinned ECharts and Flint builds from jsDelivr and applies the same ECharts theme as chat charts. The daemon preview and the client use the same builder, so the agent previews what the reader sees.

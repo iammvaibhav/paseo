@@ -459,7 +459,14 @@ function ContentWidthRow({ value, onChange }: ContentWidthRowProps) {
 
 type GlassKnob = keyof GlassTuning;
 
-const GLASS_KNOBS: readonly GlassKnob[] = ["window", "chat", "floating", "overlay", "panels"];
+const GLASS_KNOBS: readonly GlassKnob[] = [
+  "window",
+  "chat",
+  "darkness",
+  "floating",
+  "overlay",
+  "panels",
+];
 
 interface GlassPercentRowProps {
   knob: GlassKnob;

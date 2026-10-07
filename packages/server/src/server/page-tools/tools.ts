@@ -98,6 +98,8 @@ const PreviewPageInputSchema = z
     message: "preview_page requires exactly one of html or url",
   });
 
+const HTML_TAG_RE = /<[a-z!][^>]*>/i;
+
 export function registerPageTools(options: RegisterPageToolsOptions): void {
   options.registerTool(
     "show_page",
@@ -106,6 +108,7 @@ export function registerPageTools(options: RegisterPageToolsOptions): void {
       description: [
         "Show an interactive HTML page inline in this chat, in the reply, above your final text. Use it when the answer needs interaction (filter, sort, tabs, hover), a table of more than 15 rows, a many-attribute comparison, a gallery, a mockup, a dashboard, or a running app (url). Prefer markdown, mermaid, or a flint fence for anything simpler.",
         "Check the page first with preview_page. The reader already sees the page, so the text reply must not announce it, describe where it is, or restate it: add only what the page does not show.",
+        "Call show_page as its own tool call. The reader's app renders the page from that call, so a call made from inside eval, a script, or a subagent never reaches the chat. Put the full markup in html: a file path or a shell expression such as $(cat page.html) is not expanded.",
         ...PAGE_RULES,
         `Good libraries: ${PAGE_LIBRARIES.join("; ")}. Avoid CSS frameworks that paint their own page background (Pico, Bootstrap, DaisyUI defaults).`,
       ].join("\n"),
@@ -115,14 +118,25 @@ export function registerPageTools(options: RegisterPageToolsOptions): void {
         message: z.string(),
       },
     },
-    async () => ({
-      content: [],
-      structuredContent: {
-        ok: true,
-        message:
-          "The page is shown in the chat above your reply. Do not describe or restate it; add only what it does not show.",
-      },
-    }),
+    async (input: z.infer<typeof ShowPageInputSchema>) => {
+      if (input.html !== undefined && !HTML_TAG_RE.test(input.html)) {
+        const message =
+          "html holds no HTML tag, so the reader would see it as plain text. Pass the page markup itself in html, not a file path or a command such as $(cat page.html), and call show_page directly, not from eval.";
+        return {
+          content: [{ type: "text", text: message }],
+          isError: true,
+          structuredContent: { ok: false, message },
+        };
+      }
+      return {
+        content: [],
+        structuredContent: {
+          ok: true,
+          message:
+            "The page is shown in the chat above your reply. Do not describe or restate it; add only what it does not show.",
+        },
+      };
+    },
   );
 
   options.registerTool(
