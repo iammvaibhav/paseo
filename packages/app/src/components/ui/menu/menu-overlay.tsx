@@ -24,7 +24,6 @@ import { StyleSheet } from "react-native-unistyles";
 import { FloatingScrollView, FloatingSurface } from "@/components/ui/floating";
 import { isWeb } from "@/constants/platform";
 import type { KeyboardFocusScope } from "@/keyboard/actions";
-import { glassFloatingStyle } from "@/styles/theme";
 import {
   getOverlayRoot,
   OverlayLayerProvider,
@@ -545,6 +544,5 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: theme.borderRadius.lg,
     overflow: "hidden",
     ...theme.shadow.md,
-    ...glassFloatingStyle(theme),
   },
 }));

@@ -67,7 +67,6 @@ import {
   useWebOverlayRegistration,
 } from "@/lib/overlay-root";
 import { buildDesktopFrameStyle } from "./combobox-frame-style";
-import { glassFloatingStyle } from "@/styles/theme";
 
 export { buildDesktopFrameStyle } from "./combobox-frame-style";
 
@@ -1772,7 +1771,6 @@ const styles = StyleSheet.create((theme) => ({
     ...theme.shadow.md,
     maxHeight: 400,
     overflow: "hidden",
-    ...glassFloatingStyle(theme),
   },
   desktopScroll: {
     flexShrink: 1,
