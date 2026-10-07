@@ -14,7 +14,7 @@ import Animated, { FadeIn, FadeOut } from "react-native-reanimated";
 import { ChevronDown } from "lucide-react-native";
 import { useTranslation } from "react-i18next";
 import type { StreamRenderInput, StreamStrategy, StreamViewportHandle } from "./strategy";
-import { glassFloatingStyle } from "@/styles/theme";
+import { glassOverlayStyle } from "@/styles/theme";
 
 /**
  * The ONE reusable anchored-list surface. Both the agent chat
@@ -153,7 +153,7 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     justifyContent: "center",
     ...theme.shadow.sm,
-    ...glassFloatingStyle(theme),
+    ...glassOverlayStyle(theme),
   },
   scrollToBottomIcon: {
     color: theme.colors.foreground,

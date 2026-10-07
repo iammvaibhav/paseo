@@ -1,4 +1,5 @@
 import { Platform } from "react-native";
+import { GLASS_FROST_FILTER_ID } from "@/styles/glass-frost-filter";
 import type { SurfaceBackdrop } from "@/styles/surface-backdrop";
 import { darkHighlightColors, lightHighlightColors } from "@getpaseo/highlight";
 
@@ -776,14 +777,24 @@ const darkShadow = {
  */
 export interface GlassTreatment {
   /**
-   * Menus, popovers, tooltips, dialogs, toasts: lighter than the pane so they stand out, and
-   * dense because nothing blurs what is under them. Do not add `backdrop-filter`: while any
-   * element with one is on screen, Chromium drops the window's vibrancy and the window goes dark.
+   * Transient surfaces over content (menus, popovers, tooltips, hover cards, dialogs, toasts):
+   * lighter than the pane so they stand out, with the content under them frosted.
    */
   floating: string;
-  /** A floating surface in its active or pressed state. */
-  floatingRaised: string;
+  /**
+   * The frost under `floating`: the SVG filter in `styles/glass-frost-filter.ts`. A plain
+   * `blur()` darkens where the page behind is transparent.
+   */
+  floatingBackdropFilter: string;
   floatingBorder: string;
+  /**
+   * Overlays that stay mounted over content (composer pills, the scroll-to-bottom button).
+   * Dense instead of frosted: while any `backdrop-filter` is on screen, Chromium composites the
+   * whole frame on the slower non-CoreAnimation path, so it must stay off long-lived elements.
+   */
+  overlay: string;
+  /** An `overlay` in its active or pressed state. */
+  overlayRaised: string;
   /** Surfaces that must hide what scrolls under them, such as sticky headers. */
   cover: string;
   /**
@@ -839,12 +850,14 @@ export const darkMonoGlassTheme = {
     surfaceWorkspace: "transparent",
     surfacePane: "transparent",
     surfaceUserMessage: "rgba(255, 255, 255, 0.09)",
-    popover: "rgba(46, 46, 46, 0.95)",
+    popover: "rgba(46, 46, 46, 0.72)",
   }),
   glass: {
-    floating: "rgba(46, 46, 46, 0.95)",
-    floatingRaised: "rgba(60, 60, 60, 0.96)",
+    floating: "rgba(46, 46, 46, 0.72)",
+    floatingBackdropFilter: `url(#${GLASS_FROST_FILTER_ID})`,
     floatingBorder: "rgba(255, 255, 255, 0.1)",
+    overlay: "rgba(46, 46, 46, 0.95)",
+    overlayRaised: "rgba(60, 60, 60, 0.96)",
     cover: "rgba(28, 28, 28, 0.94)",
     scrim: {
       surface0: "#1b1b1b",
@@ -862,11 +875,25 @@ interface GlassFloatingStyle {
   borderColor?: string;
 }
 
-/** Floating-surface fill for a glass theme; empty for opaque themes, which keep their own fill. */
+/**
+ * Frosted fill for a transient floating surface in a glass theme; empty for opaque themes, which
+ * keep their own fill. Only for surfaces that close again: see `GlassTreatment.overlay`.
+ */
 export function glassFloatingStyle(theme: Theme): GlassFloatingStyle {
   if (!theme.glass) return {};
+  // `backdropFilter` is a web style key react-native's style types do not declare.
   return {
     backgroundColor: theme.glass.floating,
+    borderColor: theme.glass.floatingBorder,
+    backdropFilter: theme.glass.floatingBackdropFilter,
+  } as GlassFloatingStyle;
+}
+
+/** Dense fill for a glass overlay that stays mounted over content; empty for opaque themes. */
+export function glassOverlayStyle(theme: Theme): GlassFloatingStyle {
+  if (!theme.glass) return {};
+  return {
+    backgroundColor: theme.glass.overlay,
     borderColor: theme.glass.floatingBorder,
   };
 }
