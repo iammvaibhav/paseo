@@ -1,3 +1,4 @@
+import { installGlassFrostFilter } from "@/styles/glass-frost-filter";
 import "@/styles/unistyles";
 import { BottomSheetModalProvider } from "@gorhom/bottom-sheet";
 import { PortalProvider } from "@gorhom/portal";
@@ -693,6 +694,7 @@ function DesktopWindowControlsSync() {
     // A glass theme paints translucent tints over the window's vibrancy, so the window and the
     // page body must be transparent too.
     const pageBackground = glass ? "transparent" : "";
+    if (glass) installGlassFrostFilter();
     document.documentElement.style.backgroundColor = pageBackground;
     document.body.style.backgroundColor = pageBackground;
     void updateDesktopWindowChrome({
