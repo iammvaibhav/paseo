@@ -32,9 +32,10 @@
 #                       remotes = blrofc3 (NetBird). The MacBook is a full
 #                       target driven over ssh (PASEO_MACBOOK_HOST, default
 #                       "macbook" = macbook.netbird.cloud): git-sync the checkout, rebuild the
-#                       server packages, restart its ~/.paseo daemon (snapshot +
-#                       nudge, same contract as a remote), then build → backup
-#                       Paseo.app as Paseo (Orig).app → quit → replace → relaunch.
+#                       server packages, deploy code-server (install.sh local), restart
+#                       its ~/.paseo daemon (snapshot + nudge, same contract as a remote),
+#                       then build → backup Paseo.app as Paseo (Orig).app → quit → replace
+#                       → relaunch.
 #                       The MacBook job is reachability-gated and NEVER fatal — if
 #                       the MacBook is down or its checkout is dirty/diverged,
 #                       iammvaibhav + remotes still deploy.
@@ -1165,6 +1166,16 @@ fi
 if [[ '${PASEO_SKIP_OMP_PLUGINS:-0}' != "1" ]]; then
   log "Installing omp plugins"
   bash plugins/install.sh macbook || log "  Warning: omp plugin install failed on the MacBook"
+fi
+
+# code-server for workspaces on the MacBook's own host: binary, config, the
+# paseo-bridge extension, language extensions, the VS Code root folder, and a
+# LaunchAgent reload. Same install.sh every other host runs. Not on a
+# desktop-only run: that contract is "app only".
+if [[ '${PASEO_SKIP_CODE_SERVER:-0}' != "1" && '${PASEO_DESKTOP_ONLY:-0}' != "1" ]]; then
+  log "Deploying code-server (host kind: local)"
+  CODE_SERVER_VERSION='${CODE_SERVER_VERSION:-}' bash scripts/code-server/install.sh local \
+    || log "  Warning: code-server deploy failed on the MacBook"
 fi
 
 desktop_failed=0

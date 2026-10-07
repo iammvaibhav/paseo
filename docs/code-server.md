@@ -28,7 +28,7 @@ Binary: standalone install under `~/.local/bin/code-server` (latest, or pin with
 
 ### Deploy / update (preferred)
 
-`./scripts/deploy.sh` deploys code-server on local + remotes after the daemon sync (binary update, config, service restart). **User settings** come from this Mac’s live `~/.local/share/code-server/User/settings.json` (pushed to remotes automatically). The repo `user-settings.json` is only a bootstrap fallback when no live file exists yet. Overrides:
+`./scripts/deploy.sh` deploys code-server on every host: the orchestrating host, each remote, and the MacBook job (binary update, config, paseo-bridge, language extensions, the VS Code root folder, service restart; skipped on a `PASEO_DESKTOP_ONLY=1` run). **User settings** come from this Mac’s live `~/.local/share/code-server/User/settings.json` (pushed to remotes automatically). The repo `user-settings.json` is only a bootstrap fallback when no live file exists yet. Overrides:
 
 ```bash
 PASEO_SKIP_CODE_SERVER=1 ./scripts/deploy.sh              # daemon only
