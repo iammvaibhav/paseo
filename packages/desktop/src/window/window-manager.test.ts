@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  buildSelectionAskContextMenuItems,
   applyMacWindowControlsUpdate,
   applyMacWindowVibrancy,
   DEFAULT_WINDOW_HEIGHT,
@@ -179,6 +180,28 @@ describe("window-manager", () => {
         width: 1024,
         height: 720,
       });
+    });
+  });
+
+  describe("buildSelectionAskContextMenuItems", () => {
+    it("offers Ask only for selected text outside editable fields", () => {
+      const contents = { executeJavaScript: vi.fn().mockResolvedValue(undefined) };
+      expect(
+        buildSelectionAskContextMenuItems(contents, { isEditable: false, selectionText: "  " }),
+      ).toEqual([]);
+      expect(
+        buildSelectionAskContextMenuItems(contents, { isEditable: true, selectionText: "text" }),
+      ).toEqual([]);
+
+      const [ask] = buildSelectionAskContextMenuItems(contents, {
+        isEditable: false,
+        selectionText: "some text",
+      });
+      expect(ask?.label).toBe("Ask");
+      ask?.click?.({} as never, undefined, {} as never);
+      expect(contents.executeJavaScript).toHaveBeenCalledWith(
+        'window.dispatchEvent(new CustomEvent("paseo:selection-ask"))',
+      );
     });
   });
 });
