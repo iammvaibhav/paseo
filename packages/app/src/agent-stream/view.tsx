@@ -1092,12 +1092,18 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     );
 
     // A group's host row is whichever item ended the run, so a thought can host one too.
+    // A thought outside a group (no tool call in its run yet) is the live step while it
+    // streams, so it shows open until it finishes.
     const renderThoughtItem = useCallback(
       (layoutItem: StreamLayoutItem, item: Extract<StreamItem, { kind: "thought" }>) => {
         const group = getToolCallGroup(item.id);
         return group
           ? renderToolRunGroup(group, layoutItem.isLastInToolSequence)
-          : renderThoughtSlot(item, layoutItem.isLastInToolSequence);
+          : renderThoughtSlot(
+              item,
+              layoutItem.isLastInToolSequence,
+              item.status === "loading" ? true : undefined,
+            );
       },
       [getToolCallGroup, renderThoughtSlot, renderToolRunGroup],
     );
