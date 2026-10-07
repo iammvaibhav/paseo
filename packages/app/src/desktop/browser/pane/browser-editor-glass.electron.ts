@@ -7,12 +7,12 @@
  * into the same washes and tints the app uses (see `GlassTreatment` in styles/theme.ts). It is
  * injected per window, so VS Code opened anywhere else keeps its own theme.
  */
-import { GLASS_FROST_FILTER_ID, GLASS_FROST_FILTER_MARKUP } from "@/styles/glass-frost-filter";
-
 const STYLE_ID = "paseo-glass";
 
-// VS Code's popups get the same frost as Paseo's floating surfaces (see GlassTreatment).
-const FLOATING = "rgba(58, 58, 58, 0.42)";
+// Dense, not frosted: VS Code keeps several widgets mounted while hidden, and any element with
+// `backdrop-filter` keeps the whole window on Chromium's opaque fallback path (see
+// GlassTreatment.overlay).
+const FLOATING = "rgba(46, 46, 46, 0.95)";
 const COVER = "rgba(28, 28, 28, 0.94)";
 
 const CLEARED_VARIABLES = [
@@ -46,16 +46,6 @@ const FLOATING_VARIABLES = [
 ];
 
 // Parts that VS Code also paints with inline styles, which the variables above do not reach.
-// VS Code's transient widgets; frosted like Paseo's floating surfaces.
-const FROSTED_SELECTORS = [
-  ".quick-input-widget",
-  ".editor-widget",
-  ".suggest-widget",
-  ".monaco-hover",
-  ".context-view .monaco-menu",
-  ".notification-toast",
-];
-
 const CLEARED_SELECTORS = [
   ".part.editor > .content",
   ".part.sidebar",
@@ -93,9 +83,6 @@ export const BROWSER_EDITOR_GLASS_CSS = [
   `${CLEARED_SELECTORS.map((selector) => `.monaco-workbench ${selector}`).join(",\n")} {`,
   "  background-color: transparent !important;",
   "}",
-  `${FROSTED_SELECTORS.map((selector) => `.monaco-workbench ${selector}`).join(",\n")} {`,
-  `  backdrop-filter: url(#${GLASS_FROST_FILTER_ID}) !important;`,
-  "}",
 ].join("\n");
 
 /**
@@ -106,18 +93,11 @@ export function buildBrowserEditorGlassScript(glass: boolean): string {
   return `(() => {
   const id = ${JSON.stringify(STYLE_ID)};
   const css = ${JSON.stringify(BROWSER_EDITOR_GLASS_CSS)};
-  const filterId = ${JSON.stringify(GLASS_FROST_FILTER_ID)};
-  const filterMarkup = ${JSON.stringify(GLASS_FROST_FILTER_MARKUP)};
   const apply = () => {
     const existing = document.getElementById(id);
     if (!${glass}) { existing?.remove(); return true; }
     if (!document.querySelector(".monaco-workbench")) return false;
     if (existing) return true;
-    if (!document.getElementById(filterId)) {
-      const host = document.createElement("div");
-      host.innerHTML = filterMarkup;
-      if (host.firstElementChild) document.body.appendChild(host.firstElementChild);
-    }
     const style = document.createElement("style");
     style.id = id;
     style.textContent = css;
