@@ -29,7 +29,7 @@ import { getOverlayRoot, OVERLAY_Z } from "@/lib/overlay-root";
 import { usePaneFocus } from "@/panels/pane-context";
 import { MarkdownRenderer } from "@/components/markdown/renderer";
 import { SyncedLoader } from "@/components/synced-loader";
-import type { Theme } from "@/styles/theme";
+import { glassFloatingStyle, type Theme } from "@/styles/theme";
 import { quoteSelection } from "./format";
 import {
   useSelectionAsk,
@@ -710,6 +710,7 @@ const styles = StyleSheet.create((theme) => ({
     borderRadius: theme.borderRadius.lg,
     borderWidth: 1,
     borderColor: theme.colors.border,
+    ...glassFloatingStyle(theme),
     padding: 10,
     gap: 8,
     // Always a black drop shadow — `theme.colors.foreground` is white in dark

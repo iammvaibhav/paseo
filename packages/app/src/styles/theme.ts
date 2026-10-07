@@ -839,11 +839,11 @@ export const darkMonoGlassTheme = {
     surfaceWorkspace: "transparent",
     surfacePane: "transparent",
     surfaceUserMessage: "rgba(255, 255, 255, 0.09)",
-    popover: "rgba(44, 44, 44, 0.9)",
+    popover: "rgba(46, 46, 46, 0.95)",
   }),
   glass: {
-    floating: "rgba(44, 44, 44, 0.9)",
-    floatingRaised: "rgba(58, 58, 58, 0.92)",
+    floating: "rgba(46, 46, 46, 0.95)",
+    floatingRaised: "rgba(60, 60, 60, 0.96)",
     floatingBorder: "rgba(255, 255, 255, 0.1)",
     cover: "rgba(28, 28, 28, 0.94)",
     scrim: {
