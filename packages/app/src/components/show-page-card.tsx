@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Modal, Pressable, Text, View } from "react-native";
 import { ExternalLink, Maximize2, X } from "lucide-react-native";
 import { useTranslation } from "react-i18next";
+import type { TFunction } from "i18next";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import type { ToolCallDetail } from "@getpaseo/protocol/agent-types";
@@ -125,6 +126,19 @@ function useResolvedSource(serverId: string, source: PageSource | null): Resolve
   return needsProxy ? proxied : { state: "ready", source };
 }
 
+/** The line shown instead of the page, or null when the page renders. */
+function pageNote(input: {
+  complete: boolean;
+  shown: boolean;
+  resolved: ResolvedSource;
+  t: TFunction;
+}): string | null {
+  if (!input.complete) return input.t("message.page.building");
+  if (!input.shown) return input.t("message.page.failed");
+  if (input.resolved.state === "error") return input.resolved.message;
+  return null;
+}
+
 interface ShowPageCardProps {
   detail: ToolCallDetail;
   status: string;
@@ -156,9 +170,11 @@ function ShowPageCardImpl({
     [themeJson],
   );
   const input = useMemo(() => readShowPageInput(detail), [detail]);
-  // Tool input streams in as partial JSON; build the page once the call is complete.
+  // Tool input streams in as partial JSON; build the page once the call is complete. A
+  // rejected call (its html was not markup) shows a note, never its input as a page.
   const complete = status !== "running";
-  const resolved = useResolvedSource(serverId, complete ? (input?.source ?? null) : null);
+  const shown = status === "completed";
+  const resolved = useResolvedSource(serverId, shown ? (input?.source ?? null) : null);
   const [fullSize, setFullSize] = useState(false);
   const openFullSize = useCallback(() => setFullSize(true), []);
   const closeFullSize = useCallback(() => setFullSize(false), []);
@@ -175,13 +191,9 @@ function ShowPageCardImpl({
   const title = input?.title ?? "Page";
   const maxHeight =
     input?.height ?? (input?.source.kind === "url" ? PAGE_URL_DEFAULT_HEIGHT : PAGE_MAX_HEIGHT);
-  let body: React.ReactNode = null;
-  if (!complete) {
-    body = <Text style={styles.note}>{t("message.page.building")}</Text>;
-  } else if (resolved.state === "error") {
-    body = <Text style={styles.note}>{resolved.message}</Text>;
-  } else if (resolved.state === "ready") {
-    body = (
+  const note = pageNote({ complete, shown, resolved, t });
+  const body =
+    note === null && resolved.state === "ready" ? (
       <PageFrame
         source={resolved.source}
         title={title}
@@ -190,8 +202,7 @@ function ShowPageCardImpl({
         onOpenUrl={handleOpenUrl}
         testID="show-page-frame"
       />
-    );
-  }
+    ) : null;
 
   return (
     <View style={styles.container} testID="show-page-card">
@@ -225,7 +236,7 @@ function ShowPageCardImpl({
           </View>
         ) : null}
       </View>
-      {body}
+      {note === null ? body : <Text style={styles.note}>{note}</Text>}
       {fullSize && resolved.state === "ready" ? (
         <PageFullSize
           source={resolved.source}
