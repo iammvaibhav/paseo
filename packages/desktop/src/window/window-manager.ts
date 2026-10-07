@@ -419,9 +419,40 @@ export function buildStandardContextMenuItems(
   return items;
 }
 
+/**
+ * Event the app listens for to open the selection Ask popover on the current selection
+ * (packages/app/src/selection-ask/selection-popover.web.tsx). The popover only opens from this
+ * menu item, never on a plain text selection.
+ */
+export const SELECTION_ASK_EVENT = "paseo:selection-ask";
+
+/** "Ask" for selected, non-editable text in the app window; the app decides if it applies. */
+export function buildSelectionAskContextMenuItems(
+  contents: Pick<WebContents, "executeJavaScript">,
+  params: Pick<Electron.ContextMenuParams, "isEditable" | "selectionText">,
+): MenuItemConstructorOptions[] {
+  if (params.isEditable || params.selectionText.trim().length === 0) return [];
+  return [
+    {
+      label: "Ask",
+      click: () => {
+        void contents
+          .executeJavaScript(
+            `window.dispatchEvent(new CustomEvent(${JSON.stringify(SELECTION_ASK_EVENT)}))`,
+          )
+          .catch(() => undefined);
+      },
+    },
+    { type: "separator" },
+  ];
+}
+
 export function setupDefaultContextMenu(win: BrowserWindow): void {
   win.webContents.on("context-menu", (_event, params) => {
-    const menu = Menu.buildFromTemplate(buildStandardContextMenuItems(win.webContents, params));
+    const menu = Menu.buildFromTemplate([
+      ...buildSelectionAskContextMenuItems(win.webContents, params),
+      ...buildStandardContextMenuItems(win.webContents, params),
+    ]);
     menu.popup({ window: win });
   });
 }

@@ -838,10 +838,15 @@ export const GLASS_THEME_NAME = "darkMonoGlass";
  * than the sidebar.
  */
 export interface GlassTuning {
-  /** Tint over the window vibrancy; the sidebar shows only this. */
+  /** Opacity of the tint over the window vibrancy; the sidebar shows only this. */
   window: number;
-  /** Extra tint over the chat and editor area. */
+  /** Opacity of the extra tint over the chat and editor area. */
   chat: number;
+  /**
+   * How dark the window and chat tints are, independent of their opacity: a see-through window
+   * can still read dark. 0 is a grey tint, 100 is black.
+   */
+  darkness: number;
   /** Menus, popovers, tooltips, hover cards (frosted). */
   floating: number;
   /** Composer pills and other overlays that stay over the transcript (not frosted). */
@@ -853,6 +858,7 @@ export interface GlassTuning {
 export const DEFAULT_GLASS_TUNING: GlassTuning = {
   window: 45,
   chat: 70,
+  darkness: 50,
   floating: 42,
   overlay: 95,
   panels: 100,
@@ -866,10 +872,13 @@ function glassAlpha(percent: number, scale = 1): number {
 export function resolveGlassColors(tuning: GlassTuning) {
   const wash = (alpha: number) => `rgba(255, 255, 255, ${glassAlpha(tuning.panels, alpha)})`;
   const floating = `rgba(58, 58, 58, ${glassAlpha(tuning.floating)})`;
+  // 50% darkness is the original #141414 window tint; the chat tint stays 3 steps lighter.
+  const shade = Math.round(40 * (1 - Math.min(Math.max(tuning.darkness, 0), 100) / 100));
+  const chatShade = Math.min(shade + 3, 255);
   return {
     colors: {
-      surfaceApp: `rgba(20, 20, 20, ${glassAlpha(tuning.window)})`,
-      surfaceContent: `rgba(23, 23, 23, ${glassAlpha(tuning.chat)})`,
+      surfaceApp: `rgba(${shade}, ${shade}, ${shade}, ${glassAlpha(tuning.window)})`,
+      surfaceContent: `rgba(${chatShade}, ${chatShade}, ${chatShade}, ${glassAlpha(tuning.chat)})`,
       surface1: wash(0.045),
       surface2: wash(0.08),
       surface3: wash(0.12),
