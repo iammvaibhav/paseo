@@ -85,6 +85,8 @@ export const ru: TranslationResources = {
       close: "Закрыть меню",
     },
     commandCenter: {
+      projects: "Проекты",
+      projectWorkspaces: en.shell.commandCenter.projectWorkspaces,
       placeholder: "Поиск команд, файлов, рабочих пространств и агентов...",
       filePlaceholder: "Поиск файлов...",
       searchingFiles: "Поиск файлов...",

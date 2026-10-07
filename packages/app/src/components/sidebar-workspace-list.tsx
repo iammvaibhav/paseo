@@ -58,6 +58,7 @@ import {
 } from "@/hooks/use-sidebar-workspace-pin";
 import { useSidebarWorkspaceAgents } from "@/hooks/use-sidebar-workspace-agents";
 import { useSidebarCollapsedSectionsStore } from "@/stores/sidebar-collapsed-sections-store";
+import { useSidebarRevealStore } from "@/stores/sidebar-reveal-store";
 import { useHostFeatureMap } from "@/runtime/host-features";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { useProjectIcons } from "@/projects/icons";
@@ -1023,6 +1024,39 @@ function NewWorkspaceGhostRow({
     </Pressable>
   );
 }
+/** How long a project revealed from the command center stays highlighted. */
+const PROJECT_REVEAL_HIGHLIGHT_MS = 1600;
+
+/**
+ * Consume a sidebar reveal request for this project: scroll the row into view (web) and
+ * highlight it briefly. True while the highlight shows.
+ */
+function useProjectRevealHighlight(
+  projectViewKey: string,
+  rowNodeRef: { current: View | null },
+): boolean {
+  const revealNonce = useSidebarRevealStore((state) =>
+    state.projectViewKey === projectViewKey ? state.nonce : null,
+  );
+  const clearReveal = useSidebarRevealStore((state) => state.clear);
+  useEffect(() => {
+    if (revealNonce === null) return;
+    // Let the expanded workspaces lay out first so the scroll lands on the final position.
+    const frame = requestAnimationFrame(() => {
+      const node = rowNodeRef.current as unknown;
+      if (platformIsWeb && node instanceof HTMLElement) {
+        node.scrollIntoView({ block: "start", behavior: "smooth" });
+      }
+    });
+    const timer = setTimeout(() => clearReveal(revealNonce), PROJECT_REVEAL_HIGHLIGHT_MS);
+    return () => {
+      cancelAnimationFrame(frame);
+      clearTimeout(timer);
+    };
+  }, [clearReveal, revealNonce, rowNodeRef]);
+  return revealNonce !== null;
+}
+
 // eslint-disable-next-line complexity -- agent-tab drop-target registration adds branches; the row stays one render path.
 function ProjectHeaderRow({
   project,
@@ -1086,13 +1120,16 @@ function ProjectHeaderRow({
       : "",
     disabled: !baseWorkspaceTarget,
   });
+  const rowNodeRef = useRef<View | null>(null);
   const setRowRef = useCallback(
     (node: View | null) => {
+      rowNodeRef.current = node;
       (dragHandleProps?.setActivatorNodeRef as ((value: unknown) => void) | undefined)?.(node);
       dropRowRef(node);
     },
     [dragHandleProps, dropRowRef],
   );
+  const isRevealed = useProjectRevealHighlight(project.viewKey, rowNodeRef);
 
   const handlePress = useCallback(() => {
     if (interaction.didLongPressRef.current) {
@@ -1126,11 +1163,11 @@ function ProjectHeaderRow({
     ({ pressed }: PressableStateCallbackType) => [
       styles.projectRow,
       isDragging && styles.projectRowDragging,
-      selected && styles.sidebarRowSelected,
+      (selected || isRevealed) && styles.sidebarRowSelected,
       isHovered && styles.projectRowHovered,
       pressed && styles.projectRowPressed,
     ],
-    [isDragging, selected, isHovered],
+    [isDragging, selected, isRevealed, isHovered],
   );
 
   const rowChildren = (

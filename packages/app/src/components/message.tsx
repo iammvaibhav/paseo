@@ -3203,6 +3203,7 @@ export const ToolCall = memo(function ToolCall({
 
   const isMobile = useIsCompactFormFactor();
   const shouldRenderInline = !isMobile || forceInline;
+  const isRunning = status === "running" || status === "executing";
 
   const effectiveDetail = useMemo<ToolCallDetail | undefined>(() => {
     if (detail) {
@@ -3306,6 +3307,7 @@ export const ToolCall = memo(function ToolCall({
         maxHeight={maxDetailHeight}
         showLoadingSkeleton={presentation.isLoadingDetails}
         resolveHost={resolveHost}
+        followTail={isRunning}
       />
     );
   }, [
@@ -3316,6 +3318,7 @@ export const ToolCall = memo(function ToolCall({
     presentation.isLoadingDetails,
     maxDetailHeight,
     resolveHost,
+    isRunning,
   ]);
 
   if (presentation.isPlan && effectiveDetail?.type === "plan") {
@@ -3339,7 +3342,7 @@ export const ToolCall = memo(function ToolCall({
       onToggle={presentation.canOpenDetails ? handleToggle : undefined}
       onOpenFile={handleOpenFile}
       renderDetails={presentation.canOpenDetails && shouldRenderInline ? renderDetails : undefined}
-      isLoading={status === "running" || status === "executing"}
+      isLoading={isRunning}
       isError={status === "failed"}
       isLastInSequence={isLastInSequence}
       disableOuterSpacing={disableOuterSpacing}
