@@ -38,6 +38,9 @@ import {
   type SelectionAskState,
 } from "./use-selection-ask";
 
+/** Sent by the desktop app's text context menu "Ask" item (desktop window-manager.ts). */
+const SELECTION_ASK_EVENT = "paseo:selection-ask";
+
 const POPOVER_WIDTH = 380;
 const POPOVER_MARGIN = 8;
 const ANSWER_MAX_HEIGHT = 320;
@@ -63,10 +66,11 @@ export interface SelectionAskPopoverHostProps {
 }
 
 /**
- * Web-only host for the selection Ask popover. Wraps the agent stream, waits
- * for a completed mouse selection (mouseup), and renders the popover portaled
- * to the overlay root anchored at the selection. Native builds use the no-op
- * sibling (`selection-popover.tsx`) so the feature is web-only.
+ * Web-only host for the selection Ask popover. Wraps the agent stream and opens
+ * the popover on the current selection when the desktop app's text context menu
+ * sends "Ask" (`SELECTION_ASK_EVENT`), portaled to the overlay root anchored at
+ * the selection. Selecting text alone never opens it. Native builds use the
+ * no-op sibling (`selection-popover.tsx`) so the feature is web-only.
  */
 export function SelectionAskPopoverHost({ config, children }: SelectionAskPopoverHostProps) {
   if (!config) {
@@ -117,7 +121,7 @@ function SelectionAskPopoverHostInner({
     internalOverlayOpenRef.current = Math.max(0, internalOverlayOpenRef.current + (open ? 1 : -1));
   }, []);
 
-  const handleMouseUp = useCallback(() => {
+  const handleAskRequest = useCallback(() => {
     const container = containerRef.current;
     const selection = window.getSelection();
     if (!container || !selection || selection.rangeCount !== 1 || selection.isCollapsed) {
@@ -217,14 +221,14 @@ function SelectionAskPopoverHostInner({
 
   useEffect(() => {
     window.addEventListener("pointerdown", handlePointerDown, true);
-    window.addEventListener("mouseup", handleMouseUp, true);
+    window.addEventListener(SELECTION_ASK_EVENT, handleAskRequest);
     window.addEventListener("keydown", handleKeyDown);
     window.addEventListener("blur", handleWindowBlur);
     window.addEventListener("focusin", handleFocusIn, true);
     document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => {
       window.removeEventListener("pointerdown", handlePointerDown, true);
-      window.removeEventListener("mouseup", handleMouseUp, true);
+      window.removeEventListener(SELECTION_ASK_EVENT, handleAskRequest);
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("blur", handleWindowBlur);
       window.removeEventListener("focusin", handleFocusIn, true);
@@ -236,7 +240,7 @@ function SelectionAskPopoverHostInner({
   }, [
     handleFocusIn,
     handleKeyDown,
-    handleMouseUp,
+    handleAskRequest,
     handlePointerDown,
     handleVisibilityChange,
     handleWindowBlur,
