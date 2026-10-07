@@ -5,7 +5,9 @@
   },
   // plugins/** holds omp agent plugins, one of them vendored from upstream: they
   // follow omp's own style (tabs) and must stay diffable against upstream.
-  "ignorePatterns": [".dev/**", "plugins/**"],
+  // scripts/omp-proxy/** is a standalone bun project built against omp's packages,
+  // in the same style.
+  "ignorePatterns": [".dev/**", "plugins/**", "scripts/omp-proxy/**"],
   "plugins": ["react", "react-perf", "unicorn", "typescript", "oxc", "import", "promise"],
   "categories": {
     "correctness": "error",

@@ -43,6 +43,14 @@ Set `PASEO_SKIP_OMP_PLUGINS=1` to skip plugin installation on all hosts during d
 PASEO_SKIP_OMP_PLUGINS=1 ./scripts/deploy.sh
 ```
 
+## omp version
+
+Every host runs the same `omp` release. Deploy runs `omp update` on the orchestrator first, takes its version as the fleet version, then runs `omp update` on each remote and the MacBook and fails the host when its version differs. Each host gets the build for its own architecture (linux-arm64, linux-x64, darwin-arm64), so the binaries differ while the version does not. `PASEO_SKIP_OMP_UPDATE=1` skips the updates.
+
+On each host the order is: `omp update`, then plugins, then the daemon restart, then the agent nudge, so resumed agents start on the new binary with the new plugins.
+
+Prod is not a Paseo host. It runs the omp auth broker that every host's `~/.omp/agent/config.yml` points at (`auth.broker`), plus `omp-proxy`, `omp-grok-refresher` and Bifrost. The proxy is compiled against exact `@oh-my-pi/*` versions and needs the native library of that version, which a newer `omp` deletes on first start, so the broker, the proxy and prod's `omp` change version in one step. Deploy's `prod` job does that and refuses to touch prod while the proxy's pin differs from the fleet version. Source, build, the pin, and the bump procedure: [`scripts/omp-proxy/README.md`](../scripts/omp-proxy/README.md).
+
 ## Adding a plugin
 
 Add a directory under `plugins/` containing a `package.json` with an `omp.extensions` manifest:

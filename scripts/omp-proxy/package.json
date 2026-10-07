@@ -1,0 +1,22 @@
+{
+	"name": "omp-proxy",
+	"version": "0.1.0",
+	"type": "module",
+	"private": true,
+	"scripts": {
+		"start": "bun run src/main.ts",
+		"grok-refresher": "bun run src/main.ts grok-refresher",
+		"sync-plugins": "bun run scripts/sync-plugins.ts",
+		"typecheck": "bun run scripts/sync-plugins.ts && tsc --noEmit -p .",
+		"build": "bun run scripts/sync-plugins.ts && bun build --compile --minify --target=bun-linux-arm64 --external omp-legacy-pi-modules src/main.ts --outfile dist/omp-proxy"
+	},
+	"dependencies": {
+		"@oh-my-pi/pi-ai": "18.8.3",
+		"@oh-my-pi/pi-catalog": "18.8.3",
+		"@oh-my-pi/pi-coding-agent": "18.8.3"
+	},
+	"devDependencies": {
+		"@types/bun": "^1.4.2",
+		"typescript": "^5.9.3"
+	}
+}
