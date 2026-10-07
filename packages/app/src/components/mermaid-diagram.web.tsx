@@ -146,17 +146,26 @@ const svgHostStyle: React.CSSProperties = {
 
 // Mermaid's color parser hangs the render on `rgba()`, and a glass theme's raised fills are
 // `rgba()` washes. It takes the same washes as 8-digit hex.
-const GLASS_MERMAID_COLORS = {
-  backgroundColor: "#ffffff00",
-  nodeBackgroundColor: "#ffffff1f",
-  nodeBorderColor: "#ffffff29",
-  clusterBackgroundColor: "#ffffff0b",
-};
+function rgbaToHex8(color: string): string {
+  const match = color.match(/^rgba?\(([^)]+)\)$/);
+  if (!match) return color;
+  const [r = 0, g = 0, b = 0, a = 1] = match[1].split(",").map((part) => Number(part.trim()));
+  const hex = (value: number) =>
+    Math.round(Math.min(Math.max(value, 0), 255))
+      .toString(16)
+      .padStart(2, "0");
+  return `#${hex(r)}${hex(g)}${hex(b)}${hex(a * 255)}`;
+}
 
 const mermaidThemeMapping = (theme: Theme): Partial<MermaidDiagramProps> => ({
   colorScheme: theme.colorScheme,
   ...(theme.glass
-    ? GLASS_MERMAID_COLORS
+    ? {
+        backgroundColor: "#ffffff00",
+        nodeBackgroundColor: rgbaToHex8(theme.colors.surface3),
+        nodeBorderColor: rgbaToHex8(theme.colors.surface4),
+        clusterBackgroundColor: rgbaToHex8(theme.colors.surface1),
+      }
     : {
         backgroundColor: theme.colors.surface2,
         nodeBackgroundColor: theme.colors.surface3,

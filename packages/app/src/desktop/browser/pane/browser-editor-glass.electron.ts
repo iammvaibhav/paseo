@@ -9,11 +9,19 @@
  */
 const STYLE_ID = "paseo-glass";
 
-// Dense, not frosted: VS Code keeps several widgets mounted while hidden, and any element with
-// `backdrop-filter` keeps the whole window on Chromium's opaque fallback path (see
-// GlassTreatment.overlay).
-const FLOATING = "rgba(46, 46, 46, 0.95)";
-const COVER = "rgba(28, 28, 28, 0.94)";
+/** The app's glass fills VS Code takes over, so the Appearance → Glass settings reach it. */
+export interface BrowserEditorGlassPalette {
+  /**
+   * VS Code's popups. The dense overlay fill, not the frosted one: VS Code keeps several widgets
+   * mounted while hidden, and any element with `backdrop-filter` keeps the whole window on
+   * Chromium's slower fallback path (see GlassTreatment.overlay).
+   */
+  overlay: string;
+  cover: string;
+  activeTab: string;
+  inactiveActiveTab: string;
+  input: string;
+}
 
 const CLEARED_VARIABLES = [
   "editor-background",
@@ -68,40 +76,43 @@ const CLEARED_SELECTORS = [
   ".monaco-editor .minimap",
 ];
 
-export const BROWSER_EDITOR_GLASS_CSS = [
-  "html, body { background: transparent !important; }",
-  ".monaco-workbench {",
-  "  background-color: transparent !important;",
-  ...CLEARED_VARIABLES.map((name) => `  --vscode-${name}: transparent !important;`),
-  ...FLOATING_VARIABLES.map((name) => `  --vscode-${name}: ${FLOATING} !important;`),
-  "  --vscode-tab-activeBackground: rgba(255, 255, 255, 0.08) !important;",
-  "  --vscode-tab-unfocusedActiveBackground: rgba(255, 255, 255, 0.06) !important;",
-  "  --vscode-input-background: rgba(255, 255, 255, 0.06) !important;",
-  `  --vscode-editorStickyScroll-background: ${COVER} !important;`,
-  `  --vscode-sideBarStickyScroll-background: ${COVER} !important;`,
-  "}",
-  `${CLEARED_SELECTORS.map((selector) => `.monaco-workbench ${selector}`).join(",\n")} {`,
-  "  background-color: transparent !important;",
-  "}",
-].join("\n");
+export function buildBrowserEditorGlassCss(palette: BrowserEditorGlassPalette): string {
+  return [
+    "html, body { background: transparent !important; }",
+    ".monaco-workbench {",
+    "  background-color: transparent !important;",
+    ...CLEARED_VARIABLES.map((name) => `  --vscode-${name}: transparent !important;`),
+    ...FLOATING_VARIABLES.map((name) => `  --vscode-${name}: ${palette.overlay} !important;`),
+    `  --vscode-tab-activeBackground: ${palette.activeTab} !important;`,
+    `  --vscode-tab-unfocusedActiveBackground: ${palette.inactiveActiveTab} !important;`,
+    `  --vscode-input-background: ${palette.input} !important;`,
+    `  --vscode-editorStickyScroll-background: ${palette.cover} !important;`,
+    `  --vscode-sideBarStickyScroll-background: ${palette.cover} !important;`,
+    "}",
+    `${CLEARED_SELECTORS.map((selector) => `.monaco-workbench ${selector}`).join(",\n")} {`,
+    "  background-color: transparent !important;",
+    "}",
+  ].join("\n");
+}
 
 /**
  * Script run in the guest page. It waits for VS Code's workbench (it boots after `dom-ready`),
- * then adds or removes the glass style. Pages that are not VS Code are left alone.
+ * then adds, updates, or (with no palette) removes the glass style. Pages that are not VS Code
+ * are left alone.
  */
-export function buildBrowserEditorGlassScript(glass: boolean): string {
+export function buildBrowserEditorGlassScript(palette: BrowserEditorGlassPalette | null): string {
+  const css = palette ? buildBrowserEditorGlassCss(palette) : null;
   return `(() => {
   const id = ${JSON.stringify(STYLE_ID)};
-  const css = ${JSON.stringify(BROWSER_EDITOR_GLASS_CSS)};
+  const css = ${JSON.stringify(css)};
   const apply = () => {
     const existing = document.getElementById(id);
-    if (!${glass}) { existing?.remove(); return true; }
+    if (css === null) { existing?.remove(); return true; }
     if (!document.querySelector(".monaco-workbench")) return false;
-    if (existing) return true;
-    const style = document.createElement("style");
+    const style = existing ?? document.createElement("style");
     style.id = id;
-    style.textContent = css;
-    document.head.appendChild(style);
+    if (style.textContent !== css) style.textContent = css;
+    if (!existing) document.head.appendChild(style);
     return true;
   };
   if (apply()) return;

@@ -2490,6 +2490,7 @@ export const ar: TranslationResources = {
         codeSizeHint: "يُستخدم للكود والفروقات ومخرجات الطرفية",
         codeSizeAccessibility: "حجم خط الكود",
       },
+      glass: en.settings.appearance.glass,
       layout: {
         title: "التخطيط",
         contentWidth: "عرض المحتوى",

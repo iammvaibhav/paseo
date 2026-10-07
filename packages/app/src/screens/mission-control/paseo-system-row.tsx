@@ -4,6 +4,7 @@ import { StyleSheet } from "react-native-unistyles";
 import { ScrollText } from "lucide-react-native";
 import { withUnistyles } from "react-native-unistyles";
 import type { Theme } from "@/styles/theme";
+import { MarkdownRenderer } from "@/components/markdown/renderer";
 import { openHistoryAskAgentLink } from "@/history-ask/open-agent-link";
 import { formatTimeAgo } from "@/utils/time";
 
@@ -13,6 +14,20 @@ const FLEET_DIGEST_COUNT_PATTERN = /^Fleet digest:\s*(\d+)\s+events?\.?$/i;
 const ENTRY_LINE_PATTERN = /^-\s*\[([^\]]*)\]\s*(.*)$/;
 const DEEP_LINK_PATTERN = /paseo:\/\/\S+/;
 const TITLE_HOST_PATTERN = /^(.*?)\s*\(([^)]*)\)\s*$/;
+// First line of a notify-on-finish body (server agent-prompt.ts `formatFinishNotificationBody`).
+const AGENT_FINISH_PATTERN =
+  /^Agent (\S+) \((.*)\) (finished|errored|needs permission|was closed)\.$/;
+const AGENT_RESPONSE_PATTERN = /<agent-response>\n?([\s\S]*?)\n?<\/agent-response>/;
+
+export type AgentFinishReason = "finished" | "errored" | "needs permission" | "was closed";
+
+/** A notify-on-finish envelope: a child agent's state change and its last reply. */
+export interface AgentFinishNotification {
+  agentId: string;
+  title: string;
+  reason: AgentFinishReason;
+  response: string | null;
+}
 
 export interface PaseoSystemEntry {
   kind: string | null;
@@ -92,6 +107,29 @@ function withOccurrenceKeys<T>(
   });
 }
 
+function stripEnvelope(text: string): string {
+  return text
+    .trim()
+    .replace(new RegExp(`^${PASEO_SYSTEM_OPEN_TAG}\\s*`, "i"), "")
+    .replace(new RegExp(`\\s*${PASEO_SYSTEM_CLOSE_TAG}\\s*$`, "i"), "")
+    .trim();
+}
+
+/** Parse a notify-on-finish envelope; null for any other `<paseo-system>` body. */
+export function parseAgentFinishNotification(text: string): AgentFinishNotification | null {
+  const body = stripEnvelope(text);
+  const firstLine = body.split("\n", 1)[0]?.trim() ?? "";
+  const match = firstLine.match(AGENT_FINISH_PATTERN);
+  if (!match) return null;
+  const response = body.match(AGENT_RESPONSE_PATTERN)?.[1]?.trim();
+  return {
+    agentId: match[1] ?? "",
+    title: match[2] ?? "",
+    reason: (match[3] ?? "finished") as AgentFinishReason,
+    response: response || null,
+  };
+}
+
 /**
  * Parse a `<paseo-system>` envelope into digest entries.
  *
@@ -106,12 +144,7 @@ function withOccurrenceKeys<T>(
  * a plain reason body; those surface as `bodyLines`.
  */
 export function parsePaseoSystemMessage(text: string): PaseoSystemDigest {
-  const cleaned = text
-    .trim()
-    .replace(new RegExp(`^${PASEO_SYSTEM_OPEN_TAG}\\s*`, "i"), "")
-    .replace(new RegExp(`\\s*${PASEO_SYSTEM_CLOSE_TAG}\\s*$`, "i"), "")
-    .trim();
-  const lines = cleaned.split("\n");
+  const lines = stripEnvelope(text).split("\n");
   const entries: PaseoSystemEntry[] = [];
   const bodyLines: string[] = [];
   let count: number | null = null;
@@ -168,6 +201,50 @@ interface PaseoSystemRowProps {
  * for proofs and pretty-rendered tool bodies.
  */
 export function PaseoSystemRow({ text, timestamp }: PaseoSystemRowProps): ReactElement {
+  const finish = useMemo(() => parseAgentFinishNotification(text), [text]);
+  if (finish) {
+    return <AgentFinishCard notification={finish} timestamp={timestamp} />;
+  }
+  return <PaseoSystemDigestRow text={text} timestamp={timestamp} />;
+}
+
+const AGENT_FINISH_DOT_STYLE: Record<AgentFinishReason, "dotDone" | "dotFailed" | "dotBlocked"> = {
+  finished: "dotDone",
+  errored: "dotFailed",
+  "needs permission": "dotBlocked",
+  "was closed": "dotBlocked",
+};
+
+/** A child agent's finish, shown like the agent's own reply: its title, state, and last message. */
+function AgentFinishCard({
+  notification,
+  timestamp,
+}: {
+  notification: AgentFinishNotification;
+  timestamp: number;
+}): ReactElement {
+  return (
+    <View style={styles.container}>
+      <View style={styles.finishCard}>
+        <View style={styles.finishHeader}>
+          <View style={[styles.finishDot, styles[AGENT_FINISH_DOT_STYLE[notification.reason]]]} />
+          <Text style={styles.finishTitle} numberOfLines={1}>
+            {notification.title || notification.agentId}
+          </Text>
+          <Text style={styles.finishReason} numberOfLines={1}>
+            {notification.reason}
+          </Text>
+          <Text style={styles.timestamp} numberOfLines={1}>
+            {formatTimeAgo(new Date(timestamp))}
+          </Text>
+        </View>
+        {notification.response ? <MarkdownRenderer text={notification.response} compact /> : null}
+      </View>
+    </View>
+  );
+}
+
+function PaseoSystemDigestRow({ text, timestamp }: PaseoSystemRowProps): ReactElement {
   const parsed = useMemo(() => parsePaseoSystemMessage(text), [text]);
   const keyedEntries = useMemo(
     () => withOccurrenceKeys(parsed.entries, paseoEntryListKey),
@@ -263,6 +340,49 @@ function DigestEntryAgentChip({ entry }: { entry: PaseoSystemEntry }): ReactElem
 const styles = StyleSheet.create((theme) => ({
   container: {
     paddingVertical: theme.spacing[2],
+  },
+  finishCard: {
+    gap: theme.spacing[1],
+    borderWidth: theme.borderWidth[1],
+    borderColor: theme.colors.border,
+    borderRadius: theme.borderRadius.lg,
+    backgroundColor: theme.colors.surface1,
+    paddingHorizontal: theme.spacing[3],
+    paddingVertical: theme.spacing[2],
+  },
+  finishHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[2],
+    minWidth: 0,
+  },
+  finishDot: {
+    width: 7,
+    height: 7,
+    borderRadius: theme.borderRadius.full,
+    flexShrink: 0,
+  },
+  dotDone: {
+    backgroundColor: theme.colors.statusDotSuccess,
+  },
+  dotFailed: {
+    backgroundColor: theme.colors.statusDotDanger,
+  },
+  dotBlocked: {
+    backgroundColor: theme.colors.statusDotWarning,
+  },
+  finishTitle: {
+    flexShrink: 1,
+    fontFamily: theme.fontFamily.ui,
+    fontSize: theme.fontSize.base,
+    fontWeight: theme.fontWeight.medium,
+    color: theme.colors.foreground,
+  },
+  finishReason: {
+    flex: 1,
+    fontFamily: theme.fontFamily.ui,
+    fontSize: theme.fontSize.sm,
+    color: theme.colors.foregroundMuted,
   },
   headerRow: {
     flexDirection: "row",

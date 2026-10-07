@@ -2459,6 +2459,7 @@ export const zhCN: TranslationResources = {
         codeSizeHint: "用于代码、差异和终端输出",
         codeSizeAccessibility: "代码字号",
       },
+      glass: en.settings.appearance.glass,
       layout: {
         title: "布局",
         contentWidth: "内容宽度",

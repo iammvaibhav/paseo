@@ -2499,6 +2499,7 @@ export const ko: TranslationResources = {
         codeSizeHint: "코드, diff 및 터미널 출력에 사용됩니다",
         codeSizeAccessibility: "코드 글꼴 크기",
       },
+      glass: en.settings.appearance.glass,
       layout: {
         title: "레이아웃",
         contentWidth: "콘텐츠 너비",

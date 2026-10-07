@@ -2508,6 +2508,7 @@ export const ja: TranslationResources = {
         codeSizeHint: "コード、差分、ターミナル出力に使用されます",
         codeSizeAccessibility: "コードフォントサイズ",
       },
+      glass: en.settings.appearance.glass,
       layout: {
         title: "レイアウト",
         contentWidth: "コンテンツ幅",
