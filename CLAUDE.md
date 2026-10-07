@@ -233,7 +233,7 @@ All local customizations live on **`vaibhav/customizations`**, branched from `up
 - **Open in editor over SSH** for remote workspaces (`HostProfile.sshHost`)
 - **Open → VS Code Web** via always-on code-server on each host (`HostProfile.browserEditorUrl`) — see [docs/code-server.md](docs/code-server.md)
   - Background **preload** so it opens instantly, and in-place file opens with no reload via the `scripts/code-server/paseo-bridge/` extension
-  - Desktop-only **Host files** browser (left rail) rooted at `/`, opening files in VS Code Web
+  - Every desktop file open goes to VS Code (chat links incl. `~/…` and folder links, Files sidebar, Changes), Cmd+P opens VS Code's Quick Open, and the Files sidebar browses outside the workspace
 - LaTeX math rendering for agent messages
 - **Webhooks** — HTTP-triggered agents (a tab below Schedules) with configurable tunnel providers (Tailscale Funnel / cloudflared), URL-token + optional HMAC auth, and payload templating — see [docs/webhooks.md](docs/webhooks.md)
 - **Native tickets** — boards, tickets, comments, attachments, blockers, sub-tasks and initiatives stored by the Commander-host daemon in SQLite and shown in the app at `/tickets` (desktop, web, iOS), with itsaplan import; runs beside itsaplan for now — see [docs/tickets.md](docs/tickets.md)

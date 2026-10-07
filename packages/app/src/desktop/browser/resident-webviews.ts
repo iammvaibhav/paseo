@@ -87,8 +87,22 @@ function registerBrowserWhenAttached(
   });
 }
 
+/**
+ * True for a `did-start-navigation` that replaces the guest's top document.
+ * `did-start-loading` is not a usable signal: it also fires for subframe loads
+ * (VS Code Web starts iframes for previews and extension webviews), and no
+ * `dom-ready` follows those, so readiness would stay cleared on a live page.
+ */
+export function isMainFrameDocumentNavigation(event: Event): boolean {
+  const navigation = event as Event & { isMainFrame?: unknown; isInPlace?: unknown };
+  return navigation.isMainFrame === true && navigation.isInPlace !== true;
+}
+
 function registerBrowserReadiness(webview: HTMLElement): void {
-  webview.addEventListener("did-start-loading", () => {
+  webview.addEventListener("did-start-navigation", (event) => {
+    if (!isMainFrameDocumentNavigation(event)) {
+      return;
+    }
     readyResidentWebviews.delete(webview);
     webview.removeAttribute(DOM_READY_ATTRIBUTE);
   });

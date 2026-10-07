@@ -84,6 +84,12 @@ export interface PanelState {
   explorerTabByCheckout: Record<string, ExplorerTab>;
   selectedSubmoduleByCheckout: Record<string, string>;
   expandedPathsByWorkspace: Record<string, string[]>;
+  /**
+   * Files view root when it browses away from the workspace root (an ancestor
+   * folder, or a folder opened from a chat link), keyed by workspace tab key.
+   * Session-only: absent means the workspace root.
+   */
+  explorerBrowseRootByWorkspace: Record<string, string>;
   // Changes-view folder tree. Inverted semantics vs the fields above:
   // this stores COLLAPSED directory paths (empty = all folders expanded), keyed
   // by full uncompressed dir path, so folders default to expanded and new
@@ -126,6 +132,7 @@ export interface PanelState {
     submodulePath: string | null;
   }) => void;
   setExpandedPathsForWorkspace: (workspaceKey: string, paths: ExpandedPathsUpdate) => void;
+  setExplorerBrowseRoot: (workspaceKey: string, root: string | null) => void;
   setDiffCollapsedFoldersForWorkspace: (workspaceKey: string, dirPaths: string[]) => void;
   setCollapsedFilePathsForWorkspace: (workspaceKey: string, paths: string[]) => void;
   activateExplorerTabForCheckout: (checkout: ExplorerCheckoutContext) => void;
@@ -167,6 +174,7 @@ export const usePanelStore = create<PanelState>()(
       explorerTabByCheckout: {},
       selectedSubmoduleByCheckout: {},
       expandedPathsByWorkspace: {},
+      explorerBrowseRootByWorkspace: {},
       diffCollapsedFoldersByWorkspace: {},
       collapsedFilePathsByWorkspace: {},
       sidebarWidth: DEFAULT_SIDEBAR_WIDTH,
@@ -296,6 +304,16 @@ export const usePanelStore = create<PanelState>()(
               [workspaceKey]: nextPaths,
             },
           };
+        }),
+      setExplorerBrowseRoot: (workspaceKey, root) =>
+        set((state) => {
+          const next = { ...state.explorerBrowseRootByWorkspace };
+          if (root) {
+            next[workspaceKey] = root;
+          } else {
+            delete next[workspaceKey];
+          }
+          return { explorerBrowseRootByWorkspace: next };
         }),
       setDiffCollapsedFoldersForWorkspace: (workspaceKey, dirPaths) =>
         set((state) => ({

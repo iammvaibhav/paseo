@@ -78,6 +78,10 @@ export function buildBridgeRestorePath(): string {
   return `/proxy/${CODE_SERVER_BRIDGE_PORT}/broker/restore`;
 }
 
+export function buildBridgeCommandPath(): string {
+  return `/proxy/${CODE_SERVER_BRIDGE_PORT}/broker/command`;
+}
+
 /** Origin form Chromium expects for --unsafely-treat-insecure-origin-as-secure. */
 export function browserEditorOriginFromUrl(baseUrl: string): string | null {
   const trimmed = baseUrl.trim();

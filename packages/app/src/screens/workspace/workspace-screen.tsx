@@ -220,6 +220,7 @@ import {
   openBrowserEditorTab,
   tryOpenFileInBrowserEditor,
 } from "@/workspace/open-file-in-browser-editor";
+import { useEditorQuickOpenShortcut } from "@/screens/workspace/use-editor-quick-open-shortcut";
 import {
   stopPlannotatorBrowserIfNeeded,
   tryOpenFileInPlannotator,
@@ -3820,6 +3821,18 @@ function WorkspaceScreenContent({
     priority: 100,
     isActive: () => true,
     handle: handleWorkspacePanelOpenAction,
+  });
+
+  useEditorQuickOpenShortcut({
+    enabled: workspaceActionsEnabled,
+    serverId: normalizedServerId,
+    workspaceId: normalizedWorkspaceId,
+    browserEditorUrl,
+    workspaceDirectory,
+    persistenceKey,
+    workspaceTabs: uiTabs,
+    openWorkspaceTabFocused,
+    navigateToTabId,
   });
 
   useKeyboardActionHandler({
