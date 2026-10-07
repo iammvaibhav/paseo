@@ -424,6 +424,15 @@ export const zhCN: TranslationResources = {
       viewSource: "查看源码",
       viewDiagram: "查看图表",
     },
+    page: {
+      building: "正在生成页面…",
+      fullSize: "完整尺寸",
+      close: "关闭",
+      openInBrowser: "在浏览器中打开",
+      needsDirect: "显示 localhost 页面需要直接连接到此主机。",
+      updateHost: "请更新此主机以显示其 localhost 页面。",
+      failed: "无法显示该页面。",
+    },
     actions: {
       copyCode: "复制代码",
       copyTurn: "复制回合",

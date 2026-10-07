@@ -429,6 +429,15 @@ export const ptBR: TranslationResources = {
       viewSource: "Ver fonte",
       viewDiagram: "Ver diagrama",
     },
+    page: {
+      building: "Criando página…",
+      fullSize: "Tamanho total",
+      close: "Fechar",
+      openInBrowser: "Abrir no navegador",
+      needsDirect: "Mostrar uma página localhost requer uma conexão direta com este host.",
+      updateHost: "Atualize este host para mostrar as páginas localhost dele.",
+      failed: "Não foi possível mostrar a página.",
+    },
     actions: {
       copyCode: "Copiar código",
       copyTurn: "Copiar turno",

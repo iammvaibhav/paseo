@@ -1,5 +1,12 @@
 import type * as EChartsApi from "echarts";
 import type { ChartAssemblyInput } from "flint-chart";
+import {
+  buildEChartsTheme,
+  buildPlotlyLayout,
+  buildVegaLiteConfig,
+  recolorChartSpec,
+  type PageThemeTokens,
+} from "@getpaseo/protocol/page/theme";
 import type { ChartFenceLanguage } from "./interactive-chart-fence";
 import { applyChartRows, findChartDataUrl } from "./chart-data-source";
 import type { ChartRow } from "./chart-data-source";
@@ -17,7 +24,8 @@ interface MountChartParams {
   host: HTMLElement;
   spec: Record<string, unknown>;
   language: ChartFenceLanguage;
-  colorScheme: "light" | "dark";
+  /** The app theme's chart colors; every backend paints a transparent background. */
+  tokens: PageThemeTokens;
   /** Reads a workspace file when the spec references one instead of inlining rows. */
   resolveData?: ((path: string) => Promise<ChartRow[]>) | null;
 }
@@ -85,20 +93,27 @@ async function compileSpec(
   spec: Record<string, unknown>,
   language: ChartFenceLanguage,
   backend: ChartBackend,
+  palette: readonly string[],
 ): Promise<Record<string, unknown>> {
   if (language !== "flint") {
     return spec;
   }
   const flint = await loadFlint();
   const input = spec as unknown as ChartAssemblyInput;
+  let compiled: unknown;
   if (backend === "vegalite") {
-    return flint.assembleVegaLite(input) as unknown as Record<string, unknown>;
+    compiled = flint.assembleVegaLite(input);
+  } else if (backend === "plotly") {
+    compiled = flint.assemblePlotly(input);
+  } else {
+    compiled = flint.assembleECharts(input);
   }
-  if (backend === "plotly") {
-    return flint.assemblePlotly(input) as unknown as Record<string, unknown>;
-  }
-  return flint.assembleECharts(input) as unknown as Record<string, unknown>;
+  // Flint writes each backend's default palette into the spec; a raw fence keeps its colors.
+  return recolorChartSpec(compiled as Record<string, unknown>, palette);
 }
+
+/** Height the default range slider needs below the plot, so it never covers the axis name. */
+const SLIDER_ROOM_PX = 32;
 
 /**
  * ECharts draws nothing interactive unless asked, so every chart gets a
@@ -106,22 +121,30 @@ async function compileSpec(
  * own choice. Non-cartesian series (pie, gauge, sankey) ignore `dataZoom`.
  */
 function withEchartsInteractions(option: EChartsApi.EChartsOption): EChartsApi.EChartsOption {
+  const addsSlider = option.dataZoom === undefined;
+  const grid = option.grid as { bottom?: unknown } | undefined;
   return {
     ...option,
     tooltip: { trigger: "axis", axisPointer: { type: "cross" }, ...option.tooltip },
     dataZoom: option.dataZoom ?? [{ type: "inside" }, { type: "slider", bottom: 8, height: 20 }],
+    ...(addsSlider && grid && typeof grid.bottom === "number"
+      ? { grid: { ...grid, bottom: grid.bottom + SLIDER_ROOM_PX } }
+      : {}),
   };
 }
 
 async function mountECharts(
   host: HTMLElement,
   spec: Record<string, unknown>,
-  colorScheme: "light" | "dark",
+  tokens: PageThemeTokens,
 ): Promise<ChartMount> {
   const echarts = await loadECharts();
-  const chart = echarts.init(host, colorScheme === "light" ? undefined : "dark", {
-    renderer: "canvas",
-  });
+  // Flint lays out label rotation and margins for the height it reports; give it that height.
+  const { height } = flintSize(spec);
+  if (height !== undefined) {
+    host.style.height = `${height + (spec.dataZoom === undefined ? SLIDER_ROOM_PX : 0)}px`;
+  }
+  const chart = echarts.init(host, buildEChartsTheme(tokens), { renderer: "canvas" });
   chart.setOption(withEchartsInteractions(spec as EChartsApi.EChartsOption), true);
   return { dispose: () => chart.dispose(), resize: () => chart.resize() };
 }
@@ -129,18 +152,20 @@ async function mountECharts(
 async function mountVegaLite(
   host: HTMLElement,
   spec: Record<string, unknown>,
-  colorScheme: "light" | "dark",
+  tokens: PageThemeTokens,
 ): Promise<ChartMount> {
   const vegaEmbed = await loadVegaEmbed();
   const { width, height, ...rest } = spec;
   const flintDefaults = flintSize(spec);
   const resolvedWidth = width ?? flintDefaults.width;
   const resolvedHeight = height ?? flintDefaults.height;
+  const themeConfig = buildVegaLiteConfig(tokens);
+  const specConfig = (rest.config as Record<string, unknown> | undefined) ?? {};
   const embedded = {
-    // Vega's dark theme paints an opaque plot background that clashes with the
-    // surrounding card. A spec may still declare its own.
+    // A spec may still declare its own background or config keys; they win.
     background: "transparent",
     ...rest,
+    config: { ...themeConfig, ...specConfig },
     ...(resolvedWidth === undefined ? {} : { width: resolvedWidth }),
     ...(resolvedHeight === undefined ? {} : { height: resolvedHeight }),
   } as Parameters<typeof vegaEmbed>[1];
@@ -151,7 +176,6 @@ async function mountVegaLite(
     mode: "vega-lite",
     actions: false,
     renderer: "canvas",
-    ...(colorScheme === "dark" ? { theme: "dark" as const } : {}),
   });
 
   return {
@@ -163,24 +187,28 @@ async function mountVegaLite(
 async function mountPlotly(
   host: HTMLElement,
   spec: Record<string, unknown>,
-  colorScheme: "light" | "dark",
+  tokens: PageThemeTokens,
 ): Promise<ChartMount> {
   const Plotly = await loadPlotly();
   const data = Array.isArray(spec.data) ? spec.data : [];
   const layout = (spec.layout as Record<string, unknown> | undefined) ?? {};
-  const darkLayout =
-    colorScheme === "dark"
-      ? {
-          paper_bgcolor: "rgba(0,0,0,0)",
-          plot_bgcolor: "rgba(0,0,0,0)",
-          font: { color: "#a1a1aa" },
-        }
-      : {};
+  const themeLayout = buildPlotlyLayout(tokens);
+  const axis = (key: "xaxis" | "yaxis") => ({
+    ...(themeLayout[key] as Record<string, unknown>),
+    ...(layout[key] as Record<string, unknown> | undefined),
+  });
 
   await Plotly.newPlot(
     host,
     data,
-    { autosize: true, ...flintSize(spec), ...darkLayout, ...layout },
+    {
+      autosize: true,
+      ...flintSize(spec),
+      ...themeLayout,
+      ...layout,
+      xaxis: axis("xaxis"),
+      yaxis: axis("yaxis"),
+    },
     { responsive: true, displaylogo: false },
   );
 
@@ -198,7 +226,7 @@ export async function mountChart({
   host,
   spec,
   language,
-  colorScheme,
+  tokens,
   resolveData,
 }: MountChartParams): Promise<ChartMount> {
   const backend = resolveChartBackend(spec, language);
@@ -214,13 +242,13 @@ export async function mountChart({
     resolved = applyChartRows(spec, language, await resolveData(dataUrl));
   }
 
-  const compiled = await compileSpec(resolved, language, backend);
+  const compiled = await compileSpec(resolved, language, backend, tokens.palette);
 
   if (backend === "vegalite") {
-    return mountVegaLite(host, compiled, colorScheme);
+    return mountVegaLite(host, compiled, tokens);
   }
   if (backend === "plotly") {
-    return mountPlotly(host, compiled, colorScheme);
+    return mountPlotly(host, compiled, tokens);
   }
-  return mountECharts(host, compiled, colorScheme);
+  return mountECharts(host, compiled, tokens);
 }

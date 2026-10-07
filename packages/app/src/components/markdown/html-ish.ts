@@ -90,6 +90,16 @@ export function splitHtmlishMarkdown(source: string): MarkdownDisplayPart[] {
   return splitHtmlishTokens(tokenizeHtmlishMarkdown(source));
 }
 
+const DETAILS_ELEMENT_RE = /<details[\s>]/i;
+
+/**
+ * Assistant replies parse HTML only for a block that holds a `<details>` element, so prose
+ * that names a tag outside a code span (`Array<string>`, `a<b`) keeps rendering as text.
+ */
+export function containsDetailsElement(source: string): boolean {
+  return DETAILS_ELEMENT_RE.test(source);
+}
+
 function splitHtmlishTokens(tokens: HtmlToken[]): MarkdownDisplayPart[] {
   const parts: MarkdownDisplayPart[] = [];
   let cursor = 0;

@@ -67,8 +67,9 @@ import { ToolCallSheetProvider } from "@/components/tool-call-sheet";
 import { createStreamPresentation, getStreamItemMessageId } from "./presentation";
 import { OverviewToolCallGroupView } from "@/tool-calls/detail-level/overview/view";
 import type { ToolCallDetailGroup } from "@/tool-calls/detail-level/projection";
-import { isStatusReportToolCall } from "@/tool-calls/detail-level/grouping";
+import { isShowPageToolCall, isStatusReportToolCall } from "@/tool-calls/detail-level/grouping";
 import { StatusReportCard } from "@/components/status-report-card";
+import { ShowPageCard } from "@/components/show-page-card";
 import { type AgentStreamRenderModel, buildAgentStreamRenderModel } from "./model";
 import { resolveStreamRenderStrategy } from "./strategy-resolver";
 import { type StreamSegmentRenderers, type StreamViewportHandle } from "./strategy";
@@ -1014,6 +1015,12 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
             return <StatusReportCard detail={data.detail} />;
           }
 
+          if (isShowPageToolCall(item)) {
+            return (
+              <ShowPageCard detail={data.detail} status={data.status} serverId={resolvedServerId} />
+            );
+          }
+
           return (
             <ToolCallSlot
               itemId={item.id}
@@ -1048,7 +1055,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
           />
         );
       },
-      [context.cwd, setInlineDetailsExpanded, handleToolCallOpenFile],
+      [context.cwd, resolvedServerId, setInlineDetailsExpanded, handleToolCallOpenFile],
     );
 
     // Read through a stable event so live group updates do not change the renderer identity

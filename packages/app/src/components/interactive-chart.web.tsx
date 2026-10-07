@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Text, View } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
+import type { PageThemeTokens } from "@getpaseo/protocol/page/theme";
+import { buildPageThemeTokens } from "@/components/page-frame/page-theme";
 import type { Theme } from "@/styles/theme";
 import type { ChartFenceLanguage } from "./interactive-chart-fence";
 import { mountChart, type ChartMount } from "./interactive-chart-engines.web";
@@ -9,7 +11,11 @@ import { useChartDataResolver } from "./chart-data-context";
 interface InteractiveChartProps {
   code: string;
   language: ChartFenceLanguage;
-  colorScheme?: Theme["colorScheme"];
+  /**
+   * The chart theme as JSON: a string compares by value, so the chart redraws only when a
+   * color actually changes, not on every theme recompute.
+   */
+  themeJson?: string;
 }
 
 interface ChartRenderState {
@@ -30,10 +36,14 @@ function parseChartSpec(code: string): Record<string, unknown> | null {
   }
 }
 
-function InteractiveChartBase({ code, language, colorScheme = "dark" }: InteractiveChartProps) {
+function InteractiveChartBase({ code, language, themeJson }: InteractiveChartProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const [state, setState] = useState<ChartRenderState>({ error: null, ready: false });
   const spec = useMemo(() => parseChartSpec(code), [code]);
+  const tokens = useMemo(
+    () => (themeJson ? (JSON.parse(themeJson) as PageThemeTokens) : null),
+    [themeJson],
+  );
   const resolveData = useChartDataResolver();
 
   useEffect(() => {
@@ -41,6 +51,8 @@ function InteractiveChartBase({ code, language, colorScheme = "dark" }: Interact
       setState({ error: "Chart block is not a valid JSON object", ready: false });
       return;
     }
+    if (!tokens) return;
+    const chartTokens = tokens;
 
     let cancelled = false;
     let mounted: ChartMount | null = null;
@@ -57,7 +69,7 @@ function InteractiveChartBase({ code, language, colorScheme = "dark" }: Interact
           host,
           spec: spec as Record<string, unknown>,
           language,
-          colorScheme,
+          tokens: chartTokens,
           resolveData,
         });
 
@@ -85,7 +97,7 @@ function InteractiveChartBase({ code, language, colorScheme = "dark" }: Interact
       observer?.disconnect();
       mounted?.dispose();
     };
-  }, [spec, language, colorScheme, resolveData]);
+  }, [spec, language, tokens, resolveData]);
 
   if (state.error) {
     return (
@@ -115,7 +127,7 @@ const chartHostStyle: React.CSSProperties = {
 };
 
 const chartThemeMapping = (theme: Theme): Partial<InteractiveChartProps> => ({
-  colorScheme: theme.colorScheme,
+  themeJson: JSON.stringify(buildPageThemeTokens(theme)),
 });
 
 const ThemedInteractiveChart = withUnistyles(InteractiveChartBase);

@@ -233,6 +233,8 @@ import { resolveConfigFromPersisted, type CliConfigOverrides } from "./config.js
 import { resolvePaseoToolPolicy } from "./agent/paseo-tool-policy.js";
 import { BrowserToolsBroker } from "./browser-tools/broker.js";
 import { DaemonConfigBrowserToolsPolicy } from "./browser-tools/policy.js";
+import { PagePreviewBrowser } from "./page-tools/preview-browser.js";
+import { PagePortProxy } from "./page-tools/port-proxy.js";
 import { WorkspaceGitServiceImpl, type WorkspaceGitService } from "./workspace-git-service.js";
 import { resolveWorkspaceIdForPath } from "./resolve-workspace-id-for-path.js";
 import {
@@ -1129,6 +1131,11 @@ export async function createPaseoDaemon(
   });
   const browserToolsPolicy = new DaemonConfigBrowserToolsPolicy(daemonConfigStore);
   const browserToolsBroker = new BrowserToolsBroker({});
+  const pagePreviewBrowser = new PagePreviewBrowser(logger.child({ module: "page-preview" }));
+  const pagePortProxy = new PagePortProxy({
+    logger: logger.child({ module: "page-proxy" }),
+    getBindHost: () => (listenTarget.type === "tcp" ? listenTarget.host : "127.0.0.1"),
+  });
   const pluginRuntime: PluginService = new PluginService(logger, daemonConfigStore, daemonVersion, {
     usageAgents: {
       hasAgent: (id) => agentManager.getAgent(id) !== null,
@@ -2850,6 +2857,7 @@ export async function createPaseoDaemon(
     createPaseoWorktree: createAgentCommandDependencies.createPaseoWorktree,
     browserToolsEnabled: browserToolsPolicy.isEnabled(),
     browserToolsBroker,
+    pagePreviewBrowser,
     peerManager,
     missionControlService,
     itsaplanTicketize: {
@@ -3225,7 +3233,7 @@ export async function createPaseoDaemon(
               docThreadsHost,
               ticketsHost,
               notesHost,
-              { ticketsHost, automationService },
+              { ticketsHost, automationService, pagePortProxy },
             );
             pluginRuntime.bindPaseoSessionHost(wsServer);
             await pluginRuntime.start();
@@ -3328,6 +3336,8 @@ export async function createPaseoDaemon(
     await scheduleService.stop().catch(() => undefined);
     baseCheckoutSyncService.stop();
     await peerManager?.close().catch(() => undefined);
+    await pagePreviewBrowser.close();
+    await pagePortProxy.close();
     await tunnelManager.stop().catch(() => undefined);
     await relayRuntime?.stop().catch(() => undefined);
     if (wsServer) {
