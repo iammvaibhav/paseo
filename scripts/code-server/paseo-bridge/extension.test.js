@@ -9,6 +9,7 @@ const {
   hasDiffTab,
   parseOpenPayload,
   parseJsonc,
+  resolveProjectFolderVariables,
   restoreEditorSession,
   selectBrokerTargets,
 } = require("./extension.js");
@@ -114,6 +115,24 @@ test("POST /command runs only the allowlisted commands", async () => {
   assert.equal((await send("workbench.action.terminal.new")).status, 400);
   assert.equal((await send("toString")).status, 400);
   assert.deepEqual(ran, ["quickOpen", "openFile"]);
+});
+
+test("copied settings resolve folder variables to the project, not the window's first folder", () => {
+  const resolved = resolveProjectFolderVariables(
+    {
+      "python.defaultInterpreterPath": "${workspaceFolder}/.venv-ide/bin/python",
+      "python.analysis.extraPaths": ["${workspaceRoot}/src", "${workspaceFolder:other}/lib"],
+      "window.title": "${workspaceFolderBasename} ${activeEditorShort}",
+      "editor.tabSize": 4,
+    },
+    "/home/u/stackmod",
+  );
+  assert.deepEqual(resolved, {
+    "python.defaultInterpreterPath": "/home/u/stackmod/.venv-ide/bin/python",
+    "python.analysis.extraPaths": ["/home/u/stackmod/src", "${workspaceFolder:other}/lib"],
+    "window.title": "stackmod ${activeEditorShort}",
+    "editor.tabSize": 4,
+  });
 });
 
 test("parseJsonc reads settings files: comments, trailing commas, look-alikes in strings", () => {
