@@ -964,7 +964,11 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     );
 
     const renderThoughtSlot = useCallback(
-      (item: Extract<StreamItem, { kind: "thought" }>, isLastInSequence: boolean) => (
+      (
+        item: Extract<StreamItem, { kind: "thought" }>,
+        isLastInSequence: boolean,
+        autoExpanded?: boolean,
+      ) => (
         <ThoughtSlot
           itemId={item.id}
           onInlineDetailsExpandedChangeByItemId={setInlineDetailsExpanded}
@@ -972,6 +976,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
           status={item.status}
           isLastInSequence={isLastInSequence}
           defaultExpanded={autoExpandReasoning}
+          autoExpanded={autoExpanded}
         />
       ),
       [autoExpandReasoning, setInlineDetailsExpanded],
@@ -982,6 +987,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         item: Extract<StreamItem, { kind: "tool_call" }>,
         isLastInSequence: boolean,
         maxDetailHeight?: number,
+        autoExpanded?: boolean,
       ) => {
         const { payload } = item;
 
@@ -1016,6 +1022,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
               isLastInSequence={isLastInSequence}
               onOpenFilePath={handleToolCallOpenFile}
               maxDetailHeight={maxDetailHeight}
+              autoExpanded={autoExpanded}
             />
           );
         }
@@ -1032,6 +1039,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
             isLastInSequence={isLastInSequence}
             onOpenFilePath={handleToolCallOpenFile}
             maxDetailHeight={maxDetailHeight}
+            autoExpanded={autoExpanded}
           />
         );
       },
@@ -1046,6 +1054,11 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     const renderToolRunGroup = useCallback(
       (group: ToolCallDetailGroup, isLastInSequence: boolean) => {
         const expanded = isToolCallGroupExpanded(group);
+        // While the run is live, the step it is on shows its details and every earlier
+        // step folds; the whole group folds once the run ends (reply text or turn end).
+        const liveItemId = group.run.isSealed ? null : group.run.items.at(-1)?.id;
+        const autoExpandedFor = (id: string) =>
+          liveItemId === null ? undefined : id === liveItemId;
         return (
           <OverviewToolCallGroupView
             group={group}
@@ -1057,11 +1070,12 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
               ? group.run.items.map((member) => (
                   <React.Fragment key={member.id}>
                     {member.kind === "thought"
-                      ? renderThoughtSlot(member, false)
+                      ? renderThoughtSlot(member, false, autoExpandedFor(member.id))
                       : renderSingleToolCallItem(
                           member,
                           false,
                           GROUPED_TOOL_CALL_DETAIL_MAX_HEIGHT,
+                          autoExpandedFor(member.id),
                         )}
                   </React.Fragment>
                 ))
@@ -1606,6 +1620,7 @@ interface ThoughtSlotProps {
   status: Extract<StreamItem, { kind: "thought" }>["status"];
   isLastInSequence: boolean;
   defaultExpanded: boolean;
+  autoExpanded?: boolean;
 }
 
 // Reasoning text is paced the same way assistant text is; see @/hooks/use-revealed-text.
@@ -1616,6 +1631,7 @@ function ThoughtSlot({
   status,
   isLastInSequence,
   defaultExpanded,
+  autoExpanded,
 }: ThoughtSlotProps) {
   const revealedText = useRevealedText(text, status === "ready" ? "complete" : "streaming");
   return (
@@ -1627,6 +1643,7 @@ function ThoughtSlot({
       status={status === "ready" ? "completed" : "executing"}
       isLastInSequence={isLastInSequence}
       defaultExpanded={defaultExpanded}
+      autoExpanded={autoExpanded}
       forceInline={defaultExpanded}
     />
   );

@@ -3324,6 +3324,11 @@ interface ToolCallProps {
   onInlineDetailsExpandedChange?: (expanded: boolean) => void;
   onOpenFilePath?: (filePath: string) => void;
   defaultExpanded?: boolean;
+  /**
+   * Open while true, closed when it turns false, until the user toggles the row; from then
+   * on the user's choice holds. A tool group sets it on the step that is running now.
+   */
+  autoExpanded?: boolean;
   forceInline?: boolean;
   maxDetailHeight?: number;
 }
@@ -3345,11 +3350,13 @@ export const ToolCall = memo(function ToolCall({
   onInlineDetailsExpandedChange,
   onOpenFilePath,
   defaultExpanded,
+  autoExpanded,
   forceInline = false,
   maxDetailHeight = 400,
 }: ToolCallProps) {
   const { openToolCall } = useToolCallSheet();
-  const [isExpanded, setIsExpanded] = useState(defaultExpanded ?? false);
+  const [pinnedExpanded, setPinnedExpanded] = useState<boolean | null>(null);
+  const isExpanded = pinnedExpanded ?? autoExpanded ?? defaultExpanded ?? false;
 
   const isMobile = useIsCompactFormFactor();
   const shouldRenderInline = !isMobile || forceInline;
@@ -3403,9 +3410,10 @@ export const ToolCall = memo(function ToolCall({
         showLoadingSkeleton: presentation.isLoadingDetails,
       });
     } else {
-      setIsExpanded((prev) => !prev);
+      setPinnedExpanded(!isExpanded);
     }
   }, [
+    isExpanded,
     shouldRenderInline,
     openToolCall,
     toolName,
@@ -3512,6 +3520,7 @@ function areToolCallPropsEqual(previous: ToolCallProps, next: ToolCallProps) {
   if (previous.disableOuterSpacing !== next.disableOuterSpacing) return false;
   if (previous.onOpenFilePath !== next.onOpenFilePath) return false;
   if (previous.defaultExpanded !== next.defaultExpanded) return false;
+  if (previous.autoExpanded !== next.autoExpanded) return false;
   if (previous.forceInline !== next.forceInline) return false;
   if (previous.maxDetailHeight !== next.maxDetailHeight) return false;
   return true;
