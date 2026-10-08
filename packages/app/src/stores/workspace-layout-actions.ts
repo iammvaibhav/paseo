@@ -1226,7 +1226,9 @@ export function restoreWorkspaceLayout(
   };
 }
 
-export function getFocusedBrowserId(layout: WorkspaceLayout | null | undefined): string | null {
+function getFocusedTabTarget(
+  layout: WorkspaceLayout | null | undefined,
+): WorkspaceTab["target"] | null {
   if (!layout) {
     return null;
   }
@@ -1237,7 +1239,17 @@ export function getFocusedBrowserId(layout: WorkspaceLayout | null | undefined):
   const focusedTab = collectAllTabs(layout.root).find(
     (tab) => tab.tabId === focusedPane.focusedTabId,
   );
-  return focusedTab?.target.kind === "browser" ? focusedTab.target.browserId : null;
+  return focusedTab?.target ?? null;
+}
+
+export function getFocusedBrowserId(layout: WorkspaceLayout | null | undefined): string | null {
+  const target = getFocusedTabTarget(layout);
+  return target?.kind === "browser" ? target.browserId : null;
+}
+
+export function getFocusedAgentId(layout: WorkspaceLayout | null | undefined): string | null {
+  const target = getFocusedTabTarget(layout);
+  return target?.kind === "agent" ? target.agentId : null;
 }
 
 export function createDefaultLayout(): WorkspaceLayout {

@@ -137,11 +137,14 @@ export function SidebarRowHoverCard({
 export function HoverCardHeading({
   title,
   description,
+  descriptionMaxLines,
   titleTestID,
   descriptionTestID,
 }: {
   title: string;
   description: string | null;
+  /** Omit to show the whole description. */
+  descriptionMaxLines?: number;
   titleTestID: string;
   descriptionTestID: string;
 }): ReactElement {
@@ -153,7 +156,11 @@ export function HoverCardHeading({
         </Text>
       </View>
       {description ? (
-        <Text style={styles.cardDescription} numberOfLines={3} testID={descriptionTestID}>
+        <Text
+          style={styles.cardDescription}
+          numberOfLines={descriptionMaxLines}
+          testID={descriptionTestID}
+        >
           {description}
         </Text>
       ) : null}
@@ -177,6 +184,7 @@ function WorkspaceHoverCardContent({
         description={projectDescription}
         titleTestID="hover-card-workspace-name"
         descriptionTestID="hover-card-workspace-description"
+        descriptionMaxLines={3}
       />
       {prHint ? <PrBadge hint={prHint} style={styles.cardInfoRow} /> : null}
       {workspace.diffStat ? (
@@ -470,7 +478,9 @@ const styles = StyleSheet.create((theme) => ({
   cardDescription: {
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.xs,
-    lineHeight: 16,
+    // Scales with the UI font size; a fixed px line height falls under the glyph height once
+    // the ramp grows, and the clamped last line then bleeds into the row below.
+    lineHeight: Math.round(theme.fontSize.xs * 1.35),
     paddingHorizontal: theme.spacing[3],
     paddingBottom: theme.spacing[2],
   },

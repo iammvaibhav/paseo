@@ -83,11 +83,14 @@ function AgentStatusIndicator({ bucket }: { bucket: SidebarStateBucket }) {
 
 export interface SidebarAgentViewRowProps {
   row: LifecycleRow;
+  /** The agent the visible surface is showing; drawn like the open workspace's row. */
+  selected: boolean;
   onAgentPress?: () => void;
 }
 
 export const SidebarAgentViewRow = memo(function SidebarAgentViewRow({
   row,
+  selected,
   onAgentPress,
 }: SidebarAgentViewRowProps) {
   const { t } = useTranslation();
@@ -159,10 +162,12 @@ export const SidebarAgentViewRow = memo(function SidebarAgentViewRow({
     ({ pressed }: PressableStateCallbackType) => [
       styles.row,
       isHovered && styles.rowHovered,
+      selected && styles.rowSelected,
       pressed && styles.rowPressed,
     ],
-    [isHovered],
+    [isHovered, selected],
   );
+  const accessibilityState = useMemo(() => ({ selected }), [selected]);
   const titleStyle = isHovered ? [styles.title, styles.titleHovered] : styles.title;
 
   return (
@@ -177,6 +182,8 @@ export const SidebarAgentViewRow = memo(function SidebarAgentViewRow({
             style={rowStyle}
             onPress={handlePress}
             accessibilityRole={isWeb ? undefined : "button"}
+            accessibilityState={accessibilityState}
+            aria-selected={selected}
             accessibilityLabel={title}
             testID={`sidebar-agent-view-row-${agent.serverId}-${agent.id}`}
           >
@@ -221,6 +228,9 @@ const styles = StyleSheet.create((theme) => ({
   },
   rowHovered: {
     backgroundColor: theme.colors.surfaceSidebarHover,
+  },
+  rowSelected: {
+    backgroundColor: theme.colors.surfaceSidebarSelected,
   },
   rowPressed: {
     backgroundColor: theme.colors.surface2,
