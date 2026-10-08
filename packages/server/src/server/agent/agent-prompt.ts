@@ -405,14 +405,27 @@ export async function sendPromptToAgent(
     ...(params.replaceOrigin ? { replaceOrigin: params.replaceOrigin } : {}),
   };
 
+  // A mode set or changed since the provider last heard it rides this user
+  // message as a `<paseo-mode>` block (machinery envelopes never carry it).
+  const moded = params.agentManager.withAgentModePrefix(params.agentId, params.prompt);
   const startRunStartedAt = Date.now();
   try {
-    return await startAgentRun(params.agentManager, params.agentId, params.prompt, params.logger, {
-      replaceRunning: true,
-      activeTurnBehavior: params.activeTurnBehavior,
-      clearPendingPermissions: params.clearPendingPermissions,
-      runOptions,
-    });
+    const result = await startAgentRun(
+      params.agentManager,
+      params.agentId,
+      moded.prompt,
+      params.logger,
+      {
+        replaceRunning: true,
+        activeTurnBehavior: params.activeTurnBehavior,
+        clearPendingPermissions: params.clearPendingPermissions,
+        runOptions,
+      },
+    );
+    if (moded.carriesMode && result.disposition !== "out_of_band") {
+      await params.agentManager.markAgentModeApplied(params.agentId);
+    }
+    return result;
   } finally {
     // "I pressed send and nothing happened for a while" is measured here.
     // `startAgentRun` returns before the provider acknowledges the prompt, so
@@ -447,15 +460,19 @@ export async function startCreatedAgentInitialPrompt(
     return currentSnapshot;
   }
 
+  const moded = params.agentManager.withAgentModePrefix(params.agentId, params.prompt);
   const dispatchResult = await startAgentRun(
     params.agentManager,
     params.agentId,
-    params.prompt,
+    moded.prompt,
     params.logger,
     {
       runOptions: params.runOptions,
     },
   );
+  if (moded.carriesMode) {
+    await params.agentManager.markAgentModeApplied(params.agentId);
+  }
 
   if (dispatchResult.disposition === "turn_started") {
     await waitForAgentRunStartWithTimeout(params.agentManager, params.agentId);

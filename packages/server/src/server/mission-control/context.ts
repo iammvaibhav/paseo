@@ -101,6 +101,12 @@ export interface LocalRecentAgentsInput {
 export interface LocalContextInput
   extends LocalInventoryInput, LocalModelsInput, LocalRecentAgentsInput {
   daemonConfigStore: Pick<DaemonConfigStore, "get">;
+  /**
+   * Skip models and roster: placement routing needs only the inventory, and
+   * the models list waits on provider discovery, which takes 15 s or more
+   * right after a daemon boot.
+   */
+  inventoryOnly?: boolean;
 }
 
 /**
@@ -170,6 +176,8 @@ async function buildInventoryProjectEntry(
     ...(commanderInstructions ? { commanderInstructions } : {}),
     ...(defaultBaseBranch ? { defaultBaseBranch } : {}),
     ...(project.projectKey ? { key: project.projectKey } : {}),
+    rootPath: project.rootPath,
+    kind: project.kind,
     hostServerId: serverId,
     workspaces,
   };
@@ -404,8 +412,8 @@ export async function buildLocalContextPayload(
 ): Promise<MissionControlContextPayload> {
   const [inventory, models, roster] = await Promise.all([
     buildLocalInventory(input),
-    buildLocalModels(input),
-    buildLocalRosterData(input),
+    input.inventoryOnly ? {} : buildLocalModels(input),
+    input.inventoryOnly ? { agents: [], bucketCounts: undefined } : buildLocalRosterData(input),
   ]);
   // Spec: the fleet map assembles aliases from each host's own declaration —
   // this host's missionControl.hostAlias. Never a hardcoded machine list.
@@ -416,7 +424,7 @@ export async function buildLocalContextPayload(
     inventory,
     models,
     recentAgents: roster.agents,
-    bucketCounts: roster.bucketCounts,
+    ...(roster.bucketCounts ? { bucketCounts: roster.bucketCounts } : {}),
     ...(hostAlias ? { hostAlias } : {}),
     ...(composerPreferences ? { composerPreferences } : {}),
   };
@@ -487,6 +495,8 @@ export interface FleetContextDependencies {
   serverId: string;
   hostName: string;
   logger: Logger;
+  /** Every host's inventory only (see LocalContextInput.inventoryOnly). */
+  inventoryOnly?: boolean;
 }
 
 function resolvePeerManager(deps: FleetContextDependencies): PeerManager | null {
@@ -533,9 +543,12 @@ export async function buildFleetContextData(
   ];
 
   const peerManager = resolvePeerManager(input);
-  for (const status of peerManager?.getPeerStatuses() ?? []) {
-    hosts.push(await buildPeerHostContext(input, peerManager, status));
-  }
+  const peers = await Promise.all(
+    (peerManager?.getPeerStatuses() ?? []).map((status) =>
+      buildPeerHostContext(input, peerManager, status),
+    ),
+  );
+  hosts.push(...peers);
 
   return {
     hosts,
@@ -553,7 +566,7 @@ async function buildPeerHostContext(
   let payload: MissionControlContextPayload | null = null;
   if (status.state === "online" && client) {
     try {
-      payload = await fetchPeerContextPayload(client);
+      payload = await fetchPeerContextPayload(client, input.inventoryOnly === true);
     } catch (error) {
       input.logger.warn({ err: error, peer: status.name }, "Failed to fetch context from peer");
     }
@@ -601,8 +614,9 @@ function resolveDefaultDispatchHost(
 
 async function fetchPeerContextPayload(
   client: DaemonClient,
+  inventoryOnly: boolean,
 ): Promise<MissionControlContextPayload> {
-  const response = await client.missionControlContextFetch();
+  const response = await client.missionControlContextFetch({ inventoryOnly });
   return {
     inventory: response.inventory,
     models: response.models,

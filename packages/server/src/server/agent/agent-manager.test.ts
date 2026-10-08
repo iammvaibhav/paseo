@@ -13263,8 +13263,8 @@ test("concurrent native restores run once before resuming the same agent", async
   }
 });
 
-test("refreshSessionState keeps daemon-owned permissions alongside provider ones", async () => {
-  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-daemon-perms-"));
+test("agent mode block rides one user message per mode change, never machinery", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-agent-mode-"));
   const manager = new AgentManager({ clients: { codex: new TestAgentClient() }, logger });
   let agentId: string | null = null;
   try {
@@ -13272,31 +13272,26 @@ test("refreshSessionState keeps daemon-owned permissions alongside provider ones
       workspaceId: undefined,
     });
     agentId = agent.id;
-    // Unchecked casts: AgentManager internals under test; no validator exists.
-    const internals = manager as unknown as {
-      agents: Map<string, { session: AgentSession }>;
-      refreshSessionState: (a: unknown) => Promise<void>;
-    };
-    const live = internals.agents.get(agentId);
-    if (!live?.session) throw new Error("expected a live session");
-    const providerPerm = { id: "provider-1", provider: "codex", name: "Read", kind: "tool" };
-    live.session.getPendingPermissions = () => [providerPerm] as never;
-    manager.requestDaemonPermission(
-      agentId,
-      { id: "daemon-1", provider: "codex", name: "OrchestratorPlanApproval", kind: "plan" },
-      async () => undefined,
+    expect(manager.getAgent(agentId)?.agentMode).toBe("solo");
+
+    const machinery = manager.withAgentModePrefix(agentId, "<paseo-system>\nping\n</paseo-system>");
+    expect(machinery.carriesMode).toBe(false);
+    expect(manager.withAgentModePrefix(agentId, "/goal pause").carriesMode).toBe(false);
+
+    const first = manager.withAgentModePrefix(agentId, "fix the bug");
+    expect(first.carriesMode).toBe(true);
+    expect(first.prompt).toMatch(
+      /^<paseo-mode name="solo">\n[\s\S]+\n<\/paseo-mode>\n\nfix the bug$/,
     );
-    live.session.getPendingPermissions = () => [providerPerm] as never;
-    await internals.refreshSessionState(live);
-    expect(
-      manager
-        .getPendingPermissions(agentId)
-        .map((p) => p.id)
-        .sort(),
-    ).toEqual(["daemon-1", "provider-1"]);
-    live.session.getPendingPermissions = () => [];
-    await internals.refreshSessionState(live);
-    expect(manager.getPendingPermissions(agentId).map((p) => p.id)).toEqual(["daemon-1"]);
+    await manager.markAgentModeApplied(agentId);
+    expect(manager.withAgentModePrefix(agentId, "and the test").carriesMode).toBe(false);
+
+    await manager.selectAgentMode(agentId, "orchestrator");
+    const switched = manager.withAgentModePrefix(agentId, [{ type: "text", text: "next" }]);
+    expect(switched.carriesMode).toBe(true);
+    expect(JSON.stringify(switched.prompt)).toContain('<paseo-mode name=\\"orchestrator\\">');
+    await manager.markAgentModeApplied(agentId);
+    expect(manager.withAgentModePrefix(agentId, "more").carriesMode).toBe(false);
   } finally {
     if (agentId) await manager.closeAgent(agentId).catch(() => undefined);
     rmSync(workdir, { recursive: true, force: true });

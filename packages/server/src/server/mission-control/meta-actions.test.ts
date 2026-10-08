@@ -248,6 +248,7 @@ function build(
     mkdirp: async (dirPath: string) => {
       harness.mkdirCalls.push(dirPath);
     },
+    ensureGitRepository: async () => undefined,
   };
   return harness;
 }

@@ -42,8 +42,8 @@ import {
   type InlinePathTarget,
 } from "@/components/message";
 import { PlanCard } from "@/components/plan-card";
-import { PlanGraphView, parseOrchestratorPlan } from "@/components/plan-graph-view";
 import type { StreamItem } from "@/types/stream";
+import { getAgentModeDefinition } from "@getpaseo/protocol/agent-modes";
 import type { PendingMessageSubmission } from "@/composer/submission/model";
 import type { TurnPresentation } from "@/timeline/turn-liveness";
 import type { PendingPermission } from "@/types/shared";
@@ -162,8 +162,6 @@ function BottomOverlayInset({ height }: { height: number }) {
 }
 
 function renderPendingPermissionsNode(input: {
-  agentId: string;
-  serverId: string;
   pendingPermissions: PendingPermission[];
   pendingProposals: readonly FeedCardEvent[];
   client: DaemonClient | null;
@@ -179,13 +177,7 @@ function renderPendingPermissionsNode(input: {
         ) : null,
       )}
       {input.pendingPermissions.map((permission) => (
-        <PermissionRequestCard
-          key={permission.key}
-          permission={permission}
-          client={input.client}
-          agentId={input.agentId}
-          serverId={input.serverId}
-        />
+        <PermissionRequestCard key={permission.key} permission={permission} client={input.client} />
       ))}
     </View>
   );
@@ -973,6 +965,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
               item.clientMessageId !== undefined &&
               pendingClientMessageIds.has(item.clientMessageId)
             }
+            agentModeLabel={getAgentModeDefinition(item.agentMode)?.label}
           />
         );
       },
@@ -1217,16 +1210,6 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
             );
 
           case "plugin":
-            if (item.pluginId === "orchestrator" && item.itemKind === "plan") {
-              return (
-                <OrchestratorPlanRow
-                  agentId={agentId}
-                  serverId={resolvedServerId}
-                  client={client}
-                  item={item}
-                />
-              );
-            }
             return (
               <PluginTimelineItemView agentId={agentId} item={item} serverId={resolvedServerId} />
             );
@@ -1237,7 +1220,6 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       },
       [
         agentId,
-        client,
         renderUserMessageItem,
         renderAssistantMessageItem,
         renderThoughtItem,
@@ -1307,13 +1289,11 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     const pendingPermissionsNode = useMemo(
       () =>
         renderPendingPermissionsNode({
-          agentId,
-          serverId: resolvedServerId,
           pendingPermissions: pendingPermissionItems,
           pendingProposals,
           client,
         }),
-      [agentId, client, pendingPermissionItems, pendingProposals, resolvedServerId],
+      [client, pendingPermissionItems, pendingProposals],
     );
     const turnFooterNode = useMemo(
       () =>
@@ -1792,34 +1772,12 @@ function PermissionActionButton({
   );
 }
 
-function OrchestratorPlanRow({
-  agentId,
-  serverId,
-  client,
-  item,
-}: {
-  agentId: string;
-  serverId: string;
-  client: DaemonClient | null;
-  item: Extract<StreamItem, { kind: "plugin" }>;
-}) {
-  const plan = parseOrchestratorPlan(item.data);
-  if (!plan) return null;
-  return (
-    <PlanGraphView plan={plan} mode="live" agentId={agentId} serverId={serverId} client={client} />
-  );
-}
-
 function PermissionRequestCard({
   permission,
   client,
-  agentId,
-  serverId,
 }: {
   permission: PendingPermission;
   client: DaemonClient | null;
-  agentId: string;
-  serverId: string;
 }) {
   const { t } = useTranslation();
   const isMobile = useIsCompactFormFactor();
@@ -1865,10 +1823,6 @@ function PermissionRequestCard({
     ];
   }, [isPlanRequest, request, t]);
 
-  const orchestratorPlan = useMemo(() => {
-    if (request.name !== "OrchestratorPlanApproval") return null;
-    return parseOrchestratorPlan(request.input?.["plan"]);
-  }, [request.input, request.name]);
   const planMarkdown = useMemo(() => {
     if (!request) {
       return undefined;
@@ -1997,21 +1951,6 @@ function PermissionRequestCard({
     </>
   );
 
-  if (orchestratorPlan) {
-    return (
-      <PlanGraphView
-        plan={orchestratorPlan}
-        mode="pending"
-        agentId={agentId}
-        serverId={serverId}
-        client={client}
-        requestId={request.id}
-        onRespond={handleResponse}
-        isResponding={isResponding}
-        testID="permission-plan-card"
-      />
-    );
-  }
   if (isPlanRequest && planMarkdown) {
     return (
       <PlanCard

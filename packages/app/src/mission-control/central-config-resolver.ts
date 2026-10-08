@@ -2,6 +2,7 @@ import type {
   MissionControlCentralConfig,
   MissionControlMode,
 } from "@getpaseo/protocol/mission-control/types";
+import type { RoutingConfig, RoutingSecretKey } from "@getpaseo/protocol/routing";
 
 export function missionControlCentralConfigQueryKey(serverId: string | null) {
   return ["mission-control-central-config", serverId] as const;
@@ -62,6 +63,10 @@ export interface ResolvedMissionControlCentralConfig {
   trackCommanderWorkers: boolean;
   trackVerifiers: boolean;
   trackSubagents: boolean;
+  // Placement routing (New workspace auto-selection, suggest_placement).
+  routing: RoutingConfig;
+  // Which routing API keys the commander host holds; values never reach clients.
+  routingSecretsSet: readonly RoutingSecretKey[];
 }
 
 const RESOLVED_DEFAULTS: ResolvedMissionControlCentralConfig = {
@@ -91,6 +96,8 @@ const RESOLVED_DEFAULTS: ResolvedMissionControlCentralConfig = {
   trackCommanderWorkers: true,
   trackVerifiers: true,
   trackSubagents: true,
+  routing: {},
+  routingSecretsSet: [],
 };
 
 // Grouped knob resolution (mirrors the server's resolveNullableStringKnobs
@@ -149,5 +156,7 @@ export function resolveMissionControlCentralConfig(
     ...resolveStallTimingKnobs(config),
     ...resolveMemoryKnobs(config),
     ...resolveVoiceKnobs(config),
+    routing: config.routing ?? {},
+    routingSecretsSet: config.routingSecretsSet ?? [],
   };
 }

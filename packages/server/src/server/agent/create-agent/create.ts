@@ -1,4 +1,5 @@
 import type { Logger } from "pino";
+import type { AgentModeId } from "@getpaseo/protocol/agent-modes";
 
 import type { TerminalManager } from "../../../terminal/terminal-manager.js";
 import type { CreatePaseoWorktreeInput } from "../../paseo-worktree-service.js";
@@ -83,9 +84,9 @@ export interface CreateAgentFromSessionInput {
   attachments?: AgentAttachment[];
   git?: GitSetupOptions;
   labels: Record<string, string>;
-  // Orchestrator start option (normal agents only). Stamped onto the agent at
-  // registration, persisted, echoed on snapshots.
-  orchestrator?: boolean;
+  // Agent mode (Do it yourself, Orchestrator, …). Stamped onto the agent at
+  // registration; its block rides the first user message.
+  agentMode?: AgentModeId;
   env?: Record<string, string>;
   provisionalTitle: string | null;
   firstAgentContext: FirstAgentContext;
@@ -112,6 +113,8 @@ export interface CreateAgentFromMcpInput {
   images?: Array<{ data: string; mimeType: string }>;
   attachments?: AgentAttachment[];
   mode?: string;
+  /** Agent mode (Do it yourself, Orchestrator, …). Absent = Do it yourself. */
+  agentMode?: AgentModeId;
   unattended?: boolean;
   promptFailure?: CreateAgentPromptFailureMode;
   background: boolean;
@@ -309,7 +312,7 @@ async function resolveSessionCreateAgent(
       initialPrompt: trimmedPrompt,
       env: input.env,
       initialTitle: input.provisionalTitle,
-      ...(input.orchestrator === true ? { orchestrator: true } : {}),
+      ...(input.agentMode ? { agentMode: input.agentMode } : {}),
       // A legacy git/worktreeName worktree creates a fresh workspace, so the
       // agent belongs to that workspace, not the source one. createdWorkspaceId
       // is the freshly created worktree's workspace.
@@ -409,6 +412,7 @@ async function resolveMcpCreateAgent(
       workspaceId: intent.workspaceId,
       owner: input.owner,
       env: input.env,
+      ...(input.agentMode ? { agentMode: input.agentMode } : {}),
     },
     prompt: hasPromptContent ? prompt : undefined,
     setupContinuation,

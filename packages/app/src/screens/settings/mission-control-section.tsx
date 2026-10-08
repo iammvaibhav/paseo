@@ -34,15 +34,18 @@ import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { Switch } from "@/components/ui/switch";
 import { SettingsSection } from "@/components/settings/headings/settings-section";
 import { useIsCompactFormFactor } from "@/constants/layout";
-import { useLocalDaemonServerId } from "@/hooks/use-is-local-daemon";
 import { useToast } from "@/contexts/toast-context";
 import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
 import { buildSelectableProviderSelectorProviders } from "@/provider-selection/provider-selection";
-import { useMissionControlCentralConfig } from "@/mission-control/central-config";
 import {
-  buildInvocableProviderModelStrings,
-  resolveCommanderHostServerId,
-} from "@/mission-control/model-options";
+  useCommanderHostServerId,
+  useMissionControlCentralConfig,
+} from "@/mission-control/central-config";
+import { AGENT_MODES } from "@getpaseo/protocol/agent-modes";
+import type { RoutingConfig, RoutingSecretKey } from "@getpaseo/protocol/routing";
+import { useFetchQuery } from "@/data/query";
+import type { ResolvedMissionControlCentralConfig } from "@/mission-control/central-config-resolver";
+import { buildInvocableProviderModelStrings } from "@/mission-control/model-options";
 import { getHostRuntimeStore, useHosts } from "@/runtime/host-runtime";
 import { useSessionStore } from "@/stores/session-store";
 import { settingsStyles } from "@/styles/settings";
@@ -631,7 +634,6 @@ export function MissionControlSection(): ReactElement {
     useMissionControlCentralConfig();
   const [error, setError] = useState<string | null>(null);
   const toast = useToast();
-  const localServerId = useLocalDaemonServerId();
   const { updateSettings } = useAppSettings();
   const [verbose, toggleVerbose] = useMissionControlVerbose();
   const { setClearViewPoint } = useClearViewPoint();
@@ -653,17 +655,7 @@ export function MissionControlSection(): ReactElement {
     return map;
   }, [sessions]);
 
-  const commanderHostServerId = useMemo(
-    () =>
-      resolveCommanderHostServerId({
-        commanderHost: config?.commanderHost ?? null,
-        hosts,
-        hostnameByServerId,
-        hostAliasByServerId,
-        localServerId,
-      }),
-    [config?.commanderHost, hostAliasByServerId, hostnameByServerId, hosts, localServerId],
-  );
+  const commanderHostServerId = useCommanderHostServerId();
 
   const commanderHostLabel = useMemo(() => {
     const rawHost = config?.commanderHost;
@@ -697,6 +689,14 @@ export function MissionControlSection(): ReactElement {
         label: host.label,
       })),
     [hostAliasByServerId, hostnameByServerId, hosts],
+  );
+  const routingHosts = useMemo(
+    () =>
+      hosts.map((host) => ({
+        serverId: host.serverId,
+        label: hostAliasByServerId.get(host.serverId) ?? host.label,
+      })),
+    [hostAliasByServerId, hosts],
   );
 
   // The dropdown shows the option value of the RESOLVED host (alias-first),
@@ -1139,6 +1139,8 @@ export function MissionControlSection(): ReactElement {
         </View>
       </SettingsSection>
 
+      <RoutingSettings config={config} hosts={routingHosts} patch={patch} isCompact={isCompact} />
+
       <SettingsSection title={t("settings.missionControl.memory")}>
         <View style={settingsStyles.card}>
           <TextRow
@@ -1383,4 +1385,381 @@ const styles = StyleSheet.create((theme) => ({
   disabledText: {
     opacity: 0.45,
   },
+  routingCard: {
+    marginTop: theme.spacing[3],
+  },
 }));
+
+interface RoutingSettingsHost {
+  serverId: string;
+  label: string;
+}
+
+const ROUTING_SECRET_ROWS: ReadonlyArray<{
+  key: RoutingSecretKey;
+  titleKey: string;
+  hintKey: string;
+}> = [
+  {
+    key: "typesafeApiKey",
+    titleKey: "settings.routing.typesafeKey",
+    hintKey: "settings.routing.typesafeKeyHint",
+  },
+  {
+    key: "nameModelApiKey",
+    titleKey: "settings.routing.nameModelKey",
+    hintKey: "settings.routing.nameModelKeyHint",
+  },
+  {
+    key: "metadataModelApiKey",
+    titleKey: "settings.routing.metadataModelKey",
+    hintKey: "settings.routing.metadataModelKeyHint",
+  },
+];
+
+/**
+ * One routing setting, addressed by a field key the parent applies:
+ * "defaultHost", "rules", "<record>:<key>" (per-host roots, per-mode models),
+ * "<endpoint>.<part>" (naming endpoints), or "secret:<key>".
+ */
+type RoutingFieldApply = (fieldKey: string, value: string | null) => void;
+
+function RoutingTextField({
+  fieldKey,
+  onApply,
+  ...row
+}: {
+  fieldKey: string;
+  onApply: RoutingFieldApply;
+  title: string;
+  hint: string;
+  value: string | null;
+  testID: string;
+  isCompact: boolean;
+  first?: boolean;
+}) {
+  const handleCommit = useCallback(
+    (value: string | null) => onApply(fieldKey, value),
+    [fieldKey, onApply],
+  );
+  return <TextRow {...row} onCommit={handleCommit} nullable />;
+}
+
+function RoutingDropdownField({
+  fieldKey,
+  onApply,
+  ...row
+}: {
+  fieldKey: string;
+  onApply: RoutingFieldApply;
+  title: string;
+  hint: string;
+  value: string | null;
+  options: readonly DropdownRowOption<string>[];
+  testID: string;
+  first?: boolean;
+}) {
+  const handleSelect = useCallback(
+    (value: string) => onApply(fieldKey, value || null),
+    [fieldKey, onApply],
+  );
+  return <DropdownRow {...row} onSelect={handleSelect} />;
+}
+
+function RoutingWorkHostRow({
+  host,
+  isWork,
+  onToggle,
+}: {
+  host: RoutingSettingsHost;
+  isWork: boolean;
+  onToggle: (serverId: string, isWork: boolean) => void;
+}) {
+  const { t } = useTranslation();
+  const handleChange = useCallback(
+    (next: boolean) => onToggle(host.serverId, next),
+    [host.serverId, onToggle],
+  );
+  return (
+    <View style={settingsStyles.row}>
+      <View style={settingsStyles.rowContent}>
+        <Text style={settingsStyles.rowTitle}>{host.label}</Text>
+        <Text style={settingsStyles.rowHint}>{t("settings.routing.workHostHint")}</Text>
+      </View>
+      <Switch
+        value={isWork}
+        onValueChange={handleChange}
+        accessibilityLabel={t("settings.routing.workHost")}
+        testID={`routing-settings-work-${host.serverId}`}
+      />
+    </View>
+  );
+}
+
+/**
+ * Models every connected host has ticked (daemon visibleModels): the agent
+ * model for a mode must exist on whichever host routing picks.
+ */
+function useCommonVisibleModels(serverIds: readonly string[]): string[] {
+  const query = useFetchQuery({
+    queryKey: ["routing-common-visible-models", ...serverIds],
+    dataShape: "list",
+    staleTimeMs: 60_000,
+    queryFn: async () => {
+      const lists = await Promise.all(
+        serverIds.map(async (serverId) => {
+          const client = getHostRuntimeStore().getClient(serverId);
+          if (!client?.isConnected) return null;
+          return (await client.getDaemonConfig()).config.visibleModels ?? null;
+        }),
+      );
+      let common: string[] | null = null;
+      for (const visible of lists) {
+        if (!visible || visible.length === 0) continue;
+        common = common ? common.filter((model) => visible.includes(model)) : [...visible];
+      }
+      return (common ?? []).sort();
+    },
+  });
+  return query.data ?? [];
+}
+
+const ROUTING_RECORD_FIELDS = [
+  "projectRootByHost",
+  "scratchRootByHost",
+  "modelByMode",
+  "workModelByMode",
+] as const;
+type RoutingRecordField = (typeof ROUTING_RECORD_FIELDS)[number];
+
+function applyRoutingField(
+  routing: RoutingConfig,
+  fieldKey: string,
+  value: string | null,
+): Partial<RoutingConfig> | null {
+  if (fieldKey === "defaultHost") return { defaultHost: value };
+  if (fieldKey === "rules") return { rules: value ?? "" };
+  const [record, recordKey] = fieldKey.split(":");
+  if (recordKey && (ROUTING_RECORD_FIELDS as readonly string[]).includes(record!)) {
+    const field = record as RoutingRecordField;
+    const next = { ...routing[field] };
+    if (value) {
+      next[recordKey] = value;
+    } else {
+      delete next[recordKey];
+    }
+    return { [field]: next };
+  }
+  const [endpoint, part] = fieldKey.split(".");
+  if ((endpoint === "nameModel" || endpoint === "metadataModel") && part) {
+    const next = { ...(routing[endpoint] ?? { baseUrl: "", model: "" }), [part]: value ?? "" };
+    return { [endpoint]: next.baseUrl || next.model ? next : null };
+  }
+  return null;
+}
+
+/**
+ * Placement routing settings (central config `routing` + `routingSecrets`):
+ * where new projects and scratch work land per host, which hosts are work,
+ * the agent model per mode, and the naming models. API keys are write-only.
+ */
+function RoutingSettings({
+  config,
+  hosts,
+  patch,
+  isCompact,
+}: {
+  config: ResolvedMissionControlCentralConfig;
+  hosts: readonly RoutingSettingsHost[];
+  patch: (updates: Partial<MissionControlCentralConfig>) => Promise<void>;
+  isCompact: boolean;
+}): ReactElement {
+  const { t } = useTranslation();
+  const routing = config.routing;
+  const serverIds = useMemo(() => hosts.map((host) => host.serverId), [hosts]);
+  const commonModels = useCommonVisibleModels(serverIds);
+  const hostOptions = useMemo(
+    () => hosts.map((host) => ({ value: host.serverId, label: host.label })),
+    [hosts],
+  );
+  const modelOptions = useMemo<DropdownRowOption<string>[]>(
+    () => [
+      { value: "", label: t("settings.routing.modelNone") },
+      ...commonModels.map((model) => ({ value: model, label: model })),
+    ],
+    [commonModels, t],
+  );
+  const workModelOptions = useMemo<DropdownRowOption<string>[]>(
+    () => [
+      { value: "", label: t("settings.routing.modelSameAsPersonal") },
+      ...commonModels.map((model) => ({ value: model, label: model })),
+    ],
+    [commonModels, t],
+  );
+  const modeRows = useMemo(
+    () => [{ id: "default", label: t("settings.routing.modelDefault") }, ...AGENT_MODES],
+    [t],
+  );
+  const handleApply = useCallback<RoutingFieldApply>(
+    (fieldKey, value) => {
+      if (fieldKey.startsWith("secret:")) {
+        if (value) void patch({ routingSecrets: { [fieldKey.slice(7)]: value } });
+        return;
+      }
+      const updates = applyRoutingField(routing, fieldKey, value);
+      if (updates) void patch({ routing: { ...routing, ...updates } });
+    },
+    [patch, routing],
+  );
+  const handleToggleWorkHost = useCallback(
+    (serverId: string, isWork: boolean) => {
+      const others = (routing.workHosts ?? []).filter((id) => id !== serverId);
+      void patch({ routing: { ...routing, workHosts: isWork ? [...others, serverId] : others } });
+    },
+    [patch, routing],
+  );
+
+  return (
+    <SettingsSection title={t("settings.routing.title")}>
+      <View style={settingsStyles.card}>
+        <RoutingDropdownField
+          fieldKey="defaultHost"
+          onApply={handleApply}
+          title={t("settings.routing.defaultHost")}
+          hint={t("settings.routing.defaultHostHint")}
+          value={routing.defaultHost ?? null}
+          options={hostOptions}
+          testID="routing-settings-default-host"
+          first
+        />
+        <RoutingTextField
+          fieldKey="rules"
+          onApply={handleApply}
+          title={t("settings.routing.rules")}
+          hint={t("settings.routing.rulesHint")}
+          value={routing.rules ?? null}
+          testID="routing-settings-rules"
+          isCompact={isCompact}
+        />
+      </View>
+      {hosts.map((host) => (
+        <View key={host.serverId} style={styles.routingCard}>
+          <View style={settingsStyles.card}>
+            <RoutingWorkHostRow
+              host={host}
+              isWork={(routing.workHosts ?? []).includes(host.serverId)}
+              onToggle={handleToggleWorkHost}
+            />
+            <RoutingTextField
+              fieldKey={`projectRootByHost:${host.serverId}`}
+              onApply={handleApply}
+              title={t("settings.routing.projectRoot")}
+              hint={t("settings.routing.projectRootHint")}
+              value={routing.projectRootByHost?.[host.serverId] ?? null}
+              testID={`routing-settings-project-root-${host.serverId}`}
+              isCompact={isCompact}
+            />
+            <RoutingTextField
+              fieldKey={`scratchRootByHost:${host.serverId}`}
+              onApply={handleApply}
+              title={t("settings.routing.scratchRoot")}
+              hint={t("settings.routing.scratchRootHint")}
+              value={routing.scratchRootByHost?.[host.serverId] ?? null}
+              testID={`routing-settings-scratch-root-${host.serverId}`}
+              isCompact={isCompact}
+            />
+          </View>
+        </View>
+      ))}
+      <View style={styles.routingCard}>
+        <View style={settingsStyles.card}>
+          {modeRows.map((mode, index) => (
+            <View key={mode.id}>
+              <RoutingDropdownField
+                fieldKey={`modelByMode:${mode.id}`}
+                onApply={handleApply}
+                title={mode.label}
+                hint={t("settings.routing.modelHint")}
+                value={routing.modelByMode?.[mode.id] ?? ""}
+                options={modelOptions}
+                testID={`routing-settings-model-${mode.id}`}
+                first={index === 0}
+              />
+              <RoutingDropdownField
+                fieldKey={`workModelByMode:${mode.id}`}
+                onApply={handleApply}
+                title={t("settings.routing.workModel", { mode: mode.label })}
+                hint={t("settings.routing.workModelHint")}
+                value={routing.workModelByMode?.[mode.id] ?? ""}
+                options={workModelOptions}
+                testID={`routing-settings-work-model-${mode.id}`}
+              />
+            </View>
+          ))}
+        </View>
+      </View>
+      <View style={styles.routingCard}>
+        <View style={settingsStyles.card}>
+          <RoutingTextField
+            fieldKey="nameModel.baseUrl"
+            onApply={handleApply}
+            title={t("settings.routing.nameModelUrl")}
+            hint={t("settings.routing.nameModelUrlHint")}
+            value={routing.nameModel?.baseUrl ?? null}
+            testID="routing-settings-name-model-url"
+            isCompact={isCompact}
+            first
+          />
+          <RoutingTextField
+            fieldKey="nameModel.model"
+            onApply={handleApply}
+            title={t("settings.routing.nameModelId")}
+            hint={t("settings.routing.nameModelIdHint")}
+            value={routing.nameModel?.model ?? null}
+            testID="routing-settings-name-model-id"
+            isCompact={isCompact}
+          />
+          <RoutingTextField
+            fieldKey="metadataModel.baseUrl"
+            onApply={handleApply}
+            title={t("settings.routing.metadataModelUrl")}
+            hint={t("settings.routing.metadataModelUrlHint")}
+            value={routing.metadataModel?.baseUrl ?? null}
+            testID="routing-settings-metadata-model-url"
+            isCompact={isCompact}
+          />
+          <RoutingTextField
+            fieldKey="metadataModel.model"
+            onApply={handleApply}
+            title={t("settings.routing.metadataModelId")}
+            hint={t("settings.routing.metadataModelIdHint")}
+            value={routing.metadataModel?.model ?? null}
+            testID="routing-settings-metadata-model-id"
+            isCompact={isCompact}
+          />
+        </View>
+      </View>
+      <View style={styles.routingCard}>
+        <View style={settingsStyles.card}>
+          {ROUTING_SECRET_ROWS.map((row, index) => (
+            <RoutingTextField
+              key={row.key}
+              fieldKey={`secret:${row.key}`}
+              onApply={handleApply}
+              title={t(row.titleKey)}
+              hint={`${t(row.hintKey)} ${t(
+                config.routingSecretsSet.includes(row.key)
+                  ? "settings.routing.keySaved"
+                  : "settings.routing.keyMissing",
+              )}`}
+              value={null}
+              testID={`routing-settings-secret-${row.key}`}
+              isCompact={isCompact}
+              first={index === 0}
+            />
+          ))}
+        </View>
+      </View>
+    </SettingsSection>
+  );
+}

@@ -14,6 +14,7 @@ import {
 } from "../workspace-registry.js";
 import type { StoredAgentRecord } from "../agent/agent-storage.js";
 import { applyMetaPlan, type MetaActionsDependencies } from "./meta-actions.js";
+import { buildProjectReadme, ensureGitRepository } from "../project-directory-service.js";
 
 /**
  * M5 dev-stack e2e receipt: the promote_workspace action applied end-to-end
@@ -169,6 +170,8 @@ beforeAll(async () => {
     },
     emitStoredAgentUpdate: async () => undefined,
     mkdirp: (dirPath) => mkdir(dirPath, { recursive: true }),
+    ensureGitRepository: (dirPath, title) =>
+      ensureGitRepository(dirPath, buildProjectReadme(title)),
   };
 });
 
@@ -281,7 +284,8 @@ describe("promote_workspace dev-stack e2e (service function, no UI)", () => {
     );
     expect(created).toBeDefined();
     expect(created?.displayName).toBe("meta-created");
-    expect(created?.kind).toBe("non_git");
+    expect(created?.kind).toBe("git");
+    await expect(access(join(createdRoot, ".git"))).resolves.toBeUndefined();
 
     // Cleanup: remove exactly what this test created.
     await projectRegistry.remove(created!.projectId).catch(() => undefined);

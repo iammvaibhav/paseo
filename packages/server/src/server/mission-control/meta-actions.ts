@@ -359,6 +359,8 @@ export interface MetaActionsLookupDependencies {
   workspaceRegistry: Pick<WorkspaceRegistry, "get">;
   projectRegistry: Pick<ProjectRegistry, "get" | "list">;
   peerManager?: MetaPeerManager | null;
+  /** This host's scratch root from routing config; absent = `~/experiments`. */
+  resolveScratchRoot?: () => string | null;
 }
 
 /**
@@ -406,6 +408,11 @@ export interface MetaActionsDependencies
    * project). No-op when the directory already exists.
    */
   mkdirp: (dirPath: string) => Promise<void>;
+  /**
+   * Make the new project root a git repository with a first commit (no-op
+   * when it already is one), so the project can cut worktrees right away.
+   */
+  ensureGitRepository: (dirPath: string, title: string) => Promise<void>;
   /**
    * Emit an agent_update for a STORED (not-running) agent record after a
    * mutation. Live agents flow through agent_state automatically; stored
@@ -508,13 +515,14 @@ async function resolveAgentRecord(
   return record ? { live: false, record } : null;
 }
 
-/** The per-host experiments project: root `~/experiments` (path match first,
- *  displayName fallback for dev stacks). Null when the host has none. */
+/** The per-host scratch ("experiments") project: the routing config's scratch
+ *  root for this host, else `~/experiments` (path match first, displayName
+ *  fallback for dev stacks). Null when the host has none. */
 export async function resolveExperimentsProject(
-  deps: Pick<MetaActionsLookupDependencies, "projectRegistry">,
+  deps: Pick<MetaActionsLookupDependencies, "projectRegistry" | "resolveScratchRoot">,
 ): Promise<PersistedProjectRecord | null> {
   const projects = await deps.projectRegistry.list();
-  const experimentsRoot = resolve(homedir(), "experiments");
+  const experimentsRoot = deps.resolveScratchRoot?.() ?? resolve(homedir(), "experiments");
   const byPath = projects.find(
     (project) => !project.archivedAt && areEquivalentPaths(project.rootPath, experimentsRoot),
   );
@@ -1051,9 +1059,10 @@ async function applyCreateProject(
   // explicitly provided path — never a cwd-relative guess.
   await deps.mkdirp(rootPath);
   const displayName = plan.newValue?.trim() || basename(rootPath) || rootPath;
+  await deps.ensureGitRepository(rootPath, displayName);
   const project = await deps.projectRegistry.getOrCreateActiveByRoot({
     rootPath,
-    kind: "non_git",
+    kind: "git",
     displayName,
     timestamp: new Date().toISOString(),
   });

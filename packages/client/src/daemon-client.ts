@@ -154,6 +154,7 @@ import { isRelayClientWebSocketUrl } from "@getpaseo/protocol/daemon-endpoints";
 import type { WebhookAuth, WebhookFilter, WebhookTarget } from "@getpaseo/protocol/webhook/types";
 import type { AutomationKind, AutomationTarget } from "@getpaseo/protocol/automation/types";
 import type { ScheduleCadence } from "@getpaseo/protocol/schedule/types";
+import type { RoutingProjectCreateResponse, RoutingSuggestion } from "@getpaseo/protocol/routing";
 import {
   asUint8Array,
   decodeFileTransferFrame,
@@ -486,9 +487,8 @@ export interface CreateAgentRequestOptions extends AgentConfigOverrides {
   worktreeName?: string;
   requestId?: string;
   labels?: Record<string, string>;
-  // Orchestrator start option (normal agents only, never the Commander).
-  // COMPAT(orchestrator): added 2026-09-30, remove gate after 2027-03-30.
-  orchestrator?: boolean;
+  // Agent mode id (see @getpaseo/protocol/agent-modes). Absent = Do it yourself.
+  agentMode?: string;
 }
 
 export interface CreateWorkspaceRequestOptions {
@@ -3229,7 +3229,7 @@ export class DaemonClient {
       ...(options.labels && Object.keys(options.labels).length > 0
         ? { labels: options.labels }
         : {}),
-      ...(options.orchestrator === true ? { orchestrator: true } : {}),
+      ...(options.agentMode ? { agentMode: options.agentMode } : {}),
     });
 
     const status = await this.sendRequest({
@@ -3472,6 +3472,55 @@ export class DaemonClient {
       throw new Error(payload.error ?? "setProjectDescription rejected");
     }
     return { description: payload.description };
+  }
+
+  /** Placement suggestion for a prompt (jev). Throws with the daemon's error text. */
+  async suggestRouting(prompt: string): Promise<RoutingSuggestion> {
+    const payload = await this.sendCorrelatedSessionRequest({
+      message: { type: "routing.suggest.request", prompt },
+      responseType: "routing.suggest.response",
+      timeout: 20_000,
+    });
+    if (!payload.suggestion) {
+      throw new Error(payload.error ?? "Routing failed");
+    }
+    return payload.suggestion;
+  }
+
+  /**
+   * Name, create (git init + first commit), and register a project for a
+   * prompt on this host; with `scratch`, ensure the host's scratch project instead.
+   */
+  async createProjectForPrompt(input: {
+    prompt: string;
+    parentPath?: string;
+    scratch?: boolean;
+  }): Promise<NonNullable<RoutingProjectCreateResponse["payload"]["project"]>> {
+    const payload = await this.sendCorrelatedSessionRequest({
+      message: {
+        type: "routing.project.create.request",
+        prompt: input.prompt,
+        ...(input.parentPath ? { parentPath: input.parentPath } : {}),
+        ...(input.scratch ? { scratch: true } : {}),
+      },
+      responseType: "routing.project.create.response",
+      timeout: 60_000,
+    });
+    if (!payload.project) {
+      throw new Error(payload.error ?? "Failed to create project");
+    }
+    return payload.project;
+  }
+
+  /** Change an agent's agent mode; it applies from the user's next message. */
+  async setAgentAgentMode(agentId: string, agentMode: string): Promise<void> {
+    const payload = await this.sendCorrelatedSessionRequest({
+      message: { type: "agent.agent_mode.set.request", agentId, agentMode },
+      responseType: "agent.agent_mode.set.response",
+    });
+    if (!payload.accepted) {
+      throw new Error(payload.error ?? "Failed to set agent mode");
+    }
   }
 
   async setProjectIcon(
@@ -7073,11 +7122,14 @@ export class DaemonClient {
     });
   }
 
-  async missionControlContextFetch(requestId?: string): Promise<MissionControlContextFetchPayload> {
+  async missionControlContextFetch(
+    options: { inventoryOnly?: boolean; requestId?: string } = {},
+  ): Promise<MissionControlContextFetchPayload> {
     return this.sendCorrelatedSessionRequest({
-      requestId,
+      requestId: options.requestId,
       message: {
         type: "mission_control.context.fetch.request",
+        ...(options.inventoryOnly ? { inventoryOnly: true } : {}),
       },
       responseType: "mission_control.context.fetch.response",
     });

@@ -93,6 +93,8 @@ export interface Agent {
   name?: string | null;
   /** Living short description (report_status description refresh). */
   shortDescription?: string | null;
+  /** Agent mode id (Do it yourself, Orchestrator, …); absent on older daemons. */
+  agentMode?: string | null;
   cwd: string;
   workspaceId?: string;
   model: string | null;

@@ -259,9 +259,8 @@ export interface PaseoAgentCreateOptions {
   autoArchive?: CreateAgentRequestMessage["autoArchive"];
   requestId?: string;
   labels?: Record<string, string>;
-  // Orchestrator start option (normal agents only, never the Commander).
-  // COMPAT(orchestrator): added 2026-09-30, remove gate after 2027-03-30.
-  orchestrator?: boolean;
+  // Agent mode id (see @getpaseo/protocol/agent-modes). Absent = Do it yourself.
+  agentMode?: string;
 }
 
 export type PaseoWorkspaceAgentCreateOptions = Omit<PaseoAgentCreateOptions, "cwd">;

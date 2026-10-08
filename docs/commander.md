@@ -67,10 +67,10 @@ The Commander is opinionated. The decision tree, in order:
 2. **Mutating work** (feature, bug, experiment that edits files) → matched project, **new workspace on a fresh worktree**. Two mutating agents never share a worktree.
 3. **Read-only work** (research, review, questions) → the project's root workspace, or the workspace whose change it concerns.
 4. **Verification and follow-up** on an existing change → the same workspace and worktree as the change, so the verifier sees what the worker did.
-5. **No matching project**: substantial work → propose a new project; ad hoc work → the per-host `experiments` project (create it at `~/experiments` if missing). Experiments that prove out get **promoted** to their own project on request — a meta task the Commander performs.
+5. **No matching project**: substantial work → a new project; ad hoc work → the host's scratch project (`routing.scratchRootByHost`). Experiments that prove out get **promoted** to their own project on request — a meta task the Commander performs.
 6. **Agent granularity**: one agent per self-sufficient unit of work. Reuse an agent only when the task needs that agent's context; otherwise spawn fresh and pass context in the brief. An agent that accumulates unrelated jobs is a bug.
 
-Matching "where does backtesting live" uses workspace/project descriptions in the snapshot first, memory recall second. When neither resolves it, clarification card.
+Matching "where does backtesting live" starts with `suggest_placement`, which returns the project (or `new_project` / `scratch`), host, isolation and agent mode the New workspace screen would pick ([routing.md](routing.md)); snapshot descriptions and memory recall resolve what it cannot. When neither resolves it, clarification card.
 
 ## Per-project instructions
 

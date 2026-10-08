@@ -7,6 +7,7 @@ import type {
 } from "@getpaseo/protocol/agent-types";
 import { timelineItemIdentity } from "@getpaseo/protocol/timeline-identity";
 import type { AgentAttachment, AgentStreamEventPayload } from "@getpaseo/protocol/messages";
+import { splitAgentModeBlock, type AgentModeId } from "@getpaseo/protocol/agent-modes";
 import type { AttachmentMetadata } from "@/attachments/types";
 import { extractTaskEntriesFromToolCall } from "../utils/tool-call-parsers";
 import { convertIrcMessageToTimelineToolCall, isIrcMessageText } from "@/utils/irc-message";
@@ -128,6 +129,9 @@ export interface UserMessageItem {
   classification?: UserMessageClassification;
   voiceMirrorKind?: VoiceMirrorKind;
   text: string;
+  // Agent mode whose `<paseo-mode>` block rode this message (stripped from
+  // `text`); the message renders a mode chip instead of the raw block.
+  agentMode?: AgentModeId;
   timestamp: Date;
   images?: UserMessageImage[];
   attachments?: AgentAttachment[];
@@ -142,6 +146,7 @@ export interface UserMessageInput {
   classification?: UserMessageClassification;
   voiceMirrorKind?: VoiceMirrorKind;
   text: string;
+  agentMode?: AgentModeId;
   timestamp: Date;
   images?: UserMessageImage[];
   attachments?: AgentAttachment[];
@@ -152,6 +157,7 @@ export function createUserMessage(input: UserMessageInput): UserMessageItem {
   if (!id) {
     throw new Error("User message identity is required");
   }
+  const { modeId, body } = splitAgentModeBlock(input.text);
   return {
     kind: "user_message",
     id,
@@ -161,7 +167,8 @@ export function createUserMessage(input: UserMessageInput): UserMessageItem {
     ...(input.timelineCursor ? { timelineCursor: input.timelineCursor } : {}),
     ...(input.classification ? { classification: input.classification } : {}),
     ...(input.voiceMirrorKind ? { voiceMirrorKind: input.voiceMirrorKind } : {}),
-    text: input.text,
+    text: body,
+    ...((modeId ?? input.agentMode) ? { agentMode: modeId ?? input.agentMode } : {}),
     timestamp: input.timestamp,
     ...(input.images && input.images.length > 0 ? { images: input.images } : {}),
     ...(input.attachments && input.attachments.length > 0
@@ -293,25 +300,32 @@ function produceUserMessage(
   const merged = createUserMessage({
     ...presentation,
     clientMessageId: incoming.clientMessageId ?? existing.clientMessageId,
+    agentMode: incoming.agentMode ?? existing.agentMode,
     messageId: incoming.messageId ?? existing.messageId,
     timelineCursor: incoming.timelineCursor ?? existing.timelineCursor,
   });
-  if (
-    existing.id === merged.id &&
-    existing.clientMessageId === merged.clientMessageId &&
-    existing.messageId === merged.messageId &&
-    existing.timelineCursor === merged.timelineCursor &&
-    existing.classification === merged.classification &&
-    existing.text === merged.text &&
-    existing.timestamp === merged.timestamp &&
-    existing.images === merged.images &&
-    existing.attachments === merged.attachments
-  ) {
+  if (isSameUserMessage(existing, merged)) {
     return { items, index, message: existing, matched: true };
   }
   const next = [...items];
   next[index] = merged;
   return { items: next, index, message: merged, matched: true };
+}
+
+/** Field-by-field identity of two user message rows (reference equality for arrays). */
+function isSameUserMessage(a: UserMessageItem, b: UserMessageItem): boolean {
+  return (
+    a.id === b.id &&
+    a.clientMessageId === b.clientMessageId &&
+    a.messageId === b.messageId &&
+    a.timelineCursor === b.timelineCursor &&
+    a.classification === b.classification &&
+    a.text === b.text &&
+    a.agentMode === b.agentMode &&
+    a.timestamp === b.timestamp &&
+    a.images === b.images &&
+    a.attachments === b.attachments
+  );
 }
 
 export interface UserMessageStreamUpsertInput {

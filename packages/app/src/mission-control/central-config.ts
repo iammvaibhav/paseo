@@ -9,6 +9,8 @@ import { useFetchQuery } from "@/data/query";
 import { useLocalDaemonServerId } from "@/hooks/use-is-local-daemon";
 import { useToast } from "@/contexts/toast-context";
 import { useHostRuntimeClient, useHostRuntimeIsConnected, useHosts } from "@/runtime/host-runtime";
+import { useSessionStore } from "@/stores/session-store";
+import { resolveCommanderHostServerId } from "./model-options";
 // Pure resolution (types + defaults + resolver) lives apart from the hooks so
 // it stays unit-testable without the RN/hook import chain. The names are
 // imported for in-module use AND re-exported for existing consumers.
@@ -184,4 +186,31 @@ export function useMissionControlMode(): {
     isUpdating,
     setMode: handleSetMode,
   };
+}
+
+/**
+ * The connected host the central config names as Commander host (by serverId,
+ * hostname or missionControl.hostAlias); null when none is designated or known.
+ */
+export function useCommanderHostServerId(): string | null {
+  const hosts = useHosts();
+  const sessions = useSessionStore((state) => state.sessions);
+  const localServerId = useLocalDaemonServerId();
+  const { config } = useMissionControlCentralConfig();
+  const commanderHost = config?.commanderHost ?? null;
+  return useMemo(() => {
+    const hostnameByServerId = new Map<string, string | null>();
+    const hostAliasByServerId = new Map<string, string | null>();
+    for (const [serverId, session] of Object.entries(sessions)) {
+      hostnameByServerId.set(serverId, session.serverInfo?.hostname ?? null);
+      hostAliasByServerId.set(serverId, session.serverInfo?.missionControlHostAlias ?? null);
+    }
+    return resolveCommanderHostServerId({
+      commanderHost,
+      hosts,
+      hostnameByServerId,
+      hostAliasByServerId,
+      localServerId,
+    });
+  }, [commanderHost, hosts, localServerId, sessions]);
 }

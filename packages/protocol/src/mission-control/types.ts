@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { ComposerPreferencesSchema } from "../composer-preferences.js";
+import { ROUTING_SECRET_KEYS, RoutingConfigSchema, RoutingSecretsSchema } from "../routing.js";
 
 // Mission Control fleet events: deterministic transition cards from the daemon
 // detectors plus summarizer judgment cards. One shared shape for the feed, the
@@ -780,6 +781,14 @@ export const MissionControlCentralConfigSchema = z.object({
     })
     .nullable()
     .optional(),
+  // Placement routing (routing.suggest.*): defaults, roots, profiles, models.
+  // COMPAT(routingSuggest): added 2026-10-08.
+  routing: RoutingConfigSchema.optional(),
+  // Routing API keys. Stored and replicated to peers, never returned to a
+  // client: responses drop this key and list the set keys in
+  // routingSecretsSet instead. A patch merges per key; "" clears a key.
+  routingSecrets: RoutingSecretsSchema.optional(),
+  routingSecretsSet: z.array(z.enum(ROUTING_SECRET_KEYS)).optional(),
 });
 export type MissionControlCentralConfig = z.infer<typeof MissionControlCentralConfigSchema>;
 
@@ -990,6 +999,10 @@ export const MissionControlInventoryProjectSchema = z.object({
   hostServerId: z.string(),
   commanderInstructions: z.string().optional(),
   defaultBaseBranch: z.string().optional(),
+  // Additive (2026-10-08): the project's root directory and git-ness, so
+  // placement routing can recognize the scratch project and offer worktrees.
+  rootPath: z.string().optional(),
+  kind: z.string().optional(), // git | non_git
   workspaces: z.array(MissionControlInventoryProjectWorkspaceSchema),
 });
 export type MissionControlInventoryProject = z.infer<typeof MissionControlInventoryProjectSchema>;
@@ -1025,6 +1038,9 @@ export type MissionControlContextAgentSummary = z.infer<
 export const MissionControlContextFetchRequestSchema = z.object({
   type: z.literal("mission_control.context.fetch.request"),
   requestId: z.string(),
+  // Additive (2026-10-08): skip models and roster, for placement routing.
+  // Old daemons ignore it and send the full payload.
+  inventoryOnly: z.boolean().optional(),
 });
 export type MissionControlContextFetchRequest = z.infer<
   typeof MissionControlContextFetchRequestSchema

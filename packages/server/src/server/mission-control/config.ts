@@ -5,6 +5,11 @@ import type {
   MissionControlCentralConfig,
   MissionControlMode,
 } from "@getpaseo/protocol/mission-control/types";
+import {
+  ROUTING_SECRET_KEYS,
+  type RoutingConfig,
+  type RoutingSecrets,
+} from "@getpaseo/protocol/routing";
 import { writeJsonFileAtomic } from "../atomic-file.js";
 
 const CENTRAL_CONFIG_DIR = "mission-control";
@@ -103,6 +108,10 @@ export interface ResolvedMissionControlCentralConfig {
     // missionControl.itsaplanWebBaseUrl before it reaches any consumer.
     webBaseUrl?: string;
   } | null;
+  // Placement routing (routing.suggest.*). See protocol/routing.ts.
+  routing: RoutingConfig;
+  // Routing API keys. Never sent to clients (redactCentralConfigForClient).
+  routingSecrets: RoutingSecrets;
 }
 
 export const DEFAULT_CENTRAL_MISSION_CONTROL_CONFIG: ResolvedMissionControlCentralConfig = {
@@ -138,6 +147,8 @@ export const DEFAULT_CENTRAL_MISSION_CONTROL_CONFIG: ResolvedMissionControlCentr
   verifierEnabled: false,
   projectSettings: {},
   itsaplan: null,
+  routing: {},
+  routingSecrets: {},
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -225,6 +236,13 @@ export class CentralMissionControlConfigStore {
       }
       (next as Record<string, unknown>)[key] = value;
     }
+    // Secrets merge per key: a client never holds the stored values (they are
+    // redacted from every response), so a patch names only the keys it sets;
+    // an empty string clears one.
+    if (patch.routingSecrets) {
+      next.routingSecrets = mergeRoutingSecrets(this.config.routingSecrets, patch.routingSecrets);
+    }
+    delete next.routingSecretsSet;
     this.config = pickCentralConfigKeys(next);
     try {
       await writeJsonFileAtomic(join(this.dir, CENTRAL_CONFIG_FILENAME), this.config);
@@ -303,6 +321,8 @@ const CENTRAL_CONFIG_KEYS: readonly (keyof ResolvedMissionControlCentralConfig)[
   "verifierEnabled",
   "projectSettings",
   "itsaplan",
+  "routing",
+  "routingSecrets",
 ];
 
 function pickCentralConfigKeys(value: Record<string, unknown>): MissionControlCentralConfig {
@@ -402,5 +422,37 @@ function resolveCentralConfig(
     voiceMode: stored.voiceMode ?? defaults.voiceMode,
     projectSettings: stored.projectSettings ?? defaults.projectSettings,
     itsaplan: stored.itsaplan ?? defaults.itsaplan,
+    routing: { ...defaults.routing, ...stored.routing },
+    routingSecrets: { ...defaults.routingSecrets, ...stored.routingSecrets },
   };
+}
+
+function mergeRoutingSecrets(
+  current: RoutingSecrets | undefined,
+  patch: RoutingSecrets,
+): RoutingSecrets {
+  const next: RoutingSecrets = { ...current };
+  for (const key of ROUTING_SECRET_KEYS) {
+    const value = patch[key];
+    if (value === undefined) continue;
+    if (value.trim() === "") {
+      delete next[key];
+    } else {
+      next[key] = value.trim();
+    }
+  }
+  return next;
+}
+
+/**
+ * The central config as a client may see it: routing API keys removed and
+ * replaced by the list of keys that are set. Every config.get/patch response
+ * goes through this; peer replication does not (peers call the APIs too).
+ */
+export function redactCentralConfigForClient(
+  config: MissionControlCentralConfig | ResolvedMissionControlCentralConfig,
+): MissionControlCentralConfig {
+  const { routingSecrets, ...rest } = config as MissionControlCentralConfig;
+  const routingSecretsSet = ROUTING_SECRET_KEYS.filter((key) => Boolean(routingSecrets?.[key]));
+  return { ...rest, routingSecretsSet };
 }

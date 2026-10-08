@@ -147,6 +147,7 @@ beforeAll(async () => {
       return { agentId, archivedAt: new Date().toISOString(), record: record ?? null };
     },
     mkdirp: (dirPath) => mkdir(dirPath, { recursive: true }),
+    ensureGitRepository: async () => undefined,
     emitStoredAgentUpdate: async () => undefined,
     peerManager: null,
   });

@@ -2,6 +2,7 @@ import { searchTimeline } from "./agent/chat-search/index.js";
 import type { BrowserToolsBroker } from "./browser-tools/broker.js";
 import type { PagePortProxy } from "./page-tools/port-proxy.js";
 import type { PageStore } from "./page-tools/page-store.js";
+import type { RoutingService } from "./routing/routing-service.js";
 import { BrowserAutomationHostCapabilitySchema } from "@getpaseo/protocol/browser-automation/capabilities";
 import type {
   SessionEventSubscription,
@@ -98,6 +99,8 @@ import { releaseWorkspaceServicePortPlan } from "./workspace-service-port-regist
 import { getErrorMessage, getErrorMessageOr } from "@getpaseo/protocol/error-utils";
 import { getAgentStatusPriority } from "@getpaseo/protocol/agent-state-bucket";
 import { getParentAgentIdFromLabels } from "@getpaseo/protocol/agent-labels";
+import { isAgentModeId } from "@getpaseo/protocol/agent-modes";
+import { redactCentralConfigForClient } from "./mission-control/config.js";
 import type { WorkspaceGitRuntimeSnapshot, WorkspaceGitService } from "./workspace-git-service.js";
 import type { ProjectUpdate } from "./workspace-reconciliation-service.js";
 import {
@@ -521,6 +524,7 @@ export interface SessionOptions {
   browserToolsBroker?: BrowserToolsBroker | null;
   pagePortProxy?: Pick<PagePortProxy, "open"> | null;
   pageStore?: Pick<PageStore, "get"> | null;
+  routingService?: RoutingService | null;
   /** How the socket that sent a request reached the daemon. */
   resolveSourcePeer?: (source?: object) => SessionSourcePeer | null;
   clientId: string;
@@ -877,6 +881,7 @@ export class Session {
   private readonly browserToolsBroker: SessionOptions["browserToolsBroker"];
   private readonly pagePortProxy: Pick<PagePortProxy, "open"> | null;
   private readonly pageStore: Pick<PageStore, "get"> | null;
+  private readonly routingService: RoutingService | null;
   private readonly resolveSourcePeer: (source?: object) => SessionSourcePeer | null;
   private readonly clientId: string;
   private readonly authorization: SessionAuthorization;
@@ -1061,6 +1066,7 @@ export class Session {
     this.browserToolsBroker = options.browserToolsBroker;
     this.pagePortProxy = options.pagePortProxy ?? null;
     this.pageStore = options.pageStore ?? null;
+    this.routingService = options.routingService ?? null;
     this.resolveSourcePeer = options.resolveSourcePeer ?? (() => null);
     this.clientId = clientId;
     this.authorization = new SessionAuthorization(permissions);
@@ -2831,6 +2837,7 @@ export class Session {
       agentStorage: this.agentStorage,
       daemonConfigStore: this.daemonConfigStore,
       serverId: this.daemonSession.serverIdValue ?? "local",
+      inventoryOnly: msg.inventoryOnly === true,
     });
     this.emit({
       type: "mission_control.context.fetch.response",
@@ -3060,7 +3067,7 @@ export class Session {
       type: "mission_control.config.get.response",
       payload: {
         requestId: msg.requestId,
-        config: this.missionControlService?.getCentralConfig() ?? {},
+        config: redactCentralConfigForClient(this.missionControlService?.getCentralConfig() ?? {}),
       },
     });
   }
@@ -3105,7 +3112,7 @@ export class Session {
         type: "mission_control.config.patch.response",
         payload: {
           requestId: msg.requestId,
-          config: result.config,
+          config: redactCentralConfigForClient(result.config),
           ok: result.ok,
           ...(result.ok ? {} : { error: result.error }),
           ...(result.ok || !result.unreachableCommanderHost
@@ -3118,7 +3125,9 @@ export class Session {
         type: "mission_control.config.patch.response",
         payload: {
           requestId: msg.requestId,
-          config: this.missionControlService?.getCentralConfig() ?? {},
+          config: redactCentralConfigForClient(
+            this.missionControlService?.getCentralConfig() ?? {},
+          ),
           ok: false,
           error: getErrorMessageOr(error, "Failed to patch Mission Control config"),
         },
@@ -4266,6 +4275,12 @@ export class Session {
         return this.handleProjectDescriptionSetRequest(msg);
       case "project.icon.set.request":
         return this.handleProjectIconSetRequest(msg);
+      case "routing.suggest.request":
+        return this.handleRoutingSuggestRequest(msg);
+      case "routing.project.create.request":
+        return this.handleRoutingProjectCreateRequest(msg);
+      case "agent.agent_mode.set.request":
+        return this.handleAgentModeSetRequest(msg);
       default:
         return undefined;
     }
@@ -5142,6 +5157,146 @@ export class Session {
     }
   }
 
+  private async handleRoutingSuggestRequest(
+    request: Extract<SessionInboundMessage, { type: "routing.suggest.request" }>,
+  ): Promise<void> {
+    try {
+      if (!this.routingService) {
+        throw new Error("Routing is not available on this host");
+      }
+      const suggestion = await this.routingService.suggest(request.prompt);
+      this.emit({
+        type: "routing.suggest.response",
+        payload: { requestId: request.requestId, suggestion, error: null },
+      });
+    } catch (error) {
+      this.sessionLogger.warn({ err: error }, "routing.suggest failed");
+      this.emit({
+        type: "routing.suggest.response",
+        payload: {
+          requestId: request.requestId,
+          suggestion: null,
+          error: getErrorMessageOr(error, "Routing failed"),
+        },
+      });
+    }
+  }
+
+  private async handleRoutingProjectCreateRequest(
+    request: Extract<SessionInboundMessage, { type: "routing.project.create.request" }>,
+  ): Promise<void> {
+    try {
+      if (!this.routingService) {
+        throw new Error("Routing is not available on this host");
+      }
+      const registerProject = (directoryPath: string) =>
+        this.workspaceProvisioning.findOrCreateProjectForDirectory(directoryPath);
+      const created = request.scratch
+        ? await this.routingService.ensureScratchProject(registerProject).then((project) => ({
+            project,
+            title: project.customName ?? "Scratch",
+            description: project.description ?? `Scratch area for one-off work on this host.`,
+          }))
+        : await this.routingService.createProjectForPrompt({
+            prompt: request.prompt,
+            ...(request.parentPath ? { parentPath: request.parentPath } : {}),
+            registerProject,
+          });
+      const updated = {
+        ...created.project,
+        customName: created.title,
+        description: created.description,
+        updatedAt: new Date().toISOString(),
+      };
+      await this.projectRegistry.upsert(updated);
+      this.routingService.invalidateCatalog();
+      await this.emitProjectUpdate({ kind: "upsert", project: updated });
+      this.emit({
+        type: "routing.project.create.response",
+        payload: {
+          requestId: request.requestId,
+          project: {
+            projectId: updated.projectId,
+            rootPath: updated.rootPath,
+            title: created.title,
+            description: created.description,
+          },
+          error: null,
+        },
+      });
+      if (!request.scratch) {
+        // The name had to exist before the folder; the description can
+        // improve afterwards (metadataModel), without blocking creation.
+        void this.refineNewProjectDescription(updated.projectId, request.prompt, created.title);
+      }
+    } catch (error) {
+      this.sessionLogger.warn({ err: error }, "routing.project.create failed");
+      this.emit({
+        type: "routing.project.create.response",
+        payload: {
+          requestId: request.requestId,
+          project: null,
+          error: getErrorMessageOr(error, "Failed to create project"),
+        },
+      });
+    }
+  }
+
+  private async refineNewProjectDescription(
+    projectId: string,
+    prompt: string,
+    title: string,
+  ): Promise<void> {
+    const routing = this.routingService;
+    if (!routing) return;
+    try {
+      const description = await routing.describeProject({ prompt, title });
+      const current = description ? await this.projectRegistry.get(projectId) : null;
+      if (!description || !current) return;
+      const next = { ...current, description, updatedAt: new Date().toISOString() };
+      await this.projectRegistry.upsert(next);
+      routing.invalidateCatalog();
+      await this.emitProjectUpdate({ kind: "upsert", project: next });
+    } catch (error) {
+      this.sessionLogger.warn({ err: error }, "routing.describe_project failed");
+    }
+  }
+
+  private async handleAgentModeSetRequest(
+    request: Extract<SessionInboundMessage, { type: "agent.agent_mode.set.request" }>,
+  ): Promise<void> {
+    try {
+      if (!isAgentModeId(request.agentMode)) {
+        throw new Error(`Unknown agent mode: ${request.agentMode}`);
+      }
+      await ensureAgentLoaded(request.agentId, {
+        agentManager: this.agentManager,
+        agentStorage: this.agentStorage,
+        logger: this.sessionLogger,
+      });
+      await this.agentManager.selectAgentMode(request.agentId, request.agentMode);
+      this.emit({
+        type: "agent.agent_mode.set.response",
+        payload: {
+          requestId: request.requestId,
+          agentId: request.agentId,
+          accepted: true,
+          error: null,
+        },
+      });
+    } catch (error) {
+      this.emit({
+        type: "agent.agent_mode.set.response",
+        payload: {
+          requestId: request.requestId,
+          agentId: request.agentId,
+          accepted: false,
+          error: getErrorMessageOr(error, "Failed to set agent mode"),
+        },
+      });
+    }
+  }
+
   private async handleProjectIconSetRequest(
     request: Extract<SessionInboundMessage, { type: "project.icon.set.request" }>,
   ): Promise<void> {
@@ -5947,7 +6102,7 @@ export class Session {
           git,
           labels: resolvedIntent.intent.labels,
           env,
-          ...(msg.orchestrator === true ? { orchestrator: true } : {}),
+          ...(isAgentModeId(msg.agentMode) ? { agentMode: msg.agentMode } : {}),
           provisionalTitle,
           firstAgentContext,
           buildSessionConfig: (sessionConfig, gitOptions, legacyWorktreeName, ctx) =>

@@ -17,12 +17,18 @@ import {
   PARENT_AGENT_ID_LABEL,
 } from "@getpaseo/protocol/agent-labels";
 import type { Logger } from "pino";
-import type { OrchestratorPlan, ToolPolicy } from "@getpaseo/protocol/agent-types";
+import type { ToolPolicy } from "@getpaseo/protocol/agent-types";
+import { DEFAULT_AGENT_MODE_ID, type AgentModeId } from "@getpaseo/protocol/agent-modes";
 import type { ProviderPaseoToolsPolicy } from "@getpaseo/protocol/provider-config";
 import { z } from "zod";
 import type { TerminalManager } from "../../terminal/terminal-manager.js";
-import { buildOrchestratorSystemPrompt } from "./orchestrator/prompt.js";
+import {
+  buildAgentModeBlock,
+  canCarryAgentModeBlock,
+  prependToPrompt,
+} from "./agent-modes/index.js";
 import { buildSelfReportSystemPrompt } from "../mission-control/self-report.js";
+import { isSystemOwnedAgentLabels } from "@getpaseo/protocol/mission-control/system-owned";
 
 import {
   getAgentStreamEventTurnId,
@@ -50,7 +56,6 @@ import {
   type SteerResult,
   type AgentStreamEvent,
   type AgentTimelineItem,
-  type PluginTimelineItem,
   type AgentTimelineUserMessageClassification,
   type AgentUsage,
   type AgentRuntimeInfo,
@@ -513,11 +518,9 @@ export interface CreateAgentOptions {
   env?: Record<string, string>;
   persistSession?: boolean;
   initialTitle?: string | null;
-  // Orchestrator start option (normal agents only). Stamped at creation,
+  // Agent mode (Do it yourself, Orchestrator, …). Stamped at creation,
   // persisted on the record, echoed on snapshots.
-  orchestrator?: boolean;
-  // Orchestrator plan state restored from persistence. Not stamped by clients.
-  orchestratorPlan?: OrchestratorPlan | null;
+  agentMode?: AgentModeId;
   // undefined is an explicit decision: the agent never appears in the sidebar.
   workspaceId: string | undefined;
   owner?: AgentOwner;
@@ -742,14 +745,13 @@ interface ManagedAgentBase {
    */
   shortDescription?: string;
   /**
-   * Orchestrator start option (normal agents only; never the Commander).
-   * Stamped at creation from the create request, persisted on the record,
-   * echoed on snapshots. True only — absent/false = default task mode.
+   * Agent mode (Do it yourself, Orchestrator, …). Its instructions ride the
+   * next user message as a `<paseo-mode>` block whenever it differs from
+   * `appliedAgentMode`, never the system prompt.
    */
-  orchestrator?: boolean;
-  // Orchestrator plan state (daemon-owned). Held in-memory and persisted on
-  // the stored record. True orchestrator agents only.
-  orchestratorPlan?: OrchestratorPlan | null;
+  agentMode?: AgentModeId;
+  /** The mode whose block the provider has already received. */
+  appliedAgentMode?: AgentModeId | null;
   /**
    * Set when title was auto-derived from prompt rather than explicitly set.
    */
@@ -1007,14 +1009,13 @@ function resolveRegistrationTimestamps(
   };
 }
 
-function orchestratorStamp(options?: {
-  orchestrator?: boolean;
-  orchestratorPlan?: OrchestratorPlan | null;
-}): { orchestrator?: true; orchestratorPlan?: OrchestratorPlan } {
-  if (options?.orchestrator !== true && !options?.orchestratorPlan) return {};
+function agentModeStamp(options?: {
+  agentMode?: AgentModeId;
+  appliedAgentMode?: AgentModeId | null;
+}): { agentMode?: AgentModeId; appliedAgentMode?: AgentModeId | null } {
   return {
-    ...(options?.orchestrator === true ? { orchestrator: true as const } : {}),
-    ...(options?.orchestratorPlan ? { orchestratorPlan: options.orchestratorPlan } : {}),
+    ...(options?.agentMode ? { agentMode: options.agentMode } : {}),
+    ...(options?.appliedAgentMode ? { appliedAgentMode: options.appliedAgentMode } : {}),
   };
 }
 
@@ -1111,11 +1112,10 @@ interface RegisterSessionOptions {
   initialTitle?: string | null;
   initialPrompt?: string;
   name?: string;
-  // Orchestrator start option, stamped at creation and carried through
-  // resume/reload via the stored record (true only).
-  orchestrator?: boolean;
-  // Orchestrator plan state restored from persistence. Not client-supplied.
-  orchestratorPlan?: OrchestratorPlan | null;
+  // Agent mode and the mode already delivered to the provider, carried
+  // through resume/reload via the stored record.
+  agentMode?: AgentModeId;
+  appliedAgentMode?: AgentModeId | null;
   publishWhenReady?: boolean;
   workspaceId?: string;
   owner?: AgentOwner;
@@ -1179,15 +1179,12 @@ export class AgentManager {
   private paseoToolsEnabled = true;
   private paseoToolCatalogFactory: PaseoToolCatalogFactory | null = null;
   private readonly paseoToolPolicies = new Map<string, ProviderPaseoToolsPolicy | undefined>();
-  private readonly daemonPermissionHandlers = new Map<
-    string,
-    (response: AgentPermissionResponse) => Promise<AgentPermissionResult | void>
-  >();
   private readonly resolvePaseoToolPolicy: (
     provider: AgentProvider,
   ) => ProviderPaseoToolsPolicy | undefined;
   private appendSystemPrompt: string;
   private missionControlSelfReportEnabled: boolean;
+  private metadataCompletion: ((prompt: string) => Promise<string | null>) | null = null;
   private resolveCommanderLaunchContract: AgentManagerOptions["resolveCommanderLaunchContract"];
   private resolveDefaultModel: AgentManagerOptions["resolveDefaultModel"];
   private onAgentAttention?: AgentAttentionCallback;
@@ -2007,7 +2004,7 @@ export class AgentManager {
     const { storedConfig, launchConfig, paseoToolPolicy } = await this.prepareSessionConfig(
       config,
       resolvedAgentId,
-      { labels: options.labels, env: options?.env, orchestrator: options.orchestrator },
+      { labels: options.labels, env: options?.env },
     );
     const prepareMs = Date.now() - prepareStartedAt;
     this.requireEnabledProvider(storedConfig.provider);
@@ -2045,7 +2042,14 @@ export class AgentManager {
         initialPrompt: options.initialPrompt,
         name: options.name,
         workspaceId: options.workspaceId,
-        ...orchestratorStamp(options),
+        // Every user-facing agent gets a mode; Do it yourself unless the
+        // caller chose one. Mission Control machinery (Commander, verifier)
+        // and internal sessions run on their own contracts and get none.
+        agentMode:
+          options.agentMode ??
+          (storedConfig.internal || isSystemOwnedAgentLabels(options.labels)
+            ? undefined
+            : DEFAULT_AGENT_MODE_ID),
         owner: options.owner,
         historyPrimed: true,
       });
@@ -2177,8 +2181,8 @@ export class AgentManager {
       lastUserMessageAt?: Date | null;
       labels?: Record<string, string>;
       workspaceId?: string;
-      orchestrator?: boolean;
-      orchestratorPlan?: OrchestratorPlan | null;
+      agentMode?: AgentModeId;
+      appliedAgentMode?: AgentModeId | null;
       owner?: AgentOwner;
       /** Provisional title for a freshly created agent (e.g. a fork); ignored when a stored record already has one. */
       initialTitle?: string | null;
@@ -2213,8 +2217,8 @@ export class AgentManager {
       lastUserMessageAt?: Date | null;
       labels?: Record<string, string>;
       workspaceId?: string;
-      orchestrator?: boolean;
-      orchestratorPlan?: OrchestratorPlan | null;
+      agentMode?: AgentModeId;
+      appliedAgentMode?: AgentModeId | null;
       owner?: AgentOwner;
       initialTitle?: string | null;
       attention?: AttentionState;
@@ -2245,7 +2249,7 @@ export class AgentManager {
     const { storedConfig, launchConfig, paseoToolPolicy } = await this.prepareSessionConfig(
       mergedConfig,
       resolvedAgentId,
-      { labels: options?.labels, orchestrator: options?.orchestrator, purpose },
+      { labels: options?.labels, purpose },
     );
     const client = this.requireClient(handle.provider);
     const available = await client.isAvailable();
@@ -2412,7 +2416,7 @@ export class AgentManager {
     const { storedConfig, launchConfig, paseoToolPolicy } = await this.prepareSessionConfig(
       refreshConfig,
       agentId,
-      { labels: existing.labels, orchestrator: existing.orchestrator },
+      { labels: existing.labels },
     );
     const hadPreviousPaseoToolPolicy = this.paseoToolPolicies.has(agentId);
     const previousPaseoToolPolicy = this.paseoToolPolicies.get(agentId);
@@ -2466,7 +2470,7 @@ export class AgentManager {
       return this.registerSession(session, storedConfig, agentId, {
         labels: existing.labels,
         workspaceId: existing.workspaceId,
-        ...orchestratorStamp(existing),
+        ...agentModeStamp(existing),
         owner: existing.owner,
         createdAt: existing.createdAt,
         updatedAt: existing.updatedAt,
@@ -2746,9 +2750,6 @@ export class AgentManager {
   }
 
   private async fireAgentArchived(agentId: string): Promise<void> {
-    await this.handleChildAgentArchived(agentId).catch((error) => {
-      this.logger.warn({ err: error, agentId }, "orchestrator child archive handling failed");
-    });
     const callback = this.onAgentArchived;
     if (!callback) {
       return;
@@ -4241,13 +4242,7 @@ export class AgentManager {
     agent.inFlightPermissionResponses.add(requestId);
 
     try {
-      // Daemon-owned permissions (e.g. OrchestratorPlanApproval) bypass the
-      // provider session's pending map: it never saw them. Handle internally.
-      const daemonHandler = this.daemonPermissionHandlers.get(requestId);
-      const result =
-        daemonHandler !== undefined
-          ? await daemonHandler(response)
-          : await agent.session.respondToPermission(requestId, response);
+      const result = await agent.session.respondToPermission(requestId, response);
       agent.pendingPermissions.delete(requestId);
 
       try {
@@ -4268,7 +4263,6 @@ export class AgentManager {
 
       return result;
     } finally {
-      this.daemonPermissionHandlers.delete(requestId);
       agent.inFlightPermissionResponses.delete(requestId);
       agent.bufferedPermissionResolutions.delete(requestId);
     }
@@ -5056,8 +5050,8 @@ export class AgentManager {
           attention?: AttentionState;
           persistence?: AgentPersistenceHandle;
           workspaceId?: string;
-          orchestrator?: boolean;
-          orchestratorPlan?: OrchestratorPlan | null;
+          agentMode?: AgentModeId;
+          appliedAgentMode?: AgentModeId | null;
           owner?: AgentOwner;
         }
       | undefined;
@@ -5106,7 +5100,7 @@ export class AgentManager {
       turnMetrics: resolveTurnMetricsFromOptions(options?.turnMetrics),
       attention: resolveInitialAttention(options?.attention),
       internal: config.internal ?? false,
-      ...orchestratorStamp(options),
+      ...agentModeStamp(options),
       labels: options?.labels ?? {},
     } as ActiveManagedAgent;
   }
@@ -5129,7 +5123,6 @@ export class AgentManager {
     cancelReason: string,
   ): ManagedAgentClosed {
     this.agentStreamCoalescer.flushAndDiscard(agent.id);
-    this.deleteDaemonPermissionHandlers(agent.id);
     this.turnMetricsCache.delete(agent.id);
     this.agents.delete(agent.id);
     this.previousStatuses.delete(agent.id);
@@ -5402,24 +5395,9 @@ export class AgentManager {
 
     try {
       const pending = agent.session.getPendingPermissions();
-      const merged = new Map(pending.map((request) => [request.id, request]));
-      // Daemon-owned permissions (e.g. OrchestratorPlanApproval) live only in
-      // pendingPermissions: the provider session never saw them. Re-add them
-      // so answering a provider permission cannot drop a pending plan approval.
-      for (const [id, request] of agent.pendingPermissions) {
-        if (this.daemonPermissionHandlers.has(id) && !merged.has(id)) {
-          merged.set(id, request);
-        }
-      }
-      agent.pendingPermissions = merged;
+      agent.pendingPermissions = new Map(pending.map((request) => [request.id, request]));
     } catch {
-      // The provider map is unavailable; keep only daemon-owned entries so a
-      // failed refresh cannot drop a pending plan approval either.
-      const retained = new Map<string, AgentPermissionRequest>();
-      for (const [id, request] of agent.pendingPermissions) {
-        if (this.daemonPermissionHandlers.has(id)) retained.set(id, request);
-      }
-      agent.pendingPermissions = retained;
+      agent.pendingPermissions.clear();
     }
 
     this.syncFeaturesFromSession(agent);
@@ -6152,9 +6130,6 @@ export class AgentManager {
       );
     }
     this.resolvePendingPermissionsForAgent(agent, event.provider, options, "Turn failed");
-    this.handleChildAgentFailure(agent.id).catch((error) =>
-      this.logger.warn({ error, agentId: agent.id }, "orchestrator child failure handling failed"),
-    );
     if (!isForegroundEvent && !agent.activeForegroundTurnId) {
       this.emitState(agent);
     }
@@ -6255,114 +6230,64 @@ export class AgentManager {
     agent.lifecycle = "running";
     this.emitState(agent);
   }
-  // Orchestrator plan state accessors (daemon-owned).
-  //
-  getOrchestratorPlan(agentId: string): OrchestratorPlan | null {
-    const agent = this.requireAgent(agentId);
-    return agent.orchestratorPlan ?? null;
+
+  /**
+   * Plain-HTTP text generation for metadata (titles, branch names,
+   * descriptions, commit and PR drafts): structured generation tries it
+   * before starting a provider session. Wired by bootstrap to the routing
+   * config's metadataModel; returns null when none is configured.
+   */
+  setMetadataCompletion(completion: ((prompt: string) => Promise<string | null>) | null): void {
+    this.metadataCompletion = completion;
   }
 
-  async setOrchestratorPlan(agentId: string, plan: OrchestratorPlan | null): Promise<void> {
-    const agent = this.requireAgent(agentId);
-    agent.orchestratorPlan = plan;
-    this.touchUpdatedAt(agent);
-    await this.persistSnapshot(agent);
+  getMetadataCompletion(): ((prompt: string) => Promise<string | null>) | null {
+    return this.metadataCompletion;
   }
 
-  async clearDaemonPermission(agentId: string, requestId: string): Promise<void> {
+  /**
+   * Change the agent mode. Nothing is sent: the block rides the next user
+   * message (see withAgentModePrefix), so a switch starts no work and keeps
+   * the provider's cached system prompt.
+   */
+  async selectAgentMode(agentId: string, agentMode: AgentModeId): Promise<void> {
     const agent = this.requireAgent(agentId);
-    this.daemonPermissionHandlers.delete(requestId);
-    agent.pendingPermissions.delete(requestId);
+    if (agent.agentMode === agentMode) return;
+    agent.agentMode = agentMode;
     this.touchUpdatedAt(agent);
     await this.persistSnapshot(agent);
     this.emitState(agent);
   }
 
-  private deleteDaemonPermissionHandlers(agentId: string): void {
-    const agent = this.agents.get(agentId);
-    if (!agent) return;
-    for (const requestId of agent.pendingPermissions.keys()) {
-      this.daemonPermissionHandlers.delete(requestId);
-    }
-  }
-
-  async handleChildAgentFailure(failedChildAgentId: string): Promise<void> {
-    for (const [, orchestrator] of this.agents) {
-      if (orchestrator.session === null) continue;
-      if (orchestrator.orchestrator !== true || !orchestrator.orchestratorPlan) continue;
-      const plan: OrchestratorPlan = JSON.parse(
-        JSON.stringify(orchestrator.orchestratorPlan),
-      ) as OrchestratorPlan;
-      const tasksToFail = plan.tasks.filter(
-        (t) =>
-          t.childAgentId === failedChildAgentId && (t.status === "running" || t.status === "ready"),
-      );
-      if (tasksToFail.length === 0) continue;
-      for (const t of tasksToFail) {
-        t.status = "failed";
-      }
-      plan.version += 1;
-      await this.setOrchestratorPlan(orchestrator.id, plan);
-      await this.appendTimelineItem(orchestrator.id, {
-        type: "plugin",
-        id: plan.planId,
-        pluginId: "orchestrator",
-        kind: "plan",
-        version: plan.version,
-        data: JSON.parse(JSON.stringify(plan)) as PluginTimelineItem["data"],
-      });
-    }
-    await this.failStoredOrchestratorTasks(failedChildAgentId);
-  }
-
-  private async failStoredOrchestratorTasks(failedChildAgentId: string): Promise<void> {
-    if (!this.registry) return;
-    const records = await this.registry.list();
-    for (const record of records) {
-      if (record.orchestrator !== true || !record.orchestratorPlan) continue;
-      if (this.agents.has(record.id)) continue;
-      const tasksToFail = record.orchestratorPlan.tasks.filter(
-        (t) =>
-          t.childAgentId === failedChildAgentId && (t.status === "running" || t.status === "ready"),
-      );
-      if (tasksToFail.length === 0) continue;
-      const plan: OrchestratorPlan = JSON.parse(
-        JSON.stringify(record.orchestratorPlan),
-      ) as OrchestratorPlan;
-      for (const task of plan.tasks) {
-        if (
-          task.childAgentId === failedChildAgentId &&
-          (task.status === "running" || task.status === "ready")
-        ) {
-          task.status = "failed";
-        }
-      }
-      plan.version += 1;
-      await this.registry.upsert({ ...record, orchestratorPlan: plan });
-    }
-  }
-
-  async handleChildAgentArchived(archivedChildAgentId: string): Promise<void> {
-    await this.handleChildAgentFailure(archivedChildAgentId);
-  }
-
-  requestDaemonPermission(
+  /**
+   * Prepend the `<paseo-mode>` block when the provider does not have the
+   * current mode yet. `carriesMode` tells the caller to call
+   * markAgentModeApplied once the prompt was dispatched. Machinery envelopes
+   * and slash commands never carry it.
+   */
+  withAgentModePrefix(
     agentId: string,
-    request: AgentPermissionRequest,
-    handler: (response: AgentPermissionResponse) => Promise<AgentPermissionResult | void>,
-  ): void {
-    const agent = this.requireSessionAgent(agentId);
-    this.daemonPermissionHandlers.set(request.id, handler);
-    this.onStreamPermissionRequested(agent, {
-      type: "permission_requested",
-      provider: request.provider,
-      request,
-    });
-    this.dispatchStream(agentId, {
-      type: "permission_requested",
-      provider: request.provider,
-      request,
-    });
+    prompt: AgentPromptInput,
+  ): { prompt: AgentPromptInput; carriesMode: boolean } {
+    const agent = this.agents.get(agentId);
+    if (
+      !agent?.agentMode ||
+      agent.appliedAgentMode === agent.agentMode ||
+      !canCarryAgentModeBlock(prompt)
+    ) {
+      return { prompt, carriesMode: false };
+    }
+    return {
+      prompt: prependToPrompt(prompt, buildAgentModeBlock(agent.agentMode)),
+      carriesMode: true,
+    };
+  }
+
+  async markAgentModeApplied(agentId: string): Promise<void> {
+    const agent = this.agents.get(agentId);
+    if (!agent?.agentMode || agent.appliedAgentMode === agent.agentMode) return;
+    agent.appliedAgentMode = agent.agentMode;
+    await this.persistSnapshot(agent);
   }
 
   private onStreamPermissionRequested(
@@ -6389,7 +6314,6 @@ export class AgentManager {
       agent.config.modeId === AI_REVIEW_MODE_ID;
     if (
       event.request.kind === "tool" &&
-      !this.daemonPermissionHandlers.has(event.request.id) &&
       isAiReviewMode &&
       this.aiReviewer &&
       this.getAiReviewerConfig?.()?.enabled
@@ -7157,11 +7081,10 @@ export class AgentManager {
     options: {
       labels?: Record<string, string>;
       env?: Record<string, string>;
-      orchestrator?: boolean;
       purpose?: AgentResumePurpose;
     } = {},
   ): Promise<PreparedSessionConfig> {
-    const { labels, orchestrator } = options;
+    const { labels } = options;
     let storedConfig = await this.normalizeConfig(stripInternalPaseoMcpServer(config), {
       env: options.env,
       purpose: options.purpose,
@@ -7198,7 +7121,6 @@ export class AgentManager {
         mcpAuthToken: this.mcpAuthToken,
       }),
       labels ?? {},
-      orchestrator === true,
     );
     if (storedConfig.modeId === AI_REVIEW_MODE_ID) {
       const { modeId: _strippedModeId, ...rest } = launchConfig;
@@ -7210,7 +7132,6 @@ export class AgentManager {
   private applyDaemonAppendSystemPrompt(
     config: AgentSessionConfig,
     labels: Record<string, string>,
-    orchestrator?: boolean,
   ): AgentSessionConfig {
     const next = { ...config };
     delete next.daemonAppendSystemPrompt;
@@ -7218,12 +7139,7 @@ export class AgentManager {
       labels,
       this.missionControlSelfReportEnabled,
     );
-    const orchestratorPrompt = orchestrator === true ? buildOrchestratorSystemPrompt() : "";
-    const daemonAppendSystemPrompt = [
-      this.appendSystemPrompt.trim(),
-      selfReportPrompt,
-      orchestratorPrompt,
-    ]
+    const daemonAppendSystemPrompt = [this.appendSystemPrompt.trim(), selfReportPrompt]
       .filter((part): part is string => Boolean(part))
       .join("\n\n");
 

@@ -56,6 +56,7 @@ export const COMMANDER_TOOL_ALLOWLIST: readonly string[] = [
   "fleet_list_agents",
   "fleet_list_models",
   "fleet_list_inventory",
+  "suggest_placement",
   "fleet_create_agent",
   "fleet_send_prompt",
   "fleet_get_agent_activity",

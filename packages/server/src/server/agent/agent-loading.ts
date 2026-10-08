@@ -117,8 +117,8 @@ export async function ensureAgentLoaded(
         {
           ...extractTimestamps(record),
           attention: extractAttention(record),
-          ...(record.orchestrator === true ? { orchestrator: true } : {}),
-          ...(record.orchestratorPlan ? { orchestratorPlan: record.orchestratorPlan } : {}),
+          ...(record.agentMode ? { agentMode: record.agentMode } : {}),
+          ...(record.appliedAgentMode ? { appliedAgentMode: record.appliedAgentMode } : {}),
         },
         record.archivedAt ? { purpose: "history" } : undefined,
       );
@@ -136,8 +136,7 @@ export async function ensureAgentLoaded(
       snapshot = await deps.agentManager.createAgent(config, agentId, {
         labels: record.labels,
         workspaceId: record.workspaceId,
-        ...(record.orchestrator === true ? { orchestrator: true } : {}),
-        ...(record.orchestratorPlan ? { orchestratorPlan: record.orchestratorPlan } : {}),
+        ...(record.agentMode ? { agentMode: record.agentMode } : {}),
         owner: record.owner,
       });
       deps.logger.info({ agentId, provider: record.provider }, "Agent created from stored config");

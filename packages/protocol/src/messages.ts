@@ -28,6 +28,14 @@ import { ProviderPaseoToolsPolicySchema } from "./provider-config.js";
 import { TOOL_CALL_ICON_NAMES } from "./agent-types.js";
 import { WORKSPACE_LABEL_COLORS } from "./workspace-labels.js";
 import {
+  AgentModeSetRequestSchema,
+  AgentModeSetResponseSchema,
+  RoutingProjectCreateRequestSchema,
+  RoutingProjectCreateResponseSchema,
+  RoutingSuggestRequestSchema,
+  RoutingSuggestResponseSchema,
+} from "./routing.js";
+import {
   ChatCreateRequestSchema,
   ChatListRequestSchema,
   ChatInspectRequestSchema,
@@ -1130,9 +1138,10 @@ export const AgentSnapshotPayloadSchema = z.object({
   name: z.string().optional(),
   shortDescription: z.string().optional(),
   labels: z.record(z.string(), z.string()).default({}),
-  // Orchestrator start option: persisted at create time, echoed on snapshots.
-  // COMPAT(orchestrator): added 2026-09-30, remove gate after 2027-03-30.
-  orchestrator: z.boolean().optional(),
+  // Agent mode id (see agent-modes.ts). Plain string so an older client
+  // parses a mode added after it shipped. Absent = Do it yourself.
+  // COMPAT(agentModes): added 2026-10-08, remove optional after 2027-04-08.
+  agentMode: z.string().optional(),
   requiresAttention: z.boolean().optional(),
   attentionReason: z.enum(["finished", "error", "permission"]).nullable().optional(),
   attentionTimestamp: z.string().nullable().optional(),
@@ -2083,10 +2092,9 @@ export const CreateAgentRequestMessageSchema = z.object({
   worktree: CreateAgentWorktreeTargetSchema.optional(),
   autoArchive: z.boolean().optional(),
   labels: z.record(z.string(), z.string()).default({}),
-  // Orchestrator start option (normal agents only, never the Commander).
-  // COMPAT(orchestrator): added 2026-09-30, remove gate after 2027-03-30.
-  // Absent/false = default "Do the task". Old daemons/clients ignore it.
-  orchestrator: z.boolean().optional(),
+  // Agent mode id (see agent-modes.ts). Absent = Do it yourself.
+  // COMPAT(agentModes): added 2026-10-08, remove optional after 2027-04-08.
+  agentMode: z.string().optional(),
   requestId: z.string(),
 });
 
@@ -3720,6 +3728,9 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   UpdateAgentRequestMessageSchema,
   ProjectRenameRequestSchema,
   ProjectDescriptionSetRequestSchema,
+  RoutingSuggestRequestSchema,
+  RoutingProjectCreateRequestSchema,
+  AgentModeSetRequestSchema,
   ProjectIconSetRequestSchema,
   ProjectRemoveRequestSchema,
   WorkspaceTitleSetRequestSchema,
@@ -4366,9 +4377,12 @@ export const ServerInfoStatusPayloadSchema = z
         // project-anchored base workspaces (ADR 0001), gating app UI that
         // opens a base workspace from the project row.
         baseWorkspace: z.boolean().optional(),
-        // COMPAT(orchestrator): added 2026-09-30, remove gate after 2027-03-30.
-        // Orchestrator start option + propose_plan tool + plan graph rendering.
-        orchestrator: z.boolean().optional(),
+        // COMPAT(agentModes): added 2026-10-08, remove gate after 2027-04-08.
+        // agentMode on create + agent.agent_mode.set.* + <paseo-mode> injection.
+        agentModes: z.boolean().optional(),
+        // COMPAT(routingSuggest): added 2026-10-08, remove gate after 2027-04-08.
+        // routing.suggest.* (jev placement) + routing.project.create.*.
+        routingSuggest: z.boolean().optional(),
         // COMPAT(pagePortProxy): added 2026-10-07, remove gate after 2027-04-07.
         // Daemon serves page.proxy.open.* so a show_page localhost URL reaches the reader.
         pagePortProxy: z.boolean().optional(),
@@ -4381,38 +4395,6 @@ export const ServerInfoStatusPayloadSchema = z
     hostname: payload.hostname ?? null,
     version: payload.version ?? null,
   }));
-// Orchestrator plan schemas
-// COMPAT(orchestrator): added 2026-09-30, remove gate after 2027-03-30.
-export const OrchestratorTaskStatusSchema = z.enum([
-  "pending",
-  "ready",
-  "running",
-  "completed",
-  "failed",
-  "blocked",
-  "skipped",
-  "canceled",
-]);
-
-export const OrchestratorPlanTaskSchema = z.object({
-  id: z.string().min(1),
-  title: z.string().min(1),
-  brief: z.string().default(""),
-  files: z.array(z.string()).default([]),
-  dependsOn: z.array(z.string()).default([]),
-  model: z.string().optional(),
-  childAgentId: z.string().optional(),
-  status: OrchestratorTaskStatusSchema.default("pending"),
-});
-
-export const OrchestratorPlanSchema = z.object({
-  planId: z.string().min(1),
-  version: z.number().int().positive(),
-  title: z.string().min(1),
-  maxParallel: z.number().int().positive().default(4),
-  tasks: z.array(OrchestratorPlanTaskSchema),
-});
-
 export const StatusMessageSchema = z.object({
   type: z.literal("status"),
   payload: z
@@ -7712,6 +7694,9 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   AgentWorkspaceTransferResponseMessageSchema,
   ProjectRenameResponseSchema,
   ProjectDescriptionSetResponseSchema,
+  RoutingSuggestResponseSchema,
+  RoutingProjectCreateResponseSchema,
+  AgentModeSetResponseSchema,
   ProjectIconSetResponseSchema,
   ProjectRemoveResponseSchema,
   WorkspaceTitleSetResponseSchema,

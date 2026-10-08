@@ -126,6 +126,7 @@ export function normalizeAgentSnapshot(snapshot: AgentSnapshotPayload, serverId:
     title: snapshot.title ?? null,
     name: snapshot.name ?? null,
     shortDescription: snapshot.shortDescription ?? null,
+    agentMode: snapshot.agentMode,
     cwd: snapshot.cwd,
     workspaceId: snapshot.workspaceId,
     model: snapshot.model ?? null,

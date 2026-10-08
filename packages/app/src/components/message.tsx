@@ -149,6 +149,8 @@ interface UserMessageProps {
   isLastInGroup?: boolean;
   isPending?: boolean;
   disableOuterSpacing?: boolean;
+  /** Agent mode whose block rode this message; renders a small label above it. */
+  agentModeLabel?: string;
 }
 
 const MessageOuterSpacingContext = createContext(false);
@@ -428,6 +430,12 @@ const userMessageStylesheet = StyleSheet.create((theme) => ({
     color: theme.colors.foregroundMuted,
     fontSize: STREAM_METADATA_FONT_SIZE,
   },
+  modeChip: {
+    alignSelf: "flex-end",
+    color: theme.colors.foregroundMuted,
+    fontSize: STREAM_METADATA_FONT_SIZE,
+    marginBottom: theme.spacing[1],
+  },
 }));
 
 interface UserMessageImagePillProps {
@@ -499,6 +507,7 @@ export const UserMessage = memo(function UserMessage({
   isLastInGroup = true,
   isPending = false,
   disableOuterSpacing,
+  agentModeLabel,
 }: UserMessageProps) {
   const isCompact = useIsCompactFormFactor();
   const { t } = useTranslation();
@@ -572,6 +581,11 @@ export const UserMessage = memo(function UserMessage({
         onPointerEnter={handlePointerEnter}
         onPointerLeave={handlePointerLeave}
       >
+        {agentModeLabel ? (
+          <Text style={userMessageStylesheet.modeChip} testID="user-message-agent-mode">
+            {t("agentMode.messageChip", { mode: agentModeLabel })}
+          </Text>
+        ) : null}
         <View style={userMessageStylesheet.bubble}>
           {hasImages ? (
             <View style={imagePreviewContainerStyle}>

@@ -176,12 +176,9 @@ import type {
   PaseoToolExecutionContext,
   PaseoToolResult,
 } from "./types.js";
-import type {
-  OrchestratorDispatcher,
-  OrchestratorProposePlanInput,
-  OrchestratorTaskUpdateInput,
-} from "../orchestrator/dispatcher.js";
 import type { ProviderPaseoToolsPolicy } from "@getpaseo/protocol/provider-config";
+import type { RoutingService } from "../../routing/routing-service.js";
+import { AGENT_MODE_IDS, type AgentModeId } from "@getpaseo/protocol/agent-modes";
 import { isPaseoToolEnabled } from "../paseo-tool-policy.js";
 
 export interface PaseoToolHostDependencies {
@@ -282,13 +279,9 @@ export interface PaseoToolHostDependencies {
    */
   verifierDispatcher?: MissionControlVerifierDispatcher | null;
   fleetIdIndex?: FleetIdIndex | null;
+  /** Placement routing (suggest_placement). Absent → the tool is not offered. */
+  routingService?: RoutingService | null;
   logger: Logger;
-  /**
-   * Orchestrator dispatcher (daemon-owned plan state, permission bridge,
-   * timeline rows). Absent → no orchestrator tools. Present + the caller is a
-   * live orchestrator agent → exposes propose_plan/orchestrator_task_update.
-   */
-  orchestratorDispatcher?: OrchestratorDispatcher | null;
 }
 
 function parseTimestamp(value: string | null | undefined): number {
@@ -1213,11 +1206,21 @@ function buildPeerCreateAgentPayload(args: {
 function buildMcpCreateAgentInputExtras(input: {
   worktree: CreateAgentFromMcpInput["worktree"];
   workspaceId: string | undefined;
-  settings?: { modeId?: string; thinkingOptionId?: string; features?: Record<string, unknown> };
+  settings?: {
+    modeId?: string;
+    agentMode?: AgentModeId;
+    thinkingOptionId?: string;
+    features?: Record<string, unknown>;
+  };
   labels?: Record<string, string>;
-}): Pick<CreateAgentFromMcpInput, "workspaceId" | "thinking" | "features" | "labels"> {
-  const extras: Pick<CreateAgentFromMcpInput, "workspaceId" | "thinking" | "features" | "labels"> =
-    {};
+}): Pick<
+  CreateAgentFromMcpInput,
+  "workspaceId" | "thinking" | "features" | "labels" | "agentMode"
+> {
+  const extras: Pick<
+    CreateAgentFromMcpInput,
+    "workspaceId" | "thinking" | "features" | "labels" | "agentMode"
+  > = {};
   if (!input.worktree && input.workspaceId) {
     extras.workspaceId = input.workspaceId;
   }
@@ -1226,6 +1229,9 @@ function buildMcpCreateAgentInputExtras(input: {
   }
   if (input.settings?.features) {
     extras.features = input.settings.features;
+  }
+  if (input.settings?.agentMode) {
+    extras.agentMode = input.settings.agentMode;
   }
   if (input.labels) {
     extras.labels = input.labels;
@@ -1359,13 +1365,6 @@ function resolveCatalogCallerContext(
   return callerAgentId ? (resolveCallerContext?.(callerAgentId) ?? null) : null;
 }
 
-type OrchestratorToolRegistrar = (
-  name: string,
-  config: PaseoToolConfig,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Tool handlers are schema-validated at registration boundaries.
-  handler: (input: any, context: PaseoToolExecutionContext) => Promise<PaseoToolResult>,
-) => void;
-
 interface CommanderGate {
   isCommanderCaller: boolean;
   runCommanderGatedAction: (action: {
@@ -1413,143 +1412,6 @@ function buildCommanderGate(deps: {
   return { isCommanderCaller, runCommanderGatedAction };
 }
 
-function registerProposePlanTool(
-  registerTool: OrchestratorToolRegistrar,
-  orchestratorDispatcher: OrchestratorDispatcher,
-  callerAgentId: string,
-): void {
-  registerTool(
-    "propose_plan",
-    {
-      title: "Propose plan",
-      description:
-        "Propose an execution plan for user approval. Validates the task " +
-        "DAG (unique ids, existing dependencies, no cycles), stores the plan, " +
-        "and pauses the turn until the user approves, edits briefs, or rejects.",
-      inputSchema: {
-        title: z.string().trim().min(1).describe("Plan title."),
-        maxParallel: z
-          .number()
-          .int()
-          .positive()
-          .optional()
-          .describe("Maximum parallel tasks (default 4)."),
-        tasks: z
-          .array(
-            z.object({
-              id: z.string().trim().min(1).describe("Task id, unique within the plan."),
-              title: z.string().trim().min(1).describe("Task title."),
-              brief: z.string().optional().describe("Closed brief for the worker sub-agent."),
-              files: z.array(z.string()).optional().describe("Files in scope."),
-              dependsOn: z.array(z.string()).optional().describe("Task ids this task depends on."),
-              model: z.string().optional().describe("Preferred model for this task."),
-            }),
-          )
-          .min(1)
-          .describe("Tasks in the plan."),
-      },
-      outputSchema: {
-        planId: z.string(),
-        version: z.number(),
-        approved: z.boolean(),
-        edited: z.boolean().optional(),
-        rejected: z.boolean().optional(),
-      },
-    },
-    async (input: {
-      title: string;
-      maxParallel?: number;
-      tasks: Array<{
-        id: string;
-        title: string;
-        brief?: string;
-        files?: string[];
-        dependsOn?: string[];
-        model?: string;
-      }>;
-    }) => {
-      const result = await orchestratorDispatcher.proposePlan(callerAgentId, {
-        title: input.title,
-        ...(input.maxParallel !== undefined ? { maxParallel: input.maxParallel } : {}),
-        tasks: input.tasks,
-      } satisfies OrchestratorProposePlanInput);
-      return {
-        content: [],
-        structuredContent: ensureValidJson(result),
-      };
-    },
-  );
-}
-
-function registerTaskUpdateTool(
-  registerTool: OrchestratorToolRegistrar,
-  orchestratorDispatcher: OrchestratorDispatcher,
-  callerAgentId: string,
-): void {
-  registerTool(
-    "orchestrator_task_update",
-    {
-      title: "Update orchestrator task",
-      description:
-        "Update a task in the approved plan: link its child agent " +
-        "(childAgentId) and/or move its status. Emits the next plan version.",
-      inputSchema: {
-        taskId: z.string().trim().min(1).describe("Task id within the current plan."),
-        status: z
-          .enum([
-            "pending",
-            "ready",
-            "running",
-            "completed",
-            "failed",
-            "blocked",
-            "skipped",
-            "canceled",
-          ])
-          .optional()
-          .describe("New task status."),
-        childAgentId: z.string().optional().describe("Linked child agent id."),
-      },
-      outputSchema: {
-        version: z.number(),
-      },
-    },
-    async (input: OrchestratorTaskUpdateInput) => {
-      const result = await orchestratorDispatcher.updateTask(callerAgentId, {
-        taskId: input.taskId,
-        ...(input.status !== undefined ? { status: input.status } : {}),
-        ...(input.childAgentId !== undefined ? { childAgentId: input.childAgentId } : {}),
-      });
-      return {
-        content: [],
-        structuredContent: ensureValidJson(result),
-      };
-    },
-  );
-}
-
-// Orchestrator tools: exposed only to live orchestrator agents (orchestrator
-// start flag). propose_plan validates the DAG, stores version 1, emits a
-// plugin plan row, then blocks until the user approves/edits/rejects through
-// the daemon-owned OrchestratorPlanApproval permission.
-// orchestrator_task_update applies a status/child-agent transition and emits
-// the next plan version.
-function registerOrchestratorTools(deps: {
-  registerTool: OrchestratorToolRegistrar;
-  orchestratorDispatcher: OrchestratorDispatcher | null;
-  callerAgentId: string | undefined;
-}): void {
-  const { registerTool, orchestratorDispatcher, callerAgentId } = deps;
-  if (
-    orchestratorDispatcher === null ||
-    callerAgentId === undefined ||
-    !orchestratorDispatcher.isOrchestratorAgent(callerAgentId)
-  ) {
-    return;
-  }
-  registerProposePlanTool(registerTool, orchestratorDispatcher, callerAgentId);
-  registerTaskUpdateTool(registerTool, orchestratorDispatcher, callerAgentId);
-}
 /** Native board + notes tools for the Commander; the notes host rides the tickets gate. */
 function registerNativeBoardTools(
   registerTool: (
@@ -2162,6 +2024,12 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
   const CreateAgentSettingsInputSchema = z
     .object({
       modeId: z.string().optional().describe("Session mode to configure before the first run."),
+      agentMode: z
+        .enum(AGENT_MODE_IDS)
+        .optional()
+        .describe(
+          "How the agent works: solo (do it yourself, default), orchestrator, plan, research, review, debug. suggest_placement recommends one.",
+        ),
       thinkingOptionId: z.string().optional().describe("Thinking option ID."),
       features: z
         .record(z.string(), z.unknown())
@@ -5451,6 +5319,46 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     },
   );
 
+  const routingService = options.routingService ?? null;
+  if (routingService) {
+    registerTool(
+      "suggest_placement",
+      {
+        title: "Suggest where a prompt should run",
+        description:
+          "Placement for a new agent from its prompt: the existing project (with host), a new " +
+          "project (with host and parent directory), or the host's scratch area; plus isolation " +
+          "(local or worktree), agent mode, and model. The prompt's explicit instructions win " +
+          "(a named host, project, or way of working). Read-only; use before creating an agent " +
+          "when the user did not say where it should run.",
+        inputSchema: {
+          prompt: z.string().trim().min(1).describe("The task the new agent will receive."),
+        },
+        outputSchema: {
+          placement: z.object({
+            kind: z.enum(["project", "new_project", "scratch"]),
+            serverId: z.string(),
+            hostLabel: z.string(),
+            projectId: z.string().nullable(),
+            projectTitle: z.string().nullable(),
+            rootPath: z.string().nullable(),
+            probability: z.number(),
+          }),
+          alternatives: z.array(z.record(z.string(), z.unknown())),
+          isolation: z.enum(["local", "worktree"]),
+          agentMode: z.string(),
+          model: z.string().nullable(),
+          profile: z.enum(["personal", "work"]),
+          latencyMs: z.number(),
+        },
+      },
+      async ({ prompt }: { prompt: string }) => {
+        const suggestion = await routingService.suggest(prompt);
+        return { content: [], structuredContent: ensureValidJson(suggestion) };
+      },
+    );
+  }
+
   registerTool(
     "fleet_list_inventory",
     {
@@ -7540,9 +7448,6 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       };
     },
   );
-
-  const orchestratorDispatcher = options.orchestratorDispatcher ?? null;
-  registerOrchestratorTools({ registerTool, orchestratorDispatcher, callerAgentId });
 
   // Verifier-only tools: exposed only to sessions of Mission Control verifier
   // agents (paseo.mission-control=verifier). contact_worker routes through the

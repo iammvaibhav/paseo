@@ -317,37 +317,6 @@ export function mergeIsolationPreference(args: {
   return next;
 }
 
-/**
- * Persist base branch choice into the project scope (when known) and the global fallback.
- * Workspace-level base branch is not stored — New workspace creates the workspace.
- */
-export function mergeBaseBranchPreference(args: {
-  preferences: FormPreferences;
-  baseBranch: string;
-  scope?: FormPreferenceScope | null;
-}): FormPreferences {
-  const { preferences, baseBranch, scope } = args;
-  const { projectKey } = normalizeFormPreferenceScope(scope);
-  let next: FormPreferences = {
-    ...preferences,
-    baseBranch,
-  };
-  if (projectKey) {
-    const existing = next.byProject?.[projectKey];
-    next = {
-      ...next,
-      byProject: {
-        ...next.byProject,
-        [projectKey]: {
-          ...existing,
-          baseBranch,
-        },
-      },
-    };
-  }
-  return next;
-}
-
 function normalizeSelectionAskValue(value: string | null | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;

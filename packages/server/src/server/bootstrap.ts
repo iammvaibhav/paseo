@@ -4,6 +4,9 @@ import express, { type RequestHandler } from "express";
 import { createServer as createHTTPServer, type IncomingMessage, type ServerResponse } from "http";
 import { constants, existsSync, mkdirSync, unlinkSync } from "fs";
 import { mkdir, open, rm, stat } from "fs/promises";
+import { buildProjectReadme, ensureGitRepository } from "./project-directory-service.js";
+import { RoutingService } from "./routing/routing-service.js";
+import { HindsightClient } from "./mission-control/hindsight.js";
 import { randomUUID } from "node:crypto";
 import { getHostName } from "./host-name.js";
 import path from "node:path";
@@ -174,7 +177,6 @@ import type { ComposerPreferences } from "@getpaseo/protocol/composer-preference
 import { CommanderSnapshotInjector } from "./mission-control/commander-snapshot.js";
 import { CentralMissionControlConfigStore } from "./mission-control/config.js";
 import { createMissionControlPresenceSource } from "./mission-control/presence.js";
-import { AgentManagerOrchestratorDispatcher } from "./agent/orchestrator/dispatcher.js";
 import { MissionControlVerifierDispatcher } from "./mission-control/verifier.js";
 import {
   commanderHomeCwd,
@@ -2018,7 +2020,6 @@ export async function createPaseoDaemon(
   // fall back to the hostname only when no alias is set.
   let missionControlService: MissionControlService;
   const missionControlHostAlias = daemonConfigStore.get().missionControl?.hostAlias?.trim() || null;
-  const orchestratorDispatcher = new AgentManagerOrchestratorDispatcher(agentManager, logger);
   const verifierDispatcher = new MissionControlVerifierDispatcher({
     logger,
     agentManager,
@@ -2083,6 +2084,10 @@ export async function createPaseoDaemon(
     mkdirp: async (dirPath: string) => {
       await mkdir(dirPath, { recursive: true });
     },
+    ensureGitRepository: (dirPath: string, title: string) =>
+      ensureGitRepository(dirPath, buildProjectReadme(title)),
+    resolveScratchRoot: () =>
+      centralMissionControlConfig.get().routing.scratchRootByHost?.[serverId] ?? null,
     emitStoredAgentUpdate: async (record: StoredAgentRecord) => {
       await Promise.all(
         (wsServer?.listSessions() ?? []).map((session) =>
@@ -2493,6 +2498,31 @@ export async function createPaseoDaemon(
       })),
     );
   };
+  // Placement routing (routing.suggest.* + suggest_placement MCP tool) and
+  // metadataModel text generation. Reads central config live (replicated to
+  // every host), so every daemon can route.
+  const routingService = new RoutingService({
+    serverId,
+    logger,
+    getCentralConfig: () => centralMissionControlConfig.get(),
+    loadFleet: () =>
+      buildFleetContextData({
+        agentManager,
+        agentStorage,
+        workspaceRegistry,
+        projectRegistry,
+        providerSnapshotManager,
+        peerManager: () => peerManager,
+        daemonConfigStore,
+        centralConfig: centralMissionControlConfig.get(),
+        serverId,
+        hostName: getHostName(),
+        logger,
+        inventoryOnly: true,
+      }),
+    hindsight: new HindsightClient({ logger }),
+  });
+  agentManager.setMetadataCompletion((prompt) => routingService.completeMetadata(prompt));
   const itsaplanProjectSyncDeps = {
     store: itsaplanProjectStore,
     getConfig: getItsaplanConfig,
@@ -2869,7 +2899,7 @@ export async function createPaseoDaemon(
     resolveTicketTools: ticketFleet.resolveToolsBackend,
     resolveNoteTools,
     verifierDispatcher,
-    orchestratorDispatcher,
+    routingService,
     resolveDocThreads: docThreadsHost?.service ? () => docThreadsHost.service! : null,
     serverId,
     hostAlias: missionControlHostAlias,
@@ -3236,7 +3266,7 @@ export async function createPaseoDaemon(
               docThreadsHost,
               ticketsHost,
               notesHost,
-              { ticketsHost, automationService, pagePortProxy, pageStore },
+              { ticketsHost, automationService, pagePortProxy, pageStore, routingService },
             );
             pluginRuntime.bindPaseoSessionHost(wsServer);
             await pluginRuntime.start();

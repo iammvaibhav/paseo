@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
   type ReactElement,
+  type ReactNode,
   type RefObject,
 } from "react";
 import { useTranslation } from "react-i18next";
@@ -54,6 +55,7 @@ import {
   useLiveAgentModeControl,
   type AgentModeControlValue,
 } from "@/composer/agent-controls/mode-control";
+import { LiveAgentModePicker } from "@/composer/agent-controls/agent-mode-picker";
 import { AdaptiveModalSheet, type SheetHeader } from "@/components/adaptive-modal-sheet";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type {
@@ -168,6 +170,8 @@ interface ControlledAgentControlsProps {
   onRetryModelProvider?: (provider: AgentProvider) => void;
   isRetryingModelProvider?: boolean;
   modeControl?: AgentModeControlValue | null;
+  /** Agent mode picker (Do it yourself, Orchestrator, …), rendered after the mode control. */
+  agentModePicker?: ReactNode;
   modelSelectorServerId?: string | null;
   isCompactLayout?: boolean;
 }
@@ -697,6 +701,7 @@ function ControlledAgentControls({
   onRetryModelProvider,
   isRetryingModelProvider = false,
   modeControl,
+  agentModePicker,
   modelSelectorServerId = null,
   isCompactLayout,
 }: ControlledAgentControlsProps) {
@@ -967,6 +972,7 @@ function ControlledAgentControls({
             handleNestedOpenChange={handleSheetOpenChange}
             renderThinkingOption={renderThinkingOption}
             modeControl={modeControl}
+            agentModePicker={agentModePicker}
             presentation={presentation}
             glyphSize={layoutContextValue.glyphSize}
             activeSheet={activeSheet}
@@ -1007,6 +1013,7 @@ function ControlledAgentControls({
             handleOpenChange={handleSheetOpenChange}
             renderThinkingOption={renderThinkingOption}
             modeControl={modeControl}
+            agentModePicker={agentModePicker}
             glyphSize={layoutContextValue.glyphSize}
             modelSelectorServerId={modelSelectorServerId}
             canSwitchProvider={Boolean(onSelectProviderAndModel)}
@@ -1067,6 +1074,7 @@ interface DesktopAgentControlsContentProps {
     onPress: () => void;
   }) => ReactElement;
   modeControl?: AgentModeControlValue | null;
+  agentModePicker?: ReactNode;
   presentation: ComposerControlPresentation;
   glyphSize: number;
   activeSheet: ActiveSheet;
@@ -1124,6 +1132,7 @@ function DesktopAgentControlsContent(props: DesktopAgentControlsContentProps) {
     handleNestedOpenChange,
     renderThinkingOption,
     modeControl,
+    agentModePicker,
     presentation,
     glyphSize,
     activeSheet,
@@ -1243,6 +1252,7 @@ function DesktopAgentControlsContent(props: DesktopAgentControlsContentProps) {
       ) : null}
 
       {modeControl ? <AgentModeControl {...modeControl} onClose={onDropdownClose} /> : null}
+      {agentModePicker}
 
       {presentation.aggregateFeatures && features?.length ? (
         <>
@@ -1330,6 +1340,7 @@ interface SheetAgentControlsContentProps {
     onPress: () => void;
   }) => ReactElement;
   modeControl?: AgentModeControlValue | null;
+  agentModePicker?: ReactNode;
   glyphSize: number;
   modelSelectorServerId: string | null;
   canSwitchProvider: boolean;
@@ -1369,6 +1380,7 @@ function SheetAgentControlsContent(props: SheetAgentControlsContentProps) {
     handleOpenChange,
     renderThinkingOption,
     modeControl,
+    agentModePicker,
     glyphSize,
     modelSelectorServerId,
     canSwitchProvider,
@@ -1424,6 +1436,7 @@ function SheetAgentControlsContent(props: SheetAgentControlsContentProps) {
       ) : null}
 
       {modeControl ? <AgentModeControl {...modeControl} surface="sheet" /> : null}
+      {agentModePicker}
 
       {(features ?? []).map((feature) => (
         <SheetFeatureItem
@@ -2061,6 +2074,13 @@ export const AgentControls = memo(function AgentControls({
     },
     [refreshSnapshot],
   );
+  const agentModePicker = useMemo(
+    () =>
+      isCommander ? null : (
+        <LiveAgentModePicker serverId={serverId} agentId={agentId} disabled={!client} />
+      ),
+    [agentId, client, isCommander, serverId],
+  );
 
   if (!agent) {
     return null;
@@ -2094,6 +2114,7 @@ export const AgentControls = memo(function AgentControls({
         onDropdownClose={onDropdownClose}
         disabled={!client}
         modeControl={modeControl}
+        agentModePicker={agentModePicker}
         modelSelectorServerId={serverId}
         isCompactLayout={isCompactLayout}
       />
