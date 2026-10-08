@@ -474,7 +474,20 @@ exact ref also resolves through its stored branch name.
 
 Worktrees inherit committed Git state only; uncommitted source-checkout changes are not copied.
 
-### Warm worktree pool source
+### Warm worktree pool
+
+The pool keeps `targetIdle` worktrees provisioned ahead of time, `worktree.setup`
+included, so a new workspace only cuts its branch. Each warm tree lives at its final
+path under `$PASEO_HOME/worktrees/<project hash>/<random name>`; a marker file in
+`.paseo-warm/` beside it hides it from listings until a claim takes it. The claim runs
+`git switch -c <branch>` in place and never moves the tree, so repos whose worktrees
+carry submodules pool too. Directory names stay random; the workspace title and the
+branch carry the task name.
+
+A claim skips `worktree.setup` when the tree is still at the commit setup ran on and
+the setup commands are unchanged. When the base ref moves, the pool provisions a tree
+at the new tip and then retires the stale one; until then a claim of the stale tree
+checks out the new base and reruns setup.
 
 `worktree.warmPool.baseRef` is the git ref the warm pool cuts from (branch, tag,
 or `origin/<branch>`). Omitted, the pool uses the repository default branch.

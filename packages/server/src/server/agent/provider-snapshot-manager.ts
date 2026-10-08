@@ -417,6 +417,24 @@ export class ProviderSnapshotManager {
     return this.createAgentManagerState(this.generation.definitions, this.providerClients);
   }
 
+  /**
+   * Tell every enabled provider that a create is about to land at `cwd`, so
+   * one with a warm process pool can move an idle process there first.
+   * Providers without a pool ignore it.
+   */
+  prewarmAgentCwd(cwd: string): void {
+    for (const client of Object.values(this.getAgentManagerProviderState().clients)) {
+      try {
+        client?.prewarmCwd?.(cwd);
+      } catch (error) {
+        this.logger.warn(
+          { err: error, cwd, provider: client?.provider },
+          "Provider prewarm failed",
+        );
+      }
+    }
+  }
+
   private createAgentManagerState(
     definitions: Record<AgentProvider, ProviderDefinition>,
     providerClients: Record<AgentProvider, AgentClient>,

@@ -25,15 +25,11 @@ what most real projects run on every fresh worktree. The warm pool wins here bec
 that cost is paid once during background provisioning, off the request's critical
 path, instead of once per claim.
 
-That win is conditional on setup cost dominating. Measured separately with an empty
-`worktree.setup` (no lifecycle commands at all), cold `git worktree add -b <branch>
-
-<base>` runs in ~70ms while warm claim's `git worktree move` + `git checkout` runs in
-~120-170ms — the warm path is *slower* in that case, because it pays two extra git
-process invocations (`move`, `checkout`) that the cold path's single `worktree add`
-avoids. Projects with a fast or absent `worktree.setup` will not see this speedup and
-may see a small regression; the pool is a net win specifically for projects whose
-setup cost is large relative to `git worktree add`'s own overhead.
+That win is conditional on setup cost dominating. These numbers predate the in-place
+claim (2026-10-08): the warm path then paid `git worktree move` + `git checkout`
+(~120-170ms) against the cold path's single `git worktree add` (~70ms). A claim now
+only runs `git switch -c` in the tree it was provisioned in (13-40ms measured on the
+paseo repo), so the warm path is no longer slower even with an empty `worktree.setup`.
 
 ## Trial Breakdown
 
@@ -53,4 +49,4 @@ setup cost is large relative to `git worktree add`'s own overhead.
 ## Mechanism Breakdown
 
 1. **Cold Creation path** executes synchronous `git worktree add`, metadata initialization, config file seeding, and runs all lifecycle `worktree.setup` scripts in the critical path before returning to the caller.
-2. **Warm Pool Claim path** claims an already initialized, setup-complete worktree in `<projectWorktreesRoot>/.warm-*`, executes atomic `git worktree move` to the target slug path, checks out the target branch, and schedules background replenishment to asynchronously maintain the target idle count.
+2. **Warm Pool Claim path** takes an idle tree that was provisioned at its final path (hidden by a marker under `<projectWorktreesRoot>/.paseo-warm/`), runs `git switch -c` in place, reuses the provisioning run of `worktree.setup` when the commit and setup commands still match, unmarks the tree, and schedules background replenishment. No `git worktree move`, so trees with submodules pool too.

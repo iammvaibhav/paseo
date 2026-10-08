@@ -1,16 +1,19 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
-import { randomUUID } from "node:crypto";
+import { basename, join, resolve } from "node:path";
+import { createNameId } from "mnemonic-id";
 import type { Logger } from "pino";
 import { PaseoWorktreeWarmPoolConfigRawSchema } from "@getpaseo/protocol/paseo-config-schema";
 import type { WorkspaceGitService } from "./workspace-git-service.js";
 import type { ProjectRegistry } from "./workspace-registry.js";
 import {
-  computeWorktreePath,
   configureWorktreePushRemote,
   configureWorktreeTrackingRemote,
+  getPaseoWorktreesRoot,
+  getWorktreeSetupCommands,
   listPaseoWorktrees,
   normalizePathForOwnership,
+  resolvePaseoWorktreesBaseRoot,
   resolveWorktreeSourcePlan,
   runWorktreeSetupCommands,
   seedPaseoConfigFile,
@@ -20,13 +23,27 @@ import {
 } from "../utils/worktree.js";
 import { readPaseoConfigJson } from "../utils/paseo-config-file.js";
 import { runGitCommand, runWithGitCommandPriority } from "../utils/run-git-command.js";
-import { writePaseoWorktreeMetadata } from "../utils/worktree-metadata.js";
+import {
+  readPaseoWorktreeRuntimePort,
+  writePaseoWorktreeMetadata,
+  writePaseoWorktreeRuntimeMetadata,
+} from "../utils/worktree-metadata.js";
+import {
+  listWarmWorktreeMarkedPaths,
+  readWarmWorktreeMarker,
+  removeWarmWorktreeMarker,
+  writeWarmWorktreeMarker,
+} from "../utils/warm-worktree-marker.js";
 
 export interface WarmWorktreeRecord {
   repoRoot: string;
   worktreePath: string;
   worktreeSlug: string;
   baseBranch: string;
+  /** Commit the tree is checked out at; differs from the base's tip once the base moves. */
+  baseSha: string;
+  /** Hash of the worktree.setup that ran in this tree; null until setup finished. */
+  setupFingerprint: string | null;
   createdAt: string;
   status: "idle" | "provisioning" | "claimed";
 }
@@ -38,11 +55,18 @@ export interface WarmWorktreeClaimOptions {
   paseoHome?: string;
   worktreesRoot?: string;
   runSetup?: boolean;
+  /** Called with the tree's path as soon as it is reserved, before the claim's git work. */
+  onReserved?: (worktreePath: string) => void;
 }
 
 export interface WarmWorktreeClaimResult {
   worktree: CreatedWorktree;
   claimed: boolean;
+  /**
+   * True when the claimed tree already ran this project's worktree.setup at
+   * the commit it now has checked out, so the caller must not run it again.
+   */
+  setupPrepared: boolean;
 }
 
 export interface WarmWorktreePoolOptions {
@@ -101,6 +125,37 @@ const DEFAULT_MAINTENANCE_INTERVAL_MS = 30_000;
 // one attempt every 15 minutes instead of one every 30 seconds.
 const PROVISION_BACKOFF_BASE_MS = 60_000;
 const PROVISION_BACKOFF_MAX_MS = 900_000;
+/** Warm trees from before markers were named `.warm-<id>` so a claim could `git worktree move` them. */
+const LEGACY_WARM_SLUG_PREFIX = ".warm-";
+
+/**
+ * What a tree's setup depends on besides its commit: the setup commands
+ * themselves. A claim reuses the provisioning run only when this still matches.
+ */
+function computeWorktreeSetupFingerprint(worktreePath: string): string {
+  return createHash("sha256")
+    .update(JSON.stringify(getWorktreeSetupCommands(worktreePath)))
+    .digest("hex");
+}
+
+/**
+ * Record the claim's base on the tree. Rewriting the base metadata drops the
+ * runtime section, so the port setup ran with is carried over: the
+ * workspace's services must agree with whatever setup baked in.
+ */
+function writeClaimedWorktreeMetadata(worktreePath: string, sourcePlan: WorktreeSourcePlan): void {
+  const provisionedPort = readPaseoWorktreeRuntimePort(worktreePath);
+  writePaseoWorktreeMetadata(worktreePath, {
+    baseRefName: sourcePlan.metadataBaseRefName,
+    ...(sourcePlan.metadataBaseRef ? { baseRef: sourcePlan.metadataBaseRef } : {}),
+    ...(sourcePlan.changeRequestLookupTarget
+      ? { changeRequestLookupTarget: sourcePlan.changeRequestLookupTarget }
+      : {}),
+  });
+  if (provisionedPort !== null) {
+    writePaseoWorktreeRuntimeMetadata(worktreePath, { worktreePort: provisionedPort });
+  }
+}
 
 export class WarmWorktreePoolManager implements WarmWorktreePool {
   private readonly paseoHome?: string;
@@ -124,6 +179,8 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
   private maintenanceTimer: NodeJS.Timeout | null = null;
   private isStopped = false;
   private readonly provisionFailures = new Map<string, { count: number; nextAttemptAt: number }>();
+  /** Trees handed out by an in-flight claim; still marked until the claim finishes, so discovery must skip them. */
+  private readonly claimingPaths = new Set<string>();
 
   constructor(options: WarmWorktreePoolOptions) {
     this.paseoHome = options.paseoHome;
@@ -179,12 +236,18 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
     if (!this.resolvePoolEnabled(repoRoot)) {
       return null;
     }
-    // `git worktree move` refuses trees containing submodules, and a claim
-    // is exactly that rename (.warm-* to target slug) — it can never succeed
-    // for such repos, so skip before touching the pool. The per-repo
-    // worktree.warmPool.enabled flag in paseo.json already gates here too;
-    // this is the automatic backstop for repos that never set it.
-    if (existsSync(join(repoRoot, ".gitmodules"))) {
+    // Warm trees are provisioned at their final path under the pool's
+    // worktrees root and never moved, so a caller asking for a different root
+    // cannot use them.
+    const callerBaseRoot = resolvePaseoWorktreesBaseRoot({
+      paseoHome: options.paseoHome ?? this.paseoHome,
+      worktreesRoot: options.worktreesRoot ?? this.worktreesRoot,
+    });
+    const poolBaseRoot = resolvePaseoWorktreesBaseRoot({
+      paseoHome: this.paseoHome,
+      worktreesRoot: this.worktreesRoot,
+    });
+    if (callerBaseRoot !== poolBaseRoot) {
       return null;
     }
 
@@ -192,74 +255,59 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
     // resolveRepoRoot, which throws for non-git paths. Re-checking here ran the
     // full getCheckout snapshot (~10 git subprocesses) on every claim.
     const reserved = await this.withRepoLock(repoRoot, async () => {
-      let records = this.pools.get(repoRoot);
-      let candidateIndex = records
-        ? records.findIndex((r) => r.status === "idle" && existsSync(r.worktreePath))
-        : -1;
-
-      if (candidateIndex === -1) {
-        await this.discoverExistingWarmWorktrees(repoRoot);
-        records = this.pools.get(repoRoot) ?? [];
-        candidateIndex = records.findIndex(
-          (r) => r.status === "idle" && existsSync(r.worktreePath),
+      const takeNewestIdle = (): WarmWorktreeRecord | null => {
+        const records = this.pools.get(repoRoot) ?? [];
+        // Newest first: after the base moves, a freshly provisioned tree sits
+        // at the new tip while an older one would need a checkout + setup.
+        const candidate = records
+          .filter((r) => r.status === "idle" && existsSync(r.worktreePath))
+          .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+        if (!candidate) {
+          return null;
+        }
+        candidate.status = "claimed";
+        this.claimingPaths.add(candidate.worktreePath);
+        this.pools.set(
+          repoRoot,
+          records.filter((r) => r !== candidate),
         );
+        return candidate;
+      };
+      const candidate = takeNewestIdle();
+      if (candidate) {
+        return candidate;
       }
-
-      if (candidateIndex === -1 || !records) {
-        return null;
-      }
-
-      const warmRecord = records[candidateIndex];
-      warmRecord.status = "claimed";
-      records.splice(candidateIndex, 1);
-      this.pools.set(repoRoot, records);
-      return warmRecord;
+      await this.discoverExistingWarmWorktrees(repoRoot);
+      return takeNewestIdle();
     });
 
     if (!reserved) {
       void this.replenish(repoRoot).catch(() => undefined);
       return null;
     }
-
-    // Do not refill until this claim's git retarget finishes. Starting
-    // `git worktree add` + worktree.setup (often `npm run build:server`) in
-    // parallel with the claim's `worktree move` + checkout starved live
-    // warm-path creates on CPU/IO, and OMP `/move` then missed its budget.
-    const claimedAt = this.now().getTime();
+    // The tree's final path is known before any git work, so the caller can
+    // start moving an agent process there while the branch is cut.
     try {
-      // Source plan only needs the repo; overlap it with the worktree move.
-      const sourcePlanPromise = resolveWorktreeSourcePlan({
+      options.onReserved?.(reserved.worktreePath);
+    } catch {
+      // Best-effort hint; it must never fail the claim.
+    }
+
+    // Do not refill until this claim's git work finishes. Starting
+    // `git worktree add` + worktree.setup (often a full build) in parallel with
+    // the claim's checkout starved live warm-path creates on CPU/IO, and OMP
+    // `/move` then missed its budget.
+    const claimedAt = this.now().getTime();
+    const worktreePath = reserved.worktreePath;
+    try {
+      const sourcePlan = await resolveWorktreeSourcePlan({
         cwd: repoRoot,
         source: options.source,
         desiredSlug: options.worktreeSlug,
       });
 
-      const targetPath = await computeWorktreePath(
-        repoRoot,
-        options.worktreeSlug,
-        options.paseoHome ?? this.paseoHome,
-        options.worktreesRoot ?? this.worktreesRoot,
-      );
-
-      let finalTargetPath = targetPath;
-      let suffix = 1;
-      while (existsSync(finalTargetPath)) {
-        finalTargetPath = `${targetPath}-${suffix}`;
-        suffix++;
-      }
-
-      mkdirSync(dirname(finalTargetPath), { recursive: true });
-
-      await runGitCommand(["worktree", "move", reserved.worktreePath, finalTargetPath], {
-        cwd: repoRoot,
-        timeout: 60_000,
-      });
-
-      const normalizedTargetPath = normalizePathForOwnership(finalTargetPath);
-      const sourcePlan = await sourcePlanPromise;
-
-      await this.applyBranchToClaimedWorktree({
-        worktreePath: normalizedTargetPath,
+      const headAlreadyAtTarget = await this.applyBranchToClaimedWorktree({
+        worktreePath,
         sourcePlan,
       });
 
@@ -279,29 +327,36 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
         });
       }
 
-      writePaseoWorktreeMetadata(normalizedTargetPath, {
-        baseRefName: sourcePlan.metadataBaseRefName,
-        ...(sourcePlan.metadataBaseRef ? { baseRef: sourcePlan.metadataBaseRef } : {}),
-        ...(sourcePlan.changeRequestLookupTarget
-          ? { changeRequestLookupTarget: sourcePlan.changeRequestLookupTarget }
-          : {}),
-      });
+      writeClaimedWorktreeMetadata(worktreePath, sourcePlan);
 
-      await seedPaseoConfigFile({ sourceCwd: repoRoot, targetCwd: normalizedTargetPath });
+      await seedPaseoConfigFile({ sourceCwd: repoRoot, targetCwd: worktreePath });
 
-      if (options.runSetup === true) {
+      // Setup already ran here during provisioning. It is still valid when the
+      // claim kept the same commit and the project's setup commands are
+      // unchanged; otherwise (stale base, other branch, edited setup) it must
+      // run again against what is now checked out.
+      const setupPrepared =
+        headAlreadyAtTarget &&
+        reserved.setupFingerprint !== null &&
+        reserved.setupFingerprint === computeWorktreeSetupFingerprint(worktreePath);
+
+      if (options.runSetup === true && !setupPrepared) {
         await runWorktreeSetupCommands({
-          worktreePath: normalizedTargetPath,
+          worktreePath,
           branchName: sourcePlan.branchName,
           cleanupOnFailure: true,
         });
       }
 
+      // Unmarking makes the tree a regular Paseo worktree, visible in listings.
+      removeWarmWorktreeMarker(worktreePath);
+
       this.logger.info(
         {
           repoRoot,
-          worktreePath: normalizedTargetPath,
+          worktreePath,
           branchName: sourcePlan.branchName,
+          setupPrepared,
           durationMs: this.now().getTime() - claimedAt,
         },
         "Successfully claimed warm worktree",
@@ -312,23 +367,26 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
       return {
         worktree: {
           branchName: sourcePlan.branchName,
-          worktreePath: normalizedTargetPath,
+          worktreePath,
           comparisonBaseRef: sourcePlan.metadataBaseRef ?? sourcePlan.metadataBaseRefName,
         },
         claimed: true,
+        setupPrepared,
       };
     } catch (error) {
       this.logger.error(
-        { err: error, repoRoot, warmWorktree: reserved.worktreePath },
+        { err: error, repoRoot, warmWorktree: worktreePath },
         "Failed to claim warm worktree; discarding",
       );
       try {
-        await this.cleanupFailedWorktree(repoRoot, reserved.worktreePath);
+        await this.removeWarmWorktree(repoRoot, worktreePath);
       } catch {
         // ignore
       }
       void this.replenish(repoRoot).catch(() => undefined);
       return null;
+    } finally {
+      this.claimingPaths.delete(worktreePath);
     }
   }
 
@@ -373,28 +431,45 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
 
     const normalizedRoot = normalizePathForOwnership(resolve(repoRoot));
     if (!this.resolvePoolEnabled(normalizedRoot)) return;
-    // Same backstop as claim(): a provisioned .warm-* holds submodules, so
-    // the next claim's `git worktree move` fails and the 120s add competes
-    // with the real create it was meant to speed up. Honor the per-repo
-    // worktree.warmPool.enabled flag by setting it false in paseo.json; this
-    // covers repos that never set it.
-    if (existsSync(join(normalizedRoot, ".gitmodules"))) return;
 
     const isGit = await this.isGitRepo(normalizedRoot);
     if (!isGit) return;
-    const needed = await this.withRepoLock(normalizedRoot, async () => {
+    const base = await this.resolveWarmBase(normalizedRoot);
+    const { needed, stale } = await this.withRepoLock(normalizedRoot, async () => {
       await this.discoverExistingWarmWorktrees(normalizedRoot);
 
       const targetIdle = this.resolveTargetIdle(normalizedRoot);
       const records = this.pools.get(normalizedRoot) ?? [];
-      const currentCount = records.filter(
-        (r) => r.status === "idle" || r.status === "provisioning",
-      ).length;
+      // A tree is fresh while it sits at the base's current tip. When the
+      // base cannot be resolved, treat everything as fresh rather than churn.
+      const isFresh = (record: WarmWorktreeRecord) =>
+        base === null || record.baseSha === base.baseSha;
+      const freshIdle = records.filter((r) => r.status === "idle" && isFresh(r)).length;
+      const provisioning = records.filter((r) => r.status === "provisioning").length;
 
-      if (this.isProvisioningBackedOff(normalizedRoot)) return 0;
+      // Stale idle trees stay claimable (a claim checks out the new base and
+      // reruns setup) until fresh ones cover the target; then they only cost disk.
+      const retired =
+        freshIdle >= targetIdle ? records.filter((r) => r.status === "idle" && !isFresh(r)) : [];
+      if (retired.length > 0) {
+        this.pools.set(
+          normalizedRoot,
+          records.filter((r) => !retired.includes(r)),
+        );
+      }
 
-      return Math.max(0, targetIdle - currentCount);
+      if (this.isProvisioningBackedOff(normalizedRoot)) return { needed: 0, stale: retired };
+
+      return { needed: Math.max(0, targetIdle - freshIdle - provisioning), stale: retired };
     });
+
+    for (const record of stale) {
+      this.logger.info(
+        { repoRoot: normalizedRoot, worktreePath: record.worktreePath, baseSha: record.baseSha },
+        "Retiring warm worktree left behind by a moved base",
+      );
+      await this.removeWarmWorktree(normalizedRoot, record.worktreePath);
+    }
 
     // Setup is slow and must not hold the repo lock — claim/create wait on it.
     const started: Array<Promise<void>> = [];
@@ -569,6 +644,23 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
     return this.resolveDefaultBranch(repoRoot);
   }
 
+  /** The ref warm trees are cut from and the commit it points at right now. */
+  private async resolveWarmBase(
+    repoRoot: string,
+  ): Promise<{ sourceRef: string; baseSha: string } | null> {
+    try {
+      const sourceRef = await this.resolveWarmSourceRef(repoRoot);
+      const { stdout } = await runGitCommand(
+        ["rev-parse", "--verify", "--quiet", `${sourceRef}^{commit}`],
+        { cwd: repoRoot, timeout: 5_000 },
+      );
+      const baseSha = stdout.trim();
+      return baseSha ? { sourceRef, baseSha } : null;
+    } catch {
+      return null;
+    }
+  }
+
   private async resolveDefaultBranch(repoRoot: string): Promise<string> {
     if (this.resolveDefaultBranchOverride) {
       try {
@@ -620,29 +712,44 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
         includeWarm: true,
       });
 
-      const warmEntries = worktrees.filter((w) => basename(w.path).startsWith(".warm-"));
       const existingRecords = this.pools.get(repoRoot) ?? [];
       const updatedRecords: WarmWorktreeRecord[] = [];
+      const orphans: string[] = [];
+      const listedPaths = new Set<string>();
 
-      for (const entry of warmEntries) {
-        const normalizedPath = normalizePathForOwnership(entry.path);
-        const existing = existingRecords.find((r) => r.worktreePath === normalizedPath);
+      for (const entry of worktrees) {
+        const worktreePath = normalizePathForOwnership(entry.path);
+        listedPaths.add(worktreePath);
+        if (this.claimingPaths.has(worktreePath)) {
+          // Mid-claim: still marked, but already handed to a workspace.
+          continue;
+        }
+        const existing = existingRecords.find((r) => r.worktreePath === worktreePath);
         if (existing) {
           updatedRecords.push(existing);
-        } else {
+          continue;
+        }
+        const marker = readWarmWorktreeMarker(worktreePath);
+        if (marker?.status === "ready") {
           updatedRecords.push({
             repoRoot,
-            worktreePath: normalizedPath,
-            worktreeSlug: basename(normalizedPath),
-            baseBranch: entry.branchName ?? "main",
-            createdAt: entry.createdAt ?? this.now().toISOString(),
+            worktreePath,
+            worktreeSlug: basename(worktreePath),
+            baseBranch: marker.sourceRef,
+            baseSha: marker.baseSha,
+            setupFingerprint: marker.setupFingerprint,
+            createdAt: marker.createdAt,
             status: "idle",
           });
+        } else if (marker || basename(worktreePath).startsWith(LEGACY_WARM_SLUG_PREFIX)) {
+          // A provision a previous daemon never finished, or a warm tree from
+          // before markers existed (`.warm-*`, named for `git worktree move`).
+          orphans.push(worktreePath);
         }
       }
 
-      // In-flight provisions have no git worktree yet; keep their slots so a
-      // concurrent replenish does not overfill the pool.
+      // In-flight provisions are not in `git worktree list` until the add
+      // finishes; keep their slots so a concurrent replenish does not overfill.
       for (const existing of existingRecords) {
         if (
           existing.status === "provisioning" &&
@@ -653,6 +760,21 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
       }
 
       this.pools.set(repoRoot, updatedRecords);
+
+      const projectRoot = normalizePathForOwnership(
+        await getPaseoWorktreesRoot(repoRoot, this.paseoHome, this.worktreesRoot),
+      );
+      for (const markedPath of listWarmWorktreeMarkedPaths(projectRoot)) {
+        const known =
+          listedPaths.has(markedPath) || updatedRecords.some((r) => r.worktreePath === markedPath);
+        if (!known) {
+          removeWarmWorktreeMarker(markedPath);
+        }
+      }
+      for (const orphan of orphans) {
+        this.logger.info({ repoRoot, worktreePath: orphan }, "Removing orphaned warm worktree");
+        await this.removeWarmWorktree(repoRoot, orphan);
+      }
     } catch (error) {
       this.logger.debug({ err: error, repoRoot }, "Failed to discover existing warm worktrees");
     }
@@ -660,42 +782,66 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
 
   private async provisionOneWarmWorktree(repoRoot: string): Promise<void> {
     const previous = this.inFlightProvisions.get(repoRoot) ?? Promise.resolve();
-    let releaseInFlight!: () => void;
-    const thisFlight = new Promise<void>((resolveFlight) => {
-      releaseInFlight = resolveFlight;
-    });
+    const { promise: thisFlight, resolve: releaseInFlight } = Promise.withResolvers<void>();
     const chained = previous.then(() => thisFlight);
     this.inFlightProvisions.set(repoRoot, chained);
 
     let reserved: WarmWorktreeRecord | null = null;
     try {
-      const sourceRef = await this.resolveWarmSourceRef(repoRoot);
+      const base = await this.resolveWarmBase(repoRoot);
+      if (!base) {
+        throw new Error(`Cannot resolve the warm worktree base ref for ${repoRoot}`);
+      }
+      const { sourceRef, baseSha } = base;
       reserved = await this.withRepoLock(repoRoot, async () => {
         const records = this.pools.get(repoRoot) ?? [];
-        const currentCount = records.filter(
-          (r) => r.status === "idle" || r.status === "provisioning",
+        const freshCount = records.filter(
+          (r) => r.status === "provisioning" || (r.status === "idle" && r.baseSha === baseSha),
         ).length;
-        if (currentCount >= this.resolveTargetIdle(repoRoot)) {
+        if (freshCount >= this.resolveTargetIdle(repoRoot)) {
           return null;
         }
 
-        const warmSlug = `.warm-${randomUUID().slice(0, 8)}`;
-        const warmWorktreePath = await computeWorktreePath(
+        // Provision at the final path: a claim only switches the branch, so
+        // trees with submodules (which `git worktree move` refuses) pool too.
+        // Resolve the parent before naming the tree so the recorded path
+        // matches the realpath `git worktree list` reports even when the
+        // worktrees root sits behind a symlink.
+        const unresolvedRoot = await getPaseoWorktreesRoot(
           repoRoot,
-          warmSlug,
           this.paseoHome,
           this.worktreesRoot,
         );
-        mkdirSync(dirname(warmWorktreePath), { recursive: true });
-
+        mkdirSync(unresolvedRoot, { recursive: true });
+        const projectRoot = normalizePathForOwnership(unresolvedRoot);
+        let slug = createNameId();
+        while (
+          existsSync(join(projectRoot, slug)) ||
+          readWarmWorktreeMarker(join(projectRoot, slug))
+        ) {
+          slug = createNameId();
+        }
+        const createdAt = this.now().toISOString();
         const next: WarmWorktreeRecord = {
           repoRoot,
-          worktreePath: normalizePathForOwnership(warmWorktreePath),
-          worktreeSlug: warmSlug,
+          worktreePath: join(projectRoot, slug),
+          worktreeSlug: slug,
           baseBranch: sourceRef,
-          createdAt: this.now().toISOString(),
+          baseSha,
+          setupFingerprint: null,
+          createdAt,
           status: "provisioning",
         };
+        // Marked before `git worktree add` so listings never show the tree,
+        // not even while git's checkout hooks run inside the add.
+        writeWarmWorktreeMarker(next.worktreePath, {
+          version: 1,
+          status: "provisioning",
+          sourceRef,
+          baseSha,
+          setupFingerprint: null,
+          createdAt,
+        });
         records.push(next);
         this.pools.set(repoRoot, records);
         return next;
@@ -706,32 +852,45 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
       const record = reserved;
 
       this.logger.info(
-        { repoRoot, warmSlug: record.worktreeSlug, sourceRef },
+        { repoRoot, warmSlug: record.worktreeSlug, sourceRef, baseSha },
         "Provisioning idle warm worktree",
       );
 
       await runWithGitCommandPriority("normal", async () => {
-        await runGitCommand(["worktree", "add", "--detach", record.worktreePath, sourceRef], {
+        await runGitCommand(["worktree", "add", "--detach", record.worktreePath, baseSha], {
           cwd: repoRoot,
           timeout: 120_000,
         });
       });
 
       await seedPaseoConfigFile({ sourceCwd: repoRoot, targetCwd: record.worktreePath });
+      // Metadata first: setup resolves PASEO_WORKTREE_PORT and persists it into
+      // the metadata, and the claim keeps that port, so whatever setup baked in
+      // (an .env, a dev-server config) still matches the workspace's services.
+      writePaseoWorktreeMetadata(record.worktreePath, {
+        baseRefName: sourceRef,
+      });
 
       await runWorktreeSetupCommands({
         worktreePath: record.worktreePath,
         branchName: sourceRef,
         cleanupOnFailure: true,
       });
+      const setupFingerprint = computeWorktreeSetupFingerprint(record.worktreePath);
 
-      writePaseoWorktreeMetadata(record.worktreePath, {
-        baseRefName: sourceRef,
+      writeWarmWorktreeMarker(record.worktreePath, {
+        version: 1,
+        status: "ready",
+        sourceRef,
+        baseSha,
+        setupFingerprint,
+        createdAt: record.createdAt,
       });
 
+      record.setupFingerprint = setupFingerprint;
       record.status = "idle";
       this.logger.info(
-        { repoRoot, warmWorktreePath: record.worktreePath, sourceRef },
+        { repoRoot, warmWorktreePath: record.worktreePath, sourceRef, baseSha },
         "Warm worktree provisioned successfully",
       );
       this.recordProvisionOutcome(repoRoot, true);
@@ -749,7 +908,7 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
             records.splice(index, 1);
           }
         });
-        await this.cleanupFailedWorktree(repoRoot, toRemove.worktreePath);
+        await this.removeWarmWorktree(repoRoot, toRemove.worktreePath);
       }
       this.recordProvisionOutcome(repoRoot, false);
     } finally {
@@ -765,11 +924,12 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
   // same resolved arguments — rather than re-deriving base/branch decisions from the
   // original WorktreeSource — keeps the warm and cold paths provably in sync: any branch
   // name collision, remote-only base, or already-fetched PR/change-request branch that
-  // resolveWorktreeSourcePlan accounted for is honored identically here.
+  // resolveWorktreeSourcePlan accounted for is honored identically here. Returns true
+  // when the tree was already at the target commit, so its files (and setup) are unchanged.
   private async applyBranchToClaimedWorktree(options: {
     worktreePath: string;
     sourcePlan: WorktreeSourcePlan;
-  }): Promise<void> {
+  }): Promise<boolean> {
     const { worktreePath, sourcePlan } = options;
     const args = sourcePlan.addArguments;
     const targetRef = args[0] === "-b" ? args[3] : args[0];
@@ -789,7 +949,7 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
           timeout: 15_000,
         });
       }
-      return;
+      return true;
     }
     if (args[0] === "-b") {
       // ["-b", newBranchName, "--no-track", base] — mirrors `git worktree add` exactly.
@@ -805,6 +965,7 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
         timeout: 60_000,
       });
     }
+    return false;
   }
 
   private async worktreeHeadMatchesRef(worktreePath: string, ref: string): Promise<boolean> {
@@ -821,7 +982,8 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
     }
   }
 
-  private async cleanupFailedWorktree(repoRoot: string, worktreePath: string): Promise<void> {
+  /** Delete a pool tree (failed provision or claim, stale, orphaned) and its marker. */
+  private async removeWarmWorktree(repoRoot: string, worktreePath: string): Promise<void> {
     try {
       if (existsSync(worktreePath)) {
         rmSync(worktreePath, { recursive: true, force: true });
@@ -829,6 +991,7 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
     } catch {
       // ignore
     }
+    removeWarmWorktreeMarker(worktreePath);
     try {
       await runGitCommand(["worktree", "prune"], { cwd: repoRoot, timeout: 30_000 });
     } catch {

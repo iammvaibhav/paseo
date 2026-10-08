@@ -1,13 +1,16 @@
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { execSync } from "node:child_process";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import pino from "pino";
 import { WarmWorktreePoolManager } from "./warm-worktree-pool.js";
 import { listPaseoWorktrees, type WorktreeSource } from "../utils/worktree.js";
-import { readPaseoWorktreeMetadata } from "../utils/worktree-metadata.js";
+import {
+  readPaseoWorktreeMetadata,
+  readPaseoWorktreeRuntimePort,
+} from "../utils/worktree-metadata.js";
 import { createPaseoWorktree, type CreatePaseoWorktreeDeps } from "./paseo-worktree-service.js";
 import type { PersistedWorkspaceRecord } from "./workspace-registry.js";
 import type { ForgeService } from "../services/forge-service.js";
@@ -21,7 +24,7 @@ function createTestGitRepo(dir: string): void {
   writeFileSync(join(dir, "README.md"), "# Test Repo\n", "utf8");
   writeFileSync(
     join(dir, "paseo.json"),
-    JSON.stringify({ worktree: { setup: ["echo setup-ran > setup.log"] } }),
+    JSON.stringify({ worktree: { setup: ["echo setup-ran >> setup.log"] } }),
     "utf8",
   );
   execSync("git add . && git commit -m 'Initial commit'", { cwd: dir, stdio: "ignore" });
@@ -71,7 +74,7 @@ describe("WarmWorktreePoolManager", () => {
     expect(status.pools).toHaveLength(1);
     expect(status.pools[0].idleCount).toBe(1);
     expect(status.pools[0].worktrees).toHaveLength(1);
-    expect(status.pools[0].worktrees[0].slug).toMatch(/^\.warm-/);
+    expect(status.pools[0].worktrees[0].slug.startsWith(".")).toBe(false);
     expect(existsSync(status.pools[0].worktrees[0].path)).toBe(true);
 
     // Verify setup commands ran during warming
@@ -173,7 +176,7 @@ describe("WarmWorktreePoolManager", () => {
     await manager.stop();
   });
 
-  test("claims warm worktree for branch-off, retargets path and switches branch", async () => {
+  test("claims a warm worktree in place for branch-off and reuses its setup", async () => {
     const manager = new WarmWorktreePoolManager({
       paseoHome,
       worktreesRoot,
@@ -183,6 +186,10 @@ describe("WarmWorktreePoolManager", () => {
     });
 
     await manager.replenish(repoDir);
+    const warmPath = manager.getStatus().pools[0].worktrees[0].path;
+    // Setup ran with this port; the workspace's services must get the same one.
+    const provisionedPort = readPaseoWorktreeRuntimePort(warmPath);
+    expect(provisionedPort).not.toBeNull();
 
     const source: WorktreeSource = {
       kind: "branch-off",
@@ -196,29 +203,96 @@ describe("WarmWorktreePoolManager", () => {
       source,
       paseoHome,
       worktreesRoot,
+      runSetup: true,
     });
 
-    expect(result).not.toBeNull();
     expect(result?.claimed).toBe(true);
+    // No `git worktree move`: the tree stays where it was provisioned.
+    expect(result?.worktree.worktreePath).toBe(warmPath);
     expect(result?.worktree.branchName).toBe("feature-warm-test");
-    expect(result?.worktree.worktreePath).toContain("feature-warm-test");
-    expect(existsSync(result!.worktree.worktreePath)).toBe(true);
+    // Same commit and same setup commands, so the provisioning run counts.
+    expect(result?.setupPrepared).toBe(true);
+    expect(readFileSync(join(warmPath, "setup.log"), "utf8")).toBe("setup-ran\n");
 
-    // Verify setup file was preserved across move
-    expect(existsSync(join(result!.worktree.worktreePath, "setup.log"))).toBe(true);
-
-    // Verify branch in claimed worktree
-    const currentBranch = execSync("git branch --show-current", {
-      cwd: result!.worktree.worktreePath,
-    })
+    const currentBranch = execSync("git branch --show-current", { cwd: warmPath })
       .toString()
       .trim();
     expect(currentBranch).toBe("feature-warm-test");
+    expect(readPaseoWorktreeMetadata(warmPath).baseRefName).toBe("main");
+    expect(readPaseoWorktreeRuntimePort(warmPath)).toBe(provisionedPort);
 
-    // Verify worktree metadata
-    const metadata = readPaseoWorktreeMetadata(result!.worktree.worktreePath);
-    expect(metadata.baseRefName).toBe("main");
+    // Claimed trees are ordinary worktrees again.
+    const listed = await listPaseoWorktrees({ cwd: repoDir, paseoHome, worktreesRoot });
+    expect(listed.map((entry) => entry.path)).toEqual([warmPath]);
 
+    await manager.stop();
+  });
+
+  test("after the base moves, provisions a tree at the new tip and retires the stale one", async () => {
+    const manager = new WarmWorktreePoolManager({
+      paseoHome,
+      worktreesRoot,
+      targetIdle: 1,
+      enabled: true,
+      logger,
+      maintenanceIntervalMs: 0,
+    });
+    await manager.replenish(repoDir);
+    const stalePath = manager.getStatus().pools[0].worktrees[0].path;
+
+    writeFileSync(join(repoDir, "landed.txt"), "new commit on main\n", "utf8");
+    execSync("git add . && git commit -m 'land'", { cwd: repoDir, stdio: "ignore" });
+    const newTip = execSync("git rev-parse HEAD", { cwd: repoDir }).toString().trim();
+
+    await manager.replenish(repoDir);
+    // The fresh tree now covers the target; the next pass retires the stale one.
+    await manager.replenish(repoDir);
+
+    const worktrees = manager.getStatus().pools[0].worktrees;
+    expect(worktrees).toHaveLength(1);
+    expect(worktrees[0].path).not.toBe(stalePath);
+    expect(existsSync(stalePath)).toBe(false);
+
+    const result = await manager.claim({
+      repoRoot: repoDir,
+      worktreeSlug: "after-land",
+      source: { kind: "branch-off", branchName: "after-land", baseBranch: "main" },
+      paseoHome,
+      worktreesRoot,
+    });
+    expect(result?.setupPrepared).toBe(true);
+    expect(execSync("git rev-parse HEAD", { cwd: worktrees[0].path }).toString().trim()).toBe(
+      newTip,
+    );
+
+    await manager.stop();
+  });
+
+  test("a stale warm tree is still claimable but reports its setup as not prepared", async () => {
+    const manager = new WarmWorktreePoolManager({
+      paseoHome,
+      worktreesRoot,
+      targetIdle: 1,
+      enabled: true,
+      logger,
+      maintenanceIntervalMs: 0,
+    });
+    await manager.replenish(repoDir);
+
+    writeFileSync(join(repoDir, "landed.txt"), "new commit on main\n", "utf8");
+    execSync("git add . && git commit -m 'land'", { cwd: repoDir, stdio: "ignore" });
+
+    const result = await manager.claim({
+      repoRoot: repoDir,
+      worktreeSlug: "stale-claim",
+      source: { kind: "branch-off", branchName: "stale-claim", baseBranch: "main" },
+      paseoHome,
+      worktreesRoot,
+    });
+
+    expect(result?.claimed).toBe(true);
+    expect(result?.setupPrepared).toBe(false);
+    expect(existsSync(join(result!.worktree.worktreePath, "landed.txt"))).toBe(true);
     await manager.stop();
   });
 
@@ -287,7 +361,7 @@ describe("WarmWorktreePoolManager", () => {
     const result = await manager.claim({
       repoRoot: repoDir,
       worktreeSlug: "feature-x-claim",
-      source: { kind: "branch-off", branchName: "feature-x" },
+      source: { kind: "branch-off", branchName: "feature-x", baseBranch: "main" },
       paseoHome,
       worktreesRoot,
     });
@@ -366,7 +440,7 @@ describe("WarmWorktreePoolManager", () => {
     const result = await manager.claim({
       repoRoot: repoDir,
       worktreeSlug: "first-claim",
-      source: { kind: "branch-off", branchName: "first-claim" },
+      source: { kind: "branch-off", branchName: "first-claim", baseBranch: "main" },
       paseoHome,
       worktreesRoot,
     });
@@ -587,8 +661,23 @@ describe("WarmWorktreePoolManager", () => {
     await manager.stop();
   });
 
-  test("skips claim and replenish for repos with submodules", async () => {
-    writeFileSync(join(repoDir, ".gitmodules"), "[submodule]\n", "utf8");
+  test("pools repos whose worktrees carry initialized submodules", async () => {
+    // `git worktree move` refuses trees with initialized submodules, which used
+    // to keep such repos out of the pool entirely. Claims no longer move.
+    const subRepo = join(tempBase, "sub");
+    createTestGitRepo(subRepo);
+    execSync("git -c protocol.file.allow=always submodule add ../sub sub", {
+      cwd: repoDir,
+      stdio: "ignore",
+    });
+    writeFileSync(
+      join(repoDir, "paseo.json"),
+      JSON.stringify({
+        worktree: { setup: ["git -c protocol.file.allow=always submodule update --init"] },
+      }),
+      "utf8",
+    );
+    execSync("git add . && git commit -m 'add submodule'", { cwd: repoDir, stdio: "ignore" });
 
     const manager = new WarmWorktreePoolManager({
       paseoHome,
@@ -598,18 +687,71 @@ describe("WarmWorktreePoolManager", () => {
       logger,
     });
 
-    // `git worktree move` refuses submodule trees, so a warm claim can never
-    // succeed — the pool stays out of the way and the caller goes cold.
     await manager.replenish(repoDir);
-    expect(manager.getStatus().pools).toHaveLength(0);
+    const warmPath = manager.getStatus().pools[0].worktrees[0].path;
+    expect(existsSync(join(warmPath, "sub", "README.md"))).toBe(true);
+
     const claimResult = await manager.claim({
       repoRoot: repoDir,
       worktreeSlug: "submodule-claim",
-      source: { kind: "branch-off", branchName: "submodule-claim" },
+      source: { kind: "branch-off", branchName: "submodule-claim", baseBranch: "main" },
       paseoHome,
       worktreesRoot,
     });
-    expect(claimResult).toBeNull();
+    expect(claimResult?.claimed).toBe(true);
+    expect(claimResult?.worktree.worktreePath).toBe(warmPath);
+    expect(claimResult?.setupPrepared).toBe(true);
+    await manager.stop();
+  });
+
+  test("never hands out a tree that is still provisioning, even behind a symlinked root", async () => {
+    // Production regression: ~/.paseo was a symlink, the in-flight record kept
+    // the unresolved path while `git worktree list` reported the realpath, and
+    // discovery added the half-provisioned tree as idle for a claim to steal.
+    const realHome = join(tempBase, "real-home");
+    mkdirSync(realHome, { recursive: true });
+    const linkedHome = join(tempBase, "linked-home");
+    symlinkSync(realHome, linkedHome);
+    writeFileSync(
+      join(repoDir, "paseo.json"),
+      JSON.stringify({ worktree: { setup: ["sleep 2"] } }),
+      "utf8",
+    );
+    execSync("git add . && git commit -m 'slow setup'", { cwd: repoDir, stdio: "ignore" });
+
+    const manager = new WarmWorktreePoolManager({
+      paseoHome: linkedHome,
+      targetIdle: 1,
+      enabled: true,
+      logger,
+      maintenanceIntervalMs: 0,
+    });
+    const provisioning = manager.replenish(repoDir);
+    // Wait until git itself lists the tree: the window the old race hit.
+    await vi.waitFor(
+      async () => {
+        const all = await listPaseoWorktrees({
+          cwd: repoDir,
+          paseoHome: linkedHome,
+          includeWarm: true,
+        });
+        expect(all).toHaveLength(1);
+      },
+      { timeout: 5_000 },
+    );
+
+    const claimed = await manager.claim({
+      repoRoot: repoDir,
+      worktreeSlug: "too-early",
+      source: { kind: "branch-off", branchName: "too-early" },
+      paseoHome: linkedHome,
+    });
+    expect(claimed).toBeNull();
+    // And listings keep the in-flight tree hidden.
+    expect(await listPaseoWorktrees({ cwd: repoDir, paseoHome: linkedHome })).toHaveLength(0);
+
+    await provisioning;
+    expect(manager.getStatus().pools[0]?.idleCount).toBe(1);
     await manager.stop();
   });
 

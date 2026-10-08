@@ -45,6 +45,7 @@ import { createExternalProcessEnv } from "../server/paseo-env.js";
 import { parseGitRevParsePath, resolveGitRevParsePath } from "./git-rev-parse-path.js";
 import { expandTilde, getRealpathAwareRelativePath, isPathInsideRoot } from "./path.js";
 import { terminateWithTreeKill } from "./tree-kill.js";
+import { hasWarmWorktreeMarker } from "./warm-worktree-marker.js";
 
 export { slugify, validateBranchSlug } from "@getpaseo/protocol/branch-slug";
 
@@ -1079,7 +1080,7 @@ export async function listPaseoWorktrees({
   return parseWorktreeList(stdout)
     .map((entry) => Object.assign({}, entry, { path: normalizePathForOwnership(entry.path) }))
     .filter((entry) => getRealpathAwareRelativePath(projectWorktreesRoot, entry.path) !== null)
-    .filter((entry) => includeWarm || !basename(entry.path).startsWith(".warm-"))
+    .filter((entry) => includeWarm || !hasWarmWorktreeMarker(entry.path))
     .map((entry) =>
       Object.assign({}, entry, { createdAt: resolveWorktreeCreatedAtIso(entry.path) }),
     );

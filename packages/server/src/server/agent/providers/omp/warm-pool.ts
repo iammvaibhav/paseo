@@ -1,6 +1,5 @@
-import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
-import { mkdir, readFile, rm } from "node:fs/promises";
+import { existsSync, type FSWatcher, watch } from "node:fs";
+import { readFile, rm } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import type { Logger } from "pino";
@@ -53,6 +52,23 @@ const WARM_POOL_TARGET_IDLE = 2;
  * and pay a 12s cold boot. Bound a wedged process, not a healthy one.
  */
 const WARM_POOL_MOVE_TIMEOUT_MS = 8_000;
+/**
+ * Backoff after a failed fill. A fill that fails once (a broken binary, a
+ * rejected flag, a bad config) fails every time, and the maintenance loop
+ * retries every WARM_POOL_MAINTAIN_INTERVAL_MS: unbounded, that burned about
+ * half a core respawning omp. Doubles per consecutive failure up to the cap.
+ */
+const WARM_POOL_FILL_BACKOFF_BASE_MS = 15_000;
+const WARM_POOL_FILL_BACKOFF_MAX_MS = 600_000;
+/** Editors and installers write config in bursts (temp file, rename, chmod); retire once per burst. */
+const OMP_CONFIG_CHANGE_DEBOUNCE_MS = 500;
+/**
+ * Files in omp's agent dir that omp only reads at boot. A pooled process keeps
+ * whatever it booted with, so a change to any of these (or to the custom agent
+ * definitions under `agents/`) retires the pool.
+ */
+const OMP_BOOT_CONFIG_FILES: Record<string, true> = { "config.yml": true, "models.yml": true };
+const OMP_AGENTS_DIR_NAME = "agents";
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return new Promise<T>((resolvePromise, rejectPromise) => {
@@ -88,8 +104,9 @@ function sleep(ms: number): Promise<void> {
  * creates pay that every time. This pool keeps booted, idle processes around
  * so a create hands one off and pays tens of milliseconds of RPC instead.
  *
- * Handoff contract (verified against omp 17.2.9/17.2.10): a process launched
- * with `--session <throwaway>` can be fully re-targeted in-process:
+ * Handoff contract (verified against omp 18.8.4): a process launched without
+ * `--session` boots on a fresh throwaway session and can be fully re-targeted
+ * in-process:
  *   - `/move <dir>` (sent as a prompt) relocates the session to another
  *     workspace — ~30ms — and omp reloads settings, plugins and project rules
  *     for the new cwd, so the agent sees the right AGENTS.md.
@@ -103,8 +120,10 @@ function sleep(ms: number): Promise<void> {
  * keeps WARM_POOL_TARGET_IDLE live idle processes of the most recent launch
  * shape, reconciled every WARM_POOL_MAINTAIN_INTERVAL_MS (drop processes that
  * stopped answering, top up the rest). A claim for a different launch shape
- * retires the old processes and refills. Failures never surface to callers:
- * claim returns null and the caller cold-starts.
+ * retires the old processes and refills; a change to omp's boot-time config
+ * (`configDir`) retires them too. Failed fills back off exponentially.
+ * Failures never surface to callers: claim returns null and the caller
+ * cold-starts.
  */
 export interface OmpWarmPoolInput {
   cwd: string;
@@ -138,6 +157,12 @@ interface OmpWarmPoolOptions {
    * last-seen-traffic caveat as `getDefaultHostTools`.
    */
   getDefaultModel?: () => { provider: string; id: string } | null;
+  /**
+   * omp's agent dir (`~/.omp/agent`). When set, `start()` watches its
+   * boot-time config and retires idle processes on change so the next create
+   * boots with the new config. Omitted for fake runtimes in tests.
+   */
+  configDir?: string;
 }
 
 /** Handoff of a claimed pooled process, with what the pool already knows was set on it so the caller can skip re-doing it. */
@@ -169,6 +194,8 @@ interface WarmEntry {
   model: OmpModel | null;
   thinkingLevel: OmpThinkingLevel | null;
   hostToolNames: ReadonlySet<string> | null;
+  /** Config generation this process booted under; a stale one is never handed out. */
+  generation: number;
 }
 
 export class OmpWarmPool {
@@ -200,12 +227,22 @@ export class OmpWarmPool {
    * has moved omp onto the agent's own session.
    */
   private readonly claimedThrowaways = new WeakMap<OmpRuntimeSession, string>();
+  /** Every fill still booting, including ones a config change orphaned, so `closeAll` can wait for all of them. */
+  private readonly pendingFills = new Set<Promise<void>>();
+  /** Bumped on every omp config change; entries booted under an older value are retired. */
+  private generation = 0;
+  private consecutiveFillFailures = 0;
+  private fillBackoffUntil = 0;
+  private readonly configDir: string | undefined;
+  private readonly configWatchers = new Map<string, FSWatcher>();
+  private configChangeTimer: NodeJS.Timeout | null = null;
 
   constructor(options: OmpWarmPoolOptions) {
     this.runtime = options.runtime;
     this.logger = options.logger;
     this.getDefaultHostTools = options.getDefaultHostTools;
     this.getDefaultModel = options.getDefaultModel;
+    this.configDir = options.configDir;
   }
 
   /**
@@ -226,7 +263,111 @@ export class OmpWarmPool {
     const timer = setInterval(() => void this.maintain(), WARM_POOL_MAINTAIN_INTERVAL_MS);
     timer.unref?.();
     this.maintainTimer = timer;
+    this.watchOmpConfig();
     void this.primeFromSeed();
+  }
+
+  /**
+   * Watch omp's boot-time config. omp reads config.yml, models.yml and the
+   * custom agent definitions once at launch, so idle pooled processes would
+   * otherwise keep serving creates with the config they booted with.
+   */
+  private watchOmpConfig(): void {
+    const configDir = this.configDir;
+    if (!configDir) {
+      return;
+    }
+    this.watchConfigDirectory(configDir, (name) => {
+      if (name === OMP_AGENTS_DIR_NAME) {
+        // The agents dir may be created (or replaced) after boot; watch the new one.
+        this.watchAgentsDirectory();
+      }
+      if (
+        name === null ||
+        name === OMP_AGENTS_DIR_NAME ||
+        Object.hasOwn(OMP_BOOT_CONFIG_FILES, name)
+      ) {
+        this.scheduleConfigInvalidation(name ?? configDir);
+      }
+    });
+    this.watchAgentsDirectory();
+  }
+
+  private watchAgentsDirectory(): void {
+    if (!this.configDir) {
+      return;
+    }
+    const agentsDir = path.join(this.configDir, OMP_AGENTS_DIR_NAME);
+    this.configWatchers.get(agentsDir)?.close();
+    this.configWatchers.delete(agentsDir);
+    this.watchConfigDirectory(agentsDir, (name) => {
+      this.scheduleConfigInvalidation(path.join(OMP_AGENTS_DIR_NAME, name ?? ""));
+    });
+  }
+
+  private watchConfigDirectory(directory: string, onChange: (name: string | null) => void): void {
+    if (this.closed || !existsSync(directory)) {
+      return;
+    }
+    try {
+      const watcher = watch(directory, (_event, filename) => {
+        onChange(filename === null ? null : filename.toString());
+      });
+      watcher.on("error", (error) => {
+        this.logger.warn({ err: error, directory }, "OMP config watcher failed");
+        watcher.close();
+        this.configWatchers.delete(directory);
+      });
+      this.configWatchers.set(directory, watcher);
+    } catch (error) {
+      this.logger.warn({ err: error, directory }, "OMP config watcher could not start");
+    }
+  }
+
+  private scheduleConfigInvalidation(changed: string): void {
+    if (this.closed) {
+      return;
+    }
+    if (this.configChangeTimer) {
+      clearTimeout(this.configChangeTimer);
+    }
+    const timer = setTimeout(() => {
+      this.configChangeTimer = null;
+      this.invalidateForConfigChange(changed);
+    }, OMP_CONFIG_CHANGE_DEBOUNCE_MS);
+    timer.unref?.();
+    this.configChangeTimer = timer;
+  }
+
+  /**
+   * Retire every process booted under the old omp config and refill. A
+   * process mid-prewarm is left to finish its move and is retired by the next
+   * maintenance pass; until then its stale generation keeps claims away from it.
+   */
+  invalidateForConfigChange(changed: string): void {
+    if (this.closed) {
+      return;
+    }
+    this.generation += 1;
+    // A config change is the usual fix for a failing fill; retry immediately.
+    this.consecutiveFillFailures = 0;
+    this.fillBackoffUntil = 0;
+    // In-flight fills booted under the old config; stop counting them toward
+    // the target so the refill below starts fresh processes now.
+    this.filling.clear();
+    const stale = this.entries.filter((entry) => !entry.busy);
+    this.entries.splice(0, this.entries.length, ...this.entries.filter((entry) => entry.busy));
+    for (const entry of stale) {
+      void this.dispose(entry);
+    }
+    this.logger.info(
+      { changed, disposed: stale.length, generation: this.generation },
+      "OMP warm pool retired processes after omp config change",
+    );
+    const tracked = this.trackedInput;
+    if (tracked) {
+      this.fill(tracked);
+    }
   }
 
   /** Boot the seed's launch shape so the first create of this daemon is warm. */
@@ -308,10 +449,29 @@ export class OmpWarmPool {
     if (this.closed) {
       return;
     }
+    this.dropStaleGenerationEntries();
     await this.dropDeadEntries();
     const tracked = this.trackedInput;
     if (tracked) {
       this.fill(tracked);
+    }
+  }
+
+  /** Dispose idle entries a config change left behind (they were mid-prewarm when it fired). */
+  private dropStaleGenerationEntries(): void {
+    const stale = this.entries.filter(
+      (entry) => !entry.busy && entry.generation !== this.generation,
+    );
+    if (stale.length === 0) {
+      return;
+    }
+    this.entries.splice(
+      0,
+      this.entries.length,
+      ...this.entries.filter((entry) => !stale.includes(entry)),
+    );
+    for (const entry of stale) {
+      void this.dispose(entry);
     }
   }
 
@@ -372,7 +532,8 @@ export class OmpWarmPool {
     // cwd; ride that move instead of starting a second one on a different
     // process (`prewarm.retargeting` never rejects).
     const prewarming = this.entries.find(
-      (entry) => entry.key === key && entry.retargetingCwd === cwd,
+      (entry) =>
+        entry.key === key && entry.generation === this.generation && entry.retargetingCwd === cwd,
     );
     if (prewarming?.retargeting) {
       await prewarming.retargeting;
@@ -383,10 +544,10 @@ export class OmpWarmPool {
       // costs nothing at all. Otherwise take any process of this key and move
       // it. Busy entries are mid-prewarm toward some other cwd; leave them.
       let index = this.entries.findIndex(
-        (entry) => !entry.busy && entry.key === key && entry.cwd === cwd,
+        (entry) => this.isClaimable(entry, key) && entry.cwd === cwd,
       );
       if (index === -1) {
-        index = this.entries.findIndex((entry) => !entry.busy && entry.key === key);
+        index = this.entries.findIndex((entry) => this.isClaimable(entry, key));
       }
       if (index === -1) {
         break;
@@ -433,6 +594,11 @@ export class OmpWarmPool {
     return null;
   }
 
+  /** Idle, of the requested launch shape, and booted under the current omp config. */
+  private isClaimable(entry: WarmEntry, key: string): boolean {
+    return !entry.busy && entry.key === key && entry.generation === this.generation;
+  }
+
   /**
    * Retarget one idle process to `cwd` ahead of a create, so that create's own
    * `claim` finds it already there and pays no `/move`. Fire-and-forget and
@@ -453,7 +619,7 @@ export class OmpWarmPool {
     const key = keyFor(tracked);
     const targetCwd = path.resolve(cwd);
     const candidate = this.entries.find(
-      (entry) => !entry.busy && entry.key === key && entry.cwd !== targetCwd,
+      (entry) => this.isClaimable(entry, key) && entry.cwd !== targetCwd,
     );
     if (!candidate) {
       return;
@@ -561,12 +727,19 @@ export class OmpWarmPool {
       clearInterval(this.maintainTimer);
       this.maintainTimer = null;
     }
+    if (this.configChangeTimer) {
+      clearTimeout(this.configChangeTimer);
+      this.configChangeTimer = null;
+    }
+    for (const watcher of this.configWatchers.values()) {
+      watcher.close();
+    }
+    this.configWatchers.clear();
     const entries = this.entries.splice(0);
     await Promise.all(entries.map((entry) => this.dispose(entry)));
     // Wait for in-flight fills so their freshly spawned processes are closed
     // too (they check `closed` before being admitted to the pool).
-    const pending = [...this.filling.values()].flat();
-    await Promise.allSettled(pending);
+    await Promise.allSettled(this.pendingFills);
   }
 
   /**
@@ -574,14 +747,18 @@ export class OmpWarmPool {
    * to call from anywhere: it counts what already exists and never overfills.
    */
   private fill(input: OmpWarmPoolInput): void {
-    if (this.closed) {
+    if (this.closed || Date.now() < this.fillBackoffUntil) {
       return;
     }
     const key = keyFor(input);
     const inFlight = this.filling.get(key) ?? [];
-    const live = this.entries.reduce((count, entry) => count + (entry.key === key ? 1 : 0), 0);
+    const live = this.entries.reduce(
+      (count, entry) => count + (entry.key === key && entry.generation === this.generation ? 1 : 0),
+      0,
+    );
     for (let slot = live + inFlight.length; slot < WARM_POOL_TARGET_IDLE; slot++) {
       const pending: Promise<void> = this.doFill(input).finally(() => {
+        this.pendingFills.delete(pending);
         const rest = (this.filling.get(key) ?? []).filter((other) => other !== pending);
         if (rest.length > 0) {
           this.filling.set(key, rest);
@@ -589,6 +766,7 @@ export class OmpWarmPool {
           this.filling.delete(key);
         }
       });
+      this.pendingFills.add(pending);
       inFlight.push(pending);
     }
     if (inFlight.length > 0) {
@@ -597,29 +775,51 @@ export class OmpWarmPool {
   }
 
   private async doFill(input: OmpWarmPoolInput): Promise<void> {
+    const generation = this.generation;
     try {
-      const entry = await this.spawnWarm(input);
-      if (entry && !this.closed) {
-        this.entries.push(entry);
-      } else if (entry) {
+      const entry = await this.spawnWarm(input, generation);
+      if (this.closed || entry.generation !== this.generation) {
+        // Shut down, or omp's config changed while this process booted.
         void this.dispose(entry);
+        return;
       }
+      this.consecutiveFillFailures = 0;
+      this.entries.push(entry);
     } catch (error) {
+      if (generation !== this.generation) {
+        // Booted under config that has since changed; its failure says
+        // nothing about the current config.
+        return;
+      }
+      this.consecutiveFillFailures += 1;
+      const retryInMs = Math.min(
+        WARM_POOL_FILL_BACKOFF_BASE_MS * 2 ** (this.consecutiveFillFailures - 1),
+        WARM_POOL_FILL_BACKOFF_MAX_MS,
+      );
+      this.fillBackoffUntil = Date.now() + retryInMs;
       this.logger.warn(
-        { err: error, cwd: input.cwd, modeId: input.modeId },
-        "OMP warm pool fill failed; next create will cold start",
+        {
+          err: error,
+          cwd: input.cwd,
+          modeId: input.modeId,
+          consecutiveFailures: this.consecutiveFillFailures,
+          retryInMs,
+        },
+        "OMP warm pool fill failed; creates cold start until a retry succeeds",
       );
     }
   }
 
-  private async spawnWarm(input: OmpWarmPoolInput): Promise<WarmEntry | null> {
-    const throwawayPath = this.throwawaySessionPath(input.cwd);
+  private async spawnWarm(input: OmpWarmPoolInput, generation: number): Promise<WarmEntry> {
+    // No `--session`: omp rejects a path that does not exist yet ("Session
+    // ... not found"), and without the flag it mints a fresh session in its
+    // own sessions dir for `cwd`, exactly as a cold create does. That minted
+    // file is the throwaway the claim discards after `new_session`.
     const session = await this.runtime.startSession({
       cwd: input.cwd,
       protocolMode: "rpc-ui",
       modeId: input.modeId,
       extraArgs: input.extraArgs,
-      session: throwawayPath,
       // Per-create overrides that differ from the seeded default (below) are
       // still applied over RPC at claim time.
       systemPrompt: input.systemPrompt.trim() || undefined,
@@ -665,13 +865,14 @@ export class OmpWarmPool {
       session,
       systemPrompt: input.systemPrompt.trim(),
       cwd: path.resolve(input.cwd),
-      throwawayPath,
+      throwawayPath: initialState.sessionFile ?? null,
       busy: false,
       retargetingCwd: null,
       retargeting: null,
       model,
       thinkingLevel: initialState.thinkingLevel ?? null,
       hostToolNames,
+      generation,
     };
   }
 
@@ -689,26 +890,6 @@ export class OmpWarmPool {
     } catch {
       // Best effort: a leftover throwaway file is harmless.
     }
-  }
-
-  /**
-   * A canonical throwaway session path, placed in omp's sessions directory so
-   * the session minted by `new_session` at claim time lands in the same
-   * directory omp would pick for a normal create of `cwd`.
-   */
-  private throwawaySessionPath(cwd: string): string {
-    const dir = path.join(
-      homedir(),
-      ".omp",
-      "agent",
-      "sessions",
-      encodeOmpSessionDirName(path.resolve(cwd)),
-    );
-    // omp mints its session files itself; make sure the directory exists so a
-    // fresh pool path (e.g. a brand-new workspace) never races its mkdir.
-    void mkdir(dir, { recursive: true }).catch(() => undefined);
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    return path.join(dir, `${stamp}_${randomUUID()}.jsonl`);
   }
 }
 

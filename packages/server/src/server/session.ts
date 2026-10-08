@@ -7893,6 +7893,9 @@ export class Session {
       workspaceGitService: this.workspaceGitService,
       workspaceProvisioning: this.workspaceProvisioning,
       warmWorktreePool: this.warmWorktreePool,
+      // Move an idle agent process to the tree while the claim cuts the
+      // branch, so the first agent rides it instead of paying `/move`.
+      prewarmAgentCwd: (cwd: string) => this.providerSnapshotManager.prewarmAgentCwd(cwd),
     });
     void Promise.all([
       this.gitMutation.notifyGitMutation(input.cwd, "create-worktree"),

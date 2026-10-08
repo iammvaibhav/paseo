@@ -48,6 +48,8 @@ export interface RunAsyncWorktreeBootstrapOptions {
   worktree: WorktreeConfig;
   workspaceCwd?: string;
   shouldBootstrap?: boolean;
+  /** The warm pool already ran worktree.setup in this tree; only the terminal bootstrap is left. */
+  setupPrepared?: boolean;
   terminalManager: TerminalManager | null;
   appendTimelineItem: (item: AgentTimelineItem) => Promise<boolean>;
   emitLiveTimelineItem?: (item: AgentTimelineItem) => Promise<boolean>;
@@ -666,30 +668,32 @@ export async function runAsyncWorktreeBootstrap(
       env: runtimeEnv,
     });
 
-    setupResults = await runWorktreeSetupCommands({
-      worktreePath: workspaceCwd,
-      branchName: options.worktree.branchName,
-      cleanupOnFailure: false,
-      runtimeEnv,
-      onEvent: (event) => {
-        applyWorktreeSetupProgressEvent(progressAccumulator, event);
-        queueLiveRunningEmit();
-      },
-    });
-    await liveEmitQueue;
+    if (!options.setupPrepared) {
+      setupResults = await runWorktreeSetupCommands({
+        worktreePath: workspaceCwd,
+        branchName: options.worktree.branchName,
+        cleanupOnFailure: false,
+        runtimeEnv,
+        onEvent: (event) => {
+          applyWorktreeSetupProgressEvent(progressAccumulator, event);
+          queueLiveRunningEmit();
+        },
+      });
+      await liveEmitQueue;
 
-    const completed = await options.appendTimelineItem(
-      buildSetupTimelineItem({
-        callId: setupCallId,
-        status: "completed",
-        worktree: options.worktree,
-        results: setupResults,
-        outputAccumulatorsByIndex: progressAccumulator.outputAccumulatorsByIndex,
-        errorMessage: null,
-      }),
-    );
-    if (!completed) {
-      return;
+      const completed = await options.appendTimelineItem(
+        buildSetupTimelineItem({
+          callId: setupCallId,
+          status: "completed",
+          worktree: options.worktree,
+          results: setupResults,
+          outputAccumulatorsByIndex: progressAccumulator.outputAccumulatorsByIndex,
+          errorMessage: null,
+        }),
+      );
+      if (!completed) {
+        return;
+      }
     }
   } catch (error) {
     if (error instanceof WorktreeSetupError) {

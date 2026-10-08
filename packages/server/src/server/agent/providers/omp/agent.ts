@@ -2717,6 +2717,14 @@ export class OmpAgentClient implements AgentClient {
             logger: this.logger,
             getDefaultHostTools: () => this.lastKnownPaseoTools,
             getDefaultModel: () => this.lastKnownDefaultModel,
+            // Only the real binary reads omp's config dir; a fake runtime must
+            // not react to the developer's own ~/.omp edits mid-test.
+            ...(options.runtime === undefined
+              ? {
+                  configDir: resolveOmpDiagnosticPaths({ ...process.env, ...runtimeSettings?.env })
+                    .agentDir,
+                }
+              : {}),
           })
         : null;
     this.warmPool?.start();

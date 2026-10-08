@@ -15,7 +15,8 @@ The next send claims a pooled process and attaches the session with
 - The warm pool is **host-global**: one bucket of **2** idle processes
   per OMP-derived provider. cwd is not in the launch shape; `/move`
   retargets. A claim for a different launch shape retires the old
-  processes and refills.
+  processes and refills. So does any change to omp's boot-time config
+  (`config.yml`, `models.yml`, `agents/*`), since omp reads it only at launch.
 - Create from a warm process: **~87 ms**. Cold create boot: **~1.9 s**.
 - Resume via `switch_session` onto a warm process: **~49–107 ms** by
   JSONL size. Cold `--session` spawn: **~1.85 s**.
@@ -69,17 +70,26 @@ not reattached: JSONL RPC uses stdin/stdout pipes.
 | Key            | `modeId` + `extraArgs` + trimmed system prompt + significant env           | `keyFor`                         |
 | Not in the key | cwd, model, thinking, `PASEO_AGENT_ID` / `PASEO_AGENT_CWD`                 | comments on `keyFor`             |
 | Idle per key   | 2                                                                          | `WARM_POOL_TARGET_IDLE`          |
-| Keys kept      | 2 most recent                                                              | `WARM_POOL_MAX_KEYS`             |
+| Keys kept      | 1: the most recent launch shape                                            | `trackedInput`                   |
 | Maintain       | 15s: drop dead, evict LRU keys, refill                                     | `WARM_POOL_MAINTAIN_INTERVAL_MS` |
 | Liveness ping  | `get_state` ≤ 2s                                                           | `WARM_POOL_LIVENESS_TIMEOUT_MS`  |
 | `/move` budget | ~30ms measured, 3s cap                                                     | `WARM_POOL_MOVE_TIMEOUT_MS`      |
 | Seed           | `$PASEO_HOME/omp-warm-pool.json` so the first create after restart is warm | `primeFromSeed`                  |
+| Config watch   | change to `config.yml` / `models.yml` / `agents/*` retires idle processes  | `watchOmpConfig`                 |
+| Fill failure   | exponential backoff, 15s doubling to 10 min                                | `WARM_POOL_FILL_BACKOFF_*_MS`    |
 | Config knobs   | none                                                                       | hardcoded                        |
 
-A pooled process boots with a throwaway `--session` file, no model, no
-thinking. Claim prefers a process already in the target cwd (ping only),
-else `/move <cwd>` (~30ms, reloads AGENTS.md / plugins), then the caller
-runs `new_session` → `set_model` → `set_thinking_level` → `set_host_tools`.
+A pooled process boots **without** `--session`: omp mints a fresh
+throwaway session itself (omp ≥18 exits on a `--session` path that does
+not exist yet, which kept the pool empty from 2026-10-07 to 2026-10-08).
+It boots with no model and no thinking. Claim prefers a process already
+in the target cwd (ping only), else `/move <cwd>` (~30ms idle, ~0.8s
+under load; reloads AGENTS.md / plugins), then the caller runs
+`new_session` → `set_model` → `set_thinking_level` → `set_host_tools`.
+
+A warm worktree claim calls `ProviderSnapshotManager.prewarmAgentCwd`
+as soon as it reserves its tree, so the `/move` runs while the branch is
+cut and the agent create finds the process already in place.
 
 Used processes never go back. `close()` kills them.
 
@@ -122,12 +132,11 @@ Not a money budget. The **intended process cap** written in
 `warm-pool.ts`:
 
 ```
-WARM_POOL_TARGET_IDLE = 2   // idle processes kept per launch key
-WARM_POOL_MAX_KEYS    = 2   // distinct launch shapes kept warm
+WARM_POOL_TARGET_IDLE = 2   // idle processes kept for the tracked launch shape
 ```
 
-Max idle pooled processes per `OmpWarmPool` = 2 × 2 = **4**.
-Comment prices each at ~300 MiB → **~1.2 GiB** for the pool.
+Max idle pooled processes per `OmpWarmPool` = **2**.
+At ~300 MiB each that is **~600 MiB** for the pool.
 No env or settings knob. Live agents sit **outside** this cap.
 
 The pool is **per host daemon × per OMP-derived provider**, not per
@@ -139,9 +148,9 @@ cwd and not per agent:
 - One daemon has one `ProviderSnapshotManager`. Happy path: one pool
   for builtin `omp`.
 - A custom provider with `extends: "omp"` gets its **own** client and
-  therefore its own 4-slot pool.
+  therefore its own 2-slot pool.
 - This host's `config.json` has a single enabled `omp` provider, so
-  the intended pool is 4 processes for the whole machine.
+  the intended pool is 2 processes for the whole machine.
 
 Observed 25 processes / 6.60 GiB because
 `applyMutableProviderConfig` drops `providerClients` without
@@ -199,7 +208,7 @@ deliberate.
 
 ## Recommendation
 
-1. **Stop leaking pools** on config rebuild. Otherwise the 4-slot cap
+1. **Stop leaking pools** on config rebuild. Otherwise the 2-slot cap
    is fiction.
 2. **Idle-close after a configurable N minutes** (default 30) into
    existing `closed`. Settings on Host. Do not close running turns or
@@ -209,8 +218,8 @@ deliberate.
    cold `--session`, do not rewrite the agent handle. Without that
    check, idle-close can empty the next open.
 4. Keep the pool virgin. Close used processes. `fill()` replaces them.
-5. Do not grow `MAX_KEYS` / `TARGET_IDLE` until the leak is gone and
-   you have a reason two launch shapes are not enough.
+5. Do not grow `TARGET_IDLE` or keep more than one launch shape until the
+   leak is gone and you have a reason one shape is not enough.
 
 Do not close-on-idle while a turn or a child is live. Do not treat
 create-claim latency as today's resume latency — they become the same

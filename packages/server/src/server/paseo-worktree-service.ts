@@ -47,6 +47,8 @@ export interface CreatePaseoWorktreeResult {
   workspace: PersistedWorkspaceRecord;
   repoRoot: string;
   created: boolean;
+  /** Set when a warm-pool tree already ran this workspace's worktree.setup; skip running it again. */
+  setupPrepared?: true;
   timing: CreatePaseoWorktreeTiming;
 }
 
@@ -132,6 +134,11 @@ async function createPaseoWorktreeWithPriority(
       workspace,
       repoRoot: createdWorktree.repoRoot,
       created: createdWorktree.created,
+      // The pool ran setup at the worktree root; a workspace rooted in a
+      // subdirectory reads its own paseo.json, so its setup still has to run.
+      ...(createdWorktree.setupPrepared && workspaceCwdPlan.relativeWorkspaceCwd === ""
+        ? { setupPrepared: true as const }
+        : {}),
       timing: {
         planCwdMs: coreStartedAt - planStartedAt,
         coreMs: provisionStartedAt - coreStartedAt,

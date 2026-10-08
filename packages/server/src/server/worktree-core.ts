@@ -51,6 +51,8 @@ export interface CreateWorktreeCoreResult {
   intent: WorktreeCreationIntent;
   repoRoot: string;
   created: boolean;
+  /** Set when a warm-pool tree already ran worktree.setup at this commit; skip running it again. */
+  setupPrepared?: true;
 }
 
 export async function createWorktreeCore(
@@ -136,18 +138,17 @@ async function createWorktreeCoreWithPriority(
       paseoHome: input.paseoHome,
       worktreesRoot: input.worktreesRoot,
       runSetup: input.runSetup,
+      // Warm trees never move, so the agent process can start its `/move`
+      // while the claim is still cutting the branch.
+      ...(deps.prewarmAgentCwd ? { onReserved: deps.prewarmAgentCwd } : {}),
     });
     if (warmClaimResult) {
-      try {
-        deps.prewarmAgentCwd?.(warmClaimResult.worktree.worktreePath);
-      } catch {
-        // Best-effort warm hint; a failed prewarm must never block worktree creation.
-      }
       return {
         worktree: warmClaimResult.worktree,
         intent,
         repoRoot,
         created: true,
+        ...(warmClaimResult.setupPrepared ? { setupPrepared: true as const } : {}),
       };
     }
   }

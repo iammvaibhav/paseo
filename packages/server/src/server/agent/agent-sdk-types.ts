@@ -887,4 +887,10 @@ export interface AgentClient {
    * shuts down. Must be idempotent.
    */
   shutdown?(): Promise<void>;
+  /**
+   * Hint that a create is about to happen at `cwd` (a worktree claim just
+   * picked its path). Providers with a warm process pool start moving an idle
+   * process there so the create finds it in place. Fire-and-forget; never throws.
+   */
+  prewarmCwd?(cwd: string): void;
 }
