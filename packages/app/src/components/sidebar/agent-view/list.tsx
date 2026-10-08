@@ -134,7 +134,7 @@ export function SidebarAgentViewList({
       {sections.length === 0
         ? emptyComponent
         : sections.map((section) => (
-            <View key={section.bucket}>
+            <View key={section.bucket} style={styles.section}>
               <SidebarAgentViewSectionHeader bucket={section.bucket} count={section.rows.length} />
               {section.rows.map(renderRow)}
             </View>
@@ -179,28 +179,33 @@ const styles = StyleSheet.create((theme) => ({
     paddingTop: 2,
     paddingBottom: theme.spacing[4],
   },
+  // Section headers and spacing mirror the project rows of the workspace view
+  // (`projectRow`, `projectTitle`, `projectBlockExpanded` in sidebar-workspace-list.tsx).
+  section: {
+    paddingBottom: theme.spacing[3],
+  },
   sectionHeader: {
+    minHeight: 32,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     gap: theme.spacing[2],
-    paddingLeft: theme.spacing[2],
-    paddingRight: theme.spacing[2],
-    paddingTop: theme.spacing[3],
-    paddingBottom: theme.spacing[1],
+    paddingVertical: theme.spacing[1.5],
+    paddingHorizontal: theme.spacing[2],
+    marginBottom: theme.spacing[1],
     userSelect: "none",
   },
   sectionTitle: {
     color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.sm,
-    fontWeight: theme.fontWeight.normal,
+    fontSize: theme.fontSize.base,
+    fontWeight: "400",
     flex: 1,
     minWidth: 0,
   },
   sectionCount: {
-    color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.xs,
-    fontWeight: "500",
+    color: theme.colors.foregroundExtraMuted,
+    fontSize: theme.fontSize.sm,
+    fontWeight: theme.fontWeight.normal,
     flexShrink: 0,
   },
   emptyContainer: {

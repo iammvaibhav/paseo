@@ -1273,7 +1273,6 @@ export const ja: TranslationResources = {
         checks: "チェック",
         services: "サービス",
         labels: "ラベル",
-        diff: "差分統計",
         timestamp: "最終アクティビティ",
       },
       checks: {

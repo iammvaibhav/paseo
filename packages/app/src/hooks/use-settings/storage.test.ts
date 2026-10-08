@@ -835,6 +835,16 @@ describe("appearance settings", () => {
     expect((await loadAppSettingsFromStorage(deps)).toolCallDetailLevel).toBe("overview");
   });
 
+  it("clears the removed diff-stat trailing choice instead of switching to timestamps", async () => {
+    const deps = makeDeps({
+      storage: createInMemoryKeyValueStorage({
+        [APP_SETTINGS_KEY]: JSON.stringify({ sidebarWorkspaceTrailing: "diff" }),
+      }),
+    });
+
+    expect((await loadAppSettingsFromStorage(deps)).sidebarWorkspaceTrailing).toBe("none");
+  });
+
   it("migrates a switched-off checks row item to the hidden checks display", async () => {
     const deps = makeDeps({
       storage: createInMemoryKeyValueStorage({

@@ -437,7 +437,7 @@ export function resolveTrailingActionVisibility({
 } {
   const hasTrailing = hasSidebarWorkspaceTrailing({ workspace, trailing });
   const showKebab = Boolean(hasArchiveAction && (isHovered || isTouchPlatform)) && !showShortcut;
-  // Touch permanently replaces the stats with the menu. Only temporary shortcut hints
+  // Touch permanently replaces the trailing content with the menu. Only temporary shortcut hints
   // conceal content while retaining its width, so desktop rows do not shift.
   const hasContent = hasTrailing && !(hasArchiveAction && isTouchPlatform);
   let trailingPresentation: SidebarWorkspaceTrailingPresentation = "absent";
@@ -499,7 +499,7 @@ export function SidebarWorkspaceTrailingActionOverlay({
   children,
 }: {
   visible: boolean;
-  /** Fade the row into the kebab when something (the diff stat) is still rendered behind it. */
+  /** Fade the row into the kebab when something (the timestamp) is still rendered behind it. */
   scrimBackdrop?: SidebarSurfaceBackdrop;
   children: ReactNode;
 }) {

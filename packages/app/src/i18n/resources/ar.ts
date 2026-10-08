@@ -1259,7 +1259,6 @@ export const ar: TranslationResources = {
         checks: "الفحوصات",
         services: "الخدمات",
         labels: "التسميات",
-        diff: "إحصائيات الفروق",
         timestamp: "آخر نشاط",
       },
       checks: {

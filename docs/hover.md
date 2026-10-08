@@ -35,7 +35,7 @@ Five things make this work. Every one of them matters.
 1. **Hover lives on a plain `View`, not a `Pressable`.** `Pressable` carries its own internal hover state machine. Nested `Pressable`s fight over it. A plain `View` just dispatches DOM events — no state machine, no fighting.
 2. **Press lives on a _separate_ inner `Pressable`.** Hover and press never share an element. The two state machines never see each other.
 3. **`onPointerEnter` / `onPointerLeave` are non-bubbling**, mouseenter-style by W3C spec. They fire only when crossing the outer `View`'s bounding box. Crossing into descendants — including descendant `Pressable`s (the kebab menu's buttons, a copy button, a tooltip target) — does **not** fire `pointerleave`. This is why nesting `Pressable`s inside is safe.
-4. **The row has a fixed `minHeight`.** When content swaps in on hover (kebab replacing a diff stat), both occupy the same fixed slot. Zero layout shift, zero geometry flicker.
+4. **The row has a fixed `minHeight`.** When content swaps in on hover (kebab replacing a timestamp), both occupy the same fixed slot. Zero layout shift, zero geometry flicker.
 5. **The outer `View` has nothing but `position: relative`.** It exists only to be the hover target. All real layout lives on the inner `Pressable`. The hover-tracker is a sealed envelope around the row; layout changes inside it never leak out and re-enter through the side.
 
 That's the whole pattern. Internalize it.

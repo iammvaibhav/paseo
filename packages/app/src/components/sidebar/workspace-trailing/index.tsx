@@ -1,6 +1,5 @@
 import { Text } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
-import { DiffStat } from "@/components/diff-stat";
 import type { SidebarWorkspaceEntry } from "@/hooks/use-sidebar-workspaces-list";
 import { useAppSettings } from "@/hooks/use-settings";
 import type { SidebarWorkspaceTrailing } from "@/hooks/use-settings";
@@ -9,12 +8,10 @@ import { useCompactTimeAgo } from "@/hooks/use-time-ago";
 export type { SidebarWorkspaceTrailing };
 
 /**
- * The slot to the right of a workspace title. Three renderers behind one preference, so
- * every row renderer asks the same question and the kebab overlay geometry stays identical
- * no matter which one is showing.
+ * The slot to the right of a workspace title. Every row renderer asks the same question
+ * so the kebab overlay geometry stays identical whether or not the slot is showing.
  *
- * "none" exists because the slot is the only thing competing with the title for width, and
- * a user who never reads the diff would rather have the characters.
+ * "none" exists because the slot is the only thing competing with the title for width.
  */
 export function useSidebarWorkspaceTrailing(): SidebarWorkspaceTrailing {
   const {
@@ -31,9 +28,7 @@ export function hasSidebarWorkspaceTrailing({
   workspace: SidebarWorkspaceEntry;
   trailing: SidebarWorkspaceTrailing;
 }): boolean {
-  if (trailing === "diff") return workspace.diffStat !== null;
-  if (trailing === "timestamp") return workspace.statusEnteredAt !== null;
-  return false;
+  return trailing === "timestamp" && workspace.statusEnteredAt !== null;
 }
 
 export function SidebarWorkspaceTrailingContent({
@@ -43,11 +38,6 @@ export function SidebarWorkspaceTrailingContent({
   workspace: SidebarWorkspaceEntry;
   trailing: SidebarWorkspaceTrailing;
 }) {
-  if (trailing === "diff" && workspace.diffStat) {
-    return (
-      <DiffStat additions={workspace.diffStat.additions} deletions={workspace.diffStat.deletions} />
-    );
-  }
   if (trailing === "timestamp" && workspace.statusEnteredAt) {
     return <WorkspaceTimestamp enteredAt={workspace.statusEnteredAt} />;
   }

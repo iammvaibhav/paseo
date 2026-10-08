@@ -1268,7 +1268,6 @@ export const en = {
         checks: "Checks",
         services: "Services",
         labels: "Labels",
-        diff: "Diff stats",
         timestamp: "Last activity",
       },
       checks: {

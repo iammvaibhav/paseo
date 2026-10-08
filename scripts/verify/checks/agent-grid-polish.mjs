@@ -775,9 +775,10 @@ export const steps = [
   },
   {
     id: "sidebar-click-modes",
-    label: "Verify sidebar agent click opens grid view and focuses tile",
+    label:
+      "Verify sidebar agent click focuses the tile on the grid and opens the workspace elsewhere",
     narrate:
-      "Verified sidebar click focuses tile with glow in grid-open mode, and opens grid view when off-grid.",
+      "Verified sidebar click focuses tile with glow in grid-open mode, and opens the agent in its workspace when off-grid.",
     async run(ctx) {
       const page = ctx.page;
 
@@ -809,39 +810,51 @@ export const steps = [
       );
       ctx.expect(Boolean(tileHasGlow), "Tile receives glow upon sidebar click in grid-open mode");
 
-      // 2. Off-grid mode: navigate to workspace, click sidebar row -> navigates to MC grid and focuses tile
+      // 2. Off-grid mode: from a workspace, a sidebar row opens the agent in its own workspace
+      // and does not route back to the grid.
       await scrollToTile(page, READY_AGENT_ID);
       const expandBtn = page.locator(tileExpandSelector(READY_AGENT_ID)).first();
       await expandBtn.waitFor({ state: "visible", timeout: 10_000 });
       await expandBtn.click();
       await page.waitForSelector(backToGridSelector(), { timeout: 15_000 });
 
-      // Now in workspace (off-grid): click sidebar agent row to navigate back to MC grid
       await ensureSidebarAgentsView(page);
       const sidebarRowClosed = page.locator(sidebarAgentRowSelector("local", RUN_AGENT_ID)).first();
       await sidebarRowClosed.waitFor({ state: "attached", timeout: 15_000 });
       await sidebarRowClosed.scrollIntoViewIfNeeded().catch(() => {});
       await sidebarRowClosed.click();
 
-      // Navigates to grid view
-      await page.waitForSelector('[data-testid="mission-control-agent-grid"]', { timeout: 15_000 });
-      await page.waitForSelector(tileSelector(RUN_AGENT_ID), { timeout: 15_000 });
-
-      const runTileHasGlow = await pollFor(
+      // On web the Mission Control layer stays mounted at opacity 0 off its route, so the route
+      // and the workspace's active tab are the signal: the click must select the clicked agent's
+      // tab and must not route back to /mission-control.
+      const runTab = page.locator(`[data-testid="workspace-tab-agent_${RUN_AGENT_ID}"]`).first();
+      const openedInWorkspace = await pollFor(
         async () => {
-          const hasGlow = await page.locator(tileSelector(RUN_AGENT_ID)).evaluate((tile) => {
-            return (
-              tile.getAttribute("data-glow") === "true" ||
-              tile.className.includes("Glow") ||
-              Boolean(tile.querySelector('[data-testid*="glow"]'))
-            );
-          });
-          return { ok: hasGlow, value: hasGlow };
+          const url = page.url();
+          const selected = await runTab
+            .getAttribute("aria-selected", { timeout: 500 })
+            .catch(() => null);
+          return {
+            ok: url.includes("/workspace/") && selected === "true",
+            value: { url, selected },
+          };
         },
-        { timeoutMs: 8_000, description: "Run tile glow active after navigating from off-grid" },
+        { timeoutMs: 15_000, description: "Sidebar click from off-grid opens the workspace" },
       );
-      ctx.expect(Boolean(runTileHasGlow), "Tile receives glow upon sidebar click from off-grid");
-      return "sidebar click opens grid view and focuses tile with glow";
+      await page.waitForTimeout(1_500);
+      ctx.expect(
+        !page.url().includes("/mission-control"),
+        "Sidebar click from off-grid stays in the workspace",
+      );
+      ctx.expect(
+        Boolean(openedInWorkspace),
+        "Sidebar click from off-grid opens the agent's workspace, not the grid",
+      );
+
+      // Later checks start from the grid.
+      await page.locator('[data-testid="sidebar-mission-control"]').click();
+      await page.waitForSelector('[data-testid="mission-control-agent-grid"]', { timeout: 15_000 });
+      return "sidebar click focuses tile on grid and opens the workspace off-grid";
     },
   },
   {

@@ -1296,7 +1296,6 @@ export const fr: TranslationResources = {
         checks: "Vérifications",
         services: "Services",
         labels: "Libellés",
-        diff: "Statistiques de diff",
         timestamp: "Dernière activité",
       },
       checks: {

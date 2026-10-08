@@ -41,7 +41,7 @@ export type ServiceUrlBehavior = "ask" | "in-app" | "external";
 export type WorkspaceTitleSource = "title" | "branch";
 export type PullRequestOpenLocation = "main" | "side" | "explorer";
 /** What a sidebar workspace row shows in the space to the right of its title. */
-export type SidebarWorkspaceTrailing = "diff" | "timestamp" | "none";
+export type SidebarWorkspaceTrailing = "timestamp" | "none";
 /** How workspaces inside a project are ordered in the sidebar. */
 export type SidebarWorkspaceSort = "manual" | "activity" | "created";
 export type ToolCallDetailLevel = "overview" | "detailed";
@@ -323,7 +323,11 @@ const StoredAppSettingsSchema = z
       })
       .catch(DEFAULT_GLASS_TUNING),
     workspaceTitleSource: z.enum(["title", "branch"]).catch("title"),
-    sidebarWorkspaceTrailing: z.enum(["diff", "timestamp", "none"]).catch("timestamp"),
+    sidebarWorkspaceTrailing: z
+      .enum(["timestamp", "none"])
+      // COMPAT(sidebarDiffTrailing): diff-stat choice removed in v0.11; remove after 2027-04-08.
+      .or(z.literal("diff").transform(() => "none" as const))
+      .catch("timestamp"),
     sidebarWorkspaceSort: z.enum(["manual", "activity", "created"]).catch("manual"),
     sidebarRowItems: SidebarRowItemsSchema,
     sidebarChecksDisplay: z

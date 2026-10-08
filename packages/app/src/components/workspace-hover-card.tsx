@@ -1,5 +1,6 @@
 import {
   useCallback,
+  useMemo,
   useState,
   type PropsWithChildren,
   type ReactElement,
@@ -79,6 +80,38 @@ export function WorkspaceHoverCard({
   children,
 }: PropsWithChildren<WorkspaceHoverCardProps>): ReactNode {
   const { t } = useTranslation();
+  const content = useMemo(
+    () => <WorkspaceHoverCardContent workspace={workspace} prHint={prHint} />,
+    [workspace, prHint],
+  );
+  return (
+    <SidebarRowHoverCard
+      disabled={isDragging || disabled}
+      accessibilityLabel={t("workspace.hoverCard.scriptsAccessibility")}
+      testID="workspace-hover-card"
+      content={content}
+    >
+      {children}
+    </SidebarRowHoverCard>
+  );
+}
+
+/**
+ * The hover card shell every sidebar row shares: opens to the right of the row on desktop web
+ * and is absent on compact layouts, where there is no hover. `content` mounts only while open.
+ */
+export function SidebarRowHoverCard({
+  disabled,
+  accessibilityLabel,
+  testID,
+  content,
+  children,
+}: PropsWithChildren<{
+  disabled: boolean;
+  accessibilityLabel: string;
+  testID: string;
+  content: ReactElement;
+}>): ReactNode {
   const isCompact = useIsCompactFormFactor();
 
   if (isCompact) {
@@ -86,18 +119,45 @@ export function WorkspaceHoverCard({
   }
 
   return (
-    <HoverCard disabled={isDragging || disabled}>
+    <HoverCard disabled={disabled}>
       <HoverCardTrigger>{children}</HoverCardTrigger>
       <HoverCardContent
         placement="right"
         role="menu"
-        accessibilityLabel={t("workspace.hoverCard.scriptsAccessibility")}
-        testID="workspace-hover-card"
+        accessibilityLabel={accessibilityLabel}
+        testID={testID}
         style={styles.card}
       >
-        <WorkspaceHoverCardContent workspace={workspace} prHint={prHint} />
+        {content}
       </HoverCardContent>
     </HoverCard>
+  );
+}
+
+export function HoverCardHeading({
+  title,
+  description,
+  titleTestID,
+  descriptionTestID,
+}: {
+  title: string;
+  description: string | null;
+  titleTestID: string;
+  descriptionTestID: string;
+}): ReactElement {
+  return (
+    <>
+      <View style={styles.cardHeader}>
+        <Text style={styles.cardTitle} testID={titleTestID}>
+          {title}
+        </Text>
+      </View>
+      {description ? (
+        <Text style={styles.cardDescription} numberOfLines={3} testID={descriptionTestID}>
+          {description}
+        </Text>
+      ) : null}
+    </>
   );
 }
 
@@ -112,20 +172,12 @@ function WorkspaceHoverCardContent({
   const projectDescription = useWorkspaceProjectDescription(workspace);
   return (
     <>
-      <View style={styles.cardHeader}>
-        <Text style={styles.cardTitle} testID="hover-card-workspace-name">
-          {workspace.name}
-        </Text>
-      </View>
-      {projectDescription ? (
-        <Text
-          style={styles.cardDescription}
-          numberOfLines={3}
-          testID="hover-card-workspace-description"
-        >
-          {projectDescription}
-        </Text>
-      ) : null}
+      <HoverCardHeading
+        title={workspace.name}
+        description={projectDescription}
+        titleTestID="hover-card-workspace-name"
+        descriptionTestID="hover-card-workspace-description"
+      />
       {prHint ? <PrBadge hint={prHint} style={styles.cardInfoRow} /> : null}
       {workspace.diffStat ? (
         <View style={styles.cardInfoRow}>
@@ -136,9 +188,9 @@ function WorkspaceHoverCardContent({
           />
         </View>
       ) : null}
-      <HostRow serverId={workspace.serverId} />
+      <HoverCardHostRow serverId={workspace.serverId} testID="hover-card-workspace-host" />
       {workspace.currentBranch ? (
-        <CopyableInfoRow
+        <HoverCardCopyableInfoRow
           icon={ThemedGitBranch}
           value={workspace.currentBranch}
           copyValue={workspace.currentBranch}
@@ -147,7 +199,7 @@ function WorkspaceHoverCardContent({
         />
       ) : null}
       {workspace.workspaceDirectoryLabel ? (
-        <CopyableInfoRow
+        <HoverCardCopyableInfoRow
           icon={ThemedFolder}
           value={workspace.workspaceDirectoryLabel}
           copyValue={workspace.workspaceDirectory}
@@ -170,14 +222,20 @@ const ThemedFolder = withUnistyles(Folder);
 const ThemedServer = withUnistyles(Server);
 const ThemedFileDiff = withUnistyles(FileDiff);
 
-type CardInfoIcon = React.ComponentType<React.ComponentProps<typeof ThemedGitBranch>>;
+export type HoverCardInfoIcon = React.ComponentType<React.ComponentProps<typeof ThemedGitBranch>>;
 
-function HostRow({ serverId }: { serverId: string }): ReactElement | null {
+export function HoverCardHostRow({
+  serverId,
+  testID,
+}: {
+  serverId: string;
+  testID: string;
+}): ReactElement | null {
   const hosts = useHosts();
   const host = hosts.find((h) => h.serverId === serverId);
   const label = host?.label?.trim() || serverId;
 
-  return <InfoRow icon={ThemedServer} value={label} testID="hover-card-workspace-host" />;
+  return <HoverCardInfoRow icon={ThemedServer} value={label} testID={testID} />;
 }
 
 const ThemedExternalLink = withUnistyles(ExternalLink);
@@ -187,12 +245,12 @@ const ThemedCheck = withUnistyles(Check);
 const foregroundColorMapping = (theme: Theme) => ({ color: theme.colors.foreground });
 const foregroundMutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 
-function InfoRow({
+export function HoverCardInfoRow({
   icon: Icon,
   value,
   testID,
 }: {
-  icon: CardInfoIcon;
+  icon: HoverCardInfoIcon;
   value: string;
   testID: string;
 }) {
@@ -210,14 +268,14 @@ function renderChecksSummaryForgeIcon(icon: string, iconUniProps: typeof foregro
   return <ForgeBrandIcon iconKind={icon} size={12} uniProps={iconUniProps} />;
 }
 
-function CopyableInfoRow({
+export function HoverCardCopyableInfoRow({
   icon: Icon,
   value,
   copyValue,
   copyLabel,
   testID,
 }: {
-  icon: CardInfoIcon;
+  icon: HoverCardInfoIcon;
   value: string;
   copyValue: string;
   copyLabel: string;

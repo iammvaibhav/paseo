@@ -1,22 +1,35 @@
-import { memo, useCallback, useMemo } from "react";
+import { memo, useCallback, useMemo, useState } from "react";
 import { Text, View, type PressableStateCallbackType } from "react-native";
-import { StyleSheet } from "react-native-unistyles";
+import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { useTranslation } from "react-i18next";
-import { HostGlyph } from "@/components/host-glyph";
+import { CircleAlert } from "lucide-react-native";
+import { usePathname } from "expo-router";
 import { StatusRing } from "@/components/status-ring";
 import { ContextMenu, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { isWeb } from "@/constants/platform";
 import { useCompactTimeAgo } from "@/hooks/use-time-ago";
 import { useLiveDuration } from "@/hooks/use-live-duration";
 import { rowActivityMs, rowRunningStartedMs, type LifecycleRow } from "@/mission-control/lifecycle";
+import type { Theme } from "@/styles/theme";
 import { buildMissionControlRoute } from "@/utils/host-routes";
+import { navigateToAgent } from "@/utils/navigate-to-agent";
 import type { SidebarStateBucket } from "@/utils/sidebar-agent-state";
 import { getStatusDotColor } from "@/utils/status-dot-color";
-import { STATUS_INDICATOR_FILLED_DOT_SIZE } from "@/utils/status-indicator-geometry";
-import { SidebarAgentViewRowMenu } from "./row-menu";
-import { router, usePathname } from "expo-router";
+import {
+  STATUS_INDICATOR_ALERT_SIZE,
+  STATUS_INDICATOR_FILLED_DOT_SIZE,
+} from "@/utils/status-indicator-geometry";
 import { useAgentGridStore } from "@/screens/mission-control/agent-grid/store";
 import { focusAgentInGrid } from "@/screens/mission-control/agent-grid/grid-glow";
+import { SidebarAgentHoverCard } from "./hover-card";
+import { SidebarAgentViewRowMenu } from "./row-menu";
+
+const needsInputColorMapping = (theme: Theme) => ({
+  color: theme.colors.background,
+  fill: getStatusDotColor({ theme, bucket: "needs_input" }) ?? undefined,
+});
+
+const ThemedCircleAlert = withUnistyles(CircleAlert);
 
 export function rowToSidebarStateBucket(row: LifecycleRow): SidebarStateBucket {
   switch (row.bucket) {
@@ -34,19 +47,38 @@ export function rowToSidebarStateBucket(row: LifecycleRow): SidebarStateBucket {
   }
 }
 
-function getStatusDotStyle(bucket: SidebarStateBucket) {
+function getStatusDotStyle(bucket: Exclude<SidebarStateBucket, "running" | "needs_input">) {
   switch (bucket) {
-    case "needs_input":
-      return styles.statusDotNeedsInput;
     case "failed":
       return styles.statusDotFailed;
-    case "running":
-      return styles.statusDotRunning;
     case "attention":
       return styles.statusDotAttention;
     case "done":
       return styles.statusDotDone;
   }
+}
+
+/** Same leading slot, geometry and glyphs as a workspace row's status indicator. */
+function AgentStatusIndicator({ bucket }: { bucket: SidebarStateBucket }) {
+  if (bucket === "running") {
+    return (
+      <View style={styles.statusSlot}>
+        <StatusRing />
+      </View>
+    );
+  }
+  if (bucket === "needs_input") {
+    return (
+      <View style={styles.statusSlot}>
+        <ThemedCircleAlert size={STATUS_INDICATOR_ALERT_SIZE} uniProps={needsInputColorMapping} />
+      </View>
+    );
+  }
+  return (
+    <View style={styles.statusSlot}>
+      <View style={[styles.statusDot, getStatusDotStyle(bucket)]} />
+    </View>
+  );
 }
 
 export interface SidebarAgentViewRowProps {
@@ -85,93 +117,105 @@ export const SidebarAgentViewRow = memo(function SidebarAgentViewRow({
   const title = agent.title ?? agent.name ?? t("agentList.fallbackTitle");
 
   const pathname = usePathname();
+  const [isHovered, setIsHovered] = useState(false);
+  const [contextMenuOpen, setContextMenuOpen] = useState(false);
 
+  const handleOpenInWorkspace = useCallback(() => {
+    onAgentPress?.();
+    navigateToAgent({
+      serverId: agent.serverId,
+      workspaceId: agent.workspaceId ?? undefined,
+      agentId: agent.id,
+    });
+  }, [agent.id, agent.serverId, agent.workspaceId, onAgentPress]);
+
+  // Highlighting the tile only makes sense while the Agent Grid is the visible surface. From
+  // anywhere else (a workspace, the Commander view) the row opens the agent in its workspace.
   const handlePress = useCallback(() => {
+    const isGridOpen =
+      pathname === buildMissionControlRoute() && useAgentGridStore.getState().view === "grid";
+    if (!isGridOpen) {
+      handleOpenInWorkspace();
+      return;
+    }
     onAgentPress?.();
     const key = `${agent.serverId}:${agent.id}`;
     const store = useAgentGridStore.getState();
-
-    // Ensure grid view is active
-    if (store.view !== "grid") {
-      store.setView("grid");
-    }
-
-    // Set active composer key and glow key
-    if (typeof store.setActiveKey === "function") {
-      store.setActiveKey(key);
-    }
-    if (typeof store.setGlow === "function") {
-      store.setGlow(key);
-    }
-
-    // If not already on mission control route, navigate there
-    const isMissionControlRoute =
-      typeof pathname === "string" && pathname.includes("/mission-control");
-    if (!isMissionControlRoute) {
-      router.push(buildMissionControlRoute());
-    }
-
-    // Scroll to tile + glow in grid (handles pending target if grid mounting)
+    store.setActiveKey(key);
+    store.setGlow(key);
     focusAgentInGrid(agent.serverId, agent.id);
-  }, [agent.id, agent.serverId, onAgentPress, pathname]);
+  }, [agent.id, agent.serverId, handleOpenInWorkspace, onAgentPress, pathname]);
+
+  const handlePointerEnter = useCallback(() => {
+    if (!contextMenuOpen) setIsHovered(true);
+  }, [contextMenuOpen]);
+  const handlePointerLeave = useCallback(() => setIsHovered(false), []);
+  const handleContextMenuOpenChange = useCallback((open: boolean) => {
+    setContextMenuOpen(open);
+    if (open) setIsHovered(false);
+  }, []);
 
   const rowStyle = useCallback(
-    ({ pressed, hovered = false }: PressableStateCallbackType & { hovered?: boolean }) => [
+    ({ pressed }: PressableStateCallbackType) => [
       styles.row,
-      hovered && styles.rowHovered,
+      isHovered && styles.rowHovered,
       pressed && styles.rowPressed,
     ],
-    [],
+    [isHovered],
   );
+  const titleStyle = isHovered ? [styles.title, styles.titleHovered] : styles.title;
 
   return (
-    <ContextMenu>
-      <ContextMenuTrigger
-        style={rowStyle}
-        onPress={handlePress}
-        accessibilityRole={isWeb ? undefined : "button"}
-        accessibilityLabel={title}
-        testID={`sidebar-agent-view-row-${agent.serverId}-${agent.id}`}
+    <SidebarAgentHoverCard agent={agent} title={title} disabled={contextMenuOpen}>
+      <View
+        style={styles.hoverTarget}
+        onPointerEnter={handlePointerEnter}
+        onPointerLeave={handlePointerLeave}
       >
-        <View style={styles.glyphSlot}>
-          {stateBucket === "running" ? (
-            <StatusRing />
-          ) : (
-            <View style={[styles.statusDot, getStatusDotStyle(stateBucket)]} />
-          )}
-        </View>
-        <HostGlyph
-          serverId={agent.serverId}
-          label={agent.serverLabel ?? agent.serverId}
-          size="sm"
-        />
-        <Text style={styles.title} numberOfLines={1}>
-          {title}
-        </Text>
-        {timeLabel ? (
-          <Text
-            style={styles.time}
-            numberOfLines={1}
-            testID={`sidebar-agent-view-row-time-${agent.serverId}-${agent.id}`}
+        <ContextMenu open={contextMenuOpen} onOpenChange={handleContextMenuOpenChange}>
+          <ContextMenuTrigger
+            style={rowStyle}
+            onPress={handlePress}
+            accessibilityRole={isWeb ? undefined : "button"}
+            accessibilityLabel={title}
+            testID={`sidebar-agent-view-row-${agent.serverId}-${agent.id}`}
           >
-            {timeLabel}
-          </Text>
-        ) : null}
-      </ContextMenuTrigger>
-      <SidebarAgentViewRowMenu row={row} onOpen={handlePress} />
-    </ContextMenu>
+            <AgentStatusIndicator bucket={stateBucket} />
+            <Text style={titleStyle} numberOfLines={1}>
+              {title}
+            </Text>
+            {timeLabel ? (
+              <Text
+                style={styles.time}
+                numberOfLines={1}
+                testID={`sidebar-agent-view-row-time-${agent.serverId}-${agent.id}`}
+              >
+                {timeLabel}
+              </Text>
+            ) : null}
+          </ContextMenuTrigger>
+          <SidebarAgentViewRowMenu row={row} onOpen={handleOpenInWorkspace} />
+        </ContextMenu>
+      </View>
+    </SidebarAgentHoverCard>
   );
 });
 
+// Mirrors the workspace row (`workspaceRow` in sidebar-workspace-list.tsx and the title and
+// status slot in sidebar-workspace-row-content.tsx) so both sidebar views read as one list.
 const styles = StyleSheet.create((theme) => ({
+  hoverTarget: {
+    position: "relative",
+  },
   row: {
     minHeight: 32,
     flexDirection: "row",
     alignItems: "center",
     gap: theme.spacing[2],
-    paddingHorizontal: theme.spacing[2],
     paddingVertical: theme.spacing[1.5],
-    borderRadius: theme.borderRadius.lg,
+    paddingLeft: theme.spacing[2],
+    paddingRight: theme.spacing[3],
+    borderRadius: theme.borderRadius.md,
     marginBottom: theme.spacing[0.5],
     userSelect: "none",
   },
@@ -181,10 +225,10 @@ const styles = StyleSheet.create((theme) => ({
   rowPressed: {
     backgroundColor: theme.colors.surface2,
   },
-  glyphSlot: {
+  statusSlot: {
     position: "relative",
     width: theme.iconSize.md,
-    height: 18,
+    height: 20,
     alignItems: "center",
     justifyContent: "center",
     flexShrink: 0,
@@ -194,14 +238,8 @@ const styles = StyleSheet.create((theme) => ({
     height: STATUS_INDICATOR_FILLED_DOT_SIZE,
     borderRadius: theme.borderRadius.full,
   },
-  statusDotNeedsInput: {
-    backgroundColor: getStatusDotColor({ theme, bucket: "needs_input" }) ?? undefined,
-  },
   statusDotFailed: {
     backgroundColor: getStatusDotColor({ theme, bucket: "failed" }) ?? undefined,
-  },
-  statusDotRunning: {
-    backgroundColor: getStatusDotColor({ theme, bucket: "running" }) ?? undefined,
   },
   statusDotAttention: {
     backgroundColor: getStatusDotColor({ theme, bucket: "attention" }) ?? undefined,
@@ -212,16 +250,22 @@ const styles = StyleSheet.create((theme) => ({
   },
   title: {
     color: theme.colors.foreground,
-    fontSize: theme.fontSize.sm,
-    lineHeight: 18,
-    fontWeight: theme.fontWeight.normal,
+    fontSize: theme.fontSize.base,
+    fontWeight: "400",
+    lineHeight: 20,
+    opacity: 0.76,
     flex: 1,
     minWidth: 0,
   },
+  titleHovered: {
+    opacity: 1,
+  },
   time: {
-    color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.xs,
-    lineHeight: 18,
+    height: 20,
+    lineHeight: 20,
+    color: theme.colors.foregroundExtraMuted,
+    fontSize: theme.fontSize.sm,
+    fontWeight: theme.fontWeight.normal,
     flexShrink: 0,
   },
 }));
