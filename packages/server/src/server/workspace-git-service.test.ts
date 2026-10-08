@@ -1437,4 +1437,33 @@ describe("WorkspaceGitServiceImpl", () => {
 
     service.dispose();
   });
+
+  test("forced getCheckoutDiff attaches to in-flight non-forced load without starting a duplicate load", async () => {
+    vi.useRealTimers();
+    let resolveDiff!: (val: { diff: string }) => void;
+    const inFlight = new Promise<{ diff: string }>((resolve) => {
+      resolveDiff = resolve;
+    });
+    const getCheckoutDiff = vi.fn(() => inFlight);
+    const service = createService({
+      getCheckoutDiff: getCheckoutDiff as unknown as ReturnType<typeof vi.fn>,
+    });
+
+    const normalPromise = service.getCheckoutDiff("/tmp/repo-dedupe", { mode: "uncommitted" });
+    const forcedPromise = service.getCheckoutDiff(
+      "/tmp/repo-dedupe",
+      { mode: "uncommitted" },
+      { force: true, reason: "working-tree-watch" },
+    );
+
+    expect(getCheckoutDiff).toHaveBeenCalledTimes(1);
+
+    resolveDiff({ diff: "resolved diff" });
+    const [normalResult, forcedResult] = await Promise.all([normalPromise, forcedPromise]);
+    expect(normalResult).toEqual({ diff: "resolved diff" });
+    expect(forcedResult).toEqual({ diff: "resolved diff" });
+    expect(getCheckoutDiff).toHaveBeenCalledTimes(1);
+
+    service.dispose();
+  });
 });

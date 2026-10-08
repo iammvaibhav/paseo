@@ -1,3 +1,4 @@
+import { PluginRegistriesSchema } from "@getpaseo/protocol/plugin-registry";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
@@ -12,7 +13,9 @@ import { ensurePrivateFile, writePrivateFileAtomicSync } from "./private-files.j
 import { AgentProfileSchema, AgentSkillSelectionSchema } from "@getpaseo/protocol/agent-profile";
 import { PluginIdSchema, PluginSourceSchema } from "@getpaseo/protocol/plugin-config";
 import { TerminalProfileSchema } from "@getpaseo/protocol/terminal-profile";
+import { ComposerPreferencesSchema } from "@getpaseo/protocol/composer-preferences";
 import { PaseoServicePortAllocationSchema } from "@getpaseo/protocol/paseo-config-schema";
+import { PeerConfigSchema } from "./peers/types.js";
 
 export const LogLevelSchema = z.enum(["trace", "debug", "info", "warn", "error", "fatal"]);
 export const LogFormatSchema = z.enum(["pretty", "json"]);
@@ -70,10 +73,22 @@ const LocalSpeechProviderSchema = z
   })
   .strict();
 
+const FishProviderSchema = z
+  .object({
+    apiKey: z.string().trim().min(1).optional(),
+    baseUrl: z.string().trim().min(1).optional(),
+    model: z.string().min(1).optional(),
+    voice: z.string().min(1).optional(),
+    latency: z.enum(["low", "balanced", "normal"]).optional(),
+    speed: z.number().optional(),
+  })
+  .strict();
+
 const ProvidersSchema = z
   .object({
     openai: OpenAiProviderSchema.optional(),
     local: LocalSpeechProviderSchema.optional(),
+    fish: FishProviderSchema.optional(),
   })
   .strict();
 
@@ -98,7 +113,7 @@ const SpeechProviderIdSchema = z
   .string()
   .trim()
   .toLowerCase()
-  .pipe(z.enum(["openai", "local"]));
+  .pipe(z.enum(["openai", "local", "fish"]));
 
 const FeatureDictationSchema = z
   .object({
@@ -143,7 +158,7 @@ const FeatureVoiceModeSchema = z
       .object({
         provider: SpeechProviderIdSchema.optional(),
         model: z.string().min(1).optional(),
-        voice: z.enum(["alloy", "echo", "fable", "onyx", "nova", "shimmer"]).optional(),
+        voice: z.string().min(1).optional(),
         speakerId: z.number().int().optional(),
         speed: z.number().optional(),
       })
@@ -156,6 +171,101 @@ const FeatureWebUiSchema = z
   .object({
     enabled: z.boolean().optional(),
     distDir: z.string().min(1).optional(),
+  })
+  .strict();
+
+// Optional per-host AI permission reviewer (disabled unless explicitly enabled).
+const AiReviewerConfigSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    provider: z.string().optional(),
+    model: z.string().optional(),
+    policy: z.string().optional(),
+  })
+  .strict();
+
+// COMPAT(missionControlV3): summarizer/autopilot judgment machinery was
+// removed with v3. The schemas stay accepted so pre-v3 config files keep
+// parsing; nothing reads them anymore.
+const MissionControlSummarizerConfigSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+    baseUrl: z.string().nullable().default(null),
+    apiKey: z.string().nullable().default(null),
+    model: z.string().default("extract"),
+    minNewItems: z.number().int().positive().default(12),
+    debounceSeconds: z.number().int().positive().default(30),
+    backend: z.enum(["gateway", "omp"]).default("gateway"),
+  })
+  .strict();
+
+// COMPAT(missionControlV3): same COMPAT treatment as the summarizer schema —
+// accepted for old configs, unused by v3 code.
+const MissionControlAutopilotConfigSchema = z
+  .object({
+    mode: z.enum(["off", "observe", "act"]).default("off"),
+    model: z.string().nullable().optional(),
+    scope: z.enum(["commander-spawned", "all"]).default("commander-spawned"),
+    maxNudgesPerAgent: z.number().int().positive().default(2),
+  })
+  .strict();
+
+// COMPAT(missionControlV3): summarizer/autopilot keys above are accepted for
+// old configs only; v3 code does not read them. Absent config = feature on
+// with defaults.
+const MissionControlConfigSchema = z
+  .object({
+    retentionDays: z.number().int().positive().default(30),
+    // Zod 3 `.default()` requires the object's *output* type; all fields defaulted
+    // makes that output all-required, so `{}` is not assignable. `.optional()` keeps
+    // field-level defaults (partial configs normalize); the service's `readConfig()`
+    // applies central-config defaults when the whole section is absent.
+    summarizer: MissionControlSummarizerConfigSchema.optional(),
+    autopilot: MissionControlAutopilotConfigSchema.optional(),
+    // Self-reporting kill-switch: when false, the report_status prompt
+    // paragraph is not injected into agent system prompts (default true).
+    selfReport: z
+      .object({
+        enabled: z.boolean().default(true),
+      })
+      .strict()
+      .optional(),
+    // Identity: naming theme for the daemon naming service; "mixed" default lives
+    // server-side (mission-control/naming.ts).
+    naming: z
+      .object({
+        theme: z
+          .enum(["mixed", "indian", "cartoon", "scientists", "astronauts", "mythology", "nature"])
+          .optional(),
+      })
+      .strict()
+      .optional(),
+    // Commander dispatch: preferred host when the Commander routes work. Null
+    // (default) means the Commander decides from the fleet map.
+    defaultHost: z.string().nullable().optional(),
+    // v3 per-host keys: this machine's own fleet-map alias + feature switch.
+    // Fleet aliases assemble from each host's own declaration — never from a
+    // commander-host hardcoded list.
+    hostAlias: z.string().optional(),
+    enabled: z.boolean().optional(),
+    // Per-host glyph identity (host settings): custom initials (1–2 chars,
+    // emoji allowed) + an identity-color name from the app's palette. Null
+    // clears a previous override. The app owns the palette and validates on
+    // read; this schema only persists it.
+    hostGlyph: z
+      .object({
+        initials: z.string().max(4).optional(),
+        color: z.string().optional(),
+      })
+      .strict()
+      .nullable()
+      .optional(),
+    // Friendly aliases for peer host names ("blrofc3": "work server"), used in
+    // the Commander's fleet map.
+    hostAliases: z.record(z.string(), z.string()).optional(),
+    // Commander contract/instructions overridden from central config; the
+    // shipped default contract lives in the bundled commander-prompt.md.
+    commanderInstructions: z.string().optional(),
   })
   .strict();
 
@@ -258,10 +368,14 @@ export const PersistedConfigSchema = z
           .strict()
           .optional(),
         autoArchiveAfterMerge: z.boolean().optional(),
+        // Close idle OMP processes after this many seconds; 0 turns the sweep off.
+        ompIdleCloseAfterSeconds: z.number().int().min(0).optional(),
         enableTerminalAgentHooks: z.boolean().optional(),
         appendSystemPrompt: z.string().optional(),
         terminalProfiles: z.array(TerminalProfileSchema).optional(),
         agentProfiles: z.array(AgentProfileSchema).optional(),
+        visibleModels: z.array(z.string()).optional(),
+        composerPreferences: ComposerPreferencesSchema.optional(),
         cors: z
           .object({
             allowedOrigins: z.array(z.string()).optional(),
@@ -289,6 +403,29 @@ export const PersistedConfigSchema = z
           })
           .strict()
           .optional(),
+        tunnel: z
+          .object({
+            provider: z.enum(["tailscale-funnel", "cloudflared", "none"]).optional(),
+            localPort: z.number().int().positive().optional(),
+            // host:port the tunnel forwards to; defaults to the daemon's listen address.
+            localTarget: z.string().optional(),
+            autoStart: z.boolean().optional(),
+            // Explicit public base URL for `none`, or an override for the others.
+            publicBaseUrl: z.string().optional(),
+            tailscaleBin: z.string().optional(),
+            cloudflared: z
+              .object({
+                hostname: z.string().optional(),
+                bin: z.string().optional(),
+                configFile: z.string().optional(),
+                token: z.string().optional(),
+                tunnel: z.string().optional(),
+              })
+              .strict()
+              .optional(),
+          })
+          .strict()
+          .optional(),
         auth: DaemonAuthSchema.optional(),
       })
       .strict()
@@ -306,6 +443,8 @@ export const PersistedConfigSchema = z
       .optional(),
 
     providers: ProvidersSchema.optional(),
+    pluginRegistries: PluginRegistriesSchema.optional(),
+    pluginRegistryEnabled: z.boolean().optional(),
     pluginsEnabled: z.boolean().optional(),
     plugins: z.record(PluginIdSchema, PluginSourceSchema).optional(),
     worktrees: WorktreesConfigSchema.optional(),
@@ -318,11 +457,26 @@ export const PersistedConfigSchema = z
       })
       .strict()
       .optional(),
+    peers: z.array(PeerConfigSchema).optional(),
     features: z
       .object({
         dictation: FeatureDictationSchema.optional(),
         voiceMode: FeatureVoiceModeSchema.optional(),
         webUi: FeatureWebUiSchema.optional(),
+      })
+      .strict()
+      .optional(),
+
+    missionControl: MissionControlConfigSchema.optional(),
+    aiReviewer: AiReviewerConfigSchema.optional(),
+
+    // Automations: Linear API key fallback + default poll cadence. Strict
+    // schema keeps unknown keys out; an older daemon never sees this file
+    // section because only the new daemon writes it.
+    automations: z
+      .object({
+        linearApiKey: z.string().trim().min(1).optional(),
+        defaultPollIntervalSec: z.number().int().positive().optional(),
       })
       .strict()
       .optional(),
@@ -436,27 +590,9 @@ export function loadPersistedConfig(paseoHome: string, logger?: LoggerLike): Per
     });
   }
 
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    throw new Error(`[Config] Invalid JSON in ${configPath}: ${message}`, {
-      cause: err,
-    });
-  }
-
-  const migrated = stripRemovedConfigFields(parsed);
-  const result = PersistedConfigSchema.safeParse(migrated);
-  if (!result.success) {
-    const issues = result.error.issues
-      .map((i) => `  - ${i.path.join(".")}: ${i.message}`)
-      .join("\n");
-    throw new Error(`[Config] Invalid config in ${configPath}:\n${issues}`);
-  }
-
+  const config = parseConfigFile(configPath, raw);
   log?.info(`Loaded from ${configPath}`);
-  return result.data as PersistedConfig;
+  return config;
 }
 
 /** Observe the file without initializing a home, identity, or default configuration. */
@@ -464,15 +600,42 @@ export function readPersistedConfig(
   paseoHome: string,
   options: { defaultsIfMissing?: boolean } = {},
 ): PersistedConfig {
+  const configPath = getConfigPath(paseoHome);
   let raw: string;
   try {
-    raw = readFileSync(getConfigPath(paseoHome), "utf8");
+    raw = readFileSync(configPath, "utf8");
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT")
       return options.defaultsIfMissing ? structuredClone(DEFAULT_PERSISTED_CONFIG) : {};
     throw error;
   }
-  return PersistedConfigSchema.parse(stripRemovedConfigFields(JSON.parse(raw))) as PersistedConfig;
+  return parseConfigFile(configPath, raw);
+}
+
+function parseConfigFile(configPath: string, raw: string): PersistedConfig {
+  let parsed: unknown;
+  try {
+    parsed = parseConfigText(raw);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`[Config] Invalid JSON in ${configPath}: ${message}`, {
+      cause: err,
+    });
+  }
+
+  const result = PersistedConfigSchema.safeParse(stripRemovedConfigFields(parsed));
+  if (!result.success) {
+    const issues = result.error.issues
+      .map((i) => `  - ${i.path.join(".")}: ${i.message}`)
+      .join("\n");
+    throw new Error(`[Config] Invalid config in ${configPath}:\n${issues}`);
+  }
+  return result.data as PersistedConfig;
+}
+
+/** Editors such as Windows Notepad save UTF-8 with a byte order mark, which JSON.parse rejects. */
+function parseConfigText(raw: string): unknown {
+  return JSON.parse(raw.replace(/^\uFEFF/, ""));
 }
 
 function configPathParts(field: string): string[] {

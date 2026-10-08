@@ -349,4 +349,21 @@ describe("applyDraftToConfig", () => {
     const scripts = next.scripts ?? {};
     expect(Object.keys(scripts)).toEqual(["dev"]);
   });
+
+  it("preserves commander instructions on round-trip", () => {
+    const base = PaseoConfigRawSchema.parse({
+      commander: {
+        instructions: "Use omp/anthropic/claude-sonnet-5.",
+        instructionsFile: "docs/COMMANDER.md",
+      },
+      commanderInstructions: "Shortcut text.",
+    });
+    const draft = configToDraft(base);
+    const next = applyDraftToConfig({ draft, base });
+    expect(next.commander).toEqual({
+      instructions: "Use omp/anthropic/claude-sonnet-5.",
+      instructionsFile: "docs/COMMANDER.md",
+    });
+    expect(next.commanderInstructions).toBe("Shortcut text.");
+  });
 });

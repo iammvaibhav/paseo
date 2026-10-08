@@ -32,6 +32,17 @@ export function getStreamItemMessageId(item: StreamItem): string {
   return item.kind === "assistant_message" ? (item.blockGroupId ?? item.id) : item.id;
 }
 
+/** Message id for a stream row, or the row id when the value is only row-shaped. */
+export function readStreamMessageId(item: unknown): string | undefined {
+  if (typeof item !== "object" || item === null || !("id" in item) || typeof item.id !== "string") {
+    return undefined;
+  }
+  if (!("kind" in item)) {
+    return item.id;
+  }
+  return getStreamItemMessageId(item as StreamItem);
+}
+
 /**
  * A block is reusable only when it still stands for the same source state. Text and
  * turn are what the reader sees; cursor and timestamp are what the timeline reads back
@@ -112,8 +123,10 @@ export function createStreamPresentation() {
       const index = prefix.length + offset;
       let blockText = text;
       if (offset === textBlocks.length - 1) {
-        const trailingNewlines = /\n+$/.exec(item.text)?.[0] ?? "";
-        blockText += trailingNewlines;
+        // The split drops trailing blank lines, including a line break followed only
+        // by the next line's indent. Keep them so the next append continues that line.
+        const trailingBlankLines = /\n\s*$/.exec(item.text)?.[0] ?? "";
+        blockText += trailingBlankLines;
       }
       const existing = previous?.[index];
       const id = `${item.id}:block:${index}`;

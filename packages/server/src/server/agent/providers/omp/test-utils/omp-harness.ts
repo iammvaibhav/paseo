@@ -15,11 +15,12 @@ import type { PaseoToolCatalog } from "../../../tools/types.js";
 import {
   OmpAgentClient,
   OmpAgentSession,
+  type OmpAgentClientOptions,
   type OmpNoTurnScheduler,
   type OmpProviderIdleScheduler,
 } from "../agent.js";
 import type { OmpUsagePollScheduler } from "../usage-poller.js";
-import type { OmpAgentMessage, OmpRpcSlashCommand } from "../rpc-types.js";
+import type { OmpAgentMessage, OmpRpcSlashCommand, OmpRuntimeEvent } from "../rpc-types.js";
 import { FakeOmp } from "./fake-omp.js";
 
 const CWD = "/tmp/paseo-omp-agent-test";
@@ -34,11 +35,24 @@ interface OmpResumeHistory {
   assistant: OmpHistoryMessage;
 }
 
-async function writeOmpHistory(history: OmpResumeHistory): Promise<string> {
+interface OmpResumeOptions {
+  /**
+   * Drop the `{"type":"session"}` record, reproducing a transcript omp
+   * relocated and left without its preamble.
+   */
+  omitSessionHeader?: boolean;
+}
+
+async function writeOmpHistory(
+  history: OmpResumeHistory,
+  options?: OmpResumeOptions,
+): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), "paseo-omp-resume-"));
   const sessionFile = join(directory, "session.jsonl");
   const entries = [
-    { type: "session", id: "session-root", parentId: null },
+    ...(options?.omitSessionHeader
+      ? []
+      : [{ type: "session", id: "session-root", parentId: null }]),
     {
       type: "message",
       id: history.user.id,
@@ -65,25 +79,54 @@ export class OmpHarness {
   private readonly client: OmpAgentClient;
   private readonly events: AgentStreamEvent[] = [];
   private session: OmpAgentSession | null = null;
+  private resumedSessionFile: string | null = null;
 
   constructor(
     options: {
       providerIdleScheduler?: OmpProviderIdleScheduler;
       noTurnScheduler?: OmpNoTurnScheduler;
       usagePollScheduler?: OmpUsagePollScheduler;
+      runtimeSettings?: OmpAgentClientOptions["runtimeSettings"];
+      logger?: OmpAgentClientOptions["logger"];
+      providerIdleDeadlineMs?: number;
+      runtimeEnv?: Record<string, string>;
+      warmPool?: boolean;
     } = {},
   ) {
     this.client = new OmpAgentClient({
-      logger: pino({ level: "silent" }),
+      logger: options.logger ?? pino({ level: "silent" }),
       runtime: this.omp,
+      runtimeSettings: options.runtimeEnv
+        ? {
+            ...options.runtimeSettings,
+            env: { ...options.runtimeSettings?.env, ...options.runtimeEnv },
+          }
+        : options.runtimeSettings,
       providerIdleScheduler: options.providerIdleScheduler,
       noTurnScheduler: options.noTurnScheduler,
       usagePollScheduler: options.usagePollScheduler,
+      providerIdleDeadlineMs: options.providerIdleDeadlineMs,
+      warmPool: options.warmPool,
     });
+  }
+
+  /** The session JSONL the last `resume()` handed to the client. */
+  resumedSessionFilePath(): string {
+    if (!this.resumedSessionFile) {
+      throw new Error("OMP harness has not resumed");
+    }
+    return this.resumedSessionFile;
   }
 
   queueCommands(commands: OmpRpcSlashCommand[]): void {
     this.omp.queueCommands(commands);
+  }
+  getSession(): OmpAgentSession {
+    return this.requireSession();
+  }
+
+  isAvailable(): Promise<boolean> {
+    return this.client.isAvailable();
   }
 
   failEventSubscription(error: Error): void {
@@ -93,10 +136,11 @@ export class OmpHarness {
   async start(
     config: Partial<AgentSessionConfig> = {},
     paseoTools?: PaseoToolCatalog,
+    env?: Record<string, string>,
   ): Promise<void> {
     const session = await this.client.createSession(
       { provider: "omp", cwd: CWD, ...config },
-      paseoTools ? { paseoTools } : undefined,
+      paseoTools || env ? { paseoTools, env } : undefined,
     );
     if (!(session instanceof OmpAgentSession)) {
       throw new Error("OMP client returned a non-OMP session");
@@ -108,8 +152,10 @@ export class OmpHarness {
   async resume(
     history: OmpResumeHistory,
     overrides: Partial<AgentSessionConfig> = {},
+    options?: OmpResumeOptions,
   ): Promise<void> {
-    const sessionFile = await writeOmpHistory(history);
+    const sessionFile = await writeOmpHistory(history, options);
+    this.resumedSessionFile = sessionFile;
     const handle: AgentPersistenceHandle = {
       provider: "omp",
       sessionId: "omp-session-1",
@@ -142,12 +188,63 @@ export class OmpHarness {
     };
   }
 
+  switchSessionRequests(): string[] {
+    return this.omp.allSessions().flatMap((session) => session.switchSessionRequests);
+  }
+
+  keepPooledSessionFileOnSwitch(): void {
+    for (const session of this.omp.allSessions()) {
+      session.keepSessionFileOnSwitch = true;
+    }
+  }
+
+  recordedLaunchCount(): number {
+    return this.omp.recordedLaunches.length;
+  }
+
+  latestLaunchHasSessionFlag(): boolean {
+    const launch = this.omp.recordedLaunches.at(-1);
+    return Boolean(launch?.session);
+  }
+
+  latestLaunchConfiguration(): {
+    cwd: string;
+    protocolMode?: string;
+    modeId?: string;
+    session?: string;
+    argv: string[];
+  } {
+    const launch = this.omp.recordedLaunches.at(-1);
+    if (!launch) throw new Error("OMP harness has not launched");
+    return {
+      cwd: launch.cwd,
+      protocolMode: launch.protocolMode,
+      modeId: launch.modeId,
+      ...(launch.session ? { session: launch.session } : {}),
+      argv: launch.argv,
+    };
+  }
+
   registeredHostTools() {
     return this.omp.latestSession().hostToolSetRequests;
   }
 
   capabilities() {
     return this.client.capabilities;
+  }
+
+  persistence() {
+    return this.requireSession().describePersistence();
+  }
+
+  async replayHistory(handle: AgentPersistenceHandle): Promise<AgentStreamEvent[]> {
+    const session = await this.client.resumeSession(handle, undefined, undefined, {
+      purpose: "history",
+    });
+    const events: AgentStreamEvent[] = [];
+    for await (const event of session.streamHistory()) events.push(event);
+    await session.close();
+    return events;
   }
 
   async runPrompt(
@@ -204,6 +301,26 @@ export class OmpHarness {
     return { completion };
   }
 
+  /**
+   * OMP reports the turn as over without ever having reported it as started.
+   * The adapter has no `activeTurnStarted` to wait on, so this is the shape
+   * that used to drop the terminal event and hang the agent at `running`.
+   */
+  async startPromptWithAgentEndBeforeTurnStart(
+    input: string,
+    output: string,
+  ): Promise<{ completion: Promise<unknown> }> {
+    const session = this.requireSession();
+    const promptStarted = this.omp.latestSession().nextPrompt();
+    const completion = session.run(input);
+    await promptStarted;
+    const runtime = this.omp.latestSession();
+    runtime.acceptPrompt(input, "user-1");
+    runtime.streamAssistantText(output);
+    runtime.finishTurn();
+    return { completion };
+  }
+
   async runPromptAfterExtensionNotice(
     input: string,
     output: string,
@@ -247,6 +364,35 @@ export class OmpHarness {
     return { completion: run };
   }
 
+  async startPromptWithTerminalAssistantFailure(
+    input: string,
+    failure: Extract<OmpAgentMessage, { role: "assistant" }>,
+    providerState: { isStreaming: boolean; isCompacting: boolean } = {
+      isStreaming: true,
+      isCompacting: false,
+    },
+  ): Promise<{ completion: Promise<unknown> }> {
+    const session = this.requireSession();
+    const promptStarted = this.omp.latestSession().nextPrompt();
+    const completion = session.run(input);
+    await promptStarted;
+    const runtime = this.omp.latestSession();
+    runtime.beginTurn();
+    runtime.acceptPrompt(input, "user-1");
+    runtime.state = { ...runtime.state, ...providerState };
+    runtime.emit({ type: "message_end", message: failure });
+    runtime.finishTurn(failure);
+    return { completion };
+  }
+
+  failedTurnCount(): number {
+    return this.events.filter((event) => event.type === "turn_failed").length;
+  }
+
+  failedTurnErrors(): string[] {
+    return this.events.flatMap((event) => (event.type === "turn_failed" ? [event.error] : []));
+  }
+
   waitForProviderStateChecks(count: number): Promise<void> {
     return this.omp.latestSession().waitForStateRequests(count);
   }
@@ -273,6 +419,14 @@ export class OmpHarness {
     runtime.streamAssistantText(output);
     runtime.finishTurn();
     return await run;
+  }
+
+  async runPromptWithoutTurnOnNextRuntime(input: string, requestId: string): Promise<unknown> {
+    const session = this.requireSession();
+    this.omp.queueSessionSetup((runtime) => {
+      runtime.promptAck = { requestId, agentInvoked: false };
+    });
+    return await session.run(input);
   }
 
   async runPromptWithoutTurn(input: string): Promise<unknown> {
@@ -308,6 +462,31 @@ export class OmpHarness {
       agentInvoked: false,
     });
     return { completed: () => isCompleted, completion };
+  }
+
+  async runPromptRejectedBeforeAgentRuns(
+    input: string,
+    error: string,
+    order: "result after ack" | "result before ack",
+  ): Promise<unknown> {
+    const session = this.requireSession();
+    const runtime = this.omp.latestSession();
+    runtime.promptAck = { requestId: "prompt-rejected" };
+    const rejection = {
+      type: "prompt_result",
+      id: "prompt-rejected",
+      agentInvoked: false,
+      status: "error",
+      sessionSettled: true,
+      error: { message: error, retryable: false },
+    } as const;
+    const promptStarted = runtime.nextPrompt();
+    const run = session.run(input);
+    if (order === "result before ack") runtime.emit(rejection);
+    await promptStarted;
+    await waitForImmediate();
+    if (order === "result after ack") runtime.emit(rejection);
+    return await run;
   }
 
   async runPromptAfterCorrelatedTrueResult(
@@ -382,6 +561,44 @@ export class OmpHarness {
     return { completedBeforeTurn, result: await run };
   }
 
+  /**
+   * Reproduces the false local-only race: OMP ack says local-only and the
+   * foreground turn completes, then the real native user echo arrives later on
+   * an autonomous turn after `activeClientMessageId` was cleared.
+   */
+  async runPromptAfterCompletedFalseLocalOnly(
+    input: string,
+    output: string,
+    clientMessageId: string,
+  ): Promise<{ completedBeforeNativeEcho: boolean; result: unknown }> {
+    const session = this.requireSession();
+    const runtime = this.omp.latestSession();
+    runtime.promptAck = { agentInvoked: false };
+    const promptStarted = runtime.nextPrompt();
+    const run = session.run(input, { clientMessageId });
+    let completed = false;
+    void run.then(
+      () => {
+        completed = true;
+        return undefined;
+      },
+      () => {
+        completed = true;
+        return undefined;
+      },
+    );
+    await promptStarted;
+    await waitForImmediate();
+    await waitForImmediate();
+    const completedBeforeNativeEcho = completed;
+    runtime.beginTurn();
+    runtime.acceptPrompt(input, "user-native-delayed");
+    runtime.streamAssistantText(output);
+    runtime.finishTurn();
+    await waitForImmediate();
+    return { completedBeforeNativeEcho, result: await run };
+  }
+
   async runAutonomousTurn(output: string): Promise<void> {
     const runtime = this.omp.latestSession();
     runtime.beginTurn();
@@ -410,6 +627,10 @@ export class OmpHarness {
     return this.events.filter((event) => event.type === "turn_completed").length;
   }
 
+  streamEvents(): AgentStreamEvent[] {
+    return [...this.events];
+  }
+
   usageUpdates() {
     return this.events.flatMap((event) => (event.type === "usage_updated" ? [event.usage] : []));
   }
@@ -420,6 +641,10 @@ export class OmpHarness {
     detail: string;
   }): void {
     this.omp.latestSession().requestToolApproval(input);
+  }
+
+  emit(event: OmpRuntimeEvent): void {
+    this.omp.latestSession().emit(event);
   }
 
   pendingPermissions() {
@@ -442,8 +667,45 @@ export class OmpHarness {
     return await this.requireSession().listCommands();
   }
 
+  async runOutOfBand(prompt: string): Promise<boolean> {
+    const handler = this.requireSession().tryHandleOutOfBand(prompt);
+    if (!handler) return false;
+    await handler.run({ emit: (event) => this.events.push(event) });
+    return true;
+  }
+
   async setMode(modeId: string) {
     return await this.requireSession().setMode(modeId);
+  }
+
+  currentMode() {
+    return this.requireSession().getCurrentMode();
+  }
+
+  runtimeLaunches() {
+    return this.omp.recordedLaunches;
+  }
+
+  runtimeSessions() {
+    return this.omp.allSessions();
+  }
+
+  processExit(error: string): void {
+    this.omp.latestSession().emit({ type: "process_exit", error });
+  }
+
+  failNextStart(error: Error): void {
+    this.omp.failNextStart(error);
+  }
+
+  turnFailures(): string[] {
+    return this.events.flatMap((event) => (event.type === "turn_failed" ? [event.error] : []));
+  }
+
+  threadStartedSessionIds(): string[] {
+    return this.events.flatMap((event) =>
+      event.type === "thread_started" ? [event.sessionId] : [],
+    );
   }
 
   async rewind(messageId: string, restoredPrompt: string): Promise<void> {
@@ -460,10 +722,20 @@ export class OmpHarness {
     await this.requireSession().interrupt();
   }
 
-  async requireStartTurn(message: string): Promise<void> {
+  async requireStartTurn(message: string): Promise<{ turnId: string }> {
     const promptStarted = this.omp.latestSession().nextPrompt();
-    await this.requireSession().startTurn(message);
+    const result = await this.requireSession().startTurn(message);
     await promptStarted;
+    return result;
+  }
+
+  async startTurn(message: string): Promise<void> {
+    await this.requireSession().startTurn(message);
+    await waitForImmediate();
+  }
+
+  startTurnDetached(message: string) {
+    return this.requireSession().startTurn(message);
   }
 
   async interrupt(): Promise<void> {
@@ -472,6 +744,10 @@ export class OmpHarness {
 
   wasAborted(): boolean {
     return this.omp.latestSession().abortRequested;
+  }
+
+  failNextAbort(error: Error): void {
+    this.omp.latestSession().failNextAbort(error);
   }
 
   runtime() {
@@ -504,6 +780,10 @@ export class OmpHarness {
     return this.events.filter((event) => event.type === "turn_canceled").length;
   }
 
+  usageSession() {
+    return this.requireSession().usageSession();
+  }
+
   async close(): Promise<void> {
     await this.requireSession().close();
     await waitForImmediate();
@@ -513,10 +793,18 @@ export class OmpHarness {
     return this.omp.latestSession().closed;
   }
 
+  isRuntimeAlive(): boolean {
+    return this.requireSession().isRuntimeAlive();
+  }
+
   async waitForSubscriptionFallback(): Promise<string[]> {
     const runtime = this.omp.latestSession();
     await runtime.waitForSubagentSubscriptions(2);
     return runtime.subagentSubscriptionRequests;
+  }
+
+  get rawSession(): OmpAgentSession {
+    return this.requireSession();
   }
 
   private requireSession(): OmpAgentSession {

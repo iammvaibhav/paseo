@@ -3,7 +3,11 @@
   "options": {
     "typeAware": false
   },
-  "ignorePatterns": [".dev/**"],
+  // plugins/** holds omp agent plugins, one of them vendored from upstream: they
+  // follow omp's own style (tabs) and must stay diffable against upstream.
+  // scripts/omp-proxy/** is a standalone bun project built against omp's packages,
+  // in the same style.
+  "ignorePatterns": [".dev/**", "plugins/**", "scripts/omp-proxy/**"],
   "plugins": ["react", "react-perf", "unicorn", "typescript", "oxc", "import", "promise"],
   "categories": {
     "correctness": "error",
@@ -84,6 +88,45 @@
     "max-nested-callbacks": ["error", { "max": 3 }]
   },
   "overrides": [
+    {
+      "files": [
+        "plugins/*-provider/server/**/*.ts",
+        "packages/plugin/src/server/acp-internal/**/*.ts"
+      ],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "paths": [
+              {
+                "name": "node:child_process",
+                "importNames": [
+                  "spawn",
+                  "exec",
+                  "execFile",
+                  "spawnSync",
+                  "execSync",
+                  "execFileSync"
+                ],
+                "message": "Use the plugin server process helpers so Windows command scripts and argv are handled consistently."
+              },
+              {
+                "name": "child_process",
+                "importNames": [
+                  "spawn",
+                  "exec",
+                  "execFile",
+                  "spawnSync",
+                  "execSync",
+                  "execFileSync"
+                ],
+                "message": "Use the plugin server process helpers so Windows command scripts and argv are handled consistently."
+              }
+            ]
+          }
+        ]
+      }
+    },
     {
       "files": ["packages/app/src/**/*.{ts,tsx}"],
       "rules": {

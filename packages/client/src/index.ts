@@ -24,7 +24,6 @@ import type {
   ProjectPlacementPayload,
   WorkspaceProjectDescriptorPayload,
   RefreshProvidersSnapshotResponseMessage,
-  SendAgentMessageRequest,
   SessionOutboundMessage,
   WorkspaceDescriptorPayload,
   WorkspaceCreateRequest,
@@ -55,6 +54,7 @@ import type {
   FetchAgentTimelineDirection,
   FetchAgentTimelinePayload,
   FetchAgentTimelineProjection,
+  SendMessageOptions,
   WaitForFinishResult,
 } from "./daemon-client.js";
 
@@ -259,6 +259,9 @@ export interface PaseoAgentCreateOptions {
   autoArchive?: CreateAgentRequestMessage["autoArchive"];
   requestId?: string;
   labels?: Record<string, string>;
+  // Orchestrator start option (normal agents only, never the Commander).
+  // COMPAT(orchestrator): added 2026-09-30, remove gate after 2027-03-30.
+  orchestrator?: boolean;
 }
 
 export type PaseoWorkspaceAgentCreateOptions = Omit<PaseoAgentCreateOptions, "cwd">;
@@ -276,11 +279,7 @@ export interface PaseoAgentTimelineRefetchOptions {
   requestId?: string;
 }
 
-export interface PaseoAgentSendOptions {
-  messageId?: string;
-  images?: Array<{ data: string; mimeType: string }>;
-  attachments?: SendAgentMessageRequest["attachments"];
-}
+export type PaseoAgentSendOptions = SendMessageOptions;
 
 export interface PaseoAgentRunOptions extends PaseoAgentSendOptions {
   timeoutMs?: number;
@@ -380,6 +379,10 @@ export interface PaseoAgentHandle {
   commands(options?: PaseoAgentCommandsOptions): Promise<PaseoAgentCommandsResult>;
   archive(): Promise<{ archivedAt: string }>;
   detach(): Promise<void>;
+  moveToWorkspace(
+    workspaceId: string,
+    requestId?: string,
+  ): Promise<{ agentId: string; workspaceId: string }>;
   subscribe(handler: (update: PaseoAgentUpdate) => void): () => void;
 }
 
@@ -422,6 +425,8 @@ export type PaseoProviderDiagnosticResult = ProviderDiagnosticResponseMessage["p
 export type PaseoProviderUsageResult = ProviderUsageListResponseMessage["payload"];
 export interface PaseoProviderUsageOptions {
   requestId?: string;
+  forceRefresh?: boolean;
+  providerId?: string;
 }
 
 export interface PaseoProviderListOptions {
@@ -979,6 +984,9 @@ function createAgentHandleFactory(
       },
       detach: async () => {
         await daemonClient.detachAgent(id);
+      },
+      moveToWorkspace: async (workspaceId: string, requestId?: string) => {
+        return daemonClient.moveAgentToWorkspace(id, workspaceId, requestId);
       },
       subscribe: (handler) =>
         listen((update) => {

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { darkHighlightColors, resolveSyntaxColors } from "@getpaseo/highlight";
-import { DEFAULT_UI_FONT_STACK, REGISTERED_THEMES } from "@/styles/theme";
+import { DEFAULT_GLASS_TUNING, DEFAULT_UI_FONT_STACK, REGISTERED_THEMES } from "@/styles/theme";
 import { applyAppearance, type AppearanceInput } from "./apply";
 
 // Override the global react-native-unistyles mock (vitest.setup.ts) so that
@@ -37,6 +37,7 @@ interface FakeTheme {
     "4xl": number;
   };
   lineHeight: { diff: number };
+  contentMaxWidth: number;
   colors: { foreground: string; syntax: Record<string, string> };
 }
 
@@ -56,6 +57,7 @@ function makeFakeTheme(): FakeTheme {
       "4xl": 26,
     },
     lineHeight: { diff: 22 },
+    contentMaxWidth: 820,
     colors: { foreground: "#fff", syntax: {} },
   };
 }
@@ -67,7 +69,9 @@ function makeInput(overrides: Partial<AppearanceInput> = {}): AppearanceInput {
     uiBaseFontSize: 14,
     contentFontSize: 15,
     codeFontSize: 12,
+    contentMaxWidth: 820,
     syntaxTheme: "one",
+    glassTuning: DEFAULT_GLASS_TUNING,
     ...overrides,
   };
 }
@@ -100,6 +104,12 @@ describe("applyAppearance", () => {
       "darkPureBlack",
       ...ALL_THEME_KEYS.filter((key) => key !== "darkPureBlack"),
     ]);
+  });
+
+  it("patches the content max width into the theme", () => {
+    applyAppearance(makeInput({ contentMaxWidth: 1600 }));
+
+    expect(runCapturedUpdater().contentMaxWidth).toBe(1600);
   });
 
   it("resolves an empty UI font family to the default stack", () => {

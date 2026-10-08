@@ -15,8 +15,10 @@ import {
 } from "./resolve-worktree-creation-intent.js";
 import type { ChangeRequestCheckoutSource, FirstAgentContext } from "@getpaseo/protocol/messages";
 import type { WorkspaceGitService } from "./workspace-git-service.js";
-import { runWithGitCommandPriority } from "../utils/run-git-command.js";
-
+import { branchNameFromRef } from "../utils/worktree-metadata.js";
+import { runGitCommand, runWithGitCommandPriority } from "../utils/run-git-command.js";
+import { createPhaseTimer } from "../utils/phase-timer.js";
+import type { WarmWorktreePool } from "./warm-worktree-pool.js";
 export interface CreateWorktreeCoreInput {
   cwd: string;
   worktreeSlug?: string;
@@ -35,9 +37,14 @@ export interface CreateWorktreeCoreDeps {
   github: ForgeService;
   workspaceGitService?: Pick<
     WorkspaceGitService,
-    "resolveRepoRoot" | "resolveDefaultBranch" | "resolveForge"
+    "resolveRepoRoot" | "resolveDefaultBranch" | "resolveForge" | "hasOriginTrackingBranch"
   >;
   resolveDefaultBranch?: (repoRoot: string) => Promise<string>;
+  warmWorktreePool?: Pick<WarmWorktreePool, "claim">;
+  /** Fire-and-forget hint that a fresh session is about to open at this cwd,
+   * so an idle OMP agent pool entry can retarget ahead of the real create
+   * request instead of paying pool-miss latency on it. Never throws. */
+  prewarmAgentCwd?: (cwd: string) => void;
 }
 
 export interface CreateWorktreeCoreResult {
@@ -45,6 +52,13 @@ export interface CreateWorktreeCoreResult {
   intent: WorktreeCreationIntent;
   repoRoot: string;
   created: boolean;
+  /** Set when a warm-pool tree already ran worktree.setup at this commit; skip running it again. */
+  setupPrepared?: true;
+  /**
+   * Milliseconds per phase: repoRootMs, intentMs, then either warm claim
+   * phases (prefixed `claim.`) or fetchMs + createMs for a cold create.
+   */
+  timing: Record<string, number>;
 }
 
 export async function createWorktreeCore(
@@ -54,43 +68,48 @@ export async function createWorktreeCore(
   return runWithGitCommandPriority("high", () => createWorktreeCoreWithPriority(input, deps));
 }
 
-async function createWorktreeCoreWithPriority(
+function buildWorktreeCreationIntentInput(
   input: CreateWorktreeCoreInput,
-  deps: CreateWorktreeCoreDeps,
-): Promise<CreateWorktreeCoreResult> {
-  const repoRoot = await resolveWorktreeRepoRoot(input, deps.workspaceGitService);
-  const requestedWorktreeSlug = input.worktreeSlug
-    ? normalizeWorktreeSlug(input.worktreeSlug)
-    : undefined;
-  const requestedBranchName = input.branchName?.trim();
-
-  let intentInput: ResolveWorktreeCreationIntentInput;
+  requestedWorktreeSlug: string | undefined,
+): ResolveWorktreeCreationIntentInput {
   if (input.action === "checkout") {
-    intentInput = {
+    return {
       action: "checkout",
       refName: input.refName,
       checkoutSource: input.checkoutSource,
       githubPrNumber: input.githubPrNumber,
       worktreeSlug: requestedWorktreeSlug,
     };
-  } else if (input.checkoutSource !== undefined || input.githubPrNumber !== undefined) {
-    intentInput = {
+  }
+  if (input.checkoutSource !== undefined || input.githubPrNumber !== undefined) {
+    return {
       checkoutSource: input.checkoutSource,
       githubPrNumber: input.githubPrNumber,
       refName: input.refName,
       worktreeSlug: requestedWorktreeSlug,
     };
-  } else {
-    const worktreeSlug = requestedWorktreeSlug ?? normalizeWorktreeSlug(createNameId());
-    intentInput = {
-      action: "branch-off",
-      refName: input.refName,
-      branchName: requestedBranchName,
-      worktreeSlug,
-    };
   }
+  return {
+    action: "branch-off",
+    refName: input.refName,
+    branchName: input.branchName?.trim(),
+    worktreeSlug: requestedWorktreeSlug ?? normalizeWorktreeSlug(createNameId()),
+  };
+}
 
-  const forge = await resolveForge(repoRoot, deps, intentInput);
+async function createWorktreeCoreWithPriority(
+  input: CreateWorktreeCoreInput,
+  deps: CreateWorktreeCoreDeps,
+): Promise<CreateWorktreeCoreResult> {
+  const timer = createPhaseTimer();
+  const repoRoot = await resolveWorktreeRepoRoot(input, deps.workspaceGitService);
+  timer.mark("repoRootMs");
+  const requestedWorktreeSlug = input.worktreeSlug
+    ? normalizeWorktreeSlug(input.worktreeSlug)
+    : undefined;
+  const intentInput = buildWorktreeCreationIntentInput(input, requestedWorktreeSlug);
+
+  const forge = await resolveForgeForWorktreeCreate(input, repoRoot, deps, intentInput);
   const intent = await resolveWorktreeCreationIntent(intentInput, repoRoot, {
     forge: forge.forge,
     forgeService: forge.service,
@@ -114,20 +133,70 @@ async function createWorktreeCoreWithPriority(
       break;
     }
   }
+  timer.mark("intentMs");
 
-  return {
-    worktree: await createWorktree({
-      cwd: repoRoot,
+  // Claim before the origin fetch. A warm worktree is already checked out at a
+  // recent SHA; waiting up to DISPATCH_BASE_BRANCH_FETCH_TIMEOUT_MS here made
+  // every "instant" create pay a 1–3s git fetch even when the pool hit.
+  // ADR 0001's fetch still runs on the cold path so a miss branches from origin.
+  if (deps.warmWorktreePool) {
+    const warmClaimResult = await deps.warmWorktreePool.claim({
+      repoRoot,
       worktreeSlug: normalizedSlug,
       source: intent,
-      runSetup: input.runSetup ?? true,
       paseoHome: input.paseoHome,
       worktreesRoot: input.worktreesRoot,
-    }),
-    intent,
-    repoRoot,
-    created: true,
-  };
+      runSetup: input.runSetup,
+      // Warm trees never move, so the agent process can start its `/move`
+      // while the claim is still cutting the branch.
+      ...(deps.prewarmAgentCwd ? { onReserved: deps.prewarmAgentCwd } : {}),
+    });
+    if (warmClaimResult) {
+      return {
+        worktree: warmClaimResult.worktree,
+        intent,
+        repoRoot,
+        created: true,
+        ...(warmClaimResult.setupPrepared ? { setupPrepared: true as const } : {}),
+        timing: {
+          ...timer.phases,
+          ...Object.fromEntries(
+            Object.entries(warmClaimResult.timing).map(([name, ms]) => [`claim.${name}`, ms]),
+          ),
+        },
+      };
+    }
+    timer.mark("claimMissMs");
+  }
+  if (intent.kind === "branch-off" && intent.baseBranch) {
+    await fetchDispatchBaseBranch(repoRoot, intent.baseBranch);
+    timer.mark("fetchMs");
+  }
+
+  const worktree = await createWorktree({
+    cwd: repoRoot,
+    worktreeSlug: normalizedSlug,
+    source: intent,
+    runSetup: input.runSetup ?? true,
+    paseoHome: input.paseoHome,
+    worktreesRoot: input.worktreesRoot,
+  });
+  timer.mark("createMs");
+  return { worktree, intent, repoRoot, created: true, timing: timer.phases };
+}
+
+async function resolveForgeForWorktreeCreate(
+  input: CreateWorktreeCoreInput,
+  repoRoot: string,
+  deps: CreateWorktreeCoreDeps,
+  intentInput: ResolveWorktreeCreationIntentInput,
+): Promise<{ forge: string; service: ForgeService }> {
+  // Branch-off / checkout-branch do not need forge identity. Resolving it
+  // walked remotes on every warm claim.
+  if (input.checkoutSource === undefined && input.githubPrNumber === undefined) {
+    return { forge: "github", service: deps.github };
+  }
+  return resolveForge(repoRoot, deps, intentInput);
 }
 
 async function resolveForge(
@@ -146,17 +215,62 @@ async function resolveForge(
   return { forge: resolution.forge, service: resolution.service };
 }
 
+/** ADR 0001: dispatch's unconditional, short-budget fetch before a branch-off worktree cut. */
+const DISPATCH_BASE_BRANCH_FETCH_TIMEOUT_MS = 3_000;
+
+// ADR 0001: dispatch cuts a worktree from the base branch under time pressure, so it gets one
+// short, budgeted chance to pull origin's tip before the branch-off resolves its source ref
+// (utils/worktree.ts resolveBaseBranchForWorktree / resolveWorktreeSourcePlan). Soft-fail: a
+// slow or unreachable remote must never block dispatch — worst case it branches from a
+// slightly stale local view, and the periodic base-checkout-sync service catches up later.
+async function fetchDispatchBaseBranch(repoRoot: string, baseBranch: string): Promise<void> {
+  const refName = branchNameFromRef(baseBranch);
+  if (!refName || refName === "HEAD") {
+    return;
+  }
+  await runGitCommand(["fetch", "origin", refName], {
+    cwd: repoRoot,
+    timeout: DISPATCH_BASE_BRANCH_FETCH_TIMEOUT_MS,
+    acceptExitCodes: [0, 1, 128],
+  }).catch(() => undefined);
+}
+
+// ADR 0001: `resolveBaseBranchForWorktree` (utils/worktree.ts) resolves bare branch names
+// local-first, so a stale local branch sharing the default branch's name silently wins over
+// origin's current tip — correct for manual flows, stale for dispatch. When nothing else named
+// the base branch (this function only runs for that fallback), prefer the `origin/<name>`
+// remote-tracking ref whenever it exists so dispatch always cuts from what origin advertises.
+async function preferOriginDefaultBranch(
+  repoRoot: string,
+  baseBranch: string,
+  workspaceGitService: Pick<WorkspaceGitService, "hasOriginTrackingBranch">,
+): Promise<string> {
+  if (baseBranch.startsWith("origin/") || baseBranch.startsWith("refs/")) {
+    return baseBranch;
+  }
+  const hasOriginBranch = await workspaceGitService
+    .hasOriginTrackingBranch(repoRoot, baseBranch)
+    .catch(() => false);
+  return hasOriginBranch ? `origin/${baseBranch}` : baseBranch;
+}
+
 async function resolveDefaultBranch(
   repoRoot: string,
   deps: CreateWorktreeCoreDeps,
 ): Promise<string> {
-  const baseBranch = deps.resolveDefaultBranch
-    ? await deps.resolveDefaultBranch(repoRoot)
-    : await deps.workspaceGitService?.resolveDefaultBranch(repoRoot);
-  if (!baseBranch) {
+  if (deps.resolveDefaultBranch) {
+    const baseBranch = await deps.resolveDefaultBranch(repoRoot);
+    if (!baseBranch) {
+      throw new Error("Unable to resolve repository default branch");
+    }
+    return baseBranch;
+  }
+  const workspaceGitService = deps.workspaceGitService;
+  const baseBranch = await workspaceGitService?.resolveDefaultBranch(repoRoot);
+  if (!baseBranch || !workspaceGitService) {
     throw new Error("Unable to resolve repository default branch");
   }
-  return baseBranch;
+  return preferOriginDefaultBranch(repoRoot, baseBranch, workspaceGitService);
 }
 
 export async function resolveWorktreeRepoRoot(

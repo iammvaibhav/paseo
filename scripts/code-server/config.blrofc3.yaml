@@ -1,0 +1,4 @@
+# code-server on blrofc3 — bind NetBird IP only
+bind-addr: 100.123.36.124:8765
+auth: none
+cert: false

@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { Text, View } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { getProviderIcon } from "@/components/provider-icons";
+import { useProviderIcon } from "@/components/provider-icons";
 import { StatusBadge } from "@/components/ui/status-badge";
 import type { Theme } from "@/styles/theme";
 import { ProviderUsageBalanceBar } from "./balance-bar";
@@ -16,7 +16,7 @@ interface ProviderUsageIconProps {
 }
 
 function ProviderUsageIcon({ iconKey, size, color = "" }: ProviderUsageIconProps) {
-  const Icon = getProviderIcon(iconKey);
+  const Icon = useProviderIcon(iconKey);
   return <Icon size={size} color={color} />;
 }
 
@@ -25,12 +25,27 @@ const ThemedProviderUsageIcon = withUnistyles(ProviderUsageIcon);
 const mutedIconColor = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 
 function statusText(usage: ProviderUsage): string | null {
-  if (usage.status === "available") return null;
+  if (usage.status === "available") {
+    // COMPAT(fastProviderUsage): headroom tone from the daemon (or the local
+    // headroom hook) surfaces here; the bar tones below stay per-window.
+    if (usage.headroomTone === "exhausted") {
+      return usage.resetCountdown ? `Exhausted · ${usage.resetCountdown}` : "Exhausted";
+    }
+    if (usage.headroomTone === "low") {
+      return usage.headroomPercent != null
+        ? `Running low · ${Math.round(usage.headroomPercent)}% left`
+        : "Running low";
+    }
+    if (usage.headroomTone === "checking") return "Checking…";
+    return null;
+  }
   return usage.status === "error" ? "Error" : "Unavailable";
 }
 
-function footerText(usage: ProviderUsage): string | null {
-  const updated = formatAgo(usage.fetchedAt);
+function footerText(usage: ProviderUsage, listFetchedAt?: string | null): string | null {
+  // Prefer the list-response fetch time. Nested providers (especially OMP) may
+  // carry older provider-side timestamps that make the UI look stale on hover.
+  const updated = formatAgo(listFetchedAt ?? usage.fetchedAt);
   const parts = [usage.sourceLabel, updated ? `Updated ${updated}` : null].filter(
     (part): part is string => typeof part === "string" && part.length > 0,
   );
@@ -39,13 +54,19 @@ function footerText(usage: ProviderUsage): string | null {
 
 export function ProviderUsageCard({
   usage,
+  active = false,
   compact = false,
+  listFetchedAt,
+  title,
 }: {
   usage: ProviderUsage;
+  active?: boolean;
   compact?: boolean;
+  listFetchedAt?: string | null;
+  title?: string;
 }) {
   const status = statusText(usage);
-  const footer = footerText(usage);
+  const footer = footerText(usage, listFetchedAt);
   const balances = usage.balances ?? [];
   const details = usage.details ?? [];
 
@@ -56,19 +77,47 @@ export function ProviderUsageCard({
   const dotStyle = useMemo(
     () => [
       styles.statusDot,
-      usage.status === "available" && styles.statusDotAvailable,
-      usage.status === "error" && styles.statusDotError,
+      usage.status === "available" &&
+        (usage.headroomTone === "low" ? styles.statusDotLow : styles.statusDotAvailable),
+      (usage.status === "error" || usage.headroomTone === "exhausted") && styles.statusDotError,
     ],
-    [usage.status],
+    [usage.status, usage.headroomTone],
   );
+  let alternativeHint: string | null = null;
+  if (usage.bestAlternativeAccountName && usage.headroomTone !== "ready") {
+    alternativeHint = `Try ${usage.bestAlternativeAccountName}`;
+  } else if (usage.isBestAlternative === true) {
+    alternativeHint = "Best available";
+  }
 
   return (
     <View style={containerStyle}>
       <View style={styles.header}>
-        <ThemedProviderUsageIcon iconKey={usage.providerId} size={14} uniProps={mutedIconColor} />
-        <Text style={styles.name} numberOfLines={1}>
-          {usage.displayName}
-        </Text>
+        <ThemedProviderUsageIcon
+          iconKey={usage.groupId ?? usage.providerId}
+          size={14}
+          uniProps={mutedIconColor}
+        />
+        <View style={styles.identity}>
+          <Text style={styles.name} numberOfLines={1}>
+            {title ?? usage.displayName}
+          </Text>
+          {usage.accountEmail ? (
+            <View style={styles.accountRow}>
+              {active ? (
+                <View
+                  style={styles.activeDot}
+                  accessibilityLabel="Currently in use"
+                  // @ts-expect-error title attribute on web
+                  title="Currently in use"
+                />
+              ) : null}
+              <Text style={styles.accountEmail} numberOfLines={1}>
+                {usage.accountEmail}
+              </Text>
+            </View>
+          ) : null}
+        </View>
         {usage.planLabel ? <StatusBadge label={usage.planLabel} variant="muted" /> : null}
         <View style={styles.headerSpacer} />
         {status ? (
@@ -111,6 +160,12 @@ export function ProviderUsageCard({
         </View>
       ) : null}
 
+      {alternativeHint ? (
+        <Text style={styles.alternative} numberOfLines={1}>
+          {alternativeHint}
+        </Text>
+      ) : null}
+
       {footer ? (
         <Text style={styles.footer} numberOfLines={1}>
           {footer}
@@ -142,6 +197,26 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.foreground,
     fontSize: theme.fontSize.base,
   },
+  identity: {
+    minWidth: 0,
+    flexShrink: 1,
+    gap: theme.spacing[0.5],
+  },
+  accountRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[1.5],
+  },
+  activeDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: theme.colors.statusSuccess,
+  },
+  accountEmail: {
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.xs,
+  },
   headerSpacer: {
     flex: 1,
   },
@@ -158,6 +233,9 @@ const styles = StyleSheet.create((theme) => ({
   },
   statusDotAvailable: {
     backgroundColor: theme.colors.statusSuccess,
+  },
+  statusDotLow: {
+    backgroundColor: theme.colors.statusWarning,
   },
   statusDotError: {
     backgroundColor: theme.colors.statusDanger,
@@ -193,6 +271,10 @@ const styles = StyleSheet.create((theme) => ({
   },
   footer: {
     color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.sm,
+  },
+  alternative: {
+    color: theme.colors.statusWarning,
     fontSize: theme.fontSize.sm,
   },
 }));

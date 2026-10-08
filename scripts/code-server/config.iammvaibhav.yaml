@@ -1,0 +1,4 @@
+# code-server on iammvaibhav — bind NetBird IP only
+bind-addr: 100.123.178.38:8765
+auth: none
+cert: false

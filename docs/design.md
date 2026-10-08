@@ -30,7 +30,7 @@ Before adding a new component, read `components/ui/`. The primitive usually exis
 
 Hierarchy is conveyed through weight and color, not size. Most interface text is `fontSize.base`; compact metadata and hints use `fontSize.sm`. The distinction between a row's primary line and its secondary line is `foreground` versus `foregroundMuted`.
 
-The authored interface ramp uses a 14px base. New native installs default to 15px; web and desktop default to 14px. The Appearance **Interface size** setting is the rendered `fontSize.base` value and scales the rest of the UI ramp proportionally. Primary readable content has its own `fontSize.content`, which defaults to 16px on native and 15px on web and desktop. It owns message bodies, composer input, Markdown, and PR prose. Controls, navigation, metadata, tool chrome, code, diffs, editors, and terminals stay on their interface or code tokens. **Code size** remains independent.
+The authored interface ramp uses a 14px base. New native installs default to 15px; web and desktop default to 14px. The Appearance **Interface size** setting is the rendered `fontSize.base` value and scales the rest of the UI ramp proportionally. Primary readable content has its own `fontSize.content`, which defaults to 16px on native and 15px on web and desktop. It owns message bodies, composer input, Markdown, and PR prose in the full agent pane. Mission Control **Agent Grid** tiles use a separate `agentGridFontSize` setting (Appearance → Agent Grid size) so dense tiles can be smaller without changing the full agent pane. Controls, navigation, metadata, tool chrome, code, diffs, editors, and terminals stay on their interface or code tokens. **Code size** remains independent.
 
 Weight has three tiers, applied by role:
 
@@ -193,7 +193,7 @@ Terminology:
 
 Loading is inline by default. `<LoadingSpinner size={14} color={foregroundMuted} />` sits next to the thing it relates to (`packages/app/src/screens/settings/providers-section.tsx:227-231`). Page-level loading is a centered `<LoadingSpinner size="large">` (`packages/app/src/screens/sessions-screen.tsx:69-72`). Card-level loading is a single short line, not a spinner. In-row dropdown items use `<DropdownMenuItem status="pending" pendingLabel="Removing...">`; the menu item handles its own pending state.
 
-Empty states are short noun phrases. Centered, muted, one or two lines. Sessions screen pairs the empty noun with a single ghost button to navigate back (`packages/app/src/screens/sessions-screen.tsx:74-81`); that pairing is the maximum elaboration. Illustrations and CTAs disguised as empty states are wrong.
+Screen-level empty states use a centered, muted noun phrase and at most one ghost button (`packages/app/src/screens/sessions-screen.tsx`). Sidebar list empty states use a quiet bordered card with a left-aligned `sm` title, a muted `sm` description, and `xs` `<Button>` actions. Use `secondary` for the primary action and `outline` for a secondary action (`packages/app/src/components/sidebar/empty-states.tsx`). Keep both forms short and free of illustrations.
 
 Inline errors are a single sentence in `palette.red[300]` `xs`, sitting under the field or inside the card it relates to (`packages/app/src/screens/settings/providers-section.tsx:115-119`).
 
@@ -217,7 +217,7 @@ Changing state must not move the layout. A row that grows when its badge arrives
 
 The row anatomy is a content column with an optional trailing slot. Inside a card the row is `settingsStyles.row`. Inside a sidebar list the row carries its own padding and `borderRadius.lg` per item (`packages/app/src/components/sidebar-workspace-list.tsx:2614-2625`).
 
-Rows that drill into a detail lead with a chevron in the trailing slot (`ChevronRight`, `iconSize.sm`, `foregroundMuted`). The whole row is the `<Pressable>`. Pair-device row (`packages/app/src/screens/settings/host-page.tsx:644-668`), provider row (`packages/app/src/screens/settings/providers-section.tsx:92-132`), project row in the projects list. Chevron means navigation.
+Rows that drill into a detail lead with a chevron in the trailing slot (`ChevronRight`, `iconSize.sm`, `foregroundMuted`). The whole row is the `<Pressable>`. Pair-device row (`packages/app/src/screens/settings/host-page.tsx:644-668`), provider row (`packages/app/src/screens/settings/providers-section.tsx:92-132`), project row in the projects list. A fixed right chevron means navigation. An expandable row uses a trailing right chevron that rotates down when expanded (`SettingsCollapsibleRow`); pressing the row reveals its child rows in place.
 
 Kebab menus (`<DropdownMenu>` with `<MoreVertical size={14} />` trigger) are for actions on the row, not navigation. Trigger style: `padding: 2`, `borderRadius: 4`, hover background `surface2`. Menu position: `align="end"`. Items use `<DropdownMenuItem leading={<Icon size={14} color={foregroundMuted} />} ...>`. Visibility is `isHovered || isTouchPlatform` — hover-revealed on web, always visible on native (`packages/app/src/components/sidebar-workspace-list.tsx:684-770`).
 
@@ -288,3 +288,24 @@ New status pills use `<StatusBadge>`. Identity, shortcut, and interactive link b
 | Trigger-anchored menu                               | `packages/app/src/components/ui/dropdown-menu.tsx` (used in `sidebar-workspace-list.tsx`, theme picker)                                                                                                                                                                                                  |
 | Right-click / long-press menu                       | `packages/app/src/components/ui/context-menu.tsx` (used in `sidebar-workspace-list.tsx`)                                                                                                                                                                                                                 |
 | Headers (back, screen, menu)                        | `packages/app/src/components/headers/back-header.tsx`, `screen-header.tsx`, `menu-header.tsx`                                                                                                                                                                                                            |
+
+---
+
+## 16. Glass (Mono on macOS)
+
+The desktop app on macOS renders the Mono theme as `darkMonoGlass` (`packages/app/src/styles/theme.ts`): translucent tints over the window vibrancy. Translucent fills stack, so the theme follows three rules, and new surfaces must too.
+
+- **Region fills are clear.** `surface0`, `surfaceSidebar`, `surfacePane`, and `surfaceWorkspace` are `transparent`. Only the window root (`surfaceApp`) and the content pane (`surfaceContent`) paint tints. Do not paint `surface0` as an ink color (text on a filled chip); use `background`, which stays opaque.
+- **Raised fills are washes.** `surface1`…`surface4` and `surfaceUserMessage` are white washes, so the composer, code blocks, tables, cards, and row fills read lighter than the pane. Sidebar hover and selected fills stay opaque so their trailing-action scrims match exactly.
+- **Floating and covering surfaces opt in.** Transient surfaces over content get a lighter tint with the content under it frosted. Menus, popovers, tooltips, hover cards, and pickers get it from `FloatingSurface` (`packages/app/src/components/ui/floating.tsx`), which paints it inline so a caller's own fill cannot win (on web, stylesheet classes resolve by insertion order, not array order), and frosts embedded webviews such as VS Code Web like any other content: Chromium composites the `<webview>` into the same frame, so the backdrop filter samples it. Other floating surfaces (dialogs, toasts, the command center) spread `glassFloatingStyle(theme)` inside their own style. Overlays that stay mounted over content (the composer pills, the scroll-to-bottom button) spread `glassOverlayStyle(theme)`: the same tint, dense, no frost. Surfaces that must hide what scrolls under them (sticky diff headers, full-screen backdrops) use `theme.glass.cover`. Scrims and status-ring knockouts paint `theme.glass.scrim`, an opaque estimate of the composited fill.
+
+The frost is `backdrop-filter: url(#paseo-glass-frost)`, an SVG filter (`packages/app/src/styles/glass-frost-filter.ts`); a plain `blur()` darkens where the page behind is transparent. Two window facts make it work:
+
+- Any `backdrop-filter` on screen stops Chromium from compositing the frame as CoreAnimation layers, and the whole frame is drawn into one surface. That surface is translucent only if the window was created with `vibrancy`; `setVibrancy` later adds the material but not the translucency. So the main window is created with `vibrancy` (`packages/desktop/src/window/window-manager.ts`), and without it any frost turns the window black.
+- The same fallback is slower, so keep `backdrop-filter` off anything that stays on screen. Use `glassOverlayStyle` there.
+
+The window is `NSVisualEffectView` vibrancy, not macOS 26 Liquid Glass, which Electron does not expose to web content. The investigation is in electron/electron#39529 and Chromium's `ca_layer_overlay.cc` (`kCALayerFailedRenderPassBackdropFilters`).
+
+The strengths are user settings (Settings → Appearance → Glass, `glassTuning`): window opacity, chat area opacity, tint darkness, menus and popovers, floating bars, and panel brightness. `resolveGlassColors` turns them into the colors above; `applyAppearance` patches them into the registered glass theme, and VS Code Web takes its fills from the same theme.
+
+Mermaid's color parser hangs on `rgba()`, so the diagram takes its glass colors as 8-digit hex (`packages/app/src/components/mermaid-diagram.web.tsx`).

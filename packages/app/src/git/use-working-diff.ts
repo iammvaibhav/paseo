@@ -41,12 +41,17 @@ export function useWorkingDiff({
   const statusErrorMessage =
     status?.error?.message ??
     (isStatusError && statusError instanceof Error ? statusError.message : null);
-  const baseRef = gitStatus?.baseRef ?? undefined;
+  const defaultBaseRef = gitStatus?.baseRef ?? undefined;
   const hasUncommittedChanges = Boolean(gitStatus?.isDirty);
   const currentBranchName =
     gitStatus?.currentBranch && gitStatus.currentBranch !== "HEAD" ? gitStatus.currentBranch : null;
 
-  const { comparison: diffMode, selectComparison } = useWorkingDiffComparison({
+  const {
+    comparison: diffMode,
+    selectComparison,
+    baseRef: selectedBaseRef,
+    selectBaseRef: selectComparisonBaseRef,
+  } = useWorkingDiffComparison({
     serverId,
     workspaceId,
     cwd,
@@ -54,6 +59,14 @@ export function useWorkingDiff({
   });
   const selectUncommitted = useCallback(() => selectComparison("uncommitted"), [selectComparison]);
   const selectBase = useCallback(() => selectComparison("base"), [selectComparison]);
+  // Picking the default by name is the same as clearing the pick, so the comparison keeps
+  // following the checkout's stored base if that base later changes.
+  const selectBaseRef = useCallback(
+    (next: string | null) => selectComparisonBaseRef(next === defaultBaseRef ? null : next),
+    [defaultBaseRef, selectComparisonBaseRef],
+  );
+  const baseRef = selectedBaseRef ?? defaultBaseRef;
+  const isCustomBaseRef = selectedBaseRef !== null && selectedBaseRef !== defaultBaseRef;
 
   const {
     files,
@@ -97,6 +110,9 @@ export function useWorkingDiff({
     notGit,
     statusErrorMessage,
     baseRef,
+    defaultBaseRef,
+    isCustomBaseRef,
+    selectBaseRef,
     currentBranchName,
     diffMode,
     selectUncommitted,

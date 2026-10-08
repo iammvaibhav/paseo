@@ -55,7 +55,7 @@ contextBridge.exposeInMainWorld("paseoDesktop", {
     },
   },
   window: {
-    openNew: (options?: { pendingOpenProjectPath?: string | null }) =>
+    openNew: (options?: { pendingOpenProjectPath?: string | null; initialRoute?: string | null }) =>
       ipcRenderer.invoke("paseo:window:openNew", options),
     getCurrentWindow: () => ({
       minimize: () => ipcRenderer.invoke("paseo:window:minimize"),
@@ -65,8 +65,11 @@ contextBridge.exposeInMainWorld("paseoDesktop", {
       setFullscreen: (fullscreen: boolean) =>
         ipcRenderer.invoke("paseo:window:setFullscreen", fullscreen),
       isFullscreen: () => ipcRenderer.invoke("paseo:window:isFullscreen"),
-      updateChrome: (update: { backgroundColor?: string; trafficLightOffsetY?: number }) =>
-        ipcRenderer.invoke("paseo:window:updateChrome", update),
+      updateChrome: (update: {
+        backgroundColor?: string;
+        trafficLightOffsetY?: number;
+        vibrancy?: boolean;
+      }) => ipcRenderer.invoke("paseo:window:updateChrome", update),
       onResized: (handler: EventHandler): (() => void) => {
         const listener = (_ipcEvent: Electron.IpcRendererEvent, payload: unknown) => {
           handler(payload);
@@ -98,10 +101,13 @@ contextBridge.exposeInMainWorld("paseoDesktop", {
     listTargets: () => ipcRenderer.invoke("paseo:editor:listTargets"),
     openTarget: (input: {
       editorId: string;
-      workspacePath: string;
+      workspacePath?: string;
       filePath?: string;
       line?: number;
       column?: number;
+      path?: string;
+      cwd?: string;
+      sshHost?: string;
     }) => ipcRenderer.invoke("paseo:editor:openTarget", input),
   },
   webUtils: {
@@ -136,5 +142,20 @@ contextBridge.exposeInMainWorld("paseoDesktop", {
     ) => ipcRenderer.invoke("paseo:browser:capture-element", browserId, rect),
     copyElement: (payload: { text?: string; imageDataUrl?: string }) =>
       ipcRenderer.invoke("paseo:browser:copy-element", payload),
+    preparePlannotator: (input: { browserId: string; remoteUrl: string }) =>
+      ipcRenderer.invoke("paseo:browser:prepare-plannotator", input) as Promise<{
+        url: string;
+        accelerated: boolean;
+      }>,
+    releasePlannotator: (browserId: string) =>
+      ipcRenderer.invoke("paseo:browser:release-plannotator", browserId),
+  },
+  browserEditor: {
+    setInsecureOrigins: (origins: string[]) =>
+      ipcRenderer.invoke("paseo:browser-editor:setInsecureOrigins", origins) as Promise<{
+        restartRequired: boolean;
+      }>,
+    getInsecureOrigins: () =>
+      ipcRenderer.invoke("paseo:browser-editor:getInsecureOrigins") as Promise<string[]>,
   },
 });

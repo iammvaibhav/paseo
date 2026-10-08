@@ -1,8 +1,14 @@
+import { createExternalProcessEnv } from "../../../paseo-env.js";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import type { Logger } from "pino";
+import { z } from "zod";
 
 import type { ProviderRuntimeSettings } from "../../provider-launch-config.js";
-import { JsonlRpcProcess, type JsonlRpcLaunch } from "../jsonl-rpc-process.js";
+import {
+  JSONL_RPC_NO_TIMEOUT,
+  JsonlRpcProcess,
+  type JsonlRpcLaunch,
+} from "../jsonl-rpc-process.js";
 import { establishOmpProtocol } from "./protocol-session.js";
 import {
   buildOmpLaunch,
@@ -22,8 +28,10 @@ import {
   OmpPromptAckSchema,
   OmpRpcCommandSchema,
   OmpRuntimeEventSchema,
+  parseOmpRuntimeEvent,
   OmpSessionStateSchema,
   OmpSessionStatsSchema,
+  OmpSwitchSessionResultSchema,
   type OmpThinkingLevel,
   type OmpAgentMessage,
   type OmpModel,
@@ -41,6 +49,14 @@ import {
 
 const DEFAULT_OMP_COMMAND: [string, ...string[]] = [process.env.OMP_COMMAND ?? "omp"];
 const DEFAULT_COMMANDS_RPC_NAME = "get_available_commands";
+
+/**
+ * OMP RPC timeout policy:
+ * - Control-plane / accept-and-stream (`prompt`, `get_state`, `abort`, …): default 30s
+ * - Blocking LLM jobs (`compact`, `handoff`): no wall-clock timeout — they finish on
+ *   response, process death, or session close (`JsonlRpcProcess.failAll` / `close`).
+ */
+const OMP_BLOCKING_JOB_TIMEOUT_MS = JSONL_RPC_NO_TIMEOUT;
 
 export interface OmpCliRuntimeOptions {
   logger: Logger;
@@ -69,6 +85,7 @@ export class OmpCliRuntime implements OmpRuntime {
       runtimeSettings: this.options.runtimeSettings,
       session: input,
     });
+    launch.env = createExternalProcessEnv(globalThis.process.env, launch.env ?? {});
     const [command, ...args] = launch.argv;
     const processLaunch: JsonlRpcLaunch = {
       command,
@@ -93,7 +110,12 @@ export class OmpCliRuntime implements OmpRuntime {
         requestTimeoutMs: this.options.requestTimeoutMs,
       });
       input.signal?.throwIfAborted();
-      return new OmpCliRuntimeSession(process, this.commandsRpcName);
+      return new OmpCliRuntimeSession(
+        process,
+        this.commandsRpcName,
+        launch.env,
+        this.options.logger,
+      );
     } catch (error) {
       const startupError = error instanceof Error ? error : new Error(String(error));
       await process.close(startupError);
@@ -111,16 +133,37 @@ class OmpCliRuntimeSession implements OmpRuntimeSession {
   constructor(
     private readonly process: JsonlRpcProcess,
     private readonly commandsRpcName: "get_available_commands",
+    private readonly launchEnvironment: Record<string, string>,
+    private readonly logger: Logger,
   ) {
     process.onMessage((message) => {
-      const event = OmpRuntimeEventSchema.safeParse(message);
-      if (event.success) {
-        this.emit(event.data);
+      const event = parseOmpRuntimeEvent(message);
+      if (event) {
+        this.emit(event);
+        return;
       }
+      // A frame the daemon's schema rejects is dropped here with no other
+      // trace. If OMP emits an event type or field shape this daemon version
+      // does not know, an `agent_end` (or the whole tail of a turn) can vanish
+      // and leave the agent lifecycle stuck at running. Surface it.
+      this.logger.warn(
+        {
+          frameType: typeof message.type === "string" ? message.type : "<non-string type>",
+          frameKeys: Object.keys(message).slice(0, 12),
+          issue: OmpRuntimeEventSchema.safeParse(message)
+            .error?.issues?.slice(0, 3)
+            .map((issue) => `${issue.path.join(".")}: ${issue.message}`),
+        },
+        "omp.rpc.schema_drop",
+      );
     });
     process.onExit(({ error }) => {
       this.emit({ type: "process_exit", error: error.message });
     });
+  }
+
+  get environment(): Record<string, string> {
+    return this.launchEnvironment;
   }
 
   onEvent(callback: (event: OmpRuntimeEvent) => void): () => void {
@@ -144,22 +187,36 @@ class OmpCliRuntimeSession implements OmpRuntimeSession {
   }
 
   async compact(customInstructions?: string): Promise<void> {
-    await this.request({
-      type: "compact",
-      ...(customInstructions ? { customInstructions } : {}),
-    });
+    await this.request(
+      {
+        type: "compact",
+        ...(customInstructions ? { customInstructions } : {}),
+      },
+      OMP_BLOCKING_JOB_TIMEOUT_MS,
+    );
   }
 
   async setAutoCompaction(enabled: boolean): Promise<void> {
     await this.request({ type: "set_auto_compaction", enabled });
   }
 
-  async abort(): Promise<void> {
-    await this.request({ type: "abort" });
+  // The interactive stop path must resolve inside AgentManager's interrupt
+  // window (~2s), so the first abort gets a short ack budget. A miss does not
+  // mean OMP is dead — see OmpAgentSession.interrupt, which retries with a
+  // longer budget instead of killing a live process.
+  private static readonly ABORT_TIMEOUT_MS = 1_000;
+
+  async abort(timeoutMs = OmpCliRuntimeSession.ABORT_TIMEOUT_MS): Promise<void> {
+    await this.requestStopWork({ type: "abort" }, timeoutMs);
   }
 
   async getState(): Promise<OmpSessionState> {
     return OmpSessionStateSchema.parse(await this.request({ type: "get_state" }));
+  }
+
+  async setFastMode(enabled: boolean): Promise<{ enabled: boolean; active: boolean }> {
+    const result = await this.request({ type: "set_fast_mode", enabled });
+    return z.object({ enabled: z.boolean(), active: z.boolean() }).parse(result);
   }
 
   async getMessages(): Promise<OmpAgentMessage[]> {
@@ -180,6 +237,19 @@ class OmpCliRuntimeSession implements OmpRuntimeSession {
 
   async setThinkingLevel(level: OmpThinkingLevel): Promise<void> {
     await this.request({ type: "set_thinking_level", level });
+  }
+
+  async newSession(): Promise<void> {
+    await this.request({ type: "new_session" });
+  }
+
+  async switchSession(sessionPath: string): Promise<void> {
+    const data = OmpSwitchSessionResultSchema.parse(
+      await this.request({ type: "switch_session", sessionPath }),
+    );
+    if (data?.cancelled === true) {
+      throw new Error("OMP switch_session was cancelled");
+    }
   }
 
   async getSessionStats(): Promise<OmpSessionStats> {
@@ -222,6 +292,35 @@ class OmpCliRuntimeSession implements OmpRuntimeSession {
   }
 
   async setHostTools(tools: OmpRpcHostToolDefinition[]): Promise<string[]> {
+    const requestedNames = tools.map((tool) => tool.name);
+    if (requestedNames.length === 0) {
+      return await this.requestSetHostTools(tools);
+    }
+    let registered = await this.requestSetHostTools(tools);
+    let missing = requestedNames.filter((name) => !new Set(registered).has(name));
+    if (missing.length === 0) {
+      return registered;
+    }
+    // A non-empty catalog must never register zero (or fewer) tools silently:
+    // the session would run without Paseo host tools while nothing logs why.
+    // Retry once — set_host_tools is idempotent (replaces the tool set) — then
+    // surface what is still missing so the failure stays loud either way.
+    this.logger.error(
+      { requested: requestedNames, registered, missing },
+      "OMP set_host_tools registered fewer tools than requested; retrying once",
+    );
+    registered = await this.requestSetHostTools(tools);
+    missing = requestedNames.filter((name) => !new Set(registered).has(name));
+    if (missing.length > 0) {
+      this.logger.error(
+        { requested: requestedNames, registered, stillMissing: missing },
+        "OMP set_host_tools still missing tools after retry",
+      );
+    }
+    return registered;
+  }
+
+  private async requestSetHostTools(tools: OmpRpcHostToolDefinition[]): Promise<string[]> {
     const data = OmpHostToolsResultSchema.parse(
       await this.request({ type: "set_host_tools", tools }),
     );
@@ -255,8 +354,11 @@ class OmpCliRuntimeSession implements OmpRuntimeSession {
     return data.messages ?? [];
   }
 
-  steer(message: string, images?: Array<{ type: "image"; data: string; mimeType: string }>): void {
-    this.process.send({ type: "steer", message, ...(images?.length ? { images } : {}) });
+  async steer(
+    message: string,
+    images?: Array<{ type: "image"; data: string; mimeType: string }>,
+  ): Promise<void> {
+    await this.request({ type: "steer", message, ...(images?.length ? { images } : {}) });
   }
 
   followUp(
@@ -267,10 +369,13 @@ class OmpCliRuntimeSession implements OmpRuntimeSession {
   }
 
   async handoff(customInstructions?: string): Promise<void> {
-    await this.request({
-      type: "handoff",
-      ...(customInstructions ? { customInstructions } : {}),
-    });
+    await this.request(
+      {
+        type: "handoff",
+        ...(customInstructions ? { customInstructions } : {}),
+      },
+      OMP_BLOCKING_JOB_TIMEOUT_MS,
+    );
   }
 
   respondToExtensionUiRequest(
@@ -290,6 +395,10 @@ class OmpCliRuntimeSession implements OmpRuntimeSession {
 
   private request(command: OmpRpcCommand, timeoutMs?: number | null): Promise<unknown> {
     return this.process.request(OmpRpcCommandSchema.parse(command), timeoutMs);
+  }
+
+  private requestStopWork(command: OmpRpcCommand, timeoutMs?: number | null): Promise<void> {
+    return this.process.requestStopWork(OmpRpcCommandSchema.parse(command), timeoutMs);
   }
 
   private emit(event: OmpRuntimeEvent): void {

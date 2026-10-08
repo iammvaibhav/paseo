@@ -19,6 +19,7 @@ import {
   deleteExplorerEntry,
   duplicateExplorerEntry,
   getExplorerFileVersion,
+  listDirectoryEntries,
   readExplorerFile,
   renameExplorerEntry,
   streamExplorerFile,
@@ -375,18 +376,37 @@ describe("file explorer service", () => {
     }
   });
 
-  it("rejects ~-prefixed paths that resolve outside the workspace", async () => {
+  it("allows ~-prefixed paths that resolve outside the workspace", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "paseo-file-explorer-outside-home-"));
-
+    const homeFilePath = path.join(os.homedir(), ".paseo-test-file-tilde.txt");
     try {
-      await expect(
-        readExplorerFile({
-          root,
-          relativePath: "~/some/file.txt",
-        }),
-      ).rejects.toThrow("Access outside of workspace is not allowed");
+      await writeFile(homeFilePath, "hello from tilde\n", "utf8");
+      const result = await readExplorerFile({
+        root,
+        relativePath: "~/.paseo-test-file-tilde.txt",
+      });
+      expect(result.content).toBe("hello from tilde\n");
     } finally {
       await rm(root, { recursive: true, force: true });
+      await rm(homeFilePath, { force: true });
+    }
+  });
+  it("allows reading and listing files outside the workspace via absolute paths", async () => {
+    const root = await createTempDir("paseo-file-explorer-root-");
+    const outside = await createTempDir("paseo-file-explorer-outside-");
+    try {
+      await writeFile(path.join(outside, "external.txt"), "external data\n", "utf8");
+      const list = await listDirectoryEntries({ root, relativePath: outside });
+      expect(list.entries.some((entry) => entry.name === "external.txt")).toBe(true);
+
+      const file = await readExplorerFile({
+        root,
+        relativePath: path.join(outside, "external.txt"),
+      });
+      expect(file.content).toBe("external data\n");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
     }
   });
 

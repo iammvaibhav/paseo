@@ -113,6 +113,7 @@ describe("editor target registry", () => {
         label: "VS Code",
         kind: "editor",
         icon: { kind: "image", dataUrl: "data:image/png;base64,vscode.png" },
+        supportsRemote: true,
       },
       {
         id: "webstorm",

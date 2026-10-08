@@ -165,6 +165,24 @@ describe("classifyForResolution", () => {
 
     expect(result).toEqual({ kind: "resolved", value: { kind: "ignored" } });
   });
+
+  it("links folder paths: a trailing slash, or three plain segments", () => {
+    const pathOf = (href: string) => {
+      const result = classifyForResolution(
+        { href, text: href, sourceType: "inline-code" },
+        CONTEXT,
+      );
+      return result.kind === "resolved" && result.value.kind === "file"
+        ? result.value.target.path
+        : null;
+    };
+    expect(pathOf("packages/app/src")).toBe("/Users/test/project/packages/app/src");
+    expect(pathOf("src/components/")).toBe("/Users/test/project/src/components");
+    // Two bare segments read as prose, not a path.
+    expect(pathOf("read/write")).toBeNull();
+    expect(pathOf("src/")).toBe("/Users/test/project/src");
+    expect(pathOf("example.com/")).toBeNull();
+  });
 });
 
 describe("fetchDaemonResolution", () => {

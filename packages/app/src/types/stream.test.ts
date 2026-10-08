@@ -157,6 +157,51 @@ describe("plugin timeline rows", () => {
   });
 });
 
+describe("ai review decision rows", () => {
+  it("appends one compact row per request and replaces it on repeat", () => {
+    const first = reduceStreamUpdate(
+      [],
+      {
+        type: "timeline",
+        provider: "codex",
+        item: {
+          type: "ai_review_decision",
+          requestId: "req-1",
+          decision: "escalate",
+          reason: "Needs a human look.",
+          toolName: "shell",
+        },
+      },
+      new Date(1),
+    );
+    expect(first).toHaveLength(1);
+    expect(first[0]).toMatchObject({
+      kind: "ai_review_decision",
+      id: "ai_review_decision:req-1",
+      decision: "escalate",
+      toolName: "shell",
+    });
+    expect(streamTimelineItemIdentity(first[0] as StreamItem)).toBe("ai_review_decision:req-1");
+
+    const second = reduceStreamUpdate(
+      first,
+      {
+        type: "timeline",
+        provider: "codex",
+        item: {
+          type: "ai_review_decision",
+          requestId: "req-1",
+          decision: "allow",
+          reason: "Safe read.",
+        },
+      },
+      new Date(2),
+    );
+    expect(second).toHaveLength(1);
+    expect(second[0]).toMatchObject({ kind: "ai_review_decision", decision: "allow" });
+  });
+});
+
 describe("user message identity", () => {
   it("replaces provisional optimistic turn membership with canonical membership", () => {
     const optimistic = createUserMessage({
@@ -328,6 +373,127 @@ describe("user message identity", () => {
         messageId: "provider-1",
       },
     ]);
+  });
+
+  it("carries the machinery classification from a canonical timeline row", () => {
+    const timestamp = new Date("2026-07-27T10:00:00.000Z");
+    const result = applyStreamEvent({
+      tail: [],
+      head: [],
+      event: {
+        type: "timeline",
+        provider: "omp",
+        item: {
+          type: "user_message",
+          text: "You've been quiet for a while. Post a one-line report_status.",
+          classification: "machinery",
+        },
+      },
+      timestamp,
+    });
+
+    const user = [...result.tail, ...result.head].find(
+      (item): item is Extract<StreamItem, { kind: "user_message" }> => item.kind === "user_message",
+    );
+    expect(user).toMatchObject({
+      kind: "user_message",
+      text: "You've been quiet for a while. Post a one-line report_status.",
+      classification: "machinery",
+    });
+  });
+
+  it("treats an unclassified canonical row as an instruction (legacy safety: never hidden)", () => {
+    const result = applyStreamEvent({
+      tail: [],
+      head: [],
+      event: {
+        type: "timeline",
+        provider: "omp",
+        item: { type: "user_message", text: "Direction change: ship the fix.", messageId: "m-1" },
+      },
+      timestamp: new Date("2026-07-27T10:00:01.000Z"),
+    });
+
+    const user = [...result.tail, ...result.head].find(
+      (item): item is Extract<StreamItem, { kind: "user_message" }> => item.kind === "user_message",
+    );
+    expect(user?.text).toBe("Direction change: ship the fix.");
+    expect(user).not.toHaveProperty("classification");
+  });
+
+  it("carries the voiceMirrorKind from a canonical voice mirror user row", () => {
+    const timestamp = new Date("2026-08-12T10:00:00.000Z");
+    const result = applyStreamEvent({
+      tail: [],
+      head: [],
+      event: {
+        type: "timeline",
+        provider: "omp",
+        item: {
+          type: "user_message",
+          text: "What is Archimedes doing?",
+          voiceMirrorKind: "qa",
+        },
+      },
+      timestamp,
+    });
+
+    const user = [...result.tail, ...result.head].find(
+      (item): item is Extract<StreamItem, { kind: "user_message" }> => item.kind === "user_message",
+    );
+    expect(user).toMatchObject({
+      kind: "user_message",
+      text: "What is Archimedes doing?",
+      voiceMirrorKind: "qa",
+    });
+  });
+
+  it("carries the voiceMirrorKind on a voice mirror assistant row as its own row", () => {
+    const first = new Date("2026-08-12T10:00:01.000Z");
+    const second = new Date("2026-08-12T10:00:02.000Z");
+    const mirrorEvent = (timestamp: Date, text: string) =>
+      applyStreamEvent({
+        tail: [],
+        head: [],
+        event: {
+          type: "timeline",
+          provider: "omp",
+          item: { type: "assistant_message", text, voiceMirrorKind: "qa" },
+        },
+        timestamp,
+      });
+
+    // Two consecutive mirror replies are TWO discrete rows: a mirror row is
+    // never coalesced into a neighboring assistant row.
+    const firstResult = mirrorEvent(first, "Archimedes is working on the fleet health check.");
+    const secondResult = applyStreamEvent({
+      tail: firstResult.tail,
+      head: firstResult.head,
+      event: {
+        type: "timeline",
+        provider: "omp",
+        item: {
+          type: "assistant_message",
+          text: "Pia finished the stackmod migration.",
+          voiceMirrorKind: "qa",
+        },
+      },
+      timestamp: second,
+    });
+
+    const assistants = [...secondResult.tail, ...secondResult.head].filter(
+      (item): item is Extract<StreamItem, { kind: "assistant_message" }> =>
+        item.kind === "assistant_message",
+    );
+    expect(assistants).toHaveLength(2);
+    expect(assistants[0]).toMatchObject({
+      text: "Archimedes is working on the fleet health check.",
+      voiceMirrorKind: "qa",
+    });
+    expect(assistants[1]).toMatchObject({
+      text: "Pia finished the stackmod migration.",
+      voiceMirrorKind: "qa",
+    });
   });
 });
 
@@ -1503,6 +1669,26 @@ describe("stream reducer canonical tool calls", () => {
     assert.strictEqual(message.timestamp.getTime(), submittedTimestamp.getTime());
   });
 
+  it("keeps native { data, mimeType } images from a daemon user_message row", () => {
+    const nativeImages = [{ data: "aaa", mimeType: "image/png" }];
+    const event: AgentStreamEventPayload = {
+      type: "timeline",
+      provider: "omp",
+      item: {
+        type: "user_message",
+        text: "1 image attached natively",
+        images: nativeImages,
+      },
+    };
+
+    const state = reduceStreamUpdate([], event, new Date("2026-08-30T21:30:00Z"));
+    const message = state.find((item) => item.kind === "user_message");
+
+    assert.ok(message);
+    assert.strictEqual(message.kind, "user_message");
+    assert.deepStrictEqual(message.images, nativeImages);
+  });
+
   it("keeps canonical assistant/user/assistant order during replay", () => {
     const state: StreamItem[] = [
       {
@@ -2303,5 +2489,55 @@ describe("notification timeline items", () => {
       { kind: "notification", level: "error", message: "Command blocked" },
     ]);
     expect(new Set(state.map((item) => item.id)).size).toBe(state.length);
+  });
+});
+
+describe("irc message reduction", () => {
+  it("reduces an assistant message containing <irc> into a hub tool call", () => {
+    const timestamp = new Date("2026-09-22T12:00:00.000Z");
+    const ircText = [
+      "<irc>",
+      "Incoming IRC message from agent `PolishIntegrate` (reply to 1589897060cfaba5):",
+      "",
+      '<task-result id="PolishIntegrate" agent="task" status="completed" duration="6m10s">',
+      '<meta lines="28" size="1.8KB" />',
+      "<output>",
+      '{"status": "complete"}',
+      "</output>",
+      "</task-result>",
+      'If response expected, reply via hub ( op: "send" , to: "PolishIntegrate" ); may finish current step first. No one replies on your behalf.',
+      "</irc>",
+    ].join("\n");
+
+    const state = hydrateStreamState(
+      [
+        {
+          event: {
+            type: "timeline",
+            provider: "omp",
+            item: {
+              type: "assistant_message",
+              text: ircText,
+              messageId: "msg-irc-1",
+            },
+          },
+          timestamp,
+        },
+      ],
+      { source: "canonical" },
+    );
+
+    expect(state).toHaveLength(1);
+    const item = state[0];
+    expect(item?.kind).toBe("tool_call");
+    if (item && item.kind === "tool_call" && item.payload.source === "agent") {
+      expect(item.payload.data.name).toBe("hub");
+      expect(item.payload.data.status).toBe("completed");
+      expect(item.payload.data.detail).toMatchObject({
+        type: "plain_text",
+        label: "receive · from PolishIntegrate · task completed (6m10s)",
+        icon: "bot",
+      });
+    }
   });
 });

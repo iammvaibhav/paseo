@@ -8,6 +8,7 @@ export const OmpThinkingLevelSchema = z.enum([
   "high",
   "xhigh",
   "max",
+  "auto",
 ]);
 
 export const OmpImageContentSchema = z
@@ -37,6 +38,13 @@ export const OmpAssistantContentSchema = z.discriminatedUnion("type", [
 const OmpUserMessageSchema = z
   .object({
     role: z.literal("user"),
+    content: z.union([z.string(), z.array(z.union([OmpTextContentSchema, OmpImageContentSchema]))]),
+  })
+  .passthrough();
+// OMP injects hidden developer messages, such as rule-violation reminders, into a run.
+const OmpDeveloperMessageSchema = z
+  .object({
+    role: z.literal("developer"),
     content: z.union([z.string(), z.array(z.union([OmpTextContentSchema, OmpImageContentSchema]))]),
   })
   .passthrough();
@@ -78,13 +86,30 @@ const OmpBashExecutionMessageSchema = z
     timestamp: z.number(),
   })
   .passthrough();
+// Roles Paseo does not render. They are listed so that a frame carrying one, such as
+// agent_end, still parses; every role in OMP's RPC AgentMessage must appear in the union.
+const OmpPythonExecutionMessageSchema = z
+  .object({ role: z.literal("pythonExecution") })
+  .passthrough();
+const OmpHookMessageSchema = z.object({ role: z.literal("hookMessage") }).passthrough();
+const OmpBranchSummaryMessageSchema = z.object({ role: z.literal("branchSummary") }).passthrough();
+const OmpCompactionSummaryMessageSchema = z
+  .object({ role: z.literal("compactionSummary") })
+  .passthrough();
+const OmpFileMentionMessageSchema = z.object({ role: z.literal("fileMention") }).passthrough();
 
 export const OmpAgentMessageSchema = z.discriminatedUnion("role", [
   OmpUserMessageSchema,
+  OmpDeveloperMessageSchema,
   OmpCustomMessageSchema,
   OmpAssistantMessageSchema,
   OmpToolResultMessageSchema,
   OmpBashExecutionMessageSchema,
+  OmpPythonExecutionMessageSchema,
+  OmpHookMessageSchema,
+  OmpBranchSummaryMessageSchema,
+  OmpCompactionSummaryMessageSchema,
+  OmpFileMentionMessageSchema,
 ]);
 
 export const OmpModelThinkingSchema = z
@@ -128,6 +153,8 @@ export const OmpSessionStateSchema = z
     isStreaming: z.boolean(),
     isCompacting: z.boolean(),
     autoCompactionEnabled: z.boolean().optional(),
+    fastModeEnabled: z.boolean().optional(),
+    fastModeActive: z.boolean().optional(),
     sessionFile: z.string().optional(),
     sessionId: z.string(),
     sessionName: z.string().optional(),
@@ -270,12 +297,29 @@ export const OmpAssistantMessageEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("text_end") }).passthrough(),
   z.object({ type: z.literal("thinking_start") }).passthrough(),
   z.object({ type: z.literal("thinking_end") }).passthrough(),
+  z.object({ type: z.literal("image_end") }).passthrough(),
+  z.object({ type: z.literal("toolcall_start") }).passthrough(),
+  z.object({ type: z.literal("toolcall_delta"), delta: z.string().optional() }).passthrough(),
+  z.object({ type: z.literal("toolcall_end") }).passthrough(),
+  z
+    .object({
+      type: z.literal("error"),
+      reason: z.enum(["aborted", "error"]).optional(),
+    })
+    .passthrough(),
   z.object({ type: z.literal("done") }).passthrough(),
 ]);
 
 export const OmpAgentSessionEventSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("agent_start") }).passthrough(),
   z.object({ type: z.literal("turn_start") }).passthrough(),
+  z
+    .object({
+      type: z.literal("turn_end"),
+      message: OmpAgentMessageSchema.optional(),
+      toolResults: z.array(OmpAgentMessageSchema).optional(),
+    })
+    .passthrough(),
   z.object({ type: z.literal("message_start"), message: OmpAgentMessageSchema }).passthrough(),
   z.object({ type: z.literal("message_end"), message: OmpAgentMessageSchema }).passthrough(),
   z
@@ -333,7 +377,8 @@ export const OmpAgentSessionEventSchema = z.discriminatedUnion("type", [
 export const OmpTodoItemSchema = z
   .object({
     content: z.string(),
-    status: z.enum(["pending", "in_progress", "completed", "abandoned"]),
+    status: z.enum(["pending", "in_progress", "completed", "abandoned", "blocked"]),
+    blocker: z.string().optional(),
   })
   .passthrough();
 export const OmpTodoPhaseSchema = z
@@ -444,6 +489,7 @@ const OmpExtensionUiRequestSchema = z
     title: z.string().optional(),
     message: z.string().optional(),
     options: z.array(z.string()).optional(),
+    optionDetails: z.unknown().optional(),
     placeholder: z.string().optional(),
     url: z.string().optional(),
     launchUrl: z.string().optional(),
@@ -475,6 +521,8 @@ export const OmpRuntimeEventSchema = z.discriminatedUnion("type", [
       type: z.literal("prompt_result"),
       id: z.string().optional(),
       agentInvoked: z.boolean().optional(),
+      status: z.string().optional(),
+      error: z.object({ message: z.string() }).passthrough().optional(),
     })
     .passthrough(),
   z.object({ type: z.literal("process_exit"), error: z.string() }).passthrough(),
@@ -494,10 +542,16 @@ export const OmpRuntimeEventSchema = z.discriminatedUnion("type", [
   OmpRpcHostToolCallRequestSchema,
   OmpRpcHostToolCancelRequestSchema,
   OmpRpcHostToolUpdateSchema,
+  z.object({ type: z.literal("model_changed") }).passthrough(),
 ]);
 
 const OmpCommandBase = { id: z.string().optional() };
 export const OmpRpcCommandSchema = z.discriminatedUnion("type", [
+  z.object({
+    ...OmpCommandBase,
+    type: z.literal("negotiate_protocol"),
+    protocolVersion: z.number(),
+  }),
   z.object({
     ...OmpCommandBase,
     type: z.literal("prompt"),
@@ -512,6 +566,13 @@ export const OmpRpcCommandSchema = z.discriminatedUnion("type", [
   z.object({ ...OmpCommandBase, type: z.literal("set_auto_compaction"), enabled: z.boolean() }),
   z.object({ ...OmpCommandBase, type: z.literal("abort") }),
   z.object({ ...OmpCommandBase, type: z.literal("get_state") }),
+  z.object({
+    ...OmpCommandBase,
+    type: z.literal("steer"),
+    message: z.string(),
+    images: z.array(OmpImageContentSchema).optional(),
+  }),
+  z.object({ ...OmpCommandBase, type: z.literal("set_fast_mode"), enabled: z.boolean() }),
   z.object({ ...OmpCommandBase, type: z.literal("get_messages") }),
   z.object({ ...OmpCommandBase, type: z.literal("get_available_models") }),
   z.object({
@@ -524,6 +585,12 @@ export const OmpRpcCommandSchema = z.discriminatedUnion("type", [
     ...OmpCommandBase,
     type: z.literal("set_thinking_level"),
     level: OmpThinkingLevelSchema,
+  }),
+  z.object({ ...OmpCommandBase, type: z.literal("new_session") }),
+  z.object({
+    ...OmpCommandBase,
+    type: z.literal("switch_session"),
+    sessionPath: z.string(),
   }),
   z.object({ ...OmpCommandBase, type: z.literal("get_session_stats") }),
   z.object({ ...OmpCommandBase, type: z.literal("get_available_commands") }),
@@ -559,9 +626,17 @@ export const OmpModelsResultSchema = z
 export const OmpCommandsResultSchema = z
   .object({ commands: z.array(OmpRpcSlashCommandSchema).optional() })
   .passthrough();
-export const OmpHostToolsResultSchema = z
-  .object({ toolNames: z.array(z.string()).optional() })
-  .passthrough();
+/**
+ * set_host_tools must answer with the registered tool names. A success frame
+ * without `toolNames` (or with zero names for a non-empty request) is a
+ * registration failure — never pass it through silently, or the session ends
+ * up without Paseo host tools while nothing logs why.
+ */
+export const OmpHostToolsResultSchema = z.object({ toolNames: z.array(z.string()) }).passthrough();
+export const OmpSwitchSessionResultSchema = z
+  .object({ cancelled: z.boolean().optional() })
+  .passthrough()
+  .optional();
 export const OmpBranchResultSchema = z
   .object({ text: z.string().optional(), cancelled: z.boolean().optional() })
   .passthrough();
@@ -569,6 +644,9 @@ export const OmpBranchMessagesResultSchema = z
   .object({
     messages: z.array(z.object({ entryId: z.string(), text: z.string() }).passthrough()).optional(),
   })
+  .passthrough();
+export const OmpNegotiateProtocolResultSchema = z
+  .object({ protocolVersion: z.number().optional() })
   .passthrough();
 
 export type OmpThinkingLevel = z.infer<typeof OmpThinkingLevelSchema>;
@@ -596,6 +674,36 @@ export type OmpSubagentEventPayload = z.infer<typeof OmpSubagentEventPayloadSche
 export type OmpAssistantMessageEvent = z.infer<typeof OmpAssistantMessageEventSchema>;
 export type OmpAgentSessionEvent = z.infer<typeof OmpAgentSessionEventSchema>;
 export type OmpRuntimeEvent = z.infer<typeof OmpRuntimeEventSchema>;
+
+/**
+ * COMPAT(ompLatePromptRejection): added in v0.11.0, remove after 2027-04-05 once the
+ * minimum supported OMP version emits prompt_result errors.
+ * OMP 18.3 reports a prompt it rejects after acknowledging it, such as one whose model has
+ * no API key, only as a second failed `response` frame for the prompt id. Later releases
+ * report the same outcome as a `prompt_result` with `status: "error"`.
+ */
+const OmpLatePromptRejectionSchema = z.object({
+  type: z.literal("response"),
+  command: z.literal("prompt"),
+  id: z.string(),
+  success: z.literal(false),
+  error: z.string(),
+});
+
+export function parseOmpRuntimeEvent(message: unknown): OmpRuntimeEvent | null {
+  const rejection = OmpLatePromptRejectionSchema.safeParse(message);
+  if (rejection.success) {
+    return {
+      type: "prompt_result",
+      id: rejection.data.id,
+      agentInvoked: false,
+      status: "error",
+      error: { message: rejection.data.error },
+    };
+  }
+  const event = OmpRuntimeEventSchema.safeParse(message);
+  return event.success ? event.data : null;
+}
 export type OmpTodoItem = z.infer<typeof OmpTodoItemSchema>;
 export type OmpTodoPhase = z.infer<typeof OmpTodoPhaseSchema>;
 export type OmpTodoReminderEvent = z.infer<typeof OmpTodoReminderEventSchema>;

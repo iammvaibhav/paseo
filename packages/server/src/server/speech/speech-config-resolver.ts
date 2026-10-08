@@ -4,6 +4,8 @@ import type { PersistedConfig } from "../persisted-config.js";
 import type { PaseoOpenAIConfig, PaseoSpeechConfig } from "../bootstrap.js";
 import { resolveLocalSpeechConfig } from "./providers/local/config.js";
 import { resolveOpenAiSpeechConfig } from "./providers/openai/config.js";
+import { resolveFishSpeechConfig } from "./providers/fish/config.js";
+import type { FishSpeechProviderConfig } from "./providers/fish/config.js";
 import {
   SpeechProviderIdSchema,
   type RequestedSpeechProvider,
@@ -149,6 +151,7 @@ export function resolveSpeechConfig(params: {
   persisted: PersistedConfig;
 }): {
   openai: PaseoOpenAIConfig | undefined;
+  fish: FishSpeechProviderConfig | undefined;
   speech: PaseoSpeechConfig;
 } {
   const providers = resolveRequestedSpeechProviders({
@@ -169,8 +172,15 @@ export function resolveSpeechConfig(params: {
     providers,
   });
 
+  const fish = resolveFishSpeechConfig({
+    env: params.env,
+    persisted: params.persisted,
+    providers,
+  });
+
   return {
     openai,
+    fish,
     speech: {
       providers,
       sttLanguages: local.sttLanguages,

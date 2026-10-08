@@ -45,6 +45,8 @@ export type KeyboardActionId =
   | "workspace.focus.toggle"
   | "workspace.terminal.new"
   | "workspace.browser.new"
+  | "workspace.editor.quick-open"
+  | "workspace.editor.open-file"
   | "sidebar.toggle.right"
   | "sidebar.toggle.both"
   | "workspace.new"
@@ -103,6 +105,8 @@ export type KeyboardActionDefinition =
   | { id: "workspace.focus.toggle"; scope: KeyboardActionScope }
   | { id: "workspace.terminal.new"; scope: KeyboardActionScope }
   | { id: "workspace.browser.new"; scope: KeyboardActionScope }
+  | { id: "workspace.editor.quick-open"; scope: KeyboardActionScope }
+  | { id: "workspace.editor.open-file"; scope: KeyboardActionScope }
   | { id: "sidebar.toggle.right"; scope: KeyboardActionScope }
   | { id: "sidebar.toggle.both"; scope: KeyboardActionScope }
   | { id: "workspace.new"; scope: KeyboardActionScope }

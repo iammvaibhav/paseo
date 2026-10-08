@@ -61,6 +61,41 @@ function getOpenIntentTarget(openIntent: WorkspaceOpenIntent): WorkspaceTabTarge
   if (openIntent.kind === "setup") {
     return { kind: "setup", workspaceId: openIntent.workspaceId };
   }
+  if (openIntent.kind === "browser") {
+    return { kind: "browser", browserId: openIntent.browserId };
+  }
+  if (openIntent.kind === "commit_diff") {
+    return { kind: "commit_diff", sha: openIntent.sha };
+  }
+  if (openIntent.kind === "working_diff") {
+    return openIntent.path
+      ? { kind: "working_diff", focusPath: openIntent.path }
+      : { kind: "working_diff" };
+  }
+  if (openIntent.kind === "changes_tree") {
+    return { kind: "changes_tree" };
+  }
+  if (openIntent.kind === "files") {
+    return { kind: "files" };
+  }
+  if (openIntent.kind === "pull_request") {
+    return { kind: "pull_request" };
+  }
+  if (openIntent.kind === "provider_subagent") {
+    return {
+      kind: "provider_subagent",
+      parentAgentId: openIntent.parentAgentId,
+      subagentId: openIntent.subagentId,
+    };
+  }
+  if (openIntent.kind === "plugin") {
+    return {
+      kind: "plugin",
+      pluginId: openIntent.pluginId,
+      panelId: openIntent.panelId,
+      context: "workspace",
+    };
+  }
   return { kind: "draft", draftId: openIntent.draftId };
 }
 

@@ -29,6 +29,7 @@ export type WindowTheme = "light" | "dark";
 export interface WindowChromeUpdate {
   backgroundColor?: string;
   trafficLightOffsetY?: number;
+  vibrancy?: boolean;
 }
 
 export function readWindowTheme(input: unknown): WindowTheme | null {
@@ -51,13 +52,27 @@ export function getMainWindowChromeOptions(input: {
   mode: DesktopWindowChromeMode;
 }): Pick<
   Electron.BrowserWindowConstructorOptions,
-  "titleBarStyle" | "trafficLightPosition" | "frame" | "titleBarOverlay" | "autoHideMenuBar"
+  | "titleBarStyle"
+  | "trafficLightPosition"
+  | "frame"
+  | "titleBarOverlay"
+  | "autoHideMenuBar"
+  | "visualEffectState"
+  | "vibrancy"
 > {
   if (input.mode === "native-mac") {
     return {
       titleBarStyle: "hidden",
       titleBarOverlay: true,
       trafficLightPosition: MAC_TRAFFIC_LIGHT_POSITION,
+      // Keep the glass theme's vibrancy translucent when the window is not focused. By default
+      // macOS swaps it for a flat grey material on inactive windows.
+      visualEffectState: "active",
+      // Electron makes the compositor translucent only when the window is created with
+      // vibrancy; `setVibrancy` later adds the material but leaves the compositor opaque. The
+      // glass theme's frosted menus need a translucent compositor, or the window renders over
+      // black while one is open. The renderer removes the material again for opaque themes.
+      vibrancy: "sidebar",
     };
   }
 
@@ -120,14 +135,16 @@ export function readWindowChromeUpdate(input: unknown): WindowChromeUpdate | nul
   const candidate = input as Record<string, unknown>;
   const backgroundColor = readOverlayColor(candidate.backgroundColor);
   const trafficLightOffsetY = readTrafficLightOffsetY(candidate.trafficLightOffsetY);
+  const vibrancy = typeof candidate.vibrancy === "boolean" ? candidate.vibrancy : null;
 
-  if (backgroundColor === null && trafficLightOffsetY === null) {
+  if (backgroundColor === null && trafficLightOffsetY === null && vibrancy === null) {
     return null;
   }
 
   return {
     ...(backgroundColor !== null ? { backgroundColor } : {}),
     ...(trafficLightOffsetY !== null ? { trafficLightOffsetY } : {}),
+    ...(vibrancy !== null ? { vibrancy } : {}),
   };
 }
 
@@ -143,6 +160,20 @@ export function applyMacWindowControlsUpdate(input: {
     x: MAC_TRAFFIC_LIGHT_POSITION.x,
     y: MAC_TRAFFIC_LIGHT_POSITION.y + input.update.trafficLightOffsetY,
   });
+}
+
+/**
+ * The sidebar material only shows through where the page is transparent, so the renderer
+ * turns it on together with a transparent background color and off with an opaque one.
+ */
+export function applyMacWindowVibrancy(input: {
+  win: Pick<BrowserWindow, "setVibrancy">;
+  update: WindowChromeUpdate;
+  platform?: NodeJS.Platform;
+}): void {
+  if ((input.platform ?? process.platform) !== "darwin") return;
+  if (input.update.vibrancy === undefined) return;
+  input.win.setVibrancy(input.update.vibrancy ? "sidebar" : null);
 }
 
 export function registerWindowManager(input: { mode: DesktopWindowChromeMode }): void {
@@ -204,6 +235,7 @@ export function registerWindowManager(input: { mode: DesktopWindowChromeMode }):
       return;
     }
 
+    applyMacWindowVibrancy({ win, update: nextUpdate });
     if (nextUpdate.backgroundColor) {
       win.setBackgroundColor(nextUpdate.backgroundColor);
     }
@@ -387,9 +419,40 @@ export function buildStandardContextMenuItems(
   return items;
 }
 
+/**
+ * Event the app listens for to open the selection Ask popover on the current selection
+ * (packages/app/src/selection-ask/selection-popover.web.tsx). The popover only opens from this
+ * menu item, never on a plain text selection.
+ */
+export const SELECTION_ASK_EVENT = "paseo:selection-ask";
+
+/** "Ask" for selected, non-editable text in the app window; the app decides if it applies. */
+export function buildSelectionAskContextMenuItems(
+  contents: Pick<WebContents, "executeJavaScript">,
+  params: Pick<Electron.ContextMenuParams, "isEditable" | "selectionText">,
+): MenuItemConstructorOptions[] {
+  if (params.isEditable || params.selectionText.trim().length === 0) return [];
+  return [
+    {
+      label: "Ask",
+      click: () => {
+        void contents
+          .executeJavaScript(
+            `window.dispatchEvent(new CustomEvent(${JSON.stringify(SELECTION_ASK_EVENT)}))`,
+          )
+          .catch(() => undefined);
+      },
+    },
+    { type: "separator" },
+  ];
+}
+
 export function setupDefaultContextMenu(win: BrowserWindow): void {
   win.webContents.on("context-menu", (_event, params) => {
-    const menu = Menu.buildFromTemplate(buildStandardContextMenuItems(win.webContents, params));
+    const menu = Menu.buildFromTemplate([
+      ...buildSelectionAskContextMenuItems(win.webContents, params),
+      ...buildStandardContextMenuItems(win.webContents, params),
+    ]);
     menu.popup({ window: win });
   });
 }

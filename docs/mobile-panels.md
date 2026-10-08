@@ -32,8 +32,10 @@ The UI worklet owns transient motion:
 
 React publishes the active panel only when the canonical target and the UI-thread position agree at
 the final anchor. Retained content never observes gesture previews, progress, or an unsettled target.
-The gesture hosts stay mounted; worklets reveal their retained overlays through native styles while
-React owns pointer events and accessibility. Native panel hosts and their dependent draggable lists
+The gesture hosts stay mounted. Native worklets own overlay opacity and pointer events while
+React owns settled panel activity and accessibility. Keep hidden native overlays laid out: collapsing
+their scroll ranges makes Android spring retained offsets back to zero during touch cancellation or
+release. Native panel hosts and their dependent draggable lists
 also retain identity across appearance hydration and settings changes. Do not wrap those hosts in
 appearance keys; see [Unistyles appearance boundaries](unistyles.md#runtime-theme-patching-for-user-preferences).
 
@@ -104,6 +106,10 @@ definition, no longer eligible to begin.
 - Panels whose gesture wrapper already owns visibility use `RetainedPanelActivity` to provide the
   same active signal without adding another layout root. Persistent animations, timers, polling, and
   shared clocks must subscribe to that signal and stop when their final visible consumer leaves.
+- Agent stream viewports (`strategy-web` / `strategy-native`) save scroll + stick/detached mode when
+  `useRetainedPanelActive()` flips false, restore on reactivate, and suppress stick-to-bottom while
+  restoring. Without that, hide→show + stream thaw re-anchors to the bottom. Save from last-known
+  scroll refs — `display: none` often reports `scrollTop === 0`.
 - Synchronized step animations use one wall-clock-aligned source. Register a local shared value only
   while its retained panel is active so hidden animated styles remain mounted without receiving clock
   updates. Do not give every instance its own loop or leave hidden styles subscribed to the source.

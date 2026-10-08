@@ -45,6 +45,16 @@ function assistant(id: string): AssistantMessageItem {
   };
 }
 
+function thought(id: string, status: "loading" | "ready" = "ready"): StreamItem {
+  return {
+    kind: "thought",
+    id,
+    text: id,
+    status,
+    timestamp: new Date(`2026-01-01T00:00:${id}.000Z`),
+  };
+}
+
 function project(input: {
   level: ToolCallDetailLevel;
   tail?: StreamItem[];
@@ -98,6 +108,56 @@ describe("tool call detail-level projection", () => {
     expect(result.groupsByHostId.size).toBe(0);
   });
 
+  it("folds thinking between calls into the run and counts it", () => {
+    const tail = [
+      thought("10"),
+      toolCall("11", { type: "shell", command: "one" }),
+      thought("12"),
+      toolCall("13", { type: "read", filePath: "/repo/a.ts" }),
+      assistant("answer"),
+    ];
+
+    const result = project({ level: "overview", tail });
+
+    expect(result.tail).toEqual([expect.objectContaining({ id: "10" }), tail[4]]);
+    expect(result.groupsByHostId.get("10")).toMatchObject({
+      run: { items: tail.slice(0, 4), isSealed: true },
+      summary: { thoughtCount: 2, commandCount: 1, readFileCount: 1 },
+    });
+  });
+
+  it("leaves thinking with no tool call around it as its own row", () => {
+    const tail = [thought("10"), assistant("answer"), thought("12")];
+
+    const result = project({ level: "overview", tail });
+
+    expect(result.tail).toEqual(tail);
+    expect(result.groupsByHostId.size).toBe(0);
+  });
+
+  it("keeps report_status out of runs so it renders as its own card", () => {
+    const report = toolCall(
+      "12",
+      { type: "unknown", input: { status: "completed", headline: "Done" }, output: null },
+      { name: "report_status" },
+    );
+    const tail = [
+      toolCall("10", { type: "shell", command: "one" }),
+      toolCall("11", { type: "shell", command: "two" }),
+      report,
+      toolCall("13", { type: "shell", command: "three" }),
+    ];
+
+    const result = project({ level: "overview", tail });
+
+    expect(result.tail).toEqual([
+      expect.objectContaining({ id: "10" }),
+      report,
+      expect.objectContaining({ id: "13" }),
+    ]);
+    expect(result.groupsByHostId.get("10")?.run.items).toEqual(tail.slice(0, 2));
+  });
+
   it("keeps one stable overview host as a run grows", () => {
     const firstCall = toolCall("1", { type: "shell", command: "one" });
     const secondCall = toolCall("2", { type: "read", filePath: "/repo/a.ts" });
@@ -111,7 +171,7 @@ describe("tool call detail-level projection", () => {
     });
     expect(single.head).toEqual([firstCall]);
     expect(single.groupsByHostId.get(firstCall.id)?.run).toMatchObject({
-      calls: [firstCall],
+      items: [firstCall],
       latest: firstCall,
       isSealed: false,
     });
@@ -126,7 +186,7 @@ describe("tool call detail-level projection", () => {
       expect.objectContaining({ id: firstCall.id, timestamp: secondCall.timestamp }),
     ]);
     expect(grouped.groupsByHostId.get(firstCall.id)?.run).toMatchObject({
-      calls: [firstCall, secondCall],
+      items: [firstCall, secondCall],
       latest: secondCall,
       isSealed: false,
     });
@@ -255,12 +315,15 @@ describe("tool call detail-level projection", () => {
       run: expect.any(Object),
       isLoading: false,
       summary: {
+        thoughtCount: 0,
         editedFileCount: 1,
         commandCount: 1,
         readFileCount: 2,
         searchCount: 0,
+        fetchCount: 0,
         otherToolCount: 0,
         paseoCallCount: 0,
+        failedCount: 1,
       },
     });
   });
@@ -286,7 +349,9 @@ describe("tool call detail-level projection", () => {
         commandCount: 0,
         readFileCount: 2,
         searchCount: 1,
-        otherToolCount: 2,
+        fetchCount: 2,
+        otherToolCount: 0,
+        failedCount: 1,
       },
     });
   });
@@ -328,7 +393,7 @@ describe("tool call detail-level projection", () => {
     const result = project({ level: "overview", head: calls });
 
     expect(result.groupsByHostId.get("1")).toMatchObject({
-      summary: { otherToolCount: 2, paseoCallCount: 2 },
+      summary: { fetchCount: 2, otherToolCount: 0, paseoCallCount: 2 },
     });
   });
 
@@ -387,7 +452,7 @@ describe("tool call detail-level projection", () => {
     expect(second.groupsByHostId.get("1")).toBe(prepared.grouped.groupsByHostId.get("1"));
     expect(first.historyGroupUpdatesByHostId.size).toBe(0);
     expect(second.historyGroupUpdatesByHostId).toBe(first.historyGroupUpdatesByHostId);
-    expect(second.groupsByHostId.get("5")?.run.calls).toHaveLength(2);
+    expect(second.groupsByHostId.get("5")?.run.items).toHaveLength(2);
   });
 
   it("preserves projected history identity during assistant-only head updates", () => {
@@ -445,7 +510,7 @@ describe("tool call detail-level projection", () => {
     ]);
     expect(result.head).toEqual([]);
     expect(result.groupsByHostId.get("1")?.run).toMatchObject({
-      calls: [...tail.slice(1), ...head],
+      items: [...tail.slice(1), ...head],
       latest: head[1],
       isSealed: false,
     });
@@ -476,7 +541,7 @@ describe("tool call detail-level projection", () => {
     const result = project({ level: "overview", head: [singleCall, plan, speak] });
 
     expect(result.head).toEqual([singleCall, plan, speak]);
-    expect(result.groupsByHostId.get(singleCall.id)?.run.calls).toEqual([singleCall]);
+    expect(result.groupsByHostId.get(singleCall.id)?.run.items).toEqual([singleCall]);
     expect(result.groupsByHostId.size).toBe(1);
   });
 });

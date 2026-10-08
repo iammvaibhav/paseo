@@ -8,6 +8,8 @@ import {
   reconstructOldFile,
   highlightDiffFromHunks,
   highlightDiffWithFileContent,
+  shouldHighlightFromHunks,
+  needsFileContentForHighlight,
   type ParsedDiffFile,
 } from "./diff-highlighter.js";
 
@@ -291,6 +293,36 @@ ${SIMPLE_DIFF.replaceAll("example.ts", "other.ts")
     expect(files[0].isDeleted).toBe(false);
     expect(files[0].additions).toBe(3);
     expect(files[0].deletions).toBe(0);
+  });
+
+  it("extracts correct path for deleted file when falling back to metadata lines", () => {
+    const prefixedDiff = [
+      "diff --git a/deleted_file.txt /dev/null",
+      "deleted file mode 100644",
+      "index ce01362..0000000",
+      "--- a/deleted_file.txt",
+      "+++ /dev/null",
+      "@@ -1 +0,0 @@",
+      "-hello",
+      "",
+    ].join("\n");
+    const filesPrefixed = parseDiff(prefixedDiff);
+    expect(filesPrefixed).toHaveLength(1);
+    expect(filesPrefixed[0].path).toBe("deleted_file.txt");
+
+    const noprefixDiff = [
+      "diff --git deleted_file.txt /dev/null",
+      "deleted file mode 100644",
+      "index ce01362..0000000",
+      "--- deleted_file.txt",
+      "+++ /dev/null",
+      "@@ -1 +0,0 @@",
+      "-hello",
+      "",
+    ].join("\n");
+    const filesNoprefix = parseDiff(noprefixDiff);
+    expect(filesNoprefix).toHaveLength(1);
+    expect(filesNoprefix[0].path).toBe("deleted_file.txt");
   });
 
   it("parses a deleted file diff", () => {
@@ -688,5 +720,41 @@ index 1111111..2222222 100644
     } finally {
       rmSync(cwd, { recursive: true, force: true });
     }
+  });
+  it("prefers hunk highlighting for files with few changed lines", () => {
+    const diff = `diff --git a/example.ts b/example.ts
+index 1111111..2222222 100644
+--- a/example.ts
++++ b/example.ts
+@@ -1,4 +1,4 @@
+-export const value0 = 0;
++export const valueUpdated = 0;
+ export const value1 = 0;
+ export const value2 = 0;
+ export const value3 = 0;
+`;
+    const [file] = parseDiff(diff);
+    expect(shouldHighlightFromHunks(file)).toBe(true);
+    expect(needsFileContentForHighlight(file)).toBe(false);
+  });
+
+  it("requires full-file content for files with multi-line comment constructs", () => {
+    const diff = `diff --git a/example.ts b/example.ts
+index 1111111..2222222 100644
+--- a/example.ts
++++ b/example.ts
+@@ -5,7 +5,7 @@
+  comment line 4
+  comment line 5
+  comment line 6
+-old comment line
++new comment line
+  comment line 8
+  */
+  const x = 1;
+`;
+    const [file] = parseDiff(diff);
+    expect(shouldHighlightFromHunks(file)).toBe(false);
+    expect(needsFileContentForHighlight(file)).toBe(true);
   });
 });

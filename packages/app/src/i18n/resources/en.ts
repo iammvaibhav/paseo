@@ -22,10 +22,12 @@ export const en = {
     total: "{{total}} matches",
   },
   common: {
+    bottomSheetBackdrop: "Bottom sheet backdrop",
     back: "Back",
     loading: "Loading...",
     actions: {
       back: "Back",
+      backToGrid: "Back to grid",
       cancel: "Cancel",
       close: "Close",
       copy: "Copy",
@@ -78,12 +80,14 @@ export const en = {
       close: "Close menu",
     },
     commandCenter: {
-      placeholder: "Search commands, files, workspaces, and agents...",
+      placeholder: "Search commands, files, projects, workspaces, and agents...",
       filePlaceholder: "Search files...",
       searchingFiles: "Searching files...",
       noMatches: "No matches",
       actions: "Actions",
       files: "Files",
+      projects: "Projects",
+      projectWorkspaces: { one: "{{count}} workspace", other: "{{count}} workspaces" },
       workspaces: "Workspaces",
       agents: "Agents",
       newAgent: "New agent",
@@ -127,6 +131,8 @@ export const en = {
       sendMessage: "Send message",
       queue: "Queue",
       send: "Send",
+      forkToNewTab: "Fork to new tab",
+      forkFailed: "Failed to fork agent",
     },
     cancel: {
       cancelingAgent: "Canceling agent",
@@ -144,6 +150,7 @@ export const en = {
       muteVoice: "Mute voice",
       dictation: "Dictation",
       interruptBeforeVoice: "Interrupt the agent before starting voice mode",
+      commanderVoice: "Commander Voice",
     },
     attachments: {
       addImage: "Add image",
@@ -195,6 +202,7 @@ export const en = {
       fallback: "Provider",
       select: "Select agent provider",
     },
+    providerSwitched: "Switched provider to {{provider}}",
     thinking: {
       title: "Thinking",
       unknown: "Unknown",
@@ -239,6 +247,13 @@ export const en = {
       implement: "Implement",
       question: "How would you like to proceed?",
       proposedPlan: "Proposed plan",
+      approve: "Approve",
+      reject: "Reject",
+      editBriefs: "Edit briefs",
+      cancelEdit: "Cancel",
+      childAgent: "Child agent",
+      filesCount: "{{count}} files",
+      dependsOn: "Depends on",
     },
   },
   agentPanel: {
@@ -268,16 +283,58 @@ export const en = {
       callout: "This agent is archived",
       unarchive: "Unarchive",
     },
+    providerUnavailable: {
+      callout: "This agent's provider is no longer available on this host.",
+      detail: "You can still read the history, or continue in a new draft with another provider.",
+      continueWithAnotherProvider: "Continue with another provider",
+    },
   },
   sessions: {
     title: "History",
     empty: "No sessions yet",
+    emptyForHost: "No sessions for this host",
+    loadError: "Unable to load sessions",
     noMatches: "No sessions match",
     tooManyMatches: "Too many matches — narrow your search",
     hostLoadFailed: "{{host}}: Could not load history",
     searchPlaceholder: "Search history",
+    tabs: {
+      agents: "Agents",
+      ask: "Ask",
+    },
+    search: {
+      placeholder: "Filter by title, provider, path…",
+      empty: "No sessions match this filter",
+    },
+    ask: {
+      placeholder: "Ask about past agent sessions…",
+      submit: "Ask",
+      jobsHeading: "Ask jobs",
+      jobsOpenHint: "Tap a job to open it. New asks open automatically.",
+      empty: "No History Ask jobs yet",
+      launched: "History Ask started — opening…",
+      scopeLabel: "Scope",
+      scopeUnknown: "Unknown scope",
+      scopeSelectHost: "Select a host",
+      scopeWorkspace: "Workspace · {{name}}",
+      scopeProject: "Project · {{name}}",
+      scopeHost: "Host · {{name}} (host-wide)",
+      needHostHint: "Ask runs on one host. Pick a host above — “All hosts” cannot launch.",
+      modelLabel: "Model",
+      modelPlaceholder: "Select model",
+      errors: {
+        noScope: "Choose a host or open Ask from a project/workspace",
+        noCwd:
+          "Couldn't start Ask on this host (no session directory available yet). Open a workspace once, or try again after history loads.",
+        hostDisconnected: "Host is not connected",
+        launchFailed: "Failed to start History Ask",
+      },
+    },
     actions: {
       loadMore: "Load more",
+      tryAgain: "Try again",
+      back: "Back",
+      askAboutThis: "Ask about this",
       clearSearch: "Clear search",
     },
   },
@@ -309,6 +366,54 @@ export const en = {
       archive: "Archive",
     },
   },
+  missionControl: {
+    inspector: {
+      archivedBanner: "Archived",
+      workspaceArchived:
+        "This agent's workspace is archived, so it cannot be opened in the workspace view.",
+      workspaceUnavailable:
+        "This agent's workspace isn't available on this host, so it cannot be opened in the workspace view.",
+    },
+    proposal: {
+      origin: {
+        verifier: "Verifier contact",
+        commander: "Commander",
+        stall: "Stall check",
+      },
+      chips: {
+        project: "Project: {{label}}",
+        workspace: "Workspace: {{label}}",
+        agent: "Agent: {{label}}",
+        newProject: "New project: {{label}}",
+        newWorkspace: "New workspace: {{label}}",
+        newAgent: "New agent: {{label}}",
+      },
+      model: "Model: {{model}}",
+      payload: "Payload",
+      meta: {
+        renameProject: "Rename project {{target}} → {{name}}",
+        renameWorkspace: "Rename workspace {{target}} → {{name}}",
+        renameAgentTitle: "Rename agent {{target}} → {{name}}",
+        archiveProject: "Archive project {{target}}",
+        archiveWorkspace: "Archive workspace {{target}}",
+        archiveAgent: "Archive agent {{target}}",
+        createProject: "Create project {{target}}",
+        moveAgent: "Move agent {{target}} → workspace {{destination}}",
+        promoteWorkspace: "Promote {{target}} → project {{destination}}",
+      },
+    },
+    clarification: {
+      title: "Clarification",
+      send: "Send",
+      answerPlaceholder: "Type your answer...",
+      answered: "Answered: {{answer}}",
+    },
+    answer: {
+      title: "Answer",
+      agentStatus: "Agent status",
+      state: "State",
+    },
+  },
   message: {
     diagram: {
       diagram: "Diagram",
@@ -318,6 +423,15 @@ export const en = {
       fullscreen: "Fullscreen",
       viewSource: "View source",
       viewDiagram: "View diagram",
+    },
+    page: {
+      building: "Building page…",
+      fullSize: "Full size",
+      close: "Close",
+      openInBrowser: "Open in browser",
+      needsDirect: "Showing a localhost page needs a direct connection to this host.",
+      updateHost: "Update this host to show its localhost pages.",
+      failed: "The page could not be shown.",
     },
     actions: {
       copyCode: "Copy code",
@@ -329,6 +443,9 @@ export const en = {
       forkUnavailable: "Update the host to use this.",
       forkMissingWorkspace: "This agent is not in a workspace.",
       forkFailed: "Failed to fork chat",
+      secondOpinion: "Second opinion",
+      noOtherModels: "No other models available",
+      jumpToUserMessage: "Jump to user message",
       openFile: "Open file",
       copied: "Copied",
     },
@@ -436,7 +553,9 @@ export const en = {
       recovery: {
         archivedTitle: "Workspace archived",
         restoreDescription:
-          "{{workspaceName}} was archived and its worktree was removed. Restore branch {{branch}} to open it again.",
+          "Restore {{workspaceName}} to return to its agents. Its worktree will use branch {{branch}}.",
+        restoreWithoutBranchDescription:
+          "Restore {{workspaceName}} to return to its agents. A new branch will start from the saved base or the repository default.",
         unarchiveDescription: "{{workspaceName}} is archived. Unarchive it to open it again.",
         restoreAction: "Restore",
         unarchiveAction: "Unarchive",
@@ -493,6 +612,9 @@ export const en = {
       context: {
         size: "Size",
         modified: "Modified",
+        copyPath: "Copy path",
+        download: "Download",
+        downloadAsZip: "Download as ZIP",
       },
       actions: {
         back: "Back",
@@ -509,6 +631,11 @@ export const en = {
       states: {
         unavailable: "Workspace is unavailable",
         loading: "Loading files...",
+      },
+      drop: {
+        hostDisconnected: "Host is disconnected",
+        uploading: "Uploading {{count}} file(s)…",
+        uploaded: "Uploaded {{count}} file(s)",
       },
       errors: {
         failedToListDirectory: "Failed to list directory",
@@ -621,10 +748,14 @@ export const en = {
       },
       menu: {
         openFor: "Open menu for {{label}}",
+        markDone: "Mark done",
         copyResumeCommand: "Copy resume command",
         copyAgentId: "Copy agent id",
         copyTerminalId: "Copy terminal id",
         copyFilePath: "Copy file path",
+        moveToNewWorkspace: "Move to new workspace",
+        openInNewWindow: "Open in new window",
+        openInNewWindowFailed: "Couldn't open a new window",
         rename: "Rename",
         closeAbove: "Close tabs above",
         closeBelow: "Close tabs below",
@@ -676,6 +807,12 @@ export const en = {
         reloadedAgent: "Reloaded agent",
         failedToReloadAgent: "Failed to reload agent",
         failedToCloseAgent: "Failed to close agent",
+        movedToWorkspace: "Moved agent to {{workspaceName}}",
+        movedToNewWorkspace: "Moved agent to new workspace",
+        agentRunningCannotMove: "Stop the agent before moving to another workspace",
+        workspacePathUnavailable: "Workspace path not available",
+        failedToCreateWorkspace: "Failed to create workspace",
+        failedToMoveAgent: "Failed to move agent to workspace",
       },
       confirmations: {
         close: "Close",
@@ -950,6 +1087,14 @@ export const en = {
         committed: "Committed",
         branchUnknown: "Unknown",
         base: "base",
+        baseBranch: "Base branch",
+        baseBranchTrigger: "Base branch: {{name}}. Press to change.",
+        baseBranchTooltip: "Change base branch",
+        baseBranchDefault: "Use default ({{name}})",
+        baseBranchDefaultHint: "default",
+        baseBranchSearchPlaceholder: "Filter branches...",
+        baseBranchEmpty: "No branches found",
+        baseBranchLoading: "Loading branches...",
         newFile: "New",
         deletedFile: "Deleted",
         modifiedFile: "Modified",
@@ -970,6 +1115,7 @@ export const en = {
         openIn: "Open workspace in {{target}}",
         openFileIn: "Open {{fileName}} in {{target}}",
         failedOpen: "Failed to open workspace",
+        noFile: "Select a Markdown file to open in Plannotator",
       },
       pr: {
         actions: {
@@ -1107,6 +1253,12 @@ export const en = {
         title: "Title",
         branch: "Branch name",
       },
+      workspaceSort: {
+        label: "Sort workspaces",
+        manual: "Manual",
+        activity: "Latest activity",
+        created: "Date created",
+      },
       show: {
         label: "Show",
         branch: "Branch",
@@ -1116,7 +1268,6 @@ export const en = {
         checks: "Checks",
         services: "Services",
         labels: "Labels",
-        diff: "Diff stats",
         timestamp: "Last activity",
       },
       checks: {
@@ -1131,6 +1282,29 @@ export const en = {
       projectFilter: {
         label: "Project",
         all: "All projects",
+      },
+    },
+    view: { workspaces: "Workspaces", agents: "Agents" },
+    agentView: {
+      title: "Agents",
+      display: { trigger: "Agent view preferences", heading: "Agents", showDone: "Show done" },
+      sections: {
+        needsYou: "Needs you",
+        running: "Running",
+        ready: "Ready for review",
+        done: "Done",
+      },
+      empty: {
+        title: "No agents to show",
+        description: "Running and ready-for-review agents appear here.",
+        clear: "Clear filters",
+      },
+      menu: {
+        open: "Open in workspace",
+        copyReference: "Copy reference",
+        stop: "Stop",
+        clear: "Clear",
+        archive: "Archive",
       },
     },
     filterEmpty: {
@@ -1153,6 +1327,14 @@ export const en = {
       settings: "Settings",
       closeSidebar: "Close sidebar",
     },
+    fleetStats: {
+      label: "Fleet stats",
+      collecting: "Collecting fleet stats…",
+      failed: "Could not collect fleet stats",
+    },
+    footer: {
+      usage: "Usage",
+    },
     help: {
       trigger: "Help and support",
       sectionHelp: "Help",
@@ -1168,6 +1350,9 @@ export const en = {
       sessions: "History",
       search: "Search",
       schedules: "Schedules",
+      missionControl: "Mission Control",
+      itsaplan: "itsaplan",
+      webhooks: "Webhooks",
     },
     worktreeSetup: {
       title: "Set up worktree scripts",
@@ -1179,10 +1364,14 @@ export const en = {
       actions: {
         menu: "Project actions",
         openSettings: "Open project settings",
+        openBaseWorkspace: "Open base workspace",
+        expandProject: "Expand project",
+        collapseProject: "Collapse project",
         openNewWindow: "Open in new window",
         openNewWindowFailed: "Couldn't open a new window",
         openFolder: "Open in file manager",
         openFolderFailed: "Couldn't open folder",
+        askHistory: "Ask history…",
         remove: "Remove project",
         removing: "Removing...",
       },
@@ -1204,6 +1393,13 @@ export const en = {
       },
     },
     workspace: {
+      agents: {
+        count: "Agents ({{count}})",
+        expand: "Show agents",
+        collapse: "Hide agents",
+        sortByActivity: "Recent",
+        sortByCreated: "Created",
+      },
       status: {
         serviceRunning: "Service {{name}} running",
         serviceUnhealthy: "Service {{name}} unhealthy",
@@ -1223,11 +1419,16 @@ export const en = {
         showMore: "Show more",
         showLess: "Show less",
         createWorkspaceFor: "Create a new workspace for {{projectName}}",
+        openItsaplanFor: "Open itsaplan for {{projectName}}",
+        dropToMoveAgent: "Move agent here",
         copyPath: "Copy path",
         copyBranchName: "Copy branch name",
         rename: "Rename workspace",
+        openNewWindow: "Open in new window",
+        openNewWindowFailed: "Couldn't open a new window",
         pin: "Pin to top",
         unpin: "Unpin",
+        askHistory: "Ask history…",
         archive: "Archive",
         archiveWorkspace: "Archive workspace",
         hideFromSidebar: "Hide from sidebar",
@@ -1547,6 +1748,8 @@ export const en = {
     noFiles: "No files or directories found",
     noCommands: "No commands found",
     failedToLoad: "Failed to load",
+    chooseProjectForCommands: "Choose a project to see commands",
+    chooseModelForCommands: "Select a model to see commands",
   },
   loadOlderHistory: {
     failed: "Couldn't load older history",
@@ -1638,6 +1841,21 @@ export const en = {
     },
   },
   pairing: {
+    hostPassword: {
+      title: "Password for {{host}}",
+      label: "Host password",
+    },
+    hostConfirmation: {
+      title: "Connect to this host?",
+      description:
+        "This host will be able to run code in this app and reach your other connected hosts. Only connect if you recognize it.",
+      descriptionChanged:
+        "This link changes how you connect to this host. The host will be able to run code in this app and reach your other connected hosts. Only connect if you recognize it.",
+      hostLabel: "Host",
+      fingerprintLabel: "Key fingerprint",
+      relayLabel: "Relay",
+      connect: "Connect",
+    },
     connectionMethods: {
       title: "Add connection",
       direct: {
@@ -1704,6 +1922,12 @@ export const en = {
       helper: "Connect to a Paseo daemon running on the remote host.",
       fields: {
         target: "SSH host",
+        password: "Daemon password",
+        optional: "Optional",
+      },
+      passwordVisibility: {
+        show: "Show password",
+        hide: "Hide password",
       },
       actions: {
         cancel: "Cancel",
@@ -1797,6 +2021,491 @@ export const en = {
   diffViewer: {
     empty: "No changes to display",
   },
+  itsaplan: {
+    notConfigured: {
+      title: "itsaplan is not configured",
+      description:
+        "No itsaplan address could be resolved for any connected host. Set itsaplan URL in Settings \u2192 General, or connect to the host running it.",
+    },
+    unreachable: {
+      title: "Cannot reach itsaplan",
+      description: "Paseo could not load {{origin}}. Make sure itsaplan is running, then retry.",
+    },
+    retry: "Retry",
+  },
+  tickets: {
+    nav: {
+      label: "Tickets",
+    },
+    common: {
+      allProjects: "All projects",
+      errors: {
+        hostUnavailable: "The Commander host is not connected",
+        emptyResponse: "The Commander host sent an empty response",
+      },
+      stateType: {
+        backlog: "Backlog",
+        unstarted: "Todo",
+        started: "In progress",
+        completed: "Done",
+        canceled: "Canceled",
+      },
+      priority: {
+        urgent: "Urgent",
+        high: "High",
+        medium: "Medium",
+        low: "Low",
+      },
+      assignee: {
+        user: "You",
+        commander: "Commander",
+        unassigned: "Unassigned",
+      },
+      runBucket: {
+        needs_you: "Needs you",
+        running: "Running",
+        ready: "Ready",
+        done: "Done",
+        idle: "Idle",
+      },
+      agentFallback: "Agent",
+      blocked: "Blocked",
+      blockedBy_one: "Blocked by {{count}} open ticket",
+      blockedBy_other: "Blocked by {{count}} open tickets",
+      subtaskProgress: "{{done}} of {{total}} sub-tasks done",
+      age: "Age {{age}}",
+      createdUpdated: "Created {{created}} · Updated {{updated}}",
+      comments_one: "{{count}} comment",
+      comments_other: "{{count}} comments",
+      attachments_one: "{{count}} attachment",
+      attachments_other: "{{count}} attachments",
+    },
+    board: {
+      title: "Tickets",
+      boardPicker: "Choose board",
+      views: {
+        board: "Board",
+        list: "List",
+      },
+      newTicket: "New ticket",
+      addToColumn: "Add ticket to {{column}}",
+      moreActions: "More board actions",
+      initiatives: "Initiatives",
+      importFromItsaplan: "Import from itsaplan",
+      importing: "Importing...",
+      importDone:
+        "Imported {{tickets}} tickets, {{comments}} comments and {{attachments}} attachments. {{updated}} records updated.",
+      importDoneWithErrors: "Import finished with {{count}} errors. First error: {{first}}",
+      importFailed: "Unable to import from itsaplan: {{message}}",
+      moveFailed: "Unable to move {{key}}: {{message}}",
+      noMatchingColumn: "{{board}} has no {{column}} column",
+      openTicket: "Open {{key}}",
+      emptyColumn: "No tickets",
+      retry: "Try again",
+      states: {
+        connecting: "Connecting to the Commander host...",
+        noBoardHost: {
+          title: "No Commander host connected",
+          description:
+            "Tickets live on the Mission Control Commander host. Connect to that host, or choose a Commander host in Mission Control settings.",
+        },
+        offline: {
+          title: "{{host}} is offline",
+          description: "Tickets live on the Commander host. They appear again when it reconnects.",
+        },
+        offlineUnknown: {
+          title: "No host is online",
+          description: "Tickets live on the Commander host. They appear when it connects.",
+        },
+        loadFailed: "Unable to load tickets: {{message}}",
+        noBoards: {
+          title: "No boards yet",
+          description:
+            "A board appears for each project when you create its first ticket. Import your itsaplan boards to start from them.",
+        },
+        emptyBoard: {
+          title: "No tickets yet",
+          description: "Create the first ticket, or import tickets from itsaplan.",
+        },
+      },
+    },
+    initiatives: {
+      title: "Initiatives",
+      newInitiative: "New initiative",
+      board: "Board",
+      openInitiative: "Open {{title}}",
+      status: {
+        proposed: "Proposed",
+        planned: "Planned",
+        active: "Active",
+        completed: "Completed",
+        canceled: "Canceled",
+      },
+      noPriority: "No priority",
+      targetDate: "Target {{date}}",
+      noTargetDate: "No target date",
+      progress: "{{done}} of {{total}} tickets done",
+      states: {
+        loadFailed: "Unable to load initiatives: {{message}}",
+        empty: {
+          title: "No initiatives yet",
+          description: "An initiative groups the tickets that move one goal forward.",
+        },
+        emptyBoard: "No initiatives on this board",
+        noBoards: {
+          title: "No boards yet",
+          description:
+            "Initiatives live on a board. A board appears for each project when you create its first ticket.",
+        },
+        notFound: {
+          title: "Initiative not found",
+          description: "It was deleted, or it lives on another Commander host.",
+        },
+      },
+      form: {
+        createTitle: "New initiative",
+        editTitle: "Edit initiative",
+        title: "Title",
+        titlePlaceholder: "Initiative title",
+        description: "Description",
+        descriptionPlaceholder: "What this initiative achieves",
+        board: "Board",
+        boardPlaceholder: "Choose a board",
+        noBoards: "No boards",
+        status: "Status",
+        priority: "Priority",
+        startDate: "Start date",
+        targetDate: "Target date",
+        datePlaceholder: "YYYY-MM-DD",
+        invalidDate: "Enter the date as YYYY-MM-DD",
+        targetBeforeStart: "The target date is before the start date",
+        create: "Create initiative",
+        save: "Save",
+        saveFailed: "Unable to save initiative: {{message}}",
+      },
+      detail: {
+        tabs: {
+          overview: "Overview",
+          tickets: "Tickets",
+        },
+        actions: "Initiative actions",
+        edit: "Edit initiative",
+        delete: "Delete initiative",
+        deleting: "Deleting...",
+        deleteTitle: "Delete initiative",
+        deleteMessage: 'Delete "{{title}}"? This cannot be undone.',
+        deleteMessageWithTickets_one:
+          'Delete "{{title}}"? Its {{count}} ticket stays on the board without the initiative.',
+        deleteMessageWithTickets_other:
+          'Delete "{{title}}"? Its {{count}} tickets stay on the board without the initiative.',
+        deleteConfirm: "Delete",
+        deleteFailed: "Unable to delete initiative: {{message}}",
+        updateFailed: "Unable to update initiative: {{message}}",
+        statusPicker: "Status: {{status}}",
+        priorityPicker: "Priority: {{priority}}",
+        noDescription: "No description",
+        progressHeading: "Progress",
+        noTickets: "No tickets linked yet",
+        timelineHeading: "Timeline",
+        start: "Start",
+        target: "Target",
+        remaining: "Remaining",
+        daysLeft_one: "{{count}} day left",
+        daysLeft_other: "{{count}} days left",
+        overdue_one: "{{count}} day overdue",
+        overdue_other: "{{count}} days overdue",
+        dueToday: "Due today",
+        timeElapsed: "Time elapsed",
+        workDone: "Work done",
+        setTargetDate: "Set a target date to compare time with work done",
+        activeWork: "Active work",
+        noActiveWork: "No agent works on these tickets now",
+        addTicket: "Add ticket",
+      },
+    },
+    detail: {
+      titleLabel: "Ticket title",
+      titlePlaceholder: "Ticket title",
+      saving: "Saving...",
+      close: "Close ticket",
+      copyKey: "Copy {{key}}",
+      importedFrom: "Imported from itsaplan {{identifier}}",
+      archivedNote: "Archived",
+      states: {
+        loadFailed: "Unable to load the ticket",
+        notFound: "Ticket not found",
+      },
+      errors: {
+        withReason: "{{action}}: {{message}}",
+        saveTitle: "Unable to save the title",
+        saveDescription: "Unable to save the description",
+        move: "Unable to move the ticket",
+        saveAssignee: "Unable to change the assignee",
+        savePriority: "Unable to change the priority",
+        saveInitiative: "Unable to change the initiative",
+        saveParent: "Unable to change the parent",
+        saveDueDate: "Unable to change the due date",
+        saveLink: "Unable to change the blockers",
+        addAttachment: "Unable to add the attachment",
+        deleteAttachment: "Unable to delete the attachment",
+        openAttachment: "Unable to open the attachment",
+        addComment: "Unable to post the comment",
+        saveComment: "Unable to save the comment",
+        deleteComment: "Unable to delete the comment",
+        dispatch: "Unable to dispatch the ticket",
+        archive: "Unable to archive the ticket",
+        delete: "Unable to delete the ticket",
+      },
+      fields: {
+        status: "Status",
+        assignee: "Assignee",
+        priority: "Priority",
+        initiative: "Initiative",
+        parent: "Parent",
+        dueDate: "Due date",
+        type: "Type",
+        board: "Board",
+        noPriority: "No priority",
+        noInitiative: "No initiative",
+        noParent: "No parent",
+      },
+      dueDate: {
+        today: "Today",
+        tomorrow: "Tomorrow",
+        nextWeek: "In one week",
+        inTwoWeeks: "In two weeks",
+        none: "No due date",
+        invalid: "Type the date as YYYY-MM-DD",
+        customPrefix: "Set",
+      },
+      picker: {
+        searchPlaceholder: "Search by key or title...",
+        empty: "No matching tickets",
+      },
+      description: {
+        label: "Description",
+        placeholder: "Add a description",
+        inputPlaceholder: "Write in Markdown",
+        emptyPreview: "Nothing to preview",
+        edit: "Edit",
+        write: "Write",
+        preview: "Preview",
+        save: "Save",
+      },
+      subtasks: {
+        title: "Sub-tasks",
+        parent: "Parent",
+        new: "New",
+        addExisting: "Existing",
+        addExistingTitle: "Add an existing ticket as a sub-task",
+        empty: "No sub-tasks",
+        detach: "Detach {{key}}",
+        detachFromParent: "Detach from {{key}}",
+      },
+      links: {
+        add: "Add",
+        remove: "Remove {{key}}",
+        blockedBy: {
+          title: "Blocked by",
+          pickerTitle: "Tickets that block {{key}}",
+          empty: "Nothing blocks this ticket",
+        },
+        blocks: {
+          title: "Blocks",
+          pickerTitle: "Tickets that {{key}} blocks",
+          empty: "This ticket blocks nothing",
+        },
+      },
+      attachments: {
+        title: "Attachments",
+        add: "Add",
+        uploading: "Uploading...",
+        empty: "No attachments",
+        open: "Open {{file}}",
+        delete: "Delete {{file}}",
+        tooLarge: "{{file}} is larger than 20 MB",
+        deleteTitle: "Delete attachment?",
+        deleteMessage: "{{file}} is removed from {{key}}. This cannot be undone.",
+        deleteConfirm: "Delete",
+      },
+      runs: {
+        title: "Runs",
+        empty: "No agent has worked on this ticket",
+        archived: "Archived",
+        open: "Open agent {{agent}}",
+      },
+      activity: {
+        title: "Activity",
+        empty: "No activity yet",
+        systemActor: "Paseo",
+        edited: "edited",
+        commentActions: "Comment actions",
+        editComment: "Edit comment",
+        saveComment: "Save",
+        deleteComment: "Delete comment",
+        deleting: "Deleting...",
+        deleteTitle: "Delete comment?",
+        deleteMessage: "The comment is removed from {{key}}. This cannot be undone.",
+        deleteConfirm: "Delete",
+        events: {
+          created: "created this ticket",
+          createdIn: "created this ticket in {{column}}",
+          moved: "moved this from {{from}} to {{to}}",
+          movedTo: "moved this to {{to}}",
+          renamed: "renamed this to {{to}}",
+          assigned: "assigned this to {{to}}",
+          reassigned: "reassigned this from {{from}} to {{to}}",
+          unassigned: "removed the assignee {{from}}",
+          prioritySet: "set the priority to {{to}}",
+          priorityChanged: "changed the priority from {{from}} to {{to}}",
+          priorityCleared: "removed the priority",
+          parentSet: "made this a sub-task of {{to}}",
+          parentChanged: "moved this from {{from}} to {{to}}",
+          parentCleared: "detached this from {{from}}",
+          initiativeSet: "added this to {{to}}",
+          initiativeChanged: "moved this from {{from}} to {{to}}",
+          initiativeCleared: "removed this from {{from}}",
+          blockerAdded: "marked this as blocked by {{key}}",
+          blockerRemoved: "removed the blocker {{key}}",
+          archived: "archived this ticket",
+          restored: "restored this ticket",
+          runLinked: "linked the agent {{agent}}",
+          runState: "is now {{bucket}}",
+          attachmentAdded: "attached {{file}}",
+          attachmentRemoved: "removed the attachment {{file}}",
+          imported: "imported this ticket from itsaplan",
+        },
+      },
+      composer: {
+        label: "Comment",
+        placeholder: "Leave a comment in Markdown",
+        commanderHint: "Mention @commander to ask the Commander",
+        send: "Comment",
+        sending: "Posting...",
+      },
+      actions: {
+        dispatch: "Dispatch now",
+        dispatching: "Dispatching...",
+        dispatched: "{{key}} is dispatched to the Commander",
+        more: "Ticket actions",
+        copyLink: "Copy link",
+        link: "link",
+        archive: "Archive",
+        restore: "Restore",
+        delete: "Delete ticket",
+        deleting: "Deleting...",
+        deleteTitle: "Delete {{key}}?",
+        deleteMessage:
+          "The ticket, its comments and its attachments are removed. This cannot be undone.",
+        deleteConfirm: "Delete",
+      },
+    },
+    create: {
+      title: "New ticket",
+      subtaskOf: "Sub-task of {{key}}",
+      titleLabel: "Title",
+      titlePlaceholder: "Ticket title",
+      descriptionLabel: "Description",
+      descriptionPlaceholder: "Add a description in Markdown",
+      noBoards: "No boards yet. A board appears when you import from itsaplan or open a project.",
+      blockedBy: "Blocked by",
+      blockedByTitle: "Tickets that block the new ticket",
+      blockedByChip: "Blocked by {{key}}",
+      removeBlocker: "Remove blocker {{key}}",
+      create: "Create",
+      creating: "Creating...",
+      createAndDispatch: "Create and dispatch",
+    },
+  },
+  notes: {
+    nav: {
+      label: "Notes",
+    },
+    common: {
+      errors: {
+        hostUnavailable: "The Commander host is not connected",
+        emptyResponse: "The Commander host sent an empty response",
+      },
+    },
+    list: {
+      title: "Notes",
+      searchPlaceholder: "Search notes",
+      newNote: "New note",
+      retry: "Try again",
+      states: {
+        connecting: "Connecting to the Commander host...",
+        noNotesHost: {
+          title: "No Commander host connected",
+          description:
+            "Notes live on the Mission Control Commander host. Connect to that host, or choose a Commander host in Mission Control settings.",
+        },
+        offline: {
+          title: "{{host}} is offline",
+          description: "Notes live on the Commander host. They appear again when it reconnects.",
+        },
+        offlineUnknown: {
+          title: "No host is online",
+          description: "Notes live on the Commander host. They appear when it connects.",
+        },
+        loadFailed: "Unable to load notes: {{message}}",
+        empty: {
+          title: "No notes yet",
+          description: "Capture the first note, or save one from a chat.",
+        },
+        noMatches: {
+          title: "No matching notes",
+          description: "Try a different search or filter.",
+        },
+      },
+      filters: {
+        tag: "Tag",
+        allTags: "All tags",
+        project: "Project",
+        allProjects: "All projects",
+      },
+    },
+    detail: {
+      titleLabel: "Note title",
+      titlePlaceholder: "Note title",
+      bodyLabel: "Note body",
+      bodyPlaceholder: "Write the note in Markdown",
+      tagsLabel: "Tags",
+      tagsPlaceholder: "tag-one, tag-two",
+      write: "Write",
+      preview: "Preview",
+      emptyPreview: "Nothing to preview",
+      save: "Save",
+      saving: "Saving...",
+      delete: "Delete",
+      deleting: "Deleting...",
+      deleteTitle: "Delete note?",
+      deleteMessage: 'Delete "{{title}}"? This cannot be undone.',
+      deleteConfirm: "Delete",
+      cancel: "Cancel",
+      fromChat: "From chat",
+      addToChat: "Add to chat",
+      addedToChat: "Added to the chat",
+      noChat: "Open a chat first",
+      sourceAgent: "From {{agent}}",
+      states: {
+        loadFailed: "Unable to load the note",
+        notFound: "Note not found",
+      },
+      errors: {
+        save: "Unable to save the note: {{message}}",
+        delete: "Unable to delete the note: {{message}}",
+      },
+    },
+    saveAsNote: {
+      label: "Save as note",
+      saved: "Saved to notes",
+      failed: "Unable to save the note: {{message}}",
+    },
+    mentions: {
+      noNotes: "No notes",
+    },
+  },
+
   serviceUrl: {
     title: "Open service URL",
     message: "Open {{url}}?",
@@ -1831,6 +2540,15 @@ export const en = {
     archiveFinishedAction: "Archive finished subagents",
     archiveFinishedRetry: "Retry ({{failed}}/{{total}})",
   },
+  selectionAsks: {
+    title: "Asks",
+    pillLabelOne: "1 ask",
+    pillLabelMany: "{{count}} asks",
+    openAction: "Open ask {{label}}",
+    archiveAction: "Archive {{label}}",
+    archiveTooltip: "Archive ask",
+    clearAll: "Clear all asks",
+  },
   panels: {
     draft: {
       newAgent: "New Agent",
@@ -1838,6 +2556,7 @@ export const en = {
     },
     file: {
       directoryMissing: "Workspace directory not found.",
+      notFoundOnHost: "File not found on the host: {{path}}",
       loading: "Loading file...",
       noPreview: "No preview available",
       binaryPreviewUnavailable: "Binary preview unavailable",
@@ -1897,6 +2616,15 @@ export const en = {
     subAgentActivity: "Sub-agent activity",
     input: "Input",
     output: "Output",
+    previewPage: {
+      width: "{{width}} px wide",
+      pageHeight: "page {{height}} px tall",
+      captured: "screenshot cut at {{height}} px",
+      openScreenshot: "Open screenshot",
+      console: "Console ({{count}})",
+      noConsole: "Nothing logged",
+      source: "Page source",
+    },
   },
   toolCallGroup: {
     editedFiles: {
@@ -1923,7 +2651,18 @@ export const en = {
       one: "called Paseo {{count}} time",
       other: "called Paseo {{count}} times",
     },
-    and: "and",
+    thoughts: {
+      one: "thought {{count}} time",
+      other: "thought {{count}} times",
+    },
+    fetches: {
+      one: "fetched {{count}} page",
+      other: "fetched {{count}} pages",
+    },
+    failed: {
+      one: "{{count}} failed",
+      other: "{{count}} failed",
+    },
   },
   renameModal: {
     rename: "Rename",
@@ -1933,9 +2672,12 @@ export const en = {
     dismiss: "Dismiss",
   },
   contextWindow: {
+    noData: "No context data",
+    accessibilityNoData: "Context window: No context data",
     title: "Context window",
     used: "{{percentage}}% used",
     tokens: "{{used}} / {{max}} tokens",
+    tokensUnknown: "0 tokens (waiting for usage)",
     sessionCost: "Session cost {{cost}}",
     accessibility: "Context window {{percentage}}% used",
   },
@@ -1974,14 +2716,18 @@ export const en = {
     groupInfo: "About {{title}}",
     sections: {
       general: "General",
+      chat: "Chat",
       appearance: "Appearance",
-      layout: "Layout",
+      sidebar: "Sidebar",
       editor: "Editor",
+      terminal: "Terminal",
+      browser: "Browser",
       shortcuts: "Shortcuts",
       integrations: "Integrations",
       notifications: "Notifications",
       permissions: "Permissions",
       diagnostics: "Diagnostics",
+      missionControl: "Mission Control",
       about: "About",
     },
     layout: {
@@ -1994,28 +2740,31 @@ export const en = {
         },
         sources: {
           explorerFiles: {
-            label: "Selecting a file in Explorer",
+            label: "Clicking a file in the Explorer sidebar",
             description: "Open files selected in the Explorer sidebar beside your work",
           },
           diffs: {
-            label: "Opening a diff",
+            label: "Clicking a change in the Explorer sidebar or a chat",
             description: "Open diffs from Explorer and agent conversations beside your work",
           },
           chatFiles: {
-            label: "Opening a file from an agent chat",
+            label: "Clicking a file in an agent chat",
             description: "Open file links and tool-call files beside the conversation",
           },
           diffFiles: {
-            label: "Opening a file from Changes",
+            label: "Clicking a file in a diff",
             description: "Open source files selected from a diff beside it",
           },
           subagents: {
-            label: "Opening a subagent",
+            label: "Clicking a subagent in an agent chat",
             description: "Open subagents beside their parent agent",
           },
           pullRequests: {
-            label: "Opening a pull request from Changes",
+            label: "Clicking a pull request in the Explorer sidebar",
             description: "Open pull request details beside Changes",
+          },
+          serviceUrls: {
+            label: "Clicking a script's service URL",
           },
         },
       },
@@ -2024,6 +2773,16 @@ export const en = {
       title: "Editor",
       vimKeybindings: "Vim keybindings",
       vimHint: "Applies to source files on web and desktop.",
+      defaultFileOpener: "Default file opener",
+      defaultFileOpenerHint:
+        "Used for normal file clicks. Plannotator supports document and configuration files; source files fall back to Paseo.",
+      defaultFileOpenerPaseo: "Paseo",
+      defaultFileOpenerVsCodeWeb: "VS Code Web",
+      defaultFileOpenerPlannotator: "Plannotator",
+      plannotatorFeedbackMode: "Plannotator feedback",
+      plannotatorFeedbackModeHint: "How annotation feedback is delivered to the linked agent.",
+      plannotatorFeedbackAutoSend: "Auto-send",
+      plannotatorFeedbackCompose: "Pre-fill composer",
     },
     notifications: {
       title: "Notifications",
@@ -2052,6 +2811,33 @@ export const en = {
       plugins: "Plugins",
       host: "Overview",
     },
+    missionControl: {
+      memory: "Memory",
+      hindsightUrl: "Hindsight URL",
+      hindsightUrlHint:
+        "Hindsight API base URL. Empty disables fleet memory (run-record writes and recall).",
+      hindsightBank: "Write bank",
+      hindsightBankHint: "Bank Paseo writes run records to.",
+      hindsightSecondaryBank: "Recall bank (secondary)",
+      hindsightSecondaryBankHint:
+        "Read-only secondary bank consulted by fleet_recall. Empty disables.",
+      voiceNodeUrl: "Voice node URL",
+      voiceNodeUrlHint:
+        "Commander Voice server (e.g. ws://127.0.0.1:8787/ws). Empty hides Commander Voice in the Mission Control composer.",
+      voiceMode: "Voice tool mode",
+      voiceModeHint:
+        "Relay = voice reads like Commander but routes every change through commander_dispatch. Direct = voice holds the full Commander tool surface, approval-gated. Applies to new voice sessions.",
+      approvalMode: "Approval mode",
+      approvalModeHint: "Auto mode sends proposals immediately; destructive actions always ask.",
+      verbose: "Verbose mode",
+      verboseHint:
+        "Show internal Mission Control machinery rows, system-owned workspaces, and detailed diagnostics.",
+      clearView: "Clear view",
+      clearViewHint: "Hide earlier cards from the feed. Older events remain available in History.",
+      resetCommander: "Reset Commander",
+      resetCommanderHint:
+        "Archive current Commander and spawn a fresh one with a new context pack.",
+    },
     plugins: {
       title: "Plugins",
       screens: {
@@ -2059,6 +2845,7 @@ export const en = {
         offline: "Connect to this host to open plugin settings.",
         update: "Update this host to use plugin settings.",
         unavailable: "This plugin settings screen is unavailable.",
+        backToPlugins: "Back to plugins",
       },
       trustedTitle: "Plugins are trusted code",
       trustedDescription:
@@ -2130,6 +2917,7 @@ export const en = {
     },
     general: {
       title: "General",
+      sending: "Sending",
       browserData: {
         title: "Browser data",
         siteData: "Cookies and site data",
@@ -2144,10 +2932,12 @@ export const en = {
       defaultSend: {
         label: "Default send",
         descriptions: {
-          interrupt: "When the agent is running, Enter interrupts. Command/Ctrl+Enter queues.",
+          interrupt:
+            "When the agent is running, Enter or spoken input interrupts. Command/Ctrl+Enter queues typed messages.",
+          queue:
+            "When the agent is running, Enter or spoken input queues. Command/Ctrl+Enter submits typed messages.",
           steer:
-            "When the agent is running, Enter steers the active turn. Command/Ctrl+Enter queues.",
-          queue: "When the agent is running, Enter queues. Command/Ctrl+Enter submits.",
+            "When the agent is running, Enter steers it — it finishes the current tool call, reads your message, then continues. Command/Ctrl+Enter interrupts.",
         },
         options: {
           interrupt: "Interrupt",
@@ -2156,8 +2946,6 @@ export const en = {
         },
       },
       serviceUrls: {
-        label: "Service URLs",
-        description: "Where to open URLs from running scripts",
         options: {
           ask: "Ask",
           inApp: "In Paseo",
@@ -2169,6 +2957,12 @@ export const en = {
         description: "Lines kept in the built-in terminal buffer",
         accessibilityLabel: "Terminal scrollback lines",
       },
+      itsaplanOrigin: {
+        label: "itsaplan URL",
+        description:
+          "Origin of the itsaplan instance shown in the sidebar (empty = derive from host)",
+        accessibilityLabel: "itsaplan URL",
+      },
       autoExpandReasoning: {
         label: "Always expand reasoning",
         description: "Show agent thinking and chain-of-thought blocks fully expanded by default",
@@ -2176,7 +2970,6 @@ export const en = {
       toolCallDetail: {
         label: "Tool call display",
         description: "How tool calls appear in the timeline",
-        accessibilityLabel: "Select tool call display ({{value}})",
         options: {
           overview: "Summary",
           detailed: "Full detail",
@@ -2263,6 +3056,7 @@ export const en = {
         options: {
           light: "Light",
           dark: "Dark",
+          mono: "Mono",
           zinc: "Zinc",
           midnight: "Midnight",
           claude: "Claude",
@@ -2279,8 +3073,15 @@ export const en = {
         description: "Show an outline for jumping between prompts",
       },
       sidebar: {
-        title: "Sidebar",
-        description: "Choose which items appear at the top of the sidebar and in what order",
+        header: {
+          title: "Header",
+          description: "Choose which items appear at the top of the sidebar and in what order",
+        },
+        footer: {
+          title: "Footer",
+          description:
+            "Choose which rows appear at the bottom of the sidebar and in what order. Add project and the icon row always show",
+        },
         moveUp: "Move up",
         moveDown: "Move down",
       },
@@ -2294,8 +3095,12 @@ export const en = {
         interfaceSizeHint: "Used for navigation, controls, and labels",
         interfaceSizeAccessibility: "Interface font size",
         contentSize: "Content size",
-        contentSizeHint: "Used for chat text and rendered Markdown",
+        contentSizeHint: "Used for chat text and rendered Markdown in the full agent pane",
         contentSizeAccessibility: "Content font size",
+        agentGridSize: "Agent Grid size",
+        agentGridSizeHint:
+          "Used for chat text in Mission Control Agent Grid tiles, separate from the full agent pane",
+        agentGridSizeAccessibility: "Agent Grid font size",
         codeFont: "Code font",
         codeFontHint:
           "Used in code, diffs, and the terminal output. Leave empty for the system default",
@@ -2303,6 +3108,50 @@ export const en = {
         codeSize: "Code size",
         codeSizeHint: "Used for code, diffs, and terminal output",
         codeSizeAccessibility: "Code font size",
+      },
+      agentGrid: {
+        title: "Agent Grid",
+        hoverComposer: "Show composer on hover",
+        hoverComposerHint:
+          "Reveal the tile composer when hovering; header or chat click always shows it",
+        direction: "Scroll direction",
+        directionHint: "Layout direction for the agent grid",
+        visibleCount: "Tiles per screen",
+        visibleCountHint: "Number of agent tiles displayed per screen (1–16)",
+        fontSize: "Tile font size",
+        fontSizeHint:
+          "Used for chat text in Mission Control Agent Grid tiles, separate from the full agent pane",
+      },
+      glass: {
+        title: "Glass",
+        hint: "Opacity sets how much the desktop shows through (0% is clear, 100% is solid). Darkness sets how dark the tint is. Only the Mono theme in the macOS app uses glass.",
+        window: "Window opacity",
+        windowHint: "Tint over the whole window. The sidebars show only this.",
+        chat: "Chat area opacity",
+        chatHint:
+          "Added over the window tint in the chat and VS Code area, so it is always denser than the sidebar.",
+        darkness: "Tint darkness",
+        darknessHint:
+          "How dark the window and chat tints are, without changing their opacity. 100% is black.",
+        floating: "Menus and popovers",
+        floatingHint:
+          "Tint of menus, popovers, tooltips and hover cards. Content under them is frosted.",
+        overlay: "Floating bars",
+        overlayHint: "Tint of the composer pills and the scroll-to-bottom button. Not frosted.",
+        panels: "Panel brightness",
+        panelsHint:
+          "Strength of the light fill on code blocks, tables, the composer and your messages (100% is the default).",
+        accessibility: "{{name}} in percent",
+        reset: "Reset",
+        resetAccessibility: "Reset {{name}} to default",
+      },
+      layout: {
+        title: "Layout",
+        contentWidth: "Content width",
+        contentWidthHint: "Max width of chat and Markdown files on wide screens",
+        contentWidthAccessibility: "Content width in pixels",
+        reset: "Reset",
+        resetAccessibility: "Reset content width to default",
       },
       syntax: {
         title: "Syntax",
@@ -2363,6 +3212,7 @@ export const en = {
         newTerminal: "New terminal",
         searchFiles: "Search files",
         toggleCommandCenter: "Toggle command center",
+        toggleCommandCenterFromGuest: "Toggle command center from an embedded app",
         showKeyboardShortcuts: "Show keyboard shortcuts",
         toggleLeftSidebar: "Toggle left sidebar",
         toggleRightSidebar: "Toggle Explorer sidebar",
@@ -2413,6 +3263,9 @@ export const en = {
       },
     },
     host: {
+      password: {
+        guidance: "Remove this host and add it again with the password this daemon asks for.",
+      },
       appearance: {
         title: "Appearance",
         name: {
@@ -2606,6 +3459,26 @@ export const en = {
           placeholder: "My Host",
           submit: "Rename",
         },
+        sshHost: {
+          title: "SSH host",
+          hint: "Lets “Open in editor” open this host's workspaces in Cursor or VS Code over Remote SSH",
+          notConfigured: "Not configured",
+          edit: "Edit",
+          configure: "Configure",
+          modalTitle: "SSH host",
+          placeholder: "user@hostname or SSH config alias",
+          submit: "Save",
+        },
+        browserEditorUrl: {
+          title: "VS Code Web URL",
+          hint: "Lets “Open → VS Code Web” open this host's workspaces in an in-app browser tab (code-server)",
+          notConfigured: "Not configured",
+          edit: "Edit",
+          configure: "Configure",
+          modalTitle: "VS Code Web URL",
+          placeholder: "http://hostname:8765",
+          submit: "Save",
+        },
         restart: {
           title: "Restart daemon",
           hint: "Restarts the daemon process. The app will reconnect automatically",
@@ -2708,6 +3581,10 @@ export const en = {
         adding: "Adding...",
         failedToSave: "Failed to save model",
         removeModel: "Remove {{id}}",
+        hideModel: "Hide {{name}}",
+        showModel: "Show {{name}}",
+        checkAll: "Check all",
+        uncheckAll: "Uncheck all",
         searchPlaceholder: "Search models",
         loading: "Loading models...",
         retry: "Retry",
@@ -2746,6 +3623,9 @@ export const en = {
         useAutomatic: "Use automatic",
         imageUrl: "Image or website URL",
         save: "Save changes",
+        description: "Description",
+        descriptionLabel: "Project description",
+        descriptionPlaceholder: "What this project is for",
         savedToast: "Project updated",
       },
       readFailures: {

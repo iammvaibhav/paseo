@@ -7,6 +7,7 @@ import {
   DEFAULT_CLIENT_SETTINGS,
   DEFAULT_CODE_FONT_SIZE,
   DEFAULT_CONTENT_FONT_SIZE,
+  DEFAULT_AGENT_GRID_FONT_SIZE,
   DEFAULT_UI_BASE_FONT_SIZE,
   defaultUiBaseFontSize,
   defaultContentFontSize,
@@ -14,6 +15,7 @@ import {
   loadSettingsFromStorage,
   parseClampedFontSize,
   parseTerminalScrollbackLines,
+  resolveContentMaxWidth,
   saveAppSettings,
   type SettingsDeps,
 } from "./storage";
@@ -22,7 +24,7 @@ import {
   DEFAULT_SIDEBAR_ROW_ITEMS,
   SIDEBAR_ROW_ITEMS,
 } from "@/components/sidebar/display-preferences/row-items";
-import { THEME_OPTIONS } from "@/styles/theme";
+import { DEFAULT_CONTENT_MAX_WIDTH, THEME_OPTIONS } from "@/styles/theme";
 
 const LEGACY_SETTINGS_KEY = "@paseo:settings";
 
@@ -237,6 +239,98 @@ describe("loadAppSettingsFromStorage", () => {
     expect(result.sidebarNavItems).toEqual([]);
   });
 
+  it("loads stored sidebar footer items in order and defaults them to empty", async () => {
+    expect((await loadAppSettingsFromStorage(makeDeps())).sidebarFooterItems).toEqual([]);
+
+    const deps = makeDeps({
+      storage: createInMemoryKeyValueStorage({
+        [APP_SETTINGS_KEY]: JSON.stringify({
+          sidebarFooterItems: [
+            // A footer button that was configurable once; the sidebar model skips it.
+            { key: "help", visible: false },
+            { key: "plugin:sync:status", visible: true },
+            { key: "usage", visible: false },
+          ],
+        }),
+      }),
+    });
+
+    const result = await loadAppSettingsFromStorage(deps);
+
+    expect(result.sidebarFooterItems).toEqual([
+      { key: "help", visible: false },
+      { key: "plugin:sync:status", visible: true },
+      { key: "usage", visible: false },
+    ]);
+  });
+
+  it("loads legacy usage pins in order and defaults a fresh device to source defaults", async () => {
+    expect((await loadAppSettingsFromStorage(makeDeps())).usage).toEqual({
+      displayAs: "used",
+      pins: null,
+      serverId: null,
+    });
+
+    const deps = makeDeps({
+      storage: createInMemoryKeyValueStorage({
+        [APP_SETTINGS_KEY]: JSON.stringify({
+          usage: {
+            displayAs: "remaining",
+            pinned: [
+              { sourceId: "codex", windowId: "weekly" },
+              { sourceId: "claude", windowId: "five-hour" },
+            ],
+            serverId: "server",
+          },
+        }),
+      }),
+    });
+
+    expect((await loadAppSettingsFromStorage(deps)).usage).toEqual({
+      displayAs: "remaining",
+      pins: [
+        { sourceId: "codex", windowId: "weekly" },
+        { sourceId: "claude", windowId: "five-hour" },
+      ],
+      serverId: "server",
+    });
+  });
+
+  it("loads an explicitly empty usage selection without restoring defaults", async () => {
+    const deps = makeDeps({
+      storage: createInMemoryKeyValueStorage({
+        [APP_SETTINGS_KEY]: JSON.stringify({
+          usage: { displayAs: "remaining", pins: [], serverId: "server" },
+        }),
+      }),
+    });
+    expect((await loadAppSettingsFromStorage(deps)).usage).toEqual({
+      displayAs: "remaining",
+      pins: [],
+      serverId: "server",
+    });
+  });
+
+  it("keeps valid usage preferences when one field is malformed", async () => {
+    const deps = makeDeps({
+      storage: createInMemoryKeyValueStorage({
+        [APP_SETTINGS_KEY]: JSON.stringify({
+          usage: {
+            displayAs: "percent",
+            pinned: [{ sourceId: "claude", windowId: "weekly" }],
+            serverId: 42,
+          },
+        }),
+      }),
+    });
+
+    expect((await loadAppSettingsFromStorage(deps)).usage).toEqual({
+      displayAs: "used",
+      pins: [{ sourceId: "claude", windowId: "weekly" }],
+      serverId: null,
+    });
+  });
+
   it("collapses legacy diff destinations into the former Explorer choice", async () => {
     const deps = makeDeps({
       storage: createInMemoryKeyValueStorage({
@@ -310,6 +404,38 @@ describe("loadAppSettingsFromStorage", () => {
     const result = await loadAppSettingsFromStorage(deps);
 
     expect(result.workspaceTitleSource).toBe("branch");
+  });
+
+  it("loads the configured default file opener", async () => {
+    const deps = makeDeps({
+      storage: createInMemoryKeyValueStorage({
+        [APP_SETTINGS_KEY]: JSON.stringify({ defaultFileOpener: "plannotator" }),
+      }),
+    });
+
+    const result = await loadAppSettingsFromStorage(deps);
+
+    expect(result.defaultFileOpener).toBe("plannotator");
+  });
+
+  it("migrates the previous markdown Plannotator switch", async () => {
+    const enabledDeps = makeDeps({
+      storage: createInMemoryKeyValueStorage({
+        [APP_SETTINGS_KEY]: JSON.stringify({ openMarkdownInPlannotator: true }),
+      }),
+    });
+    const disabledDeps = makeDeps({
+      storage: createInMemoryKeyValueStorage({
+        [APP_SETTINGS_KEY]: JSON.stringify({ openMarkdownInPlannotator: false }),
+      }),
+    });
+
+    await expect(loadAppSettingsFromStorage(enabledDeps)).resolves.toMatchObject({
+      defaultFileOpener: "plannotator",
+    });
+    await expect(loadAppSettingsFromStorage(disabledDeps)).resolves.toMatchObject({
+      defaultFileOpener: "vscode-web",
+    });
   });
 
   it("drops an unknown workspace title source back to title", async () => {
@@ -686,7 +812,7 @@ describe("appearance settings", () => {
     expect(result.contentFontSize).toBe(DEFAULT_UI_BASE_FONT_SIZE);
     expect(result.codeFontSize).toBe(DEFAULT_CODE_FONT_SIZE);
     expect(result.syntaxTheme).toBe("one");
-    expect(result.toolCallDetailLevel).toBe("detailed");
+    expect(result.toolCallDetailLevel).toBe("overview");
   });
 
   it("migrates the enabled compact tool call preference to overview", async () => {
@@ -706,7 +832,17 @@ describe("appearance settings", () => {
       }),
     });
 
-    expect((await loadAppSettingsFromStorage(deps)).toolCallDetailLevel).toBe("detailed");
+    expect((await loadAppSettingsFromStorage(deps)).toolCallDetailLevel).toBe("overview");
+  });
+
+  it("clears the removed diff-stat trailing choice instead of switching to timestamps", async () => {
+    const deps = makeDeps({
+      storage: createInMemoryKeyValueStorage({
+        [APP_SETTINGS_KEY]: JSON.stringify({ sidebarWorkspaceTrailing: "diff" }),
+      }),
+    });
+
+    expect((await loadAppSettingsFromStorage(deps)).sidebarWorkspaceTrailing).toBe("none");
   });
 
   it("migrates a switched-off checks row item to the hidden checks display", async () => {
@@ -780,6 +916,31 @@ describe("appearance settings", () => {
     expect((await loadAppSettingsFromStorage(bogus)).contentFontSize).toBe(
       DEFAULT_CONTENT_FONT_SIZE,
     );
+  });
+
+  it("defaults Agent Grid size independently of content size and clamps it", async () => {
+    const missing = makeDeps({
+      storage: createInMemoryKeyValueStorage({
+        [APP_SETTINGS_KEY]: JSON.stringify({ contentFontSize: 18 }),
+      }),
+    });
+    const missingResult = await loadAppSettingsFromStorage(missing);
+    expect(missingResult.contentFontSize).toBe(18);
+    expect(missingResult.agentGridFontSize).toBe(DEFAULT_AGENT_GRID_FONT_SIZE);
+
+    const high = makeDeps({
+      storage: createInMemoryKeyValueStorage({
+        [APP_SETTINGS_KEY]: JSON.stringify({ agentGridFontSize: 999 }),
+      }),
+    });
+    expect((await loadAppSettingsFromStorage(high)).agentGridFontSize).toBe(21);
+
+    const low = makeDeps({
+      storage: createInMemoryKeyValueStorage({
+        [APP_SETTINGS_KEY]: JSON.stringify({ agentGridFontSize: 8 }),
+      }),
+    });
+    expect((await loadAppSettingsFromStorage(low)).agentGridFontSize).toBe(10);
   });
 
   it.each([
@@ -953,5 +1114,51 @@ describe("parseClampedFontSize", () => {
     expect(parseClampedFontSize(8, { min: 11, max: 24 })).toBe(11);
     expect(parseClampedFontSize("15", { min: 11, max: 24 })).toBe(15);
     expect(parseClampedFontSize("abc", { min: 11, max: 24 })).toBeNull();
+  });
+});
+
+describe("content max width", () => {
+  it("follows the current default until the user picks a width", async () => {
+    const deps = makeDeps();
+    const queryClient = new QueryClient();
+
+    await saveAppSettings({ queryClient, updates: { codeFontSize: 14 }, deps });
+
+    const stored = JSON.parse(deps.storage.entries.get(APP_SETTINGS_KEY) ?? "null");
+    expect(stored.contentMaxWidth).toBeNull();
+    expect(resolveContentMaxWidth(await loadAppSettingsFromStorage(deps))).toBe(
+      DEFAULT_CONTENT_MAX_WIDTH,
+    );
+  });
+
+  it("keeps a picked width and returns to the default when reset", async () => {
+    const deps = makeDeps();
+    const queryClient = new QueryClient();
+
+    await saveAppSettings({ queryClient, updates: { contentMaxWidth: 1600 }, deps });
+    expect(resolveContentMaxWidth(await loadAppSettingsFromStorage(deps))).toBe(1600);
+
+    await saveAppSettings({ queryClient, updates: { contentMaxWidth: null }, deps });
+    expect(JSON.parse(deps.storage.entries.get(APP_SETTINGS_KEY) ?? "null").contentMaxWidth).toBe(
+      null,
+    );
+    expect(resolveContentMaxWidth(await loadAppSettingsFromStorage(deps))).toBe(
+      DEFAULT_CONTENT_MAX_WIDTH,
+    );
+  });
+
+  it("clamps stored widths and drops malformed ones to the default", async () => {
+    const load = (contentMaxWidth: unknown) =>
+      loadAppSettingsFromStorage(
+        makeDeps({
+          storage: createInMemoryKeyValueStorage({
+            [APP_SETTINGS_KEY]: JSON.stringify({ contentMaxWidth }),
+          }),
+        }),
+      );
+
+    expect((await load(100_000)).contentMaxWidth).toBe(4000);
+    expect((await load(10)).contentMaxWidth).toBe(600);
+    expect((await load("wide")).contentMaxWidth).toBeNull();
   });
 });

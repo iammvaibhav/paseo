@@ -1117,6 +1117,7 @@ function createDeps(options?: {
     projectRegistry,
     workspaceRegistry,
     workspaceGitService,
+    isDirectory: async () => true,
     logger: createTestLogger(),
   });
 
@@ -1254,6 +1255,17 @@ function createWorkspaceGitServiceStub(): WorkspaceGitService {
       }
     },
     resolveDefaultBranch: async () => "main",
+    hasOriginTrackingBranch: async (repoRoot, branch) => {
+      try {
+        execFileSync("git", ["rev-parse", "--verify", `refs/remotes/origin/${branch}`], {
+          cwd: repoRoot,
+          stdio: "pipe",
+        });
+        return true;
+      } catch {
+        return false;
+      }
+    },
     refresh: async () => {},
     requestWorkingTreeWatch: async (cwd) => ({
       repoRoot: cwd,

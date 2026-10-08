@@ -172,5 +172,5 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.surface1,
   },
   errorText: { color: theme.colors.foreground, fontSize: theme.fontSize.sm, flex: 1 },
-  highlight: { backgroundColor: theme.colors.statusWarning, color: theme.colors.surface0 },
+  highlight: { backgroundColor: theme.colors.statusWarning, color: theme.colors.background },
 }));

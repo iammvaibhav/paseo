@@ -124,4 +124,32 @@ describe("splitMarkdownBlocks", () => {
       "Second paragraph",
     ]);
   });
+
+  it("keeps a details element with paragraphs in its body as one block", () => {
+    const details =
+      "<details><summary>Evidence</summary>\n\n- one\n- two\n\nMore text\n\n</details>";
+    expect(splitMarkdownBlocks(`Intro\n\n${details}\n\nAfter`)).toEqual([
+      "Intro",
+      details,
+      "After",
+    ]);
+  });
+
+  it("keeps a nested details element whole", () => {
+    const details =
+      "<details><summary>Outer</summary>\n\n<details><summary>Inner</summary>\n\nBody\n\n</details>\n\nTail\n\n</details>";
+    expect(splitMarkdownBlocks(`${details}\n\nAfter`)).toEqual([details, "After"]);
+  });
+
+  it("ignores details tags inside code", () => {
+    expect(
+      splitMarkdownBlocks("```html\n<details>\n```\n\nUse `<details>` here.\n\nAfter"),
+    ).toEqual(["```html\n<details>\n```", "Use `<details>` here.", "After"]);
+  });
+
+  it("keeps everything after an unclosed details tag as one block for streaming content", () => {
+    expect(
+      splitMarkdownBlocks("Intro\n\n<details><summary>S</summary>\n\nPart one\n\nPart"),
+    ).toEqual(["Intro", "<details><summary>S</summary>\n\nPart one\n\nPart"]);
+  });
 });

@@ -7,6 +7,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { Check, X, XCircle } from "lucide-react-native";
 import { useDownloadStore, formatSpeed, formatEta, type Download } from "@/stores/download-store";
+import { glassFloatingStyle } from "@/styles/theme";
 
 const AUTO_DISMISS_DELAY = 3000;
 
@@ -123,6 +124,7 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: theme.spacing[3],
     paddingHorizontal: theme.spacing[4],
     ...theme.shadow.md,
+    ...glassFloatingStyle(theme),
   },
   textContainer: {
     flex: 1,

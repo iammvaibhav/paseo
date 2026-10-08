@@ -1,7 +1,9 @@
+import { readFileSync } from "node:fs";
 import { afterEach, expect, expectTypeOf, test, vi } from "vitest";
 import { z } from "zod";
 import {
   DaemonClient,
+  supportsUsageReports,
   type DaemonClientTrace,
   type CreateAgentRequestOptions,
   type DaemonTransport,
@@ -854,6 +856,142 @@ test("passes password as HTTP bearer header and WebSocket subprotocol", async ()
   });
 });
 
+test("keeps relay upgrade credentials out of the socket request", async () => {
+  const mock = createMockTransport();
+  const requests: Array<{ url: string; headers?: Record<string, string>; protocols?: string[] }> =
+    [];
+  const client = new DaemonClient({
+    url: "ws://relay.test/ws?role=client&serverId=srv_test&v=2",
+    clientId: "clsk_relay_auth_test",
+    password: "shared-secret",
+    authHeader: "Bearer shared-secret",
+    e2ee: { enabled: true, daemonPublicKeyB64: "daemon-public-key" },
+    reconnect: { enabled: false },
+    transportFactory: (request) => {
+      requests.push(request);
+      return mock.transport;
+    },
+  });
+  clients.push(client);
+  void client.connect();
+  await vi.waitFor(() => expect(requests).toHaveLength(1));
+  expect(requests[0]).toEqual({ url: "ws://relay.test/ws?role=client&serverId=srv_test&v=2" });
+});
+
+test("refuses relay password auth without an encrypted hello", async () => {
+  const requests: unknown[] = [];
+  const client = new DaemonClient({
+    url: "ws://relay.test/ws?role=client&serverId=srv_test&v=2",
+    clientId: "clsk_unencrypted_relay_test",
+    password: "shared-secret",
+    connectTimeoutMs: 50,
+    reconnect: { enabled: false },
+    transportFactory: (request) => {
+      requests.push(request);
+      return createMockTransport().transport;
+    },
+  });
+  clients.push(client);
+  await expect(client.connect()).rejects.toThrow("Relay credentials require E2EE");
+  expect(requests).toEqual([]);
+});
+
+test("stops reconnecting after a password rejection on an established connection", async () => {
+  const socket = createMockTransport();
+  let attempts = 0;
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "clsk_reconnect_auth_test",
+    password: "old-secret",
+    reconnect: { enabled: true, baseDelayMs: 1, maxDelayMs: 1 },
+    transportFactory: () => {
+      attempts += 1;
+      return socket.transport;
+    },
+  });
+  clients.push(client);
+  const connected = client.connect();
+  socket.triggerOpen();
+  await connected;
+  socket.triggerMessage(JSON.stringify({ type: "hello.rejected", reason: "incorrect_password" }));
+  socket.triggerClose({ code: 4003, reason: "Incorrect password" });
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  expect(client.authFailureReason).toBe("incorrect_password");
+  expect(attempts).toBe(1);
+});
+
+test("sends a password containing spaces in hello without an invalid WebSocket subprotocol", async () => {
+  const mock = createMockTransport();
+  const transportFactory = vi.fn(() => mock.transport);
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "clsk_unit_test",
+    password: "two words",
+    logger: createMockLogger(),
+    reconnect: { enabled: false },
+    transportFactory,
+  });
+  clients.push(client);
+  const connected = client.connect();
+  mock.triggerOpen({ preserveSent: true });
+  await connected;
+  expect(transportFactory).toHaveBeenCalledWith({
+    url: "ws://test",
+    headers: {},
+  });
+  expect(JSON.parse(assertStr(mock.sent[0]))).toMatchObject({
+    type: "hello",
+    auth: { kind: "password", password: "two words" },
+  });
+});
+
+test("uses a local credential over a saved password when the desktop bridge provides one", async () => {
+  const mock = createMockTransport();
+  const transportFactory = vi.fn(() => mock.transport);
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "desktop-managed",
+    password: "stale-password",
+    localCredential: async () => "current-local-token",
+    reconnect: { enabled: false },
+    transportFactory,
+  });
+  clients.push(client);
+  const connected = client.connect();
+  await vi.waitFor(() => expect(transportFactory).toHaveBeenCalled());
+  mock.triggerOpen({ preserveSent: true });
+  await connected;
+  expect(transportFactory).toHaveBeenCalledWith({ url: "ws://test", headers: {} });
+  expect(JSON.parse(assertStr(mock.sent[0]))).toMatchObject({
+    type: "hello",
+    auth: { kind: "localCredential", token: "current-local-token" },
+  });
+});
+
+test("uses the saved host password when the desktop bridge has no credential for the target", async () => {
+  const mock = createMockTransport();
+  const transportFactory = vi.fn(() => mock.transport);
+  const localCredential = vi.fn(async () => undefined);
+  const client = new DaemonClient({
+    url: "ws://remote-host",
+    clientId: "remote-saved-host",
+    password: "saved-password",
+    localCredential,
+    reconnect: { enabled: false },
+    transportFactory,
+  });
+  clients.push(client);
+  const connected = client.connect();
+  await vi.waitFor(() => expect(transportFactory).toHaveBeenCalled());
+  mock.triggerOpen({ preserveSent: true });
+  await connected;
+  expect(localCredential).toHaveBeenCalledOnce();
+  expect(JSON.parse(assertStr(mock.sent[0]))).toMatchObject({
+    type: "hello",
+    auth: { kind: "password", password: "saved-password" },
+  });
+});
+
 test("advertises client capabilities in hello", async () => {
   const logger = createMockLogger();
   const mock = createMockTransport();
@@ -900,6 +1038,7 @@ test("advertises client capabilities in hello", async () => {
       timeline_notifications: true,
       plugin_timeline_items: true,
       workspace_setup_blocked: true,
+      hello_rejection: true,
       browser_host: {
         supportedCommands: ["list_tabs"],
         hostKind: "desktop app",
@@ -1394,6 +1533,56 @@ test("honors explicit fetchAgent timeout below the session RPC default", async (
 
   await vi.advanceTimersByTimeAsync(1);
   await expect(responsePromise).rejects.toThrow("Timeout waiting for message (5000ms)");
+});
+
+test("gives fleetSpawnApply an extended timeout above the session RPC default", async () => {
+  useHeartbeatClock();
+  const logger = createMockLogger();
+  const mock = createMockTransport();
+
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "clsk_unit_test",
+    logger,
+    reconnect: { enabled: false },
+    transportFactory: () => mock.transport,
+  });
+  clients.push(client);
+
+  const connectPromise = client.connect();
+  mock.triggerOpen();
+  await connectPromise;
+
+  const responsePromise = client.fleetSpawnApply(
+    { provider: "omp", summary: "Spawn worker agent" },
+    "req-spawn-1",
+  );
+  let settled = false;
+  void responsePromise.then(
+    () => {
+      settled = true;
+      return undefined;
+    },
+    () => {
+      settled = true;
+      return undefined;
+    },
+  );
+
+  expect(parseSentFrame(mock.sent[0])).toEqual({
+    type: "mission_control.spawn.apply.request",
+    requestId: "req-spawn-1",
+    spawnPlan: { provider: "omp", summary: "Spawn worker agent" },
+  });
+
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(settled).toBe(false);
+
+  await vi.advanceTimersByTimeAsync(539_999);
+  expect(settled).toBe(false);
+
+  await vi.advanceTimersByTimeAsync(1);
+  await expect(responsePromise).rejects.toThrow("Timeout waiting for message (600000ms)");
 });
 
 test("preserves legacy fetchAgent id overload", async () => {
@@ -2474,6 +2663,46 @@ test("listDirectory sends a list file explorer request and returns directory ent
   });
 });
 
+test("missionControlCommanderReset sends the reset request and resolves the response", async () => {
+  const logger = createMockLogger();
+  const mock = createMockTransport();
+
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "clsk_reset_test",
+    logger,
+    reconnect: { enabled: false },
+    transportFactory: () => mock.transport,
+  });
+  clients.push(client);
+
+  const connectPromise = client.connect();
+  mock.triggerOpen();
+  await connectPromise;
+
+  const responsePromise = client.missionControlCommanderReset("req-reset");
+
+  expect(JSON.parse(assertStr(mock.sent[0]))).toEqual({
+    type: "session",
+    message: {
+      type: "mission_control.commander.reset.request",
+      requestId: "req-reset",
+    },
+  });
+
+  mock.triggerMessage(
+    wrapSessionMessage({
+      type: "mission_control.commander.reset.response",
+      payload: { requestId: "req-reset", ok: true },
+    }),
+  );
+
+  await expect(responsePromise).resolves.toEqual({
+    requestId: "req-reset",
+    ok: true,
+  });
+});
+
 test("readFile hides legacy base64 behind bytes", async () => {
   const logger = createMockLogger();
   const mock = createMockTransport();
@@ -2605,6 +2834,96 @@ test("readFile resolves from binary file frames when the daemon supports them", 
     modifiedAt: "2026-05-02T00:00:00.000Z",
   });
   expect(new TextDecoder().decode(result.bytes)).toBe("hello");
+});
+
+test("writeExplorerFile sends scoped write request and binary chunks", async () => {
+  const logger = createMockLogger();
+  const mock = createMockTransport();
+
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "clsk_unit_test",
+    logger,
+    reconnect: { enabled: false },
+    transportFactory: () => mock.transport,
+  });
+  clients.push(client);
+
+  const connectPromise = client.connect();
+  mock.triggerOpen();
+  await connectPromise;
+
+  const responsePromise = client.writeExplorerFile({
+    cwd: "/repo",
+    directoryPath: "src",
+    fileName: "notes.txt",
+    mimeType: "text/plain",
+    bytes: new TextEncoder().encode("hello"),
+    modifiedAt: "2026-05-02T00:00:00.000Z",
+    requestId: "req-write",
+    chunkSize: 5,
+  });
+
+  expect(JSON.parse(assertStr(mock.sent[0]))).toEqual({
+    type: "session",
+    message: {
+      type: "file.explorer.write.request",
+      cwd: "/repo",
+      directoryPath: "src",
+      fileName: "notes.txt",
+      mimeType: "text/plain",
+      size: 5,
+      modifiedAt: "2026-05-02T00:00:00.000Z",
+      requestId: "req-write",
+    },
+  });
+  expect(mock.sent.slice(1).map(assertUint8Array).map(decodeFileTransferFrame)).toEqual([
+    {
+      opcode: FileTransferOpcode.FileBegin,
+      requestId: "req-write",
+      metadata: {
+        mime: "text/plain",
+        size: 5,
+        encoding: "binary",
+        modifiedAt: "2026-05-02T00:00:00.000Z",
+        fileName: "notes.txt",
+      },
+      payload: new Uint8Array(),
+    },
+    {
+      opcode: FileTransferOpcode.FileChunk,
+      requestId: "req-write",
+      payload: new TextEncoder().encode("hello"),
+    },
+    {
+      opcode: FileTransferOpcode.FileEnd,
+      requestId: "req-write",
+      payload: new Uint8Array(),
+    },
+  ]);
+
+  mock.triggerMessage(
+    wrapSessionMessage({
+      type: "file.explorer.write.response",
+      payload: {
+        requestId: "req-write",
+        cwd: "/repo",
+        path: "src/notes.txt",
+        fileName: "notes.txt",
+        size: 5,
+        error: null,
+      },
+    }),
+  );
+
+  await expect(responsePromise).resolves.toEqual({
+    requestId: "req-write",
+    cwd: "/repo",
+    path: "src/notes.txt",
+    fileName: "notes.txt",
+    size: 5,
+    error: null,
+  });
 });
 
 test("readFile drops an old daemon's over-budget binary chunks and reports the refusal", async () => {
@@ -4792,6 +5111,145 @@ test("detaches an agent through the namespaced detach RPC", async () => {
 
   await expect(promise).resolves.toBeUndefined();
 });
+test("moves an agent to a workspace through the namespaced agent.workspace.move RPC", async () => {
+  const logger = createMockLogger();
+  const mock = createMockTransport();
+
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "clsk_unit_test",
+    logger,
+    reconnect: { enabled: false },
+    transportFactory: () => mock.transport,
+  });
+  clients.push(client);
+
+  const connectPromise = client.connect();
+  mock.triggerOpen();
+  await connectPromise;
+
+  const promise = client.moveAgentToWorkspace("agent-42", "workspace-target", "custom-request-id");
+
+  expect(mock.sent).toHaveLength(1);
+  const request = parseSentFrame(mock.sent[0]);
+  expect(request).toMatchObject({
+    type: "agent.workspace.move.request",
+    agentId: "agent-42",
+    workspaceId: "workspace-target",
+    requestId: "custom-request-id",
+  });
+
+  mock.triggerMessage(
+    wrapSessionMessage({
+      type: "agent.workspace.move.response",
+      payload: {
+        requestId: "custom-request-id",
+        agentId: "agent-42",
+        workspaceId: "workspace-target",
+        accepted: true,
+        error: null,
+      },
+    }),
+  );
+
+  await expect(promise).resolves.toEqual({
+    agentId: "agent-42",
+    workspaceId: "workspace-target",
+  });
+});
+
+test("transfers an agent inbound through the namespaced agent.workspace.transfer RPC", async () => {
+  const logger = createMockLogger();
+  const mock = createMockTransport();
+
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "clsk_unit_test",
+    logger,
+    reconnect: { enabled: false },
+    transportFactory: () => mock.transport,
+  });
+  clients.push(client);
+
+  const connectPromise = client.connect();
+  mock.triggerOpen();
+  await connectPromise;
+
+  const promise = client.transferAgentInbound(
+    {
+      targetWorkspaceId: "target-ws",
+      agent: { id: "agent-42", provider: "codex" },
+      timeline: [{ seq: 1 }],
+    },
+    "transfer-1",
+  );
+
+  expect(mock.sent).toHaveLength(1);
+  const request = parseSentFrame(mock.sent[0]);
+  expect(request).toMatchObject({
+    type: "agent.workspace.transfer.request",
+    targetWorkspaceId: "target-ws",
+    requestId: "transfer-1",
+  });
+
+  mock.triggerMessage(
+    wrapSessionMessage({
+      type: "agent.workspace.transfer.response",
+      payload: {
+        requestId: "transfer-1",
+        agentId: "agent-42",
+        workspaceId: "target-ws",
+        accepted: true,
+        error: null,
+      },
+    }),
+  );
+
+  await expect(promise).resolves.toEqual({
+    agentId: "agent-42",
+    workspaceId: "target-ws",
+  });
+});
+
+test("rejects when agent.workspace.move is not accepted", async () => {
+  const logger = createMockLogger();
+  const mock = createMockTransport();
+
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "clsk_unit_test",
+    logger,
+    reconnect: { enabled: false },
+    transportFactory: () => mock.transport,
+  });
+  clients.push(client);
+
+  const connectPromise = client.connect();
+  mock.triggerOpen();
+  await connectPromise;
+
+  const promise = client.moveAgentToWorkspace("agent-42", "workspace-target");
+
+  expect(mock.sent).toHaveLength(1);
+  const request = parseSentFrame(mock.sent[0]);
+
+  mock.triggerMessage(
+    wrapSessionMessage({
+      type: "agent.workspace.move.response",
+      payload: {
+        requestId: request.requestId,
+        agentId: "agent-42",
+        workspaceId: "workspace-target",
+        accepted: false,
+        error: "Agent agent-42 is running; stop it before moving workspaces",
+      },
+    }),
+  );
+
+  await expect(promise).rejects.toThrow(
+    "Agent agent-42 is running; stop it before moving workspaces",
+  );
+});
 
 test("sends active-scoped fetch_agents_request", async () => {
   const logger = createMockLogger();
@@ -6377,13 +6835,17 @@ test("sends provider.usage.list.request and resolves provider.usage.list.respons
   mock.triggerOpen();
   await connectPromise;
 
-  const usagePromise = client.listProviderUsage({ requestId: "usage-1" });
+  const usagePromise = client.listProviderUsage({
+    requestId: "usage-1",
+    forceRefresh: true,
+  });
 
   expect(JSON.parse(assertStr(mock.sent[0]))).toEqual({
     type: "session",
     message: {
       type: "provider.usage.list.request",
       requestId: "usage-1",
+      forceRefresh: true,
     },
   });
 
@@ -6434,6 +6896,85 @@ test("sends provider.usage.list.request and resolves provider.usage.list.respons
     ],
   });
 });
+
+test.each([
+  {
+    status: "available",
+    report: {
+      status: "available",
+      windows: [],
+      balances: undefined,
+      details: undefined,
+      planLabel: undefined,
+    },
+  },
+  { status: "error", report: { status: "error", error: "" } },
+  {
+    status: "unavailable",
+    report: { status: "unavailable", problem: { kind: "no_quota", detail: "" } },
+  },
+] as const)(
+  "maps released-host $status usage and filters report IDs",
+  async ({ status, report }) => {
+    const mock = createMockTransport();
+    const client = new DaemonClient({
+      url: "ws://test",
+      clientId: "clsk_unit_test",
+      logger: createMockLogger(),
+      reconnect: { enabled: false },
+      transportFactory: () => mock.transport,
+    });
+    clients.push(client);
+    const connected = client.connect();
+    mock.triggerOpen({ features: { providerUsageList: true } });
+    await connected;
+    const result = client.listUsageReports({
+      requestId: "legacy-usage",
+      reportIds: ["claude"],
+      forceRefresh: true,
+    });
+    expect(parseSentFrame(mock.sent[0])).toEqual({
+      type: "provider.usage.list.request",
+      requestId: "legacy-usage",
+    });
+    const provider = {
+      providerId: "claude",
+      displayName: "Claude",
+      status,
+      windows: [],
+      planLabel: null,
+      fetchedAt: null,
+      error: null,
+    };
+    mock.triggerMessage(
+      wrapSessionMessage({
+        type: "provider.usage.list.response",
+        payload: {
+          requestId: "legacy-usage",
+          fetchedAt: "2026-09-30T00:00:00.000Z",
+          providers: [provider, { ...provider, providerId: "codex" }],
+        },
+      }),
+    );
+    expect(await result).toStrictEqual({
+      requestId: "legacy-usage",
+      reports: [
+        {
+          id: "claude",
+          sourceId: "claude",
+          sourceLabel: "Claude",
+          icon: readFileSync(
+            new URL("../../../plugins/claude-usage-source/icon.svg", import.meta.url),
+            "utf8",
+          ),
+          account: {},
+          fetchedAt: "2026-09-30T00:00:00.000Z",
+          report,
+        },
+      ],
+    });
+  },
+);
 
 test("sends close_items_request and resolves close_items_response", async () => {
   const logger = createMockLogger();
@@ -6769,6 +7310,70 @@ test("creation reconnect observation uses connection-owned subscriptions and rel
   expect(phases).toEqual(["accepted", "failed"]);
 });
 
+test("uploadFile started while connecting waits for the connection and uploads", async () => {
+  const mock = createMockTransport();
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "upload-while-connecting",
+    logger: createMockLogger(),
+    reconnect: { enabled: false },
+    suppressSendErrors: true,
+    transportFactory: () => mock.transport,
+  });
+  clients.push(client);
+  const connection = client.connect();
+  expect(client.getConnectionState().status).toBe("connecting");
+
+  const upload = client.uploadFile({
+    fileName: "notes.txt",
+    mimeType: "text/plain",
+    bytes: new TextEncoder().encode("hello world"),
+    modifiedAt: "2026-05-02T00:00:00.000Z",
+    requestId: "req-upload-connecting",
+    chunkSize: 5,
+  });
+  void upload.catch(() => undefined);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  mock.triggerOpen();
+  await connection;
+
+  await vi.waitFor(() => {
+    const frames = mock.sent
+      .filter((frame) => typeof frame !== "string")
+      .map(assertUint8Array)
+      .map(decodeFileTransferFrame);
+    expect(frames.map((frame) => frame.opcode)).toEqual([
+      FileTransferOpcode.FileBegin,
+      FileTransferOpcode.FileChunk,
+      FileTransferOpcode.FileChunk,
+      FileTransferOpcode.FileChunk,
+      FileTransferOpcode.FileEnd,
+    ]);
+  });
+  const requestIndex = mock.sent.findIndex(
+    (frame) =>
+      typeof frame === "string" && parseSentFrame(frame).requestId === "req-upload-connecting",
+  );
+  expect(parseSentFrame(mock.sent[requestIndex])).toMatchObject({ type: "file.upload.request" });
+  expect(requestIndex).toBeLessThan(mock.sent.findIndex((frame) => typeof frame !== "string"));
+
+  const file = {
+    type: "uploaded_file" as const,
+    id: "upload_req-upload-connecting",
+    fileName: "notes.txt",
+    mimeType: "text/plain",
+    size: 11,
+    path: "/tmp/paseo-uploads/upload_req-upload-connecting/notes.txt",
+  };
+  mock.triggerMessage(
+    wrapSessionMessage({
+      type: "file.upload.response",
+      payload: { requestId: "req-upload-connecting", file, error: null },
+    }),
+  );
+  await expect(upload).resolves.toEqual({ requestId: "req-upload-connecting", file, error: null });
+});
+
 test("uploadFile stops sending chunks when the connection closes between sends", async () => {
   const mock = createMockTransport();
   const client = new DaemonClient({
@@ -6897,5 +7502,149 @@ test("reviewed plugin updates gate before requests and preserve exact proposal d
     await expect(applying).resolves.toEqual([
       { id: "review", outcome: "error", error: "changed since review" },
     ]);
+  }
+});
+
+test.each([
+  [undefined, false],
+  [{}, false],
+  [{ usageSources: false, providerUsageList: false }, false],
+  [{ usageSources: true }, true],
+  [{ providerUsageList: true }, true],
+  [{ usageSources: true, providerUsageList: true }, true],
+] as const)("usage support for features %j is %s", (features, expected) => {
+  expect(supportsUsageReports(features)).toBe(expected);
+});
+
+test("uses modern usage RPC when both capabilities are advertised", async () => {
+  const mock = createMockTransport();
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "clsk_unit_test",
+    logger: createMockLogger(),
+    reconnect: { enabled: false },
+    transportFactory: () => mock.transport,
+  });
+  clients.push(client);
+  const connected = client.connect();
+  mock.triggerOpen({ features: { usageSources: true, providerUsageList: true } });
+  await connected;
+  const updates: unknown[] = [];
+  const result = client.listUsageReports(
+    {
+      requestId: "modern-usage",
+      reportIds: ["claude:work"],
+      forceRefresh: true,
+    },
+    (report) => updates.push(report),
+  );
+  expect(parseSentFrame(mock.sent[0])).toEqual({
+    type: "usage.list_reports.request",
+    requestId: "modern-usage",
+    reportIds: ["claude:work"],
+    forceRefresh: true,
+  });
+  const payload = {
+    requestId: "modern-usage",
+    reports: [
+      {
+        id: "claude:work",
+        sourceId: "claude",
+        sourceLabel: "Claude",
+        account: { label: "Work" },
+        fetchedAt: "2026-09-30T00:00:00.000Z",
+        report: { status: "available", windows: [] },
+      },
+    ],
+  };
+  const report = payload.reports[0];
+  mock.triggerMessage(
+    wrapSessionMessage({
+      type: "usage.list_reports.update",
+      payload: { requestId: "foreign", report },
+    }),
+  );
+  expect(updates).toEqual([]);
+  mock.triggerMessage(
+    wrapSessionMessage({
+      type: "usage.list_reports.update",
+      payload: { requestId: payload.requestId, report },
+    }),
+  );
+  expect(updates).toEqual([report]);
+  mock.triggerMessage(
+    wrapSessionMessage({
+      type: "usage.list_reports.response",
+      payload: { requestId: payload.requestId, error: null },
+    }),
+  );
+  mock.triggerMessage(
+    wrapSessionMessage({
+      type: "usage.list_reports.update",
+      payload: { requestId: payload.requestId, report },
+    }),
+  );
+  expect(await result).toStrictEqual(payload);
+  expect(updates).toEqual([report]);
+});
+
+test("rejects usage requests when the host has neither capability", async () => {
+  const mock = createMockTransport();
+  const client = new DaemonClient({
+    url: "ws://test",
+    clientId: "clsk_unit_test",
+    logger: createMockLogger(),
+    reconnect: { enabled: false },
+    transportFactory: () => mock.transport,
+  });
+  clients.push(client);
+  const connected = client.connect();
+  mock.triggerOpen({ features: {} });
+  await connected;
+  await expect(client.listUsageReports()).rejects.toThrow("Update the host to see usage.");
+  expect(mock.sent).toEqual([]);
+});
+
+test("usage request timeout detaches its update listener", async () => {
+  vi.useFakeTimers();
+  try {
+    const mock = createMockTransport();
+    const client = new DaemonClient({
+      url: "ws://test",
+      clientId: "clsk_unit_test",
+      logger: createMockLogger(),
+      reconnect: { enabled: false },
+      transportFactory: () => mock.transport,
+    });
+    clients.push(client);
+    const connected = client.connect();
+    mock.triggerOpen({ features: { usageSources: true } });
+    await connected;
+    const updates: unknown[] = [];
+    const result = client.listUsageReports({ requestId: "timeout-usage" }, (report) =>
+      updates.push(report),
+    );
+    const rejected = expect(result).rejects.toThrow("Timeout waiting for message (60000ms)");
+    await vi.advanceTimersByTimeAsync(60_001);
+    await rejected;
+    mock.triggerMessage(
+      wrapSessionMessage({
+        type: "usage.list_reports.update",
+        payload: {
+          requestId: "timeout-usage",
+          report: {
+            id: "source:late",
+            account: {},
+            sourceId: "source",
+            sourceLabel: "Source",
+            fetchedAt: "2026-01-01T00:00:00.000Z",
+            report: { status: "available", windows: [] },
+          },
+        },
+      }),
+    );
+    expect(updates).toEqual([]);
+  } finally {
+    vi.useRealTimers();
   }
 });

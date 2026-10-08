@@ -5,9 +5,13 @@ import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import {
   ArrowLeftToLine,
   ArrowRightToLine,
+  CircleCheck,
   Copy,
   CopyX,
   Ellipsis,
+  ExternalLink,
+  FolderPlus,
+  FolderInput,
   Pencil,
   RotateCw,
   X,
@@ -24,6 +28,10 @@ import type { Theme } from "@/styles/theme";
 
 const ThemedEllipsis = withUnistyles(Ellipsis);
 const ThemedCopy = withUnistyles(Copy);
+const ThemedCircleCheck = withUnistyles(CircleCheck);
+const ThemedFolderPlus = withUnistyles(FolderPlus);
+const ThemedFolderInput = withUnistyles(FolderInput);
+const ThemedExternalLink = withUnistyles(ExternalLink);
 const ThemedRotateCw = withUnistyles(RotateCw);
 const ThemedArrowLeftToLine = withUnistyles(ArrowLeftToLine);
 const ThemedArrowRightToLine = withUnistyles(ArrowRightToLine);
@@ -59,6 +67,14 @@ function MobileTabDropdownMenuItem({
         return <ThemedCopyX size={16} uniProps={mutedColorMapping} />;
       case "pencil":
         return <ThemedPencil size={16} uniProps={mutedColorMapping} />;
+      case "circle-check":
+        return <ThemedCircleCheck size={16} uniProps={mutedColorMapping} />;
+      case "folder-plus":
+        return <ThemedFolderPlus size={16} uniProps={mutedColorMapping} />;
+      case "folder-input":
+        return <ThemedFolderInput size={16} uniProps={mutedColorMapping} />;
+      case "external-link":
+        return <ThemedExternalLink size={16} uniProps={mutedColorMapping} />;
       case "x":
         return <ThemedX size={16} uniProps={mutedColorMapping} />;
       default:

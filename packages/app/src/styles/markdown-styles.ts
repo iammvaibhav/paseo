@@ -30,7 +30,7 @@ export function createMarkdownStyles(theme: Theme) {
 
     body: {
       ...webSelectableTextStyle,
-      color: theme.colors.foreground,
+      color: theme.colors.foregroundProse,
       fontSize: theme.fontSize.content,
       // Prose line-height scales with the content size, not the
       // code-size-coupled lineHeight.diff token used by code/diff surfaces.
@@ -40,6 +40,8 @@ export function createMarkdownStyles(theme: Theme) {
       width: "100%" as const,
     },
 
+    // Leaf text takes its color from the block around it (paragraph, heading, cell),
+    // so prose and headings can use different tones.
     text: {
       ...webSelectableTextStyle,
       flexShrink: 1,
@@ -47,7 +49,12 @@ export function createMarkdownStyles(theme: Theme) {
       overflowWrap: "anywhere" as const,
     },
 
+    textgroup: {
+      ...webSelectableTextStyle,
+    },
+
     paragraph: {
+      color: theme.colors.foregroundProse,
       marginTop: 0,
       marginBottom: theme.spacing[3],
       flexWrap: "wrap" as const,
@@ -65,48 +72,42 @@ export function createMarkdownStyles(theme: Theme) {
 
     heading1: {
       ...webSelectableTextStyle,
-      fontSize: contentHeadingSize(theme.fontSize.content, "4xl"),
-      fontWeight: theme.fontWeight.bold,
+      fontSize: contentHeadingSize(theme.fontSize.content, "2xl"),
+      fontWeight: theme.fontWeight.semibold,
       color: theme.colors.foreground,
       marginTop: theme.spacing[6],
       marginBottom: theme.spacing[3],
-      lineHeight: contentHeadingLineHeight(theme.fontSize.content, "4xl"),
-      borderBottomWidth: 1,
-      borderBottomColor: theme.colors.border,
-      paddingBottom: theme.spacing[2],
+      lineHeight: contentHeadingLineHeight(theme.fontSize.content, "2xl"),
     },
 
     heading2: {
       ...webSelectableTextStyle,
-      fontSize: contentHeadingSize(theme.fontSize.content, "3xl"),
-      fontWeight: theme.fontWeight.bold,
+      fontSize: contentHeadingSize(theme.fontSize.content, "xl"),
+      fontWeight: theme.fontWeight.semibold,
       color: theme.colors.foreground,
       marginTop: theme.spacing[6],
       marginBottom: theme.spacing[3],
-      lineHeight: contentHeadingLineHeight(theme.fontSize.content, "3xl"),
-      borderBottomWidth: 1,
-      borderBottomColor: theme.colors.border,
-      paddingBottom: theme.spacing[2],
+      lineHeight: contentHeadingLineHeight(theme.fontSize.content, "xl"),
     },
 
     heading3: {
       ...webSelectableTextStyle,
-      fontSize: contentHeadingSize(theme.fontSize.content, "2xl"),
+      fontSize: contentHeadingSize(theme.fontSize.content, "lg"),
       fontWeight: theme.fontWeight.semibold,
       color: theme.colors.foreground,
       marginTop: theme.spacing[4],
       marginBottom: theme.spacing[2],
-      lineHeight: contentHeadingLineHeight(theme.fontSize.content, "2xl"),
+      lineHeight: contentHeadingLineHeight(theme.fontSize.content, "lg"),
     },
 
     heading4: {
       ...webSelectableTextStyle,
-      fontSize: contentHeadingSize(theme.fontSize.content, "xl"),
+      fontSize: contentHeadingSize(theme.fontSize.content, "lg"),
       fontWeight: theme.fontWeight.semibold,
       color: theme.colors.foreground,
       marginTop: theme.spacing[4],
       marginBottom: theme.spacing[2],
-      lineHeight: contentHeadingLineHeight(theme.fontSize.content, "xl"),
+      lineHeight: contentHeadingLineHeight(theme.fontSize.content, "lg"),
     },
 
     heading5: {
@@ -137,11 +138,13 @@ export function createMarkdownStyles(theme: Theme) {
 
     strong: {
       ...webSelectableTextStyle,
+      color: theme.colors.foreground,
       fontWeight: theme.fontWeight.medium,
     },
 
     em: {
       ...webSelectableTextStyle,
+      color: theme.colors.foreground,
       fontStyle: "italic" as const,
     },
 
@@ -177,12 +180,18 @@ export function createMarkdownStyles(theme: Theme) {
       ...webSelectableTextStyle,
       backgroundColor: theme.colors.surface2,
       color: theme.colors.foreground,
-      paddingHorizontal: theme.spacing[1],
+      paddingHorizontal: theme.spacing[1.5],
       paddingVertical: 2,
       borderRadius: theme.borderRadius.md,
       borderWidth: 0,
       fontFamily: theme.fontFamily.mono,
       fontSize: theme.fontSize.code,
+      // Unbreakable code tokens widen a wrapping paragraph's min-content and
+      // overflow narrow containers; let them break anywhere so prose and code
+      // stay inside the panel instead of clipping at the right edge.
+      flexShrink: 1,
+      minWidth: 0,
+      overflowWrap: "anywhere",
     },
 
     code_block: {
@@ -194,6 +203,9 @@ export function createMarkdownStyles(theme: Theme) {
       fontFamily: theme.fontFamily.mono,
       fontSize: theme.fontSize.code,
       marginVertical: theme.spacing[2],
+      flexShrink: 1,
+      minWidth: 0,
+      overflowWrap: "anywhere",
     },
 
     fence: {
@@ -207,6 +219,9 @@ export function createMarkdownStyles(theme: Theme) {
       fontFamily: theme.fontFamily.mono,
       fontSize: theme.fontSize.code,
       marginVertical: theme.spacing[3],
+      flexShrink: 1,
+      minWidth: 0,
+      overflowWrap: "anywhere",
     },
 
     pre: {
@@ -217,29 +232,31 @@ export function createMarkdownStyles(theme: Theme) {
     // TABLES
     // =========================================================================
 
+    // One frame around the whole table, with faint row dividers and no column lines.
+    // `overflow: hidden` clips the row fills to the rounded frame, and the negative
+    // tbody margin hides the last row's divider under the frame's bottom edge.
     table: {
       borderWidth: 1,
       borderColor: theme.colors.border,
-      borderRadius: theme.borderRadius.md,
+      borderRadius: theme.borderRadius.lg,
+      backgroundColor: theme.colors.surface1,
+      overflow: "hidden" as const,
       marginVertical: theme.spacing[3],
     },
 
-    thead: {
-      backgroundColor: theme.colors.surface2,
-    },
+    thead: {},
 
-    tbody: {},
+    tbody: {
+      marginBottom: -1,
+    },
 
     th: {
       ...webSelectableTextStyle,
-      padding: theme.spacing[2],
-      borderBottomWidth: 1,
-      borderRightWidth: 1,
-      borderColor: theme.colors.border,
-      backgroundColor: theme.colors.surface2,
-      fontWeight: theme.fontWeight.semibold,
+      paddingVertical: theme.spacing[2],
+      paddingHorizontal: theme.spacing[3],
+      fontWeight: theme.fontWeight.medium,
       color: theme.colors.foreground,
-      fontSize: theme.fontSize.content,
+      fontSize: theme.fontSize.base,
       textAlign: "left" as const,
     },
 
@@ -251,11 +268,10 @@ export function createMarkdownStyles(theme: Theme) {
 
     td: {
       ...webSelectableTextStyle,
-      padding: theme.spacing[2],
-      borderRightWidth: 1,
-      borderColor: theme.colors.border,
+      paddingVertical: theme.spacing[2],
+      paddingHorizontal: theme.spacing[3],
       color: theme.colors.foreground,
-      fontSize: theme.fontSize.content,
+      fontSize: theme.fontSize.base,
       flex: 1,
     },
 
@@ -274,6 +290,7 @@ export function createMarkdownStyles(theme: Theme) {
     },
 
     list_item: {
+      color: theme.colors.foregroundProse,
       marginBottom: theme.spacing[1],
       flexDirection: "row" as const,
       alignItems: "flex-start" as const,
@@ -281,11 +298,13 @@ export function createMarkdownStyles(theme: Theme) {
     },
 
     bullet_list_content: {
+      color: theme.colors.foregroundProse,
       flex: 1,
       flexShrink: 1,
     },
 
     ordered_list_content: {
+      color: theme.colors.foregroundProse,
       flex: 1,
       flexShrink: 1,
     },
@@ -354,6 +373,16 @@ export function createMarkdownStyles(theme: Theme) {
     },
 
     softbreak: {},
+
+    inline: {
+      ...webSelectableTextStyle,
+      color: theme.colors.foreground,
+    },
+
+    span: {
+      ...webSelectableTextStyle,
+      color: theme.colors.foreground,
+    },
   };
 }
 

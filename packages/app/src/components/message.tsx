@@ -1,9 +1,11 @@
+import type { AgentUsage } from "@getpaseo/protocol/agent-types";
+import { formatTurnMetricsLine } from "@/agent-stream/turn-metrics";
+import { SecondOpinionMenu, type SecondOpinionMenuProps } from "@/components/second-opinion-menu";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { TaskListRow } from "@/components/task-list-row";
 import {
   View,
   Text,
-  Image,
   Pressable,
   type GestureResponderEvent,
   type LayoutChangeEvent,
@@ -42,6 +44,7 @@ import {
   Scissors,
   MicVocal,
   FileSymlink,
+  NotebookPen,
 } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
@@ -56,8 +59,17 @@ import Animated, {
 } from "react-native-reanimated";
 import Svg, { Defs, LinearGradient as SvgLinearGradient, Rect, Stop } from "react-native-svg";
 import { inlineUnistylesStyle } from "@/styles/unistyles-inline-style";
-import { MarkdownRenderer, type MarkdownStyles } from "@/components/markdown/renderer";
-import type { TaskActivity, TodoEntry, UserMessageImageAttachment } from "@/types/stream";
+import {
+  MarkdownRenderer,
+  addMathPlugin,
+  createMathRenderRules,
+  type MarkdownStyles,
+} from "@/components/markdown/renderer";
+import { containsDetailsElement } from "@/components/markdown/html-ish";
+import type { TaskActivity, TodoEntry, UserMessageImage } from "@/types/stream";
+import { persistAttachmentFromBytes } from "@/attachments/service";
+import { createPreviewAttachmentId } from "@/attachments/utils";
+import type { AttachmentMetadata } from "@/attachments/types";
 import type { AgentAttachment } from "@getpaseo/protocol/messages";
 import type { ToolCallDetail } from "@getpaseo/protocol/agent-types";
 import { buildToolCallPresentation } from "@/tool-calls/presentation";
@@ -66,6 +78,8 @@ import { getMarkdownListMarker, getMarkdownListSpacing } from "@/utils/markdown-
 import { markdownNodeContainsType } from "@/utils/markdown-ast";
 import { useStableEvent } from "@/hooks/use-stable-event";
 import { HighlightedCodeBlock } from "@/components/highlighted-code-block";
+import { renderRichFence } from "@/components/markdown/rich-fence";
+import { ChartDataProvider } from "@/components/chart-data-context";
 import { MarkdownFenceBlock } from "@/components/markdown/fence";
 import type { MarkdownPhase } from "@/components/markdown/fence/types";
 import { splitMarkdownBlocks } from "@/utils/split-markdown-blocks";
@@ -91,12 +105,12 @@ import {
   useAssistantLinkPress,
 } from "@/assistant-file-links";
 import { getCompactionMarkerLabel } from "./message-compaction-label";
-import { useAssistantImage } from "@/assistant-image/use-assistant-image";
 import {
   AttachmentFrame,
   AttachmentLabel,
   AttachmentThumbnail,
 } from "@/components/attachment-pill";
+import { AssistantMarkdownImage } from "@/components/assistant-markdown-image";
 import { AttachmentLightbox, type ImageLightboxSource } from "@/components/attachment-lightbox";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { isWeb, isNative } from "@/constants/platform";
@@ -104,7 +118,9 @@ import type { AgentCapabilityFlags } from "@getpaseo/protocol/agent-types";
 import { RewindMenu, type RewindMode } from "@/components/rewind/rewind-menu";
 import { useRewindAgentMutation } from "@/components/rewind/use-rewind-agent-mutation";
 import { AssistantForkMenu, type AssistantForkTarget } from "@/components/assistant-fork-menu";
+import { JumpToUserMessageButton } from "@/components/jump-to-user-message-button";
 import { useRetainedPanelActive } from "@/components/retained-panel";
+import { openHistoryAskAgentLink } from "@/history-ask/open-agent-link";
 import {
   markdownCopyDataSet,
   markdownCopyOrderedListDataSet,
@@ -112,6 +128,10 @@ import {
   type MarkdownCopyInlineTag,
 } from "@/assistant-selection-copy/markup";
 import { capAssistantMessageForRender, getUtf8ByteLength } from "./assistant-message-render-limit";
+import { useToast } from "@/contexts/toast-context";
+import { useNotesHost } from "@/notes/use-notes-host";
+import { useNoteMutations } from "@/notes/queries";
+import { deriveNoteTitle } from "@/notes/mentions";
 export type { InlinePathTarget } from "@/assistant-file-links";
 export type { AssistantForkTarget };
 
@@ -120,7 +140,7 @@ interface UserMessageProps {
   agentId?: string;
   messageId?: string;
   message: string;
-  images?: UserMessageImageAttachment[];
+  images?: UserMessageImage[];
   attachments?: AgentAttachment[];
   timestamp: number;
   capabilities?: AgentCapabilityFlags;
@@ -167,10 +187,16 @@ const ThemedMicVocal = withUnistyles(MicVocal);
 const ThemedFileSymlinkIcon = withUnistyles(FileSymlink);
 const ThemedTriangleAlertIcon = withUnistyles(TriangleAlertIcon);
 const ThemedChevronRightIcon = withUnistyles(ChevronRight);
-const ThemedLoadingSpinner = withUnistyles(LoadingSpinner);
 const ThemedNotificationInfo = withUnistyles(Info);
 const ThemedNotificationWarning = withUnistyles(TriangleAlertIcon);
 const ThemedNotificationError = withUnistyles(XCircle);
+const ThemedCheck = withUnistyles(Check);
+const ThemedXCircle = withUnistyles(XCircle);
+const ThemedInfo = withUnistyles(Info);
+
+const statusSuccessColorMapping = (theme: Theme) => ({ color: theme.colors.statusSuccess });
+const statusDangerColorMapping = (theme: Theme) => ({ color: theme.colors.statusDanger });
+const statusWarningColorMapping = (theme: Theme) => ({ color: theme.colors.statusWarning });
 
 const foregroundColorMapping = (theme: Theme) => ({ color: theme.colors.foreground });
 const foregroundMutedColorMapping = (theme: Theme) => ({
@@ -346,11 +372,11 @@ const userMessageStylesheet = StyleSheet.create((theme) => ({
     marginBottom: theme.spacing[4],
   },
   bubble: {
-    backgroundColor: theme.colors.surface3,
-    borderRadius: theme.borderRadius["2xl"],
-    borderTopRightRadius: theme.borderRadius.sm,
-    paddingHorizontal: theme.spacing[4],
-    paddingVertical: theme.spacing[4],
+    backgroundColor: theme.colors.surfaceUserMessage,
+    borderRadius: theme.borderRadius.xl,
+    paddingHorizontal: theme.spacing[3],
+    paddingVertical: theme.spacing[2],
+    maxWidth: 576,
     minWidth: 0,
     flexShrink: 1,
   },
@@ -405,18 +431,54 @@ const userMessageStylesheet = StyleSheet.create((theme) => ({
 }));
 
 interface UserMessageImagePillProps {
-  image: UserMessageImageAttachment;
-  onOpen: (image: UserMessageImageAttachment) => void;
+  image: UserMessageImage;
+  onOpen: (image: AttachmentMetadata) => void;
   accessibilityLabel: string;
 }
 
+function isPersistedUserMessageImage(image: UserMessageImage): image is AttachmentMetadata {
+  return "id" in image && "storageType" in image && "storageKey" in image;
+}
+
 function UserMessageImagePill({ image, onOpen, accessibilityLabel }: UserMessageImagePillProps) {
+  const [persisted, setPersisted] = useState<AttachmentMetadata | null>(
+    isPersistedUserMessageImage(image) ? image : null,
+  );
+  useEffect(() => {
+    if (isPersistedUserMessageImage(image)) {
+      setPersisted(image);
+      return;
+    }
+    let cancelled = false;
+    const bytes = Uint8Array.from(atob(image.data), (char) => char.charCodeAt(0));
+    const id = createPreviewAttachmentId({
+      mimeType: image.mimeType,
+      contentKey: image.data,
+      contentLength: bytes.byteLength,
+    });
+    void persistAttachmentFromBytes({
+      id,
+      bytes,
+      mimeType: image.mimeType,
+      fileName: `ticket-image.${image.mimeType.split("/")[1] ?? "png"}`,
+    }).then((attachment) => {
+      if (!cancelled) {
+        setPersisted(attachment);
+      }
+      return attachment;
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [image]);
   const handlePress = useCallback(() => {
-    onOpen(image);
-  }, [onOpen, image]);
+    if (persisted) {
+      onOpen(persisted);
+    }
+  }, [onOpen, persisted]);
   return (
     <AttachmentFrame onPress={handlePress} accessibilityLabel={accessibilityLabel}>
-      <AttachmentThumbnail metadata={image} />
+      {persisted ? <AttachmentThumbnail metadata={persisted} /> : <View />}
     </AttachmentFrame>
   );
 }
@@ -441,7 +503,7 @@ export const UserMessage = memo(function UserMessage({
   const isCompact = useIsCompactFormFactor();
   const { t } = useTranslation();
   const [isHovered, setIsHovered] = useState(false);
-  const [lightboxMetadata, setLightboxMetadata] = useState<UserMessageImageAttachment | null>(null);
+  const [lightboxMetadata, setLightboxMetadata] = useState<AttachmentMetadata | null>(null);
   const handleLightboxClose = useCallback(() => setLightboxMetadata(null), []);
   const lightboxSource = useMemo<ImageLightboxSource | null>(
     () => (lightboxMetadata ? { type: "attachment", metadata: lightboxMetadata } : null),
@@ -515,7 +577,7 @@ export const UserMessage = memo(function UserMessage({
             <View style={imagePreviewContainerStyle}>
               {images.map((image) => (
                 <UserMessageImagePill
-                  key={image.id}
+                  key={"id" in image ? image.id : `${image.mimeType}:${image.data.slice(0, 24)}`}
                   image={image}
                   onOpen={setLightboxMetadata}
                   accessibilityLabel={t("composer.attachments.openImage")}
@@ -577,11 +639,24 @@ export const UserMessage = memo(function UserMessage({
   );
 });
 
+export interface AssistantTurnSourceContext {
+  agentId?: string;
+  serverId?: string;
+  cwd?: string;
+  projectKey?: string;
+}
+
 interface AssistantTurnFooterProps {
   getContent: () => string;
   completedAt?: Date;
   durationMs?: number | null;
   onFork?: (target: AssistantForkTarget) => Promise<void> | void;
+  onJumpToUserMessage?: () => void;
+  metrics?: AgentUsage;
+  turnMetricsEnabled?: boolean;
+  onSecondOpinion?: SecondOpinionMenuProps;
+  model?: string | null;
+  sourceContext?: AssistantTurnSourceContext;
 }
 
 const assistantTurnFooterStylesheet = StyleSheet.create((theme) => ({
@@ -626,6 +701,12 @@ export const AssistantTurnFooter = memo(function AssistantTurnFooter({
   completedAt,
   durationMs,
   onFork,
+  onJumpToUserMessage,
+  metrics,
+  turnMetricsEnabled = false,
+  onSecondOpinion,
+  model,
+  sourceContext,
 }: AssistantTurnFooterProps) {
   const [hovered, setHovered] = useState(false);
   const [pressedReveal, setPressedReveal] = useState(false);
@@ -640,6 +721,15 @@ export const AssistantTurnFooter = memo(function AssistantTurnFooter({
     };
   }, []);
 
+  const metricsLine = useMemo(() => {
+    if (!turnMetricsEnabled) return null;
+    const mergedMetrics = metrics?.model || !model ? metrics : { ...metrics, model };
+    return formatTurnMetricsLine({
+      metrics: mergedMetrics,
+      fallbackDurationMs: durationMs,
+    });
+  }, [turnMetricsEnabled, metrics, model, durationMs]);
+
   const durationLabel = useMemo(
     () =>
       durationMs !== undefined && durationMs !== null
@@ -652,8 +742,8 @@ export const AssistantTurnFooter = memo(function AssistantTurnFooter({
     [completedAt],
   );
 
-  const primaryLabel = durationLabel || timestampLabel;
-  const canSwap = Boolean(durationLabel && timestampLabel);
+  const primaryLabel = metricsLine || durationLabel || timestampLabel;
+  const canSwap = Boolean((metricsLine || durationLabel) && timestampLabel);
   const showTimestamp = canSwap && (isWeb ? hovered : pressedReveal);
 
   const handleHoverIn = useCallback(() => setHovered(true), []);
@@ -676,6 +766,7 @@ export const AssistantTurnFooter = memo(function AssistantTurnFooter({
     [onFork],
   );
   const canFork = Boolean(onFork);
+  const canJumpToUserMessage = Boolean(onJumpToUserMessage);
 
   return (
     <View style={assistantTurnFooterStylesheet.container}>
@@ -683,22 +774,39 @@ export const AssistantTurnFooter = memo(function AssistantTurnFooter({
         getContent={getContent}
         containerStyle={assistantTurnFooterStylesheet.copyButton}
       />
+      <SaveAsNoteButton
+        getContent={getContent}
+        sourceContext={sourceContext}
+        containerStyle={assistantTurnFooterStylesheet.copyButton}
+      />
+      {canJumpToUserMessage && onJumpToUserMessage ? (
+        <JumpToUserMessageButton onPress={onJumpToUserMessage} />
+      ) : null}
       {canFork ? <AssistantForkMenu onFork={handleFork} /> : null}
+      {onSecondOpinion ? (
+        <SecondOpinionMenu
+          serverId={onSecondOpinion.serverId}
+          currentProvider={onSecondOpinion.currentProvider}
+          currentModel={onSecondOpinion.currentModel}
+          cwd={onSecondOpinion.cwd}
+          onSecondOpinion={onSecondOpinion.onSecondOpinion}
+        />
+      ) : null}
       {primaryLabel ? (
         <Pressable
           onPress={handlePress}
           onHoverIn={handleHoverIn}
           onHoverOut={handleHoverOut}
           accessibilityRole={canSwap ? "button" : undefined}
-          accessibilityLabel={canSwap ? `${durationLabel}, ended ${timestampLabel}` : primaryLabel}
+          accessibilityLabel={canSwap ? `${primaryLabel}, ended ${timestampLabel}` : primaryLabel}
         >
           <View style={assistantTurnFooterStylesheet.labelWrapper}>
             {/* Sizer reserves space for whichever label is longer so the
                 container width is stable across hover transitions. */}
-            <Text style={assistantTurnFooterStylesheet.labelSizer} aria-hidden>
+            <Text style={assistantTurnFooterStylesheet.labelSizer} aria-hidden numberOfLines={1}>
               {primaryLabel.length >= timestampLabel.length ? primaryLabel : timestampLabel}
             </Text>
-            <Text style={assistantTurnFooterStylesheet.labelOverlay}>
+            <Text style={assistantTurnFooterStylesheet.labelOverlay} numberOfLines={1}>
               {showTimestamp ? timestampLabel : primaryLabel}
             </Text>
           </View>
@@ -777,166 +885,7 @@ export const assistantMessageStylesheet = StyleSheet.create((theme) => ({
     fontStyle: "italic",
     color: theme.colors.foregroundMuted,
   },
-  imageFrame: {
-    width: "100%",
-    minHeight: 160,
-    marginHorizontal: -theme.spacing[1],
-  },
-  imageSurface: {
-    width: "100%",
-    overflow: "hidden",
-    position: "relative",
-  },
-  image: {
-    width: "100%",
-    height: "100%",
-  },
-  imageLoadingOverlay: {
-    position: "absolute",
-    top: 0,
-    right: 0,
-    bottom: 0,
-    left: 0,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  imageState: {
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: theme.spacing[4],
-    paddingVertical: theme.spacing[6],
-    gap: theme.spacing[2],
-  },
-  imageErrorText: {
-    color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.base,
-    textAlign: "center",
-  },
 }));
-
-const ASSISTANT_IMAGE_MIN_HEIGHT = 160;
-
-function AssistantMarkdownImage({
-  source,
-  occurrenceKey,
-  alt,
-  hasLeadingContent,
-  client,
-  workspaceRoot,
-  serverId,
-}: {
-  source: string;
-  occurrenceKey: string;
-  alt?: string;
-  hasLeadingContent: boolean;
-  client?: DaemonClient | null;
-  workspaceRoot?: string;
-  serverId?: string;
-}) {
-  const { t } = useTranslation();
-  const [viewerOpen, setViewerOpen] = useState(false);
-  const openViewer = useCallback(() => setViewerOpen(true), []);
-  const closeViewer = useCallback(() => setViewerOpen(false), []);
-  const containerStyle = useMemo<StyleProp<ViewStyle>>(
-    () => ({
-      marginTop: hasLeadingContent ? 16 : 0,
-      marginBottom: 0,
-    }),
-    [hasLeadingContent],
-  );
-  const image = useAssistantImage({
-    source,
-    occurrenceKey,
-    client,
-    workspaceRoot,
-    serverId,
-  });
-  const binding = image.status === "failed" ? null : image.binding;
-  const aspectRatio = image.status === "failed" ? null : image.aspectRatio;
-  const imageUri = binding?.uri ?? "";
-  const imageSource = useMemo(() => ({ uri: imageUri }), [imageUri]);
-  const frameStyle = useMemo<StyleProp<ViewStyle>>(
-    () => [assistantMessageStylesheet.imageFrame, containerStyle],
-    [containerStyle],
-  );
-  const imageSizeStyle = useMemo<ViewStyle>(() => {
-    if (aspectRatio) {
-      return { aspectRatio };
-    }
-    return { height: ASSISTANT_IMAGE_MIN_HEIGHT };
-  }, [aspectRatio]);
-  const surfaceStyle = useMemo<StyleProp<ViewStyle>>(
-    () => [assistantMessageStylesheet.imageSurface, imageSizeStyle],
-    [imageSizeStyle],
-  );
-  const lightboxSource = useMemo<ImageLightboxSource | null>(() => {
-    if (!viewerOpen || !imageUri) return null;
-    return {
-      type: "uri",
-      uri: imageUri,
-      contentSize: aspectRatio ? { width: aspectRatio, height: 1 } : undefined,
-    };
-  }, [aspectRatio, imageUri, viewerOpen]);
-
-  const stateFrameStyle = useMemo<StyleProp<ViewStyle>>(
-    () => [
-      assistantMessageStylesheet.imageFrame,
-      containerStyle,
-      { height: ASSISTANT_IMAGE_MIN_HEIGHT },
-      assistantMessageStylesheet.imageState,
-    ],
-    [containerStyle],
-  );
-
-  if (image.status === "failed") {
-    return (
-      <View style={stateFrameStyle}>
-        <Text style={assistantMessageStylesheet.imageErrorText}>{image.message}</Text>
-      </View>
-    );
-  }
-
-  if (!binding) {
-    return (
-      <View style={stateFrameStyle}>
-        <ThemedLoadingSpinner size="small" uniProps={foregroundMutedColorMapping} />
-      </View>
-    );
-  }
-
-  return (
-    <View style={frameStyle}>
-      <Pressable
-        accessibilityLabel={t("composer.attachments.openImage")}
-        accessibilityRole="button"
-        disabled={image.status !== "loaded"}
-        onPress={openViewer}
-        style={surfaceStyle}
-      >
-        <View
-          style={assistantMessageStylesheet.image}
-          accessibilityRole="image"
-          accessibilityLabel={alt}
-        >
-          <Image
-            ref={binding.onRef}
-            source={imageSource}
-            style={assistantMessageStylesheet.image}
-            resizeMode="contain"
-            onLoad={binding.onLoad}
-            onError={binding.onError}
-          />
-          {image.status === "loading" ? (
-            <View pointerEvents="none" style={assistantMessageStylesheet.imageLoadingOverlay}>
-              <ThemedLoadingSpinner size="small" uniProps={foregroundMutedColorMapping} />
-            </View>
-          ) : null}
-        </View>
-      </Pressable>
-      <AttachmentLightbox source={lightboxSource} onClose={closeViewer} />
-    </View>
-  );
-}
 
 function getInlineCodeAutoLinkUrl(markdownParser: MarkdownIt, content: string): string | null {
   const trimmed = content.trim();
@@ -1099,6 +1048,94 @@ export const TurnCopyButton = memo(function TurnCopyButton({
     </Pressable>
   );
 });
+interface SaveAsNoteButtonProps {
+  getContent: () => string;
+  sourceContext?: AssistantTurnSourceContext;
+  containerStyle?: StyleProp<ViewStyle>;
+}
+
+export const SaveAsNoteButton = memo(function SaveAsNoteButton({
+  getContent,
+  sourceContext,
+  containerStyle,
+}: SaveAsNoteButtonProps) {
+  const { t } = useTranslation();
+  const { status } = useNotesHost();
+  const mutations = useNoteMutations();
+  const toast = useToast();
+  const [saved, setSaved] = useState(false);
+  const [pending, setPending] = useState(false);
+  const saveTimeoutRef = useRef<NodeJS.Timeout | number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      clearTimeout(saveTimeoutRef.current ?? undefined);
+    };
+  }, []);
+
+  const handleSave = useCallback(async () => {
+    if (pending) return;
+    const content = getContent();
+    if (!content.trim()) return;
+    setPending(true);
+    try {
+      const title = deriveNoteTitle(content);
+      await mutations.upsertNote({
+        title,
+        body: content,
+        ...(sourceContext?.agentId ? { sourceAgentId: sourceContext.agentId } : {}),
+        ...(sourceContext?.serverId ? { sourceHost: sourceContext.serverId } : {}),
+        ...(sourceContext?.cwd ? { sourceCwd: sourceContext.cwd } : {}),
+        ...(sourceContext?.projectKey ? { sourceProjectKey: sourceContext.projectKey } : {}),
+      });
+      setSaved(true);
+      toast.show(t("notes.saveAsNote.saved"));
+      clearTimeout(saveTimeoutRef.current ?? undefined);
+      saveTimeoutRef.current = setTimeout(() => {
+        setSaved(false);
+        saveTimeoutRef.current = null;
+      }, 1500);
+    } catch (error) {
+      toast.error(
+        t("notes.saveAsNote.failed", {
+          message: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    } finally {
+      setPending(false);
+    }
+  }, [getContent, mutations, pending, sourceContext, t, toast]);
+
+  if (status !== "ready") {
+    return null;
+  }
+
+  const pressableStyle = [turnCopyButtonStylesheet.container, containerStyle];
+
+  return (
+    <Pressable
+      onPress={handleSave}
+      style={pressableStyle}
+      accessibilityRole="button"
+      accessibilityLabel={saved ? t("notes.saveAsNote.saved") : t("notes.saveAsNote.label")}
+      testID="turn-save-as-note"
+    >
+      {({ hovered }) => {
+        const iconColor = hovered
+          ? turnCopyButtonStylesheet.iconHoveredColor.color
+          : turnCopyButtonStylesheet.iconColor.color;
+        return saved ? (
+          <Check size={ICON_SIZE.sm} color={iconColor} />
+        ) : (
+          <NotebookPen size={ICON_SIZE.sm} color={iconColor} />
+        );
+      }}
+    </Pressable>
+  );
+});
+
+// Icon box (22) plus its right gap (4): where a badge's label starts, past its padding.
+export const EXPANDABLE_BADGE_ICON_SLOT = 26;
 
 const expandableBadgeStylesheet = StyleSheet.create((theme) => ({
   container: {
@@ -1110,12 +1147,11 @@ const expandableBadgeStylesheet = StyleSheet.create((theme) => ({
   containerLastInSequence: {
     marginBottom: theme.spacing[4],
   },
+  // Flat rows: no box, no border, no fill when open. A row reads by its icon and label;
+  // hover and open only lift the label color.
   pressable: {
-    borderRadius: theme.borderRadius.lg,
-    borderWidth: theme.borderWidth[1],
-    borderColor: "transparent",
     paddingHorizontal: theme.spacing[2],
-    paddingVertical: theme.spacing[1],
+    paddingVertical: theme.spacing[1.5],
     overflow: "hidden",
   },
   pressablePressed: {
@@ -1132,12 +1168,12 @@ const expandableBadgeStylesheet = StyleSheet.create((theme) => ({
     overflow: "hidden",
   },
   iconBadge: {
-    width: 22,
-    height: 22,
+    width: EXPANDABLE_BADGE_ICON_SLOT - 4,
+    height: EXPANDABLE_BADGE_ICON_SLOT - 4,
     borderRadius: 11,
     alignItems: "center",
     justifyContent: "center",
-    marginRight: theme.spacing[1],
+    marginRight: 4,
     backgroundColor: "transparent",
   },
   label: {
@@ -1185,29 +1221,24 @@ const expandableBadgeStylesheet = StyleSheet.create((theme) => ({
     width: 14,
     height: 14,
   },
+  // Open details hang under the label, past the icon slot (pressable padding + icon + gap).
   detailWrapper: {
-    borderBottomLeftRadius: theme.borderRadius.lg,
-    borderBottomRightRadius: theme.borderRadius.lg,
-    borderWidth: theme.borderWidth[1],
-    borderTopWidth: 0,
-    borderColor: theme.colors.border,
-    padding: 0,
+    paddingLeft: theme.spacing[2] + EXPANDABLE_BADGE_ICON_SLOT,
+    paddingRight: theme.spacing[2],
+    paddingTop: theme.spacing[1],
+    paddingBottom: theme.spacing[1],
     gap: 0,
     flexShrink: 1,
     minWidth: 0,
     overflow: "hidden",
     ...(isWeb ? { cursor: "auto" as const, userSelect: "text" as const } : {}),
   },
-  pressableExpanded: {
-    backgroundColor: theme.colors.surface1,
-  },
-  pressableExpandedAttached: {
-    borderColor: theme.colors.border,
-    borderBottomLeftRadius: 0,
-    borderBottomRightRadius: 0,
-  },
-  detailWrapperBorderless: {
-    borderWidth: 0,
+  // A nested list (a tool group's steps) draws its own rail, so it starts at the row edge.
+  detailWrapperNested: {
+    paddingLeft: 0,
+    paddingRight: 0,
+    paddingTop: 0,
+    paddingBottom: theme.spacing[1],
   },
   shimmerOverlay: {
     position: "absolute",
@@ -1405,7 +1436,7 @@ const MemoizedMarkdownBlock = React.memo(function MemoizedMarkdownBlock({
   return (
     <MarkdownRenderer
       text={text}
-      enableHtmlish={false}
+      enableHtmlish={containsDetailsElement(text)}
       rules={rules}
       markdownit={parser}
       onLinkPress={onLinkPress}
@@ -1504,11 +1535,21 @@ export const AssistantMessage = memo(function AssistantMessage({
   phase,
 }: AssistantMessageProps) {
   const { t } = useTranslation();
-  const markdownParser = useMemo(createAssistantMarkdownParser, []);
-  const streamingMarkdownParser = useMemo(
-    () => createAssistantMarkdownParser({ streaming: true }),
-    [],
-  );
+  const buildMarkdownParser = (streaming = false) => {
+    const parser = createAssistantMarkdownParser(streaming ? { streaming: true } : undefined);
+    addMathPlugin(parser);
+    const defaultValidateLink = parser.validateLink.bind(parser);
+    parser.validateLink = (url: string) => {
+      const lower = url.trim().toLowerCase();
+      if (lower.startsWith("paseo:")) {
+        return true;
+      }
+      return defaultValidateLink(url);
+    };
+    return parser;
+  };
+  const markdownParser = useMemo(() => buildMarkdownParser(false), []);
+  const streamingMarkdownParser = useMemo(() => buildMarkdownParser(true), []);
   const renderedMessage = useMemo(
     () =>
       renderFullContent ? { text: message, capped: false } : capAssistantMessageForRender(message),
@@ -1523,6 +1564,11 @@ export const AssistantMessage = memo(function AssistantMessage({
 
   const fileLinkActions = useAssistantFileLinkActions();
   const handleMarkdownLinkPress = useStableEvent((url: string) => {
+    // History Ask citations use paseo://h/{serverId}/agent/{agentId} deep links.
+    // Open those like History rows (workspace tab + unarchive) instead of file links.
+    if (openHistoryAskAgentLink(url)) {
+      return false;
+    }
     fileLinkActions.open({ href: url }, "preferred");
     // react-native-markdown-display opens the link itself when this returns true.
     // We already handled it above, so return false to avoid duplicate opens.
@@ -1762,16 +1808,22 @@ export const AssistantMessage = memo(function AssistantMessage({
         _parent: ASTNode[],
         styles: MarkdownStyles,
         inheritedStyles: TextStyle = {},
-      ) => (
-        <MarkdownFenceBlock
-          key={node.key}
-          code={node.content}
-          info={node.sourceInfo}
-          phase={phase}
-          inheritedStyles={inheritedStyles}
-          textStyle={styles.fence}
-        />
-      ),
+      ) => {
+        const richFence = renderRichFence(node);
+        if (richFence) {
+          return richFence;
+        }
+        return (
+          <MarkdownFenceBlock
+            key={node.key}
+            code={node.content}
+            info={node.sourceInfo}
+            phase={phase}
+            inheritedStyles={inheritedStyles}
+            textStyle={styles.fence}
+          />
+        );
+      },
       code_inline: (
         node: ASTNode,
         _children: ReactNode[],
@@ -1955,6 +2007,7 @@ export const AssistantMessage = memo(function AssistantMessage({
           />
         );
       },
+      ...createMathRenderRules(),
     };
   }, [client, fileLinkActions, markdownParser, occurrenceKey, phase, serverId, workspaceRoot]);
 
@@ -1986,7 +2039,7 @@ export const AssistantMessage = memo(function AssistantMessage({
     [occurrenceKey, revealedMessage.length],
   );
 
-  return (
+  const assistantBlocks = (
     <View testID="assistant-message" dataSet={revealDataSet} style={assistantContainerStyle}>
       {keyedBlocks.map(({ key, block }, index) => (
         <AssistantMessageBlockContainer
@@ -2015,6 +2068,19 @@ export const AssistantMessage = memo(function AssistantMessage({
         </Text>
       ) : null}
     </View>
+  );
+
+  // Charts that reference a workspace file read it through this host+cwd. Without
+  // the scope they fall back to demanding inline rows, which is the right answer
+  // wherever a message renders outside a workspace.
+  if (!client || !serverId || !workspaceRoot) {
+    return assistantBlocks;
+  }
+
+  return (
+    <ChartDataProvider client={client} serverId={serverId} cwd={workspaceRoot}>
+      {assistantBlocks}
+    </ChartDataProvider>
   );
 });
 
@@ -2209,6 +2275,67 @@ const compactionStylesheet = StyleSheet.create((theme) => ({
   },
 }));
 
+export interface AiReviewDecisionProps {
+  decision: "allow" | "deny" | "escalate";
+  toolName?: string;
+  reason: string;
+}
+
+const aiReviewDecisionStyles = StyleSheet.create((theme) => ({
+  container: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[2],
+    paddingVertical: theme.spacing[1.5],
+    paddingHorizontal: theme.spacing[4],
+  },
+  text: {
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.sm,
+    flexShrink: 0,
+  },
+  reason: {
+    color: theme.colors.foreground,
+    fontSize: theme.fontSize.sm,
+    flexShrink: 1,
+  },
+}));
+
+function resolveAiReviewVisuals(decision: "allow" | "deny" | "escalate"): {
+  Icon: typeof ThemedCheck;
+  mapping: typeof statusSuccessColorMapping;
+  label: string;
+} {
+  if (decision === "allow") {
+    return { Icon: ThemedCheck, mapping: statusSuccessColorMapping, label: "Allowed" };
+  }
+  if (decision === "deny") {
+    return { Icon: ThemedXCircle, mapping: statusDangerColorMapping, label: "Denied" };
+  }
+  return { Icon: ThemedInfo, mapping: statusWarningColorMapping, label: "Escalated" };
+}
+
+export const AiReviewDecision = memo(function AiReviewDecision({
+  decision,
+  toolName,
+  reason,
+}: AiReviewDecisionProps) {
+  const { Icon, mapping, label } = resolveAiReviewVisuals(decision);
+
+  return (
+    <View style={aiReviewDecisionStyles.container} testID="ai-review-decision-row">
+      <Icon size={14} uniProps={mapping} />
+      <Text style={aiReviewDecisionStyles.text} numberOfLines={1}>
+        {label}
+        {toolName ? ` · ${toolName}` : ""}
+      </Text>
+      <Text style={aiReviewDecisionStyles.reason} numberOfLines={1} ellipsizeMode="tail">
+        {reason}
+      </Text>
+    </View>
+  );
+});
+
 export const CompactionMarker = memo(function CompactionMarker({
   status,
   trigger,
@@ -2329,7 +2456,8 @@ interface ExpandableBadgeProps {
   isError?: boolean;
   isLastInSequence?: boolean;
   disableOuterSpacing?: boolean;
-  borderlessWhenExpanded?: boolean;
+  /** The details are a nested list of rows, not content to indent under the label. */
+  nestedDetails?: boolean;
   testID?: string;
 }
 
@@ -2692,7 +2820,7 @@ export const ExpandableBadge = memo(function ExpandableBadge({
   isError = false,
   isLastInSequence = false,
   disableOuterSpacing,
-  borderlessWhenExpanded = false,
+  nestedDetails = false,
   testID,
 }: ExpandableBadgeProps) {
   const resolvedDisableOuterSpacing = useDisableOuterSpacing(disableOuterSpacing);
@@ -2862,18 +2990,16 @@ export const ExpandableBadge = memo(function ExpandableBadge({
     () => [
       expandableBadgeStylesheet.pressable,
       isPressed && isInteractive ? expandableBadgeStylesheet.pressablePressed : null,
-      isExpanded && expandableBadgeStylesheet.pressableExpanded,
-      isExpanded && !borderlessWhenExpanded && expandableBadgeStylesheet.pressableExpandedAttached,
     ],
-    [borderlessWhenExpanded, isExpanded, isInteractive, isPressed],
+    [isInteractive, isPressed],
   );
 
   const detailWrapperStyle = useMemo(
     () => [
       expandableBadgeStylesheet.detailWrapper,
-      borderlessWhenExpanded && expandableBadgeStylesheet.detailWrapperBorderless,
+      nestedDetails && expandableBadgeStylesheet.detailWrapperNested,
     ],
-    [borderlessWhenExpanded],
+    [nestedDetails],
   );
 
   const accessibilityState = useMemo(
@@ -3013,7 +3139,7 @@ function areExpandableBadgePropsEqual(previous: ExpandableBadgeProps, next: Expa
   if (previous.isError !== next.isError) return false;
   if (previous.isLastInSequence !== next.isLastInSequence) return false;
   if (previous.disableOuterSpacing !== next.disableOuterSpacing) return false;
-  if (previous.borderlessWhenExpanded !== next.borderlessWhenExpanded) return false;
+  if (previous.nestedDetails !== next.nestedDetails) return false;
   if (previous.testID !== next.testID) return false;
   if (previous.onToggle !== next.onToggle) return false;
   if (previous.onOpenFile !== next.onOpenFile) return false;
@@ -3031,12 +3157,21 @@ interface ToolCallProps {
   detail?: ToolCallDetail;
   cwd?: string;
   metadata?: Record<string, unknown>;
+  /** agentId → display name for fleet dispatch renderers (live identity join). */
+  agentNames?: Readonly<Record<string, string | undefined>>;
+  /** host → display alias resolver (maps "local" to host alias). */
+  resolveHost?: (host: string) => string;
   isLastInSequence?: boolean;
   disableOuterSpacing?: boolean;
   onInlineDetailsHoverChange?: (hovered: boolean) => void;
   onInlineDetailsExpandedChange?: (expanded: boolean) => void;
   onOpenFilePath?: (filePath: string) => void;
   defaultExpanded?: boolean;
+  /**
+   * Open while true, closed when it turns false, until the user toggles the row; from then
+   * on the user's choice holds. A tool group sets it on the step that is running now.
+   */
+  autoExpanded?: boolean;
   forceInline?: boolean;
   maxDetailHeight?: number;
 }
@@ -3050,20 +3185,25 @@ export const ToolCall = memo(function ToolCall({
   detail,
   cwd,
   metadata,
+  agentNames,
+  resolveHost,
   isLastInSequence = false,
   disableOuterSpacing,
   onInlineDetailsHoverChange,
   onInlineDetailsExpandedChange,
   onOpenFilePath,
   defaultExpanded,
+  autoExpanded,
   forceInline = false,
   maxDetailHeight = 400,
 }: ToolCallProps) {
   const { openToolCall } = useToolCallSheet();
-  const [isExpanded, setIsExpanded] = useState(defaultExpanded ?? false);
+  const [pinnedExpanded, setPinnedExpanded] = useState<boolean | null>(null);
+  const isExpanded = pinnedExpanded ?? autoExpanded ?? defaultExpanded ?? false;
 
   const isMobile = useIsCompactFormFactor();
   const shouldRenderInline = !isMobile || forceInline;
+  const isRunning = status === "running" || status === "executing";
 
   const effectiveDetail = useMemo<ToolCallDetail | undefined>(() => {
     if (detail) {
@@ -3088,9 +3228,11 @@ export const ToolCall = memo(function ToolCall({
         detail: effectiveDetail,
         metadata,
         cwd,
+        agentNames,
+        resolveHost,
         resolveIcon: resolveToolCallIcon,
       }),
-    [toolName, status, error, effectiveDetail, metadata, cwd],
+    [toolName, status, error, effectiveDetail, metadata, cwd, agentNames, resolveHost],
   );
   const handleOpenFile = useMemo(() => {
     const openFilePath = presentation.openFilePath;
@@ -3112,9 +3254,10 @@ export const ToolCall = memo(function ToolCall({
         showLoadingSkeleton: presentation.isLoadingDetails,
       });
     } else {
-      setIsExpanded((prev) => !prev);
+      setPinnedExpanded(!isExpanded);
     }
   }, [
+    isExpanded,
     shouldRenderInline,
     openToolCall,
     toolName,
@@ -3163,6 +3306,8 @@ export const ToolCall = memo(function ToolCall({
         errorText={presentation.errorText}
         maxHeight={maxDetailHeight}
         showLoadingSkeleton={presentation.isLoadingDetails}
+        resolveHost={resolveHost}
+        followTail={isRunning}
       />
     );
   }, [
@@ -3172,6 +3317,8 @@ export const ToolCall = memo(function ToolCall({
     presentation.errorText,
     presentation.isLoadingDetails,
     maxDetailHeight,
+    resolveHost,
+    isRunning,
   ]);
 
   if (presentation.isPlan && effectiveDetail?.type === "plan") {
@@ -3195,7 +3342,7 @@ export const ToolCall = memo(function ToolCall({
       onToggle={presentation.canOpenDetails ? handleToggle : undefined}
       onOpenFile={handleOpenFile}
       renderDetails={presentation.canOpenDetails && shouldRenderInline ? renderDetails : undefined}
-      isLoading={status === "running" || status === "executing"}
+      isLoading={isRunning}
       isError={status === "failed"}
       isLastInSequence={isLastInSequence}
       disableOuterSpacing={disableOuterSpacing}
@@ -3213,10 +3360,13 @@ function areToolCallPropsEqual(previous: ToolCallProps, next: ToolCallProps) {
   if (previous.detail !== next.detail) return false;
   if (previous.cwd !== next.cwd) return false;
   if (previous.metadata !== next.metadata) return false;
+  if (previous.agentNames !== next.agentNames) return false;
+  if (previous.resolveHost !== next.resolveHost) return false;
   if (previous.isLastInSequence !== next.isLastInSequence) return false;
   if (previous.disableOuterSpacing !== next.disableOuterSpacing) return false;
   if (previous.onOpenFilePath !== next.onOpenFilePath) return false;
   if (previous.defaultExpanded !== next.defaultExpanded) return false;
+  if (previous.autoExpanded !== next.autoExpanded) return false;
   if (previous.forceInline !== next.forceInline) return false;
   if (previous.maxDetailHeight !== next.maxDetailHeight) return false;
   return true;

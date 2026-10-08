@@ -48,6 +48,7 @@ $PASEO_HOME/
 ├── server-id                            # Stable daemon identifier (plain text, "srv_<base64url>")
 ├── daemon-keypair.json                  # E2EE keypair for relay (mode 0600)
 ├── paseo.pid                            # Daemon PID lock file
+├── local-credential                     # Per-run local client credential (mode 0600)
 ├── daemon.log                           # Default log file (path configurable)
 ├── agents/
 │   └── {sanitized-cwd}/
@@ -181,8 +182,10 @@ Terminal activity contributes to the workspace status bucket **per `workspaceId`
 Single file, validated with `PersistedConfigSchema`.
 
 `agents.skills.selection` is the daemon host's orchestration-skill preference. Missing means
-`{ mode: "all" }`. Installed state is not persisted; the daemon derives it from its three managed
-skill directories and keeps config plus filesystem convergence behind one serialized owner.
+`{ mode: "all" }`. Installed state is not persisted; the daemon derives it from the shared
+`~/.agents/skills` and Claude skill directories and keeps config plus filesystem convergence behind
+one serialized owner. Codex discovers the shared directory. Updates retire unchanged files from
+Paseo-managed copies in `~/.codex/skills`, preserving user edits and untracked files.
 
 `paseo reload` reads and validates this file once inside the daemon. That snapshot drives resolution,
 classification, application, and reload bookkeeping. `DaemonConfigStore` owns applying runtime-safe
@@ -198,7 +201,7 @@ snapshot so a mixed edit can apply its live subset and still name the paths that
     listen: "127.0.0.1:6767",
     hostnames: true | string[],   // legacy alias `allowedHosts` is migrated on load
     trustedProxies: true | string[], // defaults to ["loopback"]; Express proxy names/CIDRs
-    mcp: { enabled: boolean, injectIntoAgents: boolean },
+    mcp: { enabled: boolean, injectIntoAgents: boolean }, // injectIntoAgents = HTTP MCP URL in the session; native host tools (fleet_*, report_status) stay on either way
     git: { maxProcessesPerSecond: number, maxProcessConcurrency: number },
     appendSystemPrompt: string,    // appended to supported provider system/developer prompts
     terminalProfiles: TerminalProfile[],  // named shell commands; omitted means DEFAULT_TERMINAL_PROFILES
@@ -354,7 +357,7 @@ remains authoritative during reload.
 
 Local speech model ids are intentionally narrow: STT uses `parakeet-tdt-0.6b-v2-int8`, TTS uses `kokoro-en-v0_19`, and turn detection uses the bundled Silero VAD model.
 
-Set these to select OpenAI instead of local speech:
+Set these to select OpenAI or Fish instead of local speech (Fish is TTS-only):
 
 | Env var                        | Applies to                      |
 | ------------------------------ | ------------------------------- |
@@ -382,6 +385,8 @@ OpenAI speech can be configured under `providers.openai`. STT and TTS resolve in
 ```
 
 `providers.openai.stt` is used for both composer dictation and voice mode speech-to-text; `providers.openai.tts` is used for voice mode text-to-speech. The equivalent env vars are `OPENAI_STT_API_KEY`/`OPENAI_STT_BASE_URL` and `OPENAI_TTS_API_KEY`/`OPENAI_TTS_BASE_URL`. Each feature falls back to `providers.openai.apiKey`/`providers.openai.baseUrl`, then `OPENAI_API_KEY`/`OPENAI_BASE_URL`, when its own fields are unset. These settings apply only to Paseo OpenAI speech features, not to Codex or other OpenAI-backed tools.
+
+Fish Audio TTS (optional): set `features.voiceMode.tts.provider` to `"fish"` and provide `providers.fish.apiKey` or `FISH_AUDIO_API_KEY`. STT stays local/OpenAI.
 
 Paseo uses these paths under the configured OpenAI base URL:
 
@@ -557,6 +562,7 @@ These small files are not validated as full Zod schemas but are persisted under 
 | `server-id`           | Plain text, e.g. `srv_<base64url>`                             | Stable per-`$PASEO_HOME` daemon ID. Overridable via `PASEO_SERVER_ID` env.        |
 | `daemon-keypair.json` | `{ v: 2, publicKeyB64, secretKeyB64 }` (libsodium box keypair) | E2EE relay identity. Written with mode `0600`. Regenerated if file is unreadable. |
 | `paseo.pid`           | JSON `{ pid, startedAt, ... }`                                 | PID lock; prevents two daemons sharing one `$PASEO_HOME`.                         |
+| `local-credential`    | 32 random bytes encoded as base64url text                      | Rotated before each listen and deleted on shutdown; mode `0600`.                  |
 | `daemon.log`          | Pino log output                                                | Default location; path/rotation configurable via `log.file` in `config.json`.     |
 
 ---

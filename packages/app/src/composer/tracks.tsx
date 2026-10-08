@@ -11,7 +11,6 @@ import {
 } from "@/components/ui/menu";
 import { StatusRing } from "@/components/status-ring";
 import { STATUS_RING_HALO_INSET } from "@/components/status-ring/geometry";
-import { MAX_CONTENT_WIDTH } from "@/constants/layout";
 import { isWeb } from "@/constants/platform";
 import { getStatusDotColor } from "@/utils/status-dot-color";
 import { STATUS_INDICATOR_FILLED_DOT_SIZE } from "@/utils/status-indicator-geometry";
@@ -19,7 +18,8 @@ import type { SidebarStateBucket } from "@/utils/sidebar-agent-state";
 import { COMPOSER_PILL_CLEARANCE, composerPillStyles } from "./pill-styles";
 
 /**
- * The strip of pills where a pane's ambient trackers and plugin actions live.
+ * The strip of pills where a pane's ambient trackers and plugin actions live —
+ * subagents, asks, and tasks.
  *
  * Trackers expose a count and a detail panel; plugin actions expose their own icon and text.
  * Trackers used to be stacked cards, so every one of them pushed the composer further down the
@@ -328,7 +328,7 @@ const styles = StyleSheet.create((theme) => {
     },
     track: {
       width: "100%",
-      maxWidth: MAX_CONTENT_WIDTH,
+      maxWidth: theme.contentMaxWidth,
       flexDirection: "row",
       alignItems: "center",
       gap: theme.spacing[1],

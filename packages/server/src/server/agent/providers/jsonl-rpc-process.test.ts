@@ -2,7 +2,7 @@ import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import pino from "pino";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import { JsonlRpcProcess, type JsonlRpcExit } from "./jsonl-rpc-process.js";
 
@@ -38,6 +38,25 @@ readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on("line
       process.stdout.write('\\u2028b"}\r\n');
       respond(command, true, null);
     }, 5);
+    return;
+  }
+  if (command.type === "chunk") {
+    // Mirror the OMP protocol v2 encoder: split one oversized frame into
+    // base64 rpc_chunk frames.
+    const payload = JSON.stringify(command.frame);
+    const buffer = Buffer.from(payload, "utf8");
+    const chunkSize = command.chunkSize;
+    const count = Math.ceil(buffer.byteLength / chunkSize);
+    for (let index = 0; index < count; index += 1) {
+      process.stdout.write(JSON.stringify({
+        type: "rpc_chunk",
+        chunkId: "rpc-1",
+        index,
+        count,
+        byteLength: buffer.byteLength,
+        data: buffer.subarray(index * chunkSize, (index + 1) * chunkSize).toString("base64"),
+      }) + "\n");
+    }
     return;
   }
   if (command.type === "fail") {
@@ -154,6 +173,129 @@ describe("JsonlRpcProcess", () => {
     }
   });
 
+  test("reassembles a chunked response that exceeds the single-frame limit", async () => {
+    const transport = startProcess();
+    const value = "x".repeat(2_000_000);
+
+    try {
+      await expect(
+        transport.request({
+          type: "chunk",
+          chunkSize: 262_144,
+          frame: {
+            type: "response",
+            id: "req_1",
+            command: "chunk",
+            success: true,
+            data: { value, unicode: "🌍 ünïcode" },
+          },
+        }),
+      ).resolves.toEqual({ value, unicode: "🌍 ünïcode" });
+    } finally {
+      await transport.close();
+    }
+  });
+
+  test("reassembles a chunked event frame and publishes it to subscribers", async () => {
+    const transport = startProcess();
+    const messages: Record<string, unknown>[] = [];
+    transport.onMessage((message) => messages.push(message));
+    const text = "y".repeat(1_500_000);
+
+    try {
+      transport.send({
+        type: "chunk",
+        chunkSize: 262_144,
+        frame: { type: "notice", text },
+      });
+      await vi.waitFor(() => expect(messages).toHaveLength(1));
+
+      expect(messages[0]).toEqual({ type: "notice", text });
+    } finally {
+      await transport.close();
+    }
+  });
+
+  test("drops a chunk sequence with inconsistent metadata without losing later frames", async () => {
+    const child = createInMemoryChildProcess();
+    const transport = startProcess({ child });
+    const messages: Record<string, unknown>[] = [];
+    transport.onMessage((message) => messages.push(message));
+
+    try {
+      const first = Buffer.from('{"type":"notice","text":"part-', "utf8");
+      const second = Buffer.from('one"}', "utf8");
+      child.stdout.write(
+        `${JSON.stringify({
+          type: "rpc_chunk",
+          chunkId: "rpc-1",
+          index: 0,
+          count: 2,
+          byteLength: first.byteLength + second.byteLength,
+          data: first.toString("base64"),
+        })}\n`,
+      );
+      // Wrong chunkId for the open sequence: the whole sequence is dropped.
+      child.stdout.write(
+        `${JSON.stringify({
+          type: "rpc_chunk",
+          chunkId: "rpc-2",
+          index: 1,
+          count: 2,
+          byteLength: first.byteLength + second.byteLength,
+          data: second.toString("base64"),
+        })}\n`,
+      );
+      child.stdout.write(`${JSON.stringify({ type: "notice", text: "after" })}\n`);
+      await vi.waitFor(() => expect(messages).toHaveLength(1));
+
+      expect(messages).toEqual([{ type: "notice", text: "after" }]);
+    } finally {
+      await transport.close();
+    }
+  });
+
+  test("decodes a multi-byte character split across two stdout reads", async () => {
+    const child = createInMemoryChildProcess();
+    const transport = startProcess({ child });
+    const messages: Record<string, unknown>[] = [];
+    transport.onMessage((message) => messages.push(message));
+
+    try {
+      const line = Buffer.from(`${JSON.stringify({ type: "notice", text: "🌍" })}\n`, "utf8");
+      const splitAt = line.indexOf(Buffer.from("🌍", "utf8")) + 2;
+      child.stdout.write(line.subarray(0, splitAt));
+      child.stdout.write(line.subarray(splitAt));
+      await vi.waitFor(() => expect(messages).toHaveLength(1));
+
+      expect(messages).toEqual([{ type: "notice", text: "🌍" }]);
+    } finally {
+      await transport.close();
+    }
+  });
+
+  test("publishes unmatched responses without publishing the response that settles a request", async () => {
+    const child = createInMemoryChildProcess();
+    const transport = startProcess({ child });
+    const messages: Record<string, unknown>[] = [];
+    transport.onMessage((message) => messages.push(message));
+
+    try {
+      const { id, promise } = transport.startRequest({ type: "prompt" });
+      const response = { id, type: "response", command: "prompt" };
+      const rejection = { ...response, success: false, error: "rejected after acknowledgement" };
+      const unknownResponse = { ...response, id: "unknown-request", success: true };
+      child.stdout.write(`${JSON.stringify({ ...response, success: true })}\n`);
+      child.stdout.write(`${JSON.stringify(rejection)}\n`);
+      child.stdout.write(`${JSON.stringify(unknownResponse)}\n`);
+
+      await expect(promise).resolves.toBeUndefined();
+      expect(messages).toEqual([rejection, unknownResponse]);
+    } finally {
+      await transport.close();
+    }
+  });
+
   test("rejects unsuccessful responses", async () => {
     const transport = startProcess();
 
@@ -220,6 +362,40 @@ describe("JsonlRpcProcess", () => {
     });
   });
 
+  test("publishes a synthetic exit when stdout closes while the process stays alive", async () => {
+    // A provider that closes its stdout but keeps running stops emitting
+    // events with no process-exit signal. The daemon must not wait forever for
+    // a terminal that can never arrive: stdout close is surfaced as an exit.
+    const child = createInMemoryChildProcess();
+    const transport = startProcess({ child });
+    const exit = nextExit(transport);
+
+    const request = transport.request({ type: "hang" });
+    child.stdout.end();
+
+    await expect(exit).resolves.toMatchObject({
+      code: null,
+      signal: null,
+      error: expect.objectContaining({
+        message: expect.stringContaining("stdout closed while the process is still running"),
+      }),
+    });
+    await expect(request).rejects.toThrow("stdout closed while the process is still running");
+  });
+
+  test("does not double-publish when stdout closes after a real exit", async () => {
+    const child = createInMemoryChildProcess();
+    const transport = startProcess({ child });
+    const exits: JsonlRpcExit[] = [];
+    transport.onExit((exit) => exits.push(exit));
+
+    child.emit("exit", 7, null);
+    child.stdout.end();
+    await vi.waitFor(() => expect(exits).toHaveLength(1));
+
+    expect(exits[0]).toMatchObject({ code: 7, signal: null });
+  });
+
   test("rejects pending requests while shutting down the child process", async () => {
     const transport = startProcess();
     await transport.request({ type: "echo", value: "ready" });
@@ -267,6 +443,41 @@ describe("JsonlRpcProcess", () => {
       );
     },
   );
+
+  test("requestStopWork resolves once the child has exited", async () => {
+    const child = createInMemoryChildProcess();
+    const transport = startProcess({ child });
+
+    child.emit("exit", 1, null);
+
+    await expect(transport.requestStopWork({ type: "abort" })).resolves.toBeUndefined();
+  });
+
+  // A dying child's stdin pipe breaks a fraction before its exit event, so deciding at the
+  // moment of the write failure would refuse a stop the runtime did honor.
+  test("requestStopWork resolves when stdin fails just before the child exits", async () => {
+    const child = createInMemoryChildProcess();
+    const transport = startProcess({ child });
+
+    const stopped = transport.requestStopWork({ type: "abort" });
+    child.stdin.emit("error", Object.assign(new Error("write EPIPE"), { code: "EPIPE" }));
+
+    await expect(stopped).resolves.toBeUndefined();
+  });
+
+  // `close()` and a spawn error dispose the transport before the child is known to be
+  // gone, and a child can outlive SIGKILL, so a disposed transport is not proof that the
+  // requested work stopped.
+  test("requestStopWork keeps failing while the transport is disposed but the child has not exited", async () => {
+    const child = createInMemoryChildProcess();
+    const transport = startProcess({ child });
+
+    child.emit("error", new Error("spawn failed"));
+
+    await expect(transport.requestStopWork({ type: "abort" })).rejects.toThrow(
+      "JSONL RPC process is closed",
+    );
+  });
 
   test("stdin error events close the transport instead of becoming uncaught exceptions", async () => {
     const child = createInMemoryChildProcess();

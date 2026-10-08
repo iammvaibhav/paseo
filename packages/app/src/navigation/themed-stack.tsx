@@ -1,3 +1,4 @@
+import { DefaultTheme, ThemeProvider, type Theme } from "@react-navigation/native";
 import type { NativeStackNavigationOptions } from "@react-navigation/native-stack";
 import { Stack } from "expo-router";
 import { isValidElement, type ReactElement, type ReactNode, useCallback, useMemo } from "react";
@@ -41,13 +42,22 @@ function ThemedStackBase({
     [nestedNavigatorScreens],
   );
 
+  // The web stack paints each screen container with the navigation theme's background, under
+  // `contentStyle`. Keep it on the same surface so a cleared surface does not show the default.
+  const navigationTheme = useMemo<Theme>(
+    () => ({ ...DefaultTheme, colors: { ...DefaultTheme.colors, background: backgroundColor } }),
+    [backgroundColor],
+  );
+
   return (
-    <Stack screenOptions={themedScreenOptions} screenLayout={screenLayout}>
-      {children}
-    </Stack>
+    <ThemeProvider value={navigationTheme}>
+      <Stack screenOptions={themedScreenOptions} screenLayout={screenLayout}>
+        {children}
+      </Stack>
+    </ThemeProvider>
   );
 }
 
 export const ThemedStack = withUnistyles(ThemedStackBase, (theme) => ({
-  backgroundColor: theme.colors.surface0,
+  backgroundColor: theme.colors.surfacePane,
 }));

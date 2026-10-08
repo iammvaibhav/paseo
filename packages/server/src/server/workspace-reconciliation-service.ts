@@ -81,6 +81,10 @@ export interface ReconciliationResult {
   durationMs: number;
 }
 
+export interface BaseWorkspaceProvisioning {
+  findOrCreateWorkspaceForDirectory(cwd: string): Promise<PersistedWorkspaceRecord>;
+}
+
 export interface WorkspaceReconciliationServiceOptions {
   serverId?: string;
   projectRegistry: ProjectRegistry;
@@ -91,6 +95,10 @@ export interface WorkspaceReconciliationServiceOptions {
   onProjectUpdate?: (update: ProjectUpdate) => void;
   onWorkspaceArchived?: (workspaceId: string) => void | Promise<void>;
   onWorkspacesChanged?: (workspaceIds: string[]) => Promise<void>;
+  // ADR 0001: ensures every active project has a base workspace over its
+  // root checkout. Optional so existing tests / callers that don't care
+  // about base-workspace backfill keep working unchanged.
+  workspaceProvisioning?: BaseWorkspaceProvisioning;
   watchProjectRoot?: ProjectRootWatch;
   clock?: ReconciliationClock;
   rescanIntervalMs?: number;
@@ -122,11 +130,13 @@ export class WorkspaceReconciliationService {
   private readonly onProjectUpdate: ((update: ProjectUpdate) => void) | null;
   private readonly onWorkspaceArchived: ((workspaceId: string) => void | Promise<void>) | null;
   private readonly onWorkspacesChanged: ((workspaceIds: string[]) => Promise<void>) | null;
+  private readonly workspaceProvisioning: BaseWorkspaceProvisioning | null;
   private readonly watchProjectRoot: ProjectRootWatch;
   private readonly clock: ReconciliationClock;
   private readonly rescanIntervalMs: number;
   private readonly debounceMs: number;
   private readonly watchers: Array<{ rootPath: string; watcher: ProjectRootWatcher }> = [];
+  private readonly baseWorkspaceEnsures = new Map<string, Promise<void>>();
   private unsubscribeRegistry: (() => void) | null = null;
   private rescanTimer: ReconciliationTimer | null = null;
   private debounceTimer: ReconciliationTimer | null = null;
@@ -145,6 +155,7 @@ export class WorkspaceReconciliationService {
     this.onProjectUpdate = options.onProjectUpdate ?? null;
     this.onWorkspaceArchived = options.onWorkspaceArchived ?? null;
     this.onWorkspacesChanged = options.onWorkspacesChanged ?? null;
+    this.workspaceProvisioning = options.workspaceProvisioning ?? null;
     this.watchProjectRoot = options.watchProjectRoot ?? watchProjectRoot;
     this.clock = options.clock ?? systemClock;
     this.rescanIntervalMs = options.rescanIntervalMs ?? DEFAULT_RESCAN_INTERVAL_MS;
@@ -162,6 +173,15 @@ export class WorkspaceReconciliationService {
           await this.syncProjectRootWatches();
           if (this.disposed) return;
           if (mutation.kind === "upsert" && mutation.project && !mutation.project.archivedAt) {
+            // Fire-and-forget, NOT awaited: ensureBaseWorkspace can itself
+            // write through projectRegistry (a nested upsert re-fires this
+            // very listener, synchronously, before this call returns).
+            // Awaiting it here deadlocks against
+            // FileBackedProjectRegistry.getOrCreateActiveByRoot's
+            // allocation-queue lock whenever the mutation that woke us is
+            // itself still inside that lock — the common "new project"
+            // path. ensureBaseWorkspace never throws (errors are logged).
+            void this.ensureBaseWorkspace(mutation.project);
             this.onProjectUpdate?.({ kind: "upsert", project: mutation.project });
           } else {
             this.onProjectUpdate?.({ kind: "remove", projectId: mutation.projectId });
@@ -171,11 +191,68 @@ export class WorkspaceReconciliationService {
         }
       }) ?? null;
     await this.syncProjectRootWatches();
+    // Boot-time backfill (ADR 0001): projects created before base-workspace
+    // support existed, or whose mutation-triggered ensure failed
+    // transiently, get a base workspace on every daemon start.
+    // ensureBaseWorkspace is idempotent — it no-ops once
+    // project.baseWorkspaceId is set, and dedupes concurrent callers.
+    await Promise.all(
+      (await this.projectRegistry.list())
+        .filter((project) => !project.archivedAt && !project.baseWorkspaceId)
+        .map((project) => this.ensureBaseWorkspace(project)),
+    );
     this.rescanTimer = this.clock.setInterval(
       () => this.reconcileObservedGitMetadata("full"),
       this.rescanIntervalMs,
     );
     this.rescanTimer.unref?.();
+  }
+
+  // ADR 0001: every active project gets a base workspace over its root
+  // checkout — find-or-create so a same-cwd workspace created some other
+  // way (e.g. via open_project_request) is adopted, never duplicated.
+  // Errors are logged and swallowed: base-workspace trouble never fails
+  // project creation or reconciliation.
+  //
+  // Callers for the SAME projectId are chained (not merely deduped while
+  // "in flight"): ensureBaseWorkspaceNow does a read-then-write with no
+  // atomic compare-and-swap, so two independent calls that both read before
+  // either writes would both provision. Chaining guarantees call N+1's read
+  // only starts after call N's write has fully committed, so it always
+  // observes N's result and no-ops.
+  private ensureBaseWorkspace(project: PersistedProjectRecord): Promise<void> {
+    if (!this.workspaceProvisioning || project.archivedAt || project.baseWorkspaceId) {
+      return Promise.resolve();
+    }
+    const projectId = project.projectId;
+    const previous = this.baseWorkspaceEnsures.get(projectId) ?? Promise.resolve();
+    const next = previous.then(() => this.ensureBaseWorkspaceNow(projectId));
+    this.baseWorkspaceEnsures.set(projectId, next);
+    void next.finally(() => {
+      if (this.baseWorkspaceEnsures.get(projectId) === next) {
+        this.baseWorkspaceEnsures.delete(projectId);
+      }
+    });
+    return next;
+  }
+
+  private async ensureBaseWorkspaceNow(projectId: string): Promise<void> {
+    const workspaceProvisioning = this.workspaceProvisioning;
+    if (!workspaceProvisioning) return;
+    try {
+      // Re-read: a concurrent ensure (or the mutation that triggered this
+      // one) may have already set the pointer while we were queued.
+      const current = await this.projectRegistry.get(projectId);
+      if (!current || current.archivedAt || current.baseWorkspaceId) return;
+      const workspace = await workspaceProvisioning.findOrCreateWorkspaceForDirectory(
+        current.rootPath,
+      );
+      await this.projectRegistry.update(projectId, (record) =>
+        record.baseWorkspaceId ? record : { ...record, baseWorkspaceId: workspace.workspaceId },
+      );
+    } catch (error) {
+      this.logger.warn({ err: error, projectId }, "Failed to ensure base workspace for project");
+    }
   }
 
   dispose(): void {
@@ -227,6 +304,14 @@ export class WorkspaceReconciliationService {
       workspace,
       state: this.inspectDirectory(workspace.cwd),
     }));
+    // Project roots are read after the workspace directories, so a volume that
+    // goes away mid-pass leaves its project unreachable rather than its workspaces
+    // alone. The skew can only withhold an archive, never produce one.
+    const reachableProjectIds = new Set(
+      activeProjects
+        .filter((project) => this.inspectDirectory(project.rootPath) === "directory")
+        .map((project) => project.projectId),
+    );
 
     const workspacesByProject = new Map<string, PersistedWorkspaceRecord[]>();
     for (const { workspace, state } of workspaceDirectoryStates) {
@@ -236,9 +321,16 @@ export class WorkspaceReconciliationService {
       workspacesByProject.set(workspace.projectId, list);
     }
 
-    // 1. Archive workspaces whose directories no longer exist
+    // 1. Archive workspaces whose directories no longer exist, but only when the
+    //    project they belong to is still reachable. A missing project root means the
+    //    whole location is unavailable - an unmounted volume, an offline share, a disk
+    //    that has not appeared yet - and absence there proves nothing about the
+    //    workspace. Projects already persist through that; their workspaces do too.
     const missingWorkspaces = workspaceDirectoryStates
-      .filter(({ state }) => state === "missing")
+      .filter(
+        ({ workspace, state }) =>
+          state === "missing" && reachableProjectIds.has(workspace.projectId),
+      )
       .map(({ workspace }) => workspace);
     await Promise.all(
       missingWorkspaces.map(async (workspace) => {
@@ -265,7 +357,7 @@ export class WorkspaceReconciliationService {
     //    Projects persist until explicitly removed, even when they currently have
     //    zero active workspaces, so they still reconcile their own metadata.
     await this.reconcileGitMetadataForProjects(
-      activeProjects.filter((project) => this.inspectDirectory(project.rootPath) === "directory"),
+      activeProjects.filter((project) => reachableProjectIds.has(project.projectId)),
       workspacesByProject,
       changes,
     );

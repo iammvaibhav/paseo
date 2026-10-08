@@ -5,7 +5,7 @@ import { Image } from "react-native";
 import type { DesktopOpenTargetIcon } from "@/workspace/desktop-open-targets";
 
 interface EditorTargetIconProps {
-  icon: DesktopOpenTargetIcon;
+  icon?: DesktopOpenTargetIcon;
   size?: number;
   color?: string;
 }
@@ -13,14 +13,14 @@ interface EditorTargetIconProps {
 export function EditorTargetIcon({ icon, size = 16, color }: EditorTargetIconProps) {
   const imageStyle = useMemo(() => ({ width: size, height: size }), [size]);
   const imageSource = useMemo(
-    () => (icon.kind === "image" ? { uri: icon.dataUrl } : undefined),
+    () => (icon?.kind === "image" ? { uri: icon.dataUrl } : undefined),
     [icon],
   );
 
   if (imageSource) {
     return <Image source={imageSource} style={imageStyle} resizeMode="contain" />;
   }
-  if (icon.kind === "symbol" && icon.name === "folder") {
+  if (icon?.kind === "symbol" && icon.name === "folder") {
     return <Folder size={size} color={color} />;
   }
   return <SquareTerminal size={size} color={color} />;

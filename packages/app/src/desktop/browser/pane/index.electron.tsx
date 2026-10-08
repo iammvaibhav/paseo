@@ -10,6 +10,10 @@ import {
   createElement,
 } from "react";
 import { createPortal } from "react-dom";
+import {
+  buildBrowserEditorGlassScript,
+  type BrowserEditorGlassPalette,
+} from "./browser-editor-glass.electron";
 import { Pressable, Text, View, type StyleProp, type ViewStyle } from "react-native";
 import {
   EditingTextInput as TextInput,
@@ -53,6 +57,13 @@ import { persistAttachmentFromDataUrl } from "@/attachments/service";
 import { WORKSPACE_SECONDARY_HEADER_HEIGHT } from "@/constants/layout";
 import { getOverlayRoot } from "@/lib/overlay-root";
 import {
+  buildBridgeCloseAllPath,
+  buildBridgeCommandPath,
+  buildBridgeOpenPath,
+  buildBridgeRestorePath,
+} from "@/workspace/browser-editor-url";
+import { buildBridgePostScript } from "@/desktop/browser/bridge-script";
+import {
   getDesktopHost,
   isElectronRuntime,
   type DesktopBrowserShortcutEvent,
@@ -64,13 +75,21 @@ import {
   RESPONSIVE_BROWSER_VIEWPORT,
   useBrowserStore,
 } from "@/desktop/browser/store";
+import { collectAllTabs, useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
+import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
 import {
   applyInactiveBrowserWebviewViewport,
+  ensurePersistentBrowserWebview,
+  hidePersistentBrowserWebview,
+  isBrowserWebviewDomReady,
+  isMainFrameDocumentNavigation,
+  isResidentBrowserWebviewReady,
   prepareBrowserWebview,
   presentBrowserWebview,
   rememberBrowserWebviewSize,
   releaseResidentBrowserWebview,
   removeResidentBrowserWebview,
+  showPersistentBrowserWebview,
   takeResidentBrowserWebview,
 } from "../resident-webviews";
 import {
@@ -306,6 +325,17 @@ function buildBrowserAttachmentScopeKey(input: {
   });
 }
 
+function applyBrowserEditorGlass(
+  webview: ElectronWebview,
+  palette: BrowserEditorGlassPalette | null,
+): void {
+  executeWebviewJavaScript(webview, buildBrowserEditorGlassScript(palette)).catch(
+    (error: unknown) => {
+      console.warn("[browser-pane] failed to apply VS Code glass", error);
+    },
+  );
+}
+
 function executeWebviewJavaScript(webview: ElectronWebview, code: string): Promise<unknown> {
   if (!webview.isConnected) {
     return Promise.resolve(null);
@@ -318,6 +348,116 @@ function executeWebviewJavaScript(webview: ElectronWebview, code: string): Promi
 }
 
 function ignoreWebviewJavaScriptError() {}
+
+interface BridgeOpenResult {
+  ok?: boolean;
+  status?: number;
+  error?: string;
+}
+
+interface BridgeRestoreResult extends BridgeOpenResult {
+  found?: boolean;
+  restored?: number;
+  failed?: number;
+}
+
+const SESSION_RESTORE_PENDING_ATTRIBUTE = "data-paseo-session-restore-pending";
+const SESSION_RESTORED_URL_ATTRIBUTE = "data-paseo-session-restored-url";
+
+function buildBridgeOpenScript(input: {
+  path: string;
+  line: number | null;
+  column: number | null;
+  mode: "file" | "diff";
+  baseRef: string | null;
+  folder: string | null;
+}): string {
+  return buildBridgePostScript(buildBridgeOpenPath(), {
+    path: input.path,
+    ...(input.line ? { line: input.line } : {}),
+    ...(input.column ? { column: input.column } : {}),
+    ...(input.mode === "diff" ? { mode: "diff" } : {}),
+    ...(input.baseRef ? { baseRef: input.baseRef } : {}),
+    ...(input.folder ? { folder: input.folder } : {}),
+  });
+}
+
+function buildBridgeCloseAllScript(folder: string | null): string {
+  return buildBridgePostScript(buildBridgeCloseAllPath(), folder ? { folder } : {});
+}
+
+function buildBridgeRestoreScript(): string {
+  return buildBridgePostScript(buildBridgeRestorePath(), {});
+}
+
+function browserEditorFolder(url: string): string | null {
+  try {
+    return new URL(url).searchParams.get("folder");
+  } catch {
+    return null;
+  }
+}
+
+function restoreBrowserEditorSession(
+  webview: ElectronWebview,
+  expectedUrl: string | null | undefined,
+): void {
+  const currentUrl = webview.getURL?.() ?? webview.getAttribute("src") ?? "";
+  // Only single-folder windows: a `?workspace=` window restores its tabs through
+  // the project switch that follows every load (preload-browser-editor.ts).
+  const currentFolder = browserEditorFolder(currentUrl);
+  const expectedFolder = expectedUrl ? browserEditorFolder(expectedUrl) : null;
+  if (
+    !currentUrl ||
+    !currentFolder ||
+    (expectedFolder !== null && currentFolder !== expectedFolder) ||
+    webview.getAttribute(SESSION_RESTORE_PENDING_ATTRIBUTE) === currentUrl ||
+    webview.getAttribute(SESSION_RESTORED_URL_ATTRIBUTE) === currentUrl
+  ) {
+    return;
+  }
+  webview.setAttribute(SESSION_RESTORE_PENDING_ATTRIBUTE, currentUrl);
+  void executeWebviewJavaScript(webview, buildBridgeRestoreScript())
+    .then((result) => {
+      const restoreResult = (result ?? {}) as BridgeRestoreResult;
+      if (restoreResult.ok === true) {
+        webview.setAttribute(SESSION_RESTORED_URL_ATTRIBUTE, currentUrl);
+        console.log(
+          `[paseo-bridge] session restore url=${currentUrl} found=${restoreResult.found} files=${restoreResult.restored ?? 0} failed=${restoreResult.failed ?? 0}`,
+        );
+      } else {
+        console.warn(
+          `[paseo-bridge] session restore failed url=${currentUrl} status=${restoreResult.status ?? "-"} error=${restoreResult.error ?? "-"}`,
+        );
+      }
+      return undefined;
+    })
+    .catch(ignoreWebviewJavaScriptError)
+    .finally(() => {
+      if (webview.getAttribute(SESSION_RESTORE_PENDING_ATTRIBUTE) === currentUrl) {
+        webview.removeAttribute(SESSION_RESTORE_PENDING_ATTRIBUTE);
+      }
+    });
+}
+
+function workspaceHasBrowserTab(workspaceKey: string, browserId: string): boolean {
+  const layout = useWorkspaceLayoutStore.getState().layoutByWorkspace[workspaceKey];
+  if (!layout) {
+    return false;
+  }
+  return collectAllTabs(layout.root).some(
+    (tab) => tab.target.kind === "browser" && tab.target.browserId === browserId,
+  );
+}
+
+function isBridgeWebviewReady(
+  webview: ElectronWebview | null,
+  domReady: boolean,
+  showChrome: boolean,
+  host: HTMLDivElement | null,
+): webview is ElectronWebview {
+  return Boolean(webview && domReady && (!showChrome || host?.contains(webview)));
+}
 
 interface BrowserAnnotationMarker {
   index: number;
@@ -585,6 +725,7 @@ export function BrowserPane({
   workspaceId,
   cwd,
   isInteractive,
+  isWorkspaceActive = true,
   onFocusPane,
 }: {
   browserId: string;
@@ -592,12 +733,46 @@ export function BrowserPane({
   workspaceId: string;
   cwd: string | null;
   isInteractive?: boolean;
+  isWorkspaceActive?: boolean;
   onFocusPane?: () => void;
 }) {
   const { theme } = useUnistyles();
   const { t } = useTranslation();
   const browser = useBrowserStore((state) => state.browsersById[browserId] ?? null);
+  // `embedded` = chrome-less + persistent webview (VS Code Web).
+  // `embedded-transient` = chrome-less + normal lifecycle (Plannotator).
+  // `full` = toolbar + resident lifecycle.
+  const chromeMode = browser?.chrome ?? "full";
+  const showChrome = chromeMode === "full";
+  const usePersistentWebview = chromeMode === "embedded";
+  // VS Code Web joins the glass theme; other pages keep their own backgrounds.
+  const browserEditorGlass = useMemo<BrowserEditorGlassPalette | null>(
+    () =>
+      usePersistentWebview && theme.glass
+        ? {
+            overlay: theme.glass.overlay,
+            cover: theme.glass.cover,
+            activeTab: theme.colors.surface2,
+            inactiveActiveTab: theme.colors.surface1,
+            input: theme.colors.surface2,
+          }
+        : null,
+    [usePersistentWebview, theme.glass, theme.colors.surface1, theme.colors.surface2],
+  );
+  const browserEditorGlassRef = useRef(browserEditorGlass);
   const updateBrowser = useBrowserStore((state) => state.updateBrowser);
+  const navigationRequest = useBrowserStore(
+    (state) => state.navigationRequestByBrowserId[browserId] ?? null,
+  );
+  const clearNavigationRequest = useBrowserStore((state) => state.clearNavigationRequest);
+  const bridgeOpenRequest = useBrowserStore(
+    (state) => state.bridgeOpenRequestByBrowserId[browserId] ?? null,
+  );
+  const clearBridgeOpenRequest = useBrowserStore((state) => state.clearBridgeOpenRequest);
+  const bridgeCommandRequest = useBrowserStore(
+    (state) => state.bridgeCommandRequestByBrowserId[browserId] ?? null,
+  );
+  const clearBridgeCommandRequest = useBrowserStore((state) => state.clearBridgeCommandRequest);
   const setBrowserViewport = useBrowserStore((state) => state.setBrowserViewport);
   const browserViewport = browser?.viewport ?? RESPONSIVE_BROWSER_VIEWPORT;
   const browserViewportRef = useRef(browserViewport);
@@ -608,12 +783,36 @@ export function BrowserPane({
   const webviewRef = useRef<ElectronWebview | null>(null);
   const webviewHostRef = useRef<HTMLDivElement | null>(null);
   const webviewClipRef = useRef<HTMLElement | null>(null);
+  const domReadyRef = useRef(false);
+  useEffect(() => {
+    browserEditorGlassRef.current = browserEditorGlass;
+    const webview = webviewRef.current;
+    if (webview && domReadyRef.current) applyBrowserEditorGlass(webview, browserEditorGlass);
+  }, [browserEditorGlass]);
   const urlInputRef = useRef<EditingTextInputHandle | null>(null);
   const initialUrlRef = useRef(browser?.url ?? "https://example.com");
   const browserIdRef = useRef(browserId);
   browserIdRef.current = browserId;
   const browserRef = useRef(browser);
   browserRef.current = browser;
+  // The workspace folder this pane belongs to: names the project in bridge
+  // requests, since a multi-root VS Code window's URL carries no folder.
+  const cwdRef = useRef(cwd);
+  cwdRef.current = cwd;
+  const onFocusPaneRef = useRef(onFocusPane);
+  onFocusPaneRef.current = onFocusPane;
+  // Moves keyboard focus into the guest page and its pane, the same as a click
+  // into the webview.
+  const focusGuestWebview = useCallback((webview: ElectronWebview) => {
+    onFocusPaneRef.current?.();
+    webview.focus?.();
+    const focusBrowser = getDesktopHost()?.browser?.focus;
+    if (typeof focusBrowser === "function") {
+      void focusBrowser(browserIdRef.current).catch((error) => {
+        console.error("[browser-webview] focus failed", error);
+      });
+    }
+  }, []);
   const pendingNavigationUrlRef = useRef<string | null>(null);
   const annotationMarkersRef = useRef<BrowserAnnotationMarker[]>([]);
   const [selectorMode, setSelectorMode] = useState<"annotate" | "screenshot" | null>(null);
@@ -635,6 +834,10 @@ export function BrowserPane({
   const workspaceAttachmentScopeKey = useMemo(
     () => buildBrowserAttachmentScopeKey({ cwd, serverId, workspaceId }),
     [cwd, serverId, workspaceId],
+  );
+  const workspaceKey = useMemo(
+    () => buildWorkspaceTabPersistenceKey({ serverId, workspaceId }),
+    [serverId, workspaceId],
   );
   const workspaceAttachments = useWorkspaceAttachments(workspaceAttachmentScopeKey ?? "");
   const setWorkspaceAttachments = useWorkspaceAttachmentsStore(
@@ -719,8 +922,18 @@ export function BrowserPane({
     }
   }, []);
 
+  // Mount + event wiring for resident and persistent webviews in one effect.
+  // eslint-disable-next-line complexity -- hybrid persistent/resident lifecycle
   useEffect(() => {
     if (!isElectronRuntime()) {
+      return;
+    }
+    // Inactive retained tabs must not keep a fixed-position persistent webview
+    // painted on screen (VS Code Web). Also skip mounting transient panes.
+    if (!isWorkspaceActive) {
+      if (usePersistentWebview) {
+        hidePersistentBrowserWebview(browserId, webviewHostRef.current);
+      }
       return;
     }
 
@@ -736,24 +949,35 @@ export function BrowserPane({
       initialUrlRef.current,
       browserErrorLabelsRef.current,
     );
-    const residentWebview = takeResidentBrowserWebview(browserId) as ElectronWebview | null;
-    const webview = residentWebview ?? (document.createElement("webview") as ElectronWebview);
+    const persistentWebview = usePersistentWebview
+      ? (ensurePersistentBrowserWebview({
+          browserId,
+          workspaceId,
+          url: initialUnsafeNavigationMessage ? "about:blank" : initialUrlRef.current,
+        }) as ElectronWebview | null)
+      : null;
+    const residentWebview = usePersistentWebview
+      ? null
+      : (takeResidentBrowserWebview(browserId) as ElectronWebview | null);
+    const webview =
+      persistentWebview ??
+      residentWebview ??
+      (document.createElement("webview") as ElectronWebview);
     webviewRef.current = webview;
-    if (!residentWebview) {
+    domReadyRef.current =
+      isBrowserWebviewDomReady(webview) || isResidentBrowserWebviewReady(webview);
+    // A persistent webview may have finished loading before this pane mounted, so `dom-ready`
+    // will not fire again for it.
+    if (domReadyRef.current) applyBrowserEditorGlass(webview, browserEditorGlassRef.current);
+    if (!persistentWebview && !residentWebview) {
       prepareBrowserWebview(webview, {
         browserId,
         workspaceId,
         initialUrl: initialUnsafeNavigationMessage ? "about:blank" : initialUrlRef.current,
       });
     }
-    releaseResidentBrowserWebview(browserId, webview);
-    if (isPresentedRef.current) {
-      presentBrowserWebview(browserId, webview, host, clip, browserViewportRef.current);
-    } else {
-      applyInactiveBrowserWebviewViewport(browserId, webview, browserViewportRef.current);
-    }
     const sizeObserver =
-      typeof ResizeObserver === "undefined"
+      typeof ResizeObserver === "undefined" || usePersistentWebview
         ? null
         : new ResizeObserver(() => {
             if (!isPresentedRef.current) {
@@ -768,11 +992,28 @@ export function BrowserPane({
             );
             rememberResolvedBrowserWebviewSize(browserIdRef.current, webview);
           });
+    if (usePersistentWebview) {
+      // Persistent webviews stay on their fixed wrapper; only geometry updates.
+    } else {
+      releaseResidentBrowserWebview(browserId, webview);
+      if (isPresentedRef.current) {
+        presentBrowserWebview(browserId, webview, host, clip, browserViewportRef.current);
+      } else {
+        applyInactiveBrowserWebviewViewport(browserId, webview, browserViewportRef.current);
+      }
+    }
 
     const handleStartLoading = () => {
       selectorControllerRef.current?.stopForWebview(webview);
       updateBrowser(browserId, { isLoading: true, lastError: null });
       syncNavigationState({ syncUrl: false });
+    };
+    const handleStartNavigation = (event: Event) => {
+      if (!isMainFrameDocumentNavigation(event)) {
+        return;
+      }
+      webview.removeAttribute(SESSION_RESTORED_URL_ATTRIBUTE);
+      domReadyRef.current = false;
     };
     const handleStopLoading = () => {
       updateBrowser(browserId, { isLoading: false });
@@ -837,6 +1078,10 @@ export function BrowserPane({
       });
     };
     const handleDomReady = () => {
+      // Regression fix: the persistent-webview refactor dropped this line, so
+      // any load while the pane is mounted left domReadyRef false forever and
+      // every bridge-open fell back to a reload after a 20s wait.
+      domReadyRef.current = true;
       syncNavigationState();
       // The previous page's overlay is gone after a load; re-apply markers for
       // the freshly loaded document.
@@ -844,19 +1089,17 @@ export function BrowserPane({
       if (markers.length > 0) {
         applyAnnotationMarkers(webview, markers);
       }
+      if (persistentWebview) {
+        restoreBrowserEditorSession(webview, browserRef.current?.url);
+      }
+      applyBrowserEditorGlass(webview, browserEditorGlassRef.current);
     };
     const handleWebviewFocus = () => {
-      onFocusPane?.();
-      webview.focus?.();
-      const focusBrowser = getDesktopHost()?.browser?.focus;
-      if (typeof focusBrowser === "function") {
-        void focusBrowser(browserIdRef.current).catch((error) => {
-          console.error("[browser-webview] focus failed", error);
-        });
-      }
+      focusGuestWebview(webview);
     };
 
     webview.addEventListener("did-start-loading", handleStartLoading);
+    webview.addEventListener("did-start-navigation", handleStartNavigation);
     webview.addEventListener("did-stop-loading", handleStopLoading);
     webview.addEventListener("will-navigate", handleWillNavigate);
     webview.addEventListener("did-navigate", handleNavigate);
@@ -868,11 +1111,18 @@ export function BrowserPane({
     webview.addEventListener("focus", handleWebviewFocus);
     webview.addEventListener("mousedown", handleWebviewFocus);
 
-    if (isPresentedRef.current) {
-      rememberResolvedBrowserWebviewSize(browserId, webview);
+    if (persistentWebview) {
+      showPersistentBrowserWebview(browserId, host);
+      if (domReadyRef.current) {
+        restoreBrowserEditorSession(webview, browserRef.current?.url);
+      }
+    } else {
+      if (isPresentedRef.current) {
+        rememberResolvedBrowserWebviewSize(browserId, webview);
+      }
+      sizeObserver?.observe(host);
+      sizeObserver?.observe(clip);
     }
-    sizeObserver?.observe(host);
-    sizeObserver?.observe(clip);
     if (initialUnsafeNavigationMessage) {
       updateBrowserRef.current(browserIdRef.current, {
         isLoading: false,
@@ -883,6 +1133,7 @@ export function BrowserPane({
     return () => {
       sizeObserver?.disconnect();
       webview.removeEventListener("did-start-loading", handleStartLoading);
+      webview.removeEventListener("did-start-navigation", handleStartNavigation);
       webview.removeEventListener("did-stop-loading", handleStopLoading);
       webview.removeEventListener("will-navigate", handleWillNavigate);
       webview.removeEventListener("did-navigate", handleNavigate);
@@ -893,13 +1144,26 @@ export function BrowserPane({
       webview.removeEventListener("dom-ready", handleDomReady);
       webview.removeEventListener("focus", handleWebviewFocus);
       webview.removeEventListener("mousedown", handleWebviewFocus);
-      const browserStillExists = Boolean(
-        useBrowserStore.getState().browsersById[browserIdRef.current],
-      );
-      if (browserStillExists) {
-        releaseResidentBrowserWebview(browserIdRef.current, webview);
+      if (persistentWebview) {
+        if (
+          workspaceKey !== null &&
+          !workspaceHasBrowserTab(workspaceKey, browserIdRef.current) &&
+          isBrowserWebviewDomReady(webview)
+        ) {
+          void executeWebviewJavaScript(webview, buildBridgeCloseAllScript(cwdRef.current)).catch(
+            ignoreWebviewJavaScriptError,
+          );
+        }
+        hidePersistentBrowserWebview(browserIdRef.current, host);
       } else {
-        removeResidentBrowserWebview(browserIdRef.current);
+        const browserStillExists = Boolean(
+          useBrowserStore.getState().browsersById[browserIdRef.current],
+        );
+        if (browserStillExists) {
+          releaseResidentBrowserWebview(browserIdRef.current, webview);
+        } else {
+          removeResidentBrowserWebview(browserIdRef.current);
+        }
       }
       selectorControllerRef.current?.stopForWebview(webview);
       if (webviewRef.current === webview) {
@@ -907,9 +1171,12 @@ export function BrowserPane({
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [browserId, onFocusPane]);
+  }, [browserId, isWorkspaceActive, onFocusPane, showChrome, usePersistentWebview, workspaceKey]);
 
   useEffect(() => {
+    if (usePersistentWebview) {
+      return;
+    }
     const webview = webviewRef.current;
     if (!webview) {
       return;
@@ -932,7 +1199,7 @@ export function BrowserPane({
     } else {
       rememberResolvedBrowserWebviewSize(browserId, webview);
     }
-  }, [browserId, browserViewport, isPresented]);
+  }, [browserId, browserViewport, isPresented, usePersistentWebview]);
 
   const navigate = useCallback(
     (nextUrl: string) => {
@@ -955,18 +1222,26 @@ export function BrowserPane({
         });
         return;
       }
-      if (webview?.loadURL) {
-        void webview.loadURL(normalizedUrl).catch((error: unknown) => {
-          const message = getLoadUrlRejectionMessage(error, browserErrorLabels.failedToLoad);
-          if (!message) {
-            return;
-          }
-          updateBrowserRef.current(browserIdRef.current, {
-            isLoading: false,
-            lastError: message,
+      // loadURL throws synchronously ("WebView must be attached to the DOM and
+      // the dom-ready event emitted") if the webview isn't ready yet. Only use it
+      // when dom-ready; otherwise (or if it still throws) fall back to `src`,
+      // which the webview loads once it attaches.
+      if (webview?.loadURL && domReadyRef.current) {
+        try {
+          void webview.loadURL(normalizedUrl).catch((error: unknown) => {
+            const message = getLoadUrlRejectionMessage(error, browserErrorLabels.failedToLoad);
+            if (!message) {
+              return;
+            }
+            updateBrowserRef.current(browserIdRef.current, {
+              isLoading: false,
+              lastError: message,
+            });
           });
-        });
-        return;
+          return;
+        } catch {
+          // Webview exposes loadURL but isn't attached/ready — fall through to src.
+        }
       }
       if (webview) {
         webview.setAttribute("src", normalizedUrl);
@@ -974,6 +1249,187 @@ export function BrowserPane({
     },
     [browserErrorLabels],
   );
+
+  useEffect(() => {
+    if (!navigationRequest) {
+      return;
+    }
+    if (!showChrome && !isWorkspaceActive) {
+      return;
+    }
+    navigate(navigationRequest.url);
+    clearNavigationRequest(browserId, navigationRequest.requestId);
+  }, [
+    browserId,
+    clearNavigationRequest,
+    isWorkspaceActive,
+    navigate,
+    navigationRequest,
+    showChrome,
+  ]);
+
+  // Waits for the webview to attach and emit dom-ready before a bridge call: a
+  // freshly opened or adopted tab, or a cold code-server boot, is not ready at
+  // once, and giving up too early turns an in-place open into a reload.
+  const waitForBridgeWebview = useCallback(
+    async (isCancelled: () => boolean): Promise<ElectronWebview | null> => {
+      const deadline = Date.now() + 20000;
+      while (Date.now() < deadline && !isCancelled()) {
+        const webview = webviewRef.current;
+        if (
+          isBridgeWebviewReady(webview, domReadyRef.current, showChrome, webviewHostRef.current)
+        ) {
+          return webview;
+        }
+        await new Promise<void>((resolve) => {
+          setTimeout(resolve, 150);
+        });
+      }
+      return null;
+    },
+    [showChrome],
+  );
+
+  useEffect(() => {
+    if (!bridgeOpenRequest) {
+      return;
+    }
+    if (!showChrome && !isWorkspaceActive) {
+      return;
+    }
+    const { path, line, column, mode, baseRef, fallbackUrl, requestId, targetWorkspaceKey } =
+      bridgeOpenRequest;
+    if (targetWorkspaceKey && targetWorkspaceKey !== workspaceKey) {
+      return;
+    }
+    let cancelled = false;
+    console.log(
+      `[paseo-bridge] ${mode} requested browserId=${browserId} req=${requestId} path=${path} domReady=${domReadyRef.current} hasWebview=${Boolean(
+        webviewRef.current,
+      )}`,
+    );
+
+    const runFallback = (reason: string) => {
+      console.warn(`[paseo-bridge] fallback (reload) path=${path} reason=${reason}`);
+      if (fallbackUrl) {
+        navigate(fallbackUrl);
+      }
+      clearBridgeOpenRequest(browserId, requestId);
+    };
+
+    void (async () => {
+      const webview = await waitForBridgeWebview(() => cancelled);
+      if (cancelled) {
+        return;
+      }
+      if (!webview) {
+        // Never became ready — load the file the classic way (may reload).
+        runFallback("webview-not-ready");
+        return;
+      }
+      let result: BridgeOpenResult = {};
+      try {
+        result =
+          ((await executeWebviewJavaScript(
+            webview,
+            buildBridgeOpenScript({
+              path,
+              line,
+              column,
+              mode,
+              baseRef,
+              folder: cwdRef.current,
+            }),
+          )) as BridgeOpenResult | null) ?? {};
+      } catch (error) {
+        console.warn(`[paseo-bridge] executeJavaScript threw path=${path}`, error);
+        result = { ok: false, error: "executeJavaScript threw" };
+      }
+      if (cancelled) {
+        return;
+      }
+      console.log(
+        `[paseo-bridge] bridge fetch path=${path} ok=${result.ok} status=${result.status ?? "-"} error=${result.error ?? "-"}`,
+      );
+      if (result.ok === true) {
+        clearBridgeOpenRequest(browserId, requestId);
+        focusGuestWebview(webview);
+        return;
+      }
+      if (result.status === 404) {
+        // The bridge reached VS Code and the path is not on disk. Reloading to the
+        // `?payload` URL would open a phantom blank editor named after it.
+        console.warn(`[paseo-bridge] file not found path=${path}`);
+        toastRef.current.error(t("workspace.file.notFoundOnHost", { path }));
+        clearBridgeOpenRequest(browserId, requestId);
+        return;
+      }
+      // Bridge unreachable / errored — fall back to a reload.
+      runFallback(`bridge-status-${result.status ?? "none"}`);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    browserId,
+    bridgeOpenRequest,
+    clearBridgeOpenRequest,
+    focusGuestWebview,
+    isWorkspaceActive,
+    navigate,
+    showChrome,
+    t,
+    waitForBridgeWebview,
+    workspaceKey,
+  ]);
+
+  useEffect(() => {
+    if (!bridgeCommandRequest || (!showChrome && !isWorkspaceActive)) {
+      return;
+    }
+    const { command, requestId, targetWorkspaceKey } = bridgeCommandRequest;
+    if (targetWorkspaceKey && targetWorkspaceKey !== workspaceKey) {
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const webview = await waitForBridgeWebview(() => cancelled);
+      if (cancelled) {
+        return;
+      }
+      clearBridgeCommandRequest(browserId, requestId);
+      if (!webview) {
+        console.warn(`[paseo-bridge] command ${command} skipped: webview not ready`);
+        return;
+      }
+      // Focus first: VS Code puts Quick Open in the focused window, and keys
+      // typed right after the shortcut must land in it.
+      focusGuestWebview(webview);
+      const result = ((await executeWebviewJavaScript(
+        webview,
+        buildBridgePostScript(buildBridgeCommandPath(), {
+          command,
+          ...(cwdRef.current ? { folder: cwdRef.current } : {}),
+        }),
+      ).catch(() => null)) ?? {}) as BridgeOpenResult;
+      console.log(
+        `[paseo-bridge] command ${command} ok=${result.ok} status=${result.status ?? "-"} error=${result.error ?? "-"}`,
+      );
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    browserId,
+    bridgeCommandRequest,
+    clearBridgeCommandRequest,
+    focusGuestWebview,
+    isWorkspaceActive,
+    showChrome,
+    waitForBridgeWebview,
+    workspaceKey,
+  ]);
 
   const handleBack = useCallback(() => {
     webviewRef.current?.goBack?.();
@@ -1434,100 +1890,101 @@ export function BrowserPane({
 
   return (
     <View style={styles.container}>
-      <View style={styles.chromeRow}>
-        <View style={styles.chromeLeft}>
-          <ToolbarButton
-            label={t("workspace.browser.controls.back")}
-            disabled={!browser?.canGoBack}
-            onPress={handleBack}
-            style={backIconButtonStyle}
-          >
-            <ArrowLeft size={16} color={theme.colors.foregroundMuted} />
-          </ToolbarButton>
-          <ToolbarButton
-            label={t("workspace.browser.controls.forward")}
-            disabled={!browser?.canGoForward}
-            onPress={handleForward}
-            style={forwardIconButtonStyle}
-          >
-            <ArrowRight size={16} color={theme.colors.foregroundMuted} />
-          </ToolbarButton>
-          <ToolbarButton
-            label={
-              browser?.isLoading
-                ? t("workspace.browser.controls.stopLoading")
-                : t("workspace.browser.controls.refresh")
-            }
-            onPress={handleRefresh}
-            style={baseIconButtonStyle}
-          >
-            <RotateCw size={16} color={theme.colors.foregroundMuted} />
-          </ToolbarButton>
-        </View>
-        <View style={styles.urlBarWrap}>
-          <TextInput
-            accessibilityLabel={t("workspace.browser.controls.browserUrl")}
-            autoCapitalize="none"
-            autoCorrect={false}
-            onChangeText={setDraftUrl}
-            onFocus={handleUrlBarFocus}
-            onSubmitEditing={handleNavigateDraftUrl}
-            placeholder={t("workspace.browser.controls.enterUrl")}
-            placeholderTextColor={theme.colors.foregroundMuted}
-            ref={urlInputRef}
-            style={urlInputStyle}
-            initialValue={draftUrl}
-          />
-        </View>
-        <View style={styles.chromeRight}>
-          <DeviceSizeMenu
-            selectedId={selectedDeviceSizeId}
-            onSelect={handleSelectDeviceSize}
-            triggerStyle={baseIconButtonStyle}
-          />
-          <ToolbarButton
-            label={t("workspace.browser.controls.openDevTools")}
-            onPress={handleOpenDevTools}
-            style={baseIconButtonStyle}
-          >
-            <Wrench size={16} color={theme.colors.foregroundMuted} />
-          </ToolbarButton>
-          <ToolbarButton
-            label={
-              selectorMode === "annotate"
-                ? t("workspace.browser.controls.cancelSelector")
-                : t("workspace.browser.controls.annotateElement")
-            }
-            active={selectorMode === "annotate"}
-            onPress={handleToggleElementSelector}
-            style={annotateIconButtonStyle}
-          >
-            <MousePointer2
-              size={16}
-              color={
-                selectorMode === "annotate" ? theme.colors.accent : theme.colors.foregroundMuted
+      {showChrome ? (
+        <View style={styles.chromeRow}>
+          <View style={styles.chromeLeft}>
+            <ToolbarButton
+              label={t("workspace.browser.controls.back")}
+              disabled={!browser?.canGoBack}
+              onPress={handleBack}
+              style={backIconButtonStyle}
+            >
+              <ArrowLeft size={16} color={theme.colors.foregroundMuted} />
+            </ToolbarButton>
+            <ToolbarButton
+              label={t("workspace.browser.controls.forward")}
+              disabled={!browser?.canGoForward}
+              onPress={handleForward}
+              style={forwardIconButtonStyle}
+            >
+              <ArrowRight size={16} color={theme.colors.foregroundMuted} />
+            </ToolbarButton>
+            <ToolbarButton
+              label={
+                browser?.isLoading
+                  ? t("workspace.browser.controls.stopLoading")
+                  : t("workspace.browser.controls.refresh")
               }
+              onPress={handleRefresh}
+              style={baseIconButtonStyle}
+            >
+              <RotateCw size={16} color={theme.colors.foregroundMuted} />
+            </ToolbarButton>
+          </View>
+          <View style={styles.urlBarWrap}>
+            <TextInput
+              accessibilityLabel={t("workspace.browser.controls.browserUrl")}
+              autoCapitalize="none"
+              autoCorrect={false}
+              onChangeText={setDraftUrl}
+              onFocus={handleUrlBarFocus}
+              onSubmitEditing={handleNavigateDraftUrl}
+              placeholder={t("workspace.browser.controls.enterUrl")}
+              placeholderTextColor={theme.colors.foregroundMuted}
+              ref={urlInputRef}
+              style={urlInputStyle}
             />
-          </ToolbarButton>
-          <ToolbarButton
-            label={
-              selectorMode === "screenshot"
-                ? t("workspace.browser.controls.cancelSelector")
-                : t("workspace.browser.controls.screenshotElement")
-            }
-            active={selectorMode === "screenshot"}
-            onPress={handleToggleScreenshot}
-            style={screenshotIconButtonStyle}
-          >
-            <Camera
-              size={16}
-              color={
-                selectorMode === "screenshot" ? theme.colors.accent : theme.colors.foregroundMuted
+          </View>
+          <View style={styles.chromeRight}>
+            <DeviceSizeMenu
+              selectedId={selectedDeviceSizeId}
+              onSelect={handleSelectDeviceSize}
+              triggerStyle={baseIconButtonStyle}
+            />
+            <ToolbarButton
+              label={t("workspace.browser.controls.openDevTools")}
+              onPress={handleOpenDevTools}
+              style={baseIconButtonStyle}
+            >
+              <Wrench size={16} color={theme.colors.foregroundMuted} />
+            </ToolbarButton>
+            <ToolbarButton
+              label={
+                selectorMode === "annotate"
+                  ? t("workspace.browser.controls.cancelSelector")
+                  : t("workspace.browser.controls.annotateElement")
               }
-            />
-          </ToolbarButton>
+              active={selectorMode === "annotate"}
+              onPress={handleToggleElementSelector}
+              style={annotateIconButtonStyle}
+            >
+              <MousePointer2
+                size={16}
+                color={
+                  selectorMode === "annotate" ? theme.colors.accent : theme.colors.foregroundMuted
+                }
+              />
+            </ToolbarButton>
+            <ToolbarButton
+              label={
+                selectorMode === "screenshot"
+                  ? t("workspace.browser.controls.cancelSelector")
+                  : t("workspace.browser.controls.screenshotElement")
+              }
+              active={selectorMode === "screenshot"}
+              onPress={handleToggleScreenshot}
+              style={screenshotIconButtonStyle}
+            >
+              <Camera
+                size={16}
+                color={
+                  selectorMode === "screenshot" ? theme.colors.accent : theme.colors.foregroundMuted
+                }
+              />
+            </ToolbarButton>
+          </View>
         </View>
-      </View>
+      ) : null}
       {browser?.lastError ? (
         <View style={styles.errorRow}>
           <Text numberOfLines={1} style={errorTextStyle}>

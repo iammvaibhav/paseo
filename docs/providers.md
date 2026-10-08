@@ -1,43 +1,40 @@
 # Adding a New Provider to Paseo
 
-This guide walks through adding a new agent provider end-to-end. There are two integration patterns, and this doc covers both.
+Add new providers through the plugin SDK. The core adapter patterns below describe the existing
+server integrations.
+
+## Plugin providers
+
+Keep a bundled provider in `plugins/<id>/` and register it through
+`@getpaseo/plugin/server/provider`. Antigravity and Muse Code follow this pattern. Built-in loading and SDK
+import rules belong to [plugins.md](plugins.md#built-in-plugins); the
+[public provider guide](../public-docs/plugins/providers.md) covers the provider contract.
+
+The plugin owns the CLI transport, session state, catalog, and capabilities. Launch CLI transports
+and probes through the [SDK process helpers](../public-docs/plugins/providers.md#launch-the-provider-cli),
+which share Windows launcher handling with core providers. The daemon owns
+executable resolution and applies `agents.providers.<provider-id>.command` and `env` before
+connecting. Register the provider's icon with the plugin rather than adding it to the app's
+provider icon map. You do not need a core manifest entry or provider factory.
+
+| Provider    | Transport                                  | Setup and limitations                                            |
+| ----------- | ------------------------------------------ | ---------------------------------------------------------------- |
+| Antigravity | Installed `agy` CLI                        | [Antigravity](../public-docs/supported-providers.md#antigravity) |
+| Muse Code   | MSP over one `muse serve` host per session | [Muse Code](../public-docs/muse-code.md)                         |
 
 ## Provider-native session options
 
-`AgentSessionConfig.providerOptions` carries JSON-safe configuration for the selected provider. The
-names and nesting are the provider's native contract; options are not portable between providers.
-Paseo validates the object with the selected provider's strict schema before constructing a session.
-Unknown keys fail with their `providerOptions.*` path. Paseo-owned controls such as cwd, model,
-prompt, environment, session identity, MCP transport, callbacks, and hooks cannot be passed here.
+The provider owns validation and application of the opaque record in
+`AgentSessionConfig.providerOptions`. The registry supplies the effective options
+at session startup. See [provider configuration](custom-providers.md#provider-options)
+for defaults and merge rules, and the [SDK guide](../public-docs/sdk/provider-options.md)
+for native keys and examples.
 
-This Paseo version accepts these keys:
+Exact MCP preapproval is a separate daemon-owned contract. A new provider must fail
+closed for Hub unattended execution until it can approve one exact injected MCP
+server and tool identity without approving native tools.
 
-- **Codex:** `approval_policy`, `sandbox_mode`,
-  `sandbox_workspace_write.{writable_roots,network_access,exclude_slash_tmp,exclude_tmpdir_env_var}`,
-  `web_search`, `features.multi_agent_v2`, and `features.network_proxy`. A network proxy object may
-  contain `enabled`, `proxy_url`, `socks_url`, `enable_socks5`, `enable_socks5_udp`,
-  `allow_local_binding`, `allow_upstream_proxy`, `dangerously_allow_all_unix_sockets`,
-  `dangerously_allow_non_loopback_proxy`, `domains`, and `unix_sockets`. See the
-  [Codex configuration reference](https://developers.openai.com/codex/config-reference).
-- **Claude:** `allowedTools`, `disallowedTools`, `additionalDirectories`, `sandbox`, and `settings`.
-  The accepted sandbox fields cover enablement, fail-if-unavailable behavior, excluded and
-  unsandboxed commands, filesystem read/write rules, network domain/socket/local-binding rules,
-  weaker nested sandboxing, ignored violations, and the ripgrep command. `settings` accepts native
-  `permissions.{allow,ask,deny}` and sandbox settings. See the
-  [Claude Agent SDK TypeScript reference](https://platform.claude.com/docs/en/agent-sdk/typescript)
-  and [Claude settings reference](https://code.claude.com/docs/en/settings).
-- **OpenCode:** `permission`, either one `ask`/`allow`/`deny` action or the native per-tool rule
-  object. Supported entries are `read`, `edit`, `glob`, `grep`, `list`, `bash`, `task`,
-  `external_directory`, `todowrite`, `question`, `webfetch`, `websearch`, `codesearch`,
-  `repo_clone`, `repo_overview`, `lsp`, `doom_loop`, and `skill`. See the
-  [OpenCode permissions reference](https://opencode.ai/docs/permissions/). OpenCode permissions are
-  application policy, not an OS sandbox.
-
-Each provider definition owns its option schema and exact MCP preapproval mapping. A new provider
-must fail closed for Hub unattended execution until it can approve one exact injected MCP server
-and tool identity without approving native tools.
-
-## Two Integration Patterns
+## Core adapter patterns
 
 ### ACP (Agent Client Protocol) -- recommended
 
@@ -60,7 +57,7 @@ model; it does not override the model list returned by a resolver.
 
 Implement the `AgentClient` and `AgentSession` interfaces from `agent-sdk-types.ts` yourself. This gives full control but requires you to handle process management, streaming, permissions, and session persistence from scratch.
 
-Existing direct providers: `claude` (in `providers/claude/agent.ts`), `codex` (`codex-app-server-agent.ts`), `opencode` (`opencode-agent.ts`), `pi` (`providers/pi/agent.ts`), and `omp` (`providers/omp/agent.ts`). The dev-only `mock` provider (`mock-load-test-agent.ts`) is also direct.
+Core direct providers: `claude` (in `providers/claude/agent.ts`), `codex` (`codex-app-server-agent.ts`), `opencode` (`opencode/runtime-client.ts`), `pi` (`providers/pi/agent.ts`), and `omp` (`providers/omp/agent.ts`). The dev-only `mock` provider (`mock-load-test-agent.ts`) is also direct.
 
 Claude first-party model metadata lives in `packages/server/src/server/agent/providers/claude/model-manifest.ts`. When adding or updating a Claude model, update that manifest only; the model picker thinking options and Claude-specific feature gates are derived from the manifest. Do not add model-specific Claude capability lists in feature code.
 
@@ -70,11 +67,15 @@ A provider that can register runtime tools directly should set `supportsNativePa
 
 Pi is a process-backed provider. Paseo requires the user to have the `pi` binary installed and talks to it through `pi --mode rpc`; the server package does not embed Pi's SDK/runtime packages.
 
+Pi extension adapters live under `packages/server/src/server/agent/providers/pi/extensions/<extension>/`. Each adapter turns Pi RPC facts into Paseo tool, timeline, subagent, or question mappings through the [extension contract](../packages/server/src/server/agent/providers/pi/extensions/contract.ts). To add one, create its directory, add one entry to `extensions/registry.ts`, and test it with fixtures captured from the real extension in Pi that record package, version, source commit, Pi version, and capture date. `agent.ts`, `history-mapper.ts`, and `tool-call-mapper.ts` never name an extension.
+
 Paseo's per-agent and daemon-wide system prompts are appended by its generated Pi integration extension. Paseo deliberately does not pass `--append-system-prompt`, because that flag replaces Pi's automatic `APPEND_SYSTEM.md` discovery instead of composing with it.
 
 Pi model records expose input capabilities through `model.input`. Only send raw RPC `images` when the current model explicitly includes `"image"` in that list. Text-only Pi/OMP models reject image content and persist the rejected image in JSONL history, so image prompts for those models must be materialized to a local file and passed as a text path hint instead.
 
-Pi MCP support depends on the open-source `pi-mcp-adapter` extension being loaded for the agent cwd. Probe with Pi RPC `get_commands`; the adapter registers an extension command named `mcp` (often with `sourceInfo.source` containing `pi-mcp-adapter`). When Paseo injects MCP servers into Pi, write a per-agent MCP config and pass it with `--mcp-config` instead of modifying user or project MCP files. Because that flag replaces the Pi global config layer, preserve the existing `<Pi agent dir>/mcp.json` in the generated file before overlaying injected servers. For local HTTP servers such as Paseo's own `/mcp/agents` endpoint, explicitly disable adapter OAuth (`auth: false`, `oauth: false`) in the generated config.
+Probe Pi MCP support with Pi RPC `get_commands` for the agent cwd. Pi 0.99 and later ship MCP as a built-in extension, which registers an extension command named `mcp` with `sourceInfo.path` `builtin:mcp`. Register injected servers through `pi.registerMcpServer` in Paseo's generated extension; the built-in extension rejects SSE servers and names with characters other than letters, digits, `_`, and `-`, and a server of the same name in Pi's `mcp.json` takes precedence.
+
+The open-source `pi-mcp-adapter` extension replaces the built-in one and registers its own `mcp` command (often with `sourceInfo.source` containing `pi-mcp-adapter`). When it is loaded, write a per-agent MCP config and pass it with `--mcp-config` instead of modifying user or project MCP files. Because that flag replaces the Pi global config layer, preserve the existing `<Pi agent dir>/mcp.json` in the generated file before overlaying injected servers. For local HTTP servers such as Paseo's own `/mcp/agents` endpoint, explicitly disable adapter OAuth (`auth: false`, `oauth: false`) in the generated config.
 
 Pi control-plane RPCs wait 60 seconds by default. Override `params.rpcTimeoutMs` when extension or MCP startup on a slow host needs more time. Timeout errors name the pending RPC phase and report both elapsed time and the configured deadline. This setting does not govern long-running Pi compaction or Pi extension UI results. See [OMP profiles and Pi-compatible forks](custom-providers.md#omp-profiles-and-pi-compatible-forks) for OMP startup and RPC deadlines.
 
@@ -84,17 +85,27 @@ OMP is a first-class built-in provider, disabled by default. Its launch contract
 
 OMP supports native Paseo host tools. The adapter registers the full caller-scoped Paseo tool catalog directly with OMP, matching providers such as Claude that expose the full catalog through MCP. Serialize every OMP host definition with `loadMode: "essential"` so `create_agent`, `send_agent_prompt`, `wait_for_agent`, and related tools remain direct calls; omitting the field makes OMP mount non-built-in names under `xd://` instead. OMP's provider-managed task subagents are surfaced as Paseo subagents through `child_session` imports; the parent keeps the subagents track while the child runtime stays owned by OMP. Custom OMP profiles should extend `omp`; other Pi-compatible forks can still extend `pi`, override `command`, and set `params.sessionDir` to their JSONL session directory.
 
+OMP RPC caps every stdout frame at 1 MiB. Protocol v1 answers an oversized response by throwing the payload away and returning `RPC response exceeded the transport limit`, which is how a _successful_ snapcompact — megabytes of standing image frames in the compact result's `preserveData` — surfaced as a failed `/compact`. The `ready` handshake advertises `supportedProtocolVersions`; `OmpCliRuntimeSession` answers with `negotiate_protocol` for v2, and `JsonlRpcProcess` reassembles the `rpc_chunk` sequences v2 sends in place of truncated frames. OMP upgrades its encoder only after it has written that response, so anything it emits during startup is still v1-encoded. `compact` and `handoff` are blocking LLM jobs and get no wall-clock RPC timeout, matching Pi.
+
 Pi RPC extension UI dialog requests (`select`, `input`, `editor`, `confirm`) are bridged into Paseo question permissions and answered with `extension_ui_response`. Pi extensions such as `ask_user` may chain dialogs: for example, a `select` can be followed by an optional-comment `input`. When an `ask_user` tool call declares `allowComment: true`, Paseo presents the selection and optional comment as one question permission, answers Pi's initial `select` immediately, then auto-answers the follow-up optional `input` with the comment the user already supplied (or an empty string). Preserve placeholders and optional/skip semantics for standalone optional inputs so the app can still distinguish "skip this optional input" from "cancel the whole dialog." Fire-and-forget extension UI requests such as notifications are intentionally ignored by the provider adapter unless Paseo grows first-class UI for them.
 
-OpenCode 1 keeps MCP and process environment outside the session boundary. Paseo shares one OpenCode server for ordinary agents and installs a daemon-owned plugin through `OPENCODE_CONFIG_CONTENT`. The plugin reads the exact agent environment and caller-scoped Paseo tool catalog from the daemon's private loopback bridge for each OpenCode session. Bridge context lives only in daemon memory and is removed when the Paseo session closes. The content-addressed plugin artifact contains no session data or secrets.
+OpenCode adapters target v1.14.46 and v2.0.10. V2 rejects binaries older than the tested 2.0.10 SDK at runtime selection. Runtime selection uses the configured command and environment. A recognized version is cached until provider configuration reload; a failed, timed-out, or unrecognized probe retains the v1 path and retries detection on the next operation. Load v2 code and materialize its plugin only after positive v2 selection; v1 sessions remain undecorated. Keep upstream SDK types inside the version-specific adapter. OpenCode owns storage migration; a missing native session must fail resume rather than create a replacement. V2 has no native archive/unarchive operation: archiving affects Paseo only. V1 retains native archiving.
 
-An agent with custom environment variables or user-configured MCP servers gets a dedicated OpenCode server. Keep that isolation until OpenCode exposes those values as session-owned configuration. Configure custom MCP with `mcp.add`; do not follow it with `mcp.connect`, which only toggles config-backed servers.
+Use OpenCode v2 execution events to trigger turn completion, with active-state and durable-log reconciliation after admission, reconnect, and while a turn remains active. Do not use `session.wait`: a healthy turn exceeding Node's HTTP headers deadline produces a transport error while OpenCode keeps working. The live event feed has no replay, and shutdown interruption preserves the previous idle outcome, so the session snapshot alone cannot recover missed execution events. Quiet streams are healthy: v2 heartbeats are SSE comments, not application events.
+
+V2.0.4 also removed the activation endpoint that gated a cold location, and a cold location registers its config-derived commands, skills, and providers asynchronously. Wait until `plugin.list` returns a populated inventory before reading the catalog or commands; an empty inventory means the location is still warming. Fail when the readiness deadline expires, including when an inventory request stalls.
+
+Paseo installs its OpenCode tool bridge through `OPENCODE_CONFIG_CONTENT`. V1 accepts a plugin file; v2 silently skips configured files and requires a package directory with a server entry point. Both versions use the daemon's private loopback bridge for caller-scoped tools. Bridge context lives only in daemon memory and is removed when the Paseo session closes. The content-addressed plugin artifacts contain no session data or secrets. V2 also needs this plugin when native Paseo tools are disabled: its prompt API has no structured-output format, so the plugin supplies a schema-validated final-answer tool.
+
+An agent with custom environment variables or user-configured MCP servers gets a dedicated OpenCode server. V2 supports session environment, but its MCP configuration remains location-scoped, so separate servers still prevent one agent from changing another agent's MCP setup. Configure custom MCP with `mcp.add`; do not follow it with `mcp.connect`, which only toggles config-backed servers.
 
 OpenCode owns user message IDs. Do not pass Paseo-generated IDs to OpenCode prompt APIs; let OpenCode create `msg*` IDs and record the user timeline item from the `message.updated` event.
 
 `AgentManager` owns the one canonical timeline row for a foreground prompt carrying a Paseo `clientMessageId`. It records that row when `startTurn` accepts, with the wire `messageId` set to the same value. Provider adapters still emit their native user-message echo with the same `clientMessageId` when available; the manager records its provider identity on the internal row without changing or redispatching the wire item. If an adapter emits the echo before `startTurn` resolves, the manager records the provider identity with the row at acceptance. Provider adapters continue to own externally initiated user rows that have no Paseo client identity. Do not perform global transcript text dedupe.
 
-Active-turn steering is an optional `AgentSession.steerActiveTurn` operation. The manager owns admission against its exact foreground turn, canonical user-message creation, echo reconciliation, and falls back to the normal interrupt-and-replace path only when the adapter reports `unavailable`. An adapter error leaves the steer's fate ambiguous and must surface without an interrupt or retry. Codex calls `turn/steer` with the native expected turn and Paseo client user-message ID. Claude pushes an admitted steer into the exact active SDK query input; isolated control commands remain unavailable. OpenCode calls `session/prompt_async` with an OpenCode-generated message ID; the server queues the prompt while busy and the next LLM call in the same Paseo turn includes it. Pi sends its native `steer` RPC, which queues the message for delivery after the in-flight assistant turn's tool calls. Slash-command inputs report `unavailable` because pi rejects extension commands on the steer path, and echo identity is correlated by message text because pi's steer RPC takes no message ID. A missing session reports `unavailable` and uses the normal interrupt fallback.
+Active-turn steering is an optional `AgentSession.steerActiveTurn` operation. The manager owns admission against its exact foreground turn, canonical user-message creation, echo reconciliation, and falls back to the normal interrupt-and-replace path only when the adapter reports `unavailable`. An adapter error leaves the steer's fate ambiguous and must surface without an interrupt or retry. Codex calls `turn/steer` with the native expected turn and Paseo client user-message ID. Claude pushes an admitted steer into the exact active SDK query input; isolated control commands remain unavailable. OpenCode calls `session/prompt_async` with an OpenCode-generated message ID; the server queues the prompt while busy and the next LLM call in the same Paseo turn includes it. Pi sends its native `steer` RPC, which queues the message for delivery after the in-flight assistant turn's tool calls. OMP does the same for glm/claude-style models. Cursor Agent Run (`provider === "cursor"`) owns thinking and tools inside one HTTP/2 stream, so OMP has no injection boundary; `steerActiveTurn` reports `unavailable` and the manager interrupt-and-replaces (Stop, then send). Out-of-band `/steer` on Cursor aborts that stream first, then queues the prompt so the slash command does not wait for Cursor to finish. Slash-command inputs report `unavailable` because pi rejects extension commands on the steer path, and echo identity is correlated by message text because pi's steer RPC takes no message ID. A missing session reports `unavailable` and uses the normal interrupt fallback.
+
+After OMP `agent_end`, Paseo still waits out compaction, but a leftover `isStreaming` flag is not treated as live work. Cursor, grok-build, and other packed-stop providers have left that flag true after a finished answer, which parked the UI at running until the 10-minute failsafe. The adapter aborts the leftover stream and completes the turn.
 
 A steering adapter also owes its interrupt: stopping a turn must discard the steers the provider has not read yet, or one of them resumes the turn the user just stopped. Codex clears pending input when it aborts a turn; Claude does not, so its adapter cancels the SDK messages it queued before calling `query.interrupt()`. Pi requires `clear_queue` before `abort`; older binaries without that RPC retain their native queue behavior until the pi compatibility floor reaches 0.84.4.
 
@@ -180,7 +191,26 @@ promise for completion: equal results, including equal discovery timestamps, emi
 
 ---
 
-## Provider Usage Fetchers
+## Usage sources
+
+See the [public usage source reference](../public-docs/plugins/reference.md#usage-sources) for the
+contract, account and window identity, provider-derived period names, login fallback, and
+read-only credential rules. Usage adapters own the interpretation of provider fields; the app
+renders their names and resolves pins without provider-specific duration guesses.
+
+Grok Build has its own built-in source, `plugins/grok-build-usage-source`. It lists logins with
+`omp token grok-build --list`, so broker-backed logins that have no row in the local `agent.db`
+appear too, one account per listed login. Each fetch resolves the login by identity again,
+because `--account N` follows OMP's stored order, and lets `omp token` refresh an expired token.
+
+OMP-held logins for every other provider come from `plugins/omp-usage-source`, which reads one
+`omp usage --json` run per refresh and reports each report in it as an account. Use it instead of
+the upstream sources' `omp` store on hosts behind the OMP auth broker: those sources read the
+`agent.db` token copy, which the broker never refreshes, so they report the login as expired.
+
+### Plan Usage (fork quota fetcher)
+
+This fork also keeps its own Plan Usage surface beside the upstream usage window. It does not use usage sources: `provider.usage.list.request` is answered by the quota fetcher below, not by the usage-source registry's legacy path, and the upstream window reads `usage.list_reports.request`.
 
 Provider plan usage is fetch-on-demand, not a daemon push subscription. The app calls `provider.usage.list.request` through React Query when the usage tooltip or Host Usage settings screen is shown, and the daemon returns the normalized `ProviderUsage` list directly.
 
@@ -195,9 +225,11 @@ Keep the protocol shape provider-agnostic. Do not add provider-specific renderer
 
 Kimi Code usage follows the CLI-managed credential file at `KIMI_CODE_HOME` or `~/.kimi-code/credentials/kimi-code.json`; do not probe the legacy `~/.kimi` path as the primary source for current Kimi Code installs.
 
+OMP plan usage is multi-provider: the `omp` fetcher prefers `omp usage --json` and expands every authenticated OMP account with a usage report into separate cards (`omp`, `omp-claude`, `omp-antigravity`, `omp-codex`, …). Cursor is authenticated in OMP but currently has no `omp usage` endpoint, so the fetcher falls back to Cursor's dashboard API using the OMP-stored Cursor OAuth token. Antigravity is the opposite problem: `omp usage` _does_ report it, but only the short-window counters from `fetchAvailableModels` (often three ~0% "Daily" bars for Google/OpenAI/Anthropic). The AGY CLI's Models & Quota screen uses Cloud Code Assist `v1internal:retrieveUserQuotaSummary` instead, so the fetcher overrides `omp-antigravity` with that weekly + 5-hour summary using the OMP-stored `google-antigravity` OAuth token. If the CLI is unavailable, SuperGrok still falls back to reading `xai-oauth` from `~/.omp/agent/agent.db` (`OMP_HOME` override supported) and calling `cli-chat-proxy.grok.com/v1/billing`.
+
 Cursor usage reads the desktop `state.vscdb` token first, then `cursor-agent`'s `~/.config/cursor/auth.json`. Headless hosts only have the CLI file.
 
-### Usage fetchers are read-only on credentials
+#### Usage fetchers are read-only on credentials
 
 A fetcher reads the provider's credential file and never writes it. On a 401 or 403 it returns `unavailable` and leaves refresh to the provider's own CLI: redeeming a refresh token in the fetcher invalidates the CLI's copy (refresh tokens are single-use), and rewriting the file through the fetcher's Zod schema drops any field the schema does not model, corrupting the file for the CLI.
 
@@ -287,7 +319,7 @@ export class CopilotACPAgentClient extends ACPAgentClient {
 
 ### 2. Add to the provider manifest
 
-In `packages/server/src/server/agent/provider-manifest.ts`, add mode definitions with UI metadata (icons, color tiers) and a provider definition entry.
+In `packages/protocol/src/provider-manifest.ts`, add mode definitions with UI metadata (icons, color tiers) and a provider definition entry.
 
 First, define the modes with visual metadata:
 
@@ -431,7 +463,7 @@ export const allProviders: AgentProvider[] = [
 ### 6. Run typecheck
 
 ```bash
-npm run typecheck
+pnpm run typecheck
 ```
 
 This is required after every change per project rules.
@@ -506,6 +538,8 @@ interface AgentSession {
   setModel?(modelId: string | null): Promise<void>;
   setThinkingOption?(thinkingOptionId: string | null): Promise<void | AgentProviderNotice>;
   setFeature?(featureId: string, value: unknown): Promise<void>;
+  revertConversation?(input: { messageId: string }): Promise<void>;
+  isRuntimeAlive?(): boolean;
   tryHandleOutOfBand?(prompt: AgentPromptInput): {
     run(ctx: { emit: (event: AgentStreamEvent) => void }): Promise<void>;
   } | null;
@@ -513,6 +547,21 @@ interface AgentSession {
 ```
 
 `setMode` and `setThinkingOption` may return an `AgentProviderNotice` when the provider knows the change needs user-facing context. For example, providers that stage changes until the next turn should return an `info` notice while a turn is already running. The app renders the notice generically as a toast; provider-specific lifecycle behavior stays in the provider implementation.
+
+Every optional method also has to be forwarded in `wrapSessionProvider`
+(`agent/provider-registry.ts`), because that wrapper — not your class — is what the manager
+holds. A method the wrapper omits is simply `undefined` at every call site, and callers take
+their "provider can't do this" path without any error, so the hook looks healthy and is dead.
+The wrapper's `WrappedAgentSession` type makes a missing key a build error, so add the forward
+in the same change as the hook.
+
+`isRuntimeAlive` lets a provider report that its runtime is gone. Answer `false` once the
+session can no longer take work — a child process that exited, a connection that closed — and a
+prompt reloads the session from persistence instead of failing against it (see
+[agent-lifecycle.md](agent-lifecycle.md#cancellation)). Leave the hook off if you cannot tell;
+absent means "no signal", never "dead".
+
+A session that implements `tryHandleOutOfBand` must also mark the commands it intercepts as `delivery: "out_of_band"` in `listCommands`. That field is what tells the composer to send the command straight through while a turn is running instead of putting it in the queue — a queued `/steer` arrives after the turn it was meant to steer. Attachments turn a prompt into content blocks, which `tryHandleOutOfBand` rejects, so the composer treats a draft with attachments as an ordinary turn no matter what the command is.
 
 ### Steps
 
@@ -553,6 +602,24 @@ The E2E configs in `agent-configs.ts` expose two helpers:
 - `getAskModeConfig(provider)` -- returns config for a session that triggers permission requests
 
 Tests use `isProviderAvailable(provider)` to skip when the binary or credentials are missing, so CI will not fail for providers that are not installed.
+
+---
+
+## Rich tool payloads with no canonical detail
+
+`ToolCallDetail` (`packages/protocol/src/agent-types.ts`) is a closed wire union, and a tool that maps to none of its variants lands in `unknown`, where the app prints the whole envelope as JSON.
+
+**Do not add a variant for one provider's tool.** The union is a `z.discriminatedUnion` on the wire and `buildCanonicalDetailDisplay` throws on an unrecognized `type`, so a six-month-old app crashes on the tool-call row the moment a new daemon sends a new variant. That breaks the protocol contract in [protocol-compatibility.md](protocol-compatibility.md). A variant is worth it only when several providers produce the shape.
+
+For a single provider, keep the payload in `unknown` and recognize its shape in the app. The daemon already forwards the provider envelope verbatim, so a shape-keyed renderer also works against old hosts and stored history. Oh My Pi's `eval` is the worked example:
+
+- `packages/app/src/utils/eval-detail.ts` parses the notebook payload (`details.cells`, `jsonOutputs`, `images`) with zod and returns null for anything else. `ToolCallDetailsContent` only receives a detail, never the tool name, so recognition is by shape, not by name.
+- `packages/app/src/components/tool-call-details.tsx` renders a cell per entry: highlighted code, captured output, duration, exit code.
+- The collapsed badge summary comes from `buildUnknownDetailOverride` in `packages/protocol/src/tool-call-display.ts`, keyed on the tool name. Adding a name there is safe in both directions; adding a detail variant is not.
+
+Check what the envelope actually carries before mapping it. `eval` keeps `display()` values in `details.jsonOutputs` and images in `details.images` — neither appears in the text output, so a text-only mapping loses them silently.
+
+To get UI proof without the real provider, add a scenario to the mock provider (`packages/server/src/server/agent/providers/mock-load-test-agent.ts`) driven by a magic prompt, then drive it from an e2e spec. `emit an eval tool call` plus `packages/app/e2e/browser/eval-tool-call.spec.ts` is the pattern.
 
 ---
 

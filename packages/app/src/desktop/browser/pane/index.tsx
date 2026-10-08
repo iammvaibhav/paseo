@@ -9,6 +9,7 @@ interface BrowserPaneProps {
   workspaceId: string;
   cwd: string | null;
   isInteractive?: boolean;
+  isWorkspaceActive?: boolean;
   onFocusPane?: () => void;
 }
 

@@ -1,3 +1,4 @@
+import { PluginRegistryIdentitySchema } from "./plugin-registry.js";
 import { AgentProfileSchema, AgentSkillSelectionSchema } from "./agent-profile.js";
 export {
   AgentProfileSchema,
@@ -17,6 +18,7 @@ export {
 import { TerminalProfileSchema } from "./terminal-profile.js";
 export { TerminalProfileSchema, type TerminalProfile } from "./terminal-profile.js";
 import { z } from "zod";
+import { ComposerPreferencesSchema } from "./composer-preferences.js";
 import { TerminalActivitySchema } from "./terminal-activity.js";
 import { CLIENT_CAPS } from "./client-capabilities.js";
 import { AGENT_LIFECYCLE_STATUSES } from "./agent-lifecycle.js";
@@ -62,6 +64,154 @@ import {
   ScheduleUpdateResponseSchema,
 } from "./schedule/rpc-schemas.js";
 import {
+  WebhookCreateRequestSchema,
+  WebhookListRequestSchema,
+  WebhookInspectRequestSchema,
+  WebhookDeleteRequestSchema,
+  WebhookUpdateRequestSchema,
+  WebhookTestRequestSchema,
+  WebhookConfigRequestSchema,
+  WebhookCreateResponseSchema,
+  WebhookListResponseSchema,
+  WebhookInspectResponseSchema,
+  WebhookDeleteResponseSchema,
+  WebhookUpdateResponseSchema,
+  WebhookTestResponseSchema,
+  WebhookConfigResponseSchema,
+} from "./webhook/rpc-schemas.js";
+import {
+  AUTOMATION_INBOUND_SCHEMAS,
+  AUTOMATION_OUTBOUND_SCHEMAS,
+} from "./automation/rpc-schemas.js";
+import { NOTES_INBOUND_SCHEMAS, NOTES_OUTBOUND_SCHEMAS } from "./notes/rpc-schemas.js";
+import { TICKETS_INBOUND_SCHEMAS, TICKETS_OUTBOUND_SCHEMAS } from "./tickets/rpc-schemas.js";
+import {
+  DOC_THREADS_INBOUND_SCHEMAS,
+  DOC_THREADS_OUTBOUND_SCHEMAS,
+} from "./doc-threads/rpc-schemas.js";
+import {
+  MissionControlEventsFetchRequestSchema,
+  MissionControlEventsFetchResponseSchema,
+  MissionControlEventsAckRequestSchema,
+  MissionControlEventsAckResponseSchema,
+  MissionControlPeersListRequestSchema,
+  MissionControlPeersListResponseSchema,
+  MissionControlContextFetchRequestSchema,
+  MissionControlContextFetchResponseSchema,
+  MissionControlEventMessageSchema,
+  MissionControlLifecycleSetRequestSchema,
+  MissionControlLifecycleSetResponseSchema,
+  MissionControlProposalsRespondRequestSchema,
+  MissionControlProposalsRespondResponseSchema,
+  MissionControlProposalsCreateRequestSchema,
+  MissionControlProposalsCreateResponseSchema,
+  MissionControlModeSetRequestSchema,
+  MissionControlModeSetResponseSchema,
+  MissionControlConfigGetRequestSchema,
+  MissionControlConfigGetResponseSchema,
+  MissionControlConfigPatchRequestSchema,
+  MissionControlConfigPatchResponseSchema,
+  MissionControlConfigReplicaSchema,
+  MissionControlCommanderResetRequestSchema,
+  MissionControlCommanderResetResponseSchema,
+  MissionControlSearchRequestSchema,
+  MissionControlSearchResponseSchema,
+  MissionControlMediaFetchRequestSchema,
+  MissionControlMediaFetchResponseSchema,
+  MissionControlMetaApplyRequestSchema,
+  MissionControlMetaApplyResponseSchema,
+  MissionControlSpawnLabelsResolveRequestSchema,
+  MissionControlSpawnLabelsResolveResponseSchema,
+  MissionControlSpawnApplyRequestSchema,
+  MissionControlSpawnApplyResponseSchema,
+  MissionControlEventForwardRequestSchema,
+  MissionControlEventForwardResponseSchema,
+  MissionControlInstructionsListRequestSchema,
+  MissionControlInstructionsListResponseSchema,
+  MissionControlInstructionsCloseRequestSchema,
+  MissionControlInstructionsCloseResponseSchema,
+  MissionControlInstructionsOpenRequestSchema,
+  MissionControlInstructionsOpenResponseSchema,
+  MissionControlVoiceMirrorRequestSchema,
+  MissionControlVoiceMirrorResponseSchema,
+  MissionControlRecallRequestSchema,
+  MissionControlRecallResponseSchema,
+  MissionControlContextRecordsRequestSchema,
+  MissionControlContextRecordsResponseSchema,
+  MissionControlTagMessageRequestSchema,
+  MissionControlTagMessageResponseSchema,
+  MissionControlPeerTimelineRequestSchema,
+  MissionControlPeerTimelineResponseSchema,
+  MissionControlToolsExecuteRequestSchema,
+  MissionControlToolsExecuteResponseSchema,
+  MissionControlInboxFetchRequestSchema,
+  MissionControlInboxFetchResponseSchema,
+} from "./mission-control/types.js";
+export {
+  MissionControlEventSchema,
+  MissionControlEventKindSchema,
+  MissionControlProofSchema,
+  MissionControlProposalSchema,
+  MissionControlReportStatusInputSchema,
+  MissionControlPeerStatusSchema,
+  MissionControlInventorySchema,
+  MissionControlInventoryProjectSchema,
+  MissionControlInventoryProjectWorkspaceSchema,
+  MissionControlModelsSchema,
+  MissionControlContextAgentSummarySchema,
+  MissionControlCentralConfigSchema,
+  MissionControlLifecycleActionSchema,
+  MissionControlModeSchema,
+  MissionControlSearchMatchSchema,
+  MissionControlMediaFetchRequestSchema,
+  MissionControlMediaFetchResponseSchema,
+  MissionControlProposalsCreateRequestSchema,
+  MissionControlProposalsCreateResponseSchema,
+  MissionControlCommanderResetRequestSchema,
+  MissionControlCommanderResetResponseSchema,
+  MissionControlConfigReplicaSchema,
+  type MissionControlEvent,
+  type MissionControlEventKind,
+  type MissionControlProof,
+  type MissionControlProposal,
+  type MissionControlReportStatusInput,
+  type MissionControlPeerStatus,
+  type MissionControlInventory,
+  type MissionControlInventoryProject,
+  type MissionControlInventoryProjectWorkspace,
+  type MissionControlModels,
+  type MissionControlContextAgentSummary,
+  type MissionControlCentralConfig,
+  type MissionControlLifecycleAction,
+  type MissionControlMode,
+  type MissionControlSearchMatch,
+  type MissionControlMediaFetchRequest,
+  type MissionControlMediaFetchResponse,
+  type MissionControlConfigReplica,
+  type MissionControlRecallMatch,
+  type MissionControlRecallRequest,
+  type MissionControlRecallResponse,
+  type MissionControlContextRecordsRequest,
+  type MissionControlContextRecordsResponse,
+  type MissionControlContextRunRecord,
+  type MissionControlContextWorkspaceRollup,
+  type MissionControlContextProjectRollup,
+  type MissionControlTagMessageRequest,
+  type MissionControlTagMessageResponse,
+  type MissionControlPeerTimelineRequest,
+  type MissionControlPeerTimelineResponse,
+  MissionControlToolsExecuteRequestSchema,
+  MissionControlToolsExecuteResponseSchema,
+  type MissionControlToolsExecuteRequest,
+  type MissionControlToolsExecuteResponse,
+  MissionControlInboxFetchRequestSchema,
+  MissionControlInboxFetchResponseSchema,
+  MissionControlInboxReviewFactSchema,
+  type MissionControlInboxFetchRequest,
+  type MissionControlInboxFetchResponse,
+  type MissionControlInboxReviewFact,
+} from "./mission-control/types.js";
+import {
   LoopRunRequestSchema,
   LoopListRequestSchema,
   LoopInspectRequestSchema,
@@ -73,6 +223,19 @@ import {
   LoopLogsResponseSchema,
   LoopStopResponseSchema,
 } from "./loop/rpc-schemas.js";
+import {
+  PlannotatorSessionStartRequestSchema,
+  PlannotatorSessionStartResponseSchema,
+  PlannotatorSessionStopRequestSchema,
+  PlannotatorSessionStopResponseSchema,
+  PlannotatorSessionEventSchema,
+} from "./plannotator/rpc-schemas.js";
+import {
+  PageContentGetRequestSchema,
+  PageContentGetResponseSchema,
+  PageProxyOpenRequestSchema,
+  PageProxyOpenResponseSchema,
+} from "./page/rpc-schemas.js";
 import {
   BROWSER_AUTOMATION_COMMAND_NAMES,
   BrowserAutomationExecuteRequestSchema,
@@ -168,6 +331,100 @@ const MutableRelayConfigSchema = z
     enabled: z.boolean(),
   })
   .passthrough();
+// Mission Control fleet monitoring. All keys optional; defaults live server-side
+// (persisted-config.ts + MissionControlService), absent config = feature on with defaults.
+const MutableMissionControlSummarizerConfigSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    baseUrl: z.string().nullable().optional(),
+    apiKey: z.string().nullable().optional(),
+    model: z.string().optional(),
+    minNewItems: z.number().optional(),
+    debounceSeconds: z.number().optional(),
+    // Backend: gateway (default) or omp (shell out to omp --model @smol).
+    backend: z.enum(["gateway", "omp"]).optional(),
+  })
+  .passthrough();
+const MutableMissionControlNamingConfigSchema = z
+  .object({
+    theme: z
+      .enum(["mixed", "indian", "cartoon", "scientists", "astronauts", "mythology", "nature"])
+      .optional(),
+  })
+  .passthrough();
+const MutableMissionControlAutopilotConfigSchema = z
+  .object({
+    // Evaluate-and-act on worker completion: off (default) | observe | act.
+    mode: z.enum(["off", "observe", "act"]).optional(),
+    // Evaluator model tier alias; defaults server-side per backend.
+    model: z.string().nullable().optional(),
+    // commander-spawned (default) | all.
+    scope: z.enum(["commander-spawned", "all"]).optional(),
+    // Bounded nudges per agent before a nudge verdict escalates instead.
+    maxNudgesPerAgent: z.number().optional(),
+  })
+  .passthrough();
+const MutableAiReviewerConfigSchema = z
+  .object({
+    // Disabled by default. The fixed denylist is daemon-owned and never configurable.
+    enabled: z.boolean().optional(),
+    provider: z.string().optional(),
+    model: z.string().optional(),
+    policy: z.string().optional(),
+  })
+  .passthrough();
+const MutableMissionControlConfigSchema = z
+  .object({
+    // v3 per-host keys: only these two belong in the daemon config. Everything
+    // else moved to central config (mission_control.config.*).
+    enabled: z.boolean().optional(),
+    // THIS machine's alias ("work server"). Fleet map assembles aliases from
+    // each host's own declaration — no hardcoded machine lists.
+    hostAlias: z.string().optional(),
+    // Per-host glyph identity (host settings → Mission Control card): custom
+    // initials (1–2 chars, emoji allowed) and an identity-color name from the
+    // app's ten-color palette. Absent or null = alias initial + deterministic
+    // color. `color` is stored opaquely; the app validates it against its
+    // palette on read, so the palette never has to be duplicated here.
+    hostGlyph: z
+      .object({
+        initials: z.string().max(4).optional(),
+        color: z.string().optional(),
+      })
+      .passthrough()
+      .nullable()
+      .optional(),
+    // Origin of the itsaplan web app as reachable FROM THIS MACHINE, when it
+    // differs from the fleet-wide central value (itsaplan.webBaseUrl). Set it
+    // here and nowhere else: central config is replicated host to host
+    // (last-writer-wins), so a per-host address written there is overwritten.
+    itsaplanWebBaseUrl: z.string().optional(),
+    // COMPAT(missionControlV3): retentionDays/summarizer/autopilot/selfReport/
+    // naming/defaultHost/hostAliases/commanderInstructions predate central
+    // config; they stay accepted so old config files keep parsing. v3 reads
+    // prefer central config values where the key moved central. Remove after
+    // 2027-08-08 once all configs migrate to central.
+    retentionDays: z.number().optional(),
+    summarizer: MutableMissionControlSummarizerConfigSchema.optional(),
+    autopilot: MutableMissionControlAutopilotConfigSchema.optional(),
+    // Self-reporting kill-switch; defaults to enabled server-side.
+    selfReport: z
+      .object({
+        enabled: z.boolean().optional(),
+      })
+      .passthrough()
+      .optional(),
+    // Identity: naming theme for the daemon naming service. Optional, defaults
+    // to "mixed" server-side.
+    naming: MutableMissionControlNamingConfigSchema.optional(),
+    // Commander dispatch: preferred host when the Commander routes work.
+    defaultHost: z.string().nullable().optional(),
+    // Friendly aliases for peer host names ("blrofc3": "work server").
+    hostAliases: z.record(z.string(), z.string()).optional(),
+    // Commander contract/instructions overridden from Settings.
+    commanderInstructions: z.string().optional(),
+  })
+  .passthrough();
 
 export const MutableDaemonConfigSchema = z
   .object({
@@ -201,8 +458,15 @@ export const MutableDaemonConfigSchema = z
     autoArchiveAfterMerge: z.boolean().default(false),
     enableTerminalAgentHooks: z.boolean().default(false),
     appendSystemPrompt: z.string().default(""),
+    // Close idle OMP processes after this many seconds; 0 turns the sweep off.
+    // Optional so old clients and typed fixtures stay valid; runtime default is 1800.
+    ompIdleCloseAfterSeconds: z.number().int().min(0).optional(),
     terminalProfiles: z.array(TerminalProfileSchema).optional(),
+    missionControl: MutableMissionControlConfigSchema.optional(),
+    aiReviewer: MutableAiReviewerConfigSchema.optional(),
     agentProfiles: z.array(AgentProfileSchema).optional(),
+    visibleModels: z.array(z.string()).optional(),
+    composerPreferences: ComposerPreferencesSchema.optional(),
     skills: z.object({ selection: AgentSkillSelectionSchema.optional() }).strict().optional(),
     pluginsEnabled: z.boolean().optional(),
     plugins: z.record(PluginIdSchema, PluginSourceSchema).optional(),
@@ -222,8 +486,13 @@ export const MutableDaemonConfigPatchSchema = z
     autoArchiveAfterMerge: z.boolean().optional(),
     enableTerminalAgentHooks: z.boolean().optional(),
     appendSystemPrompt: z.string().optional(),
+    ompIdleCloseAfterSeconds: z.number().int().min(0).optional(),
     terminalProfiles: z.array(TerminalProfileSchema).optional(),
+    missionControl: MutableMissionControlConfigSchema.partial().optional(),
+    aiReviewer: MutableAiReviewerConfigSchema.partial().optional(),
     agentProfiles: z.array(AgentProfileSchema).optional(),
+    visibleModels: z.array(z.string()).optional(),
+    composerPreferences: ComposerPreferencesSchema.optional(),
     pluginsEnabled: z.boolean().optional(),
     plugins: z.record(PluginIdSchema, PluginSourceSchema).optional(),
   })
@@ -261,6 +530,7 @@ const AgentModeSchema: z.ZodType<AgentMode> = z.object({
   description: z.string().optional(),
   icon: z.string().optional(),
   colorTier: z.string().optional(),
+  isUnattended: z.boolean().optional(),
 });
 
 const ProviderStatusSchema: z.ZodType<ProviderStatus> = z.enum([
@@ -301,6 +571,7 @@ export const AgentFeatureSelectSchema = z.object({
   description: z.string().optional(),
   tooltip: z.string().optional(),
   icon: z.string().optional(),
+  desktopTrigger: z.enum(["icon", "label"]).optional(),
   value: z.string().nullable(),
   options: z.array(AgentSelectOptionSchema),
 });
@@ -383,10 +654,15 @@ const AgentCapabilityFlagsSchema: z.ZodType<AgentCapabilityFlags> = z
 const AgentUsageSchema: z.ZodType<AgentUsage> = z.object({
   inputTokens: z.number().optional(),
   cachedInputTokens: z.number().optional(),
+  // COMPAT(turnMetricsCacheWrite): added 2026-09-30, additive; optional forever.
+  cacheWriteTokens: z.number().optional(),
   outputTokens: z.number().optional(),
   totalCostUsd: z.number().optional(),
   contextWindowMaxTokens: z.number().optional(),
   contextWindowUsedTokens: z.number().optional(),
+  // COMPAT(turnMetricsDurationModel): added 2026-09-30, additive; optional forever.
+  durationMs: z.number().optional(),
+  model: z.string().nullable().optional(),
 });
 
 const McpStdioServerConfigSchema = z.object({
@@ -417,7 +693,7 @@ const McpServerConfigSchema = z.discriminatedUnion("type", [
   McpSseServerConfigSchema,
 ]);
 
-const ProviderOptionsSchema = z.record(z.string(), z.json());
+const ProviderOptionsSchema = z.record(z.string(), z.unknown());
 
 const McpToolRefSchema = z
   .object({
@@ -444,6 +720,8 @@ const AgentSessionConfigSchema = z.object({
   providerOptions: ProviderOptionsSchema.optional(),
   toolPolicy: ToolPolicySchema.optional(),
   systemPrompt: z.string().optional(),
+  systemPromptMode: z.enum(["append", "replace"]).optional(),
+  toolAllowlist: z.array(z.string()).optional(),
   mcpServers: z.record(z.string(), McpServerConfigSchema).optional(),
 });
 
@@ -666,11 +944,23 @@ export const AgentTimelineItemPayloadSchema: z.ZodType<AgentTimelineItem, unknow
     text: z.string(),
     messageId: z.string().optional(),
     clientMessageId: z.string().optional(),
+    // Machinery-originated prompt classification (stall status-ask nudges vs
+    // Commander/Verifier instructions). Absent = instruction (visible).
+    classification: z.enum(["machinery", "instruction"]).optional(),
+    // M9 voice dialogue mirror marker: rows appended to the Commander thread
+    // by the voice mirror RPC. "qa" = pure Q&A (hidden unless verbose);
+    // "dispatch" = the turn asked the fleet to do something (visible).
+    voiceMirrorKind: z.enum(["qa", "dispatch"]).optional(),
+    // Native images for this user row (composer paste / ticket dispatch).
+    // Optional so older daemons still parse timeline rows.
+    images: z.array(z.object({ data: z.string(), mimeType: z.string() })).optional(),
   }),
   z.object({
     type: z.literal("assistant_message"),
     text: z.string(),
     messageId: z.string().optional(),
+    // M9 voice dialogue mirror marker (same semantics as the user row).
+    voiceMirrorKind: z.enum(["qa", "dispatch"]).optional(),
   }),
   z.object({
     type: z.literal("reasoning"),
@@ -712,8 +1002,14 @@ export const AgentTimelineItemPayloadSchema: z.ZodType<AgentTimelineItem, unknow
     version: z.number(),
     data: JsonWireValueSchema,
   }),
+  z.object({
+    type: z.literal("ai_review_decision"),
+    requestId: z.string(),
+    decision: z.enum(["allow", "deny", "escalate"]),
+    reason: z.string(),
+    toolName: z.string().optional(),
+  }),
 ]);
-
 export const AgentStreamEventPayloadSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("thread_started"),
@@ -829,10 +1125,28 @@ export const AgentSnapshotPayloadSchema = z.object({
   lastUsage: AgentUsageSchema.optional(),
   lastError: z.string().optional(),
   title: z.string().nullable(),
+  // Identity fields (Mission Control naming + description refresh). Optional
+  // for wire back-compat: older daemons/clients simply omit them.
+  name: z.string().optional(),
+  shortDescription: z.string().optional(),
   labels: z.record(z.string(), z.string()).default({}),
+  // Orchestrator start option: persisted at create time, echoed on snapshots.
+  // COMPAT(orchestrator): added 2026-09-30, remove gate after 2027-03-30.
+  orchestrator: z.boolean().optional(),
   requiresAttention: z.boolean().optional(),
   attentionReason: z.enum(["finished", "error", "permission"]).nullable().optional(),
   attentionTimestamp: z.string().nullable().optional(),
+  // Mission Control stop origins (v3.1): who stopped the agent's last run.
+  // The app derives a user-stopped row as Done ("Stopped by you") instead of
+  // Needs-you; a system-stopped row (abrupt kill: daemon restart/provider
+  // crash, watchdog/boot heal) is Interrupted and lands in Needs-you.
+  // Optional for wire back-compat: old daemons simply omit it.
+  stoppedBy: z.enum(["user", "machinery", "system"]).optional(),
+  // Canonical Mission Control lifecycle bucket (spec 01), computed
+  // daemon-side from stored state (agent record + review-state.json +
+  // proposal index). Additive; absent on payloads from daemons predating the
+  // field (clients degrade to their own derivation).
+  bucket: z.enum(["needs_you", "running", "ready", "done", "idle"]).optional(),
   archivedAt: z.string().nullable().optional(),
   providerUnavailable: z.boolean().optional(),
 });
@@ -849,6 +1163,16 @@ export const AgentListItemPayloadSchema = z.object({
   effectiveThinkingOptionId: z.string().nullable().optional(),
   status: AgentStatusSchema,
   cwd: z.string(),
+  // Mission Control roster identity + placement (spec 03): every fleet tool
+  // result names the typed ids of the entities it lists, so a model can act
+  // on bare ids. Additive for wire back-compat — older daemons/clients omit
+  // them and degrade to their own resolution.
+  workspaceId: z.string().optional(),
+  projectId: z.string().optional(),
+  serverId: z.string().optional(),
+  name: z.string().optional(),
+  description: z.string().optional(),
+  bucket: z.enum(["needs_you", "running", "ready", "done", "idle"]).optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
   lastUserMessageAt: z.string().nullable(),
@@ -930,8 +1254,23 @@ export const CloseItemsRequestMessageSchema = z.object({
 export const UpdateAgentRequestMessageSchema = z.object({
   type: z.literal("update_agent_request"),
   agentId: z.string(),
+  // Legacy alias for the display title (pre-v3 wire name). Kept for
+  // back-compat; prefer the explicit `title` field going forward. When both
+  // are present, `title` wins.
   name: z.string().optional(),
+  // Mission Control identity fields (naming backfill + description refresh).
+  // Additive wire fields: older daemons/clients simply omit them.
+  title: z.string().optional(),
+  shortDescription: z.string().optional(),
   labels: z.record(z.string(), z.string()).optional(),
+  provider: z.string().optional(),
+  model: z.string().nullable().optional(),
+  /**
+   * Mode id to persist alongside a provider change. Clients send the mode
+   * remapped for the new provider; the daemon also remaps automatically when
+   * the stored mode is invalid for the new provider.
+   */
+  modeId: z.string().optional(),
   requestId: z.string(),
 });
 
@@ -947,6 +1286,14 @@ export const ProjectRenameRequestSchema = z.object({
   projectId: z.string(),
   // Null or empty string clears the override and reverts to the derived name.
   customName: z.string().nullable(),
+  requestId: z.string(),
+});
+
+export const ProjectDescriptionSetRequestSchema = z.object({
+  type: z.literal("project.description.set.request"),
+  projectId: z.string(),
+  // Null or empty string clears the description.
+  description: z.string().nullable(),
   requestId: z.string(),
 });
 
@@ -1040,6 +1387,8 @@ export const SetVoiceModeMessageSchema = z.object({
   type: z.literal("set_voice_mode"),
   enabled: z.boolean(),
   agentId: z.string().optional(),
+  // COMPAT(voiceSendBehavior): added in v0.2.4, drop the gate when floor >= v0.2.4
+  sendBehavior: z.enum(["interrupt", "queue"]).optional(),
   requestId: z.string().optional(),
 });
 
@@ -1356,6 +1705,17 @@ export const SendAgentMessageRequestSchema = z.object({
   activeTurnBehavior: ActiveTurnBehaviorSchema.optional(),
   images: z.array(ImageAttachmentSchema).optional(),
   attachments: AgentAttachmentsSchema,
+  // Delivery semantics for outbound prompts (v3, fleet_send_prompt modes).
+  // steer: deliver to a busy agent without interrupting (OMP live-steer when
+  // available, otherwise queued). interrupt: replace the running turn (today's
+  // default). queue: wait for idle, then stream without replacing. Absent =
+  // interrupt for wire compat.
+  dispatchMode: z.enum(["steer", "interrupt", "queue"]).optional(),
+  // M8 mailbox source attribution: "voice" marks a Commander Voice dispatch
+  // (scripts/commander-voice) so the daemon's instruction ledger records the
+  // right source. Absent = "chat" (the app composer). Additive; ignored for
+  // non-Commander targets.
+  source: z.enum(["chat", "voice"]).optional(),
 });
 
 export const WaitForFinishRequestSchema = z.object({
@@ -1450,8 +1810,18 @@ export const PluginSourceInstallRequestSchema = z.object({
 
 export const PluginSourceIdentitySchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("directory"), path: z.string() }),
-  z.object({ kind: z.literal("git"), remote: z.string(), pluginPath: z.string() }),
-  z.object({ kind: z.literal("npm"), packageName: z.string(), pluginPath: z.string() }),
+  z.object({
+    kind: z.literal("git"),
+    remote: z.string(),
+    pluginPath: z.string(),
+    registry: PluginRegistryIdentitySchema.optional(),
+  }),
+  z.object({
+    kind: z.literal("npm"),
+    packageName: z.string(),
+    pluginPath: z.string(),
+    registry: PluginRegistryIdentitySchema.optional(),
+  }),
 ]);
 export const PluginInstallationSchema = z.object({
   identity: PluginSourceIdentitySchema,
@@ -1644,6 +2014,20 @@ export const DictationStreamCancelMessageSchema = z.object({
   dictationId: z.string(),
 });
 
+/**
+ * Client-side loader observability: one fire-and-forget report per agent
+ * start (create/resume/send) measured from the user's click until the agent
+ * lifecycle flips to "running". No response; the daemon logs it next to its
+ * own omp.runtime.acquire records so a slow start has one timeline.
+ */
+export const ClientLoaderSpanReportMessageSchema = z.object({
+  type: z.literal("client.telemetry.loader_span.report"),
+  agentId: z.string(),
+  path: z.enum(["create", "resume", "send"]),
+  totalMs: z.number().int().nonnegative(),
+  startedAt: z.number().int().nonnegative(),
+});
+
 const GitSetupOptionsSchema = z.object({
   baseBranch: z.string().optional(),
   createNewBranch: z.boolean().optional(),
@@ -1699,6 +2083,10 @@ export const CreateAgentRequestMessageSchema = z.object({
   worktree: CreateAgentWorktreeTargetSchema.optional(),
   autoArchive: z.boolean().optional(),
   labels: z.record(z.string(), z.string()).default({}),
+  // Orchestrator start option (normal agents only, never the Commander).
+  // COMPAT(orchestrator): added 2026-09-30, remove gate after 2027-03-30.
+  // Absent/false = default "Do the task". Old daemons/clients ignore it.
+  orchestrator: z.boolean().optional(),
   requestId: z.string(),
 });
 
@@ -1772,6 +2160,19 @@ export const ProviderDiagnosticRequestMessageSchema = z.object({
 export const ProviderUsageListRequestMessageSchema = z.object({
   type: z.literal("provider.usage.list.request"),
   requestId: z.string(),
+  // Optional so old clients keep working; new clients set true on explicit refresh.
+  forceRefresh: z.boolean().optional(),
+  // COMPAT(fastProviderUsage): added 2026-09-30, remove gate after 2027-03-30.
+  // Scope refresh/response to one provider; absent means every provider.
+  providerId: z.string().optional(),
+});
+
+export const UsageListReportsRequestMessageSchema = z.object({
+  type: z.literal("usage.list_reports.request"),
+  agentId: z.string().optional(),
+  requestId: z.string(),
+  reportIds: z.array(z.string()).optional(),
+  forceRefresh: z.boolean().optional(),
 });
 
 export const ResumeAgentRequestMessageSchema = z.object({
@@ -1884,6 +2285,35 @@ export const AgentForkContextRequestMessageSchema = z.object({
   requestId: z.string(),
 });
 
+// Fork a (typically running) source agent into a brand-new sibling/root agent
+// that inherits history up to the fork boundary, then run `text` as the fork's
+// first turn. The server picks native provider session fork when available and
+// falls back to a chat-history text snapshot otherwise; the client contract is
+// identical either way.
+export const AgentForkRequestMessageSchema = z.object({
+  type: z.literal("agent.fork.request"),
+  sourceAgentId: z.string(),
+  text: z.string(),
+  messageId: z.string().optional(), // Client-provided ID for dedup of the first turn
+  images: z.array(ImageAttachmentSchema).optional(),
+  attachments: AgentAttachmentsSchema,
+  // Fork boundary, describing the assistant turn the fork's history ends at.
+  // Both are absent for "fork everything up to now". The cursor/message id pair
+  // addresses the point in the daemon timeline the fork's chat-history snapshot
+  // is cut at, matching `agent.fork_context.request`.
+  //
+  // `boundaryUserMessageId` addressed a provider-native session fork, which no
+  // longer exists. Kept so old clients still parse; the daemon ignores it.
+  boundaryUserMessageId: z.string().optional(),
+  boundaryCursor: AgentTimelineCursorSchema.optional(),
+  boundaryMessageId: z.string().optional(),
+  // Config the fork composer submitted with, when it differs from the source
+  // agent (the user changed model/mode/thinking before forking).
+  overrides: AgentSessionConfigSchema.partial().optional(),
+  labels: z.record(z.string(), z.string()).optional(),
+  requestId: z.string(),
+});
+
 export const SetAgentModeRequestMessageSchema = z.object({
   type: z.literal("set_agent_mode_request"),
   agentId: z.string(),
@@ -1984,6 +2414,71 @@ export const AgentDetachResponseMessageSchema = z.object({
   payload: AgentActionResponsePayloadSchema,
 });
 
+// M5: move an agent record to another workspace on the same host
+// (mission-control fleet_meta move_agent / app move UI). Dotted RPC pair per
+// docs/rpc-namespacing.md; additive, feature-gated via server_info
+// `missionControlV4` (app checks the flag before offering the move UI).
+// Refusals (agent missing/archived/running, workspace missing/archived) come
+// back as `error` — the record is never half-moved.
+export const AgentWorkspaceMoveRequestMessageSchema = z.object({
+  type: z.literal("agent.workspace.move.request"),
+  agentId: z.string().min(1),
+  workspaceId: z.string().min(1),
+  requestId: z.string(),
+  targetHost: z.string().optional(),
+  targetServerId: z.string().optional(),
+});
+
+export const AgentWorkspaceMoveResponseMessageSchema = z.object({
+  type: z.literal("agent.workspace.move.response"),
+  payload: z.object({
+    requestId: z.string(),
+    agentId: z.string(),
+    workspaceId: z.string(),
+    accepted: z.boolean(),
+    error: z.string().nullable(),
+    targetServerId: z.string().optional(),
+  }),
+});
+
+/**
+ * Provider-native session state carried alongside a cross-host agent move.
+ *
+ * Only OMP populates this today: its resume handle is an absolute path to a
+ * transcript file on the source host, so the record alone cannot resume on the
+ * target. Providers whose resume handle is an opaque session id (looked up in
+ * that host's own store) need no counterpart.
+ *
+ * Optional on the wire in both directions: an old daemon ignores the field, a
+ * new daemon treats a missing one as "nothing to carry".
+ */
+export const AgentWorkspaceTransferProviderSessionSchema = z.object({
+  provider: z.string().min(1),
+  sessionId: z.string().optional(),
+  fileName: z.string().min(1),
+  contentBase64: z.string(),
+});
+
+export const AgentWorkspaceTransferRequestMessageSchema = z.object({
+  type: z.literal("agent.workspace.transfer.request"),
+  requestId: z.string(),
+  targetWorkspaceId: z.string().min(1),
+  agent: z.record(z.string(), z.unknown()),
+  timeline: z.array(z.record(z.string(), z.unknown())).optional(),
+  providerSession: AgentWorkspaceTransferProviderSessionSchema.optional(),
+});
+
+export const AgentWorkspaceTransferResponseMessageSchema = z.object({
+  type: z.literal("agent.workspace.transfer.response"),
+  payload: z.object({
+    requestId: z.string(),
+    agentId: z.string(),
+    workspaceId: z.string(),
+    accepted: z.boolean(),
+    error: z.string().nullable(),
+  }),
+});
+
 export const AgentRewindModeSchema = z.enum(["conversation", "files", "both"]);
 
 export const AgentRewindRequestMessageSchema = z.object({
@@ -2020,6 +2515,17 @@ export const ProjectRenameResponsePayloadSchema = z.object({
 export const ProjectRenameResponseSchema = z.object({
   type: z.literal("project.rename.response"),
   payload: ProjectRenameResponsePayloadSchema,
+});
+
+export const ProjectDescriptionSetResponseSchema = z.object({
+  type: z.literal("project.description.set.response"),
+  payload: z.object({
+    requestId: z.string(),
+    projectId: z.string(),
+    accepted: z.boolean(),
+    description: z.string().nullable(),
+    error: z.string().nullable(),
+  }),
 });
 
 export const ProjectIconSetResponseSchema = z.object({
@@ -2201,6 +2707,12 @@ export const CheckoutPullRequestSchema = z.object({
   requestId: z.string(),
 });
 
+export const CheckoutSubmodulesRequestSchema = z.object({
+  type: z.literal("checkout_submodules_request"),
+  cwd: z.string(),
+  requestId: z.string(),
+});
+
 export const CheckoutPushRequestSchema = z.object({
   type: z.literal("checkout_push_request"),
   cwd: z.string(),
@@ -2271,6 +2783,8 @@ const CheckoutCommitSchema = z.object({
   isOnRemote: z.boolean(), // false = local-only (unpushed)
   // COMPAT(commitBaseClassification): added in v0.2.0, remove optional after 2027-01-23.
   isOnBase: z.boolean().optional(),
+  // COMPAT(commitParents): added in v0.10.0, remove optional after 2027-04-01.
+  parents: z.array(z.string()).optional(),
   files: z.array(CheckoutCommitFileSchema),
 });
 
@@ -2821,6 +3335,19 @@ export const FileUploadRequestSchema = z.object({
   requestId: z.string(),
 });
 
+/** Write a local client file into a host directory scoped by `cwd` (file explorer / Host tab). */
+export const FileExplorerWriteRequestSchema = z.object({
+  type: z.literal("file.explorer.write.request"),
+  cwd: z.string().min(1),
+  /** Relative directory under `cwd` that receives the file. Defaults to the root. */
+  directoryPath: z.string().optional(),
+  fileName: z.string().min(1),
+  mimeType: z.string().min(1),
+  size: z.number().int().nonnegative(),
+  modifiedAt: z.string(),
+  requestId: z.string(),
+});
+
 export const ClearAgentAttentionMessageSchema = z.object({
   type: z.literal("clear_agent_attention"),
   agentId: z.union([z.string(), z.array(z.string())]),
@@ -3116,6 +3643,26 @@ export const SessionEventSubscriptionSchema = z.enum([
   "activity_log",
   "hub.execution.agent.update",
   "hub.execution.agent.stream",
+  // Native notes push. Subscribe only on a host that advertises features.notes:
+  // an older daemon rejects an unknown event name.
+  "notes.changed",
+  // Native tickets push. Subscribe only on a host that advertises features.tickets:
+  // an older daemon rejects an unknown event name.
+  "tickets.changed",
+  // Unsolicited pushes that owned-subscription clients only receive once subscribed.
+  // Subscribe only on a host that advertises the paired server_info feature
+  // (missionControlEventSubscription, providerUsageEventSubscription,
+  // plannotatorEventSubscription): an older daemon rejects an unknown event name.
+  "mission_control_event",
+  "provider.usage.updated",
+  "plannotator.session.event",
+  // Owned-subscription push for Automations CRUD/run changes. Subscribe only
+  // on a host that advertises features.automations: an older daemon rejects
+  // an unknown event name.
+  "automations.changed",
+  // Doc threads push. Subscribe only on a host that advertises
+  // features.docThreadsEventSubscription: an older daemon rejects an unknown event name.
+  "doc_threads.changed",
 ]);
 export type SessionEventSubscription = z.infer<typeof SessionEventSubscriptionSchema>;
 export const SessionEventsSetSubscriptionRequestSchema = z.object({
@@ -3172,6 +3719,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   CloseItemsRequestMessageSchema,
   UpdateAgentRequestMessageSchema,
   ProjectRenameRequestSchema,
+  ProjectDescriptionSetRequestSchema,
   ProjectIconSetRequestSchema,
   ProjectRemoveRequestSchema,
   WorkspaceTitleSetRequestSchema,
@@ -3223,6 +3771,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   DictationStreamChunkMessageSchema,
   DictationStreamFinishMessageSchema,
   DictationStreamCancelMessageSchema,
+  ClientLoaderSpanReportMessageSchema,
   CreateAgentRequestMessageSchema,
   ListProviderModelsRequestMessageSchema,
   ListProviderModesRequestMessageSchema,
@@ -3232,6 +3781,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   RefreshProvidersSnapshotRequestMessageSchema,
   ProviderDiagnosticRequestMessageSchema,
   ProviderUsageListRequestMessageSchema,
+  UsageListReportsRequestMessageSchema,
   ResumeAgentRequestMessageSchema,
   ImportAgentRequestMessageSchema,
   RefreshAgentRequestMessageSchema,
@@ -3246,6 +3796,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   ProviderSubagentTimelineRequestMessageSchema,
   SetAgentTimelineSubscriptionRequestMessageSchema,
   AgentForkContextRequestMessageSchema,
+  AgentForkRequestMessageSchema,
   SetAgentModeRequestMessageSchema,
   SetAgentModelRequestMessageSchema,
   SetAgentThinkingRequestMessageSchema,
@@ -3253,6 +3804,8 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   AgentConfigApplyRequestMessageSchema,
   AgentDetachRequestMessageSchema,
   AgentRewindRequestMessageSchema,
+  AgentWorkspaceMoveRequestMessageSchema,
+  AgentWorkspaceTransferRequestMessageSchema,
   AgentPermissionResponseMessageSchema,
   CheckoutStatusRequestSchema,
   CheckoutDiffGetRequestSchema,
@@ -3262,6 +3815,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   CheckoutMergeRequestSchema,
   CheckoutMergeFromBaseRequestSchema,
   CheckoutPullRequestSchema,
+  CheckoutSubmodulesRequestSchema,
   CheckoutPushRequestSchema,
   CheckoutRefreshRequestSchema,
   CheckoutDiscardChangesRequestSchema,
@@ -3315,6 +3869,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   ProjectIconGetRequestSchema,
   FileDownloadTokenRequestSchema,
   FileUploadRequestSchema,
+  FileExplorerWriteRequestSchema,
   ClearAgentAttentionMessageSchema,
   ClientHeartbeatMessageSchema,
   PingMessageSchema,
@@ -3351,11 +3906,54 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   ScheduleDeleteRequestSchema,
   ScheduleRunOnceRequestSchema,
   ScheduleUpdateRequestSchema,
+  WebhookCreateRequestSchema,
+  WebhookListRequestSchema,
+  WebhookInspectRequestSchema,
+  WebhookDeleteRequestSchema,
+  WebhookUpdateRequestSchema,
+  WebhookTestRequestSchema,
+  WebhookConfigRequestSchema,
+  ...NOTES_INBOUND_SCHEMAS,
+  ...TICKETS_INBOUND_SCHEMAS,
+  ...AUTOMATION_INBOUND_SCHEMAS,
+  ...DOC_THREADS_INBOUND_SCHEMAS,
   LoopRunRequestSchema,
   LoopListRequestSchema,
   LoopInspectRequestSchema,
   LoopLogsRequestSchema,
   LoopStopRequestSchema,
+  PlannotatorSessionStartRequestSchema,
+  PlannotatorSessionStopRequestSchema,
+  PageProxyOpenRequestSchema,
+  PageContentGetRequestSchema,
+  MissionControlEventsFetchRequestSchema,
+  MissionControlEventsAckRequestSchema,
+  MissionControlPeersListRequestSchema,
+  MissionControlContextFetchRequestSchema,
+  MissionControlLifecycleSetRequestSchema,
+  MissionControlProposalsRespondRequestSchema,
+  MissionControlProposalsCreateRequestSchema,
+  MissionControlModeSetRequestSchema,
+  MissionControlConfigGetRequestSchema,
+  MissionControlConfigPatchRequestSchema,
+  MissionControlConfigReplicaSchema,
+  MissionControlCommanderResetRequestSchema,
+  MissionControlSearchRequestSchema,
+  MissionControlMediaFetchRequestSchema,
+  MissionControlMetaApplyRequestSchema,
+  MissionControlSpawnLabelsResolveRequestSchema,
+  MissionControlSpawnApplyRequestSchema,
+  MissionControlEventForwardRequestSchema,
+  MissionControlInstructionsListRequestSchema,
+  MissionControlInstructionsCloseRequestSchema,
+  MissionControlInstructionsOpenRequestSchema,
+  MissionControlVoiceMirrorRequestSchema,
+  MissionControlRecallRequestSchema,
+  MissionControlContextRecordsRequestSchema,
+  MissionControlTagMessageRequestSchema,
+  MissionControlPeerTimelineRequestSchema,
+  MissionControlToolsExecuteRequestSchema,
+  MissionControlInboxFetchRequestSchema,
 ]);
 
 export type SessionInboundMessage = z.infer<typeof SessionInboundMessageSchema>;
@@ -3481,15 +4079,11 @@ export const ServerCapabilitiesSchema = z
   })
   .passthrough();
 
-const ServerInfoHostnameSchema = z.unknown().transform((value): string | null => {
-  if (typeof value !== "string") {
-    return null;
-  }
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
-});
-
-const ServerInfoVersionSchema = z.unknown().transform((value): string | null => {
+// Optional trimmed-string field on server_info: unknown junk normalizes to
+// null, whitespace-only values to null, so absent/legacy payloads stay
+// parseable. Shared by hostname, version, and missionControlHostAlias
+// (additive v0.1.X: absent on older daemons, never required).
+const ServerInfoOptionalStringSchema = z.unknown().transform((value): string | null => {
   if (typeof value !== "string") {
     return null;
   }
@@ -3514,9 +4108,17 @@ const ServerCapabilitiesFromUnknownSchema = z
 export const ServerInfoStatusPayloadSchema = z
   .object({
     status: z.literal("server_info"),
+    protocolVersion: z.number().int().optional(),
     serverId: z.string().trim().min(1),
-    hostname: ServerInfoHostnameSchema.optional(),
-    version: ServerInfoVersionSchema.optional(),
+    hostname: ServerInfoOptionalStringSchema.optional(),
+    // The daemon's missionControl.hostAlias (trimmed; null when unset), so the
+    // app can resolve a central-config commanderHost that designates the alias.
+    missionControlHostAlias: ServerInfoOptionalStringSchema.optional(),
+    version: ServerInfoOptionalStringSchema.optional(),
+    // Absolute home directory of the daemon's user. The desktop app builds
+    // host-side paths from it, e.g. the VS Code Web workspace file.
+    // COMPAT(homeDirectory): added 2026-10-08; required after 2027-04-08.
+    homeDirectory: z.string().optional(),
     // COMPAT(sessionPermissions): optional while clients support older daemons.
     permissions: z.array(DaemonPermissionSchema).optional(),
     // COMPAT(desktopManaged): added in v0.1.X, remove optional parsing after 2027-01-16.
@@ -3530,9 +4132,16 @@ export const ServerInfoStatusPayloadSchema = z
         // COMPAT(workspaceRequestReceipts): added in v0.8.0; remove gate after 2027-03-07.
         workspaceRequestReceipts: z.boolean().optional(),
         creationLifecycle: z.boolean().optional(),
+        // COMPAT(docThreads): added 2026-10-01, remove gate after 2027-04-01.
+        // Daemon serves doc_threads.* RPCs for agents it owns.
+        docThreads: z.boolean().optional(),
+        // COMPAT(docThreadsEventSubscription): added 2026-10-01, remove gate after 2027-04-01.
+        // session.events accepts "doc_threads.changed".
+        docThreadsEventSubscription: z.boolean().optional(),
         // COMPAT(hubAgentRpc): added in v0.8.0; remove gate after 2027-03-05.
         hubAgentRpc: z.boolean().optional(),
         providersSnapshot: z.boolean().optional(),
+        usageSources: z.boolean().optional(),
         // COMPAT(providersSnapshotCwd): added in v0.3.2, remove gate after 2027-02-10.
         providersSnapshotCwd: z.boolean().optional(),
         // COMPAT(directorySync): added in v0.3.x, remove gate after 2027-02-12.
@@ -3573,6 +4182,8 @@ export const ServerInfoStatusPayloadSchema = z
         pushTokenRevocation: z.boolean().optional(),
         // COMPAT(plugins): added in v0.3.0, remove gate after 2027-08-07.
         plugins: z.boolean().optional(),
+        // COMPAT(loaderSpanReport): added in v0.4.0, remove gate after 2027-08-15.
+        loaderSpanReport: z.boolean().optional(),
         // COMPAT(pluginManagement): added in v0.4.0, remove gate after 2027-08-14.
         pluginManagement: z.boolean().optional(),
         // COMPAT(pluginLogs): added in v0.4.0, remove gate after 2027-08-16.
@@ -3619,6 +4230,16 @@ export const ServerInfoStatusPayloadSchema = z
         workspaceFileEditing: z.boolean().optional(),
         // COMPAT(providerUsageList): added in v0.1.98, drop the gate when daemon floor >= v0.1.98.
         providerUsageList: z.boolean().optional(),
+        // Daemon pushes refreshed usage via provider.usage.updated. Added in v0.4.0.
+        providerUsagePush: z.boolean().optional(),
+        // COMPAT(turnMetrics): added 2026-09-30, additive; optional forever.
+        // Per-turn metrics on turn_completed.usage + fetch_agent_timeline entries.
+        turnMetrics: z.boolean().optional(),
+        // COMPAT(fastProviderUsage): added 2026-09-30, remove gate after 2027-03-30.
+        // Daemon serves cached provider-usage snapshots instantly on
+        // provider.usage.list.request and refreshes each provider independently in
+        // the background, pushing per-provider provider.usage.updated events.
+        fastProviderUsage: z.boolean().optional(),
         // COMPAT(agentDetach): added in v0.1.98, remove gate after 2026-12-19 once daemon floor >= v0.1.98.
         agentDetach: z.boolean().optional(),
         // COMPAT(agentThinkingUpdate): added in v0.2.4, remove gate after 2027-01-28.
@@ -3631,6 +4252,10 @@ export const ServerInfoStatusPayloadSchema = z
         agentForkContext: z.boolean().optional(),
         // COMPAT(agentForkContextCursor): added in v0.1.108, remove gate after 2027-01-14.
         agentForkContextCursor: z.boolean().optional(),
+        // COMPAT(agentFork): added in v0.1.108, remove gate after 2027-01-17.
+        // Fork a running agent into a new sibling agent seeded with the
+        // source's chat history.
+        agentFork: z.boolean().optional(),
         // COMPAT(providerSubagents): added in v0.1.107, remove gate after 2027-01-12.
         providerSubagents: z.boolean().optional(),
         // COMPAT(projectedSubagentTimeline): added after v0.8.0, remove gates after 2027-03-14; retain wire field.
@@ -3651,10 +4276,37 @@ export const ServerInfoStatusPayloadSchema = z
         projectCreateDirectory: z.boolean().optional(),
         // COMPAT(projectList): added in v0.2.4, drop the gate when floor >= v0.2.4.
         projectList: z.boolean().optional(),
+        // Mission Control v3 (review lifecycle, approval gate, central config).
+        // Added 2026-08-08; app gates the v3 screen once on this flag.
+        missionControlV3: z.boolean().optional(),
+        // Native notes served by this daemon. True only on the notes host
+        // (the Commander host). Added 2026-09-30; the app picks the host
+        // advertising it.
+        notes: z.boolean().optional(),
+        // Native tickets (board, initiatives) served by this daemon. True only on
+        // the board host (the Commander host). Added 2026-09-30; the app picks
+        // the host advertising it.
+        tickets: z.boolean().optional(),
+        // Mission Control v4 (card grammar): meta-kind proposals, clarification
+        // + answer cards, the Commander clarify/post_answer tools. Added
+        // 2026-08-09; app gates the new card renderings once on this flag.
+        missionControlV4: z.boolean().optional(),
+        // COMPAT(missionControlInbox): added 2026-09-30, remove gate after 2027-03-30.
+        // mission_control.inbox.fetch (pending proposals, open clarifications,
+        // review facts) is served; Quarterdeck gates its per-host inbox on it.
+        missionControlInbox: z.boolean().optional(),
+        // Automations (unified schedules/webhooks/GitHub/Linear poll triggers).
+        // Added 2026-09-30; the app gates the Automations screen once on it.
+        automations: z.boolean().optional(),
+        // COMPAT(automationEventSubscription): added 2026-09-30, remove gate after 2027-03-30.
+        // session.events accepts "automations.changed".
+        automationEventSubscription: z.boolean().optional(),
         // COMPAT(commitsList): added in v0.1.110, remove gate after 2027-01-16.
         commitsList: z.boolean().optional(),
         // COMPAT(commitBaseClassification): added in v0.2.0, remove gate after 2027-01-23.
         commitBaseClassification: z.boolean().optional(),
+        // COMPAT(commitParents): added in v0.10.0, remove gate after 2027-04-01.
+        commitParents: z.boolean().optional(),
         // COMPAT(providerRemoval): added in v0.1.105, drop the gate when floor >= v0.1.105.
         providerRemoval: z.boolean().optional(),
         // COMPAT(importSessionWorkspaceTarget): added in v0.1.110, remove gate after 2027-01-16.
@@ -3670,6 +4322,16 @@ export const ServerInfoStatusPayloadSchema = z
         selectiveAgentTimeline: z.boolean().optional(),
         explicitEventSubscriptions: z.boolean().optional(),
         ownedSubscriptions: z.boolean().optional(),
+        // COMPAT(missionControlEventSubscription): added 2026-09-30, remove gate after 2027-03-30.
+        // session.events accepts "mission_control_event"; owned-subscription clients
+        // receive the push only after subscribing to it.
+        missionControlEventSubscription: z.boolean().optional(),
+        // COMPAT(providerUsageEventSubscription): added 2026-09-30, remove gate after 2027-03-30.
+        // session.events accepts "provider.usage.updated".
+        providerUsageEventSubscription: z.boolean().optional(),
+        // COMPAT(plannotatorEventSubscription): added 2026-09-30, remove gate after 2027-03-30.
+        // session.events accepts "plannotator.session.event".
+        plannotatorEventSubscription: z.boolean().optional(),
         // COMPAT(canonicalSubmittedPrompts): added in v0.2.6, remove gate after 2027-01-30.
         canonicalSubmittedPrompts: z.boolean().optional(),
         // COMPAT(agentTurnIdentity): accept peers that observed pre-release v0.2.6 through 2027-01-31.
@@ -3680,7 +4342,13 @@ export const ServerInfoStatusPayloadSchema = z
         workspaceScriptManagement: z.boolean().optional(),
         // COMPAT(projectCustomIcon): added in v0.2.0, remove after 2027-01-20.
         projectCustomIcon: z.boolean().optional(),
+        // COMPAT(plannotator): added in v0.2.x (fork), drop the gate when floor includes plannotator.
+        plannotator: z.boolean().optional(),
+        // COMPAT(missionControl): added in v0.3.x, drop the gate when floor includes mission control.
+        missionControl: z.boolean().optional(),
         // COMPAT(fsEntryOps): added in v0.3.0, remove gate after 2027-02-08.
+        // COMPAT(aiReviewer): added 2026-09-30; remove gate after 2027-03-30.
+        aiReviewer: z.boolean().optional(),
         fsEntryOps: z.boolean().optional(),
         // COMPAT(fsEntryDuplicate): added in v0.3.0, remove gate after 2027-02-09.
         fsEntryDuplicate: z.boolean().optional(),
@@ -3693,6 +4361,17 @@ export const ServerInfoStatusPayloadSchema = z
         agentProfiles: z.boolean().optional(),
         // COMPAT(agentConfigApply): added in v0.3.2, remove gate after 2027-02-11.
         agentConfigApply: z.boolean().optional(),
+        // COMPAT(baseWorkspace): added in v0.5.3 on 2026-08-25; remove gate
+        // after 2027-02-25. Set true once the daemon ensures + guards
+        // project-anchored base workspaces (ADR 0001), gating app UI that
+        // opens a base workspace from the project row.
+        baseWorkspace: z.boolean().optional(),
+        // COMPAT(orchestrator): added 2026-09-30, remove gate after 2027-03-30.
+        // Orchestrator start option + propose_plan tool + plan graph rendering.
+        orchestrator: z.boolean().optional(),
+        // COMPAT(pagePortProxy): added 2026-10-07, remove gate after 2027-04-07.
+        // Daemon serves page.proxy.open.* so a show_page localhost URL reaches the reader.
+        pagePortProxy: z.boolean().optional(),
       })
       .optional(),
   })
@@ -3702,6 +4381,37 @@ export const ServerInfoStatusPayloadSchema = z
     hostname: payload.hostname ?? null,
     version: payload.version ?? null,
   }));
+// Orchestrator plan schemas
+// COMPAT(orchestrator): added 2026-09-30, remove gate after 2027-03-30.
+export const OrchestratorTaskStatusSchema = z.enum([
+  "pending",
+  "ready",
+  "running",
+  "completed",
+  "failed",
+  "blocked",
+  "skipped",
+  "canceled",
+]);
+
+export const OrchestratorPlanTaskSchema = z.object({
+  id: z.string().min(1),
+  title: z.string().min(1),
+  brief: z.string().default(""),
+  files: z.array(z.string()).default([]),
+  dependsOn: z.array(z.string()).default([]),
+  model: z.string().optional(),
+  childAgentId: z.string().optional(),
+  status: OrchestratorTaskStatusSchema.default("pending"),
+});
+
+export const OrchestratorPlanSchema = z.object({
+  planId: z.string().min(1),
+  version: z.number().int().positive(),
+  title: z.string().min(1),
+  maxParallel: z.number().int().positive().default(4),
+  tasks: z.array(OrchestratorPlanTaskSchema),
+});
 
 export const StatusMessageSchema = z.object({
   type: z.literal("status"),
@@ -4007,6 +4717,9 @@ export const WorkspaceDescriptorPayloadSchema = z
       .nullish()
       .transform((value) => value ?? null),
     activityAt: z.string().nullable(),
+    // COMPAT(workspaceCreatedAt): added for sidebar sort-by-created. Old
+    // daemons omit it; clients treat missing as unknown and fall back.
+    createdAt: z.string().optional(),
     diffStat: z
       .object({
         additions: z.number(),
@@ -4106,6 +4819,9 @@ const AgentDirectoryResponseEntrySchema = z.object({
   searchScore: z.number().optional(),
   // Legacy server-generated highlights. Current clients highlight displayed text locally.
   searchMatches: z.array(AgentSearchMatchSchema).optional(),
+  // Excerpt from a transcript match. Optional so old clients ignore it; do not
+  // add "transcript" to AgentSearchMatchFieldSchema — that enum would fail parse.
+  searchSnippet: z.string().optional(),
   // COMPAT(directorySync): sequence of this latest directory projection.
   syncSeq: z.number().int().positive().optional(),
 });
@@ -4167,6 +4883,9 @@ export const WorkspaceProjectDescriptorPayloadSchema = z.object({
   projectCustomName: z.string().nullable().optional(),
   // COMPAT(projectCustomIcon): added in v0.2.0, remove after 2027-01-20.
   projectCustomIconRevision: z.string().nullable().optional(),
+  // Project description (v3): optional living description injected into the
+  // Commander context pack for routing. Null/absent = no description.
+  projectDescription: z.string().nullable().optional(),
   // Fingerprints the effective icon, including automatic discovery and the
   // absence of an icon. Clients may persist icon results against this value.
   // COMPAT(projectIconCache): added in v0.2.7, remove optional after 2027-02-12.
@@ -4175,6 +4894,13 @@ export const WorkspaceProjectDescriptorPayloadSchema = z.object({
   projectKind: z.enum(["git", "non_git", "directory"]),
   // COMPAT(directorySync): sequence of this latest directory projection.
   syncSeq: z.number().int().positive().optional(),
+  // The project's base workspace (ADR 0001: project-anchored base
+  // workspaces) — the workspace over the project's root checkout, created
+  // with the project, unarchivable while the project is active. The sidebar
+  // lists it with the project's other workspaces. Null until reconciliation backfills it.
+  // COMPAT(baseWorkspace): added in v0.5.3 on 2026-08-25; remove optional
+  // after 2027-02-25.
+  baseWorkspaceId: z.string().nullable().optional(),
 });
 
 export const FetchWorkspacesResponseMessageSchema = z.object({
@@ -4563,6 +5289,9 @@ export const AgentTimelineEntryPayloadSchema = z.object({
   seqEnd: z.number().int().nonnegative(),
   sourceSeqRanges: z.array(AgentTimelineSeqRangeSchema),
   collapsed: z.array(z.enum(["assistant_merge", "reasoning_merge", "tool_lifecycle", "identity"])),
+  // COMPAT(turnMetricsEntry): added 2026-09-30, additive; optional forever.
+  // Per-turn metrics record for entry.turnId, attached by the daemon when known.
+  metrics: AgentUsageSchema.optional(),
 });
 
 export const FetchAgentTimelineResponseMessageSchema = z.object({
@@ -4782,6 +5511,23 @@ export const AgentForkContextResponseMessageSchema = z.object({
     itemCount: z.number().int().nonnegative(),
     boundaryMessageId: z.string().nullable(),
     boundaryCursor: AgentTimelineCursorSchema.nullable().optional(),
+    error: z.string().nullable(),
+  }),
+});
+
+export const AgentForkResponseMessageSchema = z.object({
+  type: z.literal("agent.fork.response"),
+  payload: z.object({
+    requestId: z.string(),
+    sourceAgentId: z.string(),
+    // The newly created forked agent's id, or null when the fork failed.
+    agentId: z.string().nullable(),
+    // Vestigial: fork is always a chat-history snapshot. Kept on the wire for
+    // old clients that read it, and to parse an old daemon's "native".
+    strategy: z.enum(["native", "snapshot"]).nullable().optional(),
+    // Snapshot of the created fork, so a fork-mode draft tab can swap straight
+    // to an agent tab without waiting for the live-agent broadcast.
+    agent: AgentSnapshotPayloadSchema.nullable().optional(),
     error: z.string().nullable(),
   }),
 });
@@ -5420,6 +6166,23 @@ export const CheckoutPullResponseSchema = z.object({
     cwd: z.string(),
     success: z.boolean(),
     error: CheckoutErrorSchema.nullable(),
+    requestId: z.string(),
+  }),
+});
+
+const SubmoduleEntrySchema = z.object({
+  path: z.string(),
+  name: z.string(),
+  status: z.enum(["clean", "dirty", "uninitialized"]),
+  headRef: z.string().nullable(),
+  parentPath: z.string().nullable(),
+});
+
+export const CheckoutSubmodulesResponseSchema = z.object({
+  type: z.literal("checkout_submodules_response"),
+  payload: z.object({
+    cwd: z.string(),
+    submodules: z.array(SubmoduleEntrySchema),
     requestId: z.string(),
   }),
 });
@@ -6075,6 +6838,19 @@ export const FileUploadResponseSchema = z.object({
   }),
 });
 
+export const FileExplorerWriteResponseSchema = z.object({
+  type: z.literal("file.explorer.write.response"),
+  payload: z.object({
+    requestId: z.string(),
+    cwd: z.string(),
+    /** Relative path of the written file under `cwd`, or null on failure. */
+    path: z.string().nullable(),
+    fileName: z.string().nullable(),
+    size: z.number().nullable(),
+    error: z.string().nullable(),
+  }),
+});
+
 export const ListProviderModelsResponseMessageSchema = z.object({
   type: z.literal("list_provider_models_response"),
   payload: z.object({
@@ -6178,6 +6954,13 @@ export const ProviderUsageStatusSchema = z.enum(["available", "unavailable", "er
 export const ProviderUsageWindowSchema = z.object({
   id: z.string(),
   label: z.string(),
+  /**
+   * A few characters naming the window where space is tight, e.g. "5h" or "wk". An empty string
+   * shows the percent alone; leaving it out shows `label`.
+   */
+  shortLabel: z.string().optional(),
+  /** Shown in the usage summary until the user pins windows of their own. */
+  summary: z.boolean().optional(),
   usedPct: z.number().nullable().optional(),
   remainingPct: z.number().nullable().optional(),
   resetsAt: z.string().nullable().optional(),
@@ -6206,6 +6989,12 @@ export const ProviderUsageDetailSchema = z.object({
 
 export const ProviderUsageSchema = z.object({
   providerId: z.string(),
+  // Account-agnostic provider identity for multi-account providers (e.g.
+  // "omp-grok-build"). Added in v0.4.0; absent for old daemons, fall back to providerId.
+  groupId: z.string().optional(),
+  // Account email when a provider reports multiple accounts; absent otherwise.
+  accountEmail: z.string().optional(),
+  active: z.boolean().optional(),
   displayName: z.string(),
   status: ProviderUsageStatusSchema,
   planLabel: z.string().nullable(),
@@ -6216,6 +7005,18 @@ export const ProviderUsageSchema = z.object({
   balances: z.array(ProviderUsageBalanceSchema).optional(),
   details: z.array(ProviderUsageDetailSchema).optional(),
   error: z.string().nullable().optional(),
+  // COMPAT(fastProviderUsage): added 2026-09-30, remove gate after 2027-03-30.
+  // Daemon-computed headroom for the tightest window: remaining percent
+  // (0-100), tone, reset countdown label, and the best switch hint when this
+  // account is low or exhausted. Clients recompute locally every 30 s against
+  // resetsAt; these fields seed the first render and serve clients without
+  // local timers.
+  headroomTone: z.enum(["ready", "low", "exhausted", "checking", "unknown"]).optional(),
+  headroomPercent: z.number().nullable().optional(),
+  resetCountdown: z.string().nullable().optional(),
+  isBestAlternative: z.boolean().optional(),
+  bestAlternativeAccountId: z.string().nullable().optional(),
+  bestAlternativeAccountName: z.string().nullable().optional(),
 });
 
 export const ProviderUsageListResponseMessageSchema = z.object({
@@ -6227,11 +7028,75 @@ export const ProviderUsageListResponseMessageSchema = z.object({
   }),
 });
 
+// Daemon push of refreshed usage; additive (v0.4.0), feature-gated via
+// server_info `providerUsagePush`. Same providers shape as provider.usage.list.response.
+// Owned-subscription clients receive it only through the "provider.usage.updated"
+// session event (server_info `providerUsageEventSubscription`).
+export const ProviderUsageUpdatedMessageSchema = z.object({
+  type: z.literal("provider.usage.updated"),
+  payload: z.object({
+    subscriptionId: z.string().optional(),
+    fetchedAt: z.string(),
+    providers: z.array(ProviderUsageSchema),
+    // COMPAT(fastProviderUsage): added 2026-09-30, remove gate after 2027-03-30.
+    // Present on per-provider pushes: names the provider that just refreshed.
+    providerId: z.string().optional(),
+  }),
+});
+
+export const UsageProblemSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("expired"),
+    expiresAt: z.iso.datetime(),
+    refreshedBy: z.string().optional(),
+  }),
+  z.object({
+    kind: z.literal("rejected"),
+    status: z.number().int(),
+    refreshedBy: z.string().optional(),
+  }),
+  z.object({ kind: z.literal("no_quota"), detail: z.string() }),
+]);
+export const UsageReportSchema = z.discriminatedUnion("status", [
+  z.object({
+    status: z.literal("available"),
+    planLabel: z.string().optional(),
+    windows: z.array(ProviderUsageWindowSchema),
+    balances: z.array(ProviderUsageBalanceSchema).optional(),
+    details: z.array(ProviderUsageDetailSchema).optional(),
+  }),
+  z.object({ status: z.literal("unavailable"), problem: UsageProblemSchema }),
+  z.object({ status: z.literal("error"), error: z.string() }),
+]);
+export const UsageReportEntrySchema = z.object({
+  id: z.string(),
+  account: z.object({ label: z.string().optional() }),
+  fetchedAt: z.string(),
+  sourceId: z.string(),
+  sourceLabel: z.string(),
+  icon: z.string().optional(),
+  report: UsageReportSchema,
+});
+export const UsageListReportsUpdateMessageSchema = z.object({
+  type: z.literal("usage.list_reports.update"),
+  payload: z.object({ requestId: z.string(), report: UsageReportEntrySchema }),
+});
+export const UsageListReportsResponseMessageSchema = z.object({
+  type: z.literal("usage.list_reports.response"),
+  payload: z.object({ requestId: z.string(), error: z.string().nullable() }),
+});
+
 const AgentSlashCommandSchema = z.object({
   name: z.string(),
   description: z.string(),
   argumentHint: z.string(),
   kind: z.enum(["command", "skill"]).optional().catch("command"),
+  // "out_of_band" commands are executed by the provider as a side effect of the
+  // active turn (OMP /steer, /compact, …) instead of starting a new one. The
+  // composer must send them through immediately rather than queueing them
+  // behind the running turn — a queued /steer arrives after the turn it was
+  // meant to steer. Absent (old daemon) means "turn".
+  delivery: z.enum(["turn", "out_of_band"]).optional().catch("turn"),
 });
 
 export const ListCommandsResponseSchema = z.object({
@@ -6811,6 +7676,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   SetAgentTimelineSubscriptionResponseMessageSchema,
   AgentAttentionRequiredMessageSchema,
   AgentForkContextResponseMessageSchema,
+  AgentForkResponseMessageSchema,
   CancelAgentResponseMessageSchema,
   ClearAgentAttentionResponseMessageSchema,
   WorkspaceCreateResponseSchema,
@@ -6842,7 +7708,10 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   AgentDetachResponseMessageSchema,
   AgentRewindResponseMessageSchema,
   UpdateAgentResponseMessageSchema,
+  AgentWorkspaceMoveResponseMessageSchema,
+  AgentWorkspaceTransferResponseMessageSchema,
   ProjectRenameResponseSchema,
+  ProjectDescriptionSetResponseSchema,
   ProjectIconSetResponseSchema,
   ProjectRemoveResponseSchema,
   WorkspaceTitleSetResponseSchema,
@@ -6864,6 +7733,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   CheckoutMergeResponseSchema,
   CheckoutMergeFromBaseResponseSchema,
   CheckoutPullResponseSchema,
+  CheckoutSubmodulesResponseSchema,
   CheckoutPushResponseSchema,
   CheckoutRefreshResponseSchema,
   CheckoutDiscardChangesResponseSchema,
@@ -6903,6 +7773,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   ProjectIconGetResponseSchema,
   FileDownloadTokenResponseSchema,
   FileUploadResponseSchema,
+  FileExplorerWriteResponseSchema,
   ListProviderModelsResponseMessageSchema,
   ListProviderModesResponseMessageSchema,
   ListProviderFeaturesResponseMessageSchema,
@@ -6912,6 +7783,9 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   RefreshProvidersSnapshotResponseMessageSchema,
   ProviderDiagnosticResponseMessageSchema,
   ProviderUsageListResponseMessageSchema,
+  ProviderUsageUpdatedMessageSchema,
+  UsageListReportsUpdateMessageSchema,
+  UsageListReportsResponseMessageSchema,
   ListCommandsResponseSchema,
   ListTerminalsResponseSchema,
   TerminalsChangedSchema,
@@ -6938,11 +7812,55 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   ScheduleDeleteResponseSchema,
   ScheduleRunOnceResponseSchema,
   ScheduleUpdateResponseSchema,
+  WebhookCreateResponseSchema,
+  WebhookListResponseSchema,
+  WebhookInspectResponseSchema,
+  WebhookDeleteResponseSchema,
+  WebhookUpdateResponseSchema,
+  WebhookTestResponseSchema,
+  WebhookConfigResponseSchema,
+  ...NOTES_OUTBOUND_SCHEMAS,
+  ...TICKETS_OUTBOUND_SCHEMAS,
+  ...AUTOMATION_OUTBOUND_SCHEMAS,
+  ...DOC_THREADS_OUTBOUND_SCHEMAS,
   LoopRunResponseSchema,
   LoopListResponseSchema,
   LoopInspectResponseSchema,
   LoopLogsResponseSchema,
   LoopStopResponseSchema,
+  PlannotatorSessionStartResponseSchema,
+  PlannotatorSessionStopResponseSchema,
+  PageProxyOpenResponseSchema,
+  PageContentGetResponseSchema,
+  PlannotatorSessionEventSchema,
+  MissionControlEventsFetchResponseSchema,
+  MissionControlEventsAckResponseSchema,
+  MissionControlPeersListResponseSchema,
+  MissionControlContextFetchResponseSchema,
+  MissionControlEventMessageSchema,
+  MissionControlLifecycleSetResponseSchema,
+  MissionControlProposalsRespondResponseSchema,
+  MissionControlProposalsCreateResponseSchema,
+  MissionControlModeSetResponseSchema,
+  MissionControlConfigGetResponseSchema,
+  MissionControlConfigPatchResponseSchema,
+  MissionControlCommanderResetResponseSchema,
+  MissionControlSearchResponseSchema,
+  MissionControlMediaFetchResponseSchema,
+  MissionControlMetaApplyResponseSchema,
+  MissionControlSpawnLabelsResolveResponseSchema,
+  MissionControlSpawnApplyResponseSchema,
+  MissionControlEventForwardResponseSchema,
+  MissionControlInstructionsListResponseSchema,
+  MissionControlInstructionsCloseResponseSchema,
+  MissionControlInstructionsOpenResponseSchema,
+  MissionControlVoiceMirrorResponseSchema,
+  MissionControlRecallResponseSchema,
+  MissionControlContextRecordsResponseSchema,
+  MissionControlTagMessageResponseSchema,
+  MissionControlPeerTimelineResponseSchema,
+  MissionControlToolsExecuteResponseSchema,
+  MissionControlInboxFetchResponseSchema,
   DaemonUpdateProgressMessageSchema,
   DaemonUpdateResponseSchema,
 ]);
@@ -7030,6 +7948,7 @@ export type AgentTimelineListPromptsResponseMessage = z.infer<
   typeof AgentTimelineListPromptsResponseMessageSchema
 >;
 export type AgentForkContextResponseMessage = z.infer<typeof AgentForkContextResponseMessageSchema>;
+export type AgentForkResponseMessage = z.infer<typeof AgentForkResponseMessageSchema>;
 export type CancelAgentResponseMessage = z.infer<typeof CancelAgentResponseMessageSchema>;
 export type SendAgentMessageResponseMessage = z.infer<typeof SendAgentMessageResponseMessageSchema>;
 export type SetVoiceModeResponseMessage = z.infer<typeof SetVoiceModeResponseMessageSchema>;
@@ -7042,6 +7961,7 @@ export type AgentDetachResponseMessage = z.infer<typeof AgentDetachResponseMessa
 export type AgentRewindResponseMessage = z.infer<typeof AgentRewindResponseMessageSchema>;
 export type UpdateAgentResponseMessage = z.infer<typeof UpdateAgentResponseMessageSchema>;
 export type ProjectRenameResponse = z.infer<typeof ProjectRenameResponseSchema>;
+export type ProjectDescriptionSetResponse = z.infer<typeof ProjectDescriptionSetResponseSchema>;
 export type ProjectIconSetResponse = z.infer<typeof ProjectIconSetResponseSchema>;
 export type ProjectRemoveResponse = z.infer<typeof ProjectRemoveResponseSchema>;
 export type WorkspaceTitleSetResponse = z.infer<typeof WorkspaceTitleSetResponseSchema>;
@@ -7090,6 +8010,10 @@ export type ProviderDiagnosticResponseMessage = z.infer<
   typeof ProviderDiagnosticResponseMessageSchema
 >;
 export type ProviderUsageTone = z.infer<typeof ProviderUsageToneSchema>;
+export type UsageProblem = z.infer<typeof UsageProblemSchema>;
+export type UsageReport = z.infer<typeof UsageReportSchema>;
+export type UsageReportEntry = z.infer<typeof UsageReportEntrySchema>;
+export type UsageListReportsResponseMessage = z.infer<typeof UsageListReportsResponseMessageSchema>;
 export type ProviderUsageStatus = z.infer<typeof ProviderUsageStatusSchema>;
 export type ProviderUsage = z.infer<typeof ProviderUsageSchema>;
 export type ProviderUsageWindow = z.infer<typeof ProviderUsageWindowSchema>;
@@ -7098,6 +8022,7 @@ export type ProviderUsageDetail = z.infer<typeof ProviderUsageDetailSchema>;
 export type ProviderUsageListResponseMessage = z.infer<
   typeof ProviderUsageListResponseMessageSchema
 >;
+export type ProviderUsageUpdatedMessage = z.infer<typeof ProviderUsageUpdatedMessageSchema>;
 export type ChatCreateResponse = z.infer<typeof ChatCreateResponseSchema>;
 export type ChatListResponse = z.infer<typeof ChatListResponseSchema>;
 export type ChatInspectResponse = z.infer<typeof ChatInspectResponseSchema>;
@@ -7114,6 +8039,33 @@ export type ScheduleResumeResponse = z.infer<typeof ScheduleResumeResponseSchema
 export type ScheduleDeleteResponse = z.infer<typeof ScheduleDeleteResponseSchema>;
 export type ScheduleRunOnceResponse = z.infer<typeof ScheduleRunOnceResponseSchema>;
 export type ScheduleUpdateResponse = z.infer<typeof ScheduleUpdateResponseSchema>;
+export type WebhookCreateResponse = z.infer<typeof WebhookCreateResponseSchema>;
+export type WebhookListResponse = z.infer<typeof WebhookListResponseSchema>;
+export type WebhookInspectResponse = z.infer<typeof WebhookInspectResponseSchema>;
+export type WebhookDeleteResponse = z.infer<typeof WebhookDeleteResponseSchema>;
+export type WebhookUpdateResponse = z.infer<typeof WebhookUpdateResponseSchema>;
+export type WebhookTestResponse = z.infer<typeof WebhookTestResponseSchema>;
+export type WebhookConfigResponse = z.infer<typeof WebhookConfigResponseSchema>;
+export type MissionControlEventsFetchResponse = z.infer<
+  typeof MissionControlEventsFetchResponseSchema
+>;
+export type MissionControlEventsAckResponse = z.infer<typeof MissionControlEventsAckResponseSchema>;
+export type MissionControlPeersListResponse = z.infer<typeof MissionControlPeersListResponseSchema>;
+export type MissionControlContextFetchResponse = z.infer<
+  typeof MissionControlContextFetchResponseSchema
+>;
+export type MissionControlEventMessage = z.infer<typeof MissionControlEventMessageSchema>;
+export type MissionControlLifecycleSetResponse = z.infer<
+  typeof MissionControlLifecycleSetResponseSchema
+>;
+export type MissionControlProposalsRespondResponse = z.infer<
+  typeof MissionControlProposalsRespondResponseSchema
+>;
+export type MissionControlModeSetResponse = z.infer<typeof MissionControlModeSetResponseSchema>;
+export type MissionControlConfigGetResponse = z.infer<typeof MissionControlConfigGetResponseSchema>;
+export type MissionControlConfigPatchResponse = z.infer<
+  typeof MissionControlConfigPatchResponseSchema
+>;
 export type LoopRunResponse = z.infer<typeof LoopRunResponseSchema>;
 export type LoopListResponse = z.infer<typeof LoopListResponseSchema>;
 export type LoopInspectResponse = z.infer<typeof LoopInspectResponseSchema>;
@@ -7134,12 +8086,14 @@ export type FetchWorkspacesRequestMessage = z.infer<typeof FetchWorkspacesReques
 export type ProjectListRequestMessage = z.infer<typeof ProjectListRequestMessageSchema>;
 export type FetchAgentRequestMessage = z.infer<typeof FetchAgentRequestMessageSchema>;
 export type AgentForkContextRequestMessage = z.infer<typeof AgentForkContextRequestMessageSchema>;
+export type AgentForkRequestMessage = z.infer<typeof AgentForkRequestMessageSchema>;
 export type SendAgentMessageRequest = z.infer<typeof SendAgentMessageRequestSchema>;
 export type WaitForFinishRequest = z.infer<typeof WaitForFinishRequestSchema>;
 export type DictationStreamStartMessage = z.infer<typeof DictationStreamStartMessageSchema>;
 export type DictationStreamChunkMessage = z.infer<typeof DictationStreamChunkMessageSchema>;
 export type DictationStreamFinishMessage = z.infer<typeof DictationStreamFinishMessageSchema>;
 export type DictationStreamCancelMessage = z.infer<typeof DictationStreamCancelMessageSchema>;
+export type ClientLoaderSpanReportMessage = z.infer<typeof ClientLoaderSpanReportMessageSchema>;
 export type CreateAgentRequestMessage = z.infer<typeof CreateAgentRequestMessageSchema>;
 export type AgentAttachment = z.infer<typeof AgentAttachmentSchema>;
 export type ForgeChangeRequestAttachment = z.infer<typeof ForgeChangeRequestAttachmentSchema>;
@@ -7182,6 +8136,41 @@ export type ScheduleResumeRequest = z.infer<typeof ScheduleResumeRequestSchema>;
 export type ScheduleDeleteRequest = z.infer<typeof ScheduleDeleteRequestSchema>;
 export type ScheduleRunOnceRequest = z.infer<typeof ScheduleRunOnceRequestSchema>;
 export type ScheduleUpdateRequest = z.infer<typeof ScheduleUpdateRequestSchema>;
+export type WebhookCreateRequest = z.infer<typeof WebhookCreateRequestSchema>;
+export type WebhookListRequest = z.infer<typeof WebhookListRequestSchema>;
+export type WebhookInspectRequest = z.infer<typeof WebhookInspectRequestSchema>;
+export type WebhookDeleteRequest = z.infer<typeof WebhookDeleteRequestSchema>;
+export type WebhookUpdateRequest = z.infer<typeof WebhookUpdateRequestSchema>;
+export type WebhookTestRequest = z.infer<typeof WebhookTestRequestSchema>;
+export type WebhookConfigRequest = z.infer<typeof WebhookConfigRequestSchema>;
+export type MissionControlEventsFetchRequest = z.infer<
+  typeof MissionControlEventsFetchRequestSchema
+>;
+export type MissionControlEventsAckRequest = z.infer<typeof MissionControlEventsAckRequestSchema>;
+export type MissionControlPeersListRequest = z.infer<typeof MissionControlPeersListRequestSchema>;
+export type MissionControlContextFetchRequest = z.infer<
+  typeof MissionControlContextFetchRequestSchema
+>;
+export type MissionControlLifecycleSetRequest = z.infer<
+  typeof MissionControlLifecycleSetRequestSchema
+>;
+export type MissionControlProposalsRespondRequest = z.infer<
+  typeof MissionControlProposalsRespondRequestSchema
+>;
+export type MissionControlProposalsCreateRequest = z.infer<
+  typeof MissionControlProposalsCreateRequestSchema
+>;
+export type MissionControlModeSetRequest = z.infer<typeof MissionControlModeSetRequestSchema>;
+export type MissionControlConfigGetRequest = z.infer<typeof MissionControlConfigGetRequestSchema>;
+export type MissionControlConfigPatchRequest = z.infer<
+  typeof MissionControlConfigPatchRequestSchema
+>;
+export type MissionControlCommanderResetRequest = z.infer<
+  typeof MissionControlCommanderResetRequestSchema
+>;
+export type MissionControlCommanderResetResponse = z.infer<
+  typeof MissionControlCommanderResetResponseSchema
+>;
 export type LoopRunRequest = z.infer<typeof LoopRunRequestSchema>;
 export type LoopListRequest = z.infer<typeof LoopListRequestSchema>;
 export type LoopInspectRequest = z.infer<typeof LoopInspectRequestSchema>;
@@ -7192,6 +8181,7 @@ export type DeleteAgentRequestMessage = z.infer<typeof DeleteAgentRequestMessage
 export type UpdateAgentRequestMessage = z.infer<typeof UpdateAgentRequestMessageSchema>;
 export type ProjectIconSource = z.infer<typeof ProjectIconSourceSchema>;
 export type ProjectRenameRequest = z.infer<typeof ProjectRenameRequestSchema>;
+export type ProjectDescriptionSetRequest = z.infer<typeof ProjectDescriptionSetRequestSchema>;
 export type ProjectIconSetRequest = z.infer<typeof ProjectIconSetRequestSchema>;
 export type ProjectRemoveRequest = z.infer<typeof ProjectRemoveRequestSchema>;
 export type WorkspaceTitleSetRequest = z.infer<typeof WorkspaceTitleSetRequestSchema>;
@@ -7204,6 +8194,18 @@ export type SetAgentThinkingRequestMessage = z.infer<typeof SetAgentThinkingRequ
 export type SetAgentFeatureRequestMessage = z.infer<typeof SetAgentFeatureRequestMessageSchema>;
 export type AgentConfigApplyRequestMessage = z.infer<typeof AgentConfigApplyRequestMessageSchema>;
 export type AgentDetachRequestMessage = z.infer<typeof AgentDetachRequestMessageSchema>;
+export type AgentWorkspaceMoveRequestMessage = z.infer<
+  typeof AgentWorkspaceMoveRequestMessageSchema
+>;
+export type AgentWorkspaceMoveResponseMessage = z.infer<
+  typeof AgentWorkspaceMoveResponseMessageSchema
+>;
+export type AgentWorkspaceTransferRequestMessage = z.infer<
+  typeof AgentWorkspaceTransferRequestMessageSchema
+>;
+export type AgentWorkspaceTransferResponseMessage = z.infer<
+  typeof AgentWorkspaceTransferResponseMessageSchema
+>;
 export type AgentPermissionResponseMessage = z.infer<typeof AgentPermissionResponseMessageSchema>;
 export type CheckoutStatusRequest = z.infer<typeof CheckoutStatusRequestSchema>;
 export type CheckoutStatusResponse = z.infer<typeof CheckoutStatusResponseSchema>;
@@ -7220,6 +8222,8 @@ export type CheckoutMergeFromBaseRequest = z.infer<typeof CheckoutMergeFromBaseR
 export type CheckoutMergeFromBaseResponse = z.infer<typeof CheckoutMergeFromBaseResponseSchema>;
 export type CheckoutPullRequest = z.infer<typeof CheckoutPullRequestSchema>;
 export type CheckoutPullResponse = z.infer<typeof CheckoutPullResponseSchema>;
+export type CheckoutSubmodulesRequest = z.infer<typeof CheckoutSubmodulesRequestSchema>;
+export type CheckoutSubmodulesResponse = z.infer<typeof CheckoutSubmodulesResponseSchema>;
 export type CheckoutPushRequest = z.infer<typeof CheckoutPushRequestSchema>;
 export type CheckoutPushResponse = z.infer<typeof CheckoutPushResponseSchema>;
 export type CheckoutRefreshRequest = z.infer<typeof CheckoutRefreshRequestSchema>;
@@ -7350,6 +8354,8 @@ export type FileDownloadTokenRequest = z.infer<typeof FileDownloadTokenRequestSc
 export type FileDownloadTokenResponse = z.infer<typeof FileDownloadTokenResponseSchema>;
 export type FileUploadRequest = z.infer<typeof FileUploadRequestSchema>;
 export type FileUploadResponse = z.infer<typeof FileUploadResponseSchema>;
+export type FileExplorerWriteRequest = z.infer<typeof FileExplorerWriteRequestSchema>;
+export type FileExplorerWriteResponse = z.infer<typeof FileExplorerWriteResponseSchema>;
 export type RestartServerRequestMessage = z.infer<typeof RestartServerRequestMessageSchema>;
 export type ShutdownServerRequestMessage = z.infer<typeof ShutdownServerRequestMessageSchema>;
 export type ClearAgentAttentionMessage = z.infer<typeof ClearAgentAttentionMessageSchema>;
@@ -7411,10 +8417,17 @@ export const WSHelloMessageSchema = z.object({
   clientId: z.string().min(1),
   clientType: z.enum(["mobile", "browser", "cli", "mcp", "hub"]),
   protocolVersion: z.number().int(),
+  auth: z
+    .discriminatedUnion("kind", [
+      z.object({ kind: z.literal("password"), password: z.string() }),
+      z.object({ kind: z.literal("localCredential"), token: z.string() }),
+    ])
+    .optional(),
   appVersion: z.string().optional(),
   capabilities: z
     .object({
       voice: z.boolean().optional(),
+      [CLIENT_CAPS.helloRejection]: z.boolean().optional(),
       pushNotifications: z.boolean().optional(),
       [CLIENT_CAPS.explicitEventSubscriptions]: z.boolean().optional(),
       [CLIENT_CAPS.allProviders]: z.boolean().optional(),
@@ -7450,6 +8463,12 @@ export const WSSessionOutboundSchema = z.object({
   message: SessionOutboundMessageSchema,
 });
 
+export const WSHelloRejectedMessageSchema = z.object({
+  type: z.literal("hello.rejected"),
+  reason: z.enum(["password_required", "incorrect_password", "incompatible_protocol"]),
+  accepts: z.array(z.literal("password")),
+});
+
 // Complete WebSocket message schemas
 export const WSInboundMessageSchema = z.discriminatedUnion("type", [
   WSPingMessageSchema,
@@ -7461,6 +8480,7 @@ export const WSInboundMessageSchema = z.discriminatedUnion("type", [
 export const WSOutboundMessageSchema = z.discriminatedUnion("type", [
   WSPongMessageSchema,
   WSSessionOutboundSchema,
+  WSHelloRejectedMessageSchema,
 ]);
 
 export type WSInboundMessage = z.infer<typeof WSInboundMessageSchema>;

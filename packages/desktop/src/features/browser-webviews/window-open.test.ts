@@ -153,6 +153,31 @@ describe("browser webview window-open requests", () => {
 
     expect(result).toEqual({ kind: "deny" });
   });
+
+  it("routes paseo:// agent deep links instead of denying them", () => {
+    const url = "paseo://h/srv_abc/agent/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+    const result = decideBrowserWindowOpenRequest({
+      url,
+      disposition: "new-window",
+      frameName: "_blank",
+      features: "noopener,noreferrer",
+      hasPostBody: false,
+    });
+
+    expect(result).toEqual({ kind: "paseo-agent", url });
+  });
+
+  it("still denies other paseo:// URLs that are not agent deep links", () => {
+    const result = decideBrowserWindowOpenRequest({
+      url: "paseo://settings",
+      disposition: "foreground-tab",
+      frameName: "_blank",
+      features: "",
+      hasPostBody: false,
+    });
+
+    expect(result).toEqual({ kind: "deny" });
+  });
 });
 
 describe("pending browser window-open requests", () => {

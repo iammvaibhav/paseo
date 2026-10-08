@@ -5,6 +5,11 @@ import type { DesktopSettings } from "@/desktop/settings/desktop-settings";
 import type { AppLanguage } from "@/i18n/locales";
 import type { SidebarNavPreference } from "@/sidebar-nav/model";
 import {
+  DEFAULT_USAGE_PREFERENCES,
+  UsagePreferencesSchema,
+  type UsagePreferences,
+} from "@/usage/preferences";
+import {
   DEFAULT_SIDEBAR_CHECKS_DISPLAY,
   type SidebarChecksDisplay,
 } from "@/components/sidebar/display-preferences/checks-display";
@@ -15,7 +20,10 @@ import {
 } from "@/components/sidebar/display-preferences/row-items";
 import { isNative } from "@/constants/platform";
 import {
+  DEFAULT_CONTENT_MAX_WIDTH,
+  DEFAULT_GLASS_TUNING,
   FONT_SIZE,
+  type GlassTuning,
   PLUGIN_THEME_PREFERENCE,
   THEME_OPTIONS,
   type ThemePreference,
@@ -33,8 +41,22 @@ export type ServiceUrlBehavior = "ask" | "in-app" | "external";
 export type WorkspaceTitleSource = "title" | "branch";
 export type PullRequestOpenLocation = "main" | "side" | "explorer";
 /** What a sidebar workspace row shows in the space to the right of its title. */
-export type SidebarWorkspaceTrailing = "diff" | "timestamp" | "none";
+export type SidebarWorkspaceTrailing = "timestamp" | "none";
+/** How workspaces inside a project are ordered in the sidebar. */
+export type SidebarWorkspaceSort = "manual" | "activity" | "created";
 export type ToolCallDetailLevel = "overview" | "detailed";
+export type PlannotatorFeedbackMode = "auto-send" | "compose";
+export type DefaultFileOpener = "paseo" | "vscode-web" | "plannotator";
+
+export type AgentGridDirection = "horizontal" | "vertical";
+export type MissionControlApprovalMode = "ask" | "auto";
+
+export interface NewAgentDefaultsPreferences {
+  projectMode: "last-used" | "fixed";
+  fixedProjectKey?: string | null;
+  serverId?: string | null;
+  isolation?: string | null;
+}
 
 const ThemePreferenceSchema = z.enum([
   ...THEME_OPTIONS.map((option) => option.name),
@@ -42,6 +64,7 @@ const ThemePreferenceSchema = z.enum([
 ]);
 /** Where the theme picker lands when the persisted preference cannot be honoured. */
 export const DEFAULT_THEME_PREFERENCE = "auto" satisfies ThemePreference;
+
 export const DEFAULT_TERMINAL_SCROLLBACK_LINES = 10_000;
 export const MIN_TERMINAL_SCROLLBACK_LINES = 0;
 export const MAX_TERMINAL_SCROLLBACK_LINES = 1_000_000;
@@ -59,10 +82,28 @@ export function defaultContentFontSize(native: boolean): number {
 export const DEFAULT_CONTENT_FONT_SIZE = defaultContentFontSize(isNative);
 export const MIN_CONTENT_FONT_SIZE = 10;
 export const MAX_CONTENT_FONT_SIZE = 21;
+/** Agent Grid tiles: independent of the full-agent content size. */
+export const DEFAULT_AGENT_GRID_FONT_SIZE = 12;
+export const MIN_AGENT_GRID_FONT_SIZE = MIN_CONTENT_FONT_SIZE;
+export const MAX_AGENT_GRID_FONT_SIZE = MAX_CONTENT_FONT_SIZE;
+export const DEFAULT_AGENT_GRID_DIRECTION: AgentGridDirection = "vertical";
+export const DEFAULT_AGENT_GRID_VISIBLE_COUNT = 6;
+export const MIN_AGENT_GRID_VISIBLE_COUNT = 1;
+export const MAX_AGENT_GRID_VISIBLE_COUNT = 16;
+export const DEFAULT_MISSION_CONTROL_APPROVAL_MODE: MissionControlApprovalMode = "ask";
+export const DEFAULT_NEW_AGENT_DEFAULTS: NewAgentDefaultsPreferences = {
+  projectMode: "last-used",
+  fixedProjectKey: null,
+  serverId: null,
+  isolation: null,
+};
 export const DEFAULT_CODE_FONT_SIZE = 12; // == FONT_SIZE.code
 export const MIN_CODE_FONT_SIZE = 9;
 export const MAX_CODE_FONT_SIZE = 22; // line-height 1.5×22=33 stays safe
 export const MAX_FONT_FAMILY_LENGTH = 200;
+export { DEFAULT_CONTENT_MAX_WIDTH };
+export const MIN_CONTENT_MAX_WIDTH = 600;
+export const MAX_CONTENT_MAX_WIDTH = 4000;
 
 export interface AppSettings {
   theme: ThemePreference;
@@ -77,21 +118,46 @@ export interface AppSettings {
   monoFontFamily: string; // "" = platform default mono stack
   uiBaseFontSize: number; // clamped px, platform default 14 or 15
   contentFontSize: number; // clamped px, platform default 15 or 16
+  /** Mission Control Agent Grid transcripts only; independent of contentFontSize. */
+  agentGridFontSize: number; // clamped px, default 12
   codeFontSize: number; // clamped px, default 12
+  agentGridDirection: AgentGridDirection;
+  agentGridVisibleCount: number;
+  agentGridHoverComposer: boolean;
+  /** Max width of chat and markdown content in px; null follows the current default. */
+  contentMaxWidth: number | null;
   syntaxTheme: SyntaxThemeId; // default "one"
+  /** Glass theme strengths in percent (macOS desktop app with Mono). */
+  glassTuning: GlassTuning;
   workspaceTitleSource: WorkspaceTitleSource;
   sidebarWorkspaceTrailing: SidebarWorkspaceTrailing;
+  sidebarWorkspaceSort: SidebarWorkspaceSort;
   sidebarRowItems: SidebarRowItems;
   sidebarChecksDisplay: SidebarChecksDisplay;
   /** Top-level sidebar rows in display order; empty means the default order, all visible. */
   sidebarNavItems: SidebarNavPreference[];
+  /** Sidebar footer items in display order; empty means the default order, all visible. */
+  sidebarFooterItems: SidebarNavPreference[];
+  /** How usage reads and which windows the sidebar summary shows. */
+  usage: UsagePreferences;
   autoExpandReasoning: boolean;
   toolCallDetailLevel: ToolCallDetailLevel;
   chatOutlineEnabled: boolean;
   vimKeybindings: boolean;
-  /** Desktop-only preferences for implicit opens into the ordinary side pane. */
+  /** Preferred destination for ordinary file opens. Explicit side-pane opens remain in Paseo. */
+  defaultFileOpener: DefaultFileOpener;
+  /** How to deliver Plannotator feedback to the linked agent. */
+  plannotatorFeedbackMode: PlannotatorFeedbackMode;
+  /**
+   * Origin the sidebar itsaplan embed loads (e.g. `https://dev.netbird.cloud:8443`).
+   * Empty derives it from the host profile like a Plannotator embed.
+   */
+  itsaplanOrigin: string;
   openInSidePane: OpenInSidePanePreferences;
   pullRequestOpenLocation: PullRequestOpenLocation;
+  missionControlApprovalMode: MissionControlApprovalMode;
+  missionControlVerbose: boolean;
+  newAgentDefaults: NewAgentDefaultsPreferences;
 }
 
 export type AppSettingsUpdate =
@@ -131,21 +197,35 @@ export const DEFAULT_CLIENT_SETTINGS: AppSettings = {
   monoFontFamily: "",
   uiBaseFontSize: DEFAULT_UI_BASE_FONT_SIZE,
   contentFontSize: DEFAULT_CONTENT_FONT_SIZE,
+  agentGridFontSize: DEFAULT_AGENT_GRID_FONT_SIZE,
   codeFontSize: DEFAULT_CODE_FONT_SIZE,
+  agentGridDirection: DEFAULT_AGENT_GRID_DIRECTION,
+  agentGridVisibleCount: DEFAULT_AGENT_GRID_VISIBLE_COUNT,
+  agentGridHoverComposer: false,
+  contentMaxWidth: null,
   syntaxTheme: "one",
+  glassTuning: DEFAULT_GLASS_TUNING,
   workspaceTitleSource: "title",
-  sidebarWorkspaceTrailing: "diff",
+  sidebarWorkspaceTrailing: "timestamp",
+  sidebarWorkspaceSort: "manual",
   sidebarRowItems: DEFAULT_SIDEBAR_ROW_ITEMS,
   sidebarChecksDisplay: DEFAULT_SIDEBAR_CHECKS_DISPLAY,
   sidebarNavItems: [],
+  sidebarFooterItems: [],
+  usage: DEFAULT_USAGE_PREFERENCES,
   autoExpandReasoning: false,
-  toolCallDetailLevel: "detailed",
+  toolCallDetailLevel: "overview",
   chatOutlineEnabled: true,
   vimKeybindings: false,
+  defaultFileOpener: "paseo",
+  plannotatorFeedbackMode: "auto-send",
+  itsaplanOrigin: "",
   openInSidePane: DEFAULT_OPEN_IN_SIDE_PANE_PREFERENCES,
   pullRequestOpenLocation: "explorer",
+  missionControlApprovalMode: DEFAULT_MISSION_CONTROL_APPROVAL_MODE,
+  missionControlVerbose: false,
+  newAgentDefaults: DEFAULT_NEW_AGENT_DEFAULTS,
 };
-
 export const DEFAULT_APP_SETTINGS: Settings = {
   ...DEFAULT_CLIENT_SETTINGS,
   manageBuiltInDaemon: true,
@@ -213,30 +293,66 @@ const StoredAppSettingsSchema = z
     contentFontSize: clampedNumber(MIN_CONTENT_FONT_SIZE, MAX_CONTENT_FONT_SIZE)
       .optional()
       .catch(DEFAULT_CONTENT_FONT_SIZE),
+    agentGridFontSize: clampedNumber(MIN_AGENT_GRID_FONT_SIZE, MAX_AGENT_GRID_FONT_SIZE).catch(
+      DEFAULT_AGENT_GRID_FONT_SIZE,
+    ),
+    agentGridDirection: z.enum(["horizontal", "vertical"]).catch(DEFAULT_AGENT_GRID_DIRECTION),
+    agentGridVisibleCount: clampedNumber(
+      MIN_AGENT_GRID_VISIBLE_COUNT,
+      MAX_AGENT_GRID_VISIBLE_COUNT,
+    ).catch(DEFAULT_AGENT_GRID_VISIBLE_COUNT),
+    agentGridHoverComposer: z.boolean().catch(false),
     // COMPAT(uiFontSizeScale): replaced by the literal base size in v0.4, remove after 2027-08-17.
     uiFontSize: clampedNumber(11, 24).optional().catch(undefined),
     codeFontSize: clampedNumber(MIN_CODE_FONT_SIZE, MAX_CODE_FONT_SIZE).catch(
       DEFAULT_CODE_FONT_SIZE,
     ),
+    contentMaxWidth: z
+      .null()
+      .or(clampedNumber(MIN_CONTENT_MAX_WIDTH, MAX_CONTENT_MAX_WIDTH))
+      .catch(null),
     syntaxTheme: z.string().refine(isSyntaxThemeId).catch("one"),
+    glassTuning: z
+      .object({
+        window: clampedNumber(0, 100).catch(DEFAULT_GLASS_TUNING.window),
+        chat: clampedNumber(0, 100).catch(DEFAULT_GLASS_TUNING.chat),
+        darkness: clampedNumber(0, 100).catch(DEFAULT_GLASS_TUNING.darkness),
+        floating: clampedNumber(0, 100).catch(DEFAULT_GLASS_TUNING.floating),
+        overlay: clampedNumber(0, 100).catch(DEFAULT_GLASS_TUNING.overlay),
+        panels: clampedNumber(0, 300).catch(DEFAULT_GLASS_TUNING.panels),
+      })
+      .catch(DEFAULT_GLASS_TUNING),
     workspaceTitleSource: z.enum(["title", "branch"]).catch("title"),
-    sidebarWorkspaceTrailing: z.enum(["diff", "timestamp", "none"]).catch("diff"),
+    sidebarWorkspaceTrailing: z
+      .enum(["timestamp", "none"])
+      // COMPAT(sidebarDiffTrailing): diff-stat choice removed in v0.11; remove after 2027-04-08.
+      .or(z.literal("diff").transform(() => "none" as const))
+      .catch("timestamp"),
+    sidebarWorkspaceSort: z.enum(["manual", "activity", "created"]).catch("manual"),
     sidebarRowItems: SidebarRowItemsSchema,
     sidebarChecksDisplay: z
       .enum(["iconAndText", "icon", "none"])
       .optional()
       .catch(DEFAULT_SIDEBAR_CHECKS_DISPLAY),
     sidebarNavItems: z.array(z.object({ key: z.string(), visible: z.boolean() })).catch([]),
+    sidebarFooterItems: z.array(z.object({ key: z.string(), visible: z.boolean() })).catch([]),
+    usage: UsagePreferencesSchema,
     autoExpandReasoning: z.boolean().catch(false),
     toolCallDetailLevel: z
       .enum(["overview", "detailed"])
       .or(z.literal("concise").transform(() => "overview" as const))
       .optional()
-      .catch("detailed"),
+      .catch("overview"),
     // COMPAT(compactToolCalls): migrated in v0.1.105, remove after 2027-01-12.
     compactToolCalls: z.boolean().optional().catch(undefined),
     chatOutlineEnabled: z.boolean().catch(true),
     vimKeybindings: z.boolean().catch(false),
+    defaultFileOpener: z.enum(["paseo", "vscode-web", "plannotator"]).optional().catch(undefined),
+    // COMPAT(defaultFileOpener): added in v0.2.0-beta.1; remove after 2027-01-21.
+    // Previously, a configured host sent non-markdown files to VS Code Web.
+    openMarkdownInPlannotator: z.boolean().optional().catch(undefined),
+    plannotatorFeedbackMode: z.enum(["auto-send", "compose"]).catch("auto-send"),
+    itsaplanOrigin: z.string().catch(""),
     openInSidePane: z
       .object({
         explorerFiles: z.boolean().catch(false),
@@ -265,7 +381,20 @@ const StoredAppSettingsSchema = z
     // COMPAT(rendererDesktopSettings): these fields used to share this renderer-owned key.
     manageBuiltInDaemon: z.boolean().optional().catch(undefined),
     releaseChannel: z.enum(["stable", "beta"]).optional().catch(undefined),
+    missionControlApprovalMode: z
+      .enum(["ask", "auto"])
+      .catch(DEFAULT_MISSION_CONTROL_APPROVAL_MODE),
+    missionControlVerbose: z.boolean().catch(false),
+    newAgentDefaults: z
+      .object({
+        projectMode: z.enum(["last-used", "fixed"]).catch("last-used"),
+        fixedProjectKey: z.string().nullable().optional().catch(null),
+        serverId: z.string().nullable().optional().catch(null),
+        isolation: z.string().nullable().optional().catch(null),
+      })
+      .catch(DEFAULT_NEW_AGENT_DEFAULTS),
   })
+  // eslint-disable-next-line complexity -- settings schema transformation
   .transform((stored) => {
     const { legacyPullRequestsInSidePane, ...openInSidePane } = stored.openInSidePane;
     const needsWrite =
@@ -282,7 +411,11 @@ const StoredAppSettingsSchema = z
         ? "none"
         : DEFAULT_SIDEBAR_CHECKS_DISPLAY);
     const toolCallDetailLevel =
-      stored.toolCallDetailLevel ?? (stored.compactToolCalls ? "overview" : "detailed");
+      stored.toolCallDetailLevel ?? (stored.compactToolCalls === false ? "detailed" : "overview");
+    let defaultFileOpener = stored.defaultFileOpener ?? DEFAULT_CLIENT_SETTINGS.defaultFileOpener;
+    if (stored.defaultFileOpener === undefined && stored.openMarkdownInPlannotator !== undefined) {
+      defaultFileOpener = stored.openMarkdownInPlannotator ? "plannotator" : "vscode-web";
+    }
     return {
       ...stored,
       openInSidePane,
@@ -290,6 +423,14 @@ const StoredAppSettingsSchema = z
         stored.pullRequestOpenLocation ?? (legacyPullRequestsInSidePane ? "side" : "explorer"),
       uiBaseFontSize,
       contentFontSize: stored.contentFontSize ?? uiBaseFontSize,
+      agentGridFontSize: stored.agentGridFontSize ?? DEFAULT_AGENT_GRID_FONT_SIZE,
+      agentGridDirection: stored.agentGridDirection ?? DEFAULT_AGENT_GRID_DIRECTION,
+      agentGridVisibleCount: stored.agentGridVisibleCount ?? DEFAULT_AGENT_GRID_VISIBLE_COUNT,
+      agentGridHoverComposer: stored.agentGridHoverComposer ?? false,
+      missionControlApprovalMode:
+        stored.missionControlApprovalMode ?? DEFAULT_MISSION_CONTROL_APPROVAL_MODE,
+      missionControlVerbose: stored.missionControlVerbose ?? false,
+      newAgentDefaults: stored.newAgentDefaults ?? DEFAULT_NEW_AGENT_DEFAULTS,
       sidebarChecksDisplay,
       sidebarRowItems: {
         ...stored.sidebarRowItems,
@@ -298,6 +439,7 @@ const StoredAppSettingsSchema = z
           (stored.sidebarRowItems.scripts === false ? false : DEFAULT_SIDEBAR_ROW_ITEMS.services),
       },
       toolCallDetailLevel,
+      defaultFileOpener,
       needsWrite,
     };
   })
@@ -455,6 +597,14 @@ export function parseTerminalScrollbackLines(value: unknown): number | null {
     MAX_TERMINAL_SCROLLBACK_LINES,
     Math.max(MIN_TERMINAL_SCROLLBACK_LINES, Math.floor(numericValue)),
   );
+}
+
+export function parseContentMaxWidth(value: unknown): number | null {
+  return parseClampedFontSize(value, { min: MIN_CONTENT_MAX_WIDTH, max: MAX_CONTENT_MAX_WIDTH });
+}
+
+export function resolveContentMaxWidth(settings: Pick<AppSettings, "contentMaxWidth">): number {
+  return settings.contentMaxWidth ?? DEFAULT_CONTENT_MAX_WIDTH;
 }
 
 export function parseClampedFontSize(
