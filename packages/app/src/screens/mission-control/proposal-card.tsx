@@ -40,7 +40,6 @@ interface SubmitProposalResponseParams {
   proposalId: string;
   action: "approve" | "deny";
   editedMessage?: string;
-  reason?: string;
   allowPair: boolean;
   t: TFunction;
 }
@@ -51,7 +50,6 @@ async function submitProposalResponse({
   proposalId,
   action,
   editedMessage,
-  reason,
   allowPair,
   t,
 }: SubmitProposalResponseParams): Promise<void> {
@@ -63,7 +61,6 @@ async function submitProposalResponse({
     proposalId,
     action,
     ...(editedMessage !== undefined ? { editedMessage } : {}),
-    ...(reason !== undefined ? { reason } : {}),
     ...(allowPair ? { allowPair: true } : {}),
   });
   if (!result.ok) {
@@ -83,10 +80,6 @@ interface ProposalCardActionsProps {
   onApprove: () => void;
   onOpenEdit: () => void;
   onDeny: () => void;
-  isDenyReasonOpen: boolean;
-  denyReason: string;
-  onDenyReasonChange: (value: string) => void;
-  onCancelDenyReason: () => void;
   error: string | null;
   resolvedStatus: string;
   failureReason?: string;
@@ -108,10 +101,6 @@ function ProposalCardActions({
   onApprove,
   onOpenEdit,
   onDeny,
-  isDenyReasonOpen,
-  denyReason,
-  onDenyReasonChange,
-  onCancelDenyReason,
   error,
   resolvedStatus,
   failureReason,
@@ -136,30 +125,6 @@ function ProposalCardActions({
           onPress={onCancelEdit}
           disabled={isResponding}
           testID="mission-control-proposal-cancel-edit"
-        >
-          Cancel
-        </Button>
-      </>
-    );
-  } else if (isDenyReasonOpen) {
-    pendingActions = (
-      <>
-        <Button
-          variant="ghost"
-          size="sm"
-          onPress={onDeny}
-          disabled={isResponding}
-          loading={isResponding}
-          testID="mission-control-proposal-deny"
-        >
-          Deny
-        </Button>
-        <Button
-          variant="secondary"
-          size="sm"
-          onPress={onCancelDenyReason}
-          disabled={isResponding}
-          testID="mission-control-proposal-cancel-deny-reason"
         >
           Cancel
         </Button>
@@ -192,6 +157,7 @@ function ProposalCardActions({
           size="sm"
           onPress={onDeny}
           disabled={isResponding}
+          loading={isResponding}
           testID="mission-control-proposal-deny"
         >
           Deny
@@ -215,21 +181,7 @@ function ProposalCardActions({
       ) : null}
 
       {isPending ? (
-        <>
-          {isDenyReasonOpen ? (
-            <View style={styles.denyReasonRow}>
-              <SettingsTextArea
-                accessibilityLabel="Deny reason"
-                value={denyReason}
-                onChangeText={onDenyReasonChange}
-                placeholder="Reason (optional)"
-                testID="mission-control-proposal-deny-reason-input"
-                style={styles.denyReasonInput}
-              />
-            </View>
-          ) : null}
-          <View style={styles.actionsRow}>{pendingActions}</View>
-        </>
+        <View style={styles.actionsRow}>{pendingActions}</View>
       ) : (
         <Text style={styles.resolvedLabel}>{resolvedStatus}</Text>
       )}
@@ -356,8 +308,6 @@ export function ProposalCard({
   const toast = useToast();
   const [isEditing, setIsEditing] = useState(false);
   const [draft, setDraft] = useState(proposal.message);
-  const [isDenyReasonOpen, setIsDenyReasonOpen] = useState(false);
-  const [denyReason, setDenyReason] = useState("");
   const [allowPair, setAllowPair] = useState(false);
   const [isResponding, setIsResponding] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -408,7 +358,7 @@ export function ProposalCard({
   const timeAgo = useTimeAgo(timestamp);
 
   const respond = useCallback(
-    async (action: "approve" | "deny", editedMessage?: string, reason?: string) => {
+    async (action: "approve" | "deny", editedMessage?: string) => {
       if (isResponding) {
         return;
       }
@@ -420,13 +370,10 @@ export function ProposalCard({
           proposalId: proposal.id,
           action,
           editedMessage,
-          reason,
           allowPair,
           t,
         });
         setIsEditing(false);
-        setIsDenyReasonOpen(false);
-        setDenyReason("");
         onResolved?.(proposal.id, action === "approve" ? "sent" : "denied");
       } catch (caught) {
         const message = caught instanceof Error ? caught.message : String(caught);
@@ -451,22 +398,8 @@ export function ProposalCard({
   }, [respond]);
 
   const handleDeny = useCallback(() => {
-    // First press reveals the optional reason field; the second press submits
-    // (empty reason = plain deny, skippable).
-    if (!isDenyReasonOpen) {
-      setError(null);
-      setIsDenyReasonOpen(true);
-      return;
-    }
-    const trimmed = denyReason.trim();
-    void respond("deny", undefined, trimmed.length > 0 ? trimmed : undefined);
-  }, [denyReason, isDenyReasonOpen, respond]);
-
-  const handleCancelDenyReason = useCallback(() => {
-    setError(null);
-    setIsDenyReasonOpen(false);
-    setDenyReason("");
-  }, []);
+    void respond("deny");
+  }, [respond]);
 
   const handleOpenEdit = useCallback(() => {
     setDraft(proposal.message);
@@ -663,10 +596,6 @@ export function ProposalCard({
           onApprove={handleApprove}
           onOpenEdit={handleOpenEdit}
           onDeny={handleDeny}
-          isDenyReasonOpen={isDenyReasonOpen}
-          denyReason={denyReason}
-          onDenyReasonChange={setDenyReason}
-          onCancelDenyReason={handleCancelDenyReason}
           error={error}
           resolvedStatus={proposal.status}
           failureReason={proposal.failureReason}
@@ -770,16 +699,6 @@ const styles = StyleSheet.create((theme) => ({
   },
   messageInput: {
     minHeight: 80,
-    borderRadius: theme.borderRadius.md,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surface0,
-  },
-  denyReasonRow: {
-    marginTop: theme.spacing[1],
-  },
-  denyReasonInput: {
-    minHeight: 48,
     borderRadius: theme.borderRadius.md,
     borderWidth: 1,
     borderColor: theme.colors.border,
