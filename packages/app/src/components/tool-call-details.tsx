@@ -1,10 +1,19 @@
 import { AssistantMarkdownImage } from "@/components/assistant-markdown-image";
 import { useToolCallImageSource } from "@/tool-calls/image-source-context";
-import React, { useMemo, type ReactNode } from "react";
+import React, {
+  createContext,
+  useCallback,
+  useContext,
+  useMemo,
+  useRef,
+  type ReactNode,
+} from "react";
 import {
   View,
   Text,
   ScrollView as RNScrollView,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
   type StyleProp,
   type ViewStyle,
 } from "react-native";
@@ -52,7 +61,15 @@ interface ToolCallDetailsContentProps {
   fillAvailableHeight?: boolean;
   showLoadingSkeleton?: boolean;
   resolveHost?: (host: string) => string;
+  /** The text is still streaming in: keep long text scrolled to its newest line. */
+  followTail?: boolean;
 }
+
+/** Read by text sections deep in the section builders, so the flag is not threaded through each. */
+const FollowTailContext = createContext(false);
+
+/** How close to the bottom (px) still counts as "at the bottom" for tail following. */
+const FOLLOW_TAIL_SLOP = 24;
 
 interface DetailStyles {
   sectionFillStyle: StyleProp<ViewStyle>;
@@ -721,9 +738,25 @@ function FetchDetailSection({ url, result, ds }: FetchDetailProps) {
 }
 
 function ScrollablePlainTextSection({ text, ds }: { text: string; ds: DetailStyles }) {
+  const followTail = useContext(FollowTailContext);
+  const scrollRef = useRef<RNScrollView>(null);
+  // Scrolling up to reread stops the following; scrolling back to the bottom resumes it.
+  const atBottomRef = useRef(true);
+  const handleScroll = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const { contentOffset, layoutMeasurement, contentSize } = event.nativeEvent;
+    atBottomRef.current =
+      contentOffset.y + layoutMeasurement.height >= contentSize.height - FOLLOW_TAIL_SLOP;
+  }, []);
+  const handleContentSizeChange = useCallback(() => {
+    if (followTail && atBottomRef.current) scrollRef.current?.scrollToEnd({ animated: false });
+  }, [followTail]);
   return (
     <View style={styles.section}>
       <ScrollView
+        ref={scrollRef as never}
+        onScroll={followTail ? handleScroll : undefined}
+        scrollEventThrottle={16}
+        onContentSizeChange={handleContentSizeChange}
         style={ds.scrollAreaStyle}
         contentContainerStyle={styles.scrollContent}
         nestedScrollEnabled
@@ -1146,6 +1179,7 @@ export function ToolCallDetailsContent({
   fillAvailableHeight = false,
   showLoadingSkeleton = false,
   resolveHost,
+  followTail = false,
 }: ToolCallDetailsContentProps) {
   const { t } = useTranslation();
   const resolvedMaxHeight = fillAvailableHeight ? undefined : (maxHeight ?? 300);
@@ -1215,7 +1249,11 @@ export function ToolCallDetailsContent({
     return <Text style={styles.emptyStateText}>{t("toolCallDetails.empty")}</Text>;
   }
 
-  return <View style={ds.fullBleedContainerStyle}>{sections}</View>;
+  return (
+    <FollowTailContext.Provider value={followTail}>
+      <View style={ds.fullBleedContainerStyle}>{sections}</View>
+    </FollowTailContext.Provider>
+  );
 }
 
 // ---- Styles ----

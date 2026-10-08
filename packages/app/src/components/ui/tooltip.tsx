@@ -30,7 +30,6 @@ import { useIsCompactFormFactor } from "@/constants/layout";
 import { FloatingSurface } from "@/components/ui/floating";
 import { isNative, isWeb } from "@/constants/platform";
 import { getOverlayRoot, OVERLAY_Z } from "@/lib/overlay-root";
-import { glassFloatingStyle } from "@/styles/theme";
 
 type Side = "top" | "bottom" | "left" | "right";
 type Align = "start" | "center" | "end";
@@ -583,6 +582,5 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.borderAccent,
     ...theme.shadow.md,
     zIndex: 1000,
-    ...glassFloatingStyle(theme),
   },
 }));

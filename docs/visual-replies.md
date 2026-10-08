@@ -21,14 +21,20 @@ Charts in chat and pages in chat paint with one token set, `PageThemeTokens` (`p
 
 Two Paseo MCP tools (`packages/server/src/server/page-tools/`):
 
-| Tool           | Does                                                                                                                                                       |
-| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `show_page`    | Puts `html` or a `url` in the reply. The client renders it from the tool call input; the daemon stores nothing.                                            |
-| `preview_page` | Renders the same page in the daemon's headless Chromium and returns a screenshot, the content height, and console output, so the agent can check its work. |
+| Tool           | Does                                                                                                                                                                             |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `show_page`    | Puts a page in the reply from `path`, `html`, or `url`. A `path` page is copied into the daemon's page store (`$PASEO_HOME/pages/pg_<hash>.html`) and the result carries its id. |
+| `preview_page` | Renders the same page (`path`, `html`, or `url`) in the daemon's headless Chromium and returns a screenshot, the content height, and console output.                             |
 
 The page rules, the kit API, and the library list are in the `show_page` tool description, not the system prompt, so they cost tokens only when an agent uses the tool.
 
-The client renders a page from the `show_page` call in the transcript. A call made from inside omp `eval`, a script, or a subagent is recorded as that outer tool, so nothing renders; the tool description tells agents to call it directly. `show_page` also rejects `html` that holds no tag (a file path or `$(cat page.html)`), and the card shows a note instead of rendering a rejected call.
+### Why `path`
+
+A page is often 10–30 KB. With only `html`, every preview and the final show repeats that markup as tool-call output, so agents saved the page to a file and called the tools from omp `eval`. A call from inside `eval` is recorded as `eval`, so nothing rendered. `path` makes the cheap call the direct one: write the file once, `preview_page({ path })`, edit, preview again, `show_page({ title, path })`.
+
+The client renders from the `show_page` call in the transcript: `html` and `url` from its input, a `path` page by fetching its id with `page.content.get`. The id is in the result text, because providers return MCP results in different shapes and text survives all of them. The store is content-addressed, so a page shown twice is stored once, and later edits to the file do not change a page already shown. Nothing deletes stored pages yet.
+
+`show_page` rejects `html` or a file with no tag (`$(cat page.html)` passed as text), and the card shows a note instead of rendering a rejected call.
 
 ### The kit
 

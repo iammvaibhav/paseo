@@ -117,6 +117,7 @@ import { registerBrowserTools } from "../../browser-tools/tools.js";
 import type { BrowserToolsBroker } from "../../browser-tools/broker.js";
 import { registerPageTools } from "../../page-tools/tools.js";
 import type { PagePreviewBrowser } from "../../page-tools/preview-browser.js";
+import type { PageStore } from "../../page-tools/page-store.js";
 import { buildPeerUnreachableError, type PeerManager } from "../../peers/peer-manager.js";
 import { registerTicketTools, type TicketToolsBackend } from "../../tickets/tools.js";
 import { registerDocThreadTools } from "../../doc-threads/tools.js";
@@ -218,8 +219,9 @@ export interface PaseoToolHostDependencies {
   ) => Promise<string>;
   browserToolsEnabled?: boolean;
   browserToolsBroker?: BrowserToolsBroker | null;
-  /** Daemon-side headless browser for `preview_page`; page tools are absent without it. */
+  /** Page tools (`show_page`, `preview_page`) are registered only when both are present. */
   pagePreviewBrowser?: PagePreviewBrowser | null;
+  pageStore?: PageStore | null;
   peerManager?: PeerManager | null;
   missionControlService?: MissionControlService | null;
   itsaplanTicketize?: {
@@ -2533,9 +2535,13 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     });
   }
 
-  if (options.pagePreviewBrowser) {
-    registerPageTools({ registerTool, previewBrowser: options.pagePreviewBrowser });
-  }
+  registerPageTools({
+    registerTool,
+    previewBrowser: options.pagePreviewBrowser,
+    pageStore: options.pageStore,
+    resolveCallerCwd: () =>
+      callerAgentId ? (agentManager.getAgent(callerAgentId)?.cwd ?? null) : null,
+  });
 
   registerTool(
     "create_workspace",

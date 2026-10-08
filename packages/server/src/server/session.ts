@@ -1,6 +1,7 @@
 import { searchTimeline } from "./agent/chat-search/index.js";
 import type { BrowserToolsBroker } from "./browser-tools/broker.js";
 import type { PagePortProxy } from "./page-tools/port-proxy.js";
+import type { PageStore } from "./page-tools/page-store.js";
 import { BrowserAutomationHostCapabilitySchema } from "@getpaseo/protocol/browser-automation/capabilities";
 import type {
   SessionEventSubscription,
@@ -519,6 +520,7 @@ export interface SessionSourcePeer {
 export interface SessionOptions {
   browserToolsBroker?: BrowserToolsBroker | null;
   pagePortProxy?: Pick<PagePortProxy, "open"> | null;
+  pageStore?: Pick<PageStore, "get"> | null;
   /** How the socket that sent a request reached the daemon. */
   resolveSourcePeer?: (source?: object) => SessionSourcePeer | null;
   clientId: string;
@@ -874,6 +876,7 @@ export class Session {
   );
   private readonly browserToolsBroker: SessionOptions["browserToolsBroker"];
   private readonly pagePortProxy: Pick<PagePortProxy, "open"> | null;
+  private readonly pageStore: Pick<PageStore, "get"> | null;
   private readonly resolveSourcePeer: (source?: object) => SessionSourcePeer | null;
   private readonly clientId: string;
   private readonly authorization: SessionAuthorization;
@@ -1057,6 +1060,7 @@ export class Session {
     } = options;
     this.browserToolsBroker = options.browserToolsBroker;
     this.pagePortProxy = options.pagePortProxy ?? null;
+    this.pageStore = options.pageStore ?? null;
     this.resolveSourcePeer = options.resolveSourcePeer ?? (() => null);
     this.clientId = clientId;
     this.authorization = new SessionAuthorization(permissions);
@@ -2667,10 +2671,31 @@ export class Session {
     }
   }
 
+  private async handlePageContentGet(
+    msg: Extract<SessionInboundMessage, { type: "page.content.get.request" }>,
+  ): Promise<void> {
+    const respond = (payload: { html: string | null; error: string | null }) =>
+      this.emit({
+        type: "page.content.get.response",
+        payload: { requestId: msg.requestId, ...payload },
+      });
+    if (!this.pageStore) {
+      respond({ html: null, error: "This host does not store pages" });
+      return;
+    }
+    try {
+      const html = await this.pageStore.get(msg.pageId);
+      respond(html === null ? { html: null, error: "Page not found" } : { html, error: null });
+    } catch (error) {
+      respond({ html: null, error: getErrorMessageOr(error, "Failed to read page") });
+    }
+  }
+
   private dispatchPageProxyMessage(
     msg: SessionInboundMessage,
     source?: object,
   ): Promise<void> | undefined {
+    if (msg.type === "page.content.get.request") return this.handlePageContentGet(msg);
     if (msg.type !== "page.proxy.open.request") return undefined;
     const respond = (payload: { proxyPort: number | null; error: string | null }) =>
       this.emit({

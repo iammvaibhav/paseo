@@ -158,7 +158,7 @@ const SUMMARY_TEXT = [
 const FINAL_TEXT =
   "⚠️ `deploy-check` failed on a timeout, not on code. Rerun it after `blrofc3` reconnects.";
 
-function buildTimeline({ appUrl, preview }) {
+function buildTimeline({ appUrl, preview, dashboardCall }) {
   const previewInput = { html: DASHBOARD_HTML, width: 760, appearance: "dark" };
   const previewSummary = {
     ok: true,
@@ -193,11 +193,7 @@ function buildTimeline({ appUrl, preview }) {
       name: "show_page",
       status: "completed",
       error: null,
-      detail: {
-        type: "unknown",
-        input: { title: "Fleet dashboard", html: DASHBOARD_HTML },
-        output: { ok: true },
-      },
+      detail: { type: "unknown", ...dashboardCall },
     },
     {
       type: "tool_call",
@@ -287,6 +283,39 @@ export const steps = [
     },
   },
   {
+    id: "show-page-path",
+    label: "show_page publishes the dashboard from a file into the daemon's page store",
+    narrate: "The real show_page tool reads the page file and stores it on the stack's daemon.",
+    async run(ctx) {
+      const serverDist = path.join(repoRoot, "packages/server/dist/server/server/page-tools");
+      const { registerPageTools } = await import(path.join(serverDist, "tools.js"));
+      const { PageStore } = await import(path.join(serverDist, "page-store.js"));
+      const pagesDir = path.join(ctx.artifactsDir, "visual-replies-pages");
+      await fsp.mkdir(pagesDir, { recursive: true });
+      await fsp.writeFile(path.join(pagesDir, "dashboard.html"), DASHBOARD_HTML);
+      const handlers = new Map();
+      registerPageTools({
+        registerTool: (name, _config, handler) => handlers.set(name, handler),
+        previewBrowser: { capture: async () => ({ kind: "failed", message: "unused" }) },
+        // The stack daemon reads pages from its own home; the tool writes them there.
+        pageStore: new PageStore(ctx.host().home),
+        resolveCallerCwd: () => pagesDir,
+      });
+      const result = await handlers.get("show_page")({
+        title: "Fleet dashboard",
+        path: "dashboard.html",
+      });
+      ctx.expect(!result.isError, `show_page failed: ${JSON.stringify(result.content)}`);
+      // What a provider records: the input and the result's content blocks, not the html.
+      state.dashboardCall = {
+        input: { title: "Fleet dashboard", path: "dashboard.html" },
+        output: { content: result.content },
+      };
+      await fsp.rm(path.join(pagesDir, "dashboard.html"));
+      return `${result.content[0].text.slice(0, 40)}…; source file deleted`;
+    },
+  },
+  {
     id: "seed-agent",
     label: "Seed an agent whose reply uses every visual format",
     narrate: "An agent replies with bullets, a diagram, a table, a chart, evidence, and two pages.",
@@ -308,7 +337,11 @@ export const steps = [
         initialPrompt: "How is the fleet doing?",
         featureValues: {
           mockTimelineTurns: [
-            buildTimeline({ appUrl: `http://localhost:${state.appPort}/`, preview: state.preview }),
+            buildTimeline({
+              appUrl: `http://localhost:${state.appPort}/`,
+              preview: state.preview,
+              dashboardCall: state.dashboardCall,
+            }),
           ],
         },
       });

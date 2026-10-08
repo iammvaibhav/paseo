@@ -96,7 +96,9 @@ install_deps() {
     return
   fi
   log "Installing commander-voice npm deps (ws)"
-  (cd "$SCRIPTS_DIR" && npm install --no-audit --no-fund)
+  # This directory has its own package-lock.json. A Corepack npm shim (blrofc3) refuses
+  # npm under the repo root's "packageManager": "pnpm" unless strict mode is off.
+  (cd "$SCRIPTS_DIR" && COREPACK_ENABLE_STRICT=0 npm install --no-audit --no-fund)
 }
 
 # Write ~/.config/commander-voice/env (chmod 600). The daemon password and the

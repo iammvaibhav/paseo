@@ -1,0 +1,18 @@
+[Unit]
+Description=omp-proxy (OpenAI-compatible proxy over OMP subscription sign-ins)
+After=omp-auth-broker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=OMP_AUTH_BROKER_URL=http://100.123.97.105:8770
+# Own agent folder: keeps the proxy's caches out of the broker's agent.db.
+Environment=PI_CODING_AGENT_DIR=%h/.omp-proxy/agent
+# Loopback only: reach it on prod itself, or through an SSH tunnel.
+Environment=OMP_PROXY_BIND=127.0.0.1:4317
+ExecStart=%h/.local/bin/omp-proxy
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

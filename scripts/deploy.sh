@@ -57,6 +57,9 @@
 #   PASEO_SKIP_CODE_SERVER=1          # skip code-server deploy everywhere
 #   PASEO_SKIP_STALL_CRON=1           # skip installing the stall-check cron on every host
 #   PASEO_SKIP_OMP_PLUGINS=1          # skip installing plugins/* into ~/.omp on every host
+#   PASEO_SKIP_OMP_UPDATE=1           # skip `omp update` on every host (fleet keeps current versions)
+#   PASEO_SKIP_PROD=1                 # skip the prod omp services deploy (auth broker + proxy)
+#   PASEO_PROD_HOST=prod              # ssh alias for the prod omp host
 #   PASEO_SKIP_COMMANDER_VOICE=1      # skip Commander Voice node deploy everywhere
 #   PASEO_SKIP_VERCEL=1               # skip publishing the web app to Vercel
 #   PASEO_DEPLOY_MERGE_UPSTREAM=1     # also fetch + merge upstream/main (off by default)
@@ -129,6 +132,9 @@ fi
 MACBOOK_HOST="${PASEO_MACBOOK_HOST:-macbook}"
 MACBOOK_REPO_DIR="${PASEO_MACBOOK_REPO_DIR:-paseo}"
 MACBOOK_PASEO_HOME="${PASEO_MACBOOK_PASEO_HOME:-\$HOME/.paseo}"
+
+# Prod omp services host (no Paseo daemon, no repo checkout — only user units).
+PROD_HOST="${PASEO_PROD_HOST:-prod}"
 
 # This script never authors git history. No model writes a commit subject and no
 # model resolves a merge conflict: both stop the deploy so the caller decides.
@@ -819,6 +825,28 @@ deploy_local_plannotator() {
   PLANNOTATOR_VERSION="${PLANNOTATOR_VERSION:-}" bash "$ROOT_DIR/scripts/plannotator/install.sh" local
 }
 
+# Fleet omp lockstep: the orchestrator updates first, then every host job
+# updates to the same version (OMP_TARGET_VERSION) before installing plugins.
+# `omp update` self-updates to the latest GitHub release for the host's arch;
+# the prod proxy job pins to this same version (see scripts/omp-proxy).
+update_local_omp() {
+  if [[ "${PASEO_SKIP_OMP_UPDATE:-0}" == "1" ]]; then
+    log "Skipping local omp update (PASEO_SKIP_OMP_UPDATE=1)"
+  elif ! command -v omp >/dev/null 2>&1; then
+    log "Skipping local omp update (omp not installed)"
+  else
+    if [[ -z "${GITHUB_TOKEN:-${GH_TOKEN:-}}" ]] && command -v gh >/dev/null 2>&1; then
+      _omp_token="$(gh auth token 2>/dev/null || true)"
+      [[ -n "$_omp_token" ]] && export GITHUB_TOKEN="$_omp_token"
+    fi
+    log "Updating local omp"
+    omp update
+  fi
+  export OMP_TARGET_VERSION="$(omp --version 2>/dev/null | sed -e 's/^omp\///' -e 's/[[:space:]]//g')"
+  [[ -n "$OMP_TARGET_VERSION" ]] || die "Cannot determine local omp version (omp --version failed)"
+  log "Fleet omp target: $OMP_TARGET_VERSION"
+}
+
 # In-repo omp plugins (plugins/*): copied into ~/.omp/plugins/node_modules on
 # each host so every spawned agent loads the same account-routing and
 # grok-build extensions. Cheap and idempotent — the installer stamps a content
@@ -1102,6 +1130,12 @@ BUILD_DESKTOP='${PASEO_BUILD_DESKTOP:-1}'
 # orchestrator's env, and the MacBook's own deploy.env is the fallback below.
 PASEO_NUDGE_URL='${PASEO_NUDGE_URL:-}'
 PASEO_NUDGE_PASSWORD='${PASEO_NUDGE_PASSWORD:-${PASEO_PASSWORD:-}}'
+# Fleet omp lockstep: the orchestrator sets OMP_TARGET_VERSION from its own
+# omp update; the token rides the heredoc like the passwords above. (No backticks
+# in this unquoted heredoc: they would run on the orchestrator.)
+OMP_TARGET_VERSION='${OMP_TARGET_VERSION:-}'
+OMP_SKIP_UPDATE='${PASEO_SKIP_OMP_UPDATE:-0}'
+GITHUB_TOKEN='${GITHUB_TOKEN:-${GH_TOKEN:-}}'
 
 log() { printf '\n[%s:macbook] %s\n' "\$(date '+%H:%M:%S')" "\$*"; }
 
@@ -1153,19 +1187,52 @@ if [[ -x node_modules/.bin/patch-package ]]; then
 fi
 echo "\$cur" > "\$sync_ref_file"
 
-if [[ "\$RESTART_DAEMON" == "1" ]]; then
-  log "Building server packages"
-  pnpm run build:server
-  log "Building daemon web UI"
-  pnpm run build:daemon-web-ui
-fi
-
+# Fleet omp lockstep comes before plugins and the server build: resurrected
+# agents must load plugins matching the new omp natives.
+update_omp_macbook() {
+  # omp installs to ~/.local/bin, which non-interactive ssh shells may not have.
+  export PATH="\$HOME/.local/bin:\$PATH"
+  if [[ "\$OMP_SKIP_UPDATE" == "1" ]]; then
+    log "Skipping omp update (PASEO_SKIP_OMP_UPDATE=1)"
+    return
+  fi
+  if ! command -v omp >/dev/null 2>&1; then
+    log "Skipping omp update (omp not installed on the MacBook)"
+    return
+  fi
+  log "Updating omp (fleet target \$OMP_TARGET_VERSION)"
+  if [[ -n "\$GITHUB_TOKEN" ]]; then
+    export GITHUB_TOKEN
+  fi
+  if ! omp update; then
+    log "  Warning: omp update failed on the MacBook (continuing)"
+    return
+  fi
+  ver="\$(omp --version 2>/dev/null | sed -e 's/^omp\///' -e 's/[[:space:]]//g')"
+  if [[ "\$ver" != "\$OMP_TARGET_VERSION" ]]; then
+    log "  WARNING: omp version mismatch on the MacBook: got \$ver, fleet target \$OMP_TARGET_VERSION"
+    if [[ '${PASEO_REQUIRE_MACBOOK:-0}' == "1" ]]; then
+      echo "omp version mismatch on the MacBook: got \$ver, fleet target \$OMP_TARGET_VERSION" >&2
+      exit 1
+    fi
+  else
+    log "omp at \$ver"
+  fi
+}
+update_omp_macbook
 # The MacBook runs agents like any other host, so it needs the same plugins.
 # Outside the daemon gate: plugins are read when an omp process starts, so this
 # is useful even on a desktop-only run.
 if [[ '${PASEO_SKIP_OMP_PLUGINS:-0}' != "1" ]]; then
   log "Installing omp plugins"
   bash plugins/install.sh macbook || log "  Warning: omp plugin install failed on the MacBook"
+fi
+
+if [[ "\$RESTART_DAEMON" == "1" ]]; then
+  log "Building server packages"
+  pnpm run build:server
+  log "Building daemon web UI"
+  pnpm run build:daemon-web-ui
 fi
 
 # code-server for workspaces on the MacBook's own host: binary, config, the
@@ -1278,6 +1345,21 @@ macbook_job() {
       return 1
     fi
   fi
+}
+
+# Prod omp services (auth broker + proxy + refresher units and binary).
+# Separate helper script under scripts/omp-proxy keeps deploy.sh tidy; this
+# wrapper only carries the gates so the failure lands in the job log with the
+# same `log`/`die` posture as the other parallel jobs.
+prod_job() {
+  if [[ "${PASEO_SKIP_PROD:-0}" == "1" ]]; then
+    log "Skipping prod omp services deploy (PASEO_SKIP_PROD=1)"
+    return 0
+  fi
+  log "Deploying prod omp services (target $OMP_TARGET_VERSION)"
+  OMP_TARGET_VERSION="$OMP_TARGET_VERSION" \
+  PASEO_PROD_HOST="$PROD_HOST" \
+    bash "$ROOT_DIR/scripts/omp-proxy/deploy-prod.sh"
 }
 
 # --- Parallel post-push deploy jobs ------------------------------------------------
@@ -1401,6 +1483,12 @@ run_parallel_post_push_deploy() {
 
   log "Starting post-push deploy phase (parallel where safe)"
 
+  # Fleet omp lockstep first: the orchestrator updates to the latest release,
+  # exports OMP_TARGET_VERSION, and every host job updates to that same
+  # version before installing plugins (local plugins stay a parallel job —
+  # they already run after this point).
+  update_local_omp
+
   # Remotes can start immediately — they build on their own machines.
   if [[ "${PASEO_SKIP_REMOTES:-0}" != "1" ]]; then
     local host rhome rprovider
@@ -1421,6 +1509,10 @@ run_parallel_post_push_deploy() {
   if [[ "$IS_MAC_ORCHESTRATOR" != "1" ]]; then
     start_parallel_job "macbook" macbook_job
   fi
+
+  # Prod omp services ride alongside the other hosts; the helper skips itself
+  # on non-linux-arm64 orchestrators and fails loudly when prod is unreachable.
+  start_parallel_job "prod" prod_job
 
   if [[ "${PASEO_SKIP_LOCAL:-0}" != "1" ]]; then
     # Independent of dist/ — fine alongside remotes and the daemon build.
@@ -1709,6 +1801,11 @@ PASEO_NUDGE_PASSWORD='${PASEO_NUDGE_PASSWORD:-${PASEO_PASSWORD:-}}'
 # channel as the nudge password: interpolated from the Mac's env at heredoc
 # time, so the remote voice node authenticates instead of being locked out.
 PASEO_PASSWORD='${PASEO_PASSWORD:-}'
+# Fleet omp lockstep: the orchestrator sets OMP_TARGET_VERSION from its own
+# omp update; the token rides the heredoc through the same channel.
+OMP_TARGET_VERSION='${OMP_TARGET_VERSION:-}'
+OMP_SKIP_UPDATE='${PASEO_SKIP_OMP_UPDATE:-0}'
+GITHUB_TOKEN='${GITHUB_TOKEN:-${GH_TOKEN:-}}'
 
 log() {
   printf '\n[%s:%s] %s\n' "\$(date '+%H:%M:%S')" '$host' "\$*"
@@ -2054,9 +2151,36 @@ deploy_commander_voice() {
     bash scripts/commander-voice/install.sh '$host'
 }
 
+update_omp() {
+  # omp installs to ~/.local/bin, which non-interactive ssh shells may not have.
+  export PATH="\$HOME/.local/bin:\$PATH"
+  if [[ "\$OMP_SKIP_UPDATE" == "1" ]]; then
+    log "Skipping omp update (PASEO_SKIP_OMP_UPDATE=1)"
+    return
+  fi
+  if ! command -v omp >/dev/null 2>&1; then
+    log "Skipping omp update (omp not installed on this host)"
+    return
+  fi
+  log "Updating omp (fleet target \$OMP_TARGET_VERSION)"
+  if [[ -n "\$GITHUB_TOKEN" ]]; then
+    export GITHUB_TOKEN
+  fi
+  omp update
+  ver="\$(omp --version 2>/dev/null | sed -e 's/^omp\///' -e 's/[[:space:]]//g')"
+  if [[ "\$ver" != "\$OMP_TARGET_VERSION" ]]; then
+    echo "omp version mismatch: got \$ver, fleet target \$OMP_TARGET_VERSION" >&2
+    exit 1
+  fi
+  log "omp at \$ver"
+}
 ensure_node
 ensure_fork_remotes
 sync_git
+update_omp
+# Plugins before the daemon restart: resurrected agents must load plugins
+# matching the just-installed omp natives, not the previous version's.
+deploy_omp_plugins
 # Remote daemons always rebuild/restart unless PASEO_SKIP_REMOTE_DAEMON=1.
 # PASEO_SKIP_DAEMON only affects the local Mac (see run_parallel_post_push_deploy).
 if [[ '${PASEO_SKIP_REMOTE_DAEMON:-0}' == "1" ]]; then
@@ -2068,7 +2192,6 @@ fi
 deploy_code_server
 deploy_plannotator
 deploy_commander_voice
-deploy_omp_plugins
 install_stall_cron() {
   if [[ '${PASEO_SKIP_STALL_CRON:-0}' == "1" ]]; then
     log "Skipping stall-check schedule install (PASEO_SKIP_STALL_CRON=1)"
@@ -2212,7 +2335,7 @@ Usage:
 
 Takes no positional arguments; behavior is controlled by env variables.
 
-Orchestrator (auto-detected by `uname -s`):
+Orchestrator (auto-detected by \`uname -s\`):
   macOS (MacBook)     local = MacBook (daemon + desktop build/install),
                       remotes = blrofc3 + iammvaibhav.
   Linux (iammvaibhav) local = iammvaibhav (daemon + services),
@@ -2253,6 +2376,10 @@ Scope flags (set to 1 unless noted):
   PASEO_SKIP_STALL_CRON          Skip installing the stall-check cron entry on every host
   PASEO_SKIP_OMP_PLUGINS         Skip installing plugins/* into ~/.omp/plugins on every host
   PASEO_SKIP_COMMANDER_VOICE     Skip Commander Voice node deploy everywhere
+  PASEO_SKIP_OMP_UPDATE          Skip \`omp update\` everywhere (fleet keeps current versions;
+                                   OMP_TARGET_VERSION is still read from the local omp)
+  PASEO_SKIP_PROD                Skip the prod omp services deploy (auth broker + proxy)
+  PASEO_PROD_HOST                ssh alias for the prod omp host (default: prod)
   PASEO_SKIP_VERCEL              Skip publishing the web app to Vercel
   PASEO_DEPLOY_MERGE_UPSTREAM    Also fetch and merge $UPSTREAM_REMOTE/main (off by default)
   PASEO_VERCEL_PROJECT           Vercel project for the web app (default: paseo-web)
@@ -2347,6 +2474,9 @@ main() {
       ensure_node
       commit_local_changes
       sync_local_git
+      # The MacBook body compares against OMP_TARGET_VERSION, so lock it
+      # before the handoff even on an app-only run.
+      update_local_omp
       if ! PASEO_REQUIRE_MACBOOK=1 macbook_job; then
         die "Desktop-only deploy failed on the MacBook"
       fi
