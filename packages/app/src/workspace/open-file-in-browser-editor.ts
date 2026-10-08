@@ -21,8 +21,8 @@ interface BrowserEditorTabActions {
 }
 
 export interface OpenBrowserEditorTabInput extends BrowserEditorTabActions {
-  url: string;
   browserEditorUrl: string;
+  workspaceDirectory: string;
 }
 
 export interface OpenFileInBrowserEditorInput extends BrowserEditorTabActions {
@@ -36,7 +36,7 @@ export interface OpenFileInBrowserEditorInput extends BrowserEditorTabActions {
 }
 
 /**
- * Reveal the host's single persistent VS Code Web tab (folder view). Adopts the
+ * Reveal the host's single persistent VS Code Web tab on the workspace's folder. Adopts the
  * warm webview so it appears instantly; reopening after close reuses the same
  * instance (no reload). Returns true when handled.
  */
@@ -46,7 +46,7 @@ export function openBrowserEditorTab(input: OpenBrowserEditorTabInput): boolean 
   }
   const instance = ensureBrowserEditorInstance({
     browserEditorUrl: input.browserEditorUrl,
-    folderUrl: input.url,
+    folder: input.workspaceDirectory,
   });
   if (!instance) {
     return false;
@@ -75,28 +75,26 @@ export function tryOpenFileInBrowserEditor(input: OpenFileInBrowserEditorInput):
     return false;
   }
 
-  const folderUrl = buildBrowserEditorUrl({
-    baseUrl: input.browserEditorUrl,
-    folderPath: input.workspaceDirectory,
+  const instance = ensureBrowserEditorInstance({
+    browserEditorUrl: input.browserEditorUrl,
+    folder: input.workspaceDirectory,
   });
-  // Fallback URL: a classic ?folder=&payload= open, used only when the bridge is
-  // unreachable / times out (the pane reloads to it so the file still opens).
-  // A `~` path has no URL form: only the host can expand it.
+  if (!instance) {
+    return false;
+  }
+  // Fallback URL: the same window URL plus a `payload` open, used only when the
+  // bridge is unreachable / times out (the pane reloads to it so the file still
+  // opens). A `~` path has no URL form: only the host can expand it.
   const fileUrl = isHomePath
     ? null
     : buildBrowserEditorUrl({
         baseUrl: input.browserEditorUrl,
         folderPath: input.workspaceDirectory,
+        workspaceFile: instance.workspaceFile,
         filePath: absolutePath,
         line: input.location.lineStart ?? null,
         column: 1,
       });
-  const instance = folderUrl
-    ? ensureBrowserEditorInstance({ browserEditorUrl: input.browserEditorUrl, folderUrl })
-    : null;
-  if (!instance) {
-    return false;
-  }
 
   const mode = input.mode ?? "file";
   console.log(
@@ -131,13 +129,10 @@ export function runBrowserEditorCommand(
   if (!getIsElectron()) {
     return false;
   }
-  const folderUrl = buildBrowserEditorUrl({
-    baseUrl: input.browserEditorUrl,
-    folderPath: input.workspaceDirectory,
+  const instance = ensureBrowserEditorInstance({
+    browserEditorUrl: input.browserEditorUrl,
+    folder: input.workspaceDirectory,
   });
-  const instance = folderUrl
-    ? ensureBrowserEditorInstance({ browserEditorUrl: input.browserEditorUrl, folderUrl })
-    : null;
   if (!instance) {
     return false;
   }
@@ -161,7 +156,7 @@ function revealBrowserEditor(
   if (!getBrowserRecord(instance.browserId)) {
     createWorkspaceBrowser({
       browserId: instance.browserId,
-      initialUrl: instance.folderUrl,
+      initialUrl: instance.url,
       chrome: "embedded",
     });
   }

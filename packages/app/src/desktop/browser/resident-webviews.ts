@@ -627,6 +627,11 @@ export function navigatePersistentBrowserWebview(browserId: string, url: string)
   return true;
 }
 
+export function getPersistentBrowserWebview(browserId: string): HTMLElement | null {
+  const record = persistentWebviewsByBrowserId.get(browserId.trim());
+  return record?.webview.isConnected ? record.webview : null;
+}
+
 export function removePersistentBrowserWebview(browserId: string): void {
   const normalizedBrowserId = trimNonEmpty(browserId);
   if (!normalizedBrowserId) {

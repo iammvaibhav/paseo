@@ -1,9 +1,10 @@
 /**
- * Build a code-server / VS Code Web URL that opens a workspace folder,
- * optionally focusing a file (via VS Code's `payload` openFile mechanism).
+ * Build a code-server / VS Code Web URL that opens a workspace folder (or a
+ * `.code-workspace` file), optionally focusing a file via VS Code's `payload`
+ * openFile mechanism.
  *
- * code-server / VS Code Web read `?folder=` and an optional JSON `payload`
- * map. File open uses:
+ * code-server / VS Code Web read `?folder=` or `?workspace=` and an optional
+ * JSON `payload` map. File open uses:
  *   payload=[["openFile","vscode-remote:///<abs-path>"]]
  * with line/column:
  *   payload=[["gotoLineMode","true"],["openFile","vscode-remote:///<abs-path>:line:col"]]
@@ -11,19 +12,26 @@
 export function buildBrowserEditorUrl(input: {
   baseUrl: string;
   folderPath: string;
+  /** Opens this `.code-workspace` file instead of `folderPath`. */
+  workspaceFile?: string | null;
   filePath?: string | null;
   line?: number | null;
   column?: number | null;
 }): string | null {
   const base = input.baseUrl.trim();
   const folder = input.folderPath.trim();
-  if (!base || !folder) {
+  const workspaceFile = input.workspaceFile?.trim();
+  if (!base || (!folder && !workspaceFile)) {
     return null;
   }
 
   try {
     const url = new URL(base.includes("://") ? base : `http://${base}`);
-    url.searchParams.set("folder", folder);
+    if (workspaceFile) {
+      url.searchParams.set("workspace", workspaceFile);
+    } else {
+      url.searchParams.set("folder", folder);
+    }
 
     const filePath = input.filePath?.trim();
     if (filePath) {
@@ -80,6 +88,22 @@ export function buildBridgeRestorePath(): string {
 
 export function buildBridgeCommandPath(): string {
   return `/proxy/${CODE_SERVER_BRIDGE_PORT}/broker/command`;
+}
+
+export function buildBridgeSwitchPath(): string {
+  return `/proxy/${CODE_SERVER_BRIDGE_PORT}/broker/switch`;
+}
+
+/**
+ * The multi-root workspace file the desktop app opens on a host: folder 0 is the
+ * fixed `⚙ configs` root and the active project is swapped in as folder 1 with
+ * no reload. `scripts/code-server/install.sh` creates it on each host.
+ */
+export function browserEditorWorkspaceFile(
+  homeDirectory: string | null | undefined,
+): string | null {
+  const home = homeDirectory?.trim().replace(/\/+$/, "");
+  return home ? `${home}/.paseo/vscode/paseo.code-workspace` : null;
 }
 
 /** Origin form Chromium expects for --unsafely-treat-insecure-origin-as-secure. */

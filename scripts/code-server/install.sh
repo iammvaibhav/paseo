@@ -28,6 +28,9 @@ BIN="${HOME}/.local/bin/code-server"
 CONFIG_DIR="${HOME}/.config/code-server"
 USER_DIR="${HOME}/.local/share/code-server/User"
 VSCODE_ROOT_DIR="${HOME}/.paseo/vscode/root"
+# Keep in sync with browserEditorWorkspaceFile() in
+# packages/app/src/workspace/browser-editor-url.ts.
+VSCODE_WORKSPACE_FILE="${HOME}/.paseo/vscode/paseo.code-workspace"
 
 log() {
   printf '[code-server] %s\n' "$*"
@@ -143,6 +146,15 @@ omp-agents|${HOME}/.omp/agent/agents
 account-routing.yml|${HOME}/.omp/agent/account-routing.yml
 EOF
   log "VS Code root at ${VSCODE_ROOT_DIR}: $(ls "$VSCODE_ROOT_DIR" | tr '\n' ' ')"
+
+  # The workspace file the desktop app opens (?workspace=). Created once; after
+  # that the paseo-bridge owns it (it swaps the project in as folder 1), so a
+  # deploy never resets which project is open.
+  if [[ ! -f "$VSCODE_WORKSPACE_FILE" ]]; then
+    printf '{\n  "folders": [{ "path": "%s", "name": "⚙ configs" }],\n  "settings": {}\n}\n' \
+      "$VSCODE_ROOT_DIR" >"$VSCODE_WORKSPACE_FILE"
+    log "Created VS Code workspace file ${VSCODE_WORKSPACE_FILE}"
+  fi
 }
 
 deploy_extension() {

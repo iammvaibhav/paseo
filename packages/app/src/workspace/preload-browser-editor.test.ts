@@ -10,6 +10,8 @@ vi.mock("@/constants/platform", () => ({
 
 vi.mock("@/desktop/browser/resident-webviews", () => ({
   ensurePersistentBrowserWebview: vi.fn(),
+  getPersistentBrowserWebview: vi.fn(() => null),
+  isBrowserWebviewDomReady: vi.fn(() => true),
   hidePersistentBrowserWebview: vi.fn(() => true),
   navigatePersistentBrowserWebview: vi.fn(() => true),
   removePersistentBrowserWebview: vi.fn(),
@@ -34,6 +36,7 @@ vi.mock("@/stores/workspace-layout-store", () => ({
 import { getIsElectron } from "@/constants/platform";
 import {
   ensurePersistentBrowserWebview,
+  getPersistentBrowserWebview,
   navigatePersistentBrowserWebview,
 } from "@/desktop/browser/resident-webviews";
 import { createBrowserId, getBrowserRecord, useBrowserStore } from "@/desktop/browser/store";
@@ -46,6 +49,35 @@ import {
 } from "./preload-browser-editor";
 
 const HOST = "http://blrofc3:8765";
+const WORKSPACE_FILE = "/home/u/.paseo/vscode/paseo.code-workspace";
+
+/** A parked VS Code webview whose bridge answers every switch with `reply`. */
+function fakeEditorWebview(reply: Record<string, unknown>) {
+  const target = new EventTarget();
+  const scripts: string[] = [];
+  const webview = Object.assign(target, {
+    isConnected: true,
+    executeJavaScript: vi.fn(async (code: string) => {
+      scripts.push(code);
+      return reply;
+    }),
+  });
+  vi.mocked(getPersistentBrowserWebview).mockReturnValue(webview as never);
+  return {
+    webview,
+    /** Payloads POSTed to the bridge's switch route, oldest first. */
+    switchPayloads: () =>
+      scripts
+        .filter((code) => code.includes("/broker/switch"))
+        .map((code) => JSON.parse(/const payload = (.*);/.exec(code)?.[1] ?? "null")),
+  };
+}
+
+async function flushSwitches(): Promise<void> {
+  for (let i = 0; i < 5; i += 1) {
+    await Promise.resolve();
+  }
+}
 
 beforeEach(() => {
   resetBrowserEditorInstancesForTests();
@@ -53,6 +85,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(getIsElectron).mockReturnValue(true);
   vi.mocked(navigatePersistentBrowserWebview).mockReturnValue(true);
+  vi.mocked(getPersistentBrowserWebview).mockReturnValue(null);
   vi.mocked(getBrowserRecord).mockReturnValue(null);
   vi.mocked(useBrowserStore.getState).mockReturnValue({
     browsersById: {},
@@ -69,19 +102,14 @@ beforeEach(() => {
 describe("ensureBrowserEditorInstance", () => {
   it("returns null off Electron", () => {
     vi.mocked(getIsElectron).mockReturnValue(false);
-    expect(
-      ensureBrowserEditorInstance({ browserEditorUrl: HOST, folderUrl: `${HOST}/?folder=%2Frepo` }),
-    ).toBeNull();
+    expect(ensureBrowserEditorInstance({ browserEditorUrl: HOST, folder: "/repo" })).toBeNull();
   });
 
   it("creates exactly one instance per origin and reuses it", () => {
-    const first = ensureBrowserEditorInstance({
-      browserEditorUrl: HOST,
-      folderUrl: `${HOST}/?folder=%2Frepo`,
-    });
+    const first = ensureBrowserEditorInstance({ browserEditorUrl: HOST, folder: "/repo" });
     const second = ensureBrowserEditorInstance({
       browserEditorUrl: `${HOST}/some/deep/path`,
-      folderUrl: `${HOST}/?folder=%2Fother`,
+      folder: "/other",
     });
 
     expect(first).not.toBeNull();
@@ -89,7 +117,7 @@ describe("ensureBrowserEditorInstance", () => {
     // A second browserId is never minted for the same origin.
     expect(createBrowserId).toHaveBeenCalledTimes(1);
     expect(isBrowserEditorInstance(first?.browserId ?? "")).toBe(true);
-    expect(second?.folderUrl).toContain("other");
+    expect(second?.url).toContain("other");
     expect(navigatePersistentBrowserWebview).toHaveBeenCalledWith(
       first?.browserId,
       expect.stringContaining("other"),
@@ -99,14 +127,8 @@ describe("ensureBrowserEditorInstance", () => {
   });
 
   it("keeps distinct instances per origin", () => {
-    const a = ensureBrowserEditorInstance({
-      browserEditorUrl: "http://host-a:8765",
-      folderUrl: "http://host-a:8765/?folder=%2Fa",
-    });
-    const b = ensureBrowserEditorInstance({
-      browserEditorUrl: "http://host-b:8765",
-      folderUrl: "http://host-b:8765/?folder=%2Fb",
-    });
+    const a = ensureBrowserEditorInstance({ browserEditorUrl: "http://host-a:8765", folder: "/a" });
+    const b = ensureBrowserEditorInstance({ browserEditorUrl: "http://host-b:8765", folder: "/b" });
     expect(a?.browserId).not.toBe(b?.browserId);
   });
 
@@ -132,59 +154,146 @@ describe("ensureBrowserEditorInstance", () => {
       updateBrowser,
     } as never);
 
-    const instance = ensureBrowserEditorInstance({
-      browserEditorUrl: HOST,
-      folderUrl: `${HOST}/?folder=%2Frepo`,
-    });
+    const instance = ensureBrowserEditorInstance({ browserEditorUrl: HOST, folder: "/repo" });
 
     expect(instance?.browserId).toBe("current");
     expect(createBrowserId).not.toHaveBeenCalled();
     expect(removeBrowser).toHaveBeenCalledWith("old");
-    expect(instance?.folderUrl).toContain("repo");
     expect(updateBrowser).toHaveBeenCalledWith("current", {
       url: `${HOST}/?folder=%2Frepo`,
     });
   });
 });
 
-describe("usePreloadBrowserEditor", () => {
-  it("does nothing while the workspace is not active", () => {
-    renderHook(() =>
-      usePreloadBrowserEditor({
-        browserEditorUrl: HOST,
-        workspaceDirectory: "/repo-a",
-        workspaceKey: "server-1:workspace-a",
-        isActive: false,
-      }),
+describe("workspace mode", () => {
+  it("opens the workspace file and switches projects in place, without a reload", async () => {
+    const editor = fakeEditorWebview({ ok: true, status: 200, switched: true });
+    const instance = ensureBrowserEditorInstance({
+      browserEditorUrl: HOST,
+      folder: "/repo-a",
+      workspaceFile: WORKSPACE_FILE,
+    });
+    expect(ensurePersistentBrowserWebview).toHaveBeenCalledWith({
+      browserId: instance?.browserId,
+      url: `${HOST}/?workspace=${encodeURIComponent(WORKSPACE_FILE)}`,
+    });
+
+    ensureBrowserEditorInstance({ browserEditorUrl: HOST, folder: "/repo-b" });
+    await flushSwitches();
+
+    expect(navigatePersistentBrowserWebview).not.toHaveBeenCalled();
+    expect(editor.switchPayloads()).toEqual([{ folder: "/repo-b", workspaceFile: WORKSPACE_FILE }]);
+  });
+
+  it("selects the current project after every page load", async () => {
+    const editor = fakeEditorWebview({ ok: true, status: 200, switched: false });
+    ensureBrowserEditorInstance({
+      browserEditorUrl: HOST,
+      folder: "/repo-a",
+      workspaceFile: WORKSPACE_FILE,
+    });
+
+    editor.webview.dispatchEvent(new Event("dom-ready"));
+    await flushSwitches();
+    ensureBrowserEditorInstance({ browserEditorUrl: HOST, folder: "/repo-b" });
+    await flushSwitches();
+    // A reload (load recovery, fallback open) reopens whatever the file held.
+    editor.webview.dispatchEvent(new Event("dom-ready"));
+    await flushSwitches();
+
+    expect(editor.switchPayloads().map((payload) => payload.folder)).toEqual([
+      "/repo-a",
+      "/repo-b",
+      "/repo-b",
+    ]);
+  });
+
+  it("falls back to folder mode when the host's bridge can't switch", async () => {
+    fakeEditorWebview({ ok: false, status: 404, error: "not found" });
+    const instance = ensureBrowserEditorInstance({
+      browserEditorUrl: HOST,
+      folder: "/repo-a",
+      workspaceFile: WORKSPACE_FILE,
+    });
+    ensureBrowserEditorInstance({ browserEditorUrl: HOST, folder: "/repo-b" });
+    await flushSwitches();
+
+    expect(instance?.workspaceFile).toBeNull();
+    expect(navigatePersistentBrowserWebview).toHaveBeenLastCalledWith(
+      instance?.browserId,
+      `${HOST}/?folder=%2Frepo-b`,
     );
+    // It stays in folder mode even when callers keep supplying the file.
+    ensureBrowserEditorInstance({
+      browserEditorUrl: HOST,
+      folder: "/repo-c",
+      workspaceFile: WORKSPACE_FILE,
+    });
+    expect(navigatePersistentBrowserWebview).toHaveBeenLastCalledWith(
+      instance?.browserId,
+      `${HOST}/?folder=%2Frepo-c`,
+    );
+  });
+
+  it("keeps workspace mode on a transient bridge failure", async () => {
+    fakeEditorWebview({ ok: false, error: "Failed to fetch" });
+    const instance = ensureBrowserEditorInstance({
+      browserEditorUrl: HOST,
+      folder: "/repo-a",
+      workspaceFile: WORKSPACE_FILE,
+    });
+    ensureBrowserEditorInstance({ browserEditorUrl: HOST, folder: "/repo-b" });
+    await flushSwitches();
+
+    expect(instance?.workspaceFile).toBe(WORKSPACE_FILE);
+    expect(navigatePersistentBrowserWebview).not.toHaveBeenCalled();
+  });
+});
+
+describe("usePreloadBrowserEditor", () => {
+  const base = {
+    browserEditorUrl: HOST,
+    workspaceDirectory: "/repo-a",
+    workspaceKey: "server-1:workspace-a",
+    homeDirectory: null as string | null,
+    isActive: true,
+  };
+
+  it("does nothing while the workspace is not active", () => {
+    renderHook(() => usePreloadBrowserEditor({ ...base, isActive: false }));
     expect(ensurePersistentBrowserWebview).not.toHaveBeenCalled();
   });
 
-  it("re-roots the parked instance to the newly-active workspace folder", () => {
+  it("reloads the parked instance into the newly-active folder without a home directory", () => {
     const { rerender } = renderHook((props) => usePreloadBrowserEditor(props), {
-      initialProps: {
-        browserEditorUrl: HOST,
-        workspaceDirectory: "/repo-a",
-        workspaceKey: "server-1:workspace-a",
-        isActive: true,
-      },
+      initialProps: base,
     });
     expect(ensurePersistentBrowserWebview).toHaveBeenCalledTimes(1);
 
-    // Switch to another workspace on the same host → background re-root.
-    rerender({
-      browserEditorUrl: HOST,
-      workspaceDirectory: "/repo-b",
-      workspaceKey: "server-1:workspace-b",
-      isActive: true,
-    });
+    rerender({ ...base, workspaceDirectory: "/repo-b", workspaceKey: "server-1:workspace-b" });
     expect(navigatePersistentBrowserWebview).toHaveBeenCalledWith(
       "vscode-web-1",
       expect.stringContaining("repo-b"),
     );
   });
 
-  it("re-roots via the store when the webview is adopted (not parked)", () => {
+  it("moves into workspace mode once the host's home is known, and stays there", () => {
+    const { rerender } = renderHook((props) => usePreloadBrowserEditor(props), {
+      initialProps: base,
+    });
+    rerender({ ...base, homeDirectory: "/home/u" });
+    expect(navigatePersistentBrowserWebview).toHaveBeenLastCalledWith(
+      "vscode-web-1",
+      `${HOST}/?workspace=${encodeURIComponent(WORKSPACE_FILE)}`,
+    );
+
+    // A reconnect clears server_info for a moment: no reload back to folder mode.
+    rerender({ ...base, homeDirectory: null });
+    rerender({ ...base, homeDirectory: null, workspaceDirectory: "/repo-b" });
+    expect(navigatePersistentBrowserWebview).toHaveBeenCalledTimes(1);
+  });
+
+  it("navigates via the store when the webview is adopted (not parked)", () => {
     const updateBrowser = vi.fn();
     const requestNavigation = vi.fn();
     vi.mocked(useBrowserStore.getState).mockReturnValue({
@@ -195,19 +304,9 @@ describe("usePreloadBrowserEditor", () => {
     vi.mocked(getBrowserRecord).mockReturnValue({ browserId: "vscode-web-1" } as never);
 
     const { rerender } = renderHook((props) => usePreloadBrowserEditor(props), {
-      initialProps: {
-        browserEditorUrl: HOST,
-        workspaceDirectory: "/repo-a",
-        workspaceKey: "server-1:workspace-a",
-        isActive: true,
-      },
+      initialProps: base,
     });
-    rerender({
-      browserEditorUrl: HOST,
-      workspaceDirectory: "/repo-b",
-      workspaceKey: "server-1:workspace-b",
-      isActive: true,
-    });
+    rerender({ ...base, workspaceDirectory: "/repo-b", workspaceKey: "server-1:workspace-b" });
 
     expect(requestNavigation).toHaveBeenCalledWith(
       "vscode-web-1",
@@ -239,10 +338,9 @@ describe("usePreloadBrowserEditor", () => {
 
     renderHook(() =>
       usePreloadBrowserEditor({
-        browserEditorUrl: HOST,
+        ...base,
         workspaceDirectory: "/repo-b",
         workspaceKey: "server-1:workspace-b",
-        isActive: true,
       }),
     );
 

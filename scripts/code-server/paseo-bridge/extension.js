@@ -537,7 +537,13 @@ async function switchProjectFolder(nextFolder) {
   const folders = vscode.workspace.workspaceFolders ?? [];
   const previous = folders.length > 1 ? currentWorkspaceFolder() : null;
   if (previous && path.resolve(previous) === path.resolve(nextFolder)) {
-    return { switched: false, ms: 0, restored: 0, phases };
+    // The app asks for the open project after every window load. A fresh
+    // window opens with no editors (code-server's web session restore is
+    // unreliable), so bring back the saved tabs; otherwise leave them alone.
+    const hasTabs = vscode.window.tabGroups.all.some((group) => group.tabs.length > 0);
+    const restored = hasTabs ? { restored: 0 } : await restoreSavedEditorSession(nextFolder);
+    lap("restoreTabs");
+    return { switched: false, ms: Date.now() - started, restored: restored.restored, phases };
   }
   if (previous) {
     await persistCurrentEditorSession(previous);

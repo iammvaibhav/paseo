@@ -310,6 +310,8 @@ export interface DaemonServerInfo {
   // advertised via server_info so a central-config commanderHost designation
   // naming the alias resolves to this host.
   missionControlHostAlias?: string | null;
+  // Absolute home of the daemon's user (null on daemons that don't send it).
+  homeDirectory?: string | null;
   version: string | null;
   desktopManaged?: boolean;
   capabilities?: ServerCapabilities;
@@ -321,6 +323,7 @@ export function toDaemonServerInfo(serverInfo: ServerInfoStatusPayload): DaemonS
     serverId: serverInfo.serverId,
     hostname: serverInfo.hostname ?? null,
     missionControlHostAlias: serverInfo.missionControlHostAlias ?? null,
+    homeDirectory: serverInfo.homeDirectory ?? null,
     version: serverInfo.version ?? null,
     ...(serverInfo.desktopManaged !== undefined
       ? { desktopManaged: serverInfo.desktopManaged }
@@ -715,11 +718,16 @@ function areServerInfoFeaturesEqual(
   return JSON.stringify(current ?? null) === JSON.stringify(next ?? null);
 }
 
+function trimmedOrNull(value: string | null | undefined): string | null {
+  return value?.trim() || null;
+}
+
 function isSessionServerInfoUnchanged(input: {
   currentServerInfo: SessionState["serverInfo"] | undefined;
   nextHostname: string | null;
   nextVersion: string | null;
   nextMissionControlHostAlias: string | null;
+  nextHomeDirectory: string | null;
   nextDesktopManaged: boolean | undefined;
   nextCapabilities: ServerCapabilities | undefined;
   nextFeatures: ServerInfoStatusPayload["features"] | undefined;
@@ -734,14 +742,15 @@ function isSessionServerInfoUnchanged(input: {
     nextCapabilities,
     nextFeatures,
   } = input;
-  const prevHostname = currentServerInfo?.hostname?.trim() || null;
-  const prevVersion = currentServerInfo?.version?.trim() || null;
-  const prevMissionControlHostAlias = currentServerInfo?.missionControlHostAlias?.trim() || null;
+  const prevHostname = trimmedOrNull(currentServerInfo?.hostname);
+  const prevVersion = trimmedOrNull(currentServerInfo?.version);
+  const prevMissionControlHostAlias = trimmedOrNull(currentServerInfo?.missionControlHostAlias);
   return (
     currentServerInfo?.serverId === input.nextServerId &&
     prevHostname === nextHostname &&
     prevVersion === nextVersion &&
     prevMissionControlHostAlias === nextMissionControlHostAlias &&
+    trimmedOrNull(currentServerInfo?.homeDirectory) === input.nextHomeDirectory &&
     currentServerInfo?.desktopManaged === nextDesktopManaged &&
     areServerCapabilitiesEqual(currentServerInfo?.capabilities, nextCapabilities) &&
     areServerInfoFeaturesEqual(currentServerInfo?.features, nextFeatures)
@@ -880,6 +889,7 @@ export const useSessionStore = create<SessionStore>()(
           const nextHostname = info.hostname?.trim() || null;
           const nextVersion = info.version?.trim() || null;
           const nextMissionControlHostAlias = info.missionControlHostAlias?.trim() || null;
+          const nextHomeDirectory = info.homeDirectory?.trim() || null;
           const nextDesktopManaged = info.desktopManaged;
           const nextCapabilities = info.capabilities;
           const nextFeatures = info.features;
@@ -890,6 +900,7 @@ export const useSessionStore = create<SessionStore>()(
               nextHostname,
               nextVersion,
               nextMissionControlHostAlias,
+              nextHomeDirectory,
               nextDesktopManaged,
               nextCapabilities,
               nextFeatures,
@@ -909,6 +920,7 @@ export const useSessionStore = create<SessionStore>()(
                   serverId: info.serverId,
                   hostname: nextHostname,
                   missionControlHostAlias: nextMissionControlHostAlias,
+                  homeDirectory: nextHomeDirectory,
                   version: nextVersion,
                   ...(nextDesktopManaged !== undefined
                     ? { desktopManaged: nextDesktopManaged }

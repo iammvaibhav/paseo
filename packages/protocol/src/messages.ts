@@ -4115,6 +4115,10 @@ export const ServerInfoStatusPayloadSchema = z
     // app can resolve a central-config commanderHost that designates the alias.
     missionControlHostAlias: ServerInfoOptionalStringSchema.optional(),
     version: ServerInfoOptionalStringSchema.optional(),
+    // Absolute home directory of the daemon's user. The desktop app builds
+    // host-side paths from it, e.g. the VS Code Web workspace file.
+    // COMPAT(homeDirectory): added 2026-10-08; required after 2027-04-08.
+    homeDirectory: z.string().optional(),
     // COMPAT(sessionPermissions): optional while clients support older daemons.
     permissions: z.array(DaemonPermissionSchema).optional(),
     // COMPAT(desktopManaged): added in v0.1.X, remove optional parsing after 2027-01-16.

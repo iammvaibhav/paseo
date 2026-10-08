@@ -1759,10 +1759,14 @@ function WorkspaceScreenContent({
   );
   // Warm VS Code Web in the background, transfer its single tab away from any
   // retained inactive workspace, and root it at the active workspace's folder.
+  const browserEditorHomeDirectory = useSessionStore(
+    (state) => state.sessions[normalizedServerId]?.serverInfo?.homeDirectory ?? null,
+  );
   usePreloadBrowserEditor({
     browserEditorUrl,
     workspaceDirectory,
     workspaceKey: persistenceKey,
+    homeDirectory: browserEditorHomeDirectory,
     isActive: isRouteFocused,
   });
   const openTab = useWorkspaceLayoutStore((state) => state.openTab);
@@ -2851,22 +2855,26 @@ function WorkspaceScreenContent({
     [openWorkspaceTabFocused, persistenceKey],
   );
 
-  const handleOpenBrowserEditorUrl = useCallback(
-    (url: string) => {
-      if (!persistenceKey || !browserEditorUrl) {
-        return;
-      }
-      openBrowserEditorTab({
-        url,
-        browserEditorUrl,
-        workspaceKey: persistenceKey,
-        workspaceTabs: uiTabs,
-        openWorkspaceTabFocused: (target) => openWorkspaceTabFocused(persistenceKey, target),
-        navigateToTabId,
-      });
-    },
-    [browserEditorUrl, navigateToTabId, openWorkspaceTabFocused, persistenceKey, uiTabs],
-  );
+  const handleOpenBrowserEditorUrl = useCallback(() => {
+    if (!persistenceKey || !browserEditorUrl || !workspaceDirectory) {
+      return;
+    }
+    openBrowserEditorTab({
+      browserEditorUrl,
+      workspaceDirectory,
+      workspaceKey: persistenceKey,
+      workspaceTabs: uiTabs,
+      openWorkspaceTabFocused: (target) => openWorkspaceTabFocused(persistenceKey, target),
+      navigateToTabId,
+    });
+  }, [
+    browserEditorUrl,
+    navigateToTabId,
+    openWorkspaceTabFocused,
+    persistenceKey,
+    uiTabs,
+    workspaceDirectory,
+  ]);
 
   const handleOpenPlannotatorPath = useCallback(
     (path: string) => {

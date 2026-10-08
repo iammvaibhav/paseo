@@ -62,6 +62,7 @@ import {
   buildBridgeOpenPath,
   buildBridgeRestorePath,
 } from "@/workspace/browser-editor-url";
+import { buildBridgePostScript } from "@/desktop/browser/bridge-script";
 import {
   getDesktopHost,
   isElectronRuntime,
@@ -363,56 +364,13 @@ interface BridgeRestoreResult extends BridgeOpenResult {
 const SESSION_RESTORE_PENDING_ATTRIBUTE = "data-paseo-session-restore-pending";
 const SESSION_RESTORED_URL_ATTRIBUTE = "data-paseo-session-restored-url";
 
-/**
- * Guest-page script that POSTs one payload to a paseo-bridge route (open, run a
- * command). The fetch is same-origin, through code-server's `/proxy/<port>/`
- * reverse proxy, and resolves to `{ ok, status }` or `{ ok: false, error }` so
- * the caller can log why it failed. Every value is JSON-encoded, so paths cannot
- * break out of the script. A window that is still booting has no registered
- * extension host yet (503, or no listener), so it retries for a while: falling
- * back right away reloads the whole workbench, and a `~` path has no reload
- * fallback at all.
- */
-function buildBridgePostScript(route: string, payload: Record<string, unknown>): string {
-  return `(async () => {
-    const payload = ${JSON.stringify(payload)};
-    const folder = new URL(window.location.href).searchParams.get("folder");
-    if (folder) payload.folder = folder;
-    // Chromium's error page (chrome-error://) after a failed load: no bridge
-    // behind it, and the persistent webview reloads itself.
-    if (!/^https?:$/.test(window.location.protocol)) {
-      return { ok: false, error: "page not loaded" };
-    }
-    const deadline = Date.now() + 15000;
-    let last = { ok: false, error: "bridge unavailable" };
-    while (Date.now() < deadline) {
-      try {
-        const r = await fetch(${JSON.stringify(route)}, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-        const body = await r.json().catch(() => null);
-        // Only a bridge reply carries a boolean "ok". code-server's proxy answers
-        // 500 with its own page while nothing listens on the broker port yet.
-        const fromBridge = body !== null && typeof body.ok === "boolean";
-        last = { ...(fromBridge ? body : {}), ok: r.ok === true, status: r.status };
-        if (fromBridge && r.status !== 503) return last;
-      } catch (e) {
-        last = { ok: false, error: String(e && e.message ? e.message : e) };
-      }
-      await new Promise((resolve) => setTimeout(resolve, 250));
-    }
-    return last;
-  })()`;
-}
-
 function buildBridgeOpenScript(input: {
   path: string;
   line: number | null;
   column: number | null;
   mode: "file" | "diff";
   baseRef: string | null;
+  folder: string | null;
 }): string {
   return buildBridgePostScript(buildBridgeOpenPath(), {
     path: input.path,
@@ -420,24 +378,12 @@ function buildBridgeOpenScript(input: {
     ...(input.column ? { column: input.column } : {}),
     ...(input.mode === "diff" ? { mode: "diff" } : {}),
     ...(input.baseRef ? { baseRef: input.baseRef } : {}),
+    ...(input.folder ? { folder: input.folder } : {}),
   });
 }
 
-function buildBridgeCloseAllScript(): string {
-  return `(async () => {
-    try {
-      const folder = new URL(window.location.href).searchParams.get("folder");
-      if (!folder) return { ok: false, error: "missing folder" };
-      const r = await fetch(${JSON.stringify(buildBridgeCloseAllPath())}, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ folder }),
-      });
-      return { ok: r.ok === true, status: r.status };
-    } catch (e) {
-      return { ok: false, error: String(e && e.message ? e.message : e) };
-    }
-  })()`;
+function buildBridgeCloseAllScript(folder: string | null): string {
+  return buildBridgePostScript(buildBridgeCloseAllPath(), folder ? { folder } : {});
 }
 
 function buildBridgeRestoreScript(): string {
@@ -457,6 +403,8 @@ function restoreBrowserEditorSession(
   expectedUrl: string | null | undefined,
 ): void {
   const currentUrl = webview.getURL?.() ?? webview.getAttribute("src") ?? "";
+  // Only single-folder windows: a `?workspace=` window restores its tabs through
+  // the project switch that follows every load (preload-browser-editor.ts).
   const currentFolder = browserEditorFolder(currentUrl);
   const expectedFolder = expectedUrl ? browserEditorFolder(expectedUrl) : null;
   if (
@@ -847,6 +795,10 @@ export function BrowserPane({
   browserIdRef.current = browserId;
   const browserRef = useRef(browser);
   browserRef.current = browser;
+  // The workspace folder this pane belongs to: names the project in bridge
+  // requests, since a multi-root VS Code window's URL carries no folder.
+  const cwdRef = useRef(cwd);
+  cwdRef.current = cwd;
   const onFocusPaneRef = useRef(onFocusPane);
   onFocusPaneRef.current = onFocusPane;
   // Moves keyboard focus into the guest page and its pane, the same as a click
@@ -1198,7 +1150,7 @@ export function BrowserPane({
           !workspaceHasBrowserTab(workspaceKey, browserIdRef.current) &&
           isBrowserWebviewDomReady(webview)
         ) {
-          void executeWebviewJavaScript(webview, buildBridgeCloseAllScript()).catch(
+          void executeWebviewJavaScript(webview, buildBridgeCloseAllScript(cwdRef.current)).catch(
             ignoreWebviewJavaScriptError,
           );
         }
@@ -1380,7 +1332,14 @@ export function BrowserPane({
         result =
           ((await executeWebviewJavaScript(
             webview,
-            buildBridgeOpenScript({ path, line, column, mode, baseRef }),
+            buildBridgeOpenScript({
+              path,
+              line,
+              column,
+              mode,
+              baseRef,
+              folder: cwdRef.current,
+            }),
           )) as BridgeOpenResult | null) ?? {};
       } catch (error) {
         console.warn(`[paseo-bridge] executeJavaScript threw path=${path}`, error);
@@ -1449,7 +1408,10 @@ export function BrowserPane({
       focusGuestWebview(webview);
       const result = ((await executeWebviewJavaScript(
         webview,
-        buildBridgePostScript(buildBridgeCommandPath(), { command }),
+        buildBridgePostScript(buildBridgeCommandPath(), {
+          command,
+          ...(cwdRef.current ? { folder: cwdRef.current } : {}),
+        }),
       ).catch(() => null)) ?? {}) as BridgeOpenResult;
       console.log(
         `[paseo-bridge] command ${command} ok=${result.ok} status=${result.status ?? "-"} error=${result.error ?? "-"}`,

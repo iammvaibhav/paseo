@@ -12,10 +12,15 @@ vi.mock("@/desktop/browser/store", () => ({
   },
 }));
 
-const INSTANCE = {
+const INSTANCE: BrowserEditorInstance = {
   browserId: "vscode-web-1",
   origin: "http://blrofc3:8765",
-  folderUrl: "http://blrofc3:8765/?folder=%2Frepo",
+  baseUrl: "http://blrofc3:8765",
+  url: "http://blrofc3:8765/?folder=%2Frepo",
+  folder: "/repo",
+  workspaceFile: null,
+  workspaceModeUnsupported: false,
+  switchChain: Promise.resolve(),
 };
 
 vi.mock("@/workspace/preload-browser-editor", () => ({
@@ -24,7 +29,10 @@ vi.mock("@/workspace/preload-browser-editor", () => ({
 
 import { getIsElectron } from "@/constants/platform";
 import { createWorkspaceBrowser, getBrowserRecord, useBrowserStore } from "@/desktop/browser/store";
-import { ensureBrowserEditorInstance } from "@/workspace/preload-browser-editor";
+import {
+  type BrowserEditorInstance,
+  ensureBrowserEditorInstance,
+} from "@/workspace/preload-browser-editor";
 import { openBrowserEditorTab, tryOpenFileInBrowserEditor } from "./open-file-in-browser-editor";
 
 beforeEach(() => {
@@ -40,8 +48,8 @@ describe("openBrowserEditorTab", () => {
     vi.mocked(getIsElectron).mockReturnValue(false);
     expect(
       openBrowserEditorTab({
-        url: "http://blrofc3:8765/?folder=%2Frepo",
         browserEditorUrl: "http://blrofc3:8765",
+        workspaceDirectory: "/repo",
         workspaceKey: "server-1:workspace-1",
         workspaceTabs: [],
         openWorkspaceTabFocused: vi.fn(),
@@ -56,8 +64,8 @@ describe("openBrowserEditorTab", () => {
 
     expect(
       openBrowserEditorTab({
-        url: "http://blrofc3:8765/?folder=%2Frepo",
         browserEditorUrl: "http://blrofc3:8765",
+        workspaceDirectory: "/repo",
         workspaceKey: "server-1:workspace-1",
         workspaceTabs: [],
         openWorkspaceTabFocused,
@@ -67,7 +75,7 @@ describe("openBrowserEditorTab", () => {
 
     expect(createWorkspaceBrowser).toHaveBeenCalledWith({
       browserId: "vscode-web-1",
-      initialUrl: INSTANCE.folderUrl,
+      initialUrl: INSTANCE.url,
       chrome: "embedded",
     });
     expect(openWorkspaceTabFocused).toHaveBeenCalledWith({
@@ -83,8 +91,8 @@ describe("openBrowserEditorTab", () => {
     const navigateToTabId = vi.fn();
 
     openBrowserEditorTab({
-      url: "http://blrofc3:8765/?folder=%2Frepo",
       browserEditorUrl: "http://blrofc3:8765",
+      workspaceDirectory: "/repo",
       workspaceKey: "server-1:workspace-1",
       workspaceTabs: [
         { tabId: "tab-existing", target: { kind: "browser", browserId: "vscode-web-1" } },
@@ -131,6 +139,32 @@ describe("tryOpenFileInBrowserEditor", () => {
         fallbackUrl: expect.stringContaining("payload="),
       }),
     );
+  });
+
+  it("keeps a workspace-mode window on its workspace file when falling back to a reload", () => {
+    const requestBridgeOpen = vi.fn();
+    vi.mocked(useBrowserStore.getState).mockReturnValue({ requestBridgeOpen } as never);
+    vi.mocked(ensureBrowserEditorInstance).mockReturnValue({
+      ...INSTANCE,
+      workspaceFile: "/home/u/.paseo/vscode/paseo.code-workspace",
+    });
+
+    tryOpenFileInBrowserEditor({
+      browserEditorUrl: "http://blrofc3:8765",
+      workspaceDirectory: "/repo",
+      workspaceKey: "server-1:workspace-1",
+      location: { path: "src/a.ts" },
+      workspaceTabs: [],
+      openWorkspaceTabFocused: vi.fn(() => "tab-1"),
+      navigateToTabId: vi.fn(),
+    });
+
+    const fallbackUrl = new URL(requestBridgeOpen.mock.calls[0]?.[1].fallbackUrl);
+    expect(fallbackUrl.searchParams.get("workspace")).toBe(
+      "/home/u/.paseo/vscode/paseo.code-workspace",
+    );
+    expect(fallbackUrl.searchParams.get("folder")).toBeNull();
+    expect(fallbackUrl.searchParams.get("payload")).toContain("/repo/src/a.ts");
   });
 
   it("asks the bridge for a diff against the pane's base ref", () => {
@@ -194,7 +228,7 @@ describe("tryOpenFileInBrowserEditor outside the workspace", () => {
     expect(opened).toBe(true);
     expect(ensureBrowserEditorInstance).toHaveBeenLastCalledWith({
       browserEditorUrl: "http://blrofc3:8765",
-      folderUrl: "http://blrofc3:8765/?folder=%2Frepo",
+      folder: "/repo",
     });
     expect(request).toEqual(expect.objectContaining({ path: "/etc/hosts" }));
   });

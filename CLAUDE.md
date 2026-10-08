@@ -235,6 +235,7 @@ All local customizations live on **`vaibhav/customizations`**, branched from `up
 - **Open → VS Code Web** via always-on code-server on each host (`HostProfile.browserEditorUrl`) — see [docs/code-server.md](docs/code-server.md)
   - Background **preload** so it opens instantly, and in-place file opens with no reload via the `scripts/code-server/paseo-bridge/` extension
   - Every desktop file open goes to VS Code (chat links incl. `~/…` and folder links, Files sidebar, Changes), Cmd+P opens VS Code's Quick Open, and the Files sidebar browses outside the workspace
+  - Switching workspaces swaps the project into one multi-root VS Code window in place, with no page reload (folder 0 is a fixed **⚙ configs** folder)
 - LaTeX math rendering for agent messages
 - **Visual replies** — terse reply-format rules in the daemon system prompt, collapsible `<details>` evidence, glass-themed chart fences, and agent-built interactive HTML pages inline in chat (`show_page` + `preview_page`, localhost apps proxied to the reader) — see [docs/visual-replies.md](docs/visual-replies.md)
 - **Webhooks** — HTTP-triggered agents (a tab below Schedules) with configurable tunnel providers (Tailscale Funnel / cloudflared), URL-token + optional HMAC auth, and payload templating — see [docs/webhooks.md](docs/webhooks.md)

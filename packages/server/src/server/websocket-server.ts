@@ -6,6 +6,7 @@ import { MessageReceipts } from "./message-receipts/index.js";
 import { WebSocket, WebSocketServer } from "ws";
 import type { IncomingMessage, Server as HTTPServer } from "http";
 import { join } from "path";
+import { homedir } from "node:os";
 import { getHostName } from "./host-name.js";
 import { randomUUID } from "node:crypto";
 import { monitorEventLoopDelay } from "node:perf_hooks";
@@ -1931,6 +1932,8 @@ export class VoiceAssistantWebSocketServer {
       missionControlHostAlias:
         this.daemonConfigStore.get().missionControl?.hostAlias?.trim() || undefined,
       version: this.daemonVersion,
+      // COMPAT(homeDirectory): added 2026-10-08; required after 2027-04-08.
+      homeDirectory: homedir(),
       permissions: session.getPermissions(),
       // COMPAT(desktopManaged): added in v0.1.X, remove optional parsing after 2027-01-16.
       desktopManaged: this.daemonRuntimeConfig?.desktopManaged === true,
