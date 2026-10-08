@@ -203,6 +203,10 @@ describe("buildBrowserKeyboardPolicy", () => {
     });
     expect(defaults.editorOrigins).toEqual(["http://dev.netbird.cloud:8765"]);
     expect(defaults.editorPrefixes.map(keyOf).sort()).toEqual(["Meta+KeyO", "Meta+KeyP"]);
+    expect(defaults.editorPaseoPrefixes.map(keyOf).sort()).toEqual([
+      "Meta+KeyK",
+      "Meta+Shift+KeyK",
+    ]);
 
     const rebound = buildBrowserKeyboardPolicy({
       bindings: buildEffectiveBindings({ "workspace-project-pick-cmd-p-mac": "Cmd+Shift+F" }),
