@@ -94,7 +94,13 @@ export function useKeyboardShortcuts({
               isDesktop: isDesktopApp,
               editorOrigins: editorOriginsKey ? editorOriginsKey.split("\n") : [],
             })
-          : { menuPrefixes: [], prefixes: [], editorOrigins: [], editorPrefixes: [] };
+          : {
+              menuPrefixes: [],
+              prefixes: [],
+              editorOrigins: [],
+              editorPrefixes: [],
+              editorPaseoPrefixes: [],
+            };
       void getDesktopHost()?.browser?.setShortcutPolicy?.(policy);
     },
     [bindings, editorOriginsKey, enabled, isDesktopApp, isMac, shortcutsAvailable],

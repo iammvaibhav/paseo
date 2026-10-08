@@ -1,3 +1,6 @@
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import pino from "pino";
 import { describe, expect, test, vi } from "vitest";
 
@@ -91,4 +94,75 @@ describe("OmpWarmPool", () => {
     const claimed = await pool.claim(createInput({ modeId: "write" }));
     expect(claimed).toBeNull();
   });
+
+  test("pooled processes launch without --session so omp mints the throwaway itself", async () => {
+    const { pool, runtime } = createPool();
+    await seedPool(pool, createInput());
+
+    expect(runtime.recordedLaunches.length).toBeGreaterThan(0);
+    for (const launch of runtime.recordedLaunches) {
+      expect(launch.argv).not.toContain("--session");
+    }
+  });
+
+  test("a failed fill backs off instead of respawning on every claim", async () => {
+    let starts = 0;
+    const failures: unknown[] = [];
+    const runtime = {
+      startSession: async () => {
+        starts += 1;
+        throw new Error('Session "/x.jsonl" not found.');
+      },
+    } as unknown as FakeOmp;
+    const logger = pino({ level: "silent" });
+    logger.warn = ((payload: unknown) => {
+      failures.push(payload);
+    }) as typeof logger.warn;
+    const pool = new OmpWarmPool({ runtime, logger });
+
+    // A cold miss starts both fills; both fail and arm the backoff.
+    expect(await pool.claim(createInput())).toBeNull();
+    await vi.waitFor(() => expect(failures).toHaveLength(2));
+    expect(starts).toBe(2);
+
+    // Inside the backoff window a claim neither hands out nor respawns. A fill
+    // calls startSession synchronously, so none can still be pending here.
+    expect(await pool.claim(createInput())).toBeNull();
+    expect(starts).toBe(2);
+  });
+
+  // Exercises the real fs.watch backend: the watcher wiring is the behavior
+  // under test, so the clock cannot be faked. waitFor polls the condition.
+  test.each(["config.yml", "models.yml", "agents/new-agent.md"])(
+    "a change to omp's %s retires idle processes and boots replacements",
+    async (changedFile) => {
+      const configDir = await mkdtemp(path.join(tmpdir(), "paseo-omp-config-"));
+      try {
+        await mkdir(path.join(configDir, "agents"));
+        await writeFile(path.join(configDir, "config.yml"), "theme: dark\n");
+        const runtime = new FakeOmp();
+        const pool = new OmpWarmPool({ runtime, logger: pino({ level: "silent" }), configDir });
+        pool.start();
+        await seedPool(pool, createInput());
+        const original = runtime.allSessions().filter((session) => !session.closed);
+        expect(original.length).toBeGreaterThan(0);
+
+        await writeFile(path.join(configDir, changedFile), "changed: true\n");
+
+        await vi.waitFor(
+          () => {
+            for (const session of original) expect(session.closed).toBe(true);
+          },
+          { timeout: 5_000 },
+        );
+        await vi.waitFor(() => expect(pool.hasIdleProcess()).toBe(true));
+        const claimed = await pool.claim(createInput());
+        expect(claimed).not.toBeNull();
+        expect(original).not.toContain(claimed?.session);
+        await pool.closeAll();
+      } finally {
+        await rm(configDir, { recursive: true, force: true });
+      }
+    },
+  );
 });

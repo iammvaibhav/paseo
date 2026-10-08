@@ -887,4 +887,23 @@ export interface AgentClient {
    * shuts down. Must be idempotent.
    */
   shutdown?(): Promise<void>;
+  /**
+   * Hint that a create is about to happen at `cwd` (a worktree claim just
+   * picked its path). Providers with a warm process pool start moving an idle
+   * process there so the create finds it in place. Fire-and-forget; never throws.
+   */
+  prewarmCwd?(cwd: string): void;
+  /**
+   * The client was replaced by a provider config rebuild. Release resources no
+   * live session depends on (idle process pools, their timers and watchers).
+   * Sessions this client already started keep running; `shutdown` still
+   * follows at daemon exit. Must be idempotent.
+   */
+  retire?(): Promise<void>;
+  /**
+   * The client became the live client for its provider. Start background
+   * resources (warm process pools). Catalog-only clients are never activated.
+   * Must be idempotent.
+   */
+  activate?(): void;
 }

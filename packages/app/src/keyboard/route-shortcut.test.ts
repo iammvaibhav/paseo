@@ -368,9 +368,22 @@ describe("routeKeyboardShortcut — callbacks and pickers", () => {
     });
   });
 
-  it("agent.new → open-project-picker", () => {
+  it("offers Open project to VS Code first and falls back to the project picker", () => {
     expect(
       routeKeyboardShortcut({ action: "agent.new", payload: null }, makeCtx()),
+    ).toEqual<ShortcutAction>({
+      kind: "dispatch",
+      action: { id: "workspace.editor.open-file", scope: "workspace" },
+      fallback: { kind: "open-project-picker" },
+    });
+  });
+
+  it("opens the project picker outside a workspace", () => {
+    expect(
+      routeKeyboardShortcut(
+        { action: "agent.new", payload: null },
+        makeCtx({ pathname: "/settings" }),
+      ),
     ).toEqual<ShortcutAction>({ kind: "open-project-picker" });
   });
 });

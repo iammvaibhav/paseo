@@ -391,17 +391,20 @@ pool claim, turn start) plus two off-daemon sources: the omp process log
 
 One record per phase, all keyed by `agentId` or `cwd`:
 
-| Line                                           | Level       | Read it for                                                                                                                                                                                         |
-| ---------------------------------------------- | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `client.loader.span`                           | info        | Client-side click→running total (`path`, `totalMs`, `startedAt`). Sent only when `features.loaderSpanReport` is advertised                                                                          |
-| `agent.create.session` / `_slow`               | info / warn | Create request total with `intentMs` + `createCommandMs` (session handler)                                                                                                                          |
-| `provider.resolve_create_config` / `_slow`     | info / warn | `readyMs` — wait for the provider snapshot before mode resolution                                                                                                                                   |
-| `agent.create.resolve_default_model` / `_slow` | info / warn | `modelResolveMs` — cold omp catalog fetch when the create carried no model                                                                                                                          |
-| `agent.create.manager` / `_slow`               | info / warn | Phase split inside AgentManager.createAgent: `deleteStateMs`, `prepareMs` (session config incl. model), `clientReadyMs` (provider probe), `launchContextMs`, `sessionMs` (pool claim), `registerMs` |
-| `omp.catalog.fetch` / `_slow`                  | info / warn | Catalog fetch split: `runtimeStartMs` (cold omp boot) vs `modelsMs` (model list RPC)                                                                                                                |
-| `omp.runtime.acquire`                          | info / warn | Pool claim: `poolHit`, `claimMs`, `newSessionMs`, `setModelMs`, or cold `bootMs`/`totalMs`                                                                                                          |
-| `agent.turn.dispatched` / `_slow`              | info / warn | `startTurnMs` — provider handshake before the agent shows as running                                                                                                                                |
-| `agent.manager.turn.started`                   | info        | Lifecycle flip to running — what the UI loader waits for                                                                                                                                            |
+| Line                                           | Level       | Read it for                                                                                                                                                                                                                                                                                        |
+| ---------------------------------------------- | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `client.loader.span`                           | info        | Client-side click→running total (`path`, `totalMs`, `startedAt`). Sent only when `features.loaderSpanReport` is advertised                                                                                                                                                                         |
+| `creation.timing`                              | info        | One row per workspace/agent create request: `admissionWaitMs` (serial admission queue), `admitMs`, `receiptMs` (creation receipt writes), `provisionMs`, `agentMs`, `runMs`                                                                                                                        |
+| `workspace.create.timing`                      | info        | Worktree workspace create: `planCwdMs`, `coreMs`, `provisionMs`, and `phases` with `core.*` (repo root, intent, warm `claim.*` steps or cold fetch/create) and `provision.*` (incl. `registry.persistMs` / `registry.notifyMs`)                                                                    |
+| `workspace.mutation.slow`                      | info        | One session took ≥250ms to apply a workspace registry mutation (`observerMs`, `emitMs`); the registry write waits on every session                                                                                                                                                                 |
+| `agent.create.session` / `_slow`               | info / warn | Create request total with `intentMs` + `createCommandMs` (session handler)                                                                                                                                                                                                                         |
+| `provider.resolve_create_config` / `_slow`     | info / warn | `readyMs` — wait for the provider snapshot before mode resolution                                                                                                                                                                                                                                  |
+| `agent.create.resolve_default_model` / `_slow` | info / warn | `modelResolveMs` — cold omp catalog fetch when the create carried no model                                                                                                                                                                                                                         |
+| `agent.create.manager` / `_slow`               | info / warn | Phase split inside AgentManager.createAgent: `beforeHookMs` (plugin hook), `deleteStateMs`, `prepareMs` (session config incl. model), `clientReadyMs`, `launchContextMs`, `sessionMs` (pool claim), `register.*` (identity, timeline, runtime info, session state, persist, emit), `createdHookMs` |
+| `omp.catalog.fetch` / `_slow`                  | info / warn | Catalog fetch split: `runtimeStartMs` (cold omp boot) vs `modelsMs` (model list RPC)                                                                                                                                                                                                               |
+| `omp.runtime.acquire`                          | info / warn | Pool claim: `poolHit`, `claimMs`, `newSessionMs`, `setModelMs`, or cold `bootMs`/`totalMs`                                                                                                                                                                                                         |
+| `agent.turn.dispatched` / `_slow`              | info / warn | `startTurnMs` — provider handshake before the agent shows as running                                                                                                                                                                                                                               |
+| `agent.manager.turn.started`                   | info        | Lifecycle flip to running — what the UI loader waits for                                                                                                                                                                                                                                           |
 
 Reconstruct with one grep over `$PASEO_HOME/daemon.log` (all lines carry
 `agentId` except the provider-snapshot ones, which carry `cwd`):
@@ -474,7 +477,20 @@ exact ref also resolves through its stored branch name.
 
 Worktrees inherit committed Git state only; uncommitted source-checkout changes are not copied.
 
-### Warm worktree pool source
+### Warm worktree pool
+
+The pool keeps `targetIdle` worktrees provisioned ahead of time, `worktree.setup`
+included, so a new workspace only cuts its branch. Each warm tree lives at its final
+path under `$PASEO_HOME/worktrees/<project hash>/<random name>`; a marker file in
+`.paseo-warm/` beside it hides it from listings until a claim takes it. The claim runs
+`git switch -c <branch>` in place and never moves the tree, so repos whose worktrees
+carry submodules pool too. Directory names stay random; the workspace title and the
+branch carry the task name.
+
+A claim skips `worktree.setup` when the tree is still at the commit setup ran on and
+the setup commands are unchanged. When the base ref moves, the pool provisions a tree
+at the new tip and then retires the stale one; until then a claim of the stale tree
+checks out the new base and reruns setup.
 
 `worktree.warmPool.baseRef` is the git ref the warm pool cuts from (branch, tag,
 or `origin/<branch>`). Omitted, the pool uses the repository default branch.

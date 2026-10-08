@@ -1107,6 +1107,59 @@ describe("runWorktreeSetupInBackground", () => {
     expect(emitWorkspaceUpdateForWorkspaceId).toHaveBeenCalledWith("44");
   });
 
+  test("a warm-pool tree whose setup already ran completes without running it again", async () => {
+    const { tempDir, repoDir } = createGitRepo({
+      paseoConfig: {
+        worktree: {
+          setup: ["printf 'ran' > setup-ran.txt"],
+        },
+      },
+    });
+    cleanupPaths.push(tempDir);
+
+    const paseoHome = path.join(tempDir, ".paseo");
+    const preparedWorktree = await createLegacyWorktreeForTest({
+      branchName: "prepared-worktree",
+      cwd: repoDir,
+      baseBranch: "main",
+      worktreeSlug: "prepared-worktree",
+      runSetup: false,
+      paseoHome,
+    });
+
+    const emitted: SessionOutboundMessage[] = [];
+    await runWorktreeSetupInBackground(
+      {
+        paseoHome,
+        emitWorkspaceUpdateForWorkspaceId: async () => {},
+        cacheWorkspaceSetupSnapshot: () => {},
+        emit: (message) => emitted.push(message),
+        sessionLogger: createLogger(),
+        terminalManager: createTerminalManagerStub().manager,
+      },
+      {
+        requestCwd: repoDir,
+        repoRoot: repoDir,
+        workspaceId: "45",
+        worktree: {
+          branchName: "prepared-worktree",
+          worktreePath: preparedWorktree.worktreePath,
+        },
+        shouldBootstrap: true,
+        setupPrepared: true,
+        slug: "prepared-worktree",
+        worktreePath: preparedWorktree.worktreePath,
+      },
+    );
+
+    const finalProgress = emitted.findLast(
+      (message): message is Extract<SessionOutboundMessage, { type: "workspace_setup_progress" }> =>
+        message.type === "workspace_setup_progress",
+    );
+    expect(finalProgress?.payload).toMatchObject({ status: "completed", error: null });
+    expect(existsSync(path.join(preparedWorktree.worktreePath, "setup-ran.txt"))).toBe(false);
+  });
+
   test("keeps setup completed without attempting script launch afterward", async () => {
     const { tempDir, repoDir } = createGitRepo({
       paseoConfig: {

@@ -336,6 +336,8 @@ type ProviderSubagentManagerEvent = Extract<
 const LEGACY_PROVIDER_IDS = new Set(["claude", "codex", "opencode"]);
 const MIN_VERSION_ALL_PROVIDERS = "0.1.45";
 const MIN_VERSION_EXPLICIT_WORKSPACE_RECOVERY = "0.1.105";
+/** Logs `workspace.mutation.slow` past this; the registry write waits on every session's handler. */
+const SLOW_WORKSPACE_MUTATION_MS = 250;
 function errorToFriendlyMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   if (typeof error === "string") return error;
@@ -1996,6 +1998,8 @@ export class Session {
   }
 
   private async handleWorkspaceMutation(mutation: WorkspaceMutation): Promise<void> {
+    const startedAt = Date.now();
+    let observerMs = 0;
     try {
       if (this.isCleanedUp) {
         return;
@@ -2009,6 +2013,7 @@ export class Session {
       } else {
         await this.syncWorkspaceMutationObserver(mutation);
       }
+      observerMs = Date.now() - startedAt;
       if (this.isCleanedUp) {
         return;
       }
@@ -2016,6 +2021,21 @@ export class Session {
         [mutation.workspaceId],
         mutation.expectsInitialAgent ? { optimisticStatus: "running" } : undefined,
       );
+      // A registry upsert awaits every session's handler, so a slow one here
+      // is latency on the create/update that triggered it.
+      const totalMs = Date.now() - startedAt;
+      if (totalMs >= SLOW_WORKSPACE_MUTATION_MS) {
+        this.sessionLogger.info(
+          {
+            workspaceId: mutation.workspaceId,
+            mutationKind: mutation.kind,
+            observerMs,
+            emitMs: totalMs - observerMs,
+            totalMs,
+          },
+          "workspace.mutation.slow",
+        );
+      }
     } catch (error) {
       this.sessionLogger.warn(
         { err: error, workspaceId: mutation.workspaceId, mutationKind: mutation.kind },
@@ -8048,6 +8068,9 @@ export class Session {
       workspaceGitService: this.workspaceGitService,
       workspaceProvisioning: this.workspaceProvisioning,
       warmWorktreePool: this.warmWorktreePool,
+      // Move an idle agent process to the tree while the claim cuts the
+      // branch, so the first agent rides it instead of paying `/move`.
+      prewarmAgentCwd: (cwd: string) => this.providerSnapshotManager.prewarmAgentCwd(cwd),
     });
     void Promise.all([
       this.gitMutation.notifyGitMutation(input.cwd, "create-worktree"),

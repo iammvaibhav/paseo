@@ -2,13 +2,14 @@ import { getIsElectron } from "@/constants/platform";
 import { useKeyboardActionHandler } from "@/hooks/use-keyboard-action-handler";
 import { useStableEvent } from "@/hooks/use-stable-event";
 import { buildWorkspaceKeyboardHandlerId } from "@/keyboard/handler-id";
+import type { KeyboardActionDefinition } from "@/keyboard/keyboard-action-dispatcher";
 import type { WorkspaceTabTarget } from "@/workspace-tabs/model";
 import { runBrowserEditorCommand } from "@/workspace/open-file-in-browser-editor";
 
 /**
- * Search files (Cmd+P) on a host with VS Code Web: show the VS Code tab and run
- * VS Code's own Quick Open. Without this handler the shortcut falls back to the
- * files command center.
+ * On a host with VS Code Web, show the VS Code tab and run VS Code's native twin
+ * of a Paseo shortcut: Search files (Cmd+P) → Quick Open, Open project (Cmd+O)
+ * → Open File. Without this handler the shortcuts fall back to Paseo's own UI.
  */
 export function useEditorQuickOpenShortcut(input: {
   enabled: boolean;
@@ -23,14 +24,14 @@ export function useEditorQuickOpenShortcut(input: {
   navigateToTabId: (tabId: string) => void;
 }): void {
   const { browserEditorUrl, workspaceDirectory, persistenceKey } = input;
-  const handle = useStableEvent((): boolean => {
+  const handle = useStableEvent((action: KeyboardActionDefinition): boolean => {
     if (!browserEditorUrl || !workspaceDirectory || !persistenceKey) {
       return false;
     }
     return runBrowserEditorCommand({
       browserEditorUrl,
       workspaceDirectory,
-      command: "quickOpen",
+      command: action.id === "workspace.editor.open-file" ? "openFile" : "quickOpen",
       workspaceKey: persistenceKey,
       workspaceTabs: input.workspaceTabs,
       openWorkspaceTabFocused: (target) => input.openWorkspaceTabFocused(persistenceKey, target),
@@ -43,7 +44,7 @@ export function useEditorQuickOpenShortcut(input: {
       serverId: input.serverId,
       workspaceId: input.workspaceId,
     }),
-    actions: ["workspace.editor.quick-open"] as const,
+    actions: ["workspace.editor.quick-open", "workspace.editor.open-file"] as const,
     enabled:
       input.enabled &&
       getIsElectron() &&

@@ -1,4 +1,6 @@
 // Request history. Ring buffer of the last 500 settled or pending turns.
+import type { ThinkingDecision } from "./thinking";
+
 export type RequestFormat = "openai-chat" | "openai-responses" | "anthropic-messages";
 export type RequestStatus = "pending" | "ok" | "error" | "aborted";
 
@@ -12,6 +14,7 @@ export interface RequestRecord {
 	upstreamBaseUrl: string;
 	stream: boolean;
 	session: { id: string; source: "client" | "chain" | "new" };
+	thinking: ThinkingDecision;
 	account: { credentialId: number; label: string; email: string | null } | null;
 	status: RequestStatus;
 	httpStatus: number | null;

@@ -209,6 +209,14 @@ export function routeKeyboardShortcut(
     case "message-input.action":
       return routeMessageInputAction(input.payload);
     case "agent.new":
+      if (parseHostWorkspaceRouteFromPathname(ctx.pathname)) {
+        // A host with VS Code Web takes Open project into VS Code's Open File.
+        return {
+          kind: "dispatch",
+          action: { id: "workspace.editor.open-file", scope: "workspace" },
+          fallback: { kind: "open-project-picker" },
+        };
+      }
       return { kind: "open-project-picker" };
     case "settings.toggle":
       return routeSettingsToggle(ctx);

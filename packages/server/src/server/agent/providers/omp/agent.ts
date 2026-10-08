@@ -63,6 +63,7 @@ import {
 import {
   formatOmpVersionSupport,
   mergeOmpRuntimeSettings,
+  readOmpDefaultThinkingLevel,
   resolveOmpDiagnosticPaths,
   resolveOmpLaunchMode,
   resolveOmpProviderOptions,
@@ -2717,8 +2718,25 @@ export class OmpAgentClient implements AgentClient {
             logger: this.logger,
             getDefaultHostTools: () => this.lastKnownPaseoTools,
             getDefaultModel: () => this.lastKnownDefaultModel,
+            // Only the real binary reads omp's config dir; a fake runtime must
+            // not react to the developer's own ~/.omp edits mid-test.
+            ...(options.runtime === undefined
+              ? {
+                  configDir: resolveOmpDiagnosticPaths({ ...process.env, ...runtimeSettings?.env })
+                    .agentDir,
+                }
+              : {}),
           })
         : null;
+  }
+
+  /**
+   * Start the warm pool (seed priming, maintenance, config watch). Only the
+   * live client for the provider is activated: the provider registry also
+   * builds a catalog-only client per rebuild, and each one starting its own
+   * pool at construction left several pools of idle omp processes on a host.
+   */
+  activate(): void {
     this.warmPool?.start();
   }
 
@@ -3393,12 +3411,16 @@ export class OmpAgentClient implements AgentClient {
       if (!runtimeSession) throw new Error("OMP catalog runtime did not start");
       const catalogSession = runtimeSession;
       const modelsStartedAt = Date.now();
+      const settingsDefault = await readOmpDefaultThinkingLevel({
+        ...process.env,
+        ...this.runtimeSettings?.env,
+      });
       const models = transformOmpModels(
         (
           await runProviderRefreshActivity(context, "get_available_models", () =>
             catalogSession.getAvailableModels(null),
           )
-        ).map((model) => mapOmpModel(model, this.provider)),
+        ).map((model) => mapOmpModel(model, this.provider, settingsDefault)),
       );
       const modelsMs = Date.now() - modelsStartedAt;
       const totalMs = Date.now() - fetchStartedAt;
@@ -3564,6 +3586,15 @@ export class OmpAgentClient implements AgentClient {
    * AgentClient.shutdown (shutdownAgentClients) — must be idempotent.
    */
   async shutdown(): Promise<void> {
+    await this.warmPool?.closeAll();
+  }
+
+  /**
+   * A provider config rebuild replaced this client. Its idle pool goes now so
+   * the host keeps one pool of WARM_POOL_TARGET_IDLE processes; agents this
+   * client already started own their processes and keep running.
+   */
+  async retire(): Promise<void> {
     await this.warmPool?.closeAll();
   }
 }

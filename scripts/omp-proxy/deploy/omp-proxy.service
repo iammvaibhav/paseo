@@ -8,6 +8,8 @@ Type=simple
 Environment=OMP_AUTH_BROKER_URL=http://100.123.97.105:8770
 # Own agent folder: keeps the proxy's caches out of the broker's agent.db.
 Environment=PI_CODING_AGENT_DIR=%h/.omp-proxy/agent
+# Fleet omp thinking settings, written by deploy-prod.sh from the orchestrator's omp config.
+Environment=OMP_PROXY_SETTINGS=%h/.omp-proxy/settings.yml
 # Loopback only: reach it on prod itself, or through an SSH tunnel.
 Environment=OMP_PROXY_BIND=127.0.0.1:4317
 ExecStart=%h/.local/bin/omp-proxy

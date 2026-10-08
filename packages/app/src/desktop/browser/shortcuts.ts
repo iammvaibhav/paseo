@@ -30,6 +30,8 @@ export interface BrowserKeyboardPolicy {
   editorOrigins: string[];
   /** Shortcuts a VS Code Web page keeps for itself instead of crossing to Paseo. */
   editorPrefixes: BrowserShortcutPrefix[];
+  /** Shortcuts VS Code also binds that cross to Paseo before VS Code sees them. */
+  editorPaseoPrefixes: BrowserShortcutPrefix[];
 }
 
 interface BrowserShortcutPolicyInput {
@@ -48,6 +50,11 @@ interface BrowserShortcutPolicyInput {
 const EDITOR_NATIVE_ACTIONS: Record<string, true> = {
   "command-center.files": true,
   "agent.new": true,
+};
+
+/** Paseo actions that win over VS Code's own binding: Cmd+K is a VS Code chord start. */
+const EDITOR_PASEO_ACTIONS: Record<string, true> = {
+  "command-center.toggle": true,
 };
 
 export function shouldPublishBrowserShortcutPolicy(input: {
@@ -227,10 +234,16 @@ export function buildBrowserKeyboardPolicy(
     bindings: input.bindings.filter((binding) => EDITOR_NATIVE_ACTIONS[binding.action] === true),
     chordState: undefined,
   });
+  const editorPaseoPrefixes = buildBrowserShortcutPrefixes({
+    ...input,
+    bindings: input.bindings.filter((binding) => EDITOR_PASEO_ACTIONS[binding.action] === true),
+    chordState: undefined,
+  });
   return {
     menuPrefixes,
     prefixes,
     editorOrigins: [...(input.editorOrigins ?? [])],
     editorPrefixes,
+    editorPaseoPrefixes,
   };
 }

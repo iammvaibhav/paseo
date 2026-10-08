@@ -35,6 +35,7 @@ export const PROVIDER_LABELS: Record<ProviderId, string> = {
 export const VERSION: string = pkg.dependencies["@oh-my-pi/pi-ai"];
 
 export interface Boot {
+	settings: Settings;
 	storage: AuthStorage;
 	registry: ModelRegistry;
 	modelById: Map<string, Model<Api>>;
@@ -71,7 +72,14 @@ async function rebuildCatalog(boot: Boot): Promise<void> {
 
 export async function bootProxy(): Promise<Boot> {
 	const cwd = getProjectDir();
-	const settings = await Settings.init({ cwd });
+	// Fleet omp settings (thinking default, auto-thinking ceiling, judge role)
+	// arrive as a config overlay that deploy writes from the orchestrator's
+	// omp config; see deploy-prod.sh.
+	const overlay = process.env.OMP_PROXY_SETTINGS;
+	const settings = await Settings.init({
+		cwd,
+		...(overlay && (await Bun.file(overlay).exists()) ? { configFiles: [overlay] } : {}),
+	});
 	// Credentials come only from the OMP auth broker. The broker owns token
 	// refresh; this process never opens a local credential database.
 	if (!(await resolveAuthBrokerConfig())) {
@@ -96,6 +104,7 @@ export async function bootProxy(): Promise<Boot> {
 	};
 	registerGrokBuild(grokApi as unknown as ExtensionAPI);
 	const boot: Boot = {
+		settings,
 		storage,
 		registry,
 		modelById: new Map(),

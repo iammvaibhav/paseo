@@ -173,6 +173,8 @@ interface ApplyMutableProviderConfigOptions {
 export interface PreparedMutableProviderConfig {
   agentManagerState: AgentManagerProviderState;
   commit(): void;
+  /** Rolled back instead of committed: retire the clients this prepare created. */
+  discard(): void;
 }
 
 interface ProviderSnapshotProviderOptions {
@@ -417,6 +419,24 @@ export class ProviderSnapshotManager {
     return this.createAgentManagerState(this.generation.definitions, this.providerClients);
   }
 
+  /**
+   * Tell every enabled provider that a create is about to land at `cwd`, so
+   * one with a warm process pool can move an idle process there first.
+   * Providers without a pool ignore it.
+   */
+  prewarmAgentCwd(cwd: string): void {
+    for (const client of Object.values(this.getAgentManagerProviderState().clients)) {
+      try {
+        client?.prewarmCwd?.(cwd);
+      } catch (error) {
+        this.logger.warn(
+          { err: error, cwd, provider: client?.provider },
+          "Provider prewarm failed",
+        );
+      }
+    }
+  }
+
   private createAgentManagerState(
     definitions: Record<AgentProvider, ProviderDefinition>,
     providerClients: Record<AgentProvider, AgentClient>,
@@ -515,6 +535,8 @@ export class ProviderSnapshotManager {
     const client = definition.createClient(this.logger);
     clients[provider] = client;
     this.ownedClients.add(client);
+    // A prepared (uncommitted) generation activates its clients on install.
+    if (clients === this.providerClients) client.activate?.();
     return client;
   }
 
@@ -727,6 +749,10 @@ export class ProviderSnapshotManager {
         this.providerOverrides = providerOverrides;
         this.installGeneration(generation, clients, changed, catalogChanged);
       },
+      discard: () => {
+        const current = new Set(Object.values(this.providerClients));
+        this.retireClients(Object.values(clients).filter((client) => !current.has(client)));
+      },
     };
   }
 
@@ -752,7 +778,9 @@ export class ProviderSnapshotManager {
       }
     }
     this.generation = generation;
+    this.retireReplacedClients(clients);
     this.providerClients = clients;
+    for (const client of Object.values(clients)) client?.activate?.();
     this.warnUnknownProviderOverrides();
     for (const [key, catalogs] of this.catalogs) {
       for (const provider of catalogChanged) catalogs.delete(provider);
@@ -773,6 +801,40 @@ export class ProviderSnapshotManager {
         resolveProviderSnapshotTarget(cwd === GLOBAL_PROVIDER_SNAPSHOT_KEY ? undefined : cwd),
         providers,
       );
+    }
+  }
+
+  /**
+   * Retire clients the new generation replaced. A replaced client keeps
+   * serving the live sessions it already started, so it is not shut down
+   * (that waits for daemon shutdown via `ownedClients`). It does release what
+   * no live session uses: the OMP warm pool's idle processes, refill timer and
+   * config watchers. Without this every settings save left one more pool
+   * refilling forever. Injected extra clients belong to the caller.
+   */
+  private retireReplacedClients(next: Record<AgentProvider, AgentClient>): void {
+    const kept = new Set(Object.values(next));
+    this.retireClients(Object.values(this.providerClients).filter((client) => !kept.has(client)));
+  }
+
+  private retireClients(candidates: ReadonlyArray<AgentClient | undefined>): void {
+    const injected = new Set(Object.values(this.extraClients));
+    const retired = candidates.filter(
+      (client): client is AgentClient =>
+        client !== undefined && !injected.has(client) && !!client.retire,
+    );
+    if (retired.length === 0) return;
+    this.logger.info(
+      { providers: retired.map((client) => client.provider) },
+      "Retiring provider clients replaced by a registry rebuild",
+    );
+    for (const client of retired) {
+      void client.retire?.().catch((error: unknown) => {
+        this.logger.warn(
+          { err: error, provider: client.provider },
+          "Provider client retire failed",
+        );
+      });
     }
   }
 

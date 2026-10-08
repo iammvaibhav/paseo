@@ -81,6 +81,7 @@ describe("browser keyboard policy", () => {
       ],
       editorOrigins: [],
       editorPrefixes: [],
+      editorPaseoPrefixes: [],
     });
     expect(parseBrowserKeyboardPolicy({ prefixes: [{ code: "KeyB", control: true }] })).toBeNull();
   });
@@ -132,6 +133,7 @@ describe("browser keyboard policy", () => {
       ],
       editorOrigins: [],
       editorPrefixes: [],
+      editorPaseoPrefixes: [],
     });
     expect(
       parseBrowserKeyboardPolicy({

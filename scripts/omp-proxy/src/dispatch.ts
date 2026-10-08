@@ -41,6 +41,7 @@ import { ImageInputError, prepareImages, restoreImages } from "./images";
 import { aliasFor, parseAccountSpec, pinForRequest } from "./accounts";
 import { createRecord, updateRecord } from "./records";
 import type { RequestFormat } from "./records";
+import { parseableBody, resolveThinking } from "./thinking";
 import type { Boot } from "./boot";
 export const ROUTES: Record<string, { module: FormatModule; label: RequestFormat }> = {
 	"/v1/chat/completions": { module: openaiChat, label: "openai-chat" },
@@ -232,7 +233,7 @@ export async function handleChat(
 
 	let parsed: ParsedFormatRequest;
 	try {
-		parsed = route.module.parseRequest(body, req.headers);
+		parsed = route.module.parseRequest(parseableBody(body, route.label), req.headers);
 	} catch (error) {
 		if (controller.signal.aborted) return clientClosedResponse(route);
 		const message = error instanceof Error ? error.message : String(error);
@@ -303,6 +304,18 @@ export async function handleChat(
 	if (controller.signal.aborted) return clientClosedResponse(route);
 	if ("status" in apiKey) return route.module.formatError(apiKey.status, apiKey.type, apiKey.message);
 
+	const thinking = await resolveThinking({
+		body,
+		format: route.label,
+		parsed,
+		model,
+		settings: deps.boot.settings,
+		registry: deps.boot.registry,
+		sessionId,
+		signal: controller.signal,
+	});
+	if (controller.signal.aborted) return clientClosedResponse(route);
+
 	const streamOpts = buildStreamOptions(parsed, model.api, controller.signal, sessionId);
 	const lease = deps.sessionStates.acquire({
 		clientKey,
@@ -344,6 +357,8 @@ export async function handleChat(
 		"x-omp-account": identity.label,
 		"x-omp-credential-id": resolvedCredentialId !== undefined ? String(resolvedCredentialId) : "",
 		"x-omp-proxy-overhead-ms": String(proxyOverheadMs),
+		"x-omp-thinking": thinking.resolved ?? "",
+		"x-omp-thinking-source": thinking.source,
 	};
 
 	createRecord({
@@ -356,6 +371,7 @@ export async function handleChat(
 		upstreamBaseUrl: model.baseUrl,
 		stream: parsed.stream,
 		session: { id: sessionId, source: sessionSource },
+		thinking,
 		account:
 			resolvedCredentialId !== undefined
 				? { credentialId: resolvedCredentialId, label: identity.label, email: identity.email }

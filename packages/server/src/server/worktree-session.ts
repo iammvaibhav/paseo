@@ -677,6 +677,7 @@ export async function createPaseoWorktreeWorkflow(
             workspaceId: workspace.workspaceId,
             worktree: createdWorktree.worktree,
             shouldBootstrap: createdWorktree.created,
+            setupPrepared: createdWorktree.setupPrepared === true,
             slug,
             worktreePath: createdWorktree.worktree.worktreePath,
             workspaceCwd: workspace.cwd,
@@ -703,6 +704,7 @@ export async function createPaseoWorktreeWorkflow(
             worktree: createdWorktree.worktree,
             workspaceCwd: workspace.cwd,
             shouldBootstrap: createdWorktree.created,
+            setupPrepared: createdWorktree.setupPrepared === true,
             terminalManager: setupContinuation.terminalManager,
             appendTimelineItem: (item) => setupContinuation.appendTimelineItem({ agentId, item }),
             emitLiveTimelineItem: (item) =>
@@ -815,6 +817,8 @@ export async function runWorktreeSetupInBackground(
     workspaceId: string;
     worktree: WorktreeConfig;
     shouldBootstrap: boolean;
+    /** The warm pool already ran worktree.setup in this tree; skip straight to auto terminals. */
+    setupPrepared?: boolean;
     slug: string;
     worktreePath: string;
     workspaceCwd?: string;
@@ -871,18 +875,22 @@ export async function runWorktreeSetupInBackground(
             cwd: workspaceCwd,
             env: runtimeEnv,
           });
-          setupResults = await runWorktreeSetupCommands({
-            worktreePath: workspaceCwd,
-            branchName: worktree.branchName,
-            cleanupOnFailure: false,
-            repoRootPath: options.repoRoot,
-            runtimeEnv,
-            signal,
-            onEvent: (event) => {
-              applyWorktreeSetupProgressEvent(progressAccumulator, event);
-              emitSetupProgress("running", null);
-            },
-          });
+          // Prepared trees ran this setup in the warm pool; the runtime env
+          // still has to be registered for the workspace's terminals.
+          setupResults = options.setupPrepared
+            ? []
+            : await runWorktreeSetupCommands({
+                worktreePath: workspaceCwd,
+                branchName: worktree.branchName,
+                cleanupOnFailure: false,
+                repoRootPath: options.repoRoot,
+                runtimeEnv,
+                signal,
+                onEvent: (event) => {
+                  applyWorktreeSetupProgressEvent(progressAccumulator, event);
+                  emitSetupProgress("running", null);
+                },
+              });
           emitSetupProgress("completed", null);
         }
         if (options.runAutoTerminals) {

@@ -20,6 +20,7 @@ import type { CreatePaseoWorktreeWorkflowResult } from "../../worktree-session.j
 import { deriveProjectKey } from "../../project-key.js";
 import { areEquivalentPaths, createRealpathAwarePathMatcher } from "../../../utils/path.js";
 import type { UntrustedWorkspaceSource } from "../../workspace-automation-gate.js";
+import type { PhaseTimer } from "../../../utils/phase-timer.js";
 
 export interface ResolveOrCreateWorkspaceIdInput {
   createdWorktree: CreatePaseoWorktreeWorkflowResult | null;
@@ -67,6 +68,7 @@ export interface WorkspaceProvisioningService {
   ): Promise<PersistedWorkspaceRecord>;
   createWorkspaceForWorktree(
     input: CreateWorktreeWorkspaceInput,
+    options?: { timer?: PhaseTimer },
   ): Promise<PersistedWorkspaceRecord>;
   findOrCreateProjectForDirectory(cwd: string): Promise<PersistedProjectRecord>;
   ensureWorkspaceRecordUnarchived(
@@ -243,6 +245,7 @@ export function createWorkspaceProvisioningService(deps: {
 
   async function createWorkspaceForWorktree(
     input: CreateWorktreeWorkspaceInput,
+    options?: { timer?: PhaseTimer },
   ): Promise<PersistedWorkspaceRecord> {
     const sourceCwd = resolve(input.sourceCwd);
     const repoRoot = resolve(input.repoRoot);
@@ -253,6 +256,7 @@ export function createWorkspaceProvisioningService(deps: {
       projectId: input.projectId,
       repoRoot,
     });
+    options?.timer?.mark("resolveProjectMs");
     const timestamp = new Date().toISOString();
     const workspace = createPersistedWorkspaceRecord({
       workspaceId: input.workspaceId ?? generateWorkspaceId(),
@@ -272,8 +276,10 @@ export function createWorkspaceProvisioningService(deps: {
     });
     await workspaceRegistry.upsert(workspace, {
       expectsInitialAgent: input.expectsInitialAgent,
+      ...(options?.timer ? { timer: options.timer } : {}),
     });
     deps.lifecycle?.emit("workspace.created", { workspace: describeHookWorkspace(workspace) });
+    options?.timer?.mark("lifecycleMs");
     return workspace;
   }
 
@@ -283,7 +289,13 @@ export function createWorkspaceProvisioningService(deps: {
     repoRoot: string;
   }): Promise<PersistedProjectRecord> {
     if (input.projectId) {
-      return refreshProjectKind(await requireActiveProject(input.projectId));
+      const project = await requireActiveProject(input.projectId);
+      // An explicit FK may point at a project rooted somewhere else entirely;
+      // only that rare case still needs a probe of the project's own root.
+      if (!areEquivalentPaths(project.rootPath, input.repoRoot)) {
+        return refreshProjectKind(project);
+      }
+      return markProjectGitForCreatedWorktree(project);
     }
 
     const workspaces = await workspaceRegistry.list();
@@ -296,7 +308,11 @@ export function createWorkspaceProvisioningService(deps: {
       );
     if (sourceWorkspace) {
       const project = await projectRegistry.get(sourceWorkspace.projectId);
-      if (project) return project;
+      if (project) {
+        return areEquivalentPaths(project.rootPath, input.repoRoot)
+          ? markProjectGitForCreatedWorktree(project)
+          : project;
+      }
       // COMPAT(worktreeMissingSourceProject): added in v0.1.107, remove after 2027-01-15.
       // Orphaned legacy workspace FKs fall through to exact-root allocation.
     }
@@ -322,6 +338,34 @@ export function createWorkspaceProvisioningService(deps: {
       }),
       timestamp: new Date().toISOString(),
     });
+  }
+
+  /**
+   * A worktree was just cut from this project's root, so the root is git. A
+   * full checkout probe here (status, remotes, ahead/behind) cost 1-5s per
+   * create under load (PASEO-16); a project still recorded as non-git is
+   * rewritten from what the git service already holds in memory, and the
+   * periodic workspace refresh reconciles the remote-derived identity later.
+   */
+  async function markProjectGitForCreatedWorktree(
+    project: PersistedProjectRecord,
+  ): Promise<PersistedProjectRecord> {
+    if (project.kind === "git") return project;
+    const cachedSnapshot = workspaceGitService.peekSnapshot(project.rootPath);
+    const refreshed: PersistedProjectRecord = {
+      ...project,
+      kind: "git",
+      projectKey: deriveProjectKey({
+        rootPath: project.rootPath,
+        remoteUrl: cachedSnapshot?.git.remoteUrl ?? null,
+        worktreeRoot: cachedSnapshot?.git.repoRoot ?? null,
+        mainRepoRoot: cachedSnapshot?.git.mainRepoRoot ?? null,
+        serverId,
+      }),
+      updatedAt: new Date().toISOString(),
+    };
+    await projectRegistry.upsert(refreshed);
+    return refreshed;
   }
 
   async function findOrCreateWorkspaceForDirectory(cwd: string): Promise<PersistedWorkspaceRecord> {

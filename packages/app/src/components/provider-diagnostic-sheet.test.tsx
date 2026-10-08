@@ -2,6 +2,7 @@
  * @vitest-environment jsdom
  */
 import React, { act } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProviderSnapshotEntry } from "@getpaseo/protocol/agent-types";
@@ -22,7 +23,7 @@ vi.mock("@react-native-async-storage/async-storage", () => {
   };
 });
 
-const { theme, snapshotState, configState, patchConfigMock, refreshMock, connectionState } =
+const { theme, snapshotState, configState, daemonClient, refreshMock, connectionState } =
   vi.hoisted(() => ({
     theme: {
       spacing: { 0.5: 2, 1: 4, 1.5: 6, 2: 8, 3: 12, 4: 16, 6: 24, 8: 32 },
@@ -57,8 +58,14 @@ const { theme, snapshotState, configState, patchConfigMock, refreshMock, connect
     configState: {
       config: null as MutableDaemonConfig | null,
     },
-    patchConfigMock: vi.fn(async () => undefined),
     refreshMock: vi.fn(async () => undefined),
+    daemonClient: {
+      getDaemonConfig: vi.fn(async () => ({ requestId: "r", config: configState.config })),
+      patchDaemonConfig: vi.fn(async (patch: Partial<MutableDaemonConfig>) => ({
+        requestId: "r",
+        config: { ...configState.config, ...patch },
+      })),
+    },
     connectionState: {
       isConnected: false,
     },
@@ -208,13 +215,15 @@ vi.mock("@/hooks/use-daemon-config", () => ({
   useDaemonConfig: () => ({
     config: configState.config,
     isLoading: false,
-    patchConfig: patchConfigMock,
+    patchConfig: vi.fn(),
   }),
 }));
 
 vi.mock("@/runtime/host-runtime", () => ({
-  useHostRuntimeClient: () => null,
+  useHostRuntimeClient: () => daemonClient,
   useHostRuntimeIsConnected: () => connectionState.isConnected,
+  getHostRuntimeStore: () => ({ getHosts: () => [] }),
+  isHostRuntimeConnected: () => false,
 }));
 
 vi.mock("react-i18next", () => ({
@@ -242,12 +251,14 @@ describe("ProviderDiagnosticSheet model visibility", () => {
   function renderSheet() {
     act(() => {
       root.render(
-        <ProviderDiagnosticSheet
-          provider="claude"
-          serverId="local"
-          visible={true}
-          onClose={handleClose}
-        />,
+        <QueryClientProvider client={new QueryClient()}>
+          <ProviderDiagnosticSheet
+            provider="claude"
+            serverId="local"
+            visible={true}
+            onClose={handleClose}
+          />
+        </QueryClientProvider>,
       );
     });
   }
@@ -319,7 +330,7 @@ describe("ProviderDiagnosticSheet model visibility", () => {
     toggle("model-toggle-claude-opus-5");
 
     expect(hiddenKeys()).toEqual(["claude:claude-haiku-3.5", "claude:claude-opus-5"]);
-    expect(patchConfigMock).not.toHaveBeenCalled();
+    expect(daemonClient.patchDaemonConfig).not.toHaveBeenCalled();
     expect(refreshMock).not.toHaveBeenCalled();
   });
 
@@ -329,7 +340,7 @@ describe("ProviderDiagnosticSheet model visibility", () => {
     toggle("model-toggle-claude-haiku-3.5");
 
     expect(hiddenKeys()).toEqual([]);
-    expect(patchConfigMock).not.toHaveBeenCalled();
+    expect(daemonClient.patchDaemonConfig).not.toHaveBeenCalled();
   });
 
   it("reflects the new state in the checkbox without a refetch", () => {
@@ -350,7 +361,7 @@ describe("ProviderDiagnosticSheet model visibility", () => {
     toggle("models-check-all-discovered");
 
     expect(hiddenKeys()).toEqual([]);
-    expect(patchConfigMock).not.toHaveBeenCalled();
+    expect(daemonClient.patchDaemonConfig).not.toHaveBeenCalled();
   });
 
   it("unchecks all discovered models", () => {
@@ -384,7 +395,7 @@ describe("ProviderDiagnosticSheet model visibility", () => {
     ).toBe("true");
   });
 
-  it("writes visibleModels through daemon patchConfig when connected", () => {
+  it("writes visibleModels to the host when connected", async () => {
     connectionState.isConnected = true;
     configState.config = {
       ...configState.config,
@@ -400,12 +411,14 @@ describe("ProviderDiagnosticSheet model visibility", () => {
 
     toggle("model-toggle-claude-opus-5");
 
-    expect(patchConfigMock).toHaveBeenCalledWith({
-      visibleModels: [
-        "claude:claude-custom-1",
-        "claude:claude-haiku-3.5",
-        "claude:claude-sonnet-4.5",
-      ],
-    });
+    await vi.waitFor(() =>
+      expect(daemonClient.patchDaemonConfig).toHaveBeenCalledWith({
+        visibleModels: [
+          "claude:claude-custom-1",
+          "claude:claude-haiku-3.5",
+          "claude:claude-sonnet-4.5",
+        ],
+      }),
+    );
   });
 });

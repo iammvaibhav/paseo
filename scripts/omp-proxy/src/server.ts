@@ -4,6 +4,10 @@ import appCss from "../public/app.css" with { type: "file" };
 // @ts-expect-error TS7016: plain browser script, imported only for its file path.
 import appJs from "../public/app.js" with { type: "file" };
 import { AuthGatewaySessionStateStore } from "@oh-my-pi/pi-ai/auth-gateway/session-state";
+import type { Api, Model } from "@oh-my-pi/pi-ai";
+import type { Effort } from "@oh-my-pi/pi-catalog/effort";
+import { getSupportedEfforts } from "@oh-my-pi/pi-catalog/model-thinking";
+import type { Settings } from "@oh-my-pi/pi-coding-agent";
 import { corsHeaders, withCors } from "@oh-my-pi/pi-ai/auth-gateway/http";
 import { parseBind } from "@oh-my-pi/pi-ai/utils/parse-bind";
 import { aliasFor, readRoutingConfig } from "./accounts";
@@ -11,6 +15,7 @@ import { bootProxy, defaultModelFor, PROVIDER_LABELS, PROVIDERS, VERSION } from 
 import type { Boot, ProviderId } from "./boot";
 import { handleChat, ROUTES } from "./dispatch";
 import { getRecord, listRecords } from "./records";
+import { defaultSelector, thinkingSelectors } from "./thinking";
 
 const OMP_HEADERS = [
 	"x-omp-request-id",
@@ -21,6 +26,8 @@ const OMP_HEADERS = [
 	"x-omp-account",
 	"x-omp-credential-id",
 	"x-omp-proxy-overhead-ms",
+	"x-omp-thinking",
+	"x-omp-thinking-source",
 ];
 
 function corsWithOmp(req: Request): Record<string, string> {
@@ -108,7 +115,7 @@ function providerPayload(boot: Boot, provider: ProviderId) {
 	};
 }
 
-function modelRow(provider: ProviderId, model: { id: string; name: string; api: string; contextWindow: number | null; maxTokens: number | null; reasoning: boolean; thinking?: { efforts?: readonly string[] }; input: readonly string[] }) {
+function modelRow(provider: ProviderId, model: Model<Api>, settings: Settings) {
 	return {
 		id: `${provider}/${model.id}`,
 		object: "model",
@@ -119,7 +126,79 @@ function modelRow(provider: ProviderId, model: { id: string; name: string; api: 
 		max_output_tokens: model.maxTokens,
 		reasoning: model.reasoning,
 		thinking_levels: [...(model.thinking?.efforts ?? [])],
+		// omp's choices for this model and the level a request that names none runs at.
+		thinking: model.reasoning
+			? { levels: thinkingSelectors(model), default: defaultSelector(model, settings) ?? null }
+			: null,
 		input_modalities: [...model.input],
+	};
+}
+
+const EFFORT_LABELS: Record<Effort, string> = {
+	minimal: "Minimal",
+	low: "Low",
+	medium: "Medium",
+	high: "High",
+	xhigh: "XHigh",
+	max: "Max",
+};
+
+/**
+ * One Bifrost model-parameters datasheet row (Model Settings →
+ * model_parameters_url). Bifrost reads `reasoning_effort_levels` to stop
+ * clamping efforts to low/medium/high, `supports_reasoning_disable` to pass
+ * `none` through, and `model_parameters` to draw the Prompt Repository
+ * controls; `provider` must name the Bifrost provider that fronts this proxy.
+ */
+function bifrostRow(key: string, model: Model<Api>, settings: Settings, bifrostProvider: string) {
+	const efforts = getSupportedEfforts(model);
+	const fallback = defaultSelector(model, settings);
+	const parameters: Record<string, unknown>[] = [
+		{
+			id: "temperature",
+			label: "Temperature",
+			helpText: "Sampling temperature between 0 and 2.",
+			type: "number",
+			range: { min: 0, max: 2, step: 0.01 },
+		},
+		{
+			id: "max_tokens",
+			label: "Max Tokens",
+			helpText: "The maximum number of tokens that can be generated in the Result.",
+			type: "number",
+			range: { min: 1, max: model.maxTokens ?? 8192, step: 1 },
+		},
+	];
+	if (model.reasoning) {
+		parameters.push({
+			id: "reasoning_effort",
+			label: "Reasoning Effort",
+			helpText: `omp thinking level. Unset runs at omp's default (${fallback ?? "provider default"}). Auto lets omp's judge pick the level each user turn. Off: where the model cannot turn reasoning off, omp runs its fallback level.`,
+			type: "select",
+			...(fallback ? { default: fallback } : {}),
+			options: [
+				{ label: "Off", value: "none" },
+				{ label: "Auto", value: "auto" },
+				...efforts.map(effort => ({ label: EFFORT_LABELS[effort], value: effort })),
+			],
+		});
+	}
+	parameters.push({
+		id: "stream",
+		label: "Stream",
+		helpText: "Send the response in incremental updates as it is generated.",
+		type: "boolean",
+	});
+	return {
+		mode: "chat",
+		base_model: key,
+		provider: bifrostProvider,
+		...(model.contextWindow ? { max_input_tokens: model.contextWindow } : {}),
+		...(model.maxTokens ? { max_output_tokens: model.maxTokens, max_tokens: model.maxTokens } : {}),
+		supports_vision: model.input.includes("image"),
+		supports_reasoning: model.reasoning,
+		...(model.reasoning ? { reasoning_effort_levels: [...efforts], supports_reasoning_disable: true } : {}),
+		model_parameters: parameters,
 	};
 }
 
@@ -160,7 +239,7 @@ async function serve(): Promise<void> {
 				}
 				if (req.method === "GET" && pathname === "/v1/models") {
 					const data = PROVIDERS.flatMap(provider =>
-						(boot.providerModels.get(provider) ?? []).map(model => modelRow(provider, model)),
+						(boot.providerModels.get(provider) ?? []).map(model => modelRow(provider, model, boot.settings)),
 					);
 					return withProxyCors(json(200, { object: "list", data }), req);
 				}
@@ -168,8 +247,21 @@ async function serve(): Promise<void> {
 				if (providerModels) {
 					const provider = providerModels[1] as ProviderId;
 					if (!PROVIDERS.includes(provider)) return withProxyCors(json(404, { error: "unknown provider" }), req);
-					const data = (boot.providerModels.get(provider) ?? []).map(model => modelRow(provider, model));
+					const data = (boot.providerModels.get(provider) ?? []).map(model =>
+						modelRow(provider, model, boot.settings),
+					);
 					return withProxyCors(json(200, { object: "list", data }), req);
+				}
+				if (req.method === "GET" && pathname === "/api/bifrost/model-parameters") {
+					const bifrostProvider = url.searchParams.get("provider") ?? "omp-proxy";
+					const sheet: Record<string, object> = {};
+					for (const provider of PROVIDERS) {
+						for (const model of boot.providerModels.get(provider) ?? []) {
+							const key = `${provider}/${model.id}`;
+							sheet[key] = bifrostRow(key, model, boot.settings, bifrostProvider);
+						}
+					}
+					return withProxyCors(json(200, sheet), req);
 				}
 				if (req.method === "GET" && pathname === "/api/requests") {
 					const limit = Number(url.searchParams.get("limit") ?? "100");

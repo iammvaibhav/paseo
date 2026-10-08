@@ -126,6 +126,7 @@ import {
   type AiReviewerConfig,
 } from "./ai-reviewer.js";
 import { getStructuredAgentResponse } from "./agent-response-loop.js";
+import { createPhaseTimer, type PhaseTimer } from "../../utils/phase-timer.js";
 
 const RELOAD_SESSION_CLOSE_TIMEOUT_MS = 3_000;
 const INTERRUPT_SESSION_TIMEOUT_MS = 2_000;
@@ -1987,6 +1988,7 @@ export class AgentManager {
     options: CreateAgentOptions,
   ): Promise<ManagedAgent> {
     const createStartedAt = Date.now();
+    const timer = createPhaseTimer();
     this.assertAcceptingAgentRegistrations();
     const resolvedAgentId = validateAgentId(agentId ?? this.idFactory(), "createAgent");
     if (this.pluginLifecycle && !config.internal) {
@@ -1997,24 +1999,21 @@ export class AgentManager {
       config = { ...request.config, internal: config.internal };
       options = { ...options, env: request.env };
     }
-    const deleteStateStartedAt = Date.now();
+    timer.mark("beforeHookMs");
     await this.deleteAgentState(resolvedAgentId);
-    const deleteStateMs = Date.now() - deleteStateStartedAt;
-    const prepareStartedAt = Date.now();
+    timer.mark("deleteStateMs");
     const { storedConfig, launchConfig, paseoToolPolicy } = await this.prepareSessionConfig(
       config,
       resolvedAgentId,
       { labels: options.labels, env: options?.env },
     );
-    const prepareMs = Date.now() - prepareStartedAt;
+    timer.mark("prepareMs");
     this.requireEnabledProvider(storedConfig.provider);
-    const clientReadyStartedAt = Date.now();
     const client = await this.requireAvailableClient({
       provider: storedConfig.provider,
     });
-    const clientReadyMs = Date.now() - clientReadyStartedAt;
+    timer.mark("clientReadyMs");
     this.paseoToolPolicies.set(resolvedAgentId, paseoToolPolicy);
-    const launchContextStartedAt = Date.now();
     const launchContext = await this.buildLaunchContext(
       resolvedAgentId,
       client,
@@ -2025,54 +2024,55 @@ export class AgentManager {
       { reason: "create", purpose: "interactive", workspaceId: options.workspaceId ?? null },
     );
     const providerLaunchConfig = this.resolveProviderLaunchConfig(launchConfig, launchContext);
-    const launchContextMs = Date.now() - launchContextStartedAt;
+    timer.mark("launchContextMs");
     const createOptions = this.buildCreateSessionOptions(options);
     try {
-      const sessionStartedAt = Date.now();
       const session = await client.createSession(
         providerLaunchConfig,
         launchContext,
         createOptions,
       );
-      const sessionMs = Date.now() - sessionStartedAt;
+      timer.mark("sessionMs");
       await this.requireExternalMcpSupport(session, storedConfig);
-      const registered = await this.registerSession(session, storedConfig, resolvedAgentId, {
-        labels: options.labels,
-        initialTitle: options.initialTitle,
-        initialPrompt: options.initialPrompt,
-        name: options.name,
-        workspaceId: options.workspaceId,
-        // Every user-facing agent gets a mode; Do it yourself unless the
-        // caller chose one. Mission Control machinery (Commander, verifier)
-        // and internal sessions run on their own contracts and get none.
-        agentMode:
-          options.agentMode ??
-          (storedConfig.internal || isSystemOwnedAgentLabels(options.labels)
-            ? undefined
-            : DEFAULT_AGENT_MODE_ID),
-        owner: options.owner,
-        historyPrimed: true,
-      });
+      const registered = await this.registerSession(
+        session,
+        storedConfig,
+        resolvedAgentId,
+        {
+          labels: options.labels,
+          initialTitle: options.initialTitle,
+          initialPrompt: options.initialPrompt,
+          name: options.name,
+          workspaceId: options.workspaceId,
+          // Every user-facing agent gets a mode; Do it yourself unless the
+          // caller chose one. Mission Control machinery (Commander, verifier)
+          // and internal sessions run on their own contracts and get none.
+          agentMode:
+            options.agentMode ??
+            (storedConfig.internal || isSystemOwnedAgentLabels(options.labels)
+              ? undefined
+              : DEFAULT_AGENT_MODE_ID),
+          owner: options.owner,
+          historyPrimed: true,
+        },
+        timer,
+      );
       if (!registered.internal) {
         this.pluginLifecycle?.emit("agent.created", {
           agent: describeHookAgent({ ...registered, title: registered.config.title }),
         });
       }
-      // and the pool claim: deleteAgentState, prepareSessionConfig (incl. model
-      // resolution), provider availability probe, launch context build, provider
-      // createSession (the pool claim itself is logged separately as
-      // omp.runtime.acquire), and agent registration. Info normally; warn when
-      // the whole create took >=1s.
+      timer.mark("createdHookMs");
+      // One row per create, split into the plugin before-hook, state reset,
+      // config preparation (incl. model resolution), provider availability,
+      // launch context, provider createSession (the pool claim itself is
+      // logged separately as omp.runtime.acquire) and each registration step
+      // (`register.*`). Info normally; warn when the whole create took >=1s.
       const totalMs = Date.now() - createStartedAt;
       const timingFields = {
         agentId: resolvedAgentId,
         provider: storedConfig.provider,
-        deleteStateMs,
-        prepareMs,
-        clientReadyMs,
-        launchContextMs,
-        sessionMs,
-        registerMs: totalMs - sessionMs,
+        ...timer.phases,
         totalMs,
       };
       if (totalMs >= 1_000) {
@@ -4831,6 +4831,9 @@ export class AgentManager {
     config: AgentSessionConfig,
     agentId: string,
     options?: RegisterSessionOptions,
+    // Splits registration into `register.*` phases for the create-latency log;
+    // resume/restore callers keep the throwaway default.
+    timer: PhaseTimer = createPhaseTimer(),
   ): Promise<ManagedAgent> {
     let registered = false;
     try {
@@ -4841,6 +4844,7 @@ export class AgentManager {
       }
       const { initialPersistedTitle, titleAutoDerived, existingRecord, name, shortDescription } =
         await this.resolveRegisterIdentity(resolvedAgentId, config, options);
+      timer.mark("register.identityMs");
 
       const now = new Date();
       const { durableTimelineHasRows } = await this.initializeAgentTimelineForRegister({
@@ -4848,6 +4852,7 @@ export class AgentManager {
         now,
         options,
       });
+      timer.mark("register.timelineMs");
 
       const managed = this.buildManagedAgentForRegister({
         resolvedAgentId,
@@ -4891,11 +4896,14 @@ export class AgentManager {
         }
         this.refreshSessionPersistence(managed);
       }
+      timer.mark("register.historyMs");
       await this.refreshRuntimeInfo(managed, { emit: false });
       this.assertAgentRegistrationActive(managed);
+      timer.mark("register.runtimeInfoMs");
       if (!options?.publishWhenReady) {
         this.emitState(managed, { persist: false });
       }
+      timer.mark("register.emitMs");
 
       // Single combined session-state refresh + persist: refreshSessionState
       // would otherwise call getRuntimeInfo() a second time, and a second
@@ -4904,6 +4912,7 @@ export class AgentManager {
       // them into one write after both refreshes finish is safe.
       await this.refreshSessionState(managed, { emit: false, skipRuntimeInfo: true });
       this.assertAgentRegistrationActive(managed);
+      timer.mark("register.sessionStateMs");
       managed.lifecycle = "idle";
       // Restoring a stored agent is bookkeeping, not activity. Stamping now
       // rewrote lastActivityAt for every idle agent on resume.
@@ -4915,8 +4924,10 @@ export class AgentManager {
         titleAutoDerived,
       });
       this.assertAgentRegistrationActive(managed);
+      timer.mark("register.persistMs");
       this.emitState(managed, { persist: false });
       this.subscribeToSession(managed);
+      timer.mark("register.emitMs");
       return { ...managed };
     } catch (error) {
       if (!registered) {
