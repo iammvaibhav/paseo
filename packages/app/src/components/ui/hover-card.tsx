@@ -13,9 +13,11 @@ import {
 import { Dimensions, View, type Role, type StyleProp, type ViewStyle } from "react-native";
 import { FadeIn, FadeOut } from "react-native-reanimated";
 import { StyleSheet } from "react-native-unistyles";
+import { createPortal } from "react-dom";
 import { Portal } from "@gorhom/portal";
 import { useBottomSheetModalInternal } from "@gorhom/bottom-sheet";
 import {
+  getOverlayRoot,
   OverlayLayerProvider,
   useOverlayLayer,
   useWebOverlayRegistration,
@@ -363,26 +365,28 @@ function HoverCardSurface({
   );
   const surfaceStyle = useMemo(() => [styles.surface, style], [style]);
 
-  return (
-    <Portal hostName={bottomSheetInternal?.hostName}>
-      <View pointerEvents="box-none" style={[styles.portalOverlay, { zIndex: layer }]}>
-        <FloatingSurface
-          ref={contentRef}
-          entering={FadeIn.duration(80)}
-          exiting={FadeOut.duration(80)}
-          collapsable={false}
-          onLayout={handleLayout}
-          role={role}
-          accessibilityLabel={accessibilityLabel}
-          testID={testID}
-          style={surfaceStyle}
-          frameStyle={frameStyle}
-        >
-          {children}
-        </FloatingSurface>
-      </View>
-    </Portal>
+  const overlay = (
+    <View pointerEvents="box-none" style={[styles.portalOverlay, { zIndex: layer }]}>
+      <FloatingSurface
+        ref={contentRef}
+        entering={FadeIn.duration(80)}
+        exiting={FadeOut.duration(80)}
+        collapsable={false}
+        onLayout={handleLayout}
+        role={role}
+        accessibilityLabel={accessibilityLabel}
+        testID={testID}
+        style={surfaceStyle}
+        frameStyle={frameStyle}
+      >
+        {children}
+      </FloatingSurface>
+    </View>
   );
+  // On web the card goes in the shared overlay root like menus and tooltips. The app tree sits
+  // on the same plane as embedded browser panes, so a card portaled there paints under VS Code.
+  if (isWeb) return createPortal(overlay, getOverlayRoot());
+  return <Portal hostName={bottomSheetInternal?.hostName}>{overlay}</Portal>;
 }
 
 const styles = StyleSheet.create((theme) => ({
