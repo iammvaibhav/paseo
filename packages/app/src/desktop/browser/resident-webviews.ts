@@ -98,6 +98,64 @@ export function isMainFrameDocumentNavigation(event: Event): boolean {
   return navigation.isMainFrame === true && navigation.isInPlace !== true;
 }
 
+/** Delays before reloading a persistent webview whose page failed to load. */
+export const PERSISTENT_RELOAD_DELAYS_MS = [2_000, 5_000, 10_000, 30_000] as const;
+const ERR_ABORTED = -3;
+
+/**
+ * The persistent VS Code webview loads once and is never reloaded by its pane,
+ * so a page load that fails (VPN drop, laptop wake, ERR_NETWORK_CHANGED) leaves
+ * it on Chromium's error page for good, which reads as VS Code stuck loading.
+ * This retries the failed URL with backoff, and at once when the OS reports the
+ * network back. A navigation the page replaced itself (ERR_ABORTED) is no
+ * failure.
+ */
+function registerPersistentLoadRecovery(webview: BrowserWebviewElement): void {
+  let failedUrl: string | null = null;
+  let attempt = 0;
+  let timer: number | undefined;
+  const retry = () => {
+    timer = undefined;
+    if (failedUrl && webview.isConnected) {
+      webview.src = failedUrl;
+    }
+  };
+  webview.addEventListener("did-fail-load", (event) => {
+    const failure = event as Event & {
+      errorCode?: unknown;
+      isMainFrame?: unknown;
+      validatedURL?: unknown;
+    };
+    if (
+      failure.isMainFrame !== true ||
+      failure.errorCode === ERR_ABORTED ||
+      typeof failure.validatedURL !== "string" ||
+      !/^https?:/.test(failure.validatedURL)
+    ) {
+      return;
+    }
+    failedUrl = failure.validatedURL;
+    const delay =
+      PERSISTENT_RELOAD_DELAYS_MS[Math.min(attempt, PERSISTENT_RELOAD_DELAYS_MS.length - 1)];
+    attempt += 1;
+    window.clearTimeout(timer);
+    timer = window.setTimeout(retry, delay);
+  });
+  webview.addEventListener("did-finish-load", () => {
+    const loadedUrl = (webview as BrowserWebviewElement & { getURL?: () => string }).getURL?.();
+    if (loadedUrl && /^https?:/.test(loadedUrl)) {
+      failedUrl = null;
+      attempt = 0;
+    }
+  });
+  window.addEventListener("online", () => {
+    if (failedUrl) {
+      window.clearTimeout(timer);
+      retry();
+    }
+  });
+}
+
 function registerBrowserReadiness(webview: HTMLElement): void {
   webview.addEventListener("did-start-navigation", (event) => {
     if (!isMainFrameDocumentNavigation(event)) {
@@ -470,6 +528,7 @@ export function ensurePersistentBrowserWebview(input: {
     initialUrl: input.url,
     profileHost: input.profileHost,
   });
+  registerPersistentLoadRecovery(webview);
   wrapper.appendChild(webview);
   ownerDocument.body.appendChild(wrapper);
 

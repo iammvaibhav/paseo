@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   applyInactiveBrowserWebviewViewport,
   type BrowserWebviewProfileHost,
@@ -493,5 +493,57 @@ describe("resident browser webviews", () => {
     expect(wrapper?.style.height).toBe("1px");
     expect(wrapper?.style.zIndex).toBe("0");
     expect(isBrowserWebviewDomReady(webview as HTMLElement)).toBe(true);
+  });
+
+  it("reloads a persistent webview whose page failed to load, backing off until it loads", () => {
+    vi.useFakeTimers();
+    try {
+      const url = "http://iammvaibhav:8765/?folder=%2Frepo";
+      const webview = ensurePersistentBrowserWebview({
+        browserId: "browser-persistent-retry",
+        url,
+        profileHost,
+      }) as HTMLElement & { src: string; getURL?: () => string };
+      const fail = (errorCode: number, isMainFrame = true) =>
+        webview.dispatchEvent(
+          Object.assign(new Event("did-fail-load"), { errorCode, isMainFrame, validatedURL: url }),
+        );
+
+      // A navigation the page replaced, or a failed subframe, is no failure.
+      webview.src = "chrome-error://chromewebdata/";
+      fail(-3);
+      fail(-118, false);
+      vi.advanceTimersByTime(60_000);
+      expect(webview.src).toBe("chrome-error://chromewebdata/");
+
+      fail(-21); // ERR_NETWORK_CHANGED
+      vi.advanceTimersByTime(1_999);
+      expect(webview.src).toBe("chrome-error://chromewebdata/");
+      vi.advanceTimersByTime(1);
+      expect(webview.src).toBe(url);
+
+      webview.src = "chrome-error://chromewebdata/";
+      fail(-118); // ERR_CONNECTION_TIMED_OUT: second failure waits longer
+      vi.advanceTimersByTime(4_999);
+      expect(webview.src).toBe("chrome-error://chromewebdata/");
+      vi.advanceTimersByTime(1);
+      expect(webview.src).toBe(url);
+
+      // Loaded: the next failure starts from the shortest delay again.
+      webview.getURL = () => url;
+      webview.dispatchEvent(new Event("did-finish-load"));
+      webview.src = "chrome-error://chromewebdata/";
+      fail(-118);
+      vi.advanceTimersByTime(2_000);
+      expect(webview.src).toBe(url);
+
+      // The network coming back retries at once.
+      webview.src = "chrome-error://chromewebdata/";
+      fail(-106); // ERR_INTERNET_DISCONNECTED
+      window.dispatchEvent(new Event("online"));
+      expect(webview.src).toBe(url);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

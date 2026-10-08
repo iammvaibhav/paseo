@@ -378,6 +378,11 @@ function buildBridgePostScript(route: string, payload: Record<string, unknown>):
     const payload = ${JSON.stringify(payload)};
     const folder = new URL(window.location.href).searchParams.get("folder");
     if (folder) payload.folder = folder;
+    // Chromium's error page (chrome-error://) after a failed load: no bridge
+    // behind it, and the persistent webview reloads itself.
+    if (!/^https?:$/.test(window.location.protocol)) {
+      return { ok: false, error: "page not loaded" };
+    }
     const deadline = Date.now() + 15000;
     let last = { ok: false, error: "bridge unavailable" };
     while (Date.now() < deadline) {
