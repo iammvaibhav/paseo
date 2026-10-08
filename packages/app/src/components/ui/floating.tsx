@@ -21,6 +21,7 @@ import {
 import Animated from "react-native-reanimated";
 import { isWeb } from "@/constants/platform";
 import { useGlassTreatment } from "@/appearance/glass";
+import { overlapsVisibleWebview } from "@/components/ui/webview-overlap";
 import { inlineUnistylesStyle } from "@/styles/unistyles-inline-style";
 
 export interface FloatingSurfaceProps extends Omit<ComponentProps<typeof Animated.View>, "style"> {
@@ -68,7 +69,8 @@ function assignRef<T>(ref: ForwardedRef<T>, value: T | null): void {
 }
 
 /**
- * Whether the surface sits over an embedded browser pane (`<webview>`, such as VS Code Web).
+ * Whether the surface sits over an embedded browser pane (`<webview>`, such as VS Code Web)
+ * that is on screen; a parked or clipped-away webview does not count.
  * A glass surface's frost cannot blur a webview's content, so there it needs a dense fill.
  * Re-checked whenever the surface moves.
  */
@@ -82,18 +84,7 @@ function useOverlapsWebview(
     if (!isWeb || !enabled) return;
     const node = nodeRef.current as unknown;
     if (!(node instanceof HTMLElement)) return;
-    const rect = node.getBoundingClientRect();
-    const next = Array.from(document.querySelectorAll("webview")).some((webview) => {
-      const other = webview.getBoundingClientRect();
-      return (
-        other.width > 0 &&
-        other.height > 0 &&
-        rect.left < other.right &&
-        rect.right > other.left &&
-        rect.top < other.bottom &&
-        rect.bottom > other.top
-      );
-    });
+    const next = overlapsVisibleWebview(node.getBoundingClientRect(), node.ownerDocument);
     setOverlaps(next);
   }, [enabled, nodeRef, position]);
   return overlaps;
