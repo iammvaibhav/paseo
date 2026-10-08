@@ -20,6 +20,7 @@ import type { CreatePaseoWorktreeWorkflowResult } from "../../worktree-session.j
 import { deriveProjectKey } from "../../project-key.js";
 import { areEquivalentPaths, createRealpathAwarePathMatcher } from "../../../utils/path.js";
 import type { UntrustedWorkspaceSource } from "../../workspace-automation-gate.js";
+import type { PhaseTimer } from "../../../utils/phase-timer.js";
 
 export interface ResolveOrCreateWorkspaceIdInput {
   createdWorktree: CreatePaseoWorktreeWorkflowResult | null;
@@ -67,6 +68,7 @@ export interface WorkspaceProvisioningService {
   ): Promise<PersistedWorkspaceRecord>;
   createWorkspaceForWorktree(
     input: CreateWorktreeWorkspaceInput,
+    options?: { timer?: PhaseTimer },
   ): Promise<PersistedWorkspaceRecord>;
   findOrCreateProjectForDirectory(cwd: string): Promise<PersistedProjectRecord>;
   ensureWorkspaceRecordUnarchived(
@@ -243,6 +245,7 @@ export function createWorkspaceProvisioningService(deps: {
 
   async function createWorkspaceForWorktree(
     input: CreateWorktreeWorkspaceInput,
+    options?: { timer?: PhaseTimer },
   ): Promise<PersistedWorkspaceRecord> {
     const sourceCwd = resolve(input.sourceCwd);
     const repoRoot = resolve(input.repoRoot);
@@ -253,6 +256,7 @@ export function createWorkspaceProvisioningService(deps: {
       projectId: input.projectId,
       repoRoot,
     });
+    options?.timer?.mark("resolveProjectMs");
     const timestamp = new Date().toISOString();
     const workspace = createPersistedWorkspaceRecord({
       workspaceId: input.workspaceId ?? generateWorkspaceId(),
@@ -272,8 +276,10 @@ export function createWorkspaceProvisioningService(deps: {
     });
     await workspaceRegistry.upsert(workspace, {
       expectsInitialAgent: input.expectsInitialAgent,
+      ...(options?.timer ? { timer: options.timer } : {}),
     });
     deps.lifecycle?.emit("workspace.created", { workspace: describeHookWorkspace(workspace) });
+    options?.timer?.mark("lifecycleMs");
     return workspace;
   }
 

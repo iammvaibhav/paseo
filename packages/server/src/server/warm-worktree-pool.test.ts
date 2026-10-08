@@ -268,6 +268,55 @@ describe("WarmWorktreePoolManager", () => {
     await manager.stop();
   });
 
+  test("cuts warm trees from origin's tip and claims onto origin's base without fetching", async () => {
+    const remoteDir = join(tempBase, "origin.git");
+    execSync(`git init --bare -b main "${remoteDir}"`, { stdio: "ignore" });
+    execSync(`git remote add origin "${remoteDir}"`, { cwd: repoDir, stdio: "ignore" });
+    execSync("git push -q origin main", { cwd: repoDir, stdio: "ignore" });
+    // Origin moves ahead of the local branch; the local fetch sees it.
+    const otherClone = join(tempBase, "other");
+    execSync(`git clone -q "${remoteDir}" "${otherClone}"`, { stdio: "ignore" });
+    execSync(
+      "git -c user.name=o -c user.email=o@o commit -q --allow-empty -m 'origin ahead' && git push -q origin main",
+      { cwd: otherClone, stdio: "ignore" },
+    );
+    execSync("git fetch -q origin", { cwd: repoDir, stdio: "ignore" });
+    const originTip = execSync("git rev-parse origin/main", { cwd: repoDir }).toString().trim();
+
+    const manager = new WarmWorktreePoolManager({
+      paseoHome,
+      worktreesRoot,
+      targetIdle: 1,
+      enabled: true,
+      logger,
+      maintenanceIntervalMs: 0,
+    });
+    await manager.replenish(repoDir);
+    const warmPath = manager.getStatus().pools[0].worktrees[0].path;
+    expect(execSync("git rev-parse HEAD", { cwd: warmPath }).toString().trim()).toBe(originTip);
+
+    // Origin moves again, but nothing fetches: the claim must not reach the
+    // network, so it branches from the cached tracking ref with setup reused.
+    execSync(
+      "git -c user.name=o -c user.email=o@o commit -q --allow-empty -m 'unfetched' && git push -q origin main",
+      { cwd: otherClone, stdio: "ignore" },
+    );
+    const result = await manager.claim({
+      repoRoot: repoDir,
+      worktreeSlug: "from-origin",
+      source: { kind: "branch-off", branchName: "from-origin", baseBranch: "origin/main" },
+      paseoHome,
+      worktreesRoot,
+    });
+
+    expect(result?.setupPrepared).toBe(true);
+    expect(execSync("git rev-parse HEAD", { cwd: warmPath }).toString().trim()).toBe(originTip);
+    expect(execSync("git rev-parse origin/main", { cwd: repoDir }).toString().trim()).toBe(
+      originTip,
+    );
+    await manager.stop();
+  });
+
   test("a stale warm tree is still claimable but reports its setup as not prepared", async () => {
     const manager = new WarmWorktreePoolManager({
       paseoHome,
@@ -506,7 +555,7 @@ describe("WarmWorktreePoolManager", () => {
     await manager.stop();
   });
 
-  test("does not start replacement provisioning until the claim's git retarget finishes", async () => {
+  test("refills only after the claimed create has had its head start", async () => {
     const lines: Array<{ msg?: string; time?: number }> = [];
     const capturingLogger = pino(
       { level: "info" },
@@ -520,6 +569,7 @@ describe("WarmWorktreePoolManager", () => {
         },
       },
     );
+    const refillAfterClaimDelayMs = 300;
 
     const manager = new WarmWorktreePoolManager({
       paseoHome,
@@ -527,6 +577,8 @@ describe("WarmWorktreePoolManager", () => {
       targetIdle: 1,
       enabled: true,
       logger: capturingLogger,
+      maintenanceIntervalMs: 0,
+      refillAfterClaimDelayMs,
     });
 
     await manager.replenish(repoDir);
@@ -543,19 +595,19 @@ describe("WarmWorktreePoolManager", () => {
 
     const claimed = lines.find((line) => line.msg === "Successfully claimed warm worktree");
     expect(claimed).toBeTruthy();
-
-    const deadline = Date.now() + 2_000;
-    let secondProvision: { msg?: string; time?: number } | undefined;
-    while (Date.now() < deadline) {
-      const provisions = lines.filter((line) => line.msg === "Provisioning idle warm worktree");
-      if (provisions.length >= 2) {
-        secondProvision = provisions[1];
-        break;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-    expect(secondProvision).toBeTruthy();
-    expect(Number(secondProvision?.time ?? 0)).toBeGreaterThanOrEqual(Number(claimed?.time ?? 0));
+    // Waits on the refill the claim schedules; the delay is the behavior under test.
+    const isProvision = (line: { msg?: string }) => line.msg === "Provisioning idle warm worktree";
+    const secondProvision = await vi.waitFor(
+      () => {
+        const provision = lines.filter(isProvision)[1];
+        if (!provision) throw new Error("refill has not started");
+        return provision;
+      },
+      { timeout: 5_000 },
+    );
+    expect(Number(secondProvision.time)).toBeGreaterThanOrEqual(
+      Number(claimed?.time ?? 0) + refillAfterClaimDelayMs,
+    );
 
     await manager.stop();
   });

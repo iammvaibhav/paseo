@@ -609,6 +609,7 @@ function wrapClientProvider(
     isAvailable: (signal, options) => inner.isAvailable(signal, options),
     getDiagnostic: inner.getDiagnostic?.bind(inner),
     prewarmCwd: inner.prewarmCwd?.bind(inner),
+    retire: inner.retire?.bind(inner),
   };
 }
 

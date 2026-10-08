@@ -28,7 +28,6 @@ import {
   resolveSnapshotCwd,
 } from "./provider-snapshot-manager.js";
 import { OpenCodeAgentClient } from "./providers/opencode-agent.js";
-import { OmpAgentClient } from "./providers/omp/agent.js";
 
 const TEST_CAPABILITIES = {
   supportsStreaming: false,
@@ -1685,26 +1684,71 @@ describe("ProviderSnapshotManager applyMutableProviderConfig", () => {
     }
   });
 
-  test("shuts down retired provider clients when the registry is rebuilt", async () => {
-    const shutdown = vi.spyOn(OmpAgentClient.prototype, "shutdown").mockResolvedValue(undefined);
+  test("retires, without shutting down, a client replaced by a registry rebuild", () => {
+    const providerConfig = (label: string) => ({
+      claude: { enabled: false },
+      codex: { enabled: true, label },
+      copilot: { enabled: false },
+      omp: { enabled: false },
+      opencode: { enabled: false },
+      pi: { enabled: false },
+    });
     const manager = new ProviderSnapshotManager({
       logger: createTestLogger(),
-      providerOverrides: {
-        claude: { enabled: false },
-        codex: { enabled: false },
-        copilot: { enabled: false },
-        opencode: { enabled: false },
-        pi: { enabled: false },
-        omp: { enabled: true },
-      },
+      providerOverrides: providerConfig("Initial"),
     });
     try {
-      expect(manager.getAgentManagerProviderState().clients.omp).toBeInstanceOf(OmpAgentClient);
-      manager.applyMutableProviderConfig({ omp: { enabled: true } });
-      await Promise.resolve();
-      expect(shutdown).toHaveBeenCalled();
+      const replaced = manager.getAgentManagerProviderState().clients.codex;
+      if (!replaced) throw new Error("Expected materialized Codex client");
+      const retire = vi.fn(async () => undefined);
+      const shutdown = vi.fn(async () => undefined);
+      replaced.retire = retire;
+      replaced.shutdown = shutdown;
+
+      manager.applyMutableProviderConfig(providerConfig("Renamed"), { replace: true });
+
+      expect(manager.getAgentManagerProviderState().clients.codex).not.toBe(replaced);
+      // Idle resources go now; live sessions on the old client keep running
+      // until daemon shutdown.
+      expect(retire).toHaveBeenCalledTimes(1);
+      expect(shutdown).not.toHaveBeenCalled();
     } finally {
-      shutdown.mockRestore();
+      manager.destroy();
+    }
+  });
+
+  test("a rolled-back provider config retires the clients it created", () => {
+    const providerConfig = (label: string) => ({
+      claude: { enabled: false },
+      codex: { enabled: true, label },
+      copilot: { enabled: false },
+      omp: { enabled: false },
+      opencode: { enabled: false },
+      pi: { enabled: false },
+    });
+    const manager = new ProviderSnapshotManager({
+      logger: createTestLogger(),
+      providerOverrides: providerConfig("Initial"),
+    });
+    try {
+      const installed = manager.getAgentManagerProviderState().clients.codex;
+      if (!installed) throw new Error("Expected materialized Codex client");
+      const installedRetire = vi.fn(async () => undefined);
+      installed.retire = installedRetire;
+      const prepared = manager.prepareMutableProviderConfig(providerConfig("Rolled back"), {
+        replace: true,
+      });
+      const discardedClient = prepared.agentManagerState.clients.codex;
+      if (!discardedClient) throw new Error("Expected a prepared Codex client");
+      const discardedRetire = vi.fn(async () => undefined);
+      discardedClient.retire = discardedRetire;
+
+      prepared.discard();
+
+      expect(discardedRetire).toHaveBeenCalledTimes(1);
+      expect(installedRetire).not.toHaveBeenCalled();
+      expect(manager.getAgentManagerProviderState().clients.codex).toBe(installed);
+    } finally {
       manager.destroy();
     }
   });

@@ -28,6 +28,7 @@ import { resolveFirstAgentPromptTitle } from "./agent/create-agent-title.js";
 import { buildAgentBranchNameSeed } from "./agent/prompt-attachments.js";
 import type { FirstAgentContext } from "@getpaseo/protocol/messages";
 import { runGitCommand, runWithGitCommandPriority } from "../utils/run-git-command.js";
+import { createPhaseTimer } from "../utils/phase-timer.js";
 
 export interface CreatePaseoWorktreeInput extends CreateWorktreeCoreInput {
   workspaceId?: string;
@@ -39,6 +40,12 @@ export interface CreatePaseoWorktreeTiming {
   planCwdMs: number;
   coreMs: number;
   provisionMs: number;
+  /**
+   * Milliseconds per sub-phase, keyed `core.*` (repo root, intent, warm claim
+   * phases or cold fetch/create) and `provision.*` (directory check, config
+   * seed, project resolution, registry persist + listener notify).
+   */
+  phases: Record<string, number>;
 }
 
 export interface CreatePaseoWorktreeResult {
@@ -86,6 +93,7 @@ async function createPaseoWorktreeWithPriority(
   const coreStartedAt = Date.now();
   const createdWorktree = await createWorktreeCore(input, deps);
   const provisionStartedAt = Date.now();
+  const provisionTimer = createPhaseTimer();
   try {
     maybeMarkFirstAgentBranchAutoNameEligible({ createdWorktree });
     const workspaceCwd = mapWorkspaceRelativeCwdToWorktree({
@@ -95,6 +103,7 @@ async function createPaseoWorktreeWithPriority(
     if (!(await isDirectory(workspaceCwd))) {
       throw new Error(`Selected project directory is missing from the worktree: ${workspaceCwd}`);
     }
+    provisionTimer.mark("verifyDirMs");
 
     if (createdWorktree.created) {
       await seedPaseoConfigFile({
@@ -102,31 +111,36 @@ async function createPaseoWorktreeWithPriority(
         targetCwd: workspaceCwd,
       });
     }
-    const workspace = await deps.workspaceProvisioning.createWorkspaceForWorktree({
-      sourceCwd: workspaceCwdPlan.inputCwd,
-      projectId: input.projectId,
-      workspaceId: input.workspaceId,
-      repoRoot: createdWorktree.repoRoot,
-      cwd: workspaceCwd,
-      worktreeRoot: createdWorktree.worktree.worktreePath,
-      branch: createdWorktree.worktree.branchName || null,
-      baseBranch: createdWorktree.worktree.comparisonBaseRef,
-      title: input.title?.trim() || resolveFirstAgentPromptTitle(input.firstAgentContext),
-      expectsInitialAgent: Boolean(input.firstAgentContext),
-      ...(createdWorktree.intent.kind === "checkout-change-request" &&
-      createdWorktree.intent.headRepository
-        ? {
-            untrustedSource: {
-              kind: "change_request" as const,
-              forge: createdWorktree.intent.forge,
-              number: createdWorktree.intent.changeRequestNumber,
-              headRepository: createdWorktree.intent.headRepository,
-            },
-          }
-        : {}),
-    });
+    provisionTimer.mark("seedConfigMs");
+    const workspace = await deps.workspaceProvisioning.createWorkspaceForWorktree(
+      {
+        sourceCwd: workspaceCwdPlan.inputCwd,
+        projectId: input.projectId,
+        workspaceId: input.workspaceId,
+        repoRoot: createdWorktree.repoRoot,
+        cwd: workspaceCwd,
+        worktreeRoot: createdWorktree.worktree.worktreePath,
+        branch: createdWorktree.worktree.branchName || null,
+        baseBranch: createdWorktree.worktree.comparisonBaseRef,
+        title: input.title?.trim() || resolveFirstAgentPromptTitle(input.firstAgentContext),
+        expectsInitialAgent: Boolean(input.firstAgentContext),
+        ...(createdWorktree.intent.kind === "checkout-change-request" &&
+        createdWorktree.intent.headRepository
+          ? {
+              untrustedSource: {
+                kind: "change_request" as const,
+                forge: createdWorktree.intent.forge,
+                number: createdWorktree.intent.changeRequestNumber,
+                headRepository: createdWorktree.intent.headRepository,
+              },
+            }
+          : {}),
+      },
+      { timer: provisionTimer },
+    );
 
     deps.github.invalidate({ cwd: createdWorktree.worktree.worktreePath });
+    provisionTimer.mark("invalidateMs");
 
     return {
       worktree: createdWorktree.worktree,
@@ -143,6 +157,14 @@ async function createPaseoWorktreeWithPriority(
         planCwdMs: coreStartedAt - planStartedAt,
         coreMs: provisionStartedAt - coreStartedAt,
         provisionMs: Date.now() - provisionStartedAt,
+        phases: {
+          ...Object.fromEntries(
+            Object.entries(createdWorktree.timing).map(([name, ms]) => [`core.${name}`, ms]),
+          ),
+          ...Object.fromEntries(
+            Object.entries(provisionTimer.phases).map(([name, ms]) => [`provision.${name}`, ms]),
+          ),
+        },
       },
     };
   } catch (error) {

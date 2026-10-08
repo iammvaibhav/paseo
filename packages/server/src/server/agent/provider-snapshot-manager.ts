@@ -173,6 +173,8 @@ interface ApplyMutableProviderConfigOptions {
 export interface PreparedMutableProviderConfig {
   agentManagerState: AgentManagerProviderState;
   commit(): void;
+  /** Rolled back instead of committed: retire the clients this prepare created. */
+  discard(): void;
 }
 
 interface ProviderSnapshotProviderOptions {
@@ -745,6 +747,10 @@ export class ProviderSnapshotManager {
         this.providerOverrides = providerOverrides;
         this.installGeneration(generation, clients, changed, catalogChanged);
       },
+      discard: () => {
+        const current = new Set(Object.values(this.providerClients));
+        this.retireClients(Object.values(clients).filter((client) => !current.has(client)));
+      },
     };
   }
 
@@ -770,6 +776,7 @@ export class ProviderSnapshotManager {
       }
     }
     this.generation = generation;
+    this.retireReplacedClients(clients);
     this.providerClients = clients;
     this.warnUnknownProviderOverrides();
     for (const [key, catalogs] of this.catalogs) {
@@ -791,6 +798,40 @@ export class ProviderSnapshotManager {
         resolveProviderSnapshotTarget(cwd === GLOBAL_PROVIDER_SNAPSHOT_KEY ? undefined : cwd),
         providers,
       );
+    }
+  }
+
+  /**
+   * Retire clients the new generation replaced. A replaced client keeps
+   * serving the live sessions it already started, so it is not shut down
+   * (that waits for daemon shutdown via `ownedClients`). It does release what
+   * no live session uses: the OMP warm pool's idle processes, refill timer and
+   * config watchers. Without this every settings save left one more pool
+   * refilling forever. Injected extra clients belong to the caller.
+   */
+  private retireReplacedClients(next: Record<AgentProvider, AgentClient>): void {
+    const kept = new Set(Object.values(next));
+    this.retireClients(Object.values(this.providerClients).filter((client) => !kept.has(client)));
+  }
+
+  private retireClients(candidates: ReadonlyArray<AgentClient | undefined>): void {
+    const injected = new Set(Object.values(this.extraClients));
+    const retired = candidates.filter(
+      (client): client is AgentClient =>
+        client !== undefined && !injected.has(client) && !!client.retire,
+    );
+    if (retired.length === 0) return;
+    this.logger.info(
+      { providers: retired.map((client) => client.provider) },
+      "Retiring provider clients replaced by a registry rebuild",
+    );
+    for (const client of retired) {
+      void client.retire?.().catch((error: unknown) => {
+        this.logger.warn(
+          { err: error, provider: client.provider },
+          "Provider client retire failed",
+        );
+      });
     }
   }
 

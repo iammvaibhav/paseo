@@ -5,6 +5,7 @@ import { z } from "zod";
 
 import { writeJsonFileAtomic } from "./atomic-file.js";
 import { areEquivalentPaths } from "../utils/path.js";
+import type { PhaseTimer } from "../utils/phase-timer.js";
 import {
   generateProjectId,
   type PersistedProjectKind,
@@ -132,6 +133,8 @@ export interface WorkspaceMutation {
 
 export interface WorkspaceMutationContext {
   expectsInitialAgent?: boolean;
+  /** Splits the upsert into `registry.persistMs` and `registry.notifyMs` for latency logs. */
+  timer?: PhaseTimer;
 }
 
 export interface WorkspaceArchiveContext {
@@ -571,12 +574,14 @@ export class FileBackedWorkspaceRegistry
     context?: WorkspaceMutationContext,
   ): Promise<void> {
     await super.upsert(record);
+    context?.timer?.mark("registry.persistMs");
     await this.notifyMutation({
       kind: "upsert",
       workspaceId: record.workspaceId,
       workspace: record,
       ...(context?.expectsInitialAgent ? { expectsInitialAgent: true } : {}),
     });
+    context?.timer?.mark("registry.notifyMs");
   }
 
   override async archive(

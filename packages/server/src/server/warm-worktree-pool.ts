@@ -28,6 +28,7 @@ import {
   writePaseoWorktreeMetadata,
   writePaseoWorktreeRuntimeMetadata,
 } from "../utils/worktree-metadata.js";
+import { createPhaseTimer } from "../utils/phase-timer.js";
 import {
   listWarmWorktreeMarkedPaths,
   readWarmWorktreeMarker,
@@ -67,6 +68,8 @@ export interface WarmWorktreeClaimResult {
    * the commit it now has checked out, so the caller must not run it again.
    */
   setupPrepared: boolean;
+  /** Milliseconds per claim phase (reserveMs, planMs, branchMs, …) for create-latency logs. */
+  timing: Record<string, number>;
 }
 
 export interface WarmWorktreePoolOptions {
@@ -83,6 +86,8 @@ export interface WarmWorktreePoolOptions {
   resolveDefaultBranch?: (repoRoot: string) => Promise<string>;
   now?: () => Date;
   maintenanceIntervalMs?: number;
+  /** Delay between a successful claim and its refill; defaults to REFILL_AFTER_CLAIM_DELAY_MS. */
+  refillAfterClaimDelayMs?: number;
   readConfig?: () => {
     enabled?: boolean;
     targetIdle?: number;
@@ -125,6 +130,8 @@ const DEFAULT_MAINTENANCE_INTERVAL_MS = 30_000;
 // one attempt every 15 minutes instead of one every 30 seconds.
 const PROVISION_BACKOFF_BASE_MS = 60_000;
 const PROVISION_BACKOFF_MAX_MS = 900_000;
+/** How long a successful claim waits before refilling; covers the rest of its create. */
+const REFILL_AFTER_CLAIM_DELAY_MS = 3_000;
 /** Warm trees from before markers were named `.warm-<id>` so a claim could `git worktree move` them. */
 const LEGACY_WARM_SLUG_PREFIX = ".warm-";
 
@@ -171,6 +178,7 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
   private readonly resolveDefaultBranchOverride?: (repoRoot: string) => Promise<string>;
   private readonly now: () => Date;
   private readonly maintenanceIntervalMs: number;
+  private readonly refillAfterClaimDelayMs: number;
   private readonly readConfig?: () => { enabled?: boolean; targetIdle?: number; baseRef?: string };
 
   private readonly pools = new Map<string, WarmWorktreeRecord[]>();
@@ -193,6 +201,7 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
     this.resolveDefaultBranchOverride = options.resolveDefaultBranch;
     this.now = options.now ?? (() => new Date());
     this.maintenanceIntervalMs = options.maintenanceIntervalMs ?? DEFAULT_MAINTENANCE_INTERVAL_MS;
+    this.refillAfterClaimDelayMs = options.refillAfterClaimDelayMs ?? REFILL_AFTER_CLAIM_DELAY_MS;
     this.readConfig = options.readConfig;
   }
 
@@ -231,7 +240,7 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
     if (this.isStopped) {
       return null;
     }
-
+    const timer = createPhaseTimer();
     const repoRoot = normalizePathForOwnership(resolve(options.repoRoot));
     if (!this.resolvePoolEnabled(repoRoot)) {
       return null;
@@ -299,18 +308,23 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
     // `/move` then missed its budget.
     const claimedAt = this.now().getTime();
     const worktreePath = reserved.worktreePath;
+    timer.mark("reserveMs");
     try {
       const sourcePlan = await resolveWorktreeSourcePlan({
         cwd: repoRoot,
         source: options.source,
         desiredSlug: options.worktreeSlug,
+        // The tree is already checked out; a network fetch here was ~1.5s of
+        // every warm create. The background base sync keeps origin refs fresh.
+        refreshRemoteBase: false,
       });
+      timer.mark("planMs");
 
       const headAlreadyAtTarget = await this.applyBranchToClaimedWorktree({
         worktreePath,
         sourcePlan,
       });
-
+      timer.mark("branchMs");
       if (sourcePlan.pushRemote) {
         await configureWorktreePushRemote({
           cwd: repoRoot,
@@ -326,6 +340,7 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
           remote: sourcePlan.trackingRemote,
         });
       }
+      timer.mark("remotesMs");
 
       writeClaimedWorktreeMetadata(worktreePath, sourcePlan);
 
@@ -339,6 +354,7 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
         headAlreadyAtTarget &&
         reserved.setupFingerprint !== null &&
         reserved.setupFingerprint === computeWorktreeSetupFingerprint(worktreePath);
+      timer.mark("metadataMs");
 
       if (options.runSetup === true && !setupPrepared) {
         await runWorktreeSetupCommands({
@@ -350,6 +366,7 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
 
       // Unmarking makes the tree a regular Paseo worktree, visible in listings.
       removeWarmWorktreeMarker(worktreePath);
+      timer.mark("setupMs");
 
       this.logger.info(
         {
@@ -358,11 +375,18 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
           branchName: sourcePlan.branchName,
           setupPrepared,
           durationMs: this.now().getTime() - claimedAt,
+          phases: timer.phases,
         },
         "Successfully claimed warm worktree",
       );
 
-      void this.replenish(repoRoot).catch(() => undefined);
+      // Refill after the create this claim serves has finished: `git worktree
+      // add` and the setup spawns compete with the workspace registry write and
+      // the agent start for this same create.
+      const refill = setTimeout(() => {
+        void this.replenish(repoRoot).catch(() => undefined);
+      }, this.refillAfterClaimDelayMs);
+      refill.unref();
 
       return {
         worktree: {
@@ -372,6 +396,7 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
         },
         claimed: true,
         setupPrepared,
+        timing: timer.phases,
       };
     } catch (error) {
       this.logger.error(
@@ -644,18 +669,33 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
     return this.resolveDefaultBranch(repoRoot);
   }
 
-  /** The ref warm trees are cut from and the commit it points at right now. */
+  /**
+   * The ref warm trees are cut from and the commit it points at right now.
+   * A bare branch name resolves to its `origin/` tracking ref when one exists:
+   * creates branch from what origin advertises (preferOriginDefaultBranch and
+   * the app's upstream ref), so a tree cut from a stale local branch would
+   * miss the claim's fast path and rerun setup every time.
+   */
   private async resolveWarmBase(
     repoRoot: string,
   ): Promise<{ sourceRef: string; baseSha: string } | null> {
     try {
       const sourceRef = await this.resolveWarmSourceRef(repoRoot);
-      const { stdout } = await runGitCommand(
-        ["rev-parse", "--verify", "--quiet", `${sourceRef}^{commit}`],
-        { cwd: repoRoot, timeout: 5_000 },
-      );
-      const baseSha = stdout.trim();
-      return baseSha ? { sourceRef, baseSha } : null;
+      const candidates =
+        sourceRef.startsWith("refs/") || sourceRef.startsWith("origin/")
+          ? [sourceRef]
+          : [`refs/remotes/origin/${sourceRef}`, sourceRef];
+      for (const ref of candidates) {
+        const { stdout } = await runGitCommand(
+          ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`],
+          { cwd: repoRoot, timeout: 5_000, acceptExitCodes: [0, 1, 128] },
+        );
+        const baseSha = stdout.trim();
+        if (baseSha) {
+          return { sourceRef, baseSha };
+        }
+      }
+      return null;
     } catch {
       return null;
     }

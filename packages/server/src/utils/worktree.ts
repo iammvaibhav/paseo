@@ -1329,6 +1329,13 @@ export interface ResolveWorktreeSourcePlanOptions {
   cwd: string;
   source: WorktreeSource;
   desiredSlug: string;
+  /**
+   * Fetch a remote-tracking base before branching off it (default true). The
+   * warm-pool claim passes false: that fetch is a network round trip (~1.5s to
+   * GitHub) on the create's critical path, and the background base sync keeps
+   * the remote-tracking ref fresh, the same fallback a timed-out fetch uses.
+   */
+  refreshRemoteBase?: boolean;
 }
 
 export interface WorktreeSourcePlan {
@@ -1400,6 +1407,7 @@ export async function resolveBranchOffWorktreeSourcePlan(
   cwd: string,
   source: Extract<WorktreeSource, { kind: "branch-off" }>,
   desiredSlug: string,
+  options: { refreshRemoteBase?: boolean } = {},
 ): Promise<WorktreeSourcePlan> {
   const branchName = source.branchName;
   await validateGitBranchName(cwd, branchName);
@@ -1407,7 +1415,9 @@ export async function resolveBranchOffWorktreeSourcePlan(
   const resolvedBaseBranch = await resolveBaseBranchForWorktree(cwd, source.baseBranch);
   const branchExists = await localBranchExists(cwd, branchName);
   const base = branchExists ? branchName : resolvedBaseBranch;
-  await refreshRemoteTrackingBaseRef(cwd, base);
+  if (options.refreshRemoteBase !== false) {
+    await refreshRemoteTrackingBaseRef(cwd, base);
+  }
   const candidateBranch = branchExists ? desiredSlug : branchName;
   const newBranchName = await resolveUniqueLocalBranchName(cwd, candidateBranch);
 
@@ -1427,10 +1437,11 @@ export async function resolveWorktreeSourcePlan({
   cwd,
   source,
   desiredSlug,
+  refreshRemoteBase,
 }: ResolveWorktreeSourcePlanOptions): Promise<WorktreeSourcePlan> {
   switch (source.kind) {
     case "branch-off":
-      return resolveBranchOffWorktreeSourcePlan(cwd, source, desiredSlug);
+      return resolveBranchOffWorktreeSourcePlan(cwd, source, desiredSlug, { refreshRemoteBase });
     case "restore":
       return resolveRestoredWorktreeSourcePlan(cwd, source);
     case "restore-from-base":

@@ -17,6 +17,7 @@ import type { ChangeRequestCheckoutSource, FirstAgentContext } from "@getpaseo/p
 import type { WorkspaceGitService } from "./workspace-git-service.js";
 import { branchNameFromRef } from "../utils/worktree-metadata.js";
 import { runGitCommand, runWithGitCommandPriority } from "../utils/run-git-command.js";
+import { createPhaseTimer } from "../utils/phase-timer.js";
 import type { WarmWorktreePool } from "./warm-worktree-pool.js";
 export interface CreateWorktreeCoreInput {
   cwd: string;
@@ -53,6 +54,11 @@ export interface CreateWorktreeCoreResult {
   created: boolean;
   /** Set when a warm-pool tree already ran worktree.setup at this commit; skip running it again. */
   setupPrepared?: true;
+  /**
+   * Milliseconds per phase: repoRootMs, intentMs, then either warm claim
+   * phases (prefixed `claim.`) or fetchMs + createMs for a cold create.
+   */
+  timing: Record<string, number>;
 }
 
 export async function createWorktreeCore(
@@ -95,7 +101,9 @@ async function createWorktreeCoreWithPriority(
   input: CreateWorktreeCoreInput,
   deps: CreateWorktreeCoreDeps,
 ): Promise<CreateWorktreeCoreResult> {
+  const timer = createPhaseTimer();
   const repoRoot = await resolveWorktreeRepoRoot(input, deps.workspaceGitService);
+  timer.mark("repoRootMs");
   const requestedWorktreeSlug = input.worktreeSlug
     ? normalizeWorktreeSlug(input.worktreeSlug)
     : undefined;
@@ -125,6 +133,7 @@ async function createWorktreeCoreWithPriority(
       break;
     }
   }
+  timer.mark("intentMs");
 
   // Claim before the origin fetch. A warm worktree is already checked out at a
   // recent SHA; waiting up to DISPATCH_BASE_BRANCH_FETCH_TIMEOUT_MS here made
@@ -149,26 +158,31 @@ async function createWorktreeCoreWithPriority(
         repoRoot,
         created: true,
         ...(warmClaimResult.setupPrepared ? { setupPrepared: true as const } : {}),
+        timing: {
+          ...timer.phases,
+          ...Object.fromEntries(
+            Object.entries(warmClaimResult.timing).map(([name, ms]) => [`claim.${name}`, ms]),
+          ),
+        },
       };
     }
+    timer.mark("claimMissMs");
   }
   if (intent.kind === "branch-off" && intent.baseBranch) {
     await fetchDispatchBaseBranch(repoRoot, intent.baseBranch);
+    timer.mark("fetchMs");
   }
 
-  return {
-    worktree: await createWorktree({
-      cwd: repoRoot,
-      worktreeSlug: normalizedSlug,
-      source: intent,
-      runSetup: input.runSetup ?? true,
-      paseoHome: input.paseoHome,
-      worktreesRoot: input.worktreesRoot,
-    }),
-    intent,
-    repoRoot,
-    created: true,
-  };
+  const worktree = await createWorktree({
+    cwd: repoRoot,
+    worktreeSlug: normalizedSlug,
+    source: intent,
+    runSetup: input.runSetup ?? true,
+    paseoHome: input.paseoHome,
+    worktreesRoot: input.worktreesRoot,
+  });
+  timer.mark("createMs");
+  return { worktree, intent, repoRoot, created: true, timing: timer.phases };
 }
 
 async function resolveForgeForWorktreeCreate(

@@ -55,7 +55,11 @@ import {
   type RunGitCommand,
 } from "../utils/run-git-command.js";
 import { branchNameFromRef } from "../utils/worktree-metadata.js";
-import { listPaseoWorktrees, type PaseoWorktreeInfo } from "../utils/worktree.js";
+import {
+  isPaseoOwnedWorktreeCwd,
+  listPaseoWorktrees,
+  type PaseoWorktreeInfo,
+} from "../utils/worktree.js";
 import { READ_ONLY_GIT_ENV } from "./checkout-git-utils.js";
 import {
   classifyGitMetadataPath,
@@ -1085,21 +1089,31 @@ export class WorkspaceGitServiceImpl implements WorkspaceGitService {
     this.assertNotDisposed();
     const normalizedCwd = resolve(cwd);
     const key = JSON.stringify(["repo-root", normalizedCwd]);
-    // Cheap git-root lookup. Create-worktree used to wait on a full snapshot
-    // (status, for-each-ref, remotes, forge) here, which made a 200ms warm
-    // claim look like a 2s workspace.create.
+    // One or two git processes. This used to run getCheckoutStatus (status,
+    // ahead/behind, upstream, remotes: ~180ms per warm create) only to read
+    // two paths off it.
     return this.readAuxiliaryCache(this.repoRootCache, key, options, async () => {
-      const status = await this.deps.getCheckoutStatus(normalizedCwd, {
-        paseoHome: this.paseoHome,
-        worktreesRoot: this.worktreesRoot,
-        logger: this.logger,
+      // A Paseo worktree resolves to the repository it was cut from, so a
+      // worktree created from inside one is a sibling, not a nested worktree.
+      if (/[\\/]worktrees[\\/]/.test(normalizedCwd)) {
+        const ownership = await isPaseoOwnedWorktreeCwd(normalizedCwd, {
+          paseoHome: this.paseoHome,
+          worktreesRoot: this.worktreesRoot,
+        });
+        if (ownership.allowed && ownership.repoRoot) {
+          return ownership.repoRoot;
+        }
+      }
+      const result = await this.deps.runGitCommand(["rev-parse", "--show-toplevel"], {
+        cwd: normalizedCwd,
+        envOverlay: READ_ONLY_GIT_ENV,
+        acceptExitCodes: [0, 128],
       });
-      if (!status.isGit) {
+      const toplevel = result.exitCode === 0 ? parseGitRevParsePath(result.stdout) : null;
+      if (!toplevel) {
         throw new Error("Create worktree requires a git repository");
       }
-      return status.isPaseoOwnedWorktree
-        ? (status.mainRepoRoot ?? status.repoRoot ?? normalizedCwd)
-        : (status.repoRoot ?? normalizedCwd);
+      return toplevel;
     });
   }
 

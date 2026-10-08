@@ -3579,4 +3579,13 @@ export class OmpAgentClient implements AgentClient {
   async shutdown(): Promise<void> {
     await this.warmPool?.closeAll();
   }
+
+  /**
+   * A provider config rebuild replaced this client. Its idle pool goes now so
+   * the host keeps one pool of WARM_POOL_TARGET_IDLE processes; agents this
+   * client already started own their processes and keep running.
+   */
+  async retire(): Promise<void> {
+    await this.warmPool?.closeAll();
+  }
 }
