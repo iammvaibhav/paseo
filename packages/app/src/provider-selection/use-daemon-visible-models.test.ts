@@ -1,8 +1,11 @@
 /**
  * @vitest-environment jsdom
  */
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook } from "@testing-library/react";
+import { createElement, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type * as VisibleModelsSync from "./visible-models-sync";
 
 vi.mock("@react-native-async-storage/async-storage", () => {
   const storage = new Map<string, string>();
@@ -19,27 +22,45 @@ vi.mock("@react-native-async-storage/async-storage", () => {
   };
 });
 
-const { configState, patchConfigMock, connectionState } = vi.hoisted(() => ({
-  configState: {
-    config: null as { visibleModels?: string[] } | null,
-  },
-  patchConfigMock: vi.fn(async () => undefined),
-  connectionState: {
-    isConnected: false,
-  },
+interface Config {
+  visibleModels?: string[];
+}
+
+const { cachedConfig, daemon, connectionState, propagateMock } = vi.hoisted(() => ({
+  // What this client's query cache holds (null while the config is loading).
+  cachedConfig: { value: null as Config | null },
+  // What the host actually has on disk.
+  daemon: { config: {} as Config },
+  connectionState: { isConnected: false },
+  propagateMock: vi.fn(async () => undefined),
 }));
+
+const client = {
+  getDaemonConfig: vi.fn(async () => ({ requestId: "r", config: daemon.config })),
+  patchDaemonConfig: vi.fn(async (patch: Config) => {
+    daemon.config = { ...daemon.config, ...patch };
+    return { requestId: "r", config: daemon.config };
+  }),
+};
 
 vi.mock("@/hooks/use-daemon-config", () => ({
   useDaemonConfig: () => ({
-    config: configState.config,
-    isLoading: false,
-    patchConfig: patchConfigMock,
+    config: cachedConfig.value,
+    isLoading: cachedConfig.value === null,
+    patchConfig: vi.fn(),
   }),
 }));
 
 vi.mock("@/runtime/host-runtime", () => ({
-  useHostRuntimeClient: () => null,
+  useHostRuntimeClient: () => client,
   useHostRuntimeIsConnected: () => connectionState.isConnected,
+  getHostRuntimeStore: () => ({ getHosts: () => [] }),
+  isHostRuntimeConnected: () => true,
+}));
+
+vi.mock("./visible-models-sync", async (importOriginal) => ({
+  ...(await importOriginal<typeof VisibleModelsSync>()),
+  propagateVisibleModels: propagateMock,
 }));
 
 import { useHiddenModelsStore } from "./hidden-models";
@@ -51,7 +72,8 @@ beforeEach(() => {
   mounted.length = 0;
   vi.clearAllMocks();
   connectionState.isConnected = false;
-  configState.config = null;
+  cachedConfig.value = null;
+  daemon.config = {};
   useHiddenModelsStore.setState({ hiddenKeys: new Set<string>() });
 });
 
@@ -62,14 +84,16 @@ afterEach(() => {
 const UNIVERSE = ["omp:model-1", "omp:model-2", "omp:model-3"];
 
 function renderVisibleHook(serverId: string | null, universe: readonly string[] = UNIVERSE) {
-  const rendered = renderHook(() => useDaemonVisibleModels(serverId, universe));
+  const queryClient = new QueryClient();
+  const wrapper = ({ children }: { children: ReactNode }) =>
+    createElement(QueryClientProvider, { client: queryClient }, children);
+  const rendered = renderHook(() => useDaemonVisibleModels(serverId, universe), { wrapper });
   mounted.push(rendered);
   return rendered;
 }
 
 describe("useDaemonVisibleModels", () => {
   it("falls back to local store when disconnected", () => {
-    connectionState.isConnected = false;
     useHiddenModelsStore.setState({ hiddenKeys: new Set(["omp:model-1"]) });
 
     const { result } = renderVisibleHook("server-1");
@@ -85,25 +109,16 @@ describe("useDaemonVisibleModels", () => {
       "omp:model-1",
       "omp:model-2",
     ]);
-    expect(patchConfigMock).not.toHaveBeenCalled();
-  });
-
-  it("derives hidden as universe minus visible when daemon list is defined", () => {
-    connectionState.isConnected = true;
-    configState.config = { visibleModels: ["omp:model-1"] };
-
-    const { result } = renderVisibleHook("server-1");
-
-    expect(result.current.isDaemon).toBe(true);
-    expect([...result.current.hiddenKeys].sort()).toEqual(["omp:model-2", "omp:model-3"]);
+    expect(client.patchDaemonConfig).not.toHaveBeenCalled();
   });
 
   it("hides unknown IDs by default: new models stay out until checked", () => {
     connectionState.isConnected = true;
-    configState.config = { visibleModels: ["omp:model-1"] };
+    cachedConfig.value = { visibleModels: ["omp:model-1"] };
 
     const { result } = renderVisibleHook("server-1", [...UNIVERSE, "omp:model-new"]);
 
+    expect(result.current.isDaemon).toBe(true);
     expect([...result.current.hiddenKeys].sort()).toEqual([
       "omp:model-2",
       "omp:model-3",
@@ -111,78 +126,61 @@ describe("useDaemonVisibleModels", () => {
     ]);
   });
 
-  it("uploads universe minus local hidden once when daemon list is undefined", async () => {
+  it("never overwrites the host's list while its config is still loading", async () => {
     connectionState.isConnected = true;
-    configState.config = {};
-    useHiddenModelsStore.setState({
-      hiddenKeys: new Set(["omp:model-2", "omp:model-3"]),
-    });
+    cachedConfig.value = null;
+    daemon.config = { visibleModels: ["omp:model-1"] };
+    useHiddenModelsStore.setState({ hiddenKeys: new Set(["omp:model-2"]) });
+
+    renderVisibleHook("server-1");
+    await act(async () => {});
+
+    expect(client.patchDaemonConfig).not.toHaveBeenCalled();
+    expect(daemon.config.visibleModels).toEqual(["omp:model-1"]);
+  });
+
+  it("seeds a host that has no list from the local choices, once loaded", async () => {
+    connectionState.isConnected = true;
+    cachedConfig.value = {};
+    useHiddenModelsStore.setState({ hiddenKeys: new Set(["omp:model-2", "omp:model-3"]) });
 
     renderVisibleHook("server-upload");
 
-    expect(patchConfigMock).toHaveBeenCalledWith({
-      visibleModels: ["omp:model-1"],
-    });
+    await vi.waitFor(() => expect(daemon.config.visibleModels).toEqual(["omp:model-1"]));
   });
 
-  it("does not upload if local store is empty", () => {
+  it("checks a model against the host's current list, not a stale cache", async () => {
     connectionState.isConnected = true;
-    configState.config = {};
-
-    renderVisibleHook("server-1");
-
-    expect(patchConfigMock).not.toHaveBeenCalled();
-  });
-
-  it("removes the key from visible when hiding in daemon mode", () => {
-    connectionState.isConnected = true;
-    configState.config = { visibleModels: ["omp:model-1", "omp:model-2"] };
+    cachedConfig.value = { visibleModels: ["omp:model-1"] };
+    // Another client already checked model-3 on this host.
+    daemon.config = { visibleModels: ["omp:model-1", "omp:model-3"] };
 
     const { result } = renderVisibleHook("server-1");
-
-    act(() => {
-      result.current.setModelHidden("omp", "model-2", true);
-    });
-
-    expect(patchConfigMock).toHaveBeenCalledWith({ visibleModels: ["omp:model-1"] });
-  });
-
-  it("adds the key to visible when unhiding in daemon mode", () => {
-    connectionState.isConnected = true;
-    configState.config = { visibleModels: ["omp:model-1"] };
-
-    const { result } = renderVisibleHook("server-1");
-
     act(() => {
       result.current.setModelHidden("omp", "model-2", false);
     });
 
-    expect(patchConfigMock).toHaveBeenCalledWith({
-      visibleModels: ["omp:model-1", "omp:model-2"],
-    });
+    await vi.waitFor(() =>
+      expect(daemon.config.visibleModels).toEqual(["omp:model-1", "omp:model-2", "omp:model-3"]),
+    );
+    expect(propagateMock).toHaveBeenCalledWith(
+      expect.objectContaining({ originServerId: "server-1", keys: ["omp:model-2"], hidden: false }),
+    );
   });
 
-  it("does not call patchConfig if toggle changes nothing", () => {
+  it("keeps both of two quick toggles", async () => {
     connectionState.isConnected = true;
-    configState.config = { visibleModels: ["omp:model-1"] };
+    cachedConfig.value = { visibleModels: ["omp:model-1"] };
+    daemon.config = { visibleModels: ["omp:model-1"] };
 
     const { result } = renderVisibleHook("server-1");
-
     act(() => {
-      result.current.setModelHidden("omp", "model-2", true);
+      result.current.setModelHidden("omp", "model-2", false);
+      result.current.setModelHidden("omp", "model-3", false);
     });
 
-    expect(patchConfigMock).not.toHaveBeenCalled();
-  });
-
-  it("falls back to local store when serverId is null", () => {
-    connectionState.isConnected = true;
-    useHiddenModelsStore.setState({ hiddenKeys: new Set(["omp:model-1"]) });
-
-    const { result } = renderVisibleHook(null);
-
-    expect(result.current.isDaemon).toBe(false);
-    expect([...result.current.hiddenKeys]).toEqual(["omp:model-1"]);
-    expect(patchConfigMock).not.toHaveBeenCalled();
+    await vi.waitFor(() =>
+      expect(daemon.config.visibleModels).toEqual(["omp:model-1", "omp:model-2", "omp:model-3"]),
+    );
   });
 });

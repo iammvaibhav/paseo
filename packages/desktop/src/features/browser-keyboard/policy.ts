@@ -18,6 +18,8 @@ export interface BrowserKeyboardPolicy {
   editorOrigins: string[];
   /** Shortcuts a VS Code Web page keeps for itself instead of crossing to Paseo. */
   editorPrefixes: BrowserShortcutPrefix[];
+  /** Shortcuts VS Code also binds that cross to Paseo before VS Code sees them. */
+  editorPaseoPrefixes: BrowserShortcutPrefix[];
 }
 
 export interface BrowserShortcutInput {
@@ -109,11 +111,12 @@ export function parseBrowserKeyboardPolicy(value: unknown): BrowserKeyboardPolic
   const menuPrefixes = parsePrefixes(value.menuPrefixes);
   const prefixes = parsePrefixes(value.prefixes);
   const editorPrefixes = parsePrefixes(value.editorPrefixes ?? []);
+  const editorPaseoPrefixes = parsePrefixes(value.editorPaseoPrefixes ?? []);
   const editorOrigins = Array.isArray(value.editorOrigins)
     ? value.editorOrigins.filter((origin): origin is string => typeof origin === "string")
     : [];
-  return menuPrefixes && prefixes && editorPrefixes
-    ? { menuPrefixes, prefixes, editorOrigins, editorPrefixes }
+  return menuPrefixes && prefixes && editorPrefixes && editorPaseoPrefixes
+    ? { menuPrefixes, prefixes, editorOrigins, editorPrefixes, editorPaseoPrefixes }
     : null;
 }
 

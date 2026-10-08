@@ -240,8 +240,15 @@ describe("BrowserKeyboard", () => {
       ],
       editorOrigins: [],
       editorPrefixes: [],
+      editorPaseoPrefixes: [],
     };
-    const latestPolicy = { menuPrefixes: [], prefixes: [], editorOrigins: [], editorPrefixes: [] };
+    const latestPolicy = {
+      menuPrefixes: [],
+      prefixes: [],
+      editorOrigins: [],
+      editorPrefixes: [],
+      editorPaseoPrefixes: [],
+    };
     keyboard.publish(host.id, initialPolicy);
     attach({ browserId: "browser-a", contents: guest, hostContents: host });
     keyboard.publish(host.id, latestPolicy);
@@ -277,6 +284,7 @@ describe("BrowserKeyboard", () => {
       prefixes: [],
       editorOrigins: [],
       editorPrefixes: [],
+      editorPaseoPrefixes: [],
     });
 
     host.destroy();
@@ -291,6 +299,7 @@ describe("BrowserKeyboard", () => {
           prefixes: [],
           editorOrigins: [],
           editorPrefixes: [],
+          editorPaseoPrefixes: [],
         },
       },
     ]);

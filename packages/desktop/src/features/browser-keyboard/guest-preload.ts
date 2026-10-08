@@ -7,14 +7,16 @@ const SHORTCUT_INPUT_CHANNEL = "paseo:browser-shortcut-input";
 
 let browserId: string | null = null;
 let policy: BrowserShortcutPrefix[] = [];
+// Forwarded in the capture phase so a VS Code page never sees them.
+let editorPaseoPolicy: BrowserShortcutPrefix[] = [];
 
 interface BrowserKeyboardPolicyPayload extends BrowserKeyboardPolicy {
   browserId: string;
 }
 
-function matchesPolicy(event: KeyboardEvent): boolean {
+function matchesPolicy(prefixes: BrowserShortcutPrefix[], event: KeyboardEvent): boolean {
   const editable = isEditableTarget(event.target);
-  return policy.some((prefix) => {
+  return prefixes.some((prefix) => {
     if (
       prefix.alt !== event.altKey ||
       prefix.control !== event.ctrlKey ||
@@ -58,8 +60,30 @@ function matchesCode(prefixCode: string, eventCode: string): boolean {
   return /^(?:Digit|Numpad)[1-9]$/.test(eventCode);
 }
 
+function sendShortcut(shortcutBrowserId: string, event: KeyboardEvent): void {
+  ipcRenderer.send(SHORTCUT_INPUT_CHANNEL, {
+    alt: event.altKey,
+    browserId: shortcutBrowserId,
+    code: event.code,
+    control: event.ctrlKey,
+    key: event.key,
+    meta: event.metaKey,
+    repeat: event.repeat,
+    shift: event.shiftKey,
+  });
+}
+
 function stageShortcutForward(event: KeyboardEvent): void {
-  if (!event.isTrusted || event.defaultPrevented || !browserId || !matchesPolicy(event)) {
+  if (!event.isTrusted || event.defaultPrevented || !browserId) {
+    return;
+  }
+  if (matchesPolicy(editorPaseoPolicy, event)) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    sendShortcut(browserId, event);
+    return;
+  }
+  if (!matchesPolicy(policy, event)) {
     return;
   }
 
@@ -71,16 +95,7 @@ function stageShortcutForward(event: KeyboardEvent): void {
         return;
       }
       completedEvent.preventDefault();
-      ipcRenderer.send(SHORTCUT_INPUT_CHANNEL, {
-        alt: completedEvent.altKey,
-        browserId: shortcutBrowserId,
-        code: completedEvent.code,
-        control: completedEvent.ctrlKey,
-        key: completedEvent.key,
-        meta: completedEvent.metaKey,
-        repeat: completedEvent.repeat,
-        shift: completedEvent.shiftKey,
-      });
+      sendShortcut(shortcutBrowserId, completedEvent);
     },
     { once: true },
   );
@@ -104,6 +119,8 @@ ipcRenderer.on(POLICY_CHANNEL, (_event, value: BrowserKeyboardPolicyPayload) => 
       : [],
   );
   policy = value.prefixes.filter((prefix) => !editorKeys.has(JSON.stringify(prefix)));
+  editorPaseoPolicy =
+    isEditorPage && Array.isArray(value.editorPaseoPrefixes) ? value.editorPaseoPrefixes : [];
 });
 
 ipcRenderer.send(POLICY_REQUEST_CHANNEL);

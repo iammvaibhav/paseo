@@ -167,15 +167,14 @@ export function mergeOmpRuntimeSettings(
 }
 
 /**
- * omp's global default thinking level for a new session with an explicit model:
- * top-level `defaultThinkingLevel` in `<agentDir>/config.yml` (or
- * `config.yaml`), falling back to "high" when the file is missing, unparsable,
- * or the key is absent or invalid.
+ * omp's global `defaultThinkingLevel` from `<agentDir>/config.yml` (or
+ * `config.yaml`); null when the file is missing, unparsable, or the key is
+ * absent or invalid, so the caller can tell "unset" from a chosen level.
  */
 export async function readOmpDefaultThinkingLevel(
   env: NodeJS.ProcessEnv = process.env,
   home: string = homedir(),
-): Promise<OmpThinkingLevel> {
+): Promise<OmpThinkingLevel | null> {
   const { agentDir } = resolveOmpDiagnosticPaths(env, home);
   for (const fileName of ["config.yml", "config.yaml"]) {
     let content: string;
@@ -187,15 +186,15 @@ export async function readOmpDefaultThinkingLevel(
     try {
       const parsed: unknown = YAML.parse(content);
       if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-        return "high";
+        return null;
       }
       const validated = OmpThinkingLevelSchema.safeParse(
         (parsed as Record<string, unknown>)["defaultThinkingLevel"],
       );
-      return validated.success ? validated.data : "high";
+      return validated.success ? validated.data : null;
     } catch {
-      return "high";
+      return null;
     }
   }
-  return "high";
+  return null;
 }

@@ -44,7 +44,7 @@ describe("mapOmpModel thinking options", () => {
       },
     });
 
-    const result = mapOmpModel(model, "omp", "high");
+    const result = mapOmpModel(model, "omp", null);
 
     expect(result.thinkingOptions?.map((option) => option.id)).toEqual([
       "off",
@@ -69,19 +69,33 @@ describe("mapOmpModel thinking options", () => {
     ]);
   });
 
-  test("model defaultLevel wins over the settings default", () => {
-    const { model } = effortModel(["low", "medium", "high"], "low", "high");
+  test("an explicit settings default wins over the model's defaultLevel", () => {
+    const { model } = effortModel(["low", "medium", "high"], "low");
 
-    const result = mapOmpModel(model, "omp", "high");
+    const result = mapOmpModel(model, "omp", "auto");
+
+    expect(result.defaultThinkingOptionId).toBe("auto");
+    expect(result.thinkingOptions?.find((option) => option.isDefault)?.id).toBe("auto");
+  });
+
+  test("uses the model's defaultLevel when no settings default is set", () => {
+    const { model } = effortModel(["low", "medium", "high"], "low");
+
+    const result = mapOmpModel(model, "omp", null);
 
     expect(result.defaultThinkingOptionId).toBe("low");
-    expect(result.thinkingOptions?.find((option) => option.isDefault)?.id).toBe("low");
+  });
+
+  test("falls back to high when neither the settings nor the model name a default", () => {
+    const { model } = effortModel(["low", "medium", "high"]);
+
+    expect(mapOmpModel(model, "omp", null).defaultThinkingOptionId).toBe("high");
   });
 
   test("clamps a model default above the offered efforts down", () => {
-    const { model } = effortModel(["low", "high"], "xhigh", "low");
+    const { model } = effortModel(["low", "high"], "xhigh");
 
-    const result = mapOmpModel(model, "omp", "low");
+    const result = mapOmpModel(model, "omp", null);
 
     expect(result.thinkingOptions?.map((option) => option.id)).toEqual([
       "off",
@@ -181,8 +195,8 @@ describe("mapOmpModel thinking options", () => {
     expect(result.defaultThinkingOptionId).toBe("high");
   });
 
-  test("offers auto without making it the default when the model has one", () => {
-    const { model, settingsDefault } = effortModel(["low", "high"], "high");
+  test("offers auto without making it the default when the settings name a level", () => {
+    const { model, settingsDefault } = effortModel(["low", "high"], undefined, "high");
 
     const result = mapOmpModel(model, "omp", settingsDefault);
 
