@@ -63,6 +63,7 @@ import {
 import {
   formatOmpVersionSupport,
   mergeOmpRuntimeSettings,
+  readOmpDefaultThinkingLevel,
   resolveOmpDiagnosticPaths,
   resolveOmpLaunchMode,
   resolveOmpProviderOptions,
@@ -3393,12 +3394,16 @@ export class OmpAgentClient implements AgentClient {
       if (!runtimeSession) throw new Error("OMP catalog runtime did not start");
       const catalogSession = runtimeSession;
       const modelsStartedAt = Date.now();
+      const settingsDefault = await readOmpDefaultThinkingLevel({
+        ...process.env,
+        ...this.runtimeSettings?.env,
+      });
       const models = transformOmpModels(
         (
           await runProviderRefreshActivity(context, "get_available_models", () =>
             catalogSession.getAvailableModels(null),
           )
-        ).map((model) => mapOmpModel(model, this.provider)),
+        ).map((model) => mapOmpModel(model, this.provider, settingsDefault)),
       );
       const modelsMs = Date.now() - modelsStartedAt;
       const totalMs = Date.now() - fetchStartedAt;

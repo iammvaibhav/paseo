@@ -22,9 +22,6 @@ const FORMAT_PATHS = Object.freeze({
 	messages: "messages",
 });
 
-// The Anthropic Messages wire accepts only these values in output_config.effort.
-const MESSAGES_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
-
 const STORAGE_KEYS = Object.freeze({
 	token: "omp-proxy.token",
 	settings: "omp-proxy.settings.v1",
@@ -410,6 +407,8 @@ function ompInfo(run) {
 		account: str(hd["x-omp-account"]),
 		credentialId: str(hd["x-omp-credential-id"]),
 		overheadMs: headerNumber(hd["x-omp-proxy-overhead-ms"]),
+		thinking: str(hd["x-omp-thinking"]) ?? str(run.record?.thinking?.resolved),
+		thinkingSource: str(hd["x-omp-thinking-source"]) ?? str(run.record?.thinking?.source),
 		cost: headerNumber(hd["x-litellm-response-cost"]),
 		durationMs: headerNumber(hd["x-litellm-response-duration-ms"]),
 	};
@@ -619,24 +618,26 @@ function buildRequest(pendingText) {
 	const system = state.systemPrompt.trim() ? state.systemPrompt : null;
 	const maxTokens = parsedMaxTokens(s);
 	const temperature = parsedTemperature(s);
+	// The proxy reads omp's selectors on every wire: off, auto, or an effort.
 	const effort = s.effort !== "default" ? s.effort : null;
 	const body = { model: model ? bareModelId(provider.id, model.id) : "" };
 
 	if (s.format === "chat") {
 		body.messages = system ? [{ role: "system", content: system }, ...turns] : turns;
 		if (maxTokens !== null) body.max_tokens = maxTokens;
-		if (effort) body.reasoning_effort = effort;
+		if (effort) body.reasoning_effort = effort === "off" ? "none" : effort;
 	} else if (s.format === "responses") {
 		if (system) body.instructions = system;
 		body.input = turns;
 		if (maxTokens !== null) body.max_output_tokens = maxTokens;
-		if (effort) body.reasoning = { effort };
+		if (effort) body.reasoning = { effort: effort === "off" ? "none" : effort };
 	} else {
 		if (system) body.system = system;
 		body.messages = turns;
 		// The Messages wire requires max_tokens.
 		body.max_tokens = maxTokens ?? num(model?.max_output_tokens) ?? FALLBACK_MAX_TOKENS;
-		if (effort && MESSAGES_EFFORTS.has(effort)) body.output_config = { effort };
+		if (effort === "off") body.thinking = { type: "disabled" };
+		else if (effort) body.output_config = { effort };
 	}
 	if (temperature !== null) body.temperature = temperature;
 	body.stream = s.stream;
@@ -1268,25 +1269,24 @@ function renderEffortField() {
 		ui.effortHint.hidden = true;
 		return;
 	}
-	const levels =
-		model.reasoning && Array.isArray(model.thinking_levels) ? model.thinking_levels.filter(l => typeof l === "string") : [];
-	const blocked = s.format === "messages" ? levels.filter(l => !MESSAGES_EFFORTS.has(l)) : [];
-	if (s.effort !== "default" && (!levels.includes(s.effort) || blocked.includes(s.effort))) s.effort = "default";
-	const defaultText = model.reasoning ? "default (provider decides)" : "default (no reasoning)";
+	const thinking = model.reasoning && isRecord(model.thinking) ? model.thinking : null;
+	const levels = Array.isArray(thinking?.levels) ? thinking.levels.filter(l => typeof l === "string") : [];
+	if (s.effort !== "default" && !levels.includes(s.effort)) s.effort = "default";
+	const defaultText = !model.reasoning
+		? "default (no reasoning)"
+		: str(thinking?.default)
+			? `default (omp: ${thinking.default})`
+			: "default (provider decides)";
 	ui.effortSelect.replaceChildren(
 		h("option", { value: "default", text: defaultText }),
-		...levels.map(level =>
-			h("option", {
-				value: level,
-				disabled: blocked.includes(level),
-				text: blocked.includes(level) ? `${level} (not on messages wire)` : level,
-			}),
-		),
+		...levels.map(level => h("option", { value: level, text: level })),
 	);
 	ui.effortSelect.value = s.effort;
 	ui.effortSelect.disabled = levels.length === 0;
-	ui.effortHint.hidden = blocked.length === 0;
-	ui.effortHint.textContent = blocked.length > 0 ? `output_config.effort does not accept ${blocked.join(", ")}.` : "";
+	ui.effortHint.hidden = !levels.includes("off");
+	ui.effortHint.textContent = levels.includes("off")
+		? "auto: omp's judge picks the level each user turn. off: where the model cannot turn reasoning off, omp runs its fallback level."
+		: "";
 }
 
 function setRadio(group, value) {
@@ -1508,6 +1508,7 @@ function renderTurnFoot(turn, foot) {
 	const cost = costOf(run);
 	if (cost !== null) items.push(h("span", { text: fmtUsd(cost) }));
 	if (omp.sessionSource) items.push(h("span", { class: "badge", dataset: { tone: sessionTone(omp.sessionSource) ?? "" }, text: `session ${omp.sessionSource}` }));
+	if (omp.thinking) items.push(h("span", { class: "badge", text: `thinking ${omp.thinking}${omp.thinkingSource ? ` (${omp.thinkingSource})` : ""}` }));
 	items.push(
 		h("button", {
 			type: "button",
@@ -1716,6 +1717,7 @@ function renderMetricsTab(run) {
 						["Provider", omp.provider],
 						["Model", omp.model],
 						["Proxy overhead", omp.overheadMs !== null ? fmtMs(omp.overheadMs) : null],
+						["Thinking", omp.thinking ? `${omp.thinking}${omp.thinkingSource ? ` (${omp.thinkingSource})` : ""}` : null],
 						["Gateway cost", omp.cost !== null ? fmtUsd(omp.cost) : null],
 						["Gateway duration", omp.durationMs !== null ? fmtMs(omp.durationMs) : null],
 					], "No x-omp-* headers in this response."),
