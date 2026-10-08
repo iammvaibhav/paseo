@@ -52,13 +52,18 @@ export function thinkingSelectors(model: Model<Api>): ThinkingSelector[] {
 }
 
 /**
- * The level an omp session starts at for `model` (pi-coding-agent sdk.ts
- * `pickInitialThinkingLevel`): the model's catalog default, else the
- * `defaultThinkingLevel` setting, clamped to the model's efforts.
+ * The level a request that names none runs at: a `defaultThinkingLevel` the
+ * fleet set explicitly, else the model's catalog default, else omp's built-in
+ * default. omp's own session start lets the catalog default win over the
+ * setting (sdk.ts `pickInitialThinkingLevel`); here the user's choice wins so
+ * `auto` applies to every model, Cursor's fixed-tier models included.
  */
 export function defaultSelector(model: Model<Api>, settings: Settings): typeof AUTO | Effort | undefined {
 	if (!model.reasoning) return undefined;
-	const configured: string = model.thinking?.defaultLevel ?? cfgDefaultThinkingLevel.get(settings);
+	const explicit = cfgDefaultThinkingLevel.provenance(settings) !== "default";
+	const configured: string = explicit
+		? cfgDefaultThinkingLevel.get(settings)
+		: (model.thinking?.defaultLevel ?? cfgDefaultThinkingLevel.get(settings));
 	if (configured === AUTO) return AUTO;
 	return isEffort(configured) ? clampThinkingLevelForModel(model, configured) : undefined;
 }

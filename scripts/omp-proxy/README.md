@@ -110,7 +110,7 @@ does, so a client sees omp's levels and omp's defaults:
 | An effort (`minimal` … `max`) | That effort, clamped to the model's efforts (`minimal` on a model without it runs `low`) |
 | `auto` | omp's `auto`: the judge role (TypeSafe jev when signed in) classifies the user turn, capped at `xhigh`; `ultrathink` in the prompt jumps to the top tier |
 | `none` / `off` / Messages `thinking: disabled` | Reasoning off; where the model cannot turn it off, omp runs its fallback level |
-| Nothing | The model's catalog default (`thinking.defaultLevel`), else the `defaultThinkingLevel` setting |
+| Nothing | An explicit `defaultThinkingLevel` setting; else the model's catalog default (`thinking.defaultLevel`); else `high`. The setting wins so `auto` covers Cursor's fixed-tier models too (omp's own session start lets the catalog default win) |
 
 - The selector goes in `reasoning_effort` (chat), `reasoning.effort`
   (Responses) or `output_config.effort` (Messages).

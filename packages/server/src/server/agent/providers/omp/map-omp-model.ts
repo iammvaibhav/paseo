@@ -51,7 +51,7 @@ function mapThinkingOption(
 export function mapOmpModel(
   model: OmpModel,
   provider: AgentProvider,
-  settingsDefault: OmpThinkingLevel,
+  settingsDefault: OmpThinkingLevel | null,
 ): AgentModelDefinition {
   const { thinkingOptions, defaultThinkingOptionId } = resolveOmpThinkingConfig(
     model,
@@ -73,7 +73,7 @@ export function mapOmpModel(
 
 function resolveOmpThinkingConfig(
   model: OmpModel,
-  settingsDefault: OmpThinkingLevel,
+  settingsDefault: OmpThinkingLevel | null,
 ): {
   thinkingOptions: AgentSelectOption[] | undefined;
   defaultThinkingOptionId: string | undefined;
@@ -114,12 +114,18 @@ function resolveOmpThinkingConfig(
   };
 }
 
+/**
+ * An explicit `defaultThinkingLevel` wins over the model's catalog default so
+ * `auto` applies to every model; without one, the catalog default, then omp's
+ * built-in `high`.
+ */
 function requestedThinkingDefault(
   model: OmpModel,
-  settingsDefault: OmpThinkingLevel,
+  settingsDefault: OmpThinkingLevel | null,
 ): OmpThinkingLevel {
+  if (settingsDefault) return settingsDefault;
   const parsed = OmpThinkingLevelSchema.safeParse(model.thinking?.defaultLevel);
-  return parsed.success ? parsed.data : settingsDefault;
+  return parsed.success ? parsed.data : "high";
 }
 
 function clampThinkingDefault(
