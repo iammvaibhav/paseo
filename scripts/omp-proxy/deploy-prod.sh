@@ -33,7 +33,7 @@ if ! "${SSH[@]}" -o ConnectTimeout=8 "$PROD_HOST" 'true' 2>/dev/null; then
 fi
 log "prod ($PROD_HOST) reachable — fleet omp target $TARGET"
 
-# The proxy links exact @oh-my-pi/* natives: its pin must equal the fleet omp,
+# The proxy links exact @oh-my-pi/* natives: it must be built for the fleet omp,
 # or a fresh omp would delete the natives the proxy was built against.
 if command -v node >/dev/null 2>&1; then
   PINNED="$(node -p 'require(process.argv[1]).dependencies["@oh-my-pi/pi-ai"]' "$PROXY_DIR/package.json")"
@@ -42,15 +42,25 @@ elif command -v jq >/dev/null 2>&1; then
 else
   die "prod: need node or jq to read the omp-proxy pin"
 fi
-if [[ "$PINNED" != "$TARGET" ]]; then
-  die "prod: omp-proxy is pinned to $PINNED but the fleet is on $TARGET; run scripts/omp-proxy/bump.sh $TARGET, commit, redeploy"
-fi
-log "prod: omp-proxy pinned to $PINNED — matches fleet"
 
 export PATH="$HOME/.bun/bin:$PATH"
-log "prod: building omp-proxy"
-(cd "$PROXY_DIR" && bun install --frozen-lockfile && bun run build) || die "prod: omp-proxy build failed"
-DIST="$PROXY_DIR/dist/omp-proxy"
+if [[ "$PINNED" == "$TARGET" ]]; then
+  log "prod: building omp-proxy (pinned to $PINNED, matches fleet)"
+  (cd "$PROXY_DIR" && bun install --frozen-lockfile && bun run build) || die "prod: omp-proxy build failed"
+  DIST="$PROXY_DIR/dist/omp-proxy"
+else
+  # A new omp release: rebuild against it in a scratch copy with bump.sh, so a
+  # release with no API break deploys without anyone touching the repo. The
+  # checkout stays clean; commit the bump later to record the new pin.
+  log "prod: omp-proxy is pinned to $PINNED but the fleet is on $TARGET; rebuilding against $TARGET"
+  SCRATCH="$(mktemp -d)"
+  trap 'rm -rf "$SCRATCH"' EXIT
+  tar -C "$PROXY_DIR" --exclude=./node_modules --exclude=./dist --exclude=./vendor -cf - . | tar -C "$SCRATCH" -xf -
+  OMP_PROXY_PLUGINS_DIR="$(cd "$PROXY_DIR/../../plugins" && pwd)" "$SCRATCH/bump.sh" "$TARGET" ||
+    die "prod: omp-proxy does not build against omp $TARGET (API change); fix scripts/omp-proxy, run scripts/omp-proxy/bump.sh $TARGET, commit, redeploy. Prod is untouched."
+  DIST="$SCRATCH/dist/omp-proxy"
+  log "prod: WARNING: scripts/omp-proxy is still pinned to $PINNED; run scripts/omp-proxy/bump.sh $TARGET and commit to record $TARGET"
+fi
 [[ -x "$DIST" ]] || die "prod: build did not produce $DIST"
 LOCAL_SHA="$(sha256sum "$DIST" | awk '{print $1}')"
 log "prod: built $DIST (sha256 $LOCAL_SHA)"
@@ -87,6 +97,7 @@ cleanup_stage() {
   if [[ -n "${STAGE:-}" ]]; then
     "${SSH[@]}" "$PROD_HOST" "rm -rf '$STAGE'" 2>/dev/null || true
   fi
+  if [[ -n "${SCRATCH:-}" ]]; then rm -rf "$SCRATCH"; fi
 }
 trap cleanup_stage EXIT
 scp -o BatchMode=yes "$PROXY_DIR"/deploy/*.service "$PROD_HOST:$STAGE/"

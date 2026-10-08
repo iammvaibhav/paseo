@@ -828,7 +828,8 @@ deploy_local_plannotator() {
 # Fleet omp lockstep: the orchestrator updates first, then every host job
 # updates to the same version (OMP_TARGET_VERSION) before installing plugins.
 # `omp update` self-updates to the latest GitHub release for the host's arch;
-# the prod proxy job pins to this same version (see scripts/omp-proxy).
+# the prod job builds omp-proxy for this same version, rebuilding against it
+# when the proxy's pin is behind (see scripts/omp-proxy/deploy-prod.sh).
 update_local_omp() {
   if [[ "${PASEO_SKIP_OMP_UPDATE:-0}" == "1" ]]; then
     log "Skipping local omp update (PASEO_SKIP_OMP_UPDATE=1)"

@@ -49,7 +49,7 @@ Every host runs the same `omp` release. Deploy runs `omp update` on the orchestr
 
 On each host the order is: `omp update`, then plugins, then the daemon restart, then the agent nudge, so resumed agents start on the new binary with the new plugins.
 
-Prod is not a Paseo host. It runs the omp auth broker that every host's `~/.omp/agent/config.yml` points at (`auth.broker`), plus `omp-proxy`, `omp-grok-refresher` and Bifrost. The proxy is compiled against exact `@oh-my-pi/*` versions and needs the native library of that version, which a newer `omp` deletes on first start, so the broker, the proxy and prod's `omp` change version in one step. Deploy's `prod` job does that and refuses to touch prod while the proxy's pin differs from the fleet version. Source, build, the pin, and the bump procedure: [`scripts/omp-proxy/README.md`](../scripts/omp-proxy/README.md).
+Prod is not a Paseo host. It runs the omp auth broker that every host's `~/.omp/agent/config.yml` points at (`auth.broker`), plus `omp-proxy`, `omp-grok-refresher` and Bifrost. The proxy is compiled against exact `@oh-my-pi/*` versions and needs the native library of that version, which a newer `omp` deletes on first start, so the broker, the proxy and prod's `omp` change version in one step. Deploy's `prod` job does that. When the fleet is on a newer omp than the proxy's pin, the job rebuilds the proxy against the fleet version on its own; it fails, leaving prod untouched, only when that build breaks. Source, build, the pin, and the bump procedure: [`scripts/omp-proxy/README.md`](../scripts/omp-proxy/README.md).
 
 ## Adding a plugin
 

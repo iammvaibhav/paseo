@@ -198,9 +198,15 @@ start.
 
 ## Version pin
 
-The three `@oh-my-pi/*` deps are pinned to one exact omp version. It must
-equal the `omp` version on prod and on the fleet: the broker protocol and
-the native library both change between releases. Deploy updates `omp`
-everywhere and refuses to touch prod while this pin differs. After an omp
-release, run `./bump.sh <version>`, fix any API breaks it reports, commit
-`package.json` and `bun.lock`, and deploy.
+The three `@oh-my-pi/*` deps are pinned to one exact omp version. The binary
+on prod must be built for the `omp` version on prod and on the fleet: the
+broker protocol and the native library both change between releases.
+
+Deploy updates `omp` everywhere. When the fleet is on a newer release than
+this pin, the `prod` job runs `bump.sh` on a scratch copy and deploys the
+result, so a release without an API break needs no manual step; it logs a
+warning that the pin is behind, and you record the new pin with
+`./bump.sh <version>` and a commit. When the scratch build fails (an API
+break), the job fails before touching prod, and prod keeps running the
+previous omp and proxy together. Fix the code, run `./bump.sh <version>`,
+commit, and deploy.

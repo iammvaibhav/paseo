@@ -6,7 +6,8 @@ import { cpSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } f
 import path from "node:path";
 
 const PLUGINS = ["omp-grok-build", "omp-account-routing"];
-const sourceRoot = path.resolve(import.meta.dir, "..", "..", "..", "plugins");
+// OMP_PROXY_PLUGINS_DIR: deploy-prod.sh builds a copy of this tree outside the repo.
+const sourceRoot = process.env.OMP_PROXY_PLUGINS_DIR ?? path.resolve(import.meta.dir, "..", "..", "..", "plugins");
 const vendorRoot = path.resolve(import.meta.dir, "..", "vendor");
 
 rmSync(vendorRoot, { recursive: true, force: true });
