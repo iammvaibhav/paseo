@@ -495,6 +495,46 @@ describe("resident browser webviews", () => {
     expect(isBrowserWebviewDomReady(webview as HTMLElement)).toBe(true);
   });
 
+  it("keeps the webview shown when a pane that no longer shows it cleans up", () => {
+    const webview = ensurePersistentBrowserWebview({
+      browserId: "browser-shared",
+      url: "https://example.com",
+      profileHost,
+    });
+    const wrapper = webview?.parentElement ?? null;
+    const pane = (left: number) => {
+      const element = document.createElement("div");
+      element.getBoundingClientRect = () =>
+        ({
+          left,
+          top: 0,
+          width: 800,
+          height: 600,
+          right: left + 800,
+          bottom: 600,
+          x: left,
+          y: 0,
+          toJSON: () => ({}),
+        }) as DOMRect;
+      document.body.appendChild(element);
+      return element;
+    };
+    // Two workspaces each hold a tab for the one VS Code webview.
+    const outgoing = pane(10);
+    const incoming = pane(20);
+    showPersistentBrowserWebview("browser-shared", outgoing);
+
+    // The incoming workspace shows it before the outgoing pane's cleanup runs.
+    showPersistentBrowserWebview("browser-shared", incoming);
+    expect(hidePersistentBrowserWebview("browser-shared", outgoing)).toBe(false);
+    expect(wrapper?.style.width).toBe("800px");
+    expect(wrapper?.style.left).toBe("20px");
+
+    // The pane that shows it can still park it.
+    expect(hidePersistentBrowserWebview("browser-shared", incoming)).toBe(true);
+    expect(wrapper?.style.width).toBe("1px");
+  });
+
   it("reloads a persistent webview whose page failed to load, backing off until it loads", () => {
     vi.useFakeTimers();
     try {

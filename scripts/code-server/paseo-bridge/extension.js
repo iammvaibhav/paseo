@@ -567,9 +567,28 @@ async function switchProjectFolder(nextFolder) {
   } finally {
     restoringSession = false;
   }
+  await restartTypeScriptServer();
+  lap("restartTsServer");
   const restored = await restoreSavedEditorSession(nextFolder);
   lap("restoreTabs");
   return { switched: true, ms: Date.now() - started, restored: restored.restored, phases };
+}
+
+/**
+ * Gives the new project a fresh TypeScript server, as a `?folder=` reload did. One server kept
+ * across in-place switches holds on to every project it loaded, and a few checkouts of a large
+ * monorepo push it past `typescript.tsserver.maxTsServerMemory` until V8 aborts it ("The JS/TS
+ * language service crashed"). Runs with no editors open, so the restart is cheap; skipped while
+ * the TypeScript extension is not active, since then no server is running.
+ */
+async function restartTypeScriptServer() {
+  const vscode = require("vscode");
+  if (!vscode.extensions.getExtension("vscode.typescript-language-features")?.isActive) return;
+  try {
+    await vscode.commands.executeCommand("typescript.restartTsServer");
+  } catch (error) {
+    writeLog(`tsserver restart failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 const MIRRORED_SETTINGS_KEY = "paseoBridge.mirroredProjectSettingKeys";

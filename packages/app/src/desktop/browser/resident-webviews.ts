@@ -602,12 +602,28 @@ export function showPersistentBrowserWebview(browserId: string, target: HTMLElem
   return true;
 }
 
-export function hidePersistentBrowserWebview(browserId: string): boolean {
+/**
+ * Parks the persistent webview. With `owner`, only when that pane is the one showing it: every
+ * workspace keeps its own tab for the single VS Code webview, and the outgoing workspace's pane
+ * can clean up after the incoming one has already shown it.
+ */
+export function hidePersistentBrowserWebview(
+  browserId: string,
+  owner?: HTMLElement | null,
+): boolean {
   const normalizedBrowserId = trimNonEmpty(browserId);
   const record = normalizedBrowserId
     ? persistentWebviewsByBrowserId.get(normalizedBrowserId)
     : null;
   if (!record) {
+    return false;
+  }
+  if (
+    owner !== undefined &&
+    record.target &&
+    record.target !== owner &&
+    record.target.isConnected
+  ) {
     return false;
   }
   applyPersistentWrapperParking(record);
