@@ -3,6 +3,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -35,6 +36,13 @@ import {
 } from "./anchor";
 
 const CLOSE_GRACE_MS = 100;
+
+/**
+ * Closes the open card at once when another card opens. Only one hover card shows at a time:
+ * sweeping the pointer down a list of triggers otherwise stacks the previous card's grace delay
+ * and fade-out under the next card's fade-in.
+ */
+let closeOpenCard: (() => void) | null = null;
 
 interface HoverCardContextValue {
   open: boolean;
@@ -233,6 +241,24 @@ function WebHoverCard({
   }, [clearGraceTimer, disabled]);
 
   useEffect(() => clearGraceTimer, [clearGraceTimer]);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    const closeInstantly = () => {
+      clearGraceTimer();
+      // Hide before unmounting so the replaced card skips its exit fade.
+      (contentRef.current as unknown as HTMLElement | null)?.style.setProperty(
+        "visibility",
+        "hidden",
+      );
+      setOpen(false);
+    };
+    closeOpenCard?.();
+    closeOpenCard = closeInstantly;
+    return () => {
+      if (closeOpenCard === closeInstantly) closeOpenCard = null;
+    };
+  }, [clearGraceTimer, open]);
 
   const value = useMemo<HoverCardContextValue>(
     () => ({ open, layer, setTriggerRef, triggerRef, contentRef, openNow, scheduleClose }),

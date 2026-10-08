@@ -932,7 +932,7 @@ export function BrowserPane({
     // painted on screen (VS Code Web). Also skip mounting transient panes.
     if (!isWorkspaceActive) {
       if (usePersistentWebview) {
-        hidePersistentBrowserWebview(browserId);
+        hidePersistentBrowserWebview(browserId, webviewHostRef.current);
       }
       return;
     }
@@ -1154,7 +1154,7 @@ export function BrowserPane({
             ignoreWebviewJavaScriptError,
           );
         }
-        hidePersistentBrowserWebview(browserIdRef.current);
+        hidePersistentBrowserWebview(browserIdRef.current, host);
       } else {
         const browserStillExists = Boolean(
           useBrowserStore.getState().browsersById[browserIdRef.current],
