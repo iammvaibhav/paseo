@@ -60,12 +60,18 @@ use all stored subscription sign-ins.
 - `GET /healthz` shows `{ ok: true, version }`.
 - `GET /api/providers` lists the 6 providers with accounts and routing.
 - `GET /v1/models` lists all models; `GET /v1/{provider}/models` lists one.
+  Each row's `thinking` holds omp's choices for the model (`levels`: `off`,
+  `auto`, then its efforts) and the level a request that names none runs
+  at (`default`).
 - `POST /v1/chat/completions`, `/v1/responses`, `/v1/messages` take
   `model` as `<provider>/<modelId>`, or a bare id with `?provider=<id>`.
 - `POST /v1/{provider}/chat/completions|responses|messages` is the same,
   with `model` bare or qualified.
 - `GET /api/requests?limit=N` (newest first) and
   `GET /api/requests/{requestId}` show past turns (ring buffer, 500).
+- `GET /api/bifrost/model-parameters[?provider=<name>]` is a Bifrost
+  model-parameters datasheet for every model, built from the same omp
+  data; see [Bifrost](#bifrost-prod).
 - `/`, `/app.js`, `/app.css` serve the UI (embedded from `public/`).
 
 ## Per-request controls
@@ -93,6 +99,31 @@ Account notes:
   the request.
 - `auto` routing does not use sign-ins that model discovery shows
   without access to the model (Codex `accountAccess`).
+
+## Thinking levels
+
+The proxy picks each request's thinking level the way an omp session
+does, so a client sees omp's levels and omp's defaults:
+
+| Request names | Level used |
+|---|---|
+| An effort (`minimal` … `max`) | That effort, clamped to the model's efforts (`minimal` on a model without it runs `low`) |
+| `auto` | omp's `auto`: the judge role (TypeSafe jev when signed in) classifies the user turn, capped at `xhigh`; `ultrathink` in the prompt jumps to the top tier |
+| `none` / `off` / Messages `thinking: disabled` | Reasoning off; where the model cannot turn it off, omp runs its fallback level |
+| Nothing | The model's catalog default (`thinking.defaultLevel`), else the `defaultThinkingLevel` setting |
+
+- The selector goes in `reasoning_effort` (chat), `reasoning.effort`
+  (Responses) or `output_config.effort` (Messages).
+- `auto` classifies once per user turn. A tool-loop follow-up in the
+  same session reuses that turn's level, as omp does.
+- The `x-omp-thinking` and `x-omp-thinking-source` response headers and
+  the request record's `thinking` field show the level used and why
+  (`auto`, `explicit`, `default`).
+- Settings come from the file named by `OMP_PROXY_SETTINGS`, a
+  config.yml overlay with `defaultThinkingLevel`,
+  `providers.autoThinkingMaxEffort` and the `judge` model role. Deploy
+  writes it on prod from the orchestrator's omp config
+  (`scripts/settings-overlay.ts`), so the proxy follows the fleet.
 
 ## Images
 
@@ -152,9 +183,11 @@ the other versions' libraries, so the proxy only starts on a host whose
 `./scripts/deploy.sh` owns prod through its `prod` job. It builds the
 binary on the orchestrator, then on prod runs `omp update`, installs the
 changed units from `deploy/`, swaps `~/.local/bin/omp-proxy` (the old one
-stays as `omp-proxy.prev`), restarts `omp-auth-broker`, then `omp-proxy` and
-`omp-grok-refresher`, and checks `/healthz`. `PASEO_SKIP_PROD=1` skips it;
-`PASEO_PROD_HOST` changes the ssh alias.
+stays as `omp-proxy.prev`), installs the thinking settings overlay
+`~/.omp-proxy/settings.yml`, restarts `omp-auth-broker`, then `omp-proxy`
+and `omp-grok-refresher`, checks `/healthz`, and makes Bifrost resync its
+datasheets. `PASEO_SKIP_PROD=1` skips it; `PASEO_PROD_HOST` changes the
+ssh alias.
 
 Prod runs the broker, so the proxy uses the broker's own token file
 `~/.omp/auth-broker.token`. One-time setup on a new prod host:
@@ -191,6 +224,18 @@ front of omp-proxy. It gives a web UI with login and API keys.
   `omp-proxy/opencode-go/muse-spark-1.3-contributor` and the header
   `Authorization: Bearer sk-bf-...`.
 - Request logs are kept for 7 days.
+- Model Settings → model parameters URL is
+  `http://127.0.0.1:4317/api/bifrost/model-parameters`. Bifrost's own
+  datasheet does not know the proxy's models (it only strips provider
+  prefixes it knows, so `cursor/…` never matches) and does not read
+  `/v1/models`. Without these rows Bifrost hides the reasoning control and
+  cuts `reasoning_effort` to low/medium/high. Each row is tagged
+  `provider: omp-proxy`, lists the model's efforts, and draws one
+  Reasoning Effort control (Off, Auto, the efforts, omp's default
+  preselected). The URL takes one source; the official rows already in
+  `config.db` stay but no longer refresh, which is fine while
+  `omp-proxy` is the only provider. Bifrost syncs it daily and on Force
+  Sync; deploy forces a sync after each proxy restart.
 
 Edits made in the Bifrost UI stay after a restart. If you edit
 `config.json`, the changed sections replace the UI values at the next

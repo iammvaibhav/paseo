@@ -1,10 +1,13 @@
 import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { OMP_MODES } from "@getpaseo/protocol/provider-manifest";
+import YAML from "yaml";
 import { z } from "zod";
 
 import type { ProviderRuntimeSettings } from "../../provider-launch-config.js";
+import { OmpThinkingLevelSchema, type OmpThinkingLevel } from "./rpc-types.js";
 
 const DEFAULT_OMP_MODE_ID = "full";
 const DEFAULT_OMP_READY_TIMEOUT_MS = 20_000;
@@ -161,4 +164,38 @@ export function mergeOmpRuntimeSettings(
         ? [...(base?.disallowedTools ?? []), ...(override?.disallowedTools ?? [])]
         : undefined,
   };
+}
+
+/**
+ * omp's global default thinking level for a new session with an explicit model:
+ * top-level `defaultThinkingLevel` in `<agentDir>/config.yml` (or
+ * `config.yaml`), falling back to "high" when the file is missing, unparsable,
+ * or the key is absent or invalid.
+ */
+export async function readOmpDefaultThinkingLevel(
+  env: NodeJS.ProcessEnv = process.env,
+  home: string = homedir(),
+): Promise<OmpThinkingLevel> {
+  const { agentDir } = resolveOmpDiagnosticPaths(env, home);
+  for (const fileName of ["config.yml", "config.yaml"]) {
+    let content: string;
+    try {
+      content = await readFile(join(agentDir, fileName), "utf8");
+    } catch {
+      continue;
+    }
+    try {
+      const parsed: unknown = YAML.parse(content);
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+        return "high";
+      }
+      const validated = OmpThinkingLevelSchema.safeParse(
+        (parsed as Record<string, unknown>)["defaultThinkingLevel"],
+      );
+      return validated.success ? validated.data : "high";
+    } catch {
+      return "high";
+    }
+  }
+  return "high";
 }

@@ -65,6 +65,16 @@ fi
 LOCAL_SHA="$(sha256sum "$DIST" | awk '{print $1}')"
 log "prod: built $DIST (sha256 $LOCAL_SHA)"
 
+# The proxy resolves thinking levels with the fleet's omp settings
+# (defaultThinkingLevel, the auto-thinking ceiling, the judge role). Read them
+# from this orchestrator's omp config and ship them as the proxy's overlay.
+BUILD_ROOT="$(cd "$(dirname "$DIST")/.." && pwd)"
+SETTINGS="$BUILD_ROOT/dist/omp-proxy-settings.yml"
+(cd "$BUILD_ROOT" && bun run scripts/settings-overlay.ts >"$SETTINGS") ||
+  die "prod: could not read the fleet omp settings for omp-proxy"
+SETTINGS_SHA="$(sha256sum "$SETTINGS" | awk '{print $1}')"
+log "prod: omp-proxy settings overlay: $(tr -d '\n\t' <"$SETTINGS")"
+
 # --- Idempotence: touch prod only when something drifted -----------------------
 PROD_OMP="$("${SSH[@]}" "$PROD_HOST" '~/.local/bin/omp --version 2>/dev/null' | sed -e 's/^omp\///' -e 's/[[:space:]]//g' || true)"
 PROD_SHA="$("${SSH[@]}" "$PROD_HOST" 'sha256sum ~/.local/bin/omp-proxy 2>/dev/null' | awk '{print $1}' || true)"
@@ -74,6 +84,7 @@ try:
 except Exception:
     pass' 2>/dev/null || true)"
 BROKER_EXE="$("${SSH[@]}" "$PROD_HOST" 'pid=$(systemctl --user show omp-auth-broker -p MainPID --value 2>/dev/null); if [[ -n "$pid" && "$pid" != "0" ]]; then readlink "/proc/$pid/exe" 2>/dev/null || true; fi' || true)"
+PROD_SETTINGS_SHA="$("${SSH[@]}" "$PROD_HOST" 'sha256sum ~/.omp-proxy/settings.yml 2>/dev/null' | awk '{print $1}' || true)"
 
 units_same=1
 for svc in omp-auth-broker omp-proxy omp-grok-refresher bifrost; do
@@ -85,11 +96,12 @@ for svc in omp-auth-broker omp-proxy omp-grok-refresher bifrost; do
 done
 
 if [[ "$PROD_OMP" == "$TARGET" && "$PROD_SHA" == "$LOCAL_SHA" && "$HEALTH" == "$TARGET" \
-  && -n "$BROKER_EXE" && "$BROKER_EXE" != *"(deleted)"* && "$units_same" == "1" ]]; then
+  && -n "$BROKER_EXE" && "$BROKER_EXE" != *"(deleted)"* && "$units_same" == "1" \
+  && "$PROD_SETTINGS_SHA" == "$SETTINGS_SHA" ]]; then
   log "prod: up to date (omp + omp-proxy $TARGET)"
   exit 0
 fi
-log "prod: drift detected (omp=$PROD_OMP proxy=${PROD_SHA:0:12} health=$HEALTH broker_exe=$BROKER_EXE units_same=$units_same) — redeploying"
+log "prod: drift detected (omp=$PROD_OMP proxy=${PROD_SHA:0:12} health=$HEALTH broker_exe=$BROKER_EXE units_same=$units_same settings=${PROD_SETTINGS_SHA:0:12}) — redeploying"
 
 # --- Deploy: stage files, then mutate in one ssh session -----------------------
 STAGE="$("${SSH[@]}" "$PROD_HOST" 'mktemp -d')"
@@ -101,6 +113,7 @@ cleanup_stage() {
 }
 trap cleanup_stage EXIT
 scp -o BatchMode=yes "$PROXY_DIR"/deploy/*.service "$PROD_HOST:$STAGE/"
+scp -o BatchMode=yes "$SETTINGS" "$PROD_HOST:$STAGE/omp-proxy-settings.yml"
 scp -o BatchMode=yes "$DIST" "$PROD_HOST:.local/bin/omp-proxy.new"
 
 # The token goes over stdin, not the ssh command line, so it never shows in
@@ -159,6 +172,12 @@ else
   rm -f ~/.local/bin/omp-proxy.new
 fi
 
+mkdir -p ~/.omp-proxy
+if ! cmp -s "$STAGE/omp-proxy-settings.yml" ~/.omp-proxy/settings.yml 2>/dev/null; then
+  install -m 644 "$STAGE/omp-proxy-settings.yml" ~/.omp-proxy/settings.yml
+  log "prod: installed omp-proxy settings overlay"
+fi
+
 systemctl --user restart omp-auth-broker || unit_fail omp-auth-broker "restart failed"
 bind="$(grep -oE -- '--bind=[^ ]+' ~/.config/systemd/user/omp-auth-broker.service | head -1 | cut -d= -f2)"
 bind="${bind:-100.123.97.105:8770}"
@@ -175,7 +194,8 @@ done
 [[ "$broker_ok" == "1" ]] || unit_fail omp-auth-broker "not active on $bind after 30s"
 log "prod: omp-auth-broker active ($bind)"
 
-# bifrost fronts the proxy and never needs a restart for this.
+# bifrost fronts the proxy and never needs a restart for this; its datasheet
+# resync below picks up the new proxy's thinking levels.
 systemctl --user restart omp-proxy || unit_fail omp-proxy "restart failed"
 systemctl --user restart omp-grok-refresher || unit_fail omp-grok-refresher "restart failed"
 proxy_ok=0
@@ -196,6 +216,29 @@ except Exception:
 done
 [[ "$proxy_ok" == "1" ]] || unit_fail omp-proxy "healthz version '$hv' != '$TARGET' after 60s"
 log "prod: omp-proxy healthy (version $hv)"
+
+# Bifrost reads the proxy's thinking levels from model_parameters_url
+# (/api/bifrost/model-parameters, see README) on its own daily sync; resync now
+# so a new omp catalog or settings overlay shows up at once. Not fatal: the
+# proxy is already serving, and Bifrost keeps its previous sheet on failure.
+if systemctl --user is-active --quiet bifrost && [[ -f ~/.bifrost/credentials.txt ]]; then
+  if python3 - <<'PY'
+import http.cookiejar, json, os, urllib.request
+creds = dict(l.split("=", 1) for l in open(os.path.expanduser("~/.bifrost/credentials.txt")).read().splitlines() if "=" in l)
+opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+def post(path, body):
+    data = json.dumps(body).encode()
+    req = urllib.request.Request("http://127.0.0.1:8080" + path, data=data, headers={"content-type": "application/json"}, method="POST")
+    opener.open(req, timeout=120).read()
+post("/api/session/login", {"username": creds["admin_username"].strip(), "password": creds["admin_password"].strip()})
+post("/api/pricing/force-sync", {})
+PY
+  then
+    log "prod: bifrost resynced its datasheets from omp-proxy"
+  else
+    log "prod: WARNING: bifrost datasheet resync failed; run Force Sync in Bifrost Model Settings"
+  fi
+fi
 REMOTE
 } | "${SSH[@]}" "$PROD_HOST" \
   "TARGET='$TARGET' LOCAL_SHA='$LOCAL_SHA' STAGE='$STAGE' OMP_SKIP_UPDATE='${PASEO_SKIP_OMP_UPDATE:-0}' bash -s"

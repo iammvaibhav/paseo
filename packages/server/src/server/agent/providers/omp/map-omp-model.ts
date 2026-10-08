@@ -3,7 +3,7 @@ import type {
   AgentProvider,
   AgentSelectOption,
 } from "../../agent-sdk-types.js";
-import type { OmpModel, OmpThinkingLevel } from "./rpc-types.js";
+import { OmpThinkingLevelSchema, type OmpModel, type OmpThinkingLevel } from "./rpc-types.js";
 
 export const DEFAULT_OMP_THINKING_LEVEL: OmpThinkingLevel = "medium";
 
@@ -13,8 +13,8 @@ export const OMP_THINKING_OPTIONS: ReadonlyArray<{
   description: string;
   isDefault?: boolean;
 }> = [
-  { id: "auto", label: "Auto", description: "OMP picks the effort each turn" },
   { id: "off", label: "Off", description: "No extra reasoning" },
+  { id: "auto", label: "Auto", description: "OMP picks the effort each turn" },
   { id: "minimal", label: "Minimal", description: "Light reasoning" },
   { id: "low", label: "Low", description: "Faster reasoning" },
   { id: "medium", label: "Medium", description: "Balanced reasoning", isDefault: true },
@@ -22,6 +22,16 @@ export const OMP_THINKING_OPTIONS: ReadonlyArray<{
   { id: "xhigh", label: "XHigh", description: "Extra-high reasoning" },
   { id: "max", label: "Max", description: "Maximum reasoning" },
 ] as const;
+
+/** Canonical effort order: minimal < low < medium < high < xhigh < max. */
+const OMP_EFFORT_ORDER: readonly OmpThinkingLevel[] = [
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+];
 
 function mapThinkingOption(
   option: (typeof OMP_THINKING_OPTIONS)[number],
@@ -38,8 +48,15 @@ function mapThinkingOption(
   return mapped;
 }
 
-export function mapOmpModel(model: OmpModel, provider: AgentProvider): AgentModelDefinition {
-  const { thinkingOptions, defaultThinkingOptionId } = resolveOmpThinkingConfig(model);
+export function mapOmpModel(
+  model: OmpModel,
+  provider: AgentProvider,
+  settingsDefault: OmpThinkingLevel,
+): AgentModelDefinition {
+  const { thinkingOptions, defaultThinkingOptionId } = resolveOmpThinkingConfig(
+    model,
+    settingsDefault,
+  );
   return {
     provider,
     id: `${model.provider}/${model.id}`,
@@ -54,7 +71,10 @@ export function mapOmpModel(model: OmpModel, provider: AgentProvider): AgentMode
   };
 }
 
-function resolveOmpThinkingConfig(model: OmpModel): {
+function resolveOmpThinkingConfig(
+  model: OmpModel,
+  settingsDefault: OmpThinkingLevel,
+): {
   thinkingOptions: AgentSelectOption[] | undefined;
   defaultThinkingOptionId: string | undefined;
 } {
@@ -62,33 +82,63 @@ function resolveOmpThinkingConfig(model: OmpModel): {
     return { thinkingOptions: undefined, defaultThinkingOptionId: undefined };
   }
   const efforts = model.thinking?.efforts;
-  if (!efforts || efforts.length === 0) {
-    // Older omp versions don't report per-model thinking config; expose the full set.
+  const recognized = OMP_THINKING_OPTIONS.filter(
+    (option) => option.id !== "auto" && option.id !== "off" && efforts?.includes(option.id),
+  );
+  if (!efforts || efforts.length === 0 || recognized.length === 0) {
+    // Older omp versions don't report per-model thinking config, or all reported
+    // efforts are unrecognized; expose the full set.
+    const defaultThinkingOptionId = clampThinkingDefault(
+      requestedThinkingDefault(model, settingsDefault),
+      OMP_THINKING_OPTIONS.filter((option) => option.id !== "auto" && option.id !== "off"),
+    );
     return {
-      thinkingOptions: OMP_THINKING_OPTIONS.map((option) => mapThinkingOption(option)),
-      defaultThinkingOptionId: DEFAULT_OMP_THINKING_LEVEL,
+      thinkingOptions: OMP_THINKING_OPTIONS.map((option) =>
+        mapThinkingOption(option, option.id === defaultThinkingOptionId),
+      ),
+      defaultThinkingOptionId,
     };
   }
-  const effortSet = new Set(efforts);
-  const filtered = OMP_THINKING_OPTIONS.filter((option) => effortSet.has(option.id));
-  if (filtered.length === 0) {
-    // All reported efforts are unrecognized; fall back to the full set with the standard default.
-    return {
-      thinkingOptions: OMP_THINKING_OPTIONS.map((option) => mapThinkingOption(option)),
-      defaultThinkingOptionId: DEFAULT_OMP_THINKING_LEVEL,
-    };
-  }
-  const reportedDefault = model.thinking?.defaultLevel;
-  const defaultThinkingOptionId =
-    reportedDefault && filtered.some((option) => option.id === reportedDefault)
-      ? reportedDefault
-      : (filtered[0]?.id ?? DEFAULT_OMP_THINKING_LEVEL);
-  // `auto` is a session-level OMP mode, never a per-model effort, so models do not list it.
-  const options = [OMP_THINKING_OPTIONS[0], ...filtered.filter((option) => option.id !== "auto")];
+  // `auto` and `off` are session-level OMP modes, never per-model efforts, so
+  // models do not list them; every reasoning model offers both plus its efforts.
+  const options = [OMP_THINKING_OPTIONS[0]!, OMP_THINKING_OPTIONS[1]!, ...recognized];
+  const defaultThinkingOptionId = clampThinkingDefault(
+    requestedThinkingDefault(model, settingsDefault),
+    recognized,
+  );
   return {
     thinkingOptions: options.map((option) =>
       mapThinkingOption(option, option.id === defaultThinkingOptionId),
     ),
     defaultThinkingOptionId,
   };
+}
+
+function requestedThinkingDefault(
+  model: OmpModel,
+  settingsDefault: OmpThinkingLevel,
+): OmpThinkingLevel {
+  const parsed = OmpThinkingLevelSchema.safeParse(model.thinking?.defaultLevel);
+  return parsed.success ? parsed.data : settingsDefault;
+}
+
+function clampThinkingDefault(
+  requested: OmpThinkingLevel,
+  offeredEfforts: ReadonlyArray<(typeof OMP_THINKING_OPTIONS)[number]>,
+): OmpThinkingLevel {
+  if (requested === "auto" || requested === "off") {
+    return requested;
+  }
+  const offered: Record<string, true> = {};
+  for (const option of offeredEfforts) {
+    offered[option.id] = true;
+  }
+  const start = OMP_EFFORT_ORDER.indexOf(requested);
+  for (let i = start; i >= 0; i--) {
+    const candidate = OMP_EFFORT_ORDER[i]!;
+    if (offered[candidate]) {
+      return candidate;
+    }
+  }
+  return offeredEfforts[0]!.id;
 }
