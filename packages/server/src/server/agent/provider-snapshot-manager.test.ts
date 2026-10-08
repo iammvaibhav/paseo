@@ -28,6 +28,7 @@ import {
   resolveSnapshotCwd,
 } from "./provider-snapshot-manager.js";
 import { OpenCodeAgentClient } from "./providers/opencode-agent.js";
+import { OmpWarmPool } from "./providers/omp/warm-pool.js";
 
 const TEST_CAPABILITIES = {
   supportsStreaming: false,
@@ -1680,6 +1681,43 @@ describe("ProviderSnapshotManager applyMutableProviderConfig", () => {
       expect(state.providerDefinitions.copilot).toMatchObject({ enabled: false });
       expect(state.clients.copilot).toBeUndefined();
     } finally {
+      manager.destroy();
+    }
+  });
+
+  test("starts exactly one OMP warm pool: the live client's, never the catalog-only clients'", () => {
+    // The registry builds an extra catalog client per rebuild; each started
+    // pool keeps idle omp processes alive, so only the live client may start one.
+    const start = vi.spyOn(OmpWarmPool.prototype, "start").mockImplementation(() => undefined);
+    const closeAll = vi.spyOn(OmpWarmPool.prototype, "closeAll").mockResolvedValue(undefined);
+    const providerConfig = (label: string) => ({
+      claude: { enabled: false },
+      codex: { enabled: false },
+      copilot: { enabled: false },
+      omp: { enabled: true, label },
+      opencode: { enabled: false },
+      pi: { enabled: false },
+    });
+    const manager = new ProviderSnapshotManager({
+      logger: createTestLogger(),
+      providerOverrides: providerConfig("Initial"),
+    });
+    try {
+      manager.getAgentManagerProviderState();
+      expect(start).toHaveBeenCalledTimes(1);
+
+      const prepared = manager.prepareMutableProviderConfig(providerConfig("Pending"), {
+        replace: true,
+      });
+      expect(start).toHaveBeenCalledTimes(1);
+      prepared.commit();
+
+      // The rebuilt live client starts its pool; the replaced one closes its own.
+      expect(start).toHaveBeenCalledTimes(2);
+      expect(closeAll).toHaveBeenCalledTimes(1);
+    } finally {
+      start.mockRestore();
+      closeAll.mockRestore();
       manager.destroy();
     }
   });

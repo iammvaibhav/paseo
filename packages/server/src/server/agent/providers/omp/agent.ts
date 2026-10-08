@@ -2728,6 +2728,15 @@ export class OmpAgentClient implements AgentClient {
               : {}),
           })
         : null;
+  }
+
+  /**
+   * Start the warm pool (seed priming, maintenance, config watch). Only the
+   * live client for the provider is activated: the provider registry also
+   * builds a catalog-only client per rebuild, and each one starting its own
+   * pool at construction left several pools of idle omp processes on a host.
+   */
+  activate(): void {
     this.warmPool?.start();
   }
 

@@ -152,11 +152,14 @@ cwd and not per agent:
 - This host's `config.json` has a single enabled `omp` provider, so
   the intended pool is 2 processes for the whole machine.
 
-Observed 25 processes / 6.60 GiB because
-`applyMutableProviderConfig` drops `providerClients` without
-`shutdown()`. Each Settings save that rebuilds providers orphans a
-pool whose 15 s timer keeps topping it up. Fix that before an idle
-timeout will show a clean RSS drop.
+Only the **live** client's pool runs. `buildProviderRegistry` also
+constructs a catalog-only client per provider on every registry build
+(boot, settings save, plugin change); before 2026-10-08 each of those
+started its own pool at construction, so a host held 3–4 pools (6–8
+idle omp processes). Now `OmpAgentClient.activate()` starts the pool,
+and `ProviderSnapshotManager` activates only installed clients. A
+settings save `retire()`s the client it replaced, which closes that
+client's idle pool; agents the old client started keep running.
 
 ## Idle-close + settings
 

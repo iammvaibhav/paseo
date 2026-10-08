@@ -535,6 +535,8 @@ export class ProviderSnapshotManager {
     const client = definition.createClient(this.logger);
     clients[provider] = client;
     this.ownedClients.add(client);
+    // A prepared (uncommitted) generation activates its clients on install.
+    if (clients === this.providerClients) client.activate?.();
     return client;
   }
 
@@ -778,6 +780,7 @@ export class ProviderSnapshotManager {
     this.generation = generation;
     this.retireReplacedClients(clients);
     this.providerClients = clients;
+    for (const client of Object.values(clients)) client?.activate?.();
     this.warnUnknownProviderOverrides();
     for (const [key, catalogs] of this.catalogs) {
       for (const provider of catalogChanged) catalogs.delete(provider);

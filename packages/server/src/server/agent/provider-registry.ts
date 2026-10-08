@@ -608,8 +608,18 @@ function wrapClientProvider(
     getCatalogCacheKey: inner.getCatalogCacheKey?.bind(inner),
     isAvailable: (signal, options) => inner.isAvailable(signal, options),
     getDiagnostic: inner.getDiagnostic?.bind(inner),
+    ...forwardRuntimeHooks(inner),
+  };
+}
+
+/** Pool lifecycle hooks a provider wrapper must pass through unchanged. */
+function forwardRuntimeHooks(
+  inner: AgentClient,
+): Pick<AgentClient, "prewarmCwd" | "retire" | "activate"> {
+  return {
     prewarmCwd: inner.prewarmCwd?.bind(inner),
     retire: inner.retire?.bind(inner),
+    activate: inner.activate?.bind(inner),
   };
 }
 

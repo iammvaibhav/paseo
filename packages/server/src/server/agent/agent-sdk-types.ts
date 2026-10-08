@@ -900,4 +900,10 @@ export interface AgentClient {
    * follows at daemon exit. Must be idempotent.
    */
   retire?(): Promise<void>;
+  /**
+   * The client became the live client for its provider. Start background
+   * resources (warm process pools). Catalog-only clients are never activated.
+   * Must be idempotent.
+   */
+  activate?(): void;
 }
