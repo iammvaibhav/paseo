@@ -107,7 +107,7 @@ macOS (`sh.paseo.commander-voice`), systemd user unit on Linux
 nvm + the env file, then execs `server.js`:
 
 ```bash
-./scripts/commander-voice/install.sh local        # or blrofc3 / iammvaibhav
+./scripts/commander-voice/install.sh
 ```
 
 The service targets its LOCAL daemon (`ws://127.0.0.1:6767/ws`, or the host's

@@ -2,9 +2,7 @@
 # Install/update the Plannotator binary only (no agent hooks/skills).
 #
 # Usage (run on the machine being configured):
-#   ./scripts/plannotator/install.sh local
-#   ./scripts/plannotator/install.sh blrofc3
-#   ./scripts/plannotator/install.sh iammvaibhav
+#   ./scripts/plannotator/install.sh
 #
 # Env:
 #   PLANNOTATOR_VERSION=0.22.0   # pin; omit for latest
@@ -15,7 +13,6 @@
 
 set -euo pipefail
 
-HOST_KIND="${1:-}"
 BIN="${PLANNOTATOR_BIN:-${HOME}/.local/bin/plannotator}"
 INSTALL_URL="${PLANNOTATOR_INSTALL_URL:-https://plannotator.ai/install.sh}"
 
@@ -26,20 +23,6 @@ log() {
 die() {
   printf 'error: %s\n' "$*" >&2
   exit 1
-}
-
-usage() {
-  cat >&2 <<'EOF'
-Usage: install.sh <local|blrofc3|iammvaibhav>
-EOF
-  exit 2
-}
-
-require_host_kind() {
-  case "$HOST_KIND" in
-    local | blrofc3 | iammvaibhav) ;;
-    *) usage ;;
-  esac
 }
 
 ensure_binary() {
@@ -92,8 +75,6 @@ ensure_binary() {
 }
 
 main() {
-  require_host_kind
-  log "Host kind: $HOST_KIND"
   ensure_binary
   log "Done (binary only — no agent hooks installed)"
 }

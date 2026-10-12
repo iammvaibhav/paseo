@@ -2,10 +2,12 @@
 # Install/update standalone code-server and deploy Paseo configs + service units.
 #
 # Usage (run on the machine being configured):
-#   ./scripts/code-server/install.sh local
-#   ./scripts/code-server/install.sh blrofc3
-#   ./scripts/code-server/install.sh iammvaibhav
+#   ./scripts/code-server/install.sh <bind-addr>
+#     127.0.0.1:8765        the desktop machine (the app opens it locally)
+#     <netbird-ip>:8765     every other host (reached over NetBird only)
 #
+# scripts/deploy/main.ts runs it on every host with `code-server` in its
+# inventory services, passing that address.
 # Env:
 #   CODE_SERVER_VERSION=4.127.0   # pin; omit for latest
 #   CODE_SERVER_SCRIPTS_DIR=...   # defaults to this script's directory
@@ -22,7 +24,7 @@
 
 set -euo pipefail
 
-HOST_KIND="${1:-}"
+BIND_ADDR="${1:-}"
 SCRIPTS_DIR="${CODE_SERVER_SCRIPTS_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 BIN="${HOME}/.local/bin/code-server"
 CONFIG_DIR="${HOME}/.config/code-server"
@@ -43,16 +45,13 @@ die() {
 
 usage() {
   cat >&2 <<'EOF'
-Usage: install.sh <local|blrofc3|iammvaibhav>
+Usage: install.sh <bind-addr>   e.g. 127.0.0.1:8765 or 100.123.97.105:8765
 EOF
   exit 2
 }
 
-require_host_kind() {
-  case "$HOST_KIND" in
-    local | blrofc3 | iammvaibhav) ;;
-    *) usage ;;
-  esac
+require_bind_addr() {
+  [[ "$BIND_ADDR" =~ ^[0-9.]+:[0-9]+$ ]] || usage
 }
 
 ensure_binary() {
@@ -106,14 +105,14 @@ resolve_settings_src() {
 }
 
 deploy_files() {
-  local config_src="${SCRIPTS_DIR}/config.${HOST_KIND}.yaml"
   local settings_src
   settings_src="$(resolve_settings_src)"
 
-  [[ -f "$config_src" ]] || die "Missing config: $config_src"
-
   mkdir -p "$CONFIG_DIR" "$USER_DIR"
-  cp "$config_src" "${CONFIG_DIR}/config.yaml"
+  # Port 8765 avoids common :8080 services. No auth: the bind address is
+  # loopback or the host's NetBird IP, so only the VPN reaches it.
+  printf '# Managed by scripts/code-server/install.sh\nbind-addr: %s\nauth: none\ncert: false\n' \
+    "$BIND_ADDR" >"${CONFIG_DIR}/config.yaml"
 
   # Live settings already at the destination — keep them (don't clobber with repo).
   if [[ "$(cd "$(dirname "$settings_src")" && pwd)/$(basename "$settings_src")" == "${USER_DIR}/settings.json" ]]; then
@@ -162,7 +161,17 @@ deploy_extension() {
     log "Skipping paseo-bridge extension (PASEO_SKIP_CODE_SERVER_EXTENSION=1)"
     return
   fi
+  # Deploy ships a .vsix packaged once on the deploy host (targets have no
+  # npx); a manual run packages one here.
+  local prebuilt="${SCRIPTS_DIR}/paseo-bridge.vsix"
   local ext_src="${SCRIPTS_DIR}/paseo-bridge"
+  rm -rf "${HOME}/.local/share/code-server/extensions/paseo-bridge"
+  if [[ -f "$prebuilt" ]]; then
+    log "Installing prebuilt paseo-bridge into code-server"
+    "$BIN" --install-extension "$prebuilt" --force \
+      || log "Warning: code-server extension install failed; VS Code Web opens will fall back to reload"
+    return
+  fi
   if [[ ! -f "${ext_src}/package.json" ]]; then
     log "Warning: paseo-bridge extension missing at ${ext_src}; skipping"
     return
@@ -174,8 +183,6 @@ deploy_extension() {
 
   # code-server only loads extensions registered in extensions.json — a plain
   # folder copy is ignored. Package a .vsix and install it so it's registered.
-  # Remove any stale hand-copied folder from the old (broken) approach.
-  rm -rf "${HOME}/.local/share/code-server/extensions/paseo-bridge"
 
   # Package from a temp copy with a unique, increasing version. code-server
   # refuses to reinstall the SAME version while a window has it loaded ("Please
@@ -410,7 +417,7 @@ verify_listening() {
 }
 
 main() {
-  require_host_kind
+  require_bind_addr
   ensure_binary
   deploy_files
   deploy_vscode_root
@@ -422,7 +429,7 @@ main() {
     *) die "Unsupported OS: $(uname -s)" ;;
   esac
   verify_listening
-  log "Done ($HOST_KIND)"
+  log "Done ($BIND_ADDR)"
 }
 
 main "$@"

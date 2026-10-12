@@ -33,8 +33,6 @@ export interface Host {
   tunnel: "" | "cloudflared" | "tailscale-funnel";
   /** Builders: where packaging stages and keeps the newest tarball. */
   artifactDir: string;
-  /** Config name the per-host installers take (code-server, voice, plannotator). */
-  profile: string;
   services: Service[];
 }
 
@@ -45,14 +43,17 @@ const PLATFORMS: Record<string, true> = {
   "darwin-x64": true,
 };
 // Value = whether the service runs from the host's checkout (builders only).
+// The rest run from the kit deploy ships to every host.
 const SERVICES: Record<string, boolean> = {
-  omp: true,
-  "code-server": true,
-  plannotator: true,
-  voice: true,
-  "stall-cron": true,
-  "macbook-watch": true,
+  omp: false,
+  "code-server": false,
+  plannotator: false,
+  "stall-cron": false,
   "omp-proxy": false,
+  // npm-installs its own dependencies from the checkout
+  voice: true,
+  // runs scripts/deploy.sh from the checkout
+  "macbook-watch": true,
 };
 
 function fail(message: string): never {
@@ -112,7 +113,6 @@ function parseHost(entry: Record<string, unknown>, where: string): Host {
     port,
     tunnel,
     artifactDir: optional(entry, "artifactDir", "~/.paseo/artifacts"),
-    profile: optional(entry, "profile", name),
     services: parseServices(entry, role, where),
   };
 }
