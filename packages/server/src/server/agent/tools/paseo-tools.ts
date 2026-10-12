@@ -123,6 +123,7 @@ import { registerTicketTools, type TicketToolsBackend } from "../../tickets/tool
 import { registerDocThreadTools } from "../../doc-threads/tools.js";
 import type { DocThreadsService } from "../../doc-threads/service.js";
 import { registerNoteTools, type NoteToolsBackend } from "../../notes/tools.js";
+import { registerFleetControlTools } from "./fleet-control-tools.js";
 import { MissionControlSearchMatchSchema } from "@getpaseo/protocol/mission-control/types";
 import type { MissionControlProposalSpawnPlan } from "@getpaseo/protocol/mission-control/types";
 import { MissionControlMetaPlanSchema } from "@getpaseo/protocol/mission-control/types";
@@ -158,6 +159,7 @@ import type { MissionControlService } from "../../mission-control/service.js";
 import {
   buildFleetContextData,
   buildLocalModels,
+  OMP_MODEL_ROLES_KEY,
   resolveDefaultWorkerModel,
 } from "../../mission-control/context.js";
 import type { WorkspaceRollup, ProjectRollup } from "../../mission-control/rollups.js";
@@ -4154,11 +4156,16 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         provider,
         wait: true,
       });
+      const visibleModels = daemonConfigStore?.get().visibleModels;
+      const filteredModels =
+        visibleModels && visibleModels.length > 0
+          ? models.filter((model) => visibleModels.includes(`${provider}:${model.id}`))
+          : models;
       return {
         content: [],
         structuredContent: ensureValidJson({
           provider,
-          models,
+          models: filteredModels,
         }),
       };
     },
@@ -5296,7 +5303,23 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         // Same models + default-worker derivation the world snapshot uses —
         // one implementation shared by the Commander and Voice. The composer's
         // last pick (daemon.composerPreferences) outranks the omp task role.
-        models = await buildLocalModels({ providerSnapshotManager });
+        models = await buildLocalModels({ providerSnapshotManager, daemonConfigStore });
+        const visibleModels = daemonConfigStore?.get().visibleModels;
+        if (visibleModels && visibleModels.length > 0) {
+          const visibleSet = new Set(visibleModels);
+          const filtered: MissionControlModels = {};
+          for (const [providerName, modelIds] of Object.entries(models)) {
+            if (providerName === OMP_MODEL_ROLES_KEY) {
+              filtered[providerName] = modelIds;
+              continue;
+            }
+            const matching = modelIds.filter((id) => visibleSet.has(`${providerName}:${id}`));
+            if (matching.length > 0) {
+              filtered[providerName] = matching;
+            }
+          }
+          models = filtered;
+        }
         composerPreferences = daemonConfigStore?.get().composerPreferences;
       } else {
         const client = resolveFleetHost(target);
@@ -6239,6 +6262,19 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       };
     },
   );
+
+  registerFleetControlTools({
+    registerTool,
+    agentManager,
+    agentStorage,
+    fleetIdIndex,
+    isFleetLocalTarget,
+    hostsMatch,
+    resolveFleetHost,
+    knownFleetHostsText,
+    hostLabel,
+    logger: childLogger,
+  });
 
   // 04 — the 11 split meta tools share one output contract (same as the old
   // fleet_meta) and the M8 respondsTo ledger field.

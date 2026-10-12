@@ -39,7 +39,7 @@ const OMP_CONFIG_RELATIVE_PATH = join(".omp", "agent", "config.yml");
 // Reserved MissionControlModels key carrying omp modelRoles (role → model) as
 // "role: model" strings. The renderer prints it as the roles block, never as a
 // provider's model list.
-const OMP_MODEL_ROLES_KEY = "omp.modelRoles";
+export const OMP_MODEL_ROLES_KEY = "omp.modelRoles";
 // Spec: roster is one line per agent active in the last 24 hours, bucketed by
 // lifecycle (running/needs-you/ready/done). Running agents always qualify
 // regardless of age — a long-running worker is the hot set even when its last
@@ -75,6 +75,7 @@ export interface LocalModelsInput {
     ProviderSnapshotManager,
     "listProviders" | "listRegisteredProviderIds"
   >;
+  daemonConfigStore?: Pick<DaemonConfigStore, "get">;
 }
 
 export interface LocalRecentAgentsInput {
@@ -229,6 +230,22 @@ export async function buildLocalModels(input: LocalModelsInput): Promise<Mission
   const roles = readOmpModelRoles();
   if (Object.keys(roles).length > 0) {
     models[OMP_MODEL_ROLES_KEY] = Object.entries(roles).map(([role, model]) => `${role}: ${model}`);
+  }
+  const visibleModels = input.daemonConfigStore?.get().visibleModels;
+  if (visibleModels && visibleModels.length > 0) {
+    const visibleSet = new Set(visibleModels);
+    const filtered: MissionControlModels = {};
+    for (const [provider, modelIds] of Object.entries(models)) {
+      if (provider === OMP_MODEL_ROLES_KEY) {
+        filtered[provider] = modelIds;
+        continue;
+      }
+      const matching = modelIds.filter((id) => visibleSet.has(`${provider}:${id}`));
+      if (matching.length > 0) {
+        filtered[provider] = matching;
+      }
+    }
+    return filtered;
   }
   return models;
 }

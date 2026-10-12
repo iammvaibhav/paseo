@@ -1360,12 +1360,6 @@ export const ja: TranslationResources = {
       itsaplan: "itsaplan",
       webhooks: "Webhooks",
     },
-    worktreeSetup: {
-      title: "ワークツリースクリプトを設定",
-      description:
-        "新しいワークツリーが依存関係をインストールして自動的に準備できるようにセットアップコマンドを追加してください。",
-      openProjectSettings: "プロジェクト設定を開く",
-    },
     project: {
       actions: {
         menu: "プロジェクトアクション",
@@ -1591,20 +1585,6 @@ export const ja: TranslationResources = {
         idle: "更新ステータスはまだ確認されていません。",
       },
       installError: "デスクトップアプリの更新をインストールできません。",
-      callout: {
-        installingTitle: "更新をインストール中",
-        failedTitle: "更新に失敗しました",
-        availableTitle: "更新が利用可能",
-        genericError: "問題が発生しました。",
-        whatsNew: "新機能",
-        installingAction: "インストール中...",
-        installAndRestart: "インストールして再起動",
-        installingDescription: "インストールして再起動中...",
-        versionReady: "{{version}}のインストール準備ができました。",
-        newVersionReady: "新しいバージョンのインストール準備ができました。",
-        restartWarning:
-          "アプリを更新すると、実行中のエージェントが停止しターミナルセッションが閉じられます。",
-      },
     },
     settings: {
       loadFailed: "デスクトップ設定を読み込めません。",

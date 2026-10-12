@@ -1359,12 +1359,6 @@ export const en = {
       itsaplan: "itsaplan",
       webhooks: "Webhooks",
     },
-    worktreeSetup: {
-      title: "Set up worktree scripts",
-      description:
-        "Add setup commands so new worktrees can install dependencies and prepare themselves automatically.",
-      openProjectSettings: "Open project settings",
-    },
     project: {
       actions: {
         menu: "Project actions",
@@ -1606,19 +1600,6 @@ export const en = {
         idle: "Update status has not been checked yet.",
       },
       installError: "Unable to install the desktop app update.",
-      callout: {
-        installingTitle: "Installing update",
-        failedTitle: "Update failed",
-        availableTitle: "Update available",
-        genericError: "Something went wrong.",
-        whatsNew: "What's new",
-        installingAction: "Installing...",
-        installAndRestart: "Install & restart",
-        installingDescription: "Installing and restarting...",
-        versionReady: "{{version}} is ready to install.",
-        newVersionReady: "A new version is ready to install.",
-        restartWarning: "Upgrading the app will stop running agents and close terminal sessions.",
-      },
     },
     settings: {
       loadFailed: "Unable to load desktop settings.",

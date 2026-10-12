@@ -109,6 +109,15 @@ const DaemonAuthSchema = z
   })
   .strict();
 
+export const RemoteMcpClientSchema = z
+  .object({
+    name: z.string().min(1),
+    tokenHash: BcryptHashSchema,
+  })
+  .strict();
+
+export type RemoteMcpClient = z.infer<typeof RemoteMcpClientSchema>;
+
 const SpeechProviderIdSchema = z
   .string()
   .trim()
@@ -351,6 +360,7 @@ export const PersistedConfigSchema = z
           .object({
             enabled: z.boolean().optional(),
             injectIntoAgents: z.boolean().optional(),
+            remoteClients: z.array(RemoteMcpClientSchema).optional(),
           })
           .passthrough()
           .optional(),

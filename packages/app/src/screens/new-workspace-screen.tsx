@@ -2079,6 +2079,7 @@ export function NewWorkspaceScreen({
     selectedServerId,
     selectHost: handleSelectHost,
     projectByOptionId,
+    fleetProjects: projects,
     selectProjectOption,
     composerState,
     projectPicker,

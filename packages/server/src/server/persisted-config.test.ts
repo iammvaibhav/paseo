@@ -708,6 +708,40 @@ describe("loadPersistedConfig", () => {
     }
   });
 
+  test("loads daemon.mcp.remoteClients configuration", () => {
+    const home = createTempHome();
+    const configPath = path.join(home, "config.json");
+    try {
+      writeFileSync(
+        configPath,
+        `${JSON.stringify({
+          version: 1,
+          daemon: {
+            mcp: {
+              enabled: true,
+              remoteClients: [
+                {
+                  name: "grok-bot",
+                  tokenHash: "$2a$12$e80y6xQ4u41lE50g6V.58O2G4hD1d054d550s20e6a10b42f3612a",
+                },
+              ],
+            },
+          },
+        })}\n`,
+      );
+
+      const config = loadPersistedConfig(home);
+      expect(config.daemon?.mcp?.remoteClients).toEqual([
+        {
+          name: "grok-bot",
+          tokenHash: "$2a$12$e80y6xQ4u41lE50g6V.58O2G4hD1d054d550s20e6a10b42f3612a",
+        },
+      ]);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   test("loads a config that still uses the removed providers.openai.voice block", () => {
     const home = createTempHome();
     const configPath = path.join(home, "config.json");
