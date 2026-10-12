@@ -1,0 +1,50 @@
+{
+  "hosts": [
+    {
+      "name": "macbook",
+      "ssh": "macbook",
+      "address": "100.123.252.157",
+      "dns": "macbook.netbird.cloud",
+      "platform": "darwin-arm64",
+      "role": "builder",
+      "daemon": "desktop"
+    },
+    {
+      "name": "iammvaibhav",
+      "ssh": "iammvaibhav",
+      "address": "100.123.178.38",
+      "dns": "dev.netbird.cloud",
+      "platform": "linux-arm64",
+      "role": "builder",
+      "tunnel": "cloudflared",
+      "artifactDir": "/data/paseo-artifacts"
+    },
+    {
+      "name": "blrofc3",
+      "ssh": "blrofc3",
+      "address": "100.123.36.124",
+      "dns": "work.netbird.cloud",
+      "platform": "linux-x64",
+      "role": "builder",
+      "tunnel": "tailscale-funnel"
+    },
+    {
+      "name": "prod",
+      "ssh": "prod",
+      "address": "100.123.97.105",
+      "dns": "prod.netbird.cloud",
+      "platform": "linux-arm64",
+      "role": "target",
+      "buildFrom": "iammvaibhav"
+    },
+    {
+      "name": "dell-server",
+      "ssh": "dell-server",
+      "address": "100.123.88.247",
+      "dns": "dell-server.netbird.cloud",
+      "platform": "linux-x64",
+      "role": "target",
+      "buildFrom": "blrofc3"
+    }
+  ]
+}

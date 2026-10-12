@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { resolvePeerIdentityName } from "./peer-manager.js";
+import pino from "pino";
+import { PeerManager, resolvePeerIdentityName } from "./peer-manager.js";
 
 describe("resolvePeerIdentityName", () => {
   const peers = [
@@ -37,5 +38,107 @@ describe("resolvePeerIdentityName", () => {
     expect(resolvePeerIdentityName(peers, "  vaibhav-dev  ")).toBe("iammvaibhav");
     expect(resolvePeerIdentityName(peers, "ghost")).toBeNull();
     expect(resolvePeerIdentityName(peers, "   ")).toBeNull();
+  });
+});
+
+describe("PeerManager reconcile", () => {
+  it("reconciles added, removed, changed, and unchanged peers", async () => {
+    const manager = new PeerManager({
+      logger: pino({ level: "silent" }),
+      peers: [
+        { name: "stay", url: "tcp://127.0.0.1:10001", password: "p1" },
+        { name: "change-url", url: "tcp://127.0.0.1:10002", password: "p2" },
+        { name: "change-pass", url: "tcp://127.0.0.1:10003", password: "p3" },
+        { name: "remove-me", url: "tcp://127.0.0.1:10004" },
+      ],
+    });
+
+    const stayClientBefore = manager.getPeerClient("stay");
+    const changeUrlClientBefore = manager.getPeerClient("change-url");
+    const changePassClientBefore = manager.getPeerClient("change-pass");
+    const removeClientBefore = manager.getPeerClient("remove-me");
+
+    expect(stayClientBefore).not.toBeNull();
+    expect(changeUrlClientBefore).not.toBeNull();
+    expect(changePassClientBefore).not.toBeNull();
+    expect(removeClientBefore).not.toBeNull();
+
+    manager.reconcile([
+      { name: "stay", url: "tcp://127.0.0.1:10001", password: "p1" },
+      { name: "change-url", url: "tcp://127.0.0.1:10005", password: "p2" },
+      { name: "change-pass", url: "tcp://127.0.0.1:10003", password: "p3-new" },
+      { name: "new-peer", url: "tcp://127.0.0.1:10006" },
+    ]);
+
+    // Allow in-flight client.close() promises to settle
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Unchanged peer: identical client instance, kept untouched
+    expect(manager.getPeerClient("stay")).toBe(stayClientBefore);
+    expect(stayClientBefore?.getConnectionState().status).not.toBe("disposed");
+
+    // Changed URL peer: old client disposed, new client created
+    expect(changeUrlClientBefore?.getConnectionState().status).toBe("disposed");
+    const changeUrlClientAfter = manager.getPeerClient("change-url");
+    expect(changeUrlClientAfter).not.toBeNull();
+    expect(changeUrlClientAfter).not.toBe(changeUrlClientBefore);
+    expect(manager.getPeerStatus("change-url")?.url).toBe("tcp://127.0.0.1:10005");
+
+    // Changed password peer: old client disposed, new client created
+    expect(changePassClientBefore?.getConnectionState().status).toBe("disposed");
+    const changePassClientAfter = manager.getPeerClient("change-pass");
+    expect(changePassClientAfter).not.toBeNull();
+    expect(changePassClientAfter).not.toBe(changePassClientBefore);
+
+    // Removed peer: old client disposed, lookup returns null
+    expect(removeClientBefore?.getConnectionState().status).toBe("disposed");
+    expect(manager.getPeerClient("remove-me")).toBeNull();
+    expect(manager.getPeerStatus("remove-me")).toBeNull();
+    expect(manager.resolvePeerName("remove-me")).toBeNull();
+
+    // Added peer: client created, status and resolution reflect immediately
+    const newPeerClient = manager.getPeerClient("new-peer");
+    expect(newPeerClient).not.toBeNull();
+    expect(manager.getPeerStatus("new-peer")?.url).toBe("tcp://127.0.0.1:10006");
+    expect(manager.resolvePeerName("new-peer")).toBe("new-peer");
+
+    // Active peers list reflects immediately
+    expect(manager.getPeerStatuses().map((p) => p.name)).toEqual([
+      "stay",
+      "change-url",
+      "change-pass",
+      "new-peer",
+    ]);
+
+    await manager.close();
+  });
+
+  it("reflects new set immediately and deduplicates duplicate peer names", async () => {
+    const manager = new PeerManager({
+      logger: pino({ level: "silent" }),
+      peers: [{ name: "peer1", url: "tcp://127.0.0.1:10001" }],
+    });
+
+    // Reconcile with duplicates in next list
+    manager.reconcile([
+      { name: "peer2", url: "tcp://127.0.0.1:10002" },
+      { name: "peer2", url: "tcp://127.0.0.1:10003" },
+      { name: "peer3", url: "tcp://127.0.0.1:10004" },
+    ]);
+
+    // Synchronously updated before any tick
+    expect(manager.getPeerStatuses().map((p) => p.name)).toEqual(["peer2", "peer3"]);
+    expect(manager.getPeerStatus("peer2")?.url).toBe("tcp://127.0.0.1:10002");
+    expect(manager.resolvePeerName("peer1")).toBeNull();
+    expect(manager.resolvePeerName("peer2")).toBe("peer2");
+
+    // Reconcile with empty list closes all
+    manager.reconcile([]);
+    expect(manager.getPeerStatuses()).toEqual([]);
+    expect(manager.resolvePeerName("peer2")).toBeNull();
+    expect(manager.getPeerClient("peer2")).toBeNull();
+
+    await manager.close();
   });
 });

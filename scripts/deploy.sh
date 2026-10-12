@@ -10,14 +10,25 @@
 #      progress for the caller to resolve, then re-run. Default: no upstream I/O.
 #   3. Push the branch to origin (iammvaibhav/paseo fork)
 #   4. In parallel (after the push):
-#        - each remote host (git pull + build + daemon + code-server)
-#        - local daemon (build server first, then restart) + local code-server
+#        - each remote Linux builder (git pull + build + package + activate)
+#        - local daemon (build server first, then package + activate on Linux)
 #        - desktop app build/install
 #      Local server build runs before desktop so they don't race on packages/*/dist.
+#   5. Each builder's package ships to its inventory targets (no checkout, no
+#      build there), then every daemon gets the full peer mesh + `paseo daemon reload`.
 #
-# Remote workflow (blrofc3, iammvaibhav):
+# Hosts: the fleet inventory ~/.paseo/fleet-hosts.json (PASEO_FLEET_INVENTORY),
+# format in scripts/deploy/fleet-hosts.example.json. Adding a machine = one
+# entry, then a deploy (PASEO_TARGETS_ONLY=1 for a target-only first install).
+#
+# Linux daemons (builders and targets) run a packaged runtime as the systemd
+# user unit paseo-daemon.service (scripts/deploy/activate-runtime.sh): releases
+# under ~/.local/share/paseo/releases, atomic `current` symlink, rollback with
+#   ssh <host> "bash -s -- rollback" < scripts/deploy/activate-runtime.sh
+#
+# Remote builder workflow (inventory builders other than this host):
 #   1. Ensure origin points at the fork and tracks the custom branch
-#   2. Pull the branch from origin, install deps if needed, build, restart daemon
+#   2. Pull, install deps if needed, build, package, activate (unit restart)
 #   3. Update code-server (binary + config + systemd user unit)
 #   4. Update the Commander Voice node (npm deps + env file + launchd/systemd unit)
 #
@@ -27,9 +38,9 @@
 #
 # Orchestrator modes (auto-detected by `uname -s`):
 #   macOS (MacBook)   — as before: local = MacBook (daemon + desktop build/install),
-#                       remotes = blrofc3 + iammvaibhav.
-#   Linux (iammvaibhav) — local = iammvaibhav (daemon restart + nudge + services),
-#                       remotes = blrofc3 (NetBird). The MacBook is a full
+#                       remotes = the inventory's Linux builders.
+#   Linux (iammvaibhav) — local = iammvaibhav (build + package + unit activation + services),
+#                       remotes = the other Linux builders (blrofc3). The MacBook is a full
 #                       target driven over ssh (PASEO_MACBOOK_HOST, default
 #                       "macbook" = macbook.netbird.cloud): git-sync the checkout, rebuild the
 #                       server packages, deploy code-server (install.sh local), restart
@@ -46,7 +57,14 @@
 #   PASEO_LOCAL_HOME=$HOME/.paseo
 #   PASEO_SKIP_REMOTES=1              # local only
 #   PASEO_SKIP_LOCAL=1                # remotes only
-#   PASEO_REMOTE_HOSTS="blrofc3"      # subset of remotes (space-separated); default all
+#   PASEO_REMOTE_HOSTS="blrofc3"      # subset of remote builders (space-separated); default all
+#   PASEO_FLEET_INVENTORY=<path>      # inventory file (default ~/.paseo/fleet-hosts.json)
+#   PASEO_TARGETS_ONLY=1              # only ship builders' current builds to targets + peers
+#   PASEO_TARGET_HOSTS="prod"         # subset of targets (space-separated); default all
+#   PASEO_SKIP_TARGETS=1              # skip shipping to inventory targets
+#   PASEO_SKIP_PEERS=1                # skip the full-mesh peers sync + reload
+#   PASEO_ARTIFACT_DIR=<dir>          # (package-runtime.mjs) tarball dir; deploy uses
+#                                     #   the inventory's per-builder artifactDir
 #   PASEO_SKIP_DAEMON=1               # skip daemon build/restart; still sync git,
 #                                     #   deploy code-server, and push settings
 #   PASEO_DEPLOY_NUDGE=0              # disable the self-wake nudge (default ON):
@@ -116,24 +134,23 @@ if [[ "$ORCHESTRATOR_OS" == "Darwin" ]]; then
   IS_MAC_ORCHESTRATOR=1
 fi
 
-# Allow a space-separated subset, e.g. PASEO_REMOTE_HOSTS="blrofc3"
+# Hosts come from the fleet inventory (~/.paseo/fleet-hosts.json, see
+# scripts/deploy/fleet.sh): REMOTE_HOSTS = Linux builders other than this host,
+# MACBOOK_HOST = the desktop builder. fleet_init fills both in main().
+# PASEO_REMOTE_HOSTS="blrofc3" still selects a subset (space-separated).
+REMOTE_HOSTS=()
 if [[ -n "${PASEO_REMOTE_HOSTS:-}" ]]; then
   # shellcheck disable=SC2206
   REMOTE_HOSTS=(${PASEO_REMOTE_HOSTS})
-elif [[ "$IS_MAC_ORCHESTRATOR" == "1" ]]; then
-  REMOTE_HOSTS=(blrofc3 iammvaibhav)
-else
-  # iammvaibhav orchestrator: blrofc3 is a full remote; the MacBook is its own
-  # job (macbook_job — daemon + desktop), reachability-gated and non-fatal.
-  REMOTE_HOSTS=(blrofc3)
 fi
 
-# MacBook desktop host (used only when deploy runs on iammvaibhav).
+# MacBook desktop host (used only when deploy runs on Linux).
 MACBOOK_HOST="${PASEO_MACBOOK_HOST:-macbook}"
 MACBOOK_REPO_DIR="${PASEO_MACBOOK_REPO_DIR:-paseo}"
 MACBOOK_PASEO_HOME="${PASEO_MACBOOK_PASEO_HOME:-\$HOME/.paseo}"
 
-# Prod omp services host (no Paseo daemon, no repo checkout — only user units).
+# Prod omp services host (auth broker + proxy user units). prod also runs a
+# Paseo daemon as an inventory target; that path never touches these units.
 PROD_HOST="${PASEO_PROD_HOST:-prod}"
 
 # This script never authors git history. No model writes a commit subject and no
@@ -195,6 +212,9 @@ die() {
   printf 'error: %s\n' "$*" >&2
   exit 1
 }
+
+# shellcheck source=deploy/fleet.sh
+. "$ROOT_DIR/scripts/deploy/fleet.sh"
 
 # Create ~/.paseo/deploy-logs/run-<ts>/ and export paths used by this process.
 # Also keep a /tmp/paseo-deploy-* mirror for older greps during a transition.
@@ -780,6 +800,16 @@ restart_local_daemon() {
   fi
   if [[ ! -f "$ROOT_DIR/packages/server/dist/scripts/supervisor-entrypoint.js" ]]; then
     die "packages/server/dist/scripts/supervisor-entrypoint.js missing — build:server incomplete"
+  fi
+
+  # Linux: the daemon runs from a packaged runtime under the systemd user unit
+  # paseo-daemon.service (activation snapshots, restarts, health-checks, nudges,
+  # and cuts over a legacy detached daemon once). The same package then ships
+  # to this builder's targets. macOS keeps the desktop-managed path below.
+  if [[ "$IS_MAC_ORCHESTRATOR" != "1" ]]; then
+    warn_if_nudge_password_missing
+    activate_local_runtime
+    return
   fi
 
   # Self-wake nudge: snapshot running agents BEFORE the daemon stops, then nudge
@@ -1456,12 +1486,6 @@ wait_for_parallel_jobs() {
   fi
 }
 
-# Local daemon path after packages are built: install wrapper + restart.
-local_daemon_restart_job() {
-  install_cli_wrapper "$ROOT_DIR"
-  restart_local_daemon
-}
-
 # One remote host end-to-end (runs on this Mac as an ssh driver; build happens on the host).
 remote_host_job() {
   local host="$1"
@@ -1528,7 +1552,7 @@ run_parallel_post_push_deploy() {
     # build:server:clean races that path, so keep this sequential first.
     if [[ "${PASEO_SKIP_DAEMON:-0}" != "1" ]]; then
       build_server
-      install_cli_wrapper "$ROOT_DIR"
+      [[ "$IS_MAC_ORCHESTRATOR" == "1" ]] && install_cli_wrapper "$ROOT_DIR"
       restart_local_daemon
       # build_server produced packages/app/dist. Ship that same export to
       # Vercel in the background; it snapshots the directory immediately, so
@@ -1786,6 +1810,8 @@ remote_sync_body() {
   local host="$1"
   local remote_home="$2"
   local tunnel_provider="$3"
+  local artifact_dir
+  artifact_dir="$(fleet_remote_dir "$host" artifactDir)"
   cat <<EOF
 set -euo pipefail
 BRANCH='$BRANCH'
@@ -1794,13 +1820,11 @@ REMOTE_REPO_DIR='$REMOTE_REPO_DIR'
 NODE_VERSION='$NODE_VERSION'
 PASEO_HOME='$remote_home'
 TUNNEL_PROVIDER='$tunnel_provider'
-# Self-wake nudge env (interpolated at heredoc time from the Mac's env; empty
-# values are fine — the nudge then skips instead of failing the deploy).
-PASEO_NUDGE_URL='${PASEO_NUDGE_URL:-}'
-PASEO_NUDGE_PASSWORD='${PASEO_NUDGE_PASSWORD:-${PASEO_PASSWORD:-}}'
-# Daemon password for the Commander Voice node env file on this host. Same
-# channel as the nudge password: interpolated from the Mac's env at heredoc
-# time, so the remote voice node authenticates instead of being locked out.
+# Inventory artifactDir; may contain \$HOME, expanded on the host.
+ARTIFACT_DIR="$artifact_dir"
+# Daemon password for the Commander Voice node env file on this host,
+# interpolated from the orchestrator's env at heredoc time so the remote voice
+# node authenticates instead of being locked out.
 PASEO_PASSWORD='${PASEO_PASSWORD:-}'
 # Fleet omp lockstep: the orchestrator sets OMP_TARGET_VERSION from its own
 # omp update; the token rides the heredoc through the same channel.
@@ -1881,226 +1905,33 @@ maybe_install_deps() {
   echo "\$cur" > "\$sync_ref_file"
 }
 
-install_cli_wrapper() {
-  local repo_dir="\$HOME/\$REMOTE_REPO_DIR"
-  local bin_dir="\$HOME/.local/bin"
-  local wrapper_path="\$bin_dir/paseo"
-
-  mkdir -p "\$bin_dir"
-  # See the local install_cli_wrapper: remove any symlink/file first so we never
-  # write through a symlink or trip sed -i on one.
-  rm -f "\$wrapper_path"
-  cat >"\$wrapper_path" <<'WRAPPER_EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-export NVM_DIR="\${NVM_DIR:-\$HOME/.nvm}"
-# shellcheck disable=SC1091
-[ -s "\$NVM_DIR/nvm.sh" ] && . "\$NVM_DIR/nvm.sh"
-exec node --disable-warning=DEP0040 "__REPO_DIR__/packages/cli/dist/index.js" "\$@"
-WRAPPER_EOF
-  sed -i.bak "s|__REPO_DIR__|\${repo_dir}|g" "\$wrapper_path"
-  rm -f "\${wrapper_path}.bak"
-  chmod +x "\$wrapper_path"
-  log "Installed CLI wrapper at \$wrapper_path"
-}
-
-daemon_path_env() {
-  printf '%s' "\$HOME/.local/bin:\$PATH"
-}
-
-build_and_restart() {
+# One package per platform: this builder runs it under the systemd user unit
+# paseo-daemon.service, and the orchestrator ships the same file to this
+# builder's inventory targets. Activation snapshots running agents, cuts a
+# legacy detached daemon over to the unit once, restarts, requires a new healthy
+# main pid, and nudges the snapshot (host-local deploy.env password).
+build_and_activate() {
   cd "\$HOME/\$REMOTE_REPO_DIR"
   log "Building server"
   pnpm run build:server
   log "Building daemon web UI"
   pnpm run build:daemon-web-ui
-  install_cli_wrapper
-  log "Restarting daemon (\$PASEO_HOME)"
-  # Drive the webhook tunnel via env (not config.json) so an older daemon's strict
-  # config schema is never at risk; the new daemon reads PASEO_TUNNEL_PROVIDER and
-  # resolves its own public base URL (e.g. the Tailscale MagicDNS name). Export the
-  # vars (rather than an inline env-prefix) so the spawned daemon inherits them —
-  # a quoted array expansion as an env-prefix is parsed as a command, not assignments.
+  mkdir -p "\$ARTIFACT_DIR"
+  log "Packaging runtime into \$ARTIFACT_DIR"
+  tarball="\$(PASEO_ARTIFACT_DIR="\$ARTIFACT_DIR" node scripts/deploy/package-runtime.mjs </dev/null)"
+  # The unit's daemon.env carries the webhook tunnel provider (activation
+  # persists PASEO_TUNNEL_* from its env). cloudflared quick tunnels are run by
+  # the daemon itself; tailscale-funnel is managed out-of-band
+  # (tailscaled + ensure_remote_funnel), so no autostart.
   if [[ -n "\$TUNNEL_PROVIDER" ]]; then
     export PASEO_TUNNEL_PROVIDER="\$TUNNEL_PROVIDER"
-    # cloudflared quick tunnels are run by the daemon itself; tailscale-funnel is
-    # managed out-of-band (tailscaled + ensure_remote_funnel), so no autostart.
     if [[ "\$TUNNEL_PROVIDER" == "cloudflared" ]]; then
       export PASEO_TUNNEL_AUTOSTART=1
     fi
     log "Tunnel provider: \$TUNNEL_PROVIDER"
   fi
-  # Read pid/listen without broken quoting. IMPORTANT: do not put \\" inside
-  # single-quoted node -e scripts — that yields literal backslash-quotes and
-  # JS parse failures, so new_pid stays empty forever and health is never tried.
-  # Prefer python3 (stdlib json); fall back to node with proper single-quoted JS.
-  read_daemon_pid() {
-    local home="\$1"
-    local f="\$home/paseo.pid"
-    [[ -f "\$f" ]] || return 0
-    if command -v python3 >/dev/null 2>&1; then
-      python3 -c 'import json,sys
-try:
- p=json.load(open(sys.argv[1])); print(p.get("pid") or "", end="")
-except Exception:
- pass' "\$f" 2>/dev/null || true
-    elif command -v node >/dev/null 2>&1; then
-      node -e 'try{const p=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));if(p.pid!=null)process.stdout.write(String(p.pid))}catch{}' "\$f" 2>/dev/null || true
-    fi
-  }
-  read_daemon_listen() {
-    local home="\$1"
-    local f cfg out=""
-    # Prefer live pid file (what the process actually bound), then config.json.
-    f="\$home/paseo.pid"
-    if [[ -f "\$f" ]] && command -v python3 >/dev/null 2>&1; then
-      out="\$(python3 -c 'import json,sys
-try:
- p=json.load(open(sys.argv[1])); print((p.get("listen") or "").strip(), end="")
-except Exception:
- pass' "\$f" 2>/dev/null || true)"
-    fi
-    if [[ -z "\$out" ]]; then
-      cfg="\$home/config.json"
-      if [[ -f "\$cfg" ]] && command -v python3 >/dev/null 2>&1; then
-        out="\$(python3 -c 'import json,sys
-try:
- c=json.load(open(sys.argv[1])); d=c.get("daemon") or {}; print((d.get("listen") or "").strip(), end="")
-except Exception:
- pass' "\$cfg" 2>/dev/null || true)"
-      elif [[ -f "\$cfg" ]] && command -v node >/dev/null 2>&1; then
-        out="\$(node -e 'try{const c=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));const l=c&&c.daemon&&c.daemon.listen;if(typeof l==="string"&&l.trim())process.stdout.write(l.trim())}catch{}' "\$cfg" 2>/dev/null || true)"
-      fi
-    fi
-    printf '%s' "\$out"
-  }
-  health_urls_for_listen() {
-    local listen="\$1"
-    local port primary secondary
-    listen="\${listen:-127.0.0.1:6767}"
-    port="\${listen##*:}"
-    case "\$listen" in
-      0.0.0.0:*|\\[::\\]:*)
-        primary="http://127.0.0.1:\${port}/api/health"
-        secondary="\$primary"
-        ;;
-      *)
-        # NetBird-only binds (e.g. blrofc3 100.x:6767): primary is
-        # the real bind; secondary loopback often fails and must not be the only probe.
-        primary="http://\${listen}/api/health"
-        secondary="http://127.0.0.1:\${port}/api/health"
-        ;;
-    esac
-    printf '%s %s' "\$primary" "\$secondary"
-  }
-
-  # Self-wake nudge: snapshot running agents BEFORE the daemon stops. The
-  # daemon respawns an agent's provider process on first message, so after the
-  # restart below each snapshot agent is nudged and resumes without a human.
-  # Never fails the deploy (the script exits 0 on failure; || true too).
-  nudge_file=""
-  if [[ '${PASEO_DEPLOY_NUDGE:-1}' != "0" ]]; then
-    # Host-local file wins when the orchestrator did not interpolate a password
-    # (non-interactive deploy never has bashrc). Existing env still wins.
-    if [[ -z "\$PASEO_NUDGE_PASSWORD" && -z "\$PASEO_PASSWORD" && -f "\$PASEO_HOME/deploy.env" ]]; then
-      set -a
-      # shellcheck disable=SC1091
-      . "\$PASEO_HOME/deploy.env"
-      set +a
-      PASEO_NUDGE_PASSWORD="\${PASEO_NUDGE_PASSWORD:-\$PASEO_PASSWORD}"
-    fi
-    if [[ -z "\$PASEO_NUDGE_PASSWORD" && -z "\$PASEO_PASSWORD" ]]; then
-      log "WARNING: PASEO_PASSWORD unset — snapshot/nudge will skip (Password required)."
-      log "Write PASEO_PASSWORD=… into \$PASEO_HOME/deploy.env (chmod 600) on this host."
-    fi
-    nudge_file="\$PASEO_HOME/deploy-nudge-remote.json"
-    log "Snapshotting running agents before daemon restart (nudge: \$nudge_file)"
-    PASEO_NUDGE_URL="\$PASEO_NUDGE_URL" \
-    PASEO_NUDGE_PASSWORD="\$PASEO_NUDGE_PASSWORD" \
-      node "\$HOME/\$REMOTE_REPO_DIR/scripts/deploy-nudge.mjs" --snapshot "\$nudge_file" || true
-  fi
-
-  # Detached restart via built CLI (not npx tsx). Require a NEW pid + health on
-  # configured listen and/or loopback:port (NetBird-only binds fail on 127.0.0.1).
-  restart_log="/tmp/paseo-daemon-restart-remote-\$\$.log"
-  : >"\$restart_log"
-  old_pid="\$(read_daemon_pid "\$PASEO_HOME")"
-  cli_bin="\$HOME/.local/bin/paseo"
-  if [[ ! -x "\$cli_bin" ]]; then
-    cli_bin="node \$HOME/\$REMOTE_REPO_DIR/packages/cli/dist/index.js"
-  fi
-  # A password-protected daemon authenticates every CLI call, including the worker
-  # probe below, and this shell has no bashrc: source the host's deploy.env first.
-  if [[ -f "\$PASEO_HOME/deploy.env" ]]; then
-    set -a
-    # shellcheck disable=SC1091
-    . "\$PASEO_HOME/deploy.env"
-    set +a
-  fi
-  old_worker_pid="\$(\$cli_bin daemon status --json --home "\$PASEO_HOME" 2>/dev/null | node -e '
-let raw = "";
-process.stdin.on("data", (chunk) => (raw += chunk));
-process.stdin.on("end", () => {
-  try {
-    const status = JSON.parse(raw);
-    if (typeof status.workerPid === "number" && status.workerPid > 0) process.stdout.write(String(status.workerPid));
-  } catch {}
-});
-' 2>/dev/null || true)"
-  log "Restarting daemon (\$PASEO_HOME) [detached; log \$restart_log] old_pid=\${old_pid:-none} worker=\${old_worker_pid:-none}"
-  # A password-protected daemon authenticates its own CLI, and this bash is a
-  # new session: it inherits no bashrc and no orchestrator env, so the host's
-  # deploy.env has to be sourced here or the restart dies with "Password required".
-  remote_restart_cmd="export PATH=\"\$(daemon_path_env)\"; export NVM_DIR=\"\${NVM_DIR:-\$HOME/.nvm}\"; [ -s \"\$NVM_DIR/nvm.sh\" ] && . \"\$NVM_DIR/nvm.sh\"; if [ -f \"\$PASEO_HOME/deploy.env\" ]; then set -a; . \"\$PASEO_HOME/deploy.env\"; set +a; fi; cd \"\$HOME/\$REMOTE_REPO_DIR\"; exec \$cli_bin daemon restart --home \"\$PASEO_HOME\""
-  if command -v setsid >/dev/null 2>&1; then
-    setsid bash -c "\$remote_restart_cmd" >>"\$restart_log" 2>&1 </dev/null &
-  else
-    nohup bash -c "\$remote_restart_cmd" >>"\$restart_log" 2>&1 </dev/null &
-  fi
-  ok=0
-  primary=""
-  new_worker_pid=""
-  for i in \$(seq 1 90); do
-    new_pid="\$(read_daemon_pid "\$PASEO_HOME")"
-    listen="\$(read_daemon_listen "\$PASEO_HOME")"
-    # shellcheck disable=SC2206
-    urls=(\$(health_urls_for_listen "\$listen"))
-    primary="\${urls[0]}"
-    secondary="\${urls[1]:-\$primary}"
-    # Supervisor-managed daemons keep the pid file and swap the worker. The restart
-    # CLI records that swap in the restart log when it finishes, which avoids a
-    # socket probe that would race the restart.
-    pid_ok=0
-    worker_ok=0
-    [[ -n "\$new_pid" && "\$new_pid" != "\${old_pid:-}" ]] && pid_ok=1
-    new_worker_pid="\$(sed -n 's/.*Restarted worker [0-9][0-9]* . \([0-9][0-9]*\) at .*/\1/p' "\$restart_log" 2>/dev/null | tail -n 1)"
-    [[ -n "\$new_worker_pid" && "\$new_worker_pid" != "\${old_worker_pid:-}" ]] && worker_ok=1
-    if [[ "\$pid_ok" -eq 1 || "\$worker_ok" -eq 1 ]]; then
-      if curl -fsS --max-time 2 "\$primary" >/dev/null 2>&1 \\
-        || curl -fsS --max-time 2 "\$secondary" >/dev/null 2>&1; then
-        log "Daemon healthy after \${i}s (pid \${old_pid:-none} -> \${new_pid:-none}, worker \${old_worker_pid:-none} -> \${new_worker_pid:-none}; \$primary)"
-        ok=1
-        break
-      fi
-    fi
-    sleep 1
-  done
-  if [[ "\$ok" -ne 1 ]]; then
-    log "Daemon health check failed; restart log:"
-    tail -n 80 "\$restart_log" 2>/dev/null || true
-    log "Debug: old_pid=\${old_pid:-none} new_pid=\$(read_daemon_pid "\$PASEO_HOME") listen=\$(read_daemon_listen "\$PASEO_HOME") primary=\${primary:-unset}"
-    echo "Daemon failed to come back (\${primary:-no-url}) after restart" >&2
-    exit 1
-  fi
-
-  # Health check passed — nudge the agents that were running before the restart
-  # so they resurrect (daemon respawns the provider on first message) and resume.
-  if [[ -n "\$nudge_file" ]]; then
-    log "Nudging resurrected agents after daemon restart"
-    PASEO_NUDGE_URL="\$PASEO_NUDGE_URL" \
-    PASEO_NUDGE_PASSWORD="\$PASEO_NUDGE_PASSWORD" \
-      node "\$HOME/\$REMOTE_REPO_DIR/scripts/deploy-nudge.mjs" --nudge "\$nudge_file" || true
-  fi
+  PASEO_HOME="\$PASEO_HOME" PASEO_DEPLOY_NUDGE='${PASEO_DEPLOY_NUDGE:-1}' \\
+    bash scripts/deploy/activate-runtime.sh activate "\$tarball" </dev/null
 }
 
 deploy_code_server() {
@@ -2143,8 +1974,7 @@ deploy_commander_voice() {
   # The daemon password travels over ssh stdin (never argv/logs) and lands in
   # ~/.config/commander-voice/env chmod 600 on the host; unset keeps existing.
   # PASEO_PASSWORD was interpolated into this script's env at heredoc time from
-  # the Mac's env (same channel as PASEO_NUDGE_PASSWORD) — without it the node
-  # is locked out of the daemon.
+  # the orchestrator's env — without it the node is locked out of the daemon.
   PASEO_HOME="\$PASEO_HOME" \
     PASEO_PASSWORD="\$PASEO_PASSWORD" \
     PASEO_COMMANDER_VOICE_PASSWORD='${PASEO_COMMANDER_VOICE_PASSWORD:-}' \
@@ -2188,7 +2018,7 @@ if [[ '${PASEO_SKIP_REMOTE_DAEMON:-0}' == "1" ]]; then
   log "Skipping remote daemon build/restart (PASEO_SKIP_REMOTE_DAEMON=1)"
 else
   maybe_install_deps
-  build_and_restart
+  build_and_activate
 fi
 deploy_code_server
 deploy_plannotator
@@ -2215,24 +2045,17 @@ sync_remote_host() {
   ssh -o BatchMode=yes "$host" "bash -s" < <(remote_sync_body "$host" "$remote_home" "$tunnel_provider")
 }
 
+# ~/.paseo on the remote host, resolved there (user names differ per host).
 remote_paseo_home() {
-  local host="$1"
-  case "$host" in
-    blrofc3) echo "/home/vaibhav/.paseo" ;;
-    iammvaibhav) echo "/home/ubuntu/.paseo" ;;
-    *) die "Unknown remote host: $host" ;;
-  esac
+  local home
+  home="$(fleet_on "$1" 'printf %s "$HOME"' </dev/null)" || die "cannot reach $1 to resolve its home"
+  printf '%s/.paseo' "$home"
 }
 
-# Which webhook tunnel provider a host uses. Empty = none (webhooks still work if
-# the host is exposed some other way). blrofc3 uses Tailscale Funnel.
+# Which webhook tunnel provider a host uses: the inventory `tunnel` field.
+# Empty = none (webhooks still work if the host is exposed some other way).
 remote_tunnel_provider() {
-  local host="$1"
-  case "$host" in
-    blrofc3) echo "tailscale-funnel" ;;
-    iammvaibhav) echo "cloudflared" ;;
-    *) echo "" ;;
-  esac
+  fleet_field "$1" tunnel
 }
 
 # Ensure cloudflared is installed on hosts that use it. Quick tunnels need no
@@ -2336,12 +2159,15 @@ Usage:
 
 Takes no positional arguments; behavior is controlled by env variables.
 
+Hosts come from the fleet inventory ${PASEO_FLEET_INVENTORY:-~/.paseo/fleet-hosts.json}
+(format: scripts/deploy/fleet-hosts.example.json). Adding a machine = one entry.
+
 Orchestrator (auto-detected by \`uname -s\`):
   macOS (MacBook)     local = MacBook (daemon + desktop build/install),
-                      remotes = blrofc3 + iammvaibhav.
-  Linux (iammvaibhav) local = iammvaibhav (daemon + services),
-                      remotes = blrofc3; MacBook = desktop-only ssh job
-                      (reachability-gated, non-fatal, MacBook daemon untouched).
+                      remotes = the inventory's Linux builders.
+  Linux (iammvaibhav) local = iammvaibhav (build + package + unit activation + services),
+                      remotes = other Linux builders; MacBook = desktop ssh job
+                      (reachability-gated, non-fatal).
 
 What a full run does (local Mac):
   0. Self-detaches into a new session (unless PASEO_DEPLOY_FOREGROUND=1) and writes
@@ -2354,16 +2180,26 @@ What a full run does (local Mac):
   4. Post-push in parallel: each remote host, local daemon restart (+ server build first),
      local code-server, and desktop app build/install to $DESKTOP_APP then relaunch
      (desktop via the MacBook ssh job when deploying from iammvaibhav)
-Then remotes are ${REMOTE_HOSTS[*]} (each gets its own parallel job).
+  5. Each builder's package ships to its inventory targets; then every daemon gets the
+     full peer mesh and \`paseo daemon reload\`
+Remote builders: ${REMOTE_HOSTS[*]} (each gets its own parallel job).
 
-Daemon restarts (local + remote) always run in a NEW session so cancelling an agent
-tool mid-wait cannot leave stop-without-start. The whole deploy is also detached by
-default so waiting for health/desktop cannot be killed by tool cancel.
+Linux daemons run a packaged runtime as the systemd user unit paseo-daemon.service
+(restart = snapshot → systemctl --user restart → new healthy main pid → nudge).
+The whole deploy is detached by default so waiting for health/desktop cannot be
+killed by tool cancel. Roll back a Linux host:
+  ssh <host> "bash -s -- rollback" < scripts/deploy/activate-runtime.sh
 
 Scope flags (set to 1 unless noted):
   PASEO_SKIP_LOCAL                 Skip the local host entirely (remotes only)
   PASEO_SKIP_REMOTES              Skip all remote hosts (local only)
-  PASEO_REMOTE_HOSTS             Space-separated remote subset (default: ${REMOTE_HOSTS[*]})
+  PASEO_REMOTE_HOSTS             Space-separated remote builder subset (default: ${REMOTE_HOSTS[*]})
+  PASEO_TARGETS_ONLY=1           Only package builders' current builds, ship + activate on
+                                   targets, and sync peers (no git, no builder restarts)
+  PASEO_TARGET_HOSTS             Space-separated target subset (default: all inventory targets)
+  PASEO_SKIP_TARGETS             Skip shipping to inventory targets
+  PASEO_SKIP_PEERS               Skip the full-mesh peers sync + reload
+  PASEO_FLEET_INVENTORY          Inventory path (default: ~/.paseo/fleet-hosts.json)
   PASEO_SKIP_DAEMON              Skip local daemon build/restart (desktop still builds)
   PASEO_SKIP_REMOTE_DAEMON       Skip remote daemon build/restart (remotes still pull git +
                                    code-server/plannotator; default is to rebuild, then restart)
@@ -2440,6 +2276,7 @@ EOF
 main() {
   case "${1:-}" in
     -h | --help | help)
+      fleet_init 2>/dev/null || true
       print_help
       exit 0
       ;;
@@ -2457,6 +2294,22 @@ main() {
     mkdir -p "$PASEO_DEPLOY_RUN_DIR"
     : >>"${PASEO_DEPLOY_LOG}"
     log "Continuing detached deploy (log: $PASEO_DEPLOY_LOG)"
+  fi
+
+  # Hosts come from the fleet inventory (REMOTE_HOSTS, MACBOOK_HOST, targets).
+  fleet_init
+
+  # Targets only: package each builder's current build, ship it to that
+  # builder's targets, activate there, then sync the peer mesh. No git, no
+  # builds, no restarts of builder daemons. First install of a new host.
+  if [[ "${PASEO_TARGETS_ONLY:-0}" == "1" ]]; then
+    log "Targets-only deploy ($(fleet_targets | tr '\n' ' '))"
+    ensure_node
+    ensure_fleet_passwords
+    deploy_fleet_targets
+    sync_fleet_peers
+    log "Targets-only deploy complete"
+    return 0
   fi
 
   # App-only: no other remotes, daemon, or services.
@@ -2500,6 +2353,10 @@ main() {
     log "PASEO_SKIP_LOCAL=1 — assuming $ORIGIN_REMOTE/$BRANCH is already up to date"
   fi
 
+  # Every inventory host needs a password entry before peers are written;
+  # missing target passwords are generated into deploy.env here.
+  ensure_fleet_passwords
+
   # Config must be on disk before daemons restart below; the config store only
   # reads config.json at boot.
   sync_system_prompt
@@ -2508,6 +2365,11 @@ main() {
 
   # Post-push: local daemon/desktop + both remotes overlap.
   run_parallel_post_push_deploy
+
+  # Targets run their builder's package; builders are done (and cut over to
+  # their package) at this point.
+  deploy_fleet_targets
+  sync_fleet_peers
 
   # Settings push needs remotes reachable and code-server units present.
   sync_code_server_settings_to_remotes
