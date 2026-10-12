@@ -54,6 +54,12 @@ const REPO = process.env.PASEO_REPO_DIR
   : path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const ENTRY_PACKAGE = path.join(REPO, "packages", "cli");
 
+// Never shipped: the Claude Agent SDK's per-platform Claude Code binaries
+// (~236 MiB). They are optionalDependencies of @anthropic-ai/claude-agent-sdk,
+// and Paseo always passes the user's own `claude` from PATH
+// (pathToClaudeCodeExecutable), so the bundled copy never runs.
+const EXCLUDED_PACKAGE = /^@anthropic-ai\/claude-agent-sdk-/;
+
 // Same exclusions the desktop app applies to workspace packages (see
 // packages/desktop/electron-builder.yml) minus web-ui/builtin-plugins, which
 // the standalone daemon serves/loads from its own package.
@@ -143,6 +149,7 @@ function collectClosure() {
       ...Object.keys(pkg.peerDependencies ?? {}),
     ]);
     for (const name of names) {
+      if (EXCLUDED_PACKAGE.test(name)) continue;
       const found = lookup(realDir, name);
       if (found) {
         queue.push({ lookupPath: found });
