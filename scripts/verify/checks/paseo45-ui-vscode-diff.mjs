@@ -178,8 +178,6 @@ export const steps = [
           captureElement: async () => null,
           copyElement: async () => false,
           openDevTools: async () => {},
-          preparePlannotator: async () => ({ url: "", accelerated: false }),
-          releasePlannotator: async () => {},
         };
         const browserEditorStub = {
           setInsecureOrigins: async () => ({ restartRequired: false }),

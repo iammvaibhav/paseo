@@ -18,14 +18,14 @@
   "main": "build/index.js",
   "types": "build/index.d.ts",
   "scripts": {
-    "build": "tsc",
+    "build": "sh ../../scripts/cpu-slot.sh build tsc",
     "clean": "expo-module clean",
     "dev": "expo-module build",
     "lint": "expo-module lint",
     "test": "expo-module test",
     "format": "oxfmt --check .",
     "format:fix": "oxfmt .",
-    "typecheck": "tsgo --noEmit",
+    "typecheck": "sh ../../scripts/cpu-slot.sh typecheck tsgo --noEmit",
     "expo-module": "expo-module",
     "open:ios": "xed examples/basic-usage/ios",
     "open:android": "open -a \"Android Studio\" examples/basic-usage/android"

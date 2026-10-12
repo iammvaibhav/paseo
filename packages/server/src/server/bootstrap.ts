@@ -153,7 +153,7 @@ import {
   type PaseoToolHostDependencies,
 } from "./agent/tools/paseo-tools.js";
 import { sendPromptToAgent } from "./agent/agent-prompt.js";
-import type { PaseoToolRuntimeContext } from "./agent/tools/types.js";
+import type { PaseoToolCatalog, PaseoToolRuntimeContext } from "./agent/tools/types.js";
 import { createAgentProviderRuntime } from "./agent/provider-runtime.js";
 import { bootstrapWorkspaceRegistries } from "./workspace-registry-bootstrap.js";
 import { WorkspaceReconciliationService } from "./workspace-reconciliation-service.js";
@@ -3062,6 +3062,15 @@ export async function createPaseoDaemon(
 
   {
     const fleetMcpRoute = "/mcp/fleet";
+    // The MCP endpoint is stateless (one HTTP request per tool call). Building
+    // the full catalog each time dominated latency, so each client reuses its
+    // catalog; it closes over live services, as the Voice and agent catalogs
+    // do. Rebuilt when the Commander agent changes or after the TTL.
+    const FLEET_MCP_CATALOG_TTL_MS = 5 * 60_000;
+    const fleetMcpCatalogs = new Map<
+      string,
+      { key: string; at: number; hostDeps: PaseoToolHostDependencies; catalog: PaseoToolCatalog }
+    >();
 
     const createFleetMcpSession = async (clientName: string) => {
       let commanderAgentId: string | undefined;
@@ -3071,17 +3080,32 @@ export async function createPaseoDaemon(
           break;
         }
       }
-      const hostDeps = createAgentToolHostDependencies({
-        callerLabels: {
-          [MISSION_CONTROL_LABEL_KEY]: MISSION_CONTROL_LABEL_VALUE,
-          "paseo.mcp-client": clientName,
-        },
-        ...(commanderAgentId ? { callerAgentId: commanderAgentId } : {}),
-        enableVoiceTools: false,
-        voiceOnly: false,
-      });
+      let cached = fleetMcpCatalogs.get(clientName);
+      if (
+        !cached ||
+        cached.key !== (commanderAgentId ?? "") ||
+        Date.now() - cached.at > FLEET_MCP_CATALOG_TTL_MS
+      ) {
+        const hostDeps = createAgentToolHostDependencies({
+          callerLabels: {
+            [MISSION_CONTROL_LABEL_KEY]: MISSION_CONTROL_LABEL_VALUE,
+            "paseo.mcp-client": clientName,
+          },
+          ...(commanderAgentId ? { callerAgentId: commanderAgentId } : {}),
+          enableVoiceTools: false,
+          voiceOnly: false,
+        });
+        cached = {
+          key: commanderAgentId ?? "",
+          at: Date.now(),
+          hostDeps,
+          catalog: await createPaseoToolCatalog(hostDeps),
+        };
+        fleetMcpCatalogs.set(clientName, cached);
+      }
       const fleetMcpServer = await createFleetMcpServer({
-        hostDependencies: hostDeps,
+        hostDependencies: cached.hostDeps,
+        catalog: cached.catalog,
         clientName,
       });
 

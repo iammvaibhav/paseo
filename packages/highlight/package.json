@@ -21,11 +21,11 @@
   },
   "scripts": {
     "clean": "node ../../scripts/clean-package-dist.mjs",
-    "build": "tsc -p tsconfig.json --incremental false",
+    "build": "sh ../../scripts/cpu-slot.sh build tsc -p tsconfig.json --incremental false",
     "build:clean": "pnpm run clean && pnpm run build",
     "prepack": "pnpm run build:clean",
     "test": "vitest run",
-    "typecheck": "tsgo --noEmit"
+    "typecheck": "sh ../../scripts/cpu-slot.sh typecheck tsgo --noEmit"
   },
   "dependencies": {
     "@codemirror/language": "6.12.4",

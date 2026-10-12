@@ -740,7 +740,7 @@ export function BrowserPane({
   const { t } = useTranslation();
   const browser = useBrowserStore((state) => state.browsersById[browserId] ?? null);
   // `embedded` = chrome-less + persistent webview (VS Code Web).
-  // `embedded-transient` = chrome-less + normal lifecycle (Plannotator).
+  // `embedded-transient` = chrome-less + normal lifecycle.
   // `full` = toolbar + resident lifecycle.
   const chromeMode = browser?.chrome ?? "full";
   const showChrome = chromeMode === "full";

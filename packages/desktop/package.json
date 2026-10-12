@@ -17,7 +17,7 @@
   "scripts": {
     "build": "pnpm --dir ../.. run build:server:clean && pnpm run build:main && electron-builder --config electron-builder.yml",
     "build:unsigned": "pnpm --dir ../.. run build:server:clean && pnpm run build:main && electron-builder --config electron-builder.yml -c.mac.notarize=false -c.mac.hardenedRuntime=false -p never",
-    "build:main": "tsc -p tsconfig.json",
+    "build:main": "sh ../../scripts/cpu-slot.sh build tsc -p tsconfig.json",
     "capture-harness": "pnpm run build:main && ./capture-harness/run.sh",
     "dev": "./scripts/dev.sh",
     "dev:win": "powershell ./scripts/dev.ps1",
@@ -25,7 +25,7 @@
     "test:e2e:browser-tabs": "pnpm run build:main && node ./e2e/browser-tabs.e2e.mjs",
     "verify:electron-cdp": "node ./scripts/verify-electron-cdp.mjs",
     "test": "install-electron && vitest run --exclude \"e2e/**\"",
-    "typecheck": "tsgo --noEmit -p tsconfig.json",
+    "typecheck": "sh ../../scripts/cpu-slot.sh typecheck tsgo --noEmit -p tsconfig.json",
     "test:e2e:lifecycle": "pnpm run build:main && node ./e2e/daemon-lifecycle.e2e.mjs"
   },
   "dependencies": {

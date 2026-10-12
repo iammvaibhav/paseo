@@ -19,10 +19,10 @@
   },
   "scripts": {
     "clean": "node ../../scripts/clean-package-dist.mjs",
-    "build": "tsc -p tsconfig.json --incremental false",
+    "build": "sh ../../scripts/cpu-slot.sh build tsc -p tsconfig.json --incremental false",
     "build:clean": "pnpm run clean && pnpm run build",
     "prepack": "pnpm run build:clean",
-    "typecheck": "tsgo --noEmit",
+    "typecheck": "sh ../../scripts/cpu-slot.sh typecheck tsgo --noEmit",
     "test": "vitest run",
     "generate:validators": "node scripts/generate-validation-aot.mjs",
     "watch": "concurrently --kill-others --names validation,tsc --prefix-colors green,yellow \"node scripts/watch-validation-aot.mjs\" \"tsc -p tsconfig.json --watch --preserveWatchOutput\"",
