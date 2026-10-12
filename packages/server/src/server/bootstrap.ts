@@ -143,9 +143,12 @@ import { createTranscriptSearchService } from "./search/service.js";
 import { AgentStorage, type StoredAgentRecord } from "./agent/agent-storage.js";
 import { attachAgentStoragePersistence } from "./persistence-hooks.js";
 import { createAgentMcpServer } from "./agent/mcp-server.js";
-import { createFleetMcpServer } from "./mcp-fleet/fleet-mcp-server.js";
+import { createFleetMcpServer, createFleetMcpWaitForAgent } from "./mcp-fleet/fleet-mcp-server.js";
 import { authenticateRemoteMcpClient } from "./mcp-fleet/auth.js";
-import { createMcpFinishNotifier } from "./mcp-fleet/finish-notifier.js";
+import {
+  createMcpFinishLocalAgents,
+  createMcpFinishNotifier,
+} from "./mcp-fleet/finish-notifier.js";
 import { resolveVaultSecret, warmVaultSecrets } from "./secrets/vault-secret.js";
 import {
   MISSION_CONTROL_LABEL_KEY,
@@ -2976,54 +2979,75 @@ export async function createPaseoDaemon(
     logger.info({ route: agentMcpRoute, enabled: mcpEnabled }, "Agent MCP route mounted");
   }
 
+  // The /mcp/fleet catalog cache and finish notifier sit outside the route
+  // block: start() restores journaled finish watches through them, and stop()
+  // suspends the watches before agents close.
+  //
+  // The MCP endpoint is stateless (one HTTP request per tool call). Building
+  // the full catalog each time dominated latency, so each client reuses its
+  // catalog; it closes over live services, as the Voice and agent catalogs
+  // do. Rebuilt when the Commander agent changes or after the TTL.
+  const FLEET_MCP_CATALOG_TTL_MS = 5 * 60_000;
+  const fleetMcpCatalogs = new Map<
+    string,
+    { key: string; at: number; hostDeps: PaseoToolHostDependencies; catalog: PaseoToolCatalog }
+  >();
+  const getFleetMcpCatalog = async (clientName: string) => {
+    let commanderAgentId: string | undefined;
+    for (const agent of agentManager.listAgents()) {
+      if (agent.labels[MISSION_CONTROL_LABEL_KEY] === MISSION_CONTROL_LABEL_VALUE) {
+        commanderAgentId = agent.id;
+        break;
+      }
+    }
+    let cached = fleetMcpCatalogs.get(clientName);
+    if (
+      !cached ||
+      cached.key !== (commanderAgentId ?? "") ||
+      Date.now() - cached.at > FLEET_MCP_CATALOG_TTL_MS
+    ) {
+      const hostDeps = createAgentToolHostDependencies({
+        callerLabels: {
+          [MISSION_CONTROL_LABEL_KEY]: MISSION_CONTROL_LABEL_VALUE,
+          "paseo.mcp-client": clientName,
+        },
+        ...(commanderAgentId ? { callerAgentId: commanderAgentId } : {}),
+        enableVoiceTools: false,
+        voiceOnly: false,
+      });
+      cached = {
+        key: commanderAgentId ?? "",
+        at: Date.now(),
+        hostDeps,
+        catalog: await createPaseoToolCatalog(hostDeps),
+      };
+      fleetMcpCatalogs.set(clientName, cached);
+    }
+    return cached;
+  };
+  const mcpFinishNotifier = createMcpFinishNotifier({
+    resolveSecret: resolveVaultSecret,
+    logger,
+    journalPath: path.join(config.paseoHome, "mcp-fleet", "finish-watches.jsonl"),
+    localAgents: createMcpFinishLocalAgents({ agentManager, agentStorage }),
+  });
+  const restoreMcpFinishWatches = async () => {
+    const { restored } = await mcpFinishNotifier.restore(async (clientName) => {
+      const remoteClients = loadPersistedConfig(config.paseoHome).daemon?.mcp?.remoteClients;
+      const notify = remoteClients?.find((client) => client.name === clientName)?.notify;
+      if (!notify) return null;
+      const { catalog } = await getFleetMcpCatalog(clientName);
+      return { target: notify, waitForAgent: createFleetMcpWaitForAgent(catalog) };
+    });
+    if (restored > 0) logger.info({ restored }, "mcp finish watches restored");
+  };
+
   {
     const fleetMcpRoute = "/mcp/fleet";
-    // The MCP endpoint is stateless (one HTTP request per tool call). Building
-    // the full catalog each time dominated latency, so each client reuses its
-    // catalog; it closes over live services, as the Voice and agent catalogs
-    // do. Rebuilt when the Commander agent changes or after the TTL.
-    const FLEET_MCP_CATALOG_TTL_MS = 5 * 60_000;
-    const fleetMcpCatalogs = new Map<
-      string,
-      { key: string; at: number; hostDeps: PaseoToolHostDependencies; catalog: PaseoToolCatalog }
-    >();
-    const mcpFinishNotifier = createMcpFinishNotifier({
-      resolveSecret: resolveVaultSecret,
-      logger,
-    });
 
     const createFleetMcpSession = async (client: RemoteMcpClient) => {
       const clientName = client.name;
-      let commanderAgentId: string | undefined;
-      for (const agent of agentManager.listAgents()) {
-        if (agent.labels[MISSION_CONTROL_LABEL_KEY] === MISSION_CONTROL_LABEL_VALUE) {
-          commanderAgentId = agent.id;
-          break;
-        }
-      }
-      let cached = fleetMcpCatalogs.get(clientName);
-      if (
-        !cached ||
-        cached.key !== (commanderAgentId ?? "") ||
-        Date.now() - cached.at > FLEET_MCP_CATALOG_TTL_MS
-      ) {
-        const hostDeps = createAgentToolHostDependencies({
-          callerLabels: {
-            [MISSION_CONTROL_LABEL_KEY]: MISSION_CONTROL_LABEL_VALUE,
-            "paseo.mcp-client": clientName,
-          },
-          ...(commanderAgentId ? { callerAgentId: commanderAgentId } : {}),
-          enableVoiceTools: false,
-          voiceOnly: false,
-        });
-        cached = {
-          key: commanderAgentId ?? "",
-          at: Date.now(),
-          hostDeps,
-          catalog: await createPaseoToolCatalog(hostDeps),
-        };
-        fleetMcpCatalogs.set(clientName, cached);
-      }
+      const cached = await getFleetMcpCatalog(clientName);
       const fleetMcpServer = await createFleetMcpServer({
         hostDependencies: cached.hostDeps,
         catalog: cached.catalog,
@@ -3143,6 +3167,11 @@ export async function createPaseoDaemon(
           "Service proxy listening",
         );
       }
+
+      // Before the server accepts prompts, so a restored watch sees its agent's resumed run start.
+      await restoreMcpFinishWatches().catch((error) => {
+        logger.error({ err: error }, "Failed to restore mcp finish watches");
+      });
 
       // Start main HTTP server
       await new Promise<void>((resolve, reject) => {
@@ -3402,6 +3431,8 @@ export async function createPaseoDaemon(
     // Freeze both ingress and registration before taking the agent closure snapshot.
     wsServer?.prepareForShutdown();
     agentManager.prepareForShutdown();
+    // Before agents close: the shutdown's "closed" state is not the end of a watched run.
+    await mcpFinishNotifier.suspend();
     await closeAllAgents(logger, agentManager);
     await withTimeout({
       promise: pluginRuntime.drainEvents(),

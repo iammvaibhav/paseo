@@ -20,6 +20,7 @@ import type { PaseoToolCatalog, PaseoToolConfig, PaseoToolResult } from "../agen
 import {
   MAX_NOTIFY_CONTEXT_LENGTH,
   type McpFinishNotifier,
+  type McpFinishWaitForAgent,
   type McpNotifyTarget,
 } from "./finish-notifier.js";
 import { CORE_FLEET_TOOL_NAMES, resolveTypeSafeApiKey, searchCatalogTools } from "./tool-search.js";
@@ -61,7 +62,9 @@ const NOTIFY_INPUT_SHAPE = {
     .optional()
     .describe(
       "POST a paseo.agent.finished event to your configured webhook when this agent's run ends " +
-        "(and paseo.agent.needs_permission if it blocks on a permission). Returns immediately.",
+        "(and paseo.agent.needs_permission if it blocks on a permission). Returns immediately. " +
+        "The watch survives a daemon restart: it reports the run the restarted daemon resumes, or " +
+        'reason "interrupted" when the run never resumes.',
     ),
   notifyContext: z
     .string()
@@ -99,23 +102,9 @@ function toMcpToolResult(result: PaseoToolResult): CallToolResult {
   };
 }
 
-export async function createFleetMcpServer(options: FleetMcpServerOptions): Promise<McpServer> {
-  const catalog = options.catalog ?? (await createPaseoToolCatalog(options.hostDependencies));
-  const server = new McpServer(
-    {
-      name: "paseo-fleet",
-      version: "2.0.0",
-    },
-    {
-      instructions: FLEET_MCP_INSTRUCTIONS,
-    },
-  );
-
-  const waitForAgent = async (input: {
-    agentId: string;
-    host?: string;
-    timeoutMs: number;
-  }): Promise<FleetAgentWaitResult> => {
+/** The finish watcher's view of an agent: one bounded fleet_wait_agent through this client's catalog. */
+export function createFleetMcpWaitForAgent(catalog: PaseoToolCatalog): McpFinishWaitForAgent {
+  return async (input) => {
     const result = await catalog.executeTool("fleet_wait_agent", {
       agentId: input.agentId,
       ...(input.host ? { host: input.host } : {}),
@@ -129,6 +118,21 @@ export async function createFleetMcpServer(options: FleetMcpServerOptions): Prom
     }
     return result.structuredContent as FleetAgentWaitResult;
   };
+}
+
+export async function createFleetMcpServer(options: FleetMcpServerOptions): Promise<McpServer> {
+  const catalog = options.catalog ?? (await createPaseoToolCatalog(options.hostDependencies));
+  const server = new McpServer(
+    {
+      name: "paseo-fleet",
+      version: "2.0.0",
+    },
+    {
+      instructions: FLEET_MCP_INSTRUCTIONS,
+    },
+  );
+
+  const waitForAgent = createFleetMcpWaitForAgent(catalog);
 
   // Runs a catalog tool for this MCP client. For the agent start/prompt tools
   // it takes notifyOnFinish/notifyContext off the arguments and, after the
