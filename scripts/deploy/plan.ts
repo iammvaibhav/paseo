@@ -46,7 +46,6 @@ export const COMPONENT_PATHS = {
     ...NOT_TESTS,
   ],
   "code-server": ["scripts/code-server"],
-  plannotator: ["scripts/plannotator"],
   voice: ["scripts/commander-voice"],
   "omp-proxy": ["scripts/omp-proxy", "plugins"],
 } satisfies Record<string, string[]>;
@@ -56,13 +55,12 @@ export type Component = keyof typeof COMPONENT_PATHS;
 /** Services that are redeployed only when their files changed. */
 const TRACKED_SERVICES: Partial<Record<Service, Component>> = {
   "code-server": "code-server",
-  plannotator: "plannotator",
   voice: "voice",
   "omp-proxy": "omp-proxy",
 };
 
 /** Per-host record of what it last received: component → commit. */
-export type HostState = Partial<Record<Component | "omp-proxy-omp", string>>;
+export type HostState = Partial<Record<Component | "omp-proxy-omp" | "address", string>>;
 
 export interface PlanInput {
   hosts: Host[];
@@ -123,7 +121,10 @@ function planHost(input: PlanInput, host: Host): HostPlan {
   plan.routine = true;
   // A target needs its builder's package; without the builder it keeps running what it has.
   const builderReachable = host.role === "builder" || input.reachable.includes(host.buildFrom);
-  plan.daemon = builderReachable && due("daemon");
+  // A target that moved to a new address restarts to bind it (unset = never recorded).
+  const moved =
+    host.role === "target" && state.address !== undefined && state.address !== host.address;
+  plan.daemon = builderReachable && (due("daemon") || moved);
   plan.app = host.daemon === "desktop" && due("app");
   for (const service of host.services) {
     const component = TRACKED_SERVICES[service];
