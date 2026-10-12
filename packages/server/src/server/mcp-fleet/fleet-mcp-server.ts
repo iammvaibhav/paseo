@@ -16,7 +16,7 @@ import {
   createPaseoToolCatalog,
   type PaseoToolHostDependencies,
 } from "../agent/tools/paseo-tools.js";
-import { FLEET_WAIT_RESULT_SCHEMA, type FleetAgentWaitResult } from "../agent/tools/fleet-wait.js";
+import { FLEET_WAIT_RESULT_SCHEMA } from "../agent/tools/fleet-wait.js";
 import type {
   PaseoToolCatalog,
   PaseoToolConfig,
@@ -26,6 +26,7 @@ import type {
 import {
   MAX_NOTIFY_CONTEXT_LENGTH,
   type McpFinishNotifier,
+  type McpFinishWaitForAgent,
   type McpNotifyAgent,
   type McpNotifyTarget,
 } from "./finish-notifier.js";
@@ -68,7 +69,9 @@ const NOTIFY_INPUT_SHAPE = {
     .optional()
     .describe(
       "POST a paseo.agent.finished event to your configured webhook when this agent's run ends " +
-        "(and paseo.agent.needs_permission if it blocks on a permission). Returns immediately.",
+        "(and paseo.agent.needs_permission if it blocks on a permission). Returns immediately. " +
+        "The watch survives a daemon restart: it reports the run the restarted daemon resumes, or " +
+        'reason "interrupted" when the run never resumes.',
     ),
   notifyContext: z
     .string()
@@ -254,24 +257,9 @@ function toMcpToolResult(result: PaseoToolResult): CallToolResult {
   };
 }
 
-export async function createFleetMcpServer(options: FleetMcpServerOptions): Promise<McpServer> {
-  const catalog = options.catalog ?? (await createPaseoToolCatalog(options.hostDependencies));
-  const server = new McpServer(
-    {
-      name: "paseo-fleet",
-      version: "2.0.0",
-    },
-    {
-      instructions: FLEET_MCP_INSTRUCTIONS,
-    },
-  );
-
-  const waitForAgent = async (input: {
-    agentId: string;
-    host?: string;
-    turnId?: string;
-    timeoutMs: number;
-  }): Promise<FleetAgentWaitResult> => {
+/** The finish watcher's view of an agent: one bounded, turn-bound fleet_wait_agent through this client's catalog. */
+export function createFleetMcpWaitForAgent(catalog: PaseoToolCatalog): McpFinishWaitForAgent {
+  return async (input) => {
     const result = await catalog.executeTool("fleet_wait_agent", {
       agentId: input.agentId,
       ...(input.host ? { host: input.host } : {}),
@@ -286,6 +274,21 @@ export async function createFleetMcpServer(options: FleetMcpServerOptions): Prom
     }
     return FLEET_WAIT_RESULT_SCHEMA.parse(result.structuredContent);
   };
+}
+
+export async function createFleetMcpServer(options: FleetMcpServerOptions): Promise<McpServer> {
+  const catalog = options.catalog ?? (await createPaseoToolCatalog(options.hostDependencies));
+  const server = new McpServer(
+    {
+      name: "paseo-fleet",
+      version: "2.0.0",
+    },
+    {
+      instructions: FLEET_MCP_INSTRUCTIONS,
+    },
+  );
+
+  const waitForAgent = createFleetMcpWaitForAgent(catalog);
 
   /** The turn an agent is on right now (null when idle), read via fleet_agent_status. */
   const readActiveTurn = async (agentId: string, host?: string): Promise<string | null> => {

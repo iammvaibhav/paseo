@@ -1,9 +1,17 @@
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer, type IncomingHttpHeaders, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import pino from "pino";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { FleetAgentWaitResult } from "../agent/tools/fleet-wait.js";
-import { createMcpFinishNotifier } from "./finish-notifier.js";
+import {
+  createMcpFinishNotifier,
+  type McpClientBinding,
+  type McpFinishLocalAgents,
+  type McpFinishRunStart as RunStart,
+} from "./finish-notifier.js";
 
 interface Received {
   headers: IncomingHttpHeaders;
@@ -18,7 +26,7 @@ const result = (fields: Partial<FleetAgentWaitResult>): FleetAgentWaitResult => 
   finished: true,
   needsPermission: false,
   timedOut: false,
-  turnId: "turn-1",
+  turnId: null,
   title: "Essay writer",
   bucket: "ready",
   lastMessage: "Done.",
@@ -26,19 +34,42 @@ const result = (fields: Partial<FleetAgentWaitResult>): FleetAgentWaitResult => 
   ...fields,
 });
 
+// The agent's run never resumes; the watch is only ever suspended.
+const neverStarts = () => Promise.withResolvers<RunStart>().promise;
+
+// The agent's run never resumes; the wait ends when the notifier gives up on it.
+function rejectsOnAbort(_agentId: string, signal: AbortSignal): Promise<RunStart> {
+  const never = Promise.withResolvers<RunStart>();
+  signal.addEventListener("abort", () => never.reject(signal.reason), { once: true });
+  return never.promise;
+}
+
 describe("createMcpFinishNotifier", () => {
   let server: Server;
   let url: string;
   let received: Received[];
   let statuses: number[];
+  let firstRequest: PromiseWithResolvers<void>;
+  // Resolves once this many webhook requests have arrived.
+  let awaitedCount = Number.POSITIVE_INFINITY;
+  let countReached: PromiseWithResolvers<void>;
+  let dir: string;
+  let journalPath: string;
 
   beforeEach(async () => {
     received = [];
     statuses = [];
+    firstRequest = Promise.withResolvers<void>();
+    countReached = Promise.withResolvers<void>();
+    awaitedCount = Number.POSITIVE_INFINITY;
+    dir = await mkdtemp(path.join(tmpdir(), "finish-notifier-"));
+    journalPath = path.join(dir, "mcp-fleet", "finish-watches.jsonl");
     server = createServer(async (req, res) => {
       let raw = "";
       for await (const chunk of req) raw += chunk;
       received.push({ headers: req.headers, body: JSON.parse(raw) });
+      firstRequest.resolve();
+      if (received.length >= awaitedCount) countReached.resolve();
       res.statusCode = statuses.shift() ?? 200;
       res.end("{}");
     });
@@ -48,8 +79,9 @@ describe("createMcpFinishNotifier", () => {
     url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/hook`;
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     server.close();
+    await rm(dir, { recursive: true, force: true });
   });
 
   // Zero delays: arm() resolves once delivery is done, so tests await it.
@@ -171,6 +203,156 @@ describe("createMcpFinishNotifier", () => {
     expect(received).toHaveLength(1);
   });
 
+  // A restart: the first notifier is suspended, the second restores from the same journal.
+  const daemon = (options: {
+    localAgents?: McpFinishLocalAgents;
+    retryDelaysMs?: number[];
+    resumeGraceMs?: number;
+  }) =>
+    createMcpFinishNotifier({
+      resolveSecret: async (value) => value,
+      logger: pino({ level: "silent" }),
+      journalPath,
+      pollMs: 0,
+      retryDelaysMs: options.retryDelaysMs ?? [0, 0],
+      resumeGraceMs: options.resumeGraceMs ?? 60_000,
+      localAgents: options.localAgents,
+    });
+
+  const localAgents = (
+    waitForRunStart: McpFinishLocalAgents["waitForRunStart"],
+  ): McpFinishLocalAgents => ({ activeTurnId: () => "turn-1", waitForRunStart });
+
+  const journal = async () =>
+    (await readFile(journalPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+
+  // The run the client prompted is cut by the shutdown; closing the agent
+  // ends the pending wait with "closed", which is not the run's end.
+  async function armThenRestart() {
+    const shutdownClose = Promise.withResolvers<FleetAgentWaitResult>();
+    const before = daemon({ localAgents: localAgents(neverStarts) });
+    const armed = before.arm({
+      client: "grok-bot",
+      target: { url },
+      agentId: "agent-1",
+      tool: "fleet_send_prompt",
+      context: "theme-research",
+      waitForAgent: () => shutdownClose.promise,
+    });
+    await before.suspend();
+    shutdownClose.resolve(result({ status: "closed" }));
+    await armed;
+    expect(received).toHaveLength(0);
+  }
+
+  it("reports the run the restarted daemon resumes, once", async () => {
+    await armThenRestart();
+
+    const resumed = Promise.withResolvers<RunStart>();
+    const waits: string[] = [];
+    const binding: McpClientBinding = {
+      target: { url },
+      waitForAgent: async (input) => {
+        waits.push(input.agentId);
+        // The restored watch is rebound to the resumed run's turn.
+        expect(input.turnId).toBe("turn-2");
+        return result({ lastMessage: "Screenshots saved.", turnId: "turn-2" });
+      },
+    };
+    const after = daemon({ localAgents: localAgents(() => resumed.promise) });
+    const { restored, settled } = await after.restore(async (client) =>
+      client === "grok-bot" ? binding : null,
+    );
+    expect(restored).toBe(1);
+    // The watch blocks on the resume, so its closed state is not reported.
+    expect(waits).toHaveLength(0);
+    resumed.resolve({ local: true, turnId: "turn-2" });
+    await settled;
+
+    expect(received).toHaveLength(1);
+    expect(received[0]!.body).toMatchObject({
+      type: "paseo.agent.finished",
+      reason: "finished",
+      client: "grok-bot",
+      context: "theme-research",
+      agent: {
+        id: "agent-1",
+        status: "idle",
+        turnId: "turn-2",
+        lastMessage: "Screenshots saved.",
+      },
+      trigger: { tool: "fleet_send_prompt" },
+    });
+    const entries = await journal();
+    expect(entries.map((entry) => entry.event)).toEqual([
+      "armed",
+      "suspended",
+      "restored",
+      "resumed",
+      "fired",
+      "delivered",
+    ]);
+    expect(entries[0]).toMatchObject({ agentId: "agent-1", turnId: "turn-1" });
+    expect(entries[3]).toMatchObject({ turnId: "turn-2" });
+
+    const again = await daemon({}).restore(async () => {
+      throw new Error("a settled watch is never restored");
+    });
+    expect(again.restored).toBe(0);
+  });
+
+  it("reports interrupted when the agent's run never resumes", async () => {
+    await armThenRestart();
+
+    // The notifier's own grace deadline is what this case waits out.
+    const after = daemon({ resumeGraceMs: 1, localAgents: localAgents(rejectsOnAbort) });
+    const binding: McpClientBinding = {
+      target: { url },
+      waitForAgent: async () => result({ status: "closed" }),
+    };
+    const { settled } = await after.restore(async () => binding);
+    await settled;
+
+    expect(received).toHaveLength(1);
+    expect(received[0]!.body).toMatchObject({
+      type: "paseo.agent.finished",
+      reason: "interrupted",
+      agent: { status: "closed" },
+    });
+  });
+
+  it("sends again an event the restart cut off mid-retry", async () => {
+    statuses = [503];
+    const before = daemon({ retryDelaysMs: [60_000] });
+    const armed = before.arm({
+      client: "grok-bot",
+      target: { url },
+      agentId: "agent-1",
+      tool: "fleet_create_agent",
+      context: null,
+      waitForAgent: async () => result({}),
+    });
+    await firstRequest.promise;
+    await before.suspend();
+    await armed;
+
+    const binding: McpClientBinding = {
+      target: { url },
+      waitForAgent: async () => {
+        throw new Error("a fired event is resent, not re-watched");
+      },
+    };
+    const { settled } = await daemon({}).restore(async () => binding);
+    await settled;
+
+    expect(received).toHaveLength(2);
+    expect(received[1]!.body).toEqual(received[0]!.body);
+    expect((await journal()).at(-1)).toMatchObject({ event: "delivered", status: 200 });
+  });
+
   it("binds every re-wait to the turn the first wait reported", async () => {
     const turnIds: Array<string | undefined> = [];
     await notifier().arm({
@@ -190,8 +372,25 @@ describe("createMcpFinishNotifier", () => {
     expect(received[0]!.body).toMatchObject({ agent: { turnId: "turn-7" } });
   });
 
-  it("posts one group event after the last agent finishes, plus per-agent events", async () => {
-    const finishOrder: string[] = [];
+  it("an armed turnId is bound from the first wait", async () => {
+    const turnIds: Array<string | undefined> = [];
+    await notifier().arm({
+      client: "grok-bot",
+      target: { url },
+      agentId: "agent-1",
+      turnId: "turn-from-send",
+      tool: "fleet_send_prompt",
+      context: null,
+      waitForAgent: async (input) => {
+        turnIds.push(input.turnId);
+        return result({ turnId: input.turnId ?? null });
+      },
+    });
+    expect(turnIds).toEqual(["turn-from-send"]);
+  });
+
+  it("group: one group event once every agent finished; needs_permission still posts per agent", async () => {
+    let blocked = false;
     await notifier().armGroup({
       client: "grok-bot",
       target: { url },
@@ -200,13 +399,13 @@ describe("createMcpFinishNotifier", () => {
         { agentId: "a", turnId: "t-a" },
         { agentId: "b", turnId: "t-b" },
       ],
-      perAgent: true,
+      perAgent: false,
       tool: "fleet_notify_on_finish",
       context: "batch-3",
       waitForAgent: async (input) => {
         // b blocks on a permission once, then both finish.
-        if (input.agentId === "b" && !finishOrder.includes("b-perm")) {
-          finishOrder.push("b-perm");
+        if (input.agentId === "b" && !blocked) {
+          blocked = true;
           return result({
             agentId: "b",
             status: "permission",
@@ -215,14 +414,13 @@ describe("createMcpFinishNotifier", () => {
             turnId: "t-b",
           });
         }
-        finishOrder.push(input.agentId);
         return result({ agentId: input.agentId, turnId: input.turnId ?? null });
       },
     });
-    const types = received.map((r) => r.body.type);
-    expect(types.filter((t) => t === "paseo.agent.finished")).toHaveLength(2);
-    expect(types.filter((t) => t === "paseo.agent.needs_permission")).toHaveLength(1);
-    expect(types.at(-1)).toBe("paseo.agents.group_finished");
+    expect(received.map((r) => r.body.type)).toEqual([
+      "paseo.agent.needs_permission",
+      "paseo.agents.group_finished",
+    ]);
     expect(received.at(-1)!.body).toMatchObject({
       groupId: "grp_1",
       context: "batch-3",
@@ -233,17 +431,22 @@ describe("createMcpFinishNotifier", () => {
     });
   });
 
-  it("group-only mode posts no per-agent finished events", async () => {
+  it("group with perAgent also posts one finished event per agent", async () => {
+    awaitedCount = 3;
     await notifier().armGroup({
       client: "grok-bot",
       target: { url },
       groupId: "grp_2",
       agents: [{ agentId: "a" }, { agentId: "b" }],
-      perAgent: false,
+      perAgent: true,
       tool: "fleet_notify_on_finish",
       context: null,
       waitForAgent: async (input) => result({ agentId: input.agentId }),
     });
-    expect(received.map((r) => r.body.type)).toEqual(["paseo.agents.group_finished"]);
+    // The per-agent watches settle on their own schedule; wait for all three events.
+    await countReached.promise;
+    const types = received.map((r) => r.body.type);
+    expect(types.filter((type) => type === "paseo.agent.finished")).toHaveLength(2);
+    expect(types.filter((type) => type === "paseo.agents.group_finished")).toHaveLength(1);
   });
 });
