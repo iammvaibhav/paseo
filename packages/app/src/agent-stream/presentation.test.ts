@@ -376,6 +376,28 @@ describe("stream presentation through installed plugins", () => {
     ]);
   });
 
+  it("never groups tool calls across a history gap", () => {
+    const at = (call: ToolCallItem, seq: number): ToolCallItem => ({
+      ...call,
+      timelineCursor: { epoch: "epoch-1", seq },
+    });
+    const beforeGap = [at(toolCall("call-1", "read"), 10), at(toolCall("call-2", "read"), 11)];
+    const afterGap = [at(toolCall("call-3", "read"), 900), at(toolCall("call-4", "bash"), 901)];
+    const result = createStreamPresentation()({
+      ...presentationOptions,
+      isTurnActive: false,
+      tail: [...beforeGap, ...afterGap],
+      head: [],
+      transform: undefined,
+      gaps: [{ epoch: "epoch-1", startSeq: 12, endSeq: 899 }],
+    });
+
+    expect(result.tail.map((row) => result.groupsByHostId.get(row.id)?.run.items)).toEqual([
+      beforeGap,
+      afterGap,
+    ]);
+  });
+
   it.each([
     { status: "completed", error: null },
     { status: "failed", error: { message: "Command failed" } },

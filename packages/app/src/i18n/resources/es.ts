@@ -1763,6 +1763,9 @@ export const es: TranslationResources = {
     chooseProjectForCommands: "Elige un proyecto para ver los comandos",
     chooseModelForCommands: "Selecciona un modelo para ver los comandos",
   },
+  historyGap: {
+    load: "Cargar más historial",
+  },
   loadOlderHistory: {
     failed: "No se pudo cargar el historial anterior",
   },

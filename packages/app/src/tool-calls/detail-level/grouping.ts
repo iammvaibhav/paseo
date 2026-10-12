@@ -151,6 +151,8 @@ function appendRun<TGroup>(input: {
 export function prepareGroupedHistory<TGroup>(input: {
   tail: StreamItem[];
   buildGroup: (run: ToolCallRun) => TGroup;
+  /** Rows a run must end at: the last loaded row before a history gap. */
+  runEndIds?: ReadonlySet<string>;
 }): GroupedHistory<TGroup> {
   const output: StreamItem[] = [];
   const groups = new Map<string, TGroup>();
@@ -159,6 +161,15 @@ export function prepareGroupedHistory<TGroup>(input: {
   for (const item of input.tail) {
     if (isGroupableItem(item)) {
       pending.push(item);
+      if (!input.runEndIds?.has(item.id)) continue;
+      appendRun({
+        items: pending,
+        isSealed: true,
+        output,
+        groups,
+        buildGroup: input.buildGroup,
+      });
+      pending = [];
       continue;
     }
     appendRun({

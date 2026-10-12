@@ -1747,6 +1747,9 @@ export const ptBR: TranslationResources = {
     chooseProjectForCommands: "Escolha um projeto para ver os comandos",
     chooseModelForCommands: "Selecione um modelo para ver os comandos",
   },
+  historyGap: {
+    load: "Carregar mais histórico",
+  },
   loadOlderHistory: {
     failed: "Não foi possível carregar o histórico mais antigo",
   },

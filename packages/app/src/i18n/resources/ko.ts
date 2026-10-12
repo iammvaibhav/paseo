@@ -1718,6 +1718,9 @@ export const ko: TranslationResources = {
     chooseProjectForCommands: "명령을 보려면 프로젝트를 선택하세요",
     chooseModelForCommands: "명령을 보려면 모델을 선택하세요",
   },
+  historyGap: {
+    load: "기록 더 불러오기",
+  },
   loadOlderHistory: {
     failed: "이전 기록을 불러올 수 없습니다",
   },

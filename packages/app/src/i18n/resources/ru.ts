@@ -1746,6 +1746,9 @@ export const ru: TranslationResources = {
     chooseProjectForCommands: "Выберите проект, чтобы увидеть команды",
     chooseModelForCommands: "Выберите модель, чтобы увидеть команды",
   },
+  historyGap: {
+    load: "Загрузить больше истории",
+  },
   loadOlderHistory: {
     failed: "Не удалось загрузить старую историю.",
   },

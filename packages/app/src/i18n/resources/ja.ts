@@ -1724,6 +1724,9 @@ export const ja: TranslationResources = {
     chooseProjectForCommands: "コマンドを表示するにはプロジェクトを選択してください",
     chooseModelForCommands: "コマンドを表示するにはモデルを選択してください",
   },
+  historyGap: {
+    load: "履歴をさらに読み込む",
+  },
   loadOlderHistory: {
     failed: "古い履歴を読み込めませんでした",
   },

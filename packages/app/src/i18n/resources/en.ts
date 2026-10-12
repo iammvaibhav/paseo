@@ -1738,6 +1738,9 @@ export const en = {
     chooseProjectForCommands: "Choose a project to see commands",
     chooseModelForCommands: "Select a model to see commands",
   },
+  historyGap: {
+    load: "Load more history",
+  },
   loadOlderHistory: {
     failed: "Couldn't load older history",
   },

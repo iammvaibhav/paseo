@@ -1691,6 +1691,9 @@ export const zhCN: TranslationResources = {
     chooseProjectForCommands: "选择项目以查看命令",
     chooseModelForCommands: "选择模型以查看命令",
   },
+  historyGap: {
+    load: "加载更多历史记录",
+  },
   loadOlderHistory: {
     failed: "无法加载更早历史",
   },

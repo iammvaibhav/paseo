@@ -67,6 +67,16 @@ the anchored page still leaves the viewport at history start, as with short or c
 that case pagination continues as one loading operation until the page fills the viewport or history
 is exhausted.
 
+A jump to an unloaded message (Chat outline, chat find) merges a window around it with
+`mergeWindow`. The window becomes a retained range beside the contiguous range that reaches the
+newest row, so the loaded coverage can have holes. "Older" means rows above the top of the list,
+which a jump window can own: scrolling up extends the topmost range, and a window that starts at
+the first row leaves nothing older. Rows between two ranges render a "Load more history" row below
+the last loaded row before them; each press loads the next page top-down
+(`planTimelineGapFill`), and the row disappears when the ranges join. Before this row existed, a
+jump to the first message spliced it directly onto the newest page and the turns in between could
+only come back by reloading the chat.
+
 ## Durable item anchors
 
 Provider message IDs are not guaranteed for every displayed item. Paseo-generated system errors are one example. Rendered item indices are not durable either because pagination and projection can merge source rows.

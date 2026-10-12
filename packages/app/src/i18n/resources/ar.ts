@@ -1712,6 +1712,9 @@ export const ar: TranslationResources = {
     chooseProjectForCommands: "اختر مشروعًا لعرض الأوامر",
     chooseModelForCommands: "اختر نموذجًا لعرض الأوامر",
   },
+  historyGap: {
+    load: "تحميل المزيد من السجل",
+  },
   loadOlderHistory: {
     failed: "تعذر تحميل السجل الأقدم",
   },
