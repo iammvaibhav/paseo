@@ -33,10 +33,9 @@ const REACHABILITY_TIMEOUT_MS = 8_000;
 
 /**
  * Full-screen embed of itsaplan. The tool runs next to the Paseo daemon, so the
- * origin resolves exactly like a Plannotator embed: loopback for a local daemon,
- * host-profile hostname for a remote one, and an explicit Settings override on
- * top of both. When no address can be resolved at all the screen explains
- * itself instead of rendering a dead frame.
+ * origin resolves loopback for a local daemon, host-profile hostname for a
+ * remote one, and an explicit Settings override on top of both. When no address
+ * can be resolved at all the screen explains itself instead of rendering a dead frame.
  */
 export function ItsaplanScreen(): ReactElement {
   const { t } = useTranslation();

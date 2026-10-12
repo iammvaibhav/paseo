@@ -30,7 +30,6 @@ import {
   type JudgeChoiceQuestion,
 } from "./llm-clients.js";
 
-const CATALOG_TTL_MS = 30_000;
 const HINDSIGHT_BUDGET_MS = 600;
 const RECENT_WORK_PER_PROJECT = 8;
 const ALTERNATIVES = 3;
@@ -92,7 +91,6 @@ export class RoutingNotConfiguredError extends Error {}
 export class RoutingService {
   private readonly deps: RoutingServiceDependencies;
   private readonly logger: Logger;
-  private catalogCache: { at: number; promise: Promise<RoutingCatalog> } | null = null;
   private readonly resolveSecret: ResolveSecret;
 
   constructor(deps: RoutingServiceDependencies) {
@@ -109,26 +107,6 @@ export class RoutingService {
     return { routing: central?.routing ?? {}, secrets: central?.routingSecrets ?? {} };
   }
 
-  /** Drop the cached catalog (a project or workspace changed). */
-  invalidateCatalog(): void {
-    this.catalogCache = null;
-  }
-
-  private catalog(): Promise<RoutingCatalog> {
-    const now = Date.now();
-    if (this.catalogCache && now - this.catalogCache.at < CATALOG_TTL_MS) {
-      return this.catalogCache.promise;
-    }
-    const promise = this.deps
-      .loadFleet()
-      .then((fleet) => buildCatalog(fleet, this.config().routing));
-    this.catalogCache = { at: now, promise };
-    promise.catch(() => {
-      if (this.catalogCache?.promise === promise) this.catalogCache = null;
-    });
-    return promise;
-  }
-
   async suggest(prompt: string, signal?: AbortSignal): Promise<RoutingSuggestion> {
     const startedAt = Date.now();
     const { routing, secrets } = this.config();
@@ -139,17 +117,26 @@ export class RoutingService {
       );
     }
     const rules = routing.rules?.trim() || undefined;
-    const catalog = await this.catalog();
     const judge = { apiKey, signal, fetchImpl: this.deps.fetchImpl };
 
-    // Isolation + mode need only the prompt, so they run while Hindsight
-    // recalls the evidence the placement question uses.
+    // Isolation + mode need only the prompt; they run while the catalog loads
+    // and Hindsight recalls the evidence the placement question uses. The
+    // catalog is fetched fresh every time: in parallel it costs no latency,
+    // and a cache would hide projects added outside routing (Add project,
+    // fleet_create_project, another host).
     const behaviour = judgeChoices({
       ...judge,
       state: { prompt, ...(rules ? { rules } : {}) },
       questions: BEHAVIOUR_QUESTIONS,
     });
-    const evidence = await this.recallEvidence(prompt);
+    // Awaited below; this only keeps a rejection from going unhandled when
+    // the catalog load throws first.
+    behaviour.catch(() => {});
+    const [fleet, evidence] = await Promise.all([
+      this.deps.loadFleet(),
+      this.recallEvidence(prompt),
+    ]);
+    const catalog = buildCatalog(fleet, routing);
     const placementAnswers = await judgeChoices({
       ...judge,
       state: {
@@ -283,9 +270,7 @@ export class RoutingService {
       this.config().routing.scratchRootByHost?.[this.deps.serverId] ??
       join(homedir(), "experiments");
     await mkdir(root, { recursive: true });
-    const project = await registerProject(root);
-    this.invalidateCatalog();
-    return project;
+    return registerProject(root);
   }
 
   /**

@@ -1112,7 +1112,6 @@ export const ar: TranslationResources = {
         openIn: "افتح مساحة العمل في{{target}}",
         openFileIn: "Open {{fileName}} in {{target}}",
         failedOpen: "فشل في فتح مساحة العمل",
-        noFile: "Select a Markdown file to open in Plannotator",
       },
       pr: {
         actions: {
@@ -1352,12 +1351,6 @@ export const ar: TranslationResources = {
       itsaplan: "itsaplan",
       webhooks: "Webhooks",
     },
-    worktreeSetup: {
-      title: "إعداد البرامج النصية لشجرة العمل",
-      description:
-        "أضف أوامر الإعداد حتى تتمكن أشجار العمل الجديدة من تثبيت التبعيات وإعداد نفسها تلقائيًا.",
-      openProjectSettings: "افتح إعدادات المشروع",
-    },
     project: {
       actions: {
         menu: "إجراءات المشروع",
@@ -1582,19 +1575,6 @@ export const ar: TranslationResources = {
         idle: "لم يتم التحقق من حالة التحديث بعد.",
       },
       installError: "غير قادر على تثبيت تحديث تطبيق سطح المكتب.",
-      callout: {
-        installingTitle: "تثبيت التحديث",
-        failedTitle: "فشل التحديث",
-        availableTitle: "التحديث متاح",
-        genericError: "حدث خطأ ما.",
-        whatsNew: "ما هو الجديد",
-        installingAction: "جارٍ التثبيت...",
-        installAndRestart: "التثبيت وإعادة التشغيل",
-        installingDescription: "التثبيت وإعادة التشغيل...",
-        versionReady: "{{version}}جاهز للتثبيت.",
-        newVersionReady: "إصدار جديد جاهز للتثبيت.",
-        restartWarning: "ستؤدي ترقية التطبيق إلى إيقاف تشغيل الوكلاء وإغلاق الجلسات الطرفية.",
-      },
     },
     settings: {
       loadFailed: "غير قادر على تحميل إعدادات سطح المكتب.",
@@ -1731,6 +1711,9 @@ export const ar: TranslationResources = {
     failedToLoad: "فشل التحميل",
     chooseProjectForCommands: "اختر مشروعًا لعرض الأوامر",
     chooseModelForCommands: "اختر نموذجًا لعرض الأوامر",
+  },
+  historyGap: {
+    load: "تحميل المزيد من السجل",
   },
   loadOlderHistory: {
     failed: "تعذر تحميل السجل الأقدم",
@@ -2239,15 +2222,9 @@ export const ar: TranslationResources = {
       vimKeybindings: "اختصارات Vim",
       vimHint: "تنطبق على ملفات المصدر في الويب وسطح المكتب.",
       defaultFileOpener: "Default file opener",
-      defaultFileOpenerHint:
-        "Used for normal file clicks. Plannotator supports document and configuration files; source files fall back to Paseo.",
+      defaultFileOpenerHint: "Used for normal file clicks.",
       defaultFileOpenerPaseo: "Paseo",
       defaultFileOpenerVsCodeWeb: "VS Code Web",
-      defaultFileOpenerPlannotator: "Plannotator",
-      plannotatorFeedbackMode: "Plannotator feedback",
-      plannotatorFeedbackModeHint: "How annotation feedback is delivered to the linked agent.",
-      plannotatorFeedbackAutoSend: "Auto-send",
-      plannotatorFeedbackCompose: "Pre-fill composer",
     },
     notifications: {
       title: "الإشعارات",

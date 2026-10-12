@@ -1126,7 +1126,6 @@ export const ja: TranslationResources = {
         openIn: "{{target}}でワークスペースを開く",
         openFileIn: "{{target}}で{{fileName}}を開く",
         failedOpen: "ワークスペースを開けませんでした",
-        noFile: "Select a Markdown file to open in Plannotator",
       },
       pr: {
         actions: {
@@ -1362,12 +1361,6 @@ export const ja: TranslationResources = {
       itsaplan: "itsaplan",
       webhooks: "Webhooks",
     },
-    worktreeSetup: {
-      title: "ワークツリースクリプトを設定",
-      description:
-        "新しいワークツリーが依存関係をインストールして自動的に準備できるようにセットアップコマンドを追加してください。",
-      openProjectSettings: "プロジェクト設定を開く",
-    },
     project: {
       actions: {
         menu: "プロジェクトアクション",
@@ -1593,20 +1586,6 @@ export const ja: TranslationResources = {
         idle: "更新ステータスはまだ確認されていません。",
       },
       installError: "デスクトップアプリの更新をインストールできません。",
-      callout: {
-        installingTitle: "更新をインストール中",
-        failedTitle: "更新に失敗しました",
-        availableTitle: "更新が利用可能",
-        genericError: "問題が発生しました。",
-        whatsNew: "新機能",
-        installingAction: "インストール中...",
-        installAndRestart: "インストールして再起動",
-        installingDescription: "インストールして再起動中...",
-        versionReady: "{{version}}のインストール準備ができました。",
-        newVersionReady: "新しいバージョンのインストール準備ができました。",
-        restartWarning:
-          "アプリを更新すると、実行中のエージェントが停止しターミナルセッションが閉じられます。",
-      },
     },
     settings: {
       loadFailed: "デスクトップ設定を読み込めません。",
@@ -1744,6 +1723,9 @@ export const ja: TranslationResources = {
     failedToLoad: "読み込みに失敗しました",
     chooseProjectForCommands: "コマンドを表示するにはプロジェクトを選択してください",
     chooseModelForCommands: "コマンドを表示するにはモデルを選択してください",
+  },
+  historyGap: {
+    load: "履歴をさらに読み込む",
   },
   loadOlderHistory: {
     failed: "古い履歴を読み込めませんでした",
@@ -2255,15 +2237,9 @@ export const ja: TranslationResources = {
       vimKeybindings: "Vim キーバインド",
       vimHint: "Web とデスクトップのソースファイルに適用されます。",
       defaultFileOpener: "Default file opener",
-      defaultFileOpenerHint:
-        "Used for normal file clicks. Plannotator supports document and configuration files; source files fall back to Paseo.",
+      defaultFileOpenerHint: "Used for normal file clicks.",
       defaultFileOpenerPaseo: "Paseo",
       defaultFileOpenerVsCodeWeb: "VS Code Web",
-      defaultFileOpenerPlannotator: "Plannotator",
-      plannotatorFeedbackMode: "Plannotator feedback",
-      plannotatorFeedbackModeHint: "How annotation feedback is delivered to the linked agent.",
-      plannotatorFeedbackAutoSend: "Auto-send",
-      plannotatorFeedbackCompose: "Pre-fill composer",
     },
     notifications: {
       title: "通知",

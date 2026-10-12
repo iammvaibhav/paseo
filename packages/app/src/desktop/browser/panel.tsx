@@ -21,9 +21,6 @@ function getBrowserLabel(input: {
   if (input.chrome === "embedded") {
     return "VS Code Web";
   }
-  if (input.chrome === "embedded-transient") {
-    return "Plannotator";
-  }
 
   try {
     const parsed = new URL(input.url);

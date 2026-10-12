@@ -183,12 +183,11 @@
         ]
       }
     },
-    // Raw query burn-down: 34 files total; the 28 files below still enforce the useUnistyles ban.
+    // Raw query burn-down: 33 files total; the 27 files below still enforce the useUnistyles ban.
     {
       "files": [
         "packages/app/src/assistant-file-links/use-file-link.ts",
         "packages/app/src/components/message.tsx",
-        "packages/app/src/components/worktree-setup-callout-source.tsx",
         "packages/app/src/desktop/hooks/use-daemon-status.ts",
         "packages/app/src/desktop/hooks/use-install-status.ts",
         "packages/app/src/desktop/settings/desktop-settings.ts",
@@ -235,7 +234,7 @@
         ]
       }
     },
-    // useUnistyles burn-down: 74 files total; the 68 files below still enforce the raw-query ban.
+    // useUnistyles burn-down: 73 files total; the 67 files below still enforce the raw-query ban.
     {
       "files": [
         "packages/app/src/app/_layout.tsx",
@@ -293,7 +292,6 @@
         "packages/app/src/desktop/components/desktop-permissions-section.tsx",
         "packages/app/src/desktop/components/desktop-updates-section.tsx",
         "packages/app/src/desktop/components/integrations-section.tsx",
-        "packages/app/src/desktop/updates/update-callout-source.tsx",
         "packages/app/src/git/actions-split-button.tsx",
         "packages/app/src/hooks/use-web-scrollbar-style.web.ts",
         "packages/app/src/hosts/host-chooser.tsx",

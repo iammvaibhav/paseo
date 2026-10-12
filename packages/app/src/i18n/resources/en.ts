@@ -1121,7 +1121,6 @@ export const en = {
         openIn: "Open workspace in {{target}}",
         openFileIn: "Open {{fileName}} in {{target}}",
         failedOpen: "Failed to open workspace",
-        noFile: "Select a Markdown file to open in Plannotator",
       },
       pr: {
         actions: {
@@ -1375,12 +1374,6 @@ export const en = {
       itsaplan: "itsaplan",
       webhooks: "Webhooks",
     },
-    worktreeSetup: {
-      title: "Set up worktree scripts",
-      description:
-        "Add setup commands so new worktrees can install dependencies and prepare themselves automatically.",
-      openProjectSettings: "Open project settings",
-    },
     project: {
       actions: {
         menu: "Project actions",
@@ -1622,19 +1615,6 @@ export const en = {
         idle: "Update status has not been checked yet.",
       },
       installError: "Unable to install the desktop app update.",
-      callout: {
-        installingTitle: "Installing update",
-        failedTitle: "Update failed",
-        availableTitle: "Update available",
-        genericError: "Something went wrong.",
-        whatsNew: "What's new",
-        installingAction: "Installing...",
-        installAndRestart: "Install & restart",
-        installingDescription: "Installing and restarting...",
-        versionReady: "{{version}} is ready to install.",
-        newVersionReady: "A new version is ready to install.",
-        restartWarning: "Upgrading the app will stop running agents and close terminal sessions.",
-      },
     },
     settings: {
       loadFailed: "Unable to load desktop settings.",
@@ -1771,6 +1751,9 @@ export const en = {
     failedToLoad: "Failed to load",
     chooseProjectForCommands: "Choose a project to see commands",
     chooseModelForCommands: "Select a model to see commands",
+  },
+  historyGap: {
+    load: "Load more history",
   },
   loadOlderHistory: {
     failed: "Couldn't load older history",
@@ -2795,15 +2778,9 @@ export const en = {
       vimKeybindings: "Vim keybindings",
       vimHint: "Applies to source files on web and desktop.",
       defaultFileOpener: "Default file opener",
-      defaultFileOpenerHint:
-        "Used for normal file clicks. Plannotator supports document and configuration files; source files fall back to Paseo.",
+      defaultFileOpenerHint: "Used for normal file clicks.",
       defaultFileOpenerPaseo: "Paseo",
       defaultFileOpenerVsCodeWeb: "VS Code Web",
-      defaultFileOpenerPlannotator: "Plannotator",
-      plannotatorFeedbackMode: "Plannotator feedback",
-      plannotatorFeedbackModeHint: "How annotation feedback is delivered to the linked agent.",
-      plannotatorFeedbackAutoSend: "Auto-send",
-      plannotatorFeedbackCompose: "Pre-fill composer",
     },
     notifications: {
       title: "Notifications",

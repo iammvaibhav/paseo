@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "typecheck": "tsgo -p tsconfig.json --noEmit",
+    "typecheck": "sh ../scripts/cpu-slot.sh typecheck tsgo -p tsconfig.json --noEmit",
     "test": "vitest run"
   },
   "dependencies": {

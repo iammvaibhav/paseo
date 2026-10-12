@@ -1131,7 +1131,6 @@ export const ru: TranslationResources = {
         openIn: "Открыть рабочее пространство в {{target}}",
         openFileIn: "Открыть {{fileName}} в {{target}}",
         failedOpen: "Не удалось открыть рабочее пространство",
-        noFile: "Select a Markdown file to open in Plannotator",
       },
       pr: {
         actions: {
@@ -1376,12 +1375,6 @@ export const ru: TranslationResources = {
       itsaplan: "itsaplan",
       webhooks: "Webhooks",
     },
-    worktreeSetup: {
-      title: "Настроить скрипты worktree",
-      description:
-        "Добавьте команды настройки для автоматической установки зависимостей и подготовки новых worktree.",
-      openProjectSettings: "Открыть настройки проекта",
-    },
     project: {
       actions: {
         menu: "Действия проекта",
@@ -1611,20 +1604,6 @@ export const ru: TranslationResources = {
         idle: "Статус обновления ещё не проверен.",
       },
       installError: "Не удалось установить обновление настольного приложения.",
-      callout: {
-        installingTitle: "Установка обновления",
-        failedTitle: "Обновление не выполнено",
-        availableTitle: "Доступно обновление",
-        genericError: "Что-то пошло не так.",
-        whatsNew: "Что нового",
-        installingAction: "Установка...",
-        installAndRestart: "Установить и перезапустить",
-        installingDescription: "Установка и перезапуск...",
-        versionReady: "Версия {{version}} готова к установке.",
-        newVersionReady: "Новая версия готова к установке.",
-        restartWarning:
-          "При обновлении приложения работающие агенты будут остановлены, а сеансы терминала закрыты.",
-      },
     },
     settings: {
       loadFailed: "Не удалось загрузить настройки настольного приложения.",
@@ -1766,6 +1745,9 @@ export const ru: TranslationResources = {
     failedToLoad: "Не удалось загрузить",
     chooseProjectForCommands: "Выберите проект, чтобы увидеть команды",
     chooseModelForCommands: "Выберите модель, чтобы увидеть команды",
+  },
+  historyGap: {
+    load: "Загрузить больше истории",
   },
   loadOlderHistory: {
     failed: "Не удалось загрузить старую историю.",
@@ -2278,15 +2260,9 @@ export const ru: TranslationResources = {
       vimKeybindings: "Сочетания клавиш Vim",
       vimHint: "Применяется к исходным файлам в веб- и настольной версии.",
       defaultFileOpener: "Default file opener",
-      defaultFileOpenerHint:
-        "Used for normal file clicks. Plannotator supports document and configuration files; source files fall back to Paseo.",
+      defaultFileOpenerHint: "Used for normal file clicks.",
       defaultFileOpenerPaseo: "Paseo",
       defaultFileOpenerVsCodeWeb: "VS Code Web",
-      defaultFileOpenerPlannotator: "Plannotator",
-      plannotatorFeedbackMode: "Plannotator feedback",
-      plannotatorFeedbackModeHint: "How annotation feedback is delivered to the linked agent.",
-      plannotatorFeedbackAutoSend: "Auto-send",
-      plannotatorFeedbackCompose: "Pre-fill composer",
     },
     notifications: {
       title: "Уведомления",

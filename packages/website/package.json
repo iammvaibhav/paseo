@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "typecheck": "tsgo --noEmit",
+    "typecheck": "sh ../../scripts/cpu-slot.sh typecheck tsgo --noEmit",
     "deploy": "pnpm run build && wrangler deploy",
     "test:e2e": "playwright test"
   },

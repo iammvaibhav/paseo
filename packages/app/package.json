@@ -18,7 +18,7 @@
     "web": "pnpm --dir ../.. run build:client && concurrently --kill-others --names protocol,client,expo --prefix-colors yellow,blue,magenta \"pnpm --dir ../.. run watch:protocol\" \"pnpm --dir ../.. run watch:client\" \"pnpm run web:expo\"",
     "web:expo": "expo start --web",
     "lint": "expo lint",
-    "typecheck": "tsgo --noEmit",
+    "typecheck": "sh ../../scripts/cpu-slot.sh typecheck tsgo --noEmit",
     "test": "vitest run",
     "test:browser": "vitest run --project browser",
     "test:e2e": "playwright test --project=browser",

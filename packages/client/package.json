@@ -31,11 +31,11 @@
   },
   "scripts": {
     "clean": "node ../../scripts/clean-package-dist.mjs",
-    "build": "pnpm --filter @getpaseo/protocol run build && pnpm --filter @getpaseo/relay run build && tsc -p tsconfig.json --incremental false",
+    "build": "pnpm --filter @getpaseo/protocol run build && pnpm --filter @getpaseo/relay run build && sh ../../scripts/cpu-slot.sh build tsc -p tsconfig.json --incremental false",
     "build:clean": "pnpm run clean && pnpm run build",
     "prepack": "pnpm run build:clean",
-    "typecheck": "tsgo --noEmit",
-    "typecheck:examples": "tsgo -p tsconfig.examples.json --noEmit",
+    "typecheck": "sh ../../scripts/cpu-slot.sh typecheck tsgo --noEmit",
+    "typecheck:examples": "sh ../../scripts/cpu-slot.sh typecheck tsgo -p tsconfig.examples.json --noEmit",
     "test": "vitest run"
   },
   "dependencies": {

@@ -120,7 +120,6 @@ import type { PageStore } from "./page-tools/page-store.js";
 import type { RoutingService } from "./routing/routing-service.js";
 import type { AgentSearchService } from "./agent-search/agent-search-service.js";
 import type { DaemonRuntimeConfig } from "./session/daemon/daemon-session.js";
-import { resolvePlannotatorBinary } from "../services/plannotator/resolve-binary.js";
 import { DirectorySyncService } from "./directory-sync/index.js";
 import { OWNER_PERMISSIONS, type DaemonPermission } from "./authorization/index.js";
 import type { WorkspaceLabelService } from "./workspace-labels/index.js";
@@ -197,7 +196,6 @@ type WebSocketRuntimeMetricsLogPayload = Omit<WebSocketRuntimeDiagnosticPayload,
 
 type TerminalAttentionReason = "finished" | "needs_input";
 
-/** COMPAT(plannotator): log once at daemon start whether the binary is resolvable. */
 function initialConnectionLifecycle(startPaused: boolean | undefined): "starting" | "accepting" {
   return startPaused === true ? "starting" : "accepting";
 }
@@ -207,16 +205,6 @@ function requireDaemonVersion(daemonVersion: string | undefined): string {
     throw new MissingDaemonVersionError();
   }
   return daemonVersion.trim();
-}
-
-function detectPlannotatorAvailability(logger: pino.Logger): boolean {
-  const available = resolvePlannotatorBinary() !== null;
-  if (available) {
-    logger.info("Plannotator binary detected");
-  } else {
-    logger.debug("Plannotator binary not found; feature disabled");
-  }
-  return available;
 }
 
 function resolveTerminalAttentionReason(input: {
@@ -655,8 +643,6 @@ export class VoiceAssistantWebSocketServer {
   private readonly missionControlService: MissionControlService | null;
   private transcriptSearch: TranscriptSearchService | null = null;
   private connectionLifecycle: "starting" | "accepting" | "stopping" = "accepting";
-  /** COMPAT(plannotator): true when plannotator binary is resolvable at daemon start. */
-  private readonly plannotatorAvailable: boolean;
   private readonly advertiseDaemonStatusRpc: boolean;
   private readonly advertiseRelayConfig: boolean;
   private readonly directorySync = new DirectorySyncService();
@@ -865,7 +851,6 @@ export class VoiceAssistantWebSocketServer {
         this.logger.warn({ err, agentId: params.agentId }, "Failed to broadcast agent attention");
       });
     });
-    this.plannotatorAvailable = detectPlannotatorAvailability(this.logger);
 
     this.wss = this.createWebSocketServer(server, wsConfig, auth);
     this.startRuntimeMetricsInterval();
@@ -2119,8 +2104,6 @@ export class VoiceAssistantWebSocketServer {
         missionControlEventSubscription: true,
         // COMPAT(providerUsageEventSubscription): added 2026-09-30, remove gate after 2027-03-30.
         providerUsageEventSubscription: true,
-        // COMPAT(plannotatorEventSubscription): added 2026-09-30, remove gate after 2027-03-30.
-        plannotatorEventSubscription: true,
         // Automations (unified schedules/webhooks/GitHub/Linear poll triggers).
         // Added 2026-09-30; the app gates the Automations screen once on it.
         automations: this.automationService !== null,
@@ -2132,9 +2115,6 @@ export class VoiceAssistantWebSocketServer {
         stableProjectIdentity: true,
         // COMPAT(workspaceScriptManagement): added in v0.1.105, remove gate after 2027-01-10.
         workspaceScriptManagement: true,
-        // COMPAT(plannotator): added in v0.2.x (fork), drop the gate when floor includes plannotator.
-        // Advertised when the plannotator binary is on PATH / ~/.local/bin.
-        plannotator: this.plannotatorAvailable === true,
         missionControl: true,
         // COMPAT(aiReviewer): added 2026-09-30; remove gate after 2027-03-30.
         aiReviewer: true,

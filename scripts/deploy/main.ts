@@ -101,8 +101,16 @@ function git(...args: string[]): string {
   return execFileSync("git", ["-C", ROOT, ...args], { encoding: "utf8" }).trim();
 }
 
-/** KEY=value lines from ~/.paseo/deploy.env; the existing environment wins. */
+/**
+ * KEY=value lines from ~/.paseo/deploy.env (the existing environment wins),
+ * and ~/.local/bin on PATH: omp, gh and cloudflared live there, and shells
+ * spawned by agents, timers and flotilla often lack it.
+ */
 function loadDeployEnv(): void {
+  const localBin = path.join(homedir(), ".local", "bin");
+  if (!(process.env.PATH ?? "").split(path.delimiter).includes(localBin)) {
+    process.env.PATH = `${process.env.PATH ?? ""}${path.delimiter}${localBin}`;
+  }
   if (!existsSync(DEPLOY_ENV)) return;
   for (const line of readFileSync(DEPLOY_ENV, "utf8").split("\n")) {
     const match = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(line);

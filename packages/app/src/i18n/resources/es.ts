@@ -1147,7 +1147,6 @@ export const es: TranslationResources = {
         openIn: "Abrir espacio de trabajo en{{target}}",
         openFileIn: "Open {{fileName}} in {{target}}",
         failedOpen: "No se pudo abrir el espacio de trabajo",
-        noFile: "Select a Markdown file to open in Plannotator",
       },
       pr: {
         actions: {
@@ -1394,12 +1393,6 @@ export const es: TranslationResources = {
       itsaplan: "itsaplan",
       webhooks: "Webhooks",
     },
-    worktreeSetup: {
-      title: "Configurar secuencias de comandos del árbol de trabajo",
-      description:
-        "Agregue comandos de configuración para que los nuevos árboles de trabajo puedan instalar dependencias y prepararse automáticamente.",
-      openProjectSettings: "Abrir la configuración del proyecto",
-    },
     project: {
       actions: {
         menu: "Acciones del proyecto",
@@ -1627,20 +1620,6 @@ export const es: TranslationResources = {
         idle: "El estado de la actualización aún no se ha comprobado.",
       },
       installError: "No se puede instalar la actualización de la aplicación de escritorio.",
-      callout: {
-        installingTitle: "Instalando actualización",
-        failedTitle: "La actualización falló",
-        availableTitle: "Actualización disponible",
-        genericError: "Algo salió mal.",
-        whatsNew: "Qué hay de nuevo",
-        installingAction: "Instalando...",
-        installAndRestart: "Instalar y reiniciar",
-        installingDescription: "Instalando y reiniciando...",
-        versionReady: "{{version}}está listo para instalar.",
-        newVersionReady: "Una nueva versión está lista para instalar.",
-        restartWarning:
-          "La actualización de la aplicación dejará de ejecutar agentes y cerrará sesiones de terminal.",
-      },
     },
     settings: {
       loadFailed: "No se puede cargar la configuración del escritorio.",
@@ -1783,6 +1762,9 @@ export const es: TranslationResources = {
     failedToLoad: "No se pudo cargar",
     chooseProjectForCommands: "Elige un proyecto para ver los comandos",
     chooseModelForCommands: "Selecciona un modelo para ver los comandos",
+  },
+  historyGap: {
+    load: "Cargar más historial",
   },
   loadOlderHistory: {
     failed: "No se pudo cargar el historial anterior",
@@ -2293,15 +2275,9 @@ export const es: TranslationResources = {
       vimKeybindings: "Atajos de Vim",
       vimHint: "Se aplica a archivos fuente en web y escritorio.",
       defaultFileOpener: "Default file opener",
-      defaultFileOpenerHint:
-        "Used for normal file clicks. Plannotator supports document and configuration files; source files fall back to Paseo.",
+      defaultFileOpenerHint: "Used for normal file clicks.",
       defaultFileOpenerPaseo: "Paseo",
       defaultFileOpenerVsCodeWeb: "VS Code Web",
-      defaultFileOpenerPlannotator: "Plannotator",
-      plannotatorFeedbackMode: "Plannotator feedback",
-      plannotatorFeedbackModeHint: "How annotation feedback is delivered to the linked agent.",
-      plannotatorFeedbackAutoSend: "Auto-send",
-      plannotatorFeedbackCompose: "Pre-fill composer",
     },
     notifications: {
       title: "Notificaciones",
