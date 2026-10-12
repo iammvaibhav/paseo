@@ -2540,7 +2540,7 @@ export function NewWorkspaceScreen({
     ],
   );
 
-  // Enter waits for the placement of the prompt as typed: when the 1 s pause
+  // Enter waits for the placement of the prompt as typed: when the typing pause
   // has not passed (or jev is still answering), resolve it now, let the
   // suggestion land in the controls, then create from what is selected.
   const [deferredSubmit, setDeferredSubmit] = useState<MessagePayload | null>(null);

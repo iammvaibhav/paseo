@@ -16,7 +16,7 @@ import { getHostRuntimeStore } from "@/runtime/host-runtime";
 // Fire once typing pauses this long; a new keystroke cancels the wait, and a
 // reply for an older prompt is dropped. jev is cheap (~0.4 s), so this only
 // avoids calls the user would never see.
-const ROUTING_DEBOUNCE_MS = 1_000;
+const ROUTING_DEBOUNCE_MS = 200;
 const ROUTING_MIN_PROMPT_CHARS = 15;
 const ROUTING_CACHE_LIMIT = 50;
 
