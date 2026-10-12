@@ -295,7 +295,15 @@ restart_daemon() {
       log "Daemon healthy after ${i}s (main pid $old_main -> $new_main)"
       if [[ -f "$nudge_file" ]]; then
         log "Nudging agents from the snapshot"
-        nudge --nudge "$nudge_file"
+        # /api/health answers before the WebSocket accepts sessions (503), and
+        # deploy-nudge exits 0 on every failure: retry while it cannot connect.
+        local attempt out
+        for attempt in 1 2 3 4 5 6 7 8 9 10; do
+          out="$(nudge --nudge "$nudge_file" 2>&1)"
+          printf '%s\n' "$out"
+          [[ "$out" == *"cannot connect"* ]] || break
+          sleep 3
+        done
       fi
       return 0
     fi
