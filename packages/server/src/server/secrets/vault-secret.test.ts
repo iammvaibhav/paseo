@@ -2,7 +2,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createVaultSecretResolver, parseEnvFile } from "./vault-secret.js";
+import { createVaultSecretResolver, parseEnvFile, warmVaultSecrets } from "./vault-secret.js";
 
 // A stand-in aside-vault CLI: records its argv and the broker env it saw, then
 // prints a header line and the secret like the real `get --field password`.
@@ -52,16 +52,28 @@ describe("createVaultSecretResolver", () => {
     expect(callLines()).toEqual(["get abc123 --account me@example.com --field password|tok-123"]);
   });
 
-  it("caches a resolved secret until the TTL passes", async () => {
-    let clock = 0;
-    const resolve = createVaultSecretResolver({ home, cliPath: cli, now: () => clock });
+  it("reads each reference from the vault once per process, even under concurrent use", async () => {
+    const resolve = createVaultSecretResolver({ home, cliPath: cli });
     const ref = "aside://me@example.com/abc123";
     await Promise.all([resolve(ref), resolve(ref)]);
-    clock += 9 * 60_000;
     await resolve(ref);
     expect(callLines()).toHaveLength(1);
-    clock += 2 * 60_000;
-    await resolve(ref);
+  });
+
+  it("warms embedded references once and counts failures without throwing", async () => {
+    const resolve = createVaultSecretResolver({ home, cliPath: cli });
+    const result = await warmVaultSecrets(
+      [
+        "aside://me@example.com/abc123",
+        "Bearer aside://me@example.com/abc123",
+        "Bearer aside://me@example.com/broken",
+        "plain-key",
+      ],
+      resolve,
+    );
+    expect(result).toEqual({ loaded: 1, failed: 1 });
+    expect(await resolve("aside://me@example.com/abc123")).toBe("secret-for-abc123");
+    // abc123 read once by the warm-up and served from memory after; broken read once.
     expect(callLines()).toHaveLength(2);
   });
 

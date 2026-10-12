@@ -1,5 +1,5 @@
 import { judgeChoices } from "../routing/llm-clients.js";
-import { createVaultSecretResolver, type ResolveSecret } from "../secrets/vault-secret.js";
+import { resolveVaultSecret, type ResolveSecret } from "../secrets/vault-secret.js";
 import { serializePaseoToolInputParameters } from "../agent/tools/paseo-tool-serialization.js";
 import type { PaseoToolCatalog, PaseoToolDefinition } from "../agent/tools/types.js";
 import type { MissionControlService } from "../mission-control/service.js";
@@ -165,7 +165,7 @@ export async function resolveTypeSafeApiKey(options: {
   if (!apiKeyRef) {
     return undefined;
   }
-  const resolveSecret = options.resolveSecret ?? createVaultSecretResolver();
+  const resolveSecret = options.resolveSecret ?? resolveVaultSecret;
   return resolveSecret(apiKeyRef);
 }
 

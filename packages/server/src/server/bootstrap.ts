@@ -146,7 +146,7 @@ import { createAgentMcpServer } from "./agent/mcp-server.js";
 import { createFleetMcpServer } from "./mcp-fleet/fleet-mcp-server.js";
 import { authenticateRemoteMcpClient } from "./mcp-fleet/auth.js";
 import { createMcpFinishNotifier } from "./mcp-fleet/finish-notifier.js";
-import { createVaultSecretResolver } from "./secrets/vault-secret.js";
+import { resolveVaultSecret, warmVaultSecrets } from "./secrets/vault-secret.js";
 import {
   MISSION_CONTROL_LABEL_KEY,
   MISSION_CONTROL_LABEL_VALUE,
@@ -2519,6 +2519,15 @@ export async function createPaseoDaemon(
         : null,
     getTypesafeApiKeyRef: () => centralMissionControlConfig.get().routingSecrets?.typesafeApiKey,
   });
+  // Vault-backed secrets are read once per daemon run: load every aside://
+  // reference the config names now (routing keys, MCP client webhooks) so the
+  // first request does not pay for the vault. Values are never logged.
+  void warmVaultSecrets([
+    ...Object.values(centralMissionControlConfig.get().routingSecrets ?? {}),
+    ...(loadPersistedConfig(config.paseoHome).daemon?.mcp?.remoteClients ?? []).flatMap((client) =>
+      Object.values(client.notify?.headers ?? {}),
+    ),
+  ]).then((counts) => logger.info(counts, "vault secrets loaded"));
   const itsaplanProjectSyncDeps = {
     store: itsaplanProjectStore,
     getConfig: getItsaplanConfig,
@@ -2952,7 +2961,7 @@ export async function createPaseoDaemon(
       { key: string; at: number; hostDeps: PaseoToolHostDependencies; catalog: PaseoToolCatalog }
     >();
     const mcpFinishNotifier = createMcpFinishNotifier({
-      resolveSecret: createVaultSecretResolver(),
+      resolveSecret: resolveVaultSecret,
       logger,
     });
 

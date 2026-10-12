@@ -6,22 +6,22 @@ import { join } from "node:path";
 /**
  * Secrets stored in the Aside vault instead of on disk. A config value of the
  * form `aside://<account>/<itemId>` names the item; the daemon reads its
- * password field through the `aside-vault` CLI at the moment of use and keeps
- * the value only in memory. Plain values pass through unchanged, so a field
- * can hold either a key or a reference.
+ * password field through the `aside-vault` CLI once per daemon run (warmed at
+ * startup, see warmVaultSecrets) and keeps the value only in memory. A
+ * rotated secret takes effect on the next daemon start. Plain values pass
+ * through unchanged, so a field can hold either a key or a reference.
  *
  * The reference is safe to replicate across hosts (central config syncs to
  * peers); each host resolves it with its own `~/.config/aside-vault/recovery.env`.
  */
 const VAULT_REF = /^aside:\/\/([^/\s]+)\/([A-Za-z0-9]+)$/;
-const CACHE_TTL_MS = 10 * 60_000;
+const VAULT_REF_IN_TEXT = /aside:\/\/[^/\s]+\/[A-Za-z0-9]+/g;
 const CLI_TIMEOUT_MS = 15_000;
 
 export interface VaultSecretOptions {
   home?: string;
   /** Path to the aside-vault CLI; default ~/.local/bin/aside-vault, else PATH. */
   cliPath?: string;
-  now?: () => number;
 }
 
 /** The secret for `value`: read from the vault when it is an `aside://` reference. */
@@ -62,9 +62,8 @@ function runCli(cli: string, args: string[], env: NodeJS.ProcessEnv): Promise<st
 
 export function createVaultSecretResolver(options: VaultSecretOptions = {}): ResolveSecret {
   const home = options.home ?? homedir();
-  const now = options.now ?? Date.now;
-  const cache = new Map<string, { value: string; at: number }>();
-  const inFlight = new Map<string, Promise<string>>();
+  // Successful reads live for the process; a failed read is retried on the next use.
+  const cache = new Map<string, Promise<string>>();
 
   const fetchRef = async (account: string, itemId: string): Promise<string> => {
     const envFile = join(home, ".config", "aside-vault", "recovery.env");
@@ -88,17 +87,29 @@ export function createVaultSecretResolver(options: VaultSecretOptions = {}): Res
     const ref = value.trim();
     const match = VAULT_REF.exec(ref);
     if (!match) return value;
-    const cached = cache.get(ref);
-    if (cached && now() - cached.at < CACHE_TTL_MS) return cached.value;
-    const pending = inFlight.get(ref);
-    if (pending) return pending;
-    const promise = fetchRef(match[1]!, match[2]!)
-      .then((secret) => {
-        cache.set(ref, { value: secret, at: now() });
-        return secret;
-      })
-      .finally(() => inFlight.delete(ref));
-    inFlight.set(ref, promise);
-    return promise;
+    let pending = cache.get(ref);
+    if (!pending) {
+      pending = fetchRef(match[1]!, match[2]!);
+      cache.set(ref, pending);
+      pending.catch(() => cache.delete(ref));
+    }
+    return pending;
   };
+}
+
+/** The daemon's one resolver: every service shares its cache, so each secret is read once per run. */
+export const resolveVaultSecret: ResolveSecret = createVaultSecretResolver();
+
+/**
+ * Read every vault reference found in `values` (whole values or embedded, like
+ * "Bearer aside://…") into the cache. Never throws; returns counts for logging.
+ */
+export async function warmVaultSecrets(
+  values: readonly string[],
+  resolve: ResolveSecret = resolveVaultSecret,
+): Promise<{ loaded: number; failed: number }> {
+  const refs = new Set(values.flatMap((value) => value.match(VAULT_REF_IN_TEXT) ?? []));
+  const results = await Promise.allSettled([...refs].map((ref) => resolve(ref)));
+  const failed = results.filter((result) => result.status === "rejected").length;
+  return { loaded: results.length - failed, failed };
 }
