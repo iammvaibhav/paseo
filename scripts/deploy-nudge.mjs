@@ -32,15 +32,29 @@
  */
 
 import { DaemonClient } from "@getpaseo/client/internal/daemon-client";
+import { existsSync, readFileSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
-import { createRequire } from "node:module";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocket } from "ws";
 
-const require = createRequire(import.meta.url);
 // Advertise a real client version so the daemon does not treat this CLI as a
 // legacy client (which hides non-legacy providers and returns zero agents).
-const CLIENT_APP_VERSION = require("../packages/client/package.json").version;
+// Resolved through the package (not a repo-relative path) so the script also
+// runs from a packaged runtime (scripts/deploy/package-runtime.mjs).
+function clientPackageVersion() {
+  let dir = path.dirname(fileURLToPath(import.meta.resolve("@getpaseo/client")));
+  while (dir !== path.dirname(dir)) {
+    const file = path.join(dir, "package.json");
+    if (existsSync(file)) {
+      const pkg = JSON.parse(readFileSync(file, "utf8"));
+      if (pkg.name === "@getpaseo/client") return pkg.version;
+    }
+    dir = path.dirname(dir);
+  }
+  throw new Error("cannot find @getpaseo/client/package.json");
+}
+const CLIENT_APP_VERSION = clientPackageVersion();
 
 const DEFAULT_HOST = "127.0.0.1:6767";
 const CONNECT_TIMEOUT_MS = 10_000;
