@@ -1244,6 +1244,7 @@ export const ko: TranslationResources = {
     },
   },
   sidebar: {
+    search: en.sidebar.search,
     display: {
       trigger: "표시 설정",
       heading: "표시",

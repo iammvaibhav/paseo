@@ -69,6 +69,7 @@ describe("sidebar agent view model", () => {
         projectFilters: [],
         projectViewKeyByWorkspaceKey: emptyMapping,
         showDone: true,
+        searchAgentKeys: null,
       });
 
       expect(bucketsOf(sections)).toEqual(SIDEBAR_AGENT_VIEW_BUCKET_ORDER);
@@ -90,6 +91,7 @@ describe("sidebar agent view model", () => {
         projectFilters: [],
         projectViewKeyByWorkspaceKey: emptyMapping,
         showDone: false,
+        searchAgentKeys: null,
       });
       expect(bucketsOf(withoutDone)).toEqual(["running"]);
       expect(withoutDone[0].rows).toEqual([runningRow]);
@@ -101,6 +103,7 @@ describe("sidebar agent view model", () => {
         projectFilters: [],
         projectViewKeyByWorkspaceKey: emptyMapping,
         showDone: true,
+        searchAgentKeys: null,
       });
       expect(bucketsOf(withDone)).toEqual(["running", "done"]);
       expect(withDone[1].rows).toEqual([doneRow]);
@@ -118,6 +121,7 @@ describe("sidebar agent view model", () => {
         projectFilters: [],
         projectViewKeyByWorkspaceKey: emptyMapping,
         showDone: false,
+        searchAgentKeys: null,
       });
       expect(filtered).toHaveLength(1);
       expect(filtered[0].rows).toEqual([host1Row]);
@@ -129,6 +133,7 @@ describe("sidebar agent view model", () => {
         projectFilters: [],
         projectViewKeyByWorkspaceKey: emptyMapping,
         showDone: false,
+        searchAgentKeys: null,
       });
       expect(all[0].rows).toEqual([host1Row, host2Row]);
     });
@@ -160,6 +165,7 @@ describe("sidebar agent view model", () => {
         projectFilters: ["project-alpha"],
         projectViewKeyByWorkspaceKey: projectMapping,
         showDone: false,
+        searchAgentKeys: null,
       });
 
       expect(filtered).toHaveLength(1);
@@ -172,6 +178,7 @@ describe("sidebar agent view model", () => {
         projectFilters: [],
         projectViewKeyByWorkspaceKey: projectMapping,
         showDone: false,
+        searchAgentKeys: null,
       });
       expect(unfiltered[0].rows).toEqual([
         matchingRow,
@@ -193,6 +200,7 @@ describe("sidebar agent view model", () => {
         projectFilters: [],
         projectViewKeyByWorkspaceKey: emptyMapping,
         showDone: false,
+        searchAgentKeys: null,
       });
 
       expect(sections[0].rows).toEqual([row1, row2, row3]);
@@ -215,11 +223,35 @@ describe("sidebar agent view model", () => {
         projectFilters: [],
         projectViewKeyByWorkspaceKey: emptyMapping,
         showDone: false,
+        searchAgentKeys: null,
       });
 
       // needs_you is omitted because all rows filtered out; ready is omitted because 0 rows
       expect(bucketsOf(sections)).toEqual(["running"]);
       expect(sections[0].rows).toEqual([runningRow]);
+    });
+
+    it("a search keeps only matched agents and reaches Done even when Done is hidden", () => {
+      const matchedRunning = makeRow({ id: "a", serverId: "srv-1" });
+      const sameIdOtherHost = makeRow({ id: "a", serverId: "srv-2" });
+      const unmatched = makeRow({ id: "b", serverId: "srv-1" });
+      const matchedDone = makeRow({ id: "c", serverId: "srv-1", bucket: "done" });
+
+      const sections = buildSidebarAgentViewSections({
+        groups: [
+          makeGroup("running", [matchedRunning, sameIdOtherHost, unmatched]),
+          makeGroup("done", [matchedDone]),
+        ],
+        hostFilters: [],
+        projectFilters: [],
+        projectViewKeyByWorkspaceKey: emptyMapping,
+        showDone: false,
+        searchAgentKeys: new Set(["srv-1:a", "srv-1:c"]),
+      });
+
+      expect(bucketsOf(sections)).toEqual(["running", "done"]);
+      expect(sections[0].rows).toEqual([matchedRunning]);
+      expect(sections[1].rows).toEqual([matchedDone]);
     });
   });
 });

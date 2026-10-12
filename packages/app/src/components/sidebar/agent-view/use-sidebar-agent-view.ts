@@ -43,7 +43,7 @@ export function useSidebarAgentView(options: { enabled: boolean }): SidebarAgent
   const clearHostFilters = useSidebarAgentViewStore((state) => state.clearHostFilters);
   const clearProjectFilters = useSidebarAgentViewStore((state) => state.clearProjectFilters);
 
-  const { allHostProjects } = useSidebarModel();
+  const { allHostProjects, search } = useSidebarModel();
 
   const projectViewKeyByWorkspaceKey = useMemo(() => {
     const map = new Map<string, string>();
@@ -80,8 +80,9 @@ export function useSidebarAgentView(options: { enabled: boolean }): SidebarAgent
         projectFilters: resolvedProjectFilters,
         projectViewKeyByWorkspaceKey,
         showDone,
+        searchAgentKeys: search.active ? search.agentKeys : null,
       }),
-    [groups, hostFilters, resolvedProjectFilters, projectViewKeyByWorkspaceKey, showDone],
+    [groups, hostFilters, resolvedProjectFilters, projectViewKeyByWorkspaceKey, search, showDone],
   );
 
   return {

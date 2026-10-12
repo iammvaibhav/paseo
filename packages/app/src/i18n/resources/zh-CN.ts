@@ -1228,6 +1228,7 @@ export const zhCN: TranslationResources = {
     },
   },
   sidebar: {
+    search: en.sidebar.search,
     display: {
       trigger: "显示偏好",
       heading: "显示",

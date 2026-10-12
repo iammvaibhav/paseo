@@ -1245,6 +1245,21 @@ export const en = {
     },
   },
   sidebar: {
+    search: {
+      open: "Search agents",
+      close: "Close search",
+      placeholder: "Search agents",
+      clear: "Clear search",
+      includeArchived: "Include archived",
+      searching: "Searching…",
+      semantic: "jev · {{ms}} ms",
+      wordsOnly: "Word matches only",
+      archivedTitle: "Archived",
+      emptyTitle: "No agents match",
+      emptyDescription:
+        "Try other words, include archived agents, or run a deep search in History.",
+      deepSearch: "Deep search",
+    },
     display: {
       trigger: "Display preferences",
       heading: "Display",

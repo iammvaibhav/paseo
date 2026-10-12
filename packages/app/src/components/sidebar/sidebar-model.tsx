@@ -28,6 +28,8 @@ import {
   hasAuthoritativeWorkspaceLabelCatalog,
   useWorkspaceLabelProjection,
 } from "@/workspace-labels";
+import { matchesAgentSearchWords } from "@getpaseo/protocol/agent-search";
+import { useSidebarSearch, type SidebarSearch } from "./sidebar-search";
 
 interface SidebarModel extends SidebarWorkspacesListResult {
   workspaceEntriesByKey: ReadonlyMap<string, SidebarWorkspaceEntry>;
@@ -53,6 +55,8 @@ interface SidebarModel extends SidebarWorkspacesListResult {
   collapsedProjectKeys: ReadonlySet<string>;
   toggleProjectCollapsed: (projectViewKey: string) => void;
   shortcutModel: SidebarShortcutModel;
+  /** The search bar's matches; `active` false while the query is blank. */
+  search: SidebarSearch;
 }
 
 const SidebarModelContext = createContext<SidebarModel | null>(null);
@@ -105,6 +109,12 @@ export function SidebarModelProvider({
     reconcileLabelFilter(availableLabelNames);
   }, [availableLabelNames, hasAuthoritativeLabelCatalog, reconcileLabelFilter]);
   const hasActiveLabelFilter = hasActiveSidebarLabelFilter(labelFilter);
+  const search = useSidebarSearch();
+  // A collapsed project would hide its matches.
+  const effectiveCollapsedProjectKeys = useMemo(
+    () => (search.active ? new Set<string>() : collapsedProjectKeys),
+    [collapsedProjectKeys, search.active],
+  );
   const resolvedProjectFilters = useMemo(
     () =>
       resolveActiveProjectFilters(
@@ -119,19 +129,34 @@ export function SidebarModelProvider({
   // anything; the label filter reads `labels`, which only exists on an entry. Hydration opens a
   // live session-store subscription over every workspace on every visible host, so widening this
   // for a filter that does not need it costs a retained-but-inactive sidebar real work.
-  const needsWorkspaceEntries = groupMode !== "project" || hasActiveLabelFilter;
+  const needsWorkspaceEntries = groupMode !== "project" || hasActiveLabelFilter || search.active;
   const workspaceEntriesByKey = useSidebarWorkspaceEntries(
     list.workspacePlacements,
     active !== false || needsWorkspaceEntries,
   );
+  // Search narrows to workspaces holding a matching agent or whose own name or title matches.
+  const searchWorkspaceKeys = useMemo(() => {
+    if (!search.active) return null;
+    const keys = new Set(search.workspaceKeys);
+    for (const workspace of list.workspacePlacements) {
+      const title = workspaceEntriesByKey.get(workspace.workspaceKey)?.title;
+      if (matchesAgentSearchWords(search.words, [workspace.name, title])) {
+        keys.add(workspace.workspaceKey);
+      }
+    }
+    return keys;
+  }, [list.workspacePlacements, search, workspaceEntriesByKey]);
   const filteredWorkspaceEntriesByKey = useMemo(() => {
     const byProject = filterWorkspacesByProjects({
       workspaces: [...workspaceEntriesByKey.values()],
       projectFilters: resolvedProjectFilters,
     });
-    const filtered = filterWorkspacesByLabels({ workspaces: byProject, ...labelFilter });
+    const byLabel = filterWorkspacesByLabels({ workspaces: byProject, ...labelFilter });
+    const filtered = searchWorkspaceKeys
+      ? byLabel.filter((workspace) => searchWorkspaceKeys.has(workspace.workspaceKey))
+      : byLabel;
     return new Map(filtered.map((workspace) => [workspace.workspaceKey, workspace]));
-  }, [labelFilter, resolvedProjectFilters, workspaceEntriesByKey]);
+  }, [labelFilter, resolvedProjectFilters, searchWorkspaceKeys, workspaceEntriesByKey]);
   const visibleWorkspaceKeys = useMemo(
     () => new Set(filteredWorkspaceEntriesByKey.keys()),
     [filteredWorkspaceEntriesByKey],
@@ -154,12 +179,21 @@ export function SidebarModelProvider({
         return workspaces.length > 0 ? [{ ...project, workspaces }] : [];
       });
     }
+    if (searchWorkspaceKeys) {
+      projects = projects.flatMap((project) => {
+        const workspaces = project.workspaces.filter((workspace) =>
+          searchWorkspaceKeys.has(workspace.workspaceKey),
+        );
+        return workspaces.length > 0 ? [{ ...project, workspaces }] : [];
+      });
+    }
     return projects;
   }, [
     hasActiveLabelFilter,
     hasActiveProjectFilter,
     resolvedProjectFilters,
     list.projects,
+    searchWorkspaceKeys,
     visibleWorkspaceKeys,
   ]);
   const pinnedKeys = usePinnedSidebarKeys(filteredProjects);
@@ -172,11 +206,11 @@ export function SidebarModelProvider({
       projectNamesByViewKey: list.projectNamesByViewKey,
       groupMode,
       pinnedCollapsed,
-      collapsedProjectKeys,
+      collapsedProjectKeys: effectiveCollapsedProjectKeys,
       collapsedWorkspaceGroupKeys,
     }),
     [
-      collapsedProjectKeys,
+      effectiveCollapsedProjectKeys,
       collapsedWorkspaceGroupKeys,
       groupMode,
       list.projectNamesByViewKey,
@@ -201,13 +235,15 @@ export function SidebarModelProvider({
       workspaceGroups: projection.workspaceGroups,
       projectIconTargets: projection.projectIconTargets,
       pinnedGroups: projection.pinnedGroups,
-      collapsedProjectKeys,
+      collapsedProjectKeys: effectiveCollapsedProjectKeys,
       toggleProjectCollapsed,
+      search,
       shortcutModel: projection.shortcutModel,
     }),
     [
       resolvedProjectFilters,
-      collapsedProjectKeys,
+      effectiveCollapsedProjectKeys,
+      search,
       groupMode,
       list,
       filteredProjects,

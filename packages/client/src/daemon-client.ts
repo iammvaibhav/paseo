@@ -155,6 +155,7 @@ import type { WebhookAuth, WebhookFilter, WebhookTarget } from "@getpaseo/protoc
 import type { AutomationKind, AutomationTarget } from "@getpaseo/protocol/automation/types";
 import type { ScheduleCadence } from "@getpaseo/protocol/schedule/types";
 import type { RoutingProjectCreateResponse, RoutingSuggestion } from "@getpaseo/protocol/routing";
+import type { AgentSearchResponse } from "@getpaseo/protocol/agent-search";
 import {
   asUint8Array,
   decodeFileTransferFrame,
@@ -3485,6 +3486,26 @@ export class DaemonClient {
       throw new Error(payload.error ?? "Routing failed");
     }
     return payload.suggestion;
+  }
+
+  /** Shallow jev search over this host's agents (features.agentSearch). */
+  async searchAgents(input: {
+    query: string;
+    includeArchived?: boolean;
+  }): Promise<AgentSearchResponse["payload"]> {
+    const payload = await this.sendCorrelatedSessionRequest({
+      message: {
+        type: "agent.search.request",
+        query: input.query,
+        ...(input.includeArchived ? { includeArchived: true } : {}),
+      },
+      responseType: "agent.search.response",
+      timeout: 10_000,
+    });
+    if (payload.error) {
+      throw new Error(payload.error);
+    }
+    return payload;
   }
 
   /**

@@ -5,6 +5,8 @@ import { Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { Button } from "@/components/ui/button";
 import { useSidebarViewStore } from "@/stores/sidebar-view-store";
+import { useSidebarSearchStore } from "@/stores/sidebar-search-store";
+import { SidebarSearchEmptyState } from "./sidebar-search-bar";
 
 function SidebarEmptyStateCard({
   testID,
@@ -37,6 +39,11 @@ function SidebarEmptyStateCard({
  * it — which is how filtering the last row away used to close the menu you were filtering from.
  */
 export function SidebarFilterEmptyState() {
+  const searchActive = useSidebarSearchStore((state) => state.query.trim().length > 0);
+  return searchActive ? <SidebarSearchEmptyState /> : <SidebarLabelFilterEmptyState />;
+}
+
+function SidebarLabelFilterEmptyState() {
   const { t } = useTranslation();
   const clearLabelFilter = useSidebarViewStore((state) => state.clearLabelFilter);
   const clearProjectFilters = useSidebarViewStore((state) => state.clearProjectFilters);

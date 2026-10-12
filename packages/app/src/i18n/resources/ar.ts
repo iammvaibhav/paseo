@@ -1236,6 +1236,7 @@ export const ar: TranslationResources = {
     },
   },
   sidebar: {
+    search: en.sidebar.search,
     display: {
       trigger: "تفضيلات العرض",
       heading: "العرض",

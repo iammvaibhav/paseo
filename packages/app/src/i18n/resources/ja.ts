@@ -1250,6 +1250,7 @@ export const ja: TranslationResources = {
     },
   },
   sidebar: {
+    search: en.sidebar.search,
     display: {
       trigger: "表示設定",
       heading: "表示",
