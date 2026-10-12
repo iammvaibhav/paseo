@@ -4,8 +4,6 @@ import {
   CircleGauge,
   FolderPlus,
   GitBranch,
-  Kanban,
-  NotebookPen,
   Radar,
   Server,
   Settings,
@@ -87,8 +85,6 @@ import {
   buildWebhooksRoute,
 } from "@/utils/host-routes";
 import { openHostOverview } from "@/navigation/settings-navigation";
-import { buildNotesRoute } from "@/notes/routes";
-import { buildTicketsRoute } from "@/tickets/routes";
 import {
   UsageSidebarItem,
   UsageSidebarRoot,
@@ -107,8 +103,6 @@ interface SidebarLabels {
   settings: string;
   searchHosts: string;
   itsaplan: string;
-  tickets: string;
-  notes: string;
   missionControl: string;
   webhooks: string;
   usage: string;
@@ -143,10 +137,6 @@ interface SidebarSharedProps {
   handleOpenHostSettings: (serverId: string) => void;
   /** Any connected host advertises features.missionControl — gates the row. */
   hasMissionControl: boolean;
-  /** A known host advertises features.tickets (the Commander host) — gates the row. */
-  hasTickets: boolean;
-  /** A known host advertises features.notes (the Commander host) — gates the row. */
-  hasNotes: boolean;
   /** Two-segment badge: working + ready-for-review counts across all hosts. */
 }
 
@@ -157,8 +147,6 @@ interface MobileSidebarProps extends SidebarSharedProps {
   closeSidebar: () => void;
   handleViewWebhooksNavigate: () => void;
   handleViewItsaplanNavigate: () => void;
-  handleViewTicketsNavigate: () => void;
-  handleViewNotesNavigate: () => void;
   handleViewMissionControlNavigate: () => void;
 }
 
@@ -167,8 +155,6 @@ interface DesktopSidebarProps extends SidebarSharedProps {
   active: boolean;
   handleViewWebhooks: () => void;
   handleViewItsaplan: () => void;
-  handleViewTickets: () => void;
-  handleViewNotes: () => void;
   handleViewMissionControl: () => void;
 }
 
@@ -265,13 +251,6 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
     router.push(buildItsaplanRoute());
   }, []);
 
-  const handleViewTicketsNavigate = useCallback(() => {
-    router.push(buildTicketsRoute());
-  }, []);
-
-  const handleViewNotesNavigate = useCallback(() => {
-    router.push(buildNotesRoute());
-  }, []);
   const handleViewMissionControlNavigate = useCallback(() => {
     router.push(buildMissionControlRoute());
   }, []);
@@ -279,16 +258,6 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
   const hosts = useHosts();
   const hostServerIds = useMemo(() => hosts.map((host) => host.serverId), [hosts]);
   const missionControlFeatureMap = useHostFeatureMap(hostServerIds, "missionControl");
-  const ticketsFeatureMap = useHostFeatureMap(hostServerIds, "tickets");
-  const notesFeatureMap = useHostFeatureMap(hostServerIds, "notes");
-  const hasTickets = useMemo(
-    () => hosts.some((host) => ticketsFeatureMap.get(host.serverId) === true),
-    [hosts, ticketsFeatureMap],
-  );
-  const hasNotes = useMemo(
-    () => hosts.some((host) => notesFeatureMap.get(host.serverId) === true),
-    [hosts, notesFeatureMap],
-  );
   const hostConnectionStatuses = useHostRuntimeConnectionStatuses(hostServerIds);
   const hasMissionControl = useMemo(
     () =>
@@ -306,8 +275,6 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
       settings: t("sidebar.actions.settings"),
       searchHosts: t("sidebar.host.searchPlaceholder"),
       itsaplan: t("sidebar.sections.itsaplan"),
-      tickets: t("tickets.nav.label"),
-      notes: t("notes.nav.label"),
       missionControl: t("sidebar.sections.missionControl"),
       webhooks: t("sidebar.sections.webhooks"),
       usage: t(builtinSidebarNavLabelKey("usage")),
@@ -338,8 +305,6 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
     handleRefresh,
     labels,
     hasMissionControl,
-    hasTickets,
-    hasNotes,
   };
 
   if (isCompactLayout) {
@@ -359,8 +324,6 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
             handleOpenHostSettings={handleOpenHostSettingsMobile}
             handleViewWebhooksNavigate={handleViewWebhooksNavigate}
             handleViewItsaplanNavigate={handleViewItsaplanNavigate}
-            handleViewTicketsNavigate={handleViewTicketsNavigate}
-            handleViewNotesNavigate={handleViewNotesNavigate}
             handleViewMissionControlNavigate={handleViewMissionControlNavigate}
           />
         </RetainedPanelActivity>
@@ -383,8 +346,6 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
           handleOpenHostSettings={handleOpenHostSettingsDesktop}
           handleViewWebhooks={handleViewWebhooksNavigate}
           handleViewItsaplan={handleViewItsaplanNavigate}
-          handleViewTickets={handleViewTicketsNavigate}
-          handleViewNotes={handleViewNotesNavigate}
           handleViewMissionControl={handleViewMissionControlNavigate}
         />
       </RetainedPanelActivity>
@@ -696,12 +657,8 @@ function MobileSidebar({
   insetsBottom,
   closeSidebar,
   hasMissionControl,
-  hasTickets,
-  hasNotes,
   handleViewWebhooksNavigate,
   handleViewItsaplanNavigate,
-  handleViewTicketsNavigate,
-  handleViewNotesNavigate,
   handleViewMissionControlNavigate,
 }: MobileSidebarProps) {
   const hasActiveHostFilter = useSidebarViewStore((state) => state.hostFilters.length > 0);
@@ -709,8 +666,6 @@ function MobileSidebar({
   const pathname = usePathname();
   const isWebhooksActive = pathname.includes("/webhooks");
   const isItsaplanActive = pathname.includes("/itsaplan");
-  const isTicketsActive = pathname === "/tickets" || pathname.startsWith("/tickets/");
-  const isNotesActive = pathname === "/notes" || pathname.startsWith("/notes/");
   const isMissionControlActive = pathname.includes("/mission-control");
   const { gesture: closeGesture, gestureRef: closeGestureRef } = useCloseAgentListGesture();
 
@@ -723,16 +678,6 @@ function MobileSidebar({
     closeSidebar();
     handleViewItsaplanNavigate();
   }, [closeSidebar, handleViewItsaplanNavigate]);
-
-  const handleViewTickets = useCallback(() => {
-    closeSidebar();
-    handleViewTicketsNavigate();
-  }, [closeSidebar, handleViewTicketsNavigate]);
-
-  const handleViewNotes = useCallback(() => {
-    closeSidebar();
-    handleViewNotesNavigate();
-  }, [closeSidebar, handleViewNotesNavigate]);
 
   const handleViewMissionControl = useCallback(() => {
     closeSidebar();
@@ -770,26 +715,6 @@ function MobileSidebar({
             testID="sidebar-itsaplan"
             variant="compact"
           />
-          {hasTickets ? (
-            <SidebarHeaderRow
-              icon={Kanban}
-              label={labels.tickets}
-              onPress={handleViewTickets}
-              isActive={isTicketsActive}
-              testID="sidebar-tickets"
-              variant="compact"
-            />
-          ) : null}
-          {hasNotes ? (
-            <SidebarHeaderRow
-              icon={NotebookPen}
-              label={labels.notes}
-              onPress={handleViewNotes}
-              isActive={isNotesActive}
-              testID="sidebar-notes"
-              variant="compact"
-            />
-          ) : null}
           {hasMissionControl ? (
             <SidebarHeaderRow
               icon={Radar}
@@ -918,12 +843,8 @@ function DesktopSidebar({
   insetsTop,
   active,
   hasMissionControl,
-  hasTickets,
-  hasNotes,
   handleViewWebhooks,
   handleViewItsaplan,
-  handleViewTickets,
-  handleViewNotes,
   handleViewMissionControl,
 }: DesktopSidebarProps) {
   const ownsTopLeft = useOwnsWindowChromeCorner("top-left");
@@ -932,8 +853,6 @@ function DesktopSidebar({
   const pathname = usePathname();
   const isWebhooksActive = pathname.includes("/webhooks");
   const isItsaplanActive = pathname.includes("/itsaplan");
-  const isTicketsActive = pathname === "/tickets" || pathname.startsWith("/tickets/");
-  const isNotesActive = pathname === "/notes" || pathname.startsWith("/notes/");
   const isMissionControlActive = pathname.includes("/mission-control");
   const sidebarWidth = usePanelStore((state) => state.sidebarWidth);
   const setSidebarWidth = usePanelStore((state) => state.setSidebarWidth);
@@ -1051,26 +970,6 @@ function DesktopSidebar({
               testID="sidebar-itsaplan"
               variant="compact"
             />
-            {hasTickets ? (
-              <SidebarHeaderRow
-                icon={Kanban}
-                label={labels.tickets}
-                onPress={handleViewTickets}
-                isActive={isTicketsActive}
-                testID="sidebar-tickets"
-                variant="compact"
-              />
-            ) : null}
-            {hasNotes ? (
-              <SidebarHeaderRow
-                icon={NotebookPen}
-                label={labels.notes}
-                onPress={handleViewNotes}
-                isActive={isNotesActive}
-                testID="sidebar-notes"
-                variant="compact"
-              />
-            ) : null}
             {hasMissionControl ? (
               <SidebarHeaderRow
                 icon={Radar}

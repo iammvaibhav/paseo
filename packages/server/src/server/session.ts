@@ -207,9 +207,7 @@ import { WebhookSession } from "./session/webhook/webhook-session.js";
 import type { WebhookService } from "./webhook/service.js";
 import { AutomationSession } from "./automation/session.js";
 import type { AutomationService } from "./automation/service.js";
-import { TicketsSession, type TicketsHost } from "./tickets/session.js";
 import { DocThreadsSession, type DocThreadsHost } from "./doc-threads/session.js";
-import { NotesSession, type NotesHost } from "./notes/session.js";
 import type { PeerManager } from "./peers/peer-manager.js";
 import type { MissionControlService } from "./mission-control/service.js";
 import {
@@ -555,10 +553,6 @@ export interface SessionOptions {
   automationService?: AutomationService | null;
   // Threaded file comments; null/absent = this daemon has no doc-thread wiring.
   docThreads?: DocThreadsHost | null;
-  // Native tickets; null/absent = this daemon has no tickets wiring.
-  tickets?: TicketsHost | null;
-  // Native notes; null/absent = this daemon has no notes wiring.
-  notes?: NotesHost | null;
   peerManager?: PeerManager | null;
   missionControlService?: MissionControlService | null;
   transcriptSearch?: TranscriptSearchService | null;
@@ -850,6 +844,55 @@ interface ClientActivity {
   appVisibilityChangedAt: Date;
 }
 
+// COMPAT(tickets-removed): native tickets removed 2026-10-12, remove after 2027-01-12 once app floor >= 2026-10-12.
+const REMOVED_TICKETS_RESPONSES: Record<string, (error: string) => Record<string, unknown>> = {
+  "tickets.board.list.request": (error) => ({ error, boards: [] }),
+  "tickets.board.ensure.request": (error) => ({ error, board: null }),
+  "tickets.board.update.request": (error) => ({ error, board: null }),
+  "tickets.column.save.request": (error) => ({ error, board: null }),
+  "tickets.column.delete.request": (error) => ({ error, board: null }),
+  "tickets.ticket.list.request": (error) => ({ error, tickets: [], revision: 0 }),
+  "tickets.ticket.get.request": (error) => ({ error, ticket: null }),
+  "tickets.ticket.create.request": (error) => ({ error, ticket: null }),
+  "tickets.ticket.update.request": (error) => ({ error, ticket: null }),
+  "tickets.ticket.move.request": (error) => ({ error, ticket: null }),
+  "tickets.ticket.delete.request": (error) => ({ error }),
+  "tickets.ticket.dispatch.request": (error) => ({ error, ticket: null }),
+  "tickets.link.set.request": (error) => ({ error, ticket: null }),
+  "tickets.comment.add.request": (error) => ({ error, activity: null }),
+  "tickets.comment.update.request": (error) => ({ error, activity: null }),
+  "tickets.comment.delete.request": (error) => ({ error }),
+  "tickets.attachment.add.request": (error) => ({ error, ticket: null }),
+  "tickets.attachment.read.request": (error) => ({
+    error,
+    fileName: null,
+    mimeType: null,
+    dataBase64: null,
+  }),
+  "tickets.attachment.delete.request": (error) => ({ error, ticket: null }),
+  "tickets.initiative.list.request": (error) => ({ error, initiatives: [] }),
+  "tickets.initiative.save.request": (error) => ({ error, initiative: null }),
+  "tickets.initiative.delete.request": (error) => ({ error }),
+  "tickets.import.itsaplan.request": (error) => ({ error, report: null }),
+  "tickets.run.report.request": (error) => ({ error, applied: false }),
+};
+
+// COMPAT(tickets-removed): native notes removed 2026-10-12, remove after 2027-01-12 once app floor >= 2026-10-12.
+const REMOVED_NOTES_RESPONSES: Record<string, (error: string) => Record<string, unknown>> = {
+  "notes.list.request": (error) => ({ error, notes: [], revision: 0 }),
+  "notes.get.request": (error) => ({ error, note: null }),
+  "notes.upsert.request": (error) => ({ error, note: null }),
+  "notes.delete.request": (error) => ({ error }),
+  "notes.image.add.request": (error) => ({ error, note: null }),
+  "notes.image.read.request": (error) => ({
+    error,
+    fileName: null,
+    mimeType: null,
+    dataBase64: null,
+  }),
+  "notes.image.delete.request": (error) => ({ error, note: null }),
+};
+
 export class Session {
   readonly delivery = new SessionDelivery(
     (source, message) => {
@@ -976,8 +1019,6 @@ export class Session {
   private readonly webhookSession: WebhookSession;
   private readonly automationSession: AutomationSession;
   private readonly docThreadsSession: DocThreadsSession;
-  private readonly ticketsSession: TicketsSession;
-  private readonly notesSession: NotesSession;
   private readonly peerManager: PeerManager | null;
   private readonly missionControlService: MissionControlService | null;
   private readonly transcriptSearch: TranscriptSearchService | null;
@@ -1187,16 +1228,6 @@ export class Session {
     this.docThreadsSession = new DocThreadsSession({
       emit: (msg) => this.emit(msg),
       host: orNull(options.docThreads),
-      logger: this.sessionLogger,
-    });
-    this.ticketsSession = new TicketsSession({
-      emit: (msg) => this.emit(msg),
-      host: orNull(options.tickets),
-      logger: this.sessionLogger,
-    });
-    this.notesSession = new NotesSession({
-      emit: (msg) => this.emit(msg),
-      host: orNull(options.notes),
       logger: this.sessionLogger,
     });
     this.peerManager = orNull(peerManager);
@@ -2669,9 +2700,9 @@ export class Session {
     (msg) => this.dispatchTerminalMessage(msg),
     (msg) => this.dispatchScheduleMessage(msg),
     (msg) => this.docThreadsSession.dispatch(msg),
-    (msg) => this.ticketsSession.dispatch(msg),
+    (msg) => this.dispatchRemovedTicketsRequest(msg),
     (msg) => this.automationSession.dispatch(msg),
-    (msg) => this.notesSession.dispatch(msg),
+    (msg) => this.dispatchRemovedNotesRequest(msg),
     (msg) => this.dispatchMissionControlPeersMessage(msg),
     (msg) => this.dispatchMissionControlEventsMessage(msg),
     (msg) => this.dispatchMissionControlContextMessage(msg),
@@ -4622,6 +4653,41 @@ export class Session {
       default:
         return undefined;
     }
+  }
+  // COMPAT(tickets-removed): native tickets removed 2026-10-12, remove after 2027-01-12 once app floor >= 2026-10-12.
+  private dispatchRemovedTicketsRequest(msg: SessionInboundMessage): Promise<void> | undefined {
+    const buildPayload = REMOVED_TICKETS_RESPONSES[msg.type];
+    if (!buildPayload) {
+      return undefined;
+    }
+    const requestId = "requestId" in msg && typeof msg.requestId === "string" ? msg.requestId : "";
+    const error = "Native tickets have been removed. Itsaplan is the only ticket system.";
+    const responseType = msg.type.replace(
+      /\.request$/,
+      ".response",
+    ) as SessionOutboundMessage["type"];
+    const payload = { requestId, ...buildPayload(error) };
+    const response = { type: responseType, payload } as unknown as SessionOutboundMessage;
+    this.emit(response);
+    return Promise.resolve();
+  }
+
+  // COMPAT(tickets-removed): native notes removed 2026-10-12, remove after 2027-01-12 once app floor >= 2026-10-12.
+  private dispatchRemovedNotesRequest(msg: SessionInboundMessage): Promise<void> | undefined {
+    const buildPayload = REMOVED_NOTES_RESPONSES[msg.type];
+    if (!buildPayload) {
+      return undefined;
+    }
+    const requestId = "requestId" in msg && typeof msg.requestId === "string" ? msg.requestId : "";
+    const error = "Notes have been removed.";
+    const responseType = msg.type.replace(
+      /\.request$/,
+      ".response",
+    ) as SessionOutboundMessage["type"];
+    const payload = { requestId, ...buildPayload(error) };
+    const response = { type: responseType, payload } as unknown as SessionOutboundMessage;
+    this.emit(response);
+    return Promise.resolve();
   }
 
   private async dispatchMiscMessage(msg: SessionInboundMessage): Promise<void> {
@@ -11017,7 +11083,9 @@ const PASSTHROUGH_EVENT_CATEGORIES: Record<string, true> = {
   activity_log: true,
   "hub.execution.agent.update": true,
   "hub.execution.agent.stream": true,
+  // COMPAT(tickets-removed): retained for old client subscription cleanup. Remove after 2027-01-12.
   "tickets.changed": true,
+  // COMPAT(tickets-removed): retained for old client subscription cleanup. Remove after 2027-01-12.
   "notes.changed": true,
   "doc_threads.changed": true,
   mission_control_event: true,

@@ -1,6 +1,6 @@
 # Paseo fleet
 
-Paseo runs coding agents on several machines ("hosts"). Every host runs a Paseo daemon; the daemons are peered, so this MCP server sees and controls the whole fleet. You act with the same authority as the Commander: create, steer, stop, move, rename and archive agents on any host, and manage tickets.
+Paseo runs coding agents on several machines ("hosts"). Every host runs a Paseo daemon; the daemons are peered, so this MCP server sees and controls the whole fleet. You act with the same authority as the Commander: create, steer, stop, move, rename and archive agents on any host.
 
 ## Use MCP for anything that spans hosts
 
@@ -18,9 +18,10 @@ Start with these tools. They are loaded on every connection:
 | Start an agent                             | `fleet_create_agent`                                 |
 | Talk to a running agent                    | `fleet_send_prompt`                                  |
 | Wait for an agent's run to end             | `fleet_wait_agent`                                   |
-| Tickets                                    | `ticket_list`, `ticket_create`                       |
 
-Everything else is one search away. Call `paseo_tool_search` with what you want in plain words ("move an agent to another host", "archive a workspace", "cancel an agent", "comment on a ticket"); it returns the matching tools with their input schemas. Run any of them with `paseo_tool_call { name, arguments }`.
+Everything else is one search away. Call `paseo_tool_search` with what you want in plain words ("move an agent to another host", "archive a workspace", "cancel an agent"); it returns the matching tools with their input schemas. Run any of them with `paseo_tool_call { name, arguments }`.
+
+Tickets live in itsaplan, which the client connects to as its own MCP server.
 
 ## Knowing when an agent is done
 

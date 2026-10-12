@@ -15,8 +15,6 @@ export const CORE_FLEET_TOOL_NAMES = [
   "fleet_create_agent",
   "fleet_send_prompt",
   "fleet_wait_agent",
-  "ticket_list",
-  "ticket_create",
 ] as const;
 
 export const META_FLEET_TOOL_NAMES = [
@@ -30,7 +28,6 @@ export const TOOL_GROUP_CRITERIA: Record<string, string> = {
   dispatch: "Create or start agents, send prompts, run workspace scripts, or manage schedules",
   control: "Cancel, kill, update, session mode, or permissions of agents",
   meta: "Move, rename, archive, adopt, promote projects, workspaces, or agents",
-  tickets: "Create, list, or manage tickets and issues",
   history: "Search past conversations, memory, or historical activity",
   models: "Inspect providers, models, agent profiles, or placement routing",
   mission_control: "Mission control cards, user clarification, and worker verdicts",
@@ -64,10 +61,6 @@ interface ToolClassificationRule {
 }
 
 const CLASSIFICATION_RULES: ToolClassificationRule[] = [
-  {
-    group: "tickets",
-    matches: (name) => name.startsWith("ticket_") || name.includes("ticketize"),
-  },
   {
     group: "meta",
     matches: (name) =>

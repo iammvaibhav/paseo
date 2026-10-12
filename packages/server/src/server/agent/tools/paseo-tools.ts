@@ -119,10 +119,8 @@ import { registerPageTools } from "../../page-tools/tools.js";
 import type { PagePreviewBrowser } from "../../page-tools/preview-browser.js";
 import type { PageStore } from "../../page-tools/page-store.js";
 import { buildPeerUnreachableError, type PeerManager } from "../../peers/peer-manager.js";
-import { registerTicketTools, type TicketToolsBackend } from "../../tickets/tools.js";
 import { registerDocThreadTools } from "../../doc-threads/tools.js";
 import type { DocThreadsService } from "../../doc-threads/service.js";
-import { registerNoteTools, type NoteToolsBackend } from "../../notes/tools.js";
 import { registerFleetControlTools } from "./fleet-control-tools.js";
 import { MissionControlSearchMatchSchema } from "@getpaseo/protocol/mission-control/types";
 import type { MissionControlProposalSpawnPlan } from "@getpaseo/protocol/mission-control/types";
@@ -231,19 +229,7 @@ export interface PaseoToolHostDependencies {
       agentId: string,
     ) => Promise<{ issueId: number; url: string } | { error: string }>;
   } | null;
-  /**
-   * Native tickets board for the Commander ticket tools, resolved per call
-   * (local on the board host, else the board-host peer). Absent → no ticket
-   * tools.
-   */
-  resolveTicketTools?: (() => TicketToolsBackend) | null;
   resolveDocThreads?: (() => DocThreadsService) | null;
-  /**
-   * Native notes for the Commander note tools, resolved per call
-   * (local on the notes host, else the notes-host peer). Absent → no note
-   * tools.
-   */
-  resolveNoteTools?: (() => NoteToolsBackend) | null;
   paseoToolPolicy?: ProviderPaseoToolsPolicy;
   paseoHome?: string;
   worktreesRoot?: string;
@@ -1416,24 +1402,6 @@ function buildCommanderGate(deps: {
     }
   };
   return { isCommanderCaller, runCommanderGatedAction };
-}
-
-/** Native board + notes tools for the Commander; the notes host rides the tickets gate. */
-function registerNativeBoardTools(
-  registerTool: (
-    name: string,
-    config: PaseoToolConfig,
-    handler: (input: unknown, context: PaseoToolExecutionContext) => Promise<PaseoToolResult>,
-  ) => void,
-  options: Pick<PaseoToolHostDependencies, "resolveTicketTools" | "resolveNoteTools">,
-): void {
-  if (!options.resolveTicketTools) {
-    return;
-  }
-  registerTicketTools({ registerTool, resolveBackend: options.resolveTicketTools });
-  if (options.resolveNoteTools) {
-    registerNoteTools({ registerTool, resolveBackend: options.resolveNoteTools });
-  }
 }
 
 export function createPaseoToolCatalog(options: PaseoToolHostDependencies): PaseoToolCatalog {
@@ -6795,9 +6763,6 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     },
   );
 
-  if (isCommanderCaller) {
-    registerNativeBoardTools(registerTool, options);
-  }
   registerDocThreadToolsIfAvailable({
     registerTool,
     resolveDocThreads: options.resolveDocThreads,
