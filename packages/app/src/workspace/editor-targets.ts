@@ -10,7 +10,6 @@ const KNOWN_EDITOR_TARGET_IDS: ReadonlySet<string> = new Set([
   "explorer",
   "file-manager",
   "vscode-web",
-  "plannotator",
 ]);
 
 export function isKnownEditorTargetId(editorId: EditorTargetId): boolean {

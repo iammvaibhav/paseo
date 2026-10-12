@@ -101,8 +101,6 @@ export const steps = [
           captureElement: async () => null,
           copyElement: async () => false,
           openDevTools: async () => {},
-          preparePlannotator: async () => ({ url: "", accelerated: false }),
-          releasePlannotator: async () => {},
         };
 
         window.paseoDesktop = {

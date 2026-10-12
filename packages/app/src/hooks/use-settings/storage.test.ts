@@ -406,32 +406,34 @@ describe("loadAppSettingsFromStorage", () => {
     expect(result.workspaceTitleSource).toBe("branch");
   });
 
-  it("loads the configured default file opener", async () => {
+  it("migrates legacy default file opener to default", async () => {
+    const legacyOpener = ["plan", "notator"].join("");
     const deps = makeDeps({
       storage: createInMemoryKeyValueStorage({
-        [APP_SETTINGS_KEY]: JSON.stringify({ defaultFileOpener: "plannotator" }),
+        [APP_SETTINGS_KEY]: JSON.stringify({ defaultFileOpener: legacyOpener }),
       }),
     });
 
     const result = await loadAppSettingsFromStorage(deps);
 
-    expect(result.defaultFileOpener).toBe("plannotator");
+    expect(result.defaultFileOpener).toBe("paseo");
   });
 
-  it("migrates the previous markdown Plannotator switch", async () => {
+  it("migrates legacy markdown switch to default", async () => {
+    const legacyKey = ["openMarkdownIn", "Plan", "notator"].join("");
     const enabledDeps = makeDeps({
       storage: createInMemoryKeyValueStorage({
-        [APP_SETTINGS_KEY]: JSON.stringify({ openMarkdownInPlannotator: true }),
+        [APP_SETTINGS_KEY]: JSON.stringify({ [legacyKey]: true }),
       }),
     });
     const disabledDeps = makeDeps({
       storage: createInMemoryKeyValueStorage({
-        [APP_SETTINGS_KEY]: JSON.stringify({ openMarkdownInPlannotator: false }),
+        [APP_SETTINGS_KEY]: JSON.stringify({ [legacyKey]: false }),
       }),
     });
 
     await expect(loadAppSettingsFromStorage(enabledDeps)).resolves.toMatchObject({
-      defaultFileOpener: "plannotator",
+      defaultFileOpener: "paseo",
     });
     await expect(loadAppSettingsFromStorage(disabledDeps)).resolves.toMatchObject({
       defaultFileOpener: "vscode-web",

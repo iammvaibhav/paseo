@@ -1120,7 +1120,6 @@ export const ko: TranslationResources = {
         openIn: "{{target}}에서 워크스페이스 열기",
         openFileIn: "{{target}}에서 {{fileName}} 열기",
         failedOpen: "워크스페이스를 열지 못했습니다",
-        noFile: "Select a Markdown file to open in Plannotator",
       },
       pr: {
         actions: {
@@ -1348,12 +1347,6 @@ export const ko: TranslationResources = {
       missionControl: "Mission Control",
       itsaplan: "itsaplan",
       webhooks: "Webhooks",
-    },
-    worktreeSetup: {
-      title: "워크트리 스크립트 설정",
-      description:
-        "새 워크트리가 의존성을 설치하고 자동으로 준비될 수 있도록 설정 명령을 추가하세요.",
-      openProjectSettings: "프로젝트 설정 열기",
     },
     project: {
       actions: {
@@ -1586,19 +1579,6 @@ export const ko: TranslationResources = {
         idle: "업데이트 상태를 아직 확인하지 않았습니다.",
       },
       installError: "데스크톱 앱 업데이트를 설치할 수 없습니다.",
-      callout: {
-        installingTitle: "업데이트 설치 중",
-        failedTitle: "업데이트 실패",
-        availableTitle: "업데이트 사용 가능",
-        genericError: "문제가 발생했습니다.",
-        whatsNew: "새로운 기능",
-        installingAction: "설치 중...",
-        installAndRestart: "설치 후 재시작",
-        installingDescription: "설치 후 재시작 중...",
-        versionReady: "{{version}} 설치가 준비되었습니다.",
-        newVersionReady: "새 버전 설치가 준비되었습니다.",
-        restartWarning: "앱을 업그레이드하면 실행 중인 에이전트가 중지되고 터미널 세션이 닫힙니다.",
-      },
     },
     settings: {
       loadFailed: "데스크톱 설정을 불러올 수 없습니다.",
@@ -2244,15 +2224,9 @@ export const ko: TranslationResources = {
       vimKeybindings: "Vim 키 바인딩",
       vimHint: "웹 및 데스크톱의 소스 파일에 적용됩니다.",
       defaultFileOpener: "Default file opener",
-      defaultFileOpenerHint:
-        "Used for normal file clicks. Plannotator supports document and configuration files; source files fall back to Paseo.",
+      defaultFileOpenerHint: "Used for normal file clicks.",
       defaultFileOpenerPaseo: "Paseo",
       defaultFileOpenerVsCodeWeb: "VS Code Web",
-      defaultFileOpenerPlannotator: "Plannotator",
-      plannotatorFeedbackMode: "Plannotator feedback",
-      plannotatorFeedbackModeHint: "How annotation feedback is delivered to the linked agent.",
-      plannotatorFeedbackAutoSend: "Auto-send",
-      plannotatorFeedbackCompose: "Pre-fill composer",
     },
     notifications: {
       title: "알림",

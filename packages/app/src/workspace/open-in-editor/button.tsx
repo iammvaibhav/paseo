@@ -37,8 +37,6 @@ interface WorkspaceOpenInEditorButtonProps {
   activeFile?: WorkspaceFileLocation | null;
   hideLabels?: boolean;
   onOpenBrowserEditorUrl?: (url: string) => void;
-  onOpenPlannotatorPath?: (path: string) => void;
-  plannotatorAvailable?: boolean;
 }
 
 interface OpenTarget {
@@ -91,8 +89,6 @@ export function WorkspaceOpenInEditorButton({
   activeFile,
   hideLabels,
   onOpenBrowserEditorUrl,
-  onOpenPlannotatorPath,
-  plannotatorAvailable = false,
 }: WorkspaceOpenInEditorButtonProps) {
   const { t } = useTranslation();
   const toast = useToast();
@@ -144,7 +140,6 @@ export function WorkspaceOpenInEditorButton({
         browserEditorUrl,
         checkoutStatus,
         forge: resolvedForge,
-        plannotatorAvailable,
       }).map((target) => {
         if (target.source === "forge") {
           const presentation = getForgePresentation(target.forge);
@@ -171,22 +166,6 @@ export function WorkspaceOpenInEditorButton({
             },
           };
         }
-        if (target.source === "plannotator") {
-          return {
-            id: target.id,
-            label: target.label,
-            icon: (
-              <ThemedEditorAppIcon editorId="plannotator" size={16} uniProps={mutedColorMapping} />
-            ),
-            onOpen: () => {
-              if (!target.path) {
-                toast.error(t("workspace.git.openInEditor.noFile"));
-                return;
-              }
-              onOpenPlannotatorPath?.(target.path);
-            },
-          };
-        }
         return {
           id: target.id,
           label: target.label,
@@ -206,12 +185,8 @@ export function WorkspaceOpenInEditorButton({
       isDesktopOpenAvailable,
       isLocalDaemon,
       onOpenBrowserEditorUrl,
-      onOpenPlannotatorPath,
-      plannotatorAvailable,
       remoteSshHost,
       resolvedFile,
-      t,
-      toast,
     ],
   );
 

@@ -9,13 +9,13 @@ flowchart LR
   P["Prompt (1 s pause)"] --> B["jev: isolation + agent mode"]
   P --> H["Hindsight recall (600 ms cap)"]
   H --> A["jev: project / new_project / scratch + named host"]
-  C["Fleet catalog (30 s cache)"] --> A
+  C["Fleet catalog (fresh per suggestion)"] --> A
   A --> R["Rules: host, worktree only for git projects, model by mode"]
   B --> R
 ```
 
 - **jev** is TypeSafe's System One judge (`POST https://api.typesafe.ai/v1/systemone`, model `jev-latest`). It only classifies: every question is a `choice` whose criteria are the option descriptions, and it answers with calibrated probabilities in about 0.4 s. It never writes text.
-- The **catalog** is the fleet inventory (`buildFleetContextData`): each project's title, description, host, and recent workspace titles. Project descriptions carry most of the signal; a project without one routes badly. Commander's own project and the scratch project are not options.
+- The **catalog** is the fleet inventory (`buildFleetContextData`): each project's title, description, host, and recent workspace titles. Project descriptions carry most of the signal; a project without one routes badly. Commander's own project and the scratch project are not options. It is loaded fresh for every suggestion, in parallel with the behaviour judge and Hindsight, so it adds no latency. Do not cache it: a cache hides projects added outside routing (Add project, `fleet_create_project`, another host).
 - Every question sees the prompt and the optional `routing.rules` text, and its instructions say to follow anything the prompt states explicitly ("on work", "research only", "orchestrate").
 - Isolation is `worktree` only for an existing git project. Scratch and new projects run local.
 - Host: an existing project fixes it. For a new project or scratch, a host the prompt names wins, else `routing.defaultHost`.
@@ -23,6 +23,8 @@ flowchart LR
 The app fires after a 1 s typing pause and drops replies for older prompts; Enter resolves the current prompt immediately when the pause has not passed. A suggestion only fills controls the user has not touched on this screen.
 
 The app always asks the Commander host, never the selected host. A suggestion moves the host selection, and a non-Commander host may have no peers, so it would see only its own projects. Without a designated Commander host, the selected host answers. The catalog fetch asks peers for inventory only (`mission_control.context.fetch` with `inventoryOnly`): the full payload waits on provider discovery, which took 15 s on a freshly booted peer.
+
+The app caches suggestions by prompt plus the fleet's project list, so a project appearing on any host re-runs the suggestion for the current prompt without retyping.
 
 ## Naming
 

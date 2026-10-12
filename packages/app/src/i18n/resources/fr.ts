@@ -1146,7 +1146,6 @@ export const fr: TranslationResources = {
         openIn: "Espace de travail ouvert dans{{target}}",
         openFileIn: "Open {{fileName}} in {{target}}",
         failedOpen: "Échec de l'ouverture de l'espace de travail",
-        noFile: "Select a Markdown file to open in Plannotator",
       },
       pr: {
         actions: {
@@ -1393,12 +1392,6 @@ export const fr: TranslationResources = {
       itsaplan: "itsaplan",
       webhooks: "Webhooks",
     },
-    worktreeSetup: {
-      title: "Configurer les scripts d'arbre de travail",
-      description:
-        "Ajoutez des commandes de configuration pour que les nouveaux arbres de travail puissent installer des dépendances et se préparer automatiquement.",
-      openProjectSettings: "Ouvrir les paramètres du projet",
-    },
     project: {
       actions: {
         menu: "Actions du projet",
@@ -1626,20 +1619,6 @@ export const fr: TranslationResources = {
         idle: "L'état de la mise à jour n'a pas encore été vérifié.",
       },
       installError: "Impossible d'installer la mise à jour de l'application de bureau.",
-      callout: {
-        installingTitle: "Installation de la mise à jour",
-        failedTitle: "La mise à jour a échoué",
-        availableTitle: "Mise à jour disponible",
-        genericError: "Quelque chose s'est mal passé.",
-        whatsNew: "Quoi de neuf",
-        installingAction: "Installation...",
-        installAndRestart: "Installer et redémarrer",
-        installingDescription: "Installation et redémarrage...",
-        versionReady: "{{version}}est prêt à être installé.",
-        newVersionReady: "Une nouvelle version est prête à être installée.",
-        restartWarning:
-          "La mise à niveau de l'application arrêtera l'exécution des agents et fermera les sessions de terminal.",
-      },
     },
     settings: {
       loadFailed: "Impossible de charger les paramètres du bureau.",
@@ -2297,15 +2276,9 @@ export const fr: TranslationResources = {
       vimKeybindings: "Raccourcis Vim",
       vimHint: "S’applique aux fichiers source sur le web et le bureau.",
       defaultFileOpener: "Default file opener",
-      defaultFileOpenerHint:
-        "Used for normal file clicks. Plannotator supports document and configuration files; source files fall back to Paseo.",
+      defaultFileOpenerHint: "Used for normal file clicks.",
       defaultFileOpenerPaseo: "Paseo",
       defaultFileOpenerVsCodeWeb: "VS Code Web",
-      defaultFileOpenerPlannotator: "Plannotator",
-      plannotatorFeedbackMode: "Plannotator feedback",
-      plannotatorFeedbackModeHint: "How annotation feedback is delivered to the linked agent.",
-      plannotatorFeedbackAutoSend: "Auto-send",
-      plannotatorFeedbackCompose: "Pre-fill composer",
     },
     notifications: {
       title: "Notifications",

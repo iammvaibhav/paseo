@@ -1104,7 +1104,6 @@ export const zhCN: TranslationResources = {
         openIn: "在 {{target}} 中打开 workspace",
         openFileIn: "在 {{target}} 中打开 {{fileName}}",
         failedOpen: "打开 workspace 失败",
-        noFile: "Select a Markdown file to open in Plannotator",
       },
       pr: {
         actions: {
@@ -1338,11 +1337,6 @@ export const zhCN: TranslationResources = {
       itsaplan: "itsaplan",
       webhooks: "Webhooks",
     },
-    worktreeSetup: {
-      title: "设置 worktree scripts",
-      description: "添加 setup 命令，让新的 worktree 自动安装依赖并完成准备。",
-      openProjectSettings: "打开 project 设置",
-    },
     project: {
       actions: {
         menu: "Project 操作",
@@ -1563,19 +1557,6 @@ export const zhCN: TranslationResources = {
         idle: "尚未检查更新状态。",
       },
       installError: "无法安装 desktop app 更新。",
-      callout: {
-        installingTitle: "正在安装更新",
-        failedTitle: "更新失败",
-        availableTitle: "有可用更新",
-        genericError: "出了点问题。",
-        whatsNew: "更新内容",
-        installingAction: "正在安装...",
-        installAndRestart: "安装并重启",
-        installingDescription: "正在安装并重启...",
-        versionReady: "{{version}} 已准备好安装。",
-        newVersionReady: "新版本已准备好安装。",
-        restartWarning: "升级 app 会停止正在运行的 agents，并关闭 terminal 会话。",
-      },
     },
     settings: {
       loadFailed: "无法加载桌面设置。",
@@ -2211,15 +2192,9 @@ export const zhCN: TranslationResources = {
       vimKeybindings: "Vim 键位",
       vimHint: "适用于网页和桌面端的源文件。",
       defaultFileOpener: "默认文件打开方式",
-      defaultFileOpenerHint:
-        "用于普通文件点击。Plannotator 支持文档和配置文件；源代码文件会改用 Paseo 打开。",
+      defaultFileOpenerHint: "用于普通文件点击。",
       defaultFileOpenerPaseo: "Paseo",
       defaultFileOpenerVsCodeWeb: "VS Code Web",
-      defaultFileOpenerPlannotator: "Plannotator",
-      plannotatorFeedbackMode: "Plannotator 反馈",
-      plannotatorFeedbackModeHint: "批注反馈如何发送给关联的 agent。",
-      plannotatorFeedbackAutoSend: "自动发送",
-      plannotatorFeedbackCompose: "预填输入框",
     },
     notifications: {
       title: "通知",

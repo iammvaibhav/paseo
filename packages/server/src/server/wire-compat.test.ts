@@ -663,10 +663,6 @@ test.each<SessionOutboundMessage>([
     type: "provider.usage.updated",
     payload: { fetchedAt: "2026-09-30T00:00:00.000Z", providers: [] },
   },
-  {
-    type: "plannotator.session.event",
-    payload: { sessionId: "plan-1", kind: "annotate", path: "/tmp/plan.md", event: "closed" },
-  },
 ])("$type reaches only its owned subscribers and every legacy socket", async (message) => {
   const legacy = {};
   const subscribed = {};
