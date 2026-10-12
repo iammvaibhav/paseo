@@ -55,15 +55,15 @@ The inventory defines all fleet machines. See [`scripts/deploy/fleet-hosts.examp
 
 Every daemon host runs the same set, so agents behave the same wherever they land. Hosts without a checkout get them from the **kit**: deploy ships the files these services need (`scripts/code-server`, `scripts/plannotator`, the stall check, `plugins/`, the verifier role, and a prebuilt `paseo-bridge.vsix`) to `~/.local/share/paseo/kit` and runs the installers from there.
 
-| Service         | What it is                                                                 | Runs on                         |
-| --------------- | -------------------------------------------------------------------------- | ------------------------------- |
-| `omp`           | `omp update` to the fleet version, in-repo plugins, verifier role          | every host                      |
-| `code-server`   | VS Code Web on `:8765` for **Open → VS Code Web** ([docs](code-server.md)) | every host                      |
-| `plannotator`   | binary the daemon spawns for plan reviews ([docs](plannotator.md))         | every host                      |
-| `stall-cron`    | per-minute stall check of this host's agents                               | every host                      |
-| `voice`         | Commander Voice node; npm-installs from the checkout                       | builders that host a voice node |
-| `macbook-watch` | redeploys the MacBook when it comes back online                            | the deploy host                 |
-| `omp-proxy`     | omp auth broker, proxy, refresher (`scripts/omp-proxy/deploy-prod.sh`)     | `prod`                          |
+| Service         | What it is                                                                 | Runs on                                                                         |
+| --------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `omp`           | `omp update` to the fleet version, in-repo plugins, verifier role          | every host except `prod`, whose omp `omp-proxy` updates in step with the broker |
+| `code-server`   | VS Code Web on `:8765` for **Open → VS Code Web** ([docs](code-server.md)) | every host                                                                      |
+| `plannotator`   | binary the daemon spawns for plan reviews ([docs](plannotator.md))         | every host                                                                      |
+| `stall-cron`    | per-minute stall check of this host's agents                               | every host                                                                      |
+| `voice`         | Commander Voice node; npm-installs from the checkout                       | builders that host a voice node                                                 |
+| `macbook-watch` | redeploys the MacBook when it comes back online                            | the deploy host                                                                 |
+| `omp-proxy`     | omp auth broker, proxy, refresher (`scripts/omp-proxy/deploy-prod.sh`)     | `prod`                                                                          |
 
 To add a host, add an entry to `~/.paseo/fleet-hosts.json` and run `./scripts/deploy.sh`. For new targets, deploy generates a daemon password automatically and saves it to `~/.paseo/deploy.env`.
 
