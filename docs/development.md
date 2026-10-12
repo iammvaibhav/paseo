@@ -862,3 +862,7 @@ Always run typecheck after changes:
 ```bash
 pnpm run typecheck
 ```
+
+Every `tsc` and `tsgo` leaf in the package scripts runs through `scripts/cpu-slot.sh`, which holds a machine-wide `flock` under `/tmp/paseo-cpu-slot-<slot>.lock`. Each run takes about a core and 1–4 GB, and several worktrees on a 4-core host used to run them all at once, pinning the CPU and pushing the box into swap. Now at most one typecheck and one build run at a time across every worktree; the rest print `cpu-slot: waiting for the '<slot>' slot` and queue. A run that looks stuck after that line is waiting its turn, not hung.
+
+Wrap only leaf compiler invocations. `flock` is not reentrant across processes, so a wrapped script that calls another wrapped script deadlocks. Watch-mode scripts stay unwrapped because they never release the slot. Hosts without `flock` (macOS) run unqueued.

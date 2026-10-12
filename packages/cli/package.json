@@ -16,10 +16,10 @@
   },
   "scripts": {
     "clean": "node ../../scripts/clean-package-dist.mjs",
-    "build": "tsc -p tsconfig.json --incremental false",
+    "build": "sh ../../scripts/cpu-slot.sh build tsc -p tsconfig.json --incremental false",
     "build:clean": "pnpm run clean && pnpm run build",
     "prepack": "pnpm run build:clean",
-    "typecheck": "tsgo --noEmit",
+    "typecheck": "sh ../../scripts/cpu-slot.sh typecheck tsgo --noEmit",
     "test": "pnpm run test:unit && pnpm run test:local",
     "test:unit": "vitest run src",
     "test:local": "tsx tests/run-all.ts",
