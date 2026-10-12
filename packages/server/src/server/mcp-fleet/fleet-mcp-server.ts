@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { RequestHandlerExtra } from "@modelcontextprotocol/sdk/shared/protocol.js";
 import type {
@@ -15,11 +16,17 @@ import {
   createPaseoToolCatalog,
   type PaseoToolHostDependencies,
 } from "../agent/tools/paseo-tools.js";
-import type { FleetAgentWaitResult } from "../agent/tools/fleet-control-tools.js";
-import type { PaseoToolCatalog, PaseoToolConfig, PaseoToolResult } from "../agent/tools/types.js";
+import { FLEET_WAIT_RESULT_SCHEMA, type FleetAgentWaitResult } from "../agent/tools/fleet-wait.js";
+import type {
+  PaseoToolCatalog,
+  PaseoToolConfig,
+  PaseoToolDefinition,
+  PaseoToolResult,
+} from "../agent/tools/types.js";
 import {
   MAX_NOTIFY_CONTEXT_LENGTH,
   type McpFinishNotifier,
+  type McpNotifyAgent,
   type McpNotifyTarget,
 } from "./finish-notifier.js";
 import { CORE_FLEET_TOOL_NAMES, resolveTypeSafeApiKey, searchCatalogTools } from "./tool-search.js";
@@ -79,8 +86,156 @@ function withNotifyInput(schema: PaseoToolConfig["inputSchema"]): PaseoToolConfi
   return { ...schema, ...NOTIFY_INPUT_SHAPE };
 }
 
+/** A tool's input as one object schema; null when it is not an object (unions, effects). */
+function inputObjectSchema(tool: PaseoToolDefinition): z.ZodObject | null {
+  const schema = tool.inputSchema;
+  if (schema === undefined) return z.object({});
+  if (schema instanceof z.ZodObject) return schema;
+  if (schema instanceof z.ZodType) return null;
+  return z.object(schema);
+}
+
+function mcpInputObject(tool: PaseoToolDefinition): PaseoToolConfig["inputSchema"] {
+  const object = inputObjectSchema(tool);
+  if (!object) {
+    return NOTIFY_TOOLS.has(tool.name) ? withNotifyInput(tool.inputSchema) : tool.inputSchema;
+  }
+  return (NOTIFY_TOOLS.has(tool.name) ? object.extend(NOTIFY_INPUT_SHAPE) : object).loose();
+}
+
+/** Edit distance, for suggesting the argument a client meant. */
+function editDistance(a: string, b: string): number {
+  let previous = Array.from({ length: b.length + 1 }, (_, index) => index);
+  for (let i = 1; i <= a.length; i += 1) {
+    const current = [i];
+    for (let j = 1; j <= b.length; j += 1) {
+      current[j] = Math.min(
+        current[j - 1]! + 1,
+        previous[j]! + 1,
+        previous[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1),
+      );
+    }
+    previous = current;
+  }
+  return previous[b.length]!;
+}
+
+function closestArgName(key: string, known: readonly string[]): string | null {
+  const lower = key.toLowerCase();
+  const contained = known.find(
+    (name) => lower.includes(name.toLowerCase()) || name.toLowerCase().includes(lower),
+  );
+  if (contained) return contained;
+  const ranked = known
+    .map((name) => ({ name, distance: editDistance(lower, name.toLowerCase()) }))
+    .sort((left, right) => left.distance - right.distance)[0];
+  return ranked && ranked.distance <= Math.max(2, Math.floor(key.length / 3)) ? ranked.name : null;
+}
+
+/**
+ * Unknown arguments are an error on /mcp/fleet: silently dropping one (a
+ * misnamed delivery mode) runs the call with defaults the client never chose.
+ */
+function describeUnknownArgKeys(
+  toolName: string,
+  known: readonly string[],
+  args: Record<string, unknown>,
+): string | null {
+  const unknown = Object.keys(args).filter((key) => !known.includes(key));
+  if (unknown.length === 0) return null;
+  const named = unknown.map((key) => {
+    const suggestion = closestArgName(key, known);
+    return suggestion ? `"${key}" (did you mean "${suggestion}"?)` : `"${key}"`;
+  });
+  return `${toolName} has no argument ${named.join(", ")}. Valid arguments: ${known.join(", ")}.`;
+}
+
+function describeUnknownArgs(
+  tool: PaseoToolDefinition,
+  args: Record<string, unknown>,
+): string | null {
+  const object = inputObjectSchema(tool);
+  if (!object) return null;
+  const known = [
+    ...Object.keys(object.shape),
+    ...(NOTIFY_TOOLS.has(tool.name) ? Object.keys(NOTIFY_INPUT_SHAPE) : []),
+  ];
+  return describeUnknownArgKeys(tool.name, known, args);
+}
+
+const ACTIVE_TURN_STATUS_SCHEMA = z.object({
+  running: z.object({ activeTurnId: z.string().nullable() }).nullable(),
+});
+
+const NOTIFY_AGENT_ID_SCHEMA = z
+  .string()
+  .min(1)
+  .describe("Agent UUID from fleet_list_agents/fleet_search data — fleet-wide, no host needed.");
+
+const NOTIFY_ON_FINISH_INPUT = z.object({
+  agents: z
+    .array(
+      z.object({
+        agentId: NOTIFY_AGENT_ID_SCHEMA,
+        host: z.string().min(1).optional().describe("Optional host hint."),
+        turnId: z
+          .string()
+          .min(1)
+          .optional()
+          .describe("Bind to this turn; omitted → the agent's run in progress."),
+      }),
+    )
+    .optional()
+    .describe("Agents to watch, each optionally bound to a turnId."),
+  agentIds: z.array(NOTIFY_AGENT_ID_SCHEMA).optional().describe("Shorthand for agents."),
+  perAgent: z
+    .boolean()
+    .optional()
+    .describe("POST paseo.agent.finished for each agent (default true)."),
+  group: z
+    .boolean()
+    .optional()
+    .describe("POST one paseo.agents.group_finished once every agent finished (default false)."),
+  notifyContext: z
+    .string()
+    .max(MAX_NOTIFY_CONTEXT_LENGTH)
+    .optional()
+    .describe("Free-form tag echoed back verbatim as `context` in the webhook payloads."),
+});
+
 function errorResult(text: string): PaseoToolResult {
   return { isError: true, content: [{ type: "text", text }] };
+}
+
+/** Validates fleet_notify_on_finish arguments into the agents to watch and how to notify. */
+function parseNotifyOnFinishRequest(args: Record<string, unknown>):
+  | {
+      agents: Array<{ agentId: string; host?: string; turnId?: string }>;
+      perAgent: boolean;
+      group: boolean;
+      notifyContext: string | null;
+    }
+  | { error: string } {
+  const unknownArgError = describeUnknownArgKeys(
+    "fleet_notify_on_finish",
+    Object.keys(NOTIFY_ON_FINISH_INPUT.shape),
+    args,
+  );
+  if (unknownArgError) return { error: unknownArgError };
+  const parsed = NOTIFY_ON_FINISH_INPUT.safeParse(args);
+  if (!parsed.success) {
+    return { error: parsed.error.issues.map((issue) => issue.message).join("; ") };
+  }
+  const input = parsed.data;
+  const agents = [
+    ...(input.agents ?? []),
+    ...(input.agentIds ?? []).map((agentId) => ({ agentId })),
+  ];
+  if (agents.length === 0) return { error: "Pass at least one agent in agents or agentIds." };
+  const perAgent = input.perAgent ?? true;
+  const group = input.group ?? false;
+  if (!perAgent && !group) return { error: "Set perAgent, group, or both; nothing would be sent." };
+  return { agents, perAgent, group, notifyContext: input.notifyContext ?? null };
 }
 
 type McpToolContext = RequestHandlerExtra<ServerRequest, ServerNotification>;
@@ -114,11 +269,13 @@ export async function createFleetMcpServer(options: FleetMcpServerOptions): Prom
   const waitForAgent = async (input: {
     agentId: string;
     host?: string;
+    turnId?: string;
     timeoutMs: number;
   }): Promise<FleetAgentWaitResult> => {
     const result = await catalog.executeTool("fleet_wait_agent", {
       agentId: input.agentId,
       ...(input.host ? { host: input.host } : {}),
+      ...(input.turnId ? { turnId: input.turnId } : {}),
       timeoutSeconds: Math.max(
         1,
         Math.min(WAIT_TOOL_MAX_SECONDS, Math.ceil(input.timeoutMs / 1000)),
@@ -127,7 +284,16 @@ export async function createFleetMcpServer(options: FleetMcpServerOptions): Prom
     if (result.isError) {
       throw new Error(result.content.map((block) => block.text ?? "").join(" ") || "wait failed");
     }
-    return result.structuredContent as FleetAgentWaitResult;
+    return FLEET_WAIT_RESULT_SCHEMA.parse(result.structuredContent);
+  };
+
+  /** The turn an agent is on right now (null when idle), read via fleet_agent_status. */
+  const readActiveTurn = async (agentId: string, host?: string): Promise<string | null> => {
+    const status = await catalog
+      .executeTool("fleet_agent_status", { agentId, ...(host ? { host } : {}) })
+      .catch(() => null);
+    const parsed = ACTIVE_TURN_STATUS_SCHEMA.safeParse(status?.structuredContent);
+    return parsed.success ? (parsed.data.running?.activeTurnId ?? null) : null;
   };
 
   // Runs a catalog tool for this MCP client. For the agent start/prompt tools
@@ -138,6 +304,9 @@ export async function createFleetMcpServer(options: FleetMcpServerOptions): Prom
     args: Record<string, unknown>,
     signal: AbortSignal | undefined,
   ): Promise<PaseoToolResult> => {
+    const tool = catalog.getTool(name);
+    const unknownArgError = tool ? describeUnknownArgs(tool, args) : null;
+    if (unknownArgError) return errorResult(unknownArgError);
     if (!NOTIFY_TOOLS.has(name)) return catalog.executeTool(name, args, { signal });
     const { notifyOnFinish: _notify, notifyContext: _context, ...toolArgs } = args;
     const notify = NotifyArgsSchema.safeParse(args);
@@ -165,17 +334,18 @@ export async function createFleetMcpServer(options: FleetMcpServerOptions): Prom
         structuredContent: {
           ...structured,
           notify: { armed: false },
-          guidance:
-            "notifyOnFinish was not armed: no agent was started (the request may be pending approval).",
+          guidance: "notifyOnFinish was not armed: no agent was started.",
         },
       };
     }
     const host = typeof toolArgs.host === "string" ? toolArgs.host : undefined;
+    const turnId = typeof structured.turnId === "string" ? structured.turnId : null;
     void options.finishNotifier!.arm({
       client: options.clientName!,
       target: options.notifyTarget!,
       agentId,
       ...(host ? { host } : {}),
+      turnId,
       tool: name,
       context: notify.data.notifyContext ?? null,
       waitForAgent,
@@ -201,14 +371,73 @@ export async function createFleetMcpServer(options: FleetMcpServerOptions): Prom
       {
         title: tool.title,
         description: tool.description,
-        inputSchema: NOTIFY_TOOLS.has(tool.name)
-          ? withNotifyInput(tool.inputSchema)
-          : tool.inputSchema,
+        // Loose, so unknown arguments reach runCatalogTool and get a clear
+        // error instead of being stripped silently.
+        inputSchema: mcpInputObject(tool),
       },
       async (args: Record<string, unknown>, context?: McpToolContext) =>
         toMcpToolResult(await runCatalogTool(tool.name, args, context?.signal)),
     );
   }
+
+  server.registerTool(
+    "fleet_notify_on_finish",
+    {
+      title: "Webhook when agents finish",
+      description:
+        "Arm webhook callbacks for one or more agents without holding a call open. perAgent (default true) " +
+        "POSTs paseo.agent.finished as each agent's turn ends; group POSTs one paseo.agents.group_finished " +
+        "once every agent's turn has ended. needs_permission always POSTs per agent and does not complete " +
+        "the group. Each agent binds to the turnId given, else to its run in progress; an idle agent with " +
+        "no run fires at once with turnId null. Returns immediately.",
+      inputSchema: NOTIFY_ON_FINISH_INPUT.loose(),
+    },
+    async (args: Record<string, unknown>) => {
+      const request = parseNotifyOnFinishRequest(args);
+      if ("error" in request) return toMcpToolResult(errorResult(request.error));
+      if (!options.finishNotifier || !options.notifyTarget || !options.clientName) {
+        return toMcpToolResult(
+          errorResult(
+            "fleet_notify_on_finish needs a webhook for this MCP client (daemon.mcp.remoteClients[].notify), " +
+              "and none is configured. Use fleet_wait_agents instead.",
+          ),
+        );
+      }
+      const agents = await Promise.all(
+        request.agents.map(async ({ agentId, host, turnId }): Promise<McpNotifyAgent> => {
+          const bound = turnId ?? (await readActiveTurn(agentId, host));
+          return host ? { agentId, host, turnId: bound } : { agentId, turnId: bound };
+        }),
+      );
+      const common = {
+        client: options.clientName,
+        target: options.notifyTarget,
+        tool: "fleet_notify_on_finish",
+        context: request.notifyContext,
+        waitForAgent,
+      };
+      const groupId = request.group ? `grp_${randomUUID()}` : undefined;
+      if (groupId) {
+        void options.finishNotifier.armGroup({
+          ...common,
+          groupId,
+          agents,
+          perAgent: request.perAgent,
+        });
+      } else {
+        for (const agent of agents) void options.finishNotifier.arm({ ...common, ...agent });
+      }
+      const structuredContent = {
+        armed: agents.map(({ agentId, turnId }) => ({ agentId, turnId: turnId ?? null })),
+        ...(groupId ? { groupId } : {}),
+        guidance: "Paseo will POST to your webhook when these turns end. Do not poll for them.",
+      };
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(structuredContent) }],
+        structuredContent,
+      };
+    },
+  );
 
   server.registerTool(
     "paseo_tool_search",

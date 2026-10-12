@@ -14,8 +14,13 @@ import {
 } from "../workspace-registry.js";
 import { createPaseoToolCatalog } from "../agent/tools/paseo-tools.js";
 import { createProviderSnapshotManagerStub } from "../test-utils/session-stubs.js";
+import type { PaseoToolCatalog } from "../agent/tools/types.js";
 import { FleetIdIndex } from "./fleet-id-index.js";
-import { applyMetaFromProposal, type MetaActionsDependencies } from "./meta-actions.js";
+import {
+  applyMetaFromProposal,
+  applyRoutedMetaPlan,
+  type MetaActionsDependencies,
+} from "./meta-actions.js";
 import { MissionControlService } from "./service.js";
 import { createMissionControlPresenceSource } from "./presence.js";
 import { MISSION_CONTROL_LABEL_KEY, MISSION_CONTROL_LABEL_VALUE } from "./commander-contract.js";
@@ -52,7 +57,9 @@ let daemon: Awaited<ReturnType<typeof createPaseoDaemon>>;
 let projectRegistry: FileBackedProjectRegistry;
 let workspaceRegistry: FileBackedWorkspaceRegistry;
 let service: MissionControlService;
-let catalog: ReturnType<typeof createPaseoToolCatalog>;
+let catalog: PaseoToolCatalog;
+let mcpCatalog: PaseoToolCatalog;
+const archiveAgentSpy = vi.fn();
 let experimentsProjectId: string;
 
 async function seedAgent(): Promise<StoredAgentRecord> {
@@ -143,6 +150,7 @@ beforeAll(async () => {
       removedDirectory: false,
     }),
     archiveAgent: async (agentId) => {
+      archiveAgentSpy(agentId);
       const record = await daemon.agentStorage.get(agentId);
       return { agentId, archivedAt: new Date().toISOString(), record: record ?? null };
     },
@@ -170,30 +178,40 @@ beforeAll(async () => {
     // Same wiring as bootstrap: approved meta-kind proposals apply through
     // applyMetaFromProposal over the real meta-actions deps.
     metaFromProposal: (proposal) => applyMetaFromProposal(metaActionsDeps(), proposal),
+    metaApplyDirect: (plan) => applyRoutedMetaPlan(metaActionsDeps(), plan, "mcp-direct"),
   });
   await service.start();
 
-  catalog = createPaseoToolCatalog({
-    agentManager: daemon.agentManager,
+  const fleetIdIndex = new FleetIdIndex({
     agentStorage: daemon.agentStorage,
-    providerSnapshotManager: createProviderSnapshotManagerStub().manager as never,
-    peerManager: null,
-    callerAgentId: "commander-1",
-    callerLabels: { [MISSION_CONTROL_LABEL_KEY]: MISSION_CONTROL_LABEL_VALUE },
-    serverId: "server-meta-split-e2e",
-    hostAlias: null,
-    missionControlService: service,
-    fleetIdIndex: new FleetIdIndex({
-      agentStorage: daemon.agentStorage,
-      agentManager: daemon.agentManager,
-      workspaceRegistry,
-      projectRegistry,
-      missionControlService: service,
-      peerManager: null,
-    }),
+    agentManager: daemon.agentManager,
     workspaceRegistry,
     projectRegistry,
-    logger,
+    missionControlService: service,
+    peerManager: null,
+  });
+  const catalogFor = (callerLabels: Record<string, string>) =>
+    createPaseoToolCatalog({
+      agentManager: daemon.agentManager,
+      agentStorage: daemon.agentStorage,
+      providerSnapshotManager: createProviderSnapshotManagerStub().manager as never,
+      peerManager: null,
+      callerAgentId: "commander-1",
+      callerLabels,
+      serverId: "server-meta-split-e2e",
+      hostAlias: null,
+      missionControlService: service,
+      fleetIdIndex,
+      workspaceRegistry,
+      projectRegistry,
+      logger,
+    });
+  catalog = catalogFor({ [MISSION_CONTROL_LABEL_KEY]: MISSION_CONTROL_LABEL_VALUE });
+  // A remote /mcp/fleet client: Commander identity plus the mcp-client label,
+  // exactly as bootstrap builds it.
+  mcpCatalog = catalogFor({
+    [MISSION_CONTROL_LABEL_KEY]: MISSION_CONTROL_LABEL_VALUE,
+    "paseo.mcp-client": "grok-bot",
   });
 });
 
@@ -275,5 +293,24 @@ describe("04 fleet_rename_agent_title in-process daemon round-trip", () => {
     expect(approve).toEqual({ ok: true });
     const after = await daemon.agentStorage.get(AGENT_ID);
     expect(after?.title).toBe("Runner Legacy");
+  });
+});
+
+describe("remote MCP clients are never gated", () => {
+  test("a rename and a destructive archive apply directly and record no proposal", async () => {
+    const proposalsBefore = service.listProposals().length;
+
+    const rename = await mcpCatalog.executeTool("fleet_rename_agent_title", {
+      agentId: AGENT_ID,
+      title: "Runner MCP",
+    });
+    expect(rename.structuredContent).toMatchObject({ ok: true, status: "applied" });
+    expect((await daemon.agentStorage.get(AGENT_ID))?.title).toBe("Runner MCP");
+
+    const archive = await mcpCatalog.executeTool("fleet_archive_agent", { agentId: AGENT_ID });
+    expect(archive.structuredContent).toMatchObject({ ok: true, status: "applied" });
+    expect(archiveAgentSpy).toHaveBeenCalledWith(AGENT_ID);
+
+    expect(service.listProposals()).toHaveLength(proposalsBefore);
   });
 });

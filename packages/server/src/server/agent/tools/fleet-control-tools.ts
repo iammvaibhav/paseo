@@ -1,4 +1,3 @@
-import { setTimeout as sleep } from "node:timers/promises";
 import { z } from "zod";
 import type { Logger } from "pino";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
@@ -37,197 +36,6 @@ export interface RegisterFleetControlToolsOptions {
   missionControlService?: {
     getAgentStatusRecord(agentId: string): Promise<{ bucket: string }>;
   } | null;
-}
-
-const FLEET_WAIT_DEFAULT_SECONDS = 600;
-const FLEET_WAIT_MAX_SECONDS = 1800;
-
-export interface FleetAgentWaitResult {
-  ok: boolean;
-  host: string;
-  agentId: string;
-  /** Lifecycle after the wait ("idle", "error", "running", "closed", …); "permission" when blocked on one. */
-  status: string;
-  /** The run ended (idle, error or closed). */
-  finished: boolean;
-  /** The agent is waiting on a permission decision. */
-  needsPermission: boolean;
-  timedOut: boolean;
-  title: string | null;
-  bucket: string | null;
-  lastMessage: string | null;
-  error: string | null;
-  guidance?: string;
-}
-
-function waitResult(
-  base: Pick<FleetAgentWaitResult, "host" | "agentId">,
-  fields: Partial<FleetAgentWaitResult>,
-): FleetAgentWaitResult {
-  const status = fields.status ?? "unknown";
-  return {
-    ok: true,
-    status,
-    finished: status === "idle" || status === "error" || status === "closed",
-    needsPermission: status === "permission",
-    timedOut: false,
-    title: null,
-    bucket: null,
-    lastMessage: null,
-    error: null,
-    ...base,
-    ...fields,
-  };
-}
-
-interface WaitScope {
-  base: Pick<FleetAgentWaitResult, "host" | "agentId">;
-  timeout: AbortSignal;
-  signal: AbortSignal;
-  timeoutMs: number;
-}
-
-async function waitForLocalAgent(
-  deps: RegisterFleetControlToolsOptions,
-  scope: WaitScope,
-): Promise<FleetAgentWaitResult> {
-  const { agentId } = scope.base;
-  const stored = await deps.agentStorage.get(agentId);
-  const title = stored?.title ?? null;
-  const bucket = async () =>
-    deps.missionControlService
-      ? (await deps.missionControlService.getAgentStatusRecord(agentId)).bucket
-      : null;
-  if (!deps.agentManager.getAgent(agentId)) {
-    if (!stored) {
-      return waitResult(scope.base, { ok: false, error: `Agent "${agentId}" not found` });
-    }
-    return waitResult(scope.base, {
-      status: stored.lastStatus ?? "idle",
-      title,
-      bucket: await bucket(),
-      error: stored.lastStatus === "error" ? (stored.lastError ?? null) : null,
-    });
-  }
-  try {
-    const result = await deps.agentManager.waitForAgentEvent(agentId, {
-      signal: scope.signal,
-      waitForActive: true,
-    });
-    const errorText =
-      result.status === "error" ? deps.agentManager.getAgent(agentId)?.lastError : undefined;
-    return waitResult(scope.base, {
-      status: result.permission ? "permission" : result.status,
-      title,
-      bucket: await bucket(),
-      lastMessage: result.lastMessage,
-      error: errorText ?? null,
-    });
-  } catch (error) {
-    if (!scope.timeout.aborted) throw error;
-    return waitResult(scope.base, {
-      status: deps.agentManager.getAgent(agentId)?.lifecycle ?? "running",
-      finished: false,
-      timedOut: true,
-      title,
-      bucket: await bucket(),
-    });
-  }
-}
-
-async function waitForPeerAgent(
-  client: DaemonClient,
-  scope: WaitScope,
-): Promise<FleetAgentWaitResult> {
-  // The peer RPC has no cancel; the caller's abort only stops waiting here.
-  const { promise: aborted, reject } = Promise.withResolvers<never>();
-  scope.signal.addEventListener("abort", () => reject(scope.signal.reason), { once: true });
-  try {
-    const result = await Promise.race([
-      client.waitForFinish(scope.base.agentId, scope.timeoutMs),
-      aborted,
-    ]);
-    const timedOut = result.status === "timeout";
-    return waitResult(scope.base, {
-      status: timedOut ? (result.final?.status ?? "running") : result.status,
-      ...(timedOut ? { finished: false, timedOut } : {}),
-      title: result.final?.title ?? null,
-      bucket: result.final?.bucket ?? null,
-      lastMessage: timedOut ? null : result.lastMessage,
-      error: result.error,
-    });
-  } catch (error) {
-    if (!scope.timeout.aborted) throw error;
-    return waitResult(scope.base, { status: "running", finished: false, timedOut: true });
-  }
-}
-
-const RUN_START_WAIT_MS = 15_000;
-const PEER_RUN_START_POLL_MS = 250;
-
-/**
- * Wait (bounded) until a just-prompted agent's new run has started. Without
- * it, a fleet_wait_agent issued right after fleet_send_prompt can see the
- * previous, already finished run and return its result. Only meaningful when
- * the agent was idle before the prompt; returns whether a start was seen.
- */
-export async function waitForPromptedRunStart(input: {
-  agentManager?: AgentManager;
-  client?: DaemonClient;
-  agentId: string;
-}): Promise<boolean> {
-  const deadline = Date.now() + RUN_START_WAIT_MS;
-  if (input.client) {
-    while (Date.now() < deadline) {
-      const fetched = await Promise.resolve()
-        .then(() => input.client!.fetchAgent(input.agentId))
-        .catch(() => null);
-      if (fetched?.agent.status === "running") return true;
-      await sleep(PEER_RUN_START_POLL_MS);
-    }
-    return false;
-  }
-  if (!input.agentManager) return false;
-  try {
-    await input.agentManager.waitForAgentRunStart(input.agentId, {
-      signal: AbortSignal.timeout(RUN_START_WAIT_MS),
-    });
-    return true;
-  } catch {
-    // No pending run (already finished, or queued) or the start timed out.
-    return false;
-  }
-}
-
-/**
- * Block until an agent's current run ends anywhere in the fleet. Returns at
- * once when the agent is not running, early when it needs a permission
- * decision, and with timedOut when the deadline passes first. Local agents
- * wait on agent-manager events; peer agents use the peer's
- * wait_for_finish RPC (also event-driven on the peer).
- */
-export async function waitForFleetAgent(
-  deps: RegisterFleetControlToolsOptions,
-  input: { agentId: string; host?: string; timeoutMs: number; signal?: AbortSignal },
-): Promise<FleetAgentWaitResult> {
-  const resolved = await resolveTargetHost(input.agentId, input.host, deps);
-  const base = { host: resolved.targetHostDisplay, agentId: input.agentId };
-  if (resolved.error) {
-    return waitResult(base, { ok: false, error: resolved.error, guidance: resolved.guidance });
-  }
-  const timeout = AbortSignal.timeout(input.timeoutMs);
-  const scope: WaitScope = {
-    base,
-    timeout,
-    signal: input.signal ? AbortSignal.any([timeout, input.signal]) : timeout,
-    timeoutMs: input.timeoutMs,
-  };
-  if (resolved.isLocal) return waitForLocalAgent(deps, scope);
-  const peer = resolvePeerDaemonClient(resolved.host, deps);
-  if (!peer.client) {
-    return waitResult(base, { ok: false, error: peer.error ?? null, guidance: peer.guidance });
-  }
-  return waitForPeerAgent(peer.client, scope);
 }
 
 const FLEET_CONTROL_OUTPUT_SCHEMA = {
@@ -321,7 +129,7 @@ interface ResolvedTargetHost {
   guidance?: string;
 }
 
-async function resolveTargetHost(
+export async function resolveTargetHost(
   agentId: string,
   hostHint: string | undefined,
   deps: RegisterFleetControlToolsOptions,
@@ -371,7 +179,7 @@ interface ResolvedPeerClient {
   guidance?: string;
 }
 
-function resolvePeerDaemonClient(
+export function resolvePeerDaemonClient(
   targetHost: string,
   deps: RegisterFleetControlToolsOptions,
 ): ResolvedPeerClient {
@@ -785,57 +593,6 @@ export function registerFleetControlTools(options: RegisterFleetControlToolsOpti
             : {}),
         }),
       };
-    },
-  );
-
-  registerTool(
-    "fleet_wait_agent",
-    {
-      title: "Wait for an agent to finish",
-      description:
-        "Block until an agent's current run ends, anywhere in the fleet, then return its final state and " +
-        "last message. Returns at once if the agent is not running, early if it needs a permission decision, " +
-        "and with timedOut=true after timeoutSeconds (default 600, max 1800); call again to keep waiting. " +
-        "Wait on several agents by calling this once per agent in parallel.",
-      inputSchema: {
-        agentId: FLEET_CANCEL_INPUT_SCHEMA.agentId,
-        host: FLEET_CANCEL_INPUT_SCHEMA.host,
-        timeoutSeconds: z
-          .number()
-          .int()
-          .positive()
-          .max(FLEET_WAIT_MAX_SECONDS)
-          .optional()
-          .describe(
-            `Seconds to wait before returning timedOut=true (default ${FLEET_WAIT_DEFAULT_SECONDS}, max ${FLEET_WAIT_MAX_SECONDS}).`,
-          ),
-      },
-      outputSchema: {
-        ok: z.boolean(),
-        host: z.string(),
-        agentId: z.string(),
-        status: z.string(),
-        finished: z.boolean(),
-        needsPermission: z.boolean(),
-        timedOut: z.boolean(),
-        title: z.string().nullable(),
-        bucket: z.string().nullable(),
-        lastMessage: z.string().nullable(),
-        error: z.string().nullable(),
-        guidance: z.string().optional(),
-      },
-    },
-    async (
-      input: { agentId: string; host?: string; timeoutSeconds?: number },
-      context: PaseoToolExecutionContext,
-    ) => {
-      const result = await waitForFleetAgent(options, {
-        agentId: input.agentId,
-        ...(input.host ? { host: input.host } : {}),
-        timeoutMs: (input.timeoutSeconds ?? FLEET_WAIT_DEFAULT_SECONDS) * 1000,
-        ...(context.signal ? { signal: context.signal } : {}),
-      });
-      return { content: [], structuredContent: ensureValidJson(result) };
     },
   );
 }

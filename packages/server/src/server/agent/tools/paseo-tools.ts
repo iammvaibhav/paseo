@@ -43,7 +43,7 @@ import { selectItemsByProjectedLimit } from "../timeline-projection.js";
 import type { AgentStorage } from "../agent-storage.js";
 import type { StoredAgentRecord } from "../agent-storage.js";
 import { ensureAgentLoaded } from "../agent-loading.js";
-import { supportsDiskTimeline, tryReadProviderTimelineFromDisk } from "../provider-disk-history.js";
+import { seedStoredTimeline, registerFleetTranscriptTool } from "./fleet-transcript.js";
 import { isStoredAgentProviderAvailable } from "../../persistence-hooks.js";
 import {
   archiveByScope,
@@ -121,7 +121,13 @@ import type { PageStore } from "../../page-tools/page-store.js";
 import { buildPeerUnreachableError, type PeerManager } from "../../peers/peer-manager.js";
 import { registerDocThreadTools } from "../../doc-threads/tools.js";
 import type { DocThreadsService } from "../../doc-threads/service.js";
-import { registerFleetControlTools, waitForPromptedRunStart } from "./fleet-control-tools.js";
+import { registerFleetControlTools } from "./fleet-control-tools.js";
+import {
+  executeFleetToolOnPeer,
+  readCurrentTurn,
+  registerFleetWaitTools,
+  resolvePromptedTurn,
+} from "./fleet-wait.js";
 import { MissionControlSearchMatchSchema } from "@getpaseo/protocol/mission-control/types";
 import type { MissionControlProposalSpawnPlan } from "@getpaseo/protocol/mission-control/types";
 import { MissionControlMetaPlanSchema } from "@getpaseo/protocol/mission-control/types";
@@ -807,40 +813,14 @@ async function peekAgentActivity(input: {
       currentModeId: live.currentModeId,
     };
   }
-
-  const record = await input.agentStorage.get(input.agentId);
-  if (!record) {
-    throw new Error(`Agent ${input.agentId} not found`);
-  }
-
-  const seeded = await input.agentManager.seedTimelineForRehydrate(input.agentId, async () => {
-    const sessionId = record.persistence?.sessionId;
-    if (sessionId && supportsDiskTimeline(record.provider)) {
-      return await tryReadProviderTimelineFromDisk(
-        {
-          provider: record.provider,
-          cwd: record.cwd,
-          sessionId,
-          ...(typeof record.persistence?.nativeHandle === "string"
-            ? { nativeHandle: record.persistence.nativeHandle }
-            : {}),
-        },
-        { logger: input.logger },
-      );
-    }
-    return null;
-  });
-  if (!seeded && !input.agentManager.hasTimeline(input.agentId)) {
-    input.agentManager.seedTimelineFromItems(input.agentId, []);
-  }
-
+  const { currentModeId } = await seedStoredTimeline(input);
   const rows = input.agentManager.fetchTimeline(input.agentId, {
     direction: "tail",
     limit: 0,
   }).rows;
   return {
     timeline: rows.map((row) => row.item),
-    currentModeId: null,
+    currentModeId,
   };
 }
 
@@ -1359,10 +1339,12 @@ function resolveCatalogCallerContext(
 interface CommanderGate {
   isCommanderCaller: boolean;
   /**
-   * Commander spawns and sends go through proposals. Remote MCP clients
-   * (/mcp/fleet) carry the Commander identity but are never gated: they run
-   * directly and get the real agentId or error back (so notifyOnFinish arms).
+   * Remote MCP clients (/mcp/fleet) carry the Commander identity but are
+   * never gated, for any tool, destructive ones included: spawns, sends and
+   * meta actions run directly and never create a proposal.
    */
+  isMcpClient: boolean;
+  /** Commander spawns and sends go through proposals (never for MCP clients). */
   gatesSpawnAndSend: boolean;
   runCommanderGatedAction: (action: {
     toolName: string;
@@ -1407,8 +1389,9 @@ function buildCommanderGate(deps: {
       return { ok: false, error: error instanceof Error ? error.message : String(error) };
     }
   };
-  const gatesSpawnAndSend = isCommanderCaller && callerLabels?.["paseo.mcp-client"] === undefined;
-  return { isCommanderCaller, gatesSpawnAndSend, runCommanderGatedAction };
+  const isMcpClient = callerLabels?.["paseo.mcp-client"] !== undefined;
+  const gatesSpawnAndSend = isCommanderCaller && !isMcpClient;
+  return { isCommanderCaller, isMcpClient, gatesSpawnAndSend, runCommanderGatedAction };
 }
 
 export function createPaseoToolCatalog(options: PaseoToolHostDependencies): PaseoToolCatalog {
@@ -1464,6 +1447,32 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
   const gatesSpawnAndSend = gate.gatesSpawnAndSend;
   const runCommanderGatedAction = gate.runCommanderGatedAction;
   /**
+   * Remote MCP clients' meta actions: apply the plan directly on its host,
+   * no proposal record, destructive actions included. Errors return as
+   * {ok:false} results, the same contract as a failed gated apply.
+   */
+  const runUngatedMeta = async (proposalInput: ProposalCreateInput): Promise<PaseoToolResult> => {
+    if (!missionControlService) {
+      throw new Error("Mission Control is not enabled on this host");
+    }
+    if (!proposalInput.metaPlan) {
+      throw new Error("Meta action has no meta plan");
+    }
+    const result = await missionControlService.applyMetaPlanDirect(proposalInput.metaPlan);
+    return {
+      content: [],
+      structuredContent: ensureValidJson(
+        result.ok
+          ? {
+              ok: true,
+              status: "applied",
+              guidance: `Meta action applied on ${result.metaAppliedOnHost ?? hostLabel}.`,
+            }
+          : { ok: false, error: result.error },
+      ),
+    };
+  };
+  /**
    * Threaded file comments: every agent gets reply_to_thread, list_threads
    * and comment_on_file, scoped to the calling agent. Kept out of the
    * catalog body so createPaseoToolCatalog stays under the complexity budget.
@@ -1501,6 +1510,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       );
     }
     if (
+      !gate.isMcpClient &&
       input.action === "move_agent" &&
       callerAgentId &&
       input.targetId?.trim() === callerAgentId &&
@@ -1523,6 +1533,26 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         content: [],
         structuredContent: ensureValidJson({ ok: true, status: "scheduled", guidance }),
       };
+    }
+    const buildProposal = () =>
+      buildSplitMetaProposalInput(
+        {
+          serverId: serverId ?? "",
+          hostAlias: options.hostAlias,
+          peerManager: peerManager ?? null,
+          lookup: {
+            agentManager,
+            agentStorage,
+            workspaceRegistry: metaWorkspaceRegistry,
+            projectRegistry: metaProjectRegistry,
+          },
+          resolveFleetId: (id) => fleetIdIndex.resolveFleetId(id),
+          hostLabel,
+        },
+        input,
+      );
+    if (gate.isMcpClient) {
+      return runUngatedMeta(await buildProposal());
     }
     // Dedupe (spec 03 — same discipline as fleet_create_agent and
     // fleet_send_prompt): an identical meta mutation while the prior is
@@ -1558,23 +1588,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         // sets it from the action); this hook keeps the old fleet_meta's
         // explicit destructive declaration as the authoritative source.
         classify: () => classifyFleetMetaAction({ action: input.action } as MissionControlMetaPlan),
-        buildProposal: () =>
-          buildSplitMetaProposalInput(
-            {
-              serverId: serverId ?? "",
-              hostAlias: options.hostAlias,
-              peerManager: peerManager ?? null,
-              lookup: {
-                agentManager,
-                agentStorage,
-                workspaceRegistry: metaWorkspaceRegistry,
-                projectRegistry: metaProjectRegistry,
-              },
-              resolveFleetId: (id) => fleetIdIndex.resolveFleetId(id),
-              hostLabel,
-            },
-            input,
-          ),
+        buildProposal,
       });
       if (!gated.ok) {
         throw new Error(gated.error);
@@ -5560,6 +5574,8 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         currentModeId: z.string().nullable(),
         availableModes: z.array(ProviderModeSchema),
         lastMessage: z.string().nullable().optional(),
+        // The turn the initial prompt runs in; pass it to fleet_wait_agent.
+        turnId: z.string().nullable().optional(),
         permission: AgentPermissionRequestPayloadSchema.nullable().optional(),
         // Approval-flow outcome (spec 03): the proposal id when a spawn is
         // pending (or deduplicated onto an existing one) and self-correcting
@@ -5770,6 +5786,14 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
             notifyOnFinish: false,
           },
         );
+        const turn = plan.initialPrompt
+          ? await resolvePromptedTurn({
+              agentManager,
+              agentId: snapshot.id,
+              previousTurnId: null,
+              joinsCurrentTurn: false,
+            })
+          : null;
         return {
           content: [],
           structuredContent: ensureValidJson({
@@ -5782,6 +5806,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
             availableModes: snapshot.availableModes,
             lastMessage: null,
             permission: null,
+            turnId: turn?.turnId ?? null,
           }),
         };
       };
@@ -5806,6 +5831,14 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           throw new Error(`cwd or workspaceId is required to place the agent on host "${host}"`);
         }
         const snapshot = await client.createAgent(buildPeerCreateAgentPayload(args));
+        const turn = initialPrompt
+          ? await resolvePromptedTurn({
+              client,
+              agentId: snapshot.id,
+              previousTurnId: null,
+              joinsCurrentTurn: false,
+            })
+          : null;
         const structuredContent = ensureValidJson({
           agentId: snapshot.id,
           type: snapshot.provider,
@@ -5816,6 +5849,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           availableModes: snapshot.availableModes,
           lastMessage: null,
           permission: sanitizePermissionRequest(snapshot.pendingPermissions[0] ?? null),
+          turnId: turn?.turnId ?? null,
         });
         return { content: [], structuredContent };
       };
@@ -6172,6 +6206,9 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         // The agent was idle and its new run was seen starting before this
         // returned, so a fleet_wait_agent after it waits on the new run.
         runStarted: z.boolean().optional(),
+        // The turn this prompt runs in (a live steer joins the current turn);
+        // pass it to fleet_wait_agent/fleet_wait_agents to bind the wait.
+        turnId: z.string().nullable().optional(),
         // Approval-flow outcome (spec 03): the proposal id when a send is
         // pending (or deduplicated onto an existing one) and guidance.
         // Additive.
@@ -6309,6 +6346,10 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       const dispatchLocalPrompt = async (): Promise<PaseoToolResult> => {
         let deliveredAs: string;
         const wasIdle = agentManager.getAgent(agentId)?.lifecycle !== "running";
+        // A "steer" result on an agent with a run in flight was a live steer
+        // into that run (an idle agent's steer starts a new one).
+        const wasBusy = agentManager.hasInFlightRun(agentId);
+        const before = await readCurrentTurn({ agentManager, agentId }).catch(() => null);
         try {
           deliveredAs = await dispatchLocalPromptMode({
             agentManager,
@@ -6328,13 +6369,19 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           }
           throw error;
         }
-        const runStarted = wasIdle && (await waitForPromptedRunStart({ agentManager, agentId }));
+        const turn = await resolvePromptedTurn({
+          agentManager,
+          agentId,
+          previousTurnId: before?.active ?? before?.last ?? null,
+          joinsCurrentTurn: deliveredAs === "steer" && wasBusy,
+        });
         return {
           content: [],
           structuredContent: ensureValidJson({
             success: true,
             deliveryMode: deliveredAs,
-            runStarted,
+            runStarted: wasIdle && turn.started,
+            turnId: turn.turnId,
           }),
         };
       };
@@ -6353,24 +6400,32 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       const before = await Promise.resolve()
         .then(() => client.fetchAgent(agentId))
         .catch(() => null);
+      const beforeTurn = await readCurrentTurn({ client, agentId }).catch(() => null);
       await client.sendAgentMessage(agentId, prompt, {
         dispatchMode: effectiveMode,
         ...(attachments && attachments.length > 0 ? { attachments } : {}),
       });
-      const runStarted =
-        before?.agent.status !== "running" && (await waitForPromptedRunStart({ client, agentId }));
+      const wasIdle = before?.agent.status !== "running";
+      const turn = await resolvePromptedTurn({
+        client,
+        agentId,
+        previousTurnId: beforeTurn?.active ?? beforeTurn?.last ?? null,
+        // A busy omp agent takes a steer into its live turn.
+        joinsCurrentTurn: effectiveMode === "steer" && !wasIdle && before?.agent.provider === "omp",
+      });
       return {
         content: [],
         structuredContent: ensureValidJson({
           success: true,
           deliveryMode: effectiveMode,
-          runStarted,
+          runStarted: wasIdle && turn.started,
+          turnId: turn.turnId,
         }),
       };
     },
   );
 
-  registerFleetControlTools({
+  const fleetControlOptions = {
     registerTool,
     agentManager,
     agentStorage,
@@ -6382,21 +6437,25 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     hostLabel,
     logger: childLogger,
     missionControlService,
-  });
+  };
+  registerFleetControlTools(fleetControlOptions);
+  registerFleetTranscriptTool(fleetControlOptions);
+  registerFleetWaitTools(fleetControlOptions);
 
   // 04 — the 11 split meta tools share one output contract (same as the old
   // fleet_meta) and the M8 respondsTo ledger field. "scheduled" is an agent's
-  // move of itself, applied when its turn ends.
+  // move of itself, applied when its turn ends; "applied" is a remote MCP
+  // client's ungated apply (no proposal).
   const META_TOOL_OUTPUT_SCHEMA = {
     ok: z.boolean(),
-    status: z.enum(["pending", "sent", "scheduled"]).optional(),
+    status: z.enum(["pending", "sent", "scheduled", "applied"]).optional(),
     proposalId: z.string().optional(),
     guidance: z.string().optional(),
     error: z.string().optional(),
   };
   const META_GATE_NOTE =
     "Called by the Commander it is approval-gated (a proposal card the user approves); called by " +
-    "any other agent it applies immediately.";
+    "any other agent or a remote MCP client it applies immediately.";
   const META_RESPONDS_TO_DESCRIPTION =
     "M8 instruction ledger: the open instruction id this dispatch answers (e.g. '#12'). " +
     "The envelope lists open ids; cite one on every card you emit for a user instruction.";
@@ -6472,27 +6531,29 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           "fleet_meta is unavailable: workspace/project registries are not configured on this daemon",
         );
       }
+      const buildProposal = async () => {
+        const proposalInput = await buildFleetMetaProposalInput({
+          serverId: serverId ?? "",
+          hostAlias: options.hostAlias,
+          peerManager: peerManager ?? null,
+          metaPlan: args.metaPlan,
+          lookup: {
+            agentManager,
+            agentStorage,
+            workspaceRegistry: metaWorkspaceRegistry,
+            projectRegistry: metaProjectRegistry,
+          },
+        });
+        return args.respondsTo ? { ...proposalInput, respondsTo: args.respondsTo } : proposalInput;
+      };
+      if (gate.isMcpClient) {
+        return runUngatedMeta(await buildProposal());
+      }
       const gated = await runCommanderGatedAction({
         toolName: "fleet_meta",
         toolInput: args,
         classify: () => classifyFleetMetaAction(args.metaPlan),
-        buildProposal: async () => {
-          const proposalInput = await buildFleetMetaProposalInput({
-            serverId: serverId ?? "",
-            hostAlias: options.hostAlias,
-            peerManager: peerManager ?? null,
-            metaPlan: args.metaPlan,
-            lookup: {
-              agentManager,
-              agentStorage,
-              workspaceRegistry: metaWorkspaceRegistry,
-              projectRegistry: metaProjectRegistry,
-            },
-          });
-          return args.respondsTo
-            ? { ...proposalInput, respondsTo: args.respondsTo }
-            : proposalInput;
-        },
+        buildProposal,
       });
       if (!gated.ok) {
         throw new Error(gated.error);
@@ -7078,6 +7139,41 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     },
   );
 
+  /**
+   * fleet_agent_status for an agent on a peer: the status lives in the owning
+   * host's Mission Control store, so the same tool runs there (fresh:true
+   * steers and waits on that host).
+   */
+  const fetchPeerAgentStatus = async (
+    targetHost: string,
+    agentId: string,
+    fresh: boolean,
+  ): Promise<PaseoToolResult> => {
+    const client = resolveFleetHost(targetHost);
+    if (!client) {
+      throw new Error(
+        `Host "${targetHost}" is not a configured peer; this daemon knows: ${knownFleetHostsText()}`,
+      );
+    }
+    const peerResult = await executeFleetToolOnPeer(
+      client,
+      "fleet_agent_status",
+      { agentId, fresh },
+      fresh ? FRESH_STATUS_WAIT_TIMEOUT_MS + 15_000 : undefined,
+    );
+    if (!peerResult.ok) {
+      throw new Error(`fleet_agent_status on host "${targetHost}" failed: ${peerResult.error}`);
+    }
+    const peerRecord = peerResult.structuredContent;
+    if (typeof peerRecord !== "object" || peerRecord === null) {
+      throw new Error(`fleet_agent_status on host "${targetHost}" returned no status`);
+    }
+    return {
+      content: [],
+      structuredContent: ensureValidJson({ ...peerRecord, host: targetHost }),
+    };
+  };
+
   registerTool(
     "fleet_agent_status",
     {
@@ -7167,12 +7263,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         }
       }
       if (!isFleetLocalTarget(targetHost)) {
-        const actualHost = targetHost === "local" ? hostLabel : targetHost;
-        throw new Error(
-          `Agent "${agentId}" is on host "${actualHost}" (a peer). fleet_agent_status reads the local ` +
-            "daemon's mission-control store; run it against that daemon (or use fleet_list_agents to " +
-            "see its roster row here).",
-        );
+        return fetchPeerAgentStatus(targetHost, agentId, fresh);
       }
       const record = await missionControlService.getAgentStatusRecord(agentId);
       // Project attribution: resolve the workspace's project via the local

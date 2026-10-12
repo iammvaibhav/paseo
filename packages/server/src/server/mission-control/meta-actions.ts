@@ -1317,13 +1317,26 @@ export async function applyMetaFromProposal(
   if (!plan) {
     return { ok: false, error: "Meta proposal has no meta plan" };
   }
+  return applyRoutedMetaPlan(deps, plan, proposal.id);
+}
+
+/**
+ * Apply a meta plan on the host its serverId names (local registries or a
+ * peer over mission_control.meta.apply). `traceId` is the proposal id, or a
+ * caller tag for ungated applies (remote MCP clients), used only in logs.
+ */
+export async function applyRoutedMetaPlan(
+  deps: MetaActionsDependencies,
+  plan: MissionControlMetaPlan,
+  traceId: string,
+): Promise<{ ok: true; metaAppliedOnHost?: string } | { ok: false; error: string }> {
   const target = resolveMetaTargetHost(deps, plan.serverId);
   if (!target.ok) {
     deps.logger.error(
       {
         module: "mission-control",
         component: "meta",
-        proposalId: proposal.id,
+        proposalId: traceId,
         action: plan.action,
         error: target.error,
       },
@@ -1332,7 +1345,7 @@ export async function applyMetaFromProposal(
     return { ok: false, error: target.error };
   }
   if (target.kind === "peer") {
-    return applyMetaPlanOnPeer(deps, plan, proposal.id, target);
+    return applyMetaPlanOnPeer(deps, plan, traceId, target);
   }
   const result = await applyMetaPlan(deps, plan);
   if (!result.ok) {
@@ -1342,7 +1355,7 @@ export async function applyMetaFromProposal(
     {
       module: "mission-control",
       component: "meta",
-      proposalId: proposal.id,
+      proposalId: traceId,
       targetHost: target.label,
       summary: result.summary,
     },

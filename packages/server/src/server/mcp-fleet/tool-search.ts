@@ -9,13 +9,18 @@ export const CORE_FLEET_TOOL_NAMES = [
   "fleet_list_agents",
   "fleet_agent_status",
   "fleet_get_agent_activity",
+  "fleet_get_transcript",
   "fleet_search",
   "fleet_list_models",
   "suggest_placement",
   "fleet_create_agent",
   "fleet_send_prompt",
   "fleet_wait_agent",
+  "fleet_wait_agents",
 ] as const;
+
+/** Tools /mcp/fleet registers itself (not catalog tools): they act on the client's webhook. */
+export const MCP_ONLY_FLEET_TOOL_NAMES = ["fleet_notify_on_finish"] as const;
 
 export const META_FLEET_TOOL_NAMES = [
   "paseo_tool_search",

@@ -89,6 +89,14 @@ export const COMMANDER_TOOL_ALLOWLIST: readonly string[] = [
 ];
 
 /**
+ * Fleet tools a peer daemon may run on this host's catalog over
+ * mission_control.tools.execute in addition to the Commander allowlist:
+ * turn-bound waits run on the host that owns the agent. Not part of the
+ * Commander's own toolset.
+ */
+export const PEER_EXECUTABLE_TOOL_NAMES: readonly string[] = ["fleet_wait_agent"];
+
+/**
  * The static Commander system prompt, shipped as a repo markdown file
  * (commander-prompt.md) and bundled into the server dist beside this module at
  * build time (see packages/server/package.json build:lib). The prompt is

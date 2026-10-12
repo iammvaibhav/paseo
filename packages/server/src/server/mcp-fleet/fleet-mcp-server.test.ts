@@ -4,9 +4,13 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { PaseoToolCatalog, PaseoToolDefinition } from "../agent/tools/types.js";
-import type { ArmMcpFinishNotification } from "./finish-notifier.js";
+import type { ArmMcpFinishNotification, ArmMcpGroupNotification } from "./finish-notifier.js";
 import { createFleetMcpServer, FLEET_MCP_INSTRUCTIONS } from "./fleet-mcp-server.js";
-import { CORE_FLEET_TOOL_NAMES, META_FLEET_TOOL_NAMES } from "./tool-search.js";
+import {
+  CORE_FLEET_TOOL_NAMES,
+  MCP_ONLY_FLEET_TOOL_NAMES,
+  META_FLEET_TOOL_NAMES,
+} from "./tool-search.js";
 import type { PaseoToolHostDependencies } from "../agent/tools/paseo-tools.js";
 import { createPaseoToolCatalog } from "../agent/tools/paseo-tools.js";
 import { createProviderSnapshotManagerStub } from "../test-utils/session-stubs.js";
@@ -59,7 +63,7 @@ describe("createFleetMcpServer", () => {
     // Catalog tools that exist in this stub hostDeps
     const catalog = await createPaseoToolCatalog(hostDeps);
     const expectedCore = CORE_FLEET_TOOL_NAMES.filter((name) => catalog.tools.has(name));
-    const expectedTotal = [...expectedCore, ...META_FLEET_TOOL_NAMES];
+    const expectedTotal = [...expectedCore, ...META_FLEET_TOOL_NAMES, ...MCP_ONLY_FLEET_TOOL_NAMES];
 
     expect(toolNames.sort()).toEqual(expectedTotal.sort());
 
@@ -142,10 +146,11 @@ describe("notifyOnFinish for MCP clients", () => {
   function setup(options: { withTarget: boolean }) {
     const toolCalls: Array<Record<string, unknown>> = [];
     const armed: ArmMcpFinishNotification[] = [];
+    const armedGroups: ArmMcpGroupNotification[] = [];
     const tool = (name: string, handler: PaseoToolDefinition["handler"]): PaseoToolDefinition => ({
       name,
       description: name,
-      inputSchema: z.object({ host: z.string().optional() }).passthrough(),
+      inputSchema: { host: z.string().optional(), agentId: z.string().optional() },
       handler,
     });
     const tools = new Map<string, PaseoToolDefinition>([
@@ -153,8 +158,18 @@ describe("notifyOnFinish for MCP clients", () => {
         "fleet_create_agent",
         tool("fleet_create_agent", async (input) => {
           toolCalls.push(input as Record<string, unknown>);
-          return { content: [], structuredContent: { agentId: "agent-9", status: "running" } };
+          return {
+            content: [],
+            structuredContent: { agentId: "agent-9", status: "running", turnId: "turn-9" },
+          };
         }),
+      ],
+      [
+        "fleet_agent_status",
+        tool("fleet_agent_status", async () => ({
+          content: [],
+          structuredContent: { running: { activeTurnId: "turn-live" } },
+        })),
       ],
     ]);
     const catalog: PaseoToolCatalog = {
@@ -165,6 +180,7 @@ describe("notifyOnFinish for MCP clients", () => {
     return {
       toolCalls,
       armed,
+      armedGroups,
       server: createFleetMcpServer({
         hostDependencies: createTestHostDependencies(),
         catalog,
@@ -172,6 +188,9 @@ describe("notifyOnFinish for MCP clients", () => {
         finishNotifier: {
           arm: async (input) => {
             armed.push(input);
+          },
+          armGroup: async (input) => {
+            armedGroups.push(input);
           },
         },
         notifyTarget: options.withTarget ? { url: "https://hook.example/x" } : null,
@@ -202,6 +221,8 @@ describe("notifyOnFinish for MCP clients", () => {
       client: "grok-bot",
       agentId: "agent-9",
       host: "blrofc3",
+      // Bound to the turn the create started, never an earlier run.
+      turnId: "turn-9",
       tool: "fleet_create_agent",
       context: "essay-42",
       target: { url: "https://hook.example/x" },
@@ -243,6 +264,62 @@ describe("notifyOnFinish for MCP clients", () => {
     const { client, close } = await connect(server);
     await client.callTool({ name: "fleet_create_agent", arguments: { host: "local" } });
     expect(armed).toEqual([]);
+    await close();
+  });
+
+  test("an undeclared argument is an error naming the closest real one; the tool never runs", async () => {
+    const { toolCalls, server } = setup({ withTarget: true });
+    const { client, close } = await connect(server);
+    const direct = await client.callTool({
+      name: "fleet_create_agent",
+      arguments: { host: "local", hots: "typo" },
+    });
+    expect(direct.isError).toBe(true);
+    expect(extractFirstTextContent(direct as { content: unknown[] })).toContain(
+      '"hots" (did you mean "host"?)',
+    );
+    const viaCall = await client.callTool({
+      name: "paseo_tool_call",
+      arguments: { name: "fleet_create_agent", arguments: { agentIdentifier: "x" } },
+    });
+    expect(extractFirstTextContent(viaCall as { content: unknown[] })).toContain(
+      'did you mean "agentId"?',
+    );
+    expect(toolCalls).toEqual([]);
+    await close();
+  });
+
+  test("fleet_notify_on_finish arms one group bound to each agent's turn", async () => {
+    const { armed, armedGroups, server } = setup({ withTarget: true });
+    const { client, close } = await connect(server);
+    const result = await client.callTool({
+      name: "fleet_notify_on_finish",
+      arguments: {
+        agents: [{ agentId: "a", turnId: "turn-a" }, { agentId: "b" }],
+        group: true,
+        perAgent: false,
+        notifyContext: "batch",
+      },
+    });
+    expect(result.isError).toBeFalsy();
+    expect(armed).toEqual([]);
+    expect(armedGroups).toHaveLength(1);
+    expect(armedGroups[0]).toMatchObject({
+      perAgent: false,
+      context: "batch",
+      agents: [
+        { agentId: "a", turnId: "turn-a" },
+        // No turnId given: bound to the run in progress at arm time.
+        { agentId: "b", turnId: "turn-live" },
+      ],
+    });
+    expect(result.structuredContent).toMatchObject({
+      groupId: armedGroups[0]!.groupId,
+      armed: [
+        { agentId: "a", turnId: "turn-a" },
+        { agentId: "b", turnId: "turn-live" },
+      ],
+    });
     await close();
   });
 });

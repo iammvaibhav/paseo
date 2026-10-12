@@ -218,6 +218,7 @@ import { buildCommanderLaunchConfig, buildLocalContextPayload } from "./mission-
 import { resolveLocalSpawnLabels } from "./mission-control/spawn-labels.js";
 import {
   COMMANDER_TOOL_ALLOWLIST,
+  PEER_EXECUTABLE_TOOL_NAMES,
   MISSION_CONTROL_LABEL_KEY,
   MISSION_CONTROL_LABEL_VALUE,
 } from "./mission-control/commander-contract.js";
@@ -3488,7 +3489,10 @@ export class Session {
     msg: Extract<SessionInboundMessage, { type: "mission_control.tools.execute.request" }>,
   ): Promise<void> {
     try {
-      if (!COMMANDER_TOOL_ALLOWLIST.includes(msg.name)) {
+      if (
+        !COMMANDER_TOOL_ALLOWLIST.includes(msg.name) &&
+        !PEER_EXECUTABLE_TOOL_NAMES.includes(msg.name)
+      ) {
         this.emit({
           type: "mission_control.tools.execute.response",
           payload: {

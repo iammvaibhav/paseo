@@ -490,6 +490,14 @@ export interface MissionControlServiceOptions {
     proposal: MissionControlProposal,
   ) => Promise<{ ok: true; metaAppliedOnHost?: string } | { ok: false; error: string }>;
   /**
+   * Apply a meta plan with no proposal at all, routed to the host its
+   * serverId names. Used by remote MCP clients (/mcp/fleet), which are never
+   * gated: no card, no proposal row, destructive actions included.
+   */
+  metaApplyDirect?: (
+    metaPlan: MissionControlMetaPlan,
+  ) => Promise<{ ok: true; metaAppliedOnHost?: string } | { ok: false; error: string }>;
+  /**
    * Apply a meta plan against THIS daemon's registries, reached over peering:
    * the commander-host metaFromProposal routes an approved meta-kind proposal
    * whose metaPlan.serverId names this host as a peer here
@@ -716,6 +724,7 @@ export class MissionControlService {
   private readonly resetCommanderFn: MissionControlServiceOptions["resetCommander"];
   private readonly spawnFromProposal: MissionControlServiceOptions["spawnFromProposal"];
   private readonly metaFromProposal: MissionControlServiceOptions["metaFromProposal"];
+  private readonly metaApplyDirect: MissionControlServiceOptions["metaApplyDirect"];
   private readonly metaApplyRemote: MissionControlServiceOptions["metaApplyRemote"];
   private readonly spawnApplyRemote: MissionControlServiceOptions["spawnApplyRemote"];
   private readonly resolveRunPlacement: MissionControlServiceOptions["resolveRunPlacement"];
@@ -897,6 +906,7 @@ export class MissionControlService {
     this.resetCommanderFn = options.resetCommander;
     this.spawnFromProposal = options.spawnFromProposal;
     this.metaFromProposal = options.metaFromProposal;
+    this.metaApplyDirect = options.metaApplyDirect;
     this.metaApplyRemote = options.metaApplyRemote;
     this.spawnApplyRemote = options.spawnApplyRemote;
     this.resolveRunPlacement = options.resolveRunPlacement;
@@ -1993,6 +2003,16 @@ export class MissionControlService {
       return { ok: false, error: "Spawn executor is not available on this host" };
     }
     return this.spawnApplyRemote(spawnPlan);
+  }
+
+  /** Ungated meta apply for remote MCP clients: no proposal is recorded. */
+  async applyMetaPlanDirect(
+    metaPlan: MissionControlMetaPlan,
+  ): Promise<{ ok: true; metaAppliedOnHost?: string } | { ok: false; error: string }> {
+    if (!this.metaApplyDirect) {
+      return { ok: false, error: "Meta executor is not available" };
+    }
+    return this.metaApplyDirect(metaPlan);
   }
 
   listProposals(): MissionControlProposal[] {

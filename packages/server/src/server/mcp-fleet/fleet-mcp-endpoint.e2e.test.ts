@@ -10,7 +10,11 @@ import pino from "pino";
 import { hashDaemonPassword } from "../auth.js";
 import { createPaseoDaemon, type PaseoDaemonConfig } from "../bootstrap.js";
 import { createTestAgentClients } from "../test-utils/fake-agent-client.js";
-import { CORE_FLEET_TOOL_NAMES, META_FLEET_TOOL_NAMES } from "./tool-search.js";
+import {
+  CORE_FLEET_TOOL_NAMES,
+  MCP_ONLY_FLEET_TOOL_NAMES,
+  META_FLEET_TOOL_NAMES,
+} from "./tool-search.js";
 
 async function getAvailablePort(): Promise<number> {
   const { promise, resolve, reject } = Promise.withResolvers<number>();
@@ -125,15 +129,19 @@ describe("Fleet MCP Endpoint E2E (/mcp/fleet)", () => {
       const toolsList = await client.listTools();
       const registeredNames = toolsList.tools.map((t) => t.name);
 
-      // tools/list contains exactly core+3 meta tools that exist
-      for (const meta of META_FLEET_TOOL_NAMES) {
+      // tools/list contains exactly the core, meta and MCP-only tools that exist
+      for (const meta of [...META_FLEET_TOOL_NAMES, ...MCP_ONLY_FLEET_TOOL_NAMES]) {
         expect(registeredNames).toContain(meta);
       }
       for (const tool of toolsList.tools) {
-        const isCoreOrMeta =
-          (CORE_FLEET_TOOL_NAMES as readonly string[]).includes(tool.name) ||
-          (META_FLEET_TOOL_NAMES as readonly string[]).includes(tool.name);
-        expect(isCoreOrMeta).toBe(true);
+        const isKnown = (
+          [
+            ...CORE_FLEET_TOOL_NAMES,
+            ...META_FLEET_TOOL_NAMES,
+            ...MCP_ONLY_FLEET_TOOL_NAMES,
+          ] as readonly string[]
+        ).includes(tool.name);
+        expect(isKnown).toBe(true);
       }
 
       // 5. paseo_skill returns the skill instructions

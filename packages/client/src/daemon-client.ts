@@ -7424,6 +7424,8 @@ export class DaemonClient {
     name: string;
     args?: Record<string, unknown>;
     requestId?: string;
+    /** RPC timeout; long-running tools (fleet_agent_status fresh:true) need more than the default. */
+    timeoutMs?: number;
   }): Promise<MissionControlToolsExecutePayload> {
     return this.sendCorrelatedSessionRequest({
       requestId: input.requestId,
@@ -7433,6 +7435,7 @@ export class DaemonClient {
         ...(input.args ? { args: input.args } : {}),
       },
       responseType: "mission_control.tools.execute.response",
+      ...(input.timeoutMs ? { timeout: input.timeoutMs } : {}),
     });
   }
 

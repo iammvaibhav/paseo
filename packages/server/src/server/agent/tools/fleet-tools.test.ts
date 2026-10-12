@@ -75,9 +75,20 @@ function createFakePeerHarness(
   const statuses = overrides.statuses ?? [
     { name: "macbook", state: "online" as const, lastSeenAt: null },
   ];
+  // Each send starts a new turn on the peer, reported by its fleet_agent_status.
+  let peerTurn = 0;
   const client = {
     fetchAgentTimeline: vi.fn(async () => peerTimelinePayload()),
-    sendAgentMessage: vi.fn(async () => undefined),
+    sendAgentMessage: vi.fn(async () => {
+      peerTurn += 1;
+    }),
+    missionControlToolsExecute: vi.fn(async (input: { name: string }) => ({
+      ok: true,
+      name: input.name,
+      structuredContent: {
+        running: peerTurn > 0 ? { activeTurnId: `peer-turn-${peerTurn}` } : null,
+      },
+    })),
     // Busy by default: sends to a running agent return without waiting for a run start.
     fetchAgent: vi.fn(async () => ({ agent: { status: "running" } })),
     ...overrides.client,
@@ -423,6 +434,7 @@ describe("fleet_send_prompt mode", () => {
       success: true,
       deliveryMode: "steer",
       runStarted: false,
+      turnId: "peer-turn-1",
     });
   });
 
@@ -463,6 +475,7 @@ describe("fleet_send_prompt mode", () => {
       success: true,
       deliveryMode: "steer",
       runStarted: false,
+      turnId: null,
     });
   });
 
@@ -502,6 +515,7 @@ describe("fleet_send_prompt mode", () => {
       success: true,
       deliveryMode: "steer",
       runStarted: false,
+      turnId: null,
     });
   });
 
@@ -572,6 +586,8 @@ describe("fleet_send_prompt mode", () => {
     const agentManager = {
       getAgent: vi.fn(() => ({ provider: "codex" })),
       hasInFlightRun: vi.fn(() => true),
+      hasTimeline: vi.fn(() => false),
+      waitForAgentRunStart: vi.fn(async () => undefined),
       tryRunOutOfBand,
       replaceAgentRun,
     } as unknown as AgentManager;
@@ -609,6 +625,7 @@ describe("fleet_send_prompt mode", () => {
       success: true,
       deliveryMode: "steer-interrupt",
       runStarted: false,
+      turnId: null,
     });
   });
 
@@ -1019,8 +1036,12 @@ describe("approval-gate wrap point (runCommanderGatedAction)", () => {
     });
 
     expect(client.sendAgentMessage).toHaveBeenCalledTimes(1);
-    expect(fetchAgent).toHaveBeenCalledTimes(2);
-    expect(result.structuredContent).toMatchObject({ success: true, runStarted: true });
+    // The new turn the peer reports after the send is the one returned.
+    expect(result.structuredContent).toMatchObject({
+      success: true,
+      runStarted: true,
+      turnId: "peer-turn-1",
+    });
   });
 
   test("fleet_create_agent copies native images onto the spawn plan", async () => {

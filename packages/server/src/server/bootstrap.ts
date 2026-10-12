@@ -299,6 +299,7 @@ import { archiveAgentCommand, cancelAgentRunCommand } from "./agent/lifecycle-co
 import {
   applyMetaFromProposal,
   applyMetaPlan,
+  applyRoutedMetaPlan,
   type MetaActionsDependencies,
 } from "./mission-control/meta-actions.js";
 import {
@@ -2222,6 +2223,9 @@ export async function createPaseoDaemon(
     // records — live agents flow through agent_state) fan out to every
     // trusted session's agent_update service.
     metaFromProposal: (proposal) => applyMetaFromProposal(metaActionsDeps(), proposal),
+    // Remote MCP clients are never gated: their meta tools apply here with
+    // no proposal record, routed to the plan's host like an approved card.
+    metaApplyDirect: (metaPlan) => applyRoutedMetaPlan(metaActionsDeps(), metaPlan, "mcp-direct"),
     // Peer branch of the meta apply: the commander host forwards an approved
     // meta-kind proposal whose metaPlan.serverId names THIS host as a peer
     // (mission_control.meta.apply). Re-validate against this daemon's own

@@ -2,7 +2,7 @@ import { createServer, type IncomingHttpHeaders, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import pino from "pino";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { FleetAgentWaitResult } from "../agent/tools/fleet-control-tools.js";
+import type { FleetAgentWaitResult } from "../agent/tools/fleet-wait.js";
 import { createMcpFinishNotifier } from "./finish-notifier.js";
 
 interface Received {
@@ -18,6 +18,7 @@ const result = (fields: Partial<FleetAgentWaitResult>): FleetAgentWaitResult => 
   finished: true,
   needsPermission: false,
   timedOut: false,
+  turnId: "turn-1",
   title: "Essay writer",
   bucket: "ready",
   lastMessage: "Done.",
@@ -168,5 +169,81 @@ describe("createMcpFinishNotifier", () => {
       waitForAgent: async () => result({}),
     });
     expect(received).toHaveLength(1);
+  });
+
+  it("binds every re-wait to the turn the first wait reported", async () => {
+    const turnIds: Array<string | undefined> = [];
+    await notifier().arm({
+      client: "grok-bot",
+      target: { url },
+      agentId: "agent-1",
+      tool: "fleet_send_prompt",
+      context: null,
+      waitForAgent: async (input) => {
+        turnIds.push(input.turnId);
+        return turnIds.length < 3
+          ? result({ status: "running", finished: false, timedOut: true, turnId: "turn-7" })
+          : result({ turnId: "turn-7" });
+      },
+    });
+    expect(turnIds).toEqual([undefined, "turn-7", "turn-7"]);
+    expect(received[0]!.body).toMatchObject({ agent: { turnId: "turn-7" } });
+  });
+
+  it("posts one group event after the last agent finishes, plus per-agent events", async () => {
+    const finishOrder: string[] = [];
+    await notifier().armGroup({
+      client: "grok-bot",
+      target: { url },
+      groupId: "grp_1",
+      agents: [
+        { agentId: "a", turnId: "t-a" },
+        { agentId: "b", turnId: "t-b" },
+      ],
+      perAgent: true,
+      tool: "fleet_notify_on_finish",
+      context: "batch-3",
+      waitForAgent: async (input) => {
+        // b blocks on a permission once, then both finish.
+        if (input.agentId === "b" && !finishOrder.includes("b-perm")) {
+          finishOrder.push("b-perm");
+          return result({
+            agentId: "b",
+            status: "permission",
+            finished: false,
+            needsPermission: true,
+            turnId: "t-b",
+          });
+        }
+        finishOrder.push(input.agentId);
+        return result({ agentId: input.agentId, turnId: input.turnId ?? null });
+      },
+    });
+    const types = received.map((r) => r.body.type);
+    expect(types.filter((t) => t === "paseo.agent.finished")).toHaveLength(2);
+    expect(types.filter((t) => t === "paseo.agent.needs_permission")).toHaveLength(1);
+    expect(types.at(-1)).toBe("paseo.agents.group_finished");
+    expect(received.at(-1)!.body).toMatchObject({
+      groupId: "grp_1",
+      context: "batch-3",
+      agents: [
+        { id: "a", turnId: "t-a", status: "idle" },
+        { id: "b", turnId: "t-b", status: "idle" },
+      ],
+    });
+  });
+
+  it("group-only mode posts no per-agent finished events", async () => {
+    await notifier().armGroup({
+      client: "grok-bot",
+      target: { url },
+      groupId: "grp_2",
+      agents: [{ agentId: "a" }, { agentId: "b" }],
+      perAgent: false,
+      tool: "fleet_notify_on_finish",
+      context: null,
+      waitForAgent: async (input) => result({ agentId: input.agentId }),
+    });
+    expect(received.map((r) => r.body.type)).toEqual(["paseo.agents.group_finished"]);
   });
 });
