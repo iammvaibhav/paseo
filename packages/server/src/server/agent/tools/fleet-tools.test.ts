@@ -78,6 +78,8 @@ function createFakePeerHarness(
   const client = {
     fetchAgentTimeline: vi.fn(async () => peerTimelinePayload()),
     sendAgentMessage: vi.fn(async () => undefined),
+    // Busy by default: sends to a running agent return without waiting for a run start.
+    fetchAgent: vi.fn(async () => ({ agent: { status: "running" } })),
     ...overrides.client,
   } as unknown as DaemonClient;
   const peerManager = {
@@ -417,7 +419,11 @@ describe("fleet_send_prompt mode", () => {
     expect(client.sendAgentMessage).toHaveBeenCalledWith(SEND_AGENT_UUID, "steer the turn", {
       dispatchMode: "steer",
     });
-    expect(result.structuredContent).toEqual({ success: true, deliveryMode: "steer" });
+    expect(result.structuredContent).toEqual({
+      success: true,
+      deliveryMode: "steer",
+      runStarted: false,
+    });
   });
 
   test("steers a busy omp agent locally through the out-of-band path without cancelling", async () => {
@@ -453,7 +459,11 @@ describe("fleet_send_prompt mode", () => {
       SEND_AGENT_UUID,
       expect.objectContaining({ type: "user_message", text: "focus on tests" }),
     );
-    expect(result.structuredContent).toEqual({ success: true, deliveryMode: "steer" });
+    expect(result.structuredContent).toEqual({
+      success: true,
+      deliveryMode: "steer",
+      runStarted: false,
+    });
   });
 
   test("an instruction steer records a visible user row so the agent's chat is never missing a direction", async () => {
@@ -488,7 +498,11 @@ describe("fleet_send_prompt mode", () => {
       text: "add a note about the fix",
       classification: "instruction",
     });
-    expect(result.structuredContent).toEqual({ success: true, deliveryMode: "steer" });
+    expect(result.structuredContent).toEqual({
+      success: true,
+      deliveryMode: "steer",
+      runStarted: false,
+    });
   });
 
   test("a machinery steer records a machinery-classified row (status asks render as a placeholder)", async () => {
@@ -591,7 +605,11 @@ describe("fleet_send_prompt mode", () => {
     });
     // The caller is told the truth: this was a steer request delivered as an
     // interrupt fallback, not a native steer.
-    expect(result.structuredContent).toEqual({ success: true, deliveryMode: "steer-interrupt" });
+    expect(result.structuredContent).toEqual({
+      success: true,
+      deliveryMode: "steer-interrupt",
+      runStarted: false,
+    });
   });
 
   test("steer with native images live-steers a structured OMP /steer prompt", async () => {
@@ -936,6 +954,73 @@ describe("approval-gate wrap point (runCommanderGatedAction)", () => {
       agentId: null,
       status: "pending-approval",
     });
+  });
+
+  test("a remote MCP client (Commander identity) spawns and sends directly, never via a proposal", async () => {
+    const createProposal = vi.fn();
+    const createAgent = vi.fn(async () => ({
+      id: "peer-agent-1",
+      provider: "codex",
+      status: "running",
+      cwd: "/repo",
+      currentModeId: null,
+      availableModes: [],
+      pendingPermissions: [],
+    }));
+    const { client, peerManager } = createFakePeerHarness({ client: { createAgent } });
+    const catalog = createPaseoToolCatalog({
+      agentManager: {} as unknown as AgentManager,
+      agentStorage: { get: async () => null, list: async () => [] } as unknown as AgentStorage,
+      providerSnapshotManager: createProviderSnapshotManagerStub()
+        .manager as unknown as ProviderSnapshotManager,
+      peerManager,
+      callerAgentId: "commander-1",
+      callerLabels: { "paseo.mission-control": "commander", "paseo.mcp-client": "grok-bot" },
+      serverId: "host-a",
+      missionControlService: createMissionControlServiceStub({ approvals: { createProposal } }),
+      logger: createTestLogger(),
+    });
+
+    const created = await catalog.executeTool("fleet_create_agent", {
+      host: "macbook",
+      cwd: "/repo",
+      provider: "codex/gpt-5.4",
+      initialPrompt: "write the essay",
+      title: "essay",
+    });
+    await catalog.executeTool("fleet_send_prompt", {
+      host: "macbook",
+      agentId: SEND_AGENT_UUID,
+      prompt: "follow up",
+      mode: "queue",
+    });
+
+    expect(createProposal).not.toHaveBeenCalled();
+    expect(created.structuredContent).toMatchObject({ agentId: "peer-agent-1" });
+    expect(client.sendAgentMessage).toHaveBeenCalledWith(SEND_AGENT_UUID, "follow up", {
+      dispatchMode: "queue",
+    });
+  });
+
+  test("a send to an idle peer agent returns only after the new run has started", async () => {
+    // Idle before the send, running after it: the wait in fleet_send_prompt
+    // sees the start, so a fleet_wait_agent afterwards waits on the new run
+    // instead of returning the previous run's result.
+    const statuses = ["idle", "running"];
+    const fetchAgent = vi.fn(async () => ({ agent: { status: statuses.shift() ?? "running" } }));
+    const { client, peerManager } = createFakePeerHarness({ client: { fetchAgent } });
+    const catalog = createCatalog(peerManager);
+
+    const result = await catalog.executeTool("fleet_send_prompt", {
+      host: "macbook",
+      agentId: SEND_AGENT_UUID,
+      prompt: "run again",
+      mode: "queue",
+    });
+
+    expect(client.sendAgentMessage).toHaveBeenCalledTimes(1);
+    expect(fetchAgent).toHaveBeenCalledTimes(2);
+    expect(result.structuredContent).toMatchObject({ success: true, runStarted: true });
   });
 
   test("fleet_create_agent copies native images onto the spawn plan", async () => {

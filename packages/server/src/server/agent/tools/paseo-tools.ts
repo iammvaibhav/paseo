@@ -121,7 +121,7 @@ import type { PageStore } from "../../page-tools/page-store.js";
 import { buildPeerUnreachableError, type PeerManager } from "../../peers/peer-manager.js";
 import { registerDocThreadTools } from "../../doc-threads/tools.js";
 import type { DocThreadsService } from "../../doc-threads/service.js";
-import { registerFleetControlTools } from "./fleet-control-tools.js";
+import { registerFleetControlTools, waitForPromptedRunStart } from "./fleet-control-tools.js";
 import { MissionControlSearchMatchSchema } from "@getpaseo/protocol/mission-control/types";
 import type { MissionControlProposalSpawnPlan } from "@getpaseo/protocol/mission-control/types";
 import { MissionControlMetaPlanSchema } from "@getpaseo/protocol/mission-control/types";
@@ -1358,6 +1358,12 @@ function resolveCatalogCallerContext(
 
 interface CommanderGate {
   isCommanderCaller: boolean;
+  /**
+   * Commander spawns and sends go through proposals. Remote MCP clients
+   * (/mcp/fleet) carry the Commander identity but are never gated: they run
+   * directly and get the real agentId or error back (so notifyOnFinish arms).
+   */
+  gatesSpawnAndSend: boolean;
   runCommanderGatedAction: (action: {
     toolName: string;
     toolInput: unknown;
@@ -1401,7 +1407,8 @@ function buildCommanderGate(deps: {
       return { ok: false, error: error instanceof Error ? error.message : String(error) };
     }
   };
-  return { isCommanderCaller, runCommanderGatedAction };
+  const gatesSpawnAndSend = isCommanderCaller && callerLabels?.["paseo.mcp-client"] === undefined;
+  return { isCommanderCaller, gatesSpawnAndSend, runCommanderGatedAction };
 }
 
 export function createPaseoToolCatalog(options: PaseoToolHostDependencies): PaseoToolCatalog {
@@ -1454,6 +1461,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     logWarn: childLogger.warn.bind(childLogger),
   });
   const isCommanderCaller = gate.isCommanderCaller;
+  const gatesSpawnAndSend = gate.gatesSpawnAndSend;
   const runCommanderGatedAction = gate.runCommanderGatedAction;
   /**
    * Threaded file comments: every agent gets reply_to_thread, list_threads
@@ -5700,7 +5708,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           throw error;
         }
       };
-      if (isCommanderCaller && missionControlService) {
+      if (gatesSpawnAndSend && missionControlService) {
         return runCommanderSpawnGate();
       }
       if (isFleetLocalTarget(host)) {
@@ -6084,10 +6092,14 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       outputSchema: {
         success: z.boolean(),
         deliveryMode: z.enum(["steer", "interrupt", "queue", "steer-interrupt"]),
+        // The agent was idle and its new run was seen starting before this
+        // returned, so a fleet_wait_agent after it waits on the new run.
+        runStarted: z.boolean().optional(),
         // Approval-flow outcome (spec 03): the proposal id when a send is
         // pending (or deduplicated onto an existing one) and guidance.
         // Additive.
         proposalId: z.string().optional(),
+        status: z.literal("pending-approval").optional(),
         guidance: z.string().optional(),
       },
     },
@@ -6198,6 +6210,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
               structuredContent: ensureValidJson({
                 success: false,
                 deliveryMode: effectiveMode,
+                status: "pending-approval",
                 proposalId: proposal.id,
                 guidance: `Send request sent for approval (proposal ${proposal.id}). It will be delivered once approved.`,
               }),
@@ -6218,6 +6231,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       // the failure treatment, never read as a user interruption.
       const dispatchLocalPrompt = async (): Promise<PaseoToolResult> => {
         let deliveredAs: string;
+        const wasIdle = agentManager.getAgent(agentId)?.lifecycle !== "running";
         try {
           deliveredAs = await dispatchLocalPromptMode({
             agentManager,
@@ -6237,12 +6251,17 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           }
           throw error;
         }
+        const runStarted = wasIdle && (await waitForPromptedRunStart({ agentManager, agentId }));
         return {
           content: [],
-          structuredContent: ensureValidJson({ success: true, deliveryMode: deliveredAs }),
+          structuredContent: ensureValidJson({
+            success: true,
+            deliveryMode: deliveredAs,
+            runStarted,
+          }),
         };
       };
-      if (isCommanderCaller && missionControlService) {
+      if (gatesSpawnAndSend && missionControlService) {
         return runCommanderSendGate();
       }
       if (isFleetLocalTarget(targetHost)) {
@@ -6254,13 +6273,22 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           `Host "${targetHost}" is not a configured peer; this daemon knows: ${knownFleetHostsText()}`,
         );
       }
+      const before = await Promise.resolve()
+        .then(() => client.fetchAgent(agentId))
+        .catch(() => null);
       await client.sendAgentMessage(agentId, prompt, {
         dispatchMode: effectiveMode,
         ...(attachments && attachments.length > 0 ? { attachments } : {}),
       });
+      const runStarted =
+        before?.agent.status !== "running" && (await waitForPromptedRunStart({ client, agentId }));
       return {
         content: [],
-        structuredContent: ensureValidJson({ success: true, deliveryMode: effectiveMode }),
+        structuredContent: ensureValidJson({
+          success: true,
+          deliveryMode: effectiveMode,
+          runStarted,
+        }),
       };
     },
   );
