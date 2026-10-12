@@ -221,17 +221,7 @@ import {
   tryOpenFileInBrowserEditor,
 } from "@/workspace/open-file-in-browser-editor";
 import { useEditorQuickOpenShortcut } from "@/screens/workspace/use-editor-quick-open-shortcut";
-import {
-  stopPlannotatorBrowserIfNeeded,
-  tryOpenFileInPlannotator,
-} from "@/workspace/open-file-in-plannotator";
 import { tryOpenFileWithDefaultOpener } from "@/workspace/open-file-with-default-opener";
-import { resolvePlannotatorEmbedHost } from "@/workspace/plannotator-embed-host";
-import {
-  closePlannotatorBrowserAfterSubmit,
-  handlePlannotatorSessionEvent,
-  type PlannotatorSessionEventPayload,
-} from "@/workspace/plannotator-feedback";
 import {
   isBrowserEditorInstance,
   usePreloadBrowserEditor,
@@ -1703,18 +1693,9 @@ function WorkspaceScreenContent({
 
   const client = useHostRuntimeClient(normalizedServerId);
   const isConnected = useHostRuntimeIsConnected(normalizedServerId);
-  const { hostProfile, browserEditorUrl } = useHostBrowserEditor(normalizedServerId);
+  const { browserEditorUrl } = useHostBrowserEditor(normalizedServerId);
   const isLocalDaemon = useIsLocalDaemon(normalizedServerId);
   const { settings: appSettings } = useAppSettings();
-  const plannotatorAvailable = useSessionStore(
-    (state) => state.sessions[normalizedServerId]?.serverInfo?.features?.plannotator === true,
-  );
-  // COMPAT(plannotatorEventSubscription): added 2026-09-30, remove gate after 2027-03-30.
-  const plannotatorEventsSubscribable = useSessionStore(
-    (state) =>
-      state.sessions[normalizedServerId]?.serverInfo?.features?.plannotatorEventSubscription ===
-      true,
-  );
   const supportsProvidersSnapshot = useSessionStore(
     (state) => state.sessions[normalizedServerId]?.serverInfo?.features?.providersSnapshot === true,
   );
@@ -1999,88 +1980,6 @@ function WorkspaceScreenContent({
     }
     return null;
   }, [uiTabs]);
-  const plannotatorEmbedHost = useMemo(
-    () =>
-      resolvePlannotatorEmbedHost({
-        isLocalDaemon,
-        browserEditorUrl,
-        hostProfile,
-      }),
-    [browserEditorUrl, hostProfile, isLocalDaemon],
-  );
-
-  useEffect(() => {
-    if (!client || !plannotatorAvailable || !plannotatorEventsSubscribable) {
-      return;
-    }
-    // The daemon delivers session-end pushes only to a socket subscribed to them.
-    const observation = client.observeEvents(["plannotator.session.event"]);
-    observation.subscribe({
-      snapshot: () => {},
-      update: (message) => {
-        if (message.type !== "plannotator.session.event") return;
-        void handlePlannotatorSessionEvent({
-          serverId: normalizedServerId,
-          event: message.payload as PlannotatorSessionEventPayload,
-          feedbackMode: appSettings.plannotatorFeedbackMode,
-          sendAgentMessage: async (agentId, text) => {
-            await client.sendAgentMessage(agentId, text);
-          },
-          toast: {
-            show: (msg) => toast.show(msg),
-            error: (msg) => toast.error(msg),
-          },
-        });
-      },
-      error: (error) => {
-        console.error("[plannotator] observeEvents failed", {
-          serverId: normalizedServerId,
-          error,
-        });
-      },
-    });
-    return () => {
-      void observation.release().catch(console.error);
-    };
-  }, [
-    appSettings.plannotatorFeedbackMode,
-    client,
-    normalizedServerId,
-    plannotatorAvailable,
-    plannotatorEventsSubscribable,
-    toast,
-  ]);
-
-  useEffect(() => {
-    const subscribe = getDesktopHost()?.events?.on;
-    if (!subscribe) {
-      return;
-    }
-    let disposed = false;
-    let unsubscribe: (() => void) | null = null;
-    const subscription = subscribe("plannotator-submitted", (payload) => {
-      if (
-        typeof payload === "object" &&
-        payload !== null &&
-        "browserId" in payload &&
-        typeof payload.browserId === "string"
-      ) {
-        closePlannotatorBrowserAfterSubmit(payload.browserId);
-      }
-    });
-    void Promise.resolve(subscription).then((cleanup) => {
-      if (disposed) {
-        cleanup();
-        return undefined;
-      }
-      unsubscribe = cleanup;
-      return undefined;
-    });
-    return () => {
-      disposed = true;
-      unsubscribe?.();
-    };
-  }, []);
 
   useOpenAgentTabLabels({
     client,
@@ -2148,8 +2047,6 @@ function WorkspaceScreenContent({
       if (input.target?.kind === "browser") {
         const { browserId } = input.target;
         if (!isBrowserEditorInstance(browserId)) {
-          // Stop daemon-spawned Plannotator so slots/ports free on tab close.
-          void stopPlannotatorBrowserIfNeeded({ client, browserId });
           useBrowserStore.getState().removeBrowser(browserId);
           removeResidentBrowserWebview(browserId);
           void getDesktopHost()?.browser?.unregisterWorkspaceBrowser?.(browserId);
@@ -2157,7 +2054,7 @@ function WorkspaceScreenContent({
       }
       closeWorkspaceTab(persistenceKey, normalizedTabId);
     },
-    [client, closeWorkspaceTab, hideWorkspaceAgent, persistenceKey, unpinWorkspaceAgent],
+    [closeWorkspaceTab, hideWorkspaceAgent, persistenceKey, unpinWorkspaceAgent],
   );
 
   const focusedPaneTabState = useMemo(
@@ -2484,13 +2381,10 @@ function WorkspaceScreenContent({
       return tryOpenFileWithDefaultOpener({
         defaultFileOpener: appSettings.defaultFileOpener,
         location,
-        client,
         workspaceDirectory,
         workspaceKey: persistenceKey,
         agentId: focusedAgentId,
         remote: !isLocalDaemon,
-        embedHost: plannotatorEmbedHost,
-        plannotatorAvailable,
         browserEditorUrl,
         workspaceTabs: uiTabs,
         openWorkspaceTabFocused: (target) => openWorkspaceTabFocused(persistenceKey, target),
@@ -2504,14 +2398,11 @@ function WorkspaceScreenContent({
     [
       appSettings.defaultFileOpener,
       browserEditorUrl,
-      client,
       focusedAgentId,
       isLocalDaemon,
       navigateToTabId,
       openWorkspaceTabFocused,
       persistenceKey,
-      plannotatorAvailable,
-      plannotatorEmbedHost,
       toast,
       uiTabs,
       workspaceDirectory,
@@ -2875,48 +2766,6 @@ function WorkspaceScreenContent({
     uiTabs,
     workspaceDirectory,
   ]);
-
-  const handleOpenPlannotatorPath = useCallback(
-    (path: string) => {
-      if (!persistenceKey || !workspaceDirectory || !client) {
-        return;
-      }
-      const location = normalizeWorkspaceFileLocation({ path });
-      if (!location) {
-        return;
-      }
-      void tryOpenFileInPlannotator({
-        client,
-        workspaceDirectory,
-        workspaceKey: persistenceKey,
-        location,
-        agentId: focusedAgentId,
-        remote: !isLocalDaemon,
-        embedHost: plannotatorEmbedHost,
-        workspaceTabs: uiTabs,
-        openWorkspaceTabFocused: (target) => openWorkspaceTabFocused(persistenceKey, target),
-        navigateToTabId,
-      }).then((result) => {
-        if (!result.ok) {
-          toast.error(result.message || t("workspace.git.openInEditor.failedOpen"));
-        }
-        return undefined;
-      });
-    },
-    [
-      client,
-      focusedAgentId,
-      isLocalDaemon,
-      navigateToTabId,
-      openWorkspaceTabFocused,
-      persistenceKey,
-      plannotatorEmbedHost,
-      t,
-      toast,
-      uiTabs,
-      workspaceDirectory,
-    ],
-  );
 
   useDesktopBrowserNewTabRequests({
     enabled: Boolean(persistenceKey),
@@ -4240,8 +4089,6 @@ function WorkspaceScreenContent({
             activeFile={activeFileLocation}
             hideLabels
             onOpenBrowserEditorUrl={handleOpenBrowserEditorUrl}
-            onOpenPlannotatorPath={handleOpenPlannotatorPath}
-            plannotatorAvailable={plannotatorAvailable}
           />
         ) : null}
         {!isMobile && workspaceDirectory ? (
@@ -4282,8 +4129,6 @@ function WorkspaceScreenContent({
       handleViewScriptTerminal,
       handleOpenUrlInBrowserTab,
       handleOpenBrowserEditorUrl,
-      handleOpenPlannotatorPath,
-      plannotatorAvailable,
       handleToggleExplorerSidebar,
       explorerSidebarToggleLabel,
       explorerSidebarToggleAccessibilityState,

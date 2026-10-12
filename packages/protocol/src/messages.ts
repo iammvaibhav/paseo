@@ -232,13 +232,6 @@ import {
   LoopStopResponseSchema,
 } from "./loop/rpc-schemas.js";
 import {
-  PlannotatorSessionStartRequestSchema,
-  PlannotatorSessionStartResponseSchema,
-  PlannotatorSessionStopRequestSchema,
-  PlannotatorSessionStopResponseSchema,
-  PlannotatorSessionEventSchema,
-} from "./plannotator/rpc-schemas.js";
-import {
   PageContentGetRequestSchema,
   PageContentGetResponseSchema,
   PageProxyOpenRequestSchema,
@@ -3659,10 +3652,10 @@ export const SessionEventSubscriptionSchema = z.enum([
   "tickets.changed",
   // Unsolicited pushes that owned-subscription clients only receive once subscribed.
   // Subscribe only on a host that advertises the paired server_info feature
-  // (missionControlEventSubscription, providerUsageEventSubscription,
-  // plannotatorEventSubscription): an older daemon rejects an unknown event name.
+  // (missionControlEventSubscription, providerUsageEventSubscription): an older daemon rejects an unknown event name.
   "mission_control_event",
   "provider.usage.updated",
+  // COMPAT(plannotator-removed): wire event subscription accepted for backward-compatibility with older daemons/clients. Remove after 2027-04-12.
   "plannotator.session.event",
   // Owned-subscription push for Automations CRUD/run changes. Subscribe only
   // on a host that advertises features.automations: an older daemon rejects
@@ -3933,8 +3926,6 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   LoopInspectRequestSchema,
   LoopLogsRequestSchema,
   LoopStopRequestSchema,
-  PlannotatorSessionStartRequestSchema,
-  PlannotatorSessionStopRequestSchema,
   PageProxyOpenRequestSchema,
   PageContentGetRequestSchema,
   MissionControlEventsFetchRequestSchema,
@@ -4340,8 +4331,7 @@ export const ServerInfoStatusPayloadSchema = z
         // COMPAT(providerUsageEventSubscription): added 2026-09-30, remove gate after 2027-03-30.
         // session.events accepts "provider.usage.updated".
         providerUsageEventSubscription: z.boolean().optional(),
-        // COMPAT(plannotatorEventSubscription): added 2026-09-30, remove gate after 2027-03-30.
-        // session.events accepts "plannotator.session.event".
+        // COMPAT(plannotator-removed): retained for wire backward-compatibility with older daemons. Remove after 2027-04-12.
         plannotatorEventSubscription: z.boolean().optional(),
         // COMPAT(canonicalSubmittedPrompts): added in v0.2.6, remove gate after 2027-01-30.
         canonicalSubmittedPrompts: z.boolean().optional(),
@@ -4353,7 +4343,7 @@ export const ServerInfoStatusPayloadSchema = z
         workspaceScriptManagement: z.boolean().optional(),
         // COMPAT(projectCustomIcon): added in v0.2.0, remove after 2027-01-20.
         projectCustomIcon: z.boolean().optional(),
-        // COMPAT(plannotator): added in v0.2.x (fork), drop the gate when floor includes plannotator.
+        // COMPAT(plannotator-removed): retained for wire backward-compatibility with older daemons. Remove after 2027-04-12.
         plannotator: z.boolean().optional(),
         // COMPAT(missionControl): added in v0.3.x, drop the gate when floor includes mission control.
         missionControl: z.boolean().optional(),
@@ -7813,11 +7803,8 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   LoopInspectResponseSchema,
   LoopLogsResponseSchema,
   LoopStopResponseSchema,
-  PlannotatorSessionStartResponseSchema,
-  PlannotatorSessionStopResponseSchema,
   PageProxyOpenResponseSchema,
   PageContentGetResponseSchema,
-  PlannotatorSessionEventSchema,
   MissionControlEventsFetchResponseSchema,
   MissionControlEventsAckResponseSchema,
   MissionControlPeersListResponseSchema,

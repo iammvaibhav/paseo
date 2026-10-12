@@ -1,5 +1,5 @@
 import type { HostProfile } from "@/types/host-connection";
-import { resolvePlannotatorEmbedHost } from "@/workspace/plannotator-embed-host";
+import { resolveRemoteEmbedHost } from "@/workspace/remote-embed-host";
 
 /**
  * Port the itsaplan HTTPS proxy listens on in the default dev setup. Only used
@@ -26,7 +26,7 @@ export interface ItsaplanEmbedInput {
   /**
    * Per-device override configured in Settings → General ("itsaplan URL"),
    * e.g. `https://dev.netbird.cloud:8443`. Empty/unset falls back to deriving the origin
-   * from the host the way Plannotator resolves its embed host.
+   * from the host profile.
    */
   configuredOrigin?: string | null;
   /**
@@ -84,12 +84,11 @@ export function normalizeItsaplanOrigin(raw: string | null | undefined): string 
 /**
  * Origin the embedded browser surface should load itsaplan from.
  *
- * Mirrors resolvePlannotatorEmbedHost / buildPlannotatorEmbedUrl: on a local
- * daemon the tool lives on loopback; for a remote daemon the hostname is lifted
- * from the host profile (browser editor URL → direct-TCP endpoint → SSH host →
- * label). A loopback override seen from a remote desktop is rewritten to the
- * resolved embed hostname, keeping the override's scheme and port — same
- * rewrite Plannotator applies to daemon-reported loopback URLs. Null means the
+ * Mirrors resolveRemoteEmbedHost: on a local daemon the tool lives on
+ * loopback; for a remote daemon the hostname is lifted from the host profile
+ * (browser editor URL → direct-TCP endpoint → SSH host → label). A loopback
+ * override seen from a remote desktop is rewritten to the resolved embed
+ * hostname, keeping the override's scheme and port. Null means the
  * tool cannot be located at all (no hosts, or a remote daemon with no
  * resolvable address and no override): the caller shows the not-configured
  * state.
@@ -98,9 +97,9 @@ export function resolveItsaplanEmbedOrigin(input: ItsaplanEmbedInput): ItsaplanE
   const override = normalizeItsaplanOrigin(input.configuredOrigin);
   const embedHost = input.isLocalDaemon
     ? null
-    : resolvePlannotatorEmbedHost({
+    : resolveRemoteEmbedHost({
         isLocalDaemon: false,
-        // resolvePlannotatorEmbedHost only sees an explicitly passed URL;
+        // resolveRemoteEmbedHost only sees an explicitly passed URL;
         // callers like diff-pane pass the profile's browserEditorUrl alongside
         // the profile, so mirror that here.
         browserEditorUrl: input.browserEditorUrl ?? input.hostProfile?.browserEditorUrl ?? null,

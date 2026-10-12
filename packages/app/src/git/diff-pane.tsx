@@ -96,9 +96,6 @@ import { usePublishWorkingDiffAttachment, useWorkingDiff } from "@/git/use-worki
 import type { CheckoutStatusPayload } from "@/git/use-status-query";
 import { DiffTooLargeState } from "@/git/diff-too-large-state";
 import { openDesktopTarget, useDesktopOpenTargets } from "@/workspace/desktop-open-targets";
-import { tryOpenReviewInPlannotator } from "@/workspace/open-file-in-plannotator";
-import { resolvePlannotatorEmbedHost } from "@/workspace/plannotator-embed-host";
-import { useHosts } from "@/runtime/host-runtime";
 import { PullRequestStateIcon } from "@/git/pull-request-state-icon";
 import { openExternalUrl } from "@/utils/open-external-url";
 import { openWorkspacePullRequest } from "@/workspace-tabs/open-supporting-view";
@@ -1424,11 +1421,6 @@ function useDiffTabNavigation({
   pullRequestOpenLocation: PullRequestOpenLocation;
 }) {
   const openTab = useWorkspaceLayoutStore((state) => state.openTab);
-  const focusTab = useWorkspaceLayoutStore((state) => state.focusTab);
-  const getWorkspaceTabs = useWorkspaceLayoutStore((state) => state.getWorkspaceTabs);
-  const sessionClient = useSessionStore((state) => state.sessions[serverId]?.client);
-  const isLocalDaemon = useIsLocalDaemon(serverId);
-  const hosts = useHosts();
   const openWorkspaceTab = useCallback(
     (workspaceKey: string, target: WorkspaceTabTarget, placement?: WorkspaceTabPlacement) =>
       openTab({ workspaceKey, target, intent: "reveal", placement }),
@@ -1438,58 +1430,12 @@ function useDiffTabNavigation({
     () => buildWorkspaceTabPersistenceKey({ serverId, workspaceId: workspaceId ?? cwd }),
     [cwd, serverId, workspaceId],
   );
-  const plannotatorEmbedHost = useMemo(() => {
-    if (isLocalDaemon) {
-      return null;
-    }
-    const hostProfile = hosts.find((entry) => entry.serverId === serverId) ?? null;
-    return resolvePlannotatorEmbedHost({
-      isLocalDaemon,
-      browserEditorUrl: hostProfile?.browserEditorUrl ?? null,
-      hostProfile,
-    });
-  }, [hosts, isLocalDaemon, serverId]);
   const openDiff = useCallback(() => {
     if (!persistenceKey || isMobile) {
       return;
     }
-    if (!sessionClient) {
-      openWorkspaceTab(persistenceKey, { kind: "working_diff" }, FOCUSED_PANE_PLACEMENT);
-      return;
-    }
-    void (async () => {
-      const result = await tryOpenReviewInPlannotator({
-        client: sessionClient,
-        workspaceDirectory: cwd,
-        workspaceKey: persistenceKey,
-        remote: !isLocalDaemon,
-        embedHost: plannotatorEmbedHost,
-        workspaceTabs: getWorkspaceTabs(persistenceKey),
-        openWorkspaceTabFocused: (target) =>
-          openTab({
-            workspaceKey: persistenceKey,
-            target,
-            intent: "reveal",
-            placement: FOCUSED_PANE_PLACEMENT,
-          }),
-        navigateToTabId: (tabId) => focusTab(persistenceKey, tabId),
-      });
-      if (!result.ok) {
-        openWorkspaceTab(persistenceKey, { kind: "working_diff" }, FOCUSED_PANE_PLACEMENT);
-      }
-    })();
-  }, [
-    cwd,
-    focusTab,
-    getWorkspaceTabs,
-    isLocalDaemon,
-    isMobile,
-    openTab,
-    openWorkspaceTab,
-    persistenceKey,
-    plannotatorEmbedHost,
-    sessionClient,
-  ]);
+    openWorkspaceTab(persistenceKey, { kind: "working_diff" }, FOCUSED_PANE_PLACEMENT);
+  }, [isMobile, openWorkspaceTab, persistenceKey]);
   const openCommit = useCallback(
     (sha: string) => {
       if (persistenceKey) {

@@ -54,10 +54,10 @@ function hostnameFromSshHost(sshHost: string | null | undefined): string | null 
 }
 
 /**
- * Host address the desktop webview should use to reach a remote Plannotator
- * session (VPN/LAN). Null for local daemons (always 127.0.0.1).
+ * Host address the desktop webview should use to reach a remote embed session
+ * (VPN/LAN). Null for local daemons (always 127.0.0.1).
  */
-export function resolvePlannotatorEmbedHost(input: {
+export function resolveRemoteEmbedHost(input: {
   isLocalDaemon: boolean;
   browserEditorUrl?: string | null;
   hostProfile?: HostProfile | null;
