@@ -22,6 +22,7 @@ import {
   ProjectDirectoryRequestError,
 } from "../project-directory-service.js";
 import type { PersistedProjectRecord } from "../workspace-registry.js";
+import { createVaultSecretResolver, type ResolveSecret } from "../secrets/vault-secret.js";
 import {
   chatCompletionText,
   judgeChoices,
@@ -69,6 +70,8 @@ export interface RoutingServiceDependencies {
   loadFleet: () => Promise<FleetContextData>;
   hindsight: HindsightClient;
   fetchImpl?: typeof fetch;
+  /** Resolves `aside://` vault references in routing secrets; default reads the Aside vault. */
+  resolveSecret?: ResolveSecret;
 }
 
 export interface CreatedProject {
@@ -90,10 +93,12 @@ export class RoutingService {
   private readonly deps: RoutingServiceDependencies;
   private readonly logger: Logger;
   private catalogCache: { at: number; promise: Promise<RoutingCatalog> } | null = null;
+  private readonly resolveSecret: ResolveSecret;
 
   constructor(deps: RoutingServiceDependencies) {
     this.deps = deps;
     this.logger = deps.logger.child({ module: "routing" });
+    this.resolveSecret = deps.resolveSecret ?? createVaultSecretResolver();
   }
 
   private config(): {
@@ -127,7 +132,7 @@ export class RoutingService {
   async suggest(prompt: string, signal?: AbortSignal): Promise<RoutingSuggestion> {
     const startedAt = Date.now();
     const { routing, secrets } = this.config();
-    const apiKey = secrets.typesafeApiKey;
+    const apiKey = await this.resolveSecret(secrets.typesafeApiKey);
     if (!apiKey) {
       throw new RoutingNotConfiguredError(
         "Routing needs a TypeSafe API key: Settings → Mission Control → Routing",
@@ -329,9 +334,11 @@ export class RoutingService {
       [routing.nameModel, secrets.nameModelApiKey],
       [routing.metadataModel, secrets.metadataModelApiKey],
     ];
-    for (const [endpoint, apiKey] of endpoints) {
-      if (!endpoint || !apiKey) continue;
+    for (const [endpoint, secret] of endpoints) {
+      if (!endpoint || !secret) continue;
       try {
+        // Inside the try: a vault read that fails falls through to the next model.
+        const apiKey = (await this.resolveSecret(secret))!;
         const parsed = parseJsonObject(
           await chatCompletionText({
             endpoint,
@@ -366,10 +373,11 @@ export class RoutingService {
    */
   async completeMetadata(prompt: string, signal?: AbortSignal): Promise<string | null> {
     const { routing, secrets } = this.config();
-    if (!routing.metadataModel || !secrets.metadataModelApiKey) return null;
+    const apiKey = await this.resolveSecret(secrets.metadataModelApiKey);
+    if (!routing.metadataModel || !apiKey) return null;
     return chatCompletionText({
       endpoint: routing.metadataModel,
-      apiKey: secrets.metadataModelApiKey,
+      apiKey,
       user: prompt,
       maxTokens: 1_500,
       signal,
