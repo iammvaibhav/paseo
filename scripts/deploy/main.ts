@@ -722,6 +722,12 @@ async function main(): Promise<void> {
     linkLatest(runDir);
   }
   loadDeployEnv();
+  // omp, gh and cloudflared live in ~/.local/bin; shells spawned by agents,
+  // timers and flotilla often lack it.
+  const localBin = path.join(homedir(), ".local", "bin");
+  if (!(process.env.PATH ?? "").split(path.delimiter).includes(localBin)) {
+    process.env.PATH = `${process.env.PATH ?? ""}${path.delimiter}${localBin}`;
+  }
 
   const hosts = loadInventory();
   const self = selfHost(hosts);
