@@ -12,6 +12,9 @@ const NOT_TESTS = [
   ":(exclude,glob)**/e2e/**",
 ];
 
+// What the daemon runs. Dependency changes always show up in pnpm-lock.yaml;
+// deploy tooling (scripts/deploy/**) changes how a release is installed, not
+// what it runs, so it never restarts a daemon on its own.
 const DAEMON_PATHS = [
   "packages/server",
   "packages/cli",
@@ -20,14 +23,9 @@ const DAEMON_PATHS = [
   "packages/relay",
   "packages/highlight",
   "packages/plugin",
-  "package.json",
   "pnpm-lock.yaml",
-  "pnpm-workspace.yaml",
   "patches",
   "scripts/postinstall-patches.mjs",
-  "scripts/deploy-nudge.mjs",
-  "scripts/deploy/host/package-runtime.mjs",
-  "scripts/deploy/host/activate-runtime.sh",
 ];
 
 const APP_UI_PATHS = ["packages/app", "packages/expo-two-way-audio"];
@@ -36,13 +34,7 @@ const APP_UI_PATHS = ["packages/app", "packages/expo-two-way-audio"];
 export const COMPONENT_PATHS = {
   daemon: [...DAEMON_PATHS, ...NOT_TESTS],
   // The desktop app bundles the daemon, so daemon changes rebuild it too.
-  app: [
-    ...DAEMON_PATHS,
-    ...APP_UI_PATHS,
-    "packages/desktop",
-    "scripts/deploy/host/desktop-app.sh",
-    ...NOT_TESTS,
-  ],
+  app: [...DAEMON_PATHS, ...APP_UI_PATHS, "packages/desktop", ...NOT_TESTS],
   vercel: [
     ...APP_UI_PATHS,
     "packages/client",
