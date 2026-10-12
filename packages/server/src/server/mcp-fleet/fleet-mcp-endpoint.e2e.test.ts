@@ -1,7 +1,7 @@
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { describe, expect, test } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -176,6 +176,101 @@ describe("Fleet MCP Endpoint E2E (/mcp/fleet)", () => {
       await rm(staticDir, { recursive: true, force: true });
     }
   }, 45_000);
+
+  test("a remote client spawns and prompts local agents directly, and waits see the newest run", async () => {
+    const paseoHome = await mkdtemp(path.join(os.tmpdir(), "paseo-home-fleet-spawn-"));
+    const staticDir = await mkdtemp(path.join(os.tmpdir(), "paseo-static-fleet-spawn-"));
+    const workDir = await mkdtemp(path.join(os.tmpdir(), "paseo-work-fleet-spawn-"));
+    const port = await getAvailablePort();
+    const token = "grok-secret-token-spawn";
+    await writeFile(
+      path.join(paseoHome, "config.json"),
+      JSON.stringify({
+        version: 1,
+        daemon: {
+          mcp: {
+            enabled: true,
+            remoteClients: [{ name: "grok-bot", tokenHash: hashDaemonPassword(token) }],
+          },
+        },
+      }),
+      "utf8",
+    );
+    const daemon = await createPaseoDaemon(
+      {
+        listen: `127.0.0.1:${port}`,
+        paseoHome,
+        corsAllowedOrigins: [],
+        hostnames: true,
+        mcpEnabled: true,
+        staticDir,
+        mcpDebug: false,
+        agentClients: createTestAgentClients(),
+        agentStoragePath: path.join(paseoHome, "agents"),
+      },
+      pino({ level: "silent" }),
+    );
+    await daemon.start();
+    const client = new Client({ name: "e2e-client", version: "1.0.0" });
+    try {
+      await client.connect(
+        new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp/fleet`), {
+          requestInit: { headers: { Authorization: `Bearer ${token}` } },
+        }),
+      );
+      const created = await client.callTool({
+        name: "fleet_create_agent",
+        arguments: {
+          host: "local",
+          cwd: workDir,
+          isolation: "local",
+          provider: "codex/gpt-5.4-mini",
+          title: "bot worker",
+          initialPrompt: "Respond with exactly: first",
+        },
+      });
+      expect(created.isError).toBeFalsy();
+      // A real agent id in the same call: the spawn never became a proposal.
+      const agentId = created.structuredContent?.agentId;
+      expect(agentId).toEqual(expect.any(String));
+
+      const firstWait = await client.callTool({
+        name: "fleet_wait_agent",
+        arguments: { agentId, timeoutSeconds: 30 },
+      });
+      expect(firstWait.structuredContent).toMatchObject({ finished: true, lastMessage: "first" });
+
+      const sent = await client.callTool({
+        name: "fleet_send_prompt",
+        arguments: { agentId, prompt: "Respond with exactly: second", mode: "queue" },
+      });
+      expect(sent.structuredContent).toMatchObject({ success: true });
+      const secondWait = await client.callTool({
+        name: "fleet_wait_agent",
+        arguments: { agentId, timeoutSeconds: 30 },
+      });
+      // The fake provider's timeline joins consecutive assistant rows, so the
+      // reply reads "firstsecond"; what matters is that the newest run is in it.
+      expect(secondWait.structuredContent).toMatchObject({
+        finished: true,
+        lastMessage: expect.stringMatching(/second$/),
+      });
+
+      // No proposal was recorded, so nothing asked the user and nothing was
+      // marked Commander-managed.
+      const proposals = await readFile(
+        path.join(paseoHome, "mission-control", "proposals.jsonl"),
+        "utf8",
+      ).catch(() => "");
+      expect(proposals.trim()).toBe("");
+    } finally {
+      await client.close();
+      await daemon.stop();
+      await rm(paseoHome, { recursive: true, force: true });
+      await rm(staticDir, { recursive: true, force: true });
+      await rm(workDir, { recursive: true, force: true });
+    }
+  }, 60_000);
 
   test("returns 404 when no remote clients are configured", async () => {
     const paseoHome = await mkdtemp(path.join(os.tmpdir(), "paseo-home-fleet-empty-"));

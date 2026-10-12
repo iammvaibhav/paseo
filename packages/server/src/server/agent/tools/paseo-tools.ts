@@ -5711,6 +5711,83 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       if (gatesSpawnAndSend && missionControlService) {
         return runCommanderSpawnGate();
       }
+      // A remote MCP client (Commander identity, never gated) spawning on this
+      // host: run the same plan an approved Commander spawn executes
+      // (placement, worktree, settings), minus the proposal and the Commander
+      // parentage. Delegating to create_agent would make the agent a
+      // Commander subagent placed in the Commander's own workspace.
+      const createLocallyForMcpClient = async (): Promise<PaseoToolResult> => {
+        const { spawnPlan } = buildCommanderSpawnProposalInput({
+          serverId: serverId ?? "",
+          host,
+          provider,
+          title,
+          initialPrompt,
+          images,
+          cwd,
+          workspaceId,
+          labels,
+          settings,
+          isolation,
+          baseBranch,
+          branchName,
+          worktreeSlug,
+          worktree,
+        });
+        if (!spawnPlan) {
+          throw new Error("fleet_create_agent: could not build a spawn plan");
+        }
+        const plan = spawnPlan;
+        const { snapshot } = await createAgentCommand(
+          {
+            agentManager,
+            agentStorage,
+            logger: childLogger,
+            paseoHome: options.paseoHome,
+            worktreesRoot: options.worktreesRoot,
+            terminalManager,
+            providerSnapshotManager,
+            createPaseoWorktree: options.createPaseoWorktree,
+            ...(options.ensureWorkspaceForCreate
+              ? { ensureWorkspaceForCreate: options.ensureWorkspaceForCreate }
+              : {}),
+          },
+          {
+            kind: "mcp",
+            provider,
+            title: plan.title ?? "Agent",
+            ...(plan.initialPrompt ? { initialPrompt: plan.initialPrompt } : {}),
+            ...(plan.images && plan.images.length > 0 ? { images: plan.images } : {}),
+            ...(plan.cwd ? { cwd: plan.cwd } : {}),
+            ...(plan.workspaceId ? { workspaceId: plan.workspaceId } : {}),
+            ...(plan.thinking ? { thinking: plan.thinking } : {}),
+            ...(plan.features ? { features: plan.features } : {}),
+            ...(plan.labels ? { labels: plan.labels } : {}),
+            ...(plan.mode ? { mode: plan.mode } : {}),
+            ...(plan.worktree ? { worktree: plan.worktree } : {}),
+            ...(plan.isolation ? { isolation: plan.isolation } : {}),
+            background: true,
+            notifyOnFinish: false,
+          },
+        );
+        return {
+          content: [],
+          structuredContent: ensureValidJson({
+            agentId: snapshot.id,
+            type: snapshot.provider,
+            status: snapshot.lifecycle,
+            cwd: snapshot.cwd,
+            ...(snapshot.workspaceId ? { workspaceId: snapshot.workspaceId } : {}),
+            currentModeId: snapshot.currentModeId,
+            availableModes: snapshot.availableModes,
+            lastMessage: null,
+            permission: null,
+          }),
+        };
+      };
+      if (isCommanderCaller && isFleetLocalTarget(host)) {
+        return createLocallyForMcpClient();
+      }
       if (isFleetLocalTarget(host)) {
         const { cwd: _cwd, ...localArgs } = args;
         return toCatalog().executeTool("create_agent", localArgs, context);
