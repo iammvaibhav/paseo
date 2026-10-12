@@ -330,8 +330,7 @@ export const en = {
       modelPlaceholder: "Select model",
       errors: {
         noScope: "Choose a host or open Ask from a project/workspace",
-        noCwd:
-          "Couldn't start Ask on this host (no session directory available yet). Open a workspace once, or try again after history loads.",
+        updateHost: "Update the host to run History Ask in its experiments project.",
         hostDisconnected: "Host is not connected",
         launchFailed: "Failed to start History Ask",
       },

@@ -35,6 +35,7 @@ import { type AgentHistoryHostError, useAgentHistory } from "@/hooks/use-agent-h
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { useImportSession } from "@/hooks/use-import-session";
 import { getHostRuntimeStore, useHosts } from "@/runtime/host-runtime";
+import { useHostFeature } from "@/runtime/host-features";
 import { buildOpenProjectRoute } from "@/utils/host-routes";
 import { useToast } from "@/contexts/toast-context";
 import { useSessionStore } from "@/stores/session-store";
@@ -455,8 +456,8 @@ function SessionsAskTab({
     consumePendingQuestion();
   }, [pendingQuestion, consumePendingQuestion]);
 
-  // Launch cwd is internal only (createAgent requires a directory). Host-wide
-  // History Ask does not show or offer cwd selection — search scope is the host.
+  // Directory for the provider snapshot behind the model picker. The Ask
+  // agent itself runs in the host's scratch project (see launchHistoryAsk).
   const resolveLaunchCwd = useCallback(() => {
     if (!scope) {
       return null;
@@ -469,6 +470,7 @@ function SessionsAskTab({
   }, [scope, historyAgents]);
 
   const snapshotCwd = useMemo(() => resolveLaunchCwd(), [resolveLaunchCwd]);
+  const supportsScratchWorkspace = useHostFeature(scope?.serverId, "scratchWorkspace");
   const modelSelection = useHistoryAskModelSelection({
     scope,
     needsHostSelection,
@@ -527,15 +529,14 @@ function SessionsAskTab({
       return;
     }
 
-    const client = getHostRuntimeStore().getClient(scope.serverId);
-    if (!client) {
-      toast.error(t("sessions.ask.errors.hostDisconnected"));
+    if (!supportsScratchWorkspace) {
+      toast.error(t("sessions.ask.errors.updateHost"));
       return;
     }
 
-    const primaryCwd = resolveLaunchCwd();
-    if (!primaryCwd) {
-      toast.error(t("sessions.ask.errors.noCwd"));
+    const client = getHostRuntimeStore().getClient(scope.serverId);
+    if (!client) {
+      toast.error(t("sessions.ask.errors.hostDisconnected"));
       return;
     }
 
@@ -546,7 +547,6 @@ function SessionsAskTab({
         client,
         scope,
         question,
-        primaryCwd,
         provider: modelSelection.selectedProvider || null,
         model: modelSelection.selectedModel || null,
       });
@@ -570,7 +570,7 @@ function SessionsAskTab({
     isLaunching,
     needsHostSelection,
     scope,
-    resolveLaunchCwd,
+    supportsScratchWorkspace,
     modelSelection,
     toast,
     t,

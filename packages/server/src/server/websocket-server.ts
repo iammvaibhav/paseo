@@ -2142,6 +2142,8 @@ export class VoiceAssistantWebSocketServer {
         ...(this.pagePortProxy ? { pagePortProxy: true } : {}),
         // COMPAT(agentSearch): added 2026-10-12, remove gate after 2027-04-12.
         ...(this.agentSearchService ? { agentSearch: true } : {}),
+        // COMPAT(scratchWorkspace): added 2026-10-12, remove gate after 2027-04-12.
+        ...(this.routingService ? { scratchWorkspace: true } : {}),
       },
     };
   }

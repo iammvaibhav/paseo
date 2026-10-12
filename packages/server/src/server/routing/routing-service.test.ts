@@ -1,3 +1,6 @@
+import { mkdtemp, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 import type { RoutingConfig } from "@getpaseo/protocol/routing";
 import type { MissionControlInventoryProject } from "@getpaseo/protocol/mission-control/types";
@@ -5,7 +8,12 @@ import { createTestLogger } from "../../test-utils/test-logger.js";
 import { DEFAULT_CENTRAL_MISSION_CONTROL_CONFIG } from "../mission-control/config.js";
 import type { FleetContextData, FleetHostContext } from "../mission-control/context.js";
 import { HindsightClient } from "../mission-control/hindsight.js";
-import { RoutingService } from "./routing-service.js";
+import type { PersistedProjectRecord, PersistedWorkspaceRecord } from "../workspace-registry.js";
+import {
+  RoutingService,
+  SCRATCH_PROJECT_DESCRIPTION,
+  type ScratchProvisioning,
+} from "./routing-service.js";
 
 const PERSONAL = "srv_personal";
 const WORK = "srv_work";
@@ -42,6 +50,14 @@ const FLEET: FleetContextData = {
     ]),
     host(WORK, "Work", [
       project({ id: "prj_stack", title: "stack", hostServerId: WORK, rootPath: "/w/stack" }),
+      // Work has no configured scratch root: the default ~/experiments is its scratch.
+      project({
+        id: "prj_work_scratch",
+        title: "experiments",
+        hostServerId: WORK,
+        rootPath: "/home/v/experiments",
+        kind: "non_git",
+      }),
     ]),
   ],
 };
@@ -58,6 +74,15 @@ const ROUTING: RoutingConfig = {
 interface JudgeCall {
   criteria: Record<string, Record<string, string>>;
 }
+
+/** suggest() never provisions scratch. */
+const UNUSED_SCRATCH: ScratchProvisioning = {
+  registerProject: async () => {
+    throw new Error("not used");
+  },
+  setDescriptionIfMissing: async () => {},
+  ensureBaseWorkspace: async () => null,
+};
 
 /**
  * A jev stand-in: `pick` names a criterion by its description (placement
@@ -103,6 +128,7 @@ function createService(pick: {
     }),
     loadFleet: async () => FLEET,
     hindsight: new HindsightClient({ logger }),
+    scratch: UNUSED_SCRATCH,
     fetchImpl,
   });
   return { service, calls };
@@ -180,6 +206,17 @@ describe("RoutingService.suggest", () => {
     });
   });
 
+  test("treats ~/experiments as scratch on a host with no configured scratch root", async () => {
+    const result = await createService({ placement: () => "scratch", host: WORK }).service.suggest(
+      "try a thing on work",
+    );
+    expect(result.placement).toMatchObject({
+      kind: "scratch",
+      serverId: WORK,
+      projectId: "prj_work_scratch",
+    });
+  });
+
   test("picks the model from the work mapping on work hosts and per mode elsewhere", async () => {
     const work = await createService({
       placement: labelFor("stack"),
@@ -202,5 +239,75 @@ describe("RoutingService.suggest", () => {
     }).service.suggest("do it");
     expect(fallback.agentMode).toBe("solo");
     expect(fallback.model).toBe("omp:personal-default");
+  });
+});
+
+describe("RoutingService.ensureScratchWorkspace", () => {
+  function scratchService(root: string, scratch: ScratchProvisioning) {
+    const logger = createTestLogger();
+    return new RoutingService({
+      serverId: PERSONAL,
+      logger,
+      getCentralConfig: () => ({
+        ...DEFAULT_CENTRAL_MISSION_CONTROL_CONFIG,
+        hindsightUrl: null,
+        routing: { scratchRootByHost: { [PERSONAL]: root } },
+        routingSecrets: {},
+      }),
+      loadFleet: async () => FLEET,
+      hindsight: new HindsightClient({ logger }),
+      scratch,
+    });
+  }
+
+  test("creates the root, describes the project, and returns its base workspace", async () => {
+    const home = await mkdtemp(join(tmpdir(), "routing-scratch-"));
+    const root = join(home, "experiments");
+    const described: Array<[string, string]> = [];
+    try {
+      const result = await scratchService(root, {
+        registerProject: async (directoryPath) =>
+          ({
+            projectId: "prj_s",
+            rootPath: directoryPath,
+            description: null,
+          }) as PersistedProjectRecord,
+        setDescriptionIfMissing: async (projectId, description) => {
+          described.push([projectId, description]);
+        },
+        ensureBaseWorkspace: async () =>
+          ({ workspaceId: "ws_base", cwd: root }) as PersistedWorkspaceRecord,
+      }).ensureScratchWorkspace();
+      expect((await stat(root)).isDirectory()).toBe(true);
+      expect(described).toEqual([["prj_s", SCRATCH_PROJECT_DESCRIPTION]]);
+      expect(result.project).toMatchObject({
+        projectId: "prj_s",
+        rootPath: root,
+        description: SCRATCH_PROJECT_DESCRIPTION,
+      });
+      expect(result.workspace.workspaceId).toBe("ws_base");
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  test("fails when the scratch project has no base workspace", async () => {
+    const home = await mkdtemp(join(tmpdir(), "routing-scratch-"));
+    try {
+      await expect(
+        scratchService(join(home, "experiments"), {
+          registerProject: async (directoryPath) =>
+            ({
+              projectId: "prj_s",
+              rootPath: directoryPath,
+              description: "x",
+            }) as PersistedProjectRecord,
+          setDescriptionIfMissing: async () => {},
+          ensureBaseWorkspace: async () => null,
+        }).ensureScratchWorkspace(),
+      ).rejects.toThrow(/no base workspace/);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
   });
 });

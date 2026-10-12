@@ -1,6 +1,6 @@
 import { mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import type { Logger } from "pino";
 import {
   AGENT_MODES,
@@ -21,7 +21,7 @@ import {
   createProjectDirectory,
   ProjectDirectoryRequestError,
 } from "../project-directory-service.js";
-import type { PersistedProjectRecord } from "../workspace-registry.js";
+import type { PersistedProjectRecord, PersistedWorkspaceRecord } from "../workspace-registry.js";
 import { createVaultSecretResolver, type ResolveSecret } from "../secrets/vault-secret.js";
 import {
   chatCompletionText,
@@ -36,6 +36,9 @@ const ALTERNATIVES = 3;
 const NEW_PROJECT = "new_project";
 const SCRATCH = "scratch";
 const HOST_NOT_SPECIFIED = "not_specified";
+/** Folder name of the default scratch root, and the scratch project's title. */
+const SCRATCH_DIRECTORY = "experiments";
+export const SCRATCH_PROJECT_DESCRIPTION = "Scratch area for one-off work on this host.";
 
 interface CatalogHost {
   serverId: string;
@@ -62,12 +65,27 @@ interface RoutingCatalog {
   scratchProjectIds: Map<string, string>;
 }
 
+/** Project and workspace registry access the scratch project needs on this host. */
+export interface ScratchProvisioning {
+  /** Find or register the project rooted at a directory. */
+  registerProject: (directoryPath: string) => Promise<PersistedProjectRecord>;
+  setDescriptionIfMissing: (projectId: string, description: string) => Promise<void>;
+  /** The project's base workspace, created when missing; null when it cannot be. */
+  ensureBaseWorkspace: (projectId: string) => Promise<PersistedWorkspaceRecord | null>;
+}
+
+export interface ScratchWorkspace {
+  project: PersistedProjectRecord;
+  workspace: PersistedWorkspaceRecord;
+}
+
 export interface RoutingServiceDependencies {
   serverId: string;
   logger: Logger;
   getCentralConfig: () => ResolvedMissionControlCentralConfig | null;
   loadFleet: () => Promise<FleetContextData>;
   hindsight: HindsightClient;
+  scratch: ScratchProvisioning;
   fetchImpl?: typeof fetch;
   /** Resolves `aside://` vault references in routing secrets; default reads the Aside vault. */
   resolveSecret?: ResolveSecret;
@@ -259,18 +277,30 @@ export class RoutingService {
   }
 
   /**
-   * This host's scratch project: mkdir -p the configured scratch root (or
-   * `~/experiments`) and register it as a plain directory project. Scratch is
-   * one shared directory workspace, never a git repository.
+   * This host's scratch project and its base workspace: mkdir -p the
+   * configured scratch root (or `~/experiments`), register it as a plain
+   * directory project, and ensure its base workspace. Scratch is never a git
+   * repository. Every daemon runs this at boot, so each host has one.
    */
-  async ensureScratchProject(
-    registerProject: (directoryPath: string) => Promise<PersistedProjectRecord>,
-  ): Promise<PersistedProjectRecord> {
+  async ensureScratchWorkspace(): Promise<ScratchWorkspace> {
     const root =
       this.config().routing.scratchRootByHost?.[this.deps.serverId] ??
-      join(homedir(), "experiments");
+      join(homedir(), SCRATCH_DIRECTORY);
     await mkdir(root, { recursive: true });
-    return registerProject(root);
+    const registered = await this.deps.scratch.registerProject(root);
+    await this.deps.scratch.setDescriptionIfMissing(
+      registered.projectId,
+      SCRATCH_PROJECT_DESCRIPTION,
+    );
+    const workspace = await this.deps.scratch.ensureBaseWorkspace(registered.projectId);
+    if (!workspace) {
+      throw new Error(`Scratch project at ${root} has no base workspace`);
+    }
+    const project = {
+      ...registered,
+      description: registered.description ?? SCRATCH_PROJECT_DESCRIPTION,
+    };
+    return { project, workspace };
   }
 
   /**
@@ -492,7 +522,7 @@ function buildCatalog(fleet: FleetContextData, routing: RoutingConfig): RoutingC
     hosts.push({ serverId: host.serverId, label, names });
     const scratchRoot = routing.scratchRootByHost?.[host.serverId];
     for (const project of host.inventory.projects) {
-      if (scratchRoot && project.rootPath === scratchRoot) {
+      if (isScratchProject(project.rootPath, scratchRoot)) {
         scratchProjectIds.set(host.serverId, project.id);
         continue;
       }
@@ -521,4 +551,13 @@ function buildCatalog(fleet: FleetContextData, routing: RoutingConfig): RoutingC
     }
   }
   return { hosts, projects, scratchProjectIds };
+}
+
+/** A host without a configured scratch root uses the default, `~/experiments`. */
+function isScratchProject(
+  rootPath: string | null | undefined,
+  configuredRoot: string | undefined,
+): boolean {
+  if (!rootPath) return false;
+  return configuredRoot ? rootPath === configuredRoot : basename(rootPath) === SCRATCH_DIRECTORY;
 }

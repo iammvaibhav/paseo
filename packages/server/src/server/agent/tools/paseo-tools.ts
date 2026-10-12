@@ -5980,10 +5980,13 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           return null;
         }
         const provider = providerIds.includes("omp") ? "omp" : providerIds[0]!;
-        const workspaces = (await options.workspaceRegistry?.list()) ?? [];
-        const workspace = workspaces
-          .filter((candidate) => !candidate.archivedAt)
-          .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))[0];
+        if (!routingService) {
+          childLogger.info(
+            { component: "search" },
+            "mission_control.fleet_search.tier3_no_scratch",
+          );
+          return null;
+        }
         const cleaned = query.trim().replace(/\s+/g, " ");
         const title =
           cleaned.length <= 40
@@ -5992,6 +5995,9 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
 
         let agentId: string;
         try {
+          // History Ask agents run in the host's scratch project, not in
+          // whichever workspace happens to be most recent.
+          const { workspace } = await routingService.ensureScratchWorkspace();
           const created = await createAgentCommand(
             {
               agentManager,
@@ -6011,8 +6017,8 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
               provider,
               title,
               initialPrompt: buildFleetHistoryAskBrief(query, localServerId),
-              cwd: workspace?.cwd ?? "~",
-              ...(workspace ? { workspaceId: workspace.workspaceId } : {}),
+              cwd: workspace.cwd,
+              workspaceId: workspace.workspaceId,
               labels: { "paseo.history-ask": "1", "paseo.history-ask.scope": "host" },
               background: false,
               notifyOnFinish: false,

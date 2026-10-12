@@ -13,11 +13,9 @@ const TITLE_QUESTION_MAX = 50;
 const DEFAULT_PROVIDER: AgentProvider = "claude";
 
 export interface LaunchHistoryAskInput {
-  client: Pick<DaemonClient, "createAgent" | "getProvidersSnapshot">;
+  client: Pick<DaemonClient, "createAgent" | "createProjectForPrompt" | "getProvidersSnapshot">;
   scope: HistoryAskScope;
   question: string;
-  /** Override primary cwd when scope.cwds is empty (host-wide). */
-  primaryCwd?: string | null;
   /** UI selection; falls back to host prefs / create-agent preferences when omitted. */
   provider?: string | null;
   model?: string | null;
@@ -51,24 +49,28 @@ export async function launchHistoryAsk(
     throw new Error("Question is required");
   }
 
-  const primaryCwd = resolvePrimaryCwd(input.scope, input.primaryCwd);
-  if (!primaryCwd) {
-    throw new Error("History Ask needs a working directory to launch an agent");
+  // The agent runs in the host's scratch (experiments) project, in its base
+  // workspace, whatever the search scope: the brief carries the scope, and
+  // Ask agents never pile up inside the projects they search.
+  const scratch = await input.client.createProjectForPrompt({ prompt: question, scratch: true });
+  const workspaceId = scratch.baseWorkspaceId;
+  if (!workspaceId) {
+    throw new Error("Update the host to run History Ask in its experiments project.");
   }
+  const cwd = scratch.rootPath;
 
   const { provider, model } = await resolveLaunchProviderModel(input);
-  const modeId = await resolveLaunchModeId(input, provider, primaryCwd);
-  const workspaceId = input.scope.workspaceId ?? input.scope.workspaceIds?.[0];
+  const modeId = await resolveLaunchModeId(input, provider, cwd);
 
   const agent = await input.client.createAgent({
     config: {
       provider,
-      cwd: primaryCwd,
+      cwd,
       ...(modeId ? { modeId } : {}),
       ...(model ? { model } : {}),
       title: buildHistoryAskTitle(question),
     },
-    ...(workspaceId ? { workspaceId } : {}),
+    workspaceId,
     initialPrompt: buildHistoryAskBrief({
       scope: input.scope,
       question,
@@ -113,23 +115,14 @@ async function resolveLaunchProviderModel(input: LaunchHistoryAskInput): Promise
 async function resolveLaunchModeId(
   input: LaunchHistoryAskInput,
   provider: AgentProvider,
-  primaryCwd: string,
+  cwd: string,
 ): Promise<string | undefined> {
   let availableModes = input.availableModes ?? null;
   if (!availableModes && !input.skipProviderSnapshot) {
-    availableModes = await fetchModesForProvider(input.client, provider, primaryCwd);
+    availableModes = await fetchModesForProvider(input.client, provider, cwd);
   }
   // May be undefined for providers with no modes (e.g. some ACP/Grok snapshots).
   return resolveUnattendedModeId(provider, availableModes);
-}
-
-function resolvePrimaryCwd(scope: HistoryAskScope, override?: string | null): string | null {
-  const fromOverride = override?.trim();
-  if (fromOverride) {
-    return fromOverride;
-  }
-  const first = scope.cwds.find((cwd) => cwd.trim().length > 0)?.trim();
-  return first ?? null;
 }
 
 async function fetchModesForProvider(

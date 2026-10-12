@@ -4381,6 +4381,10 @@ export const ServerInfoStatusPayloadSchema = z
         // COMPAT(agentSearch): added 2026-10-12, remove gate after 2027-04-12.
         // agent.search.* (shallow jev search for the sidebar search bar).
         agentSearch: z.boolean().optional(),
+        // COMPAT(scratchWorkspace): added 2026-10-12, remove gate after 2027-04-12.
+        // routing.project.create scratch responses carry the scratch project's
+        // baseWorkspaceId (History Ask agents run there).
+        scratchWorkspace: z.boolean().optional(),
       })
       .optional(),
   })

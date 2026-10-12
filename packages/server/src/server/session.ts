@@ -5236,19 +5236,30 @@ export class Session {
       if (!this.routingService) {
         throw new Error("Routing is not available on this host");
       }
-      const registerProject = (directoryPath: string) =>
-        this.workspaceProvisioning.findOrCreateProjectForDirectory(directoryPath);
-      const created = request.scratch
-        ? await this.routingService.ensureScratchProject(registerProject).then((project) => ({
-            project,
-            title: project.customName ?? "Scratch",
-            description: project.description ?? `Scratch area for one-off work on this host.`,
-          }))
-        : await this.routingService.createProjectForPrompt({
-            prompt: request.prompt,
-            ...(request.parentPath ? { parentPath: request.parentPath } : {}),
-            registerProject,
-          });
+      if (request.scratch) {
+        const { project, workspace } = await this.routingService.ensureScratchWorkspace();
+        this.emit({
+          type: "routing.project.create.response",
+          payload: {
+            requestId: request.requestId,
+            project: {
+              projectId: project.projectId,
+              rootPath: project.rootPath,
+              title: project.customName ?? project.displayName,
+              description: project.description,
+              baseWorkspaceId: workspace.workspaceId,
+            },
+            error: null,
+          },
+        });
+        return;
+      }
+      const created = await this.routingService.createProjectForPrompt({
+        prompt: request.prompt,
+        ...(request.parentPath ? { parentPath: request.parentPath } : {}),
+        registerProject: (directoryPath) =>
+          this.workspaceProvisioning.findOrCreateProjectForDirectory(directoryPath),
+      });
       const updated = {
         ...created.project,
         customName: created.title,
@@ -5270,11 +5281,9 @@ export class Session {
           error: null,
         },
       });
-      if (!request.scratch) {
-        // The name had to exist before the folder; the description can
-        // improve afterwards (metadataModel), without blocking creation.
-        void this.refineNewProjectDescription(updated.projectId, request.prompt, created.title);
-      }
+      // The name had to exist before the folder; the description can
+      // improve afterwards (metadataModel), without blocking creation.
+      void this.refineNewProjectDescription(updated.projectId, request.prompt, created.title);
     } catch (error) {
       this.sessionLogger.warn({ err: error }, "routing.project.create failed");
       this.emit({

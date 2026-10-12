@@ -51,10 +51,9 @@ Navigation uses `buildSessionsRoute()` and the History Ask zustand store (`pendi
    - Copilot `allow-all`
    - ACP (Cursor / Grok / …) `paseo-allow-all` or first mode with `isUnattended: true`
 3. Build a markdown brief with scope, Paseo catalog paths, native transcript roots, search instructions, and the user question.
-4. `client.createAgent({ config, workspaceId?, initialPrompt: brief, labels })`.
-5. Title: `Ask: ` + truncated question (~50 chars).
-
-Primary `cwd` is the first scope cwd (or first active workspace on the host for host-wide).
+4. Place the agent in the host's scratch (`experiments`) project, in its base workspace: `routing.project.create` with `scratch: true` returns `baseWorkspaceId` (gated on `features.scratchWorkspace`). The scope lives only in the brief and labels, so Ask agents never pile up inside the projects they search. The `fleet_search` deep tier places its Ask agent the same way, through `RoutingService.ensureScratchWorkspace`.
+5. `client.createAgent({ config, workspaceId, initialPrompt: brief, labels })`.
+6. Title: `Ask: ` + truncated question (~50 chars).
 
 ## Labels
 

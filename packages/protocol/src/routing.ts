@@ -111,8 +111,8 @@ export const RoutingProjectCreateRequestSchema = z.object({
   prompt: z.string(),
   // Parent directory override; absent = this host's configured project root.
   parentPath: z.string().optional(),
-  // Ensure this host's scratch project instead (mkdir -p the scratch root,
-  // register it as a plain directory). The prompt is ignored.
+  // Ensure this host's scratch project and its base workspace instead (mkdir
+  // -p the scratch root, register it as a plain directory). The prompt is ignored.
   scratch: z.boolean().optional(),
   requestId: z.string(),
 });
@@ -128,6 +128,9 @@ export const RoutingProjectCreateResponseSchema = z.object({
         rootPath: z.string(),
         title: z.string(),
         description: z.string().nullable(),
+        // COMPAT(scratchWorkspace): added 2026-10-12. Set for scratch
+        // requests by daemons with features.scratchWorkspace.
+        baseWorkspaceId: z.string().optional(),
       })
       .nullable(),
     error: z.string().nullable(),

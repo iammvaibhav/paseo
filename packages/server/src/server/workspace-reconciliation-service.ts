@@ -208,6 +208,19 @@ export class WorkspaceReconciliationService {
     this.rescanTimer.unref?.();
   }
 
+  /**
+   * Ensures the project's base workspace through the same per-project chain
+   * the mutation listener uses, so callers that need the workspace now never
+   * race it into a duplicate. Returns the base workspace id, or null when the
+   * project is unknown, archived, or provisioning failed (logged).
+   */
+  async ensureProjectBaseWorkspace(projectId: string): Promise<string | null> {
+    const project = await this.projectRegistry.get(projectId);
+    if (!project || project.archivedAt) return null;
+    await this.ensureBaseWorkspace(project);
+    return (await this.projectRegistry.get(projectId))?.baseWorkspaceId ?? null;
+  }
+
   // ADR 0001: every active project gets a base workspace over its root
   // checkout — find-or-create so a same-cwd workspace created some other
   // way (e.g. via open_project_request) is adopted, never duplicated.

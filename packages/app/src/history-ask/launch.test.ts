@@ -29,8 +29,15 @@ describe("launchHistoryAsk", () => {
     vi.clearAllMocks();
   });
 
-  it("creates a labeled allow-all agent with brief", async () => {
+  it("runs a workspace-scoped Ask in the host's scratch base workspace", async () => {
     const createAgent = vi.fn(async () => ({ id: "agt_1" }));
+    const createProjectForPrompt = vi.fn(async () => ({
+      projectId: "prj_scratch",
+      rootPath: "/Users/vaibhav/experiments",
+      title: "experiments",
+      description: null,
+      baseWorkspaceId: "ws_scratch",
+    }));
     const getProvidersSnapshot = vi.fn(async () => ({
       entries: [
         {
@@ -58,6 +65,7 @@ describe("launchHistoryAsk", () => {
     const result = await launchHistoryAsk({
       client: {
         createAgent: createAgent as never,
+        createProjectForPrompt: createProjectForPrompt as never,
         getProvidersSnapshot: getProvidersSnapshot as never,
       },
       scope,
@@ -85,17 +93,48 @@ describe("launchHistoryAsk", () => {
     if (!call) {
       throw new Error("expected createAgent call");
     }
+    expect(createProjectForPrompt).toHaveBeenCalledWith({
+      prompt: "Where did we add webhooks?",
+      scratch: true,
+    });
     expect(call.config.provider).toBe("claude");
-    expect(call.config.cwd).toBe("/Users/vaibhav/paseo");
+    expect(call.config.cwd).toBe("/Users/vaibhav/experiments");
     expect(call.config.modeId).toBe("bypassPermissions");
     expect(call.config.model).toBe("claude-sonnet-4");
     expect(call.config.title).toContain("Ask:");
-    expect(call.workspaceId).toBe("ws_1");
+    expect(call.workspaceId).toBe("ws_scratch");
     expect(call.labels["paseo.history-ask"]).toBe("1");
     expect(call.labels["paseo.history-ask.scope"]).toBe("workspace");
+    expect(call.labels["paseo.history-ask.workspace-id"]).toBe("ws_1");
+    expect(call.initialPrompt).toContain("/Users/vaibhav/paseo");
     expect(call.initialPrompt).toContain("History Ask");
     expect(call.initialPrompt).toContain("Where did we add webhooks?");
     expect(call.internal).toBeUndefined();
+  });
+
+  it("refuses a host whose scratch response has no base workspace", async () => {
+    const createAgent = vi.fn();
+    await expect(
+      launchHistoryAsk({
+        client: {
+          createAgent: createAgent as never,
+          createProjectForPrompt: vi.fn(async () => ({
+            projectId: "prj_scratch",
+            rootPath: "/home/u/experiments",
+            title: "experiments",
+            description: null,
+          })) as never,
+          getProvidersSnapshot: vi.fn() as never,
+        },
+        scope: resolveWorkspaceScope({
+          serverId: "srv_1",
+          workspaceId: "ws_1",
+          cwd: "/repo",
+        }),
+        question: "who touched the relay?",
+      }),
+    ).rejects.toThrow(/Update the host/);
+    expect(createAgent).not.toHaveBeenCalled();
   });
 
   it("rejects empty question", async () => {
@@ -103,6 +142,7 @@ describe("launchHistoryAsk", () => {
       launchHistoryAsk({
         client: {
           createAgent: vi.fn() as never,
+          createProjectForPrompt: vi.fn() as never,
           getProvidersSnapshot: vi.fn() as never,
         },
         scope: resolveWorkspaceScope({

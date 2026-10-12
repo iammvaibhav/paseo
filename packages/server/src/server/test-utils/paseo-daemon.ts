@@ -215,6 +215,7 @@ async function prepareTestDaemonConfig(
     downloadTokenTtlMs: options.downloadTokenTtlMs,
     agentProfiles: options.agentProfiles,
     autoArchiveAfterMerge: options.autoArchiveAfterMerge,
+    ensureScratchProjectOnBoot: false,
     pluginsEnabled: options.pluginsEnabled,
     plugins: options.plugins,
   };

@@ -337,8 +337,7 @@ export const es: TranslationResources = {
       modelLabel: "Model",
       modelPlaceholder: "Select model",
       errors: {
-        noCwd:
-          "No working directory found on this host. Open a workspace, or ensure this host has history with a cwd.",
+        updateHost: "Update the host to run History Ask in its experiments project.",
         noScope: "Choose a host or open Ask from a project/workspace",
         hostDisconnected: "Host is not connected",
         launchFailed: "Failed to start History Ask",

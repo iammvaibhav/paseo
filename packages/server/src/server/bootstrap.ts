@@ -701,6 +701,9 @@ export interface PaseoDaemonConfig {
     maxProcessConcurrency: number;
   };
   autoArchiveAfterMerge?: boolean;
+  // Ensure this host's scratch project (~/experiments) at boot. Default on;
+  // test daemons turn it off so they never touch the real home directory.
+  ensureScratchProjectOnBoot?: boolean;
   // Close idle OMP processes after this many seconds; 0 turns the sweep off.
   ompIdleCloseAfterSeconds?: number;
   enableTerminalAgentHooks?: boolean;
@@ -2531,8 +2534,32 @@ export async function createPaseoDaemon(
         inventoryOnly: true,
       }),
     hindsight: new HindsightClient({ logger }),
+    scratch: {
+      registerProject: (directoryPath) =>
+        workspaceProvisioning.findOrCreateProjectForDirectory(directoryPath),
+      setDescriptionIfMissing: async (projectId, description) => {
+        await projectRegistry.update(projectId, (record) =>
+          record.description
+            ? record
+            : { ...record, description, updatedAt: new Date().toISOString() },
+        );
+      },
+      ensureBaseWorkspace: async (projectId) => {
+        const workspaceId = await workspaceReconciliation.ensureProjectBaseWorkspace(projectId);
+        const workspace = workspaceId ? await workspaceRegistry.get(workspaceId) : null;
+        return workspace && !workspace.archivedAt ? workspace : null;
+      },
+    },
   });
   agentManager.setMetadataCompletion((prompt) => routingService.completeMetadata(prompt));
+  // Every host gets its scratch ("experiments") project and base workspace
+  // without waiting for the first scratch placement: History Ask agents and
+  // one-off work land there.
+  if (config.ensureScratchProjectOnBoot !== false) {
+    void routingService.ensureScratchWorkspace().catch((error) => {
+      logger.warn({ err: error }, "Failed to ensure the scratch project");
+    });
+  }
   // Sidebar search (agent.search.*): a shallow jev pass over this host's agents.
   const agentSearchService = new AgentSearchService({
     logger,

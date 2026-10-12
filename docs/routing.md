@@ -37,7 +37,9 @@ Both are plain OpenAI-compatible calls with `reasoning_effort: "none"`. Haiku th
 
 ## New projects and scratch
 
-`routing.project.create` runs on the target host: `mkdir -p` the configured project root, create the folder, `git init` on `main` with a first commit holding a README, register it as a git project. `fleet_create_project` and Add project → New directory make the same repository (`ensureGitRepository` in `project-directory-service.ts`). Scratch is one shared plain-directory project per host at `routing.scratchRootByHost`, created on first use.
+`routing.project.create` runs on the target host: `mkdir -p` the configured project root, create the folder, `git init` on `main` with a first commit holding a README, register it as a git project. `fleet_create_project` and Add project → New directory make the same repository (`ensureGitRepository` in `project-directory-service.ts`).
+
+Scratch is one shared plain-directory project per host, titled `experiments`, at `routing.scratchRootByHost` or `~/experiments` when the host has no entry. Every daemon ensures it and its base workspace at boot (`RoutingService.ensureScratchWorkspace`), so a new host has one without anyone routing to it. History Ask agents run in that base workspace (see [history-ask.md](history-ask.md)). The catalog hides it from placement options: by path when the root is configured, else any project rooted at a folder named `experiments`. A scratch `routing.project.create` never renames the project.
 
 ## Configuration
 
