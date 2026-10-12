@@ -26,6 +26,7 @@ import {
   buildFleetContextData,
   buildHostModelsSection,
   buildLocalInventory,
+  buildLocalModels,
   buildLocalRecentAgents,
   buildSnapshotBlock,
   buildWorldSnapshot,
@@ -815,5 +816,36 @@ describe("peer context hostAlias derivation", () => {
     const peer = context.hosts.find((host) => host.hostName === "peer-a");
     expect(peer?.alias).toBe("peer box");
     expect(peer?.serverId).toBe("server-peer");
+  });
+});
+
+describe("buildLocalModels visibleModels filtering", () => {
+  test("filters models by answering host's visibleModels", async () => {
+    const providerSnapshotManager = {
+      listProviders: async () => [
+        {
+          provider: "omp",
+          models: [{ id: "anthropic/claude-opus-5-5" }, { id: "google/gemini-2.5" }],
+        },
+        {
+          provider: "cursor",
+          models: [{ id: "gpt-5" }],
+        },
+      ],
+      listRegisteredProviderIds: () => ["omp", "cursor"],
+    };
+    const daemonConfigStore = {
+      get: () => ({
+        visibleModels: ["omp:anthropic/claude-opus-5-5"],
+      }),
+    };
+
+    const result = await buildLocalModels({
+      providerSnapshotManager,
+      daemonConfigStore,
+    });
+
+    expect(result.omp).toEqual(["anthropic/claude-opus-5-5"]);
+    expect(result.cursor).toBeUndefined();
   });
 });

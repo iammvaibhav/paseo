@@ -230,4 +230,58 @@ describe("fleet_list_models tool", () => {
       /unreachable/i,
     );
   });
+
+  test("filters local models by daemon.visibleModels when configured", async () => {
+    const daemonConfigStore = {
+      get: () => ({
+        visibleModels: ["omp:opencode-zen/deepseek-v4-flash-free"],
+      }),
+    } as unknown as Pick<DaemonConfigStore, "get">;
+    const catalog = createCatalog(undefined, {}, daemonConfigStore);
+
+    const result = await catalog.executeTool("fleet_list_models", { host: "local" });
+    const content = result.structuredContent as FleetListModelsResult;
+    expect(content.models).toEqual({
+      omp: ["opencode-zen/deepseek-v4-flash-free"],
+    });
+  });
+
+  test("filters local models to empty when none match daemon.visibleModels", async () => {
+    const daemonConfigStore = {
+      get: () => ({
+        visibleModels: ["cursor:gpt-5"],
+      }),
+    } as unknown as Pick<DaemonConfigStore, "get">;
+    const catalog = createCatalog(undefined, {}, daemonConfigStore);
+
+    const result = await catalog.executeTool("fleet_list_models", { host: "local" });
+    const content = result.structuredContent as FleetListModelsResult;
+    expect(content.models).toEqual({});
+  });
+
+  test("list_models filters by daemon.visibleModels", async () => {
+    const stub = createProviderSnapshotManagerStub();
+    stub.listModels.mockResolvedValue([
+      { provider: "omp", id: "anthropic/claude-opus-5-5", label: "Claude Opus 5.5" },
+      { provider: "omp", id: "google/gemini-2.5", label: "Gemini 2.5" },
+    ]);
+    const daemonConfigStore = {
+      get: () => ({
+        visibleModels: ["omp:anthropic/claude-opus-5-5"],
+      }),
+    } as unknown as Pick<DaemonConfigStore, "get">;
+    const catalog = createPaseoToolCatalog({
+      agentManager: {} as unknown as AgentManager,
+      agentStorage: { get: async () => null, list: async () => [] } as unknown as AgentStorage,
+      providerSnapshotManager: stub.manager as unknown as ProviderSnapshotManager,
+      daemonConfigStore,
+      logger: createTestLogger(),
+    });
+
+    const result = await catalog.executeTool("list_models", { provider: "omp" });
+    const content = result.structuredContent as { provider: string; models: Array<{ id: string }> };
+    expect(content.models).toEqual([
+      { provider: "omp", id: "anthropic/claude-opus-5-5", label: "Claude Opus 5.5" },
+    ]);
+  });
 });

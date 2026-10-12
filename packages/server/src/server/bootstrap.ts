@@ -141,6 +141,12 @@ import { createTranscriptSearchService } from "./search/service.js";
 import { AgentStorage, type StoredAgentRecord } from "./agent/agent-storage.js";
 import { attachAgentStoragePersistence } from "./persistence-hooks.js";
 import { createAgentMcpServer } from "./agent/mcp-server.js";
+import { createFleetMcpServer } from "./mcp-fleet/fleet-mcp-server.js";
+import { authenticateRemoteMcpClient } from "./mcp-fleet/auth.js";
+import {
+  MISSION_CONTROL_LABEL_KEY,
+  MISSION_CONTROL_LABEL_VALUE,
+} from "./mission-control/commander-contract.js";
 import {
   createPaseoToolCatalog,
   dispatchLocalPromptMode,
@@ -287,6 +293,7 @@ import { withTimeout } from "../utils/promise-timeout.js";
 import { isHostnameAllowed, type HostnamesConfig } from "./hostnames.js";
 import {
   createRequireBearerMiddleware,
+  extractHttpBearerToken,
   isAgentMcpRequestAuthorized,
   type DaemonAuthConfig,
 } from "./auth.js";
@@ -3051,6 +3058,114 @@ export async function createPaseoDaemon(
     app.get(agentMcpRoute, handleAgentMcpRequest);
     app.delete(agentMcpRoute, handleAgentMcpRequest);
     logger.info({ route: agentMcpRoute, enabled: mcpEnabled }, "Agent MCP route mounted");
+  }
+
+  {
+    const fleetMcpRoute = "/mcp/fleet";
+
+    const createFleetMcpSession = async (clientName: string) => {
+      let commanderAgentId: string | undefined;
+      for (const agent of agentManager.listAgents()) {
+        if (agent.labels[MISSION_CONTROL_LABEL_KEY] === MISSION_CONTROL_LABEL_VALUE) {
+          commanderAgentId = agent.id;
+          break;
+        }
+      }
+      const hostDeps = createAgentToolHostDependencies({
+        callerLabels: {
+          [MISSION_CONTROL_LABEL_KEY]: MISSION_CONTROL_LABEL_VALUE,
+          "paseo.mcp-client": clientName,
+        },
+        ...(commanderAgentId ? { callerAgentId: commanderAgentId } : {}),
+        enableVoiceTools: false,
+        voiceOnly: false,
+      });
+      const fleetMcpServer = await createFleetMcpServer({
+        hostDependencies: hostDeps,
+        clientName,
+      });
+
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: undefined,
+        enableDnsRebindingProtection: false,
+      });
+      Object.assign(transport, {
+        onerror: (err: Error) => {
+          logger.error({ err }, "Fleet MCP transport error");
+        },
+      });
+
+      await fleetMcpServer.connect(transport);
+      return { server: fleetMcpServer, transport };
+    };
+
+    const runFleetMcpRequest = async (
+      req: express.Request,
+      res: express.Response,
+    ): Promise<void> => {
+      if (!mcpEnabled) {
+        res.status(404).json({ error: "Fleet MCP endpoint disabled" });
+        return;
+      }
+      const persisted = loadPersistedConfig(config.paseoHome);
+      const remoteClients = persisted.daemon?.mcp?.remoteClients;
+      if (!remoteClients || remoteClients.length === 0) {
+        res.status(404).json({ error: "No remote MCP clients configured" });
+        return;
+      }
+      if (req.method !== "POST") {
+        res.status(405).json({
+          jsonrpc: "2.0",
+          error: {
+            code: -32000,
+            message: "Method not allowed",
+          },
+          id: null,
+        });
+        return;
+      }
+      const token = extractHttpBearerToken(req.header("authorization"));
+      const authenticatedClient = await authenticateRemoteMcpClient(token, remoteClients);
+      if (!authenticatedClient) {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+      logger.info({ client: authenticatedClient.name }, "Fleet MCP request authorized");
+      try {
+        const { server, transport } = await createFleetMcpSession(authenticatedClient.name);
+        res.on("close", () => {
+          void transport.close();
+          void server.close();
+        });
+
+        await transport.handleRequest(
+          req as unknown as IncomingMessage,
+          res as unknown as ServerResponse,
+          req.body,
+        );
+      } catch (err) {
+        logger.error({ err }, "Failed to handle Fleet MCP request");
+        if (!res.headersSent) {
+          res.status(500).json({
+            jsonrpc: "2.0",
+            error: {
+              code: -32603,
+              message: "Internal MCP server error",
+            },
+            id: null,
+          });
+        }
+      }
+    };
+
+    const handleFleetMcpRequest: express.RequestHandler = (req, res) => {
+      void runFleetMcpRequest(req, res);
+    };
+
+    app.post(fleetMcpRoute, handleFleetMcpRequest);
+    app.get(fleetMcpRoute, handleFleetMcpRequest);
+    app.delete(fleetMcpRoute, handleFleetMcpRequest);
+    logger.info({ route: fleetMcpRoute, enabled: mcpEnabled }, "Fleet MCP route mounted");
   }
 
   const speechService = createSpeechService({
