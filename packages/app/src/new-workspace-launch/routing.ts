@@ -40,15 +40,25 @@ const TARGET_PRESENTATION: Record<
 
 type RoutingStatus = "idle" | "waiting" | "loading" | "ready" | "error";
 
+// Keyed by the fleet's project list as well as the prompt: a project added
+// since (any host, any path) makes every cached answer stale.
 const suggestionCache = new Map<string, RoutingSuggestion>();
 
-function rememberSuggestion(prompt: string, suggestion: RoutingSuggestion): void {
-  suggestionCache.delete(prompt);
-  suggestionCache.set(prompt, suggestion);
+function rememberSuggestion(key: string, suggestion: RoutingSuggestion): void {
+  suggestionCache.delete(key);
+  suggestionCache.set(key, suggestion);
   if (suggestionCache.size > ROUTING_CACHE_LIMIT) {
     const oldest = suggestionCache.keys().next().value;
     if (oldest !== undefined) suggestionCache.delete(oldest);
   }
+}
+
+/** Identity of the routable project list: changes when any host adds or drops a project. */
+function fleetProjectsKey(projects: readonly HostProjectListItem[]): string {
+  return projects
+    .flatMap((project) => project.hosts.map((host) => `${host.serverId}/${host.projectId}`))
+    .sort()
+    .join(",");
 }
 
 /** "omp:anthropic/claude-opus-5-5" → { provider: "omp", model: "anthropic/claude-opus-5-5" }. */
@@ -76,41 +86,43 @@ function useRoutingSuggestion(input: {
   serverId: string;
   textSource: ComposerTextSource;
   enabled: boolean;
+  projectsKey: string;
 }): UseRoutingSuggestionResult {
-  const { serverId, textSource, enabled } = input;
+  const { serverId, textSource, enabled, projectsKey } = input;
   const prompt = useSyncExternalStore(textSource.subscribe, textSource.getSnapshot).trim();
+  const key = `${projectsKey}\n${prompt}`;
   const [state, setState] = useState<{
-    prompt: string;
+    key: string;
     status: RoutingStatus;
     suggestion: RoutingSuggestion | null;
     error: string | null;
-  }>({ prompt: "", status: "idle", suggestion: null, error: null });
+  }>({ key: "", status: "idle", suggestion: null, error: null });
   const sequenceRef = useRef(0);
-  const inFlightRef = useRef<{ prompt: string; promise: Promise<RoutingSuggestion | null> } | null>(
+  const inFlightRef = useRef<{ key: string; promise: Promise<RoutingSuggestion | null> } | null>(
     null,
   );
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const run = useCallback(
-    (forPrompt: string): Promise<RoutingSuggestion | null> => {
-      if (inFlightRef.current?.prompt === forPrompt) return inFlightRef.current.promise;
+    (forPrompt: string, forKey: string): Promise<RoutingSuggestion | null> => {
+      if (inFlightRef.current?.key === forKey) return inFlightRef.current.promise;
       const sequence = (sequenceRef.current += 1);
       const client = getHostRuntimeStore().getClient(serverId);
       if (!client?.isConnected) return Promise.resolve(null);
-      setState({ prompt: forPrompt, status: "loading", suggestion: null, error: null });
+      setState({ key: forKey, status: "loading", suggestion: null, error: null });
       const promise = client
         .suggestRouting(forPrompt)
         .then((suggestion) => {
-          rememberSuggestion(forPrompt, suggestion);
+          rememberSuggestion(forKey, suggestion);
           if (sequence === sequenceRef.current) {
-            setState({ prompt: forPrompt, status: "ready", suggestion, error: null });
+            setState({ key: forKey, status: "ready", suggestion, error: null });
           }
           return suggestion;
         })
         .catch((error: unknown) => {
           if (sequence === sequenceRef.current) {
             setState({
-              prompt: forPrompt,
+              key: forKey,
               status: "error",
               suggestion: null,
               error: error instanceof Error ? error.message : String(error),
@@ -121,7 +133,7 @@ function useRoutingSuggestion(input: {
         .finally(() => {
           if (inFlightRef.current?.promise === promise) inFlightRef.current = null;
         });
-      inFlightRef.current = { prompt: forPrompt, promise };
+      inFlightRef.current = { key: forKey, promise };
       return promise;
     },
     [serverId],
@@ -132,39 +144,40 @@ function useRoutingSuggestion(input: {
     timerRef.current = null;
     if (!enabled || prompt.length < ROUTING_MIN_PROMPT_CHARS) {
       sequenceRef.current += 1;
-      setState({ prompt, status: "idle", suggestion: null, error: null });
+      setState({ key, status: "idle", suggestion: null, error: null });
       return;
     }
-    const cached = suggestionCache.get(prompt);
+    const cached = suggestionCache.get(key);
     if (cached) {
       sequenceRef.current += 1;
-      setState({ prompt, status: "ready", suggestion: cached, error: null });
+      setState({ key, status: "ready", suggestion: cached, error: null });
       return;
     }
-    // A newer prompt supersedes any in-flight request: its reply is dropped.
+    // A newer prompt or project list supersedes any in-flight request: its
+    // reply is dropped.
     sequenceRef.current += 1;
-    setState((current) => ({ ...current, prompt, status: "waiting" }));
+    setState((current) => ({ ...current, key, status: "waiting" }));
     timerRef.current = setTimeout(() => {
       timerRef.current = null;
-      void run(prompt);
+      void run(prompt, key);
     }, ROUTING_DEBOUNCE_MS);
     return () => {
       clearTimeout(timerRef.current ?? undefined);
     };
-  }, [enabled, prompt, run]);
+  }, [enabled, key, prompt, run]);
 
   const settle = useCallback(async (): Promise<RoutingSuggestion | null> => {
     if (!enabled || prompt.length < ROUTING_MIN_PROMPT_CHARS) return null;
-    const cached = suggestionCache.get(prompt);
+    const cached = suggestionCache.get(key);
     if (cached) return cached;
     if (timerRef.current) {
       clearTimeout(timerRef.current);
       timerRef.current = null;
     }
-    return run(prompt);
-  }, [enabled, prompt, run]);
+    return run(prompt, key);
+  }, [enabled, key, prompt, run]);
 
-  const current = state.prompt === prompt ? state : null;
+  const current = state.key === key ? state : null;
   return {
     suggestion: current?.suggestion ?? null,
     status: current?.status ?? "idle",
@@ -211,6 +224,8 @@ export interface NewWorkspaceRoutingInput {
   /** Select a host without marking it as the user's choice. */
   selectHost: (serverId: string) => void;
   projectByOptionId: ReadonlyMap<string, HostProjectListItem>;
+  /** Every host's projects; a change re-asks for the current prompt. */
+  fleetProjects: readonly HostProjectListItem[];
   /** Select a project option without marking it as the user's choice. */
   selectProjectOption: (optionId: string) => void;
   composerState: RoutingComposerState | null;
@@ -271,6 +286,7 @@ export function useNewWorkspaceRouting(input: NewWorkspaceRoutingInput): NewWork
     selectedServerId,
     selectHost,
     projectByOptionId,
+    fleetProjects,
     selectProjectOption,
     composerState,
     projectPicker,
@@ -287,7 +303,13 @@ export function useNewWorkspaceRouting(input: NewWorkspaceRoutingInput): NewWork
         : null,
     [composerState],
   );
-  const routing = useRoutingSuggestion({ serverId: routingServerId, textSource, enabled });
+  const projectsKey = useMemo(() => fleetProjectsKey(fleetProjects), [fleetProjects]);
+  const routing = useRoutingSuggestion({
+    serverId: routingServerId,
+    textSource,
+    enabled,
+    projectsKey,
+  });
   const touchedRef = useRef<TouchedControls>({
     host: false,
     project: false,

@@ -5229,7 +5229,6 @@ export class Session {
         updatedAt: new Date().toISOString(),
       };
       await this.projectRegistry.upsert(updated);
-      this.routingService.invalidateCatalog();
       await this.emitProjectUpdate({ kind: "upsert", project: updated });
       this.emit({
         type: "routing.project.create.response",
@@ -5275,7 +5274,6 @@ export class Session {
       if (!description || !current) return;
       const next = { ...current, description, updatedAt: new Date().toISOString() };
       await this.projectRegistry.upsert(next);
-      routing.invalidateCatalog();
       await this.emitProjectUpdate({ kind: "upsert", project: next });
     } catch (error) {
       this.sessionLogger.warn({ err: error }, "routing.describe_project failed");
