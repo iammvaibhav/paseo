@@ -1349,12 +1349,6 @@ export const ko: TranslationResources = {
       itsaplan: "itsaplan",
       webhooks: "Webhooks",
     },
-    worktreeSetup: {
-      title: "워크트리 스크립트 설정",
-      description:
-        "새 워크트리가 의존성을 설치하고 자동으로 준비될 수 있도록 설정 명령을 추가하세요.",
-      openProjectSettings: "프로젝트 설정 열기",
-    },
     project: {
       actions: {
         menu: "프로젝트 작업",
@@ -1586,19 +1580,6 @@ export const ko: TranslationResources = {
         idle: "업데이트 상태를 아직 확인하지 않았습니다.",
       },
       installError: "데스크톱 앱 업데이트를 설치할 수 없습니다.",
-      callout: {
-        installingTitle: "업데이트 설치 중",
-        failedTitle: "업데이트 실패",
-        availableTitle: "업데이트 사용 가능",
-        genericError: "문제가 발생했습니다.",
-        whatsNew: "새로운 기능",
-        installingAction: "설치 중...",
-        installAndRestart: "설치 후 재시작",
-        installingDescription: "설치 후 재시작 중...",
-        versionReady: "{{version}} 설치가 준비되었습니다.",
-        newVersionReady: "새 버전 설치가 준비되었습니다.",
-        restartWarning: "앱을 업그레이드하면 실행 중인 에이전트가 중지되고 터미널 세션이 닫힙니다.",
-      },
     },
     settings: {
       loadFailed: "데스크톱 설정을 불러올 수 없습니다.",

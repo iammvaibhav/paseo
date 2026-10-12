@@ -1375,12 +1375,6 @@ export const ru: TranslationResources = {
       itsaplan: "itsaplan",
       webhooks: "Webhooks",
     },
-    worktreeSetup: {
-      title: "Настроить скрипты worktree",
-      description:
-        "Добавьте команды настройки для автоматической установки зависимостей и подготовки новых worktree.",
-      openProjectSettings: "Открыть настройки проекта",
-    },
     project: {
       actions: {
         menu: "Действия проекта",
@@ -1610,20 +1604,6 @@ export const ru: TranslationResources = {
         idle: "Статус обновления ещё не проверен.",
       },
       installError: "Не удалось установить обновление настольного приложения.",
-      callout: {
-        installingTitle: "Установка обновления",
-        failedTitle: "Обновление не выполнено",
-        availableTitle: "Доступно обновление",
-        genericError: "Что-то пошло не так.",
-        whatsNew: "Что нового",
-        installingAction: "Установка...",
-        installAndRestart: "Установить и перезапустить",
-        installingDescription: "Установка и перезапуск...",
-        versionReady: "Версия {{version}} готова к установке.",
-        newVersionReady: "Новая версия готова к установке.",
-        restartWarning:
-          "При обновлении приложения работающие агенты будут остановлены, а сеансы терминала закрыты.",
-      },
     },
     settings: {
       loadFailed: "Не удалось загрузить настройки настольного приложения.",

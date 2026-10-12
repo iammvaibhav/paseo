@@ -1338,11 +1338,6 @@ export const zhCN: TranslationResources = {
       itsaplan: "itsaplan",
       webhooks: "Webhooks",
     },
-    worktreeSetup: {
-      title: "设置 worktree scripts",
-      description: "添加 setup 命令，让新的 worktree 自动安装依赖并完成准备。",
-      openProjectSettings: "打开 project 设置",
-    },
     project: {
       actions: {
         menu: "Project 操作",
@@ -1563,19 +1558,6 @@ export const zhCN: TranslationResources = {
         idle: "尚未检查更新状态。",
       },
       installError: "无法安装 desktop app 更新。",
-      callout: {
-        installingTitle: "正在安装更新",
-        failedTitle: "更新失败",
-        availableTitle: "有可用更新",
-        genericError: "出了点问题。",
-        whatsNew: "更新内容",
-        installingAction: "正在安装...",
-        installAndRestart: "安装并重启",
-        installingDescription: "正在安装并重启...",
-        versionReady: "{{version}} 已准备好安装。",
-        newVersionReady: "新版本已准备好安装。",
-        restartWarning: "升级 app 会停止正在运行的 agents，并关闭 terminal 会话。",
-      },
     },
     settings: {
       loadFailed: "无法加载桌面设置。",
