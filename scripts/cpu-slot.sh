@@ -23,7 +23,7 @@ fi
 lock="/tmp/paseo-cpu-slot-$slot.lock"
 exec 9>>"$lock"
 if ! flock -n 9; then
-  echo "cpu-slot: waiting for the '$slot' slot, another worktree holds $lock" >&2
+  echo "cpu-slot: waiting for the '$slot' slot, another run holds $lock" >&2
   flock 9
 fi
 # fd 9 stays open in the exec'd command, so the lock is held until it exits.
