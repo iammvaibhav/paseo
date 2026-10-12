@@ -22,7 +22,7 @@ import {
   ProjectDirectoryRequestError,
 } from "../project-directory-service.js";
 import type { PersistedProjectRecord, PersistedWorkspaceRecord } from "../workspace-registry.js";
-import { createVaultSecretResolver, type ResolveSecret } from "../secrets/vault-secret.js";
+import { resolveVaultSecret, type ResolveSecret } from "../secrets/vault-secret.js";
 import {
   chatCompletionText,
   judgeChoices,
@@ -114,7 +114,7 @@ export class RoutingService {
   constructor(deps: RoutingServiceDependencies) {
     this.deps = deps;
     this.logger = deps.logger.child({ module: "routing" });
-    this.resolveSecret = deps.resolveSecret ?? createVaultSecretResolver();
+    this.resolveSecret = deps.resolveSecret ?? resolveVaultSecret;
   }
 
   private config(): {

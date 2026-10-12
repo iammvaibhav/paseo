@@ -11,7 +11,7 @@ describe("itsaplanNavigationKind", () => {
 
   it("allows loads that stay inside the tool's own origin", () => {
     expect(itsaplanNavigationKind("https://dev-box:8443/login", ORIGIN)).toBe("sameOrigin");
-    expect(itsaplanNavigationKind(`${ORIGIN}/tickets/42`, ORIGIN)).toBe("sameOrigin");
+    expect(itsaplanNavigationKind(`${ORIGIN}/issues/42`, ORIGIN)).toBe("sameOrigin");
   });
 
   it("hands plain web links to the external browser", () => {

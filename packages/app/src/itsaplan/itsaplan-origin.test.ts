@@ -22,7 +22,7 @@ describe("normalizeItsaplanOrigin", () => {
 
   it("keeps an explicit scheme and strips paths", () => {
     expect(normalizeItsaplanOrigin("http://10.0.0.237:3001")).toBe("http://10.0.0.237:3001");
-    expect(normalizeItsaplanOrigin("https://host.example:8443/tickets?x=1")).toBe(
+    expect(normalizeItsaplanOrigin("https://host.example:8443/issues?x=1")).toBe(
       "https://host.example:8443",
     );
   });

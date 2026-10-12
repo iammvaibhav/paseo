@@ -21,8 +21,6 @@ import {
   providersSnapshotQueryRoot,
 } from "@/data/providers-snapshot";
 import { providerUsageQueryKey } from "@/provider-usage/query-key";
-import { ticketsQueryRoot } from "@/tickets/query-keys";
-import { notesQueryRoot } from "@/notes/query-keys";
 
 type ProvidersSnapshotUpdateMessage = Extract<
   SessionOutboundMessage,
@@ -70,7 +68,7 @@ interface WorkspaceTerminalsRegistration extends WorkspaceTerminalsRoute {
   subscription: OwnedSubscription<TerminalsChangedMessage["payload"]>;
 }
 
-type EventStreamDomain = "notes" | "tickets" | "missionControlEvents" | "providerUsage";
+type EventStreamDomain = "missionControlEvents" | "providerUsage";
 
 /** A query that needs one connection event stream held while it is observed. */
 interface EventStreamRoute {
@@ -103,24 +101,6 @@ interface EventStream {
 
 // Owned-subscription daemons deliver these pushes only to a socket subscribed to them.
 const EVENT_STREAMS: Record<EventStreamDomain, EventStream> = {
-  notes: {
-    event: "notes.changed",
-    apply: ({ message, queryClient, serverId }) => {
-      if (message.type === "notes.changed") {
-        void queryClient.invalidateQueries({ queryKey: notesQueryRoot(serverId) });
-      }
-    },
-  },
-  tickets: {
-    event: "tickets.changed",
-    apply: ({ message, queryClient, serverId }) => {
-      // Refetch every active tickets query of this host: one changed ticket
-      // also moves derived fields (blocker counts, sub-task progress) of others.
-      if (message.type === "tickets.changed") {
-        void queryClient.invalidateQueries({ queryKey: ticketsQueryRoot(serverId) });
-      }
-    },
-  },
   missionControlEvents: {
     event: "mission_control_event",
     apply: ({ message, queryClient, serverId }) => {
@@ -234,18 +214,6 @@ const RECONNECT_REPAIR_POLICIES: ReconnectRepairPolicy[] = [
       });
     },
   },
-  {
-    domain: "tickets",
-    invalidate: ({ queryClient, serverId }) => {
-      void queryClient.invalidateQueries({ queryKey: ticketsQueryRoot(serverId) });
-    },
-  },
-  {
-    domain: "notes",
-    invalidate: ({ queryClient, serverId }) => {
-      void queryClient.invalidateQueries({ queryKey: notesQueryRoot(serverId) });
-    },
-  },
 ];
 
 export function checkoutDiffPushRoute(input: {
@@ -282,24 +250,6 @@ export function workspaceTerminalsPushRoute(input: {
       ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
     },
   };
-}
-
-/**
- * Tickets queries declare this route, so the router holds the tickets.changed
- * stream only for the board host and only while a tickets surface is open.
- */
-export function ticketsPushRoute(input: {
-  enabled: boolean;
-  serverId: string;
-}): ServerDataQueryMeta {
-  return { serverData: { domain: "tickets", enabled: input.enabled, serverId: input.serverId } };
-}
-/**
- * Notes queries declare this route, so the router holds the notes.changed
- * stream only for the notes host and only while a notes surface is open.
- */
-export function notesPushRoute(input: { enabled: boolean; serverId: string }): ServerDataQueryMeta {
-  return { serverData: { domain: "notes", enabled: input.enabled, serverId: input.serverId } };
 }
 
 /** Mission Control feed queries hold the mission_control_event stream while a feed is open. */
@@ -804,12 +754,7 @@ function readServerDataRoute(value: Record<string, unknown>): ServerDataRoute | 
   if (typeof enabled !== "boolean" || typeof serverId !== "string") {
     return null;
   }
-  if (
-    domain === "notes" ||
-    domain === "tickets" ||
-    domain === "missionControlEvents" ||
-    domain === "providerUsage"
-  ) {
+  if (domain === "missionControlEvents" || domain === "providerUsage") {
     return { domain, enabled, serverId };
   }
   if (typeof cwd !== "string") {

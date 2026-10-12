@@ -44,7 +44,6 @@ import {
   Scissors,
   MicVocal,
   FileSymlink,
-  NotebookPen,
 } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { ICON_SIZE, type Theme } from "@/styles/theme";
@@ -128,10 +127,6 @@ import {
   type MarkdownCopyInlineTag,
 } from "@/assistant-selection-copy/markup";
 import { capAssistantMessageForRender, getUtf8ByteLength } from "./assistant-message-render-limit";
-import { useToast } from "@/contexts/toast-context";
-import { useNotesHost } from "@/notes/use-notes-host";
-import { useNoteMutations } from "@/notes/queries";
-import { deriveNoteTitle } from "@/notes/mentions";
 export type { InlinePathTarget } from "@/assistant-file-links";
 export type { AssistantForkTarget };
 
@@ -468,7 +463,7 @@ function UserMessageImagePill({ image, onOpen, accessibilityLabel }: UserMessage
       id,
       bytes,
       mimeType: image.mimeType,
-      fileName: `ticket-image.${image.mimeType.split("/")[1] ?? "png"}`,
+      fileName: `image.${image.mimeType.split("/")[1] ?? "png"}`,
     }).then((attachment) => {
       if (!cancelled) {
         setPersisted(attachment);
@@ -720,7 +715,7 @@ export const AssistantTurnFooter = memo(function AssistantTurnFooter({
   turnMetricsEnabled = false,
   onSecondOpinion,
   model,
-  sourceContext,
+  sourceContext: _sourceContext,
 }: AssistantTurnFooterProps) {
   const [hovered, setHovered] = useState(false);
   const [pressedReveal, setPressedReveal] = useState(false);
@@ -786,11 +781,6 @@ export const AssistantTurnFooter = memo(function AssistantTurnFooter({
     <View style={assistantTurnFooterStylesheet.container}>
       <TurnCopyButton
         getContent={getContent}
-        containerStyle={assistantTurnFooterStylesheet.copyButton}
-      />
-      <SaveAsNoteButton
-        getContent={getContent}
-        sourceContext={sourceContext}
         containerStyle={assistantTurnFooterStylesheet.copyButton}
       />
       {canJumpToUserMessage && onJumpToUserMessage ? (
@@ -1057,91 +1047,6 @@ export const TurnCopyButton = memo(function TurnCopyButton({
           <Check size={ICON_SIZE.sm} color={iconColor} />
         ) : (
           <Copy size={ICON_SIZE.sm} color={iconColor} />
-        );
-      }}
-    </Pressable>
-  );
-});
-interface SaveAsNoteButtonProps {
-  getContent: () => string;
-  sourceContext?: AssistantTurnSourceContext;
-  containerStyle?: StyleProp<ViewStyle>;
-}
-
-export const SaveAsNoteButton = memo(function SaveAsNoteButton({
-  getContent,
-  sourceContext,
-  containerStyle,
-}: SaveAsNoteButtonProps) {
-  const { t } = useTranslation();
-  const { status } = useNotesHost();
-  const mutations = useNoteMutations();
-  const toast = useToast();
-  const [saved, setSaved] = useState(false);
-  const [pending, setPending] = useState(false);
-  const saveTimeoutRef = useRef<NodeJS.Timeout | number | null>(null);
-
-  useEffect(() => {
-    return () => {
-      clearTimeout(saveTimeoutRef.current ?? undefined);
-    };
-  }, []);
-
-  const handleSave = useCallback(async () => {
-    if (pending) return;
-    const content = getContent();
-    if (!content.trim()) return;
-    setPending(true);
-    try {
-      const title = deriveNoteTitle(content);
-      await mutations.upsertNote({
-        title,
-        body: content,
-        ...(sourceContext?.agentId ? { sourceAgentId: sourceContext.agentId } : {}),
-        ...(sourceContext?.serverId ? { sourceHost: sourceContext.serverId } : {}),
-        ...(sourceContext?.cwd ? { sourceCwd: sourceContext.cwd } : {}),
-        ...(sourceContext?.projectKey ? { sourceProjectKey: sourceContext.projectKey } : {}),
-      });
-      setSaved(true);
-      toast.show(t("notes.saveAsNote.saved"));
-      clearTimeout(saveTimeoutRef.current ?? undefined);
-      saveTimeoutRef.current = setTimeout(() => {
-        setSaved(false);
-        saveTimeoutRef.current = null;
-      }, 1500);
-    } catch (error) {
-      toast.error(
-        t("notes.saveAsNote.failed", {
-          message: error instanceof Error ? error.message : String(error),
-        }),
-      );
-    } finally {
-      setPending(false);
-    }
-  }, [getContent, mutations, pending, sourceContext, t, toast]);
-
-  if (status !== "ready") {
-    return null;
-  }
-
-  const pressableStyle = [turnCopyButtonStylesheet.container, containerStyle];
-
-  return (
-    <Pressable
-      onPress={handleSave}
-      style={pressableStyle}
-      accessibilityRole="button"
-      accessibilityLabel={saved ? t("notes.saveAsNote.saved") : t("notes.saveAsNote.label")}
-      testID="turn-save-as-note"
-    >
-      {({ hovered }) => {
-        const iconColor = hovered
-          ? turnCopyButtonStylesheet.iconHoveredColor.color
-          : turnCopyButtonStylesheet.iconColor.color;
-        return saved ? (
-          <Check size={ICON_SIZE.sm} color={iconColor} />
-        ) : (
-          <NotebookPen size={ICON_SIZE.sm} color={iconColor} />
         );
       }}
     </Pressable>

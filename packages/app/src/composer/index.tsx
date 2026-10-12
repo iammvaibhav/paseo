@@ -126,15 +126,6 @@ import { createMessageSubmissionWriter } from "@/composer/submission/writer";
 import { ComposerKeyboardScopeProvider, useComposerKeyboardScope } from "@/composer/keyboard-scope";
 import { useAppSettings } from "@/hooks/use-settings";
 import { RenderProfile } from "@/utils/render-profiler";
-import { useQueryClient } from "@tanstack/react-query";
-import {
-  NOTE_MENTION_PATTERN,
-  resolveAndInjectNoteMentions,
-  type InjectedNote,
-} from "@/notes/mentions";
-import { useNotesHost } from "@/notes/use-notes-host";
-import { noteDetailQueryKey } from "@/notes/query-keys";
-import type { NoteDetail } from "@getpaseo/protocol/notes/types";
 import { AfterPaintPublication } from "@/composer/after-paint-publication";
 import { isWeb, isNative } from "@/constants/platform";
 import type { ForgeSearchItem } from "@getpaseo/protocol/messages";
@@ -1767,32 +1758,6 @@ function ComposerContentImpl({
       replaceUserInput,
     ],
   );
-  const queryClient = useQueryClient();
-  const { client: notesClient, serverId: notesServerId, status: notesStatus } = useNotesHost();
-  const hasNotes = notesStatus === "ready";
-
-  const resolveNoteMention = useCallback(
-    async (slug: string): Promise<InjectedNote | null> => {
-      if (!notesClient || !notesServerId) return null;
-      const queryKey = noteDetailQueryKey(notesServerId, { slug });
-      const cached = queryClient.getQueryData<NoteDetail | null>(queryKey);
-      if (cached) {
-        return { title: cached.title, body: cached.body };
-      }
-      try {
-        const payload = await notesClient.notesRequest("notes.get.request", { slug });
-        if (payload.note) {
-          queryClient.setQueryData(queryKey, payload.note);
-          return { title: payload.note.title, body: payload.note.body };
-        }
-      } catch {
-        // Unresolved slugs stay literal
-      }
-      return null;
-    },
-    [notesClient, notesServerId, queryClient],
-  );
-
   const sendMessageWithContent = useCallback(
     async (
       outgoingMessage: string,
@@ -1800,16 +1765,8 @@ function ComposerContentImpl({
       forceSend?: boolean,
       dispatchMode?: MessageDispatchMode,
     ) => {
-      let resolvedMessage = outgoingMessage;
-      if (hasNotes && NOTE_MENTION_PATTERN.test(outgoingMessage)) {
-        NOTE_MENTION_PATTERN.lastIndex = 0;
-        resolvedMessage = await resolveAndInjectNoteMentions({
-          text: outgoingMessage,
-          resolve: resolveNoteMention,
-        });
-      }
       const result = await submitAgentInput({
-        message: resolvedMessage,
+        message: outgoingMessage,
         attachments: outgoingAttachments,
         allowEmptySubmit,
         forceSend,
@@ -1860,8 +1817,6 @@ function ComposerContentImpl({
       replaceUserInput,
       submitBehavior,
       submitMessage,
-      hasNotes,
-      resolveNoteMention,
       t,
     ],
   );

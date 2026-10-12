@@ -145,6 +145,8 @@ import { attachAgentStoragePersistence } from "./persistence-hooks.js";
 import { createAgentMcpServer } from "./agent/mcp-server.js";
 import { createFleetMcpServer } from "./mcp-fleet/fleet-mcp-server.js";
 import { authenticateRemoteMcpClient } from "./mcp-fleet/auth.js";
+import { createMcpFinishNotifier } from "./mcp-fleet/finish-notifier.js";
+import { resolveVaultSecret, warmVaultSecrets } from "./secrets/vault-secret.js";
 import {
   MISSION_CONTROL_LABEL_KEY,
   MISSION_CONTROL_LABEL_VALUE,
@@ -198,27 +200,6 @@ import { runIdentityBackfill } from "./mission-control/backfill.js";
 import { MAX_WEBHOOK_BODY_BYTES, WebhookService } from "./webhook/service.js";
 import { createWebhookRouteHandler } from "./webhook/route.js";
 import { AutomationService } from "./automation/service.js";
-import {
-  isServingTickets,
-  openTickets,
-  type TicketService,
-  type TicketsDelegatedHandlers,
-  type TicketsHost,
-  type TicketStore,
-} from "./tickets/index.js";
-import {
-  createLocalNoteToolsBackend,
-  createPeerNoteToolsBackend,
-  isServingNotes,
-  NotesHostUnavailableError,
-  openNotes,
-  type NotesHost,
-  type NoteService,
-  type NoteStore,
-  type NoteToolsBackend,
-} from "./notes/index.js";
-import { ItsaplanTicketImporter } from "./tickets/import-itsaplan.js";
-import { startTicketFleet } from "./tickets/fleet.js";
 import { openDocThreads, type DocThreadsHost } from "./doc-threads/index.js";
 import {
   attachItsaplanProjectSync,
@@ -235,7 +216,6 @@ import {
   type ItsaplanCentralConfig,
 } from "./itsaplan/index.js";
 import { PeerManager } from "./peers/peer-manager.js";
-import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { TunnelManager } from "./tunnel/manager.js";
 import { DaemonConfigStore, type MutableDaemonConfig } from "./daemon-config-store.js";
 import { createOrchestrationSkills } from "./orchestration-skills/index.js";
@@ -276,7 +256,11 @@ import type {
   AgentProviderRuntimeSettingsMap,
   ProviderOverride,
 } from "./agent/provider-launch-config.js";
-import { loadPersistedConfig, type PersistedConfig } from "./persisted-config.js";
+import {
+  loadPersistedConfig,
+  type PersistedConfig,
+  type RemoteMcpClient,
+} from "./persisted-config.js";
 import { createServiceProxySubsystem, type ServiceProxySubsystem } from "./service-proxy.js";
 import { releaseWorkspaceServicePortPlan } from "./workspace-service-port-registry.js";
 import { ScriptHealthMonitor } from "./script-health-monitor.js";
@@ -795,16 +779,7 @@ export interface PaseoDaemon {
   scriptRuntimeStore: WorkspaceScriptRuntimeStore;
   browserToolsBroker: BrowserToolsBroker;
   missionControlService?: MissionControlService;
-  // Native tickets; null when node:sqlite is missing.
-  ticketService: TicketService | null;
-  ticketStore: TicketStore | null;
-  isTicketsBoardHost(): boolean;
-  ticketsHandlers: TicketsDelegatedHandlers;
   docThreadsHost: DocThreadsHost | null;
-  // Native notes; null when node:sqlite is missing.
-  noteService: NoteService | null;
-  noteStore: NoteStore | null;
-  isNotesHost(): boolean;
   start(): Promise<void>;
   stop(): Promise<void>;
   getListenTarget(): ListenTarget | null;
@@ -2571,6 +2546,15 @@ export async function createPaseoDaemon(
         : null,
     getTypesafeApiKeyRef: () => centralMissionControlConfig.get().routingSecrets?.typesafeApiKey,
   });
+  // Vault-backed secrets are read once per daemon run: load every aside://
+  // reference the config names now (routing keys, MCP client webhooks) so the
+  // first request does not pay for the vault. Values are never logged.
+  void warmVaultSecrets([
+    ...Object.values(centralMissionControlConfig.get().routingSecrets ?? {}),
+    ...(loadPersistedConfig(config.paseoHome).daemon?.mcp?.remoteClients ?? []).flatMap((client) =>
+      Object.values(client.notify?.headers ?? {}),
+    ),
+  ]).then((counts) => logger.info(counts, "vault secrets loaded"));
   const itsaplanProjectSyncDeps = {
     store: itsaplanProjectStore,
     getConfig: getItsaplanConfig,
@@ -2750,27 +2734,6 @@ export async function createPaseoDaemon(
   });
   webhookIngress.setHandler(createWebhookRouteHandler(webhookService, logger));
 
-  // ---- Native tickets (ServerCore). Every host opens the store; only the
-  // board host (the designated Commander host, same rule as the itsaplan
-  // sync host) serves tickets.* and advertises features.tickets. The fleet
-  // and itsaplan-import blocks below fill `ticketsHandlers`; sessions read
-  // its slots at call time.
-  const ticketsRuntime = await openTickets({ paseoHome: config.paseoHome, logger });
-  const ticketStore: TicketStore | null = ticketsRuntime?.store ?? null;
-  const ticketService: TicketService | null = ticketsRuntime?.service ?? null;
-  const ticketsHandlers: TicketsDelegatedHandlers = {};
-  const ticketsBoardHostName = (): string | null =>
-    centralMissionControlConfig.get().commanderHost?.trim() || null;
-  const ticketsHost: TicketsHost = {
-    service: ticketService,
-    isBoardHost: isThisHostTheItsaplanSyncHost,
-    boardHostName: ticketsBoardHostName,
-    handlers: ticketsHandlers,
-  };
-  const isTicketsBoardHost = (): boolean => isServingTickets(ticketsHost);
-  ticketService?.onChange((change) => {
-    wsServer?.broadcast(wrapSessionMessage({ type: "tickets.changed", ...change }));
-  });
   const docThreadsRuntime = await openDocThreads({
     paseoHome: config.paseoHome,
     logger,
@@ -2781,99 +2744,6 @@ export async function createPaseoDaemon(
   docThreadsRuntime?.host.service?.onChange((change) => {
     wsServer?.broadcast(wrapSessionMessage({ type: "doc_threads.changed", ...change }));
   });
-  // ---- end native tickets (ServerCore)
-  // ---- Native notes (ServerCore). Every host opens the store; only the
-  // notes host (the designated Commander host, same rule as the tickets
-  // board host) serves notes.* and advertises features.notes.
-  const notesRuntime = await openNotes({ paseoHome: config.paseoHome, logger });
-  const noteStore: NoteStore | null = notesRuntime?.store ?? null;
-  const noteService: NoteService | null = notesRuntime?.service ?? null;
-  const notesHost: NotesHost = {
-    service: noteService,
-    isNotesHost: isThisHostTheItsaplanSyncHost,
-    notesHostName: ticketsBoardHostName,
-  };
-  const isNotesHost = (): boolean => isServingNotes(notesHost);
-  noteService?.onChange((change) => {
-    wsServer?.broadcast(wrapSessionMessage({ type: "notes.changed", ...change }));
-  });
-  const localNoteTools = noteService ? createLocalNoteToolsBackend({ service: noteService }) : null;
-  const resolveNotesHostClient = (): DaemonClient => {
-    const designated = ticketsBoardHostName();
-    const peerName = designated === null ? null : peerManager.resolvePeerName(designated);
-    if (peerName !== null && peerManager.getPeerStatus(peerName)?.state === "online") {
-      const client = peerManager.getPeerClient(peerName);
-      if (client !== null) {
-        return client;
-      }
-    }
-    throw new NotesHostUnavailableError(designated);
-  };
-  const peerNoteTools = createPeerNoteToolsBackend(resolveNotesHostClient);
-  const resolveNoteTools = (): NoteToolsBackend => {
-    if (localNoteTools !== null && isNotesHost()) {
-      return localNoteTools;
-    }
-    return peerNoteTools;
-  };
-  // ---- end native notes (ServerCore)
-
-  // ---- itsaplan → native tickets import (Importer). Read-only copy of the
-  // itsaplan server in central config; tickets.import.itsaplan.request
-  // triggers it on the board host.
-  if (ticketStore && ticketService) {
-    const itsaplanTicketImporter = new ItsaplanTicketImporter({
-      ticketStore,
-      ticketService,
-      getConfig: getItsaplanConfig,
-      projectStore: itsaplanProjectStore,
-      agentStorage,
-      missionControl: missionControlService,
-      serverId,
-      logger,
-    });
-    ticketsHandlers.importItsaplan = () => itsaplanTicketImporter.run();
-  }
-  // ---- end itsaplan import (Importer)
-
-  // ---- Native tickets fleet (ServerFleet). Every host reports its
-  // ticket-linked agents to the board host; the board host moves tickets on
-  // those reports and wakes the Commander on user board actions. Commander
-  // delivery is the same machinery primitive the itsaplan bridge uses.
-  const ticketFleet = startTicketFleet({
-    logger,
-    serverId,
-    agentManager,
-    agentStorage,
-    missionControl: missionControlService,
-    service: ticketService,
-    isBoardHost: isTicketsBoardHost,
-    boardHostName: ticketsBoardHostName,
-    peerManager,
-    deliverMachineryPrompt: async ({ prompt, images }) => {
-      const commanderId = await missionControlService.getCommanderAgentId();
-      if (!commanderId) {
-        return false;
-      }
-      await dispatchLocalPromptMode({
-        agentManager,
-        agentStorage,
-        agentId: commanderId,
-        prompt,
-        ...(images.length > 0 ? { images } : {}),
-        mode: "steer",
-        classification: "machinery",
-        replaceOrigin: "machinery",
-        recordStopOrigin: (id, origin) => missionControlService.recordStopOrigin(id, origin),
-        logger,
-      });
-      return true;
-    },
-  });
-  ticketsHandlers.runReport = (report) => ticketFleet.reportRun(report);
-  ticketsHandlers.dispatch = (input) => ticketFleet.dispatch(input);
-  // ---- end native tickets fleet (ServerFleet)
-
   logger.info({ elapsed: elapsed() }, "Loading persisted agent registry");
   const persistedRecords = await agentStorage.list();
   logger.info(
@@ -2945,8 +2815,6 @@ export async function createPaseoDaemon(
     itsaplanTicketize: {
       ticketizeAgent: (agentId) => itsaplanBridge.ticketizeAgent(agentId),
     },
-    resolveTicketTools: ticketFleet.resolveToolsBackend,
-    resolveNoteTools,
     verifierDispatcher,
     routingService,
     resolveDocThreads: docThreadsHost?.service ? () => docThreadsHost.service! : null,
@@ -3119,8 +2987,13 @@ export async function createPaseoDaemon(
       string,
       { key: string; at: number; hostDeps: PaseoToolHostDependencies; catalog: PaseoToolCatalog }
     >();
+    const mcpFinishNotifier = createMcpFinishNotifier({
+      resolveSecret: resolveVaultSecret,
+      logger,
+    });
 
-    const createFleetMcpSession = async (clientName: string) => {
+    const createFleetMcpSession = async (client: RemoteMcpClient) => {
+      const clientName = client.name;
       let commanderAgentId: string | undefined;
       for (const agent of agentManager.listAgents()) {
         if (agent.labels[MISSION_CONTROL_LABEL_KEY] === MISSION_CONTROL_LABEL_VALUE) {
@@ -3155,6 +3028,8 @@ export async function createPaseoDaemon(
         hostDependencies: cached.hostDeps,
         catalog: cached.catalog,
         clientName,
+        finishNotifier: mcpFinishNotifier,
+        notifyTarget: client.notify ?? null,
       });
 
       const transport = new StreamableHTTPServerTransport({
@@ -3204,7 +3079,7 @@ export async function createPaseoDaemon(
       }
       logger.info({ client: authenticatedClient.name }, "Fleet MCP request authorized");
       try {
-        const { server, transport } = await createFleetMcpSession(authenticatedClient.name);
+        const { server, transport } = await createFleetMcpSession(authenticatedClient);
         res.on("close", () => {
           void transport.close();
           void server.close();
@@ -3445,16 +3320,7 @@ export async function createPaseoDaemon(
               (workspaceId) => itsaplanBridge?.handleWorkspaceArchived(workspaceId),
               warmWorktreePool,
               docThreadsHost,
-              ticketsHost,
-              notesHost,
-              {
-                ticketsHost,
-                automationService,
-                pagePortProxy,
-                pageStore,
-                routingService,
-                agentSearchService,
-              },
+              { automationService, pagePortProxy, pageStore, routingService, agentSearchService },
             );
             pluginRuntime.bindPaseoSessionHost(wsServer);
             await pluginRuntime.start();
@@ -3530,7 +3396,6 @@ export async function createPaseoDaemon(
     itsaplanReconcileService.stop();
     itsaplanChatRunner.stop();
     itsaplanBridge.stop();
-    ticketFleet.stop();
     unsubscribeItsaplanProjectSync();
     scriptHealthMonitor.stop();
     idleCloseOmpService.stop();
@@ -3565,8 +3430,6 @@ export async function createPaseoDaemon(
       await wsServer.close();
     }
     transcriptSearch?.stop();
-    ticketStore?.close();
-    noteStore?.close();
     await serviceProxy.stopStandalone();
     // Force-drop remaining sockets so httpServer.close() resolves promptly.
     // We've already closed wsServer (which sent ws-layer close frames) and
@@ -3594,14 +3457,7 @@ export async function createPaseoDaemon(
     scriptRuntimeStore,
     browserToolsBroker,
     missionControlService,
-    ticketService,
-    ticketStore,
-    isTicketsBoardHost,
-    ticketsHandlers,
     docThreadsHost,
-    noteService,
-    noteStore,
-    isNotesHost,
     start,
     stop,
     getListenTarget: () => boundListenTarget,

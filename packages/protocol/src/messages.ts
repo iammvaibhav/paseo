@@ -92,6 +92,7 @@ import {
   AUTOMATION_INBOUND_SCHEMAS,
   AUTOMATION_OUTBOUND_SCHEMAS,
 } from "./automation/rpc-schemas.js";
+// COMPAT(tickets-removed): native notes & tickets removed 2026-10-12, remove after 2027-01-12 once app floor >= 2026-10-12.
 import { NOTES_INBOUND_SCHEMAS, NOTES_OUTBOUND_SCHEMAS } from "./notes/rpc-schemas.js";
 import { TICKETS_INBOUND_SCHEMAS, TICKETS_OUTBOUND_SCHEMAS } from "./tickets/rpc-schemas.js";
 import {
@@ -3645,11 +3646,9 @@ export const SessionEventSubscriptionSchema = z.enum([
   "activity_log",
   "hub.execution.agent.update",
   "hub.execution.agent.stream",
-  // Native notes push. Subscribe only on a host that advertises features.notes:
-  // an older daemon rejects an unknown event name.
+  // COMPAT(tickets-removed): native notes push retained for older clients. Remove after 2027-01-12.
   "notes.changed",
-  // Native tickets push. Subscribe only on a host that advertises features.tickets:
-  // an older daemon rejects an unknown event name.
+  // COMPAT(tickets-removed): native tickets push retained for older clients. Remove after 2027-01-12.
   "tickets.changed",
   // Unsolicited pushes that owned-subscription clients only receive once subscribed.
   // Subscribe only on a host that advertises the paired server_info feature
@@ -3919,6 +3918,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   WebhookUpdateRequestSchema,
   WebhookTestRequestSchema,
   WebhookConfigRequestSchema,
+  // COMPAT(tickets-removed): retained for old app inbound parsing compatibility. Remove after 2027-01-12.
   ...NOTES_INBOUND_SCHEMAS,
   ...TICKETS_INBOUND_SCHEMAS,
   ...AUTOMATION_INBOUND_SCHEMAS,
@@ -4283,13 +4283,9 @@ export const ServerInfoStatusPayloadSchema = z
         // Mission Control v3 (review lifecycle, approval gate, central config).
         // Added 2026-08-08; app gates the v3 screen once on this flag.
         missionControlV3: z.boolean().optional(),
-        // Native notes served by this daemon. True only on the notes host
-        // (the Commander host). Added 2026-09-30; the app picks the host
-        // advertising it.
+        // COMPAT(tickets-removed): native notes feature flag retained for reading older daemons. Remove after 2027-01-12.
         notes: z.boolean().optional(),
-        // Native tickets (board, initiatives) served by this daemon. True only on
-        // the board host (the Commander host). Added 2026-09-30; the app picks
-        // the host advertising it.
+        // COMPAT(tickets-removed): native tickets feature flag retained for reading older daemons. Remove after 2027-01-12.
         tickets: z.boolean().optional(),
         // Mission Control v4 (card grammar): meta-kind proposals, clarification
         // + answer cards, the Commander clarify/post_answer tools. Added
@@ -7804,6 +7800,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   WebhookUpdateResponseSchema,
   WebhookTestResponseSchema,
   WebhookConfigResponseSchema,
+  // COMPAT(tickets-removed): retained for old app outbound response parsing compatibility. Remove after 2027-01-12.
   ...NOTES_OUTBOUND_SCHEMAS,
   ...TICKETS_OUTBOUND_SCHEMAS,
   ...AUTOMATION_OUTBOUND_SCHEMAS,

@@ -6,7 +6,7 @@ import {
 } from "@getpaseo/protocol/agent-search";
 import { isCommanderOrMachineryLabels } from "@getpaseo/protocol/mission-control/system-owned";
 import { judgeChoices, type JudgeChoiceQuestion } from "../routing/llm-clients.js";
-import { createVaultSecretResolver, type ResolveSecret } from "../secrets/vault-secret.js";
+import { resolveVaultSecret, type ResolveSecret } from "../secrets/vault-secret.js";
 import type { StoredAgentRecord } from "../agent/agent-storage.js";
 import type { MissionControlRunRecord } from "../mission-control/run-records.js";
 
@@ -66,7 +66,7 @@ export class AgentSearchService {
   constructor(deps: AgentSearchServiceDependencies) {
     this.deps = deps;
     this.logger = deps.logger.child({ module: "agent-search" });
-    this.resolveSecret = deps.resolveSecret ?? createVaultSecretResolver();
+    this.resolveSecret = deps.resolveSecret ?? resolveVaultSecret;
   }
 
   async search(input: AgentSearchInput, signal?: AbortSignal): Promise<AgentSearchResult> {

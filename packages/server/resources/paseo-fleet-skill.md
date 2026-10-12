@@ -1,6 +1,6 @@
 # Paseo fleet
 
-Paseo runs coding agents on several machines ("hosts"). Every host runs a Paseo daemon; the daemons are peered, so this MCP server sees and controls the whole fleet. You act with the same authority as the Commander: create, steer, stop, move, rename and archive agents on any host, and manage tickets.
+Paseo runs coding agents on several machines ("hosts"). Every host runs a Paseo daemon; the daemons are peered, so this MCP server sees and controls the whole fleet. You act with the same authority as the Commander: create, steer, stop, move, rename and archive agents on any host.
 
 ## Use MCP for anything that spans hosts
 
@@ -17,9 +17,18 @@ Start with these tools. They are loaded on every connection:
 | Where a new task should run                | `suggest_placement`                                  |
 | Start an agent                             | `fleet_create_agent`                                 |
 | Talk to a running agent                    | `fleet_send_prompt`                                  |
-| Tickets                                    | `ticket_list`, `ticket_create`                       |
+| Wait for an agent's run to end             | `fleet_wait_agent`                                   |
 
-Everything else is one search away. Call `paseo_tool_search` with what you want in plain words ("move an agent to another host", "archive a workspace", "cancel an agent", "comment on a ticket"); it returns the matching tools with their input schemas. Run any of them with `paseo_tool_call { name, arguments }`.
+Everything else is one search away. Call `paseo_tool_search` with what you want in plain words ("move an agent to another host", "archive a workspace", "cancel an agent"); it returns the matching tools with their input schemas. Run any of them with `paseo_tool_call { name, arguments }`.
+
+Tickets live in itsaplan, which the client connects to as its own MCP server.
+
+## Knowing when an agent is done
+
+- **Long or background work:** pass `notifyOnFinish: true` (and optionally `notifyContext`, any string up to 2000 characters) to `fleet_create_agent` or `fleet_send_prompt`. The call returns at once. When the run ends, Paseo POSTs to your webhook:
+  `{"type":"paseo.agent.finished","reason":"finished|errored|closed","client","context","agent":{"id","host","title","status","bucket","finishedAt","lastMessage","error"},"trigger":{"tool","requestedAt"}}`.
+  If the agent blocks on a permission first, you also get one `paseo.agent.needs_permission` event. `context` is echoed back verbatim, so use it to match the event to your request.
+- **Short work you want answered now:** call `fleet_wait_agent { agentId, timeoutSeconds }` (default 600, max 1800). It returns when the run ends, early on a permission request, or with `timedOut: true`; call it again to keep waiting. Wait on several agents by calling it once per agent in parallel.
 
 Rules that keep you out of trouble:
 
