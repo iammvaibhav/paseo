@@ -1382,12 +1382,6 @@ export const ptBR: TranslationResources = {
       itsaplan: "itsaplan",
       webhooks: "Webhooks",
     },
-    worktreeSetup: {
-      title: "Configurar scripts de worktree",
-      description:
-        "Adicione comandos de configuração para que novos worktrees instalem dependências e se preparem automaticamente.",
-      openProjectSettings: "Abrir configurações do projeto",
-    },
     project: {
       actions: {
         menu: "Ações do projeto",
@@ -1615,20 +1609,6 @@ export const ptBR: TranslationResources = {
         idle: "O status de atualização ainda não foi verificado.",
       },
       installError: "Não foi possível instalar a atualização do app desktop.",
-      callout: {
-        installingTitle: "Instalando atualização",
-        failedTitle: "Falha na atualização",
-        availableTitle: "Atualização disponível",
-        genericError: "Algo deu errado.",
-        whatsNew: "Novidades",
-        installingAction: "Instalando...",
-        installAndRestart: "Instalar e reiniciar",
-        installingDescription: "Instalando e reiniciando...",
-        versionReady: "{{version}} está pronta para instalar.",
-        newVersionReady: "Uma nova versão está pronta para instalar.",
-        restartWarning:
-          "Atualizar o app vai interromper agentes em execução e fechar sessões de terminal.",
-      },
     },
     settings: {
       loadFailed: "Não foi possível carregar as configurações do desktop.",

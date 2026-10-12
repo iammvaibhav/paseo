@@ -1351,12 +1351,6 @@ export const ar: TranslationResources = {
       itsaplan: "itsaplan",
       webhooks: "Webhooks",
     },
-    worktreeSetup: {
-      title: "إعداد البرامج النصية لشجرة العمل",
-      description:
-        "أضف أوامر الإعداد حتى تتمكن أشجار العمل الجديدة من تثبيت التبعيات وإعداد نفسها تلقائيًا.",
-      openProjectSettings: "افتح إعدادات المشروع",
-    },
     project: {
       actions: {
         menu: "إجراءات المشروع",
@@ -1581,19 +1575,6 @@ export const ar: TranslationResources = {
         idle: "لم يتم التحقق من حالة التحديث بعد.",
       },
       installError: "غير قادر على تثبيت تحديث تطبيق سطح المكتب.",
-      callout: {
-        installingTitle: "تثبيت التحديث",
-        failedTitle: "فشل التحديث",
-        availableTitle: "التحديث متاح",
-        genericError: "حدث خطأ ما.",
-        whatsNew: "ما هو الجديد",
-        installingAction: "جارٍ التثبيت...",
-        installAndRestart: "التثبيت وإعادة التشغيل",
-        installingDescription: "التثبيت وإعادة التشغيل...",
-        versionReady: "{{version}}جاهز للتثبيت.",
-        newVersionReady: "إصدار جديد جاهز للتثبيت.",
-        restartWarning: "ستؤدي ترقية التطبيق إلى إيقاف تشغيل الوكلاء وإغلاق الجلسات الطرفية.",
-      },
     },
     settings: {
       loadFailed: "غير قادر على تحميل إعدادات سطح المكتب.",
