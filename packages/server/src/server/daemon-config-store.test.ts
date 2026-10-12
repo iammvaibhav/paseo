@@ -1406,4 +1406,76 @@ describe("DaemonConfigStore reload", () => {
       overrideControlledPaths: [],
     });
   });
+
+  test("reports peers in appliedPaths when changed and excludes peers from restartRequiredPaths", () => {
+    const { paseoHome, store, persisted } = createReloadableStore();
+
+    // 1. Add peers
+    writeConfig(paseoHome, {
+      ...persisted,
+      peers: [{ name: "peer1", url: "tcp://127.0.0.1:6767", password: "secret-password" }],
+    });
+
+    expect(store.reload()).toEqual({
+      appliedPaths: ["peers"],
+      restartRequiredPaths: [],
+      overrideControlledPaths: [],
+    });
+
+    // Peer passwords must never enter MutableDaemonConfig
+    expect("peers" in store.get()).toBe(false);
+
+    // 2. Subsequent reload without changes is a no-op
+    expect(store.reload()).toEqual({
+      appliedPaths: [],
+      restartRequiredPaths: [],
+      overrideControlledPaths: [],
+    });
+
+    // 3. Update peers (e.g. url or password change)
+    writeConfig(paseoHome, {
+      ...persisted,
+      peers: [{ name: "peer1", url: "tcp://127.0.0.1:6768", password: "new-password" }],
+    });
+
+    expect(store.reload()).toEqual({
+      appliedPaths: ["peers"],
+      restartRequiredPaths: [],
+      overrideControlledPaths: [],
+    });
+
+    // 4. Remove peers
+    writeConfig(paseoHome, {
+      ...persisted,
+      peers: [],
+    });
+
+    expect(store.reload()).toEqual({
+      appliedPaths: ["peers"],
+      restartRequiredPaths: [],
+      overrideControlledPaths: [],
+    });
+  });
+
+  test("startup peers changes are excluded from restartRequiredPaths", () => {
+    const initialPeers = [{ name: "peer1", url: "tcp://127.0.0.1:6767" }];
+    const { paseoHome, store, persisted } = createReloadableStore({
+      initialPersisted: { version: 1, peers: initialPeers },
+    });
+
+    // Change peers relative to startup
+    writeConfig(paseoHome, {
+      ...persisted,
+      peers: [
+        { name: "peer1", url: "tcp://127.0.0.1:6767" },
+        { name: "peer2", url: "tcp://127.0.0.1:6768" },
+      ],
+    });
+
+    expect(store.reload()).toEqual({
+      appliedPaths: ["peers"],
+      restartRequiredPaths: [],
+      overrideControlledPaths: [],
+    });
+  });
 });

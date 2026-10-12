@@ -6,7 +6,7 @@
 // re-initiates. So its deploy job is reachability-gated and reports success by
 // skipping, which is how it silently sat 3 commits behind while every other host
 // was current. This closes that gap: check reachability on a schedule, and when
-// it returns with a stale checkout, run the MacBook-only deploy.
+// it returns with a stale checkout, run the deploy (deploy.sh --hosts macbook).
 //
 // Deliberately NOT edge-triggered on "reconnected". The trigger is state, not a
 // transition: deploy only when the MacBook's HEAD differs from the commit this
@@ -177,19 +177,9 @@ async function main() {
     // Same invocation a human would use for a MacBook-only deploy. deploy.sh
     // self-detaches, so this returns as soon as the child is launched; the
     // outcome lands in the deploy log, and the next tick sees the new HEAD.
-    const env = { ...process.env, PASEO_SKIP_LOCAL: "1", PASEO_SKIP_REMOTES: "1" };
-    for (const key of [
-      "PASEO_DEPLOY_DETACHED",
-      "PASEO_DEPLOY_RUN_DIR",
-      "PASEO_DEPLOY_LOG",
-      "PASEO_DEPLOY_FOREGROUND",
-      "PASEO_DEPLOY_DETACH_TOKEN",
-    ]) {
-      delete env[key];
-    }
-    const { stdout } = await run("bash", [path.join(REPO_DIR, "scripts", "deploy.sh")], {
+    const deploy = path.join(REPO_DIR, "scripts", "deploy.sh");
+    const { stdout } = await run("bash", [deploy, "--hosts", HOST], {
       cwd: REPO_DIR,
-      env,
       timeout: 120_000,
     });
     log(`deploy launched: ${stdout.trim().split("\n").filter(Boolean).slice(0, 2).join(" | ")}`);

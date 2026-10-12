@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Push local code-server User/ + extensions/ to blrofc3 and iammvaibhav.
+# Manual tool: push local code-server User/ + extensions/ to blrofc3 and iammvaibhav.
+# No longer run automatically by deploy.
 set -euo pipefail
 
 SRC="${CODE_SERVER_DATA:-$HOME/.local/share/code-server}"

@@ -129,7 +129,7 @@ export interface PeerIdentity {
 }
 
 export class PeerManager {
-  private readonly peers: PeerConnection[] = [];
+  private peers: PeerConnection[] = [];
   private readonly logger: Logger;
   private readonly appVersion: string | undefined;
   private readonly onPeerOnline: ((peerName: string) => void) | undefined;
@@ -142,6 +142,74 @@ export class PeerManager {
       this.peers.push(this.createPeer(config));
     }
     for (const peer of this.peers) {
+      peer.client.connect().catch((error) => {
+        this.logger.warn({ err: error, peer: peer.config.name }, "Peer connection closed");
+      });
+    }
+  }
+
+  /**
+   * Reconcile current peer connections against the desired peer configurations.
+   * Diffs by peer name:
+   * - Unchanged peers (same name, url, password) are kept untouched.
+   * - Changed peers (same name, different url or password) are closed and recreated.
+   * - Removed peers are closed and removed.
+   * - New peers are created and connected.
+   * Status, getPeerClient, and resolvePeerName reflect the new set immediately.
+   */
+  reconcile(nextConfigs: PeerConfig[]): void {
+    const currentByName = new Map<string, PeerConnection>();
+    for (const peer of this.peers) {
+      currentByName.set(peer.config.name, peer);
+    }
+
+    const seenNames = new Set<string>();
+    const uniqueNextConfigs: PeerConfig[] = [];
+    for (const config of nextConfigs) {
+      if (!seenNames.has(config.name)) {
+        seenNames.add(config.name);
+        uniqueNextConfigs.push(config);
+      }
+    }
+
+    const nextByName = new Map<string, PeerConfig>();
+    for (const config of uniqueNextConfigs) {
+      nextByName.set(config.name, config);
+    }
+
+    const updatedPeers: PeerConnection[] = [];
+    const newlyCreatedPeers: PeerConnection[] = [];
+
+    for (const nextConfig of uniqueNextConfigs) {
+      const existing = currentByName.get(nextConfig.name);
+      if (existing) {
+        const unchanged =
+          existing.config.url === nextConfig.url &&
+          (existing.config.password ?? undefined) === (nextConfig.password ?? undefined);
+        if (unchanged) {
+          updatedPeers.push(existing);
+        } else {
+          existing.client.close().catch(() => undefined);
+          const newPeer = this.createPeer(nextConfig);
+          updatedPeers.push(newPeer);
+          newlyCreatedPeers.push(newPeer);
+        }
+      } else {
+        const newPeer = this.createPeer(nextConfig);
+        updatedPeers.push(newPeer);
+        newlyCreatedPeers.push(newPeer);
+      }
+    }
+
+    for (const existing of this.peers) {
+      if (!nextByName.has(existing.config.name)) {
+        existing.client.close().catch(() => undefined);
+      }
+    }
+
+    this.peers = updatedPeers;
+
+    for (const peer of newlyCreatedPeers) {
       peer.client.connect().catch((error) => {
         this.logger.warn({ err: error, peer: peer.config.name }, "Peer connection closed");
       });

@@ -1311,7 +1311,13 @@ export class Session {
       listWorkspaces: () => this.workspaceRegistry.list(),
       logger: this.sessionLogger,
       hubRelationships: options.hubRelationships,
-      reloadConfig: () => daemonConfigStore.reload(),
+      reloadConfig: () => {
+        const result = daemonConfigStore.reload();
+        this.peerManager?.reconcile(
+          loadPersistedConfig(this.paseoHome, this.sessionLogger).peers ?? [],
+        );
+        return result;
+      },
     });
     this.hubExecutionController = options.hubExecutionAgents
       ? new HubExecutionController({

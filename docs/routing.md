@@ -52,6 +52,8 @@ All keys live in central Mission Control config (`<paseoHome>/mission-control/ce
 | `routing.nameModel`, `routing.metadataModel`             | `{ baseUrl, model }`                                                                                                                                                    |
 | `routingSecrets`                                         | TypeSafe, name model, and metadata model API keys. Replicated to peers, never sent to a client: responses carry `routingSecretsSet` instead, and a patch merges per key |
 
+Prefer a vault reference to a raw key in `routingSecrets`: a value of the form `aside://<account>/<itemId>` makes each host read the item's password field through `aside-vault` (using `~/.config/aside-vault/recovery.env`) when it needs the key, cache it in memory for 10 minutes, and never write it to disk (`packages/server/src/server/secrets/vault-secret.ts`). The reference replicates to peers safely. The TypeSafe key is item `68a30248e39146d3` in the `iammvaibhav@gmail.com` account.
+
 ## Agent modes
 
 An agent mode says how the agent works: Do it yourself (the default for every agent that is not Mission Control machinery), Orchestrator, Plan first, Research, Review, Debug. The list lives in `packages/protocol/src/agent-modes.ts`; the instructions are markdown files in `packages/server/src/server/agent/agent-modes/prompts/`, read on every injection, so an edit applies to the next message.

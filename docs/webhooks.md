@@ -54,10 +54,11 @@ Configured under `daemon.tunnel` in `~/.paseo/config.json`, or via env
 }
 ```
 
-The deploy script drives this per host **by env** (`PASEO_TUNNEL_PROVIDER` on the
-daemon-restart command) rather than editing `config.json`, so an older daemon's strict
-config schema is never at risk. `scripts/deploy.sh` sets `tailscale-funnel` for `blrofc3`
-and ensures the funnel process is up on every deploy (see below).
+Deploy drives this per host through the `"tunnel"` property in
+`~/.paseo/fleet-hosts.json` (injected into `daemon.env` as `PASEO_TUNNEL_PROVIDER`)
+rather than editing `config.json`, keeping `config.json` free of machine-local
+tunnel fields. For hosts configured with `tailscale-funnel` (e.g. `blrofc3`),
+deploy ensures the funnel process is up on every run (see below).
 
 | Provider           | Public URL                           | Stable? | Domain needed | Notes                                                    |
 | ------------------ | ------------------------------------ | ------- | ------------- | -------------------------------------------------------- |
@@ -69,7 +70,7 @@ and ensures the funnel process is up on every deploy (see below).
   funnel forwards public HTTPS (443) to the daemon's listen address. Requires the tailnet's
   ACL to grant the node the `funnel` node-attribute (verify with `tailscale status --json`
   → `Self.CapMap` contains `funnel`) and — since the daemon runs as a non-root user — the
-  Tailscale operator set once: `sudo tailscale set --operator=$USER`. `scripts/deploy.sh`
+  Tailscale operator set once: `sudo tailscale set --operator=$USER`. Deploy
   does the operator grant and starts the funnel automatically (idempotent). Publishes to the
   **public internet** under the tailnet domain — confirm that is acceptable on a corporate
   tailnet; admins can revoke. Enable manually with:

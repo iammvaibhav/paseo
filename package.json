@@ -52,7 +52,7 @@
     "build:app-deps:clean": "pnpm run build:highlight:clean && pnpm run build:client:clean && pnpm run build:plugin:clean && pnpm --filter @getpaseo/expo-two-way-audio run build",
     "watch:protocol": "pnpm --filter @getpaseo/protocol run watch",
     "watch:client": "tsc -p packages/client/tsconfig.json --watch --preserveWatchOutput",
-    "typecheck": "pnpm --if-present -r --no-bail run typecheck",
+    "typecheck": "pnpm --if-present -r --no-bail run typecheck && tsgo -p scripts/deploy/tsconfig.json",
     "typecheck:server": "pnpm --filter @getpaseo/relay run typecheck && pnpm --filter @getpaseo/protocol run typecheck && pnpm --filter @getpaseo/client run typecheck && pnpm --filter @getpaseo/builtin-plugins run typecheck && pnpm --filter @getpaseo/server run typecheck && pnpm --filter @getpaseo/cli run typecheck",
     "test": "pnpm --if-present -r run test",
     "format": "oxfmt .",

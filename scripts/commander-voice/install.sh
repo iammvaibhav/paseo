@@ -5,9 +5,7 @@
 # per-host config, launchd (macOS) / systemd user unit (Linux), restart-safe.
 #
 # Usage (run on the machine being configured):
-#   ./scripts/commander-voice/install.sh local
-#   ./scripts/commander-voice/install.sh blrofc3
-#   ./scripts/commander-voice/install.sh iammvaibhav
+#   ./scripts/commander-voice/install.sh
 #
 # The service targets its LOCAL daemon: ws://127.0.0.1:6767/ws by default,
 # derived from the host's daemon listen address (paseo.pid / config.json)
@@ -35,7 +33,6 @@
 
 set -euo pipefail
 
-HOST_KIND="${1:-}"
 SCRIPTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "${SCRIPTS_DIR}/../.." && pwd)"
 ENV_DIR="${HOME}/.config/commander-voice"
@@ -54,20 +51,6 @@ warn() {
 die() {
   printf 'error: %s\n' "$*" >&2
   exit 1
-}
-
-usage() {
-  cat >&2 <<'EOF'
-Usage: install.sh <local|blrofc3|iammvaibhav>
-EOF
-  exit 2
-}
-
-require_host_kind() {
-  case "$HOST_KIND" in
-    local | blrofc3 | iammvaibhav) ;;
-    *) usage ;;
-  esac
 }
 
 # Resolve the daemon's listen address from the live pid file or config.json;
@@ -299,7 +282,6 @@ verify_listening() {
 }
 
 main() {
-  require_host_kind
   # The env file gates the install: without a daemon password there is nothing
   # to run (a locked-out node would hammer the daemon's auth every 30s). The
   # deploy job stays green (exit 0) — the warnings above are loud in the log.
@@ -315,7 +297,7 @@ main() {
     *) die "Unsupported OS: $(uname -s)" ;;
   esac
   verify_listening
-  log "Done ($HOST_KIND)"
+  log "Done"
 }
 
 main "$@"

@@ -444,7 +444,14 @@ export class DaemonConfigStore {
       ),
       resolved.overrideControlledPaths,
     );
-    const appliedPaths = RELOADABLE_PATHS.filter((persistedPath) => {
+    const previousPeers = this.lastKnownPersisted.peers ?? [];
+    const nextPeers = persisted.peers ?? [];
+    const peersChanged = !isEqualValue(previousPeers, nextPeers);
+    const peersOverrideControlled = resolved.overrideControlledPaths.some((owner) =>
+      pathBelongsTo("peers", owner),
+    );
+
+    const appliedPaths: string[] = RELOADABLE_PATHS.filter((persistedPath) => {
       if (resolved.overrideControlledPaths.some((owner) => pathBelongsTo(persistedPath, owner))) {
         return false;
       }
@@ -457,9 +464,13 @@ export class DaemonConfigStore {
         )
       );
     });
+    if (peersChanged && !peersOverrideControlled) {
+      appliedPaths.push("peers");
+    }
     const restartRequiredPaths = compactOwnedPaths(
       diffPaths(this.startupPersisted, persisted).filter((path) => {
         if (path === "$schema" || path === "version") return false;
+        if (pathBelongsTo(path, "peers")) return false;
         if (RELOADABLE_PATHS.some((owner) => pathBelongsTo(path, owner))) return false;
         return !resolved.overrideControlledPaths.some((owner) => pathBelongsTo(path, owner));
       }),

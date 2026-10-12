@@ -4,45 +4,40 @@ Paseo's desktop **Open → VS Code Web** entry opens the current workspace folde
 
 ## URLs used in this fork
 
-| Host                    | Bind                  | URL to put in Settings → host → **VS Code Web URL** |
-| ----------------------- | --------------------- | --------------------------------------------------- |
-| Local Mac               | `127.0.0.1:8765`      | `http://127.0.0.1:8765`                             |
-| `blrofc3` (NetBird)     | `100.123.36.124:8765` | `http://work.netbird.cloud:8765`                    |
-| `iammvaibhav` (NetBird) | `100.123.178.38:8765` | `http://dev.netbird.cloud:8765`                     |
+Every host runs code-server on port 8765: the MacBook on `127.0.0.1` (the app opens it locally), every other host on its NetBird IPv4 address. Put the URL in Settings → host → **VS Code Web URL**:
 
-`blrofc3` / `iammvaibhav` must resolve on the Mac (they already do via `/etc/hosts` or mDNS in this setup). Auth is `none` because the listeners are VPN/loopback-only.
+| Host          | URL                          |
+| ------------- | ---------------------------- |
+| MacBook       | `http://127.0.0.1:8765`      |
+| `iammvaibhav` | `http://100.123.178.38:8765` |
+| `blrofc3`     | `http://100.123.36.124:8765` |
+| `prod`        | `http://100.123.97.105:8765` |
+| `dell-server` | `http://100.123.88.247:8765` |
+
+Auth is `none` because the listeners are VPN/loopback-only.
 
 ## Install / service units
 
 Artifacts live in `scripts/code-server/`:
 
-- `config.local.yaml` / `config.blrofc3.yaml` / `config.iammvaibhav.yaml`
+- `install.sh <bind-addr>` — install/update the standalone binary, write `~/.config/code-server/config.yaml` for that address + settings, install the bridge extension and the Python language extensions, restart the service
 - `sh.paseo.code-server.plist` — macOS LaunchAgent
 - `paseo-code-server.service` — Linux user systemd unit
 - `user-settings.json` — shared defaults (trust off, no welcome, hidden activity bar, language-server + watcher/search excludes)
 - `paseo-bridge/` — the in-place file-open extension (see below)
-- `install.sh` — install/update the standalone binary, write config + settings, install the bridge extension, install the Python language extensions, restart the service
-- `sync-user-data.sh` — rsync User/ + extensions/ from this machine to the remotes
+- `sync-user-data.sh` — manual tool: rsync User/ + extensions/ from this machine to the remotes
 
 Binary: standalone install under `~/.local/bin/code-server` (latest, or pin with `CODE_SERVER_VERSION`). Upstream does not publish every arch for every release — 4.131.0 has no `macos-arm64` tarball — so a failed binary update logs `Binary update FAILED` and keeps the installed binary instead of aborting; config, settings, and the bridge extension still deploy.
 
 ### Deploy / update (preferred)
 
-`./scripts/deploy.sh` deploys code-server on every host: the orchestrating host, each remote, and the MacBook job (binary update, config, paseo-bridge, language extensions, the VS Code root folder, service restart; skipped on a `PASEO_DESKTOP_ONLY=1` run). **User settings** come from the orchestrating host's live `~/.local/share/code-server/User/settings.json` (pushed to the other hosts automatically). The repo `user-settings.json` is only a bootstrap fallback when no live file exists yet. Overrides:
+`./scripts/deploy.sh` installs code-server on every host with `"code-server"` in its inventory `services`, including hosts without a checkout: deploy ships these files to `~/.local/share/paseo/kit` with a prebuilt `paseo-bridge.vsix` (targets have no `npx`). It reinstalls when `scripts/code-server` changes, or on `--force`. **User settings** from the deploy host's live `~/.local/share/code-server/User/settings.json` merge into the other Linux hosts on every deploy, restarting code-server only when settings changed. The repo `user-settings.json` is only a bootstrap fallback when no live file exists yet.
+
+Or install one host directly (on that host):
 
 ```bash
-PASEO_SKIP_CODE_SERVER=1 ./scripts/deploy.sh              # daemon only
-PASEO_SYNC_CODE_SERVER_USER_DATA=1 ./scripts/deploy.sh    # also rsync full User/ + extensions/
-CODE_SERVER_VERSION=4.127.0 ./scripts/deploy.sh           # pin binary version
-PASEO_SKIP_LANGUAGE_EXTENSIONS=1 ./scripts/deploy.sh      # skip ms-python.python + basedpyright
-```
-
-Or deploy one host directly:
-
-```bash
-./scripts/code-server/install.sh local
-./scripts/code-server/install.sh blrofc3      # run on that host (or via sync script)
-./scripts/code-server/install.sh iammvaibhav
+./scripts/code-server/install.sh 127.0.0.1:8765        # the MacBook
+./scripts/code-server/install.sh 100.123.97.105:8765    # a NetBird host: its own address
 ```
 
 Workspace trust / Restricted Mode is disabled by default (`--disable-workspace-trust` on the service, plus `security.workspace.trust.enabled: false` in `User/settings.json`) so folders open in full mode.
@@ -54,30 +49,6 @@ Startup chrome defaults (also in `User/settings.json`):
 - `workbench.secondarySideBar.defaultVisibility: "hidden"` — no secondary side bar (chat/copilot panel)
 
 There is no VS Code setting to start with the **primary** Explorer sidebar closed; close it once with ⌘B / Ctrl+B and that layout is remembered per folder.
-
-### Local Mac
-
-```bash
-cp scripts/code-server/config.local.yaml ~/.config/code-server/config.yaml
-cp scripts/code-server/user-settings.json ~/.local/share/code-server/User/settings.json
-cp scripts/code-server/sh.paseo.code-server.plist ~/Library/LaunchAgents/
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/sh.paseo.code-server.plist
-launchctl kickstart -k gui/$(id -u)/sh.paseo.code-server
-curl -I http://127.0.0.1:8765/
-```
-
-### Linux remotes (`blrofc3`, `iammvaibhav`)
-
-```bash
-# on the remote, after installing ~/.local/bin/code-server
-mkdir -p ~/.config/code-server ~/.config/systemd/user ~/.local/share/code-server/User
-# copy the matching config.*.yaml → ~/.config/code-server/config.yaml
-# copy paseo-code-server.service → ~/.config/systemd/user/
-# copy user-settings.json → ~/.local/share/code-server/User/settings.json
-systemctl --user daemon-reload
-systemctl --user enable --now paseo-code-server.service
-sudo loginctl enable-linger "$USER"   # keep running after SSH logout
-```
 
 ## Desktop app wiring
 
@@ -152,11 +123,11 @@ VSX**, so code-server can never install it. `deploy_language_extensions()` insta
 Open VSX), `grep -qx` against `--list-extensions` making reruns a true no-op. Skip with
 `PASEO_SKIP_LANGUAGE_EXTENSIONS=1`.
 
-The installer owns this because `sync-user-data.sh`
-(`PASEO_SYNC_CODE_SERVER_USER_DATA=1`) does `rsync -az --delete` on `extensions/` —
-pushing this Mac's set over the remotes and wiping anything the Mac lacks. Installing
-from `install.sh` makes that self-healing and a brand-new remote navigable out of the
-box. **Keep both extensions installed on the Mac** too, or a user-data sync opens a
+The installer owns this because running `sync-user-data.sh` manually
+does `rsync -az --delete` on `extensions/` — pushing this Mac's set over the
+remotes and wiping anything the Mac lacks. Installing from `install.sh` makes
+that self-healing and a brand-new remote navigable out of the box. **Keep both
+extensions installed on the Mac** too, or a user-data sync opens a
 window where the remotes lose them.
 
 **The settings push merges; it does not clobber.** `sync_code_server_settings_to_remotes()`
