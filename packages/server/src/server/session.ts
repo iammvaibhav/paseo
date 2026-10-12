@@ -225,7 +225,6 @@ import {
 import { resolveMissionControlMediaFetch } from "./mission-control/media.js";
 import { moveAgentToWorkspace } from "./mission-control/meta-actions.js";
 import { resolveCommanderUserMessage } from "./mission-control/tagging.js";
-import { PlannotatorSession } from "./session/plannotator/plannotator-session.js";
 import { ScheduleSession } from "./session/schedule/schedule-session.js";
 import { ProviderCatalogSession } from "./session/provider/provider-catalog-session.js";
 import { UsageSession } from "./session/usage/usage-session.js";
@@ -496,22 +495,16 @@ const nodeSessionFileSystem: SessionFileSystem = {
   },
 };
 
-function createWebhookAndPlannotatorSessions(input: {
+function createWebhookSession(input: {
   emit: (message: SessionOutboundMessage) => void;
   webhookService: WebhookService | null | undefined;
   logger: pino.Logger;
-}): { webhookSession: WebhookSession; plannotatorSession: PlannotatorSession } {
-  return {
-    webhookSession: new WebhookSession({
-      host: { emit: input.emit },
-      webhookService: input.webhookService ?? null,
-      logger: input.logger,
-    }),
-    plannotatorSession: new PlannotatorSession({
-      host: { emit: input.emit },
-      logger: input.logger,
-    }),
-  };
+}): WebhookSession {
+  return new WebhookSession({
+    host: { emit: input.emit },
+    webhookService: input.webhookService ?? null,
+    logger: input.logger,
+  });
 }
 
 // Stub types for features under development (modules not yet available)
@@ -987,7 +980,6 @@ export class Session {
   private readonly transcriptSearch: TranscriptSearchService | null;
   private readonly warmWorktreePool?: WarmWorktreePool;
   private readonly hostName: string;
-  private readonly plannotatorSession: PlannotatorSession;
   private readonly providerCatalogSession: ProviderCatalogSession;
   private readonly usageSession: UsageSession;
   private readonly workspaceFilesSession: WorkspaceFilesSession;
@@ -1178,13 +1170,11 @@ export class Session {
       scheduleService,
       logger: this.sessionLogger,
     });
-    const customSessions = createWebhookAndPlannotatorSessions({
+    this.webhookSession = createWebhookSession({
       emit: (msg) => this.emit(msg),
       webhookService,
       logger: this.sessionLogger,
     });
-    this.webhookSession = customSessions.webhookSession;
-    this.plannotatorSession = customSessions.plannotatorSession;
     this.automationSession = new AutomationSession({
       host: { emit: (msg) => this.emit(msg) },
       service: () => orNull(options.automationService),
@@ -2672,7 +2662,6 @@ export class Session {
     (msg) => this.ticketsSession.dispatch(msg),
     (msg) => this.automationSession.dispatch(msg),
     (msg) => this.notesSession.dispatch(msg),
-    (msg) => this.dispatchPlannotatorMessage(msg),
     (msg) => this.dispatchMissionControlPeersMessage(msg),
     (msg) => this.dispatchMissionControlEventsMessage(msg),
     (msg) => this.dispatchMissionControlContextMessage(msg),
@@ -2751,17 +2740,6 @@ export class Session {
       (error: unknown) =>
         respond({ proxyPort: null, error: getErrorMessageOr(error, "Failed to open page proxy") }),
     );
-  }
-
-  private dispatchPlannotatorMessage(msg: SessionInboundMessage): Promise<void> | undefined {
-    switch (msg.type) {
-      case "plannotator.session.start.request":
-        return this.plannotatorSession.handleStartRequest(msg);
-      case "plannotator.session.stop.request":
-        return this.plannotatorSession.handleStopRequest(msg);
-      default:
-        return undefined;
-    }
   }
 
   private async handleMissionControlPeersListRequest(
@@ -10922,7 +10900,6 @@ export class Session {
     }
     this.providerCatalogSession.dispose();
 
-    await this.plannotatorSession.dispose();
     this.terminalController.dispose();
 
     this.checkoutSession.cleanup();
@@ -11002,7 +10979,6 @@ const PASSTHROUGH_EVENT_CATEGORIES: Record<string, true> = {
   "doc_threads.changed": true,
   mission_control_event: true,
   "provider.usage.updated": true,
-  "plannotator.session.event": true,
   "automations.changed": true,
 };
 function passthroughEventCategory(

@@ -12,7 +12,7 @@ import {
   createPaseoToolCatalog,
   type PaseoToolHostDependencies,
 } from "../agent/tools/paseo-tools.js";
-import type { PaseoToolResult } from "../agent/tools/types.js";
+import type { PaseoToolCatalog, PaseoToolResult } from "../agent/tools/types.js";
 import { CORE_FLEET_TOOL_NAMES, resolveTypeSafeApiKey, searchCatalogTools } from "./tool-search.js";
 import { loadFleetSkillText } from "./skill.js";
 
@@ -23,6 +23,8 @@ export const FLEET_MCP_INSTRUCTIONS =
 
 export interface FleetMcpServerOptions {
   hostDependencies: PaseoToolHostDependencies;
+  /** A catalog built earlier from the same hostDependencies; skips rebuilding it per request. */
+  catalog?: PaseoToolCatalog;
   clientName?: string;
   explicitSkillPath?: string | null;
 }
@@ -44,7 +46,7 @@ function toMcpToolResult(result: PaseoToolResult): CallToolResult {
 }
 
 export async function createFleetMcpServer(options: FleetMcpServerOptions): Promise<McpServer> {
-  const catalog = await createPaseoToolCatalog(options.hostDependencies);
+  const catalog = options.catalog ?? (await createPaseoToolCatalog(options.hostDependencies));
   const server = new McpServer(
     {
       name: "paseo-fleet",

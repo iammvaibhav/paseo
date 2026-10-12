@@ -27,7 +27,7 @@ import { AfterPaintPublication } from "@/composer/after-paint-publication";
 import { useShallow } from "zustand/shallow";
 import type { ComposerTextSource } from "@/composer/text-source";
 import { isWeb } from "@/constants/platform";
-import { subscribeComposerPrefill } from "@/workspace/plannotator-feedback";
+import { subscribeComposerPrefill } from "./composer-prefill";
 
 type AttachmentUpdater =
   | UserComposerAttachment[]
@@ -272,7 +272,7 @@ export function useAgentInputDraft(input: UseAgentInputDraftInput): AgentInputDr
     });
   }, [draftKey, publishTextReplacement, replaceText, textPublication]);
 
-  // Plannotator (and similar) can prefill the composer while this draft is mounted.
+  // External actions (such as selection-ask) can prefill the composer while this draft is mounted.
   useEffect(() => {
     return subscribeComposerPrefill((payload) => {
       if (payload.draftKey !== draftKey) {

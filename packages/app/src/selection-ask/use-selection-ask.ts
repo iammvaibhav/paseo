@@ -21,7 +21,7 @@ import { useDraftStore } from "@/stores/draft-store";
 import { planTimelineTailFetch } from "@/timeline/timeline-sync-plan";
 import { navigateToAgent } from "@/utils/navigate-to-agent";
 import { toErrorMessage } from "@/utils/error-messages";
-import { emitComposerPrefill } from "@/workspace/plannotator-feedback";
+import { emitComposerPrefill } from "@/composer/draft/composer-prefill";
 import {
   buildAskThreadMessages,
   buildSelectionAskBlock,

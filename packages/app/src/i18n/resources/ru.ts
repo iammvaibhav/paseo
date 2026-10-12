@@ -1131,7 +1131,6 @@ export const ru: TranslationResources = {
         openIn: "Открыть рабочее пространство в {{target}}",
         openFileIn: "Открыть {{fileName}} в {{target}}",
         failedOpen: "Не удалось открыть рабочее пространство",
-        noFile: "Select a Markdown file to open in Plannotator",
       },
       pr: {
         actions: {
@@ -2257,15 +2256,9 @@ export const ru: TranslationResources = {
       vimKeybindings: "Сочетания клавиш Vim",
       vimHint: "Применяется к исходным файлам в веб- и настольной версии.",
       defaultFileOpener: "Default file opener",
-      defaultFileOpenerHint:
-        "Used for normal file clicks. Plannotator supports document and configuration files; source files fall back to Paseo.",
+      defaultFileOpenerHint: "Used for normal file clicks.",
       defaultFileOpenerPaseo: "Paseo",
       defaultFileOpenerVsCodeWeb: "VS Code Web",
-      defaultFileOpenerPlannotator: "Plannotator",
-      plannotatorFeedbackMode: "Plannotator feedback",
-      plannotatorFeedbackModeHint: "How annotation feedback is delivered to the linked agent.",
-      plannotatorFeedbackAutoSend: "Auto-send",
-      plannotatorFeedbackCompose: "Pre-fill composer",
     },
     notifications: {
       title: "Уведомления",

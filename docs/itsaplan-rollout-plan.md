@@ -8,7 +8,7 @@ Working plan for the remaining implementation and the E2E test campaign. Delete 
 
 **Fixed today during E2E bring-up:** itsaplan ignores client-supplied webhook secrets — the bridge now reads back the generated `whsec_*` per project, stores it in the mapping, and verifies against all known secrets; projects rooted inside `paseoHome` (the Commander's reserved home) are never synced to itsaplan.
 
-**Done this session (not yet committed):** needs-you loop (question comment + ticket reply + convergence, independently 57/57 then 77/77 after wave 2); Plannotator `review --git` routing for working_diff clicks (session-manager 4/4, open-file 16/16); All-tickets board inside `/tmp/itsaplan` (`GET /issues`, `/tickets`); ticketize (`fleet_ticketize_agent` / `itsaplan_ticketize`, now on COMMANDER_TOOL_ALLOWLIST); auto-chain label + Done-release of dependents; @commander mention-run drain (`/agent-runs/claim`, `triggerOnMention: true`). Independently verified: `npx vitest run src/server/itsaplan` 77/77; commander-boot allowlist pin + itsaplan 124/124.
+**Done this session (not yet committed):** needs-you loop (question comment + ticket reply + convergence, independently 57/57 then 77/77 after wave 2); native `review --git` routing for working_diff clicks; All-tickets board inside `/tmp/itsaplan` (`GET /issues`, `/tickets`); ticketize (`fleet_ticketize_agent` / `itsaplan_ticketize`, now on COMMANDER_TOOL_ALLOWLIST); auto-chain label + Done-release of dependents; @commander mention-run drain (`/agent-runs/claim`, `triggerOnMention: true`). Independently verified: `npx vitest run src/server/itsaplan` 77/77; commander-boot allowlist pin + itsaplan 124/124.
 
 **Still remaining:** S1–S14 E2E campaign on the live stack; repo-wide `lint`/`format`/`typecheck`/`build:server` then one commit; optional §7 (PR-policy toggle UI, base-workspace flicker). The `/tmp/itsaplan` All-tickets work is **not** in this Paseo worktree — it lives in the E2E itsaplan checkout and needs its own fork commit/push. The GlobalBoard worker recreated the itsaplan DB; `/tmp/itsaplan-e2e/credentials.json` API key is stale against the live :3000.
 
@@ -43,9 +43,9 @@ Decision (user): the one-board-for-all-tickets view lives in itsaplan itself; Mi
 - Candidate for an upstream PR — it is a generally useful feature, and upstreaming shrinks the fork.
 - Paseo-side work: none.
 
-### 3. Plannotator — integrate, never rebuild
+### 3. Diff review
 
-Plannotator already has walk-me-through and PR review. The only integration gap: clicking a diff opens the side panel today; it should open Plannotator. One change — a diff-open routing preference (alongside the existing `openInSidePane` preference family) that routes diff opens to an embedded Plannotator session (`docs/plannotator.md` spawn machinery). Everything else is Plannotator's own surface, reached because we stop routing around it.
+Diff review: clicking a diff opens Paseo's native working diff view.
 
 ### 4. Commander as a ticket participant (chat runner follow-ups)
 
@@ -85,7 +85,7 @@ Each scenario: PASS/FAIL + screenshot + API/log evidence. Runner agents execute 
 | S9  | Chat (after runner lands): 1:1 chat with Commander in itsaplan UI → real routed reply                                                                                                                                                                       | chat screenshot                                                    |
 | S10 | `@commander` mention on a ticket → agent_run claimed → reply comment                                                                                                                                                                                        | ticket timeline                                                    |
 | S11 | Global board (after item 2, itsaplan fork): "All tickets" view shows every project's tickets grouped by column with project chips                                                                                                                           | itsaplan UI screenshot                                             |
-| S12 | Plannotator (after item 3): clicking a diff opens Plannotator instead of the side panel; walk-me-through and PR review reachable from there (Plannotator-native)                                                                                            | app screenshots                                                    |
+| S12 | Diff review (after item 3): clicking a diff opens the native working diff view                                                                                                                                                                              | app screenshots                                                    |
 | S13 | auto-chain label: labeled source fires dependent at Ready-to-review; unlabeled fires at Done                                                                                                                                                                | delivery log timing                                                |
 | S14 | Base-workspace UI regression re-run (S10 of the old plan) after all changes                                                                                                                                                                                 | 4 checks re-verified                                               |
 
