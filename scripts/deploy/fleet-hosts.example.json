@@ -39,7 +39,7 @@
       "platform": "linux-arm64",
       "role": "target",
       "buildFrom": "iammvaibhav",
-      "services": ["omp", "code-server", "plannotator", "stall-cron", "omp-proxy"]
+      "services": ["code-server", "plannotator", "stall-cron", "omp-proxy"]
     },
     {
       "name": "dell-server",
