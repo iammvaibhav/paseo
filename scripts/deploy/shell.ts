@@ -131,6 +131,7 @@ export interface Job {
 export async function runJobs(jobs: Job[], main: Log, runDir: string): Promise<string[]> {
   const done = new Map<string, Promise<boolean>>();
   const failed: string[] = [];
+  const finished = new Set<string>();
   const start = (job: Job): Promise<boolean> => {
     const existing = done.get(job.name);
     if (existing) return existing;
@@ -158,11 +159,12 @@ export async function runJobs(jobs: Job[], main: Log, runDir: string): Promise<s
         return false;
       }
     })();
+    void promise.then(() => finished.add(job.name));
     done.set(job.name, promise);
     return promise;
   };
   const heartbeat = setInterval(() => {
-    const pending = jobs.filter((job) => !failed.includes(job.name)).map((job) => job.name);
+    const pending = jobs.filter((job) => !finished.has(job.name)).map((job) => job.name);
     if (pending.length > 0) main.line(`… still running: ${pending.join(", ")}`);
   }, 120_000);
   await Promise.all(jobs.map(start));

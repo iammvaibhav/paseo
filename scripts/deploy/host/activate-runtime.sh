@@ -297,9 +297,11 @@ prune_releases() {
     rm -rf "$dir"
     log "Removed old release $(basename "$dir")"
   done
-  if [[ "${PASEO_KEEP_ARTIFACT:-0}" != "1" && -f "$ARTIFACT" ]]; then
-    rm -f "$ARTIFACT"
-    log "Removed $(basename "$ARTIFACT") (unpacked)"
+  # Targets: the tarball is only needed until unpacked (also clears leftovers
+  # from failed runs). Builders keep their newest one to ship on.
+  if [[ "${PASEO_KEEP_ARTIFACT:-0}" != "1" ]]; then
+    rm -f "$PASEO_HOME"/artifacts/paseo-runtime-*.tar.gz "$PASEO_HOME"/artifacts/paseo-runtime-*.tar.gz.partial
+    log "Removed shipped tarballs (unpacked)"
   fi
 }
 
