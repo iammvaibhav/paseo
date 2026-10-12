@@ -32,7 +32,7 @@
  */
 
 import { DaemonClient } from "@getpaseo/client/internal/daemon-client";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -251,7 +251,10 @@ async function main() {
 
 export { runSnapshot, runNudge };
 
-if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+// realpath: the packaged runtime invokes this through symlinks
+// (current -> releases/<id>, lib/deploy -> packages/cli/deploy), while
+// import.meta.url is always the resolved file.
+if (process.argv[1] && fileURLToPath(import.meta.url) === realpathSync(process.argv[1])) {
   main().catch((error) => {
     console.log(`deploy-nudge failed: ${error?.message ?? error}`);
     process.exit(0);
