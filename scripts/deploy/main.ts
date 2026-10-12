@@ -476,18 +476,15 @@ async function ship(run: Run, builder: Host, target: Host, log: Log): Promise<st
   const source = run.tarballs.get(builder.name);
   if (!source) throw new Error(`no package from ${builder.name}`);
   const dest = `.paseo/artifacts/${path.basename(source)}`;
-  const sum = "(sha256sum 2>/dev/null || shasum -a 256) | cut -d' ' -f1";
+  const sha256 = (file: string) =>
+    `{ sha256sum 2>/dev/null || shasum -a 256; } < ${file} | cut -d' ' -f1`;
   log.line(`shipping ${path.basename(source)} from ${builder.name}`);
-  const want = (
-    await runLocal(`${hostCommand(builder, run.self.name, `${sum} < ${source}`)}`, log)
-  ).trim();
+  const want = (await runLocal(hostCommand(builder, run.self.name, sha256(source)), log)).trim();
   await runLocal(
     `${hostCommand(builder, run.self.name, `cat ${source}`)} | ${hostCommand(target, run.self.name, `mkdir -p ~/.paseo/artifacts && cat > ~/${dest}`)}`,
     log,
   );
-  const got = (
-    await runLocal(hostCommand(target, run.self.name, `${sum} < ~/${dest}`), log)
-  ).trim();
+  const got = (await runLocal(hostCommand(target, run.self.name, sha256(`~/${dest}`)), log)).trim();
   if (!want || want !== got) throw new Error(`checksum mismatch shipping to ${target.name}`);
   return `~/${dest}`;
 }
