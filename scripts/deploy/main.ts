@@ -319,14 +319,13 @@ const KIT_DIR = "$HOME/.local/share/paseo/kit";
 /** Repo files the kit services need. Hosts without a checkout run them from the kit. */
 const KIT_PATHS = [
   "scripts/code-server",
-  "scripts/plannotator",
   "scripts/stall-check.mjs",
   "scripts/install-stall-cron.sh",
   "scripts/set-omp-verifier-role.mjs",
   "packages/server/resources/verifier-agent.md",
   "plugins",
 ];
-const KIT_SERVICES = new Set<Service>(["omp", "code-server", "plannotator", "stall-cron"]);
+const KIT_SERVICES = new Set<Service>(["omp", "code-server", "stall-cron"]);
 /** node on any host: the packaged runtime's, else nvm's. */
 const HOST_NODE =
   'NODE="$HOME/.local/share/paseo/current/bin/node"; [ -x "$NODE" ] || NODE="$(command -v node)"';
@@ -397,7 +396,6 @@ ${HOST_NODE}
 
 const SERVICE_SCRIPTS: Partial<Record<Service, string>> = {
   "code-server": 'bash scripts/code-server/install.sh "$BIND"',
-  plannotator: "bash scripts/plannotator/install.sh",
   "stall-cron": `${HOST_NODE}; bash scripts/install-stall-cron.sh "$PWD" "$HOME/.paseo" "$NODE"`,
   voice: 'PASEO_HOME="$HOME/.paseo" bash scripts/commander-voice/install.sh',
   "macbook-watch": 'bash scripts/install-macbook-redeploy-watch.sh "$PWD" "$HOME/.paseo"',
@@ -535,6 +533,9 @@ function configPayload(run: Run, host: Host): Record<string, unknown> {
     hostnames: host.dns ? [host.dns] : [],
     appendSystemPrompt: readFileSync(path.join(ROOT, "scripts", "paseo-system-prompt.md"), "utf8"),
     webUi: true,
+    // Targets stay minimal: no local speech models unless voice is turned on
+    // there explicitly. Builders keep whatever the daemon defaults to.
+    ...(host.role === "target" ? { localSpeechDefault: false } : {}),
   };
 }
 
@@ -624,8 +625,8 @@ function jobsFor(run: Run, plans: HostPlan[]): Job[] {
         if (plan.daemon) {
           const tarball = await ship(run, builder, host, jobLog);
           await activate(run, host, "install", tarball, jobLog);
-          // A new host gets its listen address, password, and fleet config
-          // before its first start; existing hosts keep theirs.
+          // Before (re)start: listen on the inventory address (a moved host
+          // binds its new IP), and a new host's password and fleet config.
           const password = process.env[passwordVar(host.name)] ?? "";
           await runScript(
             host,
@@ -638,13 +639,13 @@ function jobsFor(run: Run, plans: HostPlan[]): Job[] {
             host,
             {
               ...configPayload(run, host),
-              initListen: `${host.address}:${host.port}`,
+              listen: `${host.address}:${host.port}`,
               initPassword: password,
             },
             jobLog,
           );
           await activate(run, host, "activate", tarball, jobLog);
-          await stamp(run, host, jobLog, { daemon: run.head });
+          await stamp(run, host, jobLog, { daemon: run.head, address: host.address });
         }
         await hostServices(run, host, plan, jobLog);
         if (plan.services.includes("omp-proxy") && run.self.platform !== "linux-arm64") {

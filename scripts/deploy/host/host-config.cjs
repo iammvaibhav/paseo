@@ -8,7 +8,11 @@
 //   appendSystemPrompt   daemon.appendSystemPrompt (from the repo's
 //                        scripts/paseo-system-prompt.md; never copied from a host)
 //   webUi                features.webUi.enabled
-//   initListen           daemon.listen, only when unset
+//   localSpeechDefault   false: dictation and voice mode stay off unless this
+//                        host's config already turned them on, so the daemon
+//                        never downloads its local speech models (~765 MiB)
+//   listen               daemon.listen (targets: always their inventory address,
+//                        so a moved host binds its new IP on activation)
 //   initPassword         daemon password, stored bcrypt-hashed in
 //                        daemon.auth.password, only when unset
 //
@@ -73,9 +77,22 @@ if (typeof payload.webUi === "boolean" && config.features?.webUi?.enabled !== pa
   changed.push(`features.webUi.enabled (${payload.webUi})`);
 }
 
-if (typeof payload.initListen === "string" && !config.daemon.listen) {
-  config.daemon.listen = payload.initListen;
-  changed.push(`daemon.listen (${payload.initListen})`);
+// The daemon enables dictation and voice mode when the keys are unset, and then
+// downloads ~765 MiB of local speech models. Voice is opt-in for this fleet:
+// only an explicit `enabled: true` someone set on the host keeps it.
+if (payload.localSpeechDefault === false) {
+  config.features ??= {};
+  for (const key of ["dictation", "voiceMode"]) {
+    if (config.features[key]?.enabled === undefined) {
+      config.features[key] = { ...config.features[key], enabled: false };
+      changed.push(`features.${key}.enabled (false)`);
+    }
+  }
+}
+
+if (typeof payload.listen === "string" && config.daemon.listen !== payload.listen) {
+  config.daemon.listen = payload.listen;
+  changed.push(`daemon.listen (${payload.listen})`);
 }
 
 if (typeof payload.initPassword === "string" && !config.daemon.auth?.password) {
