@@ -81,16 +81,16 @@ cli_cmd() {
     printf 'node %s' "$(printf %q "$ROOT_DIR/packages/cli/dist/index.js")"
     return
   fi
-  die "No built CLI. Run: npm run build:server && install wrapper, or use deploy.sh"
+  die "No built CLI. Run: pnpm run build:server, or use ./scripts/deploy.sh"
 }
 
 require_dist() {
   [[ -f "$ROOT_DIR/packages/cli/dist/index.js" ]] \
-    || die "packages/cli/dist missing — run npm run build:server first"
+    || die "packages/cli/dist missing — run pnpm run build:server first"
   [[ -f "$ROOT_DIR/packages/highlight/dist/index.js" ]] \
-    || die "packages/highlight/dist missing — run npm run build:server first"
+    || die "packages/highlight/dist missing — run pnpm run build:server first"
   [[ -f "$ROOT_DIR/packages/server/dist/scripts/supervisor-entrypoint.js" ]] \
-    || die "packages/server dist incomplete — run npm run build:server first"
+    || die "packages/server dist incomplete — run pnpm run build:server first"
 }
 
 launch_detached() {

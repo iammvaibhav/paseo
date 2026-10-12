@@ -31,8 +31,8 @@
 # shell — the absolute node path is required, so resolve it at install time and
 # bake it in.
 #
-# Deploy opt-out is PASEO_SKIP_STALL_CRON=1 (deploy.sh's concern); this script
-# installs whenever it is invoked.
+# Controlled per host by the "stall-cron" service entry in ~/.paseo/fleet-hosts.json;
+# this script installs whenever it is invoked.
 
 set -euo pipefail
 

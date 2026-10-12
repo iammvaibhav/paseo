@@ -113,17 +113,13 @@ nvm + the env file, then execs `server.js`:
 The service targets its LOCAL daemon (`ws://127.0.0.1:6767/ws`, or the host's
 actual daemon listen address when derivable). The daemon password hash in the
 host's config can't be used by the node (it authenticates over WS), so deploy
-writes the plaintext password — plus the Gemini key — once into
-`~/.config/commander-voice/env` (chmod 600) from user-set env vars; nothing
-secret is committed and re-runs preserve existing values unless overridden:
+writes the plaintext password — plus the Gemini key — into
+`~/.config/commander-voice/env` (chmod 600) sourced from `~/.paseo/deploy.env`
+(`PASEO_COMMANDER_VOICE_PASSWORD` and `GEMINI_API_KEY`).
 
-```bash
-PASEO_COMMANDER_VOICE_PASSWORD=<daemon-password> GEMINI_API_KEY=<key> \
-  ./scripts/deploy.sh
-```
-
-`scripts/deploy.sh` owns the lifecycle (like code-server): install/refresh +
-restart on every deploy, opt out with `PASEO_SKIP_COMMANDER_VOICE=1`. After
+[`./scripts/deploy.sh`](../../scripts/deploy.sh) deploys commander-voice for
+each host enabling `"voice"` in its `services` list in `~/.paseo/fleet-hosts.json`
+whenever files under `scripts/commander-voice` change, or on `--force`. After
 deploy, point the app's Mission Control settings → Memory → "Voice node URL"
 at the node (e.g. `ws://127.0.0.1:8787/ws`) to enable Commander Voice in the
 Mission Control composer.

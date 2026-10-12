@@ -17,8 +17,8 @@
 # Idempotent: rewriting the units and re-enabling never duplicates.
 # Never fails a deploy: this is a convenience, not a critical path.
 #
-# Deploy opt-out is PASEO_SKIP_MACBOOK_WATCH=1 (deploy.sh's concern); this
-# script installs whenever it is invoked.
+# Controlled per host by the "macbook-watch" service entry in ~/.paseo/fleet-hosts.json;
+# this script installs whenever it is invoked.
 
 set -euo pipefail
 

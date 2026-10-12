@@ -2,13 +2,11 @@
 // Package the built daemon runtime of THIS checkout into a versioned tarball
 // that other hosts of the same platform can run without a checkout or a build.
 //
-// Run on a builder after `pnpm run build:server` + `pnpm run build:daemon-web-ui`:
-//   node scripts/deploy/package-runtime.mjs [--out <dir>]
-// or, for a checkout that predates this script, piped over ssh:
-//   PASEO_REPO_DIR=$HOME/paseo node --input-type=module - < package-runtime.mjs
-// Output dir: --out, else PASEO_ARTIFACT_DIR, else ~/.paseo/artifacts. Staging
-// happens inside the output dir, so point it at a disk with ~2 GiB free.
-// Prints the tarball path on stdout (everything else goes to stderr).
+// Run on a builder after `pnpm run build:server` + `pnpm run build:daemon-web-ui`.
+// scripts/deploy/main.ts pipes it in:
+//   PASEO_REPO_DIR=<checkout> PASEO_ARTIFACT_DIR=<dir> node --input-type=module - < package-runtime.mjs
+// Staging happens inside the artifact dir, so it needs ~1 GiB free. Older
+// tarballs there are deleted. Prints the tarball path on stdout (logs on stderr).
 //
 // Tarball: paseo-runtime-<version>-<commit>[-dirty]-<platform>-node<major>.tar.gz, one
 // top-level directory of the same name:
@@ -17,10 +15,7 @@
 //   bin/paseo       CLI wrapper (resolves its own location, no nvm)
 //   lib/            repo-shaped subset: the workspace packages the CLI needs
 //                   plus exactly the installed node_modules they resolve to
-//   lib/deploy/     host-side helpers: deploy-nudge.mjs, the canonical system
-//                   prompt (scripts/paseo-system-prompt.md) and its patcher
-//                   (scripts/set-append-system-prompt.mjs); targets have no
-//                   checkout, so activation applies the prompt from here
+//   lib/deploy/     deploy-nudge.mjs, for activate-runtime.sh's snapshot + nudge
 //   release.json    version, commit, platform, node, builder, build time
 //
 // Why not `pnpm deploy`: it re-resolves dependencies (shared-lockfile deploy
@@ -45,13 +40,15 @@ import {
   chmodSync,
   copyFileSync,
 } from "node:fs";
-import { homedir, hostname } from "node:os";
+import { hostname } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
-const REPO = process.env.PASEO_REPO_DIR
-  ? path.resolve(process.env.PASEO_REPO_DIR)
-  : path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+const { PASEO_REPO_DIR, PASEO_ARTIFACT_DIR } = process.env;
+if (!PASEO_REPO_DIR || !PASEO_ARTIFACT_DIR) {
+  process.stderr.write("[package-runtime] PASEO_REPO_DIR and PASEO_ARTIFACT_DIR are required\n");
+  process.exit(2);
+}
+const REPO = path.resolve(PASEO_REPO_DIR);
 const ENTRY_PACKAGE = path.join(REPO, "packages", "cli");
 
 // Never shipped: the Claude Agent SDK's per-platform Claude Code binaries
@@ -207,15 +204,8 @@ exec "$release/bin/node" --disable-warning=DEP0040 "$release/lib/packages/cli/di
   chmodSync(wrapper, 0o755);
 }
 
-function resolveOutDir() {
-  const outIndex = process.argv.indexOf("--out");
-  if (outIndex !== -1) return path.resolve(process.argv[outIndex + 1]);
-  if (process.env.PASEO_ARTIFACT_DIR) return path.resolve(process.env.PASEO_ARTIFACT_DIR);
-  return path.join(homedir(), ".paseo", "artifacts");
-}
-
 function main() {
-  const outDir = resolveOutDir();
+  const outDir = path.resolve(PASEO_ARTIFACT_DIR);
 
   for (const required of [
     "packages/cli/dist/index.js",
@@ -259,19 +249,12 @@ function main() {
     mkdirSync(path.dirname(dest), { recursive: true });
     symlinkSync(target, dest);
   }
-  // Host-side helpers resolve @getpaseo/client and ws through the CLI's deps.
+  // deploy-nudge resolves @getpaseo/client and ws through the CLI's deps.
   mkdirSync(path.join(libDir, "packages", "cli", "deploy"), { recursive: true });
-  for (const file of [
-    "deploy-nudge.mjs",
-    "paseo-system-prompt.md",
-    "set-append-system-prompt.mjs",
-    "set-web-ui-config.mjs",
-  ]) {
-    copyFileSync(
-      path.join(REPO, "scripts", file),
-      path.join(libDir, "packages", "cli", "deploy", file),
-    );
-  }
+  copyFileSync(
+    path.join(REPO, "scripts", "deploy-nudge.mjs"),
+    path.join(libDir, "packages", "cli", "deploy", "deploy-nudge.mjs"),
+  );
   // Stable path for activate-runtime.sh: lib/deploy -> packages/cli/deploy.
   symlinkSync(path.join("packages", "cli", "deploy"), path.join(libDir, "deploy"));
 

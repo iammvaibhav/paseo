@@ -1,7 +1,6 @@
 #!/usr/bin/env node
-// Mission Control verifier omp-config sync, run by scripts/deploy.sh
-// (sync_omp_verifier_config). Two jobs, both builtin-only so they run locally
-// or piped over ssh (`ssh host "node - <b64>" < this`):
+// Mission Control verifier omp-config sync, run by scripts/deploy.sh (ompStep).
+// Builtin-only so it runs locally or piped over ssh:
 //
 // 1. Install the verifier agent definition:
 //    <decoded-b64> → ~/.omp/agent/agents/verifier.md

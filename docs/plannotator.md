@@ -29,10 +29,9 @@ Or via deploy:
 
 ```bash
 ./scripts/deploy.sh
-PASEO_SKIP_PLANNOTATOR=1 ./scripts/deploy.sh   # skip
-PLANNOTATOR_VERSION=0.22.0 ./scripts/deploy.sh # pin
 ```
 
+Deploy installs plannotator on every host that enables `"plannotator"` in its `services` list in `~/.paseo/fleet-hosts.json` when files under `scripts/plannotator` change, or on `--force`. When running the installer directly, pin a version with `PLANNOTATOR_VERSION=<version> ./scripts/plannotator/install.sh <target>`.
 Install uses `PLANNOTATOR_MINIMAL=1` / `--minimal` so hooks and skills are not written into Claude/Codex configs. Paseo owns invocation.
 
 Binary path: `~/.local/bin/plannotator` (also searched on `PATH`).

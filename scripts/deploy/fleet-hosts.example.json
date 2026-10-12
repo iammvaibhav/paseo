@@ -7,7 +7,9 @@
       "dns": "macbook.netbird.cloud",
       "platform": "darwin-arm64",
       "role": "builder",
-      "daemon": "desktop"
+      "daemon": "desktop",
+      "profile": "local",
+      "services": ["omp", "code-server"]
     },
     {
       "name": "iammvaibhav",
@@ -17,7 +19,8 @@
       "platform": "linux-arm64",
       "role": "builder",
       "tunnel": "cloudflared",
-      "artifactDir": "/data/paseo-artifacts"
+      "artifactDir": "/data/paseo-artifacts",
+      "services": ["omp", "code-server", "plannotator", "voice", "stall-cron", "macbook-watch"]
     },
     {
       "name": "blrofc3",
@@ -26,7 +29,8 @@
       "dns": "work.netbird.cloud",
       "platform": "linux-x64",
       "role": "builder",
-      "tunnel": "tailscale-funnel"
+      "tunnel": "tailscale-funnel",
+      "services": ["omp", "code-server", "plannotator", "voice", "stall-cron"]
     },
     {
       "name": "prod",
@@ -35,7 +39,8 @@
       "dns": "prod.netbird.cloud",
       "platform": "linux-arm64",
       "role": "target",
-      "buildFrom": "iammvaibhav"
+      "buildFrom": "iammvaibhav",
+      "services": ["omp-proxy"]
     },
     {
       "name": "dell-server",

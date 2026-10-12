@@ -78,6 +78,7 @@ At the start of non-trivial work, list `docs/` and skim anything relevant to the
 | [docs/android.md](docs/android.md)                                         | App variants, local/cloud builds, EAS workflows, version codes, F-Droid source builds and store metadata                                                                                                                                       |
 | [docs/docker.md](docs/docker.md)                                           | Running the daemon and bundled web UI in Docker, volumes, agent images, security                                                                                                                                                               |
 | [docs/release.md](docs/release.md)                                         | Release playbook, draft releases, completion checklist                                                                                                                                                                                         |
+| [docs/deploy.md](docs/deploy.md)                                           | Fleet deploy — change detection, build-once runtime layout, inventory, secrets, logs, and recovery                                                                                                                                             |
 | [docs/terminal-activity.md](docs/terminal-activity.md)                     | Terminal activity indicators — source-agnostic tracker, agent hook reporting, adding a new hook provider                                                                                                                                       |
 | [SECURITY.md](SECURITY.md)                                                 | Relay threat model, E2E encryption, DNS rebinding, agent auth                                                                                                                                                                                  |
 | [public-docs/hub/security.md](public-docs/hub/security.md)                 | Public Hub guide — trust boundaries, untrusted triggers, provider controls, and output authority                                                                                                                                               |
@@ -243,7 +244,7 @@ All local customizations live on **`vaibhav/customizations`**, branched from `up
 - **History Ask** — agentic history search from History / project / workspace menus (metadata filter + labeled allow-all agents with a structured brief) — see [docs/history-ask.md](docs/history-ask.md)
 - **Plannotator** — embedded markdown annotation review (daemon-spawned sessions, feedback → agent) — see [docs/plannotator.md](docs/plannotator.md)
 - **Mission Control** — fleet monitoring and dispatch: deterministic cross-host board, self-reported status feed (`report_status`), Commander agent with idle-flush digest queue, ephemeral proof-auditing Verifiers, Ask/Auto approval gate, daemon peering with sleep-aware errors — see [docs/mission-control.md](docs/mission-control.md)
-- `scripts/deploy.sh` for multi-host deploy
+- `scripts/deploy.sh` for multi-host deploy — see [docs/deploy.md](docs/deploy.md)
 - **Vercel-hosted web app** — every deploy publishes `packages/app/dist` to the `paseo-web` Vercel project (`https://paseo-web.vercel.app`), so a phone can open the UI without exposing a daemon and pair over the relay. Config lives in `packages/app/vercel.json`; the token comes from `VERCEL_TOKEN` in `~/.paseo/deploy.env`, and the job skips itself when that is unset.
 - `scripts/omp-stats-fleet.sh` — the stock `omp stats` dashboard over **all three hosts combined**. `omp stats` reads exactly one SQLite file and has no remote/merge support, so the script snapshots each host's `~/.omp/stats.db` (`VACUUM INTO` over ssh via bun), merges them into `~/.omp/profiles/fleet/stats.db`, and serves it with `OMP_PROFILE=fleet omp stats`. No omp fork, no rebuild; your real `~/.omp/stats.db` is never written to. `folder` rows are prefixed with the host name, so the dashboard's **Projects** tab is the per-host breakdown while every other tab is the fleet total. Flags: `--no-sync`, `--merge-only`, `--summary`, `--json`; env `OMP_FLEET_HOSTS` / `OMP_FLEET_PROFILE` / `OMP_FLEET_PORT` (default 3848, one above stock so it never fights a local `omp stats`).
 - **In-repo omp plugins** (`plugins/`) — Oh My Pi agent plugins versioned in-tree and installed to `~/.omp/plugins/node_modules/` across all hosts on deploy: `omp-account-routing` (per-host/per-project OAuth account rotation) and `omp-grok-build` (vendored Grok Build OAuth provider) — see [docs/omp-plugins.md](docs/omp-plugins.md)
@@ -275,157 +276,18 @@ script, so never land by hand while another land is in progress. Env overrides:
 
 ### Deployment — always use `./scripts/deploy.sh`
 
-**Always consult and run [`scripts/deploy.sh`](scripts/deploy.sh) for deploy.** Do not freestyle multi-host sync, remote restarts, or “just restart the daemon” with ad-hoc commands unless you are deliberately debugging a single host.
-
-|                 |                                                                                                                      |
-| --------------- | -------------------------------------------------------------------------------------------------------------------- |
-| **How**         | `./scripts/deploy.sh` from the repo root (or `/home/ubuntu/paseo` on iammvaibhav)                                    |
-| **Daemon home** | `~/.paseo` locally; `/home/vaibhav/.paseo` (blrofc3), `/home/ubuntu/.paseo` (iammvaibhav)                            |
-| **Port**        | **6767** (production-style host daemon — what the desktop app and remotes use)                                       |
-| **Desktop**     | Unsigned build → previous build to `Paseo (Orig)` → **quit → `rm -rf` → `cp -R` → `open` `/Applications/Paseo.app`** |
-| **Not this**    | `npm run dev` / port **6768** / `.dev/paseo-home` is checkout hot-reload only, not deploy                            |
-
-**Orchestrator modes** (auto-detected by `uname -s`):
-
-- **MacBook (macOS)** — as before: local = MacBook (daemon restart + desktop build/install), remotes = `blrofc3` + `iammvaibhav`.
-- **iammvaibhav (Linux)** — the current home of the migrated `paseo` project. Local = iammvaibhav (daemon build/restart + nudge + services); remotes = `blrofc3` (NetBird); the **MacBook is a full job** (`job-macbook`): deploy ssh's to it (alias `macbook` = `macbook.netbird.cloud`), git-syncs the checkout (non-clobbering: dirty/diverged → skip), rebuilds the server packages, builds → copies the installed `Paseo.app` to `Paseo (Orig).app` → quit → replace → relaunch `Paseo.app`, then **restarts its `~/.paseo` daemon** (snapshot + nudge, same contract as a remote). The restart comes last because the MacBook supervisor runs the daemon worker out of the installed `Paseo.app`; restarting before the install relaunches the previous bundle. The job is reachability-gated and **never fatal** during a full deploy. `PASEO_DESKTOP_ONLY=1` from Linux commits and pushes the local branch, then requires this MacBook job to succeed (app only — no daemon restart).
-- **The MacBook daemon restarts with every deploy**, like every other host. It used to be skipped so `paseo-dev` agents survived the migration; a daemon that never restarts serves stale code silently (on 2026-08-24 it ran 3.5-day-old mission-control behavior while its checkout and `dist` were current). `PASEO_SKIP_MACBOOK_DAEMON=1` skips only the restart for one run; `PASEO_SKIP_MACBOOK=1` skips the host entirely.
-
-#### Agents MUST treat deploy as fire-and-forget
-
-`./scripts/deploy.sh` **self-detaches** by default (new process session via `start_new_session`). The parent exits immediately and prints the log path. **Do not** run deploy under a long-lived agent tool wait that can be cancelled — canceling used to SIGTERM the whole process group and kill desktop/remotes mid-flight even though daemon restarts were already detached.
+Always run [`./scripts/deploy.sh`](scripts/deploy.sh) for deployment. See [docs/deploy.md](docs/deploy.md) for the full guide to modes, options, inventory, secrets, change detection, and recovery.
 
 ```bash
-# Prefer a clean env so a previous detached child cannot leak state into this shell.
-env -u PASEO_DEPLOY_DETACHED -u PASEO_DEPLOY_RUN_DIR -u PASEO_DEPLOY_LOG -u PASEO_DEPLOY_FOREGROUND \
-  ./scripts/deploy.sh
-# → prints: Detached deploy started pid=… log=~/.paseo/deploy-logs/run-…/deploy.log
-# Then poll logs; do not keep a shell parent waiting on deploy.
-tail -f ~/.paseo/deploy-logs/latest.log
+./scripts/deploy.sh          # deploy what changed since each host's last deploy, to every host
+./scripts/deploy.sh desktop  # only build and install the MacBook app (/Applications/Paseo.app)
 ```
 
-| Log                    | Path                                                                                      |
-| ---------------------- | ----------------------------------------------------------------------------------------- |
-| **Latest full deploy** | `~/.paseo/deploy-logs/latest.log` (symlink)                                               |
-| **Latest run dir**     | `~/.paseo/deploy-logs/latest-run/` (jobs: `job-desktop.log`, `job-remote-blrofc3.log`, …) |
-| **Mirrors**            | `/tmp/paseo-deploy-run.log`, `/tmp/paseo-deploy-latest-run` → same files                  |
-| **PID**                | `~/.paseo/deploy-logs/latest-run/pid` and `/tmp/paseo-deploy-pid`                         |
+Options: `--hosts a,b`, `--force`, `--dry-run`, `--commit "msg"`, `--merge-upstream`, `--foreground`.
 
-Interactive / debug (stay attached): `PASEO_DEPLOY_FOREGROUND=1 ./scripts/deploy.sh`.
+#### Hard rules
 
-**Hard rules (agents):**
-
-1. **Expect the detach banner.** A healthy launch prints `Detached deploy started pid=…` and exits the parent immediately. If you instead see only `Continuing detached deploy` with **no** new `Detached deploy started`, the shell is still attached — kill it and relaunch with the `env -u …` form above.
-2. **Never set `PASEO_DEPLOY_DETACHED` / `PASEO_DEPLOY_DETACH_TOKEN` yourself.** They are internal child-only. `deploy.sh` only trusts a child that holds the per-run detach token file + is a session leader; leaked env from a previous run always re-detaches.
-3. **Never long-wait on deploy in the tool.** Launch, read the printed log path / pid, then poll `~/.paseo/deploy-logs/latest.log` (or the job logs) with short commands.
-4. **Nudge needs `~/.paseo/deploy.env`.** Detached deploy does not source bashrc. Put `PASEO_PASSWORD=…` in `~/.paseo/deploy.env` (chmod 600) on every host or snapshot/nudge skips with `Password required`.
-5. **You own the git history.** Deploy never writes a commit subject and never resolves a conflict. A dirty tree stops it unless you pass `PASEO_DEPLOY_COMMIT_MESSAGE="<subject>"`; with `PASEO_DEPLOY_MERGE_UPSTREAM=1`, a conflicting `upstream/main` merge stops it with the merge left in progress. Read the error, commit or resolve yourself, then relaunch deploy.
-
-The script builds server packages, restarts host daemons with **`--home …/.paseo`**, and syncs remotes. Local/remote **daemon** restarts are **new-session detached** (not plain `nohup` — on macOS that still dies with a cancelled agent tool mid-restart) and must observe a **new PID + `/api/health`**. Restarts use the **built CLI** (`~/.local/bin/paseo` / `packages/cli/dist`), never `npx tsx` mid-build. On failure, deploy tries a detached **`daemon start` recovery** before aborting. The **whole deploy** is also detached by default so waiting for health/desktop cannot be killed by tool cancel.
-
-**Local-only restart (agents):** after `npm run build:server`, use:
-
-```bash
-./scripts/restart-local-daemon.sh
-```
-
-**Recover if a local restart leaves the daemon down:**
-
-```bash
-PATH="$HOME/.local/bin:$PATH" paseo daemon start --home "$HOME/.paseo" \
-  && curl -fsS http://127.0.0.1:6767/api/health
-```
-
-Remote recovery (example):
-
-```bash
-ssh blrofc3 'PATH="$HOME/.local/bin:$PATH" paseo daemon start --home "$HOME/.paseo"'
-ssh iammvaibhav 'PATH="$HOME/.local/bin:$PATH" paseo daemon start --home "$HOME/.paseo"'
-```
-
-### Day-to-day flow
-
-1. Commit changes on `vaibhav/customizations` yourself, or pass `PASEO_DEPLOY_COMMIT_MESSAGE="<subject>"` so deploy commits them with that subject.
-2. Run `./scripts/deploy.sh` from the repo root — **this is the deploy path.** (Self-detaches; tail `~/.paseo/deploy-logs/latest.log`.) Today the deploy normally runs **from iammvaibhav** (`ssh iammvaibhav 'cd /home/ubuntu/paseo && ./scripts/deploy.sh'` with `PASEO_PASSWORD` set for the nudge).
-
-The script:
-
-1. **Git phase (on the orchestrator host)** — requires a committed tree: an uncommitted tree stops the deploy unless `PASEO_DEPLOY_COMMIT_MESSAGE` supplies the subject, in which case deploy stages everything and commits it (the pre-commit hook still gates lint/format/typecheck). It fetches `origin`, fast-forwards to whatever `origin/$BRANCH` already has (never force-reverts another host's push), then **pushes** to `origin`. It does **not** touch `upstream` by default: merging upstream is an occasional, deliberate step. Pass `PASEO_DEPLOY_MERGE_UPSTREAM=1` to also fetch `upstream`, fast-forward `origin/main` to `upstream/main`, and **merge** `upstream/main` into the custom branch before the push; a merge conflict then stops the deploy with the merge left in progress, the conflicted files and the resolve-then-re-run steps printed, and nothing pushed. After the push, post-deploy work runs **in parallel**: each remote host, local daemon restart (after a local `build:server`), local code-server, and the **desktop app** build then install via the formal loop below (on the MacBook, either locally or via the ssh job).
-2. **Remotes** — each is a parallel post-push job: repoints `origin` to the fork if still on `getpaseo/paseo`, checks out `vaibhav/customizations` from `origin`, installs deps when `package.json` / lockfile changed, builds, and restarts the host's `~/.paseo` daemon (with the self-wake nudge). From the MacBook the remotes are `blrofc3` + `iammvaibhav`; from iammvaibhav the remote is `blrofc3` (via NetBird) plus the MacBook desktop job.
-
-No model is in this path. The commit subject comes from the caller and conflict resolution is the caller's job, so deploy never invents history or guesses a merge. An in-progress merge in the checkout also stops the deploy before it fetches anything.
-
-#### Desktop install (this fork) — formal contract
-
-`/Applications/Paseo.app` is the daily custom build. Before each replacement, deploy copies the installed app to `/Applications/Paseo (Orig).app`, replacing the older fallback. If the new build fails, `Paseo (Orig).app` is the previous installed build. `Paseo Test.app` is not part of this fork's deploy path.
-
-| Layout                                   | When                                                                |
-| ---------------------------------------- | ------------------------------------------------------------------- |
-| `Paseo (Orig).app` + replace `Paseo.app` | **Every deploy path** — keep the previous build, then replace Paseo |
-| `Paseo Test.app`                         | Not used by this fork's deploy                                      |
-
-**Can you replace while the window is open?** Partially:
-
-- **On disk:** macOS can replace the `.app` while the process still runs (process keeps old inodes).
-- **In memory:** open windows keep old JS/asar until quit/relaunch. Electron does **not** hot-reload a packaged install.
-- **Dangerous:** `cp -R` _onto_ an existing bundle **merges** files → mixed signatures → dyld Team ID crashes. Always **`rm -rf` then `cp -R`**.
-
-**Canonical loop** (what `deploy.sh` → `install_desktop_app` does every time; ~2 min build + ~2s install):
-
-```bash
-# 1) build unsigned (flags baked into @getpaseo/desktop's build:unsigned —
-#    never forward `-c` flags through pnpm run layers: pnpm preserves `--`,
-#    electron-builder then ignores everything behind it and you get an
-#    ad-hoc hardened build that crashes at launch)
-CSC_IDENTITY_AUTO_DISCOVERY=false pnpm run build:desktop
-
-# 2) preserve previous build → quit → replace → open
-rm -rf "/Applications/Paseo (Orig).app"
-cp -R /Applications/Paseo.app "/Applications/Paseo (Orig).app"
-osascript -e 'tell application "Paseo" to quit'
-rm -rf /Applications/Paseo.app
-cp -R packages/desktop/release/mac-arm64/Paseo.app /Applications/Paseo.app
-open /Applications/Paseo.app
-```
-
-Expect a brief close/reopen. That is intentional — not a bug.
-
-### Manual equivalents
-
-```bash
-git fetch upstream
-git checkout vaibhav/customizations
-git merge upstream/main            # resolve conflicts, then commit the merge
-git push origin vaibhav/customizations
-
-npm run build:server
-npx tsx packages/cli/src/index.js daemon restart --home ~/.paseo
-```
-
-### Useful overrides
-
-```bash
-PASEO_DESKTOP_ONLY=1 ./scripts/deploy.sh          # app UI only: build + install /Applications/Paseo.app + relaunch
-PASEO_SKIP_REMOTES=1 ./scripts/deploy.sh          # local only
-PASEO_SKIP_LOCAL=1 ./scripts/deploy.sh            # remotes only
-PASEO_SKIP_DAEMON=1 ./scripts/deploy.sh          # code-server + settings only (no daemon build/restart)
-PASEO_SKIP_CODE_SERVER=1 ./scripts/deploy.sh      # skip VS Code Web deploy
-PASEO_SYNC_CODE_SERVER_USER_DATA=1 ./scripts/deploy.sh  # also rsync code-server User/ + extensions/
-PASEO_SKIP_OMP_PLUGINS=1 ./scripts/deploy.sh      # skip omp plugin install
-PASEO_SKIP_VERCEL=1 ./scripts/deploy.sh           # skip publishing the web app to Vercel
-PASEO_DEPLOY_MERGE_UPSTREAM=1 ./scripts/deploy.sh  # occasional: also fetch + merge upstream/main
-PASEO_SKIP_SYSTEM_PROMPT=1 ./scripts/deploy.sh    # leave each host's daemon.appendSystemPrompt alone
-PASEO_NODE_VERSION=22 ./scripts/deploy.sh
-```
-
-code-server settings sync uses this Mac’s live `~/.local/share/code-server/User/settings.json` (not the repo template).
-
-The daemon system prompt is version-controlled at [`scripts/paseo-system-prompt.md`](scripts/paseo-system-prompt.md) and pushed into `daemon.appendSystemPrompt` in every host's `~/.paseo/config.json` by `scripts/set-append-system-prompt.mjs`. It syncs **before** the daemons restart on purpose: `DaemonConfigStore` only reads `config.json` at boot and writes its in-memory value back on any later patch, so a prompt written after the restart is reverted by the next settings change. Editing `config.json` by hand on a running daemon has the same problem — change it in Settings → Host → System prompt, or let deploy do it. Note ACP providers (Grok, Cursor, Antigravity) have no system-prompt plumbing and never receive it.
-
-### Local desktop builds (unsigned)
-
-Never run bare `npm run build:desktop` locally — it hangs on notarization, and an ad-hoc build with hardened runtime crashes at launch (dyld "different Team IDs"). Use the unsigned flags above (or let `./scripts/deploy.sh` do it).
-
-**Agents: do not invent install paths.** Always use the formal loop above: target **`/Applications/Paseo.app`**, replace **`/Applications/Paseo (Orig).app`** with the installed build, then **quit → `rm -rf` → `cp -R` → `open`**. Never use `Paseo Test.app` for day-to-day deploy. Never `cp -R` onto an existing bundle without deleting first. Prefer `./scripts/deploy.sh` so build + install stay one path.
-
-**App-only changes:** `PASEO_DESKTOP_ONLY=1 ./scripts/deploy.sh` builds locally on macOS. On iammvaibhav Linux it commits and pushes the branch, then runs the required MacBook desktop job without touching daemons, other remotes, or services.
+- **Deploy self-detaches by default.** Launch `./scripts/deploy.sh` and tail `~/.paseo/deploy-logs/latest.log`. Never long-wait on deploy inside an agent tool call.
+- **Deploy owns pushes.** Worktrees merge locally into `vaibhav/customizations` via [`scripts/land-worktree.sh`](scripts/land-worktree.sh); remote pushes to `origin` belong exclusively to `./scripts/deploy.sh`.
+- **You own git history.** Deploy never invents commit subjects and never resolves conflicts. Commit before deploying or pass `--commit "<msg>"`. Merging `upstream/main` (`--merge-upstream`) with conflicts stops deploy with the merge left in progress for manual resolution.
+- **Restarting daemons interrupts running agents.** Deploy detects changed components and restarts daemons only when daemon code changed. Avoid deploying while agents are actively executing tasks.

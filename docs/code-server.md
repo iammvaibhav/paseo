@@ -22,20 +22,13 @@ Artifacts live in `scripts/code-server/`:
 - `user-settings.json` — shared defaults (trust off, no welcome, hidden activity bar, language-server + watcher/search excludes)
 - `paseo-bridge/` — the in-place file-open extension (see below)
 - `install.sh` — install/update the standalone binary, write config + settings, install the bridge extension, install the Python language extensions, restart the service
-- `sync-user-data.sh` — rsync User/ + extensions/ from this machine to the remotes
+- `sync-user-data.sh` — manual tool: rsync User/ + extensions/ from this machine to the remotes
 
 Binary: standalone install under `~/.local/bin/code-server` (latest, or pin with `CODE_SERVER_VERSION`). Upstream does not publish every arch for every release — 4.131.0 has no `macos-arm64` tarball — so a failed binary update logs `Binary update FAILED` and keeps the installed binary instead of aborting; config, settings, and the bridge extension still deploy.
 
 ### Deploy / update (preferred)
 
-`./scripts/deploy.sh` deploys code-server on every host: the orchestrating host, each remote, and the MacBook job (binary update, config, paseo-bridge, language extensions, the VS Code root folder, service restart; skipped on a `PASEO_DESKTOP_ONLY=1` run). **User settings** come from the orchestrating host's live `~/.local/share/code-server/User/settings.json` (pushed to the other hosts automatically). The repo `user-settings.json` is only a bootstrap fallback when no live file exists yet. Overrides:
-
-```bash
-PASEO_SKIP_CODE_SERVER=1 ./scripts/deploy.sh              # daemon only
-PASEO_SYNC_CODE_SERVER_USER_DATA=1 ./scripts/deploy.sh    # also rsync full User/ + extensions/
-CODE_SERVER_VERSION=4.127.0 ./scripts/deploy.sh           # pin binary version
-PASEO_SKIP_LANGUAGE_EXTENSIONS=1 ./scripts/deploy.sh      # skip ms-python.python + basedpyright
-```
+`./scripts/deploy.sh` deploys code-server on every host that enables `"code-server"` in its `services` list in `~/.paseo/fleet-hosts.json`. It runs whenever `scripts/code-server` files change, or on `--force`. **User settings** from the deploy host's live `~/.local/share/code-server/User/settings.json` merge into remote hosts on every deploy, restarting code-server only when settings changed. The repo `user-settings.json` is only a bootstrap fallback when no live file exists yet.
 
 Or deploy one host directly:
 
@@ -152,11 +145,11 @@ VSX**, so code-server can never install it. `deploy_language_extensions()` insta
 Open VSX), `grep -qx` against `--list-extensions` making reruns a true no-op. Skip with
 `PASEO_SKIP_LANGUAGE_EXTENSIONS=1`.
 
-The installer owns this because `sync-user-data.sh`
-(`PASEO_SYNC_CODE_SERVER_USER_DATA=1`) does `rsync -az --delete` on `extensions/` —
-pushing this Mac's set over the remotes and wiping anything the Mac lacks. Installing
-from `install.sh` makes that self-healing and a brand-new remote navigable out of the
-box. **Keep both extensions installed on the Mac** too, or a user-data sync opens a
+The installer owns this because running `sync-user-data.sh` manually
+does `rsync -az --delete` on `extensions/` — pushing this Mac's set over the
+remotes and wiping anything the Mac lacks. Installing from `install.sh` makes
+that self-healing and a brand-new remote navigable out of the box. **Keep both
+extensions installed on the Mac** too, or a user-data sync opens a
 window where the remotes lose them.
 
 **The settings push merges; it does not clobber.** `sync_code_server_settings_to_remotes()`

@@ -1,46 +1,38 @@
 #!/usr/bin/env bash
 # Activate a packaged Paseo runtime on THIS Linux host and (re)start the daemon
-# as the systemd user unit paseo-daemon.service. Runs on the host itself;
-# deploy.sh ships the tarball first, then pipes this script over ssh:
+# as the systemd user unit paseo-daemon.service. scripts/deploy/main.ts ships
+# the tarball, then runs this script on the host:
 #
-#   ssh host "bash -s -- install  ~/.paseo/artifacts/<release>.tar.gz" < activate-runtime.sh
-#   ssh host "bash -s -- activate ~/.paseo/artifacts/<release>.tar.gz" < activate-runtime.sh
+#   activate-runtime.sh install  <artifact.tar.gz>   unpack + verify + switch `current`
+#   activate-runtime.sh activate <artifact.tar.gz>   install + unit + linger + restart,
+#                                                    then delete other releases + tarball
 #
-# install  = unpack + verify + switch `current` (no unit, no restart), so deploy
-#            can patch config.json with the release's node before the first start
-# activate = install + unit + fleet settings + linger + restart, then delete
-#            every other release and the tarball (PASEO_KEEP_ARTIFACT=1 keeps
-#            the tarball: builders ship it on to their targets)
+# `install` lets deploy write config.json with the release's node before a new
+# host's first start. Only the running release stays on disk; to go back,
+# deploy the older commit.
 #
-# Only the running release is kept on disk. To go back, deploy the older commit.
-#
-# Layout (all per user, no root needed except enabling linger):
+# Layout (per user; root only to enable linger):
 #   ~/.local/share/paseo/releases/<release>/   unpacked runtime (bin/node, bin/paseo, lib/)
 #   ~/.local/share/paseo/current  -> releases/<release>   (swapped atomically)
 #   ~/.local/bin/paseo            -> ~/.local/share/paseo/current/bin/paseo
 #   ~/.config/systemd/user/paseo-daemon.service  ExecStart=current/bin/paseo daemon run
-#   ~/.config/paseo/daemon.env    PATH for the daemon (login PATH + runtime bin)
+#   ~/.config/paseo/daemon.env    PATH (login PATH + runtime bin) + tunnel overrides
 #
-# Restart contract (same as the old detached restart): snapshot running agents,
-# restart, require a NEW main pid that answers /api/health, then nudge the
-# snapshot so agents resume. A daemon still running outside the unit (the old
-# detached "Paseo Supervisor") is stopped once and replaced by the unit.
+# Restart: snapshot running agents, restart, require a NEW main pid that answers
+# /api/health, then nudge the snapshot so agents resume. A daemon running
+# outside the unit (old detached "Paseo Supervisor") is stopped once and
+# replaced by the unit.
 #
-# Fleet settings: the release carries the repo's scripts/paseo-system-prompt.md
-# plus the set-append-system-prompt.mjs / set-web-ui-config.mjs patchers.
-# Activation writes them into config.json BEFORE the restart (the config store
-# reads config.json at boot and writes its in-memory value back on later
-# patches). PASEO_SKIP_SYSTEM_PROMPT=1 / PASEO_SKIP_WEB_UI=1 skip each one.
-#
-# Env: PASEO_HOME (default ~/.paseo), PASEO_RUNTIME_ROOT (default
-# ~/.local/share/paseo), PASEO_ACTIVATE_RESTART=0 (install + switch only, no
-# restart), PASEO_DEPLOY_NUDGE=0 (skip snapshot/nudge), PASEO_KEEP_ARTIFACT=1.
+# Env (set by deploy): PASEO_KEEP_ARTIFACT=1 keeps the tarball (builders ship it
+# on to their targets); PASEO_TUNNEL_PROVIDER / PASEO_TUNNEL_AUTOSTART go into
+# daemon.env.
 set -euo pipefail
 
 MODE="${1:-}"
 ARTIFACT="${2:-}"
+ARTIFACT="${ARTIFACT/#\~\//$HOME/}"
 PASEO_HOME="${PASEO_HOME:-$HOME/.paseo}"
-ROOT="${PASEO_RUNTIME_ROOT:-$HOME/.local/share/paseo}"
+ROOT="$HOME/.local/share/paseo"
 UNIT="paseo-daemon.service"
 UNIT_DIR="$HOME/.config/systemd/user"
 ENV_FILE="$HOME/.config/paseo/daemon.env"
@@ -231,25 +223,7 @@ try {
   printf '%s' "$pid"
 }
 
-apply_fleet_settings() {
-  local dir="$ROOT/current/lib/deploy" node="$ROOT/current/bin/node"
-  if [[ "${PASEO_SKIP_SYSTEM_PROMPT:-0}" == "1" ]]; then
-    log "Skipping system prompt (PASEO_SKIP_SYSTEM_PROMPT=1)"
-  else
-    [[ -f "$dir/paseo-system-prompt.md" ]] || die "release has no paseo-system-prompt.md"
-    "$node" "$dir/set-append-system-prompt.mjs" \
-      "$(base64 -w0 <"$dir/paseo-system-prompt.md")" "$PASEO_HOME/config.json" \
-      | sed 's/^/  system prompt: /'
-  fi
-  if [[ "${PASEO_SKIP_WEB_UI:-0}" == "1" ]]; then
-    log "Skipping web UI setting (PASEO_SKIP_WEB_UI=1)"
-  else
-    "$node" "$dir/set-web-ui-config.mjs" true "$PASEO_HOME/config.json" | sed 's/^/  web UI: /'
-  fi
-}
-
 nudge() {
-  [[ "${PASEO_DEPLOY_NUDGE:-1}" != "0" ]] || return 0
   # deploy-nudge defaults to 127.0.0.1:6767; hosts bound to their NetBird IP
   # only answer there.
   local listen
@@ -338,16 +312,9 @@ case "$MODE" in
     install_release
     point_current_at "$RELEASE_DIR"
     write_unit
-    apply_fleet_settings
     ensure_linger
-    if [[ "${PASEO_ACTIVATE_RESTART:-1}" == "1" ]]; then
-      restart_daemon
-    else
-      log "PASEO_ACTIVATE_RESTART=0 — release switched; daemon not restarted"
-    fi
-    if [[ "${PASEO_ACTIVATE_RESTART:-1}" == "1" ]]; then
-      prune_releases
-    fi
+    restart_daemon
+    prune_releases
     ;;
   *)
     die "usage: activate-runtime.sh install|activate <artifact.tar.gz>"

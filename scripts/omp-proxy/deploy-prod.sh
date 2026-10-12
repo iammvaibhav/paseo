@@ -2,8 +2,8 @@
 # Deploy the prod omp services (omp-auth-broker, omp-proxy, omp-grok-refresher,
 # bifrost units + the omp-proxy binary) version-locked with the fleet omp.
 #
-# Invoked by scripts/deploy.sh (prod_job) after the orchestrator's `omp update`
-# sets OMP_TARGET_VERSION. Never run by hand unless OMP_TARGET_VERSION is set.
+# Invoked by scripts/deploy/main.ts for the prod omp-proxy service after
+# OMP_TARGET_VERSION is resolved. Never run by hand unless OMP_TARGET_VERSION is set.
 set -euo pipefail
 
 PROD_HOST="${PASEO_PROD_HOST:-prod}"

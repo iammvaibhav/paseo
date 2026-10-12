@@ -180,14 +180,16 @@ the other versions' libraries, so the proxy only starts on a host whose
 
 ## Deployment (prod)
 
-`./scripts/deploy.sh` owns prod through its `prod` job. It builds the
-binary on the orchestrator, then on prod runs `omp update`, installs the
-changed units from `deploy/`, swaps `~/.local/bin/omp-proxy` (the old one
-stays as `omp-proxy.prev`), installs the thinking settings overlay
-`~/.omp-proxy/settings.yml`, restarts `omp-auth-broker`, then `omp-proxy`
-and `omp-grok-refresher`, checks `/healthz`, and makes Bifrost resync its
-datasheets. `PASEO_SKIP_PROD=1` skips it; `PASEO_PROD_HOST` changes the
-ssh alias.
+`./scripts/deploy.sh` manages prod through the `omp-proxy` service entry in
+`~/.paseo/fleet-hosts.json`. From a `linux-arm64` deploy host, it runs
+`scripts/omp-proxy/deploy-prod.sh` when `scripts/omp-proxy`, `plugins/`, or the
+fleet `omp` target version changes (or on `--force`). It builds the binary,
+then on prod runs `omp update`, installs the changed units from `deploy/`, swaps
+`~/.local/bin/omp-proxy` (the old one stays as `omp-proxy.prev`), installs the
+thinking settings overlay `~/.omp-proxy/settings.yml`, restarts
+`omp-auth-broker`, then `omp-proxy` and `omp-grok-refresher`, checks `/healthz`,
+and makes Bifrost resync its datasheets. `PASEO_PROD_HOST` is passed by deploy
+from the inventory entry's `ssh` property.
 
 Prod runs the broker, so the proxy uses the broker's own token file
 `~/.omp/auth-broker.token`. One-time setup on a new prod host:

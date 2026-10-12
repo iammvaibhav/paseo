@@ -1,32 +1,29 @@
 // Patches a host's Paseo config.json with the fleet-managed keys and leaves
-// every other key alone. deploy.sh pipes this file to `node -` over ssh with
-// one line prepended that defines the payload, so secrets travel over ssh
-// stdin only (never argv, never logs):
-//
-//   globalThis.PASEO_HOST_CONFIG = { ... };
+// every other key alone. scripts/deploy/main.ts runs it on the host with the
+// payload in env PASEO_HOST_CONFIG (JSON), so secrets never reach argv or logs.
 //
 // Payload (every field optional):
-//   home                 Paseo home (default ~/.paseo)
 //   peers                full peers array; replaces the existing one
 //   hostnames            merged into daemon.hostnames (never removes entries)
+//   appendSystemPrompt   daemon.appendSystemPrompt (from the repo's
+//                        scripts/paseo-system-prompt.md; never copied from a host)
+//   webUi                features.webUi.enabled
 //   initListen           daemon.listen, only when unset
-//   initPasswordHash     daemon.auth.password (bcrypt), only when unset
-//
-// daemon.appendSystemPrompt is NOT handled here: its source of truth is the
-// repo's scripts/paseo-system-prompt.md (set-append-system-prompt.mjs).
+//   initPassword         daemon password, stored bcrypt-hashed in
+//                        daemon.auth.password, only when unset
 //
 // Prints one line per changed key, never a value.
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const payload = globalThis.PASEO_HOST_CONFIG;
+const payload = JSON.parse(process.env.PASEO_HOST_CONFIG ?? "null");
 if (!payload || typeof payload !== "object") {
-  console.error("host-config: missing globalThis.PASEO_HOST_CONFIG payload");
+  console.error("host-config: missing PASEO_HOST_CONFIG payload");
   process.exit(2);
 }
 
-const home = (payload.home || "~/.paseo").replace(/^~(?=$|\/)/, os.homedir());
+const home = path.join(os.homedir(), ".paseo");
 const configPath = path.join(home, "config.json");
 
 let config = {};
@@ -60,13 +57,36 @@ if (Array.isArray(payload.hostnames)) {
   }
 }
 
+if (typeof payload.appendSystemPrompt === "string") {
+  const prompt = payload.appendSystemPrompt.trim();
+  if ((config.daemon.appendSystemPrompt ?? "") !== prompt) {
+    config.daemon.appendSystemPrompt = prompt;
+    changed.push(`daemon.appendSystemPrompt (${prompt.length} chars)`);
+  }
+}
+
+if (typeof payload.webUi === "boolean" && config.features?.webUi?.enabled !== payload.webUi) {
+  config.features = {
+    ...config.features,
+    webUi: { ...config.features?.webUi, enabled: payload.webUi },
+  };
+  changed.push(`features.webUi.enabled (${payload.webUi})`);
+}
+
 if (typeof payload.initListen === "string" && !config.daemon.listen) {
   config.daemon.listen = payload.initListen;
   changed.push(`daemon.listen (${payload.initListen})`);
 }
 
-if (typeof payload.initPasswordHash === "string" && !config.daemon.auth?.password) {
-  config.daemon.auth = { ...config.daemon.auth, password: payload.initPasswordHash };
+if (typeof payload.initPassword === "string" && !config.daemon.auth?.password) {
+  // Hash with the runtime's own bcryptjs, at the daemon's cost (12, see
+  // DAEMON_PASSWORD_BCRYPT_COST in packages/server/src/server/auth.ts).
+  const runtime = path.join(
+    os.homedir(),
+    ".local/share/paseo/current/lib/packages/server/package.json",
+  );
+  const { hashSync } = require("node:module").createRequire(runtime)("bcryptjs");
+  config.daemon.auth = { ...config.daemon.auth, password: hashSync(payload.initPassword, 12) };
   changed.push("daemon.auth.password (initialized)");
 }
 
