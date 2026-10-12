@@ -308,4 +308,6 @@ The window is `NSVisualEffectView` vibrancy, not macOS 26 Liquid Glass, which El
 
 The strengths are user settings (Settings → Appearance → Glass, `glassTuning`): window opacity, chat area opacity, tint darkness, menus and popovers, floating bars, and panel brightness. `resolveGlassColors` turns them into the colors above; `applyAppearance` patches them into the registered glass theme, and VS Code Web takes its fills from the same theme.
 
+Embedded apps follow the theme too. VS Code Web gets injected CSS in the glass theme (`browser-editor-glass.electron.ts`). itsaplan, in every theme, gets Paseo's palette as values for its own CSS variables, plus the UI font, through its embed bridge (`packages/app/src/itsaplan/itsaplan-appearance.ts`; itsaplan applies them in `apps/web/src/lib/paseo-appearance.ts`). Its page is transparent, so its sidebar shows the window like Paseo's. Its cards and side panels are opaque, because even the dense overlay fill lets the board behind show through a panel full of text.
+
 Mermaid's color parser hangs on `rgba()`, so the diagram takes its glass colors as 8-digit hex (`packages/app/src/components/mermaid-diagram.web.tsx`).
