@@ -1,4 +1,6 @@
 import { useEffect, useRef } from "react";
+import { withUnistyles } from "react-native-unistyles";
+import type { Theme } from "@/styles/theme";
 import {
   ensurePersistentBrowserWebview,
   getResidentBrowserWebview,
@@ -7,6 +9,7 @@ import {
   navigatePersistentBrowserWebview,
   showPersistentBrowserWebview,
 } from "@/desktop/browser/resident-webviews";
+import { buildItsaplanAppearance, buildItsaplanAppearanceScript } from "./itsaplan-appearance";
 import { planItsaplanEmbedVisit } from "./itsaplan-embed-visit";
 import type { ItsaplanEmbedProps } from "./itsaplan-webview.web";
 
@@ -264,7 +267,32 @@ function flushPendingPrefetches(): void {
   pendingPrefetchKeys.clear();
 }
 
+/** Paseo's palette for the guest, as a script; null until the pane has rendered once. */
+let appearanceScript: string | null = null;
+
+function sendAppearance(): void {
+  if (appearanceScript) runScriptInWebview(appearanceScript);
+}
+
+/**
+ * Keeps the guest on Paseo's palette. Only this leaf re-renders on a theme change (it gets the
+ * theme through `withUnistyles`), not the pane.
+ */
+function AppearanceSync({ appearanceJson }: { appearanceJson: string }): null {
+  useEffect(() => {
+    appearanceScript = buildItsaplanAppearanceScript(JSON.parse(appearanceJson));
+    sendAppearance();
+  }, [appearanceJson]);
+  return null;
+}
+
+const ThemedAppearanceSync = withUnistyles(AppearanceSync);
+const appearanceMapping = (theme: Theme) => ({
+  appearanceJson: JSON.stringify(buildItsaplanAppearance(theme)),
+});
+
 function warmGuestCaches(): void {
+  sendAppearance();
   flushPendingPrefetches();
   prefetchItsaplanAllProjects();
   flushPendingNavigate();
@@ -390,5 +418,9 @@ export function ItsaplanEmbed({
     }
   }, [project]);
 
-  return <div ref={containerRef} style={CONTAINER_STYLE} data-testid={testID} />;
+  return (
+    <div ref={containerRef} style={CONTAINER_STYLE} data-testid={testID}>
+      <ThemedAppearanceSync uniProps={appearanceMapping} />
+    </div>
+  );
 }
