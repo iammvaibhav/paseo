@@ -757,6 +757,12 @@ interface ManagedAgentBase {
    * Set when title was auto-derived from prompt rather than explicitly set.
    */
   titleAutoDerived?: boolean;
+  /**
+   * Set when the agent moved to another cwd while its provider session still
+   * runs in the old one. The next run reloads the session first
+   * (startAgentRun). A reload registers a fresh record, which clears it.
+   */
+  sessionCwdStale?: boolean;
 }
 type ManagedAgentWithSession = ManagedAgentBase & {
   session: AgentSession;
@@ -1155,7 +1161,8 @@ export class AgentManager {
   private readonly sessionEventTails = new Map<string, Promise<void>>();
   private readonly steerEventBarriers = new Map<string, SteerEventBarrier>();
   private readonly foregroundMutationTails = new Map<string, Promise<void>>();
-  private readonly runs = new AgentRunState();
+  private readonly runs = new AgentRunState((agentId) => this.flushRunSettledWaiters(agentId));
+  private readonly runSettledWaiters = new Map<string, Array<() => void>>();
   private readonly subscribers = new Set<SubscriptionRecord>();
   private readonly idFactory: () => string;
   private readonly registry?: AgentStorage;
@@ -1515,6 +1522,39 @@ export class AgentManager {
       Boolean(agent.activeForegroundTurnId) ||
       this.runs.hasRun(agentId)
     );
+  }
+
+  /**
+   * Resolves once the agent has no in-flight run: immediately when it is not
+   * running, otherwise when its current run settles. Work requested from
+   * inside a turn that must not race that turn (an agent moving itself) waits
+   * here. A new turn can start right after this resolves; callers re-check.
+   */
+  waitForRunSettled(agentId: string): Promise<void> {
+    if (!this.hasInFlightRun(agentId)) {
+      return Promise.resolve();
+    }
+    const { promise, resolve: release } = Promise.withResolvers<void>();
+    const waiters = this.runSettledWaiters.get(agentId);
+    if (waiters) {
+      waiters.push(release);
+    } else {
+      this.runSettledWaiters.set(agentId, [release]);
+    }
+    return promise;
+  }
+
+  // Run bookkeeping and lifecycle settle in either order, so both the run
+  // registry and every state emit try to release the waiters.
+  private flushRunSettledWaiters(agentId: string): void {
+    const waiters = this.runSettledWaiters.get(agentId);
+    if (!waiters || this.hasInFlightRun(agentId)) {
+      return;
+    }
+    this.runSettledWaiters.delete(agentId);
+    for (const release of waiters) {
+      release();
+    }
   }
 
   subscribe(callback: AgentSubscriber, options?: SubscribeOptions): () => void {
@@ -2993,14 +3033,14 @@ export class AgentManager {
 
   /**
    * Mission-control move-agent capability: re-point a non-archived agent's
-   * workspace placement (workspaceId) to another workspace on this host,
-   * updating the live agent and the persisted record atomically. Refuses
-   * RUNNING agents — workspace attribution is a stable identity while a run
-   * is in flight, so moves require an idle/closed agent (callers stop the
-   * agent first). Refuses archived agents. The name, title, cwd, and every
-   * other identity field are untouched; only workspaceId and updatedAt move.
-   * The live path emits agent state (subscribers see the new placement); the
-   * stored path returns the rewritten record for the caller to emit.
+   * workspace placement (workspaceId, and cwd when given) to another workspace
+   * on this host, updating the live agent and the persisted record atomically.
+   * Refuses an agent with a run in flight (pending runs included) — workspace
+   * attribution is a stable identity mid-run; an agent moving itself waits for
+   * its turn to settle first (moveAgentWhenRunSettles). Name, title and every
+   * other identity field are untouched. The live path emits agent state
+   * (subscribers see the new placement); the stored path returns the rewritten
+   * record for the caller to emit.
    */
   async moveAgentWorkspace(
     agentId: string,
@@ -3009,8 +3049,16 @@ export class AgentManager {
   ): Promise<StoredAgentRecord> {
     const liveAgent = this.agents.get(agentId);
     if (liveAgent) {
-      if (liveAgent.lifecycle === "running") {
+      // Checked in the same tick as the write below, so a run cannot start
+      // between the check and the move.
+      if (this.hasInFlightRun(agentId)) {
         throw new Error(`Agent ${agentId} is running; stop it before moving workspaces`);
+      }
+      // The provider process keeps the directory it was launched in; the next
+      // run restarts it in the new one so the shell, file tools and project
+      // rules follow the move.
+      if (cwd && cwd !== liveAgent.cwd && "session" in liveAgent) {
+        liveAgent.sessionCwdStale = true;
       }
       liveAgent.workspaceId = workspaceId;
       if (cwd) {
@@ -6731,6 +6779,7 @@ export class AgentManager {
       type: "agent_state",
       agent: { ...agent },
     });
+    this.flushRunSettledWaiters(agent.id);
   }
 
   private syncFeaturesFromSession(agent: ManagedAgent): void {

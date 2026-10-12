@@ -1713,6 +1713,12 @@ export class Session {
     }
   }
 
+  /** External-mutation agent removal (an agent transferred to a peer host by
+   *  daemon machinery outside this session). */
+  async emitAgentRemovedForExternalMutation(agentId: string): Promise<void> {
+    await this.agentUpdates.removeAgent(agentId);
+  }
+
   async syncWorkspaceGitObserversForExternalWorkspaceIds(
     workspaceIds: Iterable<string>,
   ): Promise<void> {

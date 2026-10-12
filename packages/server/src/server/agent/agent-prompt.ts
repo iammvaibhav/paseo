@@ -116,7 +116,7 @@ export async function startAgentRun(
   if (agentManager.tryRunOutOfBand(agentId, prompt, options?.runOptions)) {
     return { disposition: "out_of_band" };
   }
-  await recoverDeadProviderRuntime(agentManager, agentId, logger);
+  await refreshProviderSessionBeforeRun(agentManager, agentId, logger);
   // Per-turn pre-run seam (Commander world-snapshot injection): the hook may
   // dispatch its own machinery turn ahead of this prompt. Runs after the
   // dead-runtime recovery so the injected turn starts on a live session, and
@@ -205,37 +205,51 @@ async function startAgentRunInner(
 }
 
 /**
- * Reload a session whose provider runtime is gone, before the prompt is
- * dispatched at it.
+ * Reload the provider session before a prompt is dispatched at it when the
+ * session cannot serve the run as-is:
  *
- * A dead runtime used to be terminal: `startTurn` rejected, the turn failed
- * with the provider's "process is closed" diagnostic, and every later prompt
- * failed the same way until someone ran Reload agent by hand. Reloading here
- * resumes the provider session from its persistence handle, keeps the timeline,
- * and clears the sticky `running` lifecycle that made the composer spin over a
- * runtime doing nothing.
+ * - Its runtime is gone. A dead runtime used to be terminal: `startTurn`
+ *   rejected with the provider's "process is closed" diagnostic, every later
+ *   prompt failed the same way until someone ran Reload agent by hand, and the
+ *   sticky `running` lifecycle kept the composer spinning.
+ * - The agent moved to another workspace directory since the session started
+ *   (`sessionCwdStale`). The provider process still runs in the old directory.
  *
- * Recovery is best-effort: if the reload fails, the prompt still goes to the old
- * session so the user gets the provider's real error instead of a reload error.
+ * Reloading resumes the provider session from its persistence handle in the
+ * agent's current cwd and keeps the timeline. Best-effort: if the reload
+ * fails, the prompt still goes to the old session so the user gets the
+ * provider's real error instead of a reload error.
  */
-async function recoverDeadProviderRuntime(
+async function refreshProviderSessionBeforeRun(
   agentManager: AgentRunController,
   agentId: string,
   logger: Logger,
 ): Promise<void> {
   const snapshot = agentManager.getAgent(agentId);
   const session = snapshot && "session" in snapshot ? snapshot.session : null;
-  if (!snapshot || session?.isRuntimeAlive?.() !== false) {
+  if (!snapshot) {
+    return;
+  }
+  const runtimeDead = session?.isRuntimeAlive?.() === false;
+  // A reload cancels an in-flight run; a moved cwd waits for an idle agent.
+  const cwdMoved = snapshot.sessionCwdStale === true && !agentManager.hasInFlightRun(agentId);
+  if (!runtimeDead && !cwdMoved) {
     return;
   }
   logger.warn(
-    { agentId, provider: snapshot.provider, lifecycle: snapshot.lifecycle },
-    "agent.run.reloading_dead_provider_runtime",
+    {
+      agentId,
+      provider: snapshot.provider,
+      lifecycle: snapshot.lifecycle,
+      reason: runtimeDead ? "dead_runtime" : "cwd_moved",
+      cwd: snapshot.cwd,
+    },
+    "agent.run.reloading_provider_session",
   );
   try {
     await agentManager.reloadAgentSession(agentId);
   } catch (error) {
-    logger.warn({ err: error, agentId }, "agent.run.dead_provider_runtime_reload_failed");
+    logger.warn({ err: error, agentId }, "agent.run.provider_session_reload_failed");
   }
 }
 

@@ -43,6 +43,9 @@ export interface ForegroundRunAgentState {
 export class AgentRunState {
   private readonly runs = new Map<string, TrackedAgentRun>();
 
+  /** Called after a tracked run leaves the registry (settled, cleared, or closed). */
+  constructor(private readonly onRunCleared?: (agentId: string) => void) {}
+
   createPendingRun(agentId: string): PendingForegroundRun {
     const pendingRun = createPendingForegroundRun();
     this.runs.set(agentId, pendingRun);
@@ -214,6 +217,7 @@ export class AgentRunState {
   private clearRun(agentId: string, run: TrackedAgentRun): void {
     this.runs.delete(agentId);
     settleTrackedRun(run);
+    this.onRunCleared?.(agentId);
   }
 }
 

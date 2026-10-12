@@ -41,6 +41,8 @@ interface OmpResumeOptions {
    * relocated and left without its preamble.
    */
   omitSessionHeader?: boolean;
+  /** The cwd the session header records (omp runs a resumed session there). */
+  headerCwd?: string;
 }
 
 async function writeOmpHistory(
@@ -52,7 +54,14 @@ async function writeOmpHistory(
   const entries = [
     ...(options?.omitSessionHeader
       ? []
-      : [{ type: "session", id: "session-root", parentId: null }]),
+      : [
+          {
+            type: "session",
+            id: "session-root",
+            parentId: null,
+            ...(options?.headerCwd ? { cwd: options.headerCwd } : {}),
+          },
+        ]),
     {
       type: "message",
       id: history.user.id,

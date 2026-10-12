@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { z } from "zod";
 import type { PersistedProjectRecord, PersistedWorkspaceRecord } from "../workspace-registry.js";
 import type { StoredAgentRecord } from "../agent/agent-storage.js";
@@ -715,5 +715,58 @@ describe("registered tool schemas (04)", () => {
         expect(missing, `${tool} reports a missing required field`).toBe(true);
       }
     }
+  });
+});
+
+describe("meta tools by caller", () => {
+  const WORKER = "6e7f8a9b-0c1d-4e2f-8a3b-4c5d6e7f8a9b";
+
+  function createCallerCatalog(callerLabels: Record<string, string>) {
+    const lookup = buildLookup();
+    const createProposal = vi.fn(async (input: { forceSend?: boolean }) => ({
+      id: "mcp_meta_1",
+      status: input.forceSend ? "sent" : "pending",
+      kind: "meta",
+    }));
+    const catalog = createPaseoToolCatalog({
+      agentManager: lookup.agentManager as unknown as AgentManager,
+      agentStorage: lookup.agentStorage as unknown as AgentStorage,
+      providerSnapshotManager: createProviderSnapshotManagerStub().manager as unknown as never,
+      callerAgentId: WORKER,
+      callerLabels,
+      serverId: "server-local",
+      workspaceRegistry: lookup.workspaceRegistry as never,
+      projectRegistry: lookup.projectRegistry as never,
+      missionControlService: { approvals: { createProposal } } as never,
+      logger: createTestLogger(),
+    });
+    return { catalog, createProposal };
+  }
+
+  test("a worker's meta action applies immediately, but a destructive one still asks", async () => {
+    const { catalog, createProposal } = createCallerCatalog({});
+
+    const renamed = await catalog.executeTool("fleet_rename_workspace", {
+      workspaceId: WS_A,
+      title: "Lab",
+    });
+    expect(renamed.structuredContent).toMatchObject({ ok: true, status: "sent" });
+    expect(createProposal).toHaveBeenLastCalledWith(expect.objectContaining({ forceSend: true }));
+
+    const archived = await catalog.executeTool("fleet_archive_workspace", { workspaceId: WS_B });
+    expect(archived.structuredContent).toMatchObject({ ok: true, status: "pending" });
+    expect(createProposal.mock.lastCall?.[0]).not.toHaveProperty("forceSend");
+  });
+
+  test("the Commander's meta action is a proposal under the approval gate", async () => {
+    const { catalog, createProposal } = createCallerCatalog({
+      "paseo.mission-control": "commander",
+    });
+    const renamed = await catalog.executeTool("fleet_rename_workspace", {
+      workspaceId: WS_A,
+      title: "Lab",
+    });
+    expect(renamed.structuredContent).toMatchObject({ ok: true, status: "pending" });
+    expect(createProposal.mock.lastCall?.[0]).not.toHaveProperty("forceSend");
   });
 });

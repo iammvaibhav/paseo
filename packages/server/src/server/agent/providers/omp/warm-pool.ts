@@ -97,6 +97,35 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
+ * Move a live omp process to another workspace with omp's `/move` command.
+ * omp relocates the session file, reloads settings/plugins and re-derives
+ * project rules for the new cwd. Completion is observed as the session file
+ * changing directory — `/move` is asynchronous behind the prompt ack.
+ * Returns the state after the move, or null when it did not land in time.
+ */
+export async function moveOmpSession(
+  session: OmpRuntimeSession,
+  cwd: string,
+  before: OmpSessionState,
+): Promise<OmpSessionState | null> {
+  // `/move` is slower than a liveness ping — do not wrap it in the 2s
+  // getState budget. A timeout here used to discard a live process and
+  // cold-start (~12s) instead of finishing the retarget (~1.3s).
+  await withTimeout(session.prompt(`/move ${cwd}`), WARM_POOL_MOVE_TIMEOUT_MS);
+  const deadline = Date.now() + WARM_POOL_MOVE_TIMEOUT_MS;
+  for (;;) {
+    const state = await withTimeout(session.getState(), WARM_POOL_LIVENESS_TIMEOUT_MS);
+    if (state.sessionFile && state.sessionFile !== before.sessionFile) {
+      return state;
+    }
+    if (Date.now() >= deadline) {
+      return null;
+    }
+    await sleep(20);
+  }
+}
+
+/**
  * Warm pool of idle OMP processes.
  *
  * A cold omp launch costs ~0.6-2s of boot (native modules, TTSR, mental
@@ -687,33 +716,18 @@ export class OmpWarmPool {
     return !this.closed && this.entries.length > 0;
   }
 
-  /**
-   * Move an idle process to another workspace with omp's `/move` command.
-   * omp relocates the session file, reloads settings/plugins and re-derives
-   * project rules for the new cwd. Completion is observed as the session file
-   * changing directory — `/move` is asynchronous behind the prompt ack.
-   */
+  /** Move an idle process to another workspace (moveOmpSession). */
   private async retarget(entry: WarmEntry, cwd: string, before: OmpSessionState): Promise<boolean> {
     try {
-      // `/move` is slower than a liveness ping — do not wrap it in the 2s
-      // getState budget. A timeout here used to discard a live process and
-      // cold-start (~12s) instead of finishing the retarget (~1.3s).
-      await withTimeout(entry.session.prompt(`/move ${cwd}`), WARM_POOL_MOVE_TIMEOUT_MS);
-      const deadline = Date.now() + WARM_POOL_MOVE_TIMEOUT_MS;
-      for (;;) {
-        const state = await withTimeout(entry.session.getState(), WARM_POOL_LIVENESS_TIMEOUT_MS);
-        if (state.sessionFile && state.sessionFile !== before.sessionFile) {
-          entry.cwd = cwd;
-          // The throwaway session travelled with the move; track its new path
-          // so the claim's cleanup deletes the right file.
-          entry.throwawayPath = state.sessionFile;
-          return true;
-        }
-        if (Date.now() >= deadline) {
-          return false;
-        }
-        await sleep(20);
+      const moved = await moveOmpSession(entry.session, cwd, before);
+      if (!moved) {
+        return false;
       }
+      entry.cwd = cwd;
+      // The throwaway session travelled with the move; track its new path so
+      // the claim's cleanup deletes the right file.
+      entry.throwawayPath = moved.sessionFile ?? null;
+      return true;
     } catch (error) {
       this.logger.warn({ err: error, cwd }, "OMP warm pool move failed; create will cold start");
       return false;

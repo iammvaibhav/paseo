@@ -1629,6 +1629,13 @@ export async function createPaseoDaemon(
       ),
     );
   };
+  const emitAgentRemovedExternal = async (agentId: string) => {
+    await Promise.all(
+      (wsServer?.listSessions() ?? []).map((session) =>
+        session.emitAgentRemovedForExternalMutation(agentId),
+      ),
+    );
+  };
   const ensureWorkspaceForCreateAndBroadcastExternal = async (
     cwd: string,
     firstAgentContext?: FirstAgentContext,
@@ -2854,6 +2861,7 @@ export async function createPaseoDaemon(
     listActiveWorkspaces: listActiveWorkspacesExternal,
     archiveWorkspaceRecord: archiveWorkspaceRecordExternal,
     emitWorkspaceUpdatesForWorkspaceIds: emitWorkspaceUpdatesExternal,
+    emitAgentRemoved: emitAgentRemovedExternal,
     workspaceRegistry,
     projectRegistry,
     createDirectoryWorkspace: async (cwd, title, projectId) => {

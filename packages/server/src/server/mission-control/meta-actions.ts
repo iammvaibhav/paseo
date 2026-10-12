@@ -338,6 +338,35 @@ export async function moveAgentToWorkspace(
   );
 }
 
+export interface MoveAgentWhenRunSettlesDependencies extends MoveAgentDependencies {
+  agentManager: MoveAgentDependencies["agentManager"] &
+    Pick<AgentManager, "waitForRunSettled" | "hasInFlightRun">;
+}
+
+/**
+ * Move an agent once its in-flight run settles. This is how an agent moves
+ * itself: it asks from inside its own turn, and a move refuses an agent with a
+ * run in flight. A run that starts between the settle and the move (the user
+ * sent another message, or machinery steered the agent) defers the move to
+ * the end of that run too.
+ */
+export async function moveAgentWhenRunSettles(
+  dependencies: MoveAgentWhenRunSettlesDependencies,
+  input: MoveAgentInput,
+): Promise<MoveAgentResult> {
+  const { agentManager } = dependencies;
+  for (;;) {
+    await agentManager.waitForRunSettled(input.agentId);
+    try {
+      return await moveAgentToWorkspace(dependencies, input);
+    } catch (error) {
+      if (!agentManager.hasInFlightRun(input.agentId)) {
+        throw error;
+      }
+    }
+  }
+}
+
 export interface MetaPeerManager {
   getPeerStatus(name: string): MissionControlPeerStatus | null;
   getPeerClient(name: string): DaemonClient | null;
