@@ -1,3 +1,4 @@
+import { setTimeout as sleep } from "node:timers/promises";
 import { z } from "zod";
 import type { Logger } from "pino";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
@@ -158,6 +159,43 @@ async function waitForPeerAgent(
   } catch (error) {
     if (!scope.timeout.aborted) throw error;
     return waitResult(scope.base, { status: "running", finished: false, timedOut: true });
+  }
+}
+
+const RUN_START_WAIT_MS = 15_000;
+const PEER_RUN_START_POLL_MS = 250;
+
+/**
+ * Wait (bounded) until a just-prompted agent's new run has started. Without
+ * it, a fleet_wait_agent issued right after fleet_send_prompt can see the
+ * previous, already finished run and return its result. Only meaningful when
+ * the agent was idle before the prompt; returns whether a start was seen.
+ */
+export async function waitForPromptedRunStart(input: {
+  agentManager?: AgentManager;
+  client?: DaemonClient;
+  agentId: string;
+}): Promise<boolean> {
+  const deadline = Date.now() + RUN_START_WAIT_MS;
+  if (input.client) {
+    while (Date.now() < deadline) {
+      const fetched = await Promise.resolve()
+        .then(() => input.client!.fetchAgent(input.agentId))
+        .catch(() => null);
+      if (fetched?.agent.status === "running") return true;
+      await sleep(PEER_RUN_START_POLL_MS);
+    }
+    return false;
+  }
+  if (!input.agentManager) return false;
+  try {
+    await input.agentManager.waitForAgentRunStart(input.agentId, {
+      signal: AbortSignal.timeout(RUN_START_WAIT_MS),
+    });
+    return true;
+  } catch {
+    // No pending run (already finished, or queued) or the start timed out.
+    return false;
   }
 }
 
