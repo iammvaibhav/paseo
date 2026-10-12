@@ -287,6 +287,9 @@ interface Run {
   ompTarget: string;
   states: Record<string, HostState>;
   tarballs: Map<string, string>;
+  runDir: string;
+  /** The kit tarball, built once per run on first use. */
+  kit?: Promise<string>;
 }
 
 async function stamp(run: Run, host: Host, log: Log, values: HostState): Promise<void> {
@@ -311,6 +314,57 @@ function repoDir(run: Run, host: Host): string {
   return host.name === run.self.name ? `'${ROOT}'` : REMOTE_REPO;
 }
 
+/** Where the kit lives on every host; kit services run from here. */
+const KIT_DIR = "$HOME/.local/share/paseo/kit";
+/** Repo files the kit services need. Hosts without a checkout run them from the kit. */
+const KIT_PATHS = [
+  "scripts/code-server",
+  "scripts/plannotator",
+  "scripts/stall-check.mjs",
+  "scripts/install-stall-cron.sh",
+  "scripts/set-omp-verifier-role.mjs",
+  "packages/server/resources/verifier-agent.md",
+  "plugins",
+];
+const KIT_SERVICES = new Set<Service>(["omp", "code-server", "plannotator", "stall-cron"]);
+/** node on any host: the packaged runtime's, else nvm's. */
+const HOST_NODE =
+  'NODE="$HOME/.local/share/paseo/current/bin/node"; [ -x "$NODE" ] || NODE="$(command -v node)"';
+
+/** HEAD's kit files plus a paseo-bridge .vsix (packaged here: targets have no npx). */
+function buildKit(run: Run, log: Log): Promise<string> {
+  run.kit ??= (async () => {
+    const stage = path.join(run.runDir, "kit");
+    const tarball = path.join(run.runDir, "kit.tar.gz");
+    const bridge = path.join(stage, "scripts/code-server/paseo-bridge");
+    log.line("building the service kit");
+    await runLocal(
+      `rm -rf '${stage}' && mkdir -p '${stage}'
+git -C '${ROOT}' archive HEAD ${KIT_PATHS.join(" ")} | tar -x -C '${stage}'
+sed -i.bak 's/"version": *"[^"]*"/"version": "0.1.'"$(date +%s)"'"/' '${bridge}/package.json' && rm '${bridge}/package.json.bak'
+(cd '${bridge}' && pnpm dlx @vscode/vsce package --skip-license --no-dependencies --allow-missing-repository --out ../paseo-bridge.vsix >/dev/null)
+tar -czf '${tarball}' -C '${stage}' . && rm -rf '${stage}'`,
+      log,
+    );
+    return tarball;
+  })();
+  return run.kit;
+}
+
+/** Replace the host's kit with this run's. */
+async function shipKit(run: Run, host: Host, log: Log): Promise<void> {
+  const kit = await buildKit(run, log);
+  log.line("installing the service kit");
+  await runLocal(
+    `cat '${kit}' | ${hostCommand(
+      host,
+      run.self.name,
+      `set -e; k="${KIT_DIR}"; rm -rf "$k.new"; mkdir -p "$k.new"; tar -xz -C "$k.new"; rm -rf "$k"; mv "$k.new" "$k"`,
+    )}`,
+    log,
+  );
+}
+
 /** omp update to the fleet version, in-repo plugins, verifier agent role. */
 async function ompStep(run: Run, host: Host, log: Log): Promise<void> {
   log.line("omp: update, plugins, verifier role");
@@ -326,10 +380,11 @@ if [[ -n "$OMP_TARGET" && "$v" != "$OMP_TARGET" ]]; then
   [[ "$STRICT" == 1 ]] && exit 1
 fi
 bash plugins/install.sh "$HOST_NAME" || echo "warning: omp plugin install failed"
-node scripts/set-omp-verifier-role.mjs "$(base64 < packages/server/resources/verifier-agent.md | tr -d '\\n')"`,
+${HOST_NODE}
+"$NODE" scripts/set-omp-verifier-role.mjs "$(base64 < packages/server/resources/verifier-agent.md | tr -d '\\n')"`,
     {
       log,
-      cwd: repoDir(run, host),
+      cwd: KIT_DIR,
       env: {
         OMP_TARGET: run.ompTarget,
         STRICT: strict ? "1" : "0",
@@ -341,28 +396,58 @@ node scripts/set-omp-verifier-role.mjs "$(base64 < packages/server/resources/ver
 }
 
 const SERVICE_SCRIPTS: Partial<Record<Service, string>> = {
-  "code-server": 'bash scripts/code-server/install.sh "$PROFILE"',
-  plannotator: 'bash scripts/plannotator/install.sh "$PROFILE"',
-  voice: 'PASEO_HOME="$HOME/.paseo" bash scripts/commander-voice/install.sh "$PROFILE"',
-  "stall-cron": 'bash scripts/install-stall-cron.sh "$PWD" "$HOME/.paseo"',
+  "code-server": 'bash scripts/code-server/install.sh "$BIND"',
+  plannotator: "bash scripts/plannotator/install.sh",
+  "stall-cron": `${HOST_NODE}; bash scripts/install-stall-cron.sh "$PWD" "$HOME/.paseo" "$NODE"`,
+  voice: 'PASEO_HOME="$HOME/.paseo" bash scripts/commander-voice/install.sh',
   "macbook-watch": 'bash scripts/install-macbook-redeploy-watch.sh "$PWD" "$HOME/.paseo"',
 };
 
-/** Run a service's installer from the host's checkout. */
+/** Run a service's installer from the kit (or the checkout, for voice and the watch). */
 async function serviceStep(run: Run, host: Host, service: Service, log: Log): Promise<void> {
   const script = SERVICE_SCRIPTS[service];
   if (!script) return;
   log.line(`service: ${service}`);
   await runScript(host, run.self.name, script, {
     log,
-    cwd: repoDir(run, host),
+    cwd: KIT_SERVICES.has(service) ? KIT_DIR : repoDir(run, host),
     env: {
-      PROFILE: host.profile,
+      // The desktop machine opens VS Code Web locally; every other host is
+      // reached over NetBird only.
+      BIND: host.daemon === "desktop" ? "127.0.0.1:8765" : `${host.address}:8765`,
       PASEO_PASSWORD: process.env[passwordVar(host.name)] ?? "",
       PASEO_COMMANDER_VOICE_PASSWORD: process.env.PASEO_COMMANDER_VOICE_PASSWORD ?? "",
       GEMINI_API_KEY: process.env.GEMINI_API_KEY ?? "",
     },
   });
+}
+
+/**
+ * Before a host's daemon (re)starts: the kit, then omp + plugins, so resurrected
+ * agents load plugins that match the new omp natives.
+ */
+async function prepareHost(run: Run, host: Host, plan: HostPlan, log: Log): Promise<void> {
+  const usesKit = host.services.some((service) => KIT_SERVICES.has(service));
+  if (!usesKit || (!plan.routine && plan.services.length === 0)) return;
+  await shipKit(run, host, log);
+  if (plan.routine && host.services.includes("omp")) await ompStep(run, host, log);
+}
+
+/** After the daemon: changed services, then the idempotent per-run ones. */
+async function hostServices(run: Run, host: Host, plan: HostPlan, log: Log): Promise<void> {
+  for (const service of plan.services) {
+    if (service === "omp-proxy") continue;
+    await serviceStep(run, host, service, log);
+    await stamp(run, host, log, { [service]: run.head } as HostState);
+  }
+  if (!plan.routine) return;
+  if (host.services.includes("code-server")) await codeServerSettingsStep(run, host, log);
+  for (const service of ["stall-cron", "macbook-watch"] as const) {
+    if (host.services.includes(service)) await serviceStep(run, host, service, log);
+  }
+  if (host.tunnel) {
+    await runScript(host, run.self.name, hostScript("tunnel.sh"), { log, args: [host.tunnel] });
+  }
 }
 
 /**
@@ -505,29 +590,13 @@ function jobsFor(run: Run, plans: HostPlan[]): Job[] {
               env: { EXPECT: run.head, BRANCH, FETCH: remote ? "1" : "0" },
             });
           }
-          if (plan.routine && host.services.includes("omp")) await ompStep(run, host, jobLog);
+          await prepareHost(run, host, plan, jobLog);
           if (plan.build) await buildStep(run, host, jobLog);
           if (plan.daemon && host.daemon === "systemd") {
             await activate(run, host, "activate", run.tarballs.get(host.name) ?? "", jobLog);
             await stamp(run, host, jobLog, { daemon: run.head });
           }
-          for (const service of plan.services) {
-            await serviceStep(run, host, service, jobLog);
-            await stamp(run, host, jobLog, { [service]: run.head } as HostState);
-          }
-          if (plan.routine) {
-            if (host.services.includes("code-server"))
-              await codeServerSettingsStep(run, host, jobLog);
-            for (const service of ["stall-cron", "macbook-watch"] as const) {
-              if (host.services.includes(service)) await serviceStep(run, host, service, jobLog);
-            }
-            if (host.tunnel) {
-              await runScript(host, run.self.name, hostScript("tunnel.sh"), {
-                log: jobLog,
-                args: [host.tunnel],
-              });
-            }
-          }
+          await hostServices(run, host, plan, jobLog);
           if (plan.app) {
             await runScript(host, run.self.name, hostScript("desktop-app.sh"), {
               log: jobLog,
@@ -551,6 +620,7 @@ function jobsFor(run: Run, plans: HostPlan[]): Job[] {
       name: host.name,
       after: plan.daemon ? [builder.name] : [],
       run: async (jobLog) => {
+        await prepareHost(run, host, plan, jobLog);
         if (plan.daemon) {
           const tarball = await ship(run, builder, host, jobLog);
           await activate(run, host, "install", tarball, jobLog);
@@ -576,6 +646,7 @@ function jobsFor(run: Run, plans: HostPlan[]): Job[] {
           await activate(run, host, "activate", tarball, jobLog);
           await stamp(run, host, jobLog, { daemon: run.head });
         }
+        await hostServices(run, host, plan, jobLog);
         if (plan.services.includes("omp-proxy") && run.self.platform !== "linux-arm64") {
           jobLog.line("omp services skipped: omp-proxy builds only on a linux-arm64 deploy host");
         } else if (plan.services.includes("omp-proxy")) {
@@ -697,7 +768,7 @@ async function main(): Promise<void> {
     die("desktop: the MacBook is unreachable");
   }
 
-  const run: Run = { self, hosts, head, ompTarget, states, tarballs: new Map() };
+  const run: Run = { self, hosts, head, ompTarget, states, tarballs: new Map(), runDir };
   const jobs = jobsFor(run, plan.hosts);
   if (plan.vercel) jobs.push(vercelJob(run, runDir));
   const failed = await runJobs(jobs, log, runDir);

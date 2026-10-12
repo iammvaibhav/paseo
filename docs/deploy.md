@@ -49,8 +49,21 @@ The inventory defines all fleet machines. See [`scripts/deploy/fleet-hosts.examp
 - `daemon`: `systemd` (Linux) or `desktop` (MacBook).
 - `tunnel`: `""`, `"cloudflared"`, or `"tailscale-funnel"`.
 - `artifactDir`: directory on builders where tarballs stage.
-- `profile`: configuration profile name passed to service installers (`local`, `blrofc3`, `iammvaibhav`).
-- `services`: array of enabled services: `omp`, `code-server`, `plannotator`, `voice`, `stall-cron`, `macbook-watch`, `omp-proxy`.
+- `services`: what the host runs besides its daemon (below).
+
+### Services
+
+Every daemon host runs the same set, so agents behave the same wherever they land. Hosts without a checkout get them from the **kit**: deploy ships the files these services need (`scripts/code-server`, `scripts/plannotator`, the stall check, `plugins/`, the verifier role, and a prebuilt `paseo-bridge.vsix`) to `~/.local/share/paseo/kit` and runs the installers from there.
+
+| Service         | What it is                                                                 | Runs on                         |
+| --------------- | -------------------------------------------------------------------------- | ------------------------------- |
+| `omp`           | `omp update` to the fleet version, in-repo plugins, verifier role          | every host                      |
+| `code-server`   | VS Code Web on `:8765` for **Open → VS Code Web** ([docs](code-server.md)) | every host                      |
+| `plannotator`   | binary the daemon spawns for plan reviews ([docs](plannotator.md))         | every host                      |
+| `stall-cron`    | per-minute stall check of this host's agents                               | every host                      |
+| `voice`         | Commander Voice node; npm-installs from the checkout                       | builders that host a voice node |
+| `macbook-watch` | redeploys the MacBook when it comes back online                            | the deploy host                 |
+| `omp-proxy`     | omp auth broker, proxy, refresher (`scripts/omp-proxy/deploy-prod.sh`)     | `prod`                          |
 
 To add a host, add an entry to `~/.paseo/fleet-hosts.json` and run `./scripts/deploy.sh`. For new targets, deploy generates a daemon password automatically and saves it to `~/.paseo/deploy.env`.
 
@@ -84,7 +97,7 @@ Component paths live in [`scripts/deploy/plan.ts`](../scripts/deploy/plan.ts):
 Every deploy runs idempotent routine steps on selected reachable hosts:
 
 1. **omp:** updates `omp` to match the deploy host's version, installs plugins from `plugins/`, and syncs the verifier agent role ([`scripts/set-omp-verifier-role.mjs`](../scripts/set-omp-verifier-role.mjs)).
-2. **Services:** refreshes stall-cron and macbook-watch if listed in host services, and verifies tunnel configuration.
+2. **Services:** refreshes stall-cron and macbook-watch if listed in host services, and verifies tunnel configuration. code-server, plannotator and voice reinstall only when their files change.
 3. **code-server settings:** pushes the deploy host's live `~/.local/share/code-server/User/settings.json` merged with remote settings; restarts code-server only when settings changed.
 4. **Config sync:** writes peer definitions, DNS hostnames, system prompt ([`scripts/paseo-system-prompt.md`](../scripts/paseo-system-prompt.md)), and enables the web UI on every reachable daemon, then runs `paseo daemon reload`.
 

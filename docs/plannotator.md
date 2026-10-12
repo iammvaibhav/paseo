@@ -20,9 +20,7 @@ This is a **session-scoped** integration (not always-on like code-server): the d
 Binary only — **do not** run the full upstream installer in a mode that wires agent Stop hooks.
 
 ```bash
-./scripts/plannotator/install.sh local
-./scripts/plannotator/install.sh blrofc3
-./scripts/plannotator/install.sh iammvaibhav
+./scripts/plannotator/install.sh
 ```
 
 Or via deploy:
@@ -31,7 +29,7 @@ Or via deploy:
 ./scripts/deploy.sh
 ```
 
-Deploy installs plannotator on every host that enables `"plannotator"` in its `services` list in `~/.paseo/fleet-hosts.json` when files under `scripts/plannotator` change, or on `--force`. When running the installer directly, pin a version with `PLANNOTATOR_VERSION=<version> ./scripts/plannotator/install.sh <target>`.
+Deploy installs plannotator on every host that enables `"plannotator"` in its `services` list in `~/.paseo/fleet-hosts.json` when files under `scripts/plannotator` change, or on `--force`. When running the installer directly, pin a version with `PLANNOTATOR_VERSION=<version> ./scripts/plannotator/install.sh`.
 Install uses `PLANNOTATOR_MINIMAL=1` / `--minimal` so hooks and skills are not written into Claude/Codex configs. Paseo owns invocation.
 
 Binary path: `~/.local/bin/plannotator` (also searched on `PATH`).
