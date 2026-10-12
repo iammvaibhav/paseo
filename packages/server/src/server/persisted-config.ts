@@ -113,6 +113,18 @@ export const RemoteMcpClientSchema = z
   .object({
     name: z.string().min(1),
     tokenHash: BcryptHashSchema,
+    /**
+     * Where finish notifications for this client go (notifyOnFinish on
+     * /mcp/fleet). Header values may embed an Aside vault reference,
+     * e.g. "Bearer aside://<account>/<itemId>"; it is resolved at send time.
+     */
+    notify: z
+      .object({
+        url: z.string().url(),
+        headers: z.record(z.string(), z.string()).optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 

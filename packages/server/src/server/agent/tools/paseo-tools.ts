@@ -6302,6 +6302,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     knownFleetHostsText,
     hostLabel,
     logger: childLogger,
+    missionControlService,
   });
 
   // 04 — the 11 split meta tools share one output contract (same as the old

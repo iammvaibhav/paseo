@@ -14,6 +14,7 @@ export const CORE_FLEET_TOOL_NAMES = [
   "suggest_placement",
   "fleet_create_agent",
   "fleet_send_prompt",
+  "fleet_wait_agent",
   "ticket_list",
   "ticket_create",
 ] as const;

@@ -145,6 +145,8 @@ import { attachAgentStoragePersistence } from "./persistence-hooks.js";
 import { createAgentMcpServer } from "./agent/mcp-server.js";
 import { createFleetMcpServer } from "./mcp-fleet/fleet-mcp-server.js";
 import { authenticateRemoteMcpClient } from "./mcp-fleet/auth.js";
+import { createMcpFinishNotifier } from "./mcp-fleet/finish-notifier.js";
+import { createVaultSecretResolver } from "./secrets/vault-secret.js";
 import {
   MISSION_CONTROL_LABEL_KEY,
   MISSION_CONTROL_LABEL_VALUE,
@@ -276,7 +278,11 @@ import type {
   AgentProviderRuntimeSettingsMap,
   ProviderOverride,
 } from "./agent/provider-launch-config.js";
-import { loadPersistedConfig, type PersistedConfig } from "./persisted-config.js";
+import {
+  loadPersistedConfig,
+  type PersistedConfig,
+  type RemoteMcpClient,
+} from "./persisted-config.js";
 import { createServiceProxySubsystem, type ServiceProxySubsystem } from "./service-proxy.js";
 import { releaseWorkspaceServicePortPlan } from "./workspace-service-port-registry.js";
 import { ScriptHealthMonitor } from "./script-health-monitor.js";
@@ -3092,8 +3098,13 @@ export async function createPaseoDaemon(
       string,
       { key: string; at: number; hostDeps: PaseoToolHostDependencies; catalog: PaseoToolCatalog }
     >();
+    const mcpFinishNotifier = createMcpFinishNotifier({
+      resolveSecret: createVaultSecretResolver(),
+      logger,
+    });
 
-    const createFleetMcpSession = async (clientName: string) => {
+    const createFleetMcpSession = async (client: RemoteMcpClient) => {
+      const clientName = client.name;
       let commanderAgentId: string | undefined;
       for (const agent of agentManager.listAgents()) {
         if (agent.labels[MISSION_CONTROL_LABEL_KEY] === MISSION_CONTROL_LABEL_VALUE) {
@@ -3128,6 +3139,8 @@ export async function createPaseoDaemon(
         hostDependencies: cached.hostDeps,
         catalog: cached.catalog,
         clientName,
+        finishNotifier: mcpFinishNotifier,
+        notifyTarget: client.notify ?? null,
       });
 
       const transport = new StreamableHTTPServerTransport({
@@ -3177,7 +3190,7 @@ export async function createPaseoDaemon(
       }
       logger.info({ client: authenticatedClient.name }, "Fleet MCP request authorized");
       try {
-        const { server, transport } = await createFleetMcpSession(authenticatedClient.name);
+        const { server, transport } = await createFleetMcpSession(authenticatedClient);
         res.on("close", () => {
           void transport.close();
           void server.close();
