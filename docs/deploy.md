@@ -71,7 +71,7 @@ Each host stores component commits in `~/.paseo/deploy-state.json`. A component 
 
 Component paths live in [`scripts/deploy/plan.ts`](../scripts/deploy/plan.ts):
 
-- `daemon`: server, CLI, client, protocol, relay, highlight, plugin packages, and runtime wrappers.
+- `daemon`: server, CLI, client, protocol, relay, highlight, plugin packages, the lockfile, and patches. Changes to the deploy tooling itself (`scripts/deploy/**`) never restart a daemon.
 - `app`: desktop package, daemon paths, and app UI paths.
 - `vercel`: app UI paths and client dependencies.
 - `code-server`: `scripts/code-server`.
