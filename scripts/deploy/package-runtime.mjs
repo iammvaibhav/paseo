@@ -35,6 +35,7 @@ import {
   lstatSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   readlinkSync,
   realpathSync,
   rmSync,
@@ -293,6 +294,13 @@ function main() {
   const partial = `${tarball}.partial`;
   execFileSync("tar", ["-czf", partial, "-C", stage, release], { stdio: "inherit" });
   execFileSync("mv", [partial, tarball]);
+  // One tarball per builder: older ones are never shipped again.
+  for (const file of readdirSync(outDir)) {
+    if (/^paseo-runtime-.*\.tar\.gz(\.partial)?$/.test(file) && file !== path.basename(tarball)) {
+      rmSync(path.join(outDir, file), { force: true });
+      log(`removed old ${file}`);
+    }
+  }
   rmSync(stage, { recursive: true, force: true });
   log(`${tarball} (${(statSync(tarball).size / 1024 / 1024).toFixed(1)} MiB)`);
   process.stdout.write(`${tarball}\n`);

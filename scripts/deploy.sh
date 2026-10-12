@@ -23,8 +23,8 @@
 #
 # Linux daemons (builders and targets) run a packaged runtime as the systemd
 # user unit paseo-daemon.service (scripts/deploy/activate-runtime.sh): releases
-# under ~/.local/share/paseo/releases, atomic `current` symlink, rollback with
-#   ssh <host> "bash -s -- rollback" < scripts/deploy/activate-runtime.sh
+# under ~/.local/share/paseo/releases with an atomic `current` symlink; only the
+# running release is kept (go back by deploying the older commit).
 #
 # Remote builder workflow (inventory builders other than this host):
 #   1. Ensure origin points at the fork and tracks the custom branch
@@ -1930,7 +1930,8 @@ build_and_activate() {
     fi
     log "Tunnel provider: \$TUNNEL_PROVIDER"
   fi
-  PASEO_HOME="\$PASEO_HOME" PASEO_DEPLOY_NUDGE='${PASEO_DEPLOY_NUDGE:-1}' \\
+  # Builders keep their tarball: deploy ships it on to this builder's targets.
+  PASEO_HOME="\$PASEO_HOME" PASEO_DEPLOY_NUDGE='${PASEO_DEPLOY_NUDGE:-1}' PASEO_KEEP_ARTIFACT=1 \\
     bash scripts/deploy/activate-runtime.sh activate "\$tarball" </dev/null
 }
 
@@ -2187,8 +2188,8 @@ Remote builders: ${REMOTE_HOSTS[*]} (each gets its own parallel job).
 Linux daemons run a packaged runtime as the systemd user unit paseo-daemon.service
 (restart = snapshot → systemctl --user restart → new healthy main pid → nudge).
 The whole deploy is detached by default so waiting for health/desktop cannot be
-killed by tool cancel. Roll back a Linux host:
-  ssh <host> "bash -s -- rollback" < scripts/deploy/activate-runtime.sh
+killed by tool cancel. Only the running release is kept on each host; to go
+back, deploy the older commit.
 
 Scope flags (set to 1 unless noted):
   PASEO_SKIP_LOCAL                 Skip the local host entirely (remotes only)

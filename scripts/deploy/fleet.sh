@@ -328,5 +328,7 @@ activate_local_runtime() {
   dir="${dir/#\~/$HOME}"
   mkdir -p "$dir"
   tarball="$(PASEO_ARTIFACT_DIR="$dir" node "$FLEET_DIR/package-runtime.mjs")"
-  PASEO_HOME="$LOCAL_PASEO_HOME" bash "$FLEET_DIR/activate-runtime.sh" activate "$tarball"
+  # Keep the tarball: deploy ships it on to this builder's targets.
+  PASEO_HOME="$LOCAL_PASEO_HOME" PASEO_KEEP_ARTIFACT=1 \
+    bash "$FLEET_DIR/activate-runtime.sh" activate "$tarball"
 }

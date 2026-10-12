@@ -5,16 +5,18 @@
 #
 #   ssh host "bash -s -- install  ~/.paseo/artifacts/<release>.tar.gz" < activate-runtime.sh
 #   ssh host "bash -s -- activate ~/.paseo/artifacts/<release>.tar.gz" < activate-runtime.sh
-#   ssh host "bash -s -- rollback" < activate-runtime.sh
 #
 # install  = unpack + verify + switch `current` (no unit, no restart), so deploy
 #            can patch config.json with the release's node before the first start
-# activate = install + unit + fleet settings + linger + restart
+# activate = install + unit + fleet settings + linger + restart, then delete
+#            every other release and the tarball (PASEO_KEEP_ARTIFACT=1 keeps
+#            the tarball: builders ship it on to their targets)
+#
+# Only the running release is kept on disk. To go back, deploy the older commit.
 #
 # Layout (all per user, no root needed except enabling linger):
 #   ~/.local/share/paseo/releases/<release>/   unpacked runtime (bin/node, bin/paseo, lib/)
 #   ~/.local/share/paseo/current  -> releases/<release>   (swapped atomically)
-#   ~/.local/share/paseo/previous -> releases/<older>     (rollback target)
 #   ~/.local/bin/paseo            -> ~/.local/share/paseo/current/bin/paseo
 #   ~/.config/systemd/user/paseo-daemon.service  ExecStart=current/bin/paseo daemon run
 #   ~/.config/paseo/daemon.env    PATH for the daemon (login PATH + runtime bin)
@@ -31,16 +33,14 @@
 # patches). PASEO_SKIP_SYSTEM_PROMPT=1 / PASEO_SKIP_WEB_UI=1 skip each one.
 #
 # Env: PASEO_HOME (default ~/.paseo), PASEO_RUNTIME_ROOT (default
-# ~/.local/share/paseo), PASEO_RUNTIME_KEEP (releases kept, default 5),
-# PASEO_ACTIVATE_RESTART=0 (install + switch only, no restart),
-# PASEO_DEPLOY_NUDGE=0 (skip snapshot/nudge).
+# ~/.local/share/paseo), PASEO_ACTIVATE_RESTART=0 (install + switch only, no
+# restart), PASEO_DEPLOY_NUDGE=0 (skip snapshot/nudge), PASEO_KEEP_ARTIFACT=1.
 set -euo pipefail
 
 MODE="${1:-}"
 ARTIFACT="${2:-}"
 PASEO_HOME="${PASEO_HOME:-$HOME/.paseo}"
 ROOT="${PASEO_RUNTIME_ROOT:-$HOME/.local/share/paseo}"
-KEEP="${PASEO_RUNTIME_KEEP:-5}"
 UNIT="paseo-daemon.service"
 UNIT_DIR="$HOME/.config/systemd/user"
 ENV_FILE="$HOME/.config/paseo/daemon.env"
@@ -108,10 +108,7 @@ point_current_at() {
     log "current already -> $rel"
   else
     switch_link "$rel" "$ROOT/current"
-    if [[ -n "$old" ]]; then
-      switch_link "$old" "$ROOT/previous"
-    fi
-    log "current -> $rel${old:+ (previous -> $old)}"
+    log "current -> $rel"
   fi
   mkdir -p "$HOME/.local/bin"
   # Replace whatever was there (old nvm wrapper script, desktop symlink, ...).
@@ -313,24 +310,23 @@ restart_daemon() {
   die "daemon did not become healthy under $UNIT (logs: journalctl --user -u $UNIT, $PASEO_HOME/daemon.log)"
 }
 
+# Free disk: only the running release stays. Runs after the restart, so the
+# old release is no longer in use when it is deleted.
 prune_releases() {
-  local current previous dir name kept=0
+  local current dir
   current="$(basename "$(readlink "$ROOT/current" 2>/dev/null || echo none)")"
-  previous="$(basename "$(readlink "$ROOT/previous" 2>/dev/null || echo none)")"
-  # Newest first by mtime; always keep current + previous.
-  while IFS= read -r dir; do
-    name="$(basename "$dir")"
-    if [[ "$name" == "$current" || "$name" == "$previous" ]]; then
-      continue
-    fi
-    kept=$((kept + 1))
-    if ((kept > KEEP - 2)); then
-      rm -rf "$dir"
-      log "Pruned release $name"
-    fi
-  done < <(ls -1dt "$ROOT"/releases/*/ 2>/dev/null | sed 's:/$::')
-  # Shipped tarballs are only needed until unpacked.
-  find "$PASEO_HOME/artifacts" -maxdepth 1 -name 'paseo-runtime-*.tar.gz' -mtime +7 -delete 2>/dev/null || true
+  rm -f "$ROOT/previous"
+  for dir in "$ROOT"/releases/*/ "$ROOT"/releases/.staging-*; do
+    [[ -e "$dir" ]] || continue
+    dir="${dir%/}"
+    [[ "$(basename "$dir")" == "$current" ]] && continue
+    rm -rf "$dir"
+    log "Removed old release $(basename "$dir")"
+  done
+  if [[ "${PASEO_KEEP_ARTIFACT:-0}" != "1" && -f "$ARTIFACT" ]]; then
+    rm -f "$ARTIFACT"
+    log "Removed $(basename "$ARTIFACT") (unpacked)"
+  fi
 }
 
 case "$MODE" in
@@ -349,18 +345,12 @@ case "$MODE" in
     else
       log "PASEO_ACTIVATE_RESTART=0 — release switched; daemon not restarted"
     fi
-    prune_releases
-    ;;
-  rollback)
-    [[ -L "$ROOT/previous" ]] || die "no previous release to roll back to"
-    target="$ROOT/$(readlink "$ROOT/previous")"
-    [[ -d "$target" ]] || die "previous release missing: $target"
-    log "Rolling back to $(basename "$target")"
-    point_current_at "$target"
-    restart_daemon
+    if [[ "${PASEO_ACTIVATE_RESTART:-1}" == "1" ]]; then
+      prune_releases
+    fi
     ;;
   *)
-    die "usage: activate-runtime.sh install|activate <artifact.tar.gz> | rollback"
+    die "usage: activate-runtime.sh install|activate <artifact.tar.gz>"
     ;;
 esac
 log "Done ($(readlink "$ROOT/current"))"
