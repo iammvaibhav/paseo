@@ -11,6 +11,8 @@ import { isNative as platformIsNative } from "@/constants/platform";
 import type { LifecycleRow } from "@/mission-control/lifecycle";
 import { useAgentGridStore } from "@/screens/mission-control/agent-grid/store";
 import { useActiveWorkspaceSelection } from "@/stores/navigation-active-workspace-store";
+import { useSidebarSearchStore } from "@/stores/sidebar-search-store";
+import { SidebarSearchEmptyState } from "@/components/sidebar/sidebar-search-bar";
 import { getFocusedAgentId, useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
 import { buildMissionControlRoute } from "@/utils/host-routes";
 import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
@@ -81,6 +83,7 @@ export function SidebarAgentViewList({
     enabled: active,
   });
   const selectedKey = useSelectedSidebarAgentKey();
+  const searchActive = useSidebarSearchStore((state) => state.query.trim().length > 0);
 
   const nativeScrollGestureProps = useMemo(
     () =>
@@ -158,11 +161,12 @@ export function SidebarAgentViewList({
     );
   }
 
+  const emptyBody = searchActive ? <SidebarSearchEmptyState /> : emptyComponent;
   const content = (
     <>
       {listHeaderComponent}
       {sections.length === 0
-        ? emptyComponent
+        ? emptyBody
         : sections.map((section) => (
             <View key={section.bucket} style={styles.section}>
               <SidebarAgentViewSectionHeader bucket={section.bucket} count={section.rows.length} />

@@ -1262,6 +1262,7 @@ export const ptBR: TranslationResources = {
     },
   },
   sidebar: {
+    search: en.sidebar.search,
     display: {
       trigger: "Preferências de exibição",
       heading: "Exibição",

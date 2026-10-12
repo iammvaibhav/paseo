@@ -1273,6 +1273,7 @@ export const es: TranslationResources = {
     },
   },
   sidebar: {
+    search: en.sidebar.search,
     display: {
       trigger: "Preferencias de visualización",
       heading: "Visualización",

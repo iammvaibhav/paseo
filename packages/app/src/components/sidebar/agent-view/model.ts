@@ -24,12 +24,17 @@ export interface BuildSidebarAgentViewSectionsInput {
   projectFilters: readonly string[];
   projectViewKeyByWorkspaceKey: ReadonlyMap<string, string>;
   showDone: boolean;
+  /** `serverId:agentId` the search bar matched; null while no search narrows the view. */
+  searchAgentKeys: ReadonlySet<string> | null;
 }
 
 export function buildSidebarAgentViewSections(
   input: BuildSidebarAgentViewSectionsInput,
 ): SidebarAgentViewSection[] {
-  const { groups, hostFilters, projectFilters, projectViewKeyByWorkspaceKey, showDone } = input;
+  const { groups, hostFilters, projectFilters, projectViewKeyByWorkspaceKey, searchAgentKeys } =
+    input;
+  // A search reaches finished agents too: hiding Done is a browsing preference.
+  const showDone = input.showDone || searchAgentKeys !== null;
 
   const hasHostFilter = hostFilters.length > 0;
   const allowedHosts = hasHostFilter ? new Set(hostFilters) : null;
@@ -61,6 +66,10 @@ export function buildSidebarAgentViewSections(
 
     const filteredRows = rows.filter((row) => {
       if (allowedHosts && !allowedHosts.has(row.agent.serverId)) {
+        return false;
+      }
+
+      if (searchAgentKeys && !searchAgentKeys.has(`${row.agent.serverId}:${row.agent.id}`)) {
         return false;
       }
 

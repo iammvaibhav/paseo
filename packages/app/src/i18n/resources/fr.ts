@@ -1272,6 +1272,7 @@ export const fr: TranslationResources = {
     },
   },
   sidebar: {
+    search: en.sidebar.search,
     display: {
       trigger: "Préférences d'affichage",
       heading: "Affichage",

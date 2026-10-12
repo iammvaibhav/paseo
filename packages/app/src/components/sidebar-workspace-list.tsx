@@ -89,6 +89,7 @@ import {
   useSidebarViewStore,
   type SidebarGroupMode,
 } from "@/stores/sidebar-view-store";
+import { useSidebarSearchStore } from "@/stores/sidebar-search-store";
 import { useShowShortcutBadges } from "@/hooks/use-show-shortcut-badges";
 import {
   ContextMenu,
@@ -2294,11 +2295,13 @@ export function SidebarWorkspaceList({
   // this whole subtree, which unmounted the header — and the header is where the display menu's
   // trigger lives, so filtering the last row away closed the menu you were filtering from.
   //
-  // Only the label filter can get here. The project filter resolves against the projects it can
-  // see and falls back to "all projects" when nothing matches, so it either keeps at least one
-  // project or is not applied at all — it can narrow this list but never empty it.
+  // Only the label filter and the search bar can get here. The project filter resolves against
+  // the projects it can see and falls back to "all projects" when nothing matches, so it either
+  // keeps at least one project or is not applied at all — it can narrow this list but never
+  // empty it.
+  const searchActive = useSidebarSearchStore((state) => state.query.trim().length > 0);
   const sidebarFilterEmpty =
-    hasActiveLabelFilter && hasProjectsBeforeFilter && projects.length === 0;
+    (hasActiveLabelFilter || searchActive) && hasProjectsBeforeFilter && projects.length === 0;
 
   // Project mode is the one that keeps its project headers; every other grouping mode is a flat
   // list of grouped rows, so a new mode lands in the grouped branch rather than silently in this
@@ -2464,6 +2467,8 @@ function ProjectModeList({
   onPinnedWorkspaceReorder: (workspaces: SidebarWorkspacePlacement[]) => void;
 }) {
   const hasActiveHostFilter = useSidebarViewStore((state) => state.hostFilters.length > 0);
+  // The header holds the search bar; it must not unmount while you type in it.
+  const isSearchOpen = useSidebarSearchStore((state) => state.isOpen);
   const [creatingWorkspaceIds, setCreatingWorkspaceIds] = useState<Set<string>>(() => new Set());
   const creatingWorkspaceTimeoutsRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(
     new Map(),
@@ -2801,6 +2806,7 @@ function ProjectModeList({
       {unpinnedProjects.length > 0 ||
       hasActiveHostFilter ||
       hasActiveProjectFilter ||
+      isSearchOpen ||
       sidebarFilterEmpty
         ? listHeaderComponent
         : null}
