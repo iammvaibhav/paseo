@@ -14,7 +14,6 @@ export type Platform = "linux-arm64" | "linux-x64" | "darwin-arm64" | "darwin-x6
 export type Service =
   | "omp"
   | "code-server"
-  | "plannotator"
   | "voice"
   | "stall-cron"
   | "macbook-watch"
@@ -47,7 +46,6 @@ const PLATFORMS: Record<string, true> = {
 const SERVICES: Record<string, boolean> = {
   omp: false,
   "code-server": false,
-  plannotator: false,
   "stall-cron": false,
   "omp-proxy": false,
   // npm-installs its own dependencies from the checkout

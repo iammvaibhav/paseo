@@ -128,6 +128,14 @@ describe("deploy plan", () => {
     expect(vercel).toBe(false);
   });
 
+  test("a target that moved to a new address restarts on its new IP", () => {
+    const states = Object.fromEntries(hosts.map((host) => [host.name, deployed]));
+    states.dell = { ...deployed, address: "10.0.0.99" };
+    expect(plan([], { states }).work.dell).toBe("daemon");
+    states.dell = { ...deployed, address: "10.0.0.5" };
+    expect(plan([], { states }).work.dell).toBe("");
+  });
+
   test("the prod omp services follow a new omp release", () => {
     expect(plan([]).work.prod).toBe("");
     expect(plan([], { ompTarget: "1.1.0" }).work.prod).toBe("omp-proxy");

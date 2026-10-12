@@ -1104,7 +1104,6 @@ export const zhCN: TranslationResources = {
         openIn: "在 {{target}} 中打开 workspace",
         openFileIn: "在 {{target}} 中打开 {{fileName}}",
         failedOpen: "打开 workspace 失败",
-        noFile: "Select a Markdown file to open in Plannotator",
       },
       pr: {
         actions: {
@@ -2211,15 +2210,9 @@ export const zhCN: TranslationResources = {
       vimKeybindings: "Vim 键位",
       vimHint: "适用于网页和桌面端的源文件。",
       defaultFileOpener: "默认文件打开方式",
-      defaultFileOpenerHint:
-        "用于普通文件点击。Plannotator 支持文档和配置文件；源代码文件会改用 Paseo 打开。",
+      defaultFileOpenerHint: "用于普通文件点击。",
       defaultFileOpenerPaseo: "Paseo",
       defaultFileOpenerVsCodeWeb: "VS Code Web",
-      defaultFileOpenerPlannotator: "Plannotator",
-      plannotatorFeedbackMode: "Plannotator 反馈",
-      plannotatorFeedbackModeHint: "批注反馈如何发送给关联的 agent。",
-      plannotatorFeedbackAutoSend: "自动发送",
-      plannotatorFeedbackCompose: "预填输入框",
     },
     notifications: {
       title: "通知",

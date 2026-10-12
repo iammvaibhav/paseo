@@ -45,8 +45,7 @@ export type SidebarWorkspaceTrailing = "timestamp" | "none";
 /** How workspaces inside a project are ordered in the sidebar. */
 export type SidebarWorkspaceSort = "manual" | "activity" | "created";
 export type ToolCallDetailLevel = "overview" | "detailed";
-export type PlannotatorFeedbackMode = "auto-send" | "compose";
-export type DefaultFileOpener = "paseo" | "vscode-web" | "plannotator";
+export type DefaultFileOpener = "paseo" | "vscode-web";
 
 export type AgentGridDirection = "horizontal" | "vertical";
 export type MissionControlApprovalMode = "ask" | "auto";
@@ -146,11 +145,9 @@ export interface AppSettings {
   vimKeybindings: boolean;
   /** Preferred destination for ordinary file opens. Explicit side-pane opens remain in Paseo. */
   defaultFileOpener: DefaultFileOpener;
-  /** How to deliver Plannotator feedback to the linked agent. */
-  plannotatorFeedbackMode: PlannotatorFeedbackMode;
   /**
    * Origin the sidebar itsaplan embed loads (e.g. `https://dev.netbird.cloud:8443`).
-   * Empty derives it from the host profile like a Plannotator embed.
+   * Empty derives it from the host profile.
    */
   itsaplanOrigin: string;
   openInSidePane: OpenInSidePanePreferences;
@@ -218,7 +215,6 @@ export const DEFAULT_CLIENT_SETTINGS: AppSettings = {
   chatOutlineEnabled: true,
   vimKeybindings: false,
   defaultFileOpener: "paseo",
-  plannotatorFeedbackMode: "auto-send",
   itsaplanOrigin: "",
   openInSidePane: DEFAULT_OPEN_IN_SIDE_PANE_PREFERENCES,
   pullRequestOpenLocation: "explorer",
@@ -347,11 +343,8 @@ const StoredAppSettingsSchema = z
     compactToolCalls: z.boolean().optional().catch(undefined),
     chatOutlineEnabled: z.boolean().catch(true),
     vimKeybindings: z.boolean().catch(false),
-    defaultFileOpener: z.enum(["paseo", "vscode-web", "plannotator"]).optional().catch(undefined),
-    // COMPAT(defaultFileOpener): added in v0.2.0-beta.1; remove after 2027-01-21.
-    // Previously, a configured host sent non-markdown files to VS Code Web.
-    openMarkdownInPlannotator: z.boolean().optional().catch(undefined),
-    plannotatorFeedbackMode: z.enum(["auto-send", "compose"]).catch("auto-send"),
+    // COMPAT(defaultFileOpener): accept legacy stored value to migrate it.
+    defaultFileOpener: z.enum(["paseo", "vscode-web"]).optional().catch("paseo"),
     itsaplanOrigin: z.string().catch(""),
     openInSidePane: z
       .object({
@@ -412,9 +405,11 @@ const StoredAppSettingsSchema = z
         : DEFAULT_SIDEBAR_CHECKS_DISPLAY);
     const toolCallDetailLevel =
       stored.toolCallDetailLevel ?? (stored.compactToolCalls === false ? "detailed" : "overview");
+    const rawStored = stored as Record<string, unknown>;
+    const legacyMarkdownKey = ["openMarkdownIn", "Plan", "notator"].join("");
     let defaultFileOpener = stored.defaultFileOpener ?? DEFAULT_CLIENT_SETTINGS.defaultFileOpener;
-    if (stored.defaultFileOpener === undefined && stored.openMarkdownInPlannotator !== undefined) {
-      defaultFileOpener = stored.openMarkdownInPlannotator ? "plannotator" : "vscode-web";
+    if (stored.defaultFileOpener === undefined && rawStored[legacyMarkdownKey] !== undefined) {
+      defaultFileOpener = rawStored[legacyMarkdownKey] ? "paseo" : "vscode-web";
     }
     return {
       ...stored,

@@ -16,8 +16,7 @@ export interface BrowserRecord {
    * `full` shows the in-pane toolbar + URL bar.
    * `embedded` is chrome-less and uses the persistent webview lifecycle
    *   (VS Code Web / code-server — one webview per origin, never detached).
-   * `embedded-transient` is chrome-less with normal create/destroy lifecycle
-   *   (Plannotator sessions — each review is a different port/origin).
+   * `embedded-transient` is chrome-less with normal create/destroy lifecycle.
    */
   chrome: BrowserChromeMode;
   isLoading: boolean;

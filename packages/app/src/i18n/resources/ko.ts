@@ -1120,7 +1120,6 @@ export const ko: TranslationResources = {
         openIn: "{{target}}에서 워크스페이스 열기",
         openFileIn: "{{target}}에서 {{fileName}} 열기",
         failedOpen: "워크스페이스를 열지 못했습니다",
-        noFile: "Select a Markdown file to open in Plannotator",
       },
       pr: {
         actions: {
@@ -2244,15 +2243,9 @@ export const ko: TranslationResources = {
       vimKeybindings: "Vim 키 바인딩",
       vimHint: "웹 및 데스크톱의 소스 파일에 적용됩니다.",
       defaultFileOpener: "Default file opener",
-      defaultFileOpenerHint:
-        "Used for normal file clicks. Plannotator supports document and configuration files; source files fall back to Paseo.",
+      defaultFileOpenerHint: "Used for normal file clicks.",
       defaultFileOpenerPaseo: "Paseo",
       defaultFileOpenerVsCodeWeb: "VS Code Web",
-      defaultFileOpenerPlannotator: "Plannotator",
-      plannotatorFeedbackMode: "Plannotator feedback",
-      plannotatorFeedbackModeHint: "How annotation feedback is delivered to the linked agent.",
-      plannotatorFeedbackAutoSend: "Auto-send",
-      plannotatorFeedbackCompose: "Pre-fill composer",
     },
     notifications: {
       title: "알림",
