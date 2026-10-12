@@ -19,7 +19,6 @@ function createMockTool(name: string, description: string): PaseoToolDefinition 
 
 describe("classifyTool", () => {
   test("classifies tools into the expected groups", () => {
-    expect(classifyTool("ticket_list")).toBe("tickets");
     expect(classifyTool("fleet_move_agent")).toBe("meta");
     expect(classifyTool("fleet_cancel_agent")).toBe("control");
     expect(classifyTool("cancel_agent")).toBe("control");
@@ -55,7 +54,7 @@ describe("searchCatalogTools", () => {
     ["fleet_move_agent", createMockTool("fleet_move_agent", "Move an agent to another host")],
     ["fleet_cancel_agent", createMockTool("fleet_cancel_agent", "Cancel an agent session")],
     ["fleet_archive_project", createMockTool("fleet_archive_project", "Archive a project")],
-    ["ticket_update", createMockTool("ticket_update", "Update a ticket")],
+    ["terminal_exec", createMockTool("terminal_exec", "Execute terminal command")],
     ["paseo_tool_search", createMockTool("paseo_tool_search", "Search tools (meta)")],
   ]);
 

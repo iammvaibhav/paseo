@@ -11,7 +11,6 @@ import { buildTerminalsQueryKey } from "@/screens/workspace/terminals/state";
 import { daemonConfigQueryKey } from "@/data/daemon-config";
 import { daemonPairingOfferQueryKey } from "@/data/daemon-pairing";
 import { providersSnapshotQueryKey } from "@/data/providers-snapshot";
-import { ticketBoardsQueryKey, ticketListQueryKey } from "@/tickets/query-keys";
 import { missionControlEventsQueryKey } from "@/data/mission-control-events";
 import { missionControlInstructionsQueryKey } from "@/data/mission-control-instructions";
 import { providerUsageQueryKey } from "@/provider-usage/query-key";
@@ -21,7 +20,6 @@ import {
   missionControlEventsPushRoute,
   mountServerDataPushRouter,
   providerUsagePushRoute,
-  ticketsPushRoute,
   workspaceTerminalsPushRoute,
 } from "@/data/push-router";
 
@@ -36,7 +34,6 @@ type SubscribeCheckoutDiffResponseMessage = Extract<
 >;
 type StatusMessage = Extract<SessionOutboundMessage, { type: "status" }>;
 type TerminalsChangedMessage = Extract<SessionOutboundMessage, { type: "terminals_changed" }>;
-type TicketsChangedMessage = Extract<SessionOutboundMessage, { type: "tickets.changed" }>;
 type ProviderUsageUpdatedMessage = Extract<
   SessionOutboundMessage,
   { type: "provider.usage.updated" }
@@ -47,7 +44,6 @@ type RouterMessage =
   | SubscribeCheckoutDiffResponseMessage
   | StatusMessage
   | TerminalsChangedMessage
-  | TicketsChangedMessage
   | ProviderUsageUpdatedMessage
   | { type: "mission_control_event"; event: MissionControlEvent };
 type RouterMessageType = RouterMessage["type"];
@@ -86,7 +82,6 @@ function createFakeClient(config: { rejectCheckoutDiffSubscribe?: boolean } = {}
     status: [],
     terminals_changed: [],
     mission_control_event: [],
-    "tickets.changed": [],
     "provider.usage.updated": [],
   };
   const subscribeCheckoutDiffCalls: Array<{
@@ -167,11 +162,7 @@ function createFakeClient(config: { rejectCheckoutDiffSubscribe?: boolean } = {}
       observeEvents: (events) => {
         observeEventsCalls.push([...events]);
         const streams = events.flatMap((event) =>
-          event === "tickets.changed" ||
-          event === "mission_control_event" ||
-          event === "provider.usage.updated"
-            ? [event]
-            : [],
+          event === "mission_control_event" || event === "provider.usage.updated" ? [event] : [],
         );
         const types: RouterMessageType[] =
           streams.length > 0 ? streams : ["status", "providers_snapshot_update"];
@@ -356,42 +347,6 @@ describe("server data push router", () => {
         generatedAt: "2026-01-01T00:00:00.000Z",
         requestId: "providers_snapshot_update",
       });
-  });
-
-  it("holds tickets.changed only while a tickets query is active and refetches that host", () => {
-    const queryClient = new QueryClient();
-    const fake = createFakeClient();
-    const serverId = "server-1";
-    const listKey = ticketListQueryKey(serverId, null);
-    const otherHostKey = ticketBoardsQueryKey("server-2");
-    queryClient.setQueryData(listKey, { tickets: [], revision: 1 });
-    queryClient.setQueryData(otherHostKey, []);
-    const unmount = mountServerDataPushRouter({ client: fake.client, queryClient, serverId });
-    expect(fake.observeEventsCalls).not.toContainEqual(["tickets.changed"]);
-
-    const observer = new QueryObserver(queryClient, {
-      queryKey: listKey,
-      queryFn: skipToken,
-      enabled: false,
-      meta: ticketsPushRoute({ enabled: true, serverId }),
-    });
-    const unsubscribeObserver = observer.subscribe(() => undefined);
-    expect(fake.observeEventsCalls).toContainEqual(["tickets.changed"]);
-
-    fake.emit({
-      type: "tickets.changed",
-      revision: 2,
-      boardIds: [],
-      ticketIds: [],
-      initiativeIds: [],
-    });
-    expect(queryClient.getQueryState(listKey)?.isInvalidated).toBe(true);
-    expect(queryClient.getQueryState(otherHostKey)?.isInvalidated).toBe(false);
-
-    unsubscribeObserver();
-    expect(fake.releasedEventCalls).toContainEqual(["tickets.changed"]);
-    unmount();
-    queryClient.clear();
   });
 
   it("holds mission_control_event only while a feed query declares it and marks that host dirty", () => {

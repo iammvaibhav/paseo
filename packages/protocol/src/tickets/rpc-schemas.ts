@@ -1,3 +1,4 @@
+// COMPAT(tickets-removed): native tickets removed 2026-10-12, remove after 2027-01-12 once app floor >= 2026-10-12.
 import { z } from "zod";
 import {
   InitiativeSchema,

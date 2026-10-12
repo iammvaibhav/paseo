@@ -238,6 +238,7 @@ const INBOUND_PERMISSION = {
   "doc_threads.reply.request": "workspace.write",
   "doc_threads.resolve.request": "workspace.write",
   "doc_threads.send_all.request": "workspace.write",
+  // COMPAT(tickets-removed): native tickets removed 2026-10-12, remove after 2027-01-12.
   "tickets.attachment.add.request": "workspace.write",
   "tickets.attachment.delete.request": "workspace.write",
   "tickets.attachment.read.request": "workspace.read",
@@ -263,6 +264,7 @@ const INBOUND_PERMISSION = {
   "tickets.ticket.list.request": "workspace.read",
   "tickets.ticket.move.request": "workspace.write",
   "tickets.ticket.update.request": "workspace.write",
+  // COMPAT(tickets-removed): native notes removed 2026-10-12, remove after 2027-01-12.
   "notes.delete.request": "workspace.write",
   "notes.get.request": "workspace.read",
   "notes.image.add.request": "workspace.write",
@@ -557,6 +559,7 @@ const OUTBOUND_PERMISSION = {
   terminal_attention_required: "workspace.read",
   terminal_stream_exit: "workspace.read",
   terminals_changed: "workspace.read",
+  // COMPAT(tickets-removed): native tickets removed 2026-10-12, remove after 2027-01-12.
   "tickets.attachment.add.response": "workspace.write",
   "tickets.attachment.delete.response": "workspace.write",
   "tickets.attachment.read.response": "workspace.read",
@@ -579,6 +582,7 @@ const OUTBOUND_PERMISSION = {
   "tickets.ticket.delete.response": "workspace.write",
   "tickets.ticket.dispatch.response": "workspace.write",
   "tickets.ticket.get.response": "workspace.read",
+  // COMPAT(tickets-removed): native notes removed 2026-10-12, remove after 2027-01-12.
   "notes.changed": "workspace.read",
   "notes.delete.response": "workspace.write",
   "notes.get.response": "workspace.read",

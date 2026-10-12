@@ -50,10 +50,8 @@ import {
   type SessionRuntimeMetrics,
 } from "./session.js";
 import type { WarmWorktreePool } from "./warm-worktree-pool.js";
-import { isServingNotes, type NotesHost } from "./notes/session.js";
 import type { HubRelationshipManagement } from "./hub/relationship-controller.js";
 import { isServingDocThreads, type DocThreadsHost } from "./doc-threads/session.js";
-import { isServingTickets, type TicketsHost } from "./tickets/session.js";
 import { WorkspaceSetupRuntime } from "./workspace-setup-runtime.js";
 import type { HubExecutionAgents } from "./hub/daemon-executions.js";
 import type { AgentProvider } from "./agent/agent-sdk-types.js";
@@ -649,8 +647,6 @@ export class VoiceAssistantWebSocketServer {
   private readonly onWorkspaceArchived?: (workspaceId: string) => void | Promise<void>;
   private readonly warmWorktreePool?: WarmWorktreePool;
   private docThreadsHost!: DocThreadsHost | null;
-  private ticketsHost!: TicketsHost | null;
-  private notesHost!: NotesHost | null;
 
   private async validateCompletedCreation(snapshot: CreationSnapshot): Promise<void> {
     if (snapshot.workspace && snapshot.kind === "workspace") {
@@ -724,10 +720,7 @@ export class VoiceAssistantWebSocketServer {
     onWorkspaceArchived?: (workspaceId: string) => void | Promise<void>,
     warmWorktreePool?: WarmWorktreePool,
     docThreadsHost?: DocThreadsHost | null,
-    ticketsHost?: TicketsHost | null,
-    notesHost?: NotesHost | null,
     websocketServices?: {
-      ticketsHost?: TicketsHost | null;
       automationService?: AutomationService | null;
       pagePortProxy?: PagePortProxy | null;
       pageStore?: PageStore | null;
@@ -795,8 +788,6 @@ export class VoiceAssistantWebSocketServer {
       serviceProxyPublicBaseUrl,
       resolveScriptHealth,
       docThreadsHost,
-      ticketsHost: websocketServices?.ticketsHost ?? ticketsHost,
-      notesHost,
       automationService: websocketServices?.automationService,
     });
     if (!providerSnapshotManager) {
@@ -870,9 +861,7 @@ export class VoiceAssistantWebSocketServer {
     serviceProxyPublicBaseUrl: string | null | undefined;
     resolveScriptHealth: ((hostname: string) => ScriptHealthState | null) | undefined;
     docThreadsHost?: DocThreadsHost | null | undefined;
-    ticketsHost: TicketsHost | null | undefined;
     automationService?: AutomationService | null;
-    notesHost: NotesHost | null | undefined;
   }): void {
     this.speech = params.speech ?? null;
     this.terminalManager = params.terminalManager ?? null;
@@ -910,11 +899,9 @@ export class VoiceAssistantWebSocketServer {
     this.serviceProxyPublicBaseUrl = params.serviceProxyPublicBaseUrl ?? null;
     this.resolveScriptHealth = params.resolveScriptHealth ?? null;
     this.docThreadsHost = params.docThreadsHost ?? null;
-    this.ticketsHost = params.ticketsHost ?? null;
     if (params.automationService !== undefined) {
       this.automationService = params.automationService;
     }
-    this.notesHost = params.notesHost ?? null;
   }
 
   private createWebSocketServer(
@@ -1622,8 +1609,6 @@ export class VoiceAssistantWebSocketServer {
       pluginRuntime: this.pluginRuntime,
       orchestrationSkills: this.orchestrationSkills,
       docThreads: this.docThreadsHost,
-      tickets: this.ticketsHost,
-      notes: this.notesHost,
       mcpBaseUrl: this.mcpBaseUrl,
       stt: () => this.speech?.resolveStt() ?? null,
       sttLanguage: this.speech?.resolveSttLanguage() ?? "en",
@@ -2023,14 +2008,6 @@ export class VoiceAssistantWebSocketServer {
         // Doc threads are available on any host with node:sqlite and owned agents.
         docThreads: isServingDocThreads(this.docThreadsHost),
         docThreadsEventSubscription: isServingDocThreads(this.docThreadsHost),
-        // Native notes. True only on the notes host (the Commander host)
-        // with node:sqlite loaded; evaluated per server_info because the
-        // Commander designation can move.
-        notes: isServingNotes(this.notesHost),
-        // Native tickets. True only on the board host (the Commander host)
-        // with node:sqlite loaded; evaluated per server_info because the
-        // Commander designation can move.
-        tickets: isServingTickets(this.ticketsHost),
         // COMPAT(worktreeRestore): keep through 2027-01-11 for clients older than v0.1.105.
         worktreeRestore: true,
         // COMPAT(workspaceRecovery): added in v0.1.105, remove after 2027-01-11 once daemon floor >= v0.1.105.
