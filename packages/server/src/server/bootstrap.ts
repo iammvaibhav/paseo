@@ -6,6 +6,8 @@ import { constants, existsSync, mkdirSync, unlinkSync } from "fs";
 import { mkdir, open, rm, stat } from "fs/promises";
 import { buildProjectReadme, ensureGitRepository } from "./project-directory-service.js";
 import { RoutingService } from "./routing/routing-service.js";
+import { AgentSearchService } from "./agent-search/agent-search-service.js";
+import { readLaunchBrief } from "./mission-control/run-records.js";
 import { HindsightClient } from "./mission-control/hindsight.js";
 import { randomUUID } from "node:crypto";
 import { getHostName } from "./host-name.js";
@@ -1598,6 +1600,13 @@ export async function createPaseoDaemon(
       ),
     );
   };
+  const emitAgentRemovedExternal = async (agentId: string) => {
+    await Promise.all(
+      (wsServer?.listSessions() ?? []).map((session) =>
+        session.emitAgentRemovedForExternalMutation(agentId),
+      ),
+    );
+  };
   const ensureWorkspaceForCreateAndBroadcastExternal = async (
     cwd: string,
     firstAgentContext?: FirstAgentContext,
@@ -2493,6 +2502,17 @@ export async function createPaseoDaemon(
     hindsight: new HindsightClient({ logger }),
   });
   agentManager.setMetadataCompletion((prompt) => routingService.completeMetadata(prompt));
+  // Sidebar search (agent.search.*): a shallow jev pass over this host's agents.
+  const agentSearchService = new AgentSearchService({
+    logger,
+    listAgents: () => agentStorage.list(),
+    getRunRecords: () => missionControlService.getRunRecords(),
+    readLiveBrief: async (agentId) =>
+      agentManager.getAgent(agentId)
+        ? readLaunchBrief(await agentManager.getTimelineRows(agentId))
+        : null,
+    getTypesafeApiKeyRef: () => centralMissionControlConfig.get().routingSecrets?.typesafeApiKey,
+  });
   const itsaplanProjectSyncDeps = {
     store: itsaplanProjectStore,
     getConfig: getItsaplanConfig,
@@ -2709,6 +2729,7 @@ export async function createPaseoDaemon(
     listActiveWorkspaces: listActiveWorkspacesExternal,
     archiveWorkspaceRecord: archiveWorkspaceRecordExternal,
     emitWorkspaceUpdatesForWorkspaceIds: emitWorkspaceUpdatesExternal,
+    emitAgentRemoved: emitAgentRemovedExternal,
     workspaceRegistry,
     projectRegistry,
     createDirectoryWorkspace: async (cwd, title, projectId) => {
@@ -3250,7 +3271,7 @@ export async function createPaseoDaemon(
               (workspaceId) => itsaplanBridge?.handleWorkspaceArchived(workspaceId),
               warmWorktreePool,
               docThreadsHost,
-              { automationService, pagePortProxy, pageStore, routingService },
+              { automationService, pagePortProxy, pageStore, routingService, agentSearchService },
             );
             pluginRuntime.bindPaseoSessionHost(wsServer);
             await pluginRuntime.start();

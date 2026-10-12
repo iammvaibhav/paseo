@@ -1,13 +1,26 @@
 # History Ask
 
-Fast full-text History search is the front door: one box on the History screen
-ranks session names and indexed transcripts together (including archived
-sessions). History Ask is the fallback when that index finds nothing, or when
-you want a summarization agent instead of a ranked list.
+Agent search has three depths:
+
+| Depth              | Where                               | What it reads                                                     | Latency |
+| ------------------ | ----------------------------------- | ----------------------------------------------------------------- | ------- |
+| **Sidebar search** | Search icon in the sidebar header   | Title, launch prompt, reported status, last report headline (jev) | ~0.5 s  |
+| **History search** | History → Agents tab                | Session names and indexed transcripts (FTS5), archived included   | instant |
+| **History Ask**    | History → Ask tab, ⋮ → Ask history… | Everything on disk, read by an agent                              | minutes |
 
 This is a custom-fork feature (`vaibhav/customizations`).
 
-## What it is
+## Sidebar search
+
+The search icon next to the Workspaces / Agents toggle opens a search bar that narrows the list in place, in both views and under any project or host filter already applied. Archived agents are opt-in (**Include archived**) and listed under the bar, since the list never shows them. A search that matches nothing offers **Deep search**, which prefills History Ask with the query.
+
+- **Word matches show instantly**: every query word in the title, name, or reported description of an agent already in the session store. Workspace names match too.
+- **jev widens them** after a 250 ms pause: each host answers `agent.search.request` (`AgentSearchService`, `packages/server/src/server/agent-search/`) by asking jev one yes/no question per agent over a short card: title, launch prompt (first run record's brief, or the first user message of a live agent), reported description, and last report headline. A "yes" probability of 0.5 or more is a match. No transcript is read.
+- Cards are ~450 bytes. One jev request fails with `max_tokens_exceeded` around 400 KB, so the service sends 100 questions per call in parallel. Measured on dev: 96 active agents in ~0.45 s, 1,000 agents in 10 parallel calls ~0.75 s.
+- Without a TypeSafe key (`routingSecrets.typesafeApiKey`, see [routing.md](routing.md)) or when jev fails, the host returns word matches over the same cards, which include the launch prompt the client cannot see.
+- Commander and machinery agents are never candidates.
+
+## History Ask
 
 | Piece               | Behavior                                                                                        |
 | ------------------- | ----------------------------------------------------------------------------------------------- |
@@ -76,10 +89,11 @@ packages/app/src/history-ask/
   index.ts
 ```
 
-UI: `sessions-screen.tsx`, `sidebar-workspace-menu.tsx`, `sidebar-workspace-list.tsx`, `sidebar-status-list.tsx`.
+UI: `sessions-screen.tsx`, `sidebar-workspace-menu.tsx`, `sidebar-workspace-list.tsx`, `sidebar-status-list.tsx`. Sidebar search: `components/sidebar/sidebar-search.ts` (matching), `sidebar-search-bar.tsx` (bar, archived list, empty state).
 
 ## Tests
 
 ```bash
 npx vitest run packages/app/src/history-ask --bail=1
+npx vitest run packages/server/src/server/agent-search --bail=1
 ```

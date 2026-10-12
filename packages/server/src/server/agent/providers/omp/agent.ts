@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
+import path from "node:path";
 import { setImmediate as waitForImmediate, setTimeout as delay } from "node:timers/promises";
 import type { Logger } from "pino";
 import stripAnsi from "strip-ansi";
@@ -83,9 +84,10 @@ import {
   readOmpImportSessionConfig,
   locateOmpSessionFile,
   restoreOmpSessionHeader,
+  readOmpSessionHeaderCwd,
 } from "./session-descriptor.js";
 import type { OmpRuntime, OmpRuntimeSession, OmpStartSessionInput } from "./runtime.js";
-import { OmpWarmPool, type OmpWarmClaim } from "./warm-pool.js";
+import { moveOmpSession, OmpWarmPool, type OmpWarmClaim } from "./warm-pool.js";
 import { OmpMcpBridge, type OmpBridgedToolIdentity } from "./mcp-bridge.js";
 import type {
   OmpAgentSessionEvent,
@@ -3100,6 +3102,7 @@ export class OmpAgentClient implements AgentClient {
         { register: !skippedHostTools },
       );
       this.logAcquire({ ...acquired.logInput, skippedHostTools });
+      await this.relocateResumedSession(acquired.session, sessionFile, resumeConfig.cwd);
       const resumedState = await this.applyResumeModel(acquired.session, resumeConfig.model);
       const config = {
         ...resumeConfig.config,
@@ -3126,6 +3129,31 @@ export class OmpAgentClient implements AgentClient {
       await acquired.session.close().catch(() => undefined);
       throw error;
     }
+  }
+
+  /**
+   * omp runs a resumed session in the cwd its header records, not the cwd the
+   * process was launched in. An agent moved to another workspace resumes with
+   * a new cwd, so `/move` relocates the session there (session file,
+   * settings, project rules) — the same command the warm pool retargets with.
+   */
+  private async relocateResumedSession(
+    session: OmpRuntimeSession,
+    sessionFile: string,
+    cwd: string,
+  ): Promise<void> {
+    const headerCwd = await readOmpSessionHeaderCwd(sessionFile);
+    if (!headerCwd || path.resolve(headerCwd) === path.resolve(cwd)) {
+      return;
+    }
+    const moved = await moveOmpSession(session, cwd, await session.getState());
+    if (!moved) {
+      throw new Error(`OMP did not move the resumed session from ${headerCwd} to ${cwd} in time`);
+    }
+    this.logger.info(
+      { from: headerCwd, to: cwd, sessionFile: moved.sessionFile },
+      "omp.resume.moved",
+    );
   }
 
   /**

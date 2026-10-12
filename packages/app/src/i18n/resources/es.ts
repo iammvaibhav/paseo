@@ -1273,6 +1273,7 @@ export const es: TranslationResources = {
     },
   },
   sidebar: {
+    search: en.sidebar.search,
     display: {
       trigger: "Preferencias de visualización",
       heading: "Visualización",
@@ -1761,6 +1762,9 @@ export const es: TranslationResources = {
     failedToLoad: "No se pudo cargar",
     chooseProjectForCommands: "Elige un proyecto para ver los comandos",
     chooseModelForCommands: "Selecciona un modelo para ver los comandos",
+  },
+  historyGap: {
+    load: "Cargar más historial",
   },
   loadOlderHistory: {
     failed: "No se pudo cargar el historial anterior",

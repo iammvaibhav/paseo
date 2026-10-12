@@ -747,6 +747,14 @@ export async function hasOmpSessionHeader(sessionFile: string): Promise<boolean>
   return findSessionRecordLine(headChunk) !== null;
 }
 
+/** The cwd a session's header records — the directory omp runs it in. */
+export async function readOmpSessionHeaderCwd(sessionFile: string): Promise<string | null> {
+  const headChunk = await readHeadChunk(sessionFile);
+  const line = headChunk ? findSessionRecordLine(headChunk) : null;
+  const cwd = line ? parseJsonRecord(line)?.cwd : null;
+  return typeof cwd === "string" && cwd ? cwd : null;
+}
+
 function findSessionRecordLine(headChunk: string): string | null {
   for (const line of headChunk.split("\n")) {
     const trimmed = line.trim();

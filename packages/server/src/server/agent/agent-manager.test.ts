@@ -1,6 +1,6 @@
 import { expect, test, vi } from "vitest";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
@@ -17,6 +17,8 @@ import { AgentStorage } from "./agent-storage.js";
 import { InMemoryAgentTimelineStore } from "./agent-timeline-store.js";
 import { toAgentPayload } from "./agent-projections.js";
 import { buildSelfReportSystemPrompt } from "../mission-control/self-report.js";
+import { moveAgentWhenRunSettles } from "../mission-control/meta-actions.js";
+import type { PersistedWorkspaceRecord } from "../workspace-registry.js";
 import {
   COMMANDER_TOOL_ALLOWLIST,
   MISSION_CONTROL_LABEL_KEY,
@@ -7582,6 +7584,97 @@ test("waitForAgentEvent does not resolve idle until foreground turn is finalized
   expect(waited.status).toBe("idle");
 
   await consumePromise;
+});
+
+test("an agent moving itself mid-turn moves when the turn settles and its next run starts in the new cwd", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-self-move-"));
+  const targetCwd = join(workdir, "target");
+  mkdirSync(targetCwd);
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const releaseTurnCompleted = deferred<void>();
+  let turns = 0;
+
+  class SlowTerminalSession extends TestAgentSession {
+    override async startTurn(): Promise<{ turnId: string }> {
+      const turnId = `self-move-turn-${++turns}`;
+      void (async () => {
+        this.pushEvent({ type: "turn_started", provider: this.provider, turnId });
+        await releaseTurnCompleted.promise;
+        this.pushEvent({ type: "turn_completed", provider: this.provider, turnId });
+      })();
+      return { turnId };
+    }
+  }
+
+  class SlowTerminalClient extends TestAgentClient {
+    override async createSession(config: AgentSessionConfig): Promise<AgentSession> {
+      return new SlowTerminalSession(config);
+    }
+  }
+
+  const client = new SlowTerminalClient();
+  const manager = new AgentManager({
+    clients: { codex: client },
+    registry: storage,
+    logger,
+    idFactory: () => "00000000-0000-4000-8000-000000000125",
+  });
+  try {
+    const snapshot = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+      workspaceId: "ws-a",
+    });
+    const stream = manager.streamAgent(snapshot.id, "move yourself to ws-b");
+    const consumePromise = (async () => {
+      for await (const _event of stream) {
+        // Drain so the run settles naturally.
+      }
+    })();
+    await manager.waitForAgentRunStart(snapshot.id);
+
+    const targetWorkspace = {
+      workspaceId: "ws-b",
+      cwd: targetCwd,
+      archivedAt: null,
+    } as PersistedWorkspaceRecord;
+    const move = moveAgentWhenRunSettles(
+      {
+        agentManager: manager,
+        agentStorage: storage,
+        workspaceRegistry: { get: async (id) => (id === "ws-b" ? targetWorkspace : null) },
+      },
+      { agentId: snapshot.id, workspaceId: "ws-b" },
+    );
+
+    let moved = false;
+    void move.then((result) => {
+      moved = true;
+      return result;
+    });
+    // The turn is held open, so no amount of waiting may let the move land.
+    const { promise: drained, resolve: drain } = Promise.withResolvers<void>();
+    setImmediate(drain);
+    await drained;
+    expect(moved).toBe(false);
+    expect(manager.getAgent(snapshot.id)?.workspaceId).toBe("ws-a");
+
+    releaseTurnCompleted.resolve();
+    await expect(move).resolves.toMatchObject({
+      fromWorkspaceId: "ws-a",
+      toWorkspaceId: "ws-b",
+      live: true,
+    });
+    expect(manager.getAgent(snapshot.id)).toMatchObject({ workspaceId: "ws-b", cwd: targetCwd });
+    await consumePromise;
+    expect(client.resumeOverrides).toEqual([]);
+
+    // The next run restarts the provider session in the new directory first.
+    await startAgentRun(manager, snapshot.id, "where are you?", logger);
+    expect(client.resumeOverrides.map((config) => config?.cwd)).toEqual([targetCwd]);
+    expect(manager.getAgent(snapshot.id)?.sessionCwdStale).toBeFalsy();
+    await manager.waitForRunSettled(snapshot.id);
+  } finally {
+    rmSync(workdir, { recursive: true, force: true });
+  }
 });
 
 test("waitForAgentRunStart resolves while a foreground run is still only pending", async () => {

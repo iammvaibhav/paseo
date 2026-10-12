@@ -23,10 +23,6 @@ import {
 import { ItsaplanProjectStore, type ItsaplanCentralConfig } from "./projects.js";
 import { createPaseoToolCatalog } from "../agent/tools/paseo-tools.js";
 import { createProviderSnapshotManagerStub } from "../test-utils/session-stubs.js";
-import {
-  MISSION_CONTROL_LABEL_KEY,
-  MISSION_CONTROL_LABEL_VALUE,
-} from "../mission-control/commander-contract.js";
 
 // ---------------------------------------------------------------------------
 // In-test fake itsaplan HTTP server (acceptance: "node http, in-test").
@@ -2455,7 +2451,7 @@ describe("ItsaplanBridge", () => {
       }
     });
 
-    test("fleet_ticketize_agent Commander tool creates ticket and returns structured outcome", async () => {
+    test("fleet_ticketize_agent creates a ticket for any caller and returns structured outcome", async () => {
       const agentId = "11111111-2222-3333-4444-555555555555";
       const agent = fakeAgent(agentId, {});
       agentManagerFake.setAgent(agent);
@@ -2471,7 +2467,7 @@ describe("ItsaplanBridge", () => {
         agentManager: agentManagerFake.manager as never,
         agentStorage: createFakeAgentStorage(agentStorageRecords) as never,
         providerSnapshotManager: createProviderSnapshotManagerStub().manager as never,
-        callerLabels: { [MISSION_CONTROL_LABEL_KEY]: MISSION_CONTROL_LABEL_VALUE },
+        callerLabels: {}, // a worker, not the Commander
         itsaplanTicketize: {
           ticketizeAgent: (id) => bridge.ticketizeAgent(id),
         },
@@ -2491,25 +2487,6 @@ describe("ItsaplanBridge", () => {
         ok: true,
         issueId: expect.any(Number),
       });
-    });
-
-    test("fleet_ticketize_agent rejects non-Commander callers", async () => {
-      const catalog = createPaseoToolCatalog({
-        agentManager: agentManagerFake.manager as never,
-        agentStorage: createFakeAgentStorage(agentStorageRecords) as never,
-        providerSnapshotManager: createProviderSnapshotManagerStub().manager as never,
-        callerLabels: {}, // not Commander
-        itsaplanTicketize: {
-          ticketizeAgent: (id) => bridge.ticketizeAgent(id),
-        },
-        logger: createTestLogger(),
-      });
-
-      await expect(
-        catalog.executeTool("fleet_ticketize_agent", {
-          agentId: "11111111-2222-3333-4444-555555555555",
-        }),
-      ).rejects.toThrow("requires a Commander caller");
     });
   });
   describe("workspace archival", () => {

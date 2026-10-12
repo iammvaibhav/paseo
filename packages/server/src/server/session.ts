@@ -3,6 +3,7 @@ import type { BrowserToolsBroker } from "./browser-tools/broker.js";
 import type { PagePortProxy } from "./page-tools/port-proxy.js";
 import type { PageStore } from "./page-tools/page-store.js";
 import type { RoutingService } from "./routing/routing-service.js";
+import type { AgentSearchService } from "./agent-search/agent-search-service.js";
 import { BrowserAutomationHostCapabilitySchema } from "@getpaseo/protocol/browser-automation/capabilities";
 import type {
   SessionEventSubscription,
@@ -518,6 +519,7 @@ export interface SessionOptions {
   pagePortProxy?: Pick<PagePortProxy, "open"> | null;
   pageStore?: Pick<PageStore, "get"> | null;
   routingService?: RoutingService | null;
+  agentSearchService?: AgentSearchService | null;
   /** How the socket that sent a request reached the daemon. */
   resolveSourcePeer?: (source?: object) => SessionSourcePeer | null;
   clientId: string;
@@ -920,6 +922,7 @@ export class Session {
   private readonly pagePortProxy: Pick<PagePortProxy, "open"> | null;
   private readonly pageStore: Pick<PageStore, "get"> | null;
   private readonly routingService: RoutingService | null;
+  private readonly agentSearchService: AgentSearchService | null;
   private readonly resolveSourcePeer: (source?: object) => SessionSourcePeer | null;
   private readonly clientId: string;
   private readonly authorization: SessionAuthorization;
@@ -1102,6 +1105,7 @@ export class Session {
     this.pagePortProxy = options.pagePortProxy ?? null;
     this.pageStore = options.pageStore ?? null;
     this.routingService = options.routingService ?? null;
+    this.agentSearchService = options.agentSearchService ?? null;
     this.resolveSourcePeer = options.resolveSourcePeer ?? (() => null);
     this.clientId = clientId;
     this.authorization = new SessionAuthorization(permissions);
@@ -1742,6 +1746,12 @@ export class Session {
     if (payload.workspaceId) {
       await this.emitWorkspaceUpdateForWorkspaceId(payload.workspaceId);
     }
+  }
+
+  /** External-mutation agent removal (an agent transferred to a peer host by
+   *  daemon machinery outside this session). */
+  async emitAgentRemovedForExternalMutation(agentId: string): Promise<void> {
+    await this.agentUpdates.removeAgent(agentId);
   }
 
   async syncWorkspaceGitObserversForExternalWorkspaceIds(
@@ -4312,6 +4322,8 @@ export class Session {
         return this.handleProjectIconSetRequest(msg);
       case "routing.suggest.request":
         return this.handleRoutingSuggestRequest(msg);
+      case "agent.search.request":
+        return this.handleAgentSearchRequest(msg);
       case "routing.project.create.request":
         return this.handleRoutingProjectCreateRequest(msg);
       case "agent.agent_mode.set.request":
@@ -5247,6 +5259,37 @@ export class Session {
           requestId: request.requestId,
           suggestion: null,
           error: getErrorMessageOr(error, "Routing failed"),
+        },
+      });
+    }
+  }
+
+  private async handleAgentSearchRequest(
+    request: Extract<SessionInboundMessage, { type: "agent.search.request" }>,
+  ): Promise<void> {
+    try {
+      if (!this.agentSearchService) {
+        throw new Error("Agent search is not available on this host");
+      }
+      const result = await this.agentSearchService.search({
+        query: request.query,
+        ...(request.includeArchived ? { includeArchived: true } : {}),
+      });
+      this.emit({
+        type: "agent.search.response",
+        payload: { requestId: request.requestId, ...result, error: null },
+      });
+    } catch (error) {
+      this.sessionLogger.warn({ err: error }, "agent.search failed");
+      this.emit({
+        type: "agent.search.response",
+        payload: {
+          requestId: request.requestId,
+          matches: [],
+          semantic: false,
+          candidateCount: 0,
+          latencyMs: 0,
+          error: getErrorMessageOr(error, "Agent search failed"),
         },
       });
     }

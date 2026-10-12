@@ -1355,6 +1355,30 @@ describe("OMP agent client and session", () => {
     ]);
   });
 
+  test("moves a resumed session into the requested cwd when its header records another", async () => {
+    // omp runs a resumed session in the cwd its header records, not the cwd it
+    // was launched in. An agent moved to another workspace resumes with the new
+    // cwd, so the session is relocated there with omp's /move.
+    const history = {
+      user: { id: "user-history", text: "continue the audit" },
+      assistant: { id: "assistant-history", text: "audit context restored" },
+    };
+    const moved = new OmpHarness();
+    await moved.resume(history, { cwd: "/workspace/moved" }, { headerCwd: "/workspace/original" });
+    expect(moved.runtime().prompts.map((prompt) => prompt.message)).toContain(
+      "/move /workspace/moved",
+    );
+    expect(moved.getSession().describePersistence()?.nativeHandle).toBe(
+      "/workspace/moved/session.jsonl",
+    );
+
+    const unmoved = new OmpHarness();
+    await unmoved.resume(history, { cwd: "/workspace/same" }, { headerCwd: "/workspace/same" });
+    expect(unmoved.runtime().prompts.some((prompt) => prompt.message.startsWith("/move"))).toBe(
+      false,
+    );
+  });
+
   test("isAvailable() reports available from a warm pool without probing the binary", async () => {
     // The configured command does not exist, so the which/--version probe
     // would fail. A pool entry proves the binary works (it booted to ready),

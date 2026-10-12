@@ -116,6 +116,7 @@ import type { BrowserToolsBroker } from "./browser-tools/broker.js";
 import type { PagePortProxy } from "./page-tools/port-proxy.js";
 import type { PageStore } from "./page-tools/page-store.js";
 import type { RoutingService } from "./routing/routing-service.js";
+import type { AgentSearchService } from "./agent-search/agent-search-service.js";
 import type { DaemonRuntimeConfig } from "./session/daemon/daemon-session.js";
 import { DirectorySyncService } from "./directory-sync/index.js";
 import { OWNER_PERMISSIONS, type DaemonPermission } from "./authorization/index.js";
@@ -634,6 +635,7 @@ export class VoiceAssistantWebSocketServer {
   private readonly pagePortProxy: PagePortProxy | null;
   private readonly pageStore: PageStore | null;
   private readonly routingService: RoutingService | null;
+  private readonly agentSearchService: AgentSearchService | null;
   private readonly hubRelationships: HubRelationshipManagement | null;
   private readonly peerManager: PeerManager | null;
   private readonly missionControlService: MissionControlService | null;
@@ -725,6 +727,7 @@ export class VoiceAssistantWebSocketServer {
       pagePortProxy?: PagePortProxy | null;
       pageStore?: PageStore | null;
       routingService?: RoutingService | null;
+      agentSearchService?: AgentSearchService | null;
     },
   ) {
     this.onWorkspaceArchived = onWorkspaceArchived;
@@ -741,6 +744,7 @@ export class VoiceAssistantWebSocketServer {
     this.pagePortProxy = websocketServices?.pagePortProxy ?? null;
     this.pageStore = websocketServices?.pageStore ?? null;
     this.routingService = websocketServices?.routingService ?? null;
+    this.agentSearchService = websocketServices?.agentSearchService ?? null;
     this.hubRelationships = hubRelationships ?? null;
     this.peerManager = peerManager ?? null;
     this.missionControlService = missionControlService ?? null;
@@ -1554,6 +1558,7 @@ export class VoiceAssistantWebSocketServer {
       pagePortProxy: this.pagePortProxy,
       pageStore: this.pageStore,
       routingService: this.routingService,
+      agentSearchService: this.agentSearchService,
       resolveSourcePeer: (source) => {
         const identity = source ? this.socketIdentities.get(source as WebSocketLike) : undefined;
         return identity
@@ -2112,6 +2117,8 @@ export class VoiceAssistantWebSocketServer {
         routingSuggest: true,
         // COMPAT(pagePortProxy): added 2026-10-07, remove gate after 2027-04-07.
         ...(this.pagePortProxy ? { pagePortProxy: true } : {}),
+        // COMPAT(agentSearch): added 2026-10-12, remove gate after 2027-04-12.
+        ...(this.agentSearchService ? { agentSearch: true } : {}),
       },
     };
   }

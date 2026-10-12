@@ -1244,6 +1244,21 @@ export const en = {
     },
   },
   sidebar: {
+    search: {
+      open: "Search agents",
+      close: "Close search",
+      placeholder: "Search agents",
+      clear: "Clear search",
+      includeArchived: "Include archived",
+      searching: "Searching…",
+      semantic: "jev · {{ms}} ms",
+      wordsOnly: "Word matches only",
+      archivedTitle: "Archived",
+      emptyTitle: "No agents match",
+      emptyDescription:
+        "Try other words, include archived agents, or run a deep search in History.",
+      deepSearch: "Deep search",
+    },
     display: {
       trigger: "Display preferences",
       heading: "Display",
@@ -1736,6 +1751,9 @@ export const en = {
     failedToLoad: "Failed to load",
     chooseProjectForCommands: "Choose a project to see commands",
     chooseModelForCommands: "Select a model to see commands",
+  },
+  historyGap: {
+    load: "Load more history",
   },
   loadOlderHistory: {
     failed: "Couldn't load older history",

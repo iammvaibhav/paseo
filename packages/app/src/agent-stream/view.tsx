@@ -64,7 +64,11 @@ import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { ToolCallDetailsContent } from "@/components/tool-call-details";
 import { QuestionFormCard } from "@/components/question-form-card";
 import { ToolCallSheetProvider } from "@/components/tool-call-sheet";
-import { createStreamPresentation, getStreamItemMessageId } from "./presentation";
+import {
+  anchorHistoryGaps,
+  createStreamPresentation,
+  getStreamItemMessageId,
+} from "./presentation";
 import { OverviewToolCallGroupView } from "@/tool-calls/detail-level/overview/view";
 import type { ToolCallDetailGroup } from "@/tool-calls/detail-level/projection";
 import { isShowPageToolCall, isStatusReportToolCall } from "@/tool-calls/detail-level/grouping";
@@ -81,7 +85,8 @@ import { getHostRuntimeStore } from "@/runtime/host-runtime";
 import { usePanelStore } from "@/stores/panel-store";
 import { useDesktopBrowserEditorUrl } from "@/workspace/use-desktop-browser-editor-url";
 import { useHostFeature, useHostFeatures } from "@/runtime/host-features";
-import { planTimelineTailFetch } from "@/timeline/timeline-sync-plan";
+import { planTimelineTailFetch, type TimelineGap } from "@/timeline/timeline-sync-plan";
+import { HistoryGapRow } from "./history-gap-row";
 import { isPaseoSystemMessage, PaseoSystemRow } from "@/screens/mission-control/paseo-system-row";
 import { MachineryMessageRow } from "./machinery-message-row";
 import { useMissionControlVerbose } from "@/mission-control/use-mission-control-verbose";
@@ -373,6 +378,7 @@ const AGENT_CAPABILITY_FLAG_KEYS: (keyof AgentCapabilityFlags)[] = [
 ];
 
 const EMPTY_STREAM_HEAD: StreamItem[] = [];
+const EMPTY_HISTORY_GAPS: TimelineGap[] = [];
 
 // Stable identity: the strategy viewports key rows off this and re-create
 // their scroll-to-message plumbing when its identity changes.
@@ -528,15 +534,20 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
               hasOlder: historyPagination.hasOlder,
               progressKey: historyPagination.progressKey,
               loadOlder: historyPagination.onLoadOlder,
+              // An injected pagination (subagent panes) has no loaded-range
+              // coverage, so it never has gaps.
+              gaps: EMPTY_HISTORY_GAPS,
             }
           : {
               isLoadingOlder: agentHistoryPagination.isLoadingOlder,
               hasOlder: agentHistoryPagination.hasOlder,
               progressKey: agentHistoryPagination.progressKey,
               loadOlder: agentHistoryPagination.loadOlder,
+              gaps: agentHistoryPagination.gaps,
             },
       [
         historyPagination,
+        agentHistoryPagination.gaps,
         agentHistoryPagination.hasOlder,
         agentHistoryPagination.isLoadingOlder,
         agentHistoryPagination.loadOlder,
@@ -548,6 +559,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       hasOlder: remoteHasOlder,
       progressKey: remoteProgressKey,
       loadOlder: loadRemoteOlder,
+      gaps: historyGaps,
     } = paginationState;
     useEffect(() => {
       setExpandedInlineToolCallIds(new Set());
@@ -766,6 +778,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
           transform: transformTimelineItem,
           level: toolCallDetailLevel,
           isTurnActive,
+          gaps: historyGaps,
         }),
       [
         presentStream,
@@ -774,6 +787,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         transformTimelineItem,
         toolCallDetailLevel,
         isTurnActive,
+        historyGaps,
       ],
     );
     const {
@@ -789,6 +803,17 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     const isLoadingOlder = remoteIsLoadingOlder;
     const hasOlder = hasLocalHistory || remoteHasOlder;
     const progressKey = `${remoteProgressKey ?? "local"}:${historyWindowStart}`;
+    const gapByAnchorId = useMemo(
+      () => anchorHistoryGaps(presentation.tail, historyGaps),
+      [historyGaps, presentation.tail],
+    );
+    const { loadGap, loadingGapStart } = agentHistoryPagination;
+    const handleLoadGap = useCallback(
+      (gap: TimelineGap) => {
+        void loadGap(gap);
+      },
+      [loadGap],
+    );
 
     const baseRenderModel = useMemo(() => {
       return buildAgentStreamRenderModel({
@@ -1242,7 +1267,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     const renderStreamItem = useCallback(
       (layoutItem: StreamLayoutItem) => {
         const content = renderStreamItemContent(layoutItem);
-        return renderStreamItemWithTurnFooter({
+        const row = renderStreamItemWithTurnFooter({
           content,
           layoutItem,
           strategy: streamRenderStrategy,
@@ -1261,15 +1286,30 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
           agentCwd: context.cwd,
           sourceContext,
         });
+        const gap = gapByAnchorId.get(layoutItem.item.id);
+        if (!gap) return row;
+        return (
+          <>
+            {row}
+            <HistoryGapRow
+              gap={gap}
+              loading={loadingGapStart === gap.startSeq}
+              onLoad={handleLoadGap}
+            />
+          </>
+        );
       },
       [
         canSecondOpinion,
         context.cwd,
         context.model,
         context.provider,
+        gapByAnchorId,
         handleForkAssistantTurn,
+        handleLoadGap,
         handleSecondOpinionAssistantTurn,
         jumpToUserMessage,
+        loadingGapStart,
         renderStreamItemContent,
         resolvedServerId,
         streamRenderStrategy,

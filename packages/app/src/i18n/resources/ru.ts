@@ -1254,6 +1254,7 @@ export const ru: TranslationResources = {
     },
   },
   sidebar: {
+    search: en.sidebar.search,
     display: {
       trigger: "Настройки отображения",
       heading: "Отображение",
@@ -1744,6 +1745,9 @@ export const ru: TranslationResources = {
     failedToLoad: "Не удалось загрузить",
     chooseProjectForCommands: "Выберите проект, чтобы увидеть команды",
     chooseModelForCommands: "Выберите модель, чтобы увидеть команды",
+  },
+  historyGap: {
+    load: "Загрузить больше истории",
   },
   loadOlderHistory: {
     failed: "Не удалось загрузить старую историю.",

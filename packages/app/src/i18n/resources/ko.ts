@@ -1243,6 +1243,7 @@ export const ko: TranslationResources = {
     },
   },
   sidebar: {
+    search: en.sidebar.search,
     display: {
       trigger: "표시 설정",
       heading: "표시",
@@ -1716,6 +1717,9 @@ export const ko: TranslationResources = {
     failedToLoad: "불러오지 못했습니다",
     chooseProjectForCommands: "명령을 보려면 프로젝트를 선택하세요",
     chooseModelForCommands: "명령을 보려면 모델을 선택하세요",
+  },
+  historyGap: {
+    load: "기록 더 불러오기",
   },
   loadOlderHistory: {
     failed: "이전 기록을 불러올 수 없습니다",

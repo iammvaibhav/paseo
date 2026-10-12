@@ -139,6 +139,7 @@ import {
   type SplitMetaToolArgs,
 } from "../../mission-control/fleet-meta.js";
 import type { ResolvedMetaTarget } from "../../mission-control/meta-actions.js";
+import { scheduleAgentSelfMove } from "./self-move.js";
 import {
   MISSION_CONTROL_LABEL_KEY,
   MISSION_CONTROL_LABEL_VALUE,
@@ -198,6 +199,8 @@ export interface PaseoToolHostDependencies {
   listActiveWorkspaces?: ArchiveDependencies["listActiveWorkspaces"];
   archiveWorkspaceRecord?: ArchiveDependencies["archiveWorkspaceRecord"];
   emitWorkspaceUpdatesForWorkspaceIds?: ArchiveDependencies["emitWorkspaceUpdatesForWorkspaceIds"];
+  /** Broadcast an agent's removal to every session (cross-host move source). */
+  emitAgentRemoved?: (agentId: string) => Promise<void>;
   workspaceRegistry?: Pick<WorkspaceRegistry, "get" | "list" | "upsert">;
   projectRegistry?: Pick<ProjectRegistry, "get" | "list">;
   createDirectoryWorkspace?: (
@@ -1363,9 +1366,11 @@ interface CommanderGate {
   }) => Promise<{ ok: true; proposal: MissionControlProposal } | { ok: false; error: string }>;
 }
 
-// M4 approval-gate wrap point for mutating Commander tools (spawn, send,
-// meta): ask mode holds the card pending, auto mode approves and records,
-// destructive classification always asks. Non-Commander callers are untouched.
+// M4 approval-gate wrap point for mutating fleet tools (spawn, send, meta).
+// Commander calls are proposals: ask mode holds the card pending, auto mode
+// approves and records. Any other agent acts on its own user's instruction in
+// its own chat, so its calls apply immediately (forceSend) through the same
+// executor. Destructive classification always asks, whoever calls.
 function buildCommanderGate(deps: {
   callerLabels: Record<string, string> | undefined;
   missionControlService: PaseoToolHostDependencies["missionControlService"];
@@ -1376,17 +1381,16 @@ function buildCommanderGate(deps: {
     callerLabels?.[MISSION_CONTROL_LABEL_KEY] === MISSION_CONTROL_LABEL_VALUE;
   const runCommanderGatedAction: CommanderGate["runCommanderGatedAction"] = async (action) => {
     const { toolName, toolInput, classify, buildProposal } = action;
-    if (!isCommanderCaller) {
-      return { ok: false, error: `${toolName} requires a Commander caller` };
-    }
     if (!missionControlService) {
       return { ok: false, error: "Mission Control is not enabled on this host" };
     }
     try {
       const proposalInput = await buildProposal(toolInput);
+      const classification = classify?.(toolInput) ?? proposalInput.classification ?? "normal";
       const proposal = await missionControlService.approvals.createProposal({
         ...proposalInput,
-        classification: classify?.(toolInput) ?? proposalInput.classification ?? "normal",
+        classification,
+        ...(isCommanderCaller || classification === "destructive" ? {} : { forceSend: true }),
       });
       return { ok: true, proposal };
     } catch (error) {
@@ -1440,11 +1444,10 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
   const childLogger = logger.child({ module: "agent", component: "paseo-tool-catalog" });
   const callerContext = resolveCatalogCallerContext(callerAgentId, resolveCallerContext);
 
-  // Ask-mode gate for Commander actions: the Commander is the only
-  // mission-control machinery driving fleet spawn/send tools, so its
-  // fleet_create_agent and fleet_send_prompt calls route through the approval
-  // gate as proposals. Auto mode sends immediately; non-Commander callers
-  // (workers spawning subagents) are untouched.
+  // Approval gate (buildCommanderGate): the Commander's fleet_create_agent,
+  // fleet_send_prompt and meta calls become proposals. Workers spawn and send
+  // on their ungated paths; their meta calls apply immediately except
+  // destructive archives, which always ask.
   const gate = buildCommanderGate({
     callerLabels,
     missionControlService,
@@ -1471,15 +1474,16 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
   };
 
   /**
-   * 04 — the shared Commander-caller path for the 11 split meta tools (and
-   * the fleet_meta COMPAT alias): every tool resolves its bare id, builds the
-   * identical metaPlan proposal payload (buildSplitMetaProposalInput), and
-   * routes through the SAME approval gate as the old fleet_meta — destructive
-   * archives always ask. Output shape {ok, status, proposalId?, guidance?}.
+   * 04 — the shared path for the 11 split meta tools (and the fleet_meta
+   * COMPAT alias): every tool resolves its bare id, builds the identical
+   * metaPlan proposal payload (buildSplitMetaProposalInput), and routes
+   * through the SAME approval gate as the old fleet_meta — Commander calls
+   * become proposals (destructive archives always ask), other agents' calls
+   * apply immediately. Output shape {ok, status, proposalId?, guidance?}.
    */
   const runMetaGate = async (input: SplitMetaToolArgs & { toolName: string }) => {
-    if (!isCommanderCaller || !missionControlService) {
-      throw new Error(`${input.toolName} requires a Commander caller`);
+    if (!missionControlService) {
+      throw new Error("Mission Control is not enabled on this host");
     }
     const metaWorkspaceRegistry = options.workspaceRegistry;
     const metaProjectRegistry = options.projectRegistry;
@@ -1487,6 +1491,30 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       throw new Error(
         `${input.toolName} is unavailable: workspace/project registries are not configured on this daemon`,
       );
+    }
+    if (
+      input.action === "move_agent" &&
+      callerAgentId &&
+      input.targetId?.trim() === callerAgentId &&
+      input.destination
+    ) {
+      const guidance = await scheduleAgentSelfMove(
+        {
+          agentManager,
+          agentStorage,
+          workspaceRegistry: metaWorkspaceRegistry,
+          peerManager: peerManager ?? null,
+          emitAgentRemove: options.emitAgentRemoved,
+          emitWorkspaceUpdates: options.emitWorkspaceUpdatesForWorkspaceIds,
+          resolveFleetId: (id) => fleetIdIndex.resolveFleetId(id),
+          logger: childLogger,
+        },
+        { agentId: callerAgentId, workspaceId: input.destination },
+      );
+      return {
+        content: [],
+        structuredContent: ensureValidJson({ ok: true, status: "scheduled", guidance }),
+      };
     }
     // Dedupe (spec 03 — same discipline as fleet_create_agent and
     // fleet_send_prompt): an identical meta mutation while the prior is
@@ -6245,14 +6273,18 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
   });
 
   // 04 — the 11 split meta tools share one output contract (same as the old
-  // fleet_meta) and the M8 respondsTo ledger field.
+  // fleet_meta) and the M8 respondsTo ledger field. "scheduled" is an agent's
+  // move of itself, applied when its turn ends.
   const META_TOOL_OUTPUT_SCHEMA = {
     ok: z.boolean(),
-    status: z.enum(["pending", "sent"]).optional(),
+    status: z.enum(["pending", "sent", "scheduled"]).optional(),
     proposalId: z.string().optional(),
     guidance: z.string().optional(),
     error: z.string().optional(),
   };
+  const META_GATE_NOTE =
+    "Called by the Commander it is approval-gated (a proposal card the user approves); called by " +
+    "any other agent it applies immediately.";
   const META_RESPONDS_TO_DESCRIPTION =
     "M8 instruction ledger: the open instruction id this dispatch answers (e.g. '#12'). " +
     "The envelope lists open ids; cite one on every card you emit for a user instruction.";
@@ -6312,8 +6344,8 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       outputSchema: META_TOOL_OUTPUT_SCHEMA,
     },
     async (args: { metaPlan: MissionControlMetaPlan; respondsTo?: string }) => {
-      if (!isCommanderCaller || !missionControlService) {
-        throw new Error("fleet_meta requires a Commander caller");
+      if (!missionControlService) {
+        throw new Error("Mission Control is not enabled on this host");
       }
       // M5: ask-mode gate (user decision: everything gated except the nudge).
       // The meta action becomes a meta-kind proposal whose card shows what
@@ -6366,7 +6398,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       title: "Rename a project",
       description:
         "Rename a project across the fleet. projectId is a prj_ id from fleet_list_inventory — " +
-        "fleet-wide, no host needed. Approval-gated; creates a proposal card the user approves.",
+        `fleet-wide, no host needed. ${META_GATE_NOTE}`,
       inputSchema: {
         projectId: PROJECT_ID_SCHEMA,
         title: z.string().min(1).describe("The new project name."),
@@ -6393,7 +6425,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       title: "Rename a workspace",
       description:
         "Rename a workspace across the fleet. workspaceId is a wks_ id from fleet_list_inventory — " +
-        "fleet-wide, no host needed. Approval-gated; creates a proposal card the user approves.",
+        `fleet-wide, no host needed. ${META_GATE_NOTE}`,
       inputSchema: {
         workspaceId: WORKSPACE_ID_SCHEMA,
         title: z.string().min(1).describe("The new workspace name."),
@@ -6421,7 +6453,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       description:
         "Change an agent's TITLE across the fleet (agent names are write-once and never touched). " +
         "agentId is an agent UUID from fleet_list_agents/fleet_search data — fleet-wide, no host needed. " +
-        "Approval-gated; creates a proposal card the user approves.",
+        META_GATE_NOTE,
       inputSchema: {
         agentId: AGENT_ID_SCHEMA,
         title: z.string().min(1).describe("The new agent title."),
@@ -6525,8 +6557,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       title: "Create a project",
       description:
         "Create a project at an absolute root path on a host. host is REQUIRED — the new project root " +
-        "must land somewhere (a peer name from the daemon peers config, or 'local'). Approval-gated; " +
-        "creates a proposal card the user approves.",
+        `must land somewhere (a peer name from the daemon peers config, or 'local'). ${META_GATE_NOTE}`,
       inputSchema: {
         host: z
           .string()
@@ -6562,10 +6593,13 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       description:
         "Move an agent to another workspace, including across projects or across hosts in the fleet. agentId is an " +
         "agent UUID from fleet_list_agents/fleet_search data; workspaceId is a wks_ id from " +
-        "fleet_list_inventory — both fleet-wide, no host needed. Refuses running agents. Approval-gated; " +
-        "creates a proposal card the user approves.",
+        "fleet_list_inventory — both fleet-wide, no host needed. Refuses another agent while it is running. " +
+        "To move yourself, omit agentId: the move applies when your current turn ends and your next " +
+        `turn runs in the new workspace directory, with no approval card. ${META_GATE_NOTE}`,
       inputSchema: {
-        agentId: AGENT_ID_SCHEMA,
+        agentId: AGENT_ID_SCHEMA.optional().describe(
+          "The agent to move. Omit to move yourself (the calling agent).",
+        ),
         workspaceId: WORKSPACE_ID_SCHEMA,
         host: HOST_HINT_SCHEMA,
         respondsTo: z.string().optional().describe(META_RESPONDS_TO_DESCRIPTION),
@@ -6577,7 +6611,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         toolName: "fleet_move_agent",
         action: "move_agent",
         kind: "agent",
-        targetId: agentId,
+        targetId: agentId ?? callerAgentId,
         destination: workspaceId,
         host,
         respondsTo,
@@ -6590,8 +6624,8 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       title: "Promote an experiment workspace to its own project",
       description:
         "Promote a workspace in the per-host experiments project (~/experiments) to its own project. " +
-        "workspaceId is a wks_ id from fleet_list_inventory — fleet-wide, no host needed. Approval-gated; " +
-        "creates a proposal card the user approves.",
+        "workspaceId is a wks_ id from fleet_list_inventory — fleet-wide, no host needed. " +
+        META_GATE_NOTE,
       inputSchema: {
         workspaceId: WORKSPACE_ID_SCHEMA,
         host: HOST_HINT_SCHEMA,
@@ -6617,7 +6651,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       description:
         "Adopt an agent: stamp it as Commander-managed (paseo.commander-adopted-at) so the verifier " +
         "audits its work — no message is sent. agentId is an agent UUID from fleet_list_agents/fleet_search " +
-        "data — fleet-wide, no host needed. Approval-gated; creates a proposal card the user approves.",
+        `data — fleet-wide, no host needed. ${META_GATE_NOTE}`,
       inputSchema: {
         agentId: AGENT_ID_SCHEMA,
         host: HOST_HINT_SCHEMA,
@@ -6643,7 +6677,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       description:
         "Release an adopted agent: clear the Commander-management stamp so the verifier no longer " +
         "includes it. agentId is an agent UUID from fleet_list_agents/fleet_search data — fleet-wide, " +
-        "no host needed. Approval-gated; creates a proposal card the user approves.",
+        `no host needed. ${META_GATE_NOTE}`,
       inputSchema: {
         agentId: AGENT_ID_SCHEMA,
         host: HOST_HINT_SCHEMA,
@@ -6670,7 +6704,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         "Create an itsaplan ticket from an agent's title and description, link the agent to the ticket with an itsaplan.issue label, " +
         "and post a deep-link comment. Ticket column matches the agent's current lifecycle bucket (running/needs_you -> In Progress, " +
         "ready -> Ready to review, done -> completed, idle -> unstarted/Todo). Idempotent: returns existing ticket if already labeled. " +
-        "agentId is an agent UUID from fleet_list_agents/fleet_search data. Commander-only.",
+        "agentId is an agent UUID from fleet_list_agents/fleet_search data.",
       inputSchema: {
         agentId: AGENT_ID_SCHEMA,
       },
@@ -6682,9 +6716,6 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       },
     },
     async ({ agentId }) => {
-      if (!isCommanderCaller) {
-        throw new Error("fleet_ticketize_agent requires a Commander caller");
-      }
       const ticketize = options.itsaplanTicketize;
       if (!ticketize) {
         throw new Error(

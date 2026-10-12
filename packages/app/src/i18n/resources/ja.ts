@@ -1249,6 +1249,7 @@ export const ja: TranslationResources = {
     },
   },
   sidebar: {
+    search: en.sidebar.search,
     display: {
       trigger: "表示設定",
       heading: "表示",
@@ -1722,6 +1723,9 @@ export const ja: TranslationResources = {
     failedToLoad: "読み込みに失敗しました",
     chooseProjectForCommands: "コマンドを表示するにはプロジェクトを選択してください",
     chooseModelForCommands: "コマンドを表示するにはモデルを選択してください",
+  },
+  historyGap: {
+    load: "履歴をさらに読み込む",
   },
   loadOlderHistory: {
     failed: "古い履歴を読み込めませんでした",

@@ -2831,6 +2831,49 @@ describe("processTimelineResponse", () => {
     expect(result.sideEffects).not.toContainEqual(expect.objectContaining({ type: "catch_up" }));
   });
 
+  it("closes the gap after a prompt jump once a gap page joins both ranges", () => {
+    const result = processTimelineResponse({
+      ...baseTimelineInput,
+      currentTail: [
+        {
+          kind: "user_message",
+          id: "oldest",
+          text: "oldest",
+          timestamp: new Date(1),
+          timelineCursor: { epoch: "epoch-1", seq: 1 },
+        },
+        {
+          kind: "user_message",
+          id: "newest",
+          text: "newest",
+          timestamp: new Date(1000),
+          timelineCursor: { epoch: "epoch-1", seq: 100 },
+        },
+      ],
+      currentCursor: {
+        epoch: "epoch-1",
+        startSeq: 80,
+        endSeq: 100,
+        retainedRanges: [{ startSeq: 1, endSeq: 40, hasOlder: false }],
+      },
+      payload: {
+        ...baseTimelineInput.payload,
+        direction: "before",
+        mergeWindow: true,
+        epoch: "epoch-1",
+        startCursor: { seq: 41 },
+        endCursor: { seq: 79 },
+        hasOlder: true,
+        hasNewer: true,
+        entries: [makeTimelineEntry(41, "middle", "user_message", 79)],
+      },
+    });
+
+    expect(getUserTexts(result.tail)).toEqual(["oldest", "middle", "newest"]);
+    expect(result.cursor).toEqual({ epoch: "epoch-1", startSeq: 1, endSeq: 100 });
+    expect(result.older).toBe("unchanged");
+  });
+
   it("keeps whole live assistant messages ordered when merging a disjoint prompt-jump window", () => {
     const live = processAgentStreamEvents({
       events: [

@@ -413,8 +413,15 @@ export async function buildSplitMetaProposalInput(
 }
 
 /** The structured outcome every meta tool reports (same as fleet_meta today):
- *  pending card vs applied. */
+ *  pending card, applied, or failed (an immediate apply that errored). */
 export function formatMetaToolOutcome(proposal: MissionControlProposal): Record<string, unknown> {
+  if (proposal.status === "failed") {
+    return {
+      ok: false,
+      proposalId: proposal.id,
+      error: proposal.failureReason ?? `Meta action failed (proposal ${proposal.id})`,
+    };
+  }
   if (proposal.status === "pending") {
     return {
       ok: true,

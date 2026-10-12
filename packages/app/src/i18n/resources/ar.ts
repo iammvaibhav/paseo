@@ -1235,6 +1235,7 @@ export const ar: TranslationResources = {
     },
   },
   sidebar: {
+    search: en.sidebar.search,
     display: {
       trigger: "تفضيلات العرض",
       heading: "العرض",
@@ -1710,6 +1711,9 @@ export const ar: TranslationResources = {
     failedToLoad: "فشل التحميل",
     chooseProjectForCommands: "اختر مشروعًا لعرض الأوامر",
     chooseModelForCommands: "اختر نموذجًا لعرض الأوامر",
+  },
+  historyGap: {
+    load: "تحميل المزيد من السجل",
   },
   loadOlderHistory: {
     failed: "تعذر تحميل السجل الأقدم",

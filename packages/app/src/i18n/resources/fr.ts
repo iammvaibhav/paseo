@@ -1272,6 +1272,7 @@ export const fr: TranslationResources = {
     },
   },
   sidebar: {
+    search: en.sidebar.search,
     display: {
       trigger: "Préférences d'affichage",
       heading: "Affichage",
@@ -1765,6 +1766,9 @@ export const fr: TranslationResources = {
     failedToLoad: "Échec du chargement",
     chooseProjectForCommands: "Choisissez un projet pour voir les commandes",
     chooseModelForCommands: "Sélectionnez un modèle pour voir les commandes",
+  },
+  historyGap: {
+    load: "Charger plus d'historique",
   },
   loadOlderHistory: {
     failed: "Impossible de charger l'ancien historique",

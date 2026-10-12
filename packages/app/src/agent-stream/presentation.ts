@@ -1,4 +1,5 @@
 import type { AssistantMessageItem, StreamItem, UserMessageItem } from "@/types/stream";
+import type { TimelineGap } from "@/timeline/timeline-sync-plan";
 import type { TimelineItemTransform } from "@/plugins/timeline/model";
 import { projectPluginTimelineItems } from "@/plugins/timeline/projection";
 import { splitMarkdownBlocks } from "@/utils/split-markdown-blocks";
@@ -15,6 +16,8 @@ interface PresentationInput {
   transform: TimelineItemTransform | undefined;
   level: ToolCallDetailLevel;
   isTurnActive: boolean;
+  /** Unloaded history between loaded ranges; no tool group spans one. */
+  gaps?: readonly TimelineGap[];
 }
 
 function retainItems(previous: StreamItem[], next: StreamItem[]): StreamItem[] {
@@ -89,6 +92,7 @@ export function createStreamPresentation() {
   let preparedTail: StreamItem[] | undefined;
   let preparedLevel: ToolCallDetailLevel | undefined;
   let preparedHistory: PreparedToolCallHistory | null = null;
+  let preparedGaps: readonly TimelineGap[] | undefined;
 
   /**
    * One display row per Markdown block. Each block renders on its own, so a construct
@@ -179,10 +183,19 @@ export function createStreamPresentation() {
       displayHistory = historyRows;
       promotedRows = nextPromoted;
     }
-    if (preparedTail !== displayTail || preparedLevel !== input.level) {
-      preparedHistory = prepareToolCallHistory(input.level, displayTail);
+    if (
+      preparedTail !== displayTail ||
+      preparedLevel !== input.level ||
+      preparedGaps !== input.gaps
+    ) {
+      preparedHistory = prepareToolCallHistory(
+        input.level,
+        displayTail,
+        input.gaps?.length ? new Set(anchorHistoryGaps(displayTail, input.gaps).keys()) : undefined,
+      );
       preparedTail = displayTail;
       preparedLevel = input.level;
+      preparedGaps = input.gaps;
     }
     return projectToolCallDetailLevel({
       level: input.level,
@@ -192,4 +205,19 @@ export function createStreamPresentation() {
       isTurnActive: input.isTurnActive,
     });
   };
+}
+
+/** Each gap belongs below the last loaded row that comes before it, keyed by row id. */
+export function anchorHistoryGaps(
+  rows: readonly StreamItem[],
+  gaps: readonly TimelineGap[],
+): ReadonlyMap<string, TimelineGap> {
+  const anchors = new Map<string, TimelineGap>();
+  for (const gap of gaps) {
+    const row = rows.findLast(
+      (item) => item.timelineCursor?.epoch === gap.epoch && item.timelineCursor.seq < gap.startSeq,
+    );
+    if (row) anchors.set(row.id, gap);
+  }
+  return anchors;
 }
