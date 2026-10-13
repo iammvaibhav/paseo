@@ -13681,3 +13681,37 @@ test("usage session is a pure read of the live adapter and disappears on close",
   }
   expect(manager.usageSession(agent.id)).toBeNull();
 });
+
+test("waitForAgentEvent bound to a turn ends when another run replaces that turn", async () => {
+  const session = new SteeringTestSession({ provider: "codex", cwd: process.cwd() });
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-wait-turn-"));
+  const client = new (class extends TestAgentClient {
+    override async createSession() {
+      return session;
+    }
+  })();
+  const manager = new AgentManager({ clients: { codex: client }, logger });
+  let agentId: string | null = null;
+  try {
+    const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+      workspaceId: undefined,
+    });
+    agentId = agent.id;
+    await startAgentRun(manager, agentId, "remote client's follow-up", logger);
+    await manager.waitForAgentRunStart(agentId);
+    const boundTurn = manager.getAgent(agentId)!.activeForegroundTurnId!;
+    const wait = manager.waitForAgentEvent(agentId, { waitForActive: true, turnId: boundTurn });
+
+    // The user types with interrupt: the swap keeps the agent busy throughout.
+    await startAgentRun(manager, agentId, "user typed", logger, { replaceRunning: true });
+    await manager.waitForAgentRunStart(agentId);
+
+    // The wait ends while the user's turn still runs, not when it finishes.
+    const result = await wait;
+    expect(result.status).toBe("running");
+    expect(manager.getAgent(agentId)!.activeForegroundTurnId).not.toBe(boundTurn);
+  } finally {
+    if (agentId) await manager.closeAgent(agentId).catch(() => undefined);
+    rmSync(workdir, { recursive: true, force: true });
+  }
+}, 10_000);

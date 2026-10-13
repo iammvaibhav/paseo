@@ -638,6 +638,12 @@ function stripSteerOptions(options?: AgentSteerOptions): AgentRunOptions | undef
 export interface WaitForAgentOptions {
   signal?: AbortSignal;
   waitForActive?: boolean;
+  /**
+   * End the wait once this turn is no longer the agent's active turn. A
+   * replacement run keeps the agent busy across the swap (no idle state in
+   * between), so without it the wait would run on through the next turn.
+   */
+  turnId?: string;
 }
 
 export interface WaitForAgentResult {
@@ -4800,6 +4806,9 @@ export class AgentManager {
             }
             if (isAgentBusy(event.agent.lifecycle)) {
               hasStarted = true;
+              const activeTurnId =
+                event.agent.activeTurnId ?? event.agent.activeForegroundTurnId ?? null;
+              if (options?.turnId && activeTurnId !== options.turnId) finish(null);
               return;
             }
             if (!waitForActive || hasStarted) {

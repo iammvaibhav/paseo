@@ -208,6 +208,33 @@ describe("fleet_wait_agent turn binding (local)", () => {
     });
   });
 
+  test("a turn another run replaced reports its own outcome, not the replacing run's", async () => {
+    const agents: Record<string, LocalAgentState> = {
+      [LOCAL_AGENT_ID]: { lifecycle: "running", activeTurnId: "turn-2" },
+    };
+    const { catalog } = createHarness({
+      agents,
+      turns: { [LOCAL_AGENT_ID]: finishedTurn("turn-2", "remote answer") },
+      // The user's prompt interrupts turn-2; the agent stays busy on turn-3.
+      waitForAgentEvent: vi.fn(async () => {
+        agents[LOCAL_AGENT_ID] = { lifecycle: "running", activeTurnId: "turn-3" };
+        return { status: "running" as const, permission: null, lastMessage: "user answer" };
+      }),
+    });
+
+    const result = await catalog.executeTool("fleet_wait_agent", {
+      agentId: LOCAL_AGENT_ID,
+      turnId: "turn-2",
+    });
+
+    expect(result.structuredContent).toMatchObject({
+      status: "idle",
+      finished: true,
+      turnId: "turn-2",
+      lastMessage: "remote answer",
+    });
+  });
+
   test("a permission block returns early, not finished", async () => {
     const { catalog } = createHarness({
       agents: { [LOCAL_AGENT_ID]: { lifecycle: "running", activeTurnId: "turn-2" } },

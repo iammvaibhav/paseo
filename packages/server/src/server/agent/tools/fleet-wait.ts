@@ -2,7 +2,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { z } from "zod";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { ensureValidJson } from "../../json-utils.js";
-import type { AgentManager } from "../agent-manager.js";
+import type { AgentManager, WaitForAgentResult } from "../agent-manager.js";
 import { SYSTEM_ERROR_PREFIX } from "../agent-sdk-types.js";
 import {
   resolvePeerDaemonClient,
@@ -207,6 +207,44 @@ async function waitForLocalAgent(
   return waitForLiveRun(deps, scope, title);
 }
 
+/** The result of a live run's wait, once waitForAgentEvent returned. */
+async function liveRunResult(
+  deps: RegisterFleetControlToolsOptions,
+  scope: WaitScope,
+  title: string | null,
+  result: WaitForAgentResult,
+): Promise<FleetAgentWaitResult> {
+  const { agentManager } = deps;
+  const { agentId } = scope.base;
+  const boundTurnId = scope.bound.turnId;
+  // Another run replaced the bound turn (a user's prompt with interrupt):
+  // report the bound turn's own outcome, not the run that superseded it.
+  const activeTurnId = currentTurnId(agentManager, agentId);
+  if (boundTurnId && !result.permission && activeTurnId && activeTurnId !== boundTurnId) {
+    return {
+      ...turnOutcomeResult(agentManager, scope, boundTurnId, title),
+      bucket: await readBucket(deps, agentId),
+    };
+  }
+  const errorText =
+    result.status === "error" ? agentManager.getAgent(agentId)?.lastError : undefined;
+  const status = result.permission ? "permission" : result.status;
+  // A run that started after the wait was armed (pending at call time)
+  // has no captured id; it is the newest turn on the timeline.
+  const turnId = boundTurnId ?? activeTurnId ?? lastTimelineTurnId(agentManager, agentId);
+  return waitResult(scope.base, {
+    status,
+    turnId,
+    title,
+    bucket: await readBucket(deps, agentId),
+    lastMessage: result.lastMessage,
+    error: errorText ?? null,
+    ...(turnId === null && status === "idle"
+      ? { guidance: "No run in progress; this is the agent's last state." }
+      : {}),
+  });
+}
+
 /** Wait for the bound (or in-progress) run of a live agent to end. */
 async function waitForLiveRun(
   deps: RegisterFleetControlToolsOptions,
@@ -216,30 +254,13 @@ async function waitForLiveRun(
   const { agentManager } = deps;
   const { agentId } = scope.base;
   try {
+    const boundTurnId = scope.bound.turnId;
     const result = await agentManager.waitForAgentEvent(agentId, {
       signal: scope.signal,
       waitForActive: true,
+      ...(boundTurnId ? { turnId: boundTurnId } : {}),
     });
-    const errorText =
-      result.status === "error" ? agentManager.getAgent(agentId)?.lastError : undefined;
-    const status = result.permission ? "permission" : result.status;
-    // A run that started after the wait was armed (pending at call time)
-    // has no captured id; it is the newest turn on the timeline.
-    const turnId =
-      scope.bound.turnId ??
-      currentTurnId(agentManager, agentId) ??
-      lastTimelineTurnId(agentManager, agentId);
-    return waitResult(scope.base, {
-      status,
-      turnId,
-      title,
-      bucket: await readBucket(deps, agentId),
-      lastMessage: result.lastMessage,
-      error: errorText ?? null,
-      ...(turnId === null && status === "idle"
-        ? { guidance: "No run in progress; this is the agent's last state." }
-        : {}),
-    });
+    return await liveRunResult(deps, scope, title, result);
   } catch (error) {
     if (!scope.timeout.aborted && !scope.stop?.aborted) throw error;
     return waitResult(scope.base, {
