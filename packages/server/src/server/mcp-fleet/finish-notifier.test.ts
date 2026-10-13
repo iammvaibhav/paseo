@@ -849,9 +849,9 @@ describe("createMcpFinishNotifier", () => {
       });
     const created = arm("fleet_create_agent");
     // A live steer reports the turn already running.
-    await arm("fleet_send_prompt");
+    const steered = arm("fleet_send_prompt");
     runEnds.resolve(result({ turnId: "turn-1" }));
-    await created;
+    await Promise.all([created, steered]);
     expect(received.map((r) => r.body.type)).toEqual(["paseo.agent.finished"]);
   });
 
