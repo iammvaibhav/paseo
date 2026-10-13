@@ -707,8 +707,10 @@ export interface PaseoDaemonConfig {
   ompIdleCloseAfterSeconds?: number;
   // macOS: keep the host awake while agents run. Default "idle".
   keepAwakeWhileAgentsRun?: "off" | "idle" | "lid-closed";
-  // Upper bound on one lid-closed (SleepDisabled) hold. Default 240.
-  keepAwakeMaxLidClosedMinutes?: number;
+  // Minutes to keep holding after the last agent stops. Default 5.
+  keepAwakeReleaseGraceMinutes?: number;
+  // "lid-closed" on battery: release SleepDisabled at or below this charge. Default 10.
+  keepAwakeBatteryFloorPercent?: number;
   enableTerminalAgentHooks?: boolean;
   appendSystemPrompt?: string;
   terminalProfiles?: TerminalProfile[];
@@ -888,7 +890,8 @@ function createInitialMutableDaemonConfig(config: PaseoDaemonConfig): MutableDae
     autoArchiveAfterMerge: config.autoArchiveAfterMerge ?? false,
     ompIdleCloseAfterSeconds: config.ompIdleCloseAfterSeconds ?? 1800,
     keepAwakeWhileAgentsRun: config.keepAwakeWhileAgentsRun ?? "idle",
-    keepAwakeMaxLidClosedMinutes: config.keepAwakeMaxLidClosedMinutes ?? 240,
+    keepAwakeReleaseGraceMinutes: config.keepAwakeReleaseGraceMinutes ?? 5,
+    keepAwakeBatteryFloorPercent: config.keepAwakeBatteryFloorPercent ?? 10,
     enableTerminalAgentHooks: config.enableTerminalAgentHooks ?? false,
     appendSystemPrompt: config.appendSystemPrompt ?? "",
     ...(config.missionControl ? { missionControl: config.missionControl } : {}),

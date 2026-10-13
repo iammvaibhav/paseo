@@ -394,8 +394,10 @@ export const PersistedConfigSchema = z
         ompIdleCloseAfterSeconds: z.number().int().min(0).optional(),
         // macOS: keep the host awake while agents run ("off" | "idle" | "lid-closed").
         keepAwakeWhileAgentsRun: z.enum(["off", "idle", "lid-closed"]).optional(),
-        // Upper bound on one lid-closed (SleepDisabled) hold, in minutes.
-        keepAwakeMaxLidClosedMinutes: z.number().int().min(1).optional(),
+        // Minutes to keep holding after the last agent stops (default 5).
+        keepAwakeReleaseGraceMinutes: z.number().int().min(0).optional(),
+        // "lid-closed" on battery: release SleepDisabled at or below this charge (default 10).
+        keepAwakeBatteryFloorPercent: z.number().int().min(1).max(99).optional(),
         enableTerminalAgentHooks: z.boolean().optional(),
         appendSystemPrompt: z.string().optional(),
         terminalProfiles: z.array(TerminalProfileSchema).optional(),
