@@ -4,7 +4,11 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { PaseoToolCatalog, PaseoToolDefinition } from "../agent/tools/types.js";
-import type { ArmMcpFinishNotification, ArmMcpGroupNotification } from "./finish-notifier.js";
+import type {
+  ArmMcpFinishNotification,
+  ArmMcpGroupNotification,
+  ArmMcpStatusReportNotification,
+} from "./finish-notifier.js";
 import { createFleetMcpServer, FLEET_MCP_INSTRUCTIONS } from "./fleet-mcp-server.js";
 import {
   CORE_FLEET_TOOL_NAMES,
@@ -147,10 +151,15 @@ describe("notifyOnFinish for MCP clients", () => {
     const toolCalls: Array<Record<string, unknown>> = [];
     const armed: ArmMcpFinishNotification[] = [];
     const armedGroups: ArmMcpGroupNotification[] = [];
-    const tool = (name: string, handler: PaseoToolDefinition["handler"]): PaseoToolDefinition => ({
+    const armedStatusReports: ArmMcpStatusReportNotification[] = [];
+    const tool = (
+      name: string,
+      handler: PaseoToolDefinition["handler"],
+      schema?: Record<string, z.ZodTypeAny>,
+    ): PaseoToolDefinition => ({
       name,
       description: name,
-      inputSchema: { host: z.string().optional(), agentId: z.string().optional() },
+      inputSchema: schema ?? { host: z.string().optional(), agentId: z.string().optional() },
       handler,
     });
     const tools = new Map<string, PaseoToolDefinition>([
@@ -176,10 +185,32 @@ describe("notifyOnFinish for MCP clients", () => {
       ],
       [
         "fleet_agent_status",
-        tool("fleet_agent_status", async () => ({
-          content: [],
-          structuredContent: { running: { activeTurnId: "turn-live" } },
-        })),
+        tool(
+          "fleet_agent_status",
+          async (input) => {
+            const argObj =
+              input && typeof input === "object" ? (input as Record<string, unknown>) : {};
+            toolCalls.push(argObj);
+            return {
+              content: [],
+              structuredContent: {
+                running: { activeTurnId: "turn-live" },
+                title: "Worker Agent",
+                host: "local",
+                requested: Boolean(argObj.notify),
+                requestId: typeof argObj.requestId === "string" ? argObj.requestId : "req_test",
+              },
+            };
+          },
+          {
+            host: z.string().optional(),
+            agentId: z.string().optional(),
+            fresh: z.boolean().optional(),
+            notify: z.boolean().optional(),
+            notifyContext: z.string().optional(),
+            requestId: z.string().optional(),
+          },
+        ),
       ],
     ]);
     const catalog: PaseoToolCatalog = {
@@ -213,9 +244,13 @@ describe("notifyOnFinish for MCP clients", () => {
           },
           restore: async () => ({ restored: 0, settled: Promise.resolve() }),
           suspend: async () => {},
+          armStatusReport: (input) => {
+            armedStatusReports.push(input);
+          },
         },
         notifyTarget: options.withTarget ? { url: "https://hook.example/x" } : null,
       }),
+      armedStatusReports,
     };
   }
 
@@ -379,6 +414,65 @@ describe("notifyOnFinish for MCP clients", () => {
         { agentId: "a", turnId: "turn-a" },
         { agentId: "b", turnId: "turn-live" },
       ],
+    });
+    await close();
+  });
+
+  test("fleet_agent_status with notify: true rejects when fresh is false", async () => {
+    const { server } = setup({ withTarget: true });
+    const { client, close } = await connect(server);
+    const result = await client.callTool({
+      name: "fleet_agent_status",
+      arguments: { agentId: "agent-1", notify: true, fresh: false },
+    });
+    expect(result.isError).toBe(true);
+    const firstBlock = result.content[0];
+    const blockText =
+      firstBlock &&
+      typeof firstBlock === "object" &&
+      "text" in firstBlock &&
+      typeof firstBlock.text === "string"
+        ? firstBlock.text
+        : "";
+    expect(blockText).toContain("notify: true is only valid when fresh: true");
+    await close();
+  });
+
+  test("fleet_agent_status with notify: true rejects when webhook target is missing", async () => {
+    const { server } = setup({ withTarget: false });
+    const { client, close } = await connect(server);
+    const result = await client.callTool({
+      name: "fleet_agent_status",
+      arguments: { agentId: "agent-1", notify: true, fresh: true },
+    });
+    expect(result.isError).toBe(true);
+    const firstBlock = result.content[0];
+    const blockText =
+      firstBlock &&
+      typeof firstBlock === "object" &&
+      "text" in firstBlock &&
+      typeof firstBlock.text === "string"
+        ? firstBlock.text
+        : "";
+    expect(blockText).toContain("notify: true needs a webhook for this MCP client");
+    await close();
+  });
+
+  test("fleet_agent_status with notify: true arms armStatusReport and returns immediately", async () => {
+    const { server, armedStatusReports, toolCalls } = setup({ withTarget: true });
+    const { client, close } = await connect(server);
+    const result = await client.callTool({
+      name: "fleet_agent_status",
+      arguments: { agentId: "agent-1", notify: true, fresh: true, notifyContext: "status-tag" },
+    });
+    expect(result.isError).toBeFalsy();
+    expect(toolCalls).toHaveLength(1);
+    expect(toolCalls[0]).toMatchObject({ agentId: "agent-1", fresh: true, notify: true });
+    expect(armedStatusReports).toHaveLength(1);
+    expect(armedStatusReports[0]).toMatchObject({
+      client: "grok-bot",
+      agentId: "agent-1",
+      context: "status-tag",
     });
     await close();
   });

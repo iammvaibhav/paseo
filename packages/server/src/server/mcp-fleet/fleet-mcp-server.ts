@@ -352,15 +352,85 @@ export async function createFleetMcpServer(options: FleetMcpServerOptions): Prom
   // Runs a catalog tool for this MCP client. For the agent start/prompt tools
   // it takes notifyOnFinish/notifyContext off the arguments and, after the
   // tool succeeds, arms the client's webhook instead.
-  const runCatalogTool = async (
+  function extractStatusNotifyFields(
+    structured: Record<string, unknown>,
+    args: Record<string, unknown>,
+  ) {
+    const agentId = typeof args.agentId === "string" ? args.agentId : "";
+    let host = "local";
+    if (typeof structured.host === "string") {
+      host = structured.host;
+    } else if (typeof args.host === "string") {
+      host = args.host;
+    }
+    const title = typeof structured.title === "string" ? structured.title : null;
+    const running = structured.running as { activeTurnId?: string | null } | null | undefined;
+    const turnId = running?.activeTurnId ?? null;
+    let context: string | null = null;
+    if (typeof args.notifyContext === "string") {
+      context = args.notifyContext;
+    } else if (typeof args.context === "string") {
+      context = args.context;
+    }
+    const targetHost = typeof args.host === "string" ? args.host : host;
+    return { agentId, targetHost, title, turnId, context };
+  }
+
+  const handleStatusNotify = async (
     name: string,
     args: Record<string, unknown>,
     signal: AbortSignal | undefined,
   ): Promise<PaseoToolResult> => {
-    const tool = catalog.getTool(name);
-    const unknownArgError = tool ? describeUnknownArgs(tool, args) : null;
-    if (unknownArgError) return errorResult(unknownArgError);
-    if (!NOTIFY_TOOLS.has(name)) return catalog.executeTool(name, args, { signal });
+    if (args.fresh !== true) {
+      return errorResult("notify: true is only valid when fresh: true");
+    }
+    const { finishNotifier, notifyTarget, clientName } = options;
+    if (!finishNotifier || !notifyTarget || !clientName) {
+      return errorResult(
+        "notify: true needs a webhook for this MCP client (daemon.mcp.remoteClients[].notify), and none is configured. " +
+          "Call again without notify: true instead.",
+      );
+    }
+    const requestId = typeof args.requestId === "string" ? args.requestId : `req_${randomUUID()}`;
+    const result = await catalog.executeTool(name, { ...args, requestId }, { signal });
+    if (result.isError) return result;
+
+    const structured = (result.structuredContent ?? {}) as Record<string, unknown>;
+    const { agentId, targetHost, title, turnId, context } = extractStatusNotifyFields(
+      structured,
+      args,
+    );
+    const isLocal = targetHost === "local" || targetHost === "";
+    const peerClient =
+      !isLocal && options.hostDependencies.peerManager
+        ? options.hostDependencies.peerManager.getPeerClient(targetHost)
+        : null;
+
+    finishNotifier.armStatusReport({
+      client: clientName,
+      target: notifyTarget,
+      requestId: typeof structured.requestId === "string" ? structured.requestId : requestId,
+      agentId,
+      host: targetHost,
+      title,
+      turnId,
+      context,
+      waitForAgent,
+      subscribeSelfReports: options.hostDependencies.missionControlService
+        ? (listener) =>
+            options.hostDependencies.missionControlService!.subscribeSelfReports(listener)
+        : undefined,
+      peerClient,
+    });
+
+    return result;
+  };
+
+  const handleNotifyOnFinish = async (
+    name: string,
+    args: Record<string, unknown>,
+    signal: AbortSignal | undefined,
+  ): Promise<PaseoToolResult> => {
     const { notifyOnFinish: _notify, notifyContext: _context, ...toolArgs } = args;
     const notify = NotifyArgsSchema.safeParse(args);
     if (!notify.success) {
@@ -405,6 +475,21 @@ export async function createFleetMcpServer(options: FleetMcpServerOptions): Prom
       waitForAgent,
     });
     return { ...result, structuredContent: { ...structured, ...armedNotice(plan.inherited) } };
+  };
+
+  const runCatalogTool = async (
+    name: string,
+    args: Record<string, unknown>,
+    signal: AbortSignal | undefined,
+  ): Promise<PaseoToolResult> => {
+    const tool = catalog.getTool(name);
+    const unknownArgError = tool ? describeUnknownArgs(tool, args) : null;
+    if (unknownArgError) return errorResult(unknownArgError);
+    if (name === "fleet_agent_status" && args.notify === true) {
+      return handleStatusNotify(name, args, signal);
+    }
+    if (!NOTIFY_TOOLS.has(name)) return catalog.executeTool(name, args, { signal });
+    return handleNotifyOnFinish(name, args, signal);
   };
 
   for (const toolName of CORE_FLEET_TOOL_NAMES) {

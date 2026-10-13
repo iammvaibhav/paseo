@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
 import { z } from "zod";
 import { isAbsolute } from "node:path";
@@ -7312,6 +7313,8 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     targetHost: string,
     agentId: string,
     fresh: boolean,
+    notify: boolean = false,
+    requestId?: string,
   ): Promise<PaseoToolResult> => {
     const client = resolveFleetHost(targetHost);
     if (!client) {
@@ -7322,8 +7325,8 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     const peerResult = await executeFleetToolOnPeer(
       client,
       "fleet_agent_status",
-      { agentId, fresh },
-      fresh ? FRESH_STATUS_WAIT_TIMEOUT_MS + 15_000 : undefined,
+      { agentId, fresh, notify, ...(requestId ? { requestId } : {}) },
+      fresh && !notify ? FRESH_STATUS_WAIT_TIMEOUT_MS + 15_000 : undefined,
     );
     if (!peerResult.ok) {
       throw new Error(`fleet_agent_status on host "${targetHost}" failed: ${peerResult.error}`);
@@ -7338,6 +7341,92 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     };
   };
 
+  const handleFreshStatusReport = async (
+    agentId: string,
+    record: Record<string, unknown>,
+    targetHost: string,
+    projectId: string | null,
+    notify: boolean,
+    requestedRequestId?: string,
+  ): Promise<PaseoToolResult> => {
+    const effectiveHost = targetHost === "local" ? hostLabel : targetHost;
+    if (notify) {
+      const effectiveRequestId = requestedRequestId ?? `req_${randomUUID()}`;
+      const steer = await missionControlService!.requestFreshStatusSteer(agentId, { notify: true });
+      if (!steer.ok) {
+        return {
+          content: [],
+          structuredContent: ensureValidJson({
+            ...record,
+            projectId,
+            host: effectiveHost,
+            fresh: false,
+            requested: false,
+            requestId: effectiveRequestId,
+            note: `status-ask not delivered: ${steer.error}`,
+          }),
+        };
+      }
+      return {
+        content: [],
+        structuredContent: ensureValidJson({
+          ...record,
+          projectId,
+          host: effectiveHost,
+          fresh: false,
+          requested: true,
+          requestId: effectiveRequestId,
+        }),
+      };
+    }
+    const freshReportPromise = waitForFreshAgentReport(
+      missionControlService!,
+      agentId,
+      FRESH_STATUS_WAIT_TIMEOUT_MS,
+    );
+    const steer = await missionControlService!.requestFreshStatusSteer(agentId);
+    if (!steer.ok) {
+      return {
+        content: [],
+        structuredContent: ensureValidJson({
+          ...record,
+          projectId,
+          host: hostLabel,
+          fresh: false,
+          note: `status-ask not delivered: ${steer.error}`,
+        }),
+      };
+    }
+    const freshReport = await freshReportPromise;
+    if (!freshReport) {
+      return {
+        content: [],
+        structuredContent: ensureValidJson({
+          ...record,
+          projectId,
+          host: hostLabel,
+          fresh: false,
+          note: `No fresh report_status within ${Math.round(FRESH_STATUS_WAIT_TIMEOUT_MS / 1000)}s; showing the last known status.`,
+        }),
+      };
+    }
+    return {
+      content: [],
+      structuredContent: ensureValidJson({
+        ...record,
+        projectId,
+        host: hostLabel,
+        fresh: true,
+        lastReport: {
+          headline: freshReport.headline,
+          detail: freshReport.detail ?? null,
+          ts: freshReport.ts,
+          reportKind: freshReport.reportKind ?? null,
+        },
+      }),
+    };
+  };
+
   registerTool(
     "fleet_agent_status",
     {
@@ -7347,7 +7436,10 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         "bucket, lastStatus, running-turn info, the last report_status headline/detail/ts, and workspaceId/" +
         "projectId/host. fresh:true steers the agent to post a fresh report_status (user-invisible machinery " +
         "envelope) and waits up to 60s for it; on timeout it returns the stale data with fresh:false and a note. " +
-        "The only mid-run status mechanism — fires only on explicit request. Read-only; never approval-gated.",
+        "Passing notify:true (only valid with fresh:true) returns immediately with requested:true and a requestId, " +
+        "without the 60s wait, and POSTs paseo.agent.status_reported to your configured webhook when the report lands " +
+        "(or with status no_report on 5-min timeout or turn end). The only mid-run status mechanism — fires only on " +
+        "explicit request. Read-only; never approval-gated.",
       inputSchema: {
         agentId: z
           .string()
@@ -7361,6 +7453,19 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           .describe(
             "Steer the agent for a fresh report_status and wait up to 60s. Only on explicit request.",
           ),
+        notify: z
+          .boolean()
+          .optional()
+          .default(false)
+          .describe(
+            "When true (only valid with fresh:true), return immediately with requested:true and a requestId, " +
+              "and POST paseo.agent.status_reported to your configured webhook when the report lands (or status no_report on 5-min timeout / turn end).",
+          ),
+        notifyContext: z
+          .string()
+          .max(2000)
+          .optional()
+          .describe("Free-form tag echoed back verbatim as context in the webhook payload."),
         host: z
           .string()
           .min(1)
@@ -7369,6 +7474,10 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
             "Optional host hint: a peer name from the daemon peers config, or 'local' for this daemon. " +
               "Omitted → resolved via the fleet index.",
           ),
+        requestId: z
+          .string()
+          .optional()
+          .describe("Optional request ID to bind the notification to."),
       },
       outputSchema: {
         agentId: z.string(),
@@ -7398,20 +7507,31 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         projectId: z.string().nullable(),
         host: z.string(),
         fresh: z.boolean(),
+        requested: z.boolean().optional(),
+        requestId: z.string().optional(),
         note: z.string().optional(),
       },
     },
     async ({
       agentId: requestedAgentId,
       fresh = false,
+      notify = false,
+      notifyContext: _notifyContext,
+      requestId: requestedRequestId,
       host,
     }: {
       agentId: string;
       fresh?: boolean;
+      notify?: boolean;
+      notifyContext?: string;
+      requestId?: string;
       host?: string;
     }) => {
       if (!missionControlService) {
         throw new Error("Mission Control is not enabled on this host");
+      }
+      if (notify && !fresh) {
+        throw new Error("notify: true is only valid when fresh: true");
       }
       // Resolve the agent's host via the fleet index (spec 02): the id is
       // authoritative, host is a hint to validate against, never a routing key.
@@ -7429,7 +7549,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         }
       }
       if (!isFleetLocalTarget(targetHost)) {
-        return fetchPeerAgentStatus(targetHost, agentId, fresh);
+        return fetchPeerAgentStatus(targetHost, agentId, fresh, notify, requestedRequestId);
       }
       const record = await missionControlService.getAgentStatusRecord(agentId);
       // Project attribution: resolve the workspace's project via the local
@@ -7454,54 +7574,14 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           }),
         };
       }
-      // fresh:true — arm the report listener BEFORE the steer so no report
-      // can slip between subscription and delivery, then wait bounded 60s.
-      const freshReportPromise = waitForFreshAgentReport(
-        missionControlService,
+      return handleFreshStatusReport(
         agentId,
-        FRESH_STATUS_WAIT_TIMEOUT_MS,
+        record as unknown as Record<string, unknown>,
+        targetHost,
+        projectId,
+        notify,
+        requestedRequestId,
       );
-      const steer = await missionControlService.requestFreshStatusSteer(agentId);
-      if (!steer.ok) {
-        return {
-          content: [],
-          structuredContent: ensureValidJson({
-            ...record,
-            projectId,
-            host: hostLabel,
-            fresh: false,
-            note: `status-ask not delivered: ${steer.error}`,
-          }),
-        };
-      }
-      const freshReport = await freshReportPromise;
-      if (!freshReport) {
-        return {
-          content: [],
-          structuredContent: ensureValidJson({
-            ...record,
-            projectId,
-            host: hostLabel,
-            fresh: false,
-            note: `No fresh report_status within ${Math.round(FRESH_STATUS_WAIT_TIMEOUT_MS / 1000)}s; showing the last known status.`,
-          }),
-        };
-      }
-      return {
-        content: [],
-        structuredContent: ensureValidJson({
-          ...record,
-          projectId,
-          host: hostLabel,
-          fresh: true,
-          lastReport: {
-            headline: freshReport.headline,
-            detail: freshReport.detail ?? null,
-            ts: freshReport.ts,
-            reportKind: freshReport.reportKind ?? null,
-          },
-        }),
-      };
     },
   );
 

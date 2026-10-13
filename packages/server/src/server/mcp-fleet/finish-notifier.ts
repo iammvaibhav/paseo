@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
+import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
+import type { MissionControlEvent } from "@getpaseo/protocol/mission-control/types";
 import type { Logger } from "pino";
 import type { AgentManager } from "../agent/agent-manager.js";
 import type { AgentStorage } from "../agent/agent-storage.js";
@@ -92,6 +94,31 @@ export interface ArmMcpGroupNotification extends McpClientBinding {
   context: string | null;
 }
 
+export interface ArmMcpStatusReportNotification {
+  client: string;
+  target: McpNotifyTarget;
+  requestId: string;
+  agentId: string;
+  host: string;
+  title: string | null;
+  turnId?: string | null;
+  context?: string | null;
+  waitForAgent: McpFinishWaitForAgent;
+  subscribeSelfReports?: (listener: (event: MissionControlEvent) => void) => () => void;
+  peerClient?: DaemonClient | null;
+  timeoutMs?: number;
+}
+
+export function eventToReportStatus(
+  event: MissionControlEvent,
+): "working" | "completed" | "inconclusive" | "blocked" {
+  if (event.reportStatus) return event.reportStatus;
+  if (event.kind === "finished") return "completed";
+  if (event.kind === "blocked") return "blocked";
+  if (event.kind === "diverged") return "inconclusive";
+  return "working";
+}
+
 /** A run starting on a watched agent; `local: false` when this daemon does not host it. */
 export interface McpFinishRunStart {
   local: boolean;
@@ -153,6 +180,12 @@ export interface McpFinishNotifier {
    * complete the group. Journaled: the group event survives a restart.
    */
   armGroup(input: ArmMcpGroupNotification): Promise<void>;
+  /**
+   * Watch for an agent's next report_status and POST paseo.agent.status_reported
+   * to the caller's webhook. If 5 minutes pass or the turn ends first without a
+   * report, POSTs with status: "no_report".
+   */
+  armStatusReport(input: ArmMcpStatusReportNotification): void;
   /**
    * The client's standing request to hear about an agent's runs: set by every
    * per-agent arm, so a follow-up send to the agent arms by default. Null when
@@ -448,6 +481,7 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
   const logger = options.logger.child({ module: "mcp-finish-notifier" });
   const active = new Map<string, ActiveWatch>();
   const activeGroups = new Map<string, AbortController>();
+  const activeStatusWatches = new Map<string, () => void>();
   let suspended = false;
   const subscriptions = new Map<string, SubscriptionRecord>();
   const journal = options.journalPath
@@ -562,6 +596,52 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
       await sleep(delay, undefined, { signal: controller.signal }).catch(() => {
         throw new WatchSuspendedError();
       });
+    }
+  };
+
+  const sendStatusReport = async (
+    client: string,
+    target: McpNotifyTarget,
+    requestId: string,
+    body: string,
+  ) => {
+    const headers = await resolveHeaders(target.headers);
+    for (let attempt = 0; ; attempt += 1) {
+      let status: number | null = null;
+      let error: string | null = null;
+      try {
+        const response = await fetchImpl(target.url, {
+          method: "POST",
+          headers,
+          body,
+          signal: AbortSignal.timeout(15_000),
+        });
+        status = response.status;
+        if (response.ok) {
+          logger.info(
+            { client, requestId, status, attempts: attempt + 1 },
+            "mcp status report notification delivered",
+          );
+          return;
+        }
+        error = (await response.text().catch(() => "")).slice(0, RESPONSE_SNIPPET_LIMIT) || null;
+      } catch (caught) {
+        error = caught instanceof Error ? caught.message : String(caught);
+      }
+      logger.warn(
+        { client, requestId, status, err: error, attempt: attempt + 1 },
+        "mcp status report notification attempt failed",
+      );
+      const retryable = status === null || status === 429 || status >= 500;
+      const delay = retryDelaysMs[attempt];
+      if (!retryable || delay === undefined) {
+        logger.error(
+          { client, requestId, status, attempts: attempt + 1, error },
+          "mcp status report notification failed permanently",
+        );
+        return;
+      }
+      await sleep(delay).catch(() => undefined);
     }
   };
 
@@ -1056,6 +1136,150 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
       );
     },
 
+    armStatusReport(input) {
+      if (suspended) return;
+      const timeoutMs = input.timeoutMs ?? 5 * 60_000;
+      let settled = false;
+      let timer: NodeJS.Timeout | null = null;
+      let unsubscribeSelf: (() => void) | null = null;
+      let peerObservation: { release: () => void } | null = null;
+
+      const cleanup = () => {
+        if (timer) {
+          clearTimeout(timer);
+          timer = null;
+        }
+        if (unsubscribeSelf) {
+          unsubscribeSelf();
+          unsubscribeSelf = null;
+        }
+        if (peerObservation) {
+          peerObservation.release();
+          peerObservation = null;
+        }
+        activeStatusWatches.delete(input.requestId);
+      };
+
+      const settleAndSend = async (params: {
+        status: "working" | "completed" | "inconclusive" | "blocked" | "no_report";
+        headline: string;
+        reportedAt: string;
+        title?: string | null;
+      }) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+
+        const payload: Record<string, unknown> = {
+          type: "paseo.agent.status_reported",
+          requestId: input.requestId,
+          agentId: input.agentId,
+          title: params.title ?? input.title,
+          host: input.host,
+          status: params.status,
+          headline: params.headline,
+          reportedAt: params.reportedAt,
+        };
+        if (input.context !== null && input.context !== undefined) {
+          payload.context = input.context;
+        }
+        const body = JSON.stringify(payload);
+
+        await sendStatusReport(input.client, input.target, input.requestId, body);
+      };
+
+      activeStatusWatches.set(input.requestId, cleanup);
+
+      // 1. Local self-reports
+      if (input.subscribeSelfReports) {
+        unsubscribeSelf = input.subscribeSelfReports((event) => {
+          if (event.agentId === input.agentId && event.source === "self") {
+            void settleAndSend({
+              status: eventToReportStatus(event),
+              headline: event.headline,
+              reportedAt: event.ts,
+              title: event.agentTitle ?? input.title,
+            });
+          }
+        });
+      }
+
+      // 2. Peer mission_control_event
+      if (input.peerClient) {
+        const observation = input.peerClient.observeEvents(["mission_control_event"]);
+        peerObservation = observation;
+        observation.subscribe({
+          snapshot: () => undefined,
+          update: (msg: unknown) => {
+            const m = msg as { type?: string; event?: MissionControlEvent };
+            if (
+              m.type === "mission_control_event" &&
+              m.event &&
+              m.event.source === "self" &&
+              m.event.agentId === input.agentId
+            ) {
+              void settleAndSend({
+                status: eventToReportStatus(m.event),
+                headline: m.event.headline,
+                reportedAt: m.event.ts,
+                title: m.event.agentTitle ?? input.title,
+              });
+            }
+          },
+        });
+      }
+
+      // 3. 5-minute timeout
+      timer = setTimeout(() => {
+        void settleAndSend({
+          status: "no_report",
+          headline: "",
+          reportedAt: new Date().toISOString(),
+        });
+      }, timeoutMs);
+      timer.unref?.();
+
+      // 4. Turn-end listener (if turn ends first without report)
+      void (async () => {
+        try {
+          if (input.turnId) {
+            const result = await input.waitForAgent({
+              agentId: input.agentId,
+              host: input.host,
+              turnId: input.turnId,
+              timeoutMs,
+            });
+            if (!result.timedOut && !settled) {
+              void settleAndSend({
+                status: "no_report",
+                headline: "",
+                reportedAt: new Date().toISOString(),
+                title: result.title ?? input.title,
+              });
+            }
+          } else {
+            await sleep(1500).catch(() => undefined);
+            if (settled) return;
+            const result = await input.waitForAgent({
+              agentId: input.agentId,
+              host: input.host,
+              timeoutMs,
+            });
+            if (!result.timedOut && !settled) {
+              void settleAndSend({
+                status: "no_report",
+                headline: "",
+                reportedAt: new Date().toISOString(),
+                title: result.title ?? input.title,
+              });
+            }
+          }
+        } catch {
+          // Timeout covers any unexpected error
+        }
+      })();
+    },
+
     subscription(client, agentId) {
       const subscription = subscriptions.get(subscriptionKey(client, agentId));
       if (!subscription || Date.now() - subscription.armedAt >= SUBSCRIPTION_TTL_MS) return null;
@@ -1156,6 +1380,10 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
     },
 
     async suspend() {
+      for (const cleanup of activeStatusWatches.values()) {
+        cleanup();
+      }
+      activeStatusWatches.clear();
       suspended = true;
       const ts = new Date().toISOString();
       for (const [groupId, controller] of activeGroups) {

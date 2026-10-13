@@ -595,6 +595,37 @@ describe("fleet_agent_status tool", () => {
       vi.useRealTimers();
     }
   });
+
+  test("notify:true with fresh:false throws an error", async () => {
+    const catalog = catalogHarness(harness);
+    await expect(
+      catalog.executeTool("fleet_agent_status", {
+        agentId: "agent-1",
+        fresh: false,
+        notify: true,
+      }),
+    ).rejects.toThrow("notify: true is only valid when fresh: true");
+  });
+
+  test("notify:true with fresh:true returns immediately with requested:true and requestId", async () => {
+    const catalog = catalogHarness(harness);
+    const spy = vi
+      .spyOn(harness.service, "requestFreshStatusSteer")
+      .mockResolvedValue({ ok: true });
+    const result = await catalog.executeTool("fleet_agent_status", {
+      agentId: "agent-1",
+      fresh: true,
+      notify: true,
+    });
+    const sc = result.structuredContent as Record<string, unknown>;
+    expect(sc).toMatchObject({
+      agentId: "agent-1",
+      fresh: false,
+      requested: true,
+      requestId: expect.stringMatching(/^req_/),
+    });
+    expect(spy).toHaveBeenCalledWith("agent-1", { notify: true });
+  });
 });
 
 describe("fleet_monitor tool", () => {
@@ -706,7 +737,28 @@ describe("fleet_monitor tool", () => {
         forceSend: true,
         verboseOnly: true,
         timelineClassification: "machinery",
-        message: expect.stringMatching(/^<paseo-system>\n/),
+        message: expect.stringContaining("then continue whatever you were working on"),
+      }),
+    );
+  });
+
+  test("the service requestFreshStatusSteer queues for non-omp agents when notify is set", async () => {
+    const createProposal = vi
+      .spyOn(harness.service.approvals, "createProposal")
+      .mockResolvedValue({ id: "mcp_2" } as never);
+    vi.spyOn(harness.service.agentManager, "getAgent").mockReturnValue({
+      id: "agent-non-omp",
+      provider: "codex",
+    } as never);
+    const result = await harness.service.requestFreshStatusSteer("agent-non-omp", { notify: true });
+    expect(result).toEqual({ ok: true });
+    expect(createProposal).toHaveBeenCalledWith(
+      expect.objectContaining({
+        origin: "stall",
+        targetAgentId: "agent-non-omp",
+        deliveryMode: "queue",
+        forceSend: true,
+        message: expect.stringContaining("then continue whatever you were working on"),
       }),
     );
   });

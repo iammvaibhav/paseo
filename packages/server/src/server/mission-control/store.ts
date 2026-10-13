@@ -120,6 +120,7 @@ export interface MissionControlAppendInput {
   answer?: MissionControlEvent["answer"];
   // Original report_status kind preserved on source:"self" events (additive).
   reportKind?: MissionControlEvent["reportKind"];
+  reportStatus?: MissionControlEvent["reportStatus"];
   // Stop origin snapshotted at emit time (additive; see the event schema).
   stoppedBy?: MissionControlEvent["stoppedBy"];
   // State-only verdict cards (spec 07): the app skips them in normal mode.

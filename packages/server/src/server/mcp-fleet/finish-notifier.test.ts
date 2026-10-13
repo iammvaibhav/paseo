@@ -1,3 +1,4 @@
+import { setTimeout as sleep } from "node:timers/promises";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer, type IncomingHttpHeaders, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -900,5 +901,156 @@ describe("createMcpFinishNotifier", () => {
     const again = daemon({});
     await again.restore(async () => binding);
     expect(again.subscription("grok-bot", "agent-1")).toBeNull();
+  });
+
+  it("posts paseo.agent.status_reported when the agent reports status", async () => {
+    awaitedCount = 1;
+    let listener: ((event: unknown) => void) | null = null;
+    notifier().armStatusReport({
+      client: "grok-bot",
+      target: { url },
+      requestId: "req-123",
+      agentId: "agent-1",
+      host: "dev",
+      title: "My Worker",
+      context: "my-context",
+      waitForAgent: async () => ({ status: "running", finished: false, timedOut: true }),
+      subscribeSelfReports: (fn) => {
+        listener = fn as (event: unknown) => void;
+        return () => {
+          listener = null;
+        };
+      },
+    });
+    expect(listener).not.toBeNull();
+    listener!({
+      agentId: "agent-1",
+      source: "self",
+      kind: "milestone",
+      headline: "Found the bug",
+      ts: "2026-10-13T18:00:00.000Z",
+    });
+    await countReached.promise;
+    expect(received).toHaveLength(1);
+    expect(received[0]!.body).toEqual({
+      type: "paseo.agent.status_reported",
+      requestId: "req-123",
+      agentId: "agent-1",
+      title: "My Worker",
+      host: "dev",
+      status: "working",
+      headline: "Found the bug",
+      reportedAt: "2026-10-13T18:00:00.000Z",
+      context: "my-context",
+    });
+  });
+
+  it("fires status_reported only for the requesting sender and only once per request", async () => {
+    awaitedCount = 2;
+    let listener: ((event: unknown) => void) | null = null;
+    const n = notifier();
+    n.armStatusReport({
+      client: "client-a",
+      target: { url },
+      requestId: "req-a",
+      agentId: "agent-1",
+      host: "dev",
+      title: "Worker A",
+      context: "ctx-a",
+      waitForAgent: async () => ({ status: "running", finished: false, timedOut: true }),
+      subscribeSelfReports: (fn) => {
+        listener = fn as (event: unknown) => void;
+        return () => {};
+      },
+    });
+    n.armStatusReport({
+      client: "client-b",
+      target: { url },
+      requestId: "req-b",
+      agentId: "agent-1",
+      host: "dev",
+      title: "Worker B",
+      context: "ctx-b",
+      waitForAgent: async () => ({ status: "running", finished: false, timedOut: true }),
+      subscribeSelfReports: (fn) => {
+        const prev = listener;
+        listener = (event) => {
+          prev?.(event);
+          (fn as (event: unknown) => void)(event);
+        };
+        return () => {};
+      },
+    });
+    listener!({
+      agentId: "agent-1",
+      source: "self",
+      kind: "finished",
+      headline: "Work done",
+      ts: "2026-10-13T18:05:00.000Z",
+    });
+    await countReached.promise;
+    expect(received).toHaveLength(2);
+    expect(received.map((r) => r.body.requestId).sort()).toEqual(["req-a", "req-b"]);
+    expect(received.map((r) => r.body.context).sort()).toEqual(["ctx-a", "ctx-b"]);
+
+    // Subsequent report does not fire again (only once per request)
+    listener!({
+      agentId: "agent-1",
+      source: "self",
+      kind: "milestone",
+      headline: "Another report",
+      ts: "2026-10-13T18:06:00.000Z",
+    });
+    await sleep(50);
+    expect(received).toHaveLength(2);
+  });
+
+  it("posts status_reported with status no_report when 5-min timeout fires", async () => {
+    awaitedCount = 1;
+    notifier().armStatusReport({
+      client: "grok-bot",
+      target: { url },
+      requestId: "req-timeout",
+      agentId: "agent-1",
+      host: "dev",
+      title: "Worker",
+      timeoutMs: 50,
+      waitForAgent: async () => ({ status: "running", finished: false, timedOut: true }),
+    });
+    await countReached.promise;
+    expect(received).toHaveLength(1);
+    expect(received[0]!.body).toMatchObject({
+      type: "paseo.agent.status_reported",
+      requestId: "req-timeout",
+      agentId: "agent-1",
+      host: "dev",
+      status: "no_report",
+      headline: "",
+    });
+  });
+
+  it("posts status_reported with status no_report when turn ends first without report", async () => {
+    awaitedCount = 1;
+    notifier().armStatusReport({
+      client: "grok-bot",
+      target: { url },
+      requestId: "req-ended",
+      agentId: "agent-1",
+      host: "dev",
+      title: "Worker",
+      turnId: "turn-1",
+      timeoutMs: 10_000,
+      waitForAgent: async () => ({ status: "idle", finished: true, timedOut: false }),
+    });
+    await countReached.promise;
+    expect(received).toHaveLength(1);
+    expect(received[0]!.body).toMatchObject({
+      type: "paseo.agent.status_reported",
+      requestId: "req-ended",
+      agentId: "agent-1",
+      host: "dev",
+      status: "no_report",
+      headline: "",
+    });
   });
 });

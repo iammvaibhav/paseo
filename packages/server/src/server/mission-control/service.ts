@@ -2654,13 +2654,32 @@ export class MissionControlService {
    */
   async requestFreshStatusSteer(
     agentId: string,
+    options?: { notify?: boolean },
   ): Promise<{ ok: true } | { ok: false; error: string }> {
     try {
-      await this.createStatusAskProposal(
+      const live = this.agentManager.getAgent(agentId);
+      let isOmp = live ? live.provider === "omp" : false;
+      if (!live) {
+        const stored = await this.agentStorage.get(agentId).catch(() => null);
+        if (stored) isOmp = stored.provider === "omp";
+      }
+      const deliveryMode: "steer" | "queue" = options?.notify && !isOmp ? "queue" : "steer";
+      const steerPromise = this.createStatusAskProposal(
         agentId,
         "fleet_agent_status fresh:true — explicit status request",
-        "Status request: post a one-line report_status describing where you are right now.",
+        "Status request: post a one-line report_status describing where you are right now, then continue whatever you were working on.",
+        deliveryMode,
       );
+      if (options?.notify && deliveryMode === "queue") {
+        steerPromise.catch((error: unknown) => {
+          this.logger.warn(
+            { err: error, component: "monitor", agentId },
+            "mission_control.fresh_status_queued_steer_failed",
+          );
+        });
+      } else {
+        await steerPromise;
+      }
       return { ok: true };
     } catch (error) {
       this.logger.warn(
@@ -2679,14 +2698,19 @@ export class MissionControlService {
    * pending for approval. Shared by the terminal-state guarantee and
    * fleet_agent_status fresh:true.
    */
-  private createStatusAskProposal(agentId: string, reason: string, message: string): Promise<void> {
+  private createStatusAskProposal(
+    agentId: string,
+    reason: string,
+    message: string,
+    deliveryMode: "steer" | "queue" = "steer",
+  ): Promise<void> {
     return this.approvals
       .createProposal({
         origin: "stall",
         serverId: this.serverId,
         targetAgentId: agentId,
         message: formatSystemNotificationPrompt(message),
-        deliveryMode: "steer",
+        deliveryMode,
         reason,
         classification: "normal",
         forceSend: true,
@@ -3070,6 +3094,7 @@ export class MissionControlService {
       source: "self",
       severity,
       headline: input.headline,
+      reportStatus: input.status,
       ...(reportKind !== undefined ? { reportKind } : {}),
       ...(input.detail ? { detail: input.detail } : {}),
       ...(input.proofs && input.proofs.length > 0 ? { proof: input.proofs } : {}),

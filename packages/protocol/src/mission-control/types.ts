@@ -357,6 +357,7 @@ export const MissionControlEventSchema = z.object({
   // feed collapses progress|milestone → kind "milestone" and finding|fix|
   // decision → kind "finding". Additive; absent when not a self-report.
   reportKind: MissionControlReportKindSchema.optional(),
+  reportStatus: z.enum(["working", "completed", "inconclusive", "blocked"]).optional(),
   // Stop origin snapshotted at emit time: who cancelled the agent's last run
   // when this event was recorded ("user" = the user stopped it, "machinery" =
   // a steer/replace superseded it, "system" = provider crash/watchdog). The
