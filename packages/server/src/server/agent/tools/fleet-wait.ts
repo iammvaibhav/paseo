@@ -51,7 +51,8 @@ function waitResult(
   return {
     ok: true,
     status,
-    finished: status === "idle" || status === "error" || status === "closed",
+    finished:
+      status === "idle" || status === "error" || status === "closed" || status === "interrupted",
     needsPermission: status === "permission",
     timedOut: false,
     turnId: null,
@@ -94,12 +95,17 @@ function lastTimelineTurnId(agentManager: AgentManager, agentId: string): string
 /**
  * How a past turn ended, read from the agent's timeline; null when no row carries turnId.
  * A failed turn ends with the manager's "[System Error] …" assistant row (or an error item).
+ * A turn the agent canceled (Stop, or a prompt that interrupted it) is "interrupted".
  */
 function findTurnOutcome(
   agentManager: AgentManager,
   agentId: string,
   turnId: string,
-): { status: "idle" | "error"; lastMessage: string | null; error: string | null } | null {
+): {
+  status: "idle" | "error" | "interrupted";
+  lastMessage: string | null;
+  error: string | null;
+} | null {
   const rows = agentManager
     .fetchTimeline(agentId, { direction: "tail", limit: 0 })
     .rows.filter((row) => row.turnId === turnId);
@@ -114,7 +120,9 @@ function findTurnOutcome(
   } else if (lastMessage?.startsWith(SYSTEM_ERROR_PREFIX)) {
     error = lastMessage.slice(SYSTEM_ERROR_PREFIX.length).trim();
   }
-  return { status: error === null ? "idle" : "error", lastMessage, error };
+  if (error !== null) return { status: "error", lastMessage, error };
+  const end = agentManager.getAgent(agentId)?.finalizedForegroundTurnIds.get(turnId);
+  return { status: end === "turn_canceled" ? "interrupted" : "idle", lastMessage, error };
 }
 
 interface WaitScope {
@@ -228,10 +236,20 @@ async function liveRunResult(
   }
   const errorText =
     result.status === "error" ? agentManager.getAgent(agentId)?.lastError : undefined;
-  const status = result.permission ? "permission" : result.status;
   // A run that started after the wait was armed (pending at call time)
   // has no captured id; it is the newest turn on the timeline.
   const turnId = boundTurnId ?? activeTurnId ?? lastTimelineTurnId(agentManager, agentId);
+  let status: string = result.status;
+  if (result.permission) {
+    status = "permission";
+  } else if (
+    turnId &&
+    result.status === "idle" &&
+    agentManager.getAgent(agentId)?.finalizedForegroundTurnIds.get(turnId) === "turn_canceled"
+  ) {
+    // Stopped: the agent is idle, but its turn was canceled, not finished.
+    status = "interrupted";
+  }
   return waitResult(scope.base, {
     status,
     turnId,

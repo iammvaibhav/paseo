@@ -88,6 +88,7 @@ import {
 import { limitAgentTimelineItemContent } from "./agent-timeline-content.js";
 import {
   AgentRunState,
+  type ForegroundTurnEnd,
   type ForegroundTurnWaiter,
   type PendingForegroundRun,
 } from "./agent-run-state.js";
@@ -735,7 +736,7 @@ interface ManagedAgentBase {
   lastError?: string;
   attention: AttentionState;
   foregroundTurnWaiters: Set<ForegroundTurnWaiter>;
-  finalizedForegroundTurnIds: Set<string>;
+  finalizedForegroundTurnIds: Map<string, ForegroundTurnEnd>;
   unsubscribeSession: (() => void) | null;
   /**
    * Internal agents are hidden from listings and don't trigger notifications.
@@ -946,7 +947,9 @@ function isAgentBusy(status: AgentLifecycleStatus): boolean {
   return BUSY_STATUSES.has(status);
 }
 
-function isTurnTerminalEvent(event: AgentStreamEvent): boolean {
+function isTurnTerminalEvent(
+  event: AgentStreamEvent,
+): event is Extract<AgentStreamEvent, { type: NonNullable<ForegroundTurnEnd> }> {
   return (
     event.type === "turn_completed" ||
     event.type === "turn_failed" ||
@@ -2840,7 +2843,7 @@ export class AgentManager {
         activeTurnId: null,
         activeTurnStartedAt: null,
         foregroundTurnWaiters: new Set(),
-        finalizedForegroundTurnIds: new Set(),
+        finalizedForegroundTurnIds: new Map(),
         unsubscribeSession: null,
         persistence: record.persistence ?? null,
         historyPrimed: true,
@@ -3878,10 +3881,14 @@ export class AgentManager {
     return streamForwarder;
   }
 
-  private finalizeForegroundTurn(agent: ActiveManagedAgent, turnId?: string): void {
+  private finalizeForegroundTurn(
+    agent: ActiveManagedAgent,
+    turnId?: string,
+    end: ForegroundTurnEnd = null,
+  ): void {
     const mutableAgent = agent;
     if (turnId) {
-      this.runs.rememberFinalizedTurn(mutableAgent, turnId);
+      this.runs.rememberFinalizedTurn(mutableAgent, turnId, end);
     }
     mutableAgent.activeForegroundTurnId = null;
     this.applyActiveTurnTerminal(mutableAgent, turnId);
@@ -5183,7 +5190,7 @@ export class AgentManager {
       activeTurnId: null,
       activeTurnStartedAt: null,
       foregroundTurnWaiters: new Set<ForegroundTurnWaiter>(),
-      finalizedForegroundTurnIds: new Set<string>(),
+      finalizedForegroundTurnIds: new Map<string, ForegroundTurnEnd>(),
       unsubscribeSession: null,
       persistence: attachPersistenceCwd(
         options?.persistence ?? session.describePersistence(),
@@ -5247,7 +5254,7 @@ export class AgentManager {
       pendingReplacement: false,
       pendingReplacementOrigin: null,
       foregroundTurnWaiters: new Set(),
-      finalizedForegroundTurnIds: new Set(),
+      finalizedForegroundTurnIds: new Map(),
       unsubscribeSession: null,
     };
   }
@@ -5856,7 +5863,7 @@ export class AgentManager {
       if (isTurnTerminalEvent(event)) {
         this.runs.settleTerminalRun(agent.id, eventTurnId);
         if (isForegroundEvent) {
-          this.finalizeForegroundTurn(agent, eventTurnId);
+          this.finalizeForegroundTurn(agent, eventTurnId, event.type);
         }
       }
 

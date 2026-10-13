@@ -234,7 +234,7 @@ describe("persist and reload turn metrics", () => {
       activeTurnId: null,
       activeTurnStartedAt: null,
       foregroundTurnWaiters: new Set(),
-      finalizedForegroundTurnIds: new Set(),
+      finalizedForegroundTurnIds: new Map(),
       unsubscribeSession: null,
       persistence: null,
       historyPrimed: true,

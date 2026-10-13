@@ -5,6 +5,7 @@ import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import type { AgentManager } from "../agent-manager.js";
 import type { AgentStorage } from "../agent-storage.js";
 import type { AgentTimelineItem } from "../agent-sdk-types.js";
+import type { ForegroundTurnEnd } from "../agent-run-state.js";
 import { InMemoryAgentTimelineStore } from "../agent-timeline-store.js";
 import type { ProviderSnapshotManager } from "../provider-snapshot-manager.js";
 import type { PeerManager } from "../../peers/peer-manager.js";
@@ -18,6 +19,8 @@ const PEER_AGENT_ID = "7a8b9c0d-1e2f-3a4b-5c6d-7e8f9a0b1c2d";
 interface LocalAgentState {
   lifecycle: "running" | "idle";
   activeTurnId: string | null;
+  /** How finalized turns ended, as the manager records them. */
+  finalized?: Record<string, ForegroundTurnEnd>;
 }
 
 /**
@@ -39,7 +42,13 @@ function createHarness(input: {
   const agentManager = {
     getAgent: (id: string) =>
       agents[id]
-        ? { id, cwd: "/work", ...agents[id], activeForegroundTurnId: agents[id]!.activeTurnId }
+        ? {
+            id,
+            cwd: "/work",
+            ...agents[id],
+            activeForegroundTurnId: agents[id]!.activeTurnId,
+            finalizedForegroundTurnIds: new Map(Object.entries(agents[id]!.finalized ?? {})),
+          }
         : null,
     listAgents: () => Object.keys(agents).map((id) => ({ id, name: id })),
     hasTimeline: (id: string) => store.has(id),
@@ -208,16 +217,20 @@ describe("fleet_wait_agent turn binding (local)", () => {
     });
   });
 
-  test("a turn another run replaced reports its own outcome, not the replacing run's", async () => {
+  test("a turn another run replaced reports interrupted with its own message", async () => {
     const agents: Record<string, LocalAgentState> = {
       [LOCAL_AGENT_ID]: { lifecycle: "running", activeTurnId: "turn-2" },
     };
     const { catalog } = createHarness({
       agents,
       turns: { [LOCAL_AGENT_ID]: finishedTurn("turn-2", "remote answer") },
-      // The user's prompt interrupts turn-2; the agent stays busy on turn-3.
+      // The user's prompt cancels turn-2; the agent stays busy on turn-3.
       waitForAgentEvent: vi.fn(async () => {
-        agents[LOCAL_AGENT_ID] = { lifecycle: "running", activeTurnId: "turn-3" };
+        agents[LOCAL_AGENT_ID] = {
+          lifecycle: "running",
+          activeTurnId: "turn-3",
+          finalized: { "turn-2": "turn_canceled" },
+        };
         return { status: "running" as const, permission: null, lastMessage: "user answer" };
       }),
     });
@@ -228,11 +241,38 @@ describe("fleet_wait_agent turn binding (local)", () => {
     });
 
     expect(result.structuredContent).toMatchObject({
-      status: "idle",
+      status: "interrupted",
       finished: true,
       turnId: "turn-2",
       lastMessage: "remote answer",
     });
+  });
+
+  test("a stopped turn reports interrupted, a completed one idle", async () => {
+    const agents: Record<string, LocalAgentState> = {
+      [LOCAL_AGENT_ID]: { lifecycle: "running", activeTurnId: "turn-2" },
+    };
+    let end: ForegroundTurnEnd = "turn_canceled";
+    const { catalog } = createHarness({
+      agents,
+      waitForAgentEvent: vi.fn(async () => {
+        agents[LOCAL_AGENT_ID] = {
+          lifecycle: "idle",
+          activeTurnId: null,
+          finalized: { "turn-2": end },
+        };
+        return { status: "idle" as const, permission: null, lastMessage: "partial" };
+      }),
+    });
+    const wait = async () => {
+      agents[LOCAL_AGENT_ID] = { lifecycle: "running", activeTurnId: "turn-2" };
+      return (await catalog.executeTool("fleet_wait_agent", { agentId: LOCAL_AGENT_ID }))
+        .structuredContent;
+    };
+
+    expect(await wait()).toMatchObject({ status: "interrupted", finished: true, turnId: "turn-2" });
+    end = "turn_completed";
+    expect(await wait()).toMatchObject({ status: "idle", finished: true, turnId: "turn-2" });
   });
 
   test("a permission block returns early, not finished", async () => {

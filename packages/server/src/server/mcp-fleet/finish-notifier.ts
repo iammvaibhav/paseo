@@ -707,6 +707,7 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
   const finalReason = (status: string): FinalReason => {
     if (status === "error") return "errored";
     if (status === "closed") return "closed";
+    if (status === "interrupted") return "interrupted";
     return "finished";
   };
 

@@ -104,7 +104,7 @@ class InMemoryAgentManager {
       lastError: undefined,
       attention: { requiresAttention: false, attentionReason: null, attentionTimestamp: null },
       foregroundTurnWaiters: new Set(),
-      finalizedForegroundTurnIds: new Set(),
+      finalizedForegroundTurnIds: new Map(),
       unsubscribeSession: null,
       session: null,
       activeForegroundTurnId: null,

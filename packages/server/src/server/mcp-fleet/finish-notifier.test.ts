@@ -365,6 +365,26 @@ describe("createMcpFinishNotifier", () => {
     ]);
   });
 
+  it("a turn the agent canceled (Stop, or a user prompt replacing it) posts reason interrupted", async () => {
+    await notifier().arm({
+      client: "grok-bot",
+      target: { url },
+      agentId: "agent-1",
+      turnId: "turn-1",
+      tool: "fleet_send_prompt",
+      context: null,
+      waitForAgent: async () =>
+        result({ status: "interrupted", turnId: "turn-1", bucket: "running" }),
+    });
+
+    expect(received.map((r) => [r.body.type, r.body.reason, r.body.final])).toEqual([
+      ["paseo.agent.finished", "interrupted", true],
+    ]);
+    expect(received[0]!.body).toMatchObject({
+      agent: { turnId: "turn-1", status: "interrupted", bucket: "running" },
+    });
+  });
+
   // A restart: the first notifier is suspended, the second restores from the same journal.
   const daemon = (options: {
     localAgents?: McpFinishLocalAgents;

@@ -2963,7 +2963,7 @@ test("settles autonomous continuation of a previously finalized turnId", async (
     expect(fixture.manager.hasInFlightRun(fixture.agentId)).toBe(true);
 
     // Even if the finalized mark races back in, completion must settle.
-    fixture.manager.getAgent(fixture.agentId)!.finalizedForegroundTurnIds.add(turnId);
+    fixture.manager.getAgent(fixture.agentId)!.finalizedForegroundTurnIds.set(turnId, null);
 
     const settled = waitForAgentLifecycle(fixture.manager, fixture.agentId, "idle");
     fixture.session.pushEvent({
@@ -3008,7 +3008,7 @@ test("cancelAgentRun force-clears an autonomous run whose turnId is already fina
     expect(agent).not.toBeNull();
     // Re-mark after un-finalize-on-start: simulate the stuck bookkeeping where
     // the autonomous run remains while the turnId is marked finalized.
-    agent!.finalizedForegroundTurnIds.add("finalized-autonomous-turn");
+    agent!.finalizedForegroundTurnIds.set("finalized-autonomous-turn", null);
 
     await expect(fixture.manager.cancelAgentRun(fixture.agentId)).resolves.toEqual({
       status: "settled",
@@ -13710,6 +13710,10 @@ test("waitForAgentEvent bound to a turn ends when another run replaces that turn
     const result = await wait;
     expect(result.status).toBe("running");
     expect(manager.getAgent(agentId)!.activeForegroundTurnId).not.toBe(boundTurn);
+    // The replaced turn is remembered as canceled, so waits report it interrupted.
+    expect(manager.getAgent(agentId)!.finalizedForegroundTurnIds.get(boundTurn)).toBe(
+      "turn_canceled",
+    );
   } finally {
     if (agentId) await manager.closeAgent(agentId).catch(() => undefined);
     rmSync(workdir, { recursive: true, force: true });

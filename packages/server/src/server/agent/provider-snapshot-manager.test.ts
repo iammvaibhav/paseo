@@ -59,7 +59,7 @@ const CLOSED_PARENT: ManagedAgent = {
   activeTurnStartedAt: null,
   attention: { requiresAttention: false },
   foregroundTurnWaiters: new Set(),
-  finalizedForegroundTurnIds: new Set(),
+  finalizedForegroundTurnIds: new Map(),
   unsubscribeSession: null,
   labels: {},
   lifecycle: "closed",
