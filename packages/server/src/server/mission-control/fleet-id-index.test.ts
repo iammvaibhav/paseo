@@ -67,26 +67,26 @@ describe("fleet-id-index unit tests", () => {
 
     // Local beats cached peer
     const agentRes = await index.resolveFleetId(localAgentId);
-    expect(agentRes).toEqual({ kind: "agent", host: "local" });
+    expect(agentRes).toEqual({ kind: "agent", host: "local", id: localAgentId });
 
     const wksRes = await index.resolveFleetId(localWorkspaceId);
-    expect(wksRes).toEqual({ kind: "workspace", host: "local" });
+    expect(wksRes).toEqual({ kind: "workspace", host: "local", id: localWorkspaceId });
 
     const prjRes = await index.resolveFleetId(localProjectId);
-    expect(prjRes).toEqual({ kind: "project", host: "local" });
+    expect(prjRes).toEqual({ kind: "project", host: "local", id: localProjectId });
 
     const propRes = await index.resolveFleetId(proposalId);
-    expect(propRes).toEqual({ kind: "proposal", host: "local" });
+    expect(propRes).toEqual({ kind: "proposal", host: "local", id: proposalId });
 
     // Non-duplicate peer entities resolve to peer
     const peerAgentRes = await index.resolveFleetId("peer-agent-1");
-    expect(peerAgentRes).toEqual({ kind: "agent", host: "peer-host" });
+    expect(peerAgentRes).toEqual({ kind: "agent", host: "peer-host", id: "peer-agent-1" });
 
     const peerWksRes = await index.resolveFleetId("wks_peer_1");
-    expect(peerWksRes).toEqual({ kind: "workspace", host: "peer-host" });
+    expect(peerWksRes).toEqual({ kind: "workspace", host: "peer-host", id: "wks_peer_1" });
 
     const peerPrjRes = await index.resolveFleetId("prj_peer_1");
-    expect(peerPrjRes).toEqual({ kind: "project", host: "peer-host" });
+    expect(peerPrjRes).toEqual({ kind: "project", host: "peer-host", id: "prj_peer_1" });
   });
 
   test("miss handling: refresh -> found on peer after refresh", async () => {
@@ -119,7 +119,7 @@ describe("fleet-id-index unit tests", () => {
 
     const res = await index.resolveFleetId(peerAgentId);
     expect(fleetContext).toHaveBeenCalledTimes(1);
-    expect(res).toEqual({ kind: "agent", host: "blrofc3" });
+    expect(res).toEqual({ kind: "agent", host: "blrofc3", id: peerAgentId });
   });
 
   test("miss handling: refresh -> unknown guidance naming unreachable hosts", async () => {
@@ -182,6 +182,97 @@ describe("fleet-id-index unit tests", () => {
   });
 });
 
+describe("agent id prefixes with unreachable peers", () => {
+  const blrofc3AgentId = "e43d00d8-7e3e-4c80-b398-3ca91ff1ffbf";
+  const blrofc3OtherId = "77aa1234-0000-4000-8000-000000000002";
+
+  function peerClientWithAgents(agentIds: string[]) {
+    return {
+      missionControlContextFetch: vi.fn(async () => ({ inventory: { projects: [] } })),
+      fetchAgents: vi.fn(async () => ({
+        entries: agentIds.map((id) => ({ agent: { id } })),
+      })),
+    };
+  }
+
+  function peerManagerWith(
+    statuses: Array<{ name: string; state: "online" | "unreachable" }>,
+    clients: Record<string, unknown>,
+  ): PeerManager {
+    return {
+      getPeerStatuses: () =>
+        statuses.map((status) => ({ ...status, lastSeenAt: "2026-10-13T00:00:00Z" })),
+      getPeerClient: (name: string) => clients[name] ?? null,
+    } as unknown as PeerManager;
+  }
+
+  test("a unique prefix resolves to the full id on the reachable peer that owns it", async () => {
+    const index = createFleetIdIndex({
+      peerManager: peerManagerWith(
+        [
+          { name: "macbook", state: "unreachable" },
+          { name: "grok-bot", state: "unreachable" },
+          { name: "blrofc3", state: "online" },
+        ],
+        { blrofc3: peerClientWithAgents([blrofc3AgentId, blrofc3OtherId]) },
+      ),
+      logger: createTestLogger(),
+    });
+
+    expect(await index.resolveFleetId("e43d00d8")).toEqual({
+      kind: "agent",
+      host: "blrofc3",
+      id: blrofc3AgentId,
+    });
+  });
+
+  test("a prefix shared by several agents is ambiguous and names every candidate", async () => {
+    const localTwinId = "e43d00d8-1111-4111-8111-111111111111";
+    const index = createFleetIdIndex({
+      agentStorage: {
+        get: async () => null,
+        list: async () => [{ id: localTwinId }],
+      } as unknown as AgentStorage,
+      peerManager: peerManagerWith([{ name: "blrofc3", state: "online" }], {
+        blrofc3: peerClientWithAgents([blrofc3AgentId]),
+      }),
+      logger: createTestLogger(),
+    });
+
+    expect(await index.resolveFleetId("e43d00d8")).toEqual({
+      kind: "unknown",
+      guidance:
+        `agent id prefix "e43d00d8" is ambiguous: ${localTwinId} (local), ${blrofc3AgentId} (blrofc3). ` +
+        "Pass the full id from fleet_list_agents.",
+    });
+  });
+
+  test("a peer that is online but never answers does not block resolution on a reachable peer", async () => {
+    const { promise: neverAnswers } = Promise.withResolvers<never>();
+    const hungClient = {
+      missionControlContextFetch: () => neverAnswers,
+      fetchAgents: () => neverAnswers,
+    };
+    const index = createFleetIdIndex({
+      peerManager: peerManagerWith(
+        [
+          { name: "macbook", state: "online" },
+          { name: "blrofc3", state: "online" },
+        ],
+        { macbook: hungClient, blrofc3: peerClientWithAgents([blrofc3AgentId]) },
+      ),
+      peerFetchTimeoutMs: 50,
+      logger: createTestLogger(),
+    });
+
+    expect(await index.resolveFleetId(blrofc3AgentId)).toEqual({
+      kind: "agent",
+      host: "blrofc3",
+      id: blrofc3AgentId,
+    });
+  });
+});
+
 describe("fleet tools with fleet-id-index integration", () => {
   function createCatalogHarness(
     options: {
@@ -193,6 +284,8 @@ describe("fleet tools with fleet-id-index integration", () => {
         workspaces?: string[];
       };
       unreachablePeers?: string[];
+      /** Enables Mission Control tools (fleet_agent_status). */
+      missionControlService?: unknown;
     } = {},
   ) {
     const localAgents = options.localAgents ?? ["local-agent-1"];
@@ -307,6 +400,10 @@ describe("fleet tools with fleet-id-index integration", () => {
         ok: true,
         runRecords: [{ id: "mcr_1", agentId: peerAgents[0], outcome: "success" }],
       })),
+      missionControlToolsExecute: vi.fn(async (request: { args: Record<string, unknown> }) => ({
+        ok: true,
+        structuredContent: { agentId: request.args.agentId, bucket: "ready", host: "local" },
+      })),
     } as unknown as DaemonClient;
 
     const statuses = [
@@ -355,6 +452,9 @@ describe("fleet tools with fleet-id-index integration", () => {
         .manager as unknown as ProviderSnapshotManager,
       peerManager,
       fleetIdIndex,
+      ...(options.missionControlService
+        ? { missionControlService: options.missionControlService as never }
+        : {}),
       logger: createTestLogger(),
     });
 
@@ -464,6 +564,23 @@ describe("fleet tools with fleet-id-index integration", () => {
     ).rejects.toThrow(
       'Agent "7c3a0f4e-9b2a-4d6c-8e7a-1b2c3d4e5f01" is on host "local", not "macbook"',
     );
+  });
+
+  test("fleet_agent_status resolves a short id on a reachable peer while other peers are down", async () => {
+    const fullId = "e43d00d8-7e3e-4c80-b398-3ca91ff1ffbf";
+    const { catalog, client } = createCatalogHarness({
+      peerEntities: { peerName: "blrofc3", agents: [fullId] },
+      unreachablePeers: ["macbook", "grok-bot"],
+      missionControlService: { fetchEvents: () => [] },
+    });
+
+    const result = await catalog.executeTool("fleet_agent_status", { agentId: "e43d00d8" });
+
+    expect(client.missionControlToolsExecute).toHaveBeenCalledWith({
+      name: "fleet_agent_status",
+      args: { agentId: fullId, fresh: false, host: "local" },
+    });
+    expect(result.structuredContent).toMatchObject({ agentId: fullId, host: "blrofc3" });
   });
 
   test("fleet_create_agent: workspaceId present derives host, omitted workspaceId requires host", async () => {

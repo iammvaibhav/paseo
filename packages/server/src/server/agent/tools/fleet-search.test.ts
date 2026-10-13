@@ -199,12 +199,26 @@ describe("fleet_search tool", () => {
     });
   });
 
-  test("skips offline peers instead of failing the search", async () => {
+  test("skips offline peers instead of failing the search, and says which host was skipped", async () => {
     const { catalog, client } = createHarness({ offlinePeers: true });
     const result = await catalog.executeTool("fleet_search", { query: "auth" });
     expect(client.missionControlSearch).not.toHaveBeenCalled();
     const matches = result.structuredContent.matches as Array<Record<string, unknown>>;
     expect(matches.map((match) => match.host)).toEqual(["local"]);
+    expect(result.structuredContent.warnings).toEqual([
+      expect.stringMatching(/^Host "macbook" unreachable since /),
+    ]);
+  });
+
+  test("a peer whose search fails is reported as a warning; local matches still return", async () => {
+    const { catalog, client } = createHarness();
+    vi.mocked(client.missionControlSearch).mockRejectedValueOnce(new Error("socket closed"));
+    const result = await catalog.executeTool("fleet_search", { query: "auth" });
+    const matches = result.structuredContent.matches as Array<Record<string, unknown>>;
+    expect(matches.map((match) => match.agentId)).toEqual(["local-1"]);
+    expect(result.structuredContent.warnings).toEqual([
+      'Host "macbook" did not answer (socket closed); its matches are not included.',
+    ]);
   });
 
   test("replaces the literal local host with the host alias in results", async () => {

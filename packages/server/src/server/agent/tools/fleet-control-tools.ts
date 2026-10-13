@@ -125,6 +125,8 @@ interface ResolvedTargetHost {
   host: string;
   isLocal: boolean;
   targetHostDisplay: string;
+  /** Full agent id to route with (a short id the index expanded, else as given). */
+  agentId: string;
   error?: string;
   guidance?: string;
 }
@@ -134,14 +136,16 @@ export async function resolveTargetHost(
   hostHint: string | undefined,
   deps: RegisterFleetControlToolsOptions,
 ): Promise<ResolvedTargetHost> {
+  const resolution = await deps.fleetIdIndex.resolveFleetId(agentId);
+  const resolvedId = resolution.kind === "unknown" ? agentId : resolution.id;
   if (hostHint) {
-    const resolution = await deps.fleetIdIndex.resolveFleetId(agentId);
     if (resolution.kind !== "unknown" && !deps.hostsMatch(hostHint, resolution.host)) {
       const actualHost = resolution.host === "local" ? deps.hostLabel : resolution.host;
       return {
         host: actualHost,
         isLocal: deps.isFleetLocalTarget(actualHost),
         targetHostDisplay: actualHost,
+        agentId: resolvedId,
         error: `Agent "${agentId}" is on host "${actualHost}", not "${hostHint}"`,
         guidance: `Target host "${actualHost}" instead or omit the host hint to auto-resolve.`,
       };
@@ -151,15 +155,16 @@ export async function resolveTargetHost(
       host: hostHint,
       isLocal,
       targetHostDisplay: isLocal ? deps.hostLabel : hostHint,
+      agentId: resolvedId,
     };
   }
 
-  const resolution = await deps.fleetIdIndex.resolveFleetId(agentId);
   if (resolution.kind === "unknown") {
     return {
       host: "unknown",
       isLocal: false,
       targetHostDisplay: "unknown",
+      agentId,
       error: `Agent "${agentId}" not found on any reachable host`,
       guidance: resolution.guidance,
     };
@@ -170,6 +175,7 @@ export async function resolveTargetHost(
     host: resolution.host,
     isLocal,
     targetHostDisplay: isLocal ? deps.hostLabel : resolution.host,
+    agentId: resolvedId,
   };
 }
 
@@ -215,8 +221,9 @@ export function registerFleetControlTools(options: RegisterFleetControlToolsOpti
       inputSchema: FLEET_CANCEL_INPUT_SCHEMA,
       outputSchema: FLEET_CANCEL_OUTPUT_SCHEMA,
     },
-    async ({ agentId, host: hostHint }: { agentId: string; host?: string }) => {
-      const resolved = await resolveTargetHost(agentId, hostHint, options);
+    async ({ agentId: requestedAgentId, host: hostHint }: { agentId: string; host?: string }) => {
+      const resolved = await resolveTargetHost(requestedAgentId, hostHint, options);
+      const { agentId } = resolved;
       if (resolved.error) {
         return {
           content: [],
@@ -315,8 +322,9 @@ export function registerFleetControlTools(options: RegisterFleetControlToolsOpti
       inputSchema: FLEET_KILL_INPUT_SCHEMA,
       outputSchema: FLEET_CONTROL_OUTPUT_SCHEMA,
     },
-    async ({ agentId, host: hostHint }: { agentId: string; host?: string }) => {
-      const resolved = await resolveTargetHost(agentId, hostHint, options);
+    async ({ agentId: requestedAgentId, host: hostHint }: { agentId: string; host?: string }) => {
+      const resolved = await resolveTargetHost(requestedAgentId, hostHint, options);
+      const { agentId } = resolved;
       if (resolved.error) {
         return {
           content: [],
@@ -512,7 +520,7 @@ export function registerFleetControlTools(options: RegisterFleetControlToolsOpti
       outputSchema: FLEET_CONTROL_OUTPUT_SCHEMA,
     },
     async ({
-      agentId,
+      agentId: requestedAgentId,
       host: hostHint,
       ...updates
     }: {
@@ -525,7 +533,7 @@ export function registerFleetControlTools(options: RegisterFleetControlToolsOpti
           structuredContent: ensureValidJson({
             ok: false,
             host: hostHint ?? options.hostLabel,
-            agentId,
+            agentId: requestedAgentId,
             error: "No updates provided",
             guidance:
               "Provide at least one of: title, labels, modeId, model, thinkingOptionId, features.",
@@ -533,7 +541,8 @@ export function registerFleetControlTools(options: RegisterFleetControlToolsOpti
         };
       }
 
-      const resolved = await resolveTargetHost(agentId, hostHint, options);
+      const resolved = await resolveTargetHost(requestedAgentId, hostHint, options);
+      const { agentId } = resolved;
       if (resolved.error) {
         return {
           content: [],

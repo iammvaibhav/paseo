@@ -12,9 +12,18 @@ import type {
 
 export type FleetIdKind = "agent" | "workspace" | "project" | "proposal";
 
+/** A resolved id carries its canonical `id`: a unique agent-id prefix (the
+ * short ids rosters show) expands to the full id callers must route with. */
 export type FleetIdResolution =
-  | { kind: FleetIdKind; host: string }
+  | { kind: FleetIdKind; host: string; id: string }
   | { kind: "unknown"; guidance: string };
+
+/** Shortest agent-id prefix expanded to a full id (rosters show 7-8 chars). */
+const MIN_AGENT_ID_PREFIX_LENGTH = 6;
+const AGENT_ID_PREFIX_PATTERN = /^[0-9a-f-]+$/i;
+/** A peer that is "online" but stops answering must not stall resolution
+ * for ids on the reachable peers; its snapshot fetch is cut off here. */
+const DEFAULT_PEER_FETCH_TIMEOUT_MS = 10_000;
 
 export interface PeerSnapshotEntry {
   peerName: string;
@@ -32,6 +41,8 @@ export interface FleetIdIndexDependencies {
   missionControlService?: Pick<MissionControlService, "getProposal" | "listProposals"> | null;
   peerManager?: PeerManager | null;
   fleetContext?: () => Promise<FleetContextData>;
+  /** Per-peer snapshot fetch bound. Defaults to DEFAULT_PEER_FETCH_TIMEOUT_MS. */
+  peerFetchTimeoutMs?: number;
   logger?: Logger;
 }
 
@@ -80,8 +91,9 @@ export class FleetIdIndex {
    * Resolution order:
    * 1. Local registries (live)
    * 2. Cached peer snapshots
-   * 3. On miss: refresh peer snapshots once and retry
-   * 4. Still missing: return unknown with guidance naming unreachable peers and resolver tool
+   * 3. On miss: refresh reachable peer snapshots once and retry
+   * 4. Still missing: expand a unique agent-id prefix across local + peers
+   * 5. Otherwise: unknown with guidance naming unreachable peers and resolver tool
    */
   async resolveFleetId(id: string): Promise<FleetIdResolution> {
     const trimmedId = id.trim();
@@ -92,38 +104,87 @@ export class FleetIdIndex {
       };
     }
 
-    // 1. Local registries check
-    const localMatch = await this.resolveLocal(trimmedId);
-    if (localMatch) {
-      return localMatch;
+    const exact = (await this.resolveLocal(trimmedId)) ?? this.resolveFromPeerSnapshots(trimmedId);
+    if (exact) {
+      return { ...exact, id: trimmedId };
     }
 
-    // 2. Cached peer snapshots check
-    const cachedMatch = this.resolveFromPeerSnapshots(trimmedId);
-    if (cachedMatch) {
-      return cachedMatch;
-    }
-
-    // 3. Miss handling: refresh peer snapshots once and retry
     await this.refreshPeerSnapshots();
 
-    // Re-check local in case created recently
-    const localRetry = await this.resolveLocal(trimmedId);
-    if (localRetry) {
-      return localRetry;
+    const refreshed =
+      (await this.resolveLocal(trimmedId)) ?? this.resolveFromPeerSnapshots(trimmedId);
+    if (refreshed) {
+      return { ...refreshed, id: trimmedId };
     }
 
-    // Re-check refreshed peer snapshots
-    const refreshedMatch = this.resolveFromPeerSnapshots(trimmedId);
-    if (refreshedMatch) {
-      return refreshedMatch;
+    if (
+      inferIdKind(trimmedId) === "agent" &&
+      trimmedId.length >= MIN_AGENT_ID_PREFIX_LENGTH &&
+      AGENT_ID_PREFIX_PATTERN.test(trimmedId)
+    ) {
+      const prefixMatch = await this.resolveAgentPrefix(trimmedId.toLowerCase());
+      if (prefixMatch) {
+        return prefixMatch;
+      }
     }
 
-    // 4. Return unknown with guidance
     return {
       kind: "unknown",
       guidance: this.buildUnknownGuidance(trimmedId),
     };
+  }
+
+  /** Expand an agent-id prefix to the one full id it names across this
+   * daemon and the peer snapshots. Several candidates → ambiguous guidance;
+   * none → null so the caller reports not-found. */
+  private async resolveAgentPrefix(prefix: string): Promise<FleetIdResolution | null> {
+    const candidates = new Map<string, string>();
+    for (const agentId of await this.listLocalAgentIds()) {
+      if (agentId.toLowerCase().startsWith(prefix)) {
+        candidates.set(agentId, "local");
+      }
+    }
+    for (const [peerName, snapshot] of this.peerSnapshots.entries()) {
+      for (const agentId of snapshot.agents) {
+        if (agentId.toLowerCase().startsWith(prefix) && !candidates.has(agentId)) {
+          candidates.set(agentId, peerName);
+        }
+      }
+    }
+    if (candidates.size === 1) {
+      const [[agentId, host]] = candidates;
+      return { kind: "agent", host, id: agentId };
+    }
+    if (candidates.size > 1) {
+      const listed = [...candidates].map(([agentId, host]) => `${agentId} (${host})`).join(", ");
+      return {
+        kind: "unknown",
+        guidance: `agent id prefix "${prefix}" is ambiguous: ${listed}. Pass the full id from fleet_list_agents.`,
+      };
+    }
+    return null;
+  }
+
+  /** Every agent id this daemon knows (live manager + storage). A registry
+   * hiccup contributes nothing rather than failing the lookup. */
+  private async listLocalAgentIds(): Promise<Set<string>> {
+    const ids = new Set<string>();
+    const { agentManager, agentStorage } = this.deps;
+    try {
+      for (const agent of agentManager?.listAgents() ?? []) {
+        ids.add(agent.id);
+      }
+    } catch (err) {
+      this.logger?.debug({ err }, "Error listing live agents for prefix lookup");
+    }
+    try {
+      for (const record of (await agentStorage?.list()) ?? []) {
+        ids.add(record.id);
+      }
+    } catch (err) {
+      this.logger?.debug({ err }, "Error listing stored agents for prefix lookup");
+    }
+    return ids;
   }
 
   /** Invalidate cached peer snapshots. */
@@ -319,21 +380,37 @@ export class FleetIdIndex {
     return { peerName, fetchedAt: now, workspaces, projects, agents };
   }
 
-  /** Refresh one online peer's snapshot from its context + full agent list. */
+  /** Refresh one online peer's snapshot from its context + full agent list.
+   * A peer that does not answer within the fetch bound keeps its previous
+   * snapshot, so a dying host never stalls or empties the index. */
   private async refreshOnePeerSnapshot(peerName: string, now: number): Promise<void> {
     const client = this.deps.peerManager?.getPeerClient(peerName);
     if (!client) {
       return;
     }
+    const timeoutMs = this.deps.peerFetchTimeoutMs ?? DEFAULT_PEER_FETCH_TIMEOUT_MS;
+    const timedOut = Promise.withResolvers<"timeout">();
+    const timer = setTimeout(() => timedOut.resolve("timeout"), timeoutMs);
     try {
-      const [contextPayload, agentsPayload] = await Promise.all([
-        client.missionControlContextFetch().catch(() => null),
-        typeof client.fetchAgents === "function"
-          ? client
-              .fetchAgents({ filter: { includeArchived: true }, page: { limit: 200 } })
-              .catch(() => null)
-          : Promise.resolve(null),
+      const fetched = await Promise.race([
+        Promise.all([
+          client.missionControlContextFetch().catch(() => null),
+          typeof client.fetchAgents === "function"
+            ? client
+                .fetchAgents({ filter: { includeArchived: true }, page: { limit: 200 } })
+                .catch(() => null)
+            : Promise.resolve(null),
+        ]),
+        timedOut.promise,
       ]);
+      if (fetched === "timeout") {
+        this.logger?.warn(
+          { peer: peerName, timeoutMs },
+          "Peer did not answer the index refresh in time; keeping its previous snapshot",
+        );
+        return;
+      }
+      const [contextPayload, agentsPayload] = fetched;
       const entries = Array.isArray(agentsPayload?.entries) ? agentsPayload.entries : [];
       this.peerSnapshots.set(
         peerName,
@@ -344,6 +421,8 @@ export class FleetIdIndex {
         { err, peer: peerName },
         "Failed to fetch context payload for peer in index refresh",
       );
+    } finally {
+      clearTimeout(timer);
     }
   }
 

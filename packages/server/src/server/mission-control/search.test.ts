@@ -4,8 +4,12 @@ import type { MissionControlEvent } from "@getpaseo/protocol/mission-control/typ
 
 import { createTestLogger } from "../../test-utils/test-logger.js";
 import type { StoredAgentRecord } from "../agent/agent-storage.js";
-import type { AgentTimelineItem, AgentTimelineRow } from "../agent/agent-timeline-store-types.js";
-import type { AgentManager } from "../agent/agent-manager.js";
+import type {
+  AgentTimelineFetchOptions,
+  AgentTimelineItem,
+  AgentTimelineRow,
+} from "../agent/agent-timeline-store-types.js";
+import { AgentManager } from "../agent/agent-manager.js";
 import type { PersistedProjectRecord, PersistedWorkspaceRecord } from "../workspace-registry.js";
 import {
   SEARCH_TIER1_THIN_THRESHOLD,
@@ -93,7 +97,6 @@ function buildDeps(options: TestDepsOptions = {}): {
   ];
   const agentManager = {
     getAgent: vi.fn(() => null),
-    getTimeline: (agentId: string) => timeline.items(agentId),
     fetchTimeline: (agentId: string) => ({
       epoch: "e1",
       direction: "tail",
@@ -111,7 +114,6 @@ function buildDeps(options: TestDepsOptions = {}): {
   } as unknown as Pick<
     AgentManager,
     | "getAgent"
-    | "getTimeline"
     | "fetchTimeline"
     | "hasTimeline"
     | "seedTimelineForRehydrate"
@@ -419,6 +421,65 @@ describe("tier 2 — bounded transcript scan", () => {
     });
     const tier2 = await searchTier2("old needle", deps);
     expect(tier2.matches).toHaveLength(0);
+  });
+});
+
+describe("stale or deleted agents", () => {
+  const closedAgentId = "d54f4029-33aa-4ae6-909f-65ad1df023b7";
+  const otherAgentId = "1eabd510-7a3e-4998-9a8c-da85decf58d9";
+  const recent = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+
+  test("a closed agent whose timeline was seeded from history is searchable, not an error", async () => {
+    // Real manager: a stored-but-not-live agent gets its timeline seeded by a
+    // history open or an earlier tier-2 scan; tier 1 must read it without the
+    // live-agent requirement that throws "Unknown agent".
+    const agentManager = new AgentManager({ clients: {}, logger: createTestLogger() });
+    agentManager.seedTimelineFromItems(closedAgentId, [
+      { item: { type: "user_message", text: "ship the invoice exporter" }, timestamp: recent },
+    ]);
+    const { deps } = buildDeps({
+      records: [
+        record({ id: closedAgentId, title: "Billing work", updatedAt: recent }),
+        record({ id: otherAgentId, title: "Invoice exporter follow-up", updatedAt: recent }),
+      ],
+    });
+
+    const matches = await runFleetSearchHost({
+      query: "invoice exporter",
+      deps: { ...deps, agentManager },
+    });
+
+    expect(matches.map((match) => [match.agentId, match.matchedIn])).toEqual([
+      [otherAgentId, "identity"],
+      [closedAgentId, "brief"],
+    ]);
+  });
+
+  test("an agent whose timeline cannot be read is skipped; the rest of the search still returns", async () => {
+    const { deps, timeline } = buildDeps({
+      records: [
+        record({ id: closedAgentId, title: "Deleted worker", updatedAt: recent }),
+        record({ id: otherAgentId, title: "Healthy worker", updatedAt: recent }),
+      ],
+    });
+    timeline.set(closedAgentId, [userMessageRow(1, "needle in a deleted agent", recent)]);
+    timeline.set(otherAgentId, [userMessageRow(1, "needle in a healthy agent", recent)]);
+    const brokenManager = {
+      ...deps.agentManager,
+      fetchTimeline: (agentId: string, options?: AgentTimelineFetchOptions) => {
+        if (agentId === closedAgentId) {
+          throw new Error(`Unknown agent '${agentId}'`);
+        }
+        return deps.agentManager.fetchTimeline(agentId, options);
+      },
+    };
+
+    const matches = await runFleetSearchHost({
+      query: "needle",
+      deps: { ...deps, agentManager: brokenManager },
+    });
+
+    expect(matches.map((match) => match.agentId)).toEqual([otherAgentId]);
   });
 });
 

@@ -270,6 +270,34 @@ describe("fleet_wait_agent on a peer", () => {
     });
   });
 
+  test("a short agent id resolves to the peer and the wait runs with the full id", async () => {
+    const missionControlToolsExecute = vi.fn(async (input: { name: string }) => ({
+      ok: true,
+      name: input.name,
+      structuredContent: waitResult({ turnId: "p-1", lastMessage: "done remotely" }),
+    }));
+    const fetchAgents = vi.fn(async () => ({ entries: [{ agent: { id: PEER_AGENT_ID } }] }));
+    const missionControlContextFetch = vi.fn(async () => ({ inventory: { projects: [] } }));
+    const { catalog } = createHarness({
+      peerClient: { missionControlToolsExecute, fetchAgents, missionControlContextFetch } as never,
+    });
+
+    const result = await catalog.executeTool("fleet_wait_agent", {
+      agentId: PEER_AGENT_ID.slice(0, 8),
+      timeoutSeconds: 30,
+    });
+
+    expect(missionControlToolsExecute.mock.calls[0]![0]).toMatchObject({
+      name: "fleet_wait_agent",
+      args: { agentId: PEER_AGENT_ID, host: "local" },
+    });
+    expect(result.structuredContent).toMatchObject({
+      host: "macbook",
+      agentId: PEER_AGENT_ID,
+      finished: true,
+    });
+  });
+
   test("falls back to wait_for_finish on a peer that predates turn-bound waits", async () => {
     const waitForFinish = vi.fn(async () => ({
       status: "idle" as const,
