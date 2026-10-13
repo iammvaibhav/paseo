@@ -449,4 +449,113 @@ describe("createMcpFinishNotifier", () => {
     expect(types.filter((type) => type === "paseo.agent.finished")).toHaveLength(2);
     expect(types.filter((type) => type === "paseo.agents.group_finished")).toHaveLength(1);
   });
+
+  it("group: the group event survives a restart, keeping members that ended before it", async () => {
+    // a finishes before the shutdown; b's run is cut by it.
+    const aEnded = Promise.withResolvers<void>();
+    const shutdownClose = Promise.withResolvers<FleetAgentWaitResult>();
+    const before = daemon({ localAgents: localAgents(neverStarts) });
+    const armed = before.armGroup({
+      client: "grok-bot",
+      target: { url },
+      groupId: "grp_restart",
+      agents: [
+        { agentId: "a", turnId: "t-a" },
+        { agentId: "b", turnId: "t-b" },
+      ],
+      perAgent: false,
+      tool: "fleet_notify_on_finish",
+      context: "batch-9",
+      waitForAgent: async (input) => {
+        if (input.agentId === "b") return shutdownClose.promise;
+        aEnded.resolve();
+        return result({ agentId: "a", turnId: "t-a", lastMessage: "A done." });
+      },
+    });
+    await aEnded.promise;
+    await new Promise((resolve) => setImmediate(resolve));
+    await before.suspend();
+    shutdownClose.resolve(result({ agentId: "b", status: "closed", turnId: "t-b" }));
+    await armed;
+    expect(received).toHaveLength(0);
+
+    const resumed = Promise.withResolvers<RunStart>();
+    const resumeWaits: string[] = [];
+    const after = daemon({
+      localAgents: localAgents((agentId) => {
+        resumeWaits.push(agentId);
+        return resumed.promise;
+      }),
+    });
+    const { restored, settled } = await after.restore(async () => ({
+      target: { url },
+      waitForAgent: async (input) => {
+        expect(input).toMatchObject({ agentId: "b", turnId: "t-b2" });
+        return result({ agentId: "b", turnId: "t-b2", lastMessage: "B done." });
+      },
+    }));
+    expect(restored).toBe(1);
+    expect(resumeWaits).toEqual(["b"]);
+    resumed.resolve({ local: true, turnId: "t-b2" });
+    await settled;
+
+    expect(received).toHaveLength(1);
+    expect(received[0]!.body).toMatchObject({
+      type: "paseo.agents.group_finished",
+      groupId: "grp_restart",
+      context: "batch-9",
+      agents: [
+        { id: "a", turnId: "t-a", reason: "finished", lastMessage: "A done." },
+        { id: "b", turnId: "t-b2", reason: "finished", lastMessage: "B done." },
+      ],
+    });
+    expect((await journal()).map((entry) => entry.event)).toEqual([
+      "group_armed",
+      "member_ended",
+      "suspended",
+      "restored",
+      "resumed",
+      "member_ended",
+      "fired",
+      "delivered",
+    ]);
+    const again = await daemon({}).restore(async () => {
+      throw new Error("a delivered group is never restored");
+    });
+    expect(again.restored).toBe(0);
+  });
+
+  it("group: sends again a group event the restart cut off mid-retry", async () => {
+    statuses = [503];
+    const before = daemon({ retryDelaysMs: [60_000] });
+    const armed = before.armGroup({
+      client: "grok-bot",
+      target: { url },
+      groupId: "grp_retry",
+      agents: [{ agentId: "a", turnId: "t-a" }],
+      perAgent: false,
+      tool: "fleet_notify_on_finish",
+      context: null,
+      waitForAgent: async () => result({ agentId: "a", turnId: "t-a" }),
+    });
+    await firstRequest.promise;
+    await before.suspend();
+    await armed;
+
+    const { settled } = await daemon({}).restore(async () => ({
+      target: { url },
+      waitForAgent: async () => {
+        throw new Error("a fired group event is resent, not re-watched");
+      },
+    }));
+    await settled;
+
+    expect(received).toHaveLength(2);
+    expect(received[1]!.body).toEqual(received[0]!.body);
+    expect((await journal()).at(-1)).toMatchObject({
+      event: "delivered",
+      watchId: "grp_retry",
+      status: 200,
+    });
+  });
 });

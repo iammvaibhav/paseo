@@ -160,6 +160,7 @@ import {
   type PaseoToolHostDependencies,
 } from "./agent/tools/paseo-tools.js";
 import { sendPromptToAgent } from "./agent/agent-prompt.js";
+import { attachAgentFinishWatches } from "./agent/finish-watches.js";
 import type { PaseoToolCatalog, PaseoToolRuntimeContext } from "./agent/tools/types.js";
 import { createAgentProviderRuntime } from "./agent/provider-runtime.js";
 import { bootstrapWorkspaceRegistries } from "./workspace-registry-bootstrap.js";
@@ -3041,6 +3042,13 @@ export async function createPaseoDaemon(
     journalPath: path.join(config.paseoHome, "mcp-fleet", "finish-watches.jsonl"),
     localAgents: createMcpFinishLocalAgents({ agentManager, agentStorage }),
   });
+  // Agent-to-agent notifyOnFinish (create_agent/send_agent_prompt from an agent).
+  const agentFinishWatches = attachAgentFinishWatches({
+    agentManager,
+    agentStorage,
+    logger,
+    journalPath: path.join(config.paseoHome, "mcp-fleet", "agent-finish-watches.jsonl"),
+  });
   const restoreMcpFinishWatches = async () => {
     const { restored } = await mcpFinishNotifier.restore(async (clientName) => {
       const remoteClients = loadPersistedConfig(config.paseoHome).daemon?.mcp?.remoteClients;
@@ -3182,6 +3190,12 @@ export async function createPaseoDaemon(
       await restoreMcpFinishWatches().catch((error) => {
         logger.error({ err: error }, "Failed to restore mcp finish watches");
       });
+      try {
+        const { restored } = await agentFinishWatches.restore();
+        if (restored > 0) logger.info({ restored }, "agent finish watches restored");
+      } catch (error) {
+        logger.error({ err: error }, "Failed to restore agent finish watches");
+      }
 
       // Start main HTTP server
       await new Promise<void>((resolve, reject) => {
@@ -3443,6 +3457,7 @@ export async function createPaseoDaemon(
     agentManager.prepareForShutdown();
     // Before agents close: the shutdown's "closed" state is not the end of a watched run.
     await mcpFinishNotifier.suspend();
+    await agentFinishWatches.suspend();
     await closeAllAgents(logger, agentManager);
     await withTimeout({
       promise: pluginRuntime.drainEvents(),
