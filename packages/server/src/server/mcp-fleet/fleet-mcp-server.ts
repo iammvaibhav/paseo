@@ -71,7 +71,9 @@ const NOTIFY_INPUT_SHAPE = {
       "POST a paseo.agent.finished event to your configured webhook when this agent's run ends " +
         "(and paseo.agent.needs_permission if it blocks on a permission). Returns immediately. " +
         "The watch survives a daemon restart: it reports the run the restarted daemon resumes, or " +
-        'reason "interrupted" when the run never resumes.',
+        'reason "interrupted" when the run never resumes. If the agent\'s host restarts mid-run you ' +
+        "first get a non-final paseo.agent.interrupted event (final: false), then paseo.agent.finished " +
+        "for the run the host resumes.",
     ),
   notifyContext: z
     .string()
@@ -393,7 +395,8 @@ export async function createFleetMcpServer(options: FleetMcpServerOptions): Prom
         "once every agent's turn has ended. needs_permission always POSTs per agent and does not complete " +
         "the group. Each agent binds to the turnId given, else to its run in progress; an idle agent with " +
         "no run fires at once with turnId null. Watches survive a daemon restart: each agent reports the " +
-        'run the restarted daemon resumes, or reason "interrupted" when it never resumes. Returns immediately.',
+        'run the restarted daemon resumes, or reason "interrupted" when it never resumes. An agent whose ' +
+        "host restarts mid-run first POSTs a non-final paseo.agent.interrupted. Returns immediately.",
       inputSchema: NOTIFY_ON_FINISH_INPUT.loose(),
     },
     async (args: Record<string, unknown>) => {

@@ -16,21 +16,31 @@ import { createWatchJournal } from "../watch-journal.js";
  * run in progress), so an earlier run's finish never fires it.
  *
  * Watches survive a daemon restart. Every watch transition (armed, fired,
- * delivered, failed, suspended, restored, resumed, gave_up) is appended to a
- * JSONL journal, which doubles as the queryable delivery record. On shutdown
- * the daemon suspends its watches before closing agents, so the shutdown's
- * "closed" state is never reported as the run's end; the next process
- * restores every watch the journal still shows pending. A restart interrupts
- * this daemon's own agents, so a restored watch on one of them waits for the
- * agent's resumed run (the deploy nudge restarts it), rebinds to that run's
- * turn, and reports its end, or reason "interrupted" when no run resumes
- * within resumeGraceMs. Delivery is at-least-once: an event fired but not
- * confirmed before the restart is sent again.
+ * delivered, failed, suspended, restored, interrupted, resumed, gave_up) is
+ * appended to a JSONL journal, which doubles as the queryable delivery
+ * record. On shutdown the daemon suspends its watches before closing agents,
+ * so the shutdown's "closed" state is never reported as the run's end; the
+ * next process restores every watch the journal still shows pending. A
+ * restart interrupts this daemon's own agents, so a restored watch on one of
+ * them waits for the agent's resumed run (the deploy nudge restarts it),
+ * rebinds to that run's turn, and reports its end, or reason "interrupted"
+ * when no run resumes within resumeGraceMs. Delivery of final events is
+ * at-least-once: one fired but not confirmed before the restart is sent again.
  *
  * Group watches (armGroup) are journaled the same way: the group, each
  * member's end as it lands, and the group event. A restored group keeps the
  * members that already ended and waits out the rest, so the group event is
  * sent once every member's run has ended, across restarts.
+ *
+ * A peer's restart (a deploy, a crash) closes the agents it hosts, so a wait
+ * on a peer agent can end "closed" while its run has not finished. That is
+ * not the run's end: the watch posts a non-final paseo.agent.interrupted
+ * event, stays armed, follows the run the peer resumes (the peer's deploy
+ * nudge starts it as a new turn), and posts paseo.agent.finished when that
+ * run ends, or reason "interrupted" when no run resumes within resumeGraceMs.
+ * Only an agent this daemon hosts can be closed while its watch runs on
+ * purpose (archive, kill), since this daemon's own shutdown suspends watches
+ * first; that "closed" stays final.
  */
 export type McpNotifyTarget = NonNullable<RemoteMcpClient["notify"]>;
 
@@ -88,6 +98,8 @@ export interface McpFinishLocalAgents {
    * this daemon does not host. Rejects when the signal aborts.
    */
   waitForRunStart(agentId: string, signal: AbortSignal): Promise<McpFinishRunStart>;
+  /** Whether this daemon hosts the agent (live or stored). */
+  hosts(agentId: string): Promise<boolean>;
 }
 
 export interface McpFinishNotifierOptions {
@@ -105,7 +117,10 @@ export interface McpFinishNotifierOptions {
   pollMs?: number;
   /** Delays before delivery retries. */
   retryDelaysMs?: readonly number[];
-  /** After a restart, how long a restored watch waits for its local agent's run to resume. */
+  /**
+   * How long a watch waits for an interrupted run to resume: a local agent's
+   * run after this daemon restarts, or a peer agent's run after its host closed it.
+   */
   resumeGraceMs?: number;
 }
 
@@ -141,6 +156,8 @@ export interface McpFinishNotifier {
 
 export const MAX_NOTIFY_CONTEXT_LENGTH = 2000;
 const LAST_MESSAGE_LIMIT = 4000;
+/** One probe for the turn a peer agent runs now; a running agent holds it this long. */
+const RESUME_PROBE_MS = 1_000;
 const RESPONSE_SNIPPET_LIMIT = 500;
 const VAULT_REF = /aside:\/\/\S+/;
 
@@ -170,6 +187,8 @@ type JournalEntry =
       watchId: string;
       agentId: string;
       reason: NotifyReason;
+      /** False for events that leave the watch armed; absent in older entries (needs_permission was the only one). */
+      final?: boolean;
       status: string;
       body: string;
     }
@@ -179,6 +198,7 @@ type JournalEntry =
       watchId: string;
       agentId: string;
       reason: NotifyReason;
+      final?: boolean;
       status: number;
       attempts: number;
     }
@@ -188,6 +208,7 @@ type JournalEntry =
       watchId: string;
       agentId: string;
       reason: NotifyReason;
+      final?: boolean;
       status: number | null;
       attempts: number;
       error: string | null;
@@ -195,6 +216,8 @@ type JournalEntry =
   | { event: "suspended"; ts: string; watchId: string; agentId: string }
   | { event: "restored"; ts: string; watchId: string; agentId: string }
   | { event: "resumed"; ts: string; watchId: string; agentId: string; turnId: string | null }
+  /** A peer closed the agent mid-run; the watch now waits for the run it resumes. */
+  | { event: "interrupted"; ts: string; watchId: string; agentId: string; turnId: string | null }
   | { event: "gave_up"; ts: string; watchId: string; agentId: string; why: string }
   | GroupArmedEntry
   | {
@@ -227,10 +250,18 @@ interface GroupArmedEntry {
 
 type GroupMemberPayload = Record<string, unknown> & { reason: FinalReason };
 
+/** Where a watch's run stands: the turn it is bound to, and whether a peer closed that turn mid-run. */
+interface RunBinding {
+  turnId: string | null;
+  /** The peer closed the bound turn; the watch awaits the run the peer resumes. */
+  interrupted: boolean;
+}
+
 interface PendingWatch {
   armed: ArmedEntry;
   /** A final event fired but never confirmed delivered or failed. */
   unsent: { reason: NotifyReason; body: string } | null;
+  run: RunBinding;
 }
 
 interface PendingGroup {
@@ -239,14 +270,21 @@ interface PendingGroup {
   ended: Map<string, GroupMemberPayload>;
   /** The group event fired but never confirmed delivered or failed. */
   unsent: string | null;
+  /** Members rebound or interrupted since the group was armed, by agent id. */
+  runs: Map<string, RunBinding>;
 }
 
-interface ActiveWatch {
+interface ActiveWatch extends RunBinding {
   armed: ArmedEntry;
   binding: McpClientBinding;
   controller: AbortController;
-  /** The bound turn; a restart rebinds it to the agent's resumed run. */
-  turnId: string | null;
+  /** The state the peer reported when it closed the run; the terminal event's fallback. */
+  interruptedResult: FleetAgentWaitResult | null;
+}
+
+/** Older journal entries carry no `final`; needs_permission was the only non-final event then. */
+function isFinal(entry: { reason: NotifyReason; final?: boolean }): boolean {
+  return entry.final ?? entry.reason !== "needs_permission";
 }
 
 class WatchSuspendedError extends Error {}
@@ -264,6 +302,31 @@ async function unlessAborted<T>(promise: Promise<T>, signal: AbortSignal): Promi
   }
 }
 
+/** Applies a journaled interruption or resume to a run binding. */
+function replayRunEntry(run: RunBinding, entry: JournalEntry): void {
+  if (entry.event === "interrupted") run.interrupted = true;
+  if (entry.event === "resumed") {
+    run.turnId = entry.turnId ?? run.turnId;
+    run.interrupted = false;
+  }
+}
+
+/**
+ * A group member's own entries carry "<groupId>:<agentId>"; applies one to
+ * that member's run binding. Returns false when the entry is not a member's.
+ */
+function replayMemberEntry(groups: Map<string, PendingGroup>, entry: JournalEntry): boolean {
+  const memberSuffix = `:${entry.agentId}`;
+  if (!entry.watchId.endsWith(memberSuffix)) return false;
+  const group = groups.get(entry.watchId.slice(0, -memberSuffix.length));
+  const member = group?.armed.agents.find((agent) => agent.agentId === entry.agentId);
+  if (!group || !member) return false;
+  const run = group.runs.get(entry.agentId) ?? { turnId: member.turnId, interrupted: false };
+  replayRunEntry(run, entry);
+  group.runs.set(entry.agentId, run);
+  return true;
+}
+
 /** The watches and groups the journal shows armed and not yet settled, in arm order. */
 function pendingFromJournal(entries: readonly JournalEntry[]): {
   watches: PendingWatch[];
@@ -273,13 +336,18 @@ function pendingFromJournal(entries: readonly JournalEntry[]): {
   const groups = new Map<string, PendingGroup>();
   for (const entry of entries) {
     if (entry.event === "armed") {
-      watches.set(entry.watchId, { armed: entry, unsent: null });
+      watches.set(entry.watchId, {
+        armed: entry,
+        unsent: null,
+        run: { turnId: entry.turnId, interrupted: false },
+      });
       continue;
     }
     if (entry.event === "group_armed") {
-      groups.set(entry.watchId, { armed: entry, ended: new Map(), unsent: null });
+      groups.set(entry.watchId, { armed: entry, ended: new Map(), unsent: null, runs: new Map() });
       continue;
     }
+    if (replayMemberEntry(groups, entry)) continue;
     const group = groups.get(entry.watchId);
     if (group) {
       if (entry.event === "member_ended") {
@@ -300,10 +368,11 @@ function pendingFromJournal(entries: readonly JournalEntry[]): {
     if (entry.event === "gave_up") {
       watches.delete(entry.watchId);
     } else if (entry.event === "fired") {
-      watch.unsent = entry.reason === "needs_permission" ? null : entry;
+      watch.unsent = isFinal(entry) ? entry : null;
     } else if (entry.event === "delivered" || entry.event === "failed") {
-      if (entry.reason === "needs_permission") continue;
-      watches.delete(entry.watchId);
+      if (isFinal(entry)) watches.delete(entry.watchId);
+    } else {
+      replayRunEntry(watch.run, entry);
     }
   }
   return { watches: [...watches.values()], groups: [...groups.values()] };
@@ -359,26 +428,34 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
     };
   };
 
+  // `final` is false for events that leave the watch armed: needs_permission,
+  // and interrupted while the watch waits for the run a peer resumes.
   const buildBody = (
     armed: ArmedEntry,
     reason: NotifyReason,
+    final: boolean,
     result: FleetAgentWaitResult,
-  ): string =>
-    JSON.stringify({
-      type: reason === "needs_permission" ? "paseo.agent.needs_permission" : "paseo.agent.finished",
+  ): string => {
+    let type = "paseo.agent.finished";
+    if (reason === "needs_permission") type = "paseo.agent.needs_permission";
+    else if (!final) type = "paseo.agent.interrupted";
+    return JSON.stringify({
+      type,
       reason,
+      final,
       client: armed.client,
       context: armed.context,
       agent: agentPayload(armed.agentId, result, armed.turnId),
       trigger: { tool: armed.tool, requestedAt: armed.ts },
     });
+  };
 
   // POSTs one event, retrying network errors, 429 and 5xx. A suspend during a
   // retry pause leaves the event fired-but-unsent, so restore() sends it again.
-  const send = async (watch: ActiveWatch, reason: NotifyReason, body: string) => {
+  const send = async (watch: ActiveWatch, reason: NotifyReason, final: boolean, body: string) => {
     const { armed, binding, controller } = watch;
     const headers = await resolveHeaders(binding.target.headers);
-    const ids = { watchId: armed.watchId, agentId: armed.agentId, reason };
+    const ids = { watchId: armed.watchId, agentId: armed.agentId, reason, final };
     for (let attempt = 0; ; attempt += 1) {
       let status: number | null = null;
       let error: string | null = null;
@@ -427,18 +504,24 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
     }
   };
 
-  const fire = async (watch: ActiveWatch, reason: NotifyReason, result: FleetAgentWaitResult) => {
-    const body = buildBody(watch.armed, reason, result);
+  const fire = async (
+    watch: ActiveWatch,
+    reason: NotifyReason,
+    final: boolean,
+    result: FleetAgentWaitResult,
+  ) => {
+    const body = buildBody(watch.armed, reason, final, result);
     record({
       event: "fired",
       ts: new Date().toISOString(),
       watchId: watch.armed.watchId,
       agentId: watch.armed.agentId,
       reason,
+      final,
       status: result.status,
       body,
     });
-    await send(watch, reason, body);
+    await send(watch, reason, final, body);
   };
 
   const pause = (watch: ActiveWatch, ms: number) =>
@@ -558,12 +641,91 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
     return "finished";
   };
 
+  /**
+   * Probe the peer for a run newer than the interrupted turn until one
+   * appears or resumeGraceMs passes. A probe carries no turnId, so it binds to
+   * the run in progress (or reports the newest turn when idle). Returns the
+   * resumed turn, or null at the grace deadline.
+   */
+  const awaitPeerResume = async (watch: ActiveWatch): Promise<string | null> => {
+    const { armed } = watch;
+    const graceEnd = Math.min(Date.now() + resumeGraceMs, armed.deadline);
+    while (Date.now() < graceEnd) {
+      const probe = await unlessAborted(
+        watch.binding.waitForAgent({
+          agentId: armed.agentId,
+          ...(armed.host ? { host: armed.host } : {}),
+          timeoutMs: RESUME_PROBE_MS,
+        }),
+        watch.controller.signal,
+      ).catch((error: unknown) => {
+        if (error instanceof WatchSuspendedError) throw error;
+        return null;
+      });
+      // While the peer restarts, probes fail or report the closed turn.
+      if (probe?.ok && probe.turnId && probe.turnId !== watch.turnId) return probe.turnId;
+      await pause(watch, pollMs);
+    }
+    return null;
+  };
+
+  /**
+   * Wait until the watch's run really ends. A peer agent whose turn ends
+   * "closed" was stopped by its host, not finished: onInterrupted runs, the
+   * watch rebinds to the run the peer resumes, and waiting goes on. Returns
+   * the end with its reason ("interrupted" when no run resumed in time), or
+   * null at the watch deadline.
+   */
+  const waitForRunEnd = async (
+    watch: ActiveWatch,
+    onPermission: (result: FleetAgentWaitResult) => Promise<void>,
+    onInterrupted: (result: FleetAgentWaitResult) => Promise<void>,
+  ): Promise<{ result: FleetAgentWaitResult; reason: FinalReason } | null> => {
+    const ids = { watchId: watch.armed.watchId, agentId: watch.armed.agentId };
+    for (;;) {
+      if (!watch.interrupted) {
+        const result = await waitForTurnEnd(watch, onPermission);
+        if (!result) return null;
+        const hostedHere = (await options.localAgents?.hosts(watch.armed.agentId)) ?? false;
+        if (result.status !== "closed" || hostedHere) {
+          return { result, reason: finalReason(result.status) };
+        }
+        watch.interrupted = true;
+        watch.interruptedResult = result;
+        record({
+          event: "interrupted",
+          ts: new Date().toISOString(),
+          ...ids,
+          turnId: watch.turnId,
+        });
+        await onInterrupted(result);
+      }
+      const resumedTurnId = await awaitPeerResume(watch);
+      if (!resumedTurnId) {
+        const result =
+          watch.interruptedResult ??
+          (await watch.binding.waitForAgent({
+            agentId: watch.armed.agentId,
+            ...(watch.armed.host ? { host: watch.armed.host } : {}),
+            timeoutMs: RESUME_PROBE_MS,
+          }));
+        return { result, reason: "interrupted" };
+      }
+      watch.turnId = resumedTurnId;
+      watch.interrupted = false;
+      watch.interruptedResult = null;
+      record({ event: "resumed", ts: new Date().toISOString(), ...ids, turnId: resumedTurnId });
+    }
+  };
+
   const watchUntilFinished = async (watch: ActiveWatch) => {
-    const result = await waitForTurnEnd(watch, (blocked) =>
-      fire(watch, "needs_permission", blocked),
+    const end = await waitForRunEnd(
+      watch,
+      (blocked) => fire(watch, "needs_permission", false, blocked),
+      (closed) => fire(watch, "interrupted", false, closed),
     );
-    if (result) {
-      await fire(watch, finalReason(result.status), result);
+    if (end) {
+      await fire(watch, end.reason, true, end.result);
       return;
     }
     record({
@@ -581,6 +743,7 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
     binding: McpClientBinding,
     controller: AbortController,
     member?: GroupArmedEntry["agents"][number],
+    run?: RunBinding,
   ): ActiveWatch => ({
     armed: {
       event: "armed",
@@ -596,13 +759,16 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
     },
     binding,
     controller,
-    turnId: member?.turnId ?? null,
+    turnId: run?.turnId ?? member?.turnId ?? null,
+    interrupted: run?.interrupted ?? false,
+    interruptedResult: null,
   });
 
   /**
    * One wait per member that has not ended, then one group event once all
    * have. A restored group first waits for each local member's resumed run,
-   * since the restart closed it.
+   * since the restart closed it. A peer closing a member mid-run does not end
+   * it: the member follows the run the peer resumes.
    */
   const watchGroup = async (
     group: PendingGroup,
@@ -615,16 +781,23 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
       armed.agents
         .filter((agent) => !ended.has(agent.agentId))
         .map(async (agent) => {
-          const member = groupWatch(armed, binding, controller, agent);
-          const interrupted = restored ? await awaitResume(member) : null;
-          // Per-agent watches already POST needs_permission; without them the group does.
-          const result =
-            interrupted ??
-            (await waitForTurnEnd(member, (blocked) =>
-              armed.perAgent ? Promise.resolve() : fire(member, "needs_permission", blocked),
-            ));
-          if (!result) return;
-          const reason = interrupted ? "interrupted" : finalReason(result.status);
+          const run = group.runs.get(agent.agentId);
+          const member = groupWatch(armed, binding, controller, agent, run);
+          const interrupted = restored && !member.interrupted ? await awaitResume(member) : null;
+          // Per-agent watches already POST needs_permission and interrupted; without them the group does.
+          const end = interrupted
+            ? { result: interrupted, reason: "interrupted" as const }
+            : await waitForRunEnd(
+                member,
+                (blocked) =>
+                  armed.perAgent
+                    ? Promise.resolve()
+                    : fire(member, "needs_permission", false, blocked),
+                (closed) =>
+                  armed.perAgent ? Promise.resolve() : fire(member, "interrupted", false, closed),
+              );
+          if (!end) return;
+          const { result, reason } = end;
           const payload = { ...agentPayload(agent.agentId, result, member.turnId), reason };
           ended.set(agent.agentId, payload);
           record({
@@ -660,22 +833,25 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
       ts: new Date().toISOString(),
       ...groupIds,
       reason: "finished",
+      final: true,
       status: "finished",
       body,
     });
-    await send(groupWatch(armed, binding, controller), "finished", body);
+    await send(groupWatch(armed, binding, controller), "finished", true, body);
   };
 
   const start = (
     armed: ArmedEntry,
     binding: McpClientBinding,
     run: (watch: ActiveWatch) => Promise<void>,
+    binds: RunBinding = { turnId: armed.turnId, interrupted: false },
   ): Promise<void> => {
     const watch: ActiveWatch = {
       armed,
       binding,
       controller: new AbortController(),
-      turnId: armed.turnId,
+      ...binds,
+      interruptedResult: null,
     };
     active.set(armed.watchId, watch);
     return run(watch)
@@ -774,7 +950,12 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
       // Armed while shutting down: journaled, so the next process restores it.
       if (suspended) return Promise.resolve();
       return startGroup(armed, (controller) =>
-        watchGroup({ armed, ended: new Map(), unsent: null }, input, controller, false),
+        watchGroup(
+          { armed, ended: new Map(), unsent: null, runs: new Map() },
+          input,
+          controller,
+          false,
+        ),
       );
     },
 
@@ -810,19 +991,25 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
         return binding;
       };
       const runs: Promise<void>[] = [];
-      for (const { armed, unsent } of watches) {
+      for (const { armed, unsent, run } of watches) {
         const binding = await admit(armed);
         if (!binding) continue;
         runs.push(
-          start(armed, binding, async (watch) => {
-            if (unsent) {
-              await send(watch, unsent.reason, unsent.body);
-              return;
-            }
-            const interrupted = await awaitResume(watch);
-            if (interrupted) await fire(watch, "interrupted", interrupted);
-            else await watchUntilFinished(watch);
-          }),
+          start(
+            armed,
+            binding,
+            async (watch) => {
+              if (unsent) {
+                await send(watch, unsent.reason, true, unsent.body);
+                return;
+              }
+              // A watch waiting on a peer's resume picks that wait back up.
+              const interrupted = watch.interrupted ? null : await awaitResume(watch);
+              if (interrupted) await fire(watch, "interrupted", true, interrupted);
+              else await watchUntilFinished(watch);
+            },
+            run,
+          ),
         );
       }
       for (const group of groups) {
@@ -831,7 +1018,12 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
         runs.push(
           startGroup(group.armed, async (controller) => {
             if (group.unsent) {
-              await send(groupWatch(group.armed, binding, controller), "finished", group.unsent);
+              await send(
+                groupWatch(group.armed, binding, controller),
+                "finished",
+                true,
+                group.unsent,
+              );
               return;
             }
             await watchGroup(group, binding, controller, true);
@@ -868,7 +1060,11 @@ export function createMcpFinishLocalAgents(deps: {
   agentStorage: Pick<AgentStorage, "get">;
 }): McpFinishLocalAgents {
   const { agentManager, agentStorage } = deps;
+  const hosts = async (agentId: string) =>
+    Boolean(agentManager.getAgent(agentId)) ||
+    Boolean(await agentStorage.get(agentId).catch(() => null));
   return {
+    hosts,
     activeTurnId: (agentId) => agentManager.getAgent(agentId)?.activeForegroundTurnId ?? null,
     waitForRunStart: (agentId, signal) => {
       const { promise, resolve, reject } = Promise.withResolvers<McpFinishRunStart>();
@@ -899,10 +1095,7 @@ export function createMcpFinishLocalAgents(deps: {
       if (settled) stop();
       else unsubscribe = stop;
       const settleUnlessHostedHere = async () => {
-        const stored = await agentStorage.get(agentId).catch(() => null);
-        if (!stored && !agentManager.getAgent(agentId)) {
-          settle(() => resolve({ local: false, turnId: null }));
-        }
+        if (!(await hosts(agentId))) settle(() => resolve({ local: false, turnId: null }));
       };
       void settleUnlessHostedHere();
       return promise;

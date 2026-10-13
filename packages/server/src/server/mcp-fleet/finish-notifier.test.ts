@@ -118,6 +118,7 @@ describe("createMcpFinishNotifier", () => {
     expect(received[0]!.body).toMatchObject({
       type: "paseo.agent.finished",
       reason: "finished",
+      final: true,
       client: "grok-bot",
       context: "essay-42",
       agent: {
@@ -203,6 +204,105 @@ describe("createMcpFinishNotifier", () => {
     expect(received).toHaveLength(1);
   });
 
+  // A peer's daemon restarting (deploy, crash) closes the agent there: its
+  // wait ends "closed" without the run having finished. The peer resumes the
+  // agent as a new turn shortly after.
+  it("a peer run closed by its host restarting: interrupted, then the resumed run's finish", async () => {
+    const waits: Array<string | undefined> = [];
+    await notifier().arm({
+      client: "grok-bot",
+      target: { url },
+      agentId: "agent-1",
+      host: "macbook",
+      turnId: "turn-1",
+      tool: "fleet_create_agent",
+      context: "sleep-research",
+      waitForAgent: async (input) => {
+        waits.push(input.turnId);
+        if (input.turnId === "turn-1") {
+          return result({ status: "closed", turnId: "turn-1", lastMessage: "Half done." });
+        }
+        if (input.turnId === "turn-2") {
+          return result({ turnId: "turn-2", lastMessage: "Full report." });
+        }
+        // Unbound probes: the peer is still restarting, then reports the
+        // agent idle on the interrupted turn, then running the resumed turn.
+        const probes = waits.filter((turnId) => turnId === undefined).length;
+        if (probes === 1) return result({ ok: false, error: "peer unreachable" });
+        if (probes === 2) return result({ status: "closed", turnId: "turn-1" });
+        return result({ status: "running", finished: false, timedOut: true, turnId: "turn-2" });
+      },
+    });
+
+    expect(received.map((r) => r.body.type)).toEqual([
+      "paseo.agent.interrupted",
+      "paseo.agent.finished",
+    ]);
+    expect(received[0]!.body).toMatchObject({
+      reason: "interrupted",
+      final: false,
+      context: "sleep-research",
+      agent: { turnId: "turn-1", status: "closed", lastMessage: "Half done." },
+    });
+    expect(received[1]!.body).toMatchObject({
+      reason: "finished",
+      final: true,
+      context: "sleep-research",
+      agent: { turnId: "turn-2", status: "idle", lastMessage: "Full report." },
+    });
+  });
+
+  it("a peer run that never resumes after its host closed it ends with reason interrupted", async () => {
+    await createMcpFinishNotifier({
+      resolveSecret: async (value) => value,
+      logger: pino({ level: "silent" }),
+      pollMs: 0,
+      resumeGraceMs: 20,
+    }).arm({
+      client: "grok-bot",
+      target: { url },
+      agentId: "agent-1",
+      host: "macbook",
+      turnId: "turn-1",
+      tool: "fleet_create_agent",
+      context: null,
+      waitForAgent: async () =>
+        result({ status: "closed", turnId: "turn-1", lastMessage: "Half." }),
+    });
+
+    expect(received.map((r) => [r.body.type, r.body.reason, r.body.final])).toEqual([
+      ["paseo.agent.interrupted", "interrupted", false],
+      ["paseo.agent.finished", "interrupted", true],
+    ]);
+    expect(received[1]!.body).toMatchObject({
+      agent: { status: "closed", lastMessage: "Half." },
+    });
+  });
+
+  it("an agent this daemon hosts that is closed reports closed at once", async () => {
+    await createMcpFinishNotifier({
+      resolveSecret: async (value) => value,
+      logger: pino({ level: "silent" }),
+      pollMs: 0,
+      localAgents: {
+        activeTurnId: () => "turn-1",
+        waitForRunStart: neverStarts,
+        hosts: async () => true,
+      },
+    }).arm({
+      client: "grok-bot",
+      target: { url },
+      agentId: "agent-1",
+      tool: "fleet_create_agent",
+      context: null,
+      waitForAgent: async () => result({ status: "closed", turnId: "turn-1" }),
+    });
+
+    expect(received.map((r) => [r.body.type, r.body.reason, r.body.final])).toEqual([
+      ["paseo.agent.finished", "closed", true],
+    ]);
+  });
+
   // A restart: the first notifier is suspended, the second restores from the same journal.
   const daemon = (options: {
     localAgents?: McpFinishLocalAgents;
@@ -221,7 +321,11 @@ describe("createMcpFinishNotifier", () => {
 
   const localAgents = (
     waitForRunStart: McpFinishLocalAgents["waitForRunStart"],
-  ): McpFinishLocalAgents => ({ activeTurnId: () => "turn-1", waitForRunStart });
+  ): McpFinishLocalAgents => ({
+    activeTurnId: () => "turn-1",
+    waitForRunStart,
+    hosts: async () => true,
+  });
 
   const journal = async () =>
     (await readFile(journalPath, "utf8"))
@@ -322,6 +426,75 @@ describe("createMcpFinishNotifier", () => {
       reason: "interrupted",
       agent: { status: "closed" },
     });
+  });
+
+  it("a restart while waiting on a peer's resume picks that wait back up, without resending", async () => {
+    // Remote agent: hosted on a peer, so this daemon's localAgents does not host it.
+    const remote = (waitForRunStart: McpFinishLocalAgents["waitForRunStart"]) => ({
+      ...localAgents(waitForRunStart),
+      hosts: async () => false,
+    });
+    const probing = Promise.withResolvers<void>();
+    const before = daemon({ localAgents: remote(neverStarts) });
+    const armed = before.arm({
+      client: "grok-bot",
+      target: { url },
+      agentId: "agent-1",
+      host: "macbook",
+      turnId: "turn-1",
+      tool: "fleet_create_agent",
+      context: "sleep-research",
+      waitForAgent: (input) => {
+        if (input.turnId === "turn-1") {
+          return Promise.resolve(result({ status: "closed", turnId: "turn-1" }));
+        }
+        // The peer is still down when this daemon shuts down.
+        probing.resolve();
+        return Promise.withResolvers<FleetAgentWaitResult>().promise;
+      },
+    });
+    await probing.promise;
+    await before.suspend();
+    await armed;
+    expect(received.map((r) => r.body.type)).toEqual(["paseo.agent.interrupted"]);
+
+    const waits: Array<string | undefined> = [];
+    const after = daemon({ localAgents: remote(rejectsOnAbort) });
+    const { restored, settled } = await after.restore(async () => ({
+      target: { url },
+      waitForAgent: async (input) => {
+        waits.push(input.turnId);
+        if (input.turnId === "turn-2") return result({ turnId: "turn-2", lastMessage: "Report." });
+        if (input.turnId === undefined) {
+          return result({ status: "running", finished: false, timedOut: true, turnId: "turn-2" });
+        }
+        throw new Error(`the interrupted turn is not waited on again: ${input.turnId}`);
+      },
+    }));
+    expect(restored).toBe(1);
+    await settled;
+
+    expect(waits).toEqual([undefined, "turn-2"]);
+    expect(received.map((r) => r.body.type)).toEqual([
+      "paseo.agent.interrupted",
+      "paseo.agent.finished",
+    ]);
+    expect(received[1]!.body).toMatchObject({
+      reason: "finished",
+      final: true,
+      agent: { turnId: "turn-2", lastMessage: "Report." },
+    });
+    expect((await journal()).map((entry) => entry.event)).toEqual([
+      "armed",
+      "interrupted",
+      "fired",
+      "delivered",
+      "suspended",
+      "restored",
+      "resumed",
+      "fired",
+      "delivered",
+    ]);
   });
 
   it("sends again an event the restart cut off mid-retry", async () => {
@@ -427,6 +600,46 @@ describe("createMcpFinishNotifier", () => {
       agents: [
         { id: "a", turnId: "t-a", status: "idle" },
         { id: "b", turnId: "t-b", status: "idle" },
+      ],
+    });
+  });
+
+  it("group: a member a peer closed mid-run is reported at the end of its resumed run", async () => {
+    await notifier().armGroup({
+      client: "grok-bot",
+      target: { url },
+      groupId: "grp_peer",
+      agents: [
+        { agentId: "a", turnId: "t-a" },
+        { agentId: "b", host: "macbook", turnId: "t-b" },
+      ],
+      perAgent: false,
+      tool: "fleet_notify_on_finish",
+      context: null,
+      waitForAgent: async (input) => {
+        if (input.agentId === "a") return result({ agentId: "a", turnId: "t-a" });
+        if (input.turnId === "t-b")
+          return result({ agentId: "b", status: "closed", turnId: "t-b" });
+        if (input.turnId === undefined) {
+          return result({
+            agentId: "b",
+            status: "running",
+            finished: false,
+            timedOut: true,
+            turnId: "t-b2",
+          });
+        }
+        return result({ agentId: "b", turnId: "t-b2", lastMessage: "B report." });
+      },
+    });
+    expect(received.map((r) => r.body.type)).toEqual([
+      "paseo.agent.interrupted",
+      "paseo.agents.group_finished",
+    ]);
+    expect(received[1]!.body).toMatchObject({
+      agents: [
+        { id: "a", turnId: "t-a", reason: "finished" },
+        { id: "b", turnId: "t-b2", reason: "finished", lastMessage: "B report." },
       ],
     });
   });

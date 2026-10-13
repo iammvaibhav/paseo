@@ -4601,12 +4601,13 @@ export class AgentManager {
     await this.durableTimelineStore?.deleteAgent(agentId);
   }
 
+  /**
+   * The newest assistant message, live or stored. Reads the stores even when
+   * the agent is no longer live: closing an agent (a daemon shutdown included)
+   * drops it from the live map before its waiters settle, and they still need
+   * the run's last message.
+   */
   async getLastAssistantMessage(agentId: string): Promise<string | null> {
-    const agent = this.agents.get(agentId);
-    if (!agent) {
-      return null;
-    }
-
     return await this.getLastAssistantMessageFromStores(agentId);
   }
 
@@ -4645,7 +4646,10 @@ export class AgentManager {
   }
 
   private async getLastAssistantMessageFromStores(agentId: string): Promise<string | null> {
-    const liveTimeline = this.timelineStore.getItems(agentId);
+    // A stored-only agent may have no live timeline (never loaded, or discarded on archive).
+    const liveTimeline = this.timelineStore.has(agentId)
+      ? this.timelineStore.getItems(agentId)
+      : [];
     const liveSegment = this.getLastAssistantMessageSegmentFromTimeline(liveTimeline);
     if (!this.durableTimelineStore) {
       return liveSegment?.text ?? null;

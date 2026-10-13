@@ -8675,6 +8675,52 @@ test("waitForAgentEvent waitForActive resolves for autonomous live-event run", a
   expect(result.status).toBe("idle");
 });
 
+test("waitForAgentEvent reports the run's last assistant message when the agent closes mid-run", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-close-wait-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  let capturedSession: TestAgentSession | null = null;
+
+  class LiveEventClient extends TestAgentClient {
+    override async createSession(config: AgentSessionConfig): Promise<AgentSession> {
+      const session = new TestAgentSession(config);
+      capturedSession = session;
+      return session;
+    }
+  }
+
+  const manager = new AgentManager({
+    clients: { codex: new LiveEventClient() },
+    registry: storage,
+    logger,
+    idFactory: () => "00000000-0000-4000-8000-000000000226",
+  });
+  try {
+    const snapshot = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+      workspaceId: undefined,
+    });
+    const turnId = "closed-mid-run";
+    capturedSession!.pushEvent({ type: "turn_started", provider: "codex", turnId });
+    capturedSession!.pushEvent({
+      type: "timeline",
+      provider: "codex",
+      item: { type: "assistant_message", text: "Half of the report." },
+      turnId,
+    });
+    await vi.waitFor(() => expect(manager.getAgent(snapshot.id)?.lifecycle).toBe("running"));
+    const wait = manager.waitForAgentEvent(snapshot.id, { waitForActive: true });
+
+    // A daemon shutdown closes running agents this way.
+    await manager.closeAgent(snapshot.id);
+
+    await expect(wait).resolves.toMatchObject({
+      status: "closed",
+      lastMessage: "Half of the report.",
+    });
+  } finally {
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
 test("autonomous events arriving during foreground run are processed via subscribe", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-live-during-fg-"));
   const storagePath = join(workdir, "agents");
