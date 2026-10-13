@@ -83,10 +83,7 @@ export async function resolveFleetImages(
   if (!images || images.length === 0) return undefined;
   return Promise.all(
     images.map(async (image): Promise<NativeImage> => {
-      if ("data" in image) {
-        decodeBase64(image.data, "images[].data");
-        return { data: image.data, mimeType: image.mimeType };
-      }
+      if ("data" in image) return { data: image.data, mimeType: image.mimeType };
       const stored = await requireStoredUpload(paseoHome, image.fileId);
       if (!stored.mimeType.startsWith("image/")) {
         throw new Error(
