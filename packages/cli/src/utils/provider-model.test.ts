@@ -26,6 +26,13 @@ describe("resolveProviderAndModel", () => {
     });
   });
 
+  test("accepts the provider:model form config and the app use", () => {
+    expect(resolveProviderAndModel({ provider: "omp:anthropic/claude-opus-5-5" })).toEqual({
+      provider: "omp",
+      model: "anthropic/claude-opus-5-5",
+    });
+  });
+
   test("rejects conflicting model values", () => {
     expect(() =>
       resolveProviderAndModel({ provider: "codex/gpt-5.4", model: "gpt-5.4-mini" }),

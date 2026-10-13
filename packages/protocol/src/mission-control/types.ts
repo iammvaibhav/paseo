@@ -370,7 +370,7 @@ export const MissionControlPeerStatusSchema = z.object({
   name: z.string(), // config name, e.g. "macbook"
   url: z.string(),
   state: z.enum(["online", "unreachable"]),
-  lastSeenAt: z.string().nullable(), // for "unreachable since 12:03, likely asleep"
+  lastSeenAt: z.string().nullable(), // last live connection from this host; null = never connected
 });
 export type MissionControlPeerStatus = z.infer<typeof MissionControlPeerStatusSchema>;
 

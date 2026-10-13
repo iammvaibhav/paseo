@@ -8,6 +8,7 @@ import { selectItemsByProjectedLimit } from "./timeline-projection.js";
 import type { AgentStorage } from "./agent-storage.js";
 import { serializeAgentSnapshot } from "../messages.js";
 import { StoredScheduleSchema } from "@getpaseo/protocol/schedule/types";
+import { canonicalProviderModel } from "@getpaseo/protocol/provider-model";
 import type { AgentProvider } from "./agent-sdk-types.js";
 
 export const AgentProviderEnum = z.string();
@@ -68,7 +69,7 @@ export interface ResolvedProviderModel {
 export function resolveRequiredProviderModel(
   providerValue: string,
 ): Required<ResolvedProviderModel> {
-  const providerInput = providerValue.trim();
+  const providerInput = canonicalProviderModel(providerValue);
   const slashIndex = providerInput.indexOf("/");
   if (slashIndex <= 0 || slashIndex === providerInput.length - 1) {
     throw new Error("provider must be provider/model, for example codex/gpt-5.4");

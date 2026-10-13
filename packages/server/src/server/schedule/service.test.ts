@@ -149,6 +149,22 @@ function createScheduleService(options: TestScheduleServiceOptions): ScheduleSer
       workspaceArchiveInProgress = false;
     }
   };
+  // Every workspace the service creates (default or overridden creator) is
+  // recorded, so the default createAgent can resolve the workspaceId the
+  // service passes it, as the daemon's registry does.
+  const createDirectoryWorkspace = options.createDirectoryWorkspace ?? createDefaultWorkspace;
+  const createPaseoWorktreeWorkspace: ScheduleServiceOptions["createPaseoWorktreeWorkspace"] =
+    options.createPaseoWorktreeWorkspace ??
+    (async (input) => {
+      const workspace = await createDefaultWorkspace(input);
+      return {
+        workspace,
+        worktree: { branchName: "schedule-test", worktreePath: workspace.cwd },
+        intent: { kind: "branch-off", baseBranch: "main", branchName: "schedule-test" },
+        repoRoot: workspace.cwd,
+        created: true,
+      };
+    });
   return new ScheduleService({
     ...options,
     createAgent:
@@ -160,22 +176,20 @@ function createScheduleService(options: TestScheduleServiceOptions): ScheduleSer
             agentStorage: options.agentStorage,
             logger: options.logger,
             providerSnapshotManager: options.providerSnapshotManager as ProviderSnapshotManager,
+            getWorkspace: async (workspaceId) => workspaces.get(workspaceId) ?? null,
           },
           input,
         )),
-    createDirectoryWorkspace: options.createDirectoryWorkspace ?? createDefaultWorkspace,
-    createPaseoWorktreeWorkspace:
-      options.createPaseoWorktreeWorkspace ??
-      (async (input) => {
-        const workspace = await createDefaultWorkspace(input);
-        return {
-          workspace,
-          worktree: { branchName: "schedule-test", worktreePath: workspace.cwd },
-          intent: { kind: "branch-off", baseBranch: "main", branchName: "schedule-test" },
-          repoRoot: workspace.cwd,
-          created: true,
-        };
-      }),
+    createDirectoryWorkspace: async (input) => {
+      const workspace = await createDirectoryWorkspace(input);
+      workspaces.set(workspace.workspaceId, workspace);
+      return workspace;
+    },
+    createPaseoWorktreeWorkspace: async (input) => {
+      const created = await createPaseoWorktreeWorkspace(input);
+      workspaces.set(created.workspace.workspaceId, created.workspace);
+      return created;
+    },
     archiveWorkspace: options.archiveWorkspace ?? archiveDefaultWorkspace,
   });
 }

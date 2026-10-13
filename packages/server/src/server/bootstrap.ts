@@ -2726,6 +2726,7 @@ export async function createPaseoDaemon(
     peers: loadPersistedConfig(config.paseoHome).peers ?? [],
     logger,
     appVersion: daemonVersion,
+    lastSeenPath: path.join(config.paseoHome, "peer-last-seen.json"),
     // Sync-on-connect: when a peer comes online, the commander host pushes
     // its current central-config snapshot so the peer never serves stale
     // fleet policy (fresh join or restart alike).

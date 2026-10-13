@@ -60,10 +60,15 @@ import {
   requireActiveWorkspaceForArchive,
   type ArchiveDependencies,
 } from "../../workspace-archive-service.js";
-import { createAgentCommand, type CreateAgentFromMcpInput } from "../create-agent/create.js";
+import {
+  createAgentCommand,
+  type CreateAgentCommandDependencies,
+  type CreateAgentFromMcpInput,
+} from "../create-agent/create.js";
 import type { VoiceCallerContext, VoiceSpeakHandler } from "../../voice-types.js";
 import type { FirstAgentContext } from "../../messages.js";
 import { everyMsToFiveFieldCron } from "@getpaseo/protocol/schedule/cadence";
+import { canonicalProviderModel } from "@getpaseo/protocol/provider-model";
 import { expandUserPath, isSameOrDescendantPath, resolvePathFromBase } from "../../path-utils.js";
 import type { TerminalManager } from "../../../terminal/terminal-manager.js";
 import type { CreatePaseoWorktreeWorkflowFn } from "../../worktree-session.js";
@@ -479,7 +484,7 @@ function resolveScheduleProviderAndModel(params: {
   provider?: string;
   defaultProvider: AgentProvider;
 }): { provider: AgentProvider; model?: string } {
-  const providerInput = params.provider?.trim() || params.defaultProvider;
+  const providerInput = canonicalProviderModel(params.provider?.trim() || params.defaultProvider);
   const slashIndex = providerInput.indexOf("/");
   if (slashIndex === -1) {
     return { provider: providerInput };
@@ -501,7 +506,7 @@ function resolveScheduleUpdateProviderAndModel(params: {
   provider?: string;
   model?: string | null;
 }): { provider?: string; model?: string | null } {
-  const providerInput = params.provider?.trim();
+  const providerInput = params.provider ? canonicalProviderModel(params.provider) : undefined;
   const modelInput = typeof params.model === "string" ? params.model.trim() : params.model;
 
   if (params.model !== undefined && modelInput === "") {
@@ -1443,6 +1448,26 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     catalogHostsMatch(hostA, hostB, isFleetLocalTarget);
   const fleetIdIndex = options.fleetIdIndex ?? buildCatalogFleetIdIndex(options, hostLabel);
   const childLogger = logger.child({ module: "agent", component: "paseo-tool-catalog" });
+  // Every createAgentCommand call in this catalog shares these. getWorkspace
+  // makes a named workspace's directory authoritative over the caller's
+  // (defaulted) cwd, so a workspaceId-only spawn lands in that workspace.
+  const createAgentDependencies: CreateAgentCommandDependencies = {
+    agentManager,
+    agentStorage,
+    logger: childLogger,
+    paseoHome: options.paseoHome,
+    worktreesRoot: options.worktreesRoot,
+    terminalManager,
+    providerSnapshotManager,
+    createPaseoWorktree: options.createPaseoWorktree,
+    ...(options.ensureWorkspaceForCreate
+      ? { ensureWorkspaceForCreate: options.ensureWorkspaceForCreate }
+      : {}),
+    getWorkspace: async (workspaceId) => {
+      const record = await options.workspaceRegistry?.get(workspaceId);
+      return record ? { cwd: record.cwd, archivedAt: record.archivedAt } : null;
+    },
+  };
   const callerContext = resolveCatalogCallerContext(callerAgentId, resolveCallerContext);
 
   // Approval gate (buildCommanderGate): the Commander's fleet_create_agent,
@@ -2022,7 +2047,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     return schedule;
   }
   const ProviderModelInputSchema = AgentProviderEnum.trim()
-    .refine((value) => value.includes("/"), {
+    .refine((value) => canonicalProviderModel(value).includes("/"), {
       message: "provider must be provider/model, for example codex/gpt-5.4",
     })
     .refine(
@@ -2674,45 +2699,28 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         snapshot,
         background: createdInBackground,
         initialPromptStarted,
-      } = await createAgentCommand(
-        {
-          agentManager,
-          agentStorage,
-          logger: childLogger,
-          paseoHome: options.paseoHome,
-          worktreesRoot: options.worktreesRoot,
-          terminalManager,
-          providerSnapshotManager,
-          createPaseoWorktree: options.createPaseoWorktree,
-          ...(options.ensureWorkspaceForCreate
-            ? { ensureWorkspaceForCreate: options.ensureWorkspaceForCreate }
-            : {}),
-        },
-        {
-          kind: "mcp",
-          provider: parsedArgs.provider,
-          title: parsedArgs.title,
-          initialPrompt: parsedArgs.initialPrompt,
-          ...(parsedArgs.images && parsedArgs.images.length > 0
-            ? { images: parsedArgs.images }
-            : {}),
-          config: inheritedConfig,
-          cwd: resolvedArgs.cwd,
-          ...buildMcpCreateAgentInputExtras({
-            worktree: resolvedArgs.worktree,
-            workspaceId: resolvedArgs.workspaceId,
-            settings: parsedArgs.settings,
-            labels: parsedArgs.labels,
-          }),
-          mode: parsedArgs.settings?.modeId,
-          background: requestedBackground,
-          notifyOnFinish,
-          detached: resolvedArgs.detached,
-          callerAgentId,
-          callerContext,
-          worktree,
-        },
-      );
+      } = await createAgentCommand(createAgentDependencies, {
+        kind: "mcp",
+        provider: parsedArgs.provider,
+        title: parsedArgs.title,
+        initialPrompt: parsedArgs.initialPrompt,
+        ...(parsedArgs.images && parsedArgs.images.length > 0 ? { images: parsedArgs.images } : {}),
+        config: inheritedConfig,
+        cwd: resolvedArgs.cwd,
+        ...buildMcpCreateAgentInputExtras({
+          worktree: resolvedArgs.worktree,
+          workspaceId: resolvedArgs.workspaceId,
+          settings: parsedArgs.settings,
+          labels: parsedArgs.labels,
+        }),
+        mode: parsedArgs.settings?.modeId,
+        background: requestedBackground,
+        notifyOnFinish,
+        detached: resolvedArgs.detached,
+        callerAgentId,
+        callerContext,
+        worktree,
+      });
 
       try {
         if (!createdInBackground && initialPromptStarted) {
@@ -5416,14 +5424,22 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           alternatives: z.array(z.record(z.string(), z.unknown())),
           isolation: z.enum(["local", "worktree"]),
           agentMode: z.string(),
-          model: z.string().nullable(),
+          model: z
+            .string()
+            .nullable()
+            .describe(
+              "Invocable provider/model; pass it verbatim as fleet_create_agent's provider.",
+            ),
           profile: z.enum(["personal", "work"]),
           latencyMs: z.number(),
         },
       },
       async ({ prompt }: { prompt: string }) => {
         const suggestion = await routingService.suggest(prompt);
-        return { content: [], structuredContent: ensureValidJson(suggestion) };
+        // routing.modelByMode stores the app's "provider:model" key; MCP callers
+        // spawn with this value, and spawn surfaces take "provider/model".
+        const model = suggestion.model ? canonicalProviderModel(suggestion.model) : null;
+        return { content: [], structuredContent: ensureValidJson({ ...suggestion, model }) };
       },
     );
   }
@@ -5616,7 +5632,13 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       // fileId images become inline images here, so every path below (gate,
       // local create, peer create) carries bytes the target host can use.
       const resolvedImages = await resolveFleetImages(rawArgs.images, options.paseoHome);
-      const args = { ...rawArgs, images: resolvedImages };
+      // Canonical once, so the gate, dedupe key, proposal card and the peer
+      // payload (buildPeerCreateAgentPayload splits on "/" itself) all agree.
+      const args = {
+        ...rawArgs,
+        provider: canonicalProviderModel(rawArgs.provider),
+        images: resolvedImages,
+      };
       const {
         host: rawHost,
         cwd,
@@ -5786,38 +5808,23 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           throw new Error("fleet_create_agent: could not build a spawn plan");
         }
         const plan = spawnPlan;
-        const { snapshot } = await createAgentCommand(
-          {
-            agentManager,
-            agentStorage,
-            logger: childLogger,
-            paseoHome: options.paseoHome,
-            worktreesRoot: options.worktreesRoot,
-            terminalManager,
-            providerSnapshotManager,
-            createPaseoWorktree: options.createPaseoWorktree,
-            ...(options.ensureWorkspaceForCreate
-              ? { ensureWorkspaceForCreate: options.ensureWorkspaceForCreate }
-              : {}),
-          },
-          {
-            kind: "mcp",
-            provider,
-            title: plan.title ?? "Agent",
-            ...(plan.initialPrompt ? { initialPrompt: plan.initialPrompt } : {}),
-            ...(plan.images && plan.images.length > 0 ? { images: plan.images } : {}),
-            ...(plan.cwd ? { cwd: plan.cwd } : {}),
-            ...(plan.workspaceId ? { workspaceId: plan.workspaceId } : {}),
-            ...(plan.thinking ? { thinking: plan.thinking } : {}),
-            ...(plan.features ? { features: plan.features } : {}),
-            ...(plan.labels ? { labels: plan.labels } : {}),
-            ...(plan.mode ? { mode: plan.mode } : {}),
-            ...(plan.worktree ? { worktree: plan.worktree } : {}),
-            ...(plan.isolation ? { isolation: plan.isolation } : {}),
-            background: true,
-            notifyOnFinish: false,
-          },
-        );
+        const { snapshot } = await createAgentCommand(createAgentDependencies, {
+          kind: "mcp",
+          provider,
+          title: plan.title ?? "Agent",
+          ...(plan.initialPrompt ? { initialPrompt: plan.initialPrompt } : {}),
+          ...(plan.images && plan.images.length > 0 ? { images: plan.images } : {}),
+          ...(plan.cwd ? { cwd: plan.cwd } : {}),
+          ...(plan.workspaceId ? { workspaceId: plan.workspaceId } : {}),
+          ...(plan.thinking ? { thinking: plan.thinking } : {}),
+          ...(plan.features ? { features: plan.features } : {}),
+          ...(plan.labels ? { labels: plan.labels } : {}),
+          ...(plan.mode ? { mode: plan.mode } : {}),
+          ...(plan.worktree ? { worktree: plan.worktree } : {}),
+          ...(plan.isolation ? { isolation: plan.isolation } : {}),
+          background: true,
+          notifyOnFinish: false,
+        });
         const turn = plan.initialPrompt
           ? await resolvePromptedTurn({
               agentManager,
@@ -6131,32 +6138,17 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           // History Ask agents run in the host's scratch project, not in
           // whichever workspace happens to be most recent.
           const { workspace } = await routingService.ensureScratchWorkspace();
-          const created = await createAgentCommand(
-            {
-              agentManager,
-              agentStorage,
-              logger: childLogger,
-              paseoHome: options.paseoHome,
-              worktreesRoot: options.worktreesRoot,
-              terminalManager,
-              providerSnapshotManager,
-              createPaseoWorktree: options.createPaseoWorktree,
-              ...(options.ensureWorkspaceForCreate
-                ? { ensureWorkspaceForCreate: options.ensureWorkspaceForCreate }
-                : {}),
-            },
-            {
-              kind: "mcp",
-              provider,
-              title,
-              initialPrompt: buildFleetHistoryAskBrief(query, localServerId),
-              cwd: workspace.cwd,
-              workspaceId: workspace.workspaceId,
-              labels: { "paseo.history-ask": "1", "paseo.history-ask.scope": "host" },
-              background: false,
-              notifyOnFinish: false,
-            },
-          );
+          const created = await createAgentCommand(createAgentDependencies, {
+            kind: "mcp",
+            provider,
+            title,
+            initialPrompt: buildFleetHistoryAskBrief(query, localServerId),
+            cwd: workspace.cwd,
+            workspaceId: workspace.workspaceId,
+            labels: { "paseo.history-ask": "1", "paseo.history-ask.scope": "host" },
+            background: false,
+            notifyOnFinish: false,
+          });
           agentId = created.snapshot.id;
         } catch (error) {
           childLogger.warn(

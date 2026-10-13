@@ -23,6 +23,7 @@ import { setupFinishNotification } from "../finish-watches.js";
 import { resolveCreateAgentTitles } from "../create-agent-title.js";
 import { buildAgentPrompt } from "../prompt-attachments.js";
 import { normalizeClientMessageId, resolveClientMessageId } from "../../client-message-id.js";
+import { canonicalProviderModel } from "@getpaseo/protocol/provider-model";
 import { resolveRequiredProviderModel, type ResolvedProviderModel } from "../mcp-shared.js";
 import {
   appendTimelineItemIfAgentKnown,
@@ -52,10 +53,10 @@ export interface CreateAgentCommandDependencies {
   ensureWorkspaceForCreate?: EnsureWorkspaceForCreate;
   /**
    * Looks up a workspace by id so a create that names one lands in that
-   * workspace's real directory. Without it an explicit workspaceId is taken on
-   * trust and the agent inherits whatever cwd the caller defaulted to.
+   * workspace's real directory. Required: without it a workspaceId-only create
+   * would land in the caller's defaulted cwd (the daemon's process.cwd()).
    */
-  getWorkspace?: GetWorkspaceForCreate;
+  getWorkspace: GetWorkspaceForCreate;
 }
 
 export type EnsureWorkspaceForCreate = (
@@ -176,7 +177,7 @@ export function formatProviderModel(provider: string, model: string | null | und
 }
 
 function resolveProviderModel(providerValue: string): ResolvedProviderModel {
-  const providerInput = providerValue.trim();
+  const providerInput = canonicalProviderModel(providerValue);
   if (providerInput.includes("/")) {
     return resolveRequiredProviderModel(providerInput);
   }
@@ -373,13 +374,17 @@ async function resolveMcpCreateAgent(
     labels: input.labels,
     childAgentDefaultLabels: input.callerContext?.childAgentDefaultLabels,
     legacyDetached: input.detached ?? false,
+    // A worktree this create just made is placed at its own cwd, the same as the
+    // session path; any other named workspace is looked up.
     resolveWorkspace: async (workspaceId) =>
-      resolveExplicitWorkspacePlacement({
-        dependencies,
-        workspaceId,
-        callerRequestedCwd: input.cwd,
-        fallbackCwd: resolvedCwd,
-      }),
+      createdWorkspaceId === workspaceId
+        ? { workspaceId, cwd: resolvedCwd }
+        : resolveExplicitWorkspacePlacement({
+            dependencies,
+            workspaceId,
+            callerRequestedCwd: input.cwd,
+            fallbackCwd: resolvedCwd,
+          }),
     createWorkspace: async () => ({
       workspaceId: requireResolvedWorkspaceId(
         await ensureWorkspaceForMcpCreate(dependencies, resolvedCwd, input.initialPrompt ?? ""),
@@ -391,7 +396,7 @@ async function resolveMcpCreateAgent(
     dependencies,
     input,
     provider,
-    resolvedCwd,
+    resolvedCwd: intent.cwd,
     parentAgent,
   });
 
@@ -427,7 +432,7 @@ async function resolveMcpCreateAgent(
  * Placement for a create that names an existing workspace.
  *
  * The workspace's own directory is authoritative. Trusting the caller's cwd
- * here put agents at the daemon's `process.cwd()` (`/`) whenever a spawn named
+ * here put agents at the daemon's `process.cwd()` whenever a spawn named
  * a workspace but passed no cwd, which files the agent outside the workspace
  * and hides it from the board. An explicit caller cwd still wins, so a spawn
  * can target a subdirectory of the workspace.
@@ -442,9 +447,6 @@ export async function resolveExplicitWorkspacePlacement(params: {
   fallbackCwd: string;
 }): Promise<CreateAgentPlacement> {
   const { dependencies, workspaceId, callerRequestedCwd, fallbackCwd } = params;
-  if (!dependencies.getWorkspace) {
-    return { workspaceId, cwd: fallbackCwd };
-  }
   const workspace = await dependencies.getWorkspace(workspaceId);
   if (!workspace) {
     throw new Error(`Workspace ${workspaceId} not found`);

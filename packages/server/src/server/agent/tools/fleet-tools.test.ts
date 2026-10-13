@@ -1,12 +1,14 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, test, vi } from "vitest";
 import { createTestLogger } from "../../../test-utils/test-logger.js";
 import { createProviderSnapshotManagerStub } from "../../test-utils/session-stubs.js";
+import { createTestAgentClients } from "../../test-utils/fake-agent-client.js";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
-import type { AgentManager } from "../agent-manager.js";
-import type { AgentStorage } from "../agent-storage.js";
+import { AgentManager } from "../agent-manager.js";
+import { AgentStorage } from "../agent-storage.js";
+import type { RoutingService } from "../../routing/routing-service.js";
 import type { ProviderSnapshotManager } from "../provider-snapshot-manager.js";
 import type { PeerManager } from "../../peers/peer-manager.js";
 import type { MissionControlService } from "../../mission-control/service.js";
@@ -613,6 +615,10 @@ describe("fleet_send_prompt mode", () => {
       streamAgent,
       appendTimelineItem,
       expectPromptClassification,
+      withAgentModePrefix: vi.fn((_agentId: string, prompt: unknown) => ({
+        prompt,
+        carriesMode: false,
+      })),
     } as unknown as AgentManager;
 
     // The interrupt path echoes the submitted prompt as a natural user row;
@@ -816,6 +822,12 @@ describe("fleet_send_prompt mode", () => {
       hasInFlightRun: vi.fn(() => false),
       tryRunOutOfBand,
       streamAgent,
+      hasTimeline: vi.fn(() => false),
+      waitForAgentRunStart: vi.fn(async () => undefined),
+      withAgentModePrefix: vi.fn((_agentId: string, prompt: unknown) => ({
+        prompt,
+        carriesMode: false,
+      })),
     } as unknown as AgentManager;
     const catalog = createPaseoToolCatalog({
       agentManager,
@@ -860,7 +872,7 @@ describe("fleet_send_prompt mode", () => {
       ],
       { replaceOrigin: "machinery" },
     );
-    expect(result.structuredContent).toEqual({ success: true, deliveryMode: "steer" });
+    expect(result.structuredContent).toMatchObject({ success: true, deliveryMode: "steer" });
   });
 });
 
@@ -1908,5 +1920,105 @@ describe("list_agents stored roster (Mission Control caller)", () => {
     const result = await catalog.executeTool("list_agents", { cwd: "/srv/fleet" });
     const rows = result.structuredContent as { agents: Array<{ id: string }> };
     expect(rows.agents.map((row) => row.id)).toEqual(["in-ws"]);
+  });
+});
+
+describe("fleet_create_agent placement and model form from a remote MCP client", () => {
+  const WORKSPACE_ID = "wks_a0fd1234567890abcd";
+
+  test("a workspaceId-only spawn runs in the workspace directory, not the daemon cwd", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fleet-create-placement-"));
+    const workspaceCwd = path.join(root, "worktree");
+    mkdirSync(workspaceCwd);
+    const storage = new AgentStorage(path.join(root, "agents"), createTestLogger());
+    const agentManager = new AgentManager({
+      clients: createTestAgentClients(),
+      registry: storage,
+      logger: createTestLogger(),
+    });
+    const workspace = {
+      workspaceId: WORKSPACE_ID,
+      projectId: "prj_1",
+      cwd: workspaceCwd,
+      displayName: "eager-cougar",
+      archivedAt: null,
+    };
+    const catalog = createPaseoToolCatalog({
+      agentManager,
+      agentStorage: storage,
+      workspaceRegistry: {
+        get: async (id: string) => (id === WORKSPACE_ID ? workspace : null),
+        list: async () => [workspace],
+      } as never,
+      providerSnapshotManager: createProviderSnapshotManagerStub()
+        .manager as unknown as ProviderSnapshotManager,
+      callerAgentId: "commander-1",
+      callerLabels: { "paseo.mission-control": "commander", "paseo.mcp-client": "grok-bot" },
+      serverId: "host-a",
+      missionControlService: createMissionControlServiceStub(),
+      logger: createTestLogger(),
+    });
+    try {
+      const result = await catalog.executeTool("fleet_create_agent", {
+        host: "local",
+        workspaceId: WORKSPACE_ID,
+        // The routing config's "provider:model" form is accepted as well.
+        provider: "codex:gpt-5.4",
+        initialPrompt: "fix the bug",
+        title: "placement",
+      });
+
+      expect(workspaceCwd).not.toBe(process.cwd());
+      expect(result.structuredContent).toMatchObject({
+        type: "codex",
+        cwd: workspaceCwd,
+        workspaceId: WORKSPACE_ID,
+      });
+    } finally {
+      agentManager.prepareForShutdown();
+      await Promise.all(
+        agentManager.listAgents().map((agent) => agentManager.closeAgent(agent.id)),
+      );
+      await agentManager.flushForShutdown();
+      await storage.flush();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("suggest_placement returns the model in the provider/model form fleet_create_agent takes", async () => {
+    const routingService = {
+      suggest: async () => ({
+        placement: {
+          kind: "project",
+          serverId: "host-a",
+          hostLabel: "Personal",
+          projectId: "prj_1",
+          projectTitle: "paseo",
+          rootPath: "/data/paseo",
+          probability: 1,
+        },
+        alternatives: [],
+        isolation: "worktree",
+        agentMode: "debug",
+        model: "omp:anthropic/claude-opus-5-5",
+        profile: "personal",
+        latencyMs: 1,
+      }),
+    } as unknown as RoutingService;
+    const catalog = createPaseoToolCatalog({
+      agentManager: {} as unknown as AgentManager,
+      agentStorage: { get: async () => null, list: async () => [] } as unknown as AgentStorage,
+      providerSnapshotManager: createProviderSnapshotManagerStub()
+        .manager as unknown as ProviderSnapshotManager,
+      callerAgentId: "commander-1",
+      callerLabels: { "paseo.mission-control": "commander" },
+      serverId: "host-a",
+      routingService,
+      logger: createTestLogger(),
+    });
+
+    const result = await catalog.executeTool("suggest_placement", { prompt: "fix the bug" });
+
+    expect(result.structuredContent).toMatchObject({ model: "omp/anthropic/claude-opus-5-5" });
   });
 });

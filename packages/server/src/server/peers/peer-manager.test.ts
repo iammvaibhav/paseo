@@ -1,6 +1,14 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import pino from "pino";
-import { PeerManager, resolvePeerIdentityName } from "./peer-manager.js";
+import {
+  PeerManager,
+  buildPeerUnreachableError,
+  formatPeerLastSeen,
+  resolvePeerIdentityName,
+} from "./peer-manager.js";
 
 describe("resolvePeerIdentityName", () => {
   const peers = [
@@ -140,5 +148,69 @@ describe("PeerManager reconcile", () => {
     expect(manager.getPeerClient("peer2")).toBeNull();
 
     await manager.close();
+  });
+});
+
+describe("PeerManager lastSeen", () => {
+  it("restores a sleeping peer's lastSeenAt from the persisted file after a restart", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "peer-last-seen-"));
+    const lastSeenPath = join(dir, "peer-last-seen.json");
+    writeFileSync(lastSeenPath, JSON.stringify({ macbook: "2026-10-12T23:12:53.000Z" }));
+    const manager = new PeerManager({
+      logger: pino({ level: "silent" }),
+      peers: [
+        { name: "macbook", url: "tcp://127.0.0.1:1" },
+        { name: "grok-bot", url: "tcp://127.0.0.1:2" },
+      ],
+      lastSeenPath,
+    });
+    try {
+      expect(manager.getPeerStatus("macbook")).toMatchObject({
+        state: "unreachable",
+        lastSeenAt: "2026-10-12T23:12:53.000Z",
+      });
+      expect(manager.getPeerStatus("grok-bot")?.lastSeenAt).toBeNull();
+    } finally {
+      await manager.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("treats an unreadable lastSeen file as no history", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "peer-last-seen-"));
+    const lastSeenPath = join(dir, "peer-last-seen.json");
+    writeFileSync(lastSeenPath, "{not json");
+    const manager = new PeerManager({
+      logger: pino({ level: "silent" }),
+      peers: [{ name: "macbook", url: "tcp://127.0.0.1:1" }],
+      lastSeenPath,
+    });
+    try {
+      expect(manager.getPeerStatus("macbook")?.lastSeenAt).toBeNull();
+    } finally {
+      await manager.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("buildPeerUnreachableError", () => {
+  it("says a never-connected host never connected, not 'since never'", () => {
+    const message = buildPeerUnreachableError("grok-bot", null).message;
+    expect(message).not.toContain("since never");
+    expect(message).toContain('Host "grok-bot" has never connected to this host');
+  });
+
+  it("names the last-seen moment in UTC with its age", () => {
+    const now = Date.parse("2026-10-13T05:12:53.000Z");
+    expect(formatPeerLastSeen("2026-10-12T23:12:53.000Z", now)).toBe(
+      "2026-10-12 23:12 UTC (6h ago)",
+    );
+    expect(formatPeerLastSeen("2026-10-13T05:02:53.000Z", now)).toBe(
+      "2026-10-13 05:02 UTC (10m ago)",
+    );
+    expect(formatPeerLastSeen("2026-10-10T05:12:53.000Z", now)).toBe(
+      "2026-10-10 05:12 UTC (3d ago)",
+    );
   });
 });

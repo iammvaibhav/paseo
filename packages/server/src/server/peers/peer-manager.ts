@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import type { WebSocketLike } from "@getpaseo/client/internal/daemon-client-transport-types";
 import type { MissionControlPeerStatus } from "@getpaseo/protocol/mission-control/types";
@@ -9,6 +10,7 @@ import {
 import { WebSocket } from "ws";
 import type { Logger } from "pino";
 
+import { writeJsonFileAtomic } from "../atomic-file.js";
 import type { PeerConfig } from "./types.js";
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
@@ -50,28 +52,70 @@ function resolvePeerWebSocketUrl(rawUrl: string): string {
   return `ws://${trimmed}/ws`;
 }
 
-function formatLastSeen(lastSeenAt: string | null): string {
-  if (!lastSeenAt) {
-    return "never";
-  }
+/**
+ * "2026-10-12 23:12 UTC (6h ago)". Absolute UTC plus age reads the same on every
+ * host and stays unambiguous across days, unlike a bare locale time.
+ */
+export function formatPeerLastSeen(lastSeenAt: string, now: number = Date.now()): string {
   const parsed = Date.parse(lastSeenAt);
   if (Number.isNaN(parsed)) {
     return lastSeenAt;
   }
-  return new Date(parsed).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const absolute = `${new Date(parsed).toISOString().slice(0, 16).replace("T", " ")} UTC`;
+  const minutes = Math.max(0, Math.round((now - parsed) / 60_000));
+  let age: string;
+  if (minutes < 60) {
+    age = `${minutes}m`;
+  } else if (minutes < 48 * 60) {
+    age = `${Math.round(minutes / 60)}h`;
+  } else {
+    age = `${Math.round(minutes / (24 * 60))}d`;
+  }
+  return `${absolute} (${age} ago)`;
 }
 
 export function buildPeerUnreachableError(name: string, lastSeenAt: string | null): Error {
+  if (!lastSeenAt) {
+    return new Error(
+      `Host "${name}" has never connected to this host (check that it is awake, its daemon ` +
+        "is running, and its peer URL is right). Work queued for other hosts is unaffected.",
+    );
+  }
   return new Error(
-    `Host "${name}" unreachable since ${formatLastSeen(lastSeenAt)} (likely asleep). ` +
+    `Host "${name}" unreachable since ${formatPeerLastSeen(lastSeenAt)} (likely asleep). ` +
       "Work queued for other hosts is unaffected; retry after it wakes.",
   );
+}
+
+/** Peer name → ISO lastSeenAt. A missing or unreadable file means no history. */
+function readPeerLastSeen(path: string | undefined): Record<string, string> {
+  if (!path) {
+    return {};
+  }
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+    return Object.fromEntries(
+      Object.entries(parsed).filter(
+        (entry): entry is [string, string] => typeof entry[1] === "string",
+      ),
+    );
+  } catch {
+    return {};
+  }
 }
 
 export interface PeerManagerOptions {
   peers: PeerConfig[];
   logger: Logger;
   appVersion?: string;
+  /**
+   * JSON file holding each peer's lastSeenAt, so a restart (every deploy) does
+   * not forget when a sleeping host was last reachable. Omitted → in-memory only.
+   */
+  lastSeenPath?: string;
   /**
    * Called whenever a peer connection transitions to online (hello complete).
    * Used for central-config sync-on-connect: the commander host pushes its
@@ -133,11 +177,15 @@ export class PeerManager {
   private readonly logger: Logger;
   private readonly appVersion: string | undefined;
   private readonly onPeerOnline: ((peerName: string) => void) | undefined;
+  private readonly lastSeenPath: string | undefined;
+  private readonly lastSeen: Record<string, string>;
 
   constructor(options: PeerManagerOptions) {
     this.logger = options.logger.child({ module: "peers" });
     this.appVersion = options.appVersion;
     this.onPeerOnline = options.onPeerOnline;
+    this.lastSeenPath = options.lastSeenPath;
+    this.lastSeen = readPeerLastSeen(options.lastSeenPath);
     for (const config of options.peers) {
       this.peers.push(this.createPeer(config));
     }
@@ -283,7 +331,7 @@ export class PeerManager {
         name: config.name,
         url: config.url,
         state: "unreachable",
-        lastSeenAt: null,
+        lastSeenAt: this.lastSeen[config.name] ?? null,
       },
       serverId: null,
       hostname: null,
@@ -294,12 +342,25 @@ export class PeerManager {
       if (state.status === "connected") {
         this.setPeerOnline(peer);
       } else if (peer.status.state === "online") {
-        peer.status = { ...peer.status, state: "unreachable" };
+        // The drop is the last moment this host saw the peer.
+        const lastSeenAt = new Date().toISOString();
+        peer.status = { ...peer.status, state: "unreachable", lastSeenAt };
+        this.recordLastSeen(config.name, lastSeenAt);
         this.logger.info({ peer: config.name }, "Peer unreachable");
       }
     });
 
     return peer;
+  }
+
+  private recordLastSeen(name: string, lastSeenAt: string): void {
+    this.lastSeen[name] = lastSeenAt;
+    if (!this.lastSeenPath) {
+      return;
+    }
+    void writeJsonFileAtomic(this.lastSeenPath, this.lastSeen).catch((error) =>
+      this.logger.warn({ err: error, peer: name }, "Peer lastSeen persist failed"),
+    );
   }
 
   private setPeerOnline(peer: PeerConnection): void {
@@ -308,12 +369,14 @@ export class PeerManager {
     peer.serverId = serverId;
     peer.hostname = serverInfo?.hostname ?? null;
     peer.missionControlHostAlias = serverInfo?.missionControlHostAlias ?? null;
+    const lastSeenAt = new Date().toISOString();
     peer.status = {
       name: peer.config.name,
       url: peer.config.url,
       state: "online",
-      lastSeenAt: new Date().toISOString(),
+      lastSeenAt,
     };
+    this.recordLastSeen(peer.config.name, lastSeenAt);
     this.logger.info({ peer: peer.config.name, serverId }, "Peer online");
     try {
       this.onPeerOnline?.(peer.config.name);

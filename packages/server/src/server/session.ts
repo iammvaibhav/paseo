@@ -6207,6 +6207,7 @@ export class Session {
           paseoHome: this.paseoHome,
           worktreesRoot: this.worktreesRoot,
           providerSnapshotManager: this.providerSnapshotManager,
+          getWorkspace: (workspaceId) => this.workspaceRegistry.get(workspaceId),
         },
         {
           kind: "session",

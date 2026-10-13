@@ -1,6 +1,6 @@
 # Placement routing and agent modes
 
-The New workspace screen fills its controls from the prompt: project (or a new project, or the host's scratch area), host, isolation, agent mode, and model. Commander and any other agent get the same answer from the `suggest_placement` MCP tool. One daemon function serves both: `RoutingService.suggest` (`packages/server/src/server/routing/routing-service.ts`).
+The New workspace screen fills its controls from the prompt: project (or a new project, or the host's scratch area), host, isolation, agent mode, and model. Commander and any other agent get the same answer from the `suggest_placement` MCP tool. One daemon function serves both: `RoutingService.suggest` (`packages/server/src/server/routing/routing-service.ts`). The app receives the model in the config form (`omp:anthropic/…`); `suggest_placement` returns it as `omp/anthropic/…`, the form `fleet_create_agent` takes. Every create path accepts both (`canonicalProviderModel` in `packages/protocol/src/provider-model.ts`).
 
 ## How a suggestion is made
 

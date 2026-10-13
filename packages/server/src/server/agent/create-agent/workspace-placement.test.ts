@@ -58,15 +58,4 @@ describe("resolveExplicitWorkspacePlacement", () => {
       }),
     ).rejects.toThrow("Workspace wks_missing not found");
   });
-
-  it("falls back to the caller cwd when no workspace lookup is wired", async () => {
-    const placement = await resolveExplicitWorkspacePlacement({
-      dependencies: {} as CreateAgentCommandDependencies,
-      workspaceId: "wks_1",
-      callerRequestedCwd: undefined,
-      fallbackCwd: "/tmp/x",
-    });
-
-    expect(placement).toEqual({ workspaceId: "wks_1", cwd: "/tmp/x" });
-  });
 });

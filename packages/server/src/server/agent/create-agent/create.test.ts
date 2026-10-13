@@ -73,6 +73,10 @@ test("session create forwards clientMessageId to the initial prompt run options"
       hasInFlightRun: vi.fn(() => false),
       streamAgent,
       waitForAgentRunStart: vi.fn(async () => undefined),
+      withAgentModePrefix: vi.fn((_agentId: string, prompt: unknown) => ({
+        prompt,
+        carriesMode: false,
+      })),
     } as unknown as Parameters<typeof createAgentCommand>[0]["agentManager"],
     agentStorage: {} as Parameters<typeof createAgentCommand>[0]["agentStorage"],
     logger: createTestLogger(),
@@ -112,6 +116,10 @@ test("mcp create attaches native images to the initial prompt", async () => {
       hasInFlightRun: vi.fn(() => false),
       streamAgent,
       waitForAgentRunStart: vi.fn(async () => undefined),
+      withAgentModePrefix: vi.fn((_agentId: string, prompt: unknown) => ({
+        prompt,
+        carriesMode: false,
+      })),
     } as unknown as Parameters<typeof createAgentCommand>[0]["agentManager"],
     agentStorage: {} as Parameters<typeof createAgentCommand>[0]["agentStorage"],
     logger: createTestLogger(),
@@ -248,6 +256,7 @@ test("mcp create accepts provider-only internal input and leaves model undefined
         return {};
       }),
     } as Parameters<typeof createAgentCommand>[0]["providerSnapshotManager"],
+    getWorkspace: async () => ({ cwd: "/tmp/paseo-create-test", archivedAt: null }),
   };
 
   await createAgentCommand(dependencies, {
@@ -270,6 +279,93 @@ test("mcp create accepts provider-only internal input and leaves model undefined
     expect.objectContaining({
       workspaceId: "ws-create-test",
     }),
+  );
+});
+
+function createMcpCreateHarness(workspace: { cwd: string; archivedAt: string | null } | null) {
+  const snapshot = {
+    id: "agent-1",
+    provider: "omp",
+    cwd: "/tmp/paseo-create-test",
+    runtimeInfo: null,
+  } as ManagedAgent;
+  const createAgent = vi.fn(async () => snapshot);
+  const dependencies: Parameters<typeof createAgentCommand>[0] = {
+    agentManager: {
+      createAgent,
+      getAgent: vi.fn(() => snapshot),
+    } as unknown as Parameters<typeof createAgentCommand>[0]["agentManager"],
+    agentStorage: {} as Parameters<typeof createAgentCommand>[0]["agentStorage"],
+    logger: createTestLogger(),
+    providerSnapshotManager: createProviderSnapshotManagerStub().manager,
+    getWorkspace: async () => workspace,
+  };
+  return { createAgent, dependencies };
+}
+
+test("mcp create accepts the provider:model form routing config and the app use", async () => {
+  const { createAgent, dependencies } = createMcpCreateHarness({
+    cwd: "/tmp/paseo-create-test",
+    archivedAt: null,
+  });
+
+  await createAgentCommand(dependencies, {
+    kind: "mcp",
+    provider: "omp:anthropic/claude-opus-5-5",
+    workspaceId: "ws-create-test",
+    title: "colon form",
+    background: true,
+    notifyOnFinish: false,
+  });
+
+  expect(createAgent).toHaveBeenCalledWith(
+    expect.objectContaining({ provider: "omp", model: "anthropic/claude-opus-5-5" }),
+    undefined,
+    expect.anything(),
+  );
+});
+
+test("mcp create keeps a colon that belongs to the model id", async () => {
+  const { createAgent, dependencies } = createMcpCreateHarness({
+    cwd: "/tmp/paseo-create-test",
+    archivedAt: null,
+  });
+
+  await createAgentCommand(dependencies, {
+    kind: "mcp",
+    provider: "opencode/ollama/llama3:8b",
+    workspaceId: "ws-create-test",
+    title: "colon in model",
+    background: true,
+    notifyOnFinish: false,
+  });
+
+  expect(createAgent).toHaveBeenCalledWith(
+    expect.objectContaining({ provider: "opencode", model: "ollama/llama3:8b" }),
+    undefined,
+    expect.anything(),
+  );
+});
+
+test("mcp create naming a workspace without a cwd runs in that workspace, not the daemon cwd", async () => {
+  const { createAgent, dependencies } = createMcpCreateHarness({
+    cwd: "/data/worktrees/eager-cougar",
+    archivedAt: null,
+  });
+
+  await createAgentCommand(dependencies, {
+    kind: "mcp",
+    provider: "omp/anthropic/claude-opus-5-5",
+    workspaceId: "wks_worktree",
+    title: "named workspace",
+    background: true,
+    notifyOnFinish: false,
+  });
+
+  expect(createAgent).toHaveBeenCalledWith(
+    expect.objectContaining({ cwd: "/data/worktrees/eager-cougar" }),
+    undefined,
+    expect.objectContaining({ workspaceId: "wks_worktree" }),
   );
 });
 

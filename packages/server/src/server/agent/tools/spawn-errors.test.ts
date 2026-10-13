@@ -53,9 +53,14 @@ function createHarness(
     agentManager: {} as unknown as AgentManager,
     agentStorage: {} as unknown as AgentStorage,
     providerSnapshotManager: stub.manager as unknown as ProviderSnapshotManager,
-    // Top-level create without a workspaceId mints one; supply it so the call
-    // reaches the provider rejection.
+    // Top-level create without a workspaceId mints one; supply it (and the
+    // registry that resolves it) so the call reaches the provider rejection.
     ensureWorkspaceForCreate: async () => "ws-test",
+    workspaceRegistry: {
+      get: async (id: string) =>
+        id === "ws-test" ? { workspaceId: "ws-test", cwd: process.cwd(), archivedAt: null } : null,
+      list: async () => [],
+    } as never,
     peerManager,
     logger: createTestLogger(),
   });

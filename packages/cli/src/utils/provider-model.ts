@@ -1,3 +1,4 @@
+import { canonicalProviderModel } from "@getpaseo/protocol/provider-model";
 import type { CommandError } from "../output/index.js";
 
 export interface ResolveProviderAndModelOptions {
@@ -14,7 +15,8 @@ export interface ResolvedProviderModel {
 export function resolveProviderAndModel(
   options: ResolveProviderAndModelOptions,
 ): ResolvedProviderModel {
-  const providerInput = options.provider?.trim() || options.defaultProvider;
+  const rawProvider = options.provider?.trim() || options.defaultProvider;
+  const providerInput = rawProvider ? canonicalProviderModel(rawProvider) : rawProvider;
   const modelInput = options.model?.trim();
 
   if (!providerInput) {

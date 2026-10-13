@@ -24,7 +24,7 @@ import type { AgentManager } from "../agent/agent-manager.js";
 import type { AgentStorage, StoredAgentRecord } from "../agent/agent-storage.js";
 import type { ProviderSnapshotManager } from "../agent/provider-snapshot-manager.js";
 import type { DaemonConfigStore } from "../daemon-config-store.js";
-import type { PeerManager } from "../peers/peer-manager.js";
+import { formatPeerLastSeen, type PeerManager } from "../peers/peer-manager.js";
 import type {
   PersistedProjectRecord,
   PersistedWorkspaceRecord,
@@ -734,9 +734,12 @@ function buildFleetMapSection(context: FleetContextData): string {
       const machine = host.machineName ? ` on ${host.machineName}` : "";
       return `- ${label} — this daemon${machine}, reachable`;
     }
-    return host.reachable
-      ? `- ${label} — reachable`
-      : `- ${label} — unreachable${host.lastSeenAt ? ` since ${formatLastSeen(host.lastSeenAt)}` : ""} (likely asleep; retry after it wakes)`;
+    if (host.reachable) {
+      return `- ${label} — reachable`;
+    }
+    return host.lastSeenAt
+      ? `- ${label} — unreachable since ${formatPeerLastSeen(host.lastSeenAt)} (likely asleep; retry after it wakes)`
+      : `- ${label} — never connected to this host (check it is awake, its daemon is running, and its peer URL is right)`;
   });
   return `# Fleet map\n${lines.join("\n")}`;
 }
@@ -1105,14 +1108,6 @@ function formatAge(iso: string): string {
 
 function hostLabel(host: FleetHostContext): string {
   return host.alias ?? host.hostName;
-}
-
-function formatLastSeen(iso: string): string {
-  const parsed = Date.parse(iso);
-  if (Number.isNaN(parsed)) {
-    return iso;
-  }
-  return new Date(parsed).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
 function readOmpModelRoles(): Record<string, string> {
