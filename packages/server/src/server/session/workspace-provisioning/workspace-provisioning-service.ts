@@ -1,6 +1,6 @@
 import type { PluginLifecycle } from "../../plugins/lifecycle/index.js";
 import { describeHookWorkspace } from "../../plugins/lifecycle/index.js";
-import { basename, resolve } from "node:path";
+import { basename } from "node:path";
 import type { ProjectCheckoutLitePayload } from "@getpaseo/protocol/messages";
 import type { Logger } from "pino";
 import {
@@ -18,7 +18,11 @@ import {
 import type { WorkspaceGitService } from "../../workspace-git-service.js";
 import type { CreatePaseoWorktreeWorkflowResult } from "../../worktree-session.js";
 import { deriveProjectKey } from "../../project-key.js";
-import { areEquivalentPaths, createRealpathAwarePathMatcher } from "../../../utils/path.js";
+import {
+  areEquivalentPaths,
+  canonicalizePath,
+  createRealpathAwarePathMatcher,
+} from "../../../utils/path.js";
 import type { UntrustedWorkspaceSource } from "../../workspace-automation-gate.js";
 import type { PhaseTimer } from "../../../utils/phase-timer.js";
 
@@ -192,7 +196,7 @@ export function createWorkspaceProvisioningService(deps: {
   }
 
   async function findOrCreateProjectForDirectory(cwd: string): Promise<PersistedProjectRecord> {
-    const rootPath = resolve(cwd);
+    const rootPath = canonicalizePath(cwd);
     const checkout = await workspaceGitService.getCheckout(rootPath);
     const timestamp = new Date().toISOString();
     return projectRegistry.getOrCreateActiveByRoot({
@@ -223,7 +227,7 @@ export function createWorkspaceProvisioningService(deps: {
     projectId?: string,
     context?: { expectsInitialAgent?: boolean; workspaceId?: string },
   ): Promise<PersistedWorkspaceRecord> {
-    const normalizedCwd = resolve(cwd);
+    const normalizedCwd = canonicalizePath(cwd);
     const checkout = await workspaceGitService.getCheckout(normalizedCwd);
     const project = projectId
       ? await refreshProjectKind(await requireActiveProject(projectId), normalizedCwd, checkout)
@@ -247,10 +251,10 @@ export function createWorkspaceProvisioningService(deps: {
     input: CreateWorktreeWorkspaceInput,
     options?: { timer?: PhaseTimer },
   ): Promise<PersistedWorkspaceRecord> {
-    const sourceCwd = resolve(input.sourceCwd);
-    const repoRoot = resolve(input.repoRoot);
-    const cwd = resolve(input.cwd);
-    const worktreeRoot = resolve(input.worktreeRoot);
+    const sourceCwd = canonicalizePath(input.sourceCwd);
+    const repoRoot = canonicalizePath(input.repoRoot);
+    const cwd = canonicalizePath(input.cwd);
+    const worktreeRoot = canonicalizePath(input.worktreeRoot);
     const project = await resolveSourceProjectForWorktree({
       sourceCwd,
       projectId: input.projectId,
@@ -292,24 +296,29 @@ export function createWorkspaceProvisioningService(deps: {
       const project = await requireActiveProject(input.projectId);
       // An explicit FK may point at a project rooted somewhere else entirely;
       // only that rare case still needs a probe of the project's own root.
-      if (!areEquivalentPaths(project.rootPath, input.repoRoot)) {
+      if (!areEquivalentPaths(canonicalizePath(project.rootPath), input.repoRoot)) {
         return refreshProjectKind(project);
       }
       return markProjectGitForCreatedWorktree(project);
     }
 
+    // Registry records may predate canonicalization and hold a symlink spelling.
     const workspaces = await workspaceRegistry.list();
     const sourceWorkspace =
       workspaces.find(
-        (workspace) => !workspace.archivedAt && areEquivalentPaths(workspace.cwd, input.sourceCwd),
+        (workspace) =>
+          !workspace.archivedAt &&
+          areEquivalentPaths(canonicalizePath(workspace.cwd), input.sourceCwd),
       ) ??
       workspaces.find(
-        (workspace) => !workspace.archivedAt && areEquivalentPaths(workspace.cwd, input.repoRoot),
+        (workspace) =>
+          !workspace.archivedAt &&
+          areEquivalentPaths(canonicalizePath(workspace.cwd), input.repoRoot),
       );
     if (sourceWorkspace) {
       const project = await projectRegistry.get(sourceWorkspace.projectId);
       if (project) {
-        return areEquivalentPaths(project.rootPath, input.repoRoot)
+        return areEquivalentPaths(canonicalizePath(project.rootPath), input.repoRoot)
           ? markProjectGitForCreatedWorktree(project)
           : project;
       }
@@ -369,12 +378,13 @@ export function createWorkspaceProvisioningService(deps: {
   }
 
   async function findOrCreateWorkspaceForDirectory(cwd: string): Promise<PersistedWorkspaceRecord> {
-    const normalizedCwd = resolve(cwd);
-    const workspaces = await workspaceRegistry.list();
+    const normalizedCwd = canonicalizePath(cwd);
+    const workspaces = (await workspaceRegistry.list()).filter((workspace) =>
+      // Records may predate canonicalization and hold a symlink spelling.
+      areEquivalentPaths(canonicalizePath(workspace.cwd), normalizedCwd),
+    );
     const active = workspaces
-      .filter(
-        (workspace) => !workspace.archivedAt && areEquivalentPaths(workspace.cwd, normalizedCwd),
-      )
+      .filter((workspace) => !workspace.archivedAt)
       .sort(
         (left, right) =>
           Date.parse(left.createdAt) - Date.parse(right.createdAt) ||
@@ -382,9 +392,7 @@ export function createWorkspaceProvisioningService(deps: {
       )[0];
     if (active) return refreshWorkspaceRecord(active);
     const archived = workspaces
-      .filter(
-        (workspace) => workspace.archivedAt && areEquivalentPaths(workspace.cwd, normalizedCwd),
-      )
+      .filter((workspace) => workspace.archivedAt)
       .sort(
         (left, right) =>
           Date.parse(left.createdAt) - Date.parse(right.createdAt) ||

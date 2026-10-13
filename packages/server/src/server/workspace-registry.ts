@@ -4,7 +4,7 @@ import type { Logger } from "pino";
 import { z } from "zod";
 
 import { writeJsonFileAtomic } from "./atomic-file.js";
-import { areEquivalentPaths } from "../utils/path.js";
+import { areEquivalentPaths, canonicalizePath } from "../utils/path.js";
 import type { PhaseTimer } from "../utils/phase-timer.js";
 import {
   generateProjectId,
@@ -434,9 +434,13 @@ export class FileBackedProjectRegistry
     this.allocationQueue = new Promise<void>((resolve) => (release = resolve));
     await previous;
     try {
+      // A symlinked spelling (e.g. ~/paseo -> /data/paseo) names the same root;
+      // records written before canonicalization may still hold the link path.
+      const rootPath = canonicalizePath(input.rootPath);
       const active = (await this.list())
         .filter(
-          (project) => !project.archivedAt && areEquivalentPaths(project.rootPath, input.rootPath),
+          (project) =>
+            !project.archivedAt && areEquivalentPaths(canonicalizePath(project.rootPath), rootPath),
         )
         .sort(
           (left, right) =>
@@ -461,7 +465,7 @@ export class FileBackedProjectRegistry
         if (await this.get(projectId)) continue;
         const record = createPersistedProjectRecord({
           projectId,
-          rootPath: input.rootPath,
+          rootPath,
           kind: input.kind,
           displayName: input.displayName,
           projectKey: input.projectKey ?? null,

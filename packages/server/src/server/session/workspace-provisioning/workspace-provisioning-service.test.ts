@@ -14,6 +14,7 @@ import {
   FileBackedProjectRegistry,
   FileBackedWorkspaceRegistry,
   type PersistedProjectRecord,
+  createPersistedProjectRecord,
   createPersistedWorkspaceRecord,
   type WorkspaceRegistry,
 } from "../../workspace-registry.js";
@@ -604,6 +605,94 @@ test("findOrCreateProjectForDirectory keeps nested selected roots independent", 
   expect(second.rootPath).toBe(path.join(repo, "sub"));
   expect(await projectRegistry.list()).toHaveLength(2);
 });
+
+// PASEO-66: ~/paseo is a symlink to /data/paseo. Records written before
+// canonicalization hold the link spelling while git reports the realpath.
+async function seedSymlinkedRepo(): Promise<{
+  realRoot: string;
+  linkRoot: string;
+  project: PersistedProjectRecord;
+  workspaceId: string;
+}> {
+  const realRoot = path.join(tmpDir, "data", "paseo");
+  const linkRoot = path.join(tmpDir, "home-paseo");
+  mkdirSync(realRoot, { recursive: true });
+  symlinkSync(realRoot, linkRoot, directorySymlinkType);
+  gitRoots.add(realRoot);
+  const project = createPersistedProjectRecord({
+    projectId: "prj_legacy_link",
+    rootPath: linkRoot,
+    kind: "git",
+    displayName: "paseo",
+    createdAt: "2026-08-13T00:00:00.000Z",
+    updatedAt: "2026-08-13T00:00:00.000Z",
+  });
+  await projectRegistry.upsert(project);
+  await workspaceRegistry.upsert(
+    createPersistedWorkspaceRecord({
+      workspaceId: "wks_legacy_link",
+      projectId: project.projectId,
+      cwd: linkRoot,
+      kind: "local_checkout",
+      displayName: "main",
+      createdAt: "2026-08-13T00:00:00.000Z",
+      updatedAt: "2026-08-13T00:00:00.000Z",
+    }),
+  );
+  return { realRoot, linkRoot, project, workspaceId: "wks_legacy_link" };
+}
+
+test.skipIf(process.platform === "win32")(
+  "a worktree cut from the realpath of a symlink-registered repo joins its existing project",
+  async () => {
+    const { realRoot, project } = await seedSymlinkedRepo();
+    const worktree = path.join(tmpDir, "worktrees", "wicked-leopard");
+
+    const workspace = await provisioning.createWorkspaceForWorktree({
+      sourceCwd: realRoot,
+      repoRoot: realRoot,
+      cwd: worktree,
+      worktreeRoot: worktree,
+      branch: "feature",
+      baseBranch: "main",
+      title: null,
+    });
+
+    expect(workspace.projectId).toBe(project.projectId);
+    expect(await projectRegistry.list()).toHaveLength(1);
+  },
+);
+
+test.skipIf(process.platform === "win32")(
+  "opening a repo by its realpath reuses the workspace registered under the symlink",
+  async () => {
+    const { realRoot, workspaceId } = await seedSymlinkedRepo();
+
+    const workspace = await provisioning.findOrCreateWorkspaceForDirectory(realRoot);
+
+    expect(workspace.workspaceId).toBe(workspaceId);
+    expect(await workspaceRegistry.list()).toHaveLength(1);
+    expect(await projectRegistry.list()).toHaveLength(1);
+  },
+);
+
+test.skipIf(process.platform === "win32")(
+  "a directory opened through a symlink is registered at its realpath",
+  async () => {
+    const realRoot = path.join(tmpDir, "data", "notes");
+    const linkRoot = path.join(tmpDir, "notes-link");
+    mkdirSync(realRoot, { recursive: true });
+    symlinkSync(realRoot, linkRoot, directorySymlinkType);
+
+    const viaLink = await provisioning.findOrCreateWorkspaceForDirectory(linkRoot);
+    const viaReal = await provisioning.findOrCreateWorkspaceForDirectory(realRoot);
+
+    expect(viaLink.cwd).toBe(realRoot);
+    expect((await projectRegistry.get(viaLink.projectId))?.rootPath).toBe(realRoot);
+    expect(viaReal.workspaceId).toBe(viaLink.workspaceId);
+    expect(await workspaceRegistry.list()).toHaveLength(1);
+  },
+);
 
 test("runInImportWorkspace uses an active requested workspace without creating another", async () => {
   const cwd = path.join(tmpDir, "requested");

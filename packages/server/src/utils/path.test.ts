@@ -1,10 +1,11 @@
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test } from "vitest";
 
 import {
   areEquivalentPaths,
+  canonicalizePath,
   createPathEquivalenceMatcher,
   getRealpathAwareRelativePath,
   isPathInsideRoot,
@@ -67,4 +68,41 @@ describe("path equivalence", () => {
       }
     },
   );
+});
+
+describe.skipIf(process.platform === "win32")("canonicalizePath", () => {
+  let tempDir: string;
+  let realRoot: string;
+  let aliasRoot: string;
+
+  beforeEach(() => {
+    // tmpdir() itself may be a symlink (macOS /var -> /private/var).
+    tempDir = realpathSync(mkdtempSync(join(tmpdir(), "paseo-canonical-")));
+    realRoot = join(tempDir, "data", "paseo");
+    aliasRoot = join(tempDir, "home-paseo");
+    mkdirSync(realRoot, { recursive: true });
+    symlinkSync(realRoot, aliasRoot, "dir");
+  });
+
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  test("resolves a symlinked directory to its target", () => {
+    expect(canonicalizePath(aliasRoot)).toBe(realRoot);
+    expect(canonicalizePath(`${aliasRoot}/`)).toBe(realRoot);
+    expect(canonicalizePath(join(aliasRoot, "packages", ".."))).toBe(realRoot);
+  });
+
+  test("resolves the existing prefix of a path that does not exist yet", () => {
+    expect(canonicalizePath(join(aliasRoot, "new", "child"))).toBe(join(realRoot, "new", "child"));
+  });
+
+  test("leaves a path with no symlinks unchanged", () => {
+    expect(canonicalizePath(realRoot)).toBe(realRoot);
+  });
+
+  test("leaves Windows-shaped paths to lexical comparison on POSIX hosts", () => {
+    expect(canonicalizePath("C:\\Users\\Paseo\\Repo")).toBe("C:\\Users\\Paseo\\Repo");
+  });
 });
