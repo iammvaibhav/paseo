@@ -19,7 +19,7 @@ import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import path from "node:path";
 import type { Host, Service } from "./inventory.ts";
-import { loadInventory, passwordVar, peersFor, selfHost } from "./inventory.ts";
+import { daemonHostnames, loadInventory, passwordVar, peersFor, selfHost } from "./inventory.ts";
 import type { Component, HostPlan, HostState } from "./plan.ts";
 import { COMPONENT_PATHS, describePlan, makePlan } from "./plan.ts";
 import type { Job } from "./shell.ts";
@@ -538,7 +538,7 @@ async function activate(
 function configPayload(run: Run, host: Host): Record<string, unknown> {
   return {
     peers: peersFor(run.hosts, host.name, process.env),
-    hostnames: host.dns ? [host.dns] : [],
+    hostnames: daemonHostnames(host),
     appendSystemPrompt: readFileSync(path.join(ROOT, "scripts", "paseo-system-prompt.md"), "utf8"),
     webUi: true,
     // Targets stay minimal: no local speech models unless voice is turned on

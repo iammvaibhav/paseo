@@ -575,14 +575,20 @@ export function createTerminalActivityRouteHandler(
 function applyHostAllowlist(
   app: express.Express,
   listenTarget: ListenTarget,
-  configuredHostnames: HostnamesConfig | undefined,
+  getHostnames: () => HostnamesConfig | undefined,
+  logger: Logger,
 ): void {
   // Host allowlist / DNS rebinding protection (vite-like semantics).
   // For non-TCP (unix sockets), skip host validation.
+  // The allowlist is read per request so `daemon.hostnames` reloads apply live.
   if (listenTarget.type === "tcp") {
     app.use((req, res, next) => {
       const hostHeader = typeof req.headers.host === "string" ? req.headers.host : undefined;
-      if (!isHostnameAllowed(hostHeader, configuredHostnames)) {
+      if (!isHostnameAllowed(hostHeader, getHostnames())) {
+        logger.warn(
+          { host: hostHeader ?? null, path: req.path, remoteAddress: req.socket.remoteAddress },
+          "Rejected HTTP request from disallowed host; add it to daemon.hostnames",
+        );
         res.status(403).json({ error: "Invalid Host header" });
         return;
       }
@@ -1244,7 +1250,7 @@ export async function createPaseoDaemon(
 
   // Host allowlist / DNS rebinding protection (vite-like semantics).
   // For non-TCP (unix sockets), skip host validation.
-  applyHostAllowlist(app, listenTarget, configuredHostnames);
+  applyHostAllowlist(app, listenTarget, () => configuredHostnames, logger);
 
   // CORS - allow same-origin + configured origins
   const fixedAllowedOrigins = [

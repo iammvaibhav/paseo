@@ -36,6 +36,7 @@
       "ssh": "prod",
       "address": "100.123.97.105",
       "dns": "prod.netbird.cloud",
+      "hostnames": ["paseo.thevm.space"],
       "platform": "linux-arm64",
       "role": "target",
       "buildFrom": "iammvaibhav",
