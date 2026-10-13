@@ -73,6 +73,8 @@ CLAUDE.local.md
 
 # Local agent/tooling artifacts (do not commit)
 PLAN.md
+# core.ignorecase=true makes PLAN.md also match the Plan-first agent mode prompt.
+!packages/server/src/server/agent/agent-modes/prompts/plan.md
 .valknut/
 valknut-report.html/
 valknut-report.json/

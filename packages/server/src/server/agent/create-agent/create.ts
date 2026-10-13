@@ -1,5 +1,5 @@
 import type { Logger } from "pino";
-import type { AgentModeId } from "@getpaseo/protocol/agent-modes";
+import { isAgentModeId, type AgentModeId } from "@getpaseo/protocol/agent-modes";
 
 import type { TerminalManager } from "../../../terminal/terminal-manager.js";
 import type { CreatePaseoWorktreeInput } from "../../paseo-worktree-service.js";
@@ -115,8 +115,12 @@ export interface CreateAgentFromMcpInput {
   images?: Array<{ data: string; mimeType: string }>;
   attachments?: AgentAttachment[];
   mode?: string;
-  /** Agent mode (Do it yourself, Orchestrator, …). Absent = Do it yourself. */
-  agentMode?: AgentModeId;
+  /**
+   * Agent mode id (Do it yourself, Orchestrator, …). Absent = Do it yourself.
+   * A string because spawn plans and schedules carry it off the wire; an id
+   * this daemon does not know (a newer host's mode) falls back to the default.
+   */
+  agentMode?: string;
   unattended?: boolean;
   promptFailure?: CreateAgentPromptFailureMode;
   background: boolean;
@@ -418,7 +422,7 @@ async function resolveMcpCreateAgent(
       workspaceId: intent.workspaceId,
       owner: input.owner,
       env: input.env,
-      ...(input.agentMode ? { agentMode: input.agentMode } : {}),
+      ...(isAgentModeId(input.agentMode) ? { agentMode: input.agentMode } : {}),
     },
     prompt: hasPromptContent ? prompt : undefined,
     setupContinuation,

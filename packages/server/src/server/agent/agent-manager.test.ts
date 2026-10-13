@@ -1215,7 +1215,8 @@ test("steers a tracked autonomous turn without creating a replacement run", asyn
     expect(manager.getTimeline(agent.id)).toContainEqual(
       expect.objectContaining({
         type: "user_message",
-        text: "autonomous follow-up",
+        // The agent's first user message carries its mode block, steer or not.
+        text: expect.stringMatching(/^<paseo-mode name="solo">\n[\s\S]+\n\nautonomous follow-up$/),
         clientMessageId: "autonomous-follow-up-client",
       }),
     );
@@ -12433,7 +12434,7 @@ test("provider user_message is recorded from the live stream", async () => {
     workspaceId: undefined,
   });
 
-  await manager.runAgent(snapshot.id, { text: "do something" });
+  await manager.runAgent(snapshot.id, "do something");
 
   const timeline = manager.getTimeline(snapshot.id);
   const userMessages = timeline.filter((item) => item.type === "user_message");
@@ -12494,7 +12495,7 @@ test("expectPromptClassification stamps the machinery classification on the echo
   // Classify at the source: the machinery dispatch registered its expectation
   // before the prompt's echo landed.
   manager.expectPromptClassification(snapshot.id, "status please", "machinery");
-  await manager.runAgent(snapshot.id, { text: "status please" });
+  await manager.runAgent(snapshot.id, "status please");
 
   const first = manager.getTimeline(snapshot.id).filter((item) => item.type === "user_message");
   expect(first).toHaveLength(1);
@@ -12502,7 +12503,7 @@ test("expectPromptClassification stamps the machinery classification on the echo
 
   // The expectation was consumed: an identical later echo (e.g. a repeat nudge
   // with no pending dispatch) stays unclassified — absent = instruction.
-  await manager.runAgent(snapshot.id, { text: "status please" });
+  await manager.runAgent(snapshot.id, "status please");
   const rows = manager.getTimeline(snapshot.id).filter((item) => item.type === "user_message");
   expect(rows).toHaveLength(2);
   expect(rows[1]).toMatchObject({ text: "status please" });
@@ -12610,6 +12611,8 @@ test("canonical submitted prompt keeps wire identity while rewind resolves provi
     const snapshot = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
       workspaceId: undefined,
     });
+    // The provider already has the mode, so the submitted text stays exact.
+    await manager.markAgentModeApplied(snapshot.id);
 
     const run = manager.runAgent(snapshot.id, "hello from composer", {
       clientMessageId: "msg-client-1",
@@ -13117,7 +13120,7 @@ test("user_message events wrapping a paseo-system envelope reach the timeline", 
     workspaceId: undefined,
   });
 
-  await manager.runAgent(snapshot.id, { text: "do something" });
+  await manager.runAgent(snapshot.id, "do something");
 
   const timeline = manager.getTimeline(snapshot.id);
   const userMessages = timeline.filter((item) => item.type === "user_message");
@@ -13238,7 +13241,7 @@ test("onWorkspaceStateMayHaveChanged is called when a completed shell tool call 
     workspaceId: undefined,
   });
 
-  await manager.runAgent(snapshot.id, { text: "merge it" });
+  await manager.runAgent(snapshot.id, "merge it");
 
   expect(onWorkspaceStateMayHaveChanged).toHaveBeenCalledTimes(1);
   expect(onWorkspaceStateMayHaveChanged).toHaveBeenCalledWith({ cwd: workdir });
@@ -13274,7 +13277,7 @@ test("onWorkspaceStateMayHaveChanged is not called for non-shell tool calls", as
     workspaceId: undefined,
   });
 
-  await manager.runAgent(snapshot.id, { text: "read it" });
+  await manager.runAgent(snapshot.id, "read it");
 
   expect(onWorkspaceStateMayHaveChanged).not.toHaveBeenCalled();
 });
@@ -13309,7 +13312,7 @@ test("onWorkspaceStateMayHaveChanged is not called for running shell tool calls"
     workspaceId: undefined,
   });
 
-  await manager.runAgent(snapshot.id, { text: "merge it" });
+  await manager.runAgent(snapshot.id, "merge it");
 
   expect(onWorkspaceStateMayHaveChanged).not.toHaveBeenCalled();
 });
@@ -13394,6 +13397,61 @@ test("agent mode block rides one user message per mode change, never machinery",
     expect(JSON.stringify(switched.prompt)).toContain('<paseo-mode name=\\"orchestrator\\">');
     await manager.markAgentModeApplied(agentId);
     expect(manager.withAgentModePrefix(agentId, "more").carriesMode).toBe(false);
+  } finally {
+    if (agentId) await manager.closeAgent(agentId).catch(() => undefined);
+    rmSync(workdir, { recursive: true, force: true });
+  }
+});
+
+test("a selected agent mode rides the prompt that starts or steers a turn on every dispatch path", async () => {
+  const session = new SteeringTestSession({ provider: "codex", cwd: process.cwd() });
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-agent-mode-dispatch-"));
+  const client = new (class extends TestAgentClient {
+    override async createSession() {
+      return session;
+    }
+  })();
+  const manager = new AgentManager({ clients: { codex: client }, logger });
+  let agentId: string | null = null;
+  try {
+    const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+      workspaceId: undefined,
+    });
+    agentId = agent.id;
+    await manager.selectAgentMode(agentId, "research");
+
+    // Queue-style dispatch (no replace, no steer) used to skip the block.
+    await startAgentRun(manager, agentId, "first", logger, { replaceRunning: false });
+    await manager.waitForAgentRunStart(agentId);
+    expect(session.startPrompts[0]).toMatch(/^<paseo-mode name="research">\n[\s\S]+\n\nfirst$/);
+    expect(manager.getAgent(agentId)?.appliedAgentMode).toBe("research");
+
+    // A mode chosen with a steer applies to the turn the steer joins.
+    await manager.selectAgentMode(agentId, "debug");
+    const steer = await startAgentRun(manager, agentId, "look at the trace", logger, {
+      replaceRunning: true,
+      activeTurnBehavior: "steer",
+      runOptions: { clientMessageId: "steer-client" },
+    });
+    expect(steer.disposition).toBe("steered");
+    expect(session.startCount).toBe(1);
+    expect(
+      manager
+        .getTimeline(agentId)
+        .some(
+          (item) =>
+            item.type === "user_message" &&
+            /^<paseo-mode name="debug">\n[\s\S]+\n\nlook at the trace$/.test(item.text),
+        ),
+    ).toBe(true);
+    expect(manager.getAgent(agentId)?.appliedAgentMode).toBe("debug");
+
+    // The provider already has the mode: the next run carries no block.
+    session.pushEvent({ type: "turn_completed", provider: "codex", turnId: "active-turn-1" });
+    await manager.waitForRunSettled(agentId);
+    await startAgentRun(manager, agentId, "second", logger);
+    await manager.waitForAgentRunStart(agentId);
+    expect(session.startPrompts[1]).toBe("second");
   } finally {
     if (agentId) await manager.closeAgent(agentId).catch(() => undefined);
     rmSync(workdir, { recursive: true, force: true });

@@ -280,6 +280,111 @@ describe("Fleet MCP Endpoint E2E (/mcp/fleet)", () => {
     }
   }, 60_000);
 
+  test("a remote client's agentMode applies to the created agent and to the prompt it sends with", async () => {
+    const paseoHome = await mkdtemp(path.join(os.tmpdir(), "paseo-home-fleet-mode-"));
+    const staticDir = await mkdtemp(path.join(os.tmpdir(), "paseo-static-fleet-mode-"));
+    const workDir = await mkdtemp(path.join(os.tmpdir(), "paseo-work-fleet-mode-"));
+    const port = await getAvailablePort();
+    const token = "grok-secret-token-mode";
+    await writeFile(
+      path.join(paseoHome, "config.json"),
+      JSON.stringify({
+        version: 1,
+        daemon: {
+          mcp: {
+            enabled: true,
+            remoteClients: [{ name: "grok-bot", tokenHash: hashDaemonPassword(token) }],
+          },
+        },
+      }),
+      "utf8",
+    );
+    // What the provider actually received, per prompt.
+    const providerPrompts: string[] = [];
+    const daemon = await createPaseoDaemon(
+      {
+        listen: `127.0.0.1:${port}`,
+        paseoHome,
+        corsAllowedOrigins: [],
+        hostnames: true,
+        mcpEnabled: true,
+        staticDir,
+        mcpDebug: false,
+        agentClients: createTestAgentClients({
+          onStartTurn: (prompt) => {
+            providerPrompts.push(typeof prompt === "string" ? prompt : JSON.stringify(prompt));
+          },
+        }),
+        agentStoragePath: path.join(paseoHome, "agents"),
+      },
+      pino({ level: "silent" }),
+    );
+    await daemon.start();
+    const client = new Client({ name: "e2e-client", version: "1.0.0" });
+    try {
+      await client.connect(
+        new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp/fleet`), {
+          requestInit: { headers: { Authorization: `Bearer ${token}` } },
+        }),
+      );
+      // The Commander-identity local path that used to drop settings.agentMode.
+      const created = await client.callTool({
+        name: "fleet_create_agent",
+        arguments: {
+          host: "local",
+          cwd: workDir,
+          isolation: "local",
+          provider: "codex/gpt-5.4-mini",
+          title: "research worker",
+          initialPrompt: "Respond with exactly: first",
+          settings: { agentMode: "research" },
+        },
+      });
+      expect(created.isError).toBeFalsy();
+      const agentId = created.structuredContent?.agentId as string;
+      await client.callTool({
+        name: "fleet_wait_agent",
+        arguments: { agentId, timeoutSeconds: 30 },
+      });
+      expect(daemon.agentManager.getAgent(agentId)).toMatchObject({
+        agentMode: "research",
+        appliedAgentMode: "research",
+      });
+      expect(providerPrompts[0]).toMatch(
+        /^<paseo-mode name="research">\n[\s\S]+\n\nRespond with exactly: first$/,
+      );
+
+      // A mode sent with a queued prompt rides that prompt, not the next one.
+      const sent = await client.callTool({
+        name: "fleet_send_prompt",
+        arguments: {
+          agentId,
+          prompt: "Respond with exactly: second",
+          mode: "queue",
+          agentMode: "review",
+        },
+      });
+      expect(sent.structuredContent).toMatchObject({ success: true });
+      await client.callTool({
+        name: "fleet_wait_agent",
+        arguments: { agentId, timeoutSeconds: 30 },
+      });
+      expect(daemon.agentManager.getAgent(agentId)).toMatchObject({
+        agentMode: "review",
+        appliedAgentMode: "review",
+      });
+      expect(providerPrompts.at(-1)).toMatch(
+        /^<paseo-mode name="review">\n[\s\S]+\n\nRespond with exactly: second$/,
+      );
+    } finally {
+      await client.close();
+      await daemon.stop();
+      await rm(paseoHome, { recursive: true, force: true });
+      await rm(staticDir, { recursive: true, force: true });
+      await rm(workDir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   test("returns 404 when no remote clients are configured", async () => {
     const paseoHome = await mkdtemp(path.join(os.tmpdir(), "paseo-home-fleet-empty-"));
     const staticDir = await mkdtemp(path.join(os.tmpdir(), "paseo-static-fleet-empty-"));

@@ -130,6 +130,9 @@ export const MissionControlProposalSpawnPlanSchema = z.object({
   features: z.record(z.string(), z.unknown()).optional(),
   labels: z.record(z.string(), z.string()).optional(),
   mode: z.string().optional(),
+  // Agent mode id (agent-modes.ts). A string so an older daemon still parses a
+  // mode added after it shipped; absent = Do it yourself.
+  agentMode: z.string().optional(),
   background: z.boolean().optional(),
   detached: z.boolean().optional(),
   isolation: z.enum(["local", "worktree"]).optional(),
@@ -198,6 +201,10 @@ export const MissionControlProposalSchema = z.object({
   targetAgentId: z.string(),
   message: z.string(),
   deliveryMode: MissionControlDeliveryModeSchema,
+  // Agent mode applied to the target agent with this message (agent-modes.ts
+  // id; a string so older daemons parse later modes). Additive — absent =
+  // keep the agent's current mode.
+  agentMode: z.string().optional(),
   reason: z.string(),
   classification: z.enum(["normal", "destructive"]),
   status: z.enum(["pending", "approved", "denied", "sent", "expired", "undelivered", "failed"]),

@@ -18,7 +18,11 @@ import {
 } from "@getpaseo/protocol/agent-labels";
 import type { Logger } from "pino";
 import type { ToolPolicy } from "@getpaseo/protocol/agent-types";
-import { DEFAULT_AGENT_MODE_ID, type AgentModeId } from "@getpaseo/protocol/agent-modes";
+import {
+  DEFAULT_AGENT_MODE_ID,
+  splitAgentModeBlock,
+  type AgentModeId,
+} from "@getpaseo/protocol/agent-modes";
 import type { ProviderPaseoToolsPolicy } from "@getpaseo/protocol/provider-config";
 import { z } from "zod";
 import type { TerminalManager } from "../../terminal/terminal-manager.js";
@@ -3651,7 +3655,9 @@ export class AgentManager {
       return null;
     }
     const now = Date.now();
-    const index = entries.findIndex((entry) => entry.text === text);
+    // The echo may carry a leading agent mode block the dispatcher never saw.
+    const body = splitAgentModeBlock(text).body;
+    const index = entries.findIndex((entry) => entry.text === body);
     if (index === -1) {
       // Drop expectations whose dispatch never echoed, so a stale entry cannot
       // stamp an unrelated later message of the same text.
@@ -3757,6 +3763,10 @@ export class AgentManager {
     }
 
     const agent = existingAgent;
+    // Every run starts here, so the mode block cannot be skipped by any dispatch
+    // path (send, queue, interrupt, steer fallback, scheduled or webhook runs).
+    const moded = this.withAgentModePrefix(agentId, prompt);
+    const runPrompt = moded.prompt;
     const isReplacement = agent.pendingReplacement;
     agent.lastError = undefined;
 
@@ -3770,7 +3780,7 @@ export class AgentManager {
         agent,
         agentId,
         pendingRun,
-        prompt,
+        prompt: runPrompt,
         options,
       });
 
@@ -3800,7 +3810,7 @@ export class AgentManager {
       const stagedSubmittedPromptEcho = this.recordForegroundTurnSubmittedPrompt({
         agent,
         pendingRun,
-        prompt,
+        prompt: runPrompt,
         options,
         turnId,
       });
@@ -3834,6 +3844,11 @@ export class AgentManager {
       this.runs.addWaiter(agent, turnStream.waiter);
 
       try {
+        // After the waiter is registered: an await before it would let a fast
+        // turn complete unobserved.
+        if (moded.carriesMode) {
+          await this.markAgentModeApplied(agentId);
+        }
         const acceptedTurnStartedEvent: AgentStreamEvent = {
           type: "turn_started",
           provider: agent.provider,
@@ -4011,16 +4026,9 @@ export class AgentManager {
     if (!expectedTurnId || !agent.session.steerActiveTurn) {
       return { status: "unavailable" };
     }
-    const result = await this.runSteerAdmission(agent, expectedTurnId, async () => {
-      const admission = await agent.session.steerActiveTurn!(prompt, {
-        ...options,
-        expectedTurnId,
-      });
-      if (admission.status === "accepted") {
-        await this.recordAcceptedSteer(agent, prompt, options?.clientMessageId, expectedTurnId);
-      }
-      return admission;
-    });
+    const result = await this.runSteerAdmission(agent, expectedTurnId, () =>
+      this.admitSteer(agent, expectedTurnId, prompt, options),
+    );
     // An unavailable answer is only safe to fall back from while this admission
     // still owns the active turn. Never let an A admission replace a later B.
     if (result.status === "unavailable" && agent.activeTurnId !== expectedTurnId) {
@@ -4041,16 +4049,9 @@ export class AgentManager {
     }
 
     const result = agent.session.steerActiveTurn
-      ? await this.runSteerAdmission(agent, expectedTurnId, async () => {
-          const admission = await agent.session.steerActiveTurn!(prompt, {
-            ...options,
-            expectedTurnId,
-          });
-          if (admission.status === "accepted") {
-            await this.recordAcceptedSteer(agent, prompt, options?.clientMessageId, expectedTurnId);
-          }
-          return admission;
-        })
+      ? await this.runSteerAdmission(agent, expectedTurnId, () =>
+          this.admitSteer(agent, expectedTurnId, prompt, options),
+        )
       : { status: "unavailable" as const };
     if (result.status === "accepted") {
       return { status: "steered" };
@@ -4073,6 +4074,30 @@ export class AgentManager {
         stripSteerOptions(options),
       ),
     };
+  }
+
+  /**
+   * Hand a steer to the provider's active turn. A pending agent mode rides the
+   * steer itself, so it applies to the turn the steer joins.
+   */
+  private async admitSteer(
+    agent: ActiveManagedAgent,
+    expectedTurnId: string,
+    prompt: AgentPromptInput,
+    options: AgentSteerOptions | undefined,
+  ): Promise<SteerResult> {
+    const moded = this.withAgentModePrefix(agent.id, prompt);
+    const admission = await agent.session.steerActiveTurn!(moded.prompt, {
+      ...options,
+      expectedTurnId,
+    });
+    if (admission.status === "accepted") {
+      await this.recordAcceptedSteer(agent, moded.prompt, options?.clientMessageId, expectedTurnId);
+      if (moded.carriesMode) {
+        await this.markAgentModeApplied(agent.id);
+      }
+    }
+    return admission;
   }
 
   private assertSteerAdmissionOwnsTurn(agent: ActiveManagedAgent, expectedTurnId: string): void {
@@ -6319,9 +6344,10 @@ export class AgentManager {
 
   /**
    * Prepend the `<paseo-mode>` block when the provider does not have the
-   * current mode yet. `carriesMode` tells the caller to call
-   * markAgentModeApplied once the prompt was dispatched. Machinery envelopes
-   * and slash commands never carry it.
+   * current mode yet. Applied where a user prompt reaches the provider: run
+   * start (streamAgent), accepted steers (admitSteer), and OMP live steers.
+   * `carriesMode` tells the caller to call markAgentModeApplied once the prompt
+   * was accepted. Machinery envelopes and slash commands never carry it.
    */
   withAgentModePrefix(
     agentId: string,

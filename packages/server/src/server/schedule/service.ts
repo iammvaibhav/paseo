@@ -908,6 +908,7 @@ export class ScheduleService {
           "paseo.schedule-run": runId,
         },
         mode: config.modeId,
+        agentMode: config.agentMode,
         thinking: config.thinkingOptionId,
         features: config.featureValues,
         unattended: true,

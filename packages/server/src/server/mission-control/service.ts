@@ -9,7 +9,8 @@ import type { AgentStorage, StoredAgentRecord } from "../agent/agent-storage.js"
 import type { AgentStreamEvent } from "../agent/agent-sdk-types.js";
 import type { AgentAttachment } from "@getpaseo/protocol/messages";
 import type { AgentTimelineRow } from "../agent/agent-timeline-store-types.js";
-import { dispatchLocalPromptMode } from "../agent/tools/paseo-tools.js";
+import { dispatchLocalPromptMode, selectAgentModeOnPeer } from "../agent/tools/paseo-tools.js";
+import type { AgentModeId } from "@getpaseo/protocol/agent-modes";
 import { formatSystemNotificationPrompt } from "../agent/agent-prompt.js";
 import { archiveAgentCommand } from "../agent/lifecycle-command.js";
 import type { DaemonConfigStore } from "../daemon-config-store.js";
@@ -996,6 +997,7 @@ export class MissionControlService {
           prompt: input.message,
           mode: input.deliveryMode,
           classification: input.classification,
+          ...(input.agentMode ? { agentMode: input.agentMode } : {}),
           // Proposal delivery (escalation recovery, verifier contact,
           // commander steer) superseding a busy run is machinery-originated:
           // the superseded run keeps the failure treatment.
@@ -2233,6 +2235,7 @@ export class MissionControlService {
       agentId: string;
       message: string;
       deliveryMode: "steer" | "interrupt" | "queue";
+      agentMode?: AgentModeId;
       proposal?: { origin?: string } | null;
     },
     targetPeerName: string,
@@ -2244,6 +2247,9 @@ export class MissionControlService {
     const peerClient = peerManager?.getPeerClient(targetPeerName) ?? null;
     if (!peerClient) {
       throw new Error(`Host "${targetPeerName}" has no peer client`);
+    }
+    if (input.agentMode) {
+      await selectAgentModeOnPeer(peerClient, targetPeerName, input.agentId, input.agentMode);
     }
     await peerClient.sendAgentMessage(input.agentId, input.message, {
       dispatchMode: input.deliveryMode,

@@ -948,6 +948,7 @@ interface CommanderSpawnPlanInput {
   workspaceId?: string;
   settings?: {
     modeId?: string;
+    agentMode?: AgentModeId;
     thinkingOptionId?: string;
     features?: Record<string, unknown>;
   };
@@ -1012,6 +1013,7 @@ function resolveCommanderPlanSettings(settings?: CommanderSpawnPlanInput["settin
   if (!settings) return {};
   return {
     ...(settings.modeId ? { mode: settings.modeId } : {}),
+    ...(settings.agentMode ? { agentMode: settings.agentMode } : {}),
     ...(settings.thinkingOptionId ? { thinking: settings.thinkingOptionId } : {}),
     ...(settings.features ? { features: settings.features } : {}),
   };
@@ -1064,6 +1066,7 @@ interface CommanderSpawnProposalInput {
   settings?: {
     model?: string | null;
     modeId?: string;
+    agentMode?: AgentModeId;
     thinkingOptionId?: string;
     features?: Record<string, unknown>;
   };
@@ -1142,6 +1145,13 @@ function buildCommanderSpawnProposalInput(input: CommanderSpawnProposalInput): P
   };
 }
 
+interface PeerCreateAgentSettings {
+  modeId?: string;
+  agentMode?: AgentModeId;
+  thinkingOptionId?: string;
+  features?: Record<string, unknown>;
+}
+
 function buildPeerCreateAgentPayload(args: {
   provider: string;
   cwd?: string;
@@ -1150,7 +1160,7 @@ function buildPeerCreateAgentPayload(args: {
   images?: Array<{ data: string; mimeType: string }>;
   title?: string;
   labels?: Record<string, string>;
-  settings?: { modeId?: string; thinkingOptionId?: string; features?: Record<string, unknown> };
+  settings?: PeerCreateAgentSettings;
   isolation?: "local" | "worktree";
   baseBranch?: string;
   branchName?: string;
@@ -1178,9 +1188,20 @@ function buildPeerCreateAgentPayload(args: {
     ...(labels && Object.keys(labels).length > 0 ? { labels: normalizeLabels(labels) } : {}),
     ...(peerWorktreeTarget ? { worktree: peerWorktreeTarget } : {}),
     ...(resolvedWorktree?.worktreeName ? { worktreeName: resolvedWorktree.worktreeName } : {}),
-    ...(settings?.modeId ? { modeId: settings.modeId } : {}),
-    ...(settings?.thinkingOptionId ? { thinkingOptionId: settings.thinkingOptionId } : {}),
-    ...(settings?.features ? { featureValues: settings.features } : {}),
+    ...buildPeerCreateSettings(settings),
+  };
+}
+
+/** The create-request fields a peer derives from fleet_create_agent `settings`. */
+function buildPeerCreateSettings(
+  settings: PeerCreateAgentSettings | undefined,
+): Pick<CreateAgentRequestOptions, "modeId" | "agentMode" | "thinkingOptionId" | "featureValues"> {
+  if (!settings) return {};
+  return {
+    ...(settings.modeId ? { modeId: settings.modeId } : {}),
+    ...(settings.agentMode ? { agentMode: settings.agentMode } : {}),
+    ...(settings.thinkingOptionId ? { thinkingOptionId: settings.thinkingOptionId } : {}),
+    ...(settings.features ? { featureValues: settings.features } : {}),
   };
 }
 
@@ -1992,6 +2013,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     provider?: string;
     cwd?: string;
     isolation?: "local" | "worktree";
+    agentMode?: AgentModeId;
   }) => {
     const callerAgent = resolveCallerAgent();
     if (callerAgent) {
@@ -2000,6 +2022,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         config: {
           ...buildCallerAgentScheduleConfig(callerAgent, params),
           ...(params?.isolation ? { isolation: params.isolation } : {}),
+          ...(params?.agentMode ? { agentMode: params.agentMode } : {}),
         },
       };
     }
@@ -2019,6 +2042,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         cwd: params?.cwd?.trim() ? expandUserPath(params.cwd) : process.cwd(),
         ...(resolvedProviderModel.model ? { model: resolvedProviderModel.model } : {}),
         ...(params?.isolation ? { isolation: params.isolation } : {}),
+        ...(params?.agentMode ? { agentMode: params.agentMode } : {}),
       },
     };
   };
@@ -2076,6 +2100,12 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         }
       },
       { message: "provider must be provider or provider/model, for example codex/gpt-5.4" },
+    );
+  const PromptAgentModeInputSchema = z
+    .enum(AGENT_MODE_IDS)
+    .optional()
+    .describe(
+      "Agent mode for this prompt: solo (do it yourself), orchestrator, plan, research, review, debug. Applies from this prompt on; omit to keep the agent's current mode.",
     );
   const CreateAgentSettingsInputSchema = z
     .object({
@@ -2352,6 +2382,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     agentId: z.string(),
     prompt: z.string(),
     sessionMode: z.string().optional().describe("Optional mode to set before running the prompt."),
+    agentMode: PromptAgentModeInputSchema,
   };
   const agentToAgentSendAgentPromptInputSchema = {
     ...commonSendAgentPromptInputSchema,
@@ -3133,6 +3164,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       agentId,
       prompt,
       sessionMode,
+      agentMode,
       background = Boolean(callerAgentId),
       notifyOnFinish = Boolean(callerAgentId),
     }) => {
@@ -3163,6 +3195,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         prompt,
         replaceOrigin: "machinery",
         sessionMode,
+        ...(agentMode ? { agentMode } : {}),
         logger: childLogger,
       });
 
@@ -3809,12 +3842,29 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         ),
         cwd: z.string().optional(),
         isolation: z.enum(["local", "worktree"]).optional(),
+        agentMode: z
+          .enum(AGENT_MODE_IDS)
+          .optional()
+          .describe(
+            "Agent mode for each scheduled agent: solo (do it yourself, default), orchestrator, plan, research, review, debug.",
+          ),
         maxRuns: z.number().int().positive().optional(),
         expiresIn: z.string().optional(),
       },
       outputSchema: ScheduleSummarySchema.shape,
     },
-    async ({ prompt, cron, timezone, name, provider, cwd, isolation, maxRuns, expiresIn }) => {
+    async ({
+      prompt,
+      cron,
+      timezone,
+      name,
+      provider,
+      cwd,
+      isolation,
+      agentMode,
+      maxRuns,
+      expiresIn,
+    }) => {
       if (!scheduleService) {
         throw new Error("Schedule service is not configured");
       }
@@ -3826,7 +3876,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           cron,
           ...(timezone !== undefined ? { timezone } : {}),
         }),
-        target: resolveNewAgentScheduleTarget({ provider, cwd, isolation }),
+        target: resolveNewAgentScheduleTarget({ provider, cwd, isolation, agentMode }),
         ...(name?.trim() ? { name: name.trim() } : {}),
         ...(maxRuns === undefined ? {} : { maxRuns }),
         ...(expiresAt === undefined ? {} : { expiresAt }),
@@ -5820,6 +5870,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           ...(plan.features ? { features: plan.features } : {}),
           ...(plan.labels ? { labels: plan.labels } : {}),
           ...(plan.mode ? { mode: plan.mode } : {}),
+          agentMode: plan.agentMode,
           ...(plan.worktree ? { worktree: plan.worktree } : {}),
           ...(plan.isolation ? { isolation: plan.isolation } : {}),
           background: true,
@@ -5868,6 +5919,9 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         }
         if (!cwd && !workspaceId) {
           throw new Error(`cwd or workspaceId is required to place the agent on host "${host}"`);
+        }
+        if (settings?.agentMode) {
+          assertPeerSupportsAgentModes(client, host);
         }
         const snapshot = await client.createAgent(buildPeerCreateAgentPayload(args));
         const turn = initialPrompt
@@ -6220,6 +6274,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           .describe(
             "Delivery to a busy agent. Omit to use the fleet commanderToWorkerMode setting.",
           ),
+        agentMode: PromptAgentModeInputSchema,
         respondsTo: z
           .string()
           .optional()
@@ -6270,6 +6325,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       images: imageInputs,
       attachments: attachmentInputs,
       respondsTo,
+      agentMode,
     }) => {
       // Fail fast (spec 03): agentId is the UUID agent id family — a title or
       // an mcp_ proposal id is never an agent. Reject at call time with
@@ -6337,6 +6393,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           attachments: attachmentInputs,
           images: imageInputs,
           respondsTo,
+          agentMode,
         })}`;
         const pendingMutation = findPendingMutation(dedupeKey);
         if (pendingMutation) {
@@ -6372,7 +6429,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
               : prompt;
           const gated = await runCommanderGatedAction({
             toolName: "fleet_send_prompt",
-            toolInput: { host: targetHost, agentId, prompt: message, mode },
+            toolInput: { host: targetHost, agentId, prompt: message, mode, agentMode },
             buildProposal: () => ({
               origin: "commander",
               // The proposal's serverId is the host the Commander (origin)
@@ -6388,6 +6445,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
               classification: "normal",
               timelineClassification: "instruction",
               ...(respondsTo ? { respondsTo } : {}),
+              ...(agentMode ? { agentMode } : {}),
             }),
           });
           if (!gated.ok) {
@@ -6443,6 +6501,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
             replaceOrigin: "machinery",
             recordStopOrigin: (stopAgentId, origin) =>
               missionControlService?.recordStopOrigin(stopAgentId, origin),
+            ...(agentMode ? { agentMode } : {}),
             logger: childLogger,
           });
         } catch (error) {
@@ -6479,6 +6538,9 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         .catch(() => null);
       const beforeTurn = await readCurrentTurn({ client, agentId }).catch(() => null);
       const peerAttachments = await forwardUploadedFilesToPeer(attachments, client);
+      if (agentMode) {
+        await selectAgentModeOnPeer(client, targetHost, agentId, agentMode);
+      }
       await client.sendAgentMessage(agentId, prompt, {
         dispatchMode: effectiveMode,
         ...(images ? { images } : {}),
@@ -7989,6 +8051,26 @@ function dispatchRunOptions(input: {
   };
 }
 
+function assertPeerSupportsAgentModes(client: DaemonClient, host: string): void {
+  if (client.getLastServerInfoMessage()?.features?.agentModes !== true) {
+    throw new Error(`Host "${host}" does not support agent modes; update Paseo on that host.`);
+  }
+}
+
+/**
+ * Select an agent mode on a peer-hosted agent before a prompt is sent to it, so
+ * the peer's run start carries the mode block on that prompt.
+ */
+export async function selectAgentModeOnPeer(
+  client: DaemonClient,
+  host: string,
+  agentId: string,
+  agentMode: AgentModeId,
+): Promise<void> {
+  assertPeerSupportsAgentModes(client, host);
+  await client.setAgentAgentMode(agentId, agentMode);
+}
+
 async function tryOmpLiveSteer(params: {
   agentManager: AgentManager;
   agentId: string;
@@ -8006,13 +8088,16 @@ async function tryOmpLiveSteer(params: {
   if (agentManager.getAgent(agentId)?.provider !== "omp") {
     return null;
   }
-  // Native images ride OMP `/steer` as a structured prompt.
-  const steerText =
+  const steerBody =
     attachments && attachments.length > 0
       ? [prompt.trim(), ...attachments.map(renderPromptAttachmentAsText)]
           .filter(Boolean)
           .join("\n\n")
       : prompt;
+  // A pending agent mode rides the steer, so it applies to the turn it joins.
+  const moded = agentManager.withAgentModePrefix(agentId, steerBody);
+  const steerText = typeof moded.prompt === "string" ? moded.prompt : steerBody;
+  // Native images ride OMP `/steer` as a structured prompt.
   const steerPrompt: AgentPromptInput =
     images && images.length > 0
       ? [
@@ -8027,6 +8112,9 @@ async function tryOmpLiveSteer(params: {
   const handled = agentManager.tryRunOutOfBand(agentId, steerPrompt);
   if (!handled) {
     return null;
+  }
+  if (moded.carriesMode) {
+    await agentManager.markAgentModeApplied(agentId);
   }
   await agentManager.appendTimelineItem(agentId, {
     type: "user_message",
@@ -8086,6 +8174,11 @@ export async function dispatchLocalPromptMode(params: {
    * omp loop can swallow the prompt while Paseo records "sent".
    */
   onOutOfBandSteer?: () => void;
+  /**
+   * Agent mode for this prompt. Selected before delivery so its block rides
+   * this prompt in every mode (live steer, steer, interrupt, queue).
+   */
+  agentMode?: AgentModeId;
   logger: Logger;
 }): Promise<"steer" | "interrupt" | "queue" | "steer-interrupt"> {
   const {
@@ -8103,6 +8196,10 @@ export async function dispatchLocalPromptMode(params: {
   const replaceOrigin = params.replaceOrigin;
   const recordStopOrigin = params.recordStopOrigin;
   const promptWithAttachments = buildAgentPrompt(prompt, images, attachments);
+  if (params.agentMode) {
+    await ensureAgentLoaded(agentId, { agentManager, agentStorage, logger });
+    await agentManager.selectAgentMode(agentId, params.agentMode);
+  }
   if (mode === "interrupt") {
     return dispatchInterrupt({
       agentManager,

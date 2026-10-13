@@ -1,4 +1,5 @@
 import type { Logger } from "pino";
+import { isAgentModeId, type AgentModeId } from "@getpaseo/protocol/agent-modes";
 import type {
   MissionControlMetaPlan,
   MissionControlProposal,
@@ -38,6 +39,8 @@ export interface ProposalCreateInput {
   // "queue" rides along for verifier/commander delivery settings; stall nudges
   // always create "steer".
   deliveryMode: "steer" | "interrupt" | "queue";
+  /** Agent mode applied to the target agent with this message (send kind). */
+  agentMode?: AgentModeId;
   reason: string;
   classification: "normal" | "destructive";
   allowPair?: boolean;
@@ -140,6 +143,8 @@ export interface MissionControlApprovalsOptions {
     agentId: string;
     message: string;
     deliveryMode: "steer" | "interrupt" | "queue";
+    /** Agent mode the message applies, from the proposal's agentMode. */
+    agentMode?: AgentModeId;
     /**
      * How the delivered prompt classifies on the target agent's own timeline
      * row: "machinery" (status asks — stall nudges) vs "instruction"
@@ -664,6 +669,7 @@ export class MissionControlApprovals {
         agentId: proposal.targetAgentId,
         message: proposal.message,
         deliveryMode: proposal.deliveryMode,
+        ...(isAgentModeId(proposal.agentMode) ? { agentMode: proposal.agentMode } : {}),
         proposal,
         // Classify at the source: stall status-ask nudges are machinery
         // (verboseOnly audit trail); everything else is an instruction

@@ -6,6 +6,7 @@ import type { AgentStorage } from "./agent-storage.js";
 import { ensureAgentLoaded } from "./agent-loading.js";
 import { isStaleProviderSessionError } from "./stale-provider-session-error.js";
 import type { ActiveTurnBehavior } from "@getpaseo/protocol/messages";
+import type { AgentModeId } from "@getpaseo/protocol/agent-modes";
 
 export type AgentUnarchiveController = Pick<AgentManager, "notifyAgentState" | "unarchiveSnapshot">;
 
@@ -296,8 +297,13 @@ export interface SendPromptToAgentParams {
    * as that party's interruption (see AgentRunOptions.replaceOrigin).
    */
   replaceOrigin?: "user" | "machinery";
-  /** Optional mode to set on the agent before the run starts. */
+  /** Optional provider session mode to set on the agent before the run starts. */
   sessionMode?: string;
+  /**
+   * Optional agent mode for this prompt. Selected before the run starts, so
+   * its block rides this prompt (the run start adds it; see streamAgent).
+   */
+  agentMode?: AgentModeId;
   /**
    * Default true. When false, archived agents are skipped instead of being
    * unarchived. Use false for system-injected prompts (chat mentions,
@@ -365,7 +371,7 @@ export async function waitForAgentRunStartWithTimeout(
 
 /**
  * Full send-prompt orchestration: (optional unarchive) → load → (optional
- * mode change) → start run.
+ * session mode and agent mode change) → start run.
  *
  * Every surface that sends a prompt to an agent (Session/WS, MCP, CLI-through-MCP,
  * chat mentions, notify-on-finish) MUST go through this so behavior can never
@@ -407,6 +413,9 @@ export async function sendPromptToAgent(
     await params.agentManager.setAgentMode(params.agentId, params.sessionMode);
     setModeMs = Date.now() - setModeStartedAt;
   }
+  if (params.agentMode) {
+    await params.agentManager.selectAgentMode(params.agentId, params.agentMode);
+  }
 
   const runOptions: AgentRunOptions = {
     ...params.runOptions,
@@ -414,27 +423,14 @@ export async function sendPromptToAgent(
     ...(params.replaceOrigin ? { replaceOrigin: params.replaceOrigin } : {}),
   };
 
-  // A mode set or changed since the provider last heard it rides this user
-  // message as a `<paseo-mode>` block (machinery envelopes never carry it).
-  const moded = params.agentManager.withAgentModePrefix(params.agentId, params.prompt);
   const startRunStartedAt = Date.now();
   try {
-    const result = await startAgentRun(
-      params.agentManager,
-      params.agentId,
-      moded.prompt,
-      params.logger,
-      {
-        replaceRunning: true,
-        activeTurnBehavior: params.activeTurnBehavior,
-        clearPendingPermissions: params.clearPendingPermissions,
-        runOptions,
-      },
-    );
-    if (moded.carriesMode && result.disposition !== "out_of_band") {
-      await params.agentManager.markAgentModeApplied(params.agentId);
-    }
-    return result;
+    return await startAgentRun(params.agentManager, params.agentId, params.prompt, params.logger, {
+      replaceRunning: true,
+      activeTurnBehavior: params.activeTurnBehavior,
+      clearPendingPermissions: params.clearPendingPermissions,
+      runOptions,
+    });
   } finally {
     // "I pressed send and nothing happened for a while" is measured here.
     // `startAgentRun` returns before the provider acknowledges the prompt, so
@@ -469,19 +465,15 @@ export async function startCreatedAgentInitialPrompt(
     return currentSnapshot;
   }
 
-  const moded = params.agentManager.withAgentModePrefix(params.agentId, params.prompt);
   const dispatchResult = await startAgentRun(
     params.agentManager,
     params.agentId,
-    moded.prompt,
+    params.prompt,
     params.logger,
     {
       runOptions: params.runOptions,
     },
   );
-  if (moded.carriesMode) {
-    await params.agentManager.markAgentModeApplied(params.agentId);
-  }
 
   if (dispatchResult.disposition === "turn_started") {
     await waitForAgentRunStartWithTimeout(params.agentManager, params.agentId);

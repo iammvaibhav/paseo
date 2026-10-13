@@ -39,6 +39,7 @@ import {
 } from "./service.js";
 import { ScheduleStore } from "./store.js";
 import type { ScheduleExecutionResult, StoredSchedule } from "@getpaseo/protocol/schedule/types";
+import { splitAgentModeBlock } from "@getpaseo/protocol/agent-modes";
 
 interface ScheduleServiceInternals {
   executeSchedule(schedule: StoredSchedule, runId: string): Promise<ScheduleExecutionResult>;
@@ -1335,6 +1336,7 @@ describe("ScheduleService", () => {
           provider: "claude",
           model: "test-model",
           cwd: tempDir,
+          agentMode: "research",
         },
       },
       maxRuns: 1,
@@ -1347,7 +1349,11 @@ describe("ScheduleService", () => {
       unsubscribe();
     }
 
-    expect(observedUserMessages).toEqual(["Audit nightly run"]);
+    // The scheduled prompt is a normal user turn (no system envelope) and
+    // carries the schedule's agent mode block.
+    expect(observedUserMessages.map((text) => splitAgentModeBlock(text))).toEqual([
+      { modeId: "research", body: "Audit nightly run" },
+    ]);
     expect((await service.inspect(created.id)).runs[0]?.status).toBe("succeeded");
   });
 

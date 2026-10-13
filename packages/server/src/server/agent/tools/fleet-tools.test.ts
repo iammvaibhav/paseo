@@ -6,6 +6,7 @@ import { createTestLogger } from "../../../test-utils/test-logger.js";
 import { createProviderSnapshotManagerStub } from "../../test-utils/session-stubs.js";
 import { createTestAgentClients } from "../../test-utils/fake-agent-client.js";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
+import type { ServerInfoStatusPayload } from "@getpaseo/protocol/messages";
 import { AgentManager } from "../agent-manager.js";
 import { AgentStorage } from "../agent-storage.js";
 import type { RoutingService } from "../../routing/routing-service.js";
@@ -75,6 +76,11 @@ function writeTempAttachment(fileName: string, content: string): string {
   const filePath = path.join(mkdtempSync(path.join(tmpdir(), "paseo-attachments-")), fileName);
   writeFileSync(filePath, content);
   return filePath;
+}
+
+/** Stub for AgentManager.withAgentModePrefix when the provider already has the mode. */
+function withoutPendingAgentMode(_agentId: string, prompt: string) {
+  return { prompt, carriesMode: false };
 }
 
 /** Fake peer harness: a stub PeerManager over a stub DaemonClient. */
@@ -500,6 +506,7 @@ describe("fleet_send_prompt mode", () => {
     const appendTimelineItem = vi.fn(async () => undefined);
     const agentManager = {
       getAgent: vi.fn(() => ({ provider: "omp" })),
+      withAgentModePrefix: withoutPendingAgentMode,
       hasInFlightRun: vi.fn(() => true),
       tryRunOutOfBand,
       streamAgent,
@@ -540,6 +547,7 @@ describe("fleet_send_prompt mode", () => {
     const appendTimelineItem = vi.fn(async () => undefined);
     const agentManager = {
       getAgent: vi.fn(() => ({ provider: "omp" })),
+      withAgentModePrefix: withoutPendingAgentMode,
       hasInFlightRun: vi.fn(() => true),
       tryRunOutOfBand,
       appendTimelineItem,
@@ -580,6 +588,7 @@ describe("fleet_send_prompt mode", () => {
     const appendTimelineItem = vi.fn(async () => undefined);
     const agentManager = {
       getAgent: vi.fn(() => ({ provider: "omp" })),
+      withAgentModePrefix: withoutPendingAgentMode,
       hasInFlightRun: vi.fn(() => true),
       tryRunOutOfBand,
       appendTimelineItem,
@@ -695,6 +704,7 @@ describe("fleet_send_prompt mode", () => {
     const appendTimelineItem = vi.fn(async () => undefined);
     const agentManager = {
       getAgent: vi.fn(() => ({ provider: "omp" })),
+      withAgentModePrefix: withoutPendingAgentMode,
       hasInFlightRun: vi.fn(() => true),
       tryRunOutOfBand,
       replaceAgentRun,
@@ -1113,6 +1123,96 @@ describe("approval-gate wrap point (runCommanderGatedAction)", () => {
     expect(client.sendAgentMessage).toHaveBeenCalledWith(SEND_AGENT_UUID, "follow up", {
       dispatchMode: "queue",
     });
+  });
+
+  test("agentMode rides the Commander spawn plan and send proposal", async () => {
+    const createProposal = vi.fn(async () => ({ id: "mcp_mode", status: "pending" }));
+    const catalog = createCommanderCatalog({
+      missionControlService: createMissionControlServiceStub({ approvals: { createProposal } }),
+    });
+
+    await catalog.executeTool("fleet_create_agent", {
+      host: "local",
+      provider: "codex/gpt-5.4",
+      initialPrompt: "compare the two caches",
+      title: "cache research",
+      settings: { agentMode: "research" },
+    });
+    await catalog.executeTool("fleet_send_prompt", {
+      host: "local",
+      agentId: SEND_AGENT_UUID,
+      prompt: "review the fix",
+      agentMode: "review",
+    });
+
+    expect(createProposal.mock.calls[0][0].spawnPlan).toMatchObject({ agentMode: "research" });
+    expect(createProposal.mock.calls[1][0]).toMatchObject({
+      targetAgentId: SEND_AGENT_UUID,
+      agentMode: "review",
+    });
+  });
+
+  test("agentMode reaches a peer on create and is selected there before a send", async () => {
+    const setAgentAgentMode = vi.fn(async () => undefined);
+    const createAgent = vi.fn(async () => ({
+      id: "peer-agent-1",
+      provider: "codex",
+      status: "running",
+      cwd: "/repo",
+      currentModeId: null,
+      availableModes: [],
+      pendingPermissions: [],
+    }));
+    const { client, peerManager } = createFakePeerHarness({
+      client: {
+        createAgent,
+        getLastServerInfoMessage: () =>
+          ({ features: { agentModes: true } }) as ServerInfoStatusPayload,
+        setAgentAgentMode,
+      },
+    });
+    const catalog = createCatalog(peerManager);
+
+    await catalog.executeTool("fleet_create_agent", {
+      host: "macbook",
+      cwd: "/repo",
+      provider: "codex/gpt-5.4",
+      initialPrompt: "find the leak",
+      title: "leak hunt",
+      settings: { agentMode: "debug" },
+    });
+    await catalog.executeTool("fleet_send_prompt", {
+      host: "macbook",
+      agentId: SEND_AGENT_UUID,
+      prompt: "now plan the fix",
+      mode: "queue",
+      agentMode: "plan",
+    });
+
+    expect(createAgent).toHaveBeenCalledWith(expect.objectContaining({ agentMode: "debug" }));
+    expect(setAgentAgentMode).toHaveBeenCalledWith(SEND_AGENT_UUID, "plan");
+    expect(setAgentAgentMode.mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(client.sendAgentMessage).mock.invocationCallOrder[0] ?? 0,
+    );
+  });
+
+  test("agentMode for a peer without agent modes fails instead of being dropped", async () => {
+    const { client, peerManager } = createFakePeerHarness({
+      client: {
+        getLastServerInfoMessage: () => ({ features: {} }) as ServerInfoStatusPayload,
+      },
+    });
+    const catalog = createCatalog(peerManager);
+
+    await expect(
+      catalog.executeTool("fleet_send_prompt", {
+        host: "macbook",
+        agentId: SEND_AGENT_UUID,
+        prompt: "research this",
+        agentMode: "research",
+      }),
+    ).rejects.toThrow('Host "macbook" does not support agent modes');
+    expect(client.sendAgentMessage).not.toHaveBeenCalled();
   });
 
   test("a send to an idle peer agent returns only after the new run has started", async () => {

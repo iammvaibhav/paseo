@@ -506,6 +506,7 @@ async function spawnProposalLocally(
       ...(plan.features ? { features: plan.features } : {}),
       ...(plan.labels ? { labels: plan.labels } : {}),
       ...(plan.mode ? { mode: plan.mode } : {}),
+      agentMode: plan.agentMode,
       ...(plan.worktree ? { worktree: plan.worktree } : {}),
       ...(plan.isolation ? { isolation: plan.isolation } : {}),
       background: plan.background ?? true,
