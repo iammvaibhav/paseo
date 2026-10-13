@@ -83,6 +83,29 @@ export function normalizePathForIdentity(value: string): string {
 }
 
 /**
+ * Canonical on-disk spelling of a directory: absolute, with every symlink in
+ * its existing prefix resolved. Segments that do not exist yet are appended
+ * lexically, so a root canonicalizes the same way before and after mkdir.
+ * Windows-shaped paths on a POSIX host cannot be resolved and stay as given.
+ */
+export function canonicalizePath(value: string): string {
+  if (process.platform !== "win32" && looksLikeDefiniteWindowsPath(value)) return value;
+  const absolute = nodePath.resolve(value);
+  const missingSegments: string[] = [];
+  let existing = absolute;
+  for (;;) {
+    try {
+      return nodePath.join(realpathSync.native(existing), ...missingSegments);
+    } catch {
+      const parent = nodePath.dirname(existing);
+      if (parent === existing) return absolute;
+      missingSegments.unshift(nodePath.basename(existing));
+      existing = parent;
+    }
+  }
+}
+
+/**
  * Returns the candidate's relative suffix when it is inside root.
  *
  * The suffix is derived from the same lexical path pair used to prove
