@@ -1,6 +1,8 @@
 /**
- * Agent modes: how an agent works (do it yourself, orchestrate, plan first, …).
- * Separate from the provider **Mode** (`modeId`: permissions/sandbox).
+ * Agent modes, shown to users as **Approach**: how an agent works (build it
+ * yourself, orchestrate, plan first, …). Separate from the provider **Mode**
+ * (`modeId`: permissions/sandbox, shown as access). Ids are wire and storage
+ * values and never change; only labels are display text.
  *
  * The mode's instructions never enter the system prompt. The daemon prepends
  * a `<paseo-mode>` block to the next user message after the mode is set or
@@ -33,18 +35,18 @@ export interface AgentModeDefinition {
 export const AGENT_MODES: readonly AgentModeDefinition[] = [
   {
     id: "solo",
-    label: "Do it yourself",
+    label: "Build",
     description: "A bounded task the agent completes itself, without sub-agents.",
   },
   {
     id: "orchestrator",
-    label: "Orchestrator",
+    label: "Orchestrate",
     description:
       "A large multi-part task with independent slices: decompose, delegate to sub-agents, integrate.",
   },
   {
     id: "plan",
-    label: "Plan first",
+    label: "Plan",
     description:
       "A design choice or risky change: investigate, propose a plan, and wait for approval before editing.",
   },

@@ -202,10 +202,12 @@ export const ko: TranslationResources = {
     },
   },
   agentMode: {
-    label: "에이전트 모드",
+    label: "접근 방식",
     tooltip: "에이전트가 작동하는 방식",
     routingLoading: "실행 위치를 찾는 중…",
-    messageChip: "모드: {{mode}}",
+    messageChip: "접근 방식: {{mode}}",
+    searchPlaceholder: "접근 방식 검색...",
+    selectWithValue: "접근 방식 선택 ({{value}})",
   },
   agentControls: {
     provider: {

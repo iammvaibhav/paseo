@@ -203,10 +203,12 @@ export const ptBR: TranslationResources = {
     },
   },
   agentMode: {
-    label: "Modo do agente",
+    label: "Abordagem",
     tooltip: "Como o agente funciona",
     routingLoading: "Encontrando onde isso é executado…",
-    messageChip: "Modo: {{mode}}",
+    messageChip: "Abordagem: {{mode}}",
+    searchPlaceholder: "Buscar abordagens...",
+    selectWithValue: "Selecionar abordagem ({{value}})",
   },
   agentControls: {
     provider: {

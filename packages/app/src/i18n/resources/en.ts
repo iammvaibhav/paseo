@@ -198,10 +198,12 @@ export const en = {
     },
   },
   agentMode: {
-    label: "Agent mode",
+    label: "Approach",
     tooltip: "How the agent works",
     routingLoading: "Finding where this runs…",
-    messageChip: "Mode: {{mode}}",
+    messageChip: "Approach: {{mode}}",
+    searchPlaceholder: "Search approaches...",
+    selectWithValue: "Select approach ({{value}})",
   },
   agentControls: {
     provider: {

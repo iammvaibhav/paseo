@@ -204,10 +204,12 @@ export const es: TranslationResources = {
     },
   },
   agentMode: {
-    label: "Modo de agente",
+    label: "Enfoque",
     tooltip: "Cómo funciona el agente",
     routingLoading: "Buscando dónde se ejecuta esto…",
-    messageChip: "Modo: {{mode}}",
+    messageChip: "Enfoque: {{mode}}",
+    searchPlaceholder: "Buscar enfoques...",
+    selectWithValue: "Seleccionar enfoque ({{value}})",
   },
   agentControls: {
     provider: {

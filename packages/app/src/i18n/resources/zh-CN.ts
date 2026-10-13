@@ -202,10 +202,12 @@ export const zhCN: TranslationResources = {
     },
   },
   agentMode: {
-    label: "代理模式",
+    label: "方式",
     tooltip: "代理的工作方式",
     routingLoading: "正在寻找运行位置…",
-    messageChip: "模式: {{mode}}",
+    messageChip: "方式: {{mode}}",
+    searchPlaceholder: "搜索方式...",
+    selectWithValue: "选择方式 ({{value}})",
   },
   agentControls: {
     provider: {

@@ -206,10 +206,12 @@ export const fr: TranslationResources = {
     },
   },
   agentMode: {
-    label: "Mode d'agent",
+    label: "Approche",
     tooltip: "Comment l'agent fonctionne",
     routingLoading: "Recherche de l'endroit où cela s'exécute…",
-    messageChip: "Mode : {{mode}}",
+    messageChip: "Approche : {{mode}}",
+    searchPlaceholder: "Rechercher des approches...",
+    selectWithValue: "Choisir l'approche ({{value}})",
   },
   agentControls: {
     provider: {
