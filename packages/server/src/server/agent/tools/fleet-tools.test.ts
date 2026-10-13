@@ -280,6 +280,50 @@ describe("fleet_list_agents roster enrichment", () => {
     expect(agents[0].lastUserMessage).toBeUndefined();
   });
 
+  test("a down host is skipped with a warning; agents on reachable hosts still list", async () => {
+    const { client, peerManager } = createFakePeerHarness({
+      statuses: [
+        { name: "macbook", state: "online", lastSeenAt: null },
+        { name: "grok-bot", state: "unreachable", lastSeenAt: "2026-10-13T01:00:00.000Z" },
+      ],
+    });
+    const now = new Date().toISOString();
+    client.fetchAgents = vi.fn(async () => ({
+      entries: [
+        {
+          agent: {
+            id: "peer-agent-1",
+            provider: "omp",
+            cwd: "/tmp",
+            createdAt: now,
+            updatedAt: now,
+            status: "idle",
+            title: "Peer agent",
+          },
+        },
+      ],
+      page: { limit: 200 },
+    }));
+    client.missionControlEventsFetch = vi.fn(async () => ({ requestId: "req", events: [] }));
+    const catalog = createCatalog(peerManager, {
+      listAgents: () => [],
+      getRegisteredProviderIds: () => [],
+      getTimeline: () => [],
+    } as unknown as AgentManager);
+
+    const result = await catalog.executeTool("fleet_list_agents", { limit: 50 });
+    const payload = result.structuredContent as {
+      agents: Array<Record<string, unknown>>;
+      warnings?: string[];
+    };
+    expect(payload.agents.map((agent) => [agent.id, agent.host])).toEqual([
+      ["peer-agent-1", "macbook"],
+    ]);
+    expect(payload.warnings).toEqual([
+      expect.stringMatching(/^Host "grok-bot" unreachable since /),
+    ]);
+  });
+
   test("headlines are capped at 5, oldest to newest", async () => {
     const { client, peerManager } = createFakePeerHarness();
     client.fetchAgents = vi.fn(async () => ({

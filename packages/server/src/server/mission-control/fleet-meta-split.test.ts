@@ -166,12 +166,12 @@ function fakePeerManager(): MetaPeerManager {
 const resolveFleetId = async (id: string): Promise<FleetIdResolution> => {
   const knownLocal = [AGENT_LOCAL, AGENT_ADOPTED, WS_A, WS_B, PRJ_EXP, PRJ_OTHER];
   const knownPeer: Record<string, FleetIdResolution> = {
-    [AGENT_PEER]: { kind: "agent", host: "macbook" },
-    [WS_PEER]: { kind: "workspace", host: "macbook" },
+    [AGENT_PEER]: { kind: "agent", host: "macbook", id: AGENT_PEER },
+    [WS_PEER]: { kind: "workspace", host: "macbook", id: WS_PEER },
   };
   const staleLocal: Record<string, FleetIdResolution> = {
-    [AGENT_GHOST]: { kind: "agent", host: "local" },
-    [WS_GHOST]: { kind: "workspace", host: "local" },
+    [AGENT_GHOST]: { kind: "agent", host: "local", id: AGENT_GHOST },
+    [WS_GHOST]: { kind: "workspace", host: "local", id: WS_GHOST },
   };
   if (knownLocal.includes(id)) {
     let kind: FleetIdResolution["kind"];
@@ -182,7 +182,7 @@ const resolveFleetId = async (id: string): Promise<FleetIdResolution> => {
     } else {
       kind = "agent";
     }
-    return { kind, host: "local" };
+    return { kind, host: "local", id };
   }
   if (id in knownPeer) {
     return knownPeer[id];

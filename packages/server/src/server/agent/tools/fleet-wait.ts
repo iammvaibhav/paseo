@@ -359,7 +359,7 @@ export async function waitForFleetAgent(
   },
 ): Promise<FleetAgentWaitResult> {
   const resolved = await resolveTargetHost(input.agentId, input.host, deps);
-  const base = { host: resolved.targetHostDisplay, agentId: input.agentId };
+  const base = { host: resolved.targetHostDisplay, agentId: resolved.agentId };
   if (resolved.error) {
     return waitResult(base, { ok: false, error: resolved.error, guidance: resolved.guidance });
   }

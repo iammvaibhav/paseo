@@ -277,8 +277,8 @@ export function registerFleetTranscriptTool(options: RegisterFleetControlToolsOp
       types?: Array<(typeof TRANSCRIPT_ITEM_TYPES)[number]>;
       maxFieldChars?: number;
     }) => {
-      const { agentId } = input;
-      const resolved = await resolveTargetHost(agentId, input.host, options);
+      const resolved = await resolveTargetHost(input.agentId, input.host, options);
+      const { agentId } = resolved;
       const failure = (error: string, guidance?: string) => ({
         content: [],
         structuredContent: ensureValidJson({

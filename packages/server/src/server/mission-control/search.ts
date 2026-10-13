@@ -123,7 +123,6 @@ export interface FleetSearchHostDeps {
   agentManager: Pick<
     AgentManager,
     | "getAgent"
-    | "getTimeline"
     | "fetchTimeline"
     | "hasTimeline"
     | "seedTimelineForRehydrate"
@@ -320,17 +319,21 @@ function recordWorkspaceProjectFields(
 function recordBriefField(record: StoredAgentRecord, deps: FleetSearchHostDeps): Tier1Field | null {
   // Launch brief = the agent's first user message. Only agents with a loaded
   // timeline are searched here ("what the daemon already holds" — instant);
-  // stored prompt bodies are tier 2's job.
+  // stored prompt bodies are tier 2's job. A loaded timeline does not imply a
+  // live agent (history opens and tier-2 scans seed closed agents), so read
+  // through fetchTimeline, which serves seeded timelines without one.
   if (!deps.agentManager.hasTimeline(record.id)) {
     return null;
   }
-  const timeline = deps.agentManager.getTimeline(record.id);
-  for (const item of timeline) {
-    if (item.type === "user_message" && item.text.trim()) {
-      return { text: item.text, matchedIn: "brief" };
+  const { rows } = deps.agentManager.fetchTimeline(record.id, { direction: "tail", limit: 0 });
+  let brief: { seq: number; text: string } | null = null;
+  for (const row of rows) {
+    const { item } = row;
+    if (item.type === "user_message" && item.text.trim() && (!brief || row.seq < brief.seq)) {
+      brief = { seq: row.seq, text: item.text };
     }
   }
-  return null;
+  return brief ? { text: brief.text, matchedIn: "brief" } : null;
 }
 
 function reportEventFields(event: MissionControlEvent): Tier1Field[] {
@@ -398,9 +401,18 @@ export async function searchTier1(
       ...recordIdentityFields(record),
       ...recordWorkspaceProjectFields(record, workspaces, projects),
     ];
-    const brief = recordBriefField(record, deps);
-    if (brief) {
-      fields.push(brief);
+    // A stale or deleted agent's timeline can fail to read; it loses only its
+    // brief field, never the whole search.
+    try {
+      const brief = recordBriefField(record, deps);
+      if (brief) {
+        fields.push(brief);
+      }
+    } catch (err) {
+      deps.logger.warn(
+        { err, agentId: record.id, tier: "tier1" },
+        "mission_control.fleet_search.agent_skipped",
+      );
     }
     fields.push(...recordReportFields(record, events));
 
@@ -517,7 +529,16 @@ export async function searchTier2(
     if (scannedItems >= SEARCH_TIER2_MAX_ITEMS_PER_HOST) {
       break;
     }
-    const rows = await loadTimelineRows(record, deps);
+    let rows: AgentTimelineRow[] | null;
+    try {
+      rows = await loadTimelineRows(record, deps);
+    } catch (err) {
+      deps.logger.warn(
+        { err, agentId: record.id, tier: "tier2" },
+        "mission_control.fleet_search.agent_skipped",
+      );
+      continue;
+    }
     if (!rows) {
       continue;
     }

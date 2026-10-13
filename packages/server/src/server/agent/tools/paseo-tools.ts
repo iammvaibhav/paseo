@@ -5106,6 +5106,9 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         appliedSinceHours: z.number(),
         totalMatches: z.number(),
         bucketCounts: z.record(z.string(), z.number()),
+        // Hosts whose agents are missing from this roster (down or not
+        // answering). Empty when every peer answered.
+        warnings: z.array(z.string()),
       },
     },
     async ({ includeArchived = false, sinceHours, statuses, bucket, query, limit = 50 }) => {
@@ -5194,6 +5197,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       };
       // Peer rows: one events payload per host for the report-status
       // headlines, plus the peer's serverId when the peer map knows it.
+      const peerWarnings: string[] = [];
       const appendPeerRosterRows = async (): Promise<void> => {
         if (!peerManager) {
           return;
@@ -5207,6 +5211,9 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
             : null;
         for (const peerStatus of peerManager.getPeerStatuses()) {
           if (peerStatus.state !== "online") {
+            peerWarnings.push(
+              buildPeerUnreachableError(peerStatus.name, peerStatus.lastSeenAt).message,
+            );
             continue;
           }
           const client = peerManager.getPeerClient(peerStatus.name);
@@ -5243,6 +5250,9 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
             childLogger.warn(
               { err: error, peer: peerStatus.name },
               "Failed to list agents on peer",
+            );
+            peerWarnings.push(
+              `Host "${peerStatus.name}" did not answer (${error instanceof Error ? error.message : String(error)}); its agents are not included.`,
             );
           }
         }
@@ -5301,6 +5311,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           appliedSinceHours: rowWindowHours,
           totalMatches: filtered.length,
           bucketCounts,
+          warnings: peerWarnings,
         }),
       };
     },
@@ -5913,16 +5924,17 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         content: z.string(),
       },
     },
-    async ({ host, agentId, limit }) => {
+    async ({ host, agentId: requestedAgentId, limit }) => {
+      // The index expands a short id to the full id; route with that.
+      const resolution = await fleetIdIndex.resolveFleetId(requestedAgentId);
+      const agentId = resolution.kind === "unknown" ? requestedAgentId : resolution.id;
       let targetHost = host;
       if (targetHost) {
-        const resolution = await fleetIdIndex.resolveFleetId(agentId);
         if (resolution.kind !== "unknown" && !hostsMatch(targetHost, resolution.host)) {
           const actualHost = resolution.host === "local" ? hostLabel : resolution.host;
           throw new Error(`Agent "${agentId}" is on host "${actualHost}", not "${targetHost}"`);
         }
       } else {
-        const resolution = await fleetIdIndex.resolveFleetId(agentId);
         if (resolution.kind === "unknown") {
           throw new Error(resolution.guidance);
         }
@@ -5997,6 +6009,9 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       },
       outputSchema: {
         matches: z.array(MissionControlSearchMatchSchema),
+        // Hosts that were not searched (down or not answering). Empty when
+        // every peer answered.
+        warnings: z.array(z.string()),
       },
     },
     async ({ query, limit = 20, deep = false }) => {
@@ -6019,9 +6034,13 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       });
 
       const allMatches: FleetSearchMatch[] = [...localMatches];
+      const peerWarnings: string[] = [];
       if (peerManager) {
         for (const peerStatus of peerManager.getPeerStatuses()) {
           if (peerStatus.state !== "online") {
+            peerWarnings.push(
+              buildPeerUnreachableError(peerStatus.name, peerStatus.lastSeenAt).message,
+            );
             continue;
           }
           const client = peerManager.getPeerClient(peerStatus.name);
@@ -6037,6 +6056,9 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
             childLogger.warn(
               { err: error, peer: peerStatus.name, component: "search" },
               "Failed to search peer",
+            );
+            peerWarnings.push(
+              `Host "${peerStatus.name}" did not answer (${error instanceof Error ? error.message : String(error)}); its matches are not included.`,
             );
           }
         }
@@ -6063,7 +6085,10 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       );
       return {
         content: [],
-        structuredContent: ensureValidJson({ matches }),
+        structuredContent: ensureValidJson({
+          matches,
+          warnings: peerWarnings,
+        }),
       };
     },
   );
@@ -7144,6 +7169,9 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         const resolution = await fleetIdIndex.resolveFleetId(targetId);
         if (resolution.kind !== "unknown") {
           targetHost = resolution.host;
+          if (args.agentId && resolution.kind === "agent") {
+            args = { ...args, agentId: resolution.id };
+          }
         }
       }
       if (isFleetLocalTarget(targetHost)) {
@@ -7305,7 +7333,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       },
     },
     async ({
-      agentId,
+      agentId: requestedAgentId,
       fresh = false,
       host,
     }: {
@@ -7318,10 +7346,12 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       }
       // Resolve the agent's host via the fleet index (spec 02): the id is
       // authoritative, host is a hint to validate against, never a routing key.
-      const resolution = await fleetIdIndex.resolveFleetId(agentId);
+      // A short id expands to the full id, which every later lookup uses.
+      const resolution = await fleetIdIndex.resolveFleetId(requestedAgentId);
       if (resolution.kind === "unknown") {
         throw new Error(resolution.guidance);
       }
+      const agentId = resolution.id;
       const targetHost = resolution.host;
       if (host !== undefined) {
         if (!hostsMatch(targetHost, host)) {
@@ -7479,6 +7509,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
             `Agent "${input.agentId}" is on host "${actualHost}", not "${input.host}"`,
           );
         }
+        input = { ...input, agentId: resolution.id };
       }
       const result = missionControlService.monitorFleet({
         action: input.action,
