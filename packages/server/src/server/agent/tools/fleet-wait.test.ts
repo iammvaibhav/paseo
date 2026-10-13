@@ -139,6 +139,47 @@ describe("fleet_wait_agent turn binding (local)", () => {
     });
   });
 
+  test("a turn that failed with a provider error reports the error, not a silent idle", async () => {
+    const { catalog } = createHarness({
+      agents: { [LOCAL_AGENT_ID]: { lifecycle: "idle", activeTurnId: null } },
+      turns: {
+        [LOCAL_AGENT_ID]: [
+          ...finishedTurn("turn-1", "first"),
+          { turnId: "turn-2", item: { type: "user_message", text: "ask turn-2" } },
+          {
+            turnId: "turn-2",
+            item: {
+              type: "assistant_message",
+              text: "[System Error] No API key found for google.",
+            },
+          },
+        ],
+      },
+    });
+
+    const failed = await catalog.executeTool("fleet_wait_agent", {
+      agentId: LOCAL_AGENT_ID,
+      turnId: "turn-2",
+    });
+    const succeeded = await catalog.executeTool("fleet_wait_agent", {
+      agentId: LOCAL_AGENT_ID,
+      turnId: "turn-1",
+    });
+
+    expect(failed.structuredContent).toMatchObject({
+      status: "error",
+      finished: true,
+      turnId: "turn-2",
+      lastMessage: "[System Error] No API key found for google.",
+      error: "No API key found for google.",
+    });
+    expect(succeeded.structuredContent).toMatchObject({
+      status: "idle",
+      lastMessage: "first",
+      error: null,
+    });
+  });
+
   test("the active turn is waited on and reported by id", async () => {
     const waitForAgentEvent = vi.fn(async () => ({
       status: "idle" as const,
