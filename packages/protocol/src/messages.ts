@@ -464,6 +464,12 @@ export const MutableDaemonConfigSchema = z
     // Close idle OMP processes after this many seconds; 0 turns the sweep off.
     // Optional so old clients and typed fixtures stay valid; runtime default is 1800.
     ompIdleCloseAfterSeconds: z.number().int().min(0).optional(),
+    // macOS: keep the host awake while any agent runs. "idle" holds a caffeinate
+    // assertion; "lid-closed" also sets SleepDisabled through `sudo -n pmset`.
+    // Optional so old clients and typed fixtures stay valid; runtime default is "idle".
+    keepAwakeWhileAgentsRun: z.enum(["off", "idle", "lid-closed"]).optional(),
+    // Upper bound on one lid-closed hold; runtime default is 240.
+    keepAwakeMaxLidClosedMinutes: z.number().int().min(1).optional(),
     terminalProfiles: z.array(TerminalProfileSchema).optional(),
     missionControl: MutableMissionControlConfigSchema.optional(),
     aiReviewer: MutableAiReviewerConfigSchema.optional(),
@@ -490,6 +496,8 @@ export const MutableDaemonConfigPatchSchema = z
     enableTerminalAgentHooks: z.boolean().optional(),
     appendSystemPrompt: z.string().optional(),
     ompIdleCloseAfterSeconds: z.number().int().min(0).optional(),
+    keepAwakeWhileAgentsRun: z.enum(["off", "idle", "lid-closed"]).optional(),
+    keepAwakeMaxLidClosedMinutes: z.number().int().min(1).optional(),
     terminalProfiles: z.array(TerminalProfileSchema).optional(),
     missionControl: MutableMissionControlConfigSchema.partial().optional(),
     aiReviewer: MutableAiReviewerConfigSchema.partial().optional(),

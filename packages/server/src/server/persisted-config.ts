@@ -392,6 +392,10 @@ export const PersistedConfigSchema = z
         autoArchiveAfterMerge: z.boolean().optional(),
         // Close idle OMP processes after this many seconds; 0 turns the sweep off.
         ompIdleCloseAfterSeconds: z.number().int().min(0).optional(),
+        // macOS: keep the host awake while agents run ("off" | "idle" | "lid-closed").
+        keepAwakeWhileAgentsRun: z.enum(["off", "idle", "lid-closed"]).optional(),
+        // Upper bound on one lid-closed (SleepDisabled) hold, in minutes.
+        keepAwakeMaxLidClosedMinutes: z.number().int().min(1).optional(),
         enableTerminalAgentHooks: z.boolean().optional(),
         appendSystemPrompt: z.string().optional(),
         terminalProfiles: z.array(TerminalProfileSchema).optional(),

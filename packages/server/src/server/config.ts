@@ -588,6 +588,8 @@ function resolveProfileLists(persisted: ReturnType<typeof loadPersistedConfig>) 
     agentProfiles: persisted.daemon?.agentProfiles,
     visibleModels: persisted.daemon?.visibleModels,
     ompIdleCloseAfterSeconds: persisted.daemon?.ompIdleCloseAfterSeconds ?? 1800,
+    keepAwakeWhileAgentsRun: persisted.daemon?.keepAwakeWhileAgentsRun ?? "idle",
+    keepAwakeMaxLidClosedMinutes: persisted.daemon?.keepAwakeMaxLidClosedMinutes ?? 240,
   };
 }
 
@@ -638,6 +640,8 @@ export function resolveConfigFromPersisted(
     browserToolsEnabled,
     autoArchiveAfterMerge,
     ompIdleCloseAfterSeconds,
+    keepAwakeWhileAgentsRun,
+    keepAwakeMaxLidClosedMinutes,
     appendSystemPrompt,
     terminalProfiles,
     agentProfiles,
@@ -685,6 +689,8 @@ export function resolveConfigFromPersisted(
     git: resolveGitProcessConfig(env, persisted),
     autoArchiveAfterMerge,
     ompIdleCloseAfterSeconds,
+    keepAwakeWhileAgentsRun,
+    keepAwakeMaxLidClosedMinutes,
     enableTerminalAgentHooks: persisted.daemon?.enableTerminalAgentHooks ?? false,
     appendSystemPrompt,
     terminalProfiles,

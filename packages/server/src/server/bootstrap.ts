@@ -179,6 +179,7 @@ import { CheckoutDiffManager } from "./checkout-diff-manager.js";
 import { ScheduleService } from "./schedule/service.js";
 import { BaseCheckoutSyncService } from "./base-checkout-sync.js";
 import { IdleCloseOmpService } from "./idle-close/index.js";
+import { KeepAwakeService } from "./keep-awake/index.js";
 import { MissionControlService } from "./mission-control/service.js";
 import { getItsaplanIssueIdFromLabels } from "./itsaplan/index.js";
 import type { MissionControlProposalSpawnPlan } from "@getpaseo/protocol/mission-control/types";
@@ -703,6 +704,10 @@ export interface PaseoDaemonConfig {
   ensureScratchProjectOnBoot?: boolean;
   // Close idle OMP processes after this many seconds; 0 turns the sweep off.
   ompIdleCloseAfterSeconds?: number;
+  // macOS: keep the host awake while agents run. Default "idle".
+  keepAwakeWhileAgentsRun?: "off" | "idle" | "lid-closed";
+  // Upper bound on one lid-closed (SleepDisabled) hold. Default 240.
+  keepAwakeMaxLidClosedMinutes?: number;
   enableTerminalAgentHooks?: boolean;
   appendSystemPrompt?: string;
   terminalProfiles?: TerminalProfile[];
@@ -881,6 +886,8 @@ function createInitialMutableDaemonConfig(config: PaseoDaemonConfig): MutableDae
     },
     autoArchiveAfterMerge: config.autoArchiveAfterMerge ?? false,
     ompIdleCloseAfterSeconds: config.ompIdleCloseAfterSeconds ?? 1800,
+    keepAwakeWhileAgentsRun: config.keepAwakeWhileAgentsRun ?? "idle",
+    keepAwakeMaxLidClosedMinutes: config.keepAwakeMaxLidClosedMinutes ?? 240,
     enableTerminalAgentHooks: config.enableTerminalAgentHooks ?? false,
     appendSystemPrompt: config.appendSystemPrompt ?? "",
     ...(config.missionControl ? { missionControl: config.missionControl } : {}),
@@ -1976,6 +1983,13 @@ export async function createPaseoDaemon(
     logger,
   });
   idleCloseOmpService.start();
+  const keepAwakeService = new KeepAwakeService({
+    agentManager,
+    daemonConfigStore,
+    logger,
+    paseoHome: config.paseoHome,
+  });
+  keepAwakeService.start();
   agentManager.setAgentArchivedCallback(async (agentId) => {
     try {
       await scheduleService.completeForAgent(agentId);
@@ -3464,6 +3478,7 @@ export async function createPaseoDaemon(
     unsubscribeItsaplanProjectSync();
     scriptHealthMonitor.stop();
     idleCloseOmpService.stop();
+    await keepAwakeService.stop();
     // Freeze both ingress and registration before taking the agent closure snapshot.
     wsServer?.prepareForShutdown();
     agentManager.prepareForShutdown();

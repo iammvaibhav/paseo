@@ -35,6 +35,8 @@ interface SupportedMutableConfigPatch {
   missionControl?: MutableDaemonConfig["missionControl"];
   aiReviewer?: MutableDaemonConfig["aiReviewer"];
   ompIdleCloseAfterSeconds?: MutableDaemonConfig["ompIdleCloseAfterSeconds"];
+  keepAwakeWhileAgentsRun?: MutableDaemonConfig["keepAwakeWhileAgentsRun"];
+  keepAwakeMaxLidClosedMinutes?: MutableDaemonConfig["keepAwakeMaxLidClosedMinutes"];
   composerPreferences?: MutableDaemonConfig["composerPreferences"];
 }
 
@@ -186,6 +188,8 @@ const RELOADABLE_PATHS = [
   "daemon.autoArchiveAfterMerge",
   "daemon.enableTerminalAgentHooks",
   "daemon.appendSystemPrompt",
+  "daemon.keepAwakeWhileAgentsRun",
+  "daemon.keepAwakeMaxLidClosedMinutes",
   "daemon.terminalProfiles",
   "daemon.agentProfiles",
   "daemon.visibleModels",
@@ -210,6 +214,8 @@ const PERSISTED_TO_MUTABLE_PATH = new Map<string, string>([
   ["daemon.autoArchiveAfterMerge", "autoArchiveAfterMerge"],
   ["daemon.enableTerminalAgentHooks", "enableTerminalAgentHooks"],
   ["daemon.appendSystemPrompt", "appendSystemPrompt"],
+  ["daemon.keepAwakeWhileAgentsRun", "keepAwakeWhileAgentsRun"],
+  ["daemon.keepAwakeMaxLidClosedMinutes", "keepAwakeMaxLidClosedMinutes"],
   ["daemon.terminalProfiles", "terminalProfiles"],
   ["daemon.agentProfiles", "agentProfiles"],
   ["daemon.visibleModels", "visibleModels"],
@@ -295,6 +301,12 @@ function pickExtendedPatchFields(patch: MutableDaemonConfigPatch): SupportedMuta
   if (patch.aiReviewer !== undefined) out.aiReviewer = patch.aiReviewer;
   if (patch.ompIdleCloseAfterSeconds !== undefined) {
     out.ompIdleCloseAfterSeconds = patch.ompIdleCloseAfterSeconds;
+  }
+  if (patch.keepAwakeWhileAgentsRun !== undefined) {
+    out.keepAwakeWhileAgentsRun = patch.keepAwakeWhileAgentsRun;
+  }
+  if (patch.keepAwakeMaxLidClosedMinutes !== undefined) {
+    out.keepAwakeMaxLidClosedMinutes = patch.keepAwakeMaxLidClosedMinutes;
   }
   if (patch.composerPreferences !== undefined) {
     out.composerPreferences = patch.composerPreferences;
@@ -702,6 +714,12 @@ function mergeMutableDaemonPatch(
   if (patch.visibleModels !== undefined) next.visibleModels = patch.visibleModels;
   if (patch.ompIdleCloseAfterSeconds !== undefined) {
     next.ompIdleCloseAfterSeconds = patch.ompIdleCloseAfterSeconds;
+  }
+  if (patch.keepAwakeWhileAgentsRun !== undefined) {
+    next.keepAwakeWhileAgentsRun = patch.keepAwakeWhileAgentsRun;
+  }
+  if (patch.keepAwakeMaxLidClosedMinutes !== undefined) {
+    next.keepAwakeMaxLidClosedMinutes = patch.keepAwakeMaxLidClosedMinutes;
   }
   if (patch.composerPreferences !== undefined) {
     next.composerPreferences = patch.composerPreferences;
