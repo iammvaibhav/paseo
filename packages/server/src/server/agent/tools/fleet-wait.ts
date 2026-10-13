@@ -226,9 +226,16 @@ async function liveRunResult(
   const { agentId } = scope.base;
   const boundTurnId = scope.bound.turnId;
   // Another run replaced the bound turn (a user's prompt with interrupt):
-  // report the bound turn's own outcome, not the run that superseded it.
+  // report the bound turn's own outcome, not the run that superseded it. The
+  // agent stays "running" across the swap, and between the bound turn's
+  // cancel and the replacement's start no turn is active at all.
   const activeTurnId = currentTurnId(agentManager, agentId);
-  if (boundTurnId && !result.permission && activeTurnId && activeTurnId !== boundTurnId) {
+  const replaced =
+    boundTurnId !== null &&
+    !result.permission &&
+    activeTurnId !== boundTurnId &&
+    (activeTurnId !== null || result.status === "running");
+  if (boundTurnId && replaced) {
     return {
       ...turnOutcomeResult(agentManager, scope, boundTurnId, title),
       bucket: await readBucket(deps, agentId),

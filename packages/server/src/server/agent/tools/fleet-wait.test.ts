@@ -248,6 +248,38 @@ describe("fleet_wait_agent turn binding (local)", () => {
     });
   });
 
+  test("a replaced turn reports interrupted while the replacement has not started yet", async () => {
+    const agents: Record<string, LocalAgentState> = {
+      [LOCAL_AGENT_ID]: { lifecycle: "running", activeTurnId: "turn-2" },
+    };
+    const { catalog } = createHarness({
+      agents,
+      turns: { [LOCAL_AGENT_ID]: finishedTurn("turn-2", "remote answer") },
+      // turn-2 is canceled; the manager holds the agent running with no active
+      // turn until the user's replacement turn starts.
+      waitForAgentEvent: vi.fn(async () => {
+        agents[LOCAL_AGENT_ID] = {
+          lifecycle: "running",
+          activeTurnId: null,
+          finalized: { "turn-2": "turn_canceled" },
+        };
+        return { status: "running" as const, permission: null, lastMessage: "older reply" };
+      }),
+    });
+
+    const result = await catalog.executeTool("fleet_wait_agent", {
+      agentId: LOCAL_AGENT_ID,
+      turnId: "turn-2",
+    });
+
+    expect(result.structuredContent).toMatchObject({
+      status: "interrupted",
+      finished: true,
+      turnId: "turn-2",
+      lastMessage: "remote answer",
+    });
+  });
+
   test("a stopped turn reports interrupted, a completed one idle", async () => {
     const agents: Record<string, LocalAgentState> = {
       [LOCAL_AGENT_ID]: { lifecycle: "running", activeTurnId: "turn-2" },
