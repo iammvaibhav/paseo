@@ -589,7 +589,8 @@ function resolveProfileLists(persisted: ReturnType<typeof loadPersistedConfig>) 
     visibleModels: persisted.daemon?.visibleModels,
     ompIdleCloseAfterSeconds: persisted.daemon?.ompIdleCloseAfterSeconds ?? 1800,
     keepAwakeWhileAgentsRun: persisted.daemon?.keepAwakeWhileAgentsRun ?? "idle",
-    keepAwakeMaxLidClosedMinutes: persisted.daemon?.keepAwakeMaxLidClosedMinutes ?? 240,
+    keepAwakeReleaseGraceMinutes: persisted.daemon?.keepAwakeReleaseGraceMinutes ?? 5,
+    keepAwakeBatteryFloorPercent: persisted.daemon?.keepAwakeBatteryFloorPercent ?? 10,
   };
 }
 
@@ -641,7 +642,8 @@ export function resolveConfigFromPersisted(
     autoArchiveAfterMerge,
     ompIdleCloseAfterSeconds,
     keepAwakeWhileAgentsRun,
-    keepAwakeMaxLidClosedMinutes,
+    keepAwakeReleaseGraceMinutes,
+    keepAwakeBatteryFloorPercent,
     appendSystemPrompt,
     terminalProfiles,
     agentProfiles,
@@ -690,7 +692,8 @@ export function resolveConfigFromPersisted(
     autoArchiveAfterMerge,
     ompIdleCloseAfterSeconds,
     keepAwakeWhileAgentsRun,
-    keepAwakeMaxLidClosedMinutes,
+    keepAwakeReleaseGraceMinutes,
+    keepAwakeBatteryFloorPercent,
     enableTerminalAgentHooks: persisted.daemon?.enableTerminalAgentHooks ?? false,
     appendSystemPrompt,
     terminalProfiles,

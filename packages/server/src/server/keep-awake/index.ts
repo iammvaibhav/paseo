@@ -12,6 +12,7 @@ export type KeepAwakeLevel = "off" | "idle" | "lid-closed";
 const CAFFEINATE = "/usr/bin/caffeinate";
 const PMSET = "/usr/bin/pmset";
 const NOTIFYUTIL = "/usr/bin/notifyutil";
+const IOREG = "/usr/sbin/ioreg";
 const SUDO = "/usr/bin/sudo";
 // Must match the installed sudoers rule (`/usr/bin/pmset -a disablesleep 1` / `... 0`)
 // argument for argument; `-n` makes sudo fail instead of prompting.
@@ -20,13 +21,13 @@ const DISABLESLEEP_OFF = ["-n", PMSET, "-a", "disablesleep", "0"];
 const MARKER_FILE = "keep-awake-disablesleep.json";
 
 const DEFAULT_LEVEL: KeepAwakeLevel = "idle";
-const DEFAULT_MAX_LID_CLOSED_MINUTES = 240;
-// Agents go idle between turns; holding on this long keeps the assertion from flapping.
-const RELEASE_DEBOUNCE_MS = 60_000;
+// Agents go idle between turns; holding on this long keeps the assertion from flapping and
+// lets the next turn start without the Mac having slept.
+const DEFAULT_RELEASE_GRACE_MINUTES = 5;
+const DEFAULT_BATTERY_FLOOR_PERCENT = 10;
 const GUARD_POLL_MS = 30_000;
 const CAFFEINATE_RESPAWN_DELAY_MS = 5_000;
 const COMMAND_TIMEOUT_MS = 10_000;
-const BATTERY_FLOOR_PERCENT = 25;
 // notify(3) thermal pressure levels: 0 nominal, 1 moderate, 2 heavy, 3 trapping, 4 sleeping.
 const THERMAL_PRESSURE_HEAVY = 2;
 
@@ -59,7 +60,8 @@ export interface KeepAwakeServiceOptions {
 
 interface KeepAwakeSettings {
   level: KeepAwakeLevel;
-  maxLidClosedMs: number;
+  releaseGraceMs: number;
+  batteryFloorPercent: number;
 }
 
 const defaultRunCommand: KeepAwakeCommandRunner = (command, args) => {
@@ -114,15 +116,22 @@ function parseThermalPressure(notifyutilOutput: string): number | null {
  * Keeps a macOS host awake while any agent of any provider is running.
  *
  * - `idle`: one `caffeinate -i -s -w <daemon pid>` child while busy. `-w` ties
- *   the assertion to the daemon, so it cannot outlive a crash.
+ *   the assertion to the daemon, so it cannot outlive a crash. On AC power the
+ *   `-s` assertion also keeps a closed Mac running (display off, DarkWake).
  * - `lid-closed`: additionally sets `SleepDisabled` through `sudo -n pmset`,
- *   the only setting that survives closing the lid on battery. It also stops
- *   macOS from sleeping for heat or an empty battery, so the flag is guarded by
- *   battery, thermal and duration limits, never cleared when someone else set
- *   it, and tracked by a marker file so the next start can undo a crash.
+ *   the only setting that keeps a closed Mac running on battery. It also stops
+ *   macOS from sleeping for heat or an empty battery, so the flag is released
+ *   on battery at the configured floor and under heavy thermal pressure, never
+ *   cleared when someone else set it, and tracked by a marker file so the next
+ *   start can undo a crash. There is no time limit while agents run.
  *
- * The level is read from the daemon config on every evaluation. Busy→idle is
- * debounced so the assertion does not flap between turns.
+ * Clearing `SleepDisabled` does not make macOS re-check a lid that was closed
+ * while it was set, so the service puts a closed Mac to sleep itself
+ * (`pmset sleepnow`) right after clearing the flag. A `caffeinate -s` still held
+ * on AC turns that into a DarkWake that keeps agents running.
+ *
+ * The settings are read from the daemon config on every evaluation. Busy→idle
+ * waits for a grace period so the assertion does not flap between turns.
  */
 export class KeepAwakeService {
   private readonly agentManager: KeepAwakeServiceOptions["agentManager"];
@@ -189,7 +198,10 @@ export class KeepAwakeService {
     void this.evaluate();
   }
 
-  /** Releases caffeinate and any SleepDisabled this daemon owns. */
+  /**
+   * Releases caffeinate and any SleepDisabled this daemon owns. It never sleeps the Mac: a
+   * shutdown is usually a restart, and the next daemon takes the flag again for running agents.
+   */
   async stop(): Promise<void> {
     if (!this.started || this.stopped) {
       return;
@@ -199,7 +211,7 @@ export class KeepAwakeService {
       unsubscribe();
     }
     this.unsubscribers = [];
-    await this.enqueue(() => this.releaseAll());
+    await this.enqueue(() => this.releaseAll({ sleepIfLidClosed: false }));
     // A failed release keeps its marker for the next start; nothing retries after stop.
     this.stopGuardTimer();
   }
@@ -227,10 +239,11 @@ export class KeepAwakeService {
 
   private readSettings(): KeepAwakeSettings {
     const config = this.daemonConfigStore.get();
-    const maxMinutes = config.keepAwakeMaxLidClosedMinutes ?? DEFAULT_MAX_LID_CLOSED_MINUTES;
+    const graceMinutes = config.keepAwakeReleaseGraceMinutes ?? DEFAULT_RELEASE_GRACE_MINUTES;
     return {
       level: config.keepAwakeWhileAgentsRun ?? DEFAULT_LEVEL,
-      maxLidClosedMs: maxMinutes * 60_000,
+      releaseGraceMs: graceMinutes * 60_000,
+      batteryFloorPercent: config.keepAwakeBatteryFloorPercent ?? DEFAULT_BATTERY_FLOOR_PERCENT,
     };
   }
 
@@ -253,7 +266,7 @@ export class KeepAwakeService {
       await this.releaseAll();
       return;
     }
-    this.updateHeld(this.isBusy());
+    this.updateHeld(this.isBusy(), settings.releaseGraceMs);
     if (!this.held) {
       await this.releaseAll();
       return;
@@ -269,7 +282,7 @@ export class KeepAwakeService {
     }
   }
 
-  private updateHeld(busy: boolean): void {
+  private updateHeld(busy: boolean, releaseGraceMs: number): void {
     if (busy) {
       this.idleSince = null;
       this.clearReleaseTimer();
@@ -285,7 +298,7 @@ export class KeepAwakeService {
     }
     const now = Date.now();
     this.idleSince ??= now;
-    const remainingMs = this.idleSince + RELEASE_DEBOUNCE_MS - now;
+    const remainingMs = this.idleSince + releaseGraceMs - now;
     if (remainingMs <= 0) {
       this.held = false;
       this.idleSince = null;
@@ -308,13 +321,13 @@ export class KeepAwakeService {
     }
   }
 
-  private async releaseAll(): Promise<void> {
+  private async releaseAll(options: { sleepIfLidClosed: boolean } = { sleepIfLidClosed: true }) {
     this.held = false;
     this.idleSince = null;
     this.clearReleaseTimer();
     this.killCaffeinate();
     if (this.disableSleepTakenAt !== null) {
-      await this.releaseDisableSleep();
+      await this.releaseDisableSleep(options);
     }
   }
 
@@ -405,7 +418,9 @@ export class KeepAwakeService {
     this.logger.info("Set SleepDisabled so the host stays awake with the lid closed");
   }
 
-  private async releaseDisableSleep(): Promise<void> {
+  private async releaseDisableSleep(
+    options: { sleepIfLidClosed: boolean } = { sleepIfLidClosed: true },
+  ): Promise<void> {
     try {
       await this.runCommand(SUDO, DISABLESLEEP_OFF);
     } catch (error) {
@@ -417,6 +432,36 @@ export class KeepAwakeService {
     this.stopGuardTimer();
     await rm(this.markerPath, { force: true });
     this.logger.info("Cleared SleepDisabled");
+    if (options.sleepIfLidClosed) {
+      await this.sleepIfLidClosed();
+    }
+  }
+
+  /**
+   * A lid closed while SleepDisabled was set stays "awake but closed" after the flag clears,
+   * because macOS only evaluates the lid on a lid or power event. Ask for the sleep the lid
+   * close would have caused. A remaining `caffeinate -s` on AC demotes it to a DarkWake.
+   */
+  private async sleepIfLidClosed(): Promise<void> {
+    try {
+      const ioreg = await this.runCommand(IOREG, [
+        "-r",
+        "-n",
+        "IOPMrootDomain",
+        "-d",
+        "1",
+        "-k",
+        "AppleClamshellState",
+      ]);
+      if (!/"AppleClamshellState"\s*=\s*Yes/.test(ioreg)) {
+        return;
+      }
+      // Allowed for the console user without sudo (RootDomainUserClient local-user privilege).
+      await this.runCommand(PMSET, ["sleepnow"]);
+      this.logger.info("Lid is closed; asked macOS to sleep");
+    } catch (error) {
+      this.logger.warn({ err: error }, "Could not put the closed Mac to sleep");
+    }
   }
 
   private startGuardTimer(): void {
@@ -441,7 +486,7 @@ export class KeepAwakeService {
       return;
     }
     if (!this.disableSleepLatched) {
-      const reason = await this.findTrippedGuard(this.disableSleepTakenAt);
+      const reason = await this.findTrippedGuard();
       if (reason) {
         this.logger.warn(
           { reason },
@@ -454,15 +499,12 @@ export class KeepAwakeService {
   }
 
   /** Fails safe: a guard input that cannot be read counts as tripped. */
-  private async findTrippedGuard(takenAt: number): Promise<string | null> {
-    if (Date.now() - takenAt >= this.readSettings().maxLidClosedMs) {
-      return "max-duration";
-    }
+  private async findTrippedGuard(): Promise<string | null> {
     try {
       const battery = parseBattery(await this.runCommand(PMSET, ["-g", "batt"]));
       if (
         battery.onBattery &&
-        (battery.percent === null || battery.percent <= BATTERY_FLOOR_PERCENT)
+        (battery.percent === null || battery.percent <= this.readSettings().batteryFloorPercent)
       ) {
         return "low-battery";
       }

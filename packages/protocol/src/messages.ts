@@ -468,8 +468,10 @@ export const MutableDaemonConfigSchema = z
     // assertion; "lid-closed" also sets SleepDisabled through `sudo -n pmset`.
     // Optional so old clients and typed fixtures stay valid; runtime default is "idle".
     keepAwakeWhileAgentsRun: z.enum(["off", "idle", "lid-closed"]).optional(),
-    // Upper bound on one lid-closed hold; runtime default is 240.
-    keepAwakeMaxLidClosedMinutes: z.number().int().min(1).optional(),
+    // Minutes to keep holding after the last agent stops; runtime default is 5.
+    keepAwakeReleaseGraceMinutes: z.number().int().min(0).optional(),
+    // "lid-closed" on battery: release SleepDisabled at or below this charge; default 10.
+    keepAwakeBatteryFloorPercent: z.number().int().min(1).max(99).optional(),
     terminalProfiles: z.array(TerminalProfileSchema).optional(),
     missionControl: MutableMissionControlConfigSchema.optional(),
     aiReviewer: MutableAiReviewerConfigSchema.optional(),
@@ -497,7 +499,8 @@ export const MutableDaemonConfigPatchSchema = z
     appendSystemPrompt: z.string().optional(),
     ompIdleCloseAfterSeconds: z.number().int().min(0).optional(),
     keepAwakeWhileAgentsRun: z.enum(["off", "idle", "lid-closed"]).optional(),
-    keepAwakeMaxLidClosedMinutes: z.number().int().min(1).optional(),
+    keepAwakeReleaseGraceMinutes: z.number().int().min(0).optional(),
+    keepAwakeBatteryFloorPercent: z.number().int().min(1).max(99).optional(),
     terminalProfiles: z.array(TerminalProfileSchema).optional(),
     missionControl: MutableMissionControlConfigSchema.partial().optional(),
     aiReviewer: MutableAiReviewerConfigSchema.partial().optional(),

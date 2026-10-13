@@ -36,7 +36,8 @@ interface SupportedMutableConfigPatch {
   aiReviewer?: MutableDaemonConfig["aiReviewer"];
   ompIdleCloseAfterSeconds?: MutableDaemonConfig["ompIdleCloseAfterSeconds"];
   keepAwakeWhileAgentsRun?: MutableDaemonConfig["keepAwakeWhileAgentsRun"];
-  keepAwakeMaxLidClosedMinutes?: MutableDaemonConfig["keepAwakeMaxLidClosedMinutes"];
+  keepAwakeReleaseGraceMinutes?: MutableDaemonConfig["keepAwakeReleaseGraceMinutes"];
+  keepAwakeBatteryFloorPercent?: MutableDaemonConfig["keepAwakeBatteryFloorPercent"];
   composerPreferences?: MutableDaemonConfig["composerPreferences"];
 }
 
@@ -189,7 +190,8 @@ const RELOADABLE_PATHS = [
   "daemon.enableTerminalAgentHooks",
   "daemon.appendSystemPrompt",
   "daemon.keepAwakeWhileAgentsRun",
-  "daemon.keepAwakeMaxLidClosedMinutes",
+  "daemon.keepAwakeReleaseGraceMinutes",
+  "daemon.keepAwakeBatteryFloorPercent",
   "daemon.terminalProfiles",
   "daemon.agentProfiles",
   "daemon.visibleModels",
@@ -215,7 +217,8 @@ const PERSISTED_TO_MUTABLE_PATH = new Map<string, string>([
   ["daemon.enableTerminalAgentHooks", "enableTerminalAgentHooks"],
   ["daemon.appendSystemPrompt", "appendSystemPrompt"],
   ["daemon.keepAwakeWhileAgentsRun", "keepAwakeWhileAgentsRun"],
-  ["daemon.keepAwakeMaxLidClosedMinutes", "keepAwakeMaxLidClosedMinutes"],
+  ["daemon.keepAwakeReleaseGraceMinutes", "keepAwakeReleaseGraceMinutes"],
+  ["daemon.keepAwakeBatteryFloorPercent", "keepAwakeBatteryFloorPercent"],
   ["daemon.terminalProfiles", "terminalProfiles"],
   ["daemon.agentProfiles", "agentProfiles"],
   ["daemon.visibleModels", "visibleModels"],
@@ -305,8 +308,11 @@ function pickExtendedPatchFields(patch: MutableDaemonConfigPatch): SupportedMuta
   if (patch.keepAwakeWhileAgentsRun !== undefined) {
     out.keepAwakeWhileAgentsRun = patch.keepAwakeWhileAgentsRun;
   }
-  if (patch.keepAwakeMaxLidClosedMinutes !== undefined) {
-    out.keepAwakeMaxLidClosedMinutes = patch.keepAwakeMaxLidClosedMinutes;
+  if (patch.keepAwakeReleaseGraceMinutes !== undefined) {
+    out.keepAwakeReleaseGraceMinutes = patch.keepAwakeReleaseGraceMinutes;
+  }
+  if (patch.keepAwakeBatteryFloorPercent !== undefined) {
+    out.keepAwakeBatteryFloorPercent = patch.keepAwakeBatteryFloorPercent;
   }
   if (patch.composerPreferences !== undefined) {
     out.composerPreferences = patch.composerPreferences;
@@ -718,8 +724,11 @@ function mergeMutableDaemonPatch(
   if (patch.keepAwakeWhileAgentsRun !== undefined) {
     next.keepAwakeWhileAgentsRun = patch.keepAwakeWhileAgentsRun;
   }
-  if (patch.keepAwakeMaxLidClosedMinutes !== undefined) {
-    next.keepAwakeMaxLidClosedMinutes = patch.keepAwakeMaxLidClosedMinutes;
+  if (patch.keepAwakeReleaseGraceMinutes !== undefined) {
+    next.keepAwakeReleaseGraceMinutes = patch.keepAwakeReleaseGraceMinutes;
+  }
+  if (patch.keepAwakeBatteryFloorPercent !== undefined) {
+    next.keepAwakeBatteryFloorPercent = patch.keepAwakeBatteryFloorPercent;
   }
   if (patch.composerPreferences !== undefined) {
     next.composerPreferences = patch.composerPreferences;

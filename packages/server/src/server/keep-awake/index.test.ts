@@ -11,6 +11,9 @@ const DAEMON_PID = 4242;
 const MARKER_FILE = "keep-awake-disablesleep.json";
 const TAKE_FLAG = "/usr/bin/sudo -n /usr/bin/pmset -a disablesleep 1";
 const CLEAR_FLAG = "/usr/bin/sudo -n /usr/bin/pmset -a disablesleep 0";
+const READ_LID = "/usr/sbin/ioreg -r -n IOPMrootDomain -d 1 -k AppleClamshellState";
+const SLEEP_NOW = "/usr/bin/pmset sleepnow";
+const GRACE_MS = 5 * 60_000;
 
 interface FakeChild {
   args: string[];
@@ -21,7 +24,8 @@ interface FakeChild {
 
 interface HarnessOptions {
   level?: KeepAwakeLevel;
-  maxLidClosedMinutes?: number;
+  releaseGraceMinutes?: number;
+  batteryFloorPercent?: number;
   platform?: NodeJS.Platform;
   sleepDisabled?: boolean;
   sudoFails?: boolean;
@@ -42,15 +46,17 @@ function createHarness(options: HarnessOptions = {}) {
   const subagents: Array<{ status: string }> = [];
   const subscribers = new Set<(event: AgentManagerEvent) => void>();
   const configListeners = new Set<() => void>();
-  const config = {
+  const config: Record<string, unknown> = {
     keepAwakeWhileAgentsRun: options.level ?? "idle",
-    keepAwakeMaxLidClosedMinutes: options.maxLidClosedMinutes ?? 240,
+    keepAwakeReleaseGraceMinutes: options.releaseGraceMinutes,
+    keepAwakeBatteryFloorPercent: options.batteryFloorPercent,
   };
   const host = {
     sleepDisabled: options.sleepDisabled ?? false,
     sudoFails: options.sudoFails ?? false,
     battery: { onBattery: false, percent: 100 },
     thermalPressure: 0,
+    lidClosed: false,
   };
   const commands: string[] = [];
   const children: FakeChild[] = [];
@@ -87,6 +93,12 @@ function createHarness(options: HarnessOptions = {}) {
       }
       if (line === "/usr/bin/notifyutil -g com.apple.system.thermalpressurelevel") {
         return `com.apple.system.thermalpressurelevel ${host.thermalPressure}\n`;
+      }
+      if (line === READ_LID) {
+        return `+-o IOPMrootDomain\n    {\n      "AppleClamshellState" = ${host.lidClosed ? "Yes" : "No"}\n    }\n`;
+      }
+      if (line === SLEEP_NOW) {
+        return "Sleeping now...\n";
       }
       if (line === TAKE_FLAG || line === CLEAR_FLAG) {
         if (host.sudoFails) {
@@ -136,7 +148,7 @@ function createHarness(options: HarnessOptions = {}) {
       emit("agent_state");
       await service.evaluate();
     },
-    async changeConfig(patch: Partial<typeof config>) {
+    async changeConfig(patch: Record<string, unknown>) {
       Object.assign(config, patch);
       for (const listener of configListeners) {
         listener();
@@ -165,7 +177,7 @@ afterEach(() => {
 });
 
 describe("KeepAwakeService idle level", () => {
-  test("holds one caffeinate while busy and releases it 60 s after agents go idle", async () => {
+  test("holds one caffeinate while busy and releases it 5 minutes after agents go idle", async () => {
     const harness = createHarness();
     harness.service.start();
 
@@ -175,18 +187,28 @@ describe("KeepAwakeService idle level", () => {
       ["/usr/bin/caffeinate", "-i", "-s", "-w", String(DAEMON_PID)],
     ]);
 
-    // A gap between turns shorter than the debounce keeps the same assertion.
+    // A gap between turns shorter than the grace period keeps the same assertion.
     await harness.setRunning(false);
-    await harness.advance(59_000);
+    await harness.advance(GRACE_MS - 1_000);
     await harness.setRunning(true);
     await harness.setRunning(false);
-    await harness.advance(59_000);
+    await harness.advance(GRACE_MS - 1_000);
     expect(harness.liveChildren()).toHaveLength(1);
     expect(harness.children).toHaveLength(1);
 
     await harness.advance(1_000);
     expect(harness.liveChildren()).toHaveLength(0);
     expect(harness.commands).toEqual([]);
+  });
+
+  test("the grace period comes from the config", async () => {
+    const harness = createHarness({ releaseGraceMinutes: 1 });
+    harness.service.start();
+    await harness.setRunning(true);
+
+    await harness.setRunning(false);
+    await harness.advance(60_000);
+    expect(harness.liveChildren()).toHaveLength(0);
   });
 
   test("counts running agents of any provider and running subagents", async () => {
@@ -249,7 +271,7 @@ describe("KeepAwakeService idle level", () => {
 });
 
 describe("KeepAwakeService lid-closed level", () => {
-  test("takes SleepDisabled with the exact sudo argv and releases it after the debounce", async () => {
+  test("takes SleepDisabled with the exact sudo argv and releases it after the grace period", async () => {
     const harness = createHarness({ level: "lid-closed" });
     harness.service.start();
 
@@ -262,7 +284,7 @@ describe("KeepAwakeService lid-closed level", () => {
     });
 
     await harness.setRunning(false);
-    await harness.advance(60_000);
+    await harness.advance(GRACE_MS);
 
     expect(harness.commands.filter((line) => line.startsWith("/usr/bin/sudo"))).toEqual([
       TAKE_FLAG,
@@ -271,6 +293,37 @@ describe("KeepAwakeService lid-closed level", () => {
     expect(harness.host.sleepDisabled).toBe(false);
     expect(existsSync(harness.markerPath)).toBe(false);
     expect(harness.liveChildren()).toHaveLength(0);
+    // The lid was open, so nothing put the Mac to sleep.
+    expect(harness.commands).not.toContain(SLEEP_NOW);
+  });
+
+  test("has no time limit while agents run on a charger", async () => {
+    const harness = createHarness({ level: "lid-closed" });
+    harness.service.start();
+    await harness.setRunning(true);
+
+    await harness.advance(24 * 60 * 60_000);
+
+    expect(harness.host.sleepDisabled).toBe(true);
+    expect(harness.commands.filter((line) => line === TAKE_FLAG)).toHaveLength(1);
+    expect(harness.liveChildren()).toHaveLength(1);
+  });
+
+  test("sleeps a closed Mac once agents stopped and the grace period passed", async () => {
+    const harness = createHarness({ level: "lid-closed" });
+    harness.service.start();
+    await harness.setRunning(true);
+    harness.host.lidClosed = true;
+
+    await harness.setRunning(false);
+    await harness.advance(GRACE_MS - 1_000);
+    expect(harness.commands).not.toContain(SLEEP_NOW);
+
+    await harness.advance(1_000);
+    expect(harness.liveChildren()).toHaveLength(0);
+    expect(harness.host.sleepDisabled).toBe(false);
+    // caffeinate goes first, so the sleep request is not demoted to a DarkWake.
+    expect(harness.commands.slice(-3)).toEqual([CLEAR_FLAG, READ_LID, SLEEP_NOW]);
   });
 
   test("never clears a SleepDisabled someone else set", async () => {
@@ -279,7 +332,7 @@ describe("KeepAwakeService lid-closed level", () => {
 
     await harness.setRunning(true);
     await harness.setRunning(false);
-    await harness.advance(60_000);
+    await harness.advance(GRACE_MS);
     await harness.service.stop();
 
     expect(harness.commands.some((line) => line.startsWith("/usr/bin/sudo"))).toBe(false);
@@ -287,20 +340,33 @@ describe("KeepAwakeService lid-closed level", () => {
     expect(existsSync(harness.markerPath)).toBe(false);
   });
 
-  test("releases the flag on battery at 25% but not 26%, keeping caffeinate", async () => {
+  test("on battery releases the flag at the floor but not above it, keeping caffeinate", async () => {
     const harness = createHarness({ level: "lid-closed" });
     harness.service.start();
     await harness.setRunning(true);
+    harness.host.lidClosed = true;
 
-    harness.host.battery = { onBattery: true, percent: 26 };
+    harness.host.battery = { onBattery: true, percent: 11 };
     await harness.advance(30_000);
     expect(harness.host.sleepDisabled).toBe(true);
 
-    harness.host.battery = { onBattery: true, percent: 25 };
+    harness.host.battery = { onBattery: true, percent: 10 };
     await harness.advance(30_000);
     expect(harness.host.sleepDisabled).toBe(false);
     expect(existsSync(harness.markerPath)).toBe(false);
     expect(harness.liveChildren()).toHaveLength(1);
+    // The closed Mac is allowed to sleep now; caffeinate -s does not hold on battery.
+    expect(harness.commands.slice(-2)).toEqual([READ_LID, SLEEP_NOW]);
+  });
+
+  test("the battery floor comes from the config", async () => {
+    const harness = createHarness({ level: "lid-closed", batteryFloorPercent: 40 });
+    harness.service.start();
+    await harness.setRunning(true);
+
+    harness.host.battery = { onBattery: true, percent: 40 };
+    await harness.advance(30_000);
+    expect(harness.host.sleepDisabled).toBe(false);
   });
 
   test("releases the flag under heavy thermal pressure", async () => {
@@ -319,12 +385,14 @@ describe("KeepAwakeService lid-closed level", () => {
   });
 
   test("a tripped guard latches until agents go idle and busy again", async () => {
-    const harness = createHarness({ level: "lid-closed", maxLidClosedMinutes: 1 });
+    const harness = createHarness({ level: "lid-closed" });
     harness.service.start();
     await harness.setRunning(true);
 
-    await harness.advance(60_000);
+    harness.host.battery = { onBattery: true, percent: 5 };
+    await harness.advance(30_000);
     expect(harness.host.sleepDisabled).toBe(false);
+    harness.host.battery = { onBattery: false, percent: 5 };
 
     // Still busy: neither new events nor further guard polls retake the flag.
     await harness.setRunning(true);
@@ -333,7 +401,7 @@ describe("KeepAwakeService lid-closed level", () => {
     expect(harness.liveChildren()).toHaveLength(1);
 
     await harness.setRunning(false);
-    await harness.advance(60_000);
+    await harness.advance(GRACE_MS);
     await harness.setRunning(true);
     expect(harness.commands.filter((line) => line === TAKE_FLAG)).toHaveLength(2);
     expect(harness.host.sleepDisabled).toBe(true);
@@ -353,16 +421,18 @@ describe("KeepAwakeService lid-closed level", () => {
     expect(harness.liveChildren()).toHaveLength(1);
   });
 
-  test("stop releases caffeinate and the flag", async () => {
+  test("stop releases caffeinate and the flag without sleeping a closed Mac", async () => {
     const harness = createHarness({ level: "lid-closed" });
     harness.service.start();
     await harness.setRunning(true);
+    harness.host.lidClosed = true;
 
     await harness.service.stop();
 
     expect(harness.liveChildren()).toHaveLength(0);
     expect(harness.host.sleepDisabled).toBe(false);
     expect(existsSync(harness.markerPath)).toBe(false);
+    expect(harness.commands).not.toContain(SLEEP_NOW);
   });
 });
 
