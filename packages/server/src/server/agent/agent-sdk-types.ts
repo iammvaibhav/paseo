@@ -518,6 +518,9 @@ export function getAgentStreamEventTurnId(event: AgentStreamEvent): string | und
   return "turnId" in event ? event.turnId : undefined;
 }
 
+/** Prefix of the assistant timeline row the manager records when a turn fails. */
+export const SYSTEM_ERROR_PREFIX = "[System Error]";
+
 export type AgentPermissionRequestKind = "tool" | "plan" | "question" | "mode" | "other";
 
 export type AgentPermissionUpdate = AgentMetadata;

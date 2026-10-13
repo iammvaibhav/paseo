@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { ensureValidJson } from "../../json-utils.js";
 import type { AgentManager } from "../agent-manager.js";
+import { SYSTEM_ERROR_PREFIX } from "../agent-sdk-types.js";
 import {
   resolvePeerDaemonClient,
   resolveTargetHost,
@@ -90,21 +91,30 @@ function lastTimelineTurnId(agentManager: AgentManager, agentId: string): string
   return rows.at(-1)?.turnId ?? null;
 }
 
-/** How a past turn ended, read from the agent's timeline; null when no row carries turnId. */
+/**
+ * How a past turn ended, read from the agent's timeline; null when no row carries turnId.
+ * A failed turn ends with the manager's "[System Error] …" assistant row (or an error item).
+ */
 function findTurnOutcome(
   agentManager: AgentManager,
   agentId: string,
   turnId: string,
-): { status: "idle" | "error"; lastMessage: string | null } | null {
+): { status: "idle" | "error"; lastMessage: string | null; error: string | null } | null {
   const rows = agentManager
     .fetchTimeline(agentId, { direction: "tail", limit: 0 })
     .rows.filter((row) => row.turnId === turnId);
   if (rows.length === 0) return null;
   const lastAssistant = rows.findLast((row) => row.item.type === "assistant_message");
-  return {
-    status: rows.some((row) => row.item.type === "error") ? "error" : "idle",
-    lastMessage: lastAssistant?.item.type === "assistant_message" ? lastAssistant.item.text : null,
-  };
+  const lastMessage =
+    lastAssistant?.item.type === "assistant_message" ? lastAssistant.item.text : null;
+  const errorItem = rows.findLast((row) => row.item.type === "error");
+  let error: string | null = null;
+  if (errorItem?.item.type === "error") {
+    error = errorItem.item.message;
+  } else if (lastMessage?.startsWith(SYSTEM_ERROR_PREFIX)) {
+    error = lastMessage.slice(SYSTEM_ERROR_PREFIX.length).trim();
+  }
+  return { status: error === null ? "idle" : "error", lastMessage, error };
 }
 
 interface WaitScope {

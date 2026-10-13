@@ -32,6 +32,7 @@ import { isSystemOwnedAgentLabels } from "@getpaseo/protocol/mission-control/sys
 
 import {
   getAgentStreamEventTurnId,
+  SYSTEM_ERROR_PREFIX,
   type AgentCapabilityFlags,
   type AgentClient,
   type AgentCreateSessionOptions,
@@ -902,8 +903,6 @@ interface AgentMetadataPatch {
   workspaceId?: string;
   cwd?: string;
 }
-
-const SYSTEM_ERROR_PREFIX = "[System Error]";
 
 function attachPersistenceCwd(
   handle: AgentPersistenceHandle | null,
@@ -6185,7 +6184,7 @@ export class AgentManager {
         agent,
         event.provider,
         this.formatTurnFailedMessage(event),
-        options,
+        { ...options, turnId: eventTurnId },
       );
     }
     this.resolvePendingPermissionsForAgent(agent, event.provider, options, "Turn failed");
@@ -6687,7 +6686,7 @@ export class AgentManager {
     agent: ActiveManagedAgent,
     provider: AgentProvider,
     message: string,
-    options?: { fromHistory?: boolean },
+    options?: { fromHistory?: boolean; turnId?: string },
   ): Promise<void> {
     if (options?.fromHistory) {
       return;
@@ -6704,20 +6703,13 @@ export class AgentManager {
       return;
     }
 
-    const item: AgentTimelineItem = { type: "assistant_message", text };
-    const row = this.recordTimeline(agent.id, item);
-    this.dispatchStream(
+    // Tag the row with the failed turn so turn-bound readers (fleet_wait_agent,
+    // fleet_get_transcript) attribute the failure to it.
+    this.recordAndDispatchTimelineItem(
       agent.id,
-      {
-        type: "timeline",
-        item,
-        provider,
-      },
-      {
-        seq: row.seq,
-        epoch: this.timelineStore.getEpoch(agent.id),
-        timestamp: row.timestamp,
-      },
+      { type: "assistant_message", text },
+      provider,
+      options?.turnId,
     );
   }
 

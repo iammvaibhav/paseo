@@ -10454,6 +10454,15 @@ test("turn_failed emits a system error assistant timeline message and keeps erro
     );
   expect(systemErrors).toHaveLength(1);
   expect(systemErrors[0]?.text).toContain("invalid model id");
+
+  // The failure row belongs to the failed turn so turn-bound readers
+  // (fleet_wait_agent, fleet_get_transcript) find it.
+  const errorRow = manager
+    .fetchTimeline(agent.id, { direction: "tail", limit: 0 })
+    .rows.find(
+      (row) => row.item.type === "assistant_message" && row.item.text.includes("[System Error]"),
+    );
+  expect(errorRow?.turnId).toBe("turn-failed-1");
 });
 
 test("turn_failed surfaces provider code and diagnostic in system error message", async () => {
