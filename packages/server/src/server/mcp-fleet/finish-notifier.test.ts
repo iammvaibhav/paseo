@@ -252,6 +252,68 @@ describe("createMcpFinishNotifier", () => {
     });
   });
 
+  it("a peer that restarted before its close reached us: the lost turn is an interruption", async () => {
+    const waits: Array<string | undefined> = [];
+    await notifier().arm({
+      client: "grok-bot",
+      target: { url },
+      agentId: "agent-1",
+      host: "macbook",
+      turnId: "turn-1",
+      tool: "fleet_create_agent",
+      context: null,
+      waitForAgent: async (input) => {
+        waits.push(input.turnId);
+        const boundWaits = waits.filter((turnId) => turnId === "turn-1").length;
+        if (input.turnId === "turn-1") {
+          // The connection drops mid-wait; the restarted peer no longer knows the turn.
+          if (boundWaits === 1) throw new Error("Transport closed (code 1005)");
+          if (boundWaits === 2) return result({ ok: false, error: "peer unreachable" });
+          return result({
+            status: "pending",
+            finished: false,
+            turnId: "turn-1",
+            lastMessage: null,
+          });
+        }
+        if (input.turnId === "turn-2") return result({ turnId: "turn-2", lastMessage: "Report." });
+        return result({ status: "running", finished: false, timedOut: true, turnId: "turn-2" });
+      },
+    });
+
+    expect(waits).toEqual(["turn-1", "turn-1", "turn-1", undefined, "turn-2"]);
+    expect(received.map((r) => [r.body.type, r.body.final])).toEqual([
+      ["paseo.agent.interrupted", false],
+      ["paseo.agent.finished", true],
+    ]);
+    expect(received[1]!.body).toMatchObject({
+      reason: "finished",
+      agent: { turnId: "turn-2", lastMessage: "Report." },
+    });
+  });
+
+  it("a turn that has not started yet is waited out while the host stays reachable", async () => {
+    let calls = 0;
+    await notifier().arm({
+      client: "grok-bot",
+      target: { url },
+      agentId: "agent-1",
+      host: "macbook",
+      turnId: "turn-1",
+      tool: "fleet_send_prompt",
+      context: null,
+      waitForAgent: async () => {
+        calls += 1;
+        return calls < 3
+          ? result({ status: "pending", finished: false, turnId: "turn-1", lastMessage: null })
+          : result({ turnId: "turn-1" });
+      },
+    });
+    expect(received.map((r) => [r.body.type, r.body.reason])).toEqual([
+      ["paseo.agent.finished", "finished"],
+    ]);
+  });
+
   it("a peer run that never resumes after its host closed it ends with reason interrupted", async () => {
     await createMcpFinishNotifier({
       resolveSecret: async (value) => value,

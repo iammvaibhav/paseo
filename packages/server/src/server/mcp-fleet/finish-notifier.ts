@@ -33,11 +33,13 @@ import { createWatchJournal } from "../watch-journal.js";
  * sent once every member's run has ended, across restarts.
  *
  * A peer's restart (a deploy, a crash) closes the agents it hosts, so a wait
- * on a peer agent can end "closed" while its run has not finished. That is
- * not the run's end: the watch posts a non-final paseo.agent.interrupted
- * event, stays armed, follows the run the peer resumes (the peer's deploy
- * nudge starts it as a new turn), and posts paseo.agent.finished when that
- * run ends, or reason "interrupted" when no run resumes within resumeGraceMs.
+ * on a peer agent can end "closed" while its run has not finished, or, when
+ * the connection drops before that close arrives, the restarted peer answers
+ * "pending" for a turn it no longer knows. Neither is the run's end: the
+ * watch posts a non-final paseo.agent.interrupted event, stays armed,
+ * follows the run the peer resumes (the peer's deploy nudge starts it as a
+ * new turn), and posts paseo.agent.finished when that run ends, or reason
+ * "interrupted" when no run resumes within resumeGraceMs.
  * Only an agent this daemon hosts can be closed while its watch runs on
  * purpose (archive, kill), since this daemon's own shutdown suspends watches
  * first; that "closed" stays final.
@@ -568,7 +570,11 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
 
   /**
    * Re-wait until the watch's bound turn ends. Returns the final result, or
-   * null at the deadline. onPermission runs once per blocked stretch.
+   * null at the deadline. onPermission runs once per blocked stretch. A
+   * "pending" turn is waited out, unless the host was unreachable since the
+   * watch started: a host that restarted before its close reached us has
+   * lost the turn, so "pending" is returned for the caller to treat as an
+   * interruption.
    */
   const waitForTurnEnd = async (
     watch: ActiveWatch,
@@ -576,6 +582,7 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
   ): Promise<FleetAgentWaitResult | null> => {
     const { armed } = watch;
     let permissionSent = false;
+    let contactLost = false;
     while (Date.now() < armed.deadline) {
       let result: FleetAgentWaitResult;
       try {
@@ -599,6 +606,7 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
           },
           "mcp finish watch: wait failed, retrying",
         );
+        contactLost = true;
         await pause(watch, pollMs);
         continue;
       }
@@ -612,6 +620,7 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
           },
           "mcp finish watch: agent unreachable, retrying",
         );
+        contactLost = true;
         await pause(watch, pollMs);
         continue;
       }
@@ -619,6 +628,7 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
       watch.turnId = result.turnId ?? watch.turnId;
       if (result.timedOut) continue;
       if (result.status === "pending") {
+        if (contactLost) return result;
         await pause(watch, pollMs);
         continue;
       }
@@ -671,10 +681,11 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
 
   /**
    * Wait until the watch's run really ends. A peer agent whose turn ends
-   * "closed" was stopped by its host, not finished: onInterrupted runs, the
-   * watch rebinds to the run the peer resumes, and waiting goes on. Returns
-   * the end with its reason ("interrupted" when no run resumed in time), or
-   * null at the watch deadline.
+   * "closed", or a turn the host lost across a restart ("pending" after the
+   * host was unreachable), was stopped by its host, not finished:
+   * onInterrupted runs, the watch rebinds to the run the peer resumes, and
+   * waiting goes on. Returns the end with its reason ("interrupted" when no
+   * run resumed in time), or null at the watch deadline.
    */
   const waitForRunEnd = async (
     watch: ActiveWatch,
@@ -686,8 +697,10 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
       if (!watch.interrupted) {
         const result = await waitForTurnEnd(watch, onPermission);
         if (!result) return null;
-        const hostedHere = (await options.localAgents?.hosts(watch.armed.agentId)) ?? false;
-        if (result.status !== "closed" || hostedHere) {
+        const closedByPeer =
+          result.status === "closed" &&
+          !((await options.localAgents?.hosts(watch.armed.agentId)) ?? false);
+        if (result.status !== "pending" && !closedByPeer) {
           return { result, reason: finalReason(result.status) };
         }
         watch.interrupted = true;
