@@ -23,6 +23,12 @@
 # outside the unit (old detached "Paseo Supervisor") is stopped once and
 # replaced by the unit.
 #
+# Hosts without a systemd user manager (containers whose PID 1 is not systemd,
+# e.g. grok-bot) get no unit and no linger: the daemon runs detached under
+# Paseo's own supervisor (`paseo daemon start`, which restarts a crashed
+# worker) with the same daemon.env. Nothing starts it at boot; such a host
+# runs ~/.local/share/paseo/start-detached.sh from its own boot hook.
+#
 # Env (set by deploy): PASEO_KEEP_ARTIFACT=1 keeps the tarball (builders ship it
 # on to their targets); PASEO_TUNNEL_PROVIDER / PASEO_TUNNEL_AUTOSTART go into
 # daemon.env.
@@ -122,8 +128,8 @@ login_path() {
   printf '%s:%s' "$captured" "$ROOT/current/bin"
 }
 
-write_unit() {
-  mkdir -p "$UNIT_DIR" "$(dirname "$ENV_FILE")"
+write_env() {
+  mkdir -p "$(dirname "$ENV_FILE")"
   local env_tmp="$ENV_FILE.tmp.$$"
   {
     printf 'PATH=%s\n' "$(login_path)"
@@ -137,7 +143,11 @@ write_unit() {
   } >"$env_tmp"
   chmod 600 "$env_tmp"
   mv "$env_tmp" "$ENV_FILE"
+}
 
+write_unit() {
+  write_env
+  mkdir -p "$UNIT_DIR"
   local unit_tmp="$UNIT_DIR/$UNIT.tmp.$$"
   cat >"$unit_tmp" <<EOF
 # Managed by paseo scripts/deploy/activate-runtime.sh — edits are overwritten.
@@ -204,8 +214,13 @@ health_ok() {
 
 main_pid() { systemctl --user show "$UNIT" -p MainPID --value 2>/dev/null || echo 0; }
 
-legacy_daemon_pid() {
-  # A daemon holding the home's pid lock that the unit does not own.
+systemd_booted() {
+  # sd_booted(): PID 1 is systemd. ensure_linger brings the user manager up.
+  [[ -d /run/systemd/system ]]
+}
+
+pid_file_pid() {
+  # The live daemon holding the home's pid lock, if any.
   [[ -f "$PASEO_HOME/paseo.pid" ]] || return 0
   local pid
   pid="$("$ROOT/current/bin/node" -e '
@@ -215,6 +230,14 @@ try {
 } catch {}
 ' "$PASEO_HOME/paseo.pid" 2>/dev/null || true)"
   [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null || return 0
+  printf '%s' "$pid"
+}
+
+legacy_daemon_pid() {
+  # A daemon holding the home's pid lock that the unit does not own.
+  local pid
+  pid="$(pid_file_pid)"
+  [[ -n "$pid" ]] || return 0
   local unit_cgroup
   unit_cgroup="$(systemctl --user show "$UNIT" -p ControlGroup --value 2>/dev/null || true)"
   if [[ -n "$unit_cgroup" ]] && grep -qF "$unit_cgroup" "/proc/$pid/cgroup" 2>/dev/null; then
@@ -264,24 +287,68 @@ restart_daemon() {
     new_main="$(main_pid)"
     if [[ "$new_main" != "0" && "$new_main" != "$old_main" ]] && health_ok; then
       log "Daemon healthy after ${i}s (main pid $old_main -> $new_main)"
-      if [[ -f "$nudge_file" ]]; then
-        log "Nudging agents from the snapshot"
-        # /api/health answers before the WebSocket accepts sessions (503), and
-        # deploy-nudge exits 0 on every failure: retry while it cannot connect.
-        local attempt out
-        for attempt in 1 2 3 4 5 6 7 8 9 10; do
-          out="$(nudge --nudge "$nudge_file" 2>&1)"
-          printf '%s\n' "$out"
-          [[ "$out" == *"cannot connect"* ]] || break
-          sleep 3
-        done
-      fi
+      nudge_snapshot "$nudge_file"
       return 0
     fi
     sleep 1
   done
   systemctl --user status "$UNIT" --no-pager -n 40 >&2 || true
   die "daemon did not become healthy under $UNIT (logs: journalctl --user -u $UNIT, $PASEO_HOME/daemon.log)"
+}
+
+nudge_snapshot() {
+  local nudge_file="$1"
+  [[ -f "$nudge_file" ]] || return 0
+  log "Nudging agents from the snapshot"
+  # /api/health answers before the WebSocket accepts sessions (503), and
+  # deploy-nudge exits 0 on every failure: retry while it cannot connect.
+  local attempt out
+  for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    out="$(nudge --nudge "$nudge_file" 2>&1)"
+    printf '%s\n' "$out"
+    [[ "$out" == *"cannot connect"* ]] || break
+    sleep 3
+  done
+}
+
+write_start_script() {
+  # Boot hook entry for hosts without systemd: start the daemon if it is not
+  # running (`paseo daemon start` is a no-op then), with the unit's env.
+  local script="$ROOT/start-detached.sh"
+  cat >"$script.tmp.$$" <<EOF
+#!/usr/bin/env bash
+# Managed by paseo scripts/deploy/activate-runtime.sh — edits are overwritten.
+# Starts the Paseo daemon detached on a host without systemd. Safe to rerun.
+set -a
+. "$ENV_FILE"
+[ -f "$PASEO_HOME/deploy.env" ] && . "$PASEO_HOME/deploy.env"
+set +a
+exec "$ROOT/current/bin/paseo" daemon start --home "$PASEO_HOME"
+EOF
+  chmod 755 "$script.tmp.$$"
+  mv "$script.tmp.$$" "$script"
+}
+
+restart_detached() {
+  local nudge_file="$PASEO_HOME/deploy-nudge-activate.json"
+  local old_pid new_pid
+  old_pid="$(pid_file_pid)"
+  if [[ -n "$old_pid" ]]; then
+    log "Snapshotting running agents before restart"
+    nudge --snapshot "$nudge_file"
+    log "Stopping detached daemon (pid $old_pid)"
+    "$ROOT/current/bin/paseo" daemon stop --home "$PASEO_HOME" || die "could not stop daemon pid $old_pid"
+  else
+    rm -f "$nudge_file"
+  fi
+  log "No systemd user manager: starting the daemon detached (paseo daemon start)"
+  "$ROOT/start-detached.sh" || die "paseo daemon start failed (logs: $PASEO_HOME/daemon.log)"
+  new_pid="$(pid_file_pid)"
+  if [[ -z "$new_pid" || "$new_pid" == "$old_pid" ]] || ! health_ok; then
+    die "daemon did not come up detached (logs: $PASEO_HOME/daemon.log)"
+  fi
+  log "Daemon healthy (pid ${old_pid:-none} -> $new_pid)"
+  nudge_snapshot "$nudge_file"
 }
 
 # Free disk: only the running release stays. Runs after the restart, so the
@@ -313,9 +380,15 @@ case "$MODE" in
   activate)
     install_release
     point_current_at "$RELEASE_DIR"
-    write_unit
-    ensure_linger
-    restart_daemon
+    if systemd_booted; then
+      write_unit
+      ensure_linger
+      restart_daemon
+    else
+      write_env
+      write_start_script
+      restart_detached
+    fi
     prune_releases
     ;;
   *)
