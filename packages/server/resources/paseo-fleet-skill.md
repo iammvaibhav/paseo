@@ -21,6 +21,8 @@ Start with these tools. They are loaded on every connection:
 | Wait for one agent's turn to end           | `fleet_wait_agent`                                   |
 | Wait for several agents (any or all)       | `fleet_wait_agents`                                  |
 | Webhook when agents finish                 | `fleet_notify_on_finish`                             |
+| Give an agent a screenshot or file         | `fleet_upload_file`, then pass the `fileId`          |
+| See an image an agent produced             | `fleet_read_image`                                   |
 
 Everything else is one search away. Call `paseo_tool_search` with what you want in plain words ("move an agent to another host", "archive a workspace", "cancel an agent"); it returns the matching tools with their input schemas. Run any of them with `paseo_tool_call { name, arguments }`.
 
@@ -43,6 +45,14 @@ Every wait and notification is bound to a **turn**. `fleet_create_agent` and `fl
 ## Reading a transcript
 
 `fleet_get_transcript { agentId, limit, cursor, direction, turnId?, types? }` pages an agent's full transcript: user and assistant messages, reasoning, and tool calls with their input, output and error inline. It starts at the newest entries; pass `olderCursor` back to read further back, or `newerCursor` with `direction: "newer"` to read only what was added since. Text fields longer than `maxFieldChars` (default 8000) are cut and counted in `truncatedFields`. It never starts a closed agent.
+
+## Images and files
+
+Everything moves through MCP; never copy files to a host yourself.
+
+- **To an agent:** `fleet_upload_file { fileName, mimeType, data }` (base64) returns a `fileId`. Pass images as `images: [{ fileId }]` to `fleet_create_agent` or `fleet_send_prompt` (busy or idle agents, any host); pass other files as `attachments: [{ type: "uploaded_file", id: fileId }]` to `fleet_send_prompt`. Agents on another host get their own copy. Small images can also go inline as `images: [{ data, mimeType }]`.
+- **Large files:** upload in chunks of a few MB: the first call adds `size` (total bytes) and returns `uploadId`; send the rest as `{ uploadId, data }`. The last chunk returns the `fileId`. A request body over 25 MB is rejected with a JSON-RPC error.
+- **From an agent:** `fleet_read_image { agentId, path }` returns the image (up to 10 MB) as MCP image content. Use the absolute path the agent reported, or an image proof path from `fleet_context`.
 
 ## Rules that keep you out of trouble
 

@@ -28,7 +28,6 @@ import {
   AgentPermissionResponseSchema,
   AgentSnapshotPayloadSchema,
   WorkspaceScriptPayloadSchema,
-  AgentAttachmentSchema,
   type AgentAttachment,
 } from "../../messages.js";
 import type { AgentListItemPayload } from "../../messages.js";
@@ -44,6 +43,16 @@ import type { AgentStorage } from "../agent-storage.js";
 import type { StoredAgentRecord } from "../agent-storage.js";
 import { ensureAgentLoaded } from "../agent-loading.js";
 import { seedStoredTimeline, registerFleetTranscriptTool } from "./fleet-transcript.js";
+import {
+  FleetAttachmentInputSchema,
+  FleetImageInputSchema,
+  forwardUploadedFilesToPeer,
+  registerFleetFileTools,
+  resolveFleetAttachments,
+  resolveFleetImages,
+  storeImagesAsUploads,
+} from "./fleet-files.js";
+import type { ChunkedUploadSessions } from "../../file-upload/index.js";
 import { isStoredAgentProviderAvailable } from "../../persistence-hooks.js";
 import {
   archiveByScope,
@@ -238,6 +247,8 @@ export interface PaseoToolHostDependencies {
   resolveDocThreads?: (() => DocThreadsService) | null;
   paseoToolPolicy?: ProviderPaseoToolsPolicy;
   paseoHome?: string;
+  /** Daemon-wide chunked uploads behind fleet_upload_file; absent → the tool is not offered. */
+  chunkedUploads?: ChunkedUploadSessions | null;
   worktreesRoot?: string;
   /**
    * This daemon's serverId, for building paseo://h/… deep links.
@@ -4621,6 +4632,12 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         .describe(
           "M8 instruction ledger: the open instruction id this dispatch answers (e.g. '#12'). The envelope lists open ids; cite one on every card you emit for a user instruction.",
         ),
+      images: z
+        .array(FleetImageInputSchema)
+        .optional()
+        .describe(
+          "Native images for the new agent's first prompt: inline {data, mimeType} (base64) or {fileId} from fleet_upload_file. Use when the user or a ticket attached screenshots the worker should see.",
+        ),
     })
     .passthrough();
 
@@ -5584,7 +5601,11 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         guidance: z.string().optional(),
       },
     },
-    async (args, context) => {
+    async (rawArgs, context) => {
+      // fileId images become inline images here, so every path below (gate,
+      // local create, peer create) carries bytes the target host can use.
+      const resolvedImages = await resolveFleetImages(rawArgs.images, options.paseoHome);
+      const args = { ...rawArgs, images: resolvedImages };
       const {
         host: rawHost,
         cwd,
@@ -6188,16 +6209,23 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           .describe(
             "M8 instruction ledger: the open instruction id this dispatch answers (e.g. '#12'). The envelope lists open ids; cite one on every card you emit for a user instruction.",
           ),
-        // Composer paste-through: the Commander forwards user attachments
-        // (uploaded_file, github_pr, review, ...) as descriptors only — no
-        // base64 through the model. The receiving daemon resolves them into
-        // the worker prompt via the existing attachment store.
-        attachments: z
-          .array(AgentAttachmentSchema)
+        images: z
+          .array(FleetImageInputSchema)
           .optional()
           .describe(
-            "User attachments to forward to the worker (composer paste-through). Descriptors only; " +
-              "uploaded_file references are resolved by the daemon from its attachment store.",
+            "Native images for the agent: inline {data, mimeType} (base64) or {fileId} from fleet_upload_file. " +
+              "Delivered in every mode, to local and peer agents.",
+          ),
+        // Composer paste-through: the Commander forwards user attachments
+        // (uploaded_file, github_pr, review, ...) as descriptors.
+        attachments: z
+          .array(FleetAttachmentInputSchema)
+          .optional()
+          .describe(
+            "Attachments to forward to the agent (composer paste-through). An uploaded_file is given as " +
+              '{type: "uploaded_file", id: fileId} (fileId from fleet_upload_file) or as a full descriptor whose ' +
+              "path exists on this host; the agent gets the file's name, path and size as text and opens it " +
+              "itself. Agents on another host get a copy in their host's upload store. A missing file is an error.",
           ),
       },
       outputSchema: {
@@ -6217,7 +6245,15 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         guidance: z.string().optional(),
       },
     },
-    async ({ host, agentId, prompt, mode, attachments, respondsTo }) => {
+    async ({
+      host,
+      agentId,
+      prompt,
+      mode,
+      images: imageInputs,
+      attachments: attachmentInputs,
+      respondsTo,
+    }) => {
       // Fail fast (spec 03): agentId is the UUID agent id family — a title or
       // an mcp_ proposal id is never an agent. Reject at call time with
       // guidance so the model self-corrects in one step.
@@ -6248,6 +6284,19 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         return resolution.host;
       };
       const targetHost = await resolveSendTargetHost();
+      // Resolved on this host before any delivery: fileIds become bytes or
+      // store descriptors, and a file that is not here fails the send.
+      const images = await resolveFleetImages(imageInputs, options.paseoHome);
+      const attachments = await resolveFleetAttachments(attachmentInputs, options.paseoHome);
+      const requirePeerClient = (peerHost: string): DaemonClient => {
+        const client = resolveFleetHost(peerHost);
+        if (!client) {
+          throw new Error(
+            `Host "${peerHost}" is not a configured peer; this daemon knows: ${knownFleetHostsText()}`,
+          );
+        }
+        return client;
+      };
       // The Commander's default comes from the fleet central setting
       // commanderToWorkerMode (default "interrupt" — a fleet direction change
       // is time-sensitive and queue-until-idle can sit for tens of minutes).
@@ -6268,7 +6317,8 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           agentId,
           prompt,
           mode,
-          attachments,
+          attachments: attachmentInputs,
+          images: imageInputs,
           respondsTo,
         })}`;
         const pendingMutation = findPendingMutation(dedupeKey);
@@ -6289,9 +6339,23 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         // The send becomes a proposal; auto mode delivers immediately via the
         // approvals module, ask mode waits for Approve/Edit/Deny.
         try {
+          // A proposal delivers text only, so images and files ride in the
+          // message as uploaded-file references the agent opens itself; a
+          // peer target gets its own copy of each file first.
+          const gatedAttachments = [
+            ...(attachments ?? []),
+            ...(await storeImagesAsUploads(images, options.chunkedUploads)),
+          ];
+          const deliveredAttachments = isFleetLocalTarget(targetHost)
+            ? gatedAttachments
+            : await forwardUploadedFilesToPeer(gatedAttachments, requirePeerClient(targetHost));
+          const message =
+            deliveredAttachments && deliveredAttachments.length > 0
+              ? [prompt, ...deliveredAttachments.map(renderPromptAttachmentAsText)].join("\n\n")
+              : prompt;
           const gated = await runCommanderGatedAction({
             toolName: "fleet_send_prompt",
-            toolInput: { host: targetHost, agentId, prompt, mode, attachments },
+            toolInput: { host: targetHost, agentId, prompt: message, mode },
             buildProposal: () => ({
               origin: "commander",
               // The proposal's serverId is the host the Commander (origin)
@@ -6301,7 +6365,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
               // originating host identity from the approval card.
               serverId: serverId ?? "",
               targetAgentId: agentId,
-              message: prompt,
+              message,
               deliveryMode: effectiveMode,
               reason: "Commander send",
               classification: "normal",
@@ -6358,6 +6422,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
             prompt,
             mode: effectiveMode,
             attachments,
+            images,
             replaceOrigin: "machinery",
             recordStopOrigin: (stopAgentId, origin) =>
               missionControlService?.recordStopOrigin(stopAgentId, origin),
@@ -6391,19 +6456,16 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       if (isFleetLocalTarget(targetHost)) {
         return dispatchLocalPrompt();
       }
-      const client = resolveFleetHost(targetHost);
-      if (!client) {
-        throw new Error(
-          `Host "${targetHost}" is not a configured peer; this daemon knows: ${knownFleetHostsText()}`,
-        );
-      }
+      const client = requirePeerClient(targetHost);
       const before = await Promise.resolve()
         .then(() => client.fetchAgent(agentId))
         .catch(() => null);
       const beforeTurn = await readCurrentTurn({ client, agentId }).catch(() => null);
+      const peerAttachments = await forwardUploadedFilesToPeer(attachments, client);
       await client.sendAgentMessage(agentId, prompt, {
         dispatchMode: effectiveMode,
-        ...(attachments && attachments.length > 0 ? { attachments } : {}),
+        ...(images ? { images } : {}),
+        ...(peerAttachments ? { attachments: peerAttachments } : {}),
       });
       const wasIdle = before?.agent.status !== "running";
       const turn = await resolvePromptedTurn({
@@ -6441,6 +6503,11 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
   registerFleetControlTools(fleetControlOptions);
   registerFleetTranscriptTool(fleetControlOptions);
   registerFleetWaitTools(fleetControlOptions);
+  registerFleetFileTools({
+    ...fleetControlOptions,
+    paseoHome: options.paseoHome,
+    chunkedUploads: options.chunkedUploads,
+  });
 
   // 04 — the 11 split meta tools share one output contract (same as the old
   // fleet_meta) and the M8 respondsTo ledger field. "scheduled" is an agent's
