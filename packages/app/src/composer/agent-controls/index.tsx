@@ -118,6 +118,9 @@ interface AgentControlOption {
 
 type AgentControlSelector = "provider" | "mode" | "model" | "thinking" | `feature-${string}`;
 
+/** Renders the agent mode (Approach) picker for the toolbar row or the compact sheet. */
+type AgentModePickerSlot = (surface: "toolbar" | "sheet") => ReactNode;
+
 const EMPTY_AGENT_PROVIDER_DEFINITIONS: AgentProviderDefinition[] = [];
 
 /**
@@ -170,8 +173,8 @@ interface ControlledAgentControlsProps {
   onRetryModelProvider?: (provider: AgentProvider) => void;
   isRetryingModelProvider?: boolean;
   modeControl?: AgentModeControlValue | null;
-  /** Agent mode picker (Do it yourself, Orchestrator, …), rendered after the mode control. */
-  agentModePicker?: ReactNode;
+  /** Approach picker (Build, Orchestrate, …), rendered after the access mode control. */
+  agentModePicker?: AgentModePickerSlot;
   modelSelectorServerId?: string | null;
   isCompactLayout?: boolean;
 }
@@ -1074,7 +1077,7 @@ interface DesktopAgentControlsContentProps {
     onPress: () => void;
   }) => ReactElement;
   modeControl?: AgentModeControlValue | null;
-  agentModePicker?: ReactNode;
+  agentModePicker?: AgentModePickerSlot;
   presentation: ComposerControlPresentation;
   glyphSize: number;
   activeSheet: ActiveSheet;
@@ -1252,7 +1255,7 @@ function DesktopAgentControlsContent(props: DesktopAgentControlsContentProps) {
       ) : null}
 
       {modeControl ? <AgentModeControl {...modeControl} onClose={onDropdownClose} /> : null}
-      {agentModePicker}
+      {agentModePicker?.("toolbar")}
 
       {presentation.aggregateFeatures && features?.length ? (
         <>
@@ -1340,7 +1343,7 @@ interface SheetAgentControlsContentProps {
     onPress: () => void;
   }) => ReactElement;
   modeControl?: AgentModeControlValue | null;
-  agentModePicker?: ReactNode;
+  agentModePicker?: AgentModePickerSlot;
   glyphSize: number;
   modelSelectorServerId: string | null;
   canSwitchProvider: boolean;
@@ -1436,7 +1439,7 @@ function SheetAgentControlsContent(props: SheetAgentControlsContentProps) {
       ) : null}
 
       {modeControl ? <AgentModeControl {...modeControl} surface="sheet" /> : null}
-      {agentModePicker}
+      {agentModePicker?.("sheet")}
 
       {(features ?? []).map((feature) => (
         <SheetFeatureItem
@@ -2074,11 +2077,18 @@ export const AgentControls = memo(function AgentControls({
     },
     [refreshSnapshot],
   );
-  const agentModePicker = useMemo(
+  const agentModePicker = useMemo<AgentModePickerSlot | undefined>(
     () =>
-      isCommander ? null : (
-        <LiveAgentModePicker serverId={serverId} agentId={agentId} disabled={!client} />
-      ),
+      isCommander
+        ? undefined
+        : (surface) => (
+            <LiveAgentModePicker
+              serverId={serverId}
+              agentId={agentId}
+              disabled={!client}
+              surface={surface}
+            />
+          ),
     [agentId, client, isCommander, serverId],
   );
 

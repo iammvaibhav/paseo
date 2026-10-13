@@ -204,10 +204,12 @@ export const ru: TranslationResources = {
     },
   },
   agentMode: {
-    label: "Режим агента",
+    label: "Подход",
     tooltip: "Как работает агент",
     routingLoading: "Поиск места выполнения…",
-    messageChip: "Режим: {{mode}}",
+    messageChip: "Подход: {{mode}}",
+    searchPlaceholder: "Поиск подходов...",
+    selectWithValue: "Выбрать подход ({{value}})",
   },
   agentControls: {
     provider: {
