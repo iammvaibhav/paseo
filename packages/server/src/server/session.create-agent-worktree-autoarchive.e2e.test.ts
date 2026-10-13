@@ -9,6 +9,7 @@ import { createDaemonTestContext, type DaemonTestContext } from "./test-utils/in
 import type { CreateAgentOptions } from "./test-utils/index.js";
 import type { CreateAgentWorktreeTarget } from "./messages.js";
 import { createRealpathAwarePathMatcher } from "../utils/path.js";
+import { buildPeerCreateAgentPayload } from "./agent/tools/paseo-tools.js";
 
 let ctx: DaemonTestContext;
 const tempRoots: string[] = [];
@@ -395,6 +396,85 @@ test("create_agent_request rejects legacy git options before creating a worktree
   await expectActiveAgentListEmpty();
   await expectWorktreeListEmpty(repoDir);
 });
+
+test("create_agent_request rejects worktree combined with legacy worktreeName before creating a worktree", async () => {
+  const repoDir = createGitRepo();
+
+  await expect(
+    ctx.client.createAgent({
+      config: {
+        ...getFullAccessConfig("codex"),
+        cwd: repoDir,
+      },
+      worktreeName: "legacy-slug",
+      worktree: {
+        mode: "branch-off",
+        newBranch: "target-branch",
+        base: "main",
+      },
+      initialPrompt: "Say done.",
+    }),
+  ).rejects.toThrow("worktree cannot be combined with git options or worktreeName");
+
+  await expectActiveAgentListEmpty();
+  await expectWorktreeListEmpty(repoDir);
+});
+
+test("create_agent_request removes a legacy worktreeName worktree when a later step fails", async () => {
+  const repoDir = createGitRepo();
+
+  await expect(
+    ctx.client.createAgent({
+      config: {
+        ...getFullAccessConfig("codex"),
+        modeId: "missing-mode",
+        cwd: repoDir,
+      },
+      worktreeName: "legacy-failed-create",
+      initialPrompt: "This agent cannot be created.",
+    }),
+  ).rejects.toThrow();
+
+  await expectActiveAgentListEmpty();
+  await expect
+    .poll(async () => (await ctx.client.getPaseoWorktreeList({ cwd: repoDir })).worktrees, {
+      timeout: 10000,
+      interval: 100,
+    })
+    .toEqual([]);
+  // The source-directory workspace stays; only the created worktree is cleaned up.
+  const workspaces = await ctx.client.fetchWorkspaces();
+  expect(workspaces.entries.filter((entry) => entry.workspaceKind === "worktree")).toEqual([]);
+});
+
+test("a peer fleet_create_agent with a worktree slug creates exactly one worktree and workspace", async () => {
+  const repoDir = createGitRepo();
+  const codex = getFullAccessConfig("codex");
+
+  const created = await ctx.client.createAgent(
+    buildPeerCreateAgentPayload({
+      provider: `${codex.provider}/${codex.model}`,
+      cwd: repoDir,
+      initialPrompt: "Say done.",
+      title: "Peer worktree create",
+      worktreeSlug: "peer-worktree-slug",
+      branchName: "research/peer-worktree-branch",
+      settings: { modeId: codex.modeId, thinkingOptionId: codex.thinkingOptionId },
+    }),
+  );
+
+  const isAgentWorktree = createRealpathAwarePathMatcher(created.cwd);
+  const listed = await ctx.client.getPaseoWorktreeList({ cwd: repoDir });
+  expect(listed.worktrees).toHaveLength(1);
+  expect(isAgentWorktree(listed.worktrees[0]?.worktreePath ?? "")).toBe(true);
+  const workspaces = await ctx.client.fetchWorkspaces();
+  expect(workspaces.entries).toHaveLength(1);
+  expect(isAgentWorktree(workspaces.entries[0]?.workspaceDirectory ?? "")).toBe(true);
+  expect(workspaces.entries[0]?.id).toBe(created.workspaceId);
+
+  await ctx.client.waitForFinish(created.id, 10000);
+  await ctx.client.archivePaseoWorktree({ worktreePath: created.cwd });
+}, 30000);
 
 test("create_agent_request fails cleanly when worktree creation cannot resolve target", async () => {
   const repoDir = createGitRepo();

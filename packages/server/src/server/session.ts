@@ -6178,7 +6178,7 @@ export class Session {
         cwd: config.cwd,
         target: worktree,
         firstAgentContext,
-        hasLegacyGitOptions: Boolean(git),
+        hasLegacyGitOptions: Boolean(git || worktreeName),
       });
       createdWorktreeForCleanup = createdWorktree;
       const resolvedIntent = await this.resolveSessionCreateAgentIntent({
@@ -6231,7 +6231,13 @@ export class Session {
           provisionalTitle,
           firstAgentContext,
           buildSessionConfig: (sessionConfig, gitOptions, legacyWorktreeName, ctx) =>
-            this.buildAgentSessionConfig(sessionConfig, gitOptions, legacyWorktreeName, ctx),
+            this.buildAgentSessionConfig(sessionConfig, gitOptions, legacyWorktreeName, ctx, {
+              // A legacy git/worktreeName worktree is created inside createAgentCommand;
+              // track it so a later failure (mode validation, agent start) removes it.
+              onWorktreeCreated: (created) => {
+                createdWorktreeForCleanup = created;
+              },
+            }),
         },
       );
       createdAgentId = snapshot.id;
@@ -7007,6 +7013,7 @@ export class Session {
     gitOptions?: GitSetupOptions,
     legacyWorktreeName?: string,
     firstAgentContext?: FirstAgentContext,
+    hooks?: { onWorktreeCreated?: (created: CreatePaseoWorktreeWorkflowResult) => void },
   ): Promise<{
     sessionConfig: AgentSessionConfig;
     setupContinuation?: CreatePaseoWorktreeWorkflowResult["setupContinuation"];
@@ -7018,8 +7025,8 @@ export class Session {
         worktreesRoot: this.worktreesRoot,
         sessionLogger: this.sessionLogger,
         workspaceGitService: this.workspaceGitService,
-        createPaseoWorktree: (input, serviceOptions) =>
-          this.createPaseoWorktreeWorkflow(input, {
+        createPaseoWorktree: async (input, serviceOptions) => {
+          const created = await this.createPaseoWorktreeWorkflow(input, {
             ...serviceOptions,
             setupContinuation: {
               kind: "agent",
@@ -7038,7 +7045,10 @@ export class Session {
                 }),
               logger: this.sessionLogger,
             },
-          }),
+          });
+          hooks?.onWorktreeCreated?.(created);
+          return created;
+        },
         checkoutExistingBranch: (cwd, branch) =>
           this.gitMutation.checkoutExistingBranch(cwd, branch),
         createBranchFromBase: (params) => this.gitMutation.createBranchFromBase(params),

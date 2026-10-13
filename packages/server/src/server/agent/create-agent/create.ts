@@ -282,10 +282,9 @@ async function resolveSessionCreateAgent(
   // worktree and/or workspace record — cwd (required to resolve modes) is
   // only known once that step completes. If validation throws, any
   // worktree/workspace buildSessionConfig created is the caller's
-  // responsibility to clean up (session.ts's handleCreateAgentRequest does
-  // this for the worktree path via cleanupCreatedWorktreeAfterFailedAgentCreate;
-  // this is a pre-existing gap for directory-only workspace creates, not
-  // introduced by this validation).
+  // responsibility to clean up (session.ts's createSessionAgent removes a
+  // created worktree via cleanupCreatedWorktreeAfterFailedAgentCreate; a
+  // directory-only workspace create is still not cleaned up).
   const resolvedCreateConfig = await dependencies.providerSnapshotManager.resolveCreateConfig({
     cwd: builtSessionConfig.cwd,
     provider: builtSessionConfig.provider,

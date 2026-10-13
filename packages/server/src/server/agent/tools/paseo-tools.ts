@@ -1152,7 +1152,7 @@ interface PeerCreateAgentSettings {
   features?: Record<string, unknown>;
 }
 
-function buildPeerCreateAgentPayload(args: {
+export function buildPeerCreateAgentPayload(args: {
   provider: string;
   cwd?: string;
   workspaceId?: string;
@@ -1170,13 +1170,6 @@ function buildPeerCreateAgentPayload(args: {
   const { provider, cwd, workspaceId, initialPrompt, images, title, labels, settings } = args;
   const providerSlash = provider.indexOf("/");
   const resolvedWorktree = resolveCommanderWorktreePlan(args);
-  const peerWorktreeTarget = resolvedWorktree?.branchName
-    ? {
-        mode: "branch-off" as const,
-        newBranch: resolvedWorktree.branchName,
-        ...(resolvedWorktree.baseBranch ? { base: resolvedWorktree.baseBranch } : {}),
-      }
-    : undefined;
   return {
     provider: (providerSlash > 0 ? provider.slice(0, providerSlash) : provider) as AgentProvider,
     ...(providerSlash > 0 ? { model: provider.slice(providerSlash + 1) } : {}),
@@ -1186,10 +1179,32 @@ function buildPeerCreateAgentPayload(args: {
     ...(images && images.length > 0 ? { images } : {}),
     title,
     ...(labels && Object.keys(labels).length > 0 ? { labels: normalizeLabels(labels) } : {}),
-    ...(peerWorktreeTarget ? { worktree: peerWorktreeTarget } : {}),
-    ...(resolvedWorktree?.worktreeName ? { worktreeName: resolvedWorktree.worktreeName } : {}),
+    ...buildPeerWorktreeFields(resolvedWorktree),
     ...buildPeerCreateSettings(settings),
   };
+}
+
+/**
+ * The worktree fields of a peer create. The `worktree` target and the legacy
+ * `worktreeName` each create a worktree on the peer, so send exactly one: the
+ * target when the plan names a branch, `worktreeName` only for a slug-only plan.
+ */
+function buildPeerWorktreeFields(
+  plan: CommanderSpawnPlanInput["worktree"] | undefined,
+): Pick<CreateAgentRequestOptions, "worktree" | "worktreeName"> {
+  if (plan?.branchName) {
+    return {
+      worktree: {
+        mode: "branch-off",
+        newBranch: plan.branchName,
+        ...(plan.baseBranch ? { base: plan.baseBranch } : {}),
+      },
+    };
+  }
+  if (plan?.worktreeName) {
+    return { worktreeName: plan.worktreeName };
+  }
+  return {};
 }
 
 /** The create-request fields a peer derives from fleet_create_agent `settings`. */
