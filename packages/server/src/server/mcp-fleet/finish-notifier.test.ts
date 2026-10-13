@@ -833,4 +833,52 @@ describe("createMcpFinishNotifier", () => {
       status: 200,
     });
   });
+
+  it("a send that joins the turn a watch follows does not post that turn's end twice", async () => {
+    const runEnds = Promise.withResolvers<FleetAgentWaitResult>();
+    const subject = notifier();
+    const arm = (tool: string) =>
+      subject.arm({
+        client: "grok-bot",
+        target: { url },
+        agentId: "agent-1",
+        turnId: "turn-1",
+        tool,
+        context: "essay-42",
+        waitForAgent: () => runEnds.promise,
+      });
+    const created = arm("fleet_create_agent");
+    // A live steer reports the turn already running.
+    await arm("fleet_send_prompt");
+    runEnds.resolve(result({ turnId: "turn-1" }));
+    await created;
+    expect(received.map((r) => r.body.type)).toEqual(["paseo.agent.finished"]);
+  });
+
+  it("an arm subscribes the client to the agent across a restart until it unsubscribes", async () => {
+    const binding: McpClientBinding = { target: { url }, waitForAgent: async () => result({}) };
+    const before = daemon({});
+    await before.arm({
+      ...binding,
+      client: "grok-bot",
+      agentId: "agent-1",
+      tool: "fleet_create_agent",
+      context: "essay-42",
+    });
+    expect(before.subscription("grok-bot", "agent-1")).toEqual({ context: "essay-42" });
+    expect(before.subscription("grok-bot", "agent-2")).toBeNull();
+    expect(before.subscription("other-bot", "agent-1")).toBeNull();
+    await before.suspend();
+
+    const after = daemon({});
+    await after.restore(async () => binding);
+    expect(after.subscription("grok-bot", "agent-1")).toEqual({ context: "essay-42" });
+    after.unsubscribe("grok-bot", "agent-1");
+    expect(after.subscription("grok-bot", "agent-1")).toBeNull();
+    await after.suspend();
+
+    const again = daemon({});
+    await again.restore(async () => binding);
+    expect(again.subscription("grok-bot", "agent-1")).toBeNull();
+  });
 });

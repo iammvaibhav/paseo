@@ -15,6 +15,14 @@ import { createWatchJournal } from "../watch-journal.js";
  * Each watch is bound to a turn (the one the create/send started, else the
  * run in progress), so an earlier run's finish never fires it.
  *
+ * Every per-agent arm also records a subscription: the client wants to hear
+ * about this agent's runs. /mcp/fleet arms follow-up sends to a subscribed
+ * agent by default, so a client that asked once at create time keeps
+ * hearing about the runs its later prompts start. A send with
+ * notifyOnFinish: false unsubscribes. Subscriptions are rebuilt from the
+ * journal's armed/unsubscribed entries and lapse SUBSCRIPTION_TTL_MS after
+ * the client's last arm on the agent.
+ *
  * Watches survive a daemon restart. Every watch transition (armed, fired,
  * delivered, failed, suspended, restored, interrupted, resumed, gave_up) is
  * appended to a JSONL journal, which doubles as the queryable delivery
@@ -90,6 +98,11 @@ export interface McpFinishRunStart {
   turnId: string | null;
 }
 
+export interface McpFinishSubscription {
+  /** The notifyContext of the client's latest arm on the agent. */
+  context: string | null;
+}
+
 /** The agents this daemon hosts: a restart interrupts their runs, unlike agents on peers. */
 export interface McpFinishLocalAgents {
   /** The turn the agent runs now; null when idle or not hosted here. */
@@ -141,6 +154,15 @@ export interface McpFinishNotifier {
    */
   armGroup(input: ArmMcpGroupNotification): Promise<void>;
   /**
+   * The client's standing request to hear about an agent's runs: set by every
+   * per-agent arm, so a follow-up send to the agent arms by default. Null when
+   * the client never armed a watch on the agent, unsubscribed, or last armed
+   * one more than SUBSCRIPTION_TTL_MS ago.
+   */
+  subscription(client: string, agentId: string): McpFinishSubscription | null;
+  /** Drop the client's standing request for the agent (a send with notifyOnFinish: false). */
+  unsubscribe(client: string, agentId: string): void;
+  /**
    * Re-arm the watches a previous daemon process left pending. Call once at
    * startup, before the server accepts prompts, so a restored watch sees its
    * agent's resumed run start. `settled` resolves when every restored watch
@@ -157,6 +179,8 @@ export interface McpFinishNotifier {
 }
 
 export const MAX_NOTIFY_CONTEXT_LENGTH = 2000;
+/** A subscription lapses this long after the client last armed a watch on the agent. */
+export const SUBSCRIPTION_TTL_MS = 30 * 24 * 60 * 60_000;
 const LAST_MESSAGE_LIMIT = 4000;
 /** One probe for the turn a peer agent runs now; a running agent holds it this long. */
 const RESUME_PROBE_MS = 1_000;
@@ -221,6 +245,8 @@ type JournalEntry =
   /** A peer closed the agent mid-run; the watch now waits for the run it resumes. */
   | { event: "interrupted"; ts: string; watchId: string; agentId: string; turnId: string | null }
   | { event: "gave_up"; ts: string; watchId: string; agentId: string; why: string }
+  /** The client asked to stop hearing about the agent's later runs. */
+  | { event: "unsubscribed"; ts: string; watchId: string; agentId: string; client: string }
   | GroupArmedEntry
   | {
       event: "member_ended";
@@ -380,6 +406,38 @@ function pendingFromJournal(entries: readonly JournalEntry[]): {
   return { watches: [...watches.values()], groups: [...groups.values()] };
 }
 
+/** A client's standing request for an agent: its latest arm on the agent. */
+interface SubscriptionRecord extends McpFinishSubscription {
+  armedAt: number;
+  /** The latest arm's watch; compaction keeps its entries, so the subscription survives it. */
+  watchId: string;
+}
+
+const subscriptionKey = (client: string, agentId: string) => `${client}\u0000${agentId}`;
+
+/** The subscriptions the journal shows live at `now`: armed, not since unsubscribed, not lapsed. */
+function subscriptionsFromJournal(
+  entries: readonly JournalEntry[],
+  now: number,
+): Map<string, SubscriptionRecord> {
+  const subscriptions = new Map<string, SubscriptionRecord>();
+  for (const entry of entries) {
+    if (entry.event === "armed") {
+      subscriptions.set(subscriptionKey(entry.client, entry.agentId), {
+        context: entry.context,
+        armedAt: Date.parse(entry.ts),
+        watchId: entry.watchId,
+      });
+    } else if (entry.event === "unsubscribed") {
+      subscriptions.delete(subscriptionKey(entry.client, entry.agentId));
+    }
+  }
+  for (const [key, subscription] of subscriptions) {
+    if (now - subscription.armedAt >= SUBSCRIPTION_TTL_MS) subscriptions.delete(key);
+  }
+  return subscriptions;
+}
+
 export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpFinishNotifier {
   const fetchImpl = options.fetchImpl ?? fetch;
   const maxWatchMs = options.maxWatchMs ?? 24 * 60 * 60_000;
@@ -391,6 +449,7 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
   const active = new Map<string, ActiveWatch>();
   const activeGroups = new Map<string, AbortController>();
   let suspended = false;
+  const subscriptions = new Map<string, SubscriptionRecord>();
   const journal = options.journalPath
     ? createWatchJournal<JournalEntry>({ path: options.journalPath, logger })
     : null;
@@ -908,6 +967,25 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
 
   const arm = (input: ArmMcpFinishNotification): Promise<void> => {
     const now = new Date();
+    const turnId = input.turnId ?? options.localAgents?.activeTurnId(input.agentId) ?? null;
+    // A steer joins the run in progress, so a send can bind to the turn a
+    // watch already follows; a second watch would POST the same event twice.
+    if (turnId) {
+      for (const watch of active.values()) {
+        if (
+          watch.armed.client === input.client &&
+          watch.armed.agentId === input.agentId &&
+          watch.armed.context === input.context &&
+          watch.turnId === turnId
+        ) {
+          logger.info(
+            { watchId: watch.armed.watchId, agentId: input.agentId, turnId, tool: input.tool },
+            "mcp finish watch already armed for this turn",
+          );
+          return Promise.resolve();
+        }
+      }
+    }
     const armed: ArmedEntry = {
       event: "armed",
       ts: now.toISOString(),
@@ -917,10 +995,15 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
       host: input.host ?? null,
       tool: input.tool,
       context: input.context,
-      turnId: input.turnId ?? options.localAgents?.activeTurnId(input.agentId) ?? null,
+      turnId,
       deadline: now.getTime() + maxWatchMs,
     };
     record(armed);
+    subscriptions.set(subscriptionKey(input.client, input.agentId), {
+      context: input.context,
+      armedAt: now.getTime(),
+      watchId: armed.watchId,
+    });
     // Armed while shutting down: journaled, so the next process restores it.
     if (suspended) return Promise.resolve();
     return start(armed, input, watchUntilFinished);
@@ -972,12 +1055,37 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
       );
     },
 
+    subscription(client, agentId) {
+      const subscription = subscriptions.get(subscriptionKey(client, agentId));
+      if (!subscription || Date.now() - subscription.armedAt >= SUBSCRIPTION_TTL_MS) return null;
+      return { context: subscription.context };
+    },
+
+    unsubscribe(client, agentId) {
+      if (!subscriptions.delete(subscriptionKey(client, agentId))) return;
+      record({
+        event: "unsubscribed",
+        ts: new Date().toISOString(),
+        watchId: `unsubscribe:${randomUUID()}`,
+        agentId,
+        client,
+      });
+    },
+
     async restore(resolveClient) {
       if (!journal) return { restored: 0, settled: Promise.resolve() };
       const entries = await journal.read((all) => {
         const { watches, groups } = pendingFromJournal(all);
-        return new Set([...watches, ...groups].map((pending) => pending.armed.watchId));
+        const live = subscriptionsFromJournal(all, Date.now());
+        return new Set([
+          ...[...watches, ...groups].map((pending) => pending.armed.watchId),
+          ...[...live.values()].map((subscription) => subscription.watchId),
+        ]);
       });
+      for (const [key, subscription] of subscriptionsFromJournal(entries, Date.now())) {
+        // An arm made since startup is newer than anything the journal held.
+        if (!subscriptions.has(key)) subscriptions.set(key, subscription);
+      }
       const { watches, groups } = pendingFromJournal(entries);
       // Records why a pending watch or group is dropped, else that it is restored.
       const admit = async (armed: ArmedEntry | GroupArmedEntry) => {

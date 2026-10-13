@@ -70,6 +70,8 @@ const NOTIFY_INPUT_SHAPE = {
     .describe(
       "POST a paseo.agent.finished event to your configured webhook when this agent's run ends " +
         "(and paseo.agent.needs_permission if it blocks on a permission). Returns immediately. " +
+        "Once you arm it for an agent, later fleet_send_prompt calls to that agent arm it by default " +
+        "(reusing your last notifyContext); pass false on a send to stop. " +
         "The watch survives a daemon restart: it reports the run the restarted daemon resumes, or " +
         'reason "interrupted" when the run never resumes. If the agent\'s host restarts mid-run you ' +
         "first get a non-final paseo.agent.interrupted event (final: false), then paseo.agent.finished " +
@@ -212,6 +214,23 @@ function errorResult(text: string): PaseoToolResult {
   return { isError: true, content: [{ type: "text", text }] };
 }
 
+/** What a start/prompt call that armed the webhook tells the client. */
+function armedNotice(inherited: boolean): Record<string, unknown> {
+  if (!inherited) {
+    return {
+      notify: { armed: true },
+      guidance:
+        "Paseo will POST paseo.agent.finished to your webhook when this run ends. Do not poll for it.",
+    };
+  }
+  return {
+    notify: { armed: true, inherited: true },
+    guidance:
+      "notifyOnFinish is on for this agent from your earlier request: Paseo will POST paseo.agent.finished " +
+      "to your webhook when this run ends. Do not poll for it. Pass notifyOnFinish: false to stop.",
+  };
+}
+
 /** Validates fleet_notify_on_finish arguments into the agents to watch and how to notify. */
 function parseNotifyOnFinishRequest(args: Record<string, unknown>):
   | {
@@ -301,6 +320,35 @@ export async function createFleetMcpServer(options: FleetMcpServerOptions): Prom
     return parsed.success ? (parsed.data.running?.activeTurnId ?? null) : null;
   };
 
+  /**
+   * Whether a start/prompt call arms the client's webhook, and with which
+   * context. A follow-up send inherits the client's standing request for the
+   * agent, so a client that asked at create time keeps hearing about the runs
+   * its later prompts start; notifyOnFinish: false on a send drops it.
+   */
+  const resolveNotify = (
+    name: string,
+    toolArgs: Record<string, unknown>,
+    notify: z.infer<typeof NotifyArgsSchema>,
+  ): { arm: boolean; inherited: boolean; context: string | null } => {
+    const { clientName, finishNotifier } = options;
+    const sendAgentId =
+      !CREATE_TOOLS.has(name) && typeof toolArgs.agentId === "string" ? toolArgs.agentId : null;
+    if (notify.notifyOnFinish === false) {
+      if (sendAgentId && clientName) finishNotifier?.unsubscribe(clientName, sendAgentId);
+      return { arm: false, inherited: false, context: null };
+    }
+    const subscription =
+      sendAgentId && clientName && options.notifyTarget
+        ? (finishNotifier?.subscription(clientName, sendAgentId) ?? null)
+        : null;
+    return {
+      arm: notify.notifyOnFinish === true || subscription !== null,
+      inherited: notify.notifyOnFinish === undefined,
+      context: notify.notifyContext ?? subscription?.context ?? null,
+    };
+  };
+
   // Runs a catalog tool for this MCP client. For the agent start/prompt tools
   // it takes notifyOnFinish/notifyContext off the arguments and, after the
   // tool succeeds, arms the client's webhook instead.
@@ -320,8 +368,9 @@ export async function createFleetMcpServer(options: FleetMcpServerOptions): Prom
         `Invalid notify arguments: ${notify.error.issues.map((issue) => issue.message).join("; ")}`,
       );
     }
-    const wantsNotify = notify.data.notifyOnFinish === true;
-    if (wantsNotify && (!options.finishNotifier || !options.notifyTarget || !options.clientName)) {
+    const plan = resolveNotify(name, toolArgs, notify.data);
+    const { finishNotifier, notifyTarget, clientName } = options;
+    if (plan.arm && (!finishNotifier || !notifyTarget || !clientName)) {
       return errorResult(
         "notifyOnFinish needs a webhook for this MCP client (daemon.mcp.remoteClients[].notify), and none is configured. " +
           "Call again without notifyOnFinish and use fleet_wait_agent instead.",
@@ -329,7 +378,7 @@ export async function createFleetMcpServer(options: FleetMcpServerOptions): Prom
     }
     if (CATALOG_NOTIFY_TOOLS.has(name)) toolArgs.notifyOnFinish = false;
     const result = await catalog.executeTool(name, toolArgs, { signal });
-    if (!wantsNotify || result.isError) return result;
+    if (!plan.arm || result.isError) return result;
 
     const structured = (result.structuredContent ?? {}) as Record<string, unknown>;
     const agentId = CREATE_TOOLS.has(name) ? structured.agentId : toolArgs.agentId;
@@ -345,25 +394,17 @@ export async function createFleetMcpServer(options: FleetMcpServerOptions): Prom
     }
     const host = typeof toolArgs.host === "string" ? toolArgs.host : undefined;
     const turnId = typeof structured.turnId === "string" ? structured.turnId : null;
-    void options.finishNotifier!.arm({
-      client: options.clientName!,
-      target: options.notifyTarget!,
+    void finishNotifier!.arm({
+      client: clientName!,
+      target: notifyTarget!,
       agentId,
       ...(host ? { host } : {}),
       turnId,
       tool: name,
-      context: notify.data.notifyContext ?? null,
+      context: plan.context,
       waitForAgent,
     });
-    return {
-      ...result,
-      structuredContent: {
-        ...structured,
-        notify: { armed: true },
-        guidance:
-          "Paseo will POST paseo.agent.finished to your webhook when this run ends. Do not poll for it.",
-      },
-    };
+    return { ...result, structuredContent: { ...structured, ...armedNotice(plan.inherited) } };
   };
 
   for (const toolName of CORE_FLEET_TOOL_NAMES) {

@@ -165,6 +165,16 @@ describe("notifyOnFinish for MCP clients", () => {
         }),
       ],
       [
+        "fleet_send_prompt",
+        tool("fleet_send_prompt", async (input) => {
+          toolCalls.push(input as Record<string, unknown>);
+          return {
+            content: [],
+            structuredContent: { success: true, deliveryMode: "steer", turnId: "turn-10" },
+          };
+        }),
+      ],
+      [
         "fleet_agent_status",
         tool("fleet_agent_status", async () => ({
           content: [],
@@ -177,6 +187,7 @@ describe("notifyOnFinish for MCP clients", () => {
       getTool: (name) => tools.get(name),
       executeTool: (name, input, context) => tools.get(name)!.handler(input, context ?? {}),
     };
+    const subscriptions = new Map<string, string | null>();
     return {
       toolCalls,
       armed,
@@ -188,10 +199,20 @@ describe("notifyOnFinish for MCP clients", () => {
         finishNotifier: {
           arm: async (input) => {
             armed.push(input);
+            subscriptions.set(`${input.client}/${input.agentId}`, input.context);
           },
           armGroup: async (input) => {
             armedGroups.push(input);
           },
+          subscription: (client, agentId) => {
+            const key = `${client}/${agentId}`;
+            return subscriptions.has(key) ? { context: subscriptions.get(key) ?? null } : null;
+          },
+          unsubscribe: (client, agentId) => {
+            subscriptions.delete(`${client}/${agentId}`);
+          },
+          restore: async () => ({ restored: 0, settled: Promise.resolve() }),
+          suspend: async () => {},
         },
         notifyTarget: options.withTarget ? { url: "https://hook.example/x" } : null,
       }),
@@ -263,6 +284,45 @@ describe("notifyOnFinish for MCP clients", () => {
     const { armed, server } = setup({ withTarget: true });
     const { client, close } = await connect(server);
     await client.callTool({ name: "fleet_create_agent", arguments: { host: "local" } });
+    expect(armed).toEqual([]);
+    await close();
+  });
+
+  test("a follow-up send to an agent the client watched arms by default until it opts out", async () => {
+    const { armed, server } = setup({ withTarget: true });
+    const { client, close } = await connect(server);
+    await client.callTool({
+      name: "fleet_create_agent",
+      arguments: { host: "local", notifyOnFinish: true, notifyContext: "essay-42" },
+    });
+    const followUp = await client.callTool({
+      name: "fleet_send_prompt",
+      arguments: { agentId: "agent-9" },
+    });
+    expect(followUp.structuredContent).toMatchObject({ notify: { armed: true, inherited: true } });
+    expect(armed).toHaveLength(2);
+    expect(armed[1]).toMatchObject({
+      agentId: "agent-9",
+      turnId: "turn-10",
+      tool: "fleet_send_prompt",
+      // The create's context carries over, so the client can route the event.
+      context: "essay-42",
+    });
+
+    const optOut = await client.callTool({
+      name: "fleet_send_prompt",
+      arguments: { agentId: "agent-9", notifyOnFinish: false },
+    });
+    expect(optOut.structuredContent).not.toHaveProperty("notify");
+    await client.callTool({ name: "fleet_send_prompt", arguments: { agentId: "agent-9" } });
+    expect(armed).toHaveLength(2);
+    await close();
+  });
+
+  test("a send to an agent the client never watched does not arm", async () => {
+    const { armed, server } = setup({ withTarget: true });
+    const { client, close } = await connect(server);
+    await client.callTool({ name: "fleet_send_prompt", arguments: { agentId: "agent-9" } });
     expect(armed).toEqual([]);
     await close();
   });
