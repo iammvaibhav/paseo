@@ -392,7 +392,8 @@ export async function createFleetMcpServer(options: FleetMcpServerOptions): Prom
         "POSTs paseo.agent.finished as each agent's turn ends; group POSTs one paseo.agents.group_finished " +
         "once every agent's turn has ended. needs_permission always POSTs per agent and does not complete " +
         "the group. Each agent binds to the turnId given, else to its run in progress; an idle agent with " +
-        "no run fires at once with turnId null. Returns immediately.",
+        "no run fires at once with turnId null. Watches survive a daemon restart: each agent reports the " +
+        'run the restarted daemon resumes, or reason "interrupted" when it never resumes. Returns immediately.',
       inputSchema: NOTIFY_ON_FINISH_INPUT.loose(),
     },
     async (args: Record<string, unknown>) => {

@@ -82,6 +82,7 @@ Users can also detach an existing subagent from the subagents track. Detach is d
 Permission requests are notification checkpoints, not the end of that subscription. The caller is notified again after a permission response when the child finishes, errors, or requests another permission.
 The permission notification includes the normalized request plus the child and request IDs, so the caller can inspect it and respond without fetching agent status.
 A watched child that closes before its finish event also notifies the caller so delegated work cannot disappear silently during archive or workspace teardown.
+A daemon restart is not a close. These watches are journaled to `$PASEO_HOME/mcp-fleet/agent-finish-watches.jsonl` (one line per transition: armed, fired, delivered, skipped, failed, stopped, suspended, restored, resumed, gave_up). Shutdown suspends them before agents close, so the caller never hears the shutdown's "closed". The next daemon restores each pending watch: it waits for the child's resumed run (the deploy nudge restarts it) and reports that run's end, or tells the caller the child "was interrupted by a daemon restart and did not resume" when no run starts within ten minutes. `/mcp/fleet` webhook watches, including `fleet_notify_on_finish` group watches, are journaled the same way in `$PASEO_HOME/mcp-fleet/finish-watches.jsonl`.
 
 ## Provider-managed child agents
 

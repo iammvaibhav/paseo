@@ -83,10 +83,10 @@ import {
 import {
   isSystemInjectedEnvelope,
   sendPromptToAgent,
-  setupFinishNotification,
   startAgentRun,
   waitForAgentRunStartWithTimeout,
 } from "../agent-prompt.js";
+import { setupFinishNotification } from "../finish-watches.js";
 import { buildAgentPrompt, renderPromptAttachmentAsText } from "../prompt-attachments.js";
 import { resolveCommanderUserMessage } from "../../mission-control/tagging.js";
 import { stripAgentNamePrefix } from "../../mission-control/spawn-title.js";

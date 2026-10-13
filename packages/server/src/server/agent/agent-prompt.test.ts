@@ -12,9 +12,9 @@ import {
   formatSystemNotificationPrompt,
   isSystemInjectedEnvelope,
   sendPromptToAgent,
-  setupFinishNotification,
   waitForAgentRunStartWithTimeout,
 } from "./agent-prompt.js";
+import { setupFinishNotification } from "./finish-watches.js";
 import type { AgentManagerEvent, ManagedAgent } from "./agent-manager.js";
 import type {
   AgentClient,

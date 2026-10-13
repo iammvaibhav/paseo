@@ -1,14 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { promises as fs } from "node:fs";
-import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Logger } from "pino";
 import type { AgentManager } from "../agent/agent-manager.js";
 import type { AgentStorage } from "../agent/agent-storage.js";
 import type { FleetAgentWaitResult } from "../agent/tools/fleet-wait.js";
-import { writeFileAtomic } from "../atomic-file.js";
 import type { RemoteMcpClient } from "../persisted-config.js";
 import type { ResolveSecret } from "../secrets/vault-secret.js";
+import { createWatchJournal } from "../watch-journal.js";
 
 /**
  * notifyOnFinish for remote MCP clients (/mcp/fleet). A client has no agent
@@ -29,8 +27,10 @@ import type { ResolveSecret } from "../secrets/vault-secret.js";
  * within resumeGraceMs. Delivery is at-least-once: an event fired but not
  * confirmed before the restart is sent again.
  *
- * Group watches (armGroup) live in memory only: a restart drops the group
- * event, while the per-agent watches it armed are journaled as usual.
+ * Group watches (armGroup) are journaled the same way: the group, each
+ * member's end as it lands, and the group event. A restored group keeps the
+ * members that already ended and waits out the rest, so the group event is
+ * sent once every member's run has ended, across restarts.
  */
 export type McpNotifyTarget = NonNullable<RemoteMcpClient["notify"]>;
 
@@ -120,7 +120,7 @@ export interface McpFinishNotifier {
    * Watch a set of agents and POST one paseo.agents.group_finished once every
    * agent's bound turn has ended (plus journaled per-agent watches when
    * perAgent is set). needs_permission still POSTs per agent and does not
-   * complete the group. In memory only: a restart drops the group event.
+   * complete the group. Journaled: the group event survives a restart.
    */
   armGroup(input: ArmMcpGroupNotification): Promise<void>;
   /**
@@ -142,8 +142,6 @@ export interface McpFinishNotifier {
 export const MAX_NOTIFY_CONTEXT_LENGTH = 2000;
 const LAST_MESSAGE_LIMIT = 4000;
 const RESPONSE_SNIPPET_LIMIT = 500;
-// The journal is rewritten down to its pending watches past this size.
-const JOURNAL_COMPACT_BYTES = 4 * 1024 * 1024;
 const VAULT_REF = /aside:\/\/\S+/;
 
 type FinalReason = "finished" | "errored" | "closed" | "interrupted";
@@ -197,12 +195,50 @@ type JournalEntry =
   | { event: "suspended"; ts: string; watchId: string; agentId: string }
   | { event: "restored"; ts: string; watchId: string; agentId: string }
   | { event: "resumed"; ts: string; watchId: string; agentId: string; turnId: string | null }
-  | { event: "gave_up"; ts: string; watchId: string; agentId: string; why: string };
+  | { event: "gave_up"; ts: string; watchId: string; agentId: string; why: string }
+  | GroupArmedEntry
+  | {
+      event: "member_ended";
+      ts: string;
+      /** The group id. */
+      watchId: string;
+      /** The member agent. */
+      agentId: string;
+      reason: FinalReason;
+      /** The member's entry in the group event. */
+      agent: GroupMemberPayload;
+    };
+
+/** Group entries reuse watchId (and agentId, outside member_ended) for the group id. */
+interface GroupArmedEntry {
+  event: "group_armed";
+  ts: string;
+  watchId: string;
+  agentId: string;
+  client: string;
+  tool: string;
+  context: string | null;
+  perAgent: boolean;
+  /** Epoch ms after which the group gives up. */
+  deadline: number;
+  /** Each member's bound turn, in the order the group event lists them. */
+  agents: Array<{ agentId: string; host: string | null; turnId: string | null }>;
+}
+
+type GroupMemberPayload = Record<string, unknown> & { reason: FinalReason };
 
 interface PendingWatch {
   armed: ArmedEntry;
   /** A final event fired but never confirmed delivered or failed. */
   unsent: { reason: NotifyReason; body: string } | null;
+}
+
+interface PendingGroup {
+  armed: GroupArmedEntry;
+  /** Members whose bound run has ended, by agent id. */
+  ended: Map<string, GroupMemberPayload>;
+  /** The group event fired but never confirmed delivered or failed. */
+  unsent: string | null;
 }
 
 interface ActiveWatch {
@@ -228,26 +264,49 @@ async function unlessAborted<T>(promise: Promise<T>, signal: AbortSignal): Promi
   }
 }
 
-/** The watches the journal shows armed and not yet settled, in arm order. */
-function pendingWatches(entries: readonly JournalEntry[]): PendingWatch[] {
-  const pending = new Map<string, PendingWatch>();
+/** The watches and groups the journal shows armed and not yet settled, in arm order. */
+function pendingFromJournal(entries: readonly JournalEntry[]): {
+  watches: PendingWatch[];
+  groups: PendingGroup[];
+} {
+  const watches = new Map<string, PendingWatch>();
+  const groups = new Map<string, PendingGroup>();
   for (const entry of entries) {
     if (entry.event === "armed") {
-      pending.set(entry.watchId, { armed: entry, unsent: null });
+      watches.set(entry.watchId, { armed: entry, unsent: null });
       continue;
     }
-    const watch = pending.get(entry.watchId);
+    if (entry.event === "group_armed") {
+      groups.set(entry.watchId, { armed: entry, ended: new Map(), unsent: null });
+      continue;
+    }
+    const group = groups.get(entry.watchId);
+    if (group) {
+      if (entry.event === "member_ended") {
+        group.ended.set(entry.agentId, entry.agent);
+      } else if (entry.event === "fired") {
+        group.unsent = entry.body;
+      } else if (
+        entry.event === "delivered" ||
+        entry.event === "failed" ||
+        entry.event === "gave_up"
+      ) {
+        groups.delete(entry.watchId);
+      }
+      continue;
+    }
+    const watch = watches.get(entry.watchId);
     if (!watch) continue;
     if (entry.event === "gave_up") {
-      pending.delete(entry.watchId);
+      watches.delete(entry.watchId);
     } else if (entry.event === "fired") {
       watch.unsent = entry.reason === "needs_permission" ? null : entry;
     } else if (entry.event === "delivered" || entry.event === "failed") {
       if (entry.reason === "needs_permission") continue;
-      pending.delete(entry.watchId);
+      watches.delete(entry.watchId);
     }
   }
-  return [...pending.values()];
+  return { watches: [...watches.values()], groups: [...groups.values()] };
 }
 
 export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpFinishNotifier {
@@ -259,61 +318,18 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
   const resumeGraceMs = options.resumeGraceMs ?? 10 * 60_000;
   const logger = options.logger.child({ module: "mcp-finish-notifier" });
   const active = new Map<string, ActiveWatch>();
+  const activeGroups = new Map<string, AbortController>();
   let suspended = false;
-  let journalWrites: Promise<void> = Promise.resolve();
-  let journalDirReady = false;
-
-  const appendToJournal = async (journalPath: string, entry: JournalEntry) => {
-    try {
-      if (!journalDirReady) {
-        await fs.mkdir(path.dirname(journalPath), { recursive: true });
-        journalDirReady = true;
-      }
-      await fs.appendFile(journalPath, `${JSON.stringify(entry)}\n`, "utf8");
-    } catch (error) {
-      logger.error(
-        { err: String(error), watchId: entry.watchId },
-        "mcp finish journal write failed",
-      );
-    }
-  };
+  const journal = options.journalPath
+    ? createWatchJournal<JournalEntry>({ path: options.journalPath, logger })
+    : null;
 
   // Logs the transition and appends it to the journal, in call order.
   const record = (entry: JournalEntry) => {
     const { body: _body, ...fields } = entry as JournalEntry & { body?: string };
     const level = entry.event === "failed" || entry.event === "gave_up" ? "warn" : "info";
     logger[level](fields, `mcp finish watch ${entry.event}`);
-    const journalPath = options.journalPath;
-    if (!journalPath) return;
-    journalWrites = journalWrites.then(() => appendToJournal(journalPath, entry));
-  };
-
-  const readJournal = async (journalPath: string): Promise<JournalEntry[]> => {
-    let raw: string;
-    try {
-      raw = await fs.readFile(journalPath, "utf8");
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-      throw error;
-    }
-    const entries: JournalEntry[] = [];
-    for (const line of raw.split("\n")) {
-      if (!line.trim()) continue;
-      try {
-        entries.push(JSON.parse(line) as JournalEntry);
-      } catch {
-        // A torn final line from a crash mid-append; the rest of the journal stands.
-      }
-    }
-    if (Buffer.byteLength(raw) > JOURNAL_COMPACT_BYTES) {
-      const keep = new Set(pendingWatches(entries).map((watch) => watch.armed.watchId));
-      const kept = entries.filter((entry) => keep.has(entry.watchId));
-      await writeFileAtomic(
-        journalPath,
-        kept.map((entry) => `${JSON.stringify(entry)}\n`).join(""),
-      );
-    }
-    return entries;
+    journal?.append(entry);
   };
 
   const resolveHeaders = async (headers: Record<string, string> | undefined) => {
@@ -431,11 +447,11 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
     });
 
   // A restart closed the agent if this daemon hosts it. Wait for its resumed
-  // run, or report the interruption once the grace period passes without one.
-  // Returns false when the watch is settled here.
-  const awaitResume = async (watch: ActiveWatch): Promise<boolean> => {
+  // run and rebind the watch to it. Returns null to keep watching, or the
+  // agent's final state once the grace period passes without a resumed run.
+  const awaitResume = async (watch: ActiveWatch): Promise<FleetAgentWaitResult | null> => {
     const localAgents = options.localAgents;
-    if (!localAgents) return true;
+    if (!localAgents) return null;
     const { signal } = watch.controller;
     const grace = AbortSignal.timeout(Math.min(resumeGraceMs, watch.armed.deadline - Date.now()));
     try {
@@ -454,19 +470,17 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
           turnId: run.turnId,
         });
       }
-      return true;
+      return null;
     } catch (error) {
       if (signal.aborted) throw new WatchSuspendedError();
       if (!grace.aborted) throw error;
     }
     // The agent is not running, so this returns at once with its final state.
-    const result = await watch.binding.waitForAgent({
+    return watch.binding.waitForAgent({
       agentId: watch.armed.agentId,
       ...(watch.armed.host ? { host: watch.armed.host } : {}),
       timeoutMs: 1_000,
     });
-    await fire(watch, "interrupted", result);
-    return false;
   };
 
   /**
@@ -561,65 +575,95 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
     });
   };
 
-  const groupControllers = new Set<AbortController>();
+  // A watch-shaped view of a group (or, given an agent, of one member), for the shared wait and send paths.
+  const groupWatch = (
+    armed: GroupArmedEntry,
+    binding: McpClientBinding,
+    controller: AbortController,
+    member?: GroupArmedEntry["agents"][number],
+  ): ActiveWatch => ({
+    armed: {
+      event: "armed",
+      ts: armed.ts,
+      watchId: member ? `${armed.watchId}:${member.agentId}` : armed.watchId,
+      client: armed.client,
+      agentId: member?.agentId ?? armed.agentId,
+      host: member?.host ?? null,
+      tool: armed.tool,
+      context: armed.context,
+      turnId: member?.turnId ?? null,
+      deadline: armed.deadline,
+    },
+    binding,
+    controller,
+    turnId: member?.turnId ?? null,
+  });
 
-  /** The in-memory group watch: one wait per agent, one group event once all have ended. */
-  const watchGroup = async (input: ArmMcpGroupNotification, controller: AbortController) => {
-    const now = new Date();
-    const members: ActiveWatch[] = input.agents.map((agent) => {
-      const turnId = agent.turnId ?? options.localAgents?.activeTurnId(agent.agentId) ?? null;
-      return {
-        // Not journaled: the group is in memory only, so a restart never restores a member.
-        armed: {
-          event: "armed",
-          ts: now.toISOString(),
-          watchId: `${input.groupId}:${agent.agentId}`,
-          client: input.client,
-          agentId: agent.agentId,
-          host: agent.host ?? null,
-          tool: input.tool,
-          context: input.context,
-          turnId,
-          deadline: now.getTime() + maxWatchMs,
-        },
-        binding: input,
-        controller,
-        turnId,
-      };
-    });
-    // Per-agent watches already POST needs_permission; without them the group does.
-    const results = await Promise.all(
-      members.map((member) =>
-        waitForTurnEnd(member, (blocked) =>
-          input.perAgent ? Promise.resolve() : fire(member, "needs_permission", blocked),
-        ),
-      ),
+  /**
+   * One wait per member that has not ended, then one group event once all
+   * have. A restored group first waits for each local member's resumed run,
+   * since the restart closed it.
+   */
+  const watchGroup = async (
+    group: PendingGroup,
+    binding: McpClientBinding,
+    controller: AbortController,
+    restored: boolean,
+  ) => {
+    const { armed, ended } = group;
+    await Promise.all(
+      armed.agents
+        .filter((agent) => !ended.has(agent.agentId))
+        .map(async (agent) => {
+          const member = groupWatch(armed, binding, controller, agent);
+          const interrupted = restored ? await awaitResume(member) : null;
+          // Per-agent watches already POST needs_permission; without them the group does.
+          const result =
+            interrupted ??
+            (await waitForTurnEnd(member, (blocked) =>
+              armed.perAgent ? Promise.resolve() : fire(member, "needs_permission", blocked),
+            ));
+          if (!result) return;
+          const reason = interrupted ? "interrupted" : finalReason(result.status);
+          const payload = { ...agentPayload(agent.agentId, result, member.turnId), reason };
+          ended.set(agent.agentId, payload);
+          record({
+            event: "member_ended",
+            ts: new Date().toISOString(),
+            watchId: armed.watchId,
+            agentId: agent.agentId,
+            reason,
+            agent: payload,
+          });
+        }),
     );
-    const finished = results.filter((result): result is FleetAgentWaitResult => result !== null);
-    if (finished.length !== results.length) {
-      logger.warn(
-        { client: input.client, groupId: input.groupId },
-        "mcp group watch gave up: an agent was still running at the watch deadline",
-      );
+    const groupIds = { watchId: armed.watchId, agentId: armed.agentId };
+    if (ended.size !== armed.agents.length) {
+      record({
+        event: "gave_up",
+        ts: new Date().toISOString(),
+        ...groupIds,
+        why: "an agent was still running at the group deadline",
+      });
       return;
     }
-    const groupWatch: ActiveWatch = {
-      armed: { ...members[0]!.armed, watchId: input.groupId, agentId: input.groupId },
-      binding: input,
-      controller,
-      turnId: null,
-    };
     const body = JSON.stringify({
       type: "paseo.agents.group_finished",
-      client: input.client,
-      context: input.context,
-      groupId: input.groupId,
-      agents: finished.map((result, index) =>
-        agentPayload(members[index]!.armed.agentId, result, members[index]!.turnId),
-      ),
-      trigger: { tool: input.tool, requestedAt: now.toISOString() },
+      client: armed.client,
+      context: armed.context,
+      groupId: armed.watchId,
+      agents: armed.agents.map((agent) => ended.get(agent.agentId)),
+      trigger: { tool: armed.tool, requestedAt: armed.ts },
     });
-    await send(groupWatch, "finished", body);
+    record({
+      event: "fired",
+      ts: new Date().toISOString(),
+      ...groupIds,
+      reason: "finished",
+      status: "finished",
+      body,
+    });
+    await send(groupWatch(armed, binding, controller), "finished", body);
   };
 
   const start = (
@@ -650,7 +694,27 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
       .finally(() => {
         active.delete(armed.watchId);
       })
-      .then(() => journalWrites);
+      .then(() => journal?.flush());
+  };
+
+  const startGroup = (
+    armed: GroupArmedEntry,
+    run: (controller: AbortController) => Promise<void>,
+  ): Promise<void> => {
+    const controller = new AbortController();
+    activeGroups.set(armed.watchId, controller);
+    return run(controller)
+      .catch((error) => {
+        if (error instanceof WatchSuspendedError) return;
+        logger.error(
+          { client: armed.client, groupId: armed.watchId, err: String(error) },
+          "mcp group watch failed",
+        );
+      })
+      .finally(() => {
+        activeGroups.delete(armed.watchId);
+      })
+      .then(() => journal?.flush());
   };
 
   const arm = (input: ArmMcpFinishNotification): Promise<void> => {
@@ -689,26 +753,40 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
           });
         }
       }
+      const now = new Date();
+      const armed: GroupArmedEntry = {
+        event: "group_armed",
+        ts: now.toISOString(),
+        watchId: input.groupId,
+        agentId: input.groupId,
+        client: input.client,
+        tool: input.tool,
+        context: input.context,
+        perAgent: input.perAgent,
+        deadline: now.getTime() + maxWatchMs,
+        agents: input.agents.map((agent) => ({
+          agentId: agent.agentId,
+          host: agent.host ?? null,
+          turnId: agent.turnId ?? options.localAgents?.activeTurnId(agent.agentId) ?? null,
+        })),
+      };
+      record(armed);
+      // Armed while shutting down: journaled, so the next process restores it.
       if (suspended) return Promise.resolve();
-      const controller = new AbortController();
-      groupControllers.add(controller);
-      return watchGroup(input, controller)
-        .catch((error) => {
-          if (error instanceof WatchSuspendedError) return;
-          logger.error(
-            { client: input.client, groupId: input.groupId, err: String(error) },
-            "mcp group watch failed",
-          );
-        })
-        .finally(() => {
-          groupControllers.delete(controller);
-        });
+      return startGroup(armed, (controller) =>
+        watchGroup({ armed, ended: new Map(), unsent: null }, input, controller, false),
+      );
     },
 
     async restore(resolveClient) {
-      if (!options.journalPath) return { restored: 0, settled: Promise.resolve() };
-      const runs: Promise<void>[] = [];
-      for (const { armed, unsent } of pendingWatches(await readJournal(options.journalPath))) {
+      if (!journal) return { restored: 0, settled: Promise.resolve() };
+      const entries = await journal.read((all) => {
+        const { watches, groups } = pendingFromJournal(all);
+        return new Set([...watches, ...groups].map((pending) => pending.armed.watchId));
+      });
+      const { watches, groups } = pendingFromJournal(entries);
+      // Records why a pending watch or group is dropped, else that it is restored.
+      const admit = async (armed: ArmedEntry | GroupArmedEntry) => {
         const ids = {
           ts: new Date().toISOString(),
           watchId: armed.watchId,
@@ -720,22 +798,43 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
             ...ids,
             why: "watch deadline passed while the daemon was down",
           });
-          continue;
+          return null;
         }
         const binding = await resolveClient(armed.client).catch(() => null);
         if (!binding) {
           const why = `client "${armed.client}" has no notify webhook configured`;
           record({ event: "gave_up", ...ids, why });
-          continue;
+          return null;
         }
         record({ event: "restored", ...ids });
+        return binding;
+      };
+      const runs: Promise<void>[] = [];
+      for (const { armed, unsent } of watches) {
+        const binding = await admit(armed);
+        if (!binding) continue;
         runs.push(
           start(armed, binding, async (watch) => {
             if (unsent) {
               await send(watch, unsent.reason, unsent.body);
               return;
             }
-            if (await awaitResume(watch)) await watchUntilFinished(watch);
+            const interrupted = await awaitResume(watch);
+            if (interrupted) await fire(watch, "interrupted", interrupted);
+            else await watchUntilFinished(watch);
+          }),
+        );
+      }
+      for (const group of groups) {
+        const binding = await admit(group.armed);
+        if (!binding) continue;
+        runs.push(
+          startGroup(group.armed, async (controller) => {
+            if (group.unsent) {
+              await send(groupWatch(group.armed, binding, controller), "finished", group.unsent);
+              return;
+            }
+            await watchGroup(group, binding, controller, true);
           }),
         );
       }
@@ -744,18 +843,21 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
 
     async suspend() {
       suspended = true;
-      // Group watches are in memory only: a restart drops them.
-      for (const controller of groupControllers) controller.abort();
+      const ts = new Date().toISOString();
+      for (const [groupId, controller] of activeGroups) {
+        controller.abort();
+        record({ event: "suspended", ts, watchId: groupId, agentId: groupId });
+      }
       for (const watch of active.values()) {
         watch.controller.abort();
         record({
           event: "suspended",
-          ts: new Date().toISOString(),
+          ts,
           watchId: watch.armed.watchId,
           agentId: watch.armed.agentId,
         });
       }
-      await journalWrites;
+      await journal?.flush();
     },
   };
 }
