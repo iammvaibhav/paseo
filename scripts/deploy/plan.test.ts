@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { parseInventory } from "./inventory.ts";
+import { daemonHostnames, parseInventory } from "./inventory.ts";
 import type { Component, HostState, PlanInput } from "./plan.ts";
 import { makePlan } from "./plan.ts";
 
@@ -177,4 +177,47 @@ test("the inventory refuses a target whose builder has another platform", () => 
       }),
     ),
   ).toThrow(/cannot run "dev"'s linux-arm64 build/);
+});
+
+describe("daemon hostnames from the inventory", () => {
+  const inventoryWith = (extra: Record<string, unknown>) =>
+    JSON.stringify({
+      hosts: [
+        {
+          name: "prod",
+          ssh: "prod",
+          address: "10.0.0.4",
+          platform: "linux-arm64",
+          role: "builder",
+          ...extra,
+        },
+      ],
+    });
+
+  test("the NetBird name and every extra DNS alias reach the daemon allowlist", () => {
+    const [prod] = parseInventory(
+      inventoryWith({
+        dns: "prod.netbird.cloud",
+        hostnames: ["paseo.thevm.space", "prod.netbird.cloud"],
+      }),
+    );
+    expect(daemonHostnames(prod)).toEqual(["prod.netbird.cloud", "paseo.thevm.space"]);
+  });
+
+  test("a host with no DNS names adds nothing", () => {
+    const [prod] = parseInventory(inventoryWith({}));
+    expect(daemonHostnames(prod)).toEqual([]);
+  });
+
+  test("hostnames must be a list of names, never an allow-any switch", () => {
+    expect(() => parseInventory(inventoryWith({ hostnames: "paseo.thevm.space" }))).toThrow(
+      /hosts\[0\]\.hostnames must be a list of DNS names/,
+    );
+    expect(() => parseInventory(inventoryWith({ hostnames: [true] }))).toThrow(
+      /hosts\[0\]\.hostnames must be a list of DNS names/,
+    );
+    expect(() => parseInventory(inventoryWith({ hostnames: ["*"] }))).toThrow(
+      /hosts\[0\]\.hostnames must be a list of DNS names/,
+    );
+  });
 });

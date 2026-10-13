@@ -24,6 +24,8 @@ export interface Host {
   ssh: string;
   address: string;
   dns: string;
+  /** Extra DNS names that resolve to this host (e.g. NetBird custom-zone records). */
+  hostnames: string[];
   platform: Platform;
   role: "builder" | "target";
   buildFrom: string;
@@ -69,6 +71,20 @@ function optional(entry: Record<string, unknown>, key: string, fallback: string)
   return typeof value === "string" ? value : fallback;
 }
 
+// A DNS name, or a leading-dot pattern (".example.com") the daemon allowlist accepts.
+const DNS_NAME = /^\.?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$/i;
+
+function parseHostnames(entry: Record<string, unknown>, where: string): string[] {
+  const value = entry.hostnames ?? [];
+  if (
+    !Array.isArray(value) ||
+    !value.every((name): name is string => typeof name === "string" && DNS_NAME.test(name))
+  ) {
+    fail(`${where}.hostnames must be a list of DNS names`);
+  }
+  return value;
+}
+
 function parseServices(entry: Record<string, unknown>, role: string, where: string): Service[] {
   const services = entry.services ?? [];
   if (!Array.isArray(services)) fail(`${where}.services must be an array`);
@@ -104,6 +120,7 @@ function parseHost(entry: Record<string, unknown>, where: string): Host {
     ssh: text(entry, "ssh", where),
     address: text(entry, "address", where),
     dns: optional(entry, "dns", ""),
+    hostnames: parseHostnames(entry, where),
     platform: platform as Platform,
     role,
     buildFrom: optional(entry, "buildFrom", ""),
@@ -180,6 +197,11 @@ export function selfHost(hosts: Host[]): Host {
 
 export function passwordVar(name: string): string {
   return `PASEO_HOST_PASSWORD_${name.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`;
+}
+
+/** Every DNS name the host's daemon must accept in the Host header (daemon.hostnames). */
+export function daemonHostnames(host: Host): string[] {
+  return [...new Set([host.dns, ...host.hostnames].filter((name) => name !== ""))];
 }
 
 export interface PeerEntry {

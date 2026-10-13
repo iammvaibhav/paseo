@@ -41,6 +41,7 @@ The inventory defines all fleet machines. See [`scripts/deploy/fleet-hosts.examp
 - `ssh`: SSH host alias from `~/.ssh/config`.
 - `address`: NetBird IPv4 address.
 - `dns`: NetBird DNS name.
+- `hostnames` (optional): extra DNS names that resolve to the host, such as NetBird custom-zone records (`["paseo.thevm.space"]`). Names only, or a leading-dot pattern (`.example.com`); never `true` or `*`. Config sync merges `dns` plus these into the daemon's `daemon.hostnames`, the Host-header allowlist; without them the daemon answers `403 {"error":"Invalid Host header"}` to that name.
 - `platform`: `linux-arm64`, `linux-x64`, `darwin-arm64`, or `darwin-x64`.
 - `role`:
   - `builder` — has a checkout and builds packages locally.
