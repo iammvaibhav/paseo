@@ -145,6 +145,8 @@ import { attachAgentStoragePersistence } from "./persistence-hooks.js";
 import { createAgentMcpServer } from "./agent/mcp-server.js";
 import { createFleetMcpServer, createFleetMcpWaitForAgent } from "./mcp-fleet/fleet-mcp-server.js";
 import { authenticateRemoteMcpClient } from "./mcp-fleet/auth.js";
+import { createMcpJsonBodyParser } from "./mcp-fleet/json-body.js";
+import { ChunkedUploadSessions, FileUploadStore } from "./file-upload/index.js";
 import {
   createMcpFinishLocalAgents,
   createMcpFinishNotifier,
@@ -1297,6 +1299,9 @@ export async function createPaseoDaemon(
     }),
   );
 
+  // MCP tool calls carry base64 images; they get a larger body cap and
+  // JSON-RPC parser errors. The global parser below skips an already-parsed body.
+  app.use(["/mcp/agents", "/mcp/fleet"], createMcpJsonBodyParser());
   app.use(express.json());
 
   // Serve static files from public directory
@@ -2768,6 +2773,11 @@ export async function createPaseoDaemon(
     "Voice mode configured for agent-scoped resume flow (no dedicated voice assistant provider)",
   );
   logger.info({ elapsed: elapsed() }, "Preparing voice and MCP runtime");
+  // One store for every MCP catalog: catalogs are rebuilt on a TTL, and a
+  // chunked upload must outlive that.
+  const chunkedUploads = new ChunkedUploadSessions(
+    new FileUploadStore({ paseoHome: config.paseoHome }),
+  );
 
   const createAgentToolHostDependencies = (
     runtime: PaseoToolRuntimeContext,
@@ -2838,6 +2848,7 @@ export async function createPaseoDaemon(
       runtime.paseoToolPolicy ??
       (runtime.callerAgentId ? agentManager.getPaseoToolPolicy(runtime.callerAgentId) : undefined),
     paseoHome: config.paseoHome,
+    chunkedUploads,
     worktreesRoot: config.worktreesRoot,
     callerAgentId: runtime.callerAgentId,
     callerLabels: runtime.callerLabels,

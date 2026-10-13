@@ -1,3 +1,6 @@
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { describe, expect, test, vi } from "vitest";
 import { createTestLogger } from "../../../test-utils/test-logger.js";
 import { createProviderSnapshotManagerStub } from "../../test-utils/session-stubs.js";
@@ -63,6 +66,13 @@ function peerTimelinePayload(): Record<string, unknown> {
     ],
     error: null,
   };
+}
+
+/** A real file to attach: uploaded_file paths must exist on the sending host. */
+function writeTempAttachment(fileName: string, content: string): string {
+  const filePath = path.join(mkdtempSync(path.join(tmpdir(), "paseo-attachments-")), fileName);
+  writeFileSync(filePath, content);
+  return filePath;
 }
 
 /** Fake peer harness: a stub PeerManager over a stub DaemonClient. */
@@ -668,7 +678,17 @@ describe("fleet_send_prompt mode", () => {
   });
 
   test("validates the attachments schema and rejects unknown attachment types", async () => {
-    const { peerManager } = createFakePeerHarness();
+    const notesPath = writeTempAttachment("notes.txt", "hello notes!");
+    const peerCopy = {
+      type: "uploaded_file" as const,
+      id: "upload_peer",
+      fileName: "notes.txt",
+      mimeType: "text/plain",
+      size: 12,
+      path: "/peer/uploads/upload_peer/notes.txt",
+    };
+    const uploadFile = vi.fn(async () => ({ requestId: "r", file: peerCopy, error: null }));
+    const { client, peerManager } = createFakePeerHarness({ client: { uploadFile } });
     const catalog = createCatalog(peerManager);
     const uploadedFile = {
       type: "uploaded_file",
@@ -676,7 +696,7 @@ describe("fleet_send_prompt mode", () => {
       fileName: "notes.txt",
       mimeType: "text/plain",
       size: 12,
-      path: "/tmp/paseo-attachments/notes.txt",
+      path: notesPath,
     };
     await expect(
       catalog.executeTool("fleet_send_prompt", {
@@ -688,6 +708,25 @@ describe("fleet_send_prompt mode", () => {
     ).resolves.toMatchObject({
       structuredContent: { success: true, deliveryMode: "interrupt" },
     });
+    // The peer cannot open this host's path: it gets the bytes and the
+    // descriptor of its own copy.
+    expect(uploadFile).toHaveBeenCalledWith({
+      fileName: "notes.txt",
+      mimeType: "text/plain",
+      bytes: Buffer.from("hello notes!"),
+    });
+    expect(client.sendAgentMessage).toHaveBeenCalledWith(SEND_AGENT_UUID, "read my notes", {
+      dispatchMode: "interrupt",
+      attachments: [peerCopy],
+    });
+    await expect(
+      catalog.executeTool("fleet_send_prompt", {
+        host: "macbook",
+        agentId: SEND_AGENT_UUID,
+        prompt: "read my notes",
+        attachments: [{ ...uploadedFile, path: `${notesPath}.missing` }],
+      }),
+    ).rejects.toThrow(/does not exist on this host/);
     await expect(
       catalog.executeTool("fleet_send_prompt", {
         host: "macbook",
@@ -742,6 +781,7 @@ describe("fleet_send_prompt mode", () => {
       logger: createTestLogger(),
     });
 
+    const notesPath = writeTempAttachment("notes.txt", "hello notes!");
     const attachments = [
       {
         type: "uploaded_file",
@@ -749,7 +789,7 @@ describe("fleet_send_prompt mode", () => {
         fileName: "notes.txt",
         mimeType: "text/plain",
         size: 12,
-        path: "/tmp/paseo-attachments/notes.txt",
+        path: notesPath,
       },
     ];
     const result = await catalog.executeTool("fleet_send_prompt", {
@@ -771,7 +811,7 @@ describe("fleet_send_prompt mode", () => {
           fileName: "notes.txt",
           mimeType: "text/plain",
           size: 12,
-          path: "/tmp/paseo-attachments/notes.txt",
+          path: notesPath,
         },
       ],
       { replaceOrigin: "machinery" },

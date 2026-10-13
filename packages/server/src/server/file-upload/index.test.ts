@@ -9,7 +9,7 @@ import {
   FileTransferOpcode,
   type FileTransferFrame,
 } from "@getpaseo/protocol/binary-frames/index";
-import { FileUploadStore } from "./index.js";
+import { ChunkedUploadSessions, FileUploadStore, readStoredUpload } from "./index.js";
 
 const tempDirs: string[] = [];
 
@@ -242,6 +242,73 @@ describe("file uploads", () => {
       },
     });
     expect(readFileSync(path, "utf8")).toBe("hello world");
+  });
+
+  it("finds a completed upload by id with the mime type it was uploaded with", async () => {
+    const paseoHome = makePaseoHome();
+    const uploads = new FileUploadStore({ paseoHome });
+    const file = await uploadNamed(uploads, "screenshot");
+
+    await expect(readStoredUpload(paseoHome, file!.id)).resolves.toEqual({
+      type: "uploaded_file",
+      id: file!.id,
+      fileName: "screenshot",
+      mimeType: "text/plain",
+      size: 11,
+      path: file!.path,
+    });
+  });
+
+  it("does not resolve unknown, malformed, or path-traversing upload ids", async () => {
+    const paseoHome = makePaseoHome();
+    await uploadNamed(new FileUploadStore({ paseoHome }), "notes.txt");
+
+    await expect(
+      readStoredUpload(paseoHome, "upload_00000000-0000-4000-8000-000000000000"),
+    ).resolves.toBeNull();
+    await expect(readStoredUpload(paseoHome, "../uploads")).resolves.toBeNull();
+    await expect(readStoredUpload(paseoHome, "notes.txt")).resolves.toBeNull();
+  });
+
+  it("assembles a chunked upload and resolves it by id", async () => {
+    const paseoHome = makePaseoHome();
+    const sessions = new ChunkedUploadSessions(new FileUploadStore({ paseoHome }));
+
+    const uploadId = await sessions.start({
+      fileName: "shot.png",
+      mimeType: "image/png",
+      size: 11,
+    });
+    await expect(sessions.append(uploadId, new TextEncoder().encode("hello"))).resolves.toEqual({
+      receivedBytes: 5,
+      size: 11,
+      file: null,
+    });
+    const done = await sessions.append(uploadId, new TextEncoder().encode(" world"));
+    expect(done).toMatchObject({ receivedBytes: 11, size: 11 });
+    expect(done.file).toMatchObject({ fileName: "shot.png", mimeType: "image/png", size: 11 });
+    expect(readFileSync(done.file!.path, "utf8")).toBe("hello world");
+    await expect(readStoredUpload(paseoHome, done.file!.id)).resolves.toEqual(done.file);
+
+    // A finished upload takes no more chunks.
+    await expect(sessions.append(uploadId, new Uint8Array([1]))).rejects.toThrow(
+      /unknown or expired uploadId/,
+    );
+  });
+
+  it("rejects a chunk that overflows the declared size and keeps nothing", async () => {
+    const paseoHome = makePaseoHome();
+    const sessions = new ChunkedUploadSessions(new FileUploadStore({ paseoHome }));
+    const uploadId = await sessions.start({
+      fileName: "a.bin",
+      mimeType: "application/x",
+      size: 3,
+    });
+
+    await expect(sessions.append(uploadId, new Uint8Array([1, 2, 3, 4]))).rejects.toThrow(
+      /exceeds the declared size: 4 of 3 bytes/,
+    );
+    expect(readdirSync(join(paseoHome, "uploads"))).toEqual([]);
   });
 });
 

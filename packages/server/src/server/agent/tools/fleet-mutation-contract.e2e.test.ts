@@ -21,7 +21,7 @@ async function bootDaemonWithWorkspace(): Promise<{
     appVersion: "0.1.82",
   });
   await client.connect();
-  await client.fetchAgents({ subscribe: { subscriptionId: "fleet-mutation-contract" } });
+  await client.fetchAgents({ subscribe: {} });
   const cwd = mkdtempSync(path.join(tmpdir(), "paseo-mc-contract-"));
   const created = await client.createWorkspace({
     source: { kind: "directory", path: cwd },

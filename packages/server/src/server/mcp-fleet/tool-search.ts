@@ -17,6 +17,8 @@ export const CORE_FLEET_TOOL_NAMES = [
   "fleet_send_prompt",
   "fleet_wait_agent",
   "fleet_wait_agents",
+  "fleet_upload_file",
+  "fleet_read_image",
 ] as const;
 
 /** Tools /mcp/fleet registers itself (not catalog tools): they act on the client's webhook. */

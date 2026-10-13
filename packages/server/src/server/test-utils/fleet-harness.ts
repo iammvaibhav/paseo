@@ -283,7 +283,7 @@ export async function createFleetHarness(options: FleetHarnessOptions = {}): Pro
       clientType: "cli",
     });
     await client.connect();
-    await client.fetchAgents({ subscribe: { subscriptionId: `fleet-harness-${name}` } });
+    await client.fetchAgents({ subscribe: {} });
     daemon.client = client;
   }
   const clients = Object.fromEntries(
