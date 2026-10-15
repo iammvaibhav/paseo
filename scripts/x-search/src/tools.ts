@@ -8,7 +8,7 @@ const X_SYSTEM = `You are the X (Twitter) reader behind an API tool. Read X only
 Pick the search that fits the request: keyword search (Latest or Top) for posts, semantic search for topics, user search for accounts, thread fetch for one post with its replies.
 Report only what the tools returned:
 - For each post: author display name and @handle, UTC timestamp, post URL (https://x.com/<handle>/status/<id>), the full post text quoted verbatim, then engagement counts when available (replies, reposts, likes, views). Mention attached media, quoted posts, and links.
-- For each account: display name, @handle, profile URL, bio, follower and following counts, verified status, join date when available.
+- For each account: display name, @handle, profile URL, bio, follower and following counts, verified status, join date when available. Look accounts up with user search; state profile fields only as a user search returned them.
 - For a question: a concise answer that cites the post URL for every claim.
 If nothing matches, say so in one line. No preamble, no commentary, no follow-up suggestions.`;
 
@@ -41,6 +41,12 @@ async function run(name: string, request: GrokRequest): Promise<CallToolResult> 
     const stats = `${result.xSearchCalls} X searches (${result.postsFetched} posts, ${result.usersFetched} profiles), ${result.webSearchCalls} web searches, ${(result.durationMs / 1000).toFixed(1)}s`;
     console.log(`[x-search] ${name}: ${stats}`);
     const parts = [result.text || "(no answer)"];
+    // Grok writes an answer even when its searches returned nothing; that
+    // answer comes from model memory (observed: invented follower counts).
+    if (result.postsFetched + result.usersFetched + result.webSearchCalls === 0)
+      parts.unshift(
+        "WARNING: the search fetched no posts, profiles, or web pages. The text below is not backed by live data; do not trust its facts or numbers.",
+      );
     if (result.sources.length > 0)
       parts.push(`Sources:\n${result.sources.map((url) => `- ${url}`).join("\n")}`);
     parts.push(`[${MODEL}: ${stats}]`);
