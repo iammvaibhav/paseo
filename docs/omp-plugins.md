@@ -41,6 +41,8 @@ On each host with `omp`, the routine deploy sequence updates `omp`, installs plu
 
 Prod is an inventory target with the `"omp-proxy"` service rather than a Paseo daemon host. It runs the omp auth broker that each host's `~/.omp/agent/config.yml` points at (`auth.broker`), plus `omp-proxy`, `omp-grok-refresher`, and Bifrost. When the fleet omp version changes, deploy redeploys the prod omp services ([`scripts/omp-proxy/README.md`](../scripts/omp-proxy/README.md)) to stay version-locked.
 
+Prod also runs `x-search`, a read-only X (Twitter) MCP server that Bifrost uses. It reads its Grok Build token from the broker's store with `omp token grok-build`, so it needs no version lock, and `scripts/deploy.sh` does not deploy it ([`scripts/x-search/README.md`](../scripts/x-search/README.md)).
+
 ## Adding a plugin
 
 Add a directory under `plugins/` containing a `package.json` with an `omp.extensions` manifest:
