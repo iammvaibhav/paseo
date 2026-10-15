@@ -1,21 +1,32 @@
-// The MCP tools. Every tool is read-only: Grok's x_search can only read X.
+// The MCP tools. Both are read-only: Grok's x_search and web_search only read.
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { askGrok, type GrokRequest, MODEL, type XSearchTool } from "./grok";
+import { askGrok, type GrokRequest, MODEL, type WebSearchTool, type XSearchTool } from "./grok";
 
-const SYSTEM = `You are the X (Twitter) reader behind an API tool. Read X only with your X search tools; never answer from memory or invent posts, handles, numbers, or URLs.
+const X_SYSTEM = `You are the X (Twitter) reader behind an API tool. Read X only with your X search tools; never answer from memory or invent posts, handles, numbers, or URLs.
+Pick the search that fits the request: keyword search (Latest or Top) for posts, semantic search for topics, user search for accounts, thread fetch for one post with its replies.
 Report only what the tools returned:
 - For each post: author display name and @handle, UTC timestamp, post URL (https://x.com/<handle>/status/<id>), the full post text quoted verbatim, then engagement counts when available (replies, reposts, likes, views). Mention attached media, quoted posts, and links.
 - For each account: display name, @handle, profile URL, bio, follower and following counts, verified status, join date when available.
+- For a question: a concise answer that cites the post URL for every claim.
 If nothing matches, say so in one line. No preamble, no commentary, no follow-up suggestions.`;
+
+const WEB_SYSTEM = `You are the web search engine behind an API tool. Search the web with your web search tool; never answer from memory.
+Answer concisely and factually, cite the source URL for every claim, and prefer primary sources (official docs, release notes, the author's own site). Say when sources disagree or nothing was found. No preamble, no follow-up suggestions.`;
 
 const handle = z
   .string()
   .regex(/^@?[A-Za-z0-9_]{1,15}$/, "an X handle like @xai or xai")
   .transform((value) => value.replace(/^@/, ""));
 const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "a date as YYYY-MM-DD");
-const limit = (fallback: number) => z.number().int().min(1).max(25).default(fallback);
+const domain = z.string().regex(/^[a-z0-9.-]+\.[a-z]{2,}$/i, "a domain like bun.com");
+const depth = z
+  .enum(["quick", "thorough"])
+  .default("quick")
+  .describe(
+    "quick = up to 2 search rounds; thorough = up to 5 (slower, uses more Grok Build credits)",
+  );
 
 const READ_ONLY = {
   readOnlyHint: true,
@@ -24,10 +35,10 @@ const READ_ONLY = {
   openWorldHint: true,
 } as const;
 
-async function run(name: string, request: Omit<GrokRequest, "system">): Promise<CallToolResult> {
+async function run(name: string, request: GrokRequest): Promise<CallToolResult> {
   try {
-    const result = await askGrok({ system: SYSTEM, ...request });
-    const stats = `${result.xSearchCalls} X searches, ${result.postsFetched} posts and ${result.usersFetched} profiles fetched, ${(result.durationMs / 1000).toFixed(1)}s`;
+    const result = await askGrok(request);
+    const stats = `${result.xSearchCalls} X searches (${result.postsFetched} posts, ${result.usersFetched} profiles), ${result.webSearchCalls} web searches, ${(result.durationMs / 1000).toFixed(1)}s`;
     console.log(`[x-search] ${name}: ${stats}`);
     const parts = [result.text || "(no answer)"];
     if (result.sources.length > 0)
@@ -45,17 +56,22 @@ export function registerTools(server: McpServer): void {
   server.registerTool(
     "x_search",
     {
-      title: "Search X posts",
-      description:
-        'Search posts on X (Twitter) and return matching posts verbatim with author, time, URL, and engagement. The query accepts X search syntax: keywords, "exact phrase", OR, -exclude, #hashtag, from:handle, to:handle, filter:media, -filter:replies, min_faves:N, lang:en.',
+      title: "Search and read X",
+      description: `Search and read X (Twitter) live through Grok's X index. Read-only. One tool for everything on X:
+- find posts by keywords, phrases, hashtags, or topic, newest or most popular first
+- read one post or thread by URL or ID, with replies, quoted posts, and media
+- list an account's recent posts, replies, or media posts
+- find accounts and show their profiles (bio, followers, verified status)
+- answer a question from what people post on X, citing post URLs
+Returns posts verbatim with author, time, URL, and engagement counts, plus source URLs. The request may use X search syntax: "exact phrase", OR, -word, #tag, from:handle, to:handle, filter:media, -filter:replies, min_faves:N, lang:en.`,
       inputSchema: {
-        query: z.string().min(1).describe("Search query in X search syntax"),
-        mode: z
-          .enum(["latest", "top"])
-          .default("latest")
-          .describe("latest = newest first; top = most engaged"),
-        limit: limit(10).describe("Maximum posts to return (1-25)"),
-        from_handles: z.array(handle).max(10).optional().describe("Only posts by these accounts"),
+        request: z
+          .string()
+          .min(1)
+          .describe(
+            'What to find or read, in plain words or X search syntax, or a post URL. E.g. "latest posts from @karpathy", "https://x.com/xai/status/123 with replies", "what people say about Bun 1.3", "from:elonmusk filter:media"',
+          ),
+        handles: z.array(handle).max(10).optional().describe("Only posts by these accounts"),
         exclude_handles: z
           .array(handle)
           .max(10)
@@ -63,132 +79,60 @@ export function registerTools(server: McpServer): void {
           .describe("Never posts by these accounts"),
         since: date.optional().describe("Earliest post date, YYYY-MM-DD (inclusive)"),
         until: date.optional().describe("Latest post date, YYYY-MM-DD (inclusive)"),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(25)
+          .default(10)
+          .describe("Maximum posts or accounts to return"),
+        depth,
       },
       annotations: READ_ONLY,
     },
     (args) => {
       const tool: XSearchTool = { type: "x_search" };
-      if (args.from_handles?.length) tool.allowed_x_handles = args.from_handles;
+      if (args.handles?.length) tool.allowed_x_handles = args.handles;
       else if (args.exclude_handles?.length) tool.excluded_x_handles = args.exclude_handles;
       if (args.since) tool.from_date = args.since;
       if (args.until) tool.to_date = args.until;
       return run("x_search", {
-        user: `Search X posts with the query: ${args.query}\nOrder: ${args.mode === "top" ? "Top (most engaged)" : "Latest (newest first)"}. Return up to ${args.limit} matching posts.`,
+        system: X_SYSTEM,
+        user: `${args.request}\n\nReturn at most ${args.limit} posts or accounts.`,
         tools: [tool],
-        maxTurns: 3,
+        maxTurns: args.depth === "thorough" ? 5 : 2,
       });
     },
   );
 
   server.registerTool(
-    "x_get_post",
+    "x_web_search",
     {
-      title: "Read an X post",
+      title: "Search the web (Grok)",
       description:
-        "Read one X (Twitter) post by URL or numeric ID: full text, author, time, engagement, media, quoted post, and optionally its replies.",
+        "Search the open web live through Grok's web search, which can also open pages and read them. Read-only. Answers concisely with a source URL for every claim. Use x_search for X (Twitter) content. Slower than x_search (often 10-30 s).",
       inputSchema: {
-        post: z
-          .string()
-          .regex(
-            /^(\d{5,25}|https?:\/\/(www\.|mobile\.)?(x|twitter)\.com\/[^\s]+\/status(es)?\/\d{5,25}\S*)$/,
-            "a post URL (https://x.com/<handle>/status/<id>) or numeric post ID",
-          )
-          .describe("Post URL or numeric post ID"),
-        replies: z
-          .number()
-          .int()
-          .min(0)
-          .max(20)
-          .default(0)
-          .describe("Also list up to this many replies (0 = none)"),
+        query: z.string().min(1).describe("The question or search query"),
+        domains: z
+          .array(domain)
+          .max(5)
+          .optional()
+          .describe("Only search these domains, e.g. bun.com"),
+        exclude_domains: z.array(domain).max(5).optional().describe("Never search these domains"),
+        depth,
       },
       annotations: READ_ONLY,
     },
     (args) => {
-      const url = /^\d+$/.test(args.post) ? `https://x.com/i/status/${args.post}` : args.post;
-      const replies =
-        args.replies > 0
-          ? ` Then list up to ${args.replies} replies to it, each with author, time, URL, and verbatim text.`
-          : "";
-      return run("x_get_post", {
-        user: `Read this X post and return it in full: ${url}.${replies}`,
-        tools: [{ type: "x_search" }],
-        maxTurns: args.replies > 0 ? 3 : 2,
-      });
-    },
-  );
-
-  server.registerTool(
-    "x_user_posts",
-    {
-      title: "List an X account's posts",
-      description:
-        "List the most recent posts, replies, or media posts by one X (Twitter) account.",
-      inputSchema: {
-        handle: handle.describe("Account handle, e.g. @xai"),
-        tab: z
-          .enum(["posts", "replies", "media"])
-          .default("posts")
-          .describe(
-            "posts = original posts and reposts without replies; replies = everything; media = posts with media",
-          ),
-        limit: limit(10).describe("Maximum posts to return (1-25)"),
-        since: date.optional().describe("Earliest post date, YYYY-MM-DD (inclusive)"),
-      },
-      annotations: READ_ONLY,
-    },
-    (args) => {
-      const filter = { posts: " -filter:replies", replies: "", media: " filter:media" }[args.tab];
-      const tool: XSearchTool = { type: "x_search", allowed_x_handles: [args.handle] };
-      if (args.since) tool.from_date = args.since;
-      return run("x_user_posts", {
-        user: `List the ${args.limit} most recent posts by @${args.handle}, newest first (X query: from:${args.handle}${filter}, Latest).`,
+      const tool: WebSearchTool = { type: "web_search" };
+      if (args.domains?.length) tool.filters = { allowed_domains: args.domains };
+      else if (args.exclude_domains?.length)
+        tool.filters = { excluded_domains: args.exclude_domains };
+      return run("x_web_search", {
+        system: WEB_SYSTEM,
+        user: args.query,
         tools: [tool],
-        maxTurns: 2,
-      });
-    },
-  );
-
-  server.registerTool(
-    "x_search_users",
-    {
-      title: "Find X accounts",
-      description:
-        "Find X (Twitter) accounts by name, handle, or topic and return their profiles: handle, bio, followers, verified status.",
-      inputSchema: {
-        query: z.string().min(1).describe("Name, handle, or topic to look up"),
-        limit: limit(5).describe("Maximum accounts to return (1-25)"),
-      },
-      annotations: READ_ONLY,
-    },
-    (args) =>
-      run("x_search_users", {
-        user: `Find X accounts matching: ${args.query}. Return up to ${args.limit} profiles, best match first.`,
-        tools: [{ type: "x_search" }],
-        maxTurns: 2,
-      }),
-  );
-
-  server.registerTool(
-    "x_ask",
-    {
-      title: "Ask about X",
-      description:
-        "Answer a free-form question from what is being posted on X (Twitter), e.g. what people say about a topic, an account's stance, or the reaction to an event. Searches X as needed and cites post URLs. Slower than the other tools.",
-      inputSchema: {
-        question: z.string().min(1).describe("The question to answer from X"),
-        include_web: z.boolean().default(false).describe("Also search the web, not only X"),
-        since: date.optional().describe("Only consider posts from this date, YYYY-MM-DD"),
-      },
-      annotations: READ_ONLY,
-    },
-    (args) => {
-      const tool: XSearchTool = { type: "x_search" };
-      if (args.since) tool.from_date = args.since;
-      return run("x_ask", {
-        user: `${args.question}\n\nAnswer concisely from what you find on X. Cite the post URL for every claim.`,
-        tools: args.include_web ? [tool, { type: "web_search" }] : [tool],
-        maxTurns: 5,
+        maxTurns: args.depth === "thorough" ? 5 : 2,
       });
     },
   );

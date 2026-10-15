@@ -18,7 +18,7 @@ const TOKEN_PROVIDER = "grok-build";
 const TOKEN_SKEW_MS = 2 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = 180 * 1000;
 
-export const MODEL = process.env.X_SEARCH_MODEL ?? "grok-4.7-build-fast";
+export const MODEL = process.env.X_SEARCH_MODEL ?? "grok-4.7";
 const EFFORT = process.env.X_SEARCH_EFFORT ?? "low";
 
 let cached: { token: string; expiresAt: number } | null = null;
@@ -70,10 +70,15 @@ export interface XSearchTool {
   to_date?: string;
 }
 
+export interface WebSearchTool {
+  type: "web_search";
+  filters?: { allowed_domains?: string[]; excluded_domains?: string[] };
+}
+
 export interface GrokRequest {
   system: string;
   user: string;
-  tools: Array<XSearchTool | { type: "web_search" }>;
+  tools: Array<XSearchTool | WebSearchTool>;
   maxTurns: number;
 }
 
@@ -83,6 +88,7 @@ export interface GrokResult {
   xSearchCalls: number;
   postsFetched: number;
   usersFetched: number;
+  webSearchCalls: number;
   durationMs: number;
 }
 
@@ -96,6 +102,7 @@ interface ResponsesBody {
       x_search_calls?: number;
       x_posts_fetched?: number;
       x_users_fetched?: number;
+      web_search_calls?: number;
     };
   };
 }
@@ -115,13 +122,20 @@ function parseResponse(json: ResponsesBody, durationMs: number): GrokResult {
       }
     }
   }
-  const usage = json.usage?.server_side_tool_usage_details;
+  const usage = {
+    x_search_calls: 0,
+    x_posts_fetched: 0,
+    x_users_fetched: 0,
+    web_search_calls: 0,
+    ...json.usage?.server_side_tool_usage_details,
+  };
   return {
     text: texts.join("\n\n"),
     sources,
-    xSearchCalls: usage?.x_search_calls ?? 0,
-    postsFetched: usage?.x_posts_fetched ?? 0,
-    usersFetched: usage?.x_users_fetched ?? 0,
+    xSearchCalls: usage.x_search_calls,
+    postsFetched: usage.x_posts_fetched,
+    usersFetched: usage.x_users_fetched,
+    webSearchCalls: usage.web_search_calls,
     durationMs,
   };
 }

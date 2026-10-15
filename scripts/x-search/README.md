@@ -1,15 +1,21 @@
 # x-search
 
-MCP server (Streamable HTTP, stateless) with read-only X (Twitter) tools.
-It runs on prod as the systemd user unit `x-search` and is meant to sit behind
-Bifrost as an HTTP MCP client.
+MCP server (Streamable HTTP, stateless) with read-only X (Twitter) and web
+search tools. It runs on prod as the systemd user unit `x-search` and is meant
+to sit behind Bifrost as an HTTP MCP client.
 
 ## How it reads X
 
-X blocks automated access, so every tool asks Grok to read X with its
-server-side `x_search` tool, the same mechanism omp's own X reader and xAI
-web search use. omp's built-in path needs `xai`/`xai-oauth` credentials; this
-server uses the Grok Build subscription (`grok-build`) instead, through
+X blocks automated access, and xAI exposes X search only as a server-side tool
+of its Responses API: a request offers Grok `{"type":"x_search"}`, and Grok
+itself calls the internal functions (`x_keyword_search`, `x_semantic_search`,
+`x_user_search`, `x_thread_fetch`) on xAI's side, then writes the answer. There
+is no endpoint that runs a search without a model, and the raw search results
+are not returned (`include` rejects every `x_search` output name), so results
+are Grok's relay of the fetched posts plus the cited URLs.
+
+omp's own X reader needs `xai`/`xai-oauth` credentials. This server uses the
+Grok Build subscription (`grok-build`) instead, through
 `https://cli-chat-proxy.grok.com/v1/responses` with the CLI fingerprint headers
 from `plugins/omp-grok-build/src/constants.ts` (compiled in, so the CLI
 version stays in step with the plugin).
@@ -18,23 +24,25 @@ version stays in step with the plugin).
   expires and refetched once on a 401. On prod this reads the auth broker's
   own store, which `omp-grok-refresher` keeps fresh, so there is no separate
   login.
-- Cost: calls draw on the Grok Build weekly credit pool (the account has no
-  on-demand cap, so nothing is billed). Check the pool with
+- Cost: every call is a Grok turn (model tokens, including fetched posts, plus
+  per-item search fees) drawn from the Grok Build weekly credit pool. The
+  account has no on-demand cap, so nothing is billed; an exhausted pool makes
+  calls fail until the weekly reset. Check the pool with
   `GET https://cli-chat-proxy.grok.com/v1/billing?format=credits`.
-- Model `grok-4.7-build-fast` with reasoning effort `low` and a small
-  `max_turns` per tool keeps a call at 3-15 s and one to four X searches.
+- Model `grok-4.7`, reasoning effort `low`. `depth` caps model turns at 2
+  (`quick`) or 5 (`thorough`); one turn can run several searches in parallel.
   Override with `X_SEARCH_MODEL` / `X_SEARCH_EFFORT`.
-- Results are Grok's relay of what `x_search` returned, plus the cited URLs.
 
 ## Tools
 
-| Tool             | Input                                                                                                      | Returns                      |
-| ---------------- | ---------------------------------------------------------------------------------------------------------- | ---------------------------- |
-| `x_search`       | `query` (X search syntax), `mode` latest/top, `limit`, `from_handles`, `exclude_handles`, `since`, `until` | Matching posts               |
-| `x_get_post`     | `post` (URL or ID), `replies`                                                                              | One post, optionally replies |
-| `x_user_posts`   | `handle`, `tab` posts/replies/media, `limit`, `since`                                                      | An account's recent posts    |
-| `x_search_users` | `query`, `limit`                                                                                           | Account profiles             |
-| `x_ask`          | `question`, `include_web`, `since`                                                                         | Cited answer from X (slower) |
+| Tool           | Input                                                                            | Typical time |
+| -------------- | -------------------------------------------------------------------------------- | ------------ |
+| `x_search`     | `request`, `handles`, `exclude_handles`, `since`, `until`, `limit`, `depth`      | 4-18 s       |
+| `x_web_search` | `query`, `domains`, `exclude_domains`, `depth` (Grok's server-side `web_search`) | 10-35 s      |
+
+`x_search` covers everything on X in one tool: post search, one post or thread
+by URL, an account's posts, account lookup, and questions answered from posts.
+The request may use X search syntax.
 
 ## Run
 
