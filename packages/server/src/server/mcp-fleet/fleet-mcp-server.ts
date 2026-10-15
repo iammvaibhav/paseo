@@ -210,6 +210,16 @@ const NOTIFY_ON_FINISH_INPUT = z.object({
     .describe("Free-form tag echoed back verbatim as `context` in the webhook payloads."),
 });
 
+const WEBHOOK_DELIVERIES_INPUT = z.object({
+  agentId: z.string().min(1).optional().describe("Only deliveries about this agent."),
+  failedOnly: z
+    .boolean()
+    .optional()
+    .describe("Only attempts that did not deliver (failed, or failed and retried)."),
+  since: z.iso.datetime().optional().describe("ISO timestamp; only attempts at or after it."),
+  limit: z.number().int().min(1).max(500).optional().describe("Rows to return (default 50)."),
+});
+
 function errorResult(text: string): PaseoToolResult {
   return { isError: true, content: [{ type: "text", text }] };
 }
@@ -565,6 +575,40 @@ export async function createFleetMcpServer(options: FleetMcpServerOptions): Prom
         ...(groupId ? { groupId } : {}),
         guidance: "Paseo will POST to your webhook when these turns end. Do not poll for them.",
       };
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(structuredContent) }],
+        structuredContent,
+      };
+    },
+  );
+
+  server.registerTool(
+    "fleet_webhook_deliveries",
+    {
+      title: "Webhook delivery history",
+      description:
+        "List the POSTs Paseo made to your webhook (finish, needs_permission, interrupted, group and " +
+        "status-report events), newest first: one row per attempt with the event, agent, turn, " +
+        "notifyContext, HTTP status, response snippet, attempt number and outcome " +
+        '("delivered", "retrying", "failed"). totals counts every match, not just the returned page. ' +
+        "Use failedOnly to find events you never received.",
+      inputSchema: WEBHOOK_DELIVERIES_INPUT.shape,
+    },
+    async (args: z.infer<typeof WEBHOOK_DELIVERIES_INPUT>) => {
+      if (!options.finishNotifier || !options.clientName) {
+        return toMcpToolResult(
+          errorResult(
+            "This MCP client has no webhook configured (daemon.mcp.remoteClients[].notify).",
+          ),
+        );
+      }
+      const structuredContent = await options.finishNotifier.listDeliveries({
+        client: options.clientName,
+        ...(args.agentId ? { agentId: args.agentId } : {}),
+        ...(args.since ? { since: args.since } : {}),
+        failedOnly: args.failedOnly ?? false,
+        limit: args.limit ?? 50,
+      });
       return {
         content: [{ type: "text" as const, text: JSON.stringify(structuredContent) }],
         structuredContent,

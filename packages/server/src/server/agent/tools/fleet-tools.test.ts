@@ -500,9 +500,14 @@ describe("fleet_send_prompt mode", () => {
     });
   });
 
-  test.each(["closed", "archived"] as const)(
-    "queue resumes a %s local agent instead of failing with Unknown agent",
-    async (state) => {
+  test.each([
+    ["queue", "closed"],
+    ["queue", "archived"],
+    ["steer", "closed"],
+    ["steer", "archived"],
+  ] as const)(
+    "%s resumes a %s local agent instead of failing with Unknown agent",
+    async (mode, state) => {
       const root = mkdtempSync(path.join(tmpdir(), "fleet-send-queue-stored-"));
       const logger = createTestLogger();
       const storage = new AgentStorage(path.join(root, "agents"), logger);
@@ -533,12 +538,12 @@ describe("fleet_send_prompt mode", () => {
           host: "Personal",
           agentId: SEND_AGENT_UUID,
           prompt: "pick this back up",
-          mode: "queue",
+          mode,
         });
 
         expect(result.structuredContent).toMatchObject({
           success: true,
-          deliveryMode: "queue",
+          deliveryMode: mode,
           runStarted: true,
         });
         expect(agentManager.getAgent(SEND_AGENT_UUID)).not.toBeNull();
