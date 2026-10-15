@@ -27,6 +27,7 @@ import {
 import { projectTimelineRows } from "./timeline-projection.js";
 import { getOpenAgentTabLabel, PARENT_AGENT_ID_LABEL } from "@getpaseo/protocol/agent-labels";
 import { formatSystemNotificationPrompt, startAgentRun } from "./agent-prompt.js";
+import { dispatchLocalPromptMode } from "./tools/paseo-tools.js";
 import { StaleProviderSessionError } from "./stale-provider-session-error.js";
 import { ensureAgentLoaded, ensureUnarchivedAgentLoaded } from "./agent-loading.js";
 import type { StoredAgentRecord } from "./agent-storage.js";
@@ -4275,6 +4276,92 @@ test("tryRunOutOfBand refuses a dead provider runtime so steer escalates", async
   // With isRuntimeAlive returning false, tryRunOutOfBand must return false so
   // callers escalate to interrupt instead of swallowing the steer.
   expect(manager.tryRunOutOfBand(agentId, "/steer fix the tests")).toBe(false);
+});
+
+test("a busy omp steer without a client message id records one user row, not two", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-omp-steer-echo-"));
+  const storagePath = join(workdir, "agents");
+  const storage = new AgentStorage(storagePath, logger);
+  // Mirrors OMP: `/steer` hands the message to the runtime, and the runtime
+  // echoes it later as a native user message on the session stream.
+  class EchoingSteerSession extends TestAgentSession {
+    // The turn never completes, so the agent stays busy for the steer.
+    override async startTurn(): Promise<{ turnId: string }> {
+      return { turnId: "turn-busy" };
+    }
+    override tryHandleOutOfBand(prompt: AgentPromptInput) {
+      if (typeof prompt !== "string" || !prompt.startsWith("/steer ")) return null;
+      const text = prompt.slice("/steer ".length).trim();
+      return {
+        run: async () => {
+          queueMicrotask(() => {
+            this.pushEvent({
+              type: "timeline",
+              provider: this.provider,
+              turnId: "turn-busy",
+              item: { type: "user_message", text, messageId: "native-steer" },
+            });
+          });
+        },
+      };
+    }
+  }
+  const client = new (class extends TestAgentClient {
+    override async createSession(config: AgentSessionConfig): Promise<AgentSession> {
+      return new EchoingSteerSession(config);
+    }
+  })("omp");
+  const agentId = "00000000-0000-4000-8000-000000000903";
+  const manager = new AgentManager({
+    clients: { omp: client },
+    registry: storage,
+    logger,
+    idFactory: () => agentId,
+  });
+
+  try {
+    await manager.createAgent({ provider: "omp", cwd: workdir }, undefined, {
+      workspaceId: undefined,
+    });
+    await startAgentRun(manager, agentId, "long task", logger);
+    expect(manager.hasInFlightRun(agentId)).toBe(true);
+
+    // A remote MCP steer (fleet_send_prompt) carries no client message id.
+    const deliveredAs = await dispatchLocalPromptMode({
+      agentManager: manager,
+      agentStorage: storage,
+      agentId,
+      prompt: "focus on tests\n",
+      mode: "steer",
+      logger,
+    });
+    expect(deliveredAs).toBe("steer");
+
+    // The echo either enriches the recorded row or lands as its own row.
+    await vi.waitFor(() => {
+      const rows = manager.fetchTimeline(agentId, { direction: "tail", limit: 20 }).rows;
+      expect(
+        rows.some(
+          (row) =>
+            row.providerMessageId === "native-steer" ||
+            (row.item.type === "user_message" && row.item.messageId === "native-steer"),
+        ),
+      ).toBe(true);
+    });
+    const steerRows = manager
+      .fetchTimeline(agentId, { direction: "tail", limit: 20 })
+      .rows.filter((row) => row.item.type === "user_message");
+    expect(steerRows).toHaveLength(1);
+    expect(steerRows[0]?.item).toMatchObject({
+      type: "user_message",
+      text: "focus on tests",
+      classification: "instruction",
+    });
+  } finally {
+    await manager.flush().catch(() => undefined);
+    await storage.flush().catch(() => undefined);
+    rmSync(workdir, { recursive: true, force: true });
+  }
 });
 
 test("createAgent fails when cwd does not exist", async () => {

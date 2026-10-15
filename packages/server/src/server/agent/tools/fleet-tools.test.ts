@@ -627,12 +627,13 @@ describe("fleet_send_prompt mode", () => {
       prompt: "add a note about the fix",
       mode: "steer",
     });
-    // The native steer records no row in Paseo's timeline; the instruction is
-    // appended as a classified user row (absent classification = instruction).
+    // The instruction is recorded as a classified, submitted user row; the
+    // runtime's later echo reconciles into it by text (absent = instruction).
     expect(appendTimelineItem).toHaveBeenCalledWith(SEND_AGENT_UUID, {
       type: "user_message",
       text: "add a note about the fix",
       classification: "instruction",
+      clientMessageId: expect.any(String),
     });
     expect(result.structuredContent).toEqual({
       success: true,
@@ -669,6 +670,7 @@ describe("fleet_send_prompt mode", () => {
       type: "user_message",
       text: "You've been quiet for a while. Post a one-line report_status.",
       classification: "machinery",
+      clientMessageId: expect.any(String),
     });
   });
 
@@ -791,6 +793,7 @@ describe("fleet_send_prompt mode", () => {
       type: "user_message",
       text: "see this screenshot",
       classification: "machinery",
+      clientMessageId: expect.any(String),
       images: [{ data: "aaa", mimeType: "image/png" }],
     });
     expect(result).toBe("steer");

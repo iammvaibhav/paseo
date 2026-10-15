@@ -8214,7 +8214,9 @@ async function tryOmpLiveSteer(params: {
       : prompt;
   // A pending agent mode rides the steer, so it applies to the turn it joins.
   const moded = agentManager.withAgentModePrefix(agentId, steerBody);
-  const steerText = typeof moded.prompt === "string" ? moded.prompt : steerBody;
+  // OMP trims the `/steer` argument, so its echo carries the trimmed text; the
+  // recorded row must match it for the echo to reconcile.
+  const steerText = (typeof moded.prompt === "string" ? moded.prompt : steerBody).trim();
   // Native images ride OMP `/steer` as a structured prompt.
   const steerPrompt: AgentPromptInput =
     images && images.length > 0
@@ -8231,16 +8233,21 @@ async function tryOmpLiveSteer(params: {
   if (!handled) {
     return null;
   }
-  if (moded.carriesMode) {
-    await agentManager.markAgentModeApplied(agentId);
-  }
+  // OMP echoes the steered message as a native user message once it joins the
+  // turn. Record the row as a submitted prompt (it always carries a
+  // clientMessageId) so the manager reconciles that echo into this row by text
+  // instead of appending a second copy. appendTimelineItem records the row
+  // synchronously, before the runtime can echo it.
   await agentManager.appendTimelineItem(agentId, {
     type: "user_message",
     text: steerText,
     classification,
-    ...(messageId ? { clientMessageId: messageId } : {}),
+    clientMessageId: messageId ?? randomUUID(),
     ...(images && images.length > 0 ? { images } : {}),
   });
+  if (moded.carriesMode) {
+    await agentManager.markAgentModeApplied(agentId);
+  }
   params.onOutOfBandSteer?.();
   return "steer";
 }
@@ -8267,8 +8274,7 @@ export async function dispatchLocalPromptMode(params: {
    * direction changes, Verifier proof demands, recovery). Absent =
    * "instruction" (visible). Machinery rows render as a muted one-line
    * placeholder in the agent chat (verbose mode only); instruction rows must
-   * always be visible — including steer deliveries, which otherwise record no
-   * user row in Paseo's timeline at all.
+   * always be visible.
    */
   classification?: AgentTimelineUserMessageClassification;
   /**
