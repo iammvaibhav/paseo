@@ -1,8 +1,8 @@
 import { describe, expect, test } from "vitest";
-import pino from "pino";
 import { AgentSearchService } from "./agent-search-service.js";
 import { parseStoredAgentRecord, type StoredAgentRecord } from "../agent/agent-storage.js";
 import type { MissionControlRunRecord } from "../mission-control/run-records.js";
+import type { TranscriptHit } from "../search/service.js";
 
 function agent(id: string, fields: Partial<StoredAgentRecord> = {}): StoredAgentRecord {
   return parseStoredAgentRecord({
@@ -26,95 +26,97 @@ function run(agentId: string, brief: string, endedAt: string, headline?: string)
   } as unknown as MissionControlRunRecord;
 }
 
-/** A jev stand-in answering "yes" with the probability `score(card)`. */
-function jev(score: (card: string) => number, calls: string[][] = []): typeof fetch {
-  return (async (_url: string, init: RequestInit) => {
-    const body = JSON.parse(String(init.body)) as {
-      questions: Record<string, { instructions: string }>;
-    };
-    calls.push(Object.keys(body.questions));
-    const answers: Record<string, unknown> = {};
-    for (const [id, question] of Object.entries(body.questions)) {
-      const yes = score(question.instructions);
-      answers[id] = {
-        choice: yes >= 0.5 ? "yes" : "no",
-        probabilities: { yes, no: 1 - yes },
-      };
-    }
-    return new Response(JSON.stringify({ answers }), { status: 200 });
-  }) as typeof fetch;
-}
-
 function service(input: {
   agents: StoredAgentRecord[];
   runs?: MissionControlRunRecord[];
-  key?: string;
-  fetchImpl?: typeof fetch;
+  transcripts?: (query: string) => TranscriptHit[];
 }) {
   return new AgentSearchService({
-    logger: pino({ level: "silent" }),
     listAgents: async () => input.agents,
     getRunRecords: () => input.runs ?? [],
     readLiveBrief: async () => null,
-    getTypesafeApiKeyRef: () => input.key,
-    resolveSecret: async (value) => value,
-    fetchImpl: input.fetchImpl,
+    searchTranscripts: input.transcripts ?? (() => []),
   });
 }
 
+const ids = (result: { matches: { agentId: string }[] }) =>
+  result.matches.map((match) => match.agentId);
+
 describe("AgentSearchService", () => {
-  test("without a TypeSafe key, matches every query word across title and launch prompt", async () => {
-    const result = await service({
-      agents: [agent("a", { title: "Fix deploy" }), agent("b", { title: "Chat links" })],
-      runs: [run("a", "make the inventory build once", "2026-10-02T00:00:00.000Z")],
-    }).search({ query: "deploy inventory" });
-
-    expect(result.semantic).toBe(false);
-    expect(result.matches.map((match) => match.agentId)).toEqual(["a"]);
-    expect(result.matches[0]).toMatchObject({ lexical: true, score: null });
-  });
-
-  test("jev finds agents with no shared words, drops low scores, and ranks by probability", async () => {
-    const result = await service({
-      agents: [agent("a"), agent("b"), agent("c")],
-      runs: [
-        run("a", "links in chat are not clickable", "2026-10-02T00:00:00.000Z"),
-        run("b", "make markdown anchors open in the browser", "2026-10-02T00:00:00.000Z"),
-        run("c", "rotate the api key", "2026-10-02T00:00:00.000Z"),
-      ],
-      key: "key",
-      fetchImpl: jev((card) => {
-        if (card.includes("anchors")) return 0.95;
-        if (card.includes("clickable")) return 0.7;
-        return 0.1;
+  test("finds an agent by its name, title, or id prefix, including closed agents", async () => {
+    const agents = [
+      agent("1e1d8ead-2444-4a39-89a9-a4cca2d2411c", {
+        name: "Lively Fable",
+        title: "Research X trending",
+        lastStatus: "closed",
       }),
-    }).search({ query: "broken hyperlinks" });
+      agent("bc4c87f8-be87-4c06-b91f-d90480e2e555", { name: "Merry Otter", title: "Deploy fix" }),
+    ];
 
-    expect(result.semantic).toBe(true);
-    expect(result.matches.map((match) => match.agentId)).toEqual(["b", "a"]);
+    expect(ids(await service({ agents }).search({ query: "lively fable" }))).toEqual([
+      "1e1d8ead-2444-4a39-89a9-a4cca2d2411c",
+    ]);
+    expect(ids(await service({ agents }).search({ query: "X trending" }))).toEqual([
+      "1e1d8ead-2444-4a39-89a9-a4cca2d2411c",
+    ]);
+    expect(ids(await service({ agents }).search({ query: "bc4c87f8" }))).toEqual([
+      "bc4c87f8-be87-4c06-b91f-d90480e2e555",
+    ]);
   });
 
-  test("the card carries the first run's launch prompt and the latest report", async () => {
-    const cards: string[] = [];
-    await service({
-      agents: [agent("a")],
+  test("matches every query word across description, launch prompt, and last report", async () => {
+    const result = await service({
+      agents: [
+        agent("a", { title: "Fix deploy", shortDescription: "Rewrote the inventory" }),
+        agent("b", { title: "Chat links" }),
+      ],
       // Newest first, as MissionControlService.getRunRecords returns them.
       runs: [
-        run("a", "follow-up: ship it", "2026-10-03T00:00:00.000Z", "Shipped to every host"),
-        run("a", "build the deploy script", "2026-10-02T00:00:00.000Z", "First draft"),
+        run("b", "follow-up: ship it", "2026-10-03T00:00:00.000Z", "Anchors open in browser"),
+        run("b", "make markdown links clickable", "2026-10-02T00:00:00.000Z"),
       ],
-      key: "key",
-      fetchImpl: jev((card) => {
-        cards.push(card);
-        return 0;
-      }),
-    }).search({ query: "deploy" });
+    }).search({ query: "deploy inventory" });
+    expect(ids(result)).toEqual(["a"]);
+    expect(result.matches[0]).toMatchObject({ lexical: true, score: null });
+    expect(result.semantic).toBe(false);
 
-    expect(cards[0]).toContain("Launch prompt: build the deploy script");
-    expect(cards[0]).toContain("Last report: Shipped to every host");
+    const byBrief = await service({
+      agents: [agent("b", { title: "Chat links" })],
+      runs: [
+        run("b", "follow-up: ship it", "2026-10-03T00:00:00.000Z", "Anchors open in browser"),
+        run("b", "make markdown links clickable", "2026-10-02T00:00:00.000Z"),
+      ],
+    });
+    expect(ids(await byBrief.search({ query: "markdown clickable" }))).toEqual(["b"]);
+    expect(ids(await byBrief.search({ query: "anchors browser" }))).toEqual(["b"]);
   });
 
-  test("archived, internal, and machinery agents are candidates only as allowed", async () => {
+  test("transcript hits widen the result and rank after metadata matches, best bm25 first", async () => {
+    const result = await service({
+      agents: [agent("meta", { title: "Kinesis alarm" }), agent("deep"), agent("deeper")],
+      transcripts: () => [
+        { agentId: "deeper", rank: -9, snippet: "kinesis fan-out" },
+        { agentId: "meta", rank: -8, snippet: "kinesis" },
+        { agentId: "deep", rank: -2, snippet: "kinesis" },
+        { agentId: "unknown", rank: -10, snippet: "kinesis" },
+      ],
+    }).search({ query: "kinesis" });
+
+    expect(ids(result)).toEqual(["meta", "deeper", "deep"]);
+    expect(result.matches.map((match) => match.lexical)).toEqual([true, false, false]);
+  });
+
+  test("name and title matches rank ahead of description-only matches", async () => {
+    const result = await service({
+      agents: [
+        agent("desc", { title: "Other", shortDescription: "touched the fable renderer" }),
+        agent("name", { name: "Lively Fable", lastActivityAt: "2026-09-01T00:00:00.000Z" }),
+      ],
+    }).search({ query: "fable" });
+    expect(ids(result)).toEqual(["name", "desc"]);
+  });
+
+  test("archived agents only with includeArchived; internal and machinery never", async () => {
     const agents = [
       agent("live", { title: "deploy live" }),
       agent("old", { title: "deploy old", archivedAt: "2026-10-05T00:00:00.000Z" }),
@@ -124,38 +126,31 @@ describe("AgentSearchService", () => {
         labels: { "paseo.mission-control": "commander" },
       }),
     ];
+    const transcripts = () => [{ agentId: "hidden", rank: -5, snippet: "deploy" }];
 
-    const active = await service({ agents }).search({ query: "deploy" });
-    expect(active.matches.map((match) => match.agentId)).toEqual(["live"]);
+    const active = await service({ agents, transcripts }).search({ query: "deploy" });
+    expect(ids(active)).toEqual(["live"]);
 
-    const all = await service({ agents }).search({ query: "deploy", includeArchived: true });
-    expect(all.matches.map((match) => match.agentId).sort()).toEqual(["live", "old"]);
-  });
-
-  test("splits large candidate sets across parallel jev calls and keeps every score aligned", async () => {
-    const agents = Array.from({ length: 250 }, (_, index) =>
-      agent(`n${index}`, { title: `Task number ${index}` }),
+    const all = await service({ agents, transcripts }).search({
+      query: "deploy",
+      includeArchived: true,
+    });
+    expect(ids(all).sort()).toEqual(["live", "old"]);
+    expect(all.matches.find((match) => match.agentId === "old")?.archivedAt).toBe(
+      "2026-10-05T00:00:00.000Z",
     );
-    const calls: string[][] = [];
-    const result = await service({
-      agents,
-      key: "key",
-      fetchImpl: jev((card) => (card.endsWith("Task number 207") ? 0.9 : 0), calls),
-    }).search({ query: "the 207th task" });
-
-    expect(calls.map((questions) => questions.length)).toEqual([100, 100, 50]);
-    expect(result.candidateCount).toBe(250);
-    expect(result.matches.map((match) => match.agentId)).toEqual(["n207"]);
   });
 
-  test("a failing jev call falls back to word matches", async () => {
+  test("a blank query matches nothing and skips the transcript index", async () => {
+    let transcriptQueries = 0;
     const result = await service({
-      agents: [agent("a", { title: "Fix deploy" }), agent("b", { title: "Other" })],
-      key: "key",
-      fetchImpl: (async () => new Response("down", { status: 503 })) as unknown as typeof fetch,
-    }).search({ query: "deploy" });
-
-    expect(result.semantic).toBe(false);
-    expect(result.matches.map((match) => match.agentId)).toEqual(["a"]);
+      agents: [agent("a")],
+      transcripts: () => {
+        transcriptQueries += 1;
+        return [{ agentId: "a", rank: -1, snippet: "" }];
+      },
+    }).search({ query: "   " });
+    expect(result.matches).toEqual([]);
+    expect(transcriptQueries).toBe(0);
   });
 });

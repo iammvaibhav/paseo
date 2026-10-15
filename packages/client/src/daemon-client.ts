@@ -3463,7 +3463,7 @@ export class DaemonClient {
     return payload.suggestion;
   }
 
-  /** Shallow jev search over this host's agents (features.agentSearch). */
+  /** Full-text search over this host's agents and transcripts (features.agentSearch). */
   async searchAgents(input: {
     query: string;
     includeArchived?: boolean;

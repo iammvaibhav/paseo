@@ -11,7 +11,7 @@ import { useHostFeatureMap } from "@/runtime/host-features";
 import { useSessionStore } from "@/stores/session-store";
 import { useSidebarSearchStore } from "@/stores/sidebar-search-store";
 
-/** Long enough that a typed word is one jev pass, short enough to feel live. */
+/** Long enough that a typed word is one round trip per host, short enough to feel live. */
 const REMOTE_SEARCH_DEBOUNCE_MS = 250;
 
 const EMPTY_KEYS: readonly string[] = [];
@@ -22,7 +22,6 @@ export interface SidebarSearchArchivedMatch {
   agentId: string;
   title: string | null;
   cwd: string;
-  score: number | null;
 }
 
 export interface SidebarSearch {
@@ -33,14 +32,10 @@ export interface SidebarSearch {
   agentKeys: ReadonlySet<string>;
   /** `serverId:workspaceId` of every workspace holding a matching agent. */
   workspaceKeys: ReadonlySet<string>;
-  /** Archived matches, best first; empty unless archived agents are included. */
+  /** Archived matches, best first per host; empty unless archived agents are included. */
   archivedMatches: SidebarSearchArchivedMatch[];
   /** A host has not answered the current query yet. */
   pending: boolean;
-  /** At least one host ranked with jev; false = word matches only. */
-  semantic: boolean;
-  /** Slowest host's daemon-side search time for the current query. */
-  latencyMs: number | null;
 }
 
 interface RemoteState {
@@ -59,9 +54,9 @@ const EMPTY_REMOTE: RemoteState = {
 
 /**
  * What the sidebar search bar matches. Word matches over the agents already in
- * the session store show instantly; each host's jev search (agent.search.*)
- * widens them about half a second later with agents whose launch prompt or
- * reported status fits the query without sharing its words.
+ * the session store show instantly; each host's full-text search
+ * (agent.search.*) widens them a moment later with closed, archived (opt-in),
+ * and transcript matches the client cannot see.
  */
 export function useSidebarSearch(): SidebarSearch {
   const query = useSidebarSearchStore((state) => state.query.trim());
@@ -77,7 +72,14 @@ export function useSidebarSearch(): SidebarSearch {
       for (const [serverId, session] of Object.entries(state.sessions)) {
         for (const agent of session.agents.values()) {
           if (agent.archivedAt) continue;
-          if (!matchesAgentSearchWords(words, [agent.title, agent.name, agent.shortDescription])) {
+          if (
+            !matchesAgentSearchWords(words, [
+              agent.title,
+              agent.name,
+              agent.id,
+              agent.shortDescription,
+            ])
+          ) {
             continue;
           }
           entries.push([serverId, agent.id, agent.workspaceId ?? ""].join(KEY_SEPARATOR));
@@ -103,12 +105,8 @@ export function useSidebarSearch(): SidebarSearch {
 
     const current = remote.query === query && remote.includeArchived === includeArchived;
     const archivedMatches: SidebarSearchArchivedMatch[] = [];
-    let semantic = false;
-    let latencyMs: number | null = null;
     if (current) {
       for (const [serverId, payload] of remote.byServer) {
-        semantic ||= payload.semantic;
-        latencyMs = Math.max(latencyMs ?? 0, payload.latencyMs);
         for (const match of payload.matches) {
           if (match.archivedAt) {
             archivedMatches.push({
@@ -116,7 +114,6 @@ export function useSidebarSearch(): SidebarSearch {
               agentId: match.agentId,
               title: match.title,
               cwd: match.cwd,
-              score: match.score,
             });
           } else {
             addMatch(serverId, match.agentId, match.workspaceId);
@@ -124,7 +121,6 @@ export function useSidebarSearch(): SidebarSearch {
         }
       }
     }
-    archivedMatches.sort((left, right) => (right.score ?? 0) - (left.score ?? 0));
 
     return {
       active: words.length > 0,
@@ -133,8 +129,6 @@ export function useSidebarSearch(): SidebarSearch {
       workspaceKeys,
       archivedMatches,
       pending: words.length > 0 && (!current || remote.pendingServerIds.size > 0),
-      semantic,
-      latencyMs,
     };
   }, [includeArchived, localEntries, query, remote, words]);
 }
@@ -151,7 +145,7 @@ function useRemoteAgentSearch(query: string, includeArchived: boolean): RemoteSt
   const [state, setState] = useState<RemoteState>(EMPTY_REMOTE);
   const isOpen = useSidebarSearchStore((store) => store.isOpen);
 
-  // Opening the bar warms each host (vault key, launch prompts) before the first query lands.
+  // Opening the bar warms each host (live launch prompts) before the first query lands.
   useEffect(() => {
     if (!isOpen) return;
     const runtime = getHostRuntimeStore();

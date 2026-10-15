@@ -2,11 +2,11 @@
 
 Agent search has three depths:
 
-| Depth              | Where                               | What it reads                                                     | Latency |
-| ------------------ | ----------------------------------- | ----------------------------------------------------------------- | ------- |
-| **Sidebar search** | Search icon in the sidebar header   | Title, launch prompt, reported status, last report headline (jev) | ~0.5 s  |
-| **History search** | History → Agents tab                | Session names and indexed transcripts (FTS5), archived included   | instant |
-| **History Ask**    | History → Ask tab, ⋮ → Ask history… | Everything on disk, read by an agent                              | minutes |
+| Depth              | Where                               | What it reads                                                           | Latency |
+| ------------------ | ----------------------------------- | ----------------------------------------------------------------------- | ------- |
+| **Sidebar search** | Search icon in the sidebar header   | Name, title, id, status, launch prompt, last report, transcripts (FTS5) | instant |
+| **History search** | History → Agents tab                | Session names and indexed transcripts (FTS5), archived included         | instant |
+| **History Ask**    | History → Ask tab, ⋮ → Ask history… | Everything on disk, read by an agent                                    | minutes |
 
 This is a custom-fork feature (`vaibhav/customizations`).
 
@@ -14,11 +14,12 @@ This is a custom-fork feature (`vaibhav/customizations`).
 
 The search icon next to the Workspaces / Agents toggle opens a search bar that narrows the list in place, in both views and under any project or host filter already applied. Archived agents are opt-in (**Include archived**) and listed under the bar, since the list never shows them. A search that matches nothing offers **Deep search**, which prefills History Ask with the query.
 
-- **Word matches show instantly**: every query word in the title, name, or reported description of an agent already in the session store. Workspace names match too.
-- **jev widens them** after a 250 ms pause: each host answers `agent.search.request` (`AgentSearchService`, `packages/server/src/server/agent-search/`) by asking jev one yes/no question per agent over a short card: title, launch prompt (first run record's brief, or the first user message of a live agent), reported description, and last report headline. A "yes" probability of 0.5 or more is a match. No transcript is read.
-- Cards are ~450 bytes. One jev request fails with `max_tokens_exceeded` around 400 KB, so the service sends 100 questions per call in parallel. Measured on dev: 96 active agents in ~0.45 s, 1,000 agents in 10 parallel calls ~0.75 s.
-- Without a TypeSafe key (`routingSecrets.typesafeApiKey`, see [routing.md](routing.md)) or when jev fails, the host returns word matches over the same cards, which include the launch prompt the client cannot see.
+- **Word matches show instantly**: every query word in the title, name, id, or reported description of an agent already in the session store. Workspace names match too.
+- **Each host widens them** after a 250 ms pause: it answers `agent.search.request` (`AgentSearchService`, `packages/server/src/server/agent-search/`) with plain text matching, no model call. An agent matches when every query word is a substring of its name, title, id, reported description, launch prompt (first run record's brief, or the first user message of a live agent), or last report headline, or when the transcript FTS5 index (the one History search uses) hits. Name, title, and id matches rank first, then other fields, then transcript-only hits by bm25.
+- Closed agents are candidates. The agent view has no Dormant section, so while a search is active closed agents, and Done agents past the retention window, list under **Done**.
+- Archived agents are candidates only with **Include archived**, and list under the bar instead of the empty state.
 - Commander and machinery agents are never candidates.
+- The response still carries `semantic` (always false) and a null `score` from the removed jev ranker so older clients parse it; see `COMPAT(agentSearchJev)`.
 
 ## History Ask
 

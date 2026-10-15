@@ -93,13 +93,7 @@ export function SidebarSearchPanel(): ReactElement | null {
 
   if (!isOpen) return null;
 
-  let status: string | null = null;
-  if (search.active) {
-    if (search.pending) status = t("sidebar.search.searching");
-    else if (search.semantic && search.latencyMs !== null)
-      status = t("sidebar.search.semantic", { ms: search.latencyMs });
-    else status = t("sidebar.search.wordsOnly");
-  }
+  const status = search.pending ? t("sidebar.search.searching") : null;
 
   return (
     <View style={styles.panel} testID="sidebar-search-panel">
@@ -191,8 +185,9 @@ export function SidebarSearchEmptyState(): ReactElement | null {
     router.navigate(buildSessionsRoute());
   }, [askAboutSearch, closeCompactSidebar, query]);
 
-  // Word matches came up empty but jev may still find something; the bar says Searching….
-  if (search.pending) return null;
+  // Word matches came up empty but a host may still answer; the bar says Searching….
+  // Archived matches are listed under the bar, so the list is not empty-handed.
+  if (search.pending || search.archivedMatches.length > 0) return null;
 
   return (
     <View style={styles.empty} testID="sidebar-search-empty-state">

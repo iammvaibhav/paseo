@@ -1252,8 +1252,6 @@ export const en = {
       clear: "Clear search",
       includeArchived: "Include archived",
       searching: "Searching…",
-      semantic: "jev · {{ms}} ms",
-      wordsOnly: "Word matches only",
       archivedTitle: "Archived",
       emptyTitle: "No agents match",
       emptyDescription:

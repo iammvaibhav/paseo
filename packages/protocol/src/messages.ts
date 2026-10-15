@@ -4386,7 +4386,7 @@ export const ServerInfoStatusPayloadSchema = z
         // Daemon serves page.proxy.open.* so a show_page localhost URL reaches the reader.
         pagePortProxy: z.boolean().optional(),
         // COMPAT(agentSearch): added 2026-10-12, remove gate after 2027-04-12.
-        // agent.search.* (shallow jev search for the sidebar search bar).
+        // agent.search.* (full-text agent search for the sidebar search bar).
         agentSearch: z.boolean().optional(),
         // COMPAT(scratchWorkspace): added 2026-10-12, remove gate after 2027-04-12.
         // routing.project.create scratch responses carry the scratch project's

@@ -2599,16 +2599,15 @@ export async function createPaseoDaemon(
       logger.warn({ err: error }, "Failed to ensure the scratch project");
     });
   }
-  // Sidebar search (agent.search.*): a shallow jev pass over this host's agents.
+  // Sidebar search (agent.search.*): plain full-text search over this host's agents.
   const agentSearchService = new AgentSearchService({
-    logger,
     listAgents: () => agentStorage.list(),
     getRunRecords: () => missionControlService.getRunRecords(),
     readLiveBrief: async (agentId) =>
       agentManager.getAgent(agentId)
         ? readLaunchBrief(await agentManager.getTimelineRows(agentId))
         : null,
-    getTypesafeApiKeyRef: () => centralMissionControlConfig.get().routingSecrets?.typesafeApiKey,
+    searchTranscripts: (query) => transcriptSearch?.search(query) ?? [],
   });
   // Vault-backed secrets are read once per daemon run: load every aside://
   // reference the config names now (routing keys, MCP client webhooks) so the
