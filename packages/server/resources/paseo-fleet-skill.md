@@ -4,7 +4,7 @@ Paseo runs coding agents on several machines ("hosts"). Every host runs a Paseo 
 
 ## Use MCP for anything that spans hosts
 
-Start with these tools. They are loaded on every connection:
+Every Paseo tool is listed directly on this server. Start with these:
 
 | Need                                       | Tool                                                 |
 | ------------------------------------------ | ---------------------------------------------------- |
@@ -26,7 +26,7 @@ Start with these tools. They are loaded on every connection:
 | Give an agent a screenshot or file         | `fleet_upload_file`, then pass the `fileId`          |
 | See an image an agent produced             | `fleet_read_image`                                   |
 
-Everything else is one search away. Call `paseo_tool_search` with what you want in plain words ("move an agent to another host", "archive a workspace", "cancel an agent"); it returns the matching tools with their input schemas. Run any of them with `paseo_tool_call { name, arguments }`.
+The rest cover meta changes (`fleet_rename_*`, `fleet_archive_*`, `fleet_move_agent`, `fleet_create_project`, `fleet_adopt_agent`), control (`fleet_cancel_agent`, `fleet_kill_agent`, `fleet_update_agent`, `respond_to_permission`), schedules and heartbeats, workspace scripts, terminals, browser tabs, memory (`fleet_recall`, `fleet_context`) and Mission Control cards. Tools without the `fleet_` prefix act on this daemon's host only.
 
 Tickets live in itsaplan, which the client connects to as its own MCP server.
 

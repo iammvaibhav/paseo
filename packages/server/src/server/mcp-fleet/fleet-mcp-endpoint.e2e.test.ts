@@ -10,11 +10,6 @@ import pino from "pino";
 import { hashDaemonPassword } from "../auth.js";
 import { createPaseoDaemon, type PaseoDaemonConfig } from "../bootstrap.js";
 import { createTestAgentClients } from "../test-utils/fake-agent-client.js";
-import {
-  CORE_FLEET_TOOL_NAMES,
-  MCP_ONLY_FLEET_TOOL_NAMES,
-  META_FLEET_TOOL_NAMES,
-} from "./tool-search.js";
 
 async function getAvailablePort(): Promise<number> {
   const { promise, resolve, reject } = Promise.withResolvers<number>();
@@ -40,7 +35,7 @@ function extractFirstTextContent(result: { content: unknown[] }): string {
 }
 
 describe("Fleet MCP Endpoint E2E (/mcp/fleet)", () => {
-  test("authenticates remote clients, exposes core+meta tools, and executes tools", async () => {
+  test("authenticates remote clients, lists every Paseo tool directly, and executes tools", async () => {
     const paseoHome = await mkdtemp(path.join(os.tmpdir(), "paseo-home-fleet-"));
     const staticDir = await mkdtemp(path.join(os.tmpdir(), "paseo-static-fleet-"));
     const port = await getAvailablePort();
@@ -129,20 +124,22 @@ describe("Fleet MCP Endpoint E2E (/mcp/fleet)", () => {
       const toolsList = await client.listTools();
       const registeredNames = toolsList.tools.map((t) => t.name);
 
-      // tools/list contains exactly the core, meta and MCP-only tools that exist
-      for (const meta of [...META_FLEET_TOOL_NAMES, ...MCP_ONLY_FLEET_TOOL_NAMES]) {
-        expect(registeredNames).toContain(meta);
+      // Every tool is listed directly: fleet tools, local tools, and the
+      // server's own; the old search/call indirection is gone.
+      for (const name of [
+        "fleet_send_prompt",
+        "fleet_move_agent",
+        "fleet_archive_agent",
+        "list_agents",
+        "create_schedule",
+        "fleet_notify_on_finish",
+        "fleet_webhook_deliveries",
+        "paseo_skill",
+      ]) {
+        expect(registeredNames).toContain(name);
       }
-      for (const tool of toolsList.tools) {
-        const isKnown = (
-          [
-            ...CORE_FLEET_TOOL_NAMES,
-            ...META_FLEET_TOOL_NAMES,
-            ...MCP_ONLY_FLEET_TOOL_NAMES,
-          ] as readonly string[]
-        ).includes(tool.name);
-        expect(isKnown).toBe(true);
-      }
+      expect(registeredNames).not.toContain("paseo_tool_search");
+      expect(registeredNames).not.toContain("paseo_tool_call");
 
       // 5. paseo_skill returns the skill instructions
       const skillResult = await client.callTool({
@@ -153,29 +150,10 @@ describe("Fleet MCP Endpoint E2E (/mcp/fleet)", () => {
       const skillText = extractFirstTextContent(skillResult);
       expect(skillText).toContain("# Paseo fleet");
 
-      // 6. paseo_tool_search lexical fallback finds fleet_move_agent for 'move an agent to another host'
-      const searchResult = await client.callTool({
-        name: "paseo_tool_search",
-        arguments: {
-          query: "move an agent to another host",
-        },
-      });
-      expect(searchResult.isError).toBeFalsy();
-      const searchRawText = extractFirstTextContent(searchResult);
-      const searchParsed = JSON.parse(searchRawText);
-      const toolList = Array.isArray(searchParsed?.tools) ? searchParsed.tools : [];
-      const foundMove = toolList.some((t: { name: string }) => t.name === "fleet_move_agent");
-      expect(foundMove).toBe(true);
-
-      // 7. paseo_tool_call executes a real catalog tool
-      const callResult = await client.callTool({
-        name: "paseo_tool_call",
-        arguments: {
-          name: "fleet_list_agents",
-          arguments: {},
-        },
-      });
+      // 6. A formerly hidden catalog tool runs directly
+      const callResult = await client.callTool({ name: "list_agents", arguments: {} });
       expect(callResult.isError).toBeFalsy();
+      expect(callResult.structuredContent).toMatchObject({ agents: [] });
 
       await client.close();
     } finally {

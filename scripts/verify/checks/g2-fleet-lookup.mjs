@@ -26,7 +26,6 @@ const NEEDLE = `g2needle${randomBytes(4).toString("hex")}`;
 const PROOF_DIR = process.env.G2_PROOF_DIR ?? null;
 
 let mcp;
-let directTools = new Set();
 const agents = {};
 const evidence = {};
 
@@ -40,12 +39,10 @@ async function pollUntil(fetchValue, { timeoutMs = 120_000, intervalMs = 500, de
   throw new Error(`Timed out after ${timeoutMs}ms waiting for ${description}`);
 }
 
-/** Call a fleet tool directly when /mcp/fleet lists it, else through paseo_tool_call. */
 async function call(name, args) {
-  const request = directTools.has(name)
-    ? { name, arguments: args }
-    : { name: "paseo_tool_call", arguments: { name, arguments: args } };
-  const result = await mcp.callTool(request, undefined, { timeout: 600_000 });
+  const result = await mcp.callTool({ name, arguments: args }, undefined, {
+    timeout: 600_000,
+  });
   const text = result.content?.map((block) => block.text ?? "").join(" ") ?? "";
   if (result.isError) throw new Error(`${name} failed: ${text}`);
   return result.structuredContent;
@@ -89,8 +86,8 @@ export const steps = [
           requestInit: { headers: { Authorization: `Bearer ${TOKEN}` } },
         }),
       );
-      directTools = new Set((await mcp.listTools()).tools.map((tool) => tool.name));
-      return `connected; ${directTools.size} tools`;
+      const tools = (await mcp.listTools()).tools;
+      return `connected; ${tools.length} tools`;
     },
   },
   {

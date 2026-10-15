@@ -327,17 +327,13 @@ export const steps = [
     async run(ctx) {
       const home = ctx.host("commander").home;
       const before = await proposalCount(home);
-      // Meta tools are not core tools: an MCP client finds them by search and runs them here.
-      const rename = await call("paseo_tool_call", {
-        name: "fleet_rename_agent_title",
-        arguments: { agentId: agents.peer.agentId, title: "paseo55 renamed" },
+      const rename = await call("fleet_rename_agent_title", {
+        agentId: agents.peer.agentId,
+        title: "paseo55 renamed",
       });
       ctx.expect(rename.structuredContent.status === "applied", `rename applied: ${rename.text}`);
       for (const agent of Object.values(agents)) {
-        const archive = await call("paseo_tool_call", {
-          name: "fleet_archive_agent",
-          arguments: { agentId: agent.agentId },
-        });
+        const archive = await call("fleet_archive_agent", { agentId: agent.agentId });
         ctx.expect(
           archive.structuredContent.status === "applied",
           `archive applied: ${archive.text}`,

@@ -10,11 +10,6 @@ import type {
   ArmMcpStatusReportNotification,
 } from "./finish-notifier.js";
 import { createFleetMcpServer, FLEET_MCP_INSTRUCTIONS } from "./fleet-mcp-server.js";
-import {
-  CORE_FLEET_TOOL_NAMES,
-  MCP_ONLY_FLEET_TOOL_NAMES,
-  META_FLEET_TOOL_NAMES,
-} from "./tool-search.js";
 import type { PaseoToolHostDependencies } from "../agent/tools/paseo-tools.js";
 import { createPaseoToolCatalog } from "../agent/tools/paseo-tools.js";
 import { createProviderSnapshotManagerStub } from "../test-utils/session-stubs.js";
@@ -64,18 +59,24 @@ describe("createFleetMcpServer", () => {
     const toolsResult = await client.listTools();
     const toolNames = toolsResult.tools.map((t) => t.name);
 
-    // Catalog tools that exist in this stub hostDeps
+    // Every catalog tool is listed directly, plus the server's own tools.
     const catalog = await createPaseoToolCatalog(hostDeps);
-    const expectedCore = CORE_FLEET_TOOL_NAMES.filter((name) => catalog.tools.has(name));
-    const expectedTotal = [...expectedCore, ...META_FLEET_TOOL_NAMES, ...MCP_ONLY_FLEET_TOOL_NAMES];
+    const expectedTotal = [
+      ...catalog.tools.keys(),
+      "fleet_notify_on_finish",
+      "fleet_webhook_deliveries",
+      "paseo_skill",
+    ];
 
     expect(toolNames.sort()).toEqual(expectedTotal.sort());
+    expect(toolNames).not.toContain("paseo_tool_search");
+    expect(toolNames).not.toContain("paseo_tool_call");
 
     await client.close();
     await server.close();
   });
 
-  test("paseo_tool_call executes a real catalog tool", async () => {
+  test("a non-fleet catalog tool runs directly", async () => {
     const hostDeps = createTestHostDependencies();
     const server = await createFleetMcpServer({ hostDependencies: hostDeps });
 
@@ -84,40 +85,10 @@ describe("createFleetMcpServer", () => {
 
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
 
-    const result = await client.callTool({
-      name: "paseo_tool_call",
-      arguments: {
-        name: "list_agents",
-        arguments: {},
-      },
-    });
+    const result = await client.callTool({ name: "list_agents", arguments: {} });
 
     expect(result.isError).toBeFalsy();
-    expect(result.content).toBeDefined();
-
-    await client.close();
-    await server.close();
-  });
-
-  test("paseo_tool_call returns error with hint when tool name is unknown", async () => {
-    const hostDeps = createTestHostDependencies();
-    const server = await createFleetMcpServer({ hostDependencies: hostDeps });
-
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    const client = new Client({ name: "test-client", version: "1.0.0" });
-
-    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
-
-    const result = await client.callTool({
-      name: "paseo_tool_call",
-      arguments: {
-        name: "nonexistent_tool_xyz",
-        arguments: {},
-      },
-    });
-
-    expect(result.isError).toBe(true);
-    expect(extractFirstTextContent(result)).toContain("paseo_tool_search");
+    expect(result.structuredContent).toMatchObject({ agents: [] });
 
     await client.close();
     await server.close();
@@ -294,8 +265,8 @@ describe("notifyOnFinish for MCP clients", () => {
     const { toolCalls, armed, server } = setup({ withTarget: false });
     const { client, close } = await connect(server);
     const result = await client.callTool({
-      name: "paseo_tool_call",
-      arguments: { name: "fleet_create_agent", arguments: { notifyOnFinish: true } },
+      name: "fleet_create_agent",
+      arguments: { notifyOnFinish: true },
     });
     expect(result.isError).toBe(true);
     expect(extractFirstTextContent(result as { content: unknown[] })).toContain("fleet_wait_agent");
@@ -308,11 +279,8 @@ describe("notifyOnFinish for MCP clients", () => {
     const { toolCalls, server } = setup({ withTarget: true });
     const { client, close } = await connect(server);
     const result = await client.callTool({
-      name: "paseo_tool_call",
-      arguments: {
-        name: "fleet_create_agent",
-        arguments: { notifyOnFinish: true, notifyContext: "x".repeat(2001) },
-      },
+      name: "fleet_create_agent",
+      arguments: { notifyOnFinish: true, notifyContext: "x".repeat(2001) },
     });
     expect(result.isError).toBe(true);
     expect(toolCalls).toEqual([]);
@@ -377,11 +345,11 @@ describe("notifyOnFinish for MCP clients", () => {
     expect(extractFirstTextContent(direct as { content: unknown[] })).toContain(
       '"hots" (did you mean "host"?)',
     );
-    const viaCall = await client.callTool({
-      name: "paseo_tool_call",
-      arguments: { name: "fleet_create_agent", arguments: { agentIdentifier: "x" } },
+    const misnamed = await client.callTool({
+      name: "fleet_create_agent",
+      arguments: { agentIdentifier: "x" },
     });
-    expect(extractFirstTextContent(viaCall as { content: unknown[] })).toContain(
+    expect(extractFirstTextContent(misnamed as { content: unknown[] })).toContain(
       'did you mean "agentId"?',
     );
     expect(toolCalls).toEqual([]);

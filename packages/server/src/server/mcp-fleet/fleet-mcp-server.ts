@@ -8,10 +8,7 @@ import type {
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 
-import {
-  addModelVisibleStructuredContent,
-  serializePaseoToolInputParameters,
-} from "../agent/tools/paseo-tool-serialization.js";
+import { addModelVisibleStructuredContent } from "../agent/tools/paseo-tool-serialization.js";
 import {
   createPaseoToolCatalog,
   type PaseoToolHostDependencies,
@@ -30,12 +27,10 @@ import {
   type McpNotifyAgent,
   type McpNotifyTarget,
 } from "./finish-notifier.js";
-import { CORE_FLEET_TOOL_NAMES, resolveTypeSafeApiKey, searchCatalogTools } from "./tool-search.js";
 import { loadFleetSkillText } from "./skill.js";
 
 export const FLEET_MCP_INSTRUCTIONS =
-  "You control the whole Paseo fleet across all peered hosts. " +
-  "Core tools are listed directly; call paseo_tool_search to discover any other catalog tool, and call paseo_tool_call to execute it. " +
+  "You control the whole Paseo fleet across all peered hosts. Every Paseo tool is listed directly. " +
   "Call paseo_skill before using the paseo CLI for host-local work.";
 
 export interface FleetMcpServerOptions {
@@ -502,11 +497,7 @@ export async function createFleetMcpServer(options: FleetMcpServerOptions): Prom
     return handleNotifyOnFinish(name, args, signal);
   };
 
-  for (const toolName of CORE_FLEET_TOOL_NAMES) {
-    const tool = catalog.getTool(toolName);
-    if (!tool) {
-      continue;
-    }
+  for (const tool of catalog.tools.values()) {
     server.registerTool(
       tool.name,
       {
@@ -613,89 +604,6 @@ export async function createFleetMcpServer(options: FleetMcpServerOptions): Prom
         content: [{ type: "text" as const, text: JSON.stringify(structuredContent) }],
         structuredContent,
       };
-    },
-  );
-
-  server.registerTool(
-    "paseo_tool_search",
-    {
-      title: "Search Paseo tools",
-      description:
-        "Search non-core Paseo catalog tools by intent or keywords. Returns tool names, descriptions, and input schemas.",
-      inputSchema: {
-        query: z.string().describe("What you want to do (e.g. 'move an agent to another host')"),
-        limit: z
-          .number()
-          .int()
-          .positive()
-          .optional()
-          .describe("Maximum number of tools to return (default 12)"),
-      },
-    },
-    async (args: { query: string; limit?: number }, context?: McpToolContext) => {
-      const typesafeApiKey = await resolveTypeSafeApiKey({
-        missionControlService: options.hostDependencies.missionControlService,
-      });
-      const tools = await searchCatalogTools({
-        catalog,
-        query: args.query,
-        limit: args.limit,
-        typesafeApiKey,
-        signal: context?.signal,
-      });
-      // Show the webhook arguments on the tools that take them here too.
-      for (const item of tools) {
-        const tool = catalog.getTool(item.name);
-        if (!tool || !NOTIFY_TOOLS.has(item.name)) continue;
-        item.inputSchema = serializePaseoToolInputParameters({
-          ...tool,
-          inputSchema: withNotifyInput(tool.inputSchema),
-        });
-      }
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify({ tools }, null, 2),
-          },
-        ],
-        structuredContent: { tools },
-      };
-    },
-  );
-
-  server.registerTool(
-    "paseo_tool_call",
-    {
-      title: "Call a Paseo tool",
-      description:
-        "Execute any Paseo catalog tool by name with arguments. The tool validates its own input.",
-      inputSchema: {
-        name: z.string().describe("The name of the catalog tool to run"),
-        arguments: z
-          .record(z.string(), z.unknown())
-          .optional()
-          .describe("Arguments object to pass to the tool"),
-      },
-    },
-    async (
-      args: { name: string; arguments?: Record<string, unknown> },
-      context?: McpToolContext,
-    ) => {
-      const tool = catalog.getTool(args.name);
-      if (!tool) {
-        return {
-          isError: true,
-          content: [
-            {
-              type: "text",
-              text: `Tool "${args.name}" is not registered in the catalog. Use paseo_tool_search to find available tools.`,
-            },
-          ],
-        };
-      }
-      const result = await runCatalogTool(args.name, args.arguments ?? {}, context?.signal);
-      return toMcpToolResult(result);
     },
   );
 
