@@ -90,16 +90,8 @@ export function createWorkspaceRecoveryService(deps: {
       };
     }
 
-    const project = await deps.getProject(workspace.projectId);
-    if (!project) {
-      return {
-        kind: "unavailable",
-        workspaceId,
-        reason: "project_not_found",
-        message: "The project for this archived workspace no longer exists.",
-      };
-    }
-
+    // A workspace whose directory remains is restorable even when its project
+    // record is gone: unarchiving recreates the project at the workspace's root.
     if (await deps.isDirectory(workspace.cwd)) {
       return createRecoveryPlan({ action: "unarchive", workspace });
     }
@@ -114,7 +106,16 @@ export function createWorkspaceRecoveryService(deps: {
     }
     // COMPAT(worktreeRestoreMissingMainRepoRoot): records created before v0.1.110
     // lack placement ownership; remove the project-root fallback after 2027-01-17.
-    const sourceRepoRoot = workspace.mainRepoRoot ?? project.rootPath;
+    const sourceRepoRoot =
+      workspace.mainRepoRoot ?? (await deps.getProject(workspace.projectId))?.rootPath;
+    if (!sourceRepoRoot) {
+      return {
+        kind: "unavailable",
+        workspaceId,
+        reason: "project_not_found",
+        message: "The project for this archived workspace no longer exists.",
+      };
+    }
     if (!(await deps.isDirectory(sourceRepoRoot))) {
       return {
         kind: "unavailable",

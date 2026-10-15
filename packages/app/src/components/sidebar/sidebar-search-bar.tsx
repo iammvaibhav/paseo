@@ -13,6 +13,8 @@ import { useSidebarSearchStore } from "@/stores/sidebar-search-store";
 import type { Theme } from "@/styles/theme";
 import { buildSessionsRoute } from "@/utils/host-routes";
 import { openAgentFromHistory } from "@/workspace/open-agent-from-history";
+import { SidebarArchivedAgentRow } from "./agent-view/row";
+import { SidebarAgentViewSectionHeader } from "./agent-view/section-header";
 import { menuTriggerStyles } from "./display-preferences/filter-pages";
 import { useSidebarModel } from "./sidebar-model";
 import type { SidebarSearchArchivedMatch } from "./sidebar-search";
@@ -62,6 +64,7 @@ function useCloseCompactSidebar(): () => void {
 /**
  * The open search bar: the query narrows the list below it in place, and
  * archived matches (opt-in) are listed here because the list never shows them.
+ * Opening one unarchives it with its workspace and project.
  */
 export function SidebarSearchPanel(): ReactElement | null {
   const { t } = useTranslation();
@@ -131,7 +134,11 @@ export function SidebarSearchPanel(): ReactElement | null {
       </View>
       {includeArchived && search.archivedMatches.length > 0 ? (
         <View style={styles.archived} testID="sidebar-search-archived">
-          <Text style={styles.archivedTitle}>{t("sidebar.search.archivedTitle")}</Text>
+          <SidebarAgentViewSectionHeader
+            title={t("sidebar.search.archivedTitle")}
+            count={search.archivedMatches.length}
+            testID="sidebar-search-archived-section"
+          />
           {search.archivedMatches.map((match) => (
             <ArchivedMatchRow
               key={`${match.serverId}:${match.agentId}`}
@@ -152,23 +159,16 @@ function ArchivedMatchRow({
   match: SidebarSearchArchivedMatch;
   onPress: (match: SidebarSearchArchivedMatch) => void;
 }): ReactElement {
+  const { t } = useTranslation();
   const handlePress = useCallback(() => onPress(match), [match, onPress]);
   return (
-    <Pressable
+    <SidebarArchivedAgentRow
+      agentId={match.agentId}
+      title={match.title ?? match.name ?? t("agentList.fallbackTitle")}
+      lastActivityAt={match.lastActivityAt}
       onPress={handlePress}
-      style={archivedRowStyle}
-      testID={`sidebar-search-archived-${match.agentId}`}
-    >
-      <ThemedArchive size={12} uniProps={mutedIconMapping} />
-      <Text style={styles.archivedRowText} numberOfLines={1}>
-        {match.title ?? match.cwd}
-      </Text>
-    </Pressable>
+    />
   );
-}
-
-function archivedRowStyle({ hovered = false }: PressableStateCallbackType & { hovered?: boolean }) {
-  return [styles.archivedRow, hovered && styles.archivedRowHovered];
 }
 
 /** List body when a search matched nothing: the way out is the deep, agentic search. */
@@ -244,31 +244,10 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.xs,
   },
+  // The panel renders inside the agent list's inset and adds its own spacing[1];
+  // cancelling that lines archived rows up with the rows below.
   archived: {
-    gap: 2,
-  },
-  archivedTitle: {
-    color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.xs,
-    paddingHorizontal: theme.spacing[1],
-    paddingTop: theme.spacing[1],
-  },
-  archivedRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: theme.spacing[2],
-    paddingHorizontal: theme.spacing[1],
-    paddingVertical: theme.spacing[1],
-    borderRadius: theme.borderRadius.md,
-  },
-  archivedRowHovered: {
-    backgroundColor: theme.colors.surfaceSidebarHover,
-  },
-  archivedRowText: {
-    flex: 1,
-    minWidth: 0,
-    color: theme.colors.foreground,
-    fontSize: theme.fontSize.sm,
+    marginHorizontal: -theme.spacing[1],
   },
   empty: {
     gap: theme.spacing[1.5],

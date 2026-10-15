@@ -7,6 +7,10 @@ import { mkdir, open, rm, stat } from "fs/promises";
 import { buildProjectReadme, ensureGitRepository } from "./project-directory-service.js";
 import { RoutingService } from "./routing/routing-service.js";
 import { AgentSearchService } from "./agent-search/agent-search-service.js";
+import {
+  unarchiveAgentOnThisHost,
+  type UnarchiveAgent,
+} from "./agent/tools/fleet-unarchive-tools.js";
 import { readLaunchBrief } from "./mission-control/run-records.js";
 import { HindsightClient } from "./mission-control/hindsight.js";
 import { randomUUID } from "node:crypto";
@@ -1397,6 +1401,8 @@ export async function createPaseoDaemon(
     workspaceGitService,
     isDirectory: async (target) => (await stat(target).catch(() => null))?.isDirectory() ?? false,
     logger,
+    paseoHome: config.paseoHome,
+    getScratchProject: async () => (await routingService.ensureScratchWorkspace()).project,
   });
   const warmWorktreePool = new WarmWorktreePoolManager({
     paseoHome: config.paseoHome,
@@ -2609,6 +2615,18 @@ export async function createPaseoDaemon(
         : null,
     searchTranscripts: (query) => transcriptSearch?.search(query) ?? [],
   });
+  // The app's agent.unarchive RPC runs the same restore as fleet_unarchive_agent.
+  const unarchiveAgent: UnarchiveAgent = (agentId) =>
+    unarchiveAgentOnThisHost(
+      {
+        agentManager,
+        agentStorage,
+        workspaceRegistry,
+        restoreWorkspace: restoreWorkspaceExternal,
+        emitStoredAgentUpdate: emitStoredAgentUpdateExternal,
+      },
+      agentId,
+    );
   // Vault-backed secrets are read once per daemon run: load every aside://
   // reference the config names now (routing keys, MCP client webhooks) so the
   // first request does not pay for the vault. Values are never logged.
@@ -3431,7 +3449,14 @@ export async function createPaseoDaemon(
               (workspaceId) => itsaplanBridge?.handleWorkspaceArchived(workspaceId),
               warmWorktreePool,
               docThreadsHost,
-              { automationService, pagePortProxy, pageStore, routingService, agentSearchService },
+              {
+                automationService,
+                pagePortProxy,
+                pageStore,
+                routingService,
+                agentSearchService,
+                unarchiveAgent,
+              },
             );
             pluginRuntime.bindPaseoSessionHost(wsServer);
             await pluginRuntime.start();

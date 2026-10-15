@@ -1,8 +1,8 @@
 import { memo, useCallback, useMemo, useState } from "react";
-import { Text, View, type PressableStateCallbackType } from "react-native";
+import { Pressable, Text, View, type PressableStateCallbackType } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { useTranslation } from "react-i18next";
-import { CircleAlert } from "lucide-react-native";
+import { Archive, CircleAlert } from "lucide-react-native";
 import { usePathname } from "expo-router";
 import { StatusRing } from "@/components/status-ring";
 import { ContextMenu, ContextMenuTrigger } from "@/components/ui/context-menu";
@@ -28,6 +28,8 @@ const needsInputColorMapping = (theme: Theme) => ({
   color: theme.colors.background,
   fill: getStatusDotColor({ theme, bucket: "needs_input" }) ?? undefined,
 });
+const archiveColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
+const ThemedArchive = withUnistyles(Archive);
 
 const ThemedCircleAlert = withUnistyles(CircleAlert);
 
@@ -205,6 +207,71 @@ export const SidebarAgentViewRow = memo(function SidebarAgentViewRow({
         </ContextMenu>
       </View>
     </SidebarAgentHoverCard>
+  );
+});
+
+export interface SidebarArchivedAgentRowProps {
+  agentId: string;
+  title: string;
+  lastActivityAt: string | null;
+  onPress: () => void;
+}
+
+/**
+ * An archived agent found by the search bar: the agent row's layout, title,
+ * and time, with the archive glyph in the status slot. Archived agents have
+ * no live state, so there is no hover card or row menu.
+ */
+export const SidebarArchivedAgentRow = memo(function SidebarArchivedAgentRow({
+  agentId,
+  title,
+  lastActivityAt,
+  onPress,
+}: SidebarArchivedAgentRowProps) {
+  const activityDate = useMemo(
+    () => (lastActivityAt ? new Date(lastActivityAt) : null),
+    [lastActivityAt],
+  );
+  const timeLabel = useCompactTimeAgo(activityDate);
+  const [isHovered, setIsHovered] = useState(false);
+  const handlePointerEnter = useCallback(() => setIsHovered(true), []);
+  const handlePointerLeave = useCallback(() => setIsHovered(false), []);
+  const rowStyle = useCallback(
+    ({ pressed }: PressableStateCallbackType) => [
+      styles.row,
+      isHovered && styles.rowHovered,
+      pressed && styles.rowPressed,
+    ],
+    [isHovered],
+  );
+  const titleStyle = isHovered ? [styles.title, styles.titleHovered] : styles.title;
+
+  return (
+    <View
+      style={styles.hoverTarget}
+      onPointerEnter={handlePointerEnter}
+      onPointerLeave={handlePointerLeave}
+    >
+      <Pressable
+        style={rowStyle}
+        onPress={onPress}
+        accessibilityRole="button"
+        accessibilityLabel={title}
+        testID={`sidebar-search-archived-${agentId}`}
+      >
+        <View style={styles.statusSlot}>
+          <ThemedArchive size={STATUS_INDICATOR_ALERT_SIZE} uniProps={archiveColorMapping} />
+        </View>
+        <Text style={titleStyle} numberOfLines={1}>
+          {title}
+        </Text>
+        {timeLabel ? (
+          <Text style={styles.time} numberOfLines={1}>
+            {timeLabel}
+          </Text>
+        ) : null}
+      </Pressable>
+    </View>
   );
 });
 

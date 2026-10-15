@@ -22,6 +22,8 @@ export type AgentSearchRequest = z.infer<typeof AgentSearchRequestSchema>;
 export const AgentSearchMatchSchema = z.object({
   agentId: z.string(),
   title: z.string().nullable(),
+  // The agent's generated name; rows fall back to it when the title is empty.
+  name: z.string().nullable().optional(),
   workspaceId: z.string().nullable(),
   cwd: z.string(),
   archivedAt: z.string().nullable(),

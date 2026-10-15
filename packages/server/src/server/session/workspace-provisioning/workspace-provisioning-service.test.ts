@@ -381,6 +381,76 @@ test("ensureWorkspaceRecordUnarchived restores the owning archived project with 
   expect((await projectRegistry.get(created.projectId))?.archivedAt).toBeNull();
 });
 
+function orphanedWorkspace(cwd: string) {
+  // A legacy record whose path-keyed project was pruned from the project registry.
+  return createPersistedWorkspaceRecord({
+    workspaceId: "wks_67c57c3f679b0235",
+    projectId: cwd,
+    cwd,
+    kind: "directory",
+    displayName: path.basename(cwd),
+    createdAt: ARCHIVED_AT,
+    updatedAt: ARCHIVED_AT,
+    archivedAt: ARCHIVED_AT,
+  });
+}
+
+test("ensureWorkspaceRecordUnarchived recreates a project that no longer exists, at the workspace root", async () => {
+  const folder = path.join(tmpDir, "research");
+  mkdirSync(folder);
+  const orphan = orphanedWorkspace(folder);
+  await workspaceRegistry.upsert(orphan);
+
+  const unarchived = await provisioning.ensureWorkspaceRecordUnarchived(orphan);
+
+  const project = await projectRegistry.get(unarchived.projectId);
+  expect(project).toMatchObject({
+    rootPath: folder,
+    kind: "non_git",
+    archivedAt: null,
+    // The restored workspace is the project's base: no second workspace is minted at the folder.
+    baseWorkspaceId: orphan.workspaceId,
+  });
+  expect(await workspaceRegistry.get(orphan.workspaceId)).toMatchObject({
+    projectId: project?.projectId,
+    archivedAt: null,
+  });
+});
+
+test("an orphaned workspace above the paseo home is restored into the scratch project, never one at its root", async () => {
+  const home = path.join(tmpDir, "home");
+  mkdirSync(path.join(home, ".paseo"), { recursive: true });
+  const scratch = await provisioning.findOrCreateProjectForDirectory(path.join(tmpDir, "scratch"));
+  const guarded = createWorkspaceProvisioningService({
+    workspaceRegistry,
+    projectRegistry,
+    workspaceGitService: gitService(),
+    isDirectory,
+    logger,
+    paseoHome: path.join(home, ".paseo"),
+    getScratchProject: async () => scratch,
+  });
+  const orphan = orphanedWorkspace(home);
+  await workspaceRegistry.upsert(orphan);
+
+  const unarchived = await guarded.ensureWorkspaceRecordUnarchived(orphan);
+
+  expect(unarchived).toMatchObject({ projectId: scratch.projectId, cwd: home, archivedAt: null });
+  expect((await projectRegistry.list()).map((project) => project.rootPath)).not.toContain(home);
+
+  const noScratch = createWorkspaceProvisioningService({
+    workspaceRegistry,
+    projectRegistry,
+    workspaceGitService: gitService(),
+    isDirectory,
+    logger,
+    paseoHome: path.join(home, ".paseo"),
+  });
+  await expect(noScratch.ensureWorkspaceRecordUnarchived(orphanedWorkspace(home))).rejects.toThrow(
+    "cannot become a project because it holds the Paseo home",
+  );
+});
+
 test("ensureWorkspaceRecordUnarchived preserves the consumed auto-archive change request", async () => {
   const repo = path.join(tmpDir, "repo");
   const changeRequestUrl = "https://github.com/getpaseo/paseo/pull/2714";

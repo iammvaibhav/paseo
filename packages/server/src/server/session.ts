@@ -4,6 +4,7 @@ import type { PagePortProxy } from "./page-tools/port-proxy.js";
 import type { PageStore } from "./page-tools/page-store.js";
 import type { RoutingService } from "./routing/routing-service.js";
 import type { AgentSearchService } from "./agent-search/agent-search-service.js";
+import type { UnarchiveAgent } from "./agent/tools/fleet-unarchive-tools.js";
 import { BrowserAutomationHostCapabilitySchema } from "@getpaseo/protocol/browser-automation/capabilities";
 import type {
   SessionEventSubscription,
@@ -520,6 +521,8 @@ export interface SessionOptions {
   pageStore?: Pick<PageStore, "get"> | null;
   routingService?: RoutingService | null;
   agentSearchService?: AgentSearchService | null;
+  /** Unarchive an agent with its archived workspace (agent.unarchive.*). */
+  unarchiveAgent?: UnarchiveAgent | null;
   /** How the socket that sent a request reached the daemon. */
   resolveSourcePeer?: (source?: object) => SessionSourcePeer | null;
   clientId: string;
@@ -923,6 +926,7 @@ export class Session {
   private readonly pageStore: Pick<PageStore, "get"> | null;
   private readonly routingService: RoutingService | null;
   private readonly agentSearchService: AgentSearchService | null;
+  private readonly unarchiveAgent: UnarchiveAgent | null;
   private readonly resolveSourcePeer: (source?: object) => SessionSourcePeer | null;
   private readonly clientId: string;
   private readonly authorization: SessionAuthorization;
@@ -1106,6 +1110,7 @@ export class Session {
     this.pageStore = options.pageStore ?? null;
     this.routingService = options.routingService ?? null;
     this.agentSearchService = options.agentSearchService ?? null;
+    this.unarchiveAgent = options.unarchiveAgent ?? null;
     this.resolveSourcePeer = options.resolveSourcePeer ?? (() => null);
     this.clientId = clientId;
     this.authorization = new SessionAuthorization(permissions);
@@ -1167,6 +1172,11 @@ export class Session {
       workspaceGitService: this.workspaceGitService,
       isDirectory: (path) => this.filesystem.isDirectory(path),
       logger: this.sessionLogger,
+      paseoHome,
+      getScratchProject: async () => {
+        if (!this.routingService) throw new Error("This host has no scratch project");
+        return (await this.routingService.ensureScratchWorkspace()).project;
+      },
     });
     this.workspaceRecovery = createWorkspaceRecoveryService({
       paseoHome: this.paseoHome,
@@ -4327,6 +4337,8 @@ export class Session {
         return this.handleRoutingSuggestRequest(msg);
       case "agent.search.request":
         return this.handleAgentSearchRequest(msg);
+      case "agent.unarchive.request":
+        return this.handleAgentUnarchiveRequest(msg);
       case "routing.project.create.request":
         return this.handleRoutingProjectCreateRequest(msg);
       case "agent.agent_mode.set.request":
@@ -5262,6 +5274,41 @@ export class Session {
           requestId: request.requestId,
           suggestion: null,
           error: getErrorMessageOr(error, "Routing failed"),
+        },
+      });
+    }
+  }
+
+  private async handleAgentUnarchiveRequest(
+    request: Extract<SessionInboundMessage, { type: "agent.unarchive.request" }>,
+  ): Promise<void> {
+    const { agentId, requestId } = request;
+    try {
+      if (!this.unarchiveAgent) {
+        throw new Error("Unarchiving agents is not available on this host");
+      }
+      const { restoredWorkspaceId } = await this.unarchiveAgent(agentId);
+      const record = await this.agentStorage.get(agentId);
+      this.emit({
+        type: "agent.unarchive.response",
+        payload: {
+          requestId,
+          agentId,
+          restoredWorkspaceId,
+          workspaceId: record?.workspaceId ?? null,
+          error: null,
+        },
+      });
+    } catch (error) {
+      this.sessionLogger.warn({ err: error, agentId }, "agent.unarchive failed");
+      this.emit({
+        type: "agent.unarchive.response",
+        payload: {
+          requestId,
+          agentId,
+          restoredWorkspaceId: null,
+          workspaceId: null,
+          error: getErrorMessageOr(error, "Unarchiving the agent failed"),
         },
       });
     }

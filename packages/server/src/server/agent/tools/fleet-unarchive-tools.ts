@@ -130,7 +130,7 @@ async function unarchiveAgentRecord(
   return true;
 }
 
-interface LocalAgentUnarchiveResult {
+export interface LocalAgentUnarchiveResult {
   unarchived: boolean;
   restoredWorkspaceId: string | null;
 }
@@ -140,7 +140,7 @@ interface LocalAgentUnarchiveResult {
  * it when that is archived too (an agent archived with its workspace has no
  * directory to run in otherwise); the workspace's other agents stay archived.
  */
-async function unarchiveAgentOnThisHost(
+export async function unarchiveAgentOnThisHost(
   deps: FleetUnarchiveDependencies,
   agentId: string,
 ): Promise<LocalAgentUnarchiveResult> {
@@ -156,6 +156,9 @@ async function unarchiveAgentOnThisHost(
   const unarchived = await unarchiveAgentRecord(deps, agentId);
   return { unarchived, restoredWorkspaceId };
 }
+
+/** {@link unarchiveAgentOnThisHost} bound to this daemon, for the app's agent.unarchive RPC. */
+export type UnarchiveAgent = (agentId: string) => Promise<LocalAgentUnarchiveResult>;
 
 interface LocalWorkspaceUnarchiveResult {
   restoredWorkspace: boolean;

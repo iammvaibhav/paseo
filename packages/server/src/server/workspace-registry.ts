@@ -157,6 +157,8 @@ export interface ProjectRegistry {
     kind: PersistedProjectKind;
     displayName: string;
     projectKey?: string;
+    /** Set only when a new project is created: an existing workspace over its root. */
+    baseWorkspaceId?: string;
     timestamp: string;
   }): Promise<PersistedProjectRecord>;
   upsert(record: PersistedProjectRecord): Promise<void>;
@@ -427,6 +429,7 @@ export class FileBackedProjectRegistry
     kind: PersistedProjectKind;
     displayName: string;
     projectKey?: string;
+    baseWorkspaceId?: string;
     timestamp: string;
   }): Promise<PersistedProjectRecord> {
     const previous = this.allocationQueue;
@@ -469,6 +472,7 @@ export class FileBackedProjectRegistry
           kind: input.kind,
           displayName: input.displayName,
           projectKey: input.projectKey ?? null,
+          baseWorkspaceId: input.baseWorkspaceId ?? null,
           createdAt: input.timestamp,
           updatedAt: input.timestamp,
         });

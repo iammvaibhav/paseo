@@ -21,7 +21,8 @@ export interface SidebarSearchArchivedMatch {
   serverId: string;
   agentId: string;
   title: string | null;
-  cwd: string;
+  name: string | null;
+  lastActivityAt: string | null;
 }
 
 export interface SidebarSearch {
@@ -91,6 +92,22 @@ export function useSidebarSearch(): SidebarSearch {
 
   const remote = useRemoteAgentSearch(query, includeArchived);
 
+  // `serverId:agentId` of archived matches the session store now holds as
+  // unarchived (opened from the bar): they list as active, not under Archived.
+  const revivedKeys = useSessionStore(
+    useShallow((state) => {
+      const keys: string[] = [];
+      for (const [serverId, payload] of remote.byServer) {
+        for (const match of payload.matches) {
+          if (!match.archivedAt) continue;
+          const agent = state.sessions[serverId]?.agents.get(match.agentId);
+          if (agent && !agent.archivedAt) keys.push(`${serverId}:${match.agentId}`);
+        }
+      }
+      return keys.length > 0 ? keys : EMPTY_KEYS;
+    }),
+  );
+
   return useMemo(() => {
     const agentKeys = new Set<string>();
     const workspaceKeys = new Set<string>();
@@ -104,16 +121,18 @@ export function useSidebarSearch(): SidebarSearch {
     }
 
     const current = remote.query === query && remote.includeArchived === includeArchived;
+    const revived = new Set(revivedKeys);
     const archivedMatches: SidebarSearchArchivedMatch[] = [];
     if (current) {
       for (const [serverId, payload] of remote.byServer) {
         for (const match of payload.matches) {
-          if (match.archivedAt) {
+          if (match.archivedAt && !revived.has(`${serverId}:${match.agentId}`)) {
             archivedMatches.push({
               serverId,
               agentId: match.agentId,
               title: match.title,
-              cwd: match.cwd,
+              name: match.name ?? null,
+              lastActivityAt: match.lastActivityAt,
             });
           } else {
             addMatch(serverId, match.agentId, match.workspaceId);
@@ -130,7 +149,7 @@ export function useSidebarSearch(): SidebarSearch {
       archivedMatches,
       pending: words.length > 0 && (!current || remote.pendingServerIds.size > 0),
     };
-  }, [includeArchived, localEntries, query, remote, words]);
+  }, [includeArchived, localEntries, query, remote, revivedKeys, words]);
 }
 
 function useRemoteAgentSearch(query: string, includeArchived: boolean): RemoteState {

@@ -117,6 +117,7 @@ import type { PagePortProxy } from "./page-tools/port-proxy.js";
 import type { PageStore } from "./page-tools/page-store.js";
 import type { RoutingService } from "./routing/routing-service.js";
 import type { AgentSearchService } from "./agent-search/agent-search-service.js";
+import type { UnarchiveAgent } from "./agent/tools/fleet-unarchive-tools.js";
 import type { DaemonRuntimeConfig } from "./session/daemon/daemon-session.js";
 import { DirectorySyncService } from "./directory-sync/index.js";
 import { OWNER_PERMISSIONS, type DaemonPermission } from "./authorization/index.js";
@@ -636,6 +637,7 @@ export class VoiceAssistantWebSocketServer {
   private readonly pageStore: PageStore | null;
   private readonly routingService: RoutingService | null;
   private readonly agentSearchService: AgentSearchService | null;
+  private readonly unarchiveAgent: UnarchiveAgent | null;
   private readonly hubRelationships: HubRelationshipManagement | null;
   private readonly peerManager: PeerManager | null;
   private readonly missionControlService: MissionControlService | null;
@@ -728,6 +730,7 @@ export class VoiceAssistantWebSocketServer {
       pageStore?: PageStore | null;
       routingService?: RoutingService | null;
       agentSearchService?: AgentSearchService | null;
+      unarchiveAgent?: UnarchiveAgent | null;
     },
   ) {
     this.onWorkspaceArchived = onWorkspaceArchived;
@@ -745,6 +748,7 @@ export class VoiceAssistantWebSocketServer {
     this.pageStore = websocketServices?.pageStore ?? null;
     this.routingService = websocketServices?.routingService ?? null;
     this.agentSearchService = websocketServices?.agentSearchService ?? null;
+    this.unarchiveAgent = websocketServices?.unarchiveAgent ?? null;
     this.hubRelationships = hubRelationships ?? null;
     this.peerManager = peerManager ?? null;
     this.missionControlService = missionControlService ?? null;
@@ -1559,6 +1563,7 @@ export class VoiceAssistantWebSocketServer {
       pageStore: this.pageStore,
       routingService: this.routingService,
       agentSearchService: this.agentSearchService,
+      unarchiveAgent: this.unarchiveAgent,
       resolveSourcePeer: (source) => {
         const identity = source ? this.socketIdentities.get(source as WebSocketLike) : undefined;
         return identity
@@ -2119,6 +2124,8 @@ export class VoiceAssistantWebSocketServer {
         ...(this.pagePortProxy ? { pagePortProxy: true } : {}),
         // COMPAT(agentSearch): added 2026-10-12, remove gate after 2027-04-12.
         ...(this.agentSearchService ? { agentSearch: true } : {}),
+        // COMPAT(agentUnarchive): added 2026-10-15, remove gate after 2027-04-15.
+        ...(this.unarchiveAgent ? { agentUnarchive: true } : {}),
         // COMPAT(scratchWorkspace): added 2026-10-12, remove gate after 2027-04-12.
         ...(this.routingService ? { scratchWorkspace: true } : {}),
       },

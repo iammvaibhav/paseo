@@ -156,6 +156,7 @@ import type { AutomationKind, AutomationTarget } from "@getpaseo/protocol/automa
 import type { ScheduleCadence } from "@getpaseo/protocol/schedule/types";
 import type { RoutingProjectCreateResponse, RoutingSuggestion } from "@getpaseo/protocol/routing";
 import type { AgentSearchResponse } from "@getpaseo/protocol/agent-search";
+import type { AgentUnarchiveResponse } from "@getpaseo/protocol/agent-unarchive";
 import {
   asUint8Array,
   decodeFileTransferFrame,
@@ -3476,6 +3477,24 @@ export class DaemonClient {
       },
       responseType: "agent.search.response",
       timeout: 10_000,
+    });
+    if (payload.error) {
+      throw new Error(payload.error);
+    }
+    return payload;
+  }
+
+  /**
+   * Unarchive an agent, restoring its archived workspace and project first
+   * (features.agentUnarchive). Throws with the host's reason when the
+   * workspace cannot be restored; the agent then stays archived.
+   */
+  async unarchiveAgentWithWorkspace(agentId: string): Promise<AgentUnarchiveResponse["payload"]> {
+    const payload = await this.sendCorrelatedSessionRequest({
+      message: { type: "agent.unarchive.request", agentId },
+      responseType: "agent.unarchive.response",
+      // Same budget as workspace.recovery.restore: recreating a worktree runs git.
+      timeout: 150_000,
     });
     if (payload.error) {
       throw new Error(payload.error);

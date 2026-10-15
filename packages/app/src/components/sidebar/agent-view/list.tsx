@@ -18,6 +18,7 @@ import { buildMissionControlRoute } from "@/utils/host-routes";
 import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
 import type { SidebarAgentViewBucket } from "./model";
 import { SidebarAgentViewRow } from "./row";
+import { SidebarAgentViewSectionHeader } from "./section-header";
 import { useSidebarAgentView } from "./use-sidebar-agent-view";
 export const BUCKET_LABEL_KEYS: Record<SidebarAgentViewBucket, string> = {
   needs_you: "sidebar.agentView.sections.needsYou",
@@ -43,26 +44,6 @@ function useSelectedSidebarAgentKey(): string | null {
   );
   if (pathname === buildMissionControlRoute()) return gridActiveKey;
   return selection && focusedAgentId ? `${selection.serverId}:${focusedAgentId}` : null;
-}
-
-function SidebarAgentViewSectionHeader({
-  bucket,
-  count,
-}: {
-  bucket: SidebarAgentViewBucket;
-  count: number;
-}) {
-  const { t } = useTranslation();
-  return (
-    <View style={styles.sectionHeader} testID={`sidebar-agent-view-section-${bucket}`}>
-      <Text style={styles.sectionTitle} numberOfLines={1}>
-        {t(BUCKET_LABEL_KEYS[bucket])}
-      </Text>
-      <Text style={styles.sectionCount} numberOfLines={1}>
-        {count}
-      </Text>
-    </View>
-  );
 }
 
 export interface SidebarAgentViewListProps {
@@ -169,7 +150,11 @@ export function SidebarAgentViewList({
         ? emptyBody
         : sections.map((section) => (
             <View key={section.bucket} style={styles.section}>
-              <SidebarAgentViewSectionHeader bucket={section.bucket} count={section.rows.length} />
+              <SidebarAgentViewSectionHeader
+                title={t(BUCKET_LABEL_KEYS[section.bucket])}
+                count={section.rows.length}
+                testID={`sidebar-agent-view-section-${section.bucket}`}
+              />
               {section.rows.map(renderRow)}
             </View>
           ))}
@@ -213,34 +198,8 @@ const styles = StyleSheet.create((theme) => ({
     paddingTop: 2,
     paddingBottom: theme.spacing[4],
   },
-  // Section headers and spacing mirror the project rows of the workspace view
-  // (`projectRow`, `projectTitle`, `projectBlockExpanded` in sidebar-workspace-list.tsx).
   section: {
     paddingBottom: theme.spacing[3],
-  },
-  sectionHeader: {
-    minHeight: 32,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: theme.spacing[2],
-    paddingVertical: theme.spacing[1.5],
-    paddingHorizontal: theme.spacing[2],
-    marginBottom: theme.spacing[1],
-    userSelect: "none",
-  },
-  sectionTitle: {
-    color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.base,
-    fontWeight: "400",
-    flex: 1,
-    minWidth: 0,
-  },
-  sectionCount: {
-    color: theme.colors.foregroundExtraMuted,
-    fontSize: theme.fontSize.sm,
-    fontWeight: theme.fontWeight.normal,
-    flexShrink: 0,
   },
   emptyContainer: {
     marginHorizontal: theme.spacing[2],

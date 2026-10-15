@@ -125,6 +125,32 @@ describe("workspace recovery", () => {
     expect(unarchived).toEqual([workspace.workspaceId]);
   });
 
+  test("offers to unarchive a workspace whose project is gone while its directory remains", async () => {
+    const workspace = createWorkspace({ kind: "directory", branch: null });
+    const { service, unarchived } = createHarness({
+      workspace,
+      project: null,
+      directories: [workspace.cwd],
+    });
+
+    await expect(service.inspect(workspace.workspaceId)).resolves.toMatchObject({
+      kind: "recoverable",
+      action: "unarchive",
+    });
+    await service.restore(workspace.workspaceId);
+    expect(unarchived).toEqual([workspace.workspaceId]);
+  });
+
+  test("keeps a worktree archived when its project and source repository are both unknown", async () => {
+    const workspace = createWorkspace({ mainRepoRoot: null });
+    const { service } = createHarness({ workspace, project: null });
+
+    await expect(service.inspect(workspace.workspaceId)).resolves.toMatchObject({
+      kind: "unavailable",
+      reason: "project_not_found",
+    });
+  });
+
   test("does not offer recovery for a missing non-worktree directory", async () => {
     const workspace = createWorkspace({ kind: "directory", branch: null });
     const { service } = createHarness({ workspace });

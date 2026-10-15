@@ -1,6 +1,7 @@
 import type { PluginLifecycle } from "../../plugins/lifecycle/index.js";
 import { describeHookWorkspace } from "../../plugins/lifecycle/index.js";
-import { basename } from "node:path";
+import { homedir } from "node:os";
+import { basename, sep } from "node:path";
 import type { ProjectCheckoutLitePayload } from "@getpaseo/protocol/messages";
 import type { Logger } from "pino";
 import {
@@ -104,8 +105,51 @@ export function createWorkspaceProvisioningService(deps: {
   isDirectory: (path: string) => Promise<boolean>;
   logger: Logger;
   lifecycle?: PluginLifecycle;
+  /** The daemon's paseo home; no project is recreated at it or any folder above it. */
+  paseoHome?: string;
+  /** The host's scratch project, where an orphaned workspace at such a folder is restored. */
+  getScratchProject?: () => Promise<PersistedProjectRecord>;
 }): WorkspaceProvisioningService {
   const { serverId, workspaceRegistry, projectRegistry, workspaceGitService, logger } = deps;
+
+  /**
+   * A project rooted at the home directory or above the paseo home would
+   * enclose the Commander's home workspace (see system-owned.ts), so it is
+   * never created implicitly.
+   */
+  function enclosesDaemonHome(root: string): boolean {
+    const canonicalRoot = canonicalizePath(root);
+    if (areEquivalentPaths(canonicalRoot, canonicalizePath(homedir()))) return true;
+    if (!deps.paseoHome) return false;
+    const paseoHome = canonicalizePath(deps.paseoHome);
+    const prefix = canonicalRoot.endsWith(sep) ? canonicalRoot : `${canonicalRoot}${sep}`;
+    return areEquivalentPaths(canonicalRoot, paseoHome) || paseoHome.startsWith(prefix);
+  }
+
+  /**
+   * The project an archived workspace is restored into when its own project
+   * record is gone (a removed project, or a pruned legacy path-keyed one):
+   * one at the workspace's root, or the scratch project when that root holds
+   * the paseo home. A workspace at the root becomes the new project's base
+   * workspace, so the base-workspace listener never mints a duplicate.
+   */
+  async function projectForOrphanedWorkspace(
+    workspace: PersistedWorkspaceRecord,
+  ): Promise<PersistedProjectRecord> {
+    const root = workspace.mainRepoRoot ?? workspace.cwd;
+    if (!enclosesDaemonHome(root)) {
+      return findOrCreateProjectForDirectory(
+        root,
+        areEquivalentPaths(root, workspace.cwd) ? workspace.workspaceId : undefined,
+      );
+    }
+    if (!deps.getScratchProject) {
+      throw new Error(
+        `The project for this workspace no longer exists, and ${root} cannot become a project because it holds the Paseo home.`,
+      );
+    }
+    return deps.getScratchProject();
+  }
 
   /**
    * Placement facts at a workspace directory, or null when there is nothing
@@ -195,7 +239,10 @@ export function createWorkspaceProvisioningService(deps: {
     }
   }
 
-  async function findOrCreateProjectForDirectory(cwd: string): Promise<PersistedProjectRecord> {
+  async function findOrCreateProjectForDirectory(
+    cwd: string,
+    baseWorkspaceId?: string,
+  ): Promise<PersistedProjectRecord> {
     const rootPath = canonicalizePath(cwd);
     const checkout = await workspaceGitService.getCheckout(rootPath);
     const timestamp = new Date().toISOString();
@@ -210,6 +257,7 @@ export function createWorkspaceProvisioningService(deps: {
         mainRepoRoot: checkout.mainRepoRoot,
         serverId,
       }),
+      ...(baseWorkspaceId ? { baseWorkspaceId } : {}),
       timestamp,
     });
   }
@@ -434,10 +482,15 @@ export function createWorkspaceProvisioningService(deps: {
   }
 
   async function ensureWorkspaceRecordUnarchived(
-    workspace: PersistedWorkspaceRecord,
+    archivedWorkspace: PersistedWorkspaceRecord,
   ): Promise<PersistedWorkspaceRecord> {
-    const project = await projectRegistry.get(workspace.projectId);
-    if (!project) throw new Error(`Unknown project: ${workspace.projectId}`);
+    let workspace = archivedWorkspace;
+    let project = await projectRegistry.get(workspace.projectId);
+    const rehomed = !project;
+    if (!project) {
+      project = await projectForOrphanedWorkspace(workspace);
+      workspace = { ...workspace, projectId: project.projectId };
+    }
     const timestamp = new Date().toISOString();
     const checkout =
       workspace.archivedAt || project.archivedAt
@@ -482,7 +535,8 @@ export function createWorkspaceProvisioningService(deps: {
         });
       }
     }
-    if (!next) return workspace;
+    if (!next && !rehomed) return workspace;
+    next ??= { ...workspace, updatedAt: timestamp };
     await workspaceRegistry.upsert(next);
     return next;
   }

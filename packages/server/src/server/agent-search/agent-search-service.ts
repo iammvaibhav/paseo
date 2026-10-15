@@ -112,6 +112,7 @@ export class AgentSearchService {
       matches: ranked.slice(0, MAX_MATCHES).map(({ record, tier }) => ({
         agentId: record.id,
         title: record.title ?? null,
+        name: record.name ?? null,
         workspaceId: record.workspaceId ?? null,
         cwd: record.cwd,
         archivedAt: record.archivedAt ?? null,

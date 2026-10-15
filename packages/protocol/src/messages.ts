@@ -28,6 +28,7 @@ import { ProviderPaseoToolsPolicySchema } from "./provider-config.js";
 import { TOOL_CALL_ICON_NAMES } from "./agent-types.js";
 import { WORKSPACE_LABEL_COLORS } from "./workspace-labels.js";
 import { AgentSearchRequestSchema, AgentSearchResponseSchema } from "./agent-search.js";
+import { AgentUnarchiveRequestSchema, AgentUnarchiveResponseSchema } from "./agent-unarchive.js";
 import {
   AgentModeSetRequestSchema,
   AgentModeSetResponseSchema,
@@ -3735,6 +3736,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   RoutingSuggestRequestSchema,
   RoutingProjectCreateRequestSchema,
   AgentSearchRequestSchema,
+  AgentUnarchiveRequestSchema,
   AgentModeSetRequestSchema,
   ProjectIconSetRequestSchema,
   ProjectRemoveRequestSchema,
@@ -4388,6 +4390,9 @@ export const ServerInfoStatusPayloadSchema = z
         // COMPAT(agentSearch): added 2026-10-12, remove gate after 2027-04-12.
         // agent.search.* (full-text agent search for the sidebar search bar).
         agentSearch: z.boolean().optional(),
+        // COMPAT(agentUnarchive): added 2026-10-15, remove gate after 2027-04-15.
+        // agent.unarchive.* (unarchive an agent with its workspace and project).
+        agentUnarchive: z.boolean().optional(),
         // COMPAT(scratchWorkspace): added 2026-10-12, remove gate after 2027-04-12.
         // routing.project.create scratch responses carry the scratch project's
         // baseWorkspaceId (History Ask agents run there).
@@ -7703,6 +7708,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   RoutingSuggestResponseSchema,
   RoutingProjectCreateResponseSchema,
   AgentSearchResponseSchema,
+  AgentUnarchiveResponseSchema,
   AgentModeSetResponseSchema,
   ProjectIconSetResponseSchema,
   ProjectRemoveResponseSchema,
