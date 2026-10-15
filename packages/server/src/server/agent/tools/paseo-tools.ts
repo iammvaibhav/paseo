@@ -6267,6 +6267,16 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     };
   }
 
+  // fleet_send_prompt's mode when the call omits it. Remote MCP clients get
+  // "steer": it wakes a closed agent and never cancels a live turn the client
+  // cannot see. The Commander follows the fleet central setting
+  // commanderToWorkerMode (default "interrupt" — a fleet direction change is
+  // time-sensitive).
+  const defaultSendMode = (): "steer" | "interrupt" | "queue" =>
+    gate.isMcpClient
+      ? "steer"
+      : (missionControlService?.getCentralConfig().commanderToWorkerMode ?? "interrupt");
+
   registerTool(
     "fleet_send_prompt",
     {
@@ -6274,10 +6284,12 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       description:
         "Send a task to an agent across the fleet. agentId is fleet-wide; host is optional and resolved " +
         "automatically via the fleet index. " +
-        'mode controls delivery to a busy agent: "steer" injects into the live turn without cancelling (OMP live-steer; a busy non-OMP ' +
-        'agent is interrupted so the message lands promptly), "queue" waits for the agent to idle before streaming, "interrupt" cancels ' +
-        "the running turn and replaces it with this prompt. Omit mode to use the fleet commanderToWorkerMode central setting " +
-        '(default "interrupt"); an explicit mode always overrides it — prefer "steer" for additive, non-urgent instructions.',
+        'Use mode "steer" for every send by default: it wakes a closed or archived agent and runs the prompt, ' +
+        "and on a busy agent it joins the live turn without cancelling it (OMP live-steer; a busy non-OMP agent " +
+        'is interrupted so the message lands promptly). Use "queue" only when you explicitly want to wait until ' +
+        'the current turn ends before the prompt starts, and "interrupt" only when you mean to cancel the running ' +
+        'turn and replace it. Omitted mode is "steer" for remote MCP clients; for the Commander it is the fleet ' +
+        "commanderToWorkerMode setting.",
       inputSchema: {
         agentId: z
           .string()
@@ -6297,7 +6309,9 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           .enum(["steer", "interrupt", "queue"])
           .optional()
           .describe(
-            "Delivery to a busy agent. Omit to use the fleet commanderToWorkerMode setting.",
+            'Default "steer": wakes closed/archived agents and joins a live turn without cancelling. ' +
+              '"queue": only to wait until the current turn ends. "interrupt": only to cancel the running ' +
+              'turn. Omitted → "steer" for remote MCP clients, commanderToWorkerMode for the Commander.',
           ),
         agentMode: PromptAgentModeInputSchema,
         respondsTo: z
@@ -6395,13 +6409,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         }
         return client;
       };
-      // The Commander's default comes from the fleet central setting
-      // commanderToWorkerMode (default "interrupt" — a fleet direction change
-      // is time-sensitive and queue-until-idle can sit for tens of minutes).
-      // An explicit mode argument from the Commander always wins; it may
-      // choose "steer" for additive, non-urgent instructions.
-      const effectiveMode =
-        mode ?? missionControlService?.getCentralConfig().commanderToWorkerMode ?? "interrupt";
+      const effectiveMode = mode ?? defaultSendMode();
       // The Commander path routes the send through the approval gate as a
       // proposal (ask mode) or delivers immediately (auto mode), with
       // same-send dedupe while the prior is pending or in-flight.

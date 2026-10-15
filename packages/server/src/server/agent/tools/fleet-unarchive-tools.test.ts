@@ -140,14 +140,15 @@ describe("fleet_unarchive_agent", () => {
         expect.objectContaining({ id: AGENT_ID, archivedAt: null }),
       );
 
-      // Mode omitted → the fleet default (queue here).
+      // Mode omitted → "steer" for an MCP client, even though the fleet
+      // commanderToWorkerMode here is "queue".
       const send = await harness.catalog.executeTool("fleet_send_prompt", {
         agentId: AGENT_ID,
         prompt: "pick this back up",
       });
       expect(send.structuredContent).toMatchObject({
         success: true,
-        deliveryMode: "queue",
+        deliveryMode: "steer",
         runStarted: true,
       });
       expect(harness.createProposal).not.toHaveBeenCalled();
