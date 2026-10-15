@@ -44,6 +44,13 @@ import {
  * when no run resumes within resumeGraceMs. Delivery of final events is
  * at-least-once: one fired but not confirmed before the restart is sent again.
  *
+ * Each event carries a deliveryId (in the body and the X-Paseo-Delivery-Id
+ * header) that every retry and every resend after a restart repeats, so the
+ * receiver can drop duplicates. A failed POST is retried with exponential
+ * backoff (DEFAULT_RETRY_DELAYS_MS: 6 attempts over about 15 minutes) when it
+ * may succeed later: a network error, 408, 425, 429, 5xx, or any 4xx whose
+ * body says the receiver is rate limiting. Other 4xx fail at once.
+ *
  * Group watches (armGroup) are journaled the same way: the group, each
  * member's end as it lands, and the group event. A restored group keeps the
  * members that already ended and waits out the rest, so the group event is
@@ -166,7 +173,7 @@ export interface McpFinishNotifierOptions {
   waitChunkMs?: number;
   /** Pause between checks while blocked on a permission, and after a failed wait. */
   pollMs?: number;
-  /** Delays before delivery retries. */
+  /** Delays before each delivery retry; its length + 1 is the attempt limit. */
   retryDelaysMs?: readonly number[];
   /**
    * How long a watch waits for an interrupted run to resume: a local agent's
@@ -232,6 +239,19 @@ const LAST_MESSAGE_LIMIT = 4000;
 const RESUME_PROBE_MS = 1_000;
 const RESPONSE_SNIPPET_LIMIT = 500;
 const VAULT_REF = /aside:\/\/\S+/;
+/** 6 attempts over about 15.5 minutes. */
+export const DEFAULT_RETRY_DELAYS_MS: readonly number[] = [
+  30_000, 60_000, 120_000, 240_000, 480_000,
+];
+/** A 4xx body that says the receiver throttled the request (e.g. "Automation run rate limit exceeded"). */
+const RATE_LIMIT_TEXT = /rate.?limit|too many requests|throttl/i;
+
+/** Whether a failed POST may succeed if sent again later. */
+export function isRetryableWebhookFailure(status: number | null, response: string | null): boolean {
+  if (status === null || status >= 500) return true;
+  if (status === 408 || status === 425 || status === 429) return true;
+  return status >= 400 && RATE_LIMIT_TEXT.test(response ?? "");
+}
 
 type FinalReason = "finished" | "errored" | "closed" | "interrupted";
 type NotifyReason = FinalReason | "needs_permission";
@@ -263,6 +283,8 @@ type JournalEntry =
       final?: boolean;
       status: string;
       body: string;
+      /** The id the body carries; absent in older entries. */
+      deliveryId?: string;
     }
   | {
       event: "delivered";
@@ -334,7 +356,7 @@ interface RunBinding {
 interface PendingWatch {
   armed: ArmedEntry;
   /** A final event fired but never confirmed delivered or failed. */
-  unsent: { reason: NotifyReason; body: string } | null;
+  unsent: { reason: NotifyReason; body: string; deliveryId?: string } | null;
   run: RunBinding;
 }
 
@@ -343,7 +365,7 @@ interface PendingGroup {
   /** Members whose bound run has ended, by agent id. */
   ended: Map<string, GroupMemberPayload>;
   /** The group event fired but never confirmed delivered or failed. */
-  unsent: string | null;
+  unsent: { body: string; deliveryId?: string } | null;
   /** Members rebound or interrupted since the group was armed, by agent id. */
   runs: Map<string, RunBinding>;
 }
@@ -427,7 +449,7 @@ function pendingFromJournal(entries: readonly JournalEntry[]): {
       if (entry.event === "member_ended") {
         group.ended.set(entry.agentId, entry.agent);
       } else if (entry.event === "fired") {
-        group.unsent = entry.body;
+        group.unsent = { body: entry.body, deliveryId: entry.deliveryId };
       } else if (
         entry.event === "delivered" ||
         entry.event === "failed" ||
@@ -489,7 +511,7 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
   const maxWatchMs = options.maxWatchMs ?? 24 * 60 * 60_000;
   const waitChunkMs = options.waitChunkMs ?? 30 * 60_000;
   const pollMs = options.pollMs ?? 15_000;
-  const retryDelaysMs = options.retryDelaysMs ?? [1_000, 5_000];
+  const retryDelaysMs = options.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS;
   const resumeGraceMs = options.resumeGraceMs ?? 10 * 60_000;
   const logger = options.logger.child({ module: "mcp-finish-notifier" });
   const active = new Map<string, ActiveWatch>();
@@ -546,12 +568,14 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
     reason: NotifyReason,
     final: boolean,
     result: FleetAgentWaitResult,
+    deliveryId: string,
   ): string => {
     let type = "paseo.agent.finished";
     if (reason === "needs_permission") type = "paseo.agent.needs_permission";
     else if (!final) type = "paseo.agent.interrupted";
     return JSON.stringify({
       type,
+      deliveryId,
       reason,
       final,
       client: armed.client,
@@ -562,8 +586,8 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
   };
 
   // One POST to a client's webhook, recorded as a delivery-log row. A failed
-  // attempt is retried (retryInMs) on a network error, 429 or 5xx while
-  // retryDelaysMs has a delay left.
+  // attempt is retried (retryInMs) when isRetryableWebhookFailure says it may
+  // succeed later and retryDelaysMs has a delay left.
   const attemptPost = async (
     delivery: {
       client: string;
@@ -587,7 +611,7 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
     try {
       const reply = await fetchImpl(delivery.url, {
         method: "POST",
-        headers: delivery.headers,
+        headers: { ...delivery.headers, "x-paseo-delivery-id": delivery.deliveryId },
         body: delivery.body,
         signal: AbortSignal.timeout(15_000),
       });
@@ -597,8 +621,8 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
     } catch (caught) {
       response = caught instanceof Error ? caught.message : String(caught);
     }
-    const retryable = status === null || status === 429 || status >= 500;
-    const retryInMs = !ok && retryable ? (retryDelaysMs[attempt] ?? null) : null;
+    const retryable = !ok && isRetryableWebhookFailure(status, response);
+    const retryInMs = retryable ? (retryDelaysMs[attempt] ?? null) : null;
     let outcome: WebhookDeliveryAttempt["outcome"] = "failed";
     if (ok) outcome = "delivered";
     else if (retryInMs !== null) outcome = "retrying";
@@ -611,20 +635,33 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
       attempt: attempt + 1,
       status,
       outcome,
+      ...(retryInMs !== null
+        ? { nextAttemptAt: new Date(Date.now() + retryInMs).toISOString() }
+        : {}),
+      ...(outcome === "failed"
+        ? { failure: retryable ? ("exhausted" as const) : ("not_retryable" as const) }
+        : {}),
       response,
       durationMs: Date.now() - started,
     });
     return { ok, status, error: ok ? null : response, retryInMs };
   };
 
-  // POSTs one event, retrying network errors, 429 and 5xx. A suspend during a
-  // retry pause leaves the event fired-but-unsent, so restore() sends it again.
-  const send = async (watch: ActiveWatch, reason: NotifyReason, final: boolean, body: string) => {
+  // POSTs one event under its deliveryId, retrying with backoff. A suspend
+  // during a retry pause leaves the event fired-but-unsent, so restore()
+  // sends it again with the same deliveryId.
+  const send = async (
+    watch: ActiveWatch,
+    reason: NotifyReason,
+    final: boolean,
+    body: string,
+    deliveryId: string,
+  ) => {
     const { armed, binding, controller } = watch;
     const delivery = {
       client: armed.client,
       watchId: armed.watchId,
-      deliveryId: randomUUID(),
+      deliveryId,
       url: binding.target.url,
       headers: await resolveHeaders(binding.target.headers),
       body,
@@ -668,11 +705,12 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
     target: McpNotifyTarget,
     requestId: string,
     body: string,
+    deliveryId: string,
   ) => {
     const delivery = {
       client,
       watchId: requestId,
-      deliveryId: randomUUID(),
+      deliveryId,
       url: target.url,
       headers: await resolveHeaders(target.headers),
       body,
@@ -707,7 +745,8 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
     final: boolean,
     result: FleetAgentWaitResult,
   ) => {
-    const body = buildBody(watch.armed, reason, final, result);
+    const deliveryId = randomUUID();
+    const body = buildBody(watch.armed, reason, final, result, deliveryId);
     record({
       event: "fired",
       ts: new Date().toISOString(),
@@ -717,8 +756,9 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
       final,
       status: result.status,
       body,
+      deliveryId,
     });
-    await send(watch, reason, final, body);
+    await send(watch, reason, final, body, deliveryId);
   };
 
   const pause = (watch: ActiveWatch, ms: number) =>
@@ -1029,8 +1069,10 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
       });
       return;
     }
+    const deliveryId = randomUUID();
     const body = JSON.stringify({
       type: "paseo.agents.group_finished",
+      deliveryId,
       client: armed.client,
       context: armed.context,
       groupId: armed.watchId,
@@ -1045,8 +1087,9 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
       final: true,
       status: "finished",
       body,
+      deliveryId,
     });
-    await send(groupWatch(armed, binding, controller), "finished", true, body);
+    await send(groupWatch(armed, binding, controller), "finished", true, body, deliveryId);
   };
 
   const start = (
@@ -1226,8 +1269,10 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
         settled = true;
         cleanup();
 
+        const deliveryId = randomUUID();
         const payload: Record<string, unknown> = {
           type: "paseo.agent.status_reported",
+          deliveryId,
           requestId: input.requestId,
           agentId: input.agentId,
           title: params.title ?? input.title,
@@ -1241,7 +1286,7 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
         }
         const body = JSON.stringify(payload);
 
-        await sendStatusReport(input.client, input.target, input.requestId, body);
+        await sendStatusReport(input.client, input.target, input.requestId, body, deliveryId);
       };
 
       activeStatusWatches.set(input.requestId, cleanup);
@@ -1412,7 +1457,9 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
             binding,
             async (watch) => {
               if (unsent) {
-                await send(watch, unsent.reason, true, unsent.body);
+                // Entries from before deliveryIds had none in their body either.
+                const deliveryId = unsent.deliveryId ?? randomUUID();
+                await send(watch, unsent.reason, true, unsent.body, deliveryId);
                 return;
               }
               // A watch waiting on a peer's resume picks that wait back up.
@@ -1434,7 +1481,8 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
                 groupWatch(group.armed, binding, controller),
                 "finished",
                 true,
-                group.unsent,
+                group.unsent.body,
+                group.unsent.deliveryId ?? randomUUID(),
               );
               return;
             }

@@ -27,8 +27,16 @@ export interface WebhookDeliveryAttempt {
   attempt: number;
   /** HTTP status; null when the request never got a response. */
   status: number | null;
-  /** "retrying": this attempt failed and another follows. */
+  /** "retrying": this attempt failed and another follows. "failed": the event was given up on. */
   outcome: "delivered" | "retrying" | "failed";
+  /** On a "retrying" row: when the next attempt is due. */
+  nextAttemptAt?: string;
+  /**
+   * On a "failed" row: "exhausted" when every retry failed, "not_retryable"
+   * when the receiver's answer (e.g. 401, 404, a 400 that is not rate limiting)
+   * cannot succeed on resend. Absent on rows written before retries existed.
+   */
+  failure?: "exhausted" | "not_retryable";
   /** The start of the response body, or the network error. */
   response: string | null;
   durationMs: number;

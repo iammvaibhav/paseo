@@ -50,6 +50,8 @@ describe("createMcpFinishNotifier", () => {
   let url: string;
   let received: Received[];
   let statuses: number[];
+  /** Response bodies, in order; "{}" once empty. */
+  let replies: string[];
   let firstRequest: PromiseWithResolvers<void>;
   // Resolves once this many webhook requests have arrived.
   let awaitedCount = Number.POSITIVE_INFINITY;
@@ -60,6 +62,7 @@ describe("createMcpFinishNotifier", () => {
   beforeEach(async () => {
     received = [];
     statuses = [];
+    replies = [];
     firstRequest = Promise.withResolvers<void>();
     countReached = Promise.withResolvers<void>();
     awaitedCount = Number.POSITIVE_INFINITY;
@@ -72,7 +75,7 @@ describe("createMcpFinishNotifier", () => {
       firstRequest.resolve();
       if (received.length >= awaitedCount) countReached.resolve();
       res.statusCode = statuses.shift() ?? 200;
-      res.end("{}");
+      res.end(replies.shift() ?? "{}");
     });
     const { promise, resolve } = Promise.withResolvers<void>();
     server.listen(0, "127.0.0.1", () => resolve());
@@ -180,7 +183,7 @@ describe("createMcpFinishNotifier", () => {
     expect(received).toHaveLength(1);
   });
 
-  it("retries a 5xx, and never retries a 4xx", async () => {
+  it("retries a 5xx, and never retries a 4xx that is not rate limiting", async () => {
     statuses = [503];
     await notifier().arm({
       client: "grok-bot",
@@ -205,6 +208,65 @@ describe("createMcpFinishNotifier", () => {
     expect(received).toHaveLength(1);
   });
 
+  it("retries a rate-limited 400 under one deliveryId, and marks an event that runs out of retries", async () => {
+    const deliveryLogPath = path.join(dir, "mcp-fleet", "webhook-deliveries.jsonl");
+    const subject = createMcpFinishNotifier({
+      resolveSecret: async (value) => value,
+      logger: pino({ level: "silent" }),
+      pollMs: 0,
+      retryDelaysMs: [0, 0, 0],
+      deliveryLogPath,
+    });
+    const arm = (agentId: string) =>
+      subject.arm({
+        client: "grok-bot",
+        target: { url },
+        agentId,
+        tool: "fleet_send_prompt",
+        context: null,
+        waitForAgent: async () => result({ agentId }),
+      });
+    // The live failure: the receiver throttles with a 400, then accepts.
+    statuses = [400, 429];
+    replies = ['{"error":"Automation run rate limit exceeded"}'];
+    await arm("a");
+    expect(received).toHaveLength(3);
+    const deliveryId = received[0]!.body.deliveryId;
+    expect(deliveryId).toEqual(expect.any(String));
+    for (const request of received) {
+      expect(request.body.deliveryId).toBe(deliveryId);
+      expect(request.headers["x-paseo-delivery-id"]).toBe(deliveryId);
+    }
+
+    // 4 attempts allowed (3 delays), every one failing.
+    statuses = [503, 503, 503, 503];
+    await arm("b");
+
+    const rows = await subject.listDeliveries({ client: "grok-bot", limit: 20 });
+    expect(
+      rows.deliveries
+        .toReversed()
+        .map((row) => [row.agentId, row.attempt, row.status, row.outcome, row.failure ?? null]),
+    ).toEqual([
+      ["a", 1, 400, "retrying", null],
+      ["a", 2, 429, "retrying", null],
+      ["a", 3, 200, "delivered", null],
+      ["b", 1, 503, "retrying", null],
+      ["b", 2, 503, "retrying", null],
+      ["b", 3, 503, "retrying", null],
+      ["b", 4, 503, "failed", "exhausted"],
+    ]);
+    expect(
+      rows.deliveries
+        .filter((row) => row.agentId === "a")
+        .every((row) => row.deliveryId === deliveryId),
+    ).toBe(true);
+    expect(rows.deliveries.find((row) => row.outcome === "retrying")?.nextAttemptAt).toEqual(
+      expect.any(String),
+    );
+    expect(rows.totals).toMatchObject({ events: 2, delivered: 1, failed: 1, attempts: 7 });
+  });
+
   it("records every webhook attempt, retries included, and lists them per client", async () => {
     const deliveryLogPath = path.join(dir, "mcp-fleet", "webhook-deliveries.jsonl");
     const subject = createMcpFinishNotifier({
@@ -224,7 +286,7 @@ describe("createMcpFinishNotifier", () => {
         context: `review ${agentId}`,
         waitForAgent: async () => result({ agentId, turnId: `turn-${agentId}` }),
       });
-    // a: rate limited (400, final); b: 503 then delivered; c: another client.
+    // a: a 400 that is not rate limiting (final); b: 503 then delivered; c: another client.
     statuses = [400];
     await arm("grok-bot", "a");
     statuses = [503];
@@ -675,7 +737,10 @@ describe("createMcpFinishNotifier", () => {
     await settled;
 
     expect(received).toHaveLength(2);
+    // Same event, same deliveryId, so the receiver can drop the duplicate.
     expect(received[1]!.body).toEqual(received[0]!.body);
+    expect(received[1]!.body.deliveryId).toEqual(expect.any(String));
+    expect(received[1]!.headers["x-paseo-delivery-id"]).toBe(received[0]!.body.deliveryId);
     expect((await journal()).at(-1)).toMatchObject({ event: "delivered", status: 200 });
   });
 
@@ -1004,6 +1069,7 @@ describe("createMcpFinishNotifier", () => {
     expect(received).toHaveLength(1);
     expect(received[0]!.body).toEqual({
       type: "paseo.agent.status_reported",
+      deliveryId: received[0]!.headers["x-paseo-delivery-id"],
       requestId: "req-123",
       agentId: "agent-1",
       title: "My Worker",

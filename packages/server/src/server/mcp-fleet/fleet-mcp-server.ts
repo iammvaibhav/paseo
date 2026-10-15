@@ -580,8 +580,12 @@ export async function createFleetMcpServer(options: FleetMcpServerOptions): Prom
       description:
         "List the POSTs Paseo made to your webhook (finish, needs_permission, interrupted, group and " +
         "status-report events), newest first: one row per attempt with the event, agent, turn, " +
-        "notifyContext, HTTP status, response snippet, attempt number and outcome " +
-        '("delivered", "retrying", "failed"). totals counts every match, not just the returned page. ' +
+        "notifyContext, HTTP status, response snippet, attempt number and outcome. All attempts of one " +
+        "event share deliveryId (also sent as the body's deliveryId and the X-Paseo-Delivery-Id header, " +
+        'so you can drop duplicates). "retrying" rows carry nextAttemptAt: Paseo retries network errors, ' +
+        "408, 425, 429, 5xx and rate-limited 4xx with backoff, 6 attempts over about 15 minutes. " +
+        '"failed" means the event was given up on: failure "exhausted" (every retry failed) or ' +
+        '"not_retryable" (another 4xx). totals counts every match, not just the returned page. ' +
         "Use failedOnly to find events you never received.",
       inputSchema: WEBHOOK_DELIVERIES_INPUT.shape,
     },
