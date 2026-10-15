@@ -49,28 +49,30 @@ describe("CentralMissionControlConfigStore stall knobs", () => {
     expect(reloaded.get().escalateSeconds).toBe(300);
   });
 
-  test("delivery modes default to interrupt and accept the full union via patch", async () => {
+  test("verifier delivery defaults to interrupt and round-trips; the retired commander mode is dropped", async () => {
     const store = new CentralMissionControlConfigStore({
       paseoHome: dir,
       logger: createTestLogger(),
     });
     await store.initialize();
-    expect(store.get().commanderToWorkerMode).toBe("interrupt");
     expect(store.get().verifierToWorkerMode).toBe("interrupt");
 
+    // An older app still patches commanderToWorkerMode: accepted, never stored.
     const patched = await store.patch({
-      commanderToWorkerMode: "steer",
+      commanderToWorkerMode: "queue",
       verifierToWorkerMode: "queue",
     });
-    expect(patched.commanderToWorkerMode).toBe("steer");
     expect(patched.verifierToWorkerMode).toBe("queue");
+    const stored = JSON.parse(
+      await readFile(join(dir, "mission-control", "central-config.json"), "utf8"),
+    );
+    expect(stored).not.toHaveProperty("commanderToWorkerMode");
     // A second store instance reads the persisted values back.
     const reloaded = new CentralMissionControlConfigStore({
       paseoHome: dir,
       logger: createTestLogger(),
     });
     await reloaded.initialize();
-    expect(reloaded.get().commanderToWorkerMode).toBe("steer");
     expect(reloaded.get().verifierToWorkerMode).toBe("queue");
   });
 

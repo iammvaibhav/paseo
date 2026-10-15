@@ -532,11 +532,11 @@ describe("fleet tools with fleet-id-index integration", () => {
     expect(client.sendAgentMessage).toHaveBeenCalledWith(
       "7c3a0f4e-9b2a-4d6c-8e7a-1b2c3d4e5f02",
       "Peer task update",
-      expect.objectContaining({ dispatchMode: "interrupt" }),
+      expect.objectContaining({ dispatchMode: "steer" }),
     );
     expect(result.structuredContent).toMatchObject({
       success: true,
-      deliveryMode: "interrupt",
+      deliveryMode: "steer",
     });
   });
 

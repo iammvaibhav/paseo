@@ -36,9 +36,8 @@ export interface ResolvedMissionControlCentralConfig {
   // config): seconds a running agent may sit with no output AND no tool in
   // flight before the turn is treated as wedged and recovered.
   dormantTurnSeconds: number;
-  // Default delivery for commander/verifier → worker sends (mirrors the
-  // daemon's resolved central config). Stall nudges unaffected.
-  commanderToWorkerMode: "steer" | "interrupt" | "queue";
+  // Default delivery for verifier → worker sends (mirrors the daemon's
+  // resolved central config). Stall nudges unaffected.
   verifierToWorkerMode: "steer" | "interrupt" | "queue";
   // Hindsight fleet memory (M6 context architecture). hindsightUrl null =
   // disabled (run records stay local; fleet_recall degrades to "memory
@@ -86,7 +85,6 @@ const RESOLVED_DEFAULTS: ResolvedMissionControlCentralConfig = {
   escalateSeconds: 300,
   stallDetectionEnabled: true,
   dormantTurnSeconds: 300,
-  commanderToWorkerMode: "interrupt",
   verifierToWorkerMode: "interrupt",
   hindsightUrl: null,
   hindsightBank: "paseo-fleet",
@@ -148,7 +146,6 @@ export function resolveMissionControlCentralConfig(
     namingTheme: config.namingTheme ?? "mixed",
     hideAgentNames: config.hideAgentNames ?? false,
     defaultDispatchHost: config.defaultDispatchHost ?? null,
-    commanderToWorkerMode: config.commanderToWorkerMode ?? "interrupt",
     verifierToWorkerMode: config.verifierToWorkerMode ?? "interrupt",
     trackCommanderWorkers: config.trackCommanderWorkers ?? true,
     trackVerifiers: config.trackVerifiers ?? true,

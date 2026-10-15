@@ -23,6 +23,7 @@ import type {
   AgentSession,
   AgentStreamEvent,
   ProviderSnapshotEntry,
+  SteerResult,
 } from "./agent-sdk-types.js";
 import type { ProviderSnapshotManager } from "./provider-snapshot-manager.js";
 import { createProviderSnapshotManagerStub } from "../test-utils/session-stubs.js";
@@ -242,6 +243,7 @@ function buildAgentManagerSpies() {
     tryRunOutOfBand: vi.fn().mockReturnValue(false),
     subscribe: vi.fn().mockReturnValue(() => {}),
     streamAgent: vi.fn(() => (async function* noop() {})()),
+    steerOrReplaceActiveTurn: vi.fn().mockResolvedValue({ status: "inactive" }),
     waitForAgentRunStart: vi.fn().mockResolvedValue(undefined),
     respondToPermission: vi.fn(),
     cancelAgentRun: vi.fn(),
@@ -3700,11 +3702,13 @@ const HELD_TURN_CAPABILITIES = {
 /**
  * Provider session that records every prompt it receives. With `holdTurns`, a started
  * turn stays running until `finishTurn()` so a caller's bounded wait can run out first.
+ * With `steerable`, a prompt steered into the running turn lands in `steered`.
  */
 class HeldTurnAgentSession implements AgentSession {
   readonly capabilities = HELD_TURN_CAPABILITIES;
   readonly id = randomUUID();
   readonly prompts: string[] = [];
+  readonly steered: string[] = [];
   private readonly subscribers = new Set<(event: AgentStreamEvent) => void>();
   private activeTurnId: string | null = null;
   private turnStartGate: Promise<void> | null = null;
@@ -3712,6 +3716,7 @@ class HeldTurnAgentSession implements AgentSession {
   constructor(
     readonly provider: AgentProvider,
     private readonly holdTurns: boolean,
+    private readonly steerable = false,
   ) {}
 
   /** Hold the next turn's acknowledgment, as a provider awaiting its turn-start request does. */
@@ -3748,6 +3753,14 @@ class HeldTurnAgentSession implements AgentSession {
     }
     this.activeTurnId = null;
     this.pushEvent({ type: "turn_completed", provider: this.provider, turnId });
+  }
+
+  async steerActiveTurn(prompt: AgentPromptInput): Promise<SteerResult> {
+    if (!this.steerable || !this.activeTurnId) {
+      return { status: "unavailable" };
+    }
+    this.steered.push(typeof prompt === "string" ? prompt : JSON.stringify(prompt));
+    return { status: "accepted" };
   }
 
   subscribe(callback: (event: AgentStreamEvent) => void): () => void {
@@ -3813,6 +3826,7 @@ class HeldTurnAgentClient implements AgentClient {
   constructor(
     readonly provider: AgentProvider,
     private readonly holdTurns: boolean,
+    private readonly steerable = false,
   ) {}
 
   async isAvailable(): Promise<boolean> {
@@ -3820,7 +3834,7 @@ class HeldTurnAgentClient implements AgentClient {
   }
 
   async createSession(): Promise<AgentSession> {
-    const session = new HeldTurnAgentSession(this.provider, this.holdTurns);
+    const session = new HeldTurnAgentSession(this.provider, this.holdTurns, this.steerable);
     this.sessions.push(session);
     return session;
   }
@@ -4095,6 +4109,59 @@ describe("send_agent_prompt MCP tool", () => {
       await vi.waitFor(() => expect(finishNotifications()).not.toHaveLength(0));
       await new Promise((resolve) => setTimeout(resolve, 100));
       expect(finishNotifications()).toHaveLength(1);
+    } finally {
+      await removeAgentStateDir(agentManager, storage, workdir);
+    }
+  });
+
+  it("steers a busy agent by default and replaces its turn only on an explicit interrupt", async () => {
+    const workdir = await mkdtemp(join(tmpdir(), "mcp-send-steer-default-"));
+    const storage = new AgentStorage(join(workdir, "agents"), logger);
+    const parentClient = new HeldTurnAgentClient("claude", false);
+    const childClient = new HeldTurnAgentClient("codex", true, true);
+    const agentManager = new AgentManager({
+      clients: { claude: parentClient, codex: childClient },
+      registry: storage,
+      logger,
+    });
+
+    try {
+      const parent = await agentManager.createAgent(
+        { provider: "claude", cwd: existingCwd },
+        undefined,
+        { workspaceId: "wks_parent" },
+      );
+      const server = await createAgentMcpServer({
+        agentManager,
+        agentStorage: storage,
+        callerAgentId: parent.id,
+        providerSnapshotManager: createOpenCodeManager().manager,
+        logger,
+      });
+      const child = await agentManager.createAgent(
+        { provider: "codex", cwd: existingCwd },
+        undefined,
+        { workspaceId: "wks_parent" },
+      );
+      const childId = child.id;
+      const send = registeredTool(server, "send_agent_prompt");
+      await invokeToolWithParsedInput(send, { agentId: childId, prompt: "Run a long command" });
+      await vi.waitFor(() => expect(agentManager.getAgent(childId)?.lifecycle).toBe("running"));
+      const childSession = childClient.sessions[0]!;
+
+      await invokeToolWithParsedInput(send, { agentId: childId, prompt: "Also check the logs" });
+      expect(childSession.steered).toEqual([expect.stringContaining("Also check the logs")]);
+      expect(childSession.prompts).toHaveLength(1);
+      expect(agentManager.getAgent(childId)?.lifecycle).toBe("running");
+
+      await invokeToolWithParsedInput(send, {
+        agentId: childId,
+        prompt: "Stop and do this instead",
+        mode: "interrupt",
+      });
+      await vi.waitFor(() => expect(childSession.prompts).toHaveLength(2));
+      expect(childSession.prompts[1]).toContain("Stop and do this instead");
+      expect(childSession.steered).toHaveLength(1);
     } finally {
       await removeAgentStateDir(agentManager, storage, workdir);
     }

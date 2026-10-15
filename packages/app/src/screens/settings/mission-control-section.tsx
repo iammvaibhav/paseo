@@ -926,10 +926,6 @@ export function MissionControlSection(): ReactElement {
     (next: boolean) => void patch({ stallDetectionEnabled: next }),
     [patch],
   );
-  const handleCommanderToWorkerModeSelect = useCallback(
-    (next: "steer" | "interrupt" | "queue") => void patch({ commanderToWorkerMode: next }),
-    [patch],
-  );
   const handleVerifierToWorkerModeSelect = useCallback(
     (next: "steer" | "interrupt" | "queue") => void patch({ verifierToWorkerMode: next }),
     [patch],
@@ -1015,21 +1011,13 @@ export function MissionControlSection(): ReactElement {
       <SettingsSection title="Delivery">
         <View style={settingsStyles.card}>
           <DropdownRow
-            title="Commander → worker"
-            hint="How the Commander's fleet_send_prompt reaches a busy worker by default. Steer = additive, non-urgent instructions (injects without cancelling; a busy non-OMP worker is interrupted so it still lands); interrupt = immediate direction change (cancels and replaces); queue = waits for idle. An explicit mode in the tool call overrides this."
-            value={config.commanderToWorkerMode}
-            options={deliveryModeOptions}
-            onSelect={handleCommanderToWorkerModeSelect}
-            testID="mission-control-settings-commander-to-worker-mode"
-            first
-          />
-          <DropdownRow
             title="Verifier → worker"
             hint="How verifier proof demands reach the worker. Steer = additive clarification request; interrupt = takes over immediately; queue = waits for idle."
             value={config.verifierToWorkerMode}
             options={deliveryModeOptions}
             onSelect={handleVerifierToWorkerModeSelect}
             testID="mission-control-settings-verifier-to-worker-mode"
+            first
           />
         </View>
       </SettingsSection>

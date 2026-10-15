@@ -2406,6 +2406,13 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
   const commonSendAgentPromptInputSchema = {
     agentId: z.string(),
     prompt: z.string(),
+    mode: z
+      .enum(["steer", "interrupt"])
+      .optional()
+      .describe(
+        'Omit (default "steer"): a busy agent takes the prompt into its live turn without ' +
+          'cancelling it. "interrupt": only when the user explicitly asked to cancel the running turn.',
+      ),
     sessionMode: z.string().optional().describe("Optional mode to set before running the prompt."),
     agentMode: PromptAgentModeInputSchema,
   };
@@ -3175,7 +3182,10 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     {
       title: "Send agent prompt",
       description:
-        "Send a task to a running agent. Agent-scoped callers run in background by default; top-level callers wait by default.",
+        "Send a task to a running agent. Always use the default mode steer: a busy agent takes the " +
+        "prompt into its live turn without cancelling it. Pass interrupt only when the user explicitly " +
+        "asked to cancel the running turn. Agent-scoped callers run in background by default; " +
+        "top-level callers wait for the agent to finish by default.",
       inputSchema: sendAgentPromptInputSchema,
       outputSchema: {
         success: z.boolean(),
@@ -3188,6 +3198,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     async ({
       agentId,
       prompt,
+      mode = "steer",
       sessionMode,
       agentMode,
       background = Boolean(callerAgentId),
@@ -3209,8 +3220,10 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
 
       // Agent-originated (Commander/Verifier/worker) sends that supersede a
       // busy run are machinery-originated: the superseded run keeps the
-      // failure treatment, never reads as a user interruption.
-      if (agentManager.hasInFlightRun(agentId)) {
+      // failure treatment, never reads as a user interruption. A steer that
+      // falls back to replacing the turn carries the same origin through
+      // replaceOrigin.
+      if (mode === "interrupt" && agentManager.hasInFlightRun(agentId)) {
         missionControlService?.recordStopOrigin(agentId, "machinery");
       }
       const { disposition } = await sendPromptToAgent({
@@ -3219,6 +3232,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         agentId,
         prompt,
         replaceOrigin: "machinery",
+        ...(mode === "steer" ? { activeTurnBehavior: "steer" as const } : {}),
         sessionMode,
         ...(agentMode ? { agentMode } : {}),
         logger: childLogger,
@@ -6267,29 +6281,17 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     };
   }
 
-  // fleet_send_prompt's mode when the call omits it. Remote MCP clients get
-  // "steer": it wakes a closed agent and never cancels a live turn the client
-  // cannot see. The Commander follows the fleet central setting
-  // commanderToWorkerMode (default "interrupt" — a fleet direction change is
-  // time-sensitive).
-  const defaultSendMode = (): "steer" | "interrupt" | "queue" =>
-    gate.isMcpClient
-      ? "steer"
-      : (missionControlService?.getCentralConfig().commanderToWorkerMode ?? "interrupt");
-
   registerTool(
     "fleet_send_prompt",
     {
       title: "Send agent prompt",
       description:
         "Send a task to an agent across the fleet. agentId is fleet-wide; host is optional and resolved " +
-        "automatically via the fleet index. " +
-        'Use mode "steer" for every send by default: it wakes a closed or archived agent and runs the prompt, ' +
-        "and on a busy agent it joins the live turn without cancelling it (OMP live-steer; a busy non-OMP agent " +
-        'is interrupted so the message lands promptly). Use "queue" only when you explicitly want to wait until ' +
-        'the current turn ends before the prompt starts, and "interrupt" only when you mean to cancel the running ' +
-        'turn and replace it. Omitted mode is "steer" for remote MCP clients; for the Commander it is the fleet ' +
-        "commanderToWorkerMode setting.",
+        "automatically via the fleet index. Returns immediately in every mode; it never waits for a busy " +
+        'agent. Always use the default mode "steer": it wakes a closed or archived agent and runs the ' +
+        "prompt, and on a busy agent it joins the live turn without cancelling it (OMP live-steer; a busy " +
+        'non-OMP agent is interrupted so the message lands promptly). Pass "interrupt" only when the user ' +
+        "explicitly asked to cancel the running turn and replace it.",
       inputSchema: {
         agentId: z
           .string()
@@ -6306,12 +6308,11 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           ),
         prompt: z.string(),
         mode: z
-          .enum(["steer", "interrupt", "queue"])
+          .enum(["steer", "interrupt"])
           .optional()
           .describe(
-            'Default "steer": wakes closed/archived agents and joins a live turn without cancelling. ' +
-              '"queue": only to wait until the current turn ends. "interrupt": only to cancel the running ' +
-              'turn. Omitted → "steer" for remote MCP clients, commanderToWorkerMode for the Commander.',
+            'Omit (default "steer"): wakes closed/archived agents and joins a live turn without ' +
+              'cancelling. "interrupt": only when the user explicitly asked to cancel the running turn.',
           ),
         agentMode: PromptAgentModeInputSchema,
         respondsTo: z
@@ -6341,7 +6342,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       },
       outputSchema: {
         success: z.boolean(),
-        deliveryMode: z.enum(["steer", "interrupt", "queue", "steer-interrupt"]),
+        deliveryMode: z.enum(["steer", "interrupt", "steer-interrupt"]),
         // The agent was idle and its new run was seen starting before this
         // returned, so a fleet_wait_agent after it waits on the new run.
         runStarted: z.boolean().optional(),
@@ -6409,7 +6410,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         }
         return client;
       };
-      const effectiveMode = mode ?? defaultSendMode();
+      const effectiveMode = mode ?? "steer";
       // The Commander path routes the send through the approval gate as a
       // proposal (ask mode) or delivers immediately (auto mode), with
       // same-send dedupe while the prior is pending or in-flight.
@@ -8023,8 +8024,10 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
   return toCatalog();
 }
 
-// How long fleet_send_prompt mode "queue" waits for a busy agent's in-flight
-// run to settle before giving up with an actionable error.
+// How long a machinery "queue" delivery (approval proposals, fleet_agent_status
+// notify) waits for a busy agent's in-flight run to settle before giving up
+// with an actionable error. fleet_send_prompt never takes queue: it would block
+// the tool call until the agent goes idle.
 const FLEET_QUEUE_WAIT_TIMEOUT_MS = 10 * 60_000;
 
 /**
@@ -8081,7 +8084,7 @@ async function waitForAgentIdle(
 }
 
 /**
- * Local delivery for fleet_send_prompt modes:
+ * Local delivery for fleet_send_prompt and Mission Control proposal modes:
  * - steer: OMP live-steer (out-of-band, non-cancelling) when the agent is busy
  *   on the omp provider; an idle agent just runs the prompt. A busy agent on a
  *   provider WITHOUT a native steer path is INTERRUPTED (replaceRunning) —
@@ -8089,7 +8092,8 @@ async function waitForAgentIdle(
  *   of minutes, so the fallback cancels and replaces rather than waiting.
  *   The returned value distinguishes the fallback ("steer-interrupt") from a
  *   native steer so callers/logs stay honest about what actually happened.
- * - queue: wait for idle, then stream without replacing.
+ * - queue: wait for idle, then stream without replacing. Machinery only (it
+ *   blocks until idle); fleet_send_prompt never takes it.
  * - interrupt: today's replaceRunning behavior (sendPromptToAgent).
  *
  * Attachments ride along as prompt blocks (buildAgentPrompt) — descriptors

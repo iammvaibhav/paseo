@@ -713,10 +713,9 @@ export const MissionControlCentralConfigSchema = z.object({
   // Paseo cannot observe a model request in flight (it lives inside omp and
   // produces no timeline rows), so values under ~4 min risk false positives.
   dormantTurnSeconds: z.number().optional(),
-  // Default delivery mode for commander-origin sends (fleet_send_prompt when
-  // the Commander omits `mode`). "interrupt" = timely direction change; an
-  // explicit `mode` argument from the Commander always wins. Stall nudges are
-  // NOT affected — they stay native steer regardless.
+  // COMPAT(commander-to-worker-mode): ignored since v0.11.0-beta.4 (fleet_send_prompt
+  // always steers unless the call passes `mode`); remove after 2027-01-15 once
+  // app floor >= v0.11.0-beta.4. Kept optional so older apps can still patch it.
   commanderToWorkerMode: MissionControlDeliveryModeSchema.optional(),
   // Default delivery mode for verifier-origin contacts (contact_worker /
   // proof demands). Same union; stall nudges unaffected.

@@ -116,7 +116,6 @@ describe("images and files cross hosts over /mcp/fleet", () => {
         const sent = await call("fleet_send_prompt", {
           agentId,
           prompt: "mcp send with files",
-          mode: "queue",
           images: [{ fileId: shotId }],
           attachments: [{ type: "uploaded_file", id: notesId }],
         });

@@ -50,12 +50,10 @@ export interface ResolvedMissionControlCentralConfig {
   // model request in flight (omp-internal, no timeline rows), so values under
   // ~4 min risk false positives.
   dormantTurnSeconds: number;
-  // Delivery semantics for commander/verifier → worker sends. Default
-  // "interrupt": a fleet direction change is time-sensitive — queue-until-idle
-  // can sit for tens of minutes. The Commander may still pass an explicit
-  // `mode` to fleet_send_prompt (e.g. "steer" for additive, non-urgent
-  // instructions); stall nudges are unaffected (always native steer).
-  commanderToWorkerMode: "steer" | "interrupt" | "queue";
+  // Delivery semantics for verifier → worker sends (contact_worker and proof
+  // demands). Default "interrupt": a proof demand is time-sensitive. Stall
+  // nudges are unaffected (always native steer). Commander → worker sends have
+  // no setting: fleet_send_prompt always steers unless the call passes mode.
   verifierToWorkerMode: "steer" | "interrupt" | "queue";
   // M6 context architecture: Hindsight fleet memory bank. hindsightUrl null =
   // disabled (run records stay local; fleet_recall degrades to "memory
@@ -134,7 +132,6 @@ export const DEFAULT_CENTRAL_MISSION_CONTROL_CONFIG: ResolvedMissionControlCentr
   escalateSeconds: 300,
   stallDetectionEnabled: true,
   dormantTurnSeconds: 300,
-  commanderToWorkerMode: "interrupt",
   verifierToWorkerMode: "interrupt",
   hindsightUrl: null,
   hindsightBank: "paseo-fleet",
@@ -308,7 +305,6 @@ const CENTRAL_CONFIG_KEYS: readonly (keyof ResolvedMissionControlCentralConfig)[
   "escalateSeconds",
   "stallDetectionEnabled",
   "dormantTurnSeconds",
-  "commanderToWorkerMode",
   "verifierToWorkerMode",
   "hindsightUrl",
   "hindsightBank",
@@ -416,7 +412,6 @@ function resolveCentralConfig(
       stored.statusNudgeSeconds ?? stored.nudgeSeconds ?? defaults.statusNudgeSeconds,
     escalateSeconds: stored.escalateSeconds ?? defaults.escalateSeconds,
     dormantTurnSeconds: stored.dormantTurnSeconds ?? defaults.dormantTurnSeconds,
-    commanderToWorkerMode: stored.commanderToWorkerMode ?? defaults.commanderToWorkerMode,
     verifierToWorkerMode: stored.verifierToWorkerMode ?? defaults.verifierToWorkerMode,
     hindsightBank: stored.hindsightBank ?? defaults.hindsightBank,
     voiceMode: stored.voiceMode ?? defaults.voiceMode,

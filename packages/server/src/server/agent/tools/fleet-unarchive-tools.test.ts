@@ -73,7 +73,7 @@ function createHarness(
     serverId: "host-a",
     hostAlias: "Personal",
     missionControlService: {
-      getCentralConfig: () => ({ commanderToWorkerMode: "queue" }),
+      getCentralConfig: () => ({}),
       approvals: { createProposal },
     } as unknown as MissionControlService,
     logger,
@@ -140,8 +140,7 @@ describe("fleet_unarchive_agent", () => {
         expect.objectContaining({ id: AGENT_ID, archivedAt: null }),
       );
 
-      // Mode omitted → "steer" for an MCP client, even though the fleet
-      // commanderToWorkerMode here is "queue".
+      // Mode omitted → "steer".
       const send = await harness.catalog.executeTool("fleet_send_prompt", {
         agentId: AGENT_ID,
         prompt: "pick this back up",

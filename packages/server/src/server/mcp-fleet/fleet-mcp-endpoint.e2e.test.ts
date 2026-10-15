@@ -228,7 +228,7 @@ describe("Fleet MCP Endpoint E2E (/mcp/fleet)", () => {
 
       const sent = await client.callTool({
         name: "fleet_send_prompt",
-        arguments: { agentId, prompt: "Respond with exactly: second", mode: "queue" },
+        arguments: { agentId, prompt: "Respond with exactly: second" },
       });
       expect(sent.structuredContent).toMatchObject({ success: true });
       const secondWait = await client.callTool({
@@ -332,13 +332,12 @@ describe("Fleet MCP Endpoint E2E (/mcp/fleet)", () => {
         /^<paseo-mode name="research">\n[\s\S]+\n\nRespond with exactly: first$/,
       );
 
-      // A mode sent with a queued prompt rides that prompt, not the next one.
+      // A mode sent with a follow-up prompt rides that prompt, not the next one.
       const sent = await client.callTool({
         name: "fleet_send_prompt",
         arguments: {
           agentId,
           prompt: "Respond with exactly: second",
-          mode: "queue",
           agentMode: "review",
         },
       });

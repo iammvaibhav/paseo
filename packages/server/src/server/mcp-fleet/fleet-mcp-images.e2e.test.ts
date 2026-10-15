@@ -140,7 +140,6 @@ describe("Fleet MCP images (/mcp/fleet)", () => {
       const sent = await call("fleet_send_prompt", {
         agentId,
         prompt: "Respond with exactly: second",
-        mode: "queue",
         images: [{ fileId }],
       });
       expect(sent.isError, textOf(sent)).toBeFalsy();
@@ -158,7 +157,6 @@ describe("Fleet MCP images (/mcp/fleet)", () => {
       const attached = await call("fleet_send_prompt", {
         agentId,
         prompt: "Respond with exactly: third",
-        mode: "queue",
         attachments: [{ type: "uploaded_file", id: notesId }],
       });
       expect(attached.isError, textOf(attached)).toBeFalsy();

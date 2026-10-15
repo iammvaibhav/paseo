@@ -412,39 +412,7 @@ describe("fleet_list_agents roster enrichment", () => {
 });
 
 describe("fleet_send_prompt mode", () => {
-  test("validates the schema: mode defaults to the central setting (interrupt without MC) and rejects unknown modes", async () => {
-    const { peerManager } = createFakePeerHarness();
-    const catalog = createCatalog(peerManager);
-    // No missionControlService wired: the fleet default resolves to
-    // "interrupt" (the spec default of commanderToWorkerMode).
-    await expect(
-      catalog.executeTool("fleet_send_prompt", {
-        host: "macbook",
-        agentId: SEND_AGENT_UUID,
-        prompt: "hello",
-        mode: "steer",
-      }),
-    ).resolves.toMatchObject({ structuredContent: { success: true, deliveryMode: "steer" } });
-    await expect(
-      catalog.executeTool("fleet_send_prompt", {
-        host: "macbook",
-        agentId: SEND_AGENT_UUID,
-        prompt: "hello",
-      }),
-    ).resolves.toMatchObject({
-      structuredContent: { success: true, deliveryMode: "interrupt" },
-    });
-    await expect(
-      catalog.executeTool("fleet_send_prompt", {
-        host: "macbook",
-        agentId: SEND_AGENT_UUID,
-        prompt: "hello",
-        mode: "replace",
-      }),
-    ).rejects.toThrow();
-  });
-
-  test("commanderToWorkerMode is the default when mode is omitted; an explicit mode overrides it", async () => {
+  test("an omitted mode steers for every caller, and queue or unknown modes are rejected", async () => {
     const { client, peerManager } = createFakePeerHarness();
     const catalog = createPaseoToolCatalog({
       agentManager: {} as unknown as AgentManager,
@@ -452,32 +420,47 @@ describe("fleet_send_prompt mode", () => {
       providerSnapshotManager: createProviderSnapshotManagerStub()
         .manager as unknown as ProviderSnapshotManager,
       peerManager,
-      // Commander host daemon: the fleet setting drives the default.
+      // A Commander host whose stored config still carries the retired
+      // commanderToWorkerMode setting: it no longer picks the default.
       missionControlService: {
-        getCentralConfig: () => ({ commanderToWorkerMode: "queue" }),
+        getCentralConfig: () => ({ commanderToWorkerMode: "interrupt" }),
       } as unknown as MissionControlService,
       logger: createTestLogger(),
     });
 
-    // Omitted mode → the fleet commanderToWorkerMode setting (queue).
-    await catalog.executeTool("fleet_send_prompt", {
-      host: "macbook",
-      agentId: SEND_AGENT_UUID,
-      prompt: "follow up",
-    });
+    await expect(
+      catalog.executeTool("fleet_send_prompt", {
+        host: "macbook",
+        agentId: SEND_AGENT_UUID,
+        prompt: "follow up",
+      }),
+    ).resolves.toMatchObject({ structuredContent: { success: true, deliveryMode: "steer" } });
     expect(client.sendAgentMessage).toHaveBeenLastCalledWith(SEND_AGENT_UUID, "follow up", {
-      dispatchMode: "queue",
-    });
-    // An explicit mode from the Commander always wins (steer for additive).
-    await catalog.executeTool("fleet_send_prompt", {
-      host: "macbook",
-      agentId: SEND_AGENT_UUID,
-      prompt: "add a note",
-      mode: "steer",
-    });
-    expect(client.sendAgentMessage).toHaveBeenLastCalledWith(SEND_AGENT_UUID, "add a note", {
       dispatchMode: "steer",
     });
+    // An explicit interrupt still goes through.
+    await catalog.executeTool("fleet_send_prompt", {
+      host: "macbook",
+      agentId: SEND_AGENT_UUID,
+      prompt: "stop and do this instead",
+      mode: "interrupt",
+    });
+    expect(client.sendAgentMessage).toHaveBeenLastCalledWith(
+      SEND_AGENT_UUID,
+      "stop and do this instead",
+      { dispatchMode: "interrupt" },
+    );
+    for (const mode of ["queue", "replace"]) {
+      await expect(
+        catalog.executeTool("fleet_send_prompt", {
+          host: "macbook",
+          agentId: SEND_AGENT_UUID,
+          prompt: "hello",
+          mode,
+        }),
+      ).rejects.toThrow();
+    }
+    expect(client.sendAgentMessage).toHaveBeenCalledTimes(2);
   });
 
   test("proxies the dispatch mode to the peer via sendAgentMessage", async () => {
@@ -501,8 +484,8 @@ describe("fleet_send_prompt mode", () => {
   });
 
   test.each([
-    ["queue", "closed"],
-    ["queue", "archived"],
+    ["interrupt", "closed"],
+    ["interrupt", "archived"],
     ["steer", "closed"],
     ["steer", "archived"],
   ] as const)(
@@ -828,7 +811,7 @@ describe("fleet_send_prompt mode", () => {
         attachments: [uploadedFile],
       }),
     ).resolves.toMatchObject({
-      structuredContent: { success: true, deliveryMode: "interrupt" },
+      structuredContent: { success: true, deliveryMode: "steer" },
     });
     // The peer cannot open this host's path: it gets the bytes and the
     // descriptor of its own copy.
@@ -838,7 +821,7 @@ describe("fleet_send_prompt mode", () => {
       bytes: Buffer.from("hello notes!"),
     });
     expect(client.sendAgentMessage).toHaveBeenCalledWith(SEND_AGENT_UUID, "read my notes", {
-      dispatchMode: "interrupt",
+      dispatchMode: "steer",
       attachments: [peerCopy],
     });
     await expect(
@@ -963,7 +946,7 @@ function createMissionControlServiceStub(
 ): MissionControlService {
   return {
     emitCommanderCard: vi.fn(async () => ({ id: "mce_card_1" })),
-    getCentralConfig: () => ({ commanderToWorkerMode: "interrupt" }),
+    getCentralConfig: () => ({}),
     approvals: {
       createProposal: vi.fn(),
     },
@@ -1177,13 +1160,13 @@ describe("approval-gate wrap point (runCommanderGatedAction)", () => {
       host: "macbook",
       agentId: SEND_AGENT_UUID,
       prompt: "follow up",
-      mode: "queue",
+      mode: "interrupt",
     });
 
     expect(createProposal).not.toHaveBeenCalled();
     expect(created.structuredContent).toMatchObject({ agentId: "peer-agent-1" });
     expect(client.sendAgentMessage).toHaveBeenCalledWith(SEND_AGENT_UUID, "follow up", {
-      dispatchMode: "queue",
+      dispatchMode: "interrupt",
     });
   });
 
@@ -1247,7 +1230,6 @@ describe("approval-gate wrap point (runCommanderGatedAction)", () => {
       host: "macbook",
       agentId: SEND_AGENT_UUID,
       prompt: "now plan the fix",
-      mode: "queue",
       agentMode: "plan",
     });
 
@@ -1295,7 +1277,6 @@ describe("approval-gate wrap point (runCommanderGatedAction)", () => {
       host: "macbook",
       agentId: SEND_AGENT_UUID,
       prompt: "run again",
-      mode: "queue",
     });
 
     expect(client.sendAgentMessage).toHaveBeenCalledTimes(1);
@@ -1480,7 +1461,7 @@ describe("approval-gate wrap point (runCommanderGatedAction)", () => {
       agentId: SEND_AGENT_UUID,
       prompt: "continue",
     });
-    expect(result.structuredContent).toEqual({ success: true, deliveryMode: "interrupt" });
+    expect(result.structuredContent).toEqual({ success: true, deliveryMode: "steer" });
   });
 
   test("non-Commander callers take the ungated path (gate requires a Commander caller)", async () => {
