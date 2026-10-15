@@ -1,5 +1,6 @@
 import { mkdirSync, realpathSync } from "node:fs";
 import path from "node:path";
+import { createDaemonClient } from "../lib/client.mjs";
 
 export const meta = {
   name: "ui-sidebar-search",
@@ -9,13 +10,15 @@ export const meta = {
   description:
     "Asserts the sidebar search finds a closed (dormant) agent by name and id prefix in the " +
     "Agents view, finds archived agents only with Include archived, shows no engine label, and " +
-    "opens an archived agent whose project was removed with its workspace and project restored.",
+    "opens an archived agent whose project was removed with its workspace and project restored, " +
+    "including an agent left active in an archived workspace by the old open path.",
 };
 
 const WORKSPACE_TITLE = "sidebar-search-workspace";
 const CLOSED_TITLE = "Closed search target";
 const ARCHIVED_TITLE = "Archived search target";
 const ORPHAN_TITLE = "Orphaned search target";
+const STRANDED_TITLE = "Stranded search target";
 const CHECK_LABEL_KEY = "paseo.verify-check";
 const CHECK_LABEL_VALUE = "ui-sidebar-search";
 
@@ -25,6 +28,7 @@ let archived = null;
 let orphan = null;
 let orphanDir = null;
 let orphanWorkspaceId = null;
+let stranded = null;
 
 function commanderProviderModel(ctx) {
   const raw = String(ctx.stack.commanderModel);
@@ -337,11 +341,74 @@ export const steps = [
     },
   },
   {
+    id: "open-stranded",
+    label:
+      "An active agent stranded in an archived workspace is listed as archived and opens restored",
+    narrate:
+      "The old open path unarchived the agent but not its workspace. Search lists it under Archived; opening it restores the workspace and project.",
+    async run(ctx) {
+      const page = ctx.page;
+      const client = ctx.host().client;
+      const strandedDir = path.join(realpathSync(ctx.host().home), "stranded-project");
+      mkdirSync(strandedDir, { recursive: true });
+      const created = await client.createWorkspace({
+        source: { kind: "directory", path: strandedDir },
+        title: "stranded-project-workspace",
+      });
+      const strandedWorkspaceId = created.workspace?.id;
+      stranded = await createIdleAgent(ctx, STRANDED_TITLE, strandedWorkspaceId, strandedDir);
+      await client.removeProject(created.workspace?.projectId);
+      // The pre-fix sidebar opened archived agents with refresh_agent_request,
+      // which a current app sends without restoring the workspace.
+      const modern = createDaemonClient(
+        ctx.host().wsUrl,
+        `verify-${ctx.stack.runId}-stranded-${Date.now().toString(36)}`,
+        ctx.password,
+        { appVersion: "0.11.0", reconnect: { enabled: false } },
+      );
+      await modern.connect();
+      try {
+        await modern.refreshAgent(stranded.id);
+      } finally {
+        await modern.close().catch(() => {});
+      }
+      const strandedEntry = await client.fetchAgent({ agentId: stranded.id });
+      ctx.expect(!strandedEntry?.agent.archivedAt, "stranded agent itself is unarchived");
+
+      await search(page, stranded.name);
+      const row = page.locator(`[data-testid="sidebar-search-archived-${stranded.id}"]`);
+      await row.waitFor({ state: "visible", timeout: 10_000 });
+      await row.click();
+
+      const project = await pollFor(
+        async () =>
+          (await client.listProjects()).projects.find(
+            (candidate) => candidate.projectRootPath === strandedDir,
+          ) ?? null,
+        "project recreated for the stranded workspace",
+      );
+      await page.waitForSelector('[data-testid="message-input-root"]', {
+        state: "visible",
+        timeout: 20_000,
+      });
+      ctx.expect(
+        !(await page.getByText("Workspace unavailable", { exact: true }).isVisible()),
+        "no 'Workspace unavailable' dead end",
+      );
+      ctx.expect(
+        project.baseWorkspaceId === strandedWorkspaceId,
+        "stranded workspace restored as base",
+      );
+      await ctx.shot("stranded-restored");
+      return `stranded ${stranded.name} listed under Archived, opened with workspace ${strandedWorkspaceId} restored into project ${project.projectId}`;
+    },
+  },
+  {
     id: "cleanup",
     label: "Archive the created agents (best effort)",
     narrate: "Cleaned up the agents created for this check.",
     async run(ctx) {
-      for (const agent of [closed, orphan]) {
+      for (const agent of [closed, orphan, stranded]) {
         try {
           if (agent) await ctx.host().client.archiveAgent(agent.id);
         } catch {

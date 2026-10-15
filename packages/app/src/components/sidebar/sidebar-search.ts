@@ -92,16 +92,20 @@ export function useSidebarSearch(): SidebarSearch {
 
   const remote = useRemoteAgentSearch(query, includeArchived);
 
-  // `serverId:agentId` of archived matches the session store now holds as
-  // unarchived (opened from the bar): they list as active, not under Archived.
+  // `serverId:agentId` of archived matches (the agent or its workspace) the
+  // session store now holds as active, e.g. just opened from the bar: they
+  // list as active, not under Archived.
   const revivedKeys = useSessionStore(
     useShallow((state) => {
       const keys: string[] = [];
       for (const [serverId, payload] of remote.byServer) {
+        const session = state.sessions[serverId];
         for (const match of payload.matches) {
-          if (!match.archivedAt) continue;
-          const agent = state.sessions[serverId]?.agents.get(match.agentId);
-          if (agent && !agent.archivedAt) keys.push(`${serverId}:${match.agentId}`);
+          if (!match.archivedAt && !match.workspaceArchivedAt) continue;
+          const agent = session?.agents.get(match.agentId);
+          if (!agent || agent.archivedAt) continue;
+          if (agent.workspaceId && !session?.workspaces.has(agent.workspaceId)) continue;
+          keys.push(`${serverId}:${match.agentId}`);
         }
       }
       return keys.length > 0 ? keys : EMPTY_KEYS;
@@ -126,7 +130,8 @@ export function useSidebarSearch(): SidebarSearch {
     if (current) {
       for (const [serverId, payload] of remote.byServer) {
         for (const match of payload.matches) {
-          if (match.archivedAt && !revived.has(`${serverId}:${match.agentId}`)) {
+          const archived = Boolean(match.archivedAt || match.workspaceArchivedAt);
+          if (archived && !revived.has(`${serverId}:${match.agentId}`)) {
             archivedMatches.push({
               serverId,
               agentId: match.agentId,

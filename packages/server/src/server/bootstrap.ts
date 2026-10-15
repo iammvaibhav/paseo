@@ -2614,6 +2614,12 @@ export async function createPaseoDaemon(
         ? readLaunchBrief(await agentManager.getTimelineRows(agentId))
         : null,
     searchTranscripts: (query) => transcriptSearch?.search(query) ?? [],
+    getArchivedWorkspaces: async () =>
+      new Map(
+        (await workspaceRegistry.list()).flatMap((workspace) =>
+          workspace.archivedAt ? [[workspace.workspaceId, workspace.archivedAt] as const] : [],
+        ),
+      ),
   });
   // The app's agent.unarchive RPC runs the same restore as fleet_unarchive_agent.
   const unarchiveAgent: UnarchiveAgent = (agentId) =>

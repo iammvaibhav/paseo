@@ -18,6 +18,8 @@ export interface AgentSearchServiceDependencies {
   readLiveBrief: (agentId: string) => Promise<string | null>;
   /** FTS5 hits over indexed transcripts, best first; empty when the index is unavailable. */
   searchTranscripts: (query: string) => readonly TranscriptHit[];
+  /** `workspaceId → archivedAt` of this host's archived workspaces. */
+  getArchivedWorkspaces: () => Promise<ReadonlyMap<string, string>>;
 }
 
 export interface AgentSearchInput {
@@ -61,7 +63,7 @@ export class AgentSearchService {
   async search(input: AgentSearchInput): Promise<AgentSearchResult> {
     const startedAt = performance.now();
     const words = agentSearchWords(input.query);
-    const records = await this.listCandidates(input);
+    const { records, archivedWorkspaces } = await this.listCandidates(input);
     if (words.length === 0) {
       // A blank query is the client opening its search bar: read live launch
       // prompts now so the first real query skips them.
@@ -116,6 +118,8 @@ export class AgentSearchService {
         workspaceId: record.workspaceId ?? null,
         cwd: record.cwd,
         archivedAt: record.archivedAt ?? null,
+        workspaceArchivedAt:
+          (record.workspaceId && archivedWorkspaces.get(record.workspaceId)) || null,
         lastActivityAt: activityOf(record),
         score: null,
         lexical: tier !== MatchTier.Transcript,
@@ -126,14 +130,28 @@ export class AgentSearchService {
     };
   }
 
-  private async listCandidates(input: AgentSearchInput): Promise<StoredAgentRecord[]> {
-    // Commander and machinery never show in the sidebar, so they are never candidates.
-    return (await this.deps.listAgents()).filter(
+  /**
+   * An agent whose workspace is archived has no directory to open in and is
+   * absent from the active agent list, so it counts as archived here too.
+   * Commander and machinery never show in the sidebar, so they are never candidates.
+   */
+  private async listCandidates(input: AgentSearchInput): Promise<{
+    records: StoredAgentRecord[];
+    archivedWorkspaces: ReadonlyMap<string, string>;
+  }> {
+    const [agents, archivedWorkspaces] = await Promise.all([
+      this.deps.listAgents(),
+      this.deps.getArchivedWorkspaces(),
+    ]);
+    const records = agents.filter(
       (record) =>
         !record.internal &&
         !isCommanderOrMachineryLabels(record.labels) &&
-        (input.includeArchived || !record.archivedAt),
+        (input.includeArchived ||
+          (!record.archivedAt &&
+            !(record.workspaceId && archivedWorkspaces.has(record.workspaceId)))),
     );
+    return { records, archivedWorkspaces };
   }
 
   private async liveBrief(record: StoredAgentRecord): Promise<string | null> {

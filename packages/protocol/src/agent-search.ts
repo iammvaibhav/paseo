@@ -27,6 +27,9 @@ export const AgentSearchMatchSchema = z.object({
   workspaceId: z.string().nullable(),
   cwd: z.string(),
   archivedAt: z.string().nullable(),
+  // The archive time of the agent's workspace. An agent in an archived workspace
+  // is listed with archived matches; opening it restores the workspace.
+  workspaceArchivedAt: z.string().nullable().optional(),
   lastActivityAt: z.string().nullable(),
   // COMPAT(agentSearchJev): the removed jev ranker's probability; daemons send
   // null since v0.11.0-beta.4. Remove after 2026-12-31.

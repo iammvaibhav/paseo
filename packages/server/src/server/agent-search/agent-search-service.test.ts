@@ -30,12 +30,14 @@ function service(input: {
   agents: StoredAgentRecord[];
   runs?: MissionControlRunRecord[];
   transcripts?: (query: string) => TranscriptHit[];
+  archivedWorkspaces?: Record<string, string>;
 }) {
   return new AgentSearchService({
     listAgents: async () => input.agents,
     getRunRecords: () => input.runs ?? [],
     readLiveBrief: async () => null,
     searchTranscripts: input.transcripts ?? (() => []),
+    getArchivedWorkspaces: async () => new Map(Object.entries(input.archivedWorkspaces ?? {})),
   });
 }
 
@@ -139,6 +141,26 @@ describe("AgentSearchService", () => {
     expect(all.matches.find((match) => match.agentId === "old")?.archivedAt).toBe(
       "2026-10-05T00:00:00.000Z",
     );
+  });
+
+  test("an active agent in an archived workspace counts as archived", async () => {
+    // Lively Fable's shape: the agent record was unarchived, its workspace was not.
+    const agents = [
+      agent("stranded", { name: "Lively Fable", workspaceId: "wks_archived" }),
+      agent("live", { name: "Lively Otter" }),
+    ];
+    const archivedWorkspaces = { wks_archived: "2026-09-07T15:12:33.455Z" };
+
+    const active = await service({ agents, archivedWorkspaces }).search({ query: "lively" });
+    expect(ids(active)).toEqual(["live"]);
+
+    const all = await service({ agents, archivedWorkspaces }).search({
+      query: "lively fable",
+      includeArchived: true,
+    });
+    expect(all.matches).toMatchObject([
+      { agentId: "stranded", archivedAt: null, workspaceArchivedAt: "2026-09-07T15:12:33.455Z" },
+    ]);
   });
 
   test("a blank query matches nothing and skips the transcript index", async () => {
