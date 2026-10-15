@@ -109,6 +109,27 @@ describe("sidebar agent view model", () => {
       expect(withDone[1].rows).toEqual([doneRow]);
     });
 
+    it("a search lists matching closed (dormant) agents under Done, even with Done hidden", () => {
+      const doneRow = makeRow({ id: "d1", bucket: "done" });
+      const closedRow = makeRow({ id: "c1", serverId: "macbook", bucket: "dormant" });
+      const otherClosedRow = makeRow({ id: "c2", bucket: "dormant" });
+      const groups = [
+        makeGroup("done", [doneRow]),
+        makeGroup("dormant", [closedRow, otherClosedRow]),
+      ];
+
+      const sections = buildSidebarAgentViewSections({
+        groups,
+        hostFilters: [],
+        projectFilters: [],
+        projectViewKeyByWorkspaceKey: emptyMapping,
+        showDone: false,
+        searchAgentKeys: new Set(["server-1:d1", "macbook:c1"]),
+      });
+      expect(bucketsOf(sections)).toEqual(["done"]);
+      expect(sections[0].rows).toEqual([doneRow, closedRow]);
+    });
+
     it("filters rows by hostFilters allowlist", () => {
       const host1Row = makeRow({ id: "h1", serverId: "srv-1" });
       const host2Row = makeRow({ id: "h2", serverId: "srv-2" });

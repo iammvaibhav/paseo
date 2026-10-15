@@ -44,11 +44,13 @@ export function buildSidebarAgentViewSections(
 
   const rowsByBucket = new Map<LifecycleBucketGroup["bucket"], LifecycleRow[]>();
   for (const group of groups) {
-    const existing = rowsByBucket.get(group.bucket);
+    // The view has no Dormant section; a search lists closed agents under Done.
+    const bucket = group.bucket === "dormant" && searchAgentKeys !== null ? "done" : group.bucket;
+    const existing = rowsByBucket.get(bucket);
     if (existing) {
       existing.push(...group.rows);
     } else {
-      rowsByBucket.set(group.bucket, [...group.rows]);
+      rowsByBucket.set(bucket, [...group.rows]);
     }
   }
 

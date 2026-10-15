@@ -20,8 +20,13 @@ export interface SidebarAgentViewModel {
 export function useSidebarAgentView(options: { enabled: boolean }): SidebarAgentViewModel {
   const { enabled } = options;
 
+  const { allHostProjects, search } = useSidebarModel();
+
+  // A search reaches every unarchived agent: closed (dormant) agents and Done
+  // agents past the retention window are hidden only while browsing.
   const { groups, isInitialLoad } = useMissionControlLifecycle({
     enabled,
+    showAll: search.active,
   });
 
   const allHosts = useHosts();
@@ -42,8 +47,6 @@ export function useSidebarAgentView(options: { enabled: boolean }): SidebarAgent
   const showDone = useSidebarAgentViewStore((state) => state.showDone);
   const clearHostFilters = useSidebarAgentViewStore((state) => state.clearHostFilters);
   const clearProjectFilters = useSidebarAgentViewStore((state) => state.clearProjectFilters);
-
-  const { allHostProjects, search } = useSidebarModel();
 
   const projectViewKeyByWorkspaceKey = useMemo(() => {
     const map = new Map<string, string>();
