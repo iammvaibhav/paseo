@@ -3098,6 +3098,7 @@ export async function createPaseoDaemon(
     resolveSecret: resolveVaultSecret,
     logger,
     journalPath: path.join(config.paseoHome, "mcp-fleet", "finish-watches.jsonl"),
+    deliveryLogPath: path.join(config.paseoHome, "mcp-fleet", "webhook-deliveries.jsonl"),
     localAgents: createMcpFinishLocalAgents({ agentManager, agentStorage }),
   });
   // Agent-to-agent notifyOnFinish (create_agent/send_agent_prompt from an agent).

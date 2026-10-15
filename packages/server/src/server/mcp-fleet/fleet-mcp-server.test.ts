@@ -244,6 +244,10 @@ describe("notifyOnFinish for MCP clients", () => {
           },
           restore: async () => ({ restored: 0, settled: Promise.resolve() }),
           suspend: async () => {},
+          listDeliveries: async () => ({
+            totals: { events: 0, delivered: 0, failed: 0, attempts: 0, byStatus: {} },
+            deliveries: [],
+          }),
           armStatusReport: (input) => {
             armedStatusReports.push(input);
           },

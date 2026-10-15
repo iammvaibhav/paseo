@@ -205,6 +205,76 @@ describe("createMcpFinishNotifier", () => {
     expect(received).toHaveLength(1);
   });
 
+  it("records every webhook attempt, retries included, and lists them per client", async () => {
+    const deliveryLogPath = path.join(dir, "mcp-fleet", "webhook-deliveries.jsonl");
+    const subject = createMcpFinishNotifier({
+      resolveSecret: async (value) => value,
+      logger: pino({ level: "silent" }),
+      pollMs: 0,
+      retryDelaysMs: [0, 0],
+      deliveryLogPath,
+    });
+    const arm = (client: string, agentId: string) =>
+      subject.arm({
+        client,
+        target: { url },
+        agentId,
+        turnId: `turn-${agentId}`,
+        tool: "fleet_send_prompt",
+        context: `review ${agentId}`,
+        waitForAgent: async () => result({ agentId, turnId: `turn-${agentId}` }),
+      });
+    // a: rate limited (400, final); b: 503 then delivered; c: another client.
+    statuses = [400];
+    await arm("grok-bot", "a");
+    statuses = [503];
+    await arm("grok-bot", "b");
+    await arm("other-bot", "c");
+
+    const all = await subject.listDeliveries({ client: "grok-bot", limit: 10 });
+    expect(all.totals).toEqual({
+      events: 2,
+      delivered: 1,
+      failed: 1,
+      attempts: 3,
+      byStatus: { "200": 1, "400": 1, "503": 1 },
+    });
+    // Newest first.
+    expect(
+      all.deliveries.map((row) => [row.agentId, row.attempt, row.status, row.outcome]),
+    ).toEqual([
+      ["b", 2, 200, "delivered"],
+      ["b", 1, 503, "retrying"],
+      ["a", 1, 400, "failed"],
+    ]);
+    expect(all.deliveries[2]).toMatchObject({
+      client: "grok-bot",
+      event: "paseo.agent.finished",
+      reason: "finished",
+      turnId: "turn-a",
+      context: "review a",
+      response: "{}",
+    });
+    const failed = await subject.listDeliveries({
+      client: "grok-bot",
+      failedOnly: true,
+      limit: 10,
+    });
+    expect(failed.deliveries.map((row) => [row.agentId, row.status])).toEqual([
+      ["b", 503],
+      ["a", 400],
+    ]);
+    // A restarted daemon reads the same history.
+    const restarted = createMcpFinishNotifier({
+      resolveSecret: async (value) => value,
+      logger: pino({ level: "silent" }),
+      deliveryLogPath,
+    });
+    expect(
+      (await restarted.listDeliveries({ client: "other-bot", limit: 10 })).totals,
+    ).toMatchObject({ events: 1, delivered: 1 });
+  });
+
   // A peer's daemon restarting (deploy, crash) closes the agent there: its
   // wait ends "closed" without the run having finished. The peer resumes the
   // agent as a new turn shortly after.

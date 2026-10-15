@@ -9,6 +9,13 @@ import type { FleetAgentWaitResult } from "../agent/tools/fleet-wait.js";
 import type { RemoteMcpClient } from "../persisted-config.js";
 import type { ResolveSecret } from "../secrets/vault-secret.js";
 import { createWatchJournal } from "../watch-journal.js";
+import {
+  createWebhookDeliveryLog,
+  describeWebhookBody,
+  type WebhookDeliveryAttempt,
+  type WebhookDeliveryQuery,
+  type WebhookDeliveryTotals,
+} from "./webhook-delivery-log.js";
 
 /**
  * notifyOnFinish for remote MCP clients (/mcp/fleet). A client has no agent
@@ -150,6 +157,8 @@ export interface McpFinishNotifierOptions {
   fetchImpl?: typeof fetch;
   /** Watch journal (JSONL). Absent → watches live in memory only and restore() finds none. */
   journalPath?: string;
+  /** Every webhook POST attempt (JSONL). Absent → attempts are only logged. */
+  deliveryLogPath?: string;
   localAgents?: McpFinishLocalAgents;
   /** Give up watching an agent after this long, counted from arm, across restarts. */
   maxWatchMs?: number;
@@ -195,6 +204,10 @@ export interface McpFinishNotifier {
   subscription(client: string, agentId: string): McpFinishSubscription | null;
   /** Drop the client's standing request for the agent (a send with notifyOnFinish: false). */
   unsubscribe(client: string, agentId: string): void;
+  /** Recorded webhook POST attempts, newest first; empty without a delivery log. */
+  listDeliveries(
+    query: WebhookDeliveryQuery,
+  ): Promise<{ totals: WebhookDeliveryTotals; deliveries: WebhookDeliveryAttempt[] }>;
   /**
    * Re-arm the watches a previous daemon process left pending. Call once at
    * startup, before the server accepts prompts, so a restored watch sees its
@@ -487,6 +500,9 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
   const journal = options.journalPath
     ? createWatchJournal<JournalEntry>({ path: options.journalPath, logger })
     : null;
+  const deliveryLog = options.deliveryLogPath
+    ? createWebhookDeliveryLog({ path: options.deliveryLogPath, logger })
+    : null;
 
   // Logs the transition and appends it to the journal, in call order.
   const record = (entry: JournalEntry) => {
@@ -545,44 +561,92 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
     });
   };
 
+  // One POST to a client's webhook, recorded as a delivery-log row. A failed
+  // attempt is retried (retryInMs) on a network error, 429 or 5xx while
+  // retryDelaysMs has a delay left.
+  const attemptPost = async (
+    delivery: {
+      client: string;
+      watchId: string;
+      deliveryId: string;
+      url: string;
+      headers: Record<string, string>;
+      body: string;
+    },
+    attempt: number,
+  ): Promise<{
+    ok: boolean;
+    status: number | null;
+    error: string | null;
+    retryInMs: number | null;
+  }> => {
+    const started = Date.now();
+    let status: number | null = null;
+    let ok = false;
+    let response: string | null = null;
+    try {
+      const reply = await fetchImpl(delivery.url, {
+        method: "POST",
+        headers: delivery.headers,
+        body: delivery.body,
+        signal: AbortSignal.timeout(15_000),
+      });
+      status = reply.status;
+      ok = reply.ok;
+      response = (await reply.text().catch(() => "")).slice(0, RESPONSE_SNIPPET_LIMIT) || null;
+    } catch (caught) {
+      response = caught instanceof Error ? caught.message : String(caught);
+    }
+    const retryable = status === null || status === 429 || status >= 500;
+    const retryInMs = !ok && retryable ? (retryDelaysMs[attempt] ?? null) : null;
+    let outcome: WebhookDeliveryAttempt["outcome"] = "failed";
+    if (ok) outcome = "delivered";
+    else if (retryInMs !== null) outcome = "retrying";
+    deliveryLog?.append({
+      ts: new Date().toISOString(),
+      client: delivery.client,
+      deliveryId: delivery.deliveryId,
+      watchId: delivery.watchId,
+      ...describeWebhookBody(delivery.body),
+      attempt: attempt + 1,
+      status,
+      outcome,
+      response,
+      durationMs: Date.now() - started,
+    });
+    return { ok, status, error: ok ? null : response, retryInMs };
+  };
+
   // POSTs one event, retrying network errors, 429 and 5xx. A suspend during a
   // retry pause leaves the event fired-but-unsent, so restore() sends it again.
   const send = async (watch: ActiveWatch, reason: NotifyReason, final: boolean, body: string) => {
     const { armed, binding, controller } = watch;
-    const headers = await resolveHeaders(binding.target.headers);
+    const delivery = {
+      client: armed.client,
+      watchId: armed.watchId,
+      deliveryId: randomUUID(),
+      url: binding.target.url,
+      headers: await resolveHeaders(binding.target.headers),
+      body,
+    };
     const ids = { watchId: armed.watchId, agentId: armed.agentId, reason, final };
     for (let attempt = 0; ; attempt += 1) {
-      let status: number | null = null;
-      let error: string | null = null;
-      try {
-        const response = await fetchImpl(binding.target.url, {
-          method: "POST",
-          headers,
-          body,
-          signal: AbortSignal.timeout(15_000),
+      const { ok, status, error, retryInMs } = await attemptPost(delivery, attempt);
+      if (ok && status !== null) {
+        record({
+          event: "delivered",
+          ts: new Date().toISOString(),
+          ...ids,
+          status,
+          attempts: attempt + 1,
         });
-        status = response.status;
-        if (response.ok) {
-          record({
-            event: "delivered",
-            ts: new Date().toISOString(),
-            ...ids,
-            status,
-            attempts: attempt + 1,
-          });
-          return;
-        }
-        error = (await response.text().catch(() => "")).slice(0, RESPONSE_SNIPPET_LIMIT) || null;
-      } catch (caught) {
-        error = caught instanceof Error ? caught.message : String(caught);
+        return;
       }
       logger.warn(
         { ...ids, client: armed.client, status, err: error, attempt: attempt + 1 },
         "mcp finish notification attempt failed",
       );
-      const retryable = status === null || status === 429 || status >= 500;
-      const delay = retryDelaysMs[attempt];
-      if (!retryable || delay === undefined) {
+      if (retryInMs === null) {
         record({
           event: "failed",
           ts: new Date().toISOString(),
@@ -593,7 +657,7 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
         });
         return;
       }
-      await sleep(delay, undefined, { signal: controller.signal }).catch(() => {
+      await sleep(retryInMs, undefined, { signal: controller.signal }).catch(() => {
         throw new WatchSuspendedError();
       });
     }
@@ -605,43 +669,35 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
     requestId: string,
     body: string,
   ) => {
-    const headers = await resolveHeaders(target.headers);
+    const delivery = {
+      client,
+      watchId: requestId,
+      deliveryId: randomUUID(),
+      url: target.url,
+      headers: await resolveHeaders(target.headers),
+      body,
+    };
     for (let attempt = 0; ; attempt += 1) {
-      let status: number | null = null;
-      let error: string | null = null;
-      try {
-        const response = await fetchImpl(target.url, {
-          method: "POST",
-          headers,
-          body,
-          signal: AbortSignal.timeout(15_000),
-        });
-        status = response.status;
-        if (response.ok) {
-          logger.info(
-            { client, requestId, status, attempts: attempt + 1 },
-            "mcp status report notification delivered",
-          );
-          return;
-        }
-        error = (await response.text().catch(() => "")).slice(0, RESPONSE_SNIPPET_LIMIT) || null;
-      } catch (caught) {
-        error = caught instanceof Error ? caught.message : String(caught);
+      const { ok, status, error, retryInMs } = await attemptPost(delivery, attempt);
+      if (ok) {
+        logger.info(
+          { client, requestId, status, attempts: attempt + 1 },
+          "mcp status report notification delivered",
+        );
+        return;
       }
       logger.warn(
         { client, requestId, status, err: error, attempt: attempt + 1 },
         "mcp status report notification attempt failed",
       );
-      const retryable = status === null || status === 429 || status >= 500;
-      const delay = retryDelaysMs[attempt];
-      if (!retryable || delay === undefined) {
+      if (retryInMs === null) {
         logger.error(
           { client, requestId, status, attempts: attempt + 1, error },
           "mcp status report notification failed permanently",
         );
         return;
       }
-      await sleep(delay).catch(() => undefined);
+      await sleep(retryInMs).catch(() => undefined);
     }
   };
 
@@ -1297,6 +1353,16 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
       });
     },
 
+    async listDeliveries(query) {
+      if (!deliveryLog) {
+        return {
+          totals: { events: 0, delivered: 0, failed: 0, attempts: 0, byStatus: {} },
+          deliveries: [],
+        };
+      }
+      return deliveryLog.list(query);
+    },
+
     async restore(resolveClient) {
       if (!journal) return { restored: 0, settled: Promise.resolve() };
       const entries = await journal.read((all) => {
@@ -1399,7 +1465,7 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
           agentId: watch.armed.agentId,
         });
       }
-      await journal?.flush();
+      await Promise.all([journal?.flush(), deliveryLog?.flush()]);
     },
   };
 }

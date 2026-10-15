@@ -24,7 +24,10 @@ export const CORE_FLEET_TOOL_NAMES = [
 ] as const;
 
 /** Tools /mcp/fleet registers itself (not catalog tools): they act on the client's webhook. */
-export const MCP_ONLY_FLEET_TOOL_NAMES = ["fleet_notify_on_finish"] as const;
+export const MCP_ONLY_FLEET_TOOL_NAMES = [
+  "fleet_notify_on_finish",
+  "fleet_webhook_deliveries",
+] as const;
 
 export const META_FLEET_TOOL_NAMES = [
   "paseo_tool_search",
