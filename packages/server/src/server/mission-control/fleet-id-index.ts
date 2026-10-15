@@ -21,6 +21,7 @@ export type FleetIdResolution =
 /** Shortest agent-id prefix expanded to a full id (rosters show 7-8 chars). */
 const MIN_AGENT_ID_PREFIX_LENGTH = 6;
 const AGENT_ID_PREFIX_PATTERN = /^[0-9a-f-]+$/i;
+const FULL_AGENT_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** A peer that is "online" but stops answering must not stall resolution
  * for ids on the reachable peers; its snapshot fetch is cut off here. */
 const DEFAULT_PEER_FETCH_TIMEOUT_MS = 10_000;
@@ -92,7 +93,9 @@ export class FleetIdIndex {
    * 1. Local registries (live)
    * 2. Cached peer snapshots
    * 3. On miss: refresh reachable peer snapshots once and retry
-   * 4. Still missing: expand a unique agent-id prefix across local + peers
+   * 4. Still missing: a full agent id is looked up on every reachable peer
+   *    (snapshots hold only a peer's newest agents); a shorter one expands as
+   *    a unique agent-id prefix across local + peers
    * 5. Otherwise: unknown with guidance naming unreachable peers and resolver tool
    */
   async resolveFleetId(id: string): Promise<FleetIdResolution> {
@@ -117,7 +120,12 @@ export class FleetIdIndex {
       return { ...refreshed, id: trimmedId };
     }
 
-    if (
+    if (inferIdKind(trimmedId) === "agent" && FULL_AGENT_ID_PATTERN.test(trimmedId)) {
+      const owner = await this.probePeersForAgent(trimmedId);
+      if (owner) {
+        return owner;
+      }
+    } else if (
       inferIdKind(trimmedId) === "agent" &&
       trimmedId.length >= MIN_AGENT_ID_PREFIX_LENGTH &&
       AGENT_ID_PREFIX_PATTERN.test(trimmedId)
@@ -132,6 +140,53 @@ export class FleetIdIndex {
       kind: "unknown",
       guidance: this.buildUnknownGuidance(trimmedId),
     };
+  }
+
+  /** Ask every reachable peer for the exact agent id. A peer snapshot lists
+   * only that peer's newest agents, so an older closed or archived agent is
+   * missing from it; fetch_agent reads the peer's whole agent storage. Null
+   * when no peer has the agent. */
+  private async probePeersForAgent(agentId: string): Promise<FleetIdResolution | null> {
+    const peerManager = this.deps.peerManager;
+    if (!peerManager || typeof peerManager.getPeerStatuses !== "function") {
+      return null;
+    }
+    const timeoutMs = this.deps.peerFetchTimeoutMs ?? DEFAULT_PEER_FETCH_TIMEOUT_MS;
+    const online = (peerManager.getPeerStatuses() ?? []).filter(
+      (status) => status.state === "online",
+    );
+    const owners = await Promise.all(
+      online.map(async (status) => {
+        const client = peerManager.getPeerClient(status.name);
+        if (!client || typeof client.fetchAgent !== "function") {
+          return null;
+        }
+        const timedOut = Promise.withResolvers<null>();
+        const timer = setTimeout(() => timedOut.resolve(null), timeoutMs);
+        try {
+          const found = await Promise.race([
+            client.fetchAgent(agentId).catch(() => null),
+            timedOut.promise,
+          ]);
+          return found?.agent.id === agentId ? status.name : null;
+        } finally {
+          clearTimeout(timer);
+        }
+      }),
+    );
+    const hosts = owners.filter((host): host is string => host !== null);
+    if (hosts.length === 0) {
+      return null;
+    }
+    if (hosts.length > 1) {
+      return {
+        kind: "unknown",
+        guidance: `agent ${agentId} exists on several hosts (${hosts.join(", ")}). Pass host to pick one.`,
+      };
+    }
+    const [host] = hosts;
+    this.peerSnapshots.get(host!)?.agents.add(agentId);
+    return { kind: "agent", host: host!, id: agentId };
   }
 
   /** Expand an agent-id prefix to the one full id it names across this

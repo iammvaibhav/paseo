@@ -500,6 +500,60 @@ describe("fleet_send_prompt mode", () => {
     });
   });
 
+  test.each(["closed", "archived"] as const)(
+    "queue resumes a %s local agent instead of failing with Unknown agent",
+    async (state) => {
+      const root = mkdtempSync(path.join(tmpdir(), "fleet-send-queue-stored-"));
+      const logger = createTestLogger();
+      const storage = new AgentStorage(path.join(root, "agents"), logger);
+      const agentManager = new AgentManager({
+        clients: createTestAgentClients(),
+        registry: storage,
+        logger,
+      });
+      const catalog = createPaseoToolCatalog({
+        agentManager,
+        agentStorage: storage,
+        providerSnapshotManager: createProviderSnapshotManagerStub()
+          .manager as unknown as ProviderSnapshotManager,
+        hostAlias: "Personal",
+        logger,
+      });
+      try {
+        await agentManager.createAgent({ provider: "codex", cwd: root }, SEND_AGENT_UUID, {
+          workspaceId: "workspace-a",
+        });
+        if (state === "archived") {
+          await agentManager.archiveAgent(SEND_AGENT_UUID);
+        }
+        await agentManager.closeAgent(SEND_AGENT_UUID);
+        expect(agentManager.getAgent(SEND_AGENT_UUID)).toBeNull();
+
+        const result = await catalog.executeTool("fleet_send_prompt", {
+          host: "Personal",
+          agentId: SEND_AGENT_UUID,
+          prompt: "pick this back up",
+          mode: "queue",
+        });
+
+        expect(result.structuredContent).toMatchObject({
+          success: true,
+          deliveryMode: "queue",
+          runStarted: true,
+        });
+        expect(agentManager.getAgent(SEND_AGENT_UUID)).not.toBeNull();
+        expect((await storage.get(SEND_AGENT_UUID))?.archivedAt ?? null).toBeNull();
+      } finally {
+        await Promise.all(
+          agentManager.listAgents().map((agent) => agentManager.closeAgent(agent.id)),
+        );
+        await agentManager.flush().catch(() => undefined);
+        await storage.flush().catch(() => undefined);
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
   test("steers a busy omp agent locally through the out-of-band path without cancelling", async () => {
     const tryRunOutOfBand = vi.fn(() => true);
     const streamAgent = vi.fn();
@@ -1216,12 +1270,17 @@ describe("approval-gate wrap point (runCommanderGatedAction)", () => {
   });
 
   test("a send to an idle peer agent returns only after the new run has started", async () => {
-    // Idle before the send, running after it: the wait in fleet_send_prompt
+    // Idle until the send lands, running after it: the wait in fleet_send_prompt
     // sees the start, so a fleet_wait_agent afterwards waits on the new run
     // instead of returning the previous run's result.
-    const statuses = ["idle", "running"];
-    const fetchAgent = vi.fn(async () => ({ agent: { status: statuses.shift() ?? "running" } }));
+    const peer: { client?: DaemonClient } = {};
+    const fetchAgent = vi.fn(async () => ({
+      agent: {
+        status: vi.mocked(peer.client!.sendAgentMessage).mock.calls.length > 0 ? "running" : "idle",
+      },
+    }));
     const { client, peerManager } = createFakePeerHarness({ client: { fetchAgent } });
+    peer.client = client;
     const catalog = createCatalog(peerManager);
 
     const result = await catalog.executeTool("fleet_send_prompt", {

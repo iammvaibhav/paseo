@@ -90,11 +90,15 @@ export const COMMANDER_TOOL_ALLOWLIST: readonly string[] = [
 
 /**
  * Fleet tools a peer daemon may run on this host's catalog over
- * mission_control.tools.execute in addition to the Commander allowlist:
- * turn-bound waits run on the host that owns the agent. Not part of the
- * Commander's own toolset.
+ * mission_control.tools.execute in addition to the Commander allowlist: work
+ * that must run on the host that owns the agent or workspace (turn-bound
+ * waits, unarchives). Not part of the Commander's own toolset.
  */
-export const PEER_EXECUTABLE_TOOL_NAMES: readonly string[] = ["fleet_wait_agent"];
+export const PEER_EXECUTABLE_TOOL_NAMES: readonly string[] = [
+  "fleet_wait_agent",
+  "fleet_unarchive_agent",
+  "fleet_unarchive_workspace",
+];
 
 /**
  * The static Commander system prompt, shipped as a repo markdown file

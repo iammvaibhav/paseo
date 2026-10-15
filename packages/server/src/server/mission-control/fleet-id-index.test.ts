@@ -271,6 +271,39 @@ describe("agent id prefixes with unreachable peers", () => {
       id: blrofc3AgentId,
     });
   });
+
+  test("a full agent id missing from every snapshot resolves by an exact lookup on its peer", async () => {
+    // Snapshots list a peer's newest agents only; an older closed agent is
+    // absent from blrofc3's snapshot but its fetch_agent finds it.
+    const olderClosedId = "1e1d8ead-2444-4a39-89a9-a4cca2d2411c";
+    const owner = {
+      ...peerClientWithAgents([blrofc3AgentId]),
+      fetchAgent: vi.fn(async (agentId: string) =>
+        agentId === olderClosedId ? { agent: { id: olderClosedId }, project: null } : null,
+      ),
+    };
+    const other = { ...peerClientWithAgents([]), fetchAgent: vi.fn(async () => null) };
+    const index = createFleetIdIndex({
+      peerManager: peerManagerWith(
+        [
+          { name: "macbook", state: "online" },
+          { name: "blrofc3", state: "online" },
+        ],
+        { macbook: owner, blrofc3: other },
+      ),
+      logger: createTestLogger(),
+    });
+
+    expect(await index.resolveFleetId(olderClosedId)).toEqual({
+      kind: "agent",
+      host: "macbook",
+      id: olderClosedId,
+    });
+    // The answer is cached in the peer snapshot: the next lookup asks no one.
+    owner.fetchAgent.mockClear();
+    expect(await index.resolveFleetId(olderClosedId)).toMatchObject({ host: "macbook" });
+    expect(owner.fetchAgent).not.toHaveBeenCalled();
+  });
 });
 
 describe("fleet tools with fleet-id-index integration", () => {

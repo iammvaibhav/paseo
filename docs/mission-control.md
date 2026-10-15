@@ -159,7 +159,7 @@ Proposal = {
 
 ## Delivery modes (steer / interrupt / queue)
 
-How a send reaches a **busy** agent. Idle agents always just run the prompt; these modes only matter mid-turn.
+How a send reaches a **busy** agent. Idle agents always just run the prompt; these modes only matter mid-turn. Every mode first unarchives an archived agent and loads a closed one (`sendPromptToAgent`), like the app composer, so a queued send to a closed agent starts a run.
 
 | Mode        | Semantics                                                                                                                                                                                                                                                     | Used by                                                                                                                                |
 | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |

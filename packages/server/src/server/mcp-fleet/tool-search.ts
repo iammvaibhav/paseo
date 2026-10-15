@@ -15,6 +15,8 @@ export const CORE_FLEET_TOOL_NAMES = [
   "suggest_placement",
   "fleet_create_agent",
   "fleet_send_prompt",
+  "fleet_unarchive_agent",
+  "fleet_unarchive_workspace",
   "fleet_wait_agent",
   "fleet_wait_agents",
   "fleet_upload_file",

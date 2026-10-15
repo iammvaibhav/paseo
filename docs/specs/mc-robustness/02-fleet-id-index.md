@@ -3,8 +3,8 @@
 ## Principle
 
 Ids are fleet-wide. The commander host peers with every other host, so it
-maintains the lookup `id → host` and never hops to another machine to resolve
-an id. Tools accept bare ids; `host` is an optional hint.
+maintains the lookup `id → host` from data it already pulls. Tools accept bare
+ids; `host` is an optional hint.
 
 ## Index
 
@@ -27,10 +27,15 @@ resolveFleetId(id: string): Promise<
   | { kind: "unknown"; guidance: string }>;
 ```
 
-- Miss handling: refresh the peer caches once, retry, then return `unknown`
-  with guidance that lists reachable hosts and names unreachable ones:
-  `"agent 2b89… not found on any reachable host (blrofc3 unreachable — it may
-live there). Call fleet_list_agents to resolve."`
+- Miss handling: refresh the peer caches once and retry. A full agent id that
+  is still missing is then looked up on every reachable peer with `fetch_agent`:
+  a peer snapshot lists only that peer's newest 200 agents, so an older closed
+  or archived agent is never in it. The answer is cached in the snapshot.
+  Otherwise return `unknown` with guidance that lists reachable hosts and names
+  unreachable ones: `"agent 2b89… not found on any reachable host (blrofc3
+unreachable — it may live there). Call fleet_list_agents to resolve."`
+  Archived workspaces are in no peer snapshot either; tools that take one
+  (`fleet_unarchive_workspace`) need `host` for a peer.
 
 ## Tool signature changes (paseo-tools.ts)
 

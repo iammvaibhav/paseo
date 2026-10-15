@@ -831,6 +831,30 @@ test("send_agent_message auto-unarchives archived agents", async () => {
   }
 }, 180000);
 
+test("a queued send_agent_message unarchives an archived agent and runs it", async () => {
+  const cwd = tmpCwd();
+  try {
+    const created = await ctx.client.createAgent({
+      config: {
+        ...getFullAccessConfig("codex"),
+        cwd,
+      },
+    });
+
+    await ctx.client.archiveAgent(created.id);
+    await ctx.client.sendAgentMessage(created.id, "Say hello and nothing else", {
+      dispatchMode: "queue",
+    });
+    const finalState = await ctx.client.waitForFinish(created.id, 120000);
+    expect(finalState.status).toBe("idle");
+
+    const refreshed = await ctx.client.fetchAgent({ agentId: created.id });
+    expect(refreshed?.agent.archivedAt).toBeNull();
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+}, 180000);
+
 test("refresh_agent auto-unarchives archived agents", async () => {
   const cwd = tmpCwd();
   try {

@@ -460,6 +460,67 @@ describe("04 meta split — peer targets", () => {
   );
 });
 
+describe("unarchive — peer targets", () => {
+  test(
+    "fleet_unarchive_workspace and fleet_unarchive_agent from A restore an archived workspace and agent on C",
+    { timeout: 240_000 },
+    async () => {
+      const harness = await createFleetHarness();
+      try {
+        const wsPath = `${harness.daemons.C.paseoHomeRoot}/unarchive-ws`;
+        await mkdir(wsPath, { recursive: true });
+        const created = await harness.clients.C.createWorkspace({
+          source: { kind: "directory", path: wsPath },
+          title: "Unarchive ws",
+        });
+        const workspaceId = created.workspace?.id;
+        expect(workspaceId).toBeTruthy();
+        const { agentId } = await spawnWorker({
+          from: harness.clients.A,
+          host: "C",
+          provider: "claude/test-model",
+          initialPrompt: "unarchive worker",
+          title: "Unarchive worker",
+          workspaceId: workspaceId as string,
+        });
+        await waitForEvent(
+          harness.clients.C,
+          (e) => e.agentId === agentId && e.kind === "finished",
+          { label: "unarchive worker finished on C" },
+        );
+
+        // Archiving the workspace on C archives its agent with it.
+        await harness.clients.C.archiveWorkspace(workspaceId as string);
+        expect((await harness.clients.C.fetchAgent(agentId))?.agent.archivedAt).toBeTruthy();
+
+        // Archived workspaces on a peer are not in the fleet index: pass host.
+        const workspace = await fleetExec(harness.clients.A, "fleet_unarchive_workspace", {
+          workspaceId,
+          host: "C",
+        });
+        expect(workspace).toMatchObject({
+          ok: true,
+          host: "C",
+          workspaceId,
+          restoredWorkspace: true,
+          unarchivedAgentIds: [agentId],
+        });
+        expect((await harness.clients.C.fetchAgent(agentId))?.agent.archivedAt).toBeNull();
+        const liveWorkspaces = await harness.clients.C.fetchWorkspaces({ page: { limit: 200 } });
+        expect(liveWorkspaces.entries.some((entry) => entry.id === workspaceId)).toBe(true);
+
+        // An agent archived on its own comes back by bare id.
+        await harness.clients.C.archiveAgent(agentId);
+        const agent = await fleetExec(harness.clients.A, "fleet_unarchive_agent", { agentId });
+        expect(agent).toMatchObject({ ok: true, host: "C", agentId, unarchived: true });
+        expect((await harness.clients.C.fetchAgent(agentId))?.agent.archivedAt).toBeNull();
+      } finally {
+        await harness.close();
+      }
+    },
+  );
+});
+
 async function approveMeta(
   harness: FleetHarness,
   tool: string,

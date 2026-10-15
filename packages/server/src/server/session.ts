@@ -75,7 +75,6 @@ import {
 import type { AgentTimelineItem, AgentUsage } from "./agent/agent-sdk-types.js";
 import {
   sendPromptToAgent,
-  startAgentRun,
   waitForAgentRunStartWithTimeout,
   unarchiveAgentState,
 } from "./agent/agent-prompt.js";
@@ -10547,10 +10546,16 @@ export class Session {
     const activeTurnBehavior =
       msg.activeTurnBehavior ?? (msg.dispatchMode === "steer" ? "steer" : "interrupt");
     if (msg.dispatchMode === "queue") {
-      // Queue: wait for idle first, then stream without replacing.
+      // Queue: wait for idle first, then run without replacing. The full send
+      // path restores a closed or archived agent first, like the other modes.
       await this.waitForAgentIdle(agentId);
-      return startAgentRun(this.agentManager, agentId, prompt, this.sessionLogger, {
+      return sendPromptToAgent({
+        agentManager: this.agentManager,
+        agentStorage: this.agentStorage,
+        agentId,
+        prompt,
         replaceRunning: false,
+        logger: this.sessionLogger,
       });
     }
     return sendPromptToAgent({

@@ -137,6 +137,7 @@ import { buildPeerUnreachableError, type PeerManager } from "../../peers/peer-ma
 import { registerDocThreadTools } from "../../doc-threads/tools.js";
 import type { DocThreadsService } from "../../doc-threads/service.js";
 import { registerFleetControlTools } from "./fleet-control-tools.js";
+import { registerFleetUnarchiveTools } from "./fleet-unarchive-tools.js";
 import {
   executeFleetToolOnPeer,
   readCurrentTurn,
@@ -222,6 +223,14 @@ export interface PaseoToolHostDependencies {
   emitWorkspaceUpdatesForWorkspaceIds?: ArchiveDependencies["emitWorkspaceUpdatesForWorkspaceIds"];
   /** Broadcast an agent's removal to every session (cross-host move source). */
   emitAgentRemoved?: (agentId: string) => Promise<void>;
+  /**
+   * Restore an archived workspace like the app's Restore (record, project, a
+   * worktree Paseo removed) and publish it. Absent → fleet_unarchive_* cannot
+   * restore on this host.
+   */
+  restoreWorkspace?: (workspaceId: string) => Promise<void>;
+  /** Push a stored (not live) agent record to every session. */
+  emitStoredAgentUpdate?: (record: StoredAgentRecord) => Promise<void>;
   workspaceRegistry?: Pick<WorkspaceRegistry, "get" | "list" | "upsert">;
   projectRegistry?: Pick<ProjectRegistry, "get" | "list">;
   createDirectoryWorkspace?: (
@@ -6596,6 +6605,12 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     missionControlService,
   };
   registerFleetControlTools(fleetControlOptions);
+  registerFleetUnarchiveTools({
+    ...fleetControlOptions,
+    workspaceRegistry: options.workspaceRegistry,
+    restoreWorkspace: options.restoreWorkspace,
+    emitStoredAgentUpdate: options.emitStoredAgentUpdate,
+  });
   registerFleetTranscriptTool(fleetControlOptions);
   registerFleetWaitTools(fleetControlOptions);
   registerFleetFileTools({
@@ -8366,9 +8381,16 @@ export async function dispatchLocalPromptMode(params: {
   if (classification === "machinery" && typeof promptWithAttachments === "string") {
     agentManager.expectPromptClassification(agentId, promptWithAttachments, "machinery");
   }
-  await startAgentRun(agentManager, agentId, promptWithAttachments, logger, {
+  // The full send path, so a closed or archived agent is restored and loaded
+  // first, as steer and interrupt do; queue only differs by never replacing.
+  await sendPromptToAgent({
+    agentManager,
+    agentStorage,
+    agentId,
+    prompt: promptWithAttachments,
     replaceRunning: false,
-    ...dispatchRunOptions({ messageId }),
+    messageId,
+    logger,
   });
   return "queue";
 }

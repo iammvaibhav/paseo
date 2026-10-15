@@ -297,6 +297,12 @@ export interface SendPromptToAgentParams {
    * as that party's interruption (see AgentRunOptions.replaceOrigin).
    */
   replaceOrigin?: "user" | "machinery";
+  /**
+   * Default true: the prompt supersedes an in-flight run. Queue delivery
+   * passes false after waiting for the agent to go idle, so a run that
+   * started in the meantime is never cancelled.
+   */
+  replaceRunning?: boolean;
   /** Optional provider session mode to set on the agent before the run starts. */
   sessionMode?: string;
   /**
@@ -426,7 +432,7 @@ export async function sendPromptToAgent(
   const startRunStartedAt = Date.now();
   try {
     return await startAgentRun(params.agentManager, params.agentId, params.prompt, params.logger, {
-      replaceRunning: true,
+      replaceRunning: params.replaceRunning ?? true,
       activeTurnBehavior: params.activeTurnBehavior,
       clearPendingPermissions: params.clearPendingPermissions,
       runOptions,

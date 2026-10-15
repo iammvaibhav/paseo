@@ -130,6 +130,7 @@ import { createGitHubService } from "../services/github-service.js";
 import { createPaseoWorktree as createRegisteredPaseoWorktree } from "./paseo-worktree-service.js";
 import { WarmWorktreePoolManager } from "./warm-worktree-pool.js";
 import { createWorkspaceProvisioningService } from "./session/workspace-provisioning/workspace-provisioning-service.js";
+import { createWorkspaceRecoveryService } from "./session/workspace-recovery/workspace-recovery-service.js";
 import { createPaseoWorktreeWorkflow } from "./worktree-session.js";
 import { DownloadTokenStore } from "./file-download/token-store.js";
 import { streamDirectoryAsZip } from "./file-download/zip-directory.js";
@@ -1643,6 +1644,38 @@ export async function createPaseoDaemon(
       ),
     );
   };
+  const emitStoredAgentUpdateExternal = async (record: StoredAgentRecord) => {
+    await Promise.all(
+      (wsServer?.listSessions() ?? []).map((session) =>
+        session.emitAgentUpdateForExternalMutation(record),
+      ),
+    );
+  };
+  // The app's Restore workspace, run by daemon machinery (fleet_unarchive_*)
+  // instead of one client session: the same recovery service, then every
+  // session refreshes the restored workspace.
+  const workspaceRecoveryExternal = createWorkspaceRecoveryService({
+    paseoHome: config.paseoHome,
+    worktreesRoot: config.worktreesRoot,
+    getWorkspace: (workspaceId) => workspaceRegistry.get(workspaceId),
+    getProject: (projectId) => projectRegistry.get(projectId),
+    isDirectory: async (target) => (await stat(target).catch(() => null))?.isDirectory() ?? false,
+    unarchiveWorkspace: async (workspace) => {
+      await workspaceProvisioning.ensureWorkspaceRecordUnarchived(workspace);
+    },
+  });
+  const restoreWorkspaceExternal = async (workspaceId: string) => {
+    await workspaceRecoveryExternal.restore(workspaceId);
+    const workspace = await workspaceRegistry.get(workspaceId);
+    if (!workspace) {
+      throw new Error(`Restored workspace record not found: ${workspaceId}`);
+    }
+    await Promise.all(
+      (wsServer?.listSessions() ?? []).map((session) =>
+        session.refreshRecoveredWorkspaceForExternalMutation(workspace),
+      ),
+    );
+  };
   const ensureWorkspaceForCreateAndBroadcastExternal = async (
     cwd: string,
     firstAgentContext?: FirstAgentContext,
@@ -2110,13 +2143,7 @@ export async function createPaseoDaemon(
       ensureGitRepository(dirPath, buildProjectReadme(title)),
     resolveScratchRoot: () =>
       centralMissionControlConfig.get().routing.scratchRootByHost?.[serverId] ?? null,
-    emitStoredAgentUpdate: async (record: StoredAgentRecord) => {
-      await Promise.all(
-        (wsServer?.listSessions() ?? []).map((session) =>
-          session.emitAgentUpdateForExternalMutation(record),
-        ),
-      );
-    },
+    emitStoredAgentUpdate: emitStoredAgentUpdateExternal,
     peerManager: peerManager ?? null,
   });
 
@@ -2815,6 +2842,8 @@ export async function createPaseoDaemon(
     archiveWorkspaceRecord: archiveWorkspaceRecordExternal,
     emitWorkspaceUpdatesForWorkspaceIds: emitWorkspaceUpdatesExternal,
     emitAgentRemoved: emitAgentRemovedExternal,
+    restoreWorkspace: restoreWorkspaceExternal,
+    emitStoredAgentUpdate: emitStoredAgentUpdateExternal,
     workspaceRegistry,
     projectRegistry,
     createDirectoryWorkspace: async (cwd, title, projectId) => {

@@ -18,6 +18,7 @@ Start with these tools. They are loaded on every connection:
 | Where a new task should run                | `suggest_placement`                                  |
 | Start an agent                             | `fleet_create_agent`                                 |
 | Talk to a running agent                    | `fleet_send_prompt`                                  |
+| Bring back an archived agent or workspace  | `fleet_unarchive_agent`, `fleet_unarchive_workspace` |
 | Wait for one agent's turn to end           | `fleet_wait_agent`                                   |
 | Wait for several agents (any or all)       | `fleet_wait_agents`                                  |
 | Webhook when agents finish                 | `fleet_notify_on_finish`                             |
@@ -41,7 +42,7 @@ Every wait and notification is bound to a **turn**. `fleet_create_agent` and `fl
 - **Mid-run status check via webhook:** `fleet_agent_status { agentId, fresh: true, notify: true, notifyContext? }`. Returns immediately with `{ requested: true, requestId }` without blocking for 60s. When the agent next calls `report_status`, Paseo POSTs `{"type":"paseo.agent.status_reported","requestId","agentId","title","host","status","headline","reportedAt","context"}` to your webhook. If no report lands within 5 minutes, or the turn ends first, it POSTs the same event with `status: "no_report"`.
 - **Short work you want answered now:** `fleet_wait_agent { agentId, turnId, timeoutSeconds }` (default 600, max 1800). It returns when the turn ends, early on a permission request, or with `timedOut: true`; call it again with the same `turnId` to keep waiting. A turn that already ended returns its outcome at once; a turn that has not started returns `status: "pending"`. A turn that failed (provider or system error) returns `status: "error"` with the message in `error` and `lastMessage` set to the `[System Error] …` row. Without `turnId` it binds to the run in progress, or returns an idle agent's last state at once.
 - **Several agents now:** `fleet_wait_agents { agents: [{agentId, turnId?}], mode: "any" | "all", timeoutSeconds }`. `any` returns on the first agent that finishes or needs a permission; `all` returns when every agent has. Each result carries its `turnId` and status.
-- Nothing you call is ever gated: spawns, sends, renames, moves, archives, cancel and kill all run directly and return their real result. No call creates an approval card.
+- Nothing you call is ever gated: spawns, sends, renames, moves, archives, unarchives, cancel and kill all run directly and return their real result. No call creates an approval card.
 - Arguments a tool does not declare are an error, with the closest real name suggested (`fleet_send_prompt` takes `mode`, not `deliveryMode`).
 
 ## Reading a transcript
