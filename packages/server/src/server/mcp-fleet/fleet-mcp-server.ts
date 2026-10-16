@@ -41,7 +41,10 @@ export interface FleetMcpServerOptions {
   explicitSkillPath?: string | null;
   /** Delivers notifyOnFinish to the client's webhook; absent → notifyOnFinish is refused. */
   finishNotifier?: McpFinishNotifier;
+  /** The client's own webhook (daemon.mcp.remoteClients[].notify): the default when no notifyTarget is named. */
   notifyTarget?: McpNotifyTarget | null;
+  /** Named webhooks (daemon.mcp.notifyTargets) a call selects with notifyTarget. */
+  namedNotifyTargets?: ReadonlyMap<string, McpNotifyTarget>;
 }
 
 // Tools that start or prompt an agent. On /mcp/fleet their notifyOnFinish
@@ -77,10 +80,30 @@ const NOTIFY_INPUT_SHAPE = {
     .max(MAX_NOTIFY_CONTEXT_LENGTH)
     .optional()
     .describe("Free-form tag echoed back verbatim as `context` in the webhook payload."),
+  notifyTarget: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      "Name of a configured notify target (daemon.mcp.notifyTargets) to POST the finish event to, " +
+        "instead of your client's own webhook. Implies notifyOnFinish. Unknown names are rejected; " +
+        "URLs are not accepted. Omitted → your client's webhook, or on fleet_send_prompt the target " +
+        "your last arm on this agent used.",
+    ),
 };
 
 // Parsed off the tool arguments before the catalog tool runs.
 const NotifyArgsSchema = z.object(NOTIFY_INPUT_SHAPE);
+
+/** Whether a start/prompt call arms a webhook watch, and where it posts. */
+interface NotifyPlan {
+  arm: boolean;
+  /** No notify argument was passed: the arm comes from the client's standing subscription. */
+  inherited: boolean;
+  context: string | null;
+  /** The named target; null → the client's own webhook. */
+  notifyTarget: string | null;
+}
 
 function withNotifyInput(schema: PaseoToolConfig["inputSchema"]): PaseoToolConfig["inputSchema"] {
   if (schema instanceof z.ZodObject) return schema.extend(NOTIFY_INPUT_SHAPE);
@@ -335,23 +358,50 @@ export async function createFleetMcpServer(options: FleetMcpServerOptions): Prom
     name: string,
     toolArgs: Record<string, unknown>,
     notify: z.infer<typeof NotifyArgsSchema>,
-  ): { arm: boolean; inherited: boolean; context: string | null } => {
+  ): NotifyPlan => {
     const { clientName, finishNotifier } = options;
     const sendAgentId =
       !CREATE_TOOLS.has(name) && typeof toolArgs.agentId === "string" ? toolArgs.agentId : null;
     if (notify.notifyOnFinish === false) {
       if (sendAgentId && clientName) finishNotifier?.unsubscribe(clientName, sendAgentId);
-      return { arm: false, inherited: false, context: null };
+      return { arm: false, inherited: false, context: null, notifyTarget: null };
     }
     const subscription =
-      sendAgentId && clientName && options.notifyTarget
+      sendAgentId && clientName
         ? (finishNotifier?.subscription(clientName, sendAgentId) ?? null)
         : null;
+    const explicit = notify.notifyOnFinish === true || notify.notifyTarget !== undefined;
     return {
-      arm: notify.notifyOnFinish === true || subscription !== null,
-      inherited: notify.notifyOnFinish === undefined,
+      arm: explicit || subscription !== null,
+      inherited: !explicit,
       context: notify.notifyContext ?? subscription?.context ?? null,
+      notifyTarget: notify.notifyTarget ?? subscription?.notifyTarget ?? null,
     };
+  };
+
+  /**
+   * The webhook an arming call posts to: the named target, else the client's
+   * own. null when nothing is armed: the plan does not arm, or an inherited
+   * arm's target is gone (that only stops arming, never blocks the send).
+   * An error string when an explicit request cannot be met.
+   */
+  const resolveTarget = (plan: NotifyPlan): McpNotifyTarget | string | null => {
+    if (!plan.arm) return null;
+    let error =
+      "notifyOnFinish needs a webhook for this MCP client (daemon.mcp.remoteClients[].notify), and none is configured. " +
+      "Call again without notifyOnFinish and use fleet_wait_agent instead.";
+    const named = plan.notifyTarget ? options.namedNotifyTargets?.get(plan.notifyTarget) : null;
+    const target = plan.notifyTarget ? named : options.notifyTarget;
+    if (plan.notifyTarget && !named) {
+      const known = [...(options.namedNotifyTargets?.keys() ?? [])];
+      error =
+        `Unknown notifyTarget "${plan.notifyTarget}". ` +
+        (known.length > 0
+          ? `Configured targets: ${known.join(", ")}.`
+          : "No notify targets are configured (daemon.mcp.notifyTargets).");
+    }
+    if (target && options.finishNotifier && options.clientName) return target;
+    return plan.inherited ? null : error;
   };
 
   // Runs a catalog tool for this MCP client. For the agent start/prompt tools
@@ -436,24 +486,27 @@ export async function createFleetMcpServer(options: FleetMcpServerOptions): Prom
     args: Record<string, unknown>,
     signal: AbortSignal | undefined,
   ): Promise<PaseoToolResult> => {
-    const { notifyOnFinish: _notify, notifyContext: _context, ...toolArgs } = args;
+    const {
+      notifyOnFinish: _notify,
+      notifyContext: _context,
+      notifyTarget: _target,
+      ...toolArgs
+    } = args;
     const notify = NotifyArgsSchema.safeParse(args);
     if (!notify.success) {
       return errorResult(
         `Invalid notify arguments: ${notify.error.issues.map((issue) => issue.message).join("; ")}`,
       );
     }
-    const plan = resolveNotify(name, toolArgs, notify.data);
-    const { finishNotifier, notifyTarget, clientName } = options;
-    if (plan.arm && (!finishNotifier || !notifyTarget || !clientName)) {
-      return errorResult(
-        "notifyOnFinish needs a webhook for this MCP client (daemon.mcp.remoteClients[].notify), and none is configured. " +
-          "Call again without notifyOnFinish and use fleet_wait_agent instead.",
-      );
+    if (notify.data.notifyOnFinish === false && notify.data.notifyTarget !== undefined) {
+      return errorResult("notifyTarget needs notifyOnFinish; drop notifyOnFinish: false.");
     }
+    const plan = resolveNotify(name, toolArgs, notify.data);
+    const target = resolveTarget(plan);
+    if (typeof target === "string") return errorResult(target);
     if (CATALOG_NOTIFY_TOOLS.has(name)) toolArgs.notifyOnFinish = false;
     const result = await catalog.executeTool(name, toolArgs, { signal });
-    if (!plan.arm || result.isError) return result;
+    if (!target || result.isError) return result;
 
     const structured = (result.structuredContent ?? {}) as Record<string, unknown>;
     const agentId = CREATE_TOOLS.has(name) ? structured.agentId : toolArgs.agentId;
@@ -469,9 +522,10 @@ export async function createFleetMcpServer(options: FleetMcpServerOptions): Prom
     }
     const host = typeof toolArgs.host === "string" ? toolArgs.host : undefined;
     const turnId = typeof structured.turnId === "string" ? structured.turnId : null;
-    void finishNotifier!.arm({
-      client: clientName!,
-      target: notifyTarget!,
+    void options.finishNotifier!.arm({
+      client: options.clientName!,
+      target: target!,
+      notifyTarget: plan.notifyTarget,
       agentId,
       ...(host ? { host } : {}),
       turnId,

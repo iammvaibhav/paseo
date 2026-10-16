@@ -189,7 +189,10 @@ describe("notifyOnFinish for MCP clients", () => {
       getTool: (name) => tools.get(name),
       executeTool: (name, input, context) => tools.get(name)!.handler(input, context ?? {}),
     };
-    const subscriptions = new Map<string, string | null>();
+    const subscriptions = new Map<
+      string,
+      { context: string | null; notifyTarget: string | null }
+    >();
     return {
       toolCalls,
       armed,
@@ -201,15 +204,15 @@ describe("notifyOnFinish for MCP clients", () => {
         finishNotifier: {
           arm: async (input) => {
             armed.push(input);
-            subscriptions.set(`${input.client}/${input.agentId}`, input.context);
+            subscriptions.set(`${input.client}/${input.agentId}`, {
+              context: input.context,
+              notifyTarget: input.notifyTarget ?? null,
+            });
           },
           armGroup: async (input) => {
             armedGroups.push(input);
           },
-          subscription: (client, agentId) => {
-            const key = `${client}/${agentId}`;
-            return subscriptions.has(key) ? { context: subscriptions.get(key) ?? null } : null;
-          },
+          subscription: (client, agentId) => subscriptions.get(`${client}/${agentId}`) ?? null,
           unsubscribe: (client, agentId) => {
             subscriptions.delete(`${client}/${agentId}`);
           },
@@ -224,6 +227,9 @@ describe("notifyOnFinish for MCP clients", () => {
           },
         },
         notifyTarget: options.withTarget ? { url: "https://hook.example/x" } : null,
+        namedNotifyTargets: new Map([
+          ["n8n-reviews", { url: "https://n8n.example/webhook/review", signingSecret: "s" }],
+        ]),
       }),
       armedStatusReports,
     };
@@ -258,6 +264,50 @@ describe("notifyOnFinish for MCP clients", () => {
       context: "essay-42",
       target: { url: "https://hook.example/x" },
     });
+    await close();
+  });
+
+  test("notifyTarget routes the watch to the named target, and steers keep it", async () => {
+    const { armed, server } = setup({ withTarget: true });
+    const { client, close } = await connect(server);
+    const created = await client.callTool({
+      name: "fleet_create_agent",
+      arguments: { host: "blrofc3", notifyTarget: "n8n-reviews" },
+    });
+    expect(created.structuredContent).toMatchObject({ notify: { armed: true } });
+    await client.callTool({
+      name: "fleet_send_prompt",
+      arguments: { agentId: "agent-9" },
+    });
+    expect(armed.map((input) => [input.notifyTarget, input.target.url])).toEqual([
+      ["n8n-reviews", "https://n8n.example/webhook/review"],
+      ["n8n-reviews", "https://n8n.example/webhook/review"],
+    ]);
+    await close();
+  });
+
+  test("notifyOnFinish without notifyTarget keeps using the client's own webhook", async () => {
+    const { armed, server } = setup({ withTarget: true });
+    const { client, close } = await connect(server);
+    await client.callTool({ name: "fleet_create_agent", arguments: { notifyOnFinish: true } });
+    expect(armed[0]).toMatchObject({
+      notifyTarget: null,
+      target: { url: "https://hook.example/x" },
+    });
+    await close();
+  });
+
+  test("rejects an unknown notifyTarget before the tool runs", async () => {
+    const { toolCalls, armed, server } = setup({ withTarget: true });
+    const { client, close } = await connect(server);
+    const result = await client.callTool({
+      name: "fleet_create_agent",
+      arguments: { notifyTarget: "https://evil.example/hook" },
+    });
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.content)).toContain("Configured targets: n8n-reviews");
+    expect(toolCalls).toEqual([]);
+    expect(armed).toEqual([]);
     await close();
   });
 

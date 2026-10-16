@@ -155,6 +155,7 @@ import { ChunkedUploadSessions, FileUploadStore } from "./file-upload/index.js";
 import {
   createMcpFinishLocalAgents,
   createMcpFinishNotifier,
+  type McpNotifyTarget,
 } from "./mcp-fleet/finish-notifier.js";
 import { resolveVaultSecret, warmVaultSecrets } from "./secrets/vault-secret.js";
 import {
@@ -2641,6 +2642,9 @@ export async function createPaseoDaemon(
     ...(loadPersistedConfig(config.paseoHome).daemon?.mcp?.remoteClients ?? []).flatMap((client) =>
       Object.values(client.notify?.headers ?? {}),
     ),
+    ...(loadPersistedConfig(config.paseoHome).daemon?.mcp?.notifyTargets ?? []).flatMap((target) =>
+      Object.values(target.headers ?? {}).concat(target.signingSecret ?? []),
+    ),
   ]).then((counts) => logger.info(counts, "vault secrets loaded"));
   const itsaplanProjectSyncDeps = {
     store: itsaplanProjectStore,
@@ -3132,13 +3136,22 @@ export async function createPaseoDaemon(
     logger,
     journalPath: path.join(config.paseoHome, "mcp-fleet", "agent-finish-watches.jsonl"),
   });
+  const loadNamedNotifyTargets = (): Map<string, McpNotifyTarget> =>
+    new Map(
+      (loadPersistedConfig(config.paseoHome).daemon?.mcp?.notifyTargets ?? []).map(
+        ({ name, ...target }) => [name, target],
+      ),
+    );
   const restoreMcpFinishWatches = async () => {
-    const { restored } = await mcpFinishNotifier.restore(async (clientName) => {
-      const remoteClients = loadPersistedConfig(config.paseoHome).daemon?.mcp?.remoteClients;
-      const notify = remoteClients?.find((client) => client.name === clientName)?.notify;
-      if (!notify) return null;
+    const { restored } = await mcpFinishNotifier.restore(async (clientName, notifyTarget) => {
+      const target = notifyTarget
+        ? loadNamedNotifyTargets().get(notifyTarget)
+        : loadPersistedConfig(config.paseoHome).daemon?.mcp?.remoteClients?.find(
+            (client) => client.name === clientName,
+          )?.notify;
+      if (!target) return null;
       const { catalog } = await getFleetMcpCatalog(clientName);
-      return { target: notify, waitForAgent: createFleetMcpWaitForAgent(catalog) };
+      return { target, waitForAgent: createFleetMcpWaitForAgent(catalog) };
     });
     if (restored > 0) logger.info({ restored }, "mcp finish watches restored");
   };
@@ -3155,6 +3168,7 @@ export async function createPaseoDaemon(
         clientName,
         finishNotifier: mcpFinishNotifier,
         notifyTarget: client.notify ?? null,
+        namedNotifyTargets: loadNamedNotifyTargets(),
       });
 
       const transport = new StreamableHTTPServerTransport({

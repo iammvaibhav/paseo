@@ -130,6 +130,23 @@ export const RemoteMcpClientSchema = z
 
 export type RemoteMcpClient = z.infer<typeof RemoteMcpClientSchema>;
 
+/**
+ * A named finish-notification webhook a /mcp/fleet caller selects with
+ * notifyTarget, independent of which client token it authenticated with.
+ * signingSecret (usually an aside:// reference) signs each POST body with
+ * HMAC-SHA256 into the X-Paseo-Signature-256 header.
+ */
+export const NotifyTargetSchema = z
+  .object({
+    name: z.string().min(1),
+    url: z.string().url(),
+    headers: z.record(z.string(), z.string()).optional(),
+    signingSecret: z.string().min(1).optional(),
+  })
+  .strict();
+
+export type NotifyTargetConfig = z.infer<typeof NotifyTargetSchema>;
+
 const SpeechProviderIdSchema = z
   .string()
   .trim()
@@ -373,6 +390,7 @@ export const PersistedConfigSchema = z
             enabled: z.boolean().optional(),
             injectIntoAgents: z.boolean().optional(),
             remoteClients: z.array(RemoteMcpClientSchema).optional(),
+            notifyTargets: z.array(NotifyTargetSchema).optional(),
           })
           .passthrough()
           .optional(),

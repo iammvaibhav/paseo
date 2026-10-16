@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer, type IncomingHttpHeaders, type Server } from "node:http";
@@ -1021,14 +1022,20 @@ describe("createMcpFinishNotifier", () => {
       tool: "fleet_create_agent",
       context: "essay-42",
     });
-    expect(before.subscription("grok-bot", "agent-1")).toEqual({ context: "essay-42" });
+    expect(before.subscription("grok-bot", "agent-1")).toEqual({
+      context: "essay-42",
+      notifyTarget: null,
+    });
     expect(before.subscription("grok-bot", "agent-2")).toBeNull();
     expect(before.subscription("other-bot", "agent-1")).toBeNull();
     await before.suspend();
 
     const after = daemon({});
     await after.restore(async () => binding);
-    expect(after.subscription("grok-bot", "agent-1")).toEqual({ context: "essay-42" });
+    expect(after.subscription("grok-bot", "agent-1")).toEqual({
+      context: "essay-42",
+      notifyTarget: null,
+    });
     after.unsubscribe("grok-bot", "agent-1");
     expect(after.subscription("grok-bot", "agent-1")).toBeNull();
     await after.suspend();
@@ -1036,6 +1043,57 @@ describe("createMcpFinishNotifier", () => {
     const again = daemon({});
     await again.restore(async () => binding);
     expect(again.subscription("grok-bot", "agent-1")).toBeNull();
+  });
+
+  it("signs the body with the target's vault secret into X-Paseo-Signature-256", async () => {
+    await notifier().arm({
+      client: "grok-bot",
+      target: { url, signingSecret: "aside://me@x/item1" },
+      notifyTarget: "n8n-reviews",
+      agentId: "agent-1",
+      tool: "fleet_create_agent",
+      context: null,
+      waitForAgent: async () => result({}),
+    });
+    const [request] = received;
+    expect(request!.body).toMatchObject({ client: "grok-bot", notifyTarget: "n8n-reviews" });
+    const expected = createHmac("sha256", "crsr_secret")
+      .update(JSON.stringify(request!.body))
+      .digest("hex");
+    expect(request!.headers["x-paseo-signature-256"]).toBe(`sha256=${expected}`);
+  });
+
+  it("restores a watch to its named target after a restart", async () => {
+    const runEnds = Promise.withResolvers<FleetAgentWaitResult>();
+    const before = daemon({});
+    void before.arm({
+      client: "grok-bot",
+      target: { url: "http://127.0.0.1:1/unused" },
+      notifyTarget: "n8n-reviews",
+      agentId: "agent-1",
+      turnId: "turn-1",
+      tool: "fleet_create_agent",
+      context: "pr-7",
+      waitForAgent: () => runEnds.promise,
+    });
+    await before.suspend();
+
+    const resolved: Array<[string, string | null]> = [];
+    const after = daemon({});
+    const { restored, settled } = await after.restore(async (client, notifyTarget) => {
+      resolved.push([client, notifyTarget]);
+      return notifyTarget === "n8n-reviews"
+        ? { target: { url }, waitForAgent: async () => result({ turnId: "turn-1" }) }
+        : null;
+    });
+    expect(restored).toBe(1);
+    await settled;
+    expect(resolved).toEqual([["grok-bot", "n8n-reviews"]]);
+    expect(received.map((r) => r.body.notifyTarget)).toEqual(["n8n-reviews"]);
+    expect(after.subscription("grok-bot", "agent-1")).toEqual({
+      context: "pr-7",
+      notifyTarget: "n8n-reviews",
+    });
   });
 
   it("posts paseo.agent.status_reported when the agent reports status", async () => {

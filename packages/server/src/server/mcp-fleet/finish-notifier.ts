@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import type { MissionControlEvent } from "@getpaseo/protocol/mission-control/types";
@@ -68,7 +68,14 @@ import {
  * purpose (archive, kill), since this daemon's own shutdown suspends watches
  * first; that "closed" stays final.
  */
-export type McpNotifyTarget = NonNullable<RemoteMcpClient["notify"]>;
+/**
+ * Where a watch POSTs: a client's own notify webhook, or a named target
+ * (daemon.mcp.notifyTargets) the caller selected with notifyTarget.
+ * signingSecret, when set, signs each body into X-Paseo-Signature-256.
+ */
+export type McpNotifyTarget = NonNullable<RemoteMcpClient["notify"]> & {
+  signingSecret?: string;
+};
 
 /** One bounded wait, bound to turnId when given; the watcher calls it repeatedly until the turn ends. */
 export type McpFinishWaitForAgent = (input: {
@@ -96,6 +103,8 @@ export interface ArmMcpFinishNotification extends McpClientBinding, McpNotifyAge
   client: string;
   tool: string;
   context: string | null;
+  /** The named target the watch posts to; null → the client's own notify webhook. */
+  notifyTarget?: string | null;
 }
 
 export interface ArmMcpGroupNotification extends McpClientBinding {
@@ -142,6 +151,8 @@ export interface McpFinishRunStart {
 export interface McpFinishSubscription {
   /** The notifyContext of the client's latest arm on the agent. */
   context: string | null;
+  /** The named target of the client's latest arm on the agent; null → the client's own webhook. */
+  notifyTarget: string | null;
 }
 
 /** The agents this daemon hosts: a restart interrupts their runs, unlike agents on peers. */
@@ -222,7 +233,10 @@ export interface McpFinishNotifier {
    * has settled.
    */
   restore(
-    resolveClient: (client: string) => Promise<McpClientBinding | null>,
+    resolveClient: (
+      client: string,
+      notifyTarget: string | null,
+    ) => Promise<McpClientBinding | null>,
   ): Promise<{ restored: number; settled: Promise<void> }>;
   /**
    * Daemon shutdown: stop every watch without delivering and flush the
@@ -265,6 +279,8 @@ interface ArmedEntry {
   host: string | null;
   tool: string;
   context: string | null;
+  /** The named target the watch posts to; null or absent (older entries) → the client's own webhook. */
+  notifyTarget?: string | null;
   /** The turn the watch is bound to: the create/send's turn, else the run in progress. */
   turnId: string | null;
   /** Epoch ms after which the watch gives up. */
@@ -493,6 +509,7 @@ function subscriptionsFromJournal(
     if (entry.event === "armed") {
       subscriptions.set(subscriptionKey(entry.client, entry.agentId), {
         context: entry.context,
+        notifyTarget: entry.notifyTarget ?? null,
         armedAt: Date.parse(entry.ts),
         watchId: entry.watchId,
       });
@@ -534,11 +551,24 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
     journal?.append(entry);
   };
 
-  const resolveHeaders = async (headers: Record<string, string> | undefined) => {
+  const resolveHeaders = async (target: McpNotifyTarget, body: string) => {
     const resolved: Record<string, string> = { "content-type": "application/json" };
-    for (const [name, value] of Object.entries(headers ?? {})) {
+    const resolveRefs = async (value: string) => {
       const ref = VAULT_REF.exec(value)?.[0];
-      resolved[name] = ref ? value.replace(ref, (await options.resolveSecret(ref)) ?? "") : value;
+      return ref ? value.replace(ref, (await options.resolveSecret(ref)) ?? "") : value;
+    };
+    for (const [name, value] of Object.entries(target.headers ?? {})) {
+      resolved[name] = await resolveRefs(value);
+    }
+    if (target.signingSecret) {
+      const secret = await resolveRefs(target.signingSecret);
+      // Never sign with an empty key: an unsigned POST fails the receiver's check visibly.
+      if (secret) {
+        const digest = createHmac("sha256", secret).update(body).digest("hex");
+        resolved["x-paseo-signature-256"] = `sha256=${digest}`;
+      } else {
+        logger.warn({ url: target.url }, "notify target signing secret did not resolve");
+      }
     }
     return resolved;
   };
@@ -579,6 +609,7 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
       reason,
       final,
       client: armed.client,
+      notifyTarget: armed.notifyTarget ?? null,
       context: armed.context,
       agent: agentPayload(armed.agentId, result, armed.turnId),
       trigger: { tool: armed.tool, requestedAt: armed.ts },
@@ -663,7 +694,7 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
       watchId: armed.watchId,
       deliveryId,
       url: binding.target.url,
-      headers: await resolveHeaders(binding.target.headers),
+      headers: await resolveHeaders(binding.target, body),
       body,
     };
     const ids = { watchId: armed.watchId, agentId: armed.agentId, reason, final };
@@ -712,7 +743,7 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
       watchId: requestId,
       deliveryId,
       url: target.url,
-      headers: await resolveHeaders(target.headers),
+      headers: await resolveHeaders(target, body),
       body,
     };
     for (let attempt = 0; ; attempt += 1) {
@@ -1156,6 +1187,7 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
           watch.armed.client === input.client &&
           watch.armed.agentId === input.agentId &&
           watch.armed.context === input.context &&
+          (watch.armed.notifyTarget ?? null) === (input.notifyTarget ?? null) &&
           watch.turnId === turnId
         ) {
           logger.info(
@@ -1175,12 +1207,14 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
       host: input.host ?? null,
       tool: input.tool,
       context: input.context,
+      notifyTarget: input.notifyTarget ?? null,
       turnId,
       deadline: now.getTime() + maxWatchMs,
     };
     record(armed);
     subscriptions.set(subscriptionKey(input.client, input.agentId), {
       context: input.context,
+      notifyTarget: input.notifyTarget ?? null,
       armedAt: now.getTime(),
       watchId: armed.watchId,
     });
@@ -1384,7 +1418,7 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
     subscription(client, agentId) {
       const subscription = subscriptions.get(subscriptionKey(client, agentId));
       if (!subscription || Date.now() - subscription.armedAt >= SUBSCRIPTION_TTL_MS) return null;
-      return { context: subscription.context };
+      return { context: subscription.context, notifyTarget: subscription.notifyTarget };
     },
 
     unsubscribe(client, agentId) {
@@ -1438,9 +1472,12 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
           });
           return null;
         }
-        const binding = await resolveClient(armed.client).catch(() => null);
+        const notifyTarget = armed.event === "armed" ? (armed.notifyTarget ?? null) : null;
+        const binding = await resolveClient(armed.client, notifyTarget).catch(() => null);
         if (!binding) {
-          const why = `client "${armed.client}" has no notify webhook configured`;
+          const why = notifyTarget
+            ? `notify target "${notifyTarget}" is not configured`
+            : `client "${armed.client}" has no notify webhook configured`;
           record({ event: "gave_up", ...ids, why });
           return null;
         }
