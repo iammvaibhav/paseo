@@ -13,13 +13,8 @@ import type {
 	AuthStorage,
 	SimpleStreamOptions,
 } from "@oh-my-pi/pi-ai";
-import {
-	buildGatewayApiKeyResolver,
-	mirrorRequestAbort,
-	normalizeClientSessionKey,
-	resolveGatewayAccount,
-	resolveGatewayApiKey,
-} from "@oh-my-pi/pi-ai/auth-gateway/dispatch";
+import { mirrorRequestAbort, normalizeClientSessionKey } from "@oh-my-pi/pi-ai/auth-gateway/dispatch";
+import { keyResolver, resolveKey } from "./omp-gateway";
 import {
 	captureRequestHeaders,
 	gatewayResponseHeaders,
@@ -300,7 +295,7 @@ export async function handleChat(
 	}
 	const proxyOverheadMs = Math.round(performance.now() - startedAt);
 
-	const apiKey = await resolveGatewayApiKey(deps.boot.storage, model, sessionId, controller.signal, peer);
+	const apiKey = await resolveKey(deps.boot.storage, model, sessionId, controller.signal, peer);
 	if (controller.signal.aborted) return clientClosedResponse(route);
 	if ("status" in apiKey) return route.module.formatError(apiKey.status, apiKey.type, apiKey.message);
 
@@ -321,20 +316,11 @@ export async function handleChat(
 		clientKey,
 		model,
 		context: parsed.context,
-		account: resolveGatewayAccount(deps.boot.storage, model.provider, sessionId, apiKey.apiKey),
+		account: apiKey.account,
 	});
 	streamOpts.providerSessionState = lease.states;
-	let resolvedCredentialId: number | undefined;
-	try {
-		const withCred = await deps.boot.storage.keys.getWithCredential(model.provider, sessionId, {
-			modelId: model.id,
-			signal: controller.signal,
-		});
-		resolvedCredentialId = withCred?.credentialId;
-	} catch {
-		resolvedCredentialId = undefined;
-	}
-	streamOpts.apiKey = buildGatewayApiKeyResolver(
+	let resolvedCredentialId = apiKey.credentialId;
+	streamOpts.apiKey = keyResolver(
 		deps.boot.storage,
 		model,
 		sessionId,
@@ -342,9 +328,7 @@ export async function handleChat(
 		controller.signal,
 		route.label,
 		peer,
-		resolvedKey => {
-			lease.updateAccount(resolveGatewayAccount(deps.boot.storage, model.provider, sessionId, resolvedKey));
-		},
+		key => lease.updateAccount(key.account),
 	);
 
 	const identity = accountLabel(deps.boot.storage, model.provider, sessionId, resolvedCredentialId);

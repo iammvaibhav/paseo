@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Pin omp-proxy to an omp release: set the three @oh-my-pi packages to
-# <version>, reinstall, typecheck and build. Commit the result, then deploy;
-# deploy refuses to touch prod while this pin differs from the fleet's omp.
+# <version>, reinstall, typecheck, run the omp compatibility test and build.
+# The pin is exact on purpose: the binary links omp's native modules, which
+# must match the omp installed on prod. Commit package.json and bun.lock;
+# until then deploy rebuilds against the fleet's omp in a scratch copy.
 #
 #   scripts/omp-proxy/bump.sh 18.8.3
 set -euo pipefail
@@ -30,5 +32,6 @@ EOF
 
 bun install
 bun run typecheck
+bun test src/omp-gateway.test.ts
 bun run build
 echo "bump: omp-proxy pinned to $version; dist/omp-proxy built. Commit package.json and bun.lock."
