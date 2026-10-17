@@ -187,6 +187,13 @@ export function shouldResolveDirectFileThroughSuggestions(input: {
     return false;
   }
 
+  // The suggestion lookup finds files only; a folder-shaped token (no extension
+  // on its last segment) opens as written and the click checks what it is.
+  const lastSegment = input.token.replace(/\/+$/, "").split("/").pop() ?? "";
+  if (input.token.endsWith("/") || !lastSegment.includes(".")) {
+    return false;
+  }
+
   const workspaceRoot = input.context.workspaceRoot?.trim();
   if (!workspaceRoot) {
     return false;

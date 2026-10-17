@@ -66,6 +66,13 @@ export default defineConfig({
       },
     },
   },
+  // Metro/Babel compile the app with React's automatic JSX runtime, so components are
+  // written without a React import. esbuild would otherwise pick up expo's
+  // `jsx: "react-native"` (classic) from tsconfig and render those components as
+  // `React is not defined`.
+  esbuild: {
+    jsx: "automatic",
+  },
   // Reanimated and gesture-handler pick platform files by extension
   // (e.g. `GestureHandlerRootView.web.js`). Vite's optimizer does not apply `resolve.extensions`,
   // so it scans the native files and dies on imports react-native-web has no answer for.
@@ -128,8 +135,8 @@ export default defineConfig({
       {
         find: /^react-native-gesture-handler$/,
         replacement: path.resolve(
-          rootNodeModules,
-          "react-native-gesture-handler/lib/module/index.js",
+          resolvePackageEntry("react-native-gesture-handler"),
+          "lib/module/index.js",
         ),
       },
       // Must precede the `react-native` alias: a string `find` matches by prefix, so this subpath
@@ -144,7 +151,7 @@ export default defineConfig({
       // Vite alias resolution).
       {
         find: "react-native",
-        replacement: path.resolve(rootNodeModules, "react-native-web/dist/index.js"),
+        replacement: resolvePackageEntry("react-native-web/dist/index.js"),
       },
       { find: "react", replacement: resolvePackageEntry("react") },
       {
@@ -184,6 +191,12 @@ export default defineConfig({
       {
         find: /^expo-linking$/,
         replacement: path.resolve(__dirname, "test-stubs/expo-linking.ts"),
+      },
+      // No Node implementation: every call on the real module rejects, so a test
+      // touching a persisted store drowns in unhandled rejections.
+      {
+        find: /^@react-native-async-storage\/async-storage$/,
+        replacement: path.resolve(__dirname, "test-stubs/async-storage.ts"),
       },
       {
         find: /^lucide-react-native$/,

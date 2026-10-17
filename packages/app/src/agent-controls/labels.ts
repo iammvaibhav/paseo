@@ -29,6 +29,9 @@ function formatControlLabel(option: ControlLabelInput, splitHyphen: boolean): st
 }
 
 export function formatAgentModeLabel(mode: ControlLabelInput): string {
+  if (mode.id === "ai-review") {
+    return mode.label || "AI review";
+  }
   return formatControlLabel(mode, mode.label == null);
 }
 

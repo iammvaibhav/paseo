@@ -75,6 +75,8 @@ function createWorkspace(
     name: input.name ?? "main",
     status: input.status ?? "done",
     statusEnteredAt: input.statusEnteredAt ?? null,
+    activityAt: input.activityAt ?? null,
+    createdAt: input.createdAt ?? null,
     archivingAt: input.archivingAt ?? null,
     diffStat: input.diffStat ?? null,
     scripts: input.scripts ?? [],
@@ -410,6 +412,21 @@ describe("message submission ordering", () => {
     expect(notifications).toEqual([{ hasOptimisticRow: true, isActive: true }]);
   });
 
+  it("keeps a pending submission active across an idle snapshot before the turn opens", () => {
+    // The composer's in-flight spinner is driven by the pending submission
+    // while the daemon has not opened the turn yet. Routine idle snapshots
+    // arrive in that window and must not clear it.
+    initializeTestSession();
+    const store = useSessionStore.getState();
+    store.beginAgentMessageSubmission("test-server", agentId, submittedMessage(clientMessageId));
+    applyTestTurn("test-server", agentId, { type: "snapshot", activeTurn: null });
+
+    expect(
+      selectAgentTurnPresentation(useSessionStore.getState().sessions["test-server"], agentId)
+        .isActive,
+    ).toBe(true);
+  });
+
   it("keeps another unacknowledged submission active after one row is acknowledged", () => {
     initializeTestSession();
     const store = useSessionStore.getState();
@@ -599,11 +616,13 @@ describe("normalizeWorkspaceDescriptor", () => {
       ...basePayload,
       archivingAt: null,
       statusEnteredAt: "2026-05-12T09:30:00.000Z",
+      activityAt: null,
     });
     const withNull = normalizeWorkspaceDescriptor({
       ...basePayload,
       archivingAt: null,
       statusEnteredAt: null,
+      activityAt: null,
     });
     const missing = normalizeWorkspaceDescriptor({
       ...basePayload,

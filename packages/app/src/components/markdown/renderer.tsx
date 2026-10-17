@@ -21,8 +21,12 @@ import Markdown, {
   type ASTNode,
   type RenderRules,
 } from "react-native-markdown-display";
+import texmath from "markdown-it-texmath";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { HighlightedCodeBlock } from "@/components/highlighted-code-block";
+import { renderRichFence } from "./rich-fence";
+import { isPaseoAgentLink, PaseoAgentLinkChip, usePaseoAgentLinkContext } from "./paseo-agent-link";
+import { MathView } from "@/components/math-view";
 import { MarkdownFenceBlock } from "@/components/markdown/fence";
 import { MarkdownParagraphView, MarkdownTextSpan } from "@/components/markdown-text";
 import { MarkdownTableCellText } from "@/components/markdown-text-selection";
@@ -39,6 +43,10 @@ import {
   type MarkdownInlineImagePart,
 } from "./html-ish";
 import { resolveInlineImageSize, type InlineImageDimensions } from "./inline-image-size";
+import {
+  getAssistantImageMetadata,
+  setAssistantImageMetadata,
+} from "@/utils/assistant-image-metadata";
 import { groupMarkdownParts, type MarkdownPartGroup } from "./part-groups";
 import { colorMarkdownLinkChildren } from "./link-children";
 import { MarkdownLinkText } from "./link-text";
@@ -64,6 +72,32 @@ function markdownStyleMapping(theme: Theme): Partial<MarkdownWithStableRendererP
 
 function compactMarkdownStyleMapping(theme: Theme): Partial<MarkdownWithStableRendererProps> {
   return { style: createCompactMarkdownStyles(theme) };
+}
+
+const TEXMATH_OPTIONS = {
+  engine: { renderToString: (tex: string) => tex },
+  delimiters: ["dollars", "brackets"],
+};
+
+// Some agents (Grok) emit bare `[...\]` without the leading backslash.
+const BARE_BRACKET_BLOCK_RULE = {
+  name: "math_block",
+  rex: /^\[([^\S\n]*\n[\s\S]+?)\]\s*$/gmy,
+  tmpl: "<section><eqn>$1</eqn></section>",
+  tag: "[",
+  pre: (str: string, _outerSpace: boolean, pos: number) => {
+    const nextNonWs = str.slice(pos + 1).search(/\S/);
+    if (nextNonWs === -1) return false;
+    const firstContent = str.slice(pos + 1 + nextNonWs);
+    return /^\\[a-zA-Z{]/.test(firstContent);
+  },
+};
+
+export function addMathPlugin(parser: ReturnType<typeof MarkdownIt>) {
+  parser.use(texmath, TEXMATH_OPTIONS);
+  parser.block.ruler.before("fence", "math_block_bare", texmath.block(BARE_BRACKET_BLOCK_RULE));
+  parser.renderer.rules.math_block_bare = () => "";
+  return parser;
 }
 
 // Serves PR comment bodies and the markdown file preview; agent chat passes its
@@ -201,11 +235,16 @@ function useNaturalImageDimensions(part: MarkdownInlineImagePart): {
   failed: boolean;
   setFailed: (failed: boolean) => void;
 } {
-  const [natural, setNatural] = useState<InlineImageDimensions | null>(null);
+  const cached = useMemo(() => getAssistantImageMetadata({ source: part.src }), [part.src]);
+  const [resolved, setResolved] = useState<{
+    source: string;
+    dimensions: InlineImageDimensions;
+  } | null>(null);
+  const natural = resolved?.source === part.src ? resolved.dimensions : cached;
   const [failed, setFailed] = useState(false);
 
   useEffect(() => {
-    if (part.width && part.height) {
+    if ((part.width && part.height) || cached) {
       return;
     }
 
@@ -213,8 +252,9 @@ function useNaturalImageDimensions(part: MarkdownInlineImagePart): {
     Image.getSize(
       part.src,
       (width, height) => {
+        setAssistantImageMetadata({ source: part.src }, { width, height });
         if (!cancelled) {
-          setNatural({ width, height });
+          setResolved({ source: part.src, dimensions: { width, height } });
         }
       },
       () => {
@@ -227,7 +267,7 @@ function useNaturalImageDimensions(part: MarkdownInlineImagePart): {
     return () => {
       cancelled = true;
     };
-  }, [part.height, part.src, part.width]);
+  }, [cached, part.height, part.src, part.width]);
 
   return { natural, failed, setFailed };
 }
@@ -487,9 +527,59 @@ function SharedMarkdownLink({
   );
 }
 
+function textFromLinkChildren(children: ReactNode): string {
+  return React.Children.toArray(children)
+    .flatMap((child) => (typeof child === "string" ? [child] : []))
+    .join("")
+    .trim();
+}
+
+/**
+ * Link rule entry: when the Mission Control thread mounts the
+ * PaseoAgentLinkProvider, `paseo://` agent deep links render as inline agent
+ * chips (opened in the Inspector); everywhere else they keep the plain link.
+ */
+function MarkdownPaseoAwareLink({
+  href,
+  inheritedStyles,
+  linkStyle,
+  onLinkPress,
+  children,
+}: SharedMarkdownLinkProps) {
+  const paseoContext = usePaseoAgentLinkContext();
+  if (paseoContext && isPaseoAgentLink(href)) {
+    return <PaseoAgentLinkChip href={href} fallbackText={textFromLinkChildren(children)} />;
+  }
+  return (
+    <SharedMarkdownLink
+      href={href}
+      inheritedStyles={inheritedStyles}
+      linkStyle={linkStyle}
+      onLinkPress={onLinkPress}
+    >
+      {children}
+    </SharedMarkdownLink>
+  );
+}
+
 function getMarkdownLinkHref(node: ASTNode): string {
   const href = node.attributes?.href;
   return typeof href === "string" ? href : "";
+}
+
+export function createMathRenderRules(): RenderRules {
+  const inlineRule = (node: ASTNode, _c: ReactNode[], _p: ASTNode[], styles: MarkdownStyles) => (
+    <MathView key={node.key} tex={node.content} color={styles.text?.color as string} />
+  );
+  const blockRule = (node: ASTNode, _c: ReactNode[], _p: ASTNode[], styles: MarkdownStyles) => (
+    <MathView key={node.key} tex={node.content} display color={styles.text?.color as string} />
+  );
+  return {
+    math_inline: inlineRule,
+    math_inline_double: blockRule,
+    math_block: blockRule,
+    math_block_eqno: blockRule,
+  };
 }
 
 export function createSharedMarkdownRules(): RenderRules {
@@ -602,16 +692,23 @@ export function createSharedMarkdownRules(): RenderRules {
       _parent: ASTNode[],
       styles: MarkdownStyles,
       inheritedStyles: TextStyle = {},
-    ) => (
-      <MarkdownFenceBlock
-        key={node.key}
-        code={node.content}
-        info={node.sourceInfo}
-        phase="complete"
-        inheritedStyles={inheritedStyles}
-        textStyle={styles.fence}
-      />
-    ),
+    ) => {
+      const richFence = renderRichFence(node);
+      if (richFence) {
+        return richFence;
+      }
+
+      return (
+        <MarkdownFenceBlock
+          key={node.key}
+          code={node.content}
+          info={node.sourceInfo}
+          phase="complete"
+          inheritedStyles={inheritedStyles}
+          textStyle={styles.fence}
+        />
+      );
+    },
     code_inline: (
       node: ASTNode,
       _children: ReactNode[],
@@ -704,7 +801,7 @@ export function createSharedMarkdownRules(): RenderRules {
       styles: MarkdownStyles,
       onLinkPress?: (url: string) => boolean,
     ) => (
-      <SharedMarkdownLink
+      <MarkdownPaseoAwareLink
         key={node.key}
         href={getMarkdownLinkHref(node)}
         inheritedStyles={EMPTY_TEXT_STYLE}
@@ -712,8 +809,9 @@ export function createSharedMarkdownRules(): RenderRules {
         onLinkPress={onLinkPress}
       >
         {colorMarkdownLinkChildren(children, styles.link.color)}
-      </SharedMarkdownLink>
+      </MarkdownPaseoAwareLink>
     ),
+    ...createMathRenderRules(),
   };
 }
 

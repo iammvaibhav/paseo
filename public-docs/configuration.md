@@ -135,6 +135,30 @@ Or persist it in `config.json`:
 
 When enabled, open the daemon HTTP origin, for example `http://localhost:6767/`, to load the web app. Static UI files load without daemon auth; API and WebSocket requests still require the configured password.
 
+## Keep awake while agents run (macOS)
+
+On macOS the daemon keeps the Mac awake while any agent or provider subagent is running, and lets it sleep again `keepAwakeReleaseGraceMinutes` (default 5) after the last one stops. Other platforms ignore these settings.
+
+```json
+{
+  "daemon": {
+    "keepAwakeWhileAgentsRun": "lid-closed",
+    "keepAwakeReleaseGraceMinutes": 5,
+    "keepAwakeBatteryFloorPercent": 10
+  }
+}
+```
+
+- `"off"`: do nothing.
+- `"idle"` (default): hold `caffeinate -i -s` while agents run. This stops idle sleep. On a charger it also keeps a closed Mac running: closing the lid turns the display off and drops the Mac into a background DarkWake instead of sleep. On battery, closing the lid still sleeps the Mac.
+- `"lid-closed"`: also run `sudo -n /usr/bin/pmset -a disablesleep 1` while agents run, and `... 0` afterwards. This is the only setting that keeps a closed Mac on battery running. It needs a passwordless sudoers rule for exactly those two commands (Amphetamine's Power Protect installs one); without it Paseo logs a warning and falls back to `"idle"`.
+
+There is no time limit while agents run. With `disablesleep` set, macOS no longer sleeps for overheating or an empty battery, so Paseo releases it, while keeping `caffeinate`, when the Mac is on battery at `keepAwakeBatteryFloorPercent` or less, or when thermal pressure reaches heavy. It does not take it again until agents stop and start again. Paseo never clears a `disablesleep` that something else set, and it writes `$PASEO_HOME/keep-awake-disablesleep.json` while it holds the flag so the next daemon start can clear it after a crash.
+
+macOS does not re-check a lid that was closed while `disablesleep` was set, so after clearing the flag Paseo runs `pmset sleepnow` if the lid is closed. On a charger with agents still running, the remaining `caffeinate -s` turns that into a DarkWake and the agents keep running; otherwise the Mac sleeps. A daemon shutdown or restart clears the flag without sleeping the Mac.
+
+All settings apply on `paseo reload`, without a daemon restart.
+
 ## Logging
 
 Daemon logging uses separate console and file sinks by default:

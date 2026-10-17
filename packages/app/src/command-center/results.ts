@@ -53,6 +53,14 @@ export interface CommandCenterWorkspaceResult {
   run(): void;
 }
 
+export interface CommandCenterProjectResult {
+  kind: "project";
+  id: string;
+  title: string;
+  subtitle: string;
+  run(): void;
+}
+
 export interface CommandCenterAgentResult {
   kind: "agent";
   id: string;
@@ -81,6 +89,7 @@ export interface CommandCenterContributionResult {
 }
 
 export type CommandCenterResult =
+  | CommandCenterProjectResult
   | CommandCenterWorkspaceResult
   | CommandCenterAgentResult
   | CommandCenterFileResult
@@ -170,7 +179,9 @@ function contributionSearchFields(
 }
 
 function resultHeight(result: CommandCenterResult): number {
-  if (result.kind === "workspace" || result.kind === "agent") return 56;
+  if (result.kind === "workspace" || result.kind === "agent" || result.kind === "project") {
+    return 56;
+  }
   if (result.kind === "file") return 36;
   if (result.contribution.presentation.kind === "action") {
     return result.contribution.presentation.subtitle ? 56 : 36;

@@ -181,4 +181,47 @@ describe("WorkspacePaneContent", () => {
       agentId: "agent-a",
     });
   });
+
+  it("omits openDiffInBrowserEditor when the builder does not supply one", () => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    act(() => {
+      root?.render(
+        <WorkspacePaneContent content={buildContent()} isPaneFocused isWorkspaceFocused />,
+      );
+    });
+
+    expect(snapshots[0]?.paneContextValue.openDiffInBrowserEditor).toBeUndefined();
+  });
+
+  it("forwards openDiffInBrowserEditor calls to the supplied handler", () => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    const onOpenDiff = vi.fn();
+    const content = buildWorkspacePaneContentModel({
+      tab: agentTab,
+      normalizedServerId: "server-a",
+      normalizedWorkspaceId: "workspace-a",
+      host: "main",
+      onOpenTab: vi.fn(),
+      onOpenPreferredTarget: vi.fn(),
+      onOpenTargetToSide: vi.fn(),
+      onCloseCurrentTab: vi.fn(),
+      onRetargetCurrentTab: vi.fn(),
+      onSetCurrentTabState: vi.fn(),
+      onOpenWorkspaceFile: vi.fn(),
+      onOpenImportSheet: vi.fn(),
+      onOpenDiff,
+    });
+
+    act(() => {
+      root?.render(<WorkspacePaneContent content={content} isPaneFocused isWorkspaceFocused />);
+    });
+
+    snapshots[0]?.paneContextValue.openDiffInBrowserEditor?.("src/a.ts", "main");
+    expect(onOpenDiff).toHaveBeenCalledWith("src/a.ts", "main");
+  });
 });

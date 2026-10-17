@@ -41,6 +41,7 @@ function visibleToolCallItems(items: StreamItem[]): StreamItem[] {
 export function prepareToolCallHistory(
   level: ToolCallDetailLevel,
   tail: StreamItem[],
+  runEndIds?: ReadonlySet<string>,
 ): PreparedToolCallHistory | null {
   if (level === "detailed") {
     return null;
@@ -50,6 +51,7 @@ export function prepareToolCallHistory(
     grouped: prepareGroupedHistory({
       tail: visibleToolCallItems(tail),
       buildGroup: buildOverviewGroup,
+      runEndIds,
     }),
   };
 }

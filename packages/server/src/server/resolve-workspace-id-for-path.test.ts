@@ -1,5 +1,6 @@
-import { homedir } from "node:os";
-import { basename } from "node:path";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { basename, join } from "node:path";
 import { describe, expect, test } from "vitest";
 
 import { createPersistedWorkspaceRecord } from "./workspace-registry.js";
@@ -65,4 +66,27 @@ describe("resolveWorkspaceIdForPath", () => {
       "ws-home",
     );
   });
+
+  test.skipIf(process.platform === "win32")(
+    "resolves a path through a symlink to the workspace registered at either spelling",
+    () => {
+      const tempDir = realpathSync(mkdtempSync(join(tmpdir(), "resolve-workspace-")));
+      try {
+        const realRoot = join(tempDir, "data", "paseo");
+        const linkRoot = join(tempDir, "home-paseo");
+        mkdirSync(join(realRoot, "packages"), { recursive: true });
+        symlinkSync(realRoot, linkRoot, "dir");
+
+        const legacy = [createWorkspaceRecord(linkRoot, "ws-link")];
+        expect(resolveWorkspaceIdForPath(realRoot, legacy)).toBe("ws-link");
+        expect(resolveWorkspaceIdForPath(join(realRoot, "packages"), legacy)).toBe("ws-link");
+
+        const canonical = [createWorkspaceRecord(realRoot, "ws-real")];
+        expect(resolveWorkspaceIdForPath(linkRoot, canonical)).toBe("ws-real");
+        expect(resolveWorkspaceIdForPath(join(linkRoot, "packages"), canonical)).toBe("ws-real");
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    },
+  );
 });

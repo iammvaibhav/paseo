@@ -1,6 +1,7 @@
 import { homedir } from "node:os";
-import { resolve, sep } from "node:path";
+import { sep } from "node:path";
 
+import { canonicalizePath } from "../utils/path.js";
 import type { PersistedWorkspaceRecord } from "./workspace-registry.js";
 
 // external path→workspace adapter, not ownership.
@@ -18,19 +19,23 @@ export function resolveWorkspaceIdForPath(
   cwd: string,
   workspaces: Iterable<PersistedWorkspaceRecord>,
 ): string | null {
-  const workspaceRecords = Array.from(workspaces);
-  const resolvedCwd = resolve(cwd);
-  const exactMatch = workspaceRecords.find((workspace) => resolve(workspace.cwd) === resolvedCwd);
+  // Paths compare by realpath: a client may hand a symlinked spelling
+  // (~/paseo) of a workspace registered at its target (/data/paseo), or vice versa.
+  const workspaceRecords = Array.from(workspaces, (workspace) => ({
+    workspace,
+    canonicalCwd: canonicalizePath(workspace.cwd),
+  }));
+  const resolvedCwd = canonicalizePath(cwd);
+  const exactMatch = workspaceRecords.find(({ canonicalCwd }) => canonicalCwd === resolvedCwd);
   if (exactMatch) {
-    return exactMatch.workspaceId;
+    return exactMatch.workspace.workspaceId;
   }
 
-  const userHome = resolve(homedir());
+  const userHome = canonicalizePath(homedir());
   let bestMatchLength = 0;
   let bestMatch: PersistedWorkspaceRecord | null = null;
-  for (const workspace of workspaceRecords) {
+  for (const { workspace, canonicalCwd: workspaceCwd } of workspaceRecords) {
     if (workspace.archivedAt) continue;
-    const workspaceCwd = resolve(workspace.cwd);
     if (workspaceCwd === userHome) continue;
     const prefix = workspaceCwd.endsWith(sep) ? workspaceCwd : `${workspaceCwd}${sep}`;
     if (!resolvedCwd.startsWith(prefix)) {

@@ -115,7 +115,6 @@ function createWorkflowForRequestTest(options: {
         emit: () => {},
         sessionLogger: createLogger(),
         terminalManager: null,
-        archiveWorkspaceRecord: async () => {},
         serviceProxy: null,
         scriptRuntimeStore: null,
         getDaemonTcpPort: null,
@@ -366,6 +365,7 @@ function createPaseoWorktreeForTest(options: {
     projectRegistry,
     workspaceRegistry,
     workspaceGitService,
+    isDirectory: async () => true,
     logger: createLogger(),
   });
 
@@ -488,7 +488,6 @@ describe("create-agent worktree setup boundary", () => {
           emit: (message) => emitted.push(message),
           sessionLogger: createLogger(),
           terminalManager: createTerminalManagerStub().manager,
-          archiveWorkspaceRecord: async () => {},
           serviceProxy: null,
           scriptRuntimeStore: null,
           getDaemonTcpPort: null,
@@ -539,7 +538,6 @@ describe("create-agent worktree setup boundary", () => {
           emit: (message) => workspaceSetupEvents.push(message),
           sessionLogger: createLogger(),
           terminalManager: null,
-          archiveWorkspaceRecord: async () => {},
           serviceProxy: null,
           scriptRuntimeStore: null,
           getDaemonTcpPort: null,
@@ -713,7 +711,6 @@ describe("runWorktreeSetupInBackground", () => {
         emit: () => {},
         sessionLogger: createLogger(),
         terminalManager: null,
-        archiveWorkspaceRecord: async () => {},
       },
       {
         requestCwd: sourceWorkspaceCwd,
@@ -758,7 +755,6 @@ describe("runWorktreeSetupInBackground", () => {
     const logger = createLogger();
     const terminalManager = createTerminalManagerStub();
     const emitWorkspaceUpdateForWorkspaceId = vi.fn(async () => {});
-    const archiveWorkspaceRecord = vi.fn(async () => {});
 
     await runWorktreeSetupInBackground(
       {
@@ -769,7 +765,6 @@ describe("runWorktreeSetupInBackground", () => {
         emit: (message) => emitted.push(message),
         sessionLogger: logger,
         terminalManager: terminalManager.manager,
-        archiveWorkspaceRecord,
       },
       {
         requestCwd: repoDir,
@@ -827,11 +822,10 @@ describe("runWorktreeSetupInBackground", () => {
     });
 
     expect(terminalManager.terminals).toHaveLength(0);
-    expect(archiveWorkspaceRecord).not.toHaveBeenCalled();
     expect(emitWorkspaceUpdateForWorkspaceId).toHaveBeenCalledWith("42");
   });
 
-  test("archives the pending workspace and emits a failed snapshot when setup cannot start", async () => {
+  test("keeps the workspace available and emits a failed snapshot when setup cannot start", async () => {
     const { tempDir, repoDir } = createGitRepo();
     cleanupPaths.push(tempDir);
 
@@ -856,7 +850,6 @@ describe("runWorktreeSetupInBackground", () => {
     const snapshots = new Map<string, unknown>();
     const logger = createLogger();
     const emitWorkspaceUpdateForWorkspaceId = vi.fn(async () => {});
-    const archiveWorkspaceRecord = vi.fn(async () => {});
     const workspaceId = "ws-broken-feature";
 
     await runWorktreeSetupInBackground(
@@ -868,7 +861,6 @@ describe("runWorktreeSetupInBackground", () => {
         emit: (message) => emitted.push(message),
         sessionLogger: logger,
         terminalManager: null,
-        archiveWorkspaceRecord,
       },
       {
         requestCwd: repoDir,
@@ -900,7 +892,8 @@ describe("runWorktreeSetupInBackground", () => {
       status: "failed",
       error: expect.stringMatching(/Failed to parse paseo\.json at .*paseo\.json/),
     });
-    expect(archiveWorkspaceRecord).toHaveBeenCalledWith(workspaceId);
+    expect(existsSync(worktreePath)).toBe(true);
+    expect(existsSync(path.join(worktreePath, "paseo.json"))).toBe(true);
     expect(emitWorkspaceUpdateForWorkspaceId).toHaveBeenCalledWith(workspaceId);
   });
 
@@ -931,7 +924,6 @@ describe("runWorktreeSetupInBackground", () => {
       const snapshots = new Map<string, unknown>();
       const logger = createLogger();
       const emitWorkspaceUpdateForWorkspaceId = vi.fn(async () => {});
-      const archiveWorkspaceRecord = vi.fn(async () => {});
 
       await runWorktreeSetupInBackground(
         {
@@ -942,7 +934,6 @@ describe("runWorktreeSetupInBackground", () => {
           emit: (message) => emitted.push(message),
           sessionLogger: logger,
           terminalManager: null,
-          archiveWorkspaceRecord,
         },
         {
           requestCwd: repoDir,
@@ -1055,7 +1046,6 @@ describe("runWorktreeSetupInBackground", () => {
     const logger = createLogger();
     const terminalManager = createTerminalManagerStub();
     const emitWorkspaceUpdateForWorkspaceId = vi.fn(async () => {});
-    const archiveWorkspaceRecord = vi.fn(async () => {});
 
     await runWorktreeSetupInBackground(
       {
@@ -1066,7 +1056,6 @@ describe("runWorktreeSetupInBackground", () => {
         emit: (message) => emitted.push(message),
         sessionLogger: logger,
         terminalManager: terminalManager.manager,
-        archiveWorkspaceRecord,
       },
       {
         requestCwd: repoDir,
@@ -1115,8 +1104,60 @@ describe("runWorktreeSetupInBackground", () => {
       status: "completed",
       error: null,
     });
-    expect(archiveWorkspaceRecord).not.toHaveBeenCalled();
     expect(emitWorkspaceUpdateForWorkspaceId).toHaveBeenCalledWith("44");
+  });
+
+  test("a warm-pool tree whose setup already ran completes without running it again", async () => {
+    const { tempDir, repoDir } = createGitRepo({
+      paseoConfig: {
+        worktree: {
+          setup: ["printf 'ran' > setup-ran.txt"],
+        },
+      },
+    });
+    cleanupPaths.push(tempDir);
+
+    const paseoHome = path.join(tempDir, ".paseo");
+    const preparedWorktree = await createLegacyWorktreeForTest({
+      branchName: "prepared-worktree",
+      cwd: repoDir,
+      baseBranch: "main",
+      worktreeSlug: "prepared-worktree",
+      runSetup: false,
+      paseoHome,
+    });
+
+    const emitted: SessionOutboundMessage[] = [];
+    await runWorktreeSetupInBackground(
+      {
+        paseoHome,
+        emitWorkspaceUpdateForWorkspaceId: async () => {},
+        cacheWorkspaceSetupSnapshot: () => {},
+        emit: (message) => emitted.push(message),
+        sessionLogger: createLogger(),
+        terminalManager: createTerminalManagerStub().manager,
+      },
+      {
+        requestCwd: repoDir,
+        repoRoot: repoDir,
+        workspaceId: "45",
+        worktree: {
+          branchName: "prepared-worktree",
+          worktreePath: preparedWorktree.worktreePath,
+        },
+        shouldBootstrap: true,
+        setupPrepared: true,
+        slug: "prepared-worktree",
+        worktreePath: preparedWorktree.worktreePath,
+      },
+    );
+
+    const finalProgress = emitted.findLast(
+      (message): message is Extract<SessionOutboundMessage, { type: "workspace_setup_progress" }> =>
+        message.type === "workspace_setup_progress",
+    );
+    expect(finalProgress?.payload).toMatchObject({ status: "completed", error: null });
+    expect(existsSync(path.join(preparedWorktree.worktreePath, "setup-ran.txt"))).toBe(false);
   });
 
   test("keeps setup completed without attempting script launch afterward", async () => {
@@ -1150,7 +1191,6 @@ describe("runWorktreeSetupInBackground", () => {
       },
     });
     const emitWorkspaceUpdateForWorkspaceId = vi.fn(async () => {});
-    const archiveWorkspaceRecord = vi.fn(async () => {});
 
     await runWorktreeSetupInBackground(
       {
@@ -1161,7 +1201,6 @@ describe("runWorktreeSetupInBackground", () => {
         emit: (message) => emitted.push(message),
         sessionLogger: logger,
         terminalManager: terminalManager.manager,
-        archiveWorkspaceRecord,
       },
       {
         requestCwd: repoDir,
@@ -1201,7 +1240,6 @@ describe("runWorktreeSetupInBackground", () => {
       status: "completed",
       error: null,
     });
-    expect(archiveWorkspaceRecord).not.toHaveBeenCalled();
     expect(emitWorkspaceUpdateForWorkspaceId).toHaveBeenCalledWith("45");
   });
 
@@ -1232,7 +1270,6 @@ describe("runWorktreeSetupInBackground", () => {
     const logger = createLogger();
     const terminalManager = createTerminalManagerStub();
     const emitWorkspaceUpdateForWorkspaceId = vi.fn(async () => {});
-    const archiveWorkspaceRecord = vi.fn(async () => {});
 
     await runWorktreeSetupInBackground(
       {
@@ -1243,7 +1280,6 @@ describe("runWorktreeSetupInBackground", () => {
         emit: (message) => emitted.push(message),
         sessionLogger: logger,
         terminalManager: terminalManager.manager,
-        archiveWorkspaceRecord,
       },
       {
         requestCwd: repoDir,
@@ -1264,7 +1300,6 @@ describe("runWorktreeSetupInBackground", () => {
       status: "completed",
       error: null,
     });
-    expect(archiveWorkspaceRecord).not.toHaveBeenCalled();
     expect(emitWorkspaceUpdateForWorkspaceId).toHaveBeenCalledWith("46");
   });
 
@@ -1426,7 +1461,6 @@ describe("runWorktreeSetupInBackground", () => {
       emit: (message: SessionOutboundMessage) => emitted.push(message),
       sessionLogger: createLogger(),
       terminalManager: terminalManager.manager,
-      archiveWorkspaceRecord: vi.fn(async () => {}),
       serviceProxy: null,
       scriptRuntimeStore: null,
       getDaemonTcpPort: null,

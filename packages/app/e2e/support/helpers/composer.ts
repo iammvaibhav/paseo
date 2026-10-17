@@ -52,11 +52,21 @@ export async function expectComposerFocused(page: Page): Promise<void> {
   await expect(composerInput(page)).toBeFocused();
 }
 
+export async function expectComposerNotFocused(page: Page): Promise<void> {
+  await expect(composerInput(page)).not.toBeFocused();
+}
+
 export async function submitMessage(page: Page, text: string): Promise<void> {
   const input = composerInput(page);
   await expect(input).toBeEditable({ timeout: 30_000 });
   await input.fill(text);
   await input.press("Enter");
+}
+
+/** The Send button works on compact screens, where Enter inserts a newline. */
+export async function submitMessageWithButton(page: Page, text: string): Promise<void> {
+  await fillComposerDraft(page, text);
+  await page.getByRole("button", { name: "Send message", exact: true }).click();
 }
 
 export async function fillComposerDraft(page: Page, text: string): Promise<void> {
@@ -81,11 +91,6 @@ export async function cancelAgent(page: Page): Promise<void> {
   const stopButton = page.getByRole("button", { name: /stop|cancel/i }).first();
   await expect(stopButton).toBeVisible({ timeout: 10_000 });
   await stopButton.click();
-}
-
-/** Escape is bound to the "agent.interrupt" keyboard shortcut. */
-export async function pressInterruptShortcut(page: Page): Promise<void> {
-  await page.keyboard.press("Escape");
 }
 
 export async function openAttachmentMenu(page: Page): Promise<void> {

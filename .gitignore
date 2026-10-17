@@ -1,5 +1,6 @@
 # Dependencies
 node_modules/
+node_modules
 
 # Build outputs
 build/
@@ -72,6 +73,8 @@ CLAUDE.local.md
 
 # Local agent/tooling artifacts (do not commit)
 PLAN.md
+# core.ignorecase=true makes PLAN.md also match the Plan-first agent mode prompt.
+!packages/server/src/server/agent/agent-modes/prompts/plan.md
 .valknut/
 valknut-report.html/
 valknut-report.json/
@@ -87,6 +90,10 @@ packages/server/src/server/fixtures/dictation/dictation-debug-largest.transcript
 packages/protocol/src/generated/validation/*.aot.ts
 
 /artifacts
+__pycache__/
 packages/desktop/.cache/
 packages/desktop/src-tauri/resources/managed-runtime/
 app.json
+
+# Heap snapshots dumped by --heapsnapshot-near-heap-limit; keep them for debugging.
+*.heapsnapshot

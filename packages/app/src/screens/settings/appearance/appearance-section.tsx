@@ -1,9 +1,9 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
-import { Text, View, type PressableStateCallbackType } from "react-native";
+import { Text, View } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { ChevronDown, Monitor, Moon, Sun } from "lucide-react-native";
+import { Monitor, Moon, Sun } from "lucide-react-native";
 import {
   SYNTAX_THEME_OPTIONS,
   type SyntaxThemeId,
@@ -14,39 +14,56 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
-  DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { SettingsCard, SettingsSwitch } from "@/components/settings";
+import { DropdownTrigger } from "@/components/ui/dropdown-trigger";
 import { SettingsSection } from "@/components/settings/headings/settings-section";
+import { SettingsSwitch } from "@/components/settings";
+import { SegmentedControl, type SegmentedControlOption } from "@/components/ui/segmented-control";
+import { useAgentGridStore } from "@/screens/mission-control/agent-grid/store";
+import {
+  type AgentGridDirection,
+  MIN_AGENT_GRID_VISIBLE_COUNT,
+  MAX_AGENT_GRID_VISIBLE_COUNT,
+} from "@/hooks/use-settings/storage";
+import { isGlassThemePreference } from "@/appearance/glass";
 import { useContributedThemes } from "@/appearance/provider";
-import { EditingTextInput as TextInput } from "@/components/ui/text-input";
+import { Button } from "@/components/ui/button";
+import {
+  EditingTextInput as TextInput,
+  type EditingTextInputHandle,
+} from "@/components/ui/text-input";
 import {
   MAX_CODE_FONT_SIZE,
   MAX_CONTENT_FONT_SIZE,
+  MAX_AGENT_GRID_FONT_SIZE,
   MAX_UI_BASE_FONT_SIZE,
   MIN_CODE_FONT_SIZE,
   MIN_CONTENT_FONT_SIZE,
+  MIN_AGENT_GRID_FONT_SIZE,
   MIN_UI_BASE_FONT_SIZE,
   parseClampedFontSize,
+  parseContentMaxWidth,
+  resolveContentMaxWidth,
   sanitizeFontFamily,
   useAppSettings,
   type AppSettings,
   DEFAULT_THEME_PREFERENCE,
 } from "@/hooks/use-settings";
 import {
+  DEFAULT_GLASS_TUNING,
   DEFAULT_MONO_FONT_STACK,
   DEFAULT_UI_FONT_STACK,
   ICON_SIZE,
   PLUGIN_THEME_PREFERENCE,
   THEME_OPTIONS,
   THEME_SWATCHES,
+  type GlassTuning,
   type Theme,
 } from "@/styles/theme";
 import { isNative } from "@/constants/platform";
 import type { PluginThemeOption } from "@/plugins/themes";
 import { settingsStyles } from "@/styles/settings";
 import { AppearancePreview } from "./appearance-preview";
-import { SidebarNavSection } from "./sidebar-nav-section";
 
 // ---------------------------------------------------------------------------
 // Theme-reactive leaf icons (withUnistyles + uniProps color mapping — no
@@ -57,7 +74,6 @@ import { SidebarNavSection } from "./sidebar-nav-section";
 const ThemedSun = withUnistyles(Sun);
 const ThemedMoon = withUnistyles(Moon);
 const ThemedMonitor = withUnistyles(Monitor);
-const ThemedChevronDown = withUnistyles(ChevronDown);
 
 const mutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 
@@ -81,10 +97,6 @@ function sizeDraftToOverride(value: string): number | undefined {
   if (value.length === 0) return undefined;
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) ? parsed : undefined;
-}
-
-function dropdownTriggerStyle({ pressed }: PressableStateCallbackType) {
-  return [styles.trigger, pressed ? styles.triggerPressed : null];
 }
 
 // ---------------------------------------------------------------------------
@@ -175,27 +187,30 @@ function ThemeRow({
   const selectedLabel = selectedPluginTheme
     ? selectedPluginTheme.name
     : getThemeLabel(t, builtInValue);
+  const leading = useMemo(
+    () =>
+      selectedPluginTheme ? (
+        <ThemeSwatch color={selectedPluginTheme.swatch} />
+      ) : (
+        <ThemeLeading themeValue={builtInValue} />
+      ),
+    [builtInValue, selectedPluginTheme],
+  );
   return (
     <View style={settingsStyles.row}>
       <View style={settingsStyles.rowContent}>
         <Text style={settingsStyles.rowTitle}>{t("settings.appearance.theme.title")}</Text>
       </View>
       <DropdownMenu>
-        <DropdownMenuTrigger
-          style={dropdownTriggerStyle}
+        <DropdownTrigger
           accessibilityLabel={t("settings.appearance.theme.accessibilityLabel", {
             value: selectedLabel,
           })}
+          leading={leading}
         >
-          {selectedPluginTheme ? (
-            <ThemeSwatch color={selectedPluginTheme.swatch} />
-          ) : (
-            <ThemeLeading themeValue={builtInValue} />
-          )}
-          <Text style={styles.triggerText}>{selectedLabel}</Text>
-          <ThemedChevronDown size={ICON_SIZE.sm} uniProps={mutedColorMapping} />
-        </DropdownMenuTrigger>
-        <DropdownMenuContent side="bottom" align="end" width={200}>
+          {selectedLabel}
+        </DropdownTrigger>
+        <DropdownMenuContent side="bottom" align="end" width={200} scrollable>
           {THEME_OPTIONS.map((option, index) => {
             const previousOption = THEME_OPTIONS[index - 1];
             return (
@@ -218,109 +233,6 @@ function ThemeRow({
               option={option}
               selected={selectedPluginTheme?.id === option.id}
               onSelect={onSelectPluginTheme}
-            />
-          ))}
-        </DropdownMenuContent>
-      </DropdownMenu>
-    </View>
-  );
-}
-
-interface AutoExpandReasoningRowProps {
-  value: boolean;
-  onChange: (value: boolean) => void;
-}
-
-function AutoExpandReasoningRow({ value, onChange }: AutoExpandReasoningRowProps) {
-  const { t } = useTranslation();
-  return (
-    <SettingsSwitch
-      label={t("settings.general.autoExpandReasoning.label")}
-      hint={t("settings.general.autoExpandReasoning.description")}
-      value={value}
-      onValueChange={onChange}
-    />
-  );
-}
-
-interface ChatOutlineRowProps {
-  value: boolean;
-  onChange: (value: boolean) => void;
-}
-
-function ChatOutlineRow({ value, onChange }: ChatOutlineRowProps) {
-  const { t } = useTranslation();
-  return (
-    <SettingsSwitch
-      label={t("settings.appearance.chatOutline.title")}
-      hint={t("settings.appearance.chatOutline.description")}
-      value={value}
-      onValueChange={onChange}
-    />
-  );
-}
-
-const TOOL_CALL_DETAIL_LEVELS: readonly AppSettings["toolCallDetailLevel"][] = [
-  "detailed",
-  "overview",
-];
-
-function getToolCallDetailLevelLabel(
-  t: TFunction,
-  value: AppSettings["toolCallDetailLevel"],
-): string {
-  return t(`settings.general.toolCallDetail.options.${value}`);
-}
-
-interface ToolCallDetailMenuItemProps {
-  value: AppSettings["toolCallDetailLevel"];
-  selected: boolean;
-  onChange: (value: AppSettings["toolCallDetailLevel"]) => void;
-}
-
-function ToolCallDetailMenuItem({ value, selected, onChange }: ToolCallDetailMenuItemProps) {
-  const { t } = useTranslation();
-  const handleSelect = useCallback(() => onChange(value), [onChange, value]);
-  return (
-    <DropdownMenuItem selected={selected} onSelect={handleSelect}>
-      {getToolCallDetailLevelLabel(t, value)}
-    </DropdownMenuItem>
-  );
-}
-
-interface ToolCallDetailRowProps {
-  value: AppSettings["toolCallDetailLevel"];
-  onChange: (value: AppSettings["toolCallDetailLevel"]) => void;
-}
-
-function ToolCallDetailRow({ value, onChange }: ToolCallDetailRowProps) {
-  const { t } = useTranslation();
-  const selectedLabel = getToolCallDetailLevelLabel(t, value);
-  return (
-    <View style={settingsStyles.row}>
-      <View style={settingsStyles.rowContent}>
-        <Text style={settingsStyles.rowTitle}>{t("settings.general.toolCallDetail.label")}</Text>
-        <Text style={settingsStyles.rowHint}>
-          {t("settings.general.toolCallDetail.description")}
-        </Text>
-      </View>
-      <DropdownMenu>
-        <DropdownMenuTrigger
-          style={dropdownTriggerStyle}
-          accessibilityLabel={t("settings.general.toolCallDetail.accessibilityLabel", {
-            value: selectedLabel,
-          })}
-        >
-          <Text style={styles.triggerText}>{selectedLabel}</Text>
-          <ThemedChevronDown size={ICON_SIZE.sm} uniProps={mutedColorMapping} />
-        </DropdownMenuTrigger>
-        <DropdownMenuContent side="bottom" align="end" width={200}>
-          {TOOL_CALL_DETAIL_LEVELS.map((option) => (
-            <ToolCallDetailMenuItem
-              key={option}
-              value={option}
-              selected={value === option}
-              onChange={onChange}
             />
           ))}
         </DropdownMenuContent>
@@ -396,6 +308,7 @@ interface FontSizeRowProps {
   accessibilityLabel: string;
   draft: string;
   withBorder?: boolean;
+  testID?: string;
   onChangeDraft: (value: string) => void;
   onCommit: () => void;
 }
@@ -406,6 +319,7 @@ function FontSizeRow({
   accessibilityLabel,
   draft,
   withBorder = true,
+  testID,
   onChangeDraft,
   onCommit,
 }: FontSizeRowProps) {
@@ -426,8 +340,193 @@ function FontSizeRow({
           selectTextOnFocus
           style={styles.sizeInput}
           accessibilityLabel={accessibilityLabel}
+          testID={testID}
         />
         <Text style={styles.unit}>px</Text>
+      </View>
+    </View>
+  );
+}
+const AGENT_GRID_DIRECTION_OPTIONS: SegmentedControlOption<AgentGridDirection>[] = [
+  {
+    value: "horizontal",
+    label: "Horizontal",
+    testID: "settings-appearance-agent-grid-direction-horizontal",
+  },
+  {
+    value: "vertical",
+    label: "Vertical",
+    testID: "settings-appearance-agent-grid-direction-vertical",
+  },
+];
+
+interface AgentGridDirectionRowProps {
+  value: AgentGridDirection;
+  onChange: (value: AgentGridDirection) => void;
+}
+
+function AgentGridDirectionRow({ value, onChange }: AgentGridDirectionRowProps) {
+  const { t } = useTranslation();
+  return (
+    <View style={settingsStyles.row}>
+      <View style={settingsStyles.rowContent}>
+        <Text style={settingsStyles.rowTitle}>{t("settings.appearance.agentGrid.direction")}</Text>
+        <Text style={settingsStyles.rowHint}>
+          {t("settings.appearance.agentGrid.directionHint")}
+        </Text>
+      </View>
+      <SegmentedControl<AgentGridDirection>
+        options={AGENT_GRID_DIRECTION_OPTIONS}
+        value={value}
+        onValueChange={onChange}
+        size="sm"
+        testID="settings-appearance-agent-grid-direction"
+      />
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Content width: numeric field (commit on blur/submit) + reset to the default
+// ---------------------------------------------------------------------------
+
+interface ContentWidthRowProps {
+  value: AppSettings["contentMaxWidth"];
+  onChange: (value: AppSettings["contentMaxWidth"]) => void;
+}
+
+function ContentWidthRow({ value, onChange }: ContentWidthRowProps) {
+  const { t } = useTranslation();
+  const width = resolveContentMaxWidth({ contentMaxWidth: value });
+  // The field is uncontrolled, so a saved or reset width is written into it directly.
+  const input = useRef<EditingTextInputHandle>(null);
+
+  useEffect(() => {
+    input.current?.replaceText(String(width));
+  }, [width]);
+
+  const commit = useCallback(() => {
+    const next = parseContentMaxWidth(input.current?.getText()) ?? width;
+    input.current?.replaceText(String(next));
+    // Typing the width already in effect keeps following the default.
+    if (next !== width) {
+      onChange(next);
+    }
+  }, [onChange, width]);
+
+  const reset = useCallback(() => {
+    onChange(null);
+  }, [onChange]);
+
+  return (
+    <View style={settingsStyles.row}>
+      <View style={settingsStyles.rowContent}>
+        <Text style={settingsStyles.rowTitle}>{t("settings.appearance.layout.contentWidth")}</Text>
+        <Text style={settingsStyles.rowHint}>
+          {t("settings.appearance.layout.contentWidthHint")}
+        </Text>
+      </View>
+      <View style={styles.sizeField}>
+        {value === null ? null : (
+          <Button
+            variant="ghost"
+            size="sm"
+            onPress={reset}
+            accessibilityLabel={t("settings.appearance.layout.resetAccessibility")}
+          >
+            {t("settings.appearance.layout.reset")}
+          </Button>
+        )}
+        <TextInput
+          ref={input}
+          initialValue={String(width)}
+          onBlur={commit}
+          onSubmitEditing={commit}
+          keyboardType="number-pad"
+          inputMode="numeric"
+          selectTextOnFocus
+          style={styles.widthInput}
+          accessibilityLabel={t("settings.appearance.layout.contentWidthAccessibility")}
+        />
+        <Text style={styles.unit}>px</Text>
+      </View>
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Glass strengths: percent fields (commit on blur/submit) + reset to the default
+// ---------------------------------------------------------------------------
+
+type GlassKnob = keyof GlassTuning;
+
+const GLASS_KNOBS: readonly GlassKnob[] = [
+  "window",
+  "chat",
+  "darkness",
+  "floating",
+  "overlay",
+  "panels",
+];
+
+interface GlassPercentRowProps {
+  knob: GlassKnob;
+  value: number;
+  withBorder: boolean;
+  onChange: (knob: GlassKnob, value: number) => void;
+}
+
+function GlassPercentRow({ knob, value, withBorder, onChange }: GlassPercentRowProps) {
+  const { t } = useTranslation();
+  const name = t(`settings.appearance.glass.${knob}`);
+  const max = knob === "panels" ? 300 : 100;
+  const defaultValue = DEFAULT_GLASS_TUNING[knob];
+  // The field is uncontrolled, so a saved or reset value is written into it directly.
+  const input = useRef<EditingTextInputHandle>(null);
+
+  useEffect(() => {
+    input.current?.replaceText(String(value));
+  }, [value]);
+
+  const commit = useCallback(() => {
+    const parsed = parseClampedFontSize(input.current?.getText(), { min: 0, max });
+    const next = parsed ?? value;
+    input.current?.replaceText(String(next));
+    if (next !== value) onChange(knob, next);
+  }, [knob, max, onChange, value]);
+
+  const reset = useCallback(() => onChange(knob, defaultValue), [defaultValue, knob, onChange]);
+
+  return (
+    <View style={withBorder ? styles.rowWithBorder : settingsStyles.row}>
+      <View style={settingsStyles.rowContent}>
+        <Text style={settingsStyles.rowTitle}>{name}</Text>
+        <Text style={settingsStyles.rowHint}>{t(`settings.appearance.glass.${knob}Hint`)}</Text>
+      </View>
+      <View style={styles.sizeField}>
+        {value === defaultValue ? null : (
+          <Button
+            variant="ghost"
+            size="sm"
+            onPress={reset}
+            accessibilityLabel={t("settings.appearance.glass.resetAccessibility", { name })}
+          >
+            {t("settings.appearance.glass.reset")}
+          </Button>
+        )}
+        <TextInput
+          ref={input}
+          initialValue={String(value)}
+          onBlur={commit}
+          onSubmitEditing={commit}
+          keyboardType="number-pad"
+          inputMode="numeric"
+          selectTextOnFocus
+          style={styles.widthInput}
+          accessibilityLabel={t("settings.appearance.glass.accessibility", { name })}
+          testID={`settings-appearance-glass-${knob}`}
+        />
+        <Text style={styles.unit}>%</Text>
       </View>
     </View>
   );
@@ -464,6 +563,25 @@ interface SyntaxRowProps {
   onChange: (id: SyntaxThemeId) => void;
 }
 
+function AgentGridHoverComposerRow({
+  value,
+  onChange,
+}: {
+  value: boolean;
+  onChange: (value: boolean) => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <SettingsSwitch
+      label={t("settings.appearance.agentGrid.hoverComposer")}
+      hint={t("settings.appearance.agentGrid.hoverComposerHint")}
+      value={value}
+      onValueChange={onChange}
+      testID="settings-appearance-agent-grid-hover-composer"
+    />
+  );
+}
+
 function SyntaxRow({ value, onChange }: SyntaxRowProps) {
   const { t } = useTranslation();
   const selectedLabel = syntaxLabelForId(value);
@@ -478,15 +596,13 @@ function SyntaxRow({ value, onChange }: SyntaxRowProps) {
         </Text>
       </View>
       <DropdownMenu>
-        <DropdownMenuTrigger
-          style={dropdownTriggerStyle}
+        <DropdownTrigger
           accessibilityLabel={t("settings.appearance.syntax.highlightThemeAccessibility", {
             value: selectedLabel,
           })}
         >
-          <Text style={styles.triggerText}>{selectedLabel}</Text>
-          <ThemedChevronDown size={ICON_SIZE.sm} uniProps={mutedColorMapping} />
-        </DropdownMenuTrigger>
+          {selectedLabel}
+        </DropdownTrigger>
         <DropdownMenuContent side="bottom" align="end" width={200}>
           {SYNTAX_THEME_OPTIONS.map((option) => (
             <SyntaxMenuItem
@@ -515,6 +631,14 @@ export function AppearanceSection() {
     select: selectPluginTheme,
   } = useContributedThemes();
   const showInterfaceFontFamilyRow = !isNative;
+  // Glass only exists where the window provides vibrancy: Mono in the macOS desktop app.
+  const showGlassSection = isGlassThemePreference(settings.theme);
+  const handleGlassTuningChange = useCallback(
+    (knob: keyof GlassTuning, value: number) => {
+      void updateSettings({ glassTuning: { ...settings.glassTuning, [knob]: value } });
+    },
+    [settings.glassTuning, updateSettings],
+  );
   const uiFontPlaceholder = resolveDefaultStackPlaceholder(t, DEFAULT_UI_FONT_STACK);
   const monoFontPlaceholder = resolveDefaultStackPlaceholder(t, DEFAULT_MONO_FONT_STACK);
 
@@ -522,7 +646,11 @@ export function AppearanceSection() {
   const [monoFontDraft, setMonoFontDraft] = useState(settings.monoFontFamily);
   const [uiBaseSizeDraft, setUiBaseSizeDraft] = useState(String(settings.uiBaseFontSize));
   const [contentSizeDraft, setContentSizeDraft] = useState(String(settings.contentFontSize));
+  const [agentGridSizeDraft, setAgentGridSizeDraft] = useState(String(settings.agentGridFontSize));
   const [codeSizeDraft, setCodeSizeDraft] = useState(String(settings.codeFontSize));
+  const [agentGridVisibleCountDraft, setAgentGridVisibleCountDraft] = useState(
+    String(settings.agentGridVisibleCount),
+  );
 
   // Resync numeric drafts when the committed value changes elsewhere.
   useEffect(() => {
@@ -532,8 +660,14 @@ export function AppearanceSection() {
     setContentSizeDraft(String(settings.contentFontSize));
   }, [settings.contentFontSize]);
   useEffect(() => {
+    setAgentGridSizeDraft(String(settings.agentGridFontSize));
+  }, [settings.agentGridFontSize]);
+  useEffect(() => {
     setCodeSizeDraft(String(settings.codeFontSize));
   }, [settings.codeFontSize]);
+  useEffect(() => {
+    setAgentGridVisibleCountDraft(String(settings.agentGridVisibleCount));
+  }, [settings.agentGridVisibleCount]);
 
   const handleThemeChange = useCallback(
     (theme: BuiltInThemePreference) => {
@@ -549,30 +683,16 @@ export function AppearanceSection() {
     [selectPluginTheme],
   );
 
+  const handleContentMaxWidthChange = useCallback(
+    (contentMaxWidth: AppSettings["contentMaxWidth"]) => {
+      void updateSettings({ contentMaxWidth });
+    },
+    [updateSettings],
+  );
+
   const handleSyntaxThemeChange = useCallback(
     (syntaxTheme: SyntaxThemeId) => {
       void updateSettings({ syntaxTheme });
-    },
-    [updateSettings],
-  );
-
-  const handleAutoExpandReasoningChange = useCallback(
-    (autoExpandReasoning: boolean) => {
-      void updateSettings({ autoExpandReasoning });
-    },
-    [updateSettings],
-  );
-
-  const handleToolCallDetailLevelChange = useCallback(
-    (toolCallDetailLevel: AppSettings["toolCallDetailLevel"]) => {
-      void updateSettings({ toolCallDetailLevel });
-    },
-    [updateSettings],
-  );
-
-  const handleChatOutlineChange = useCallback(
-    (chatOutlineEnabled: boolean) => {
-      void updateSettings({ chatOutlineEnabled });
     },
     [updateSettings],
   );
@@ -619,6 +739,10 @@ export function AppearanceSection() {
     setContentSizeDraft(value.replace(/[^\d]/g, ""));
   }, []);
 
+  const handleAgentGridSizeChange = useCallback((value: string) => {
+    setAgentGridSizeDraft(value.replace(/[^\d]/g, ""));
+  }, []);
+
   const commitUiBaseSize = useCallback(() => {
     const parsed = parseClampedFontSize(uiBaseSizeDraft, {
       min: MIN_UI_BASE_FONT_SIZE,
@@ -655,6 +779,50 @@ export function AppearanceSection() {
     }
   }, [contentSizeDraft, settings.contentFontSize, updateSettings]);
 
+  const handleAgentGridVisibleCountChange = useCallback((text: string) => {
+    setAgentGridVisibleCountDraft(text.replace(/[^0-9]/g, ""));
+  }, []);
+
+  const commitAgentGridVisibleCount = useCallback(() => {
+    const parsed = parseClampedFontSize(agentGridVisibleCountDraft, {
+      min: MIN_AGENT_GRID_VISIBLE_COUNT,
+      max: MAX_AGENT_GRID_VISIBLE_COUNT,
+    });
+    const next = parsed ?? settings.agentGridVisibleCount;
+    setAgentGridVisibleCountDraft(String(next));
+    if (next !== settings.agentGridVisibleCount) {
+      void updateSettings({ agentGridVisibleCount: next });
+      useAgentGridStore.getState().setVisibleCount(next);
+    }
+  }, [agentGridVisibleCountDraft, settings.agentGridVisibleCount, updateSettings]);
+
+  const handleAgentGridDirectionChange = useCallback(
+    (direction: AgentGridDirection) => {
+      void updateSettings({ agentGridDirection: direction });
+      useAgentGridStore.getState().setDirection(direction);
+    },
+    [updateSettings],
+  );
+
+  const handleAgentGridHoverComposerChange = useCallback(
+    (value: boolean) => {
+      void updateSettings({ agentGridHoverComposer: value });
+    },
+    [updateSettings],
+  );
+
+  const commitAgentGridSize = useCallback(() => {
+    const parsed = parseClampedFontSize(agentGridSizeDraft, {
+      min: MIN_AGENT_GRID_FONT_SIZE,
+      max: MAX_AGENT_GRID_FONT_SIZE,
+    });
+    const next = parsed ?? settings.agentGridFontSize;
+    setAgentGridSizeDraft(String(next));
+    if (next !== settings.agentGridFontSize) {
+      void updateSettings({ agentGridFontSize: next });
+    }
+  }, [agentGridSizeDraft, settings.agentGridFontSize, updateSettings]);
+
   // Live-while-typing: the in-progress drafts drive the preview without
   // committing to the global theme. Empty/invalid fields fall back to the
   // theme value inside the preview.
@@ -680,25 +848,6 @@ export function AppearanceSection() {
           />
         </View>
       </SettingsSection>
-      <SettingsSection title={t("settings.appearance.detailLevel.title")}>
-        <SettingsCard>
-          <AutoExpandReasoningRow
-            value={settings.autoExpandReasoning}
-            onChange={handleAutoExpandReasoningChange}
-          />
-          <ToolCallDetailRow
-            value={settings.toolCallDetailLevel}
-            onChange={handleToolCallDetailLevelChange}
-          />
-          {!isNative ? (
-            <ChatOutlineRow
-              value={settings.chatOutlineEnabled}
-              onChange={handleChatOutlineChange}
-            />
-          ) : null}
-        </SettingsCard>
-      </SettingsSection>
-      <SidebarNavSection />
       <SettingsSection title={t("settings.appearance.fonts.title")}>
         <View style={settingsStyles.card}>
           {showInterfaceFontFamilyRow ? (
@@ -728,6 +877,7 @@ export function AppearanceSection() {
             hint={t("settings.appearance.fonts.contentSizeHint")}
             accessibilityLabel={t("settings.appearance.fonts.contentSizeAccessibility")}
             draft={contentSizeDraft}
+            testID="settings-appearance-content-size"
             onChangeDraft={handleContentSizeChange}
             onCommit={commitContentSize}
           />
@@ -752,6 +902,66 @@ export function AppearanceSection() {
           />
         </View>
       </SettingsSection>
+      <SettingsSection title={t("settings.appearance.agentGrid.title")}>
+        <View style={settingsStyles.card}>
+          <AgentGridDirectionRow
+            value={settings.agentGridDirection}
+            onChange={handleAgentGridDirectionChange}
+          />
+          <FontSizeRow
+            title={t("settings.appearance.agentGrid.visibleCount")}
+            hint={t("settings.appearance.agentGrid.visibleCountHint")}
+            accessibilityLabel={t("settings.appearance.agentGrid.visibleCount")}
+            draft={agentGridVisibleCountDraft}
+            withBorder
+            testID="settings-appearance-agent-grid-visible-count"
+            onChangeDraft={handleAgentGridVisibleCountChange}
+            onCommit={commitAgentGridVisibleCount}
+          />
+          <AgentGridHoverComposerRow
+            value={settings.agentGridHoverComposer}
+            onChange={handleAgentGridHoverComposerChange}
+          />
+          <FontSizeRow
+            title={t("settings.appearance.agentGrid.fontSize")}
+            hint={t("settings.appearance.agentGrid.fontSizeHint")}
+            accessibilityLabel={t("settings.appearance.fonts.agentGridSizeAccessibility")}
+            draft={agentGridSizeDraft}
+            withBorder
+            testID="settings-appearance-agent-grid-size"
+            onChangeDraft={handleAgentGridSizeChange}
+            onCommit={commitAgentGridSize}
+          />
+        </View>
+      </SettingsSection>
+
+      {showGlassSection ? (
+        <SettingsSection title={t("settings.appearance.glass.title")}>
+          <Text style={[settingsStyles.rowHint, styles.sectionHint]}>
+            {t("settings.appearance.glass.hint")}
+          </Text>
+          <View style={settingsStyles.card}>
+            {GLASS_KNOBS.map((knob, index) => (
+              <GlassPercentRow
+                key={knob}
+                knob={knob}
+                value={settings.glassTuning[knob]}
+                withBorder={index > 0}
+                onChange={handleGlassTuningChange}
+              />
+            ))}
+          </View>
+        </SettingsSection>
+      ) : null}
+
+      <SettingsSection title={t("settings.appearance.layout.title")}>
+        <View style={settingsStyles.card}>
+          <ContentWidthRow
+            value={settings.contentMaxWidth}
+            onChange={handleContentMaxWidthChange}
+          />
+        </View>
+      </SettingsSection>
       <SettingsSection title={t("settings.appearance.syntax.title")}>
         <View style={settingsStyles.card}>
           <SyntaxRow value={settings.syntaxTheme} onChange={handleSyntaxThemeChange} />
@@ -765,6 +975,9 @@ export function AppearanceSection() {
 }
 
 const styles = StyleSheet.create((theme) => ({
+  sectionHint: {
+    marginBottom: theme.spacing[2],
+  },
   preview: {
     marginTop: theme.spacing[4],
   },
@@ -776,23 +989,6 @@ const styles = StyleSheet.create((theme) => ({
     paddingHorizontal: theme.spacing[4],
     borderTopWidth: theme.borderWidth[1],
     borderTopColor: theme.colors.border,
-  },
-  trigger: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: theme.spacing[1],
-    paddingVertical: theme.spacing[1],
-    paddingHorizontal: theme.spacing[2],
-    borderRadius: theme.borderRadius.md,
-    borderWidth: theme.borderWidth[1],
-    borderColor: theme.colors.border,
-  },
-  triggerPressed: {
-    opacity: 0.85,
-  },
-  triggerText: {
-    color: theme.colors.foreground,
-    fontSize: theme.fontSize.base,
   },
   swatch: {
     width: ICON_SIZE.md,
@@ -823,6 +1019,19 @@ const styles = StyleSheet.create((theme) => ({
   },
   sizeInput: {
     width: 64,
+    minHeight: 36,
+    paddingVertical: theme.spacing[2],
+    paddingHorizontal: theme.spacing[3],
+    borderRadius: theme.borderRadius.md,
+    borderWidth: theme.borderWidth[1],
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface2,
+    color: theme.colors.foreground,
+    fontSize: theme.fontSize.base,
+    textAlign: "right",
+  },
+  widthInput: {
+    width: 80,
     minHeight: 36,
     paddingVertical: theme.spacing[2],
     paddingHorizontal: theme.spacing[3],

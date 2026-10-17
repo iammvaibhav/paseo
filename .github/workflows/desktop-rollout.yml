@@ -30,7 +30,7 @@ jobs:
         with:
           sparse-checkout: |
             package.json
-            package-lock.json
+            pnpm-lock.yaml
             scripts
 
       - name: Resolve release metadata
@@ -41,13 +41,13 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: "npm"
-          cache-dependency-path: package-lock.json
+          cache: "pnpm"
+          cache-dependency-path: pnpm-lock.yaml
           registry-url: "https://npm.pkg.github.com"
           scope: "@boudra"
 
       - name: Install JS dependencies
-        run: node scripts/npm-retry.mjs ci
+        run: node scripts/pnpm-retry.mjs install --frozen-lockfile
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

@@ -17,6 +17,7 @@ type SupervisorLifecycleMessage =
   | {
       type: "paseo:ready";
       listen: string;
+      serverId: string;
     }
   | {
       type: "paseo:restart";
@@ -70,7 +71,22 @@ function bootstrapFromEnvironment(): BootstrapResult {
   try {
     const paseoHome = resolvePaseoHome();
     const config = loadConfig(paseoHome);
-    const logger = createRootLogger({ log: config.log }, { paseoHome, file: false });
+    // Supervised workers used to log only to stdout and let the supervisor tee
+    // into daemon.log. That couples log volume to the IPC/stdio pipes: a boot
+    // burst (Mission Control identity backfill, worktree create) can fill the
+    // pipe, block pino/sonic-boom, stall the worker event loop, stop heartbeats,
+    // and get the worker killed mid workspace.create (client sees Transport
+    // closed 1005). The worker owns the durable log file instead.
+    const existingLog = config.log;
+    const logger = createRootLogger(
+      {
+        log: {
+          ...existingLog,
+          file: existingLog?.file ?? { path: path.join(paseoHome, "daemon.log") },
+        },
+      },
+      { paseoHome },
+    );
     return { paseoHome, logger, config };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -327,7 +343,11 @@ async function main() {
     if (!listen) {
       throw new Error("Daemon did not expose a listen target after startup");
     }
-    sendSupervisorLifecycleMessage({ type: "paseo:ready", listen });
+    sendSupervisorLifecycleMessage({
+      type: "paseo:ready",
+      listen,
+      serverId: daemon.getServerId(),
+    });
   } catch (err) {
     logger.fatal({ err }, "Daemon failed to start listening");
     throw err;

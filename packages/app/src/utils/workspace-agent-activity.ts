@@ -1,4 +1,5 @@
 import type { Agent, WorkspaceDescriptor } from "@/stores/session-store";
+import { isHistoryAskAgent } from "@/history-ask";
 import { isWorkspaceRootAgent } from "@/subagents/policies";
 import { deriveSidebarStateBucket } from "./sidebar-agent-state";
 
@@ -22,7 +23,12 @@ export function buildWorkspaceAgentActivityIndex(
 
   for (const agent of agents.values()) {
     const parentAgent = agent.parentAgentId ? agents.get(agent.parentAgentId) : undefined;
-    if (agent.archivedAt || !agent.workspaceId || !isWorkspaceRootAgent(agent, parentAgent)) {
+    if (
+      agent.archivedAt ||
+      !agent.workspaceId ||
+      !isWorkspaceRootAgent(agent, parentAgent) ||
+      isHistoryAskAgent(agent.labels)
+    ) {
       continue;
     }
 
@@ -34,10 +40,11 @@ export function buildWorkspaceAgentActivityIndex(
     latestActivityAtByWorkspaceId.set(agent.workspaceId, enteredAt);
 
     const status = deriveSidebarStateBucket({
+      bucket: agent.bucket,
       status: workspaceAgentStatus(agent),
       pendingPermissionCount: agent.pendingPermissions.length,
-      requiresAttention: agent.requiresAttention,
       attentionReason: agent.attentionReason,
+      stoppedBy: agent.stoppedBy,
     });
     activityByWorkspaceId.set(agent.workspaceId, {
       agentId: agent.id,

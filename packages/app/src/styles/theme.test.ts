@@ -30,6 +30,7 @@ describe("Theme catalog", () => {
       "light",
       "dark",
       "auto",
+      "mono",
       "zinc",
       "midnight",
       "claude",

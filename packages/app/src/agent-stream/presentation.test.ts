@@ -62,6 +62,8 @@ function installProbe(
     clientBundle,
     lifetime: new AbortController(),
     queryClient: new QueryClient(),
+    paseo: {} as InstalledPlugin["paseo"],
+    invoke: async () => undefined,
   };
 }
 
@@ -210,6 +212,17 @@ describe("stream presentation through installed plugins", () => {
     expect(result.head).toMatchObject([{ text: "```ts\nconst a = 1;\n\nconst b = 2;" }]);
   });
 
+  // Codex streams a line break and the next line's indent as their own chunks.
+  it("keeps a line break when a chunk ends in the next line's indent", () => {
+    const harness = streamHarness();
+    harness.send(assistant("```mermaid\nflowchart TD\n    A[Start] --> B[Review]\n"));
+    harness.send(assistant("   "));
+    const result = harness.send(assistant(" B --> C[Finish]\n```"));
+    expect(result.head).toMatchObject([
+      { text: "```mermaid\nflowchart TD\n    A[Start] --> B[Review]\n    B --> C[Finish]\n```" },
+    ]);
+  });
+
   // One rendering path: a fetched message is the same block group as a streamed one,
   // which is what lets find, scroll-to-message and history reveal address it by id.
   // A link reference definition stays with the paragraph that uses it, so the split
@@ -350,7 +363,7 @@ describe("stream presentation through installed plugins", () => {
       head: [],
       transform: installedTransform(installProbe("tool_call", 'item.name === "bash"')),
     });
-    expect(result.groupsByHostId.get(result.tail[0]!.id)?.run.calls).toEqual(calls.slice(0, 2));
+    expect(result.groupsByHostId.get(result.tail[0]!.id)?.run.items).toEqual(calls.slice(0, 2));
     expect(pluginData(rows(result))).toEqual([
       {
         callId: "call-3",
@@ -360,6 +373,28 @@ describe("stream presentation through installed plugins", () => {
         detail: { type: "unknown", input: { callId: "call-3" }, output: { callId: "call-3" } },
         phase: "complete",
       },
+    ]);
+  });
+
+  it("never groups tool calls across a history gap", () => {
+    const at = (call: ToolCallItem, seq: number): ToolCallItem => ({
+      ...call,
+      timelineCursor: { epoch: "epoch-1", seq },
+    });
+    const beforeGap = [at(toolCall("call-1", "read"), 10), at(toolCall("call-2", "read"), 11)];
+    const afterGap = [at(toolCall("call-3", "read"), 900), at(toolCall("call-4", "bash"), 901)];
+    const result = createStreamPresentation()({
+      ...presentationOptions,
+      isTurnActive: false,
+      tail: [...beforeGap, ...afterGap],
+      head: [],
+      transform: undefined,
+      gaps: [{ epoch: "epoch-1", startSeq: 12, endSeq: 899 }],
+    });
+
+    expect(result.tail.map((row) => result.groupsByHostId.get(row.id)?.run.items)).toEqual([
+      beforeGap,
+      afterGap,
     ]);
   });
 

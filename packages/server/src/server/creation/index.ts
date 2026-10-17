@@ -11,6 +11,7 @@ import {
 } from "@getpaseo/protocol/messages";
 import { writeFileAtomic } from "../atomic-file.js";
 import { generateWorkspaceId } from "../workspace-registry-model.js";
+import { createPhaseTimer } from "../../utils/phase-timer.js";
 
 type Observer = (snapshot: CreationSnapshot) => void;
 interface CreationRequest {
@@ -59,7 +60,9 @@ export class CreationService {
 
   async create(input: CreationInput, observer?: Observer): Promise<CreationSnapshot> {
     const identity = identityFor(input.kind, input.key);
+    const requestedAt = Date.now();
     const admitted = this.admission.then(async () => {
+      const admissionStartedAt = Date.now();
       await mkdir(this.directory, { recursive: true });
       const fingerprint = digest(input.request);
       let record = await this.read(identity);
@@ -97,8 +100,14 @@ export class CreationService {
         });
       }
       const snapshot = record.snapshot;
+      const admissionTiming = {
+        admissionWaitMs: admissionStartedAt - requestedAt,
+        admitMs: Date.now() - admissionStartedAt,
+      };
       // Defer the runner until admission has installed the initiating observer.
-      const completion = Promise.resolve().then(() => this.run(identity, record, input));
+      const completion = Promise.resolve().then(() =>
+        this.run(identity, record, input, admissionTiming),
+      );
       this.active.set(identity, completion);
       void completion.finally(() => this.active.delete(identity)).catch(() => undefined);
       return { completion, snapshot };
@@ -148,14 +157,19 @@ export class CreationService {
     identity: string,
     record: Record,
     input: CreationInput,
+    admissionTiming: { admissionWaitMs: number; admitMs: number },
   ): Promise<CreationSnapshot> {
+    const startedAt = Date.now();
+    const timer = createPhaseTimer();
     try {
       if (input.provision && !record.snapshot.workspace) {
         record.inFlight = "workspace";
         await this.write(identity, record);
+        timer.mark("receiptMs");
         const { workspace, setupSkippedReason } = await input.provision(
           record.snapshot.workspaceId!,
         );
+        timer.mark("provisionMs");
         record.inFlight = null;
         await this.publish(identity, record, {
           phase: "workspace_ready",
@@ -163,10 +177,12 @@ export class CreationService {
           workspaceId: workspace.id,
           setupSkippedReason,
         });
+        timer.mark("receiptMs");
       }
       if (input.hasAgent && input.createAgent && !record.snapshot.agent) {
         record.inFlight = "agent";
         await this.write(identity, record);
+        timer.mark("receiptMs");
         const agent = await input.createAgent(
           record.snapshot.agentId!,
           record.snapshot.workspace,
@@ -179,6 +195,7 @@ export class CreationService {
             });
           },
         );
+        timer.mark("agentMs");
         record.inFlight = null;
         if (input.hasPrompt)
           await this.publish(identity, record, { phase: "prompt_started", agent });
@@ -186,6 +203,18 @@ export class CreationService {
       }
       record.inFlight = null;
       await this.publish(identity, record, { phase: "completed" });
+      timer.mark("receiptMs");
+      // One row per create so a slow request splits into admission, receipt
+      // writes, workspace provisioning and agent start from daemon.log alone.
+      this.logger.info(
+        {
+          kind: input.kind,
+          workspaceId: record.snapshot.workspaceId,
+          agentId: record.snapshot.agentId,
+          timing: { ...admissionTiming, ...timer.phases, runMs: Date.now() - startedAt },
+        },
+        "creation.timing",
+      );
     } catch (error) {
       const stage = record.inFlight ?? "agent";
       const resourceId =

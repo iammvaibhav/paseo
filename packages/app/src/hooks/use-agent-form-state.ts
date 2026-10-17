@@ -12,12 +12,16 @@ import {
   type ProviderSelectorProvider,
 } from "@/provider-selection/provider-selection";
 import { filterSelectableModels } from "@/provider-selection/model-catalog";
+import { useHostFeature } from "@/runtime/host-features";
+import { AI_REVIEW_AGENT_MODE } from "@/composer/agent-controls/mode-control";
 import { OptimisticFormPreferences } from "@/create-agent-preferences/optimistic-preferences";
 import { applyAgentProfilePreferences } from "@/create-agent-preferences/preferences";
 import { useProvidersSnapshot } from "./use-providers-snapshot";
 import {
   useFormPreferences,
-  mergeProviderPreferences,
+  mergeProviderPreferencesWithScope,
+  resolveEffectiveFormPreferences,
+  type FormPreferenceScope,
   type FormPreferences,
 } from "./use-form-preferences";
 import {
@@ -39,6 +43,7 @@ import {
 import type { MaterializedAgentProfile } from "@/agent-profiles";
 
 export type { FormInitialValues } from "@/provider-selection/resolve-agent-form";
+export type { FormPreferenceScope } from "./use-form-preferences";
 
 export interface UseAgentFormStateOptions {
   serverId: string | null;
@@ -46,6 +51,8 @@ export interface UseAgentFormStateOptions {
   initialValues?: FormInitialValues;
   isVisible?: boolean;
   isCreateFlow?: boolean;
+  /** Workspace/project scope for remembering the last selected model. */
+  preferenceScope?: FormPreferenceScope | null;
 }
 
 export interface UseAgentFormStateResult {
@@ -122,15 +129,16 @@ async function persistProviderPreferences(input: {
   provider: AgentProvider;
   formState: FormState;
   availableModels: AgentModelDefinition[] | null;
+  preferenceScope?: FormPreferenceScope | null;
   updatePreferences: (
     updates: Partial<FormPreferences> | ((current: FormPreferences) => FormPreferences),
   ) => Promise<FormPreferences>;
 }): Promise<void> {
-  const { provider, formState, availableModels, updatePreferences } = input;
+  const { provider, formState, availableModels, preferenceScope, updatePreferences } = input;
   const resolvedModel = resolveEffectiveModel(availableModels, formState.model);
   const modelId = resolvedModel?.id ?? formState.model;
   await updatePreferences((current) =>
-    mergeProviderPreferences({
+    mergeProviderPreferencesWithScope({
       preferences: current,
       provider,
       updates: {
@@ -140,15 +148,43 @@ async function persistProviderPreferences(input: {
           ? { thinkingByModel: { [modelId]: formState.thinkingOptionId } }
           : {}),
       },
+      scope: preferenceScope,
     }),
   );
 }
 
-export function useAgentFormState(options: UseAgentFormStateOptions): UseAgentFormStateResult {
-  const { serverId, initialValues, workingDir, isVisible = true, isCreateFlow = true } = options;
+function buildPreferenceScopeKey(scope: FormPreferenceScope | null | undefined): string {
+  const workspaceId = scope?.workspaceId?.trim() || "";
+  const projectKey = scope?.projectKey?.trim() || "";
+  return `${workspaceId}\n${projectKey}`;
+}
 
-  const { preferences, isLoading: isPreferencesLoading, updatePreferences } = useFormPreferences();
+export function useAgentFormState(options: UseAgentFormStateOptions): UseAgentFormStateResult {
+  const {
+    serverId,
+    initialValues,
+    workingDir,
+    isVisible = true,
+    isCreateFlow = true,
+    preferenceScope = null,
+  } = options;
+
+  // Host-aware: the composer targets a specific daemon, so its last pick syncs
+  // with that daemon's composerPreferences (config.json) via get/patchDaemonConfig.
+  const {
+    preferences,
+    isLoading: isPreferencesLoading,
+    updatePreferences,
+  } = useFormPreferences(serverId);
   const preferenceOverlayRef = useRef(new OptimisticFormPreferences(preferences));
+  const preferenceScopeKey = useMemo(
+    () => buildPreferenceScopeKey(preferenceScope),
+    [preferenceScope],
+  );
+  const preferenceScopeRef = useRef(preferenceScope);
+  useEffect(() => {
+    preferenceScopeRef.current = preferenceScope;
+  }, [preferenceScope]);
 
   useEffect(() => {
     preferenceOverlayRef.current.reconcile(preferences);
@@ -245,10 +281,34 @@ export function useAgentFormState(options: UseAgentFormStateOptions): UseAgentFo
   const allProviderModels = snapshotAllProviderModels;
   const modelSelectorProviders = snapshotModelSelectorProviders;
   const availableModels = snapshotSelectedProviderModels;
-  const modeOptions = snapshotSelectedProviderModes;
+  const supportsAiReviewer = useHostFeature(serverId, "aiReviewer");
+  const modeOptions = useMemo(() => {
+    let modes = snapshotSelectedProviderModes;
+    if (supportsAiReviewer) {
+      if (modes.length > 0 && !modes.some((m) => m.id === "ai-review")) {
+        modes = [...modes, AI_REVIEW_AGENT_MODE];
+      }
+    } else {
+      modes = modes.filter((m) => m.id !== "ai-review");
+    }
+    return modes;
+  }, [snapshotSelectedProviderModes, supportsAiReviewer]);
   const isModelSelectionLoading =
     resolution.status === "pending" || snapshotIsLoading || selectedProviderIsLoading;
   const isAllModelsLoading = isModelSelectionLoading;
+
+  const effectivePreferences = useMemo(
+    () => resolveEffectiveFormPreferences(preferences, preferenceScope),
+    [preferences, preferenceScope],
+  );
+
+  // The reducer re-opens resolution when serverId, visibility or initialValues
+  // change. Scoped preferences (workspace -> project -> global) are an input it
+  // does not track, so re-open it here: switching workspace or project must
+  // restore the model remembered for that scope.
+  useEffect(() => {
+    dispatch({ type: "REQUEST_RESOLUTION" });
+  }, [preferenceScopeKey]);
 
   useEffect(() => {
     dispatch({
@@ -259,7 +319,7 @@ export function useAgentFormState(options: UseAgentFormStateOptions): UseAgentFo
       isPreferencesLoading,
       hasSnapshot: snapshotEntries !== undefined,
       initialValues,
-      preferences,
+      preferences: effectivePreferences,
       providerModelsByProvider: snapshotProviderModelsByProvider,
       allowedProviderMap: snapshotResolvableProviderDefinitionMap,
     });
@@ -270,7 +330,7 @@ export function useAgentFormState(options: UseAgentFormStateOptions): UseAgentFo
     isPreferencesLoading,
     snapshotEntries,
     initialValues,
-    preferences,
+    effectivePreferences,
     snapshotProviderModelsByProvider,
     snapshotResolvableProviderDefinitionMap,
   ]);
@@ -301,6 +361,7 @@ export function useAgentFormState(options: UseAgentFormStateOptions): UseAgentFo
           updates: {
             model: nextModelId || undefined,
           },
+          scope: preferenceScopeRef.current,
         }),
       );
     },
@@ -377,6 +438,7 @@ export function useAgentFormState(options: UseAgentFormStateOptions): UseAgentFo
             updates: {
               mode: modeId || undefined,
             },
+            scope: preferenceScopeRef.current,
           }),
         );
       }
@@ -406,6 +468,7 @@ export function useAgentFormState(options: UseAgentFormStateOptions): UseAgentFo
             updates: {
               model: nextModelId || undefined,
             },
+            scope: preferenceScopeRef.current,
           }),
         );
       }
@@ -427,6 +490,7 @@ export function useAgentFormState(options: UseAgentFormStateOptions): UseAgentFo
                 [modelId]: thinkingOptionId,
               },
             },
+            scope: preferenceScopeRef.current,
           }),
         );
       }
@@ -453,6 +517,7 @@ export function useAgentFormState(options: UseAgentFormStateOptions): UseAgentFo
       provider: formState.provider,
       formState,
       availableModels,
+      preferenceScope: preferenceScopeRef.current,
       updatePreferences: updateCurrentPreferences,
     });
   }, [availableModels, formState, updateCurrentPreferences]);

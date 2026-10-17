@@ -11,7 +11,7 @@ import type { SidebarStateBucket } from "@/utils/sidebar-agent-state";
 import type { SurfaceBackdrop } from "@/styles/surface-backdrop";
 import { getStatusDotColor } from "@/utils/status-dot-color";
 import { StatusRing } from "@/components/status-ring";
-import { getStatusRingOffset } from "@/components/status-ring/geometry";
+import { getStatusRingOffset, STATUS_RING_FRAME_SIZE } from "@/components/status-ring/geometry";
 import {
   STATUS_INDICATOR_ALERT_SIZE,
   STATUS_INDICATOR_DOT_SIZE,
@@ -26,6 +26,7 @@ export interface WorkspaceTabPresentation {
   subtitle: string;
   tooltip: string;
   modified: boolean;
+  showCloseButton: boolean;
   titleState: "ready" | "loading";
   icon: React.ComponentType<PanelIconProps>;
   statusBucket: SidebarStateBucket | null;
@@ -90,6 +91,7 @@ function WorkspaceTabPresentationResolverInner({
       subtitle: descriptor.subtitle,
       tooltip: descriptor.tooltip,
       modified: attributes.modified,
+      showCloseButton: registration.showCloseButton,
       titleState: descriptor.titleState,
       icon: descriptor.icon,
       statusBucket: descriptor.statusBucket,
@@ -104,6 +106,7 @@ function WorkspaceTabPresentationResolverInner({
       tab.key,
       tab.kind,
       attributes.modified,
+      registration.showCloseButton,
     ],
   );
 
@@ -129,7 +132,7 @@ const ThemedCheckIcon = withUnistyles(Check);
 const ThemedCircleAlert = withUnistyles(CircleAlert);
 const mutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 const needsInputAlertMapping = (theme: Theme) => ({
-  color: theme.colors.surface0,
+  color: theme.colors.background,
   fill: getStatusDotColor({ theme, bucket: "needs_input" }) ?? undefined,
 });
 
@@ -149,9 +152,12 @@ export function WorkspaceTabIcon({
   else if (bucket === "attention") statusDotColor = styles.statusDotAttention.color;
   const showNeedsInputAlert = bucket === "needs_input";
   const Icon = presentation.icon;
+  // Give the status ring/dot room outside the 14px glyph so they don't
+  // cover the provider/tab letter (live bug: blue running ring sat on the T).
+  const frameSize = Math.max(size, STATUS_RING_FRAME_SIZE);
   const agentIconWrapperStyle = useMemo(
-    () => [styles.agentIconWrapper, { width: size, height: size }],
-    [size],
+    () => [styles.agentIconWrapper, { width: frameSize, height: frameSize }],
+    [frameSize],
   );
   const statusDotStyle = useMemo(
     () => [

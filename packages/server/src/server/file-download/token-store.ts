@@ -1,12 +1,16 @@
 import { randomUUID } from "node:crypto";
 
+export type DownloadTokenKind = "file" | "directory";
+
 export interface DownloadTokenEntry {
   token: string;
   path: string;
   absolutePath: string;
   fileName: string;
   mimeType: string;
+  /** Byte size for files; 0 for directories (zip size is unknown until streamed). */
   size: number;
+  kind: DownloadTokenKind;
   expiresAt: number;
 }
 
@@ -25,12 +29,17 @@ export class DownloadTokenStore {
     this.now = options.now ?? (() => Date.now());
   }
 
-  issueToken(input: Omit<DownloadTokenEntry, "token" | "expiresAt">): DownloadTokenEntry {
+  issueToken(
+    input: Omit<DownloadTokenEntry, "token" | "expiresAt" | "kind"> & {
+      kind?: DownloadTokenKind;
+    },
+  ): DownloadTokenEntry {
     this.pruneExpired();
     const token = randomUUID();
     const expiresAt = this.now() + this.ttlMs;
     const entry: DownloadTokenEntry = {
       ...input,
+      kind: input.kind ?? "file",
       token,
       expiresAt,
     };

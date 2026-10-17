@@ -14,6 +14,7 @@ import type {
   FileEntryDuplicateRequest,
   FileEntryRenameRequest,
   FileExplorerRequest,
+  FileExplorerWriteRequest,
   FileUploadRequest,
   FileSubscribeRequest,
   FileUnsubscribeRequest,
@@ -27,13 +28,14 @@ import {
   createExplorerEntry,
   deleteExplorerEntry,
   duplicateExplorerEntry,
-  getDownloadableFileInfo,
+  getDownloadableEntryInfo,
   listDirectoryEntries,
   readExplorerFile,
   renameExplorerEntry,
   streamExplorerFile,
   writeExplorerFile,
 } from "../../file-explorer/service.js";
+import { FileExplorerWriteStore } from "../../file-explorer/write-store.js";
 import { workspaceFileObserver, type FileObserver } from "../../file-explorer/observer.js";
 import { getProjectIcon } from "../../../utils/project-icon.js";
 
@@ -69,6 +71,7 @@ export class WorkspaceFilesSession {
   private readonly downloadTokenStore: DownloadTokenStore;
   private readonly logger: pino.Logger;
   private readonly fileUploads: FileUploadStore;
+  private readonly fileWrites: FileExplorerWriteStore;
   private readonly fileObserver: FileObserver;
 
   constructor(options: WorkspaceFilesSessionOptions) {
@@ -76,6 +79,7 @@ export class WorkspaceFilesSession {
     this.downloadTokenStore = options.downloadTokenStore;
     this.logger = options.logger;
     this.fileUploads = new FileUploadStore({ paseoHome: options.paseoHome });
+    this.fileWrites = new FileExplorerWriteStore();
     this.fileObserver = options.fileObserver ?? workspaceFileObserver;
   }
 
@@ -289,7 +293,7 @@ export class WorkspaceFilesSession {
         );
       } else {
         if (request.maxBytes) {
-          const file = await getDownloadableFileInfo({ root: cwd, relativePath: requestedPath });
+          const file = await getDownloadableEntryInfo({ root: cwd, relativePath: requestedPath });
           if (file.size > request.maxBytes) {
             throw new Error("File is too large to display");
           }
@@ -389,7 +393,19 @@ export class WorkspaceFilesSession {
     });
   }
 
-  async handleFileTransferFrame(frame: FileTransferFrame, source: object): Promise<void> {
+  handleFileExplorerWriteRequest(request: FileExplorerWriteRequest): void {
+    this.fileWrites.beginWrite(request);
+  }
+
+  async handleFileTransferFrame(frame: FileTransferFrame, source?: object): Promise<void> {
+    if (this.fileWrites.hasPending(frame.requestId)) {
+      const writeResponse = await this.fileWrites.receiveFrame(frame);
+      if (writeResponse) {
+        this.host.emit(writeResponse, source);
+      }
+      return;
+    }
+
     await this.fileUploads.receiveFrame(frame, source);
   }
 
@@ -448,7 +464,7 @@ export class WorkspaceFilesSession {
     );
 
     try {
-      const info = await getDownloadableFileInfo({
+      const info = await getDownloadableEntryInfo({
         root: cwd,
         relativePath: requestedPath,
       });
@@ -459,6 +475,7 @@ export class WorkspaceFilesSession {
         fileName: info.fileName,
         mimeType: info.mimeType,
         size: info.size,
+        kind: info.kind,
       });
 
       this.host.emit({
