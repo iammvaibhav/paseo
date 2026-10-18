@@ -150,7 +150,6 @@ export const en = {
       muteVoice: "Mute voice",
       dictation: "Dictation",
       interruptBeforeVoice: "Interrupt the agent before starting voice mode",
-      commanderVoice: "Commander Voice",
     },
     attachments: {
       addImage: "Add image",
@@ -2809,31 +2808,11 @@ export const en = {
       host: "Overview",
     },
     missionControl: {
-      memory: "Memory",
-      hindsightUrl: "Hindsight URL",
-      hindsightUrlHint:
-        "Hindsight API base URL. Empty disables fleet memory (run-record writes and recall).",
-      hindsightBank: "Write bank",
-      hindsightBankHint: "Bank Paseo writes run records to.",
-      hindsightSecondaryBank: "Recall bank (secondary)",
-      hindsightSecondaryBankHint:
-        "Read-only secondary bank consulted by fleet_recall. Empty disables.",
-      voiceNodeUrl: "Voice node URL",
-      voiceNodeUrlHint:
-        "Commander Voice server (e.g. ws://127.0.0.1:8787/ws). Empty hides Commander Voice in the Mission Control composer.",
-      voiceMode: "Voice tool mode",
-      voiceModeHint:
-        "Relay = voice reads like Commander but routes every change through commander_dispatch. Direct = voice holds the full Commander tool surface, approval-gated. Applies to new voice sessions.",
-      approvalMode: "Approval mode",
-      approvalModeHint: "Auto mode sends proposals immediately; destructive actions always ask.",
       verbose: "Verbose mode",
       verboseHint:
         "Show internal Mission Control machinery rows, system-owned workspaces, and detailed diagnostics.",
       clearView: "Clear view",
       clearViewHint: "Hide earlier cards from the feed. Older events remain available in History.",
-      resetCommander: "Reset Commander",
-      resetCommanderHint:
-        "Archive current Commander and spawn a fresh one with a new context pack.",
     },
     plugins: {
       title: "Plugins",

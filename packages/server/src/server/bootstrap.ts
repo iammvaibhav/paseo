@@ -160,12 +160,7 @@ import {
 } from "./mcp-fleet/finish-notifier.js";
 import { resolveVaultSecret, warmVaultSecrets } from "./secrets/vault-secret.js";
 import {
-  MISSION_CONTROL_LABEL_KEY,
-  MISSION_CONTROL_LABEL_VALUE,
-} from "./mission-control/commander-contract.js";
-import {
   createPaseoToolCatalog,
-  dispatchLocalPromptMode,
   type PaseoToolHostDependencies,
 } from "./agent/tools/paseo-tools.js";
 import { sendPromptToAgent } from "./agent/agent-prompt.js";
@@ -189,26 +184,11 @@ import { IdleCloseOmpService } from "./idle-close/index.js";
 import { KeepAwakeService } from "./keep-awake/index.js";
 import { MissionControlService } from "./mission-control/service.js";
 import { getItsaplanIssueIdFromLabels } from "./itsaplan/index.js";
-import type { MissionControlProposalSpawnPlan } from "@getpaseo/protocol/mission-control/types";
 import { areEquivalentPaths } from "../utils/path.js";
 import { getWorktreeConfiguredBaseRef } from "../utils/worktree.js";
-import {
-  buildFleetContextData,
-  buildWorldSnapshot,
-  resolveRememberedBaseBranch,
-} from "./mission-control/context.js";
+import { buildFleetContextData, resolveRememberedBaseBranch } from "./mission-control/context.js";
 import type { ComposerPreferences } from "@getpaseo/protocol/composer-preferences";
-import { CommanderSnapshotInjector } from "./mission-control/commander-snapshot.js";
 import { CentralMissionControlConfigStore } from "./mission-control/config.js";
-import { createMissionControlPresenceSource } from "./mission-control/presence.js";
-import { MissionControlVerifierDispatcher } from "./mission-control/verifier.js";
-import {
-  commanderHomeCwd,
-  buildCommanderLaunchContract,
-  ensureCommanderOnBoot,
-  isDesignatedCommanderHost,
-  resetCommander,
-} from "./mission-control/commander-boot.js";
 import { AgentNamingService } from "./mission-control/naming.js";
 import { runIdentityBackfill } from "./mission-control/backfill.js";
 import { MAX_WEBHOOK_BODY_BYTES, WebhookService } from "./webhook/service.js";
@@ -220,12 +200,9 @@ import {
   createItsaplanResyncRouteHandler,
   createItsaplanWebhookRouteHandler,
   ItsaplanBridge,
-  ItsaplanChatRunner,
-  ItsaplanClient,
   ItsaplanProjectStore,
   ItsaplanReconcileService,
   resolveItsaplanConfig,
-  resolveTicketAttachments,
   runItsaplanProjectResync,
   type ItsaplanCentralConfig,
 } from "./itsaplan/index.js";
@@ -311,16 +288,10 @@ import {
 } from "./agent/create-agent/create.js";
 import { archiveAgentCommand, cancelAgentRunCommand } from "./agent/lifecycle-command.js";
 import {
-  applyMetaFromProposal,
   applyMetaPlan,
   applyRoutedMetaPlan,
   type MetaActionsDependencies,
 } from "./mission-control/meta-actions.js";
-import {
-  executeSpawnProposal,
-  spawnOnThisHost,
-  type SpawnExecutorDependencies,
-} from "./mission-control/spawn-executor.js";
 import { CreateAgentLifecycleDispatch } from "./agent/create-agent-lifecycle-dispatch.js";
 import {
   HubRelationshipController,
@@ -391,141 +362,6 @@ function createItsaplanWebhookUrl(listenTarget: ListenTarget | null): string | n
     `http://${formatHostForHttpUrl(host)}:${listenTarget.port}`,
   ).toString();
 }
-
-/**
- * A spawn attempt result. Every successful spawn records the serverId of the
- * host that actually created the agent — this daemon for local spawns, the
- * peer for peer-routed spawns — so the approvals gate can stamp
- * spawnedOnServerId onto the proposal.
- */
-type SpawnProposalResult =
-  | { ok: true; agentId: string; serverId?: string }
-  | { ok: false; error: string };
-
-/**
- * Ticket images attach natively at spawn (composer-paste shape), not as URLs
- * the worker has to fetch. Commander-supplied images win; otherwise a labeled
- * itsaplan ticket is downloaded here so peer hosts don't need itsaplan config.
- */
-async function attachTicketImagesToSpawnPlan(
-  plan: MissionControlProposalSpawnPlan,
-  getItsaplanConfig: () => ItsaplanCentralConfig | null,
-  logger: Logger,
-): Promise<MissionControlProposalSpawnPlan> {
-  if (plan.images && plan.images.length > 0) {
-    return plan;
-  }
-  const issueIdRaw = getItsaplanIssueIdFromLabels(plan.labels);
-  const issueId = issueIdRaw ? Number(issueIdRaw) : NaN;
-  if (!Number.isFinite(issueId)) {
-    return plan;
-  }
-  const config = getItsaplanConfig();
-  if (!config) {
-    return plan;
-  }
-  try {
-    const resolved = await resolveTicketAttachments(
-      new ItsaplanClient(config),
-      issueId,
-      config.baseUrl,
-    );
-    if (resolved.images.length === 0) {
-      return plan;
-    }
-    return { ...plan, images: resolved.images };
-  } catch (error) {
-    logger.warn({ err: error, issueId }, "itsaplan.spawn.ticket_images_failed");
-    return plan;
-  }
-}
-
-/**
- * Fleet-host branch of executeSpawnProposal: forward the prepared spawn plan
- * to the peer over the mission_control.spawn.apply RPC (fleetSpawnApply). The
- * PEER validates the cwd contract against its own filesystem, creates the
- * absolute cwd with mkdir recursive when missing, and creates the agent in
- * ITS OWN registry — the mkdir happens on the target host, never here. The
- * plan already carries the commander's paseo.parent-agent-id stamp, so the
- * label persists in the target's registry. Lifted out of the
- * MissionControlService wiring so the closure stays within the complexity
- * budget.
- */
-async function spawnProposalOnPeer(
-  peerManager: PeerManager | null | undefined,
-  host: string,
-  plan: MissionControlProposalSpawnPlan,
-): Promise<SpawnProposalResult> {
-  const peerStatus = peerManager?.getPeerStatus(host) ?? null;
-  if (!peerStatus || peerStatus.state !== "online" || !peerManager) {
-    return { ok: false, error: `Host "${host}" is not an online peer` };
-  }
-  const peerClient = peerManager.getPeerClient(host);
-  if (!peerClient) {
-    return { ok: false, error: `Host "${host}" has no peer client` };
-  }
-  try {
-    const payload = await peerClient.fleetSpawnApply(plan);
-    if (!payload.ok) {
-      return { ok: false, error: payload.error ?? `Fleet spawn on "${host}" failed` };
-    }
-    if (!payload.agentId) {
-      return { ok: false, error: `Fleet spawn on "${host}" returned no agent id` };
-    }
-    // COMPAT(spawnApplyServerId): added in v0.3.1, remove after 2027-02-12
-    // once the daemon floor always sends serverId in spawn.apply responses.
-    return {
-      ok: true,
-      agentId: payload.agentId,
-      // An older peer reports no serverId; leave the stamp absent rather
-      // than guessing, and the app falls back to alias resolution.
-      ...((payload.serverId ?? peerManager.getPeerServerId(host))
-        ? { serverId: payload.serverId ?? (peerManager.getPeerServerId(host) as string) }
-        : {}),
-    };
-  } catch (error) {
-    return { ok: false, error: `fleet spawn failed: ${String(error)}` };
-  }
-}
-
-/**
- * Local branch of spawnFromProposal: reconstruct the create from the plan.
- * `serverId` is THIS daemon's own identity — the host the spawn actually ran
- * on — which the approvals gate stamps onto the proposal (spawnedOnServerId).
- */
-async function spawnProposalLocally(
-  createAgent: (
-    input: Parameters<typeof createAgentCommand>[1],
-  ) => ReturnType<typeof createAgentCommand>,
-  plan: MissionControlProposalSpawnPlan,
-  providerModel: string,
-  serverId: string,
-): Promise<SpawnProposalResult> {
-  try {
-    const result = await createAgent({
-      kind: "mcp",
-      provider: providerModel,
-      title: plan.title ?? "Agent",
-      ...(plan.initialPrompt ? { initialPrompt: plan.initialPrompt } : {}),
-      ...(plan.images && plan.images.length > 0 ? { images: plan.images } : {}),
-      ...(plan.cwd ? { cwd: plan.cwd } : {}),
-      ...(plan.workspaceId ? { workspaceId: plan.workspaceId } : {}),
-      ...(plan.thinking ? { thinking: plan.thinking } : {}),
-      ...(plan.features ? { features: plan.features } : {}),
-      ...(plan.labels ? { labels: plan.labels } : {}),
-      ...(plan.mode ? { mode: plan.mode } : {}),
-      agentMode: plan.agentMode,
-      ...(plan.worktree ? { worktree: plan.worktree } : {}),
-      ...(plan.isolation ? { isolation: plan.isolation } : {}),
-      background: plan.background ?? true,
-      notifyOnFinish: false,
-    });
-    return { ok: true, agentId: result.snapshot.id, serverId };
-  } catch (error) {
-    return { ok: false, error: `spawn failed: ${String(error)}` };
-  }
-}
-
 const TerminalActivityReportSchema = z.object({
   terminalId: z.string().min(1),
   token: z.string().min(1),
@@ -1470,11 +1306,6 @@ export async function createPaseoDaemon(
     readTheme: () => centralMissionControlConfig.get().namingTheme,
     logger,
   });
-  // Hoisted: the Commander snapshot injector (constructed after the manager,
-  // below) registers its per-turn seam here. The seam fires on EVERY
-  // startAgentRun; the injector gates itself by commander labels and is a
-  // no-op until constructed.
-  let commanderSnapshotInjector: CommanderSnapshotInjector | null = null;
   const aiReviewerCwd = path.join(config.paseoHome, "ai-reviewer");
   mkdirSync(aiReviewerCwd, { recursive: true });
   const agentManager: AgentManager = new AgentManager({
@@ -1485,17 +1316,6 @@ export async function createPaseoDaemon(
     appendSystemPrompt: config.appendSystemPrompt,
     missionControlSelfReportEnabled:
       daemonConfigStore.get().missionControl?.selfReport?.enabled ?? true,
-    // Per-turn world-snapshot injection (M3 runtime model): every message
-    // delivered to the Commander — user turn or machinery turn — is preceded
-    // by a fresh snapshot dispatched as its own machinery turn.
-    beforeAgentRun: (input) => commanderSnapshotInjector?.beforeTurn(input) ?? undefined,
-    // The Commander's launch contract (systemPromptMode replace + bundled
-    // prompt + tool allowlist) is re-derived on EVERY session build so a
-    // reloaded/resumed Commander never comes back with the default coding
-    // prompt or an unrestricted catalog (live incident: a Commander resumed
-    // that way because its stored record predated contract persistence).
-    resolveCommanderLaunchContract: (labels) =>
-      buildCommanderLaunchContract(labels, () => centralMissionControlConfig.get()),
     resolveDefaultModel: (input) => providerSnapshotManager.resolveDefaultModel(input),
     onAgentCreated: (params) => agentNamingService.assignNameForCreatedAgent(params),
     onWorkspaceStateMayHaveChanged: ({ cwd }) => {
@@ -2094,85 +1914,9 @@ export async function createPaseoDaemon(
   });
   logger.info({ elapsed: elapsed() }, "Schedule service initialized");
 
-  // Central mission-control config is the daemon-wide instance constructed
-  // above (naming reads the theme from it); no second instance here.
-  // M3 runtime model: the Commander gets a FRESH world snapshot before every
-  // turn (user or machinery) — never accreted, never deltas. The injector
-  // owns the snapshot dispatch + supersede-in-place retraction; it is wired
-  // into startAgentRun via the beforeAgentRun seam above. peerManager and
-  // missionControlService are resolved lazily (the service is constructed
-  // after; the peer manager after that).
-  commanderSnapshotInjector = new CommanderSnapshotInjector({
-    agentManager,
-    logger,
-    buildSnapshot: () =>
-      buildWorldSnapshot({
-        agentManager,
-        agentStorage,
-        workspaceRegistry,
-        projectRegistry,
-        providerSnapshotManager,
-        peerManager: () => peerManager,
-        daemonConfigStore,
-        centralConfig: centralMissionControlConfig,
-        getReviewStates: () => missionControlService.getReviewStates(),
-        getReportEvents: () => missionControlService.fetchEvents(),
-        serverId,
-        hostName: getHostName(),
-        logger,
-      }),
-    // M8 mailbox: the per-turn 'Open instructions:' ledger block rides every
-    // snapshot (regenerated per turn like the snapshot, never accreted). The
-    // service is hoisted — this closure resolves it lazily at turn time.
-    buildInstructionLedgerBlock: () => missionControlService.formatOpenInstructionsBlock(),
-  });
-  // Hoisted: the verifier dispatcher and the presence source capture the
-  // service in closures that run only after boot, but TypeScript needs the
-  // binding declared before those initializers reference it. The host alias
-  // (hoisted here) feeds verifier spawn card copy: cards show the alias and
-  // fall back to the hostname only when no alias is set.
+  // Hoisted: closures below capture the service and run only after boot.
   let missionControlService: MissionControlService;
   const missionControlHostAlias = daemonConfigStore.get().missionControl?.hostAlias?.trim() || null;
-  const verifierDispatcher = new MissionControlVerifierDispatcher({
-    logger,
-    agentManager,
-    agentStorage,
-    serverId,
-    hostName: getHostName(),
-    hostAlias: missionControlHostAlias,
-    getCentralConfig: () => missionControlService.getCentralConfig(),
-    resolveFleetCommanderAgentId: () => missionControlService.resolveFleetCommanderAgentId(),
-    subscribeReviewState: (callback) =>
-      missionControlService.subscribeReviewState((agentId, record) =>
-        callback(agentId, record.reviewState),
-      ),
-    getReadyForReview: () => {
-      const events = missionControlService.fetchEvents();
-      const lastEventTsByAgent = new Map<string, string>();
-      for (const event of events) {
-        if (!lastEventTsByAgent.has(event.agentId)) {
-          lastEventTsByAgent.set(event.agentId, event.ts);
-        }
-      }
-      return missionControlService.getReadyForReview().map((agentId) => ({
-        agentId,
-        title: agentManager.getAgent(agentId)?.name ?? agentId,
-        at: lastEventTsByAgent.get(agentId) ?? new Date().toISOString(),
-      }));
-    },
-    fetchEvents: (options) => missionControlService.fetchEvents(options),
-    listMessageTags: () => missionControlService.allMessageTags(),
-    createProposal: (input) => missionControlService.approvals.createProposal(input),
-    // Durable proposal store read: the boot-time dedupe source for verifier
-    // spawn proposals (a still-pending spawn for the same worker must not be
-    // re-proposed after a restart).
-    listProposals: () => missionControlService.listProposals(),
-    onProposalChange: (callback) => missionControlService.onProposalChange(callback),
-    subscribeSelfReports: (callback) => missionControlService.subscribeSelfReports(callback),
-    setReviewState: (agentId, state, options) =>
-      missionControlService.setReviewState(agentId, state, options),
-    publish: (input) => missionControlService.publishEvent(input),
-  });
 
   // The meta-actions executor deps, shared by the commander-host hook
   // (metaFromProposal — local apply + peer routing) and the peer hook
@@ -2211,39 +1955,6 @@ export async function createPaseoDaemon(
   // replicas to peers, sync-on-connect). The closure reads the slot at call
   // time, so the eventual assignment below is always visible.
   let peerManager: PeerManager | null = null;
-  // Shared spawn executor deps (spawnFromProposal + the peer spawn apply
-  // hook): host identity + fleet map for own-alias resolution (own
-  // hostAlias/serverId/hostname → local), the commander id for the
-  // paseo.parent-agent-id stamp, and the local/peer create branches. Built
-  // lazily (a factory): the peer manager and the service are constructed
-  // after this point, so the fleet map and commander id resolve at execution
-  // time, not at service construction.
-  const spawnExecutorDeps = (stampCommanderParentLabel: boolean): SpawnExecutorDependencies => ({
-    host: {
-      serverId,
-      hostName: getHostName(),
-      hostAlias: missionControlHostAlias,
-      peerManager: peerManager ?? null,
-    },
-    stampCommanderParentLabel,
-    resolveCommanderAgentId: () => missionControlService.getCommanderAgentId(),
-    mkdirp: async (dirPath: string) => {
-      await mkdir(dirPath, { recursive: true });
-    },
-    createLocally: async (spawnPlan, providerModel) =>
-      spawnProposalLocally(
-        createAgent,
-        await attachTicketImagesToSpawnPlan(spawnPlan, getItsaplanConfig, logger),
-        providerModel,
-        serverId,
-      ),
-    createOnPeer: async (peerName, spawnPlan) =>
-      spawnProposalOnPeer(
-        peerManager,
-        peerName,
-        await attachTicketImagesToSpawnPlan(spawnPlan, getItsaplanConfig, logger),
-      ),
-  });
   missionControlService = new MissionControlService({
     paseoHome: config.paseoHome,
     onRunRecordFinalized: (record) => memoryService.pushRunRecord(record),
@@ -2253,114 +1964,22 @@ export async function createPaseoDaemon(
     daemonConfigStore,
     serverId,
     hostName: getHostName(),
-    // Central-config ownership resolution + replication: the peer manager is
-    // constructed AFTER the service, so resolve it lazily.
-    hostAlias: missionControlHostAlias,
+    // The peer manager is constructed after the service: resolve it lazily.
     peerManager: () => peerManager,
     broadcast: (message) => wsServer?.broadcast(wrapSessionMessage(message)),
     centralConfig: centralMissionControlConfig,
-    presence: createMissionControlPresenceSource({
-      isAgentFocused: (agentId) => wsServer?.anyClientFocusedOnAgent(agentId) ?? false,
-      readStopOrigin: (agentId) => missionControlService.getStopOrigin(agentId) ?? null,
-    }),
     workspaceRegistry,
     projectRegistry,
     onWorkspaceUpdated: async (workspaceId) => {
       await emitWorkspaceUpdatesExternal([workspaceId]);
     },
     archiveWorkspace: archiveWorkspaceByIdExternal,
-    // block (within budget) to the snapshot injector so the fresh snapshot
-    // carries it alongside the ledger block. M10: the idle path dispatches
-    // the snapshot turn explicitly (dispatchSnapshotTurn) and then steers
-    // the message into it, disarming the ack-drop (the joined turn's reply
-    // is real content, never a retractable machinery ack).
-    setPendingInstructionEnvelope: (block) =>
-      commanderSnapshotInjector?.setPendingInstructionEnvelope(block),
-    dispatchSnapshotTurn: (agentId) =>
-      commanderSnapshotInjector?.dispatchSnapshotTurn(agentId) ?? Promise.resolve(false),
-    disarmSnapshotAckDrop: () => commanderSnapshotInjector?.ackDrop.disarm(),
-    verifier: verifierDispatcher,
-    resetCommander: () =>
-      resetCommander({
-        logger,
-        agentManager,
-        agentStorage,
-        providerSnapshotManager,
-        createAgent,
-        centralConfig: () => centralMissionControlConfig.get(),
-        paseoHome: config.paseoHome,
-        hostName: getHostName(),
-        hostAlias: missionControlHostAlias,
-        workspaceRegistry,
-        createCommanderWorkspace: async (cwd, title) =>
-          workspaceProvisioning.createWorkspaceForDirectory(cwd, title),
-        // The reserved commander home (`<paseoHome>/commander`) must exist
-        // before a fresh workspace is provisioned there.
-        ensureCommanderHomeDir: () => {
-          mkdirSync(commanderHomeCwd(config.paseoHome), { recursive: true });
-        },
-        publishEvent: (event) => missionControlService.publishEvent(event),
-        onCommanderCreated: (commanderId) => commanderSnapshotInjector?.armLaunchTurn(commanderId),
-        launchContext: {
-          agentManager,
-          agentStorage,
-          workspaceRegistry,
-          projectRegistry,
-          providerSnapshotManager,
-          peerManager: () => peerManager,
-          daemonConfigStore,
-          centralConfig: centralMissionControlConfig,
-          serverId,
-          hostName: getHostName(),
-          logger,
-        },
-      }),
-    // Execute a commander-origin spawn-kind proposal (fleet_create_agent in
-    // ask mode): reconstruct the create from the proposal's spawnPlan. Host
-    // resolution, commander parent-label stamping, and cwd creation all live
-    // in the spawn executor (spawn-executor.ts): the plan's host resolves
-    // through the shared fleet map (own hostAlias/serverId/hostname → local,
-    // peer name → peer), local hosts create here (absolute cwd mkdir'd
-    // first), peers are forwarded over mission_control.spawn.apply (the PEER
-    // creates the cwd on its own disk). This is the single execution path for
-    // approved spawn proposals (survives daemon restarts — the plan rides the
-    // persisted proposal).
-    spawnFromProposal: async (proposal) => {
-      const plan = proposal.spawnPlan;
-      if (!plan) {
-        return { ok: false, error: "Spawn proposal has no spawn plan" };
-      }
-      return executeSpawnProposal(plan, spawnExecutorDeps(proposal.origin === "commander"));
-    },
-    // Execute a commander-origin meta-kind proposal (fleet_meta in ask mode
-    // and auto mode): apply the fleet meta action described by metaPlan
-    // (rename/archive project·workspace·agent, create project, move agent,
-    // promote workspace). Cross-host routing lives in applyMetaFromProposal:
-    // local targets apply against THIS daemon's registries; peer targets
-    // (metaPlan.serverId names a peer) are forwarded over peering and applied
-    // on the PEER (metaApplyRemote below). Stored-agent updates (closed
-    // records — live agents flow through agent_state) fan out to every
-    // trusted session's agent_update service.
-    metaFromProposal: (proposal) => applyMetaFromProposal(metaActionsDeps(), proposal),
-    // Remote MCP clients are never gated: their meta tools apply here with
-    // no proposal record, routed to the plan's host like an approved card.
+    // Meta tools apply directly, routed to the plan's host.
     metaApplyDirect: (metaPlan) => applyRoutedMetaPlan(metaActionsDeps(), metaPlan, "mcp-direct"),
-    // Peer branch of the meta apply: the commander host forwards an approved
-    // meta-kind proposal whose metaPlan.serverId names THIS host as a peer
-    // (mission_control.meta.apply). Re-validate against this daemon's own
-    // registries and apply here — only the APPLY hops; the proposal card
-    // stays on the commander host.
+    // Peer branch of the meta apply: another host forwards a plan whose
+    // metaPlan.serverId names THIS host (mission_control.meta.apply).
+    // Re-validate against this daemon's own registries and apply here.
     metaApplyRemote: (metaPlan) => applyMetaPlan(metaActionsDeps(), metaPlan),
-    // Peer branch of the spawn apply: the commander host forwards an approved
-    // spawn-kind proposal whose plan targets THIS host as a peer
-    // (mission_control.spawn.apply). THIS host validates the cwd contract
-    // against its own filesystem, creates the absolute cwd with mkdir
-    // recursive when missing, and creates the agent in its own registry —
-    // the mkdir happens here (the target host), never on the commander's
-    // disk. The plan arrives with paseo.parent-agent-id already stamped by
-    // the commander, so the label persists in this host's registry. Only the
-    // APPLY hops; the proposal card stays on the commander host.
-    spawnApplyRemote: (spawnPlan) => spawnOnThisHost(spawnPlan, spawnExecutorDeps(false)),
     // M6 run records: resolve the workspace/project attribution frozen into a
     // run record at assembly time (live registries; falls back to the cwd →
     // workspace path when the agent carries no workspaceId).
@@ -2536,24 +2155,19 @@ export async function createPaseoDaemon(
       const project = await projectRegistry.get(match.projectId);
       return project?.projectKey ?? null;
     },
-    deliverMachineryPrompt: async (prompt, images) => {
-      const commanderId = await missionControlService.getCommanderAgentId();
-      if (!commanderId) {
-        return false;
-      }
-      await dispatchLocalPromptMode({
-        agentManager,
-        agentStorage,
-        agentId: commanderId,
-        prompt,
+    // Todo tickets start their worker directly: fleet_create_agent places it
+    // from the brief (named host/project/model first, then the fleet rules).
+    dispatchWorker: async ({ title, brief, images, labels }) => {
+      const { catalog } = await getFleetMcpCatalog("itsaplan-bridge");
+      const result = await catalog.executeTool("fleet_create_agent", {
+        title,
+        initialPrompt: brief,
+        labels,
+        background: true,
         ...(images && images.length > 0 ? { images } : {}),
-        mode: "steer",
-        classification: "machinery",
-        replaceOrigin: "machinery",
-        recordStopOrigin: (id, origin) => missionControlService.recordStopOrigin(id, origin),
-        logger,
       });
-      return true;
+      const created = z.object({ agentId: z.string() }).safeParse(result.structuredContent);
+      return created.success ? created.data.agentId : null;
     },
     steerWorkerPrompt: async (agentId, prompt) => {
       // Same path a user message takes for a blocked worker (session.ts
@@ -2573,42 +2187,6 @@ export async function createPaseoDaemon(
   });
   itsaplanBridge.start();
   itsaplanWebhookIngress.setHandler(createItsaplanWebhookRouteHandler(itsaplanBridge, logger));
-  // Single-writer gate (ADR 0002 fleet safety): project mapping is
-  // fleet-wide, so only the central-config-designated Commander host may
-  // push to itsaplan — every other peer stays inert or the fleet would race
-  // to create the same projects. Same designation resolution commander-boot
-  // uses; null commanderHost designates NO host.
-  const isThisHostTheItsaplanSyncHost = (): boolean =>
-    isDesignatedCommanderHost({
-      central: { commanderHost: centralMissionControlConfig.get().commanderHost },
-      hostName: getHostName(),
-      hostAlias: missionControlHostAlias,
-    });
-  // Fleet-wide project inventory for resyncs: reuses buildFleetContextData,
-  // the exact hosts/projects assembly `fleet_list_inventory` serves (the
-  // peer manager is constructed later, so resolve it lazily).
-  const listItsaplanFleetProjects = async () => {
-    const fleet = await buildFleetContextData({
-      agentManager,
-      agentStorage,
-      workspaceRegistry,
-      projectRegistry,
-      providerSnapshotManager,
-      peerManager: () => peerManager,
-      daemonConfigStore,
-      centralConfig: centralMissionControlConfig.get(),
-      serverId,
-      hostName: getHostName(),
-      logger,
-    });
-    return fleet.hosts.flatMap((host) =>
-      host.inventory.projects.map((project) => ({
-        hostName: host.hostName,
-        projectKey: project.key ?? null,
-        name: project.title,
-      })),
-    );
-  };
   // Placement routing (routing.suggest.* + suggest_placement MCP tool) and
   // metadataModel text generation. Reads central config live (replicated to
   // every host), so every daemon can route.
@@ -2720,18 +2298,10 @@ export async function createPaseoDaemon(
     getConfig: getItsaplanConfig,
     getWebhookUrl: () => createItsaplanWebhookUrl(boundListenTarget),
     paseoHome: config.paseoHome,
-    isDesignatedSyncHost: isThisHostTheItsaplanSyncHost,
-    listFleetProjects: listItsaplanFleetProjects,
     logger,
   };
   const resyncItsaplanProjects = async () =>
-    runItsaplanProjectResync(
-      {
-        local: await projectRegistry.list(),
-        fleet: await listItsaplanFleetProjects(),
-      },
-      itsaplanProjectSyncDeps,
-    );
+    runItsaplanProjectResync(await projectRegistry.list(), itsaplanProjectSyncDeps);
   app.post(
     "/api/itsaplan/resync",
     createItsaplanResyncRouteHandler(resyncItsaplanProjects, logger),
@@ -2749,18 +2319,6 @@ export async function createPaseoDaemon(
   });
   itsaplanReconcileService.start();
 
-  // ADR 0002 chat-runner: the daemon acts as the @itsaplan/runner for every
-  // project's Commander external agent (one claim loop per project,
-  // supervised — see chat-runner.ts). Fully inert while central config
-  // `itsaplan` is absent, same as the bridge and reconcile sweep above.
-  const itsaplanChatRunner = new ItsaplanChatRunner({
-    logger,
-    projectStore: itsaplanProjectStore,
-    getConfig: getItsaplanConfig,
-    missionControl: missionControlService,
-  });
-  itsaplanChatRunner.start();
-
   // Spec 01 change 1: clean running→idle transitions notify Mission Control
   // directly — finishes no longer latch a "finished" attention, so this
   // setter is the ONLY clean-finish signal. The manager is constructed
@@ -2770,56 +2328,6 @@ export async function createPaseoDaemon(
     missionControlService.handleAgentFinished({ agentId });
     transcriptSearch?.scheduleReindex(agentId);
   });
-
-  // Boot-ensure the fleet Commander (spec: daemon boot creates it when this
-  // host is the designated commander host and none exists). Fire-and-forget:
-  // creation must not block boot; failures are logged, not fatal.
-  void ensureCommanderOnBoot({
-    logger,
-    agentManager,
-    agentStorage,
-    providerSnapshotManager,
-    createAgent,
-    centralConfig: () => centralMissionControlConfig.get(),
-    paseoHome: config.paseoHome,
-    hostName: getHostName(),
-    hostAlias: missionControlHostAlias,
-    workspaceRegistry,
-    createCommanderWorkspace: async (cwd, title) =>
-      workspaceProvisioning.createWorkspaceForDirectory(cwd, title),
-    // The reserved commander home (`<paseoHome>/commander`) must exist
-    // before a fresh workspace is provisioned there.
-    ensureCommanderHomeDir: () => {
-      mkdirSync(commanderHomeCwd(config.paseoHome), { recursive: true });
-    },
-    publishEvent: (event) => missionControlService.publishEvent(event),
-    onCommanderCreated: (commanderId) => commanderSnapshotInjector?.armLaunchTurn(commanderId),
-    launchContext: {
-      agentManager,
-      agentStorage,
-      workspaceRegistry,
-      projectRegistry,
-      providerSnapshotManager,
-      peerManager: () => peerManager,
-      daemonConfigStore,
-      centralConfig: centralMissionControlConfig,
-      serverId,
-      hostName: getHostName(),
-      logger,
-    },
-  })
-    .then((result) => {
-      if (result.created) {
-        logger.info({ component: "boot", agentId: result.agentId }, "Commander ensured on boot");
-      }
-      return result;
-    })
-    .catch((error) => {
-      logger.warn(
-        { err: error, component: "boot" },
-        "mission_control.boot.ensure_failed — Commander creation deferred",
-      );
-    });
 
   // Identity backfill: names for agents missing one (free), descriptions for
   // closed agents and titles for untitled workspaces via the structured
@@ -2868,16 +2376,6 @@ export async function createPaseoDaemon(
     logger,
     appVersion: daemonVersion,
     lastSeenPath: path.join(config.paseoHome, "peer-last-seen.json"),
-    // Sync-on-connect: when a peer comes online, the commander host pushes
-    // its current central-config snapshot so the peer never serves stale
-    // fleet policy (fresh join or restart alike).
-    onPeerOnline: (peerName) => {
-      void missionControlService
-        ?.syncCentralConfigToPeer(peerName)
-        .catch((error) =>
-          logger.warn({ err: error, peer: peerName }, "Central config sync-on-connect failed"),
-        );
-    },
   });
 
   const webhookService = new WebhookService({
@@ -2983,7 +2481,6 @@ export async function createPaseoDaemon(
     itsaplanTicketize: {
       ticketizeAgent: (agentId) => itsaplanBridge.ticketizeAgent(agentId),
     },
-    verifierDispatcher,
     routingService,
     memoryService,
     resolveDocThreads: docThreadsHost?.service ? () => docThreadsHost.service! : null,
@@ -3153,37 +2650,21 @@ export async function createPaseoDaemon(
   // The MCP endpoint is stateless (one HTTP request per tool call). Building
   // the full catalog each time dominated latency, so each client reuses its
   // catalog; it closes over live services, as the Voice and agent catalogs
-  // do. Rebuilt when the Commander agent changes or after the TTL.
+  // do. Rebuilt after the TTL.
   const FLEET_MCP_CATALOG_TTL_MS = 5 * 60_000;
   const fleetMcpCatalogs = new Map<
     string,
-    { key: string; at: number; hostDeps: PaseoToolHostDependencies; catalog: PaseoToolCatalog }
+    { at: number; hostDeps: PaseoToolHostDependencies; catalog: PaseoToolCatalog }
   >();
   const getFleetMcpCatalog = async (clientName: string) => {
-    let commanderAgentId: string | undefined;
-    for (const agent of agentManager.listAgents()) {
-      if (agent.labels[MISSION_CONTROL_LABEL_KEY] === MISSION_CONTROL_LABEL_VALUE) {
-        commanderAgentId = agent.id;
-        break;
-      }
-    }
     let cached = fleetMcpCatalogs.get(clientName);
-    if (
-      !cached ||
-      cached.key !== (commanderAgentId ?? "") ||
-      Date.now() - cached.at > FLEET_MCP_CATALOG_TTL_MS
-    ) {
+    if (!cached || Date.now() - cached.at > FLEET_MCP_CATALOG_TTL_MS) {
       const hostDeps = createAgentToolHostDependencies({
-        callerLabels: {
-          [MISSION_CONTROL_LABEL_KEY]: MISSION_CONTROL_LABEL_VALUE,
-          "paseo.mcp-client": clientName,
-        },
-        ...(commanderAgentId ? { callerAgentId: commanderAgentId } : {}),
+        callerLabels: { "paseo.mcp-client": clientName },
         enableVoiceTools: false,
         voiceOnly: false,
       });
       cached = {
-        key: commanderAgentId ?? "",
         at: Date.now(),
         hostDeps,
         catalog: await createPaseoToolCatalog(hostDeps),
@@ -3378,21 +2859,9 @@ export async function createPaseoDaemon(
             // Only resolvable once bound — the itsaplan webhook URL needs
             // the real TCP target. Fire-and-forget: itsaplan API round
             // trips must never block daemon startup.
-            void runItsaplanProjectResync(
-              { local: await projectRegistry.list(), fleet: null },
-              itsaplanProjectSyncDeps,
-            ).catch((error: unknown) => {
+            void resyncItsaplanProjects().catch((error: unknown) => {
               logger.error({ err: error }, "itsaplan.project.boot_backfill_failed");
             });
-            // Peers are usually still handshaking this early; re-sweep the
-            // whole fleet once peering has settled so a boot alone fills in
-            // peer projects without anyone triggering /api/itsaplan/resync.
-            const bootFleetResyncTimer = setTimeout(() => {
-              void resyncItsaplanProjects().catch((error: unknown) => {
-                logger.warn({ err: error }, "itsaplan.project.boot_fleet_resync_failed");
-              });
-            }, 60_000);
-            bootFleetResyncTimer.unref();
             const mcpBaseUrl = createAgentMcpBaseUrl(boundListenTarget);
             agentMcpBaseUrl =
               !mcpEnabled || config.mcpInjectIntoAgents === false ? null : mcpBaseUrl;
@@ -3622,7 +3091,6 @@ export async function createPaseoDaemon(
     await hubRelationships.stop();
     workspaceReconciliation.dispose();
     itsaplanReconcileService.stop();
-    itsaplanChatRunner.stop();
     itsaplanBridge.stop();
     unsubscribeItsaplanProjectSync();
     scriptHealthMonitor.stop();

@@ -11,7 +11,6 @@ import type { ProviderSnapshotManager } from "../agent/provider-snapshot-manager
 import type { MissionControlEvent } from "@getpaseo/protocol/mission-control/types";
 import { createPaseoToolCatalog } from "../agent/tools/paseo-tools.js";
 import { MISSION_CONTROL_SELF_REPORT_PROMPT, buildSelfReportSystemPrompt } from "./self-report.js";
-import { createMissionControlPresenceSource } from "./presence.js";
 import { MissionControlService } from "./service.js";
 import { MissionControlStore } from "./store.js";
 
@@ -161,10 +160,6 @@ describe("MissionControlService.reportSelfStatus", () => {
       serverId: "test-server",
       hostName: "test-host",
       broadcast,
-      presence: createMissionControlPresenceSource({
-        isAgentFocused: () => false,
-        readStopOrigin: () => null,
-      }),
     });
     await service.start();
   });
@@ -377,10 +372,6 @@ describe("MissionControlService.reportSelfStatus", () => {
       serverId: "test-server",
       hostName: "test-host",
       broadcast,
-      presence: createMissionControlPresenceSource({
-        isAgentFocused: () => false,
-        readStopOrigin: () => null,
-      }),
       workspaceRegistry,
       onWorkspaceUpdated,
     });
@@ -440,10 +431,6 @@ describe("MissionControlService.reportSelfStatus", () => {
       serverId: "test-server",
       hostName: "test-host",
       broadcast,
-      presence: createMissionControlPresenceSource({
-        isAgentFocused: () => false,
-        readStopOrigin: () => null,
-      }),
       workspaceRegistry,
     });
     await testService.start();

@@ -6,7 +6,6 @@ import { createTestLogger } from "../../test-utils/test-logger.js";
 import type { AgentManager } from "../agent/agent-manager.js";
 import type { AgentStorage } from "../agent/agent-storage.js";
 import type { DaemonConfigStore } from "../daemon-config-store.js";
-import { createMissionControlPresenceSource } from "./presence.js";
 import { MissionControlService } from "./service.js";
 import { AgentNamingService, AGENT_NAMING_THEMES, NAME_POOLS, NAME_QUALIFIERS } from "./naming.js";
 import { CentralMissionControlConfigStore } from "./config.js";
@@ -289,10 +288,6 @@ describe("MissionControlService namingTheme patch", () => {
       serverId: "test-server",
       hostName: "test-host",
       broadcast: vi.fn(),
-      presence: createMissionControlPresenceSource({
-        isAgentFocused: () => false,
-        readStopOrigin: () => null,
-      }),
     });
     await service.start();
   }
@@ -346,10 +341,6 @@ describe("MissionControlService shares the injected central store", () => {
       serverId: "test-server",
       hostName: "test-host",
       broadcast: vi.fn(),
-      presence: createMissionControlPresenceSource({
-        isAgentFocused: () => false,
-        readStopOrigin: () => null,
-      }),
       centralConfig: store,
     });
     await service.start();

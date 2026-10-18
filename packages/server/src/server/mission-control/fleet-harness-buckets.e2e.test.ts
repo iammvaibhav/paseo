@@ -10,20 +10,10 @@ import {
   type FleetAgentRow,
 } from "../test-utils/fleet-harness.js";
 
-/** Predicate factory: the agent's canonical lifecycle bucket via fleet_agent_status. */
-function bucketOf(harness: FleetHarness, agentId: string): () => Promise<string | null> {
-  return async () => {
-    const status = await fleetExec(harness.clients.A, "fleet_agent_status", { agentId }).catch(
-      () => null,
-    );
-    return status ? (status.bucket as string) : null;
-  };
-}
-
 /**
  * Layer 2 scenario group 1 — bucket truth (01), ready aging (01), compat
- * (protocol). Every scenario drives mission_control.tools.execute from the
- * commander host A; agents run on peer B with the deterministic fakes.
+ * (protocol). Every scenario drives the fleet tools over /mcp/fleet from host
+ * A; agents run on peer B with the deterministic fakes.
  */
 
 async function harnessFor(
@@ -79,16 +69,13 @@ describe("01 bucket truth over the fleet", () => {
           action: "done",
         });
         expect(marked.ok).toBe(true);
-        const doneRow = await waitForAgentRow(
-          harness.clients.B,
-          agentId,
-          (r) => r.bucket === "done",
-          {
-            label: "bucket done",
-          },
-        );
-        expect(doneRow.bucket).toBe("done");
-        const doneStatus = await fleetExec(harness.clients.B, "fleet_agent_status", { agentId });
+        // Done auto-archives the agent's single-agent workspace (PASEO-21), so
+        // the plain roster drops it; its status still reads done.
+        const readStatus = () =>
+          fleetExec(harness.clients.B, "fleet_agent_status", { agentId }).catch(() => null);
+        const doneStatus = await waitFor(readStatus, (record) => record.bucket === "done", {
+          label: "bucket done",
+        });
         expect(doneStatus.bucket).toBe("done");
 
         // Error → needs_you: prompt a turn failure.
@@ -169,65 +156,6 @@ describe("01 bucket truth over the fleet", () => {
       await harness.close();
     }
   });
-
-  test(
-    "pending proposal drives needs_you; resolution leaves it",
-    { timeout: 180_000 },
-    async () => {
-      const harness = await harnessFor({ centralConfig: { trackVerifiers: false } });
-      try {
-        const { agentId } = await spawnWorker({
-          from: harness.clients.A,
-          host: "local",
-          provider: "claude/test-model",
-          initialPrompt: "Ready worker",
-          title: "Proposal worker",
-          cwd: harness.daemons.A.paseoHomeRoot,
-        });
-        await waitForEvent(
-          harness.clients.A,
-          (e) => e.agentId === agentId && e.kind === "finished",
-          {
-            label: "finished",
-          },
-        );
-        const baseline = await waitFor(bucketOf(harness, agentId), (bucket) => bucket === "ready", {
-          timeoutMs: 30_000,
-          label: "ready baseline",
-        });
-        expect(baseline).toBe("ready");
-        // A pending send proposal for the agent flips the bucket to needs_you
-        // (the proposal card lives on the commander host — same daemon).
-        const exec = await harness.clients.A.missionControlToolsExecute({
-          name: "fleet_send_prompt",
-          args: { agentId, prompt: "post a fresh report_status", mode: "steer" },
-        });
-        expect(exec.ok).toBe(true);
-        const proposalId = (exec.structuredContent?.proposalId as string | undefined) ?? null;
-        expect(proposalId).toBeTruthy();
-        const pendingStatus = await fleetExec(harness.clients.A, "fleet_agent_status", { agentId });
-        expect(pendingStatus.bucket).toBe("needs_you");
-        // Deny resolves the proposal; the bucket leaves needs_you (denied
-        // proposals never count as pending again).
-        const deny = await harness.clients.A.missionControlProposalsRespond({
-          proposalId,
-          action: "deny",
-        });
-        expect(deny.ok).toBe(true);
-        const backStatus = await waitFor(
-          bucketOf(harness, agentId),
-          (bucket) => bucket === "ready",
-          {
-            timeoutMs: 30_000,
-            label: "ready after deny",
-          },
-        );
-        expect(backStatus).toBe("ready");
-      } finally {
-        await harness.close();
-      }
-    },
-  );
 });
 
 describe("01 ready aging (daily sweep)", () => {

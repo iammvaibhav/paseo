@@ -47,7 +47,6 @@ export {
 } from "./projects.js";
 export type {
   ItsaplanCentralConfig,
-  ItsaplanFleetProjectCandidate,
   ItsaplanProjectMapping,
   ItsaplanProjectSyncDependencies,
   ItsaplanResyncResult,
@@ -78,5 +77,3 @@ export type {
 } from "./reconcile.js";
 export { createItsaplanWebhookRouteHandler } from "./route.js";
 export { createItsaplanResyncRouteHandler } from "./route.js";
-export { ItsaplanChatRunner } from "./chat-runner.js";
-export type { ItsaplanChatRunnerMissionControl, ItsaplanChatRunnerOptions } from "./chat-runner.js";

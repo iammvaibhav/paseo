@@ -154,7 +154,6 @@ export const ar: TranslationResources = {
       muteVoice: "كتم الصوت",
       dictation: "الإملاء",
       interruptBeforeVoice: "قم بمقاطعة الوكيل قبل بدء الوضع الصوتي",
-      commanderVoice: "صوت القائد",
     },
     attachments: {
       addImage: "أضف صورة",
@@ -2255,28 +2254,10 @@ export const ar: TranslationResources = {
       host: "نظرة عامة",
     },
     missionControl: {
-      approvalMode: en.settings.missionControl.approvalMode,
-      approvalModeHint: en.settings.missionControl.approvalModeHint,
       verbose: en.settings.missionControl.verbose,
       verboseHint: en.settings.missionControl.verboseHint,
       clearView: en.settings.missionControl.clearView,
       clearViewHint: en.settings.missionControl.clearViewHint,
-      resetCommander: en.settings.missionControl.resetCommander,
-      resetCommanderHint: en.settings.missionControl.resetCommanderHint,
-      memory: "الذاكرة",
-      hindsightUrl: "رابط Hindsight",
-      hindsightUrlHint:
-        "عنوان API الأساسي لـ Hindsight. تركه فارغًا يعطّل ذاكرة الأسطول (كتابة سجلات التشغيل والاستدعاء).",
-      hindsightBank: "بنك الكتابة",
-      hindsightBankHint: "البنك الذي يكتب إليه Paseo سجلات التشغيل.",
-      hindsightSecondaryBank: "بنك الاستدعاء (ثانوي)",
-      hindsightSecondaryBankHint: "بنك ثانوي للقراءة فقط يستشيره fleet_recall. تركه فارغًا يعطّله.",
-      voiceNodeUrl: "عنوان عقدة الصوت",
-      voiceNodeUrlHint:
-        "خادم صوت القائد (مثال: ws://127.0.0.1:8787/ws). تركه فارغًا يخفي صوت القائد في محرر Mission Control.",
-      voiceMode: "Voice tool mode",
-      voiceModeHint:
-        "Relay = voice reads like Commander but routes every change through commander_dispatch. Direct = voice holds the full Commander tool surface, approval-gated. Applies to new voice sessions.",
     },
     plugins: pluginSettings.ar,
     routing: {

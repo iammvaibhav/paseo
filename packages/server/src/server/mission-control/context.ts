@@ -24,14 +24,13 @@ import type { AgentManager } from "../agent/agent-manager.js";
 import type { AgentStorage, StoredAgentRecord } from "../agent/agent-storage.js";
 import type { ProviderSnapshotManager } from "../agent/provider-snapshot-manager.js";
 import type { DaemonConfigStore } from "../daemon-config-store.js";
-import { formatPeerLastSeen, type PeerManager } from "../peers/peer-manager.js";
+import type { PeerManager } from "../peers/peer-manager.js";
 import type {
   PersistedProjectRecord,
   PersistedWorkspaceRecord,
   ProjectRegistry,
   WorkspaceRegistry,
 } from "../workspace-registry.js";
-import { buildCommanderSystemPrompt } from "./commander-contract.js";
 import type { MissionControlReviewStateRecord, MissionControlReviewStateValue } from "./store.js";
 import { resolveProjectCommanderInstructions } from "../../utils/project-instructions.js";
 
@@ -46,9 +45,6 @@ export const OMP_MODEL_ROLES_KEY = "omp.modelRoles";
 // self-report is older than the window.
 const ROSTER_LIMIT = 30;
 const ROSTER_ACTIVITY_WINDOW_MS = 24 * 60 * 60 * 1000;
-// The world snapshot's stamp line; the snapshot injector retracts the previous
-// snapshot row by matching rows that carry this marker.
-export const WORLD_SNAPSHOT_MARKER = "# Fleet state as of ";
 
 export interface MissionControlContextPayload {
   inventory: MissionControlInventory;
@@ -651,225 +647,7 @@ function derivePeerServerId(payload: MissionControlContextPayload | null): strin
   return payload?.recentAgents[0]?.hostServerId ?? null;
 }
 
-/**
- * The world snapshot: a compact fleet-state block computed at turn start and
- * injected before every Commander turn (docs/commander.md "Runtime model").
- * Never accreted, never deltas — the snapshot is regenerated fresh each turn
- * and the previous snapshot row is superseded in place by the injector.
- */
-export interface WorldSnapshot {
-  /** Generation time (ISO). Also stamped into the block's header line. */
-  at: string;
-  /** The compact block, headed by `# Fleet state as of <at>`. */
-  block: string;
-}
-
-/**
- * Assemble the world snapshot: fleet map (hosts + aliases), project/workspace
- * index with descriptions, last-24h agents bucketed by lifecycle, invocable
- * models, and routing defaults — a few KB, computed at delivery, stamped with
- * its generation time. Renders the same sections the launch-time context pack
- * used, minus the digest-era delta machinery.
- */
-export async function buildWorldSnapshot(input: FleetContextDependencies): Promise<WorldSnapshot> {
-  const at = new Date().toISOString();
-  const context = await buildFleetContextData(input);
-  return { at, block: buildSnapshotBlock(context, at) };
-}
-
-/**
- * Renders the world-snapshot sections: fleet map, inventory, roster, models+
- * roles, routing defaults, headed by the generation stamp. Inline-sized by
- * design — the whole fleet is ~10 projects / ~30 workspaces — so the Commander
- * never queries for what the daemon already knows. The header line carries
- * WORLD_SNAPSHOT_MARKER so the injector can identify snapshot rows for
- * supersede-in-place retraction.
- */
-export function buildSnapshotBlock(context: FleetContextData, at: string): string {
-  const sections = [
-    `${WORLD_SNAPSHOT_MARKER}${at}`,
-    buildFleetMapSection(context),
-    buildInventorySection(context),
-    buildRosterSection(context),
-    buildModelsSection(context),
-    buildAgentProfilesSection(context),
-    buildRoutingDefaultsSection(context),
-  ];
-  return sections.filter((section): section is string => section !== null).join("\n\n");
-}
-
-/**
- * The Commander's system prompt, static by construction: the bundled shipped
- * prompt (identity, playbook, safety, tool contract — no fleet state) plus the
- * central commanderInstructions. The fleet worldview never enters here; it
- * rides the launch snapshot as the first conversation message. Two builds with
- * different fleet state produce identical output. Owned by the contract
- * module (commander-contract) so reloads re-derive the same prompt; re-exported
- * here for callers that referenced it from context.
- */
-export { buildCommanderSystemPrompt } from "./commander-contract.js";
-
-/**
- * Everything the daemon needs to launch the Commander: a static system prompt
- * and the launch world snapshot as the first conversation message. Fleet state
- * is snapshot at spawn; every later turn re-injects a fresh snapshot through
- * the same <paseo-system> machinery path.
- */
-export async function buildCommanderLaunchConfig(
-  input: FleetContextDependencies,
-): Promise<{ systemPrompt: string; firstMessage: string }> {
-  const central = resolveCentralConfig(input);
-  const systemPrompt = buildCommanderSystemPrompt(central?.commanderInstructions ?? undefined);
-  const { block } = await buildWorldSnapshot(input);
-  const firstMessage = `<paseo-system>\n${block.trim()}\n</paseo-system>`;
-  return { systemPrompt, firstMessage };
-}
-
 // --- Section renderers ---
-
-function buildFleetMapSection(context: FleetContextData): string {
-  const lines = context.hosts.map((host) => {
-    const label = host.alias ? `${host.hostName} (alias "${host.alias}")` : host.hostName;
-    if (host.hostName === "local") {
-      const machine = host.machineName ? ` on ${host.machineName}` : "";
-      return `- ${label} — this daemon${machine}, reachable`;
-    }
-    if (host.reachable) {
-      return `- ${label} — reachable`;
-    }
-    return host.lastSeenAt
-      ? `- ${label} — unreachable since ${formatPeerLastSeen(host.lastSeenAt)} (likely asleep; retry after it wakes)`
-      : `- ${label} — never connected to this host (check it is awake, its daemon is running, and its peer URL is right)`;
-  });
-  return `# Fleet map\n${lines.join("\n")}`;
-}
-
-function buildInventorySection(context: FleetContextData): string {
-  const sections: string[] = [];
-  for (const host of context.hosts) {
-    const label = hostLabel(host);
-    if (host.inventory.projects.length === 0) {
-      sections.push(`## ${label}\n- (no active projects)`);
-      continue;
-    }
-    const projectLines = host.inventory.projects.map((project) => {
-      const description = project.description?.trim();
-      const alwaysRaisePr =
-        context.centralConfig?.projectSettings?.[project.id]?.alwaysRaisePr === true;
-      const suffixes = [
-        description || null,
-        project.defaultBaseBranch ? `default branch: ${project.defaultBaseBranch}` : null,
-        alwaysRaisePr ? "PR policy: always raise a PR" : null,
-      ].filter((suffix): suffix is string => suffix !== null);
-      const header = `- ${project.title} (${project.id})${suffixes.length > 0 ? ` — ${suffixes.join(" — ")}` : ""}`;
-      const instructionLines = project.commanderInstructions?.trim()
-        ? [
-            "  - Project instructions (read before dispatching):",
-            ...project.commanderInstructions
-              .trim()
-              .split("\n")
-              .map((line) => `    ${line}`),
-          ].join("\n")
-        : null;
-      if (project.workspaces.length === 0) {
-        return instructionLines
-          ? `${header} — no workspaces\n${instructionLines}`
-          : `${header} — no workspaces`;
-      }
-      const workspaceLines = project.workspaces
-        .map(
-          (workspace) =>
-            `  - ${workspace.title} [${workspace.kind}] ${workspace.cwd} (${workspace.id})`,
-        )
-        .join("\n");
-      return instructionLines
-        ? `${header}\n${instructionLines}\n${workspaceLines}`
-        : `${header}\n${workspaceLines}`;
-    });
-    sections.push(`## ${label}\n${projectLines.join("\n")}`);
-  }
-  return `# Inventory\n${sections.join("\n\n")}`;
-}
-
-function buildModelsSection(context: FleetContextData): string {
-  const sections = context.hosts.map((host) =>
-    buildHostModelsSection(host.models, hostLabel(host)),
-  );
-  return `# Models\n${sections.join("\n\n")}`;
-}
-
-/**
- * The Commander's model menu: daemon-config agent profiles (name + free-text
- * notes), one line per profile, grouped by host. Local host reads its own
- * daemon config directly (see buildFleetContextData); a peer host only
- * appears here once the context.fetch wire payload carries agentProfiles —
- * no new peer plumbing is added by this renderer. Omitted entirely when no
- * host has any profiles (the Commander falls back to the host default
- * worker model).
- */
-function buildAgentProfilesSection(context: FleetContextData): string | null {
-  const sections = context.hosts
-    .filter((host) => (host.agentProfiles?.length ?? 0) > 0)
-    .map((host) => {
-      const lines = host.agentProfiles!.map((profile) => {
-        const notes = profile.notes?.trim();
-        return notes ? `- ${profile.name} — ${notes}` : `- ${profile.name}`;
-      });
-      return `## ${hostLabel(host)}\n${lines.join("\n")}`;
-    });
-  if (sections.length === 0) {
-    return null;
-  }
-  return `# Agent profiles\n${sections.join("\n\n")}`;
-}
-
-/**
- * One host's Models block. Every line is a verbatim invocable provider/model
- * string — exactly what create_agent/fleet_create_agent accept — plus the omp
- * modelRoles translated into the same invocable form (effort split out), and
- * roles whose model is absent from this host's provider snapshot marked
- * explicitly unavailable. A "default worker model" line (the omp `task` role,
- * invocable, with fallback when the role's model is missing) gives the
- * Commander the spawn default without derivation. Exported so tests can drive
- * the renderer directly.
- */
-export function buildHostModelsSection(models: MissionControlModels, label: string): string {
-  const entries = Object.entries(models).filter(([provider]) => provider !== OMP_MODEL_ROLES_KEY);
-  if (entries.length === 0 && !models[OMP_MODEL_ROLES_KEY]) {
-    return `## ${label}\n- (no provider snapshot)`;
-  }
-  const lines = entries.flatMap(([provider, modelIds]) =>
-    modelIds.map((modelId) => `- ${provider}/${modelId}`),
-  );
-  const defaultWorkerLine = buildDefaultWorkerModelLine(models);
-  if (defaultWorkerLine) {
-    lines.push(defaultWorkerLine);
-  }
-  const roles = models[OMP_MODEL_ROLES_KEY];
-  if (roles && roles.length > 0) {
-    lines.push(
-      "- omp modelRoles → role mappings in invocable provider/model form, exactly what create_agent/fleet_create_agent accept:",
-    );
-    for (const entry of roles) {
-      const parsed = parseRoleEntry(entry);
-      if (!parsed) {
-        continue;
-      }
-      const { model, effort } = splitOmpEffortSuffix(parsed.model);
-      const resolved = resolveRoleInvocable(models, model);
-      if (resolved) {
-        lines.push(
-          `  - role "${parsed.role}" → ${resolved.invocable}${effort ? ` (effort: ${effort})` : ""}`,
-        );
-      } else {
-        // The role's model is not in this host's provider snapshot: present
-        // it as unavailable instead of an invocable string that would fail.
-        lines.push(`  - role "${parsed.role}" → ${model} (not available on this host)`);
-      }
-    }
-  }
-  return `## ${label}\n${lines.join("\n")}`;
-}
 
 export interface DefaultWorkerModelResolution {
   /** The invocable provider/model string to spawn with, or null when the host has none. */
@@ -981,16 +759,6 @@ function resolveComposerDefaultModel(
   return `${provider}/${model}`;
 }
 
-function buildDefaultWorkerModelLine(models: MissionControlModels): string | null {
-  const { invocable, note } = resolveDefaultWorkerModel(models);
-  if (!invocable) {
-    return note ? `- default worker model: none (${note})` : null;
-  }
-  return note
-    ? `- default worker model: ${invocable} (${note})`
-    : `- default worker model: ${invocable}`;
-}
-
 /** First invocable provider/model string in the snapshot, if any. */
 function firstInvocableModel(models: MissionControlModels): string | null {
   for (const [provider, modelIds] of Object.entries(models)) {
@@ -1005,110 +773,7 @@ function firstInvocableModel(models: MissionControlModels): string | null {
   return null;
 }
 
-/** Roster status labels for the world snapshot (spec 01 bucket wording). */
-const ROSTER_STATUS_LABELS: Record<string, string> = {
-  needs_you: "needs you",
-  ready: "ready for review",
-};
-
-/**
- * Fleet-truth bucket totals summed over every reachable host that reports
- * them (no recency window), rendered ahead of the windowed roster rows so
- * the Commander never states a windowed count as the fleet total.
- */
-function buildBucketTotalsLine(context: FleetContextData): string | null {
-  const totals: Record<string, number> = {};
-  let reported = false;
-  for (const host of context.hosts) {
-    if (!host.bucketCounts) {
-      continue;
-    }
-    reported = true;
-    for (const [bucket, count] of Object.entries(host.bucketCounts)) {
-      totals[bucket] = (totals[bucket] ?? 0) + count;
-    }
-  }
-  if (!reported) {
-    return null;
-  }
-  const parts = ["needs_you", "running", "ready", "done", "idle"]
-    .filter((bucket) => (totals[bucket] ?? 0) > 0)
-    .map((bucket) => `${ROSTER_STATUS_LABELS[bucket] ?? bucket} ${totals[bucket]}`);
-  return `- Fleet totals (full retention): ${parts.length > 0 ? parts.join(", ") : "none"}`;
-}
-
-function buildRosterSection(context: FleetContextData): string {
-  const totalsLine = buildBucketTotalsLine(context);
-  const entries: Array<{ line: string; at: number }> = [];
-  for (const host of context.hosts) {
-    for (const agent of host.recentAgents) {
-      const identity = [agent.name, agent.title].filter(Boolean).join(" — ");
-      const headline = agent.lastReportHeadline?.trim();
-      const detail = headline
-        ? `${identity || agent.agentId}: "${headline}"`
-        : identity || agent.agentId;
-      const age = agent.lastActivityAt ? formatAge(agent.lastActivityAt) : null;
-      const rawStatus = agent.status ?? "idle";
-      const status = ROSTER_STATUS_LABELS[rawStatus] ?? rawStatus;
-      const atMs = agent.lastActivityAt ? Date.parse(agent.lastActivityAt) : NaN;
-      entries.push({
-        line: `- ${detail} — ${status}${age ? `, ${age} ago` : ""} — ${hostLabel(host)} (paseo://h/${agent.hostServerId}/agent/${agent.agentId})`,
-        at: Number.isNaN(atMs) ? 0 : atMs,
-      });
-    }
-  }
-  const header = totalsLine ? `# Roster\n${totalsLine}` : "# Roster";
-  if (entries.length === 0) {
-    return totalsLine
-      ? `${header}\n- (no agents active in the last 24h; totals above are the full fleet)`
-      : `${header}\n- (no running or ready-for-review agents)`;
-  }
-  entries.sort((left, right) => right.at - left.at);
-  return `${header}\n${entries
-    .slice(0, ROSTER_LIMIT)
-    .map((entry) => entry.line)
-    .join("\n")}`;
-}
-
-function buildRoutingDefaultsSection(context: FleetContextData): string {
-  const lines = [
-    "- The user's wording always wins: when they name a host, workspace, or agent, use exactly that.",
-    "- Reuse a matching existing workspace; only create when nothing matches.",
-    "- Dispatch, don't discuss: state the dispatch in one line and call the tool. No plan narration, no permission-seeking for routine dispatches.",
-  ];
-  if (context.defaultHost) {
-    lines.push(
-      `- Default dispatch host (central config): "${context.defaultHost}" — use it when the user names no host.`,
-    );
-  } else {
-    lines.push(
-      "- No default dispatch host configured: choose from the fleet map by where the project lives, then capability, then load.",
-    );
-  }
-  return `# Routing defaults\n${lines.join("\n")}`;
-}
-
 // --- Helpers ---
-
-function formatAge(iso: string): string {
-  const parsed = Date.parse(iso);
-  if (Number.isNaN(parsed)) {
-    return "unknown";
-  }
-  const minutes = Math.max(0, Math.round((Date.now() - parsed) / 60_000));
-  if (minutes < 60) {
-    return `${minutes}m`;
-  }
-  const hours = Math.round(minutes / 60);
-  if (hours < 24) {
-    return `${hours}h`;
-  }
-  return `${Math.round(hours / 24)}d`;
-}
-
-function hostLabel(host: FleetHostContext): string {
-  return host.alias ?? host.hostName;
-}
 
 function readOmpModelRoles(): Record<string, string> {
   try {

@@ -30,7 +30,6 @@ import { getAgentFeatureIcon, ThinkingIcon } from "@/agent-controls/icons";
 import { formatThinkingOptionLabel } from "@/agent-controls/labels";
 import { ComboboxTrigger } from "@/components/ui/combobox-trigger";
 import { CombinedModelSelector } from "@/components/combined-model-selector";
-import { saveCommanderModel } from "@/mission-control/launch";
 import { isSystemOwnedAgentLabels } from "@getpaseo/protocol/mission-control/system-owned";
 import {
   resolveUnattendedModeId,
@@ -1761,7 +1760,8 @@ export const AgentControls = memo(function AgentControls({
   const agentLabels = useSessionStore(
     (state) => state.sessions[serverId]?.agents.get(agentId)?.labels ?? null,
   );
-  const isCommander = isSystemOwnedAgentLabels(agentLabels ?? undefined);
+  // Machinery agents (mission-control labels) run in a fixed mode.
+  const isSystemOwned = isSystemOwnedAgentLabels(agentLabels ?? undefined);
   const toast = useToast();
   const modeControl = useLiveAgentModeControl(serverId, agentId);
   const commandCenterModes = toCommandCenterModes(modeControl);
@@ -1831,10 +1831,6 @@ export const AgentControls = memo(function AgentControls({
       }
       try {
         await client.setAgentModel(agentId, modelId);
-        // Remember the Commander's model per host so relaunches keep it.
-        if (isCommander) {
-          void saveCommanderModel(serverId, { provider: agentProvider, model: modelId });
-        }
         const preferredThinking =
           resolveEffectiveFormPreferences(preferences, preferenceScope).providerPreferences?.[
             agentProvider
@@ -1856,17 +1852,7 @@ export const AgentControls = memo(function AgentControls({
         toast.error(toErrorMessage(error));
       }
     },
-    [
-      agentId,
-      agentProvider,
-      client,
-      isCommander,
-      preferenceScope,
-      preferences,
-      serverId,
-      toast,
-      updatePreferences,
-    ],
+    [agentId, agentProvider, client, preferenceScope, preferences, toast, updatePreferences],
   );
 
   const { agentProfiles, handleEditAgentProfiles } = useAgentBoundProfiles(
@@ -2079,7 +2065,7 @@ export const AgentControls = memo(function AgentControls({
   );
   const agentModePicker = useMemo<AgentModePickerSlot | undefined>(
     () =>
-      isCommander
+      isSystemOwned
         ? undefined
         : (surface) => (
             <LiveAgentModePicker
@@ -2089,7 +2075,7 @@ export const AgentControls = memo(function AgentControls({
               surface={surface}
             />
           ),
-    [agentId, client, isCommander, serverId],
+    [agentId, client, isSystemOwned, serverId],
   );
 
   if (!agent) {

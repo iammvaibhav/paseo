@@ -21,19 +21,12 @@ import type {
   WorkspaceRegistry,
 } from "../workspace-registry.js";
 import {
-  buildCommanderLaunchConfig,
-  buildCommanderSystemPrompt,
   buildFleetContextData,
-  buildHostModelsSection,
   buildLocalInventory,
   buildLocalModels,
   buildLocalRecentAgents,
-  buildSnapshotBlock,
-  buildWorldSnapshot,
   resolveRememberedBaseBranch,
-  WORLD_SNAPSHOT_MARKER,
   type FleetContextDependencies,
-  type WorldSnapshot,
 } from "./context.js";
 import type { MissionControlReviewStateRecord } from "./store.js";
 import type { StoredAgentRecord } from "../agent/agent-storage.js";
@@ -186,101 +179,6 @@ function buildDependencies(options: TestFleetOptions = {}): FleetContextDependen
     logger: createTestLogger(),
   };
 }
-
-describe("buildCommanderSystemPrompt (static)", () => {
-  test("is static: identical across different fleet states", async () => {
-    const depsA = buildDependencies({ hostAlias: "work server" });
-    const depsB = buildDependencies({ hostAlias: "other alias" });
-    const launchA = await buildCommanderLaunchConfig(depsA);
-    const launchB = await buildCommanderLaunchConfig(depsB);
-    expect(launchA.systemPrompt).toBe(launchB.systemPrompt);
-  });
-
-  test("carries the shipped playbook and orchestrator reminder, no fleet state", () => {
-    const prompt = buildCommanderSystemPrompt("");
-    expect(prompt).toContain("fleet_create_agent");
-    expect(prompt).toContain("tag_message");
-    expect(prompt).toContain("you are the orchestrator");
-    expect(prompt).toContain("never run commands, debug, or edit anything yourself");
-    expect(prompt).not.toContain("Fleet map");
-    expect(prompt).not.toContain("Roster");
-  });
-
-  test("appends central commanderInstructions on top", () => {
-    const prompt = buildCommanderSystemPrompt("User override: route iOS work to the mac.");
-    expect(prompt).toContain("User override: route iOS work to the mac.");
-    expect(buildCommanderSystemPrompt("")).not.toContain("User override");
-  });
-});
-
-describe("world snapshot as first conversation message", () => {
-  test("launch config firstMessage is the system-enveloped world snapshot", async () => {
-    const deps = buildDependencies({ hostAlias: "work server" });
-    const { systemPrompt, firstMessage } = await buildCommanderLaunchConfig(deps);
-    expect(systemPrompt).not.toContain("Fleet map");
-    expect(firstMessage).toMatch(/^<paseo-system>\n# Fleet state as of \d{4}-\d{2}-\d{2}T/);
-    expect(firstMessage).toContain("Fleet map");
-    expect(firstMessage).toContain('alias "work server"');
-    expect(firstMessage).toContain("Alpha");
-    expect(firstMessage).toContain("the alpha service");
-    expect(firstMessage).toContain("Alpha App");
-    expect(firstMessage).toContain("Rusty");
-  });
-
-  test("different fleet states produce different first messages", async () => {
-    const depsA = buildDependencies({ hostAlias: "work server" });
-    const depsB = buildDependencies({ hostAlias: "other alias" });
-    const launchA = await buildCommanderLaunchConfig(depsA);
-    const launchB = await buildCommanderLaunchConfig(depsB);
-    expect(launchA.firstMessage).not.toBe(launchB.firstMessage);
-  });
-
-  test("fleet map aliases come from each host's own hostAlias declaration", async () => {
-    const context = await buildFleetContextData(buildDependencies({ hostAlias: "work server" }));
-    const local = context.hosts.find((host) => host.hostName === "local");
-    expect(local?.alias).toBe("work server");
-  });
-
-  test("routing defaults use the central defaultDispatchHost", async () => {
-    const context = await buildFleetContextData(
-      buildDependencies({ defaultDispatchHost: "local" }),
-    );
-    expect(context.defaultHost).toBe("local");
-    const block = buildSnapshotBlock(context, new Date().toISOString());
-    expect(block).toContain('Default dispatch host (central config): "local"');
-  });
-
-  test("roster renders spec one-liners with headline and age", async () => {
-    // The age is rendered relative to now, so a hardcoded literal drifts by a day
-    // every day. Freeze the clock at exactly 218 days after the running fixture's
-    // updatedAt (2026-01-02T00:10:00Z) so the assertion holds regardless of how the
-    // renderer rounds. Only Date is faked; real timers keep working for the awaits.
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(new Date("2026-08-08T00:10:00Z"));
-    try {
-      const context = await buildFleetContextData(
-        buildDependencies({
-          // Rusty's report stays at 218d for the age assertion (running always
-          // qualifies). Mira's ready-for-review item must show recent activity
-          // to stay inside the roster's 24h window — the ready bucket does not
-          // escape the window like running does.
-          events: [
-            selfReportEvent("agent-running", "Root cause found", "2026-01-02T00:08:00Z"),
-            selfReportEvent("agent-review", "Charts done", "2026-08-07T23:00:00Z"),
-          ],
-        }),
-      );
-      const block = buildSnapshotBlock(context, new Date().toISOString());
-      expect(block).toContain('Rusty — Fix auth: "Root cause found"');
-      expect(block).toContain("running, 218d ago");
-      expect(block).toContain("Mira — Ship charts");
-      expect(block).toContain("ready for review");
-      expect(block).toContain("paseo://h/server-local/agent/agent-running");
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-});
 
 describe("buildLocalRecentAgents roster filter", () => {
   test("includes only agents active in the last 24 hours, bucketed by lifecycle", async () => {
@@ -486,89 +384,10 @@ describe("buildLocalRecentAgents roster filter", () => {
     const summaries = await buildLocalRecentAgents(deps);
     expect(summaries).toHaveLength(1);
     expect(summaries[0]?.lastActivityAt).toBeUndefined();
-    // The roster line renders without a stale boot-stamped age.
-    const context = await buildFleetContextData(deps);
-    const block = buildSnapshotBlock(context, new Date().toISOString());
-    expect(block).toContain("Rusty — Fix auth — running —");
-    expect(block).not.toMatch(/Rusty — Fix auth — running, \d+d ago/);
   });
 });
 
-describe("world snapshot (buildWorldSnapshot / buildSnapshotBlock)", () => {
-  test("is stamped with the generation time via WORLD_SNAPSHOT_MARKER", async () => {
-    const deps = buildDependencies();
-    const snapshot: WorldSnapshot = await buildWorldSnapshot(deps);
-    expect(snapshot.at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
-    expect(snapshot.block.startsWith(`${WORLD_SNAPSHOT_MARKER}${snapshot.at}`)).toBe(true);
-    // The marker is how the injector identifies snapshot rows for
-    // supersede-in-place retraction.
-    expect(snapshot.block).toContain(WORLD_SNAPSHOT_MARKER);
-  });
-
-  test("renders fleet map, inventory, roster, models, and routing defaults", async () => {
-    const deps = buildDependencies();
-    const { block } = await buildWorldSnapshot(deps);
-    expect(block).toContain("# Fleet map");
-    expect(block).toContain("# Inventory");
-    expect(block).toContain("# Roster");
-    expect(block).toContain("# Models");
-    expect(block).toContain("# Routing defaults");
-    expect(block).toContain("Alpha (proj-1) — the alpha service");
-    expect(block).toContain("Alpha App [worktree]");
-  });
-
-  test("regenerates fresh: two calls differ in the stamp and reflect new state", async () => {
-    const deps = buildDependencies({ hostAlias: "work server" });
-    const first: WorldSnapshot = await buildWorldSnapshot(deps);
-    const second: WorldSnapshot = await buildWorldSnapshot(deps);
-    expect(second.at).not.toBe(first.at);
-    const mutated = buildDependencies({ hostAlias: "other alias" });
-    const third: WorldSnapshot = await buildWorldSnapshot(mutated);
-    expect(third.block).not.toBe(second.block);
-  });
-
-  test("block is inner content: no <paseo-system> envelope of its own", async () => {
-    const deps = buildDependencies();
-    const { block } = await buildWorldSnapshot(deps);
-    expect(block).not.toMatch(/^<paseo-system>/);
-    expect(block).toContain("# Fleet state as of ");
-  });
-});
-
-describe("project descriptions in inventory", () => {
-  test("render in the world snapshot", async () => {
-    const deps = buildDependencies();
-    const block = buildSnapshotBlock(await buildFleetContextData(deps), new Date().toISOString());
-    expect(block).toContain("Alpha (proj-1) — the alpha service");
-  });
-});
-
-describe("per-project PR policy in inventory", () => {
-  test("renders 'always raise a PR' when projectSettings[projectKey].alwaysRaisePr is true", async () => {
-    const deps = buildDependencies({ projectSettings: { "proj-1": { alwaysRaisePr: true } } });
-    const block = buildSnapshotBlock(await buildFleetContextData(deps), new Date().toISOString());
-    expect(block).toContain("Alpha (proj-1) — the alpha service — PR policy: always raise a PR");
-  });
-
-  test("omits the PR policy suffix when alwaysRaisePr is unset", async () => {
-    const deps = buildDependencies();
-    const block = buildSnapshotBlock(await buildFleetContextData(deps), new Date().toISOString());
-    expect(block).not.toContain("PR policy");
-  });
-});
 describe("per-project commander instructions in inventory", () => {
-  test("renders project instructions in the world snapshot inventory section", async () => {
-    const deps = buildDependencies();
-    const context = await buildFleetContextData(deps);
-    context.hosts[0]!.inventory.projects[0]!.commanderInstructions =
-      "Use opencode-zen/ox-alpha-free model.\nAlways run npm test before completion.";
-    const block = buildSnapshotBlock(context, new Date().toISOString());
-    expect(block).toContain("Alpha (proj-1) — the alpha service");
-    expect(block).toContain("Project instructions (read before dispatching):");
-    expect(block).toContain("Use opencode-zen/ox-alpha-free model.");
-    expect(block).toContain("Always run npm test before completion.");
-  });
-
   test("buildLocalInventory loads project instructions from rootPath", async () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "paseo-local-inventory-instructions-"));
     try {
@@ -646,142 +465,6 @@ describe("per-project commander instructions in inventory", () => {
     expect(resolveRememberedBaseBranch(prefs, { projectKey: "proj-a" })).toBe("develop");
     expect(resolveRememberedBaseBranch(prefs, { projectKey: "proj-b" })).toBe("main");
     expect(resolveRememberedBaseBranch(null)).toBeNull();
-  });
-});
-
-describe("Agent profiles block", () => {
-  test("renders the local host's daemon-config agent profiles as name + notes", async () => {
-    const deps = buildDependencies({
-      agentProfiles: [
-        { id: "p1", name: "iOS reviewer", provider: "claude", notes: "Use for SwiftUI work" },
-        { id: "p2", name: "Backend fixer", provider: "codex" },
-      ],
-    });
-    const block = buildSnapshotBlock(await buildFleetContextData(deps), new Date().toISOString());
-    expect(block).toContain("# Agent profiles");
-    expect(block).toContain("- iOS reviewer — Use for SwiftUI work");
-    expect(block).toContain("- Backend fixer");
-  });
-
-  test("omits the Agent profiles block when no host has any profiles", async () => {
-    const deps = buildDependencies();
-    const block = buildSnapshotBlock(await buildFleetContextData(deps), new Date().toISOString());
-    expect(block).not.toContain("# Agent profiles");
-  });
-});
-
-describe("invocable provider/model strings", () => {
-  test("models render verbatim provider/model strings the create tools accept", async () => {
-    const deps = buildDependencies();
-    deps.providerSnapshotManager = {
-      listProviders: async () => [
-        { provider: "codex", models: [{ id: "gpt-5.4" }, { id: "gpt-5.4-mini" }] },
-      ],
-      listRegisteredProviderIds: () => ["codex"],
-    } as unknown as FleetContextDependencies["providerSnapshotManager"];
-    const context = await buildFleetContextData(deps);
-    const block = buildSnapshotBlock(context, new Date().toISOString());
-    expect(block).toContain("- codex/gpt-5.4");
-    expect(block).toContain("- codex/gpt-5.4-mini");
-    expect(block).not.toMatch(/- codex: /);
-  });
-});
-
-describe("models block roles notation (invocable only)", () => {
-  const ROLES_KEY = "omp.modelRoles";
-
-  test("roles render invocable: owning provider prefixed, effort split out", () => {
-    const block = buildHostModelsSection(
-      {
-        omp: [
-          "opencode-zen/deepseek-v4-flash-free",
-          "anthropic/claude-fable-5",
-          "grok-build/grok-4.5",
-        ],
-        [ROLES_KEY]: [
-          "task: opencode-zen/deepseek-v4-flash-free:high",
-          "plan: grok-build/grok-4.5:high",
-        ],
-      },
-      "iammvaibhav",
-    );
-    expect(block).toContain(
-      '- role "task" → omp/opencode-zen/deepseek-v4-flash-free (effort: high)',
-    );
-    expect(block).toContain('- role "plan" → omp/grok-build/grok-4.5 (effort: high)');
-    // Never the bare internal provider/model:effort form in the block.
-    expect(block).not.toContain("opencode-zen/deepseek-v4-flash-free:high");
-    expect(block).not.toContain("grok-build/grok-4.5:high");
-  });
-
-  test("role model that is itself a provider/model pair stays direct when present", () => {
-    const block = buildHostModelsSection(
-      {
-        cursor: ["gpt-5.6-sol-high", "composer-2.5"],
-        [ROLES_KEY]: ["designer: cursor/gpt-5.6-sol-high"],
-      },
-      "macbook",
-    );
-    expect(block).toContain('- role "designer" → cursor/gpt-5.6-sol-high');
-    // A colon-less value carries no effort note.
-    expect(block).not.toContain("(effort:");
-  });
-
-  test("role missing from the snapshot renders as unavailable, not usable", () => {
-    const block = buildHostModelsSection(
-      {
-        omp: ["anthropic/claude-fable-5"],
-        [ROLES_KEY]: ["task: opencode-zen/deepseek-v4-flash-free:high"],
-      },
-      "iammvaibhav",
-    );
-    expect(block).toContain(
-      '- role "task" → opencode-zen/deepseek-v4-flash-free (not available on this host)',
-    );
-    expect(block).not.toContain("omp/opencode-zen/deepseek-v4-flash-free");
-  });
-
-  test("one line states the strings are exactly what the create tools accept", () => {
-    const block = buildHostModelsSection(
-      { omp: ["anthropic/claude-fable-5"], [ROLES_KEY]: ["task: anthropic/claude-fable-5:high"] },
-      "local",
-    );
-    expect(block).toContain("exactly what create_agent/fleet_create_agent accept");
-  });
-
-  test("default worker model line: task role invocable", () => {
-    const block = buildHostModelsSection(
-      {
-        omp: ["opencode-zen/deepseek-v4-flash-free"],
-        [ROLES_KEY]: ["task: opencode-zen/deepseek-v4-flash-free:high"],
-      },
-      "local",
-    );
-    expect(block).toContain(
-      "- default worker model: omp/opencode-zen/deepseek-v4-flash-free (omp task role)",
-    );
-  });
-
-  test("default worker model line: task role missing from snapshot falls back and says so", () => {
-    const block = buildHostModelsSection(
-      {
-        omp: ["anthropic/claude-fable-5", "opencode-go/deepseek-v4-flash"],
-        [ROLES_KEY]: ["task: opencode-zen/deepseek-v4-flash-free:high"],
-      },
-      "iammvaibhav",
-    );
-    expect(block).toContain(
-      '- default worker model: omp/anthropic/claude-fable-5 (omp task role "opencode-zen/deepseek-v4-flash-free" is not available on this host; using first available model)',
-    );
-  });
-});
-
-describe("single <paseo-system> envelope", () => {
-  test("snapshot blocks are inner content: the injector wraps exactly one envelope", async () => {
-    const deps = buildDependencies();
-    const { block } = await buildWorldSnapshot(deps);
-    expect(block).not.toMatch(/^<paseo-system>/);
-    expect(block).toContain("# Fleet state as of ");
   });
 });
 

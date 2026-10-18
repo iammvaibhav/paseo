@@ -562,7 +562,9 @@ describe("ItsaplanBridge", () => {
   let handle: { baseUrl: string; close: () => Promise<void> };
   let config: ItsaplanCentralConfig;
   let projectStore: ItsaplanProjectStore;
-  let deliverMachineryPrompt: ReturnType<typeof vi.fn>;
+  let dispatchWorker: ReturnType<typeof vi.fn>;
+  const firstDispatch = () =>
+    dispatchWorker.mock.calls[0]?.[0] as { brief: string; images?: unknown } | undefined;
   let steerWorkerPrompt: ReturnType<typeof vi.fn>;
   let agentStorageRecords: Pick<StoredAgentRecord, "id" | "labels" | "updatedAt">[];
   let agentManagerFake: FakeAgentManagerHandle;
@@ -626,7 +628,7 @@ describe("ItsaplanBridge", () => {
       createdAt: new Date().toISOString(),
       commanderUserId: "bot-user-1",
     });
-    deliverMachineryPrompt = vi.fn(async () => true);
+    dispatchWorker = vi.fn(async () => "worker-1");
     steerWorkerPrompt = vi.fn(async () => {});
     agentStorageRecords = [];
     agentManagerFake = createFakeAgentManager();
@@ -640,7 +642,7 @@ describe("ItsaplanBridge", () => {
       projectStore,
       getConfig: () => config,
       resolvePaseoProjectKey: async () => "proj",
-      deliverMachineryPrompt,
+      dispatchWorker,
       steerWorkerPrompt,
     });
     bridge.start();
@@ -670,7 +672,7 @@ describe("ItsaplanBridge", () => {
         projectStore,
         getConfig: () => config,
         resolvePaseoProjectKey: async () => "proj",
-        deliverMachineryPrompt,
+        dispatchWorker,
         steerWorkerPrompt,
       });
       local.start();
@@ -700,7 +702,7 @@ describe("ItsaplanBridge", () => {
         projectStore,
         getConfig: () => config,
         resolvePaseoProjectKey: async () => "proj",
-        deliverMachineryPrompt,
+        dispatchWorker,
         steerWorkerPrompt,
       });
       remote.start();
@@ -864,7 +866,7 @@ describe("ItsaplanBridge", () => {
         projectStore,
         getConfig: () => config,
         resolvePaseoProjectKey: async () => "proj",
-        deliverMachineryPrompt,
+        dispatchWorker,
         steerWorkerPrompt,
       });
       peerBridge.start();
@@ -894,7 +896,7 @@ describe("ItsaplanBridge", () => {
         projectStore,
         getConfig: () => config,
         resolvePaseoProjectKey: async () => "proj",
-        deliverMachineryPrompt,
+        dispatchWorker,
         steerWorkerPrompt,
       });
       localBridge.start();
@@ -941,7 +943,7 @@ describe("ItsaplanBridge", () => {
         projectStore,
         getConfig: () => config,
         resolvePaseoProjectKey: async () => "proj",
-        deliverMachineryPrompt,
+        dispatchWorker,
         steerWorkerPrompt,
       });
       bridgeWithLogger.start();
@@ -967,7 +969,7 @@ describe("ItsaplanBridge", () => {
         projectStore,
         getConfig: () => config,
         resolvePaseoProjectKey: async () => "proj",
-        deliverMachineryPrompt,
+        dispatchWorker,
         steerWorkerPrompt,
       });
       bridgeRunning.start();
@@ -1114,15 +1116,17 @@ describe("ItsaplanBridge", () => {
 
       const first = await bridge.handleWebhookRequest(request);
       expect(first.status).toBe(200);
-      expect(deliverMachineryPrompt).toHaveBeenCalledTimes(1);
-      const prompt = deliverMachineryPrompt.mock.calls[0]?.[0] as string;
+      expect(dispatchWorker).toHaveBeenCalledTimes(1);
+      const prompt = firstDispatch()?.brief;
       expect(prompt).toContain("ENG-42");
-      expect(prompt).toContain(`"${ITSAPLAN_ISSUE_LABEL_KEY}": "${ISSUE_ID}"`);
+      expect(dispatchWorker.mock.calls[0]?.[0]).toMatchObject({
+        labels: { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) },
+      });
 
       // Same delivery id retried (itsaplan's own retry semantics) — no second prompt.
       const second = await bridge.handleWebhookRequest(request);
       expect(second.status).toBe(200);
-      expect(deliverMachineryPrompt).toHaveBeenCalledTimes(1);
+      expect(dispatchWorker).toHaveBeenCalledTimes(1);
     });
 
     test("the prompt's ticket URL points at the web app's issue route, not the api origin", async () => {
@@ -1137,7 +1141,7 @@ describe("ItsaplanBridge", () => {
       });
 
       expect((await bridge.handleWebhookRequest(request)).status).toBe(200);
-      const prompt = deliverMachineryPrompt.mock.calls[0]?.[0] as string;
+      const prompt = firstDispatch()?.brief;
       expect(prompt).toContain("URL: https://itsaplan.test:8443/project/ENG/issue/42");
     });
 
@@ -1152,12 +1156,14 @@ describe("ItsaplanBridge", () => {
       });
       const result = await bridge.handleWebhookRequest(request);
       expect(result.status).toBe(200);
-      expect(deliverMachineryPrompt).toHaveBeenCalledTimes(1);
-      const prompt = deliverMachineryPrompt.mock.calls[0]?.[0] as string;
+      expect(dispatchWorker).toHaveBeenCalledTimes(1);
+      const prompt = firstDispatch()?.brief;
       expect(prompt).toContain("ENG-42");
       expect(prompt).toContain("Directly created in Todo");
       expect(prompt).toContain("Must be picked up by Commander");
-      expect(prompt).toContain(`"${ITSAPLAN_ISSUE_LABEL_KEY}": "${ISSUE_ID}"`);
+      expect(dispatchWorker.mock.calls[0]?.[0]).toMatchObject({
+        labels: { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) },
+      });
     });
 
     test("ignores an issue created directly in Backlog", async () => {
@@ -1171,7 +1177,7 @@ describe("ItsaplanBridge", () => {
       });
       const result = await bridge.handleWebhookRequest(request);
       expect(result.status).toBe(200);
-      expect(deliverMachineryPrompt).not.toHaveBeenCalled();
+      expect(dispatchWorker).not.toHaveBeenCalled();
     });
 
     test("ignores a move into a non-Todo column", async () => {
@@ -1185,7 +1191,7 @@ describe("ItsaplanBridge", () => {
       });
       const result = await bridge.handleWebhookRequest(request);
       expect(result.status).toBe(200);
-      expect(deliverMachineryPrompt).not.toHaveBeenCalled();
+      expect(dispatchWorker).not.toHaveBeenCalled();
     });
 
     test("skips dispatch while an open blocker exists", async () => {
@@ -1212,7 +1218,7 @@ describe("ItsaplanBridge", () => {
       });
       const result = await bridge.handleWebhookRequest(request);
       expect(result.status).toBe(200);
-      expect(deliverMachineryPrompt).not.toHaveBeenCalled();
+      expect(dispatchWorker).not.toHaveBeenCalled();
     });
 
     test("dispatches once the blocker is done", async () => {
@@ -1239,7 +1245,7 @@ describe("ItsaplanBridge", () => {
       });
       const result = await bridge.handleWebhookRequest(request);
       expect(result.status).toBe(200);
-      expect(deliverMachineryPrompt).toHaveBeenCalledTimes(1);
+      expect(dispatchWorker).toHaveBeenCalledTimes(1);
     });
 
     test("B blocked by A, both Todo; A→Done (completed column) → Commander dispatch prompt for B fires", async () => {
@@ -1272,10 +1278,12 @@ describe("ItsaplanBridge", () => {
       });
       const result = await bridge.handleWebhookRequest(request);
       expect(result.status).toBe(200);
-      expect(deliverMachineryPrompt).toHaveBeenCalledTimes(1);
-      const prompt = deliverMachineryPrompt.mock.calls[0]?.[0] as string;
+      expect(dispatchWorker).toHaveBeenCalledTimes(1);
+      const prompt = firstDispatch()?.brief;
       expect(prompt).toContain("ENG-20");
-      expect(prompt).toContain(`"${ITSAPLAN_ISSUE_LABEL_KEY}": "200"`);
+      expect(dispatchWorker.mock.calls[0]?.[0]).toMatchObject({
+        labels: { [ITSAPLAN_ISSUE_LABEL_KEY]: "200" },
+      });
     });
 
     test("same setup, A→Ready to review, A unlabeled → B does not dispatch", async () => {
@@ -1313,7 +1321,7 @@ describe("ItsaplanBridge", () => {
       });
       const result = await bridge.handleWebhookRequest(request);
       expect(result.status).toBe(200);
-      expect(deliverMachineryPrompt).not.toHaveBeenCalled();
+      expect(dispatchWorker).not.toHaveBeenCalled();
     });
 
     test("same setup, A has auto-chain label, A→Ready to review → B dispatches", async () => {
@@ -1350,10 +1358,12 @@ describe("ItsaplanBridge", () => {
       });
       const result = await bridge.handleWebhookRequest(request);
       expect(result.status).toBe(200);
-      expect(deliverMachineryPrompt).toHaveBeenCalledTimes(1);
-      const prompt = deliverMachineryPrompt.mock.calls[0]?.[0] as string;
+      expect(dispatchWorker).toHaveBeenCalledTimes(1);
+      const prompt = firstDispatch()?.brief;
       expect(prompt).toContain("ENG-20");
-      expect(prompt).toContain(`"${ITSAPLAN_ISSUE_LABEL_KEY}": "200"`);
+      expect(dispatchWorker.mock.calls[0]?.[0]).toMatchObject({
+        labels: { [ITSAPLAN_ISSUE_LABEL_KEY]: "200" },
+      });
     });
 
     test("unmapped itsaplan projects are left alone", async () => {
@@ -1367,7 +1377,7 @@ describe("ItsaplanBridge", () => {
       });
       const result = await bridge.handleWebhookRequest(request);
       expect(result.status).toBe(200);
-      expect(deliverMachineryPrompt).not.toHaveBeenCalled();
+      expect(dispatchWorker).not.toHaveBeenCalled();
     });
 
     test("dispatches ticket with initiative name and description from webhook payload", async () => {
@@ -1387,8 +1397,8 @@ describe("ItsaplanBridge", () => {
 
       const result = await bridge.handleWebhookRequest(request);
       expect(result.status).toBe(200);
-      expect(deliverMachineryPrompt).toHaveBeenCalledTimes(1);
-      const prompt = deliverMachineryPrompt.mock.calls[0]?.[0] as string;
+      expect(dispatchWorker).toHaveBeenCalledTimes(1);
+      const prompt = firstDispatch()?.brief;
       expect(prompt).toContain("Initiative: Infrastructure Modernization");
       expect(prompt).toContain("Initiative description: Upgrade all agent runners and bridges");
       expect(prompt).toContain("Ticket: ENG-42 — Fix the bug");
@@ -1419,8 +1429,8 @@ describe("ItsaplanBridge", () => {
 
       const result = await bridge.handleWebhookRequest(request);
       expect(result.status).toBe(200);
-      expect(deliverMachineryPrompt).toHaveBeenCalledTimes(1);
-      const prompt = deliverMachineryPrompt.mock.calls[0]?.[0] as string;
+      expect(dispatchWorker).toHaveBeenCalledTimes(1);
+      const prompt = firstDispatch()?.brief;
       expect(prompt).toContain("Initiative: Core Platform");
       expect(prompt).toContain("Initiative description: Robust execution engine");
     });
@@ -1456,12 +1466,12 @@ describe("ItsaplanBridge", () => {
 
       const result = await bridge.handleWebhookRequest(request);
       expect(result.status).toBe(200);
-      expect(deliverMachineryPrompt).toHaveBeenCalledTimes(1);
-      const prompt = deliverMachineryPrompt.mock.calls[0]?.[0] as string;
-      const images = deliverMachineryPrompt.mock.calls[0]?.[1] as
+      expect(dispatchWorker).toHaveBeenCalledTimes(1);
+      const prompt = firstDispatch()?.brief;
+      const images = firstDispatch()?.images as
         | Array<{ data: string; mimeType: string }>
         | undefined;
-      expect(prompt).toContain("1 image attached natively");
+      expect(prompt).toContain("1 image from the ticket is attached to this message.");
       expect(prompt).toContain("File attachments:");
       expect(prompt).not.toContain("screenshot-error.png:");
       expect(prompt).toContain(`- stacktrace.log: ${config.baseUrl}/attachments/att-file-2/raw`);
@@ -1493,11 +1503,11 @@ describe("ItsaplanBridge", () => {
 
       const result = await bridge.handleWebhookRequest(request);
       expect(result.status).toBe(200);
-      const prompt = deliverMachineryPrompt.mock.calls[0]?.[0] as string;
-      const images = deliverMachineryPrompt.mock.calls[0]?.[1] as
+      const prompt = firstDispatch()?.brief;
+      const images = firstDispatch()?.images as
         | Array<{ data: string; mimeType: string }>
         | undefined;
-      expect(prompt).toContain("1 image attached natively");
+      expect(prompt).toContain("1 image from the ticket is attached to this message.");
       expect(prompt).toContain("Describe the image");
       expect(prompt).not.toContain("/media/attachments/");
       expect(prompt).not.toContain("![image.png]");
@@ -1538,11 +1548,11 @@ describe("ItsaplanBridge", () => {
 
       const result = await bridge.handleWebhookRequest(request);
       expect(result.status).toBe(200);
-      expect(deliverMachineryPrompt).toHaveBeenCalledTimes(1);
-      const prompt = deliverMachineryPrompt.mock.calls[0]?.[0] as string;
+      expect(dispatchWorker).toHaveBeenCalledTimes(1);
+      const prompt = firstDispatch()?.brief;
       expect(prompt).toContain("Initiative: Mobile App V2");
       expect(prompt).toContain("Initiative description: New redesign");
-      expect(prompt).toContain("1 image attached natively");
+      expect(prompt).toContain("1 image from the ticket is attached to this message.");
       expect(prompt).not.toContain("File attachments:");
     });
 
@@ -1590,8 +1600,8 @@ describe("ItsaplanBridge", () => {
       });
       const result = await bridge.handleWebhookRequest(request);
       expect(result.status).toBe(200);
-      expect(deliverMachineryPrompt).toHaveBeenCalledTimes(1);
-      const prompt = deliverMachineryPrompt.mock.calls[0]?.[0] as string;
+      expect(dispatchWorker).toHaveBeenCalledTimes(1);
+      const prompt = firstDispatch()?.brief;
       expect(prompt).toContain("ENG-20");
       expect(prompt).toContain("Initiative: Backend API");
       expect(prompt).toContain("Initiative description: Service endpoints");
@@ -1614,7 +1624,7 @@ describe("ItsaplanBridge", () => {
       });
       const result = await bridge.handleWebhookRequest(request);
       expect(result.status).toBe(200);
-      expect(deliverMachineryPrompt).not.toHaveBeenCalled();
+      expect(dispatchWorker).not.toHaveBeenCalled();
     });
 
     test("skips dispatch when issue in Todo is unassigned and has no delegate", async () => {
@@ -1632,7 +1642,7 @@ describe("ItsaplanBridge", () => {
       });
       const result = await bridge.handleWebhookRequest(request);
       expect(result.status).toBe(200);
-      expect(deliverMachineryPrompt).not.toHaveBeenCalled();
+      expect(dispatchWorker).not.toHaveBeenCalled();
     });
 
     test("dispatches when issue in Todo is assigned to vaibhav but delegated to Commander", async () => {
@@ -1650,8 +1660,8 @@ describe("ItsaplanBridge", () => {
       });
       const result = await bridge.handleWebhookRequest(request);
       expect(result.status).toBe(200);
-      expect(deliverMachineryPrompt).toHaveBeenCalledTimes(1);
-      const prompt = deliverMachineryPrompt.mock.calls[0]?.[0] as string;
+      expect(dispatchWorker).toHaveBeenCalledTimes(1);
+      const prompt = firstDispatch()?.brief;
       expect(prompt).toContain("ENG-42");
     });
 
@@ -1670,7 +1680,7 @@ describe("ItsaplanBridge", () => {
       });
       const result = await bridge.handleWebhookRequest(request);
       expect(result.status).toBe(200);
-      expect(deliverMachineryPrompt).toHaveBeenCalledTimes(1);
+      expect(dispatchWorker).toHaveBeenCalledTimes(1);
     });
 
     test("skips dispatch on issue.assigned event if reassigned to another human", async () => {
@@ -1688,7 +1698,7 @@ describe("ItsaplanBridge", () => {
       });
       const result = await bridge.handleWebhookRequest(request);
       expect(result.status).toBe(200);
-      expect(deliverMachineryPrompt).not.toHaveBeenCalled();
+      expect(dispatchWorker).not.toHaveBeenCalled();
     });
 
     test("skips releasing unblocked dependent if dependent is assigned to a human without Commander delegation", async () => {
@@ -1717,7 +1727,7 @@ describe("ItsaplanBridge", () => {
       });
       const result = await bridge.handleWebhookRequest(request);
       expect(result.status).toBe(200);
-      expect(deliverMachineryPrompt).not.toHaveBeenCalled();
+      expect(dispatchWorker).not.toHaveBeenCalled();
     });
 
     test("releases unblocked dependent if dependent is delegated to Commander even when assigned to a human", async () => {
@@ -1746,8 +1756,8 @@ describe("ItsaplanBridge", () => {
       });
       const result = await bridge.handleWebhookRequest(request);
       expect(result.status).toBe(200);
-      expect(deliverMachineryPrompt).toHaveBeenCalledTimes(1);
-      const prompt = deliverMachineryPrompt.mock.calls[0]?.[0] as string;
+      expect(dispatchWorker).toHaveBeenCalledTimes(1);
+      const prompt = firstDispatch()?.brief;
       expect(prompt).toContain("ENG-20");
     });
   });
@@ -2383,7 +2393,7 @@ describe("ItsaplanBridge", () => {
         projectStore,
         getConfig: () => config,
         resolvePaseoProjectKey: async () => null, // unmapped
-        deliverMachineryPrompt,
+        dispatchWorker,
         steerWorkerPrompt,
       });
       const result = await unmappedBridge.ticketizeAgent("agent-unmapped");
@@ -2612,7 +2622,7 @@ describe("ItsaplanBridge", () => {
         missionControl: missionControlFake.control,
         projectStore,
         getConfig: () => null,
-        deliverMachineryPrompt,
+        dispatchWorker,
         resolvePaseoProjectKey: async () => "proj",
         steerWorkerPrompt,
       });
@@ -2654,7 +2664,6 @@ describe("extractProjectKeyFromIdentifier", () => {
 describe("buildDispatchPrompt", () => {
   test("builds plain prompt with no initiative and no attachments", () => {
     const prompt = buildDispatchPrompt({
-      issueId: 42,
       ticketKey: "ENG-10",
       title: "Fix crash on launch",
       body: "Stacktrace in logs",
@@ -2662,21 +2671,17 @@ describe("buildDispatchPrompt", () => {
       projectKey: "paseo",
     });
 
-    expect(prompt).toContain(
-      "itsaplan ticket moved to Todo with zero open blockers — ready to dispatch.",
-    );
+    expect(prompt).toContain("You own itsaplan ticket ENG-10.");
     expect(prompt).toContain("Project: paseo");
     expect(prompt).toContain("Ticket: ENG-10 — Fix crash on launch");
     expect(prompt).toContain("URL: http://10.7.0.1:3001/project/ENG/issue/10");
     expect(prompt).toContain("Stacktrace in logs");
-    expect(prompt).toContain(`Label the new agent "${ITSAPLAN_ISSUE_LABEL_KEY}": "42"`);
     expect(prompt).not.toContain("Initiative:");
     expect(prompt).not.toContain("Attachments:");
   });
 
   test("builds prompt with (no description) when body is empty", () => {
     const prompt = buildDispatchPrompt({
-      issueId: 42,
       ticketKey: "ENG-10",
       title: "Empty body ticket",
       body: "   ",
@@ -2689,7 +2694,6 @@ describe("buildDispatchPrompt", () => {
 
   test("includes initiative title and description when provided", () => {
     const prompt = buildDispatchPrompt({
-      issueId: 42,
       ticketKey: "ENG-10",
       title: "Speed up tests",
       body: "Run in parallel",
@@ -2707,7 +2711,6 @@ describe("buildDispatchPrompt", () => {
 
   test("includes initiative title without description line when description is empty or null", () => {
     const prompt = buildDispatchPrompt({
-      issueId: 42,
       ticketKey: "ENG-10",
       title: "Speed up tests",
       body: "Run in parallel",
@@ -2725,7 +2728,6 @@ describe("buildDispatchPrompt", () => {
 
   test("lists non-image files as links and notes native images separately", () => {
     const prompt = buildDispatchPrompt({
-      issueId: 42,
       ticketKey: "ENG-10",
       title: "UI alignment bug",
       body: "See screenshots",
@@ -2740,14 +2742,13 @@ describe("buildDispatchPrompt", () => {
       ],
     });
 
-    expect(prompt).toContain("2 images attached natively");
+    expect(prompt).toContain("2 images from the ticket are attached to this message.");
     expect(prompt).toContain("File attachments:");
     expect(prompt).toContain("- notes.txt: http://10.7.0.1:3000/attachments/notes/raw");
   });
 
   test("strips markdown image embeds from the body when native images are attached", () => {
     const prompt = buildDispatchPrompt({
-      issueId: 42,
       ticketKey: "PASEO-24",
       title: "Test image",
       body: "![image.png](/media/attachments/abc/raw)Describe the image",
@@ -2757,14 +2758,13 @@ describe("buildDispatchPrompt", () => {
     });
 
     expect(prompt).toContain("Describe the image");
-    expect(prompt).toContain("1 image attached natively");
+    expect(prompt).toContain("1 image from the ticket is attached to this message.");
     expect(prompt).not.toContain("/media/attachments/");
     expect(prompt).not.toContain("![image.png]");
   });
 
   test("includes both initiative and file attachments formatted in expected sections", () => {
     const prompt = buildDispatchPrompt({
-      issueId: 42,
       ticketKey: "ENG-10",
       title: "Add dark mode toggle",
       body: "Toggle in settings pane",
@@ -2786,7 +2786,7 @@ describe("buildDispatchPrompt", () => {
     expect(prompt).toContain("Initiative: Theme Refresh");
     expect(prompt).toContain("Initiative description: Support multiple themes");
     expect(prompt).toContain("Toggle in settings pane");
-    expect(prompt).toContain("1 image attached natively");
+    expect(prompt).toContain("1 image from the ticket is attached to this message.");
     expect(prompt).toContain(
       "File attachments:\n- spec.pdf: http://10.7.0.1:3000/attachments/spec/raw",
     );
@@ -2874,7 +2874,7 @@ describe("itsaplan comment author attribution, deduplication, and link formattin
       missionControl: missionControlFake.control,
       projectStore,
       getConfig: () => config,
-      deliverMachineryPrompt: async () => true,
+      dispatchWorker: async () => "worker-1",
       steerWorkerPrompt: async () => {},
       resolvePaseoProjectKey: async () => "proj",
       logger: createTestLogger(),

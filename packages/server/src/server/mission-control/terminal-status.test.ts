@@ -9,7 +9,6 @@ import type { AgentTimelineItem } from "../agent/agent-sdk-types.js";
 import type { DaemonConfigStore } from "../daemon-config-store.js";
 import { MissionControlService } from "./service.js";
 import { MissionControlStore } from "./store.js";
-import { createMissionControlPresenceSource } from "./presence.js";
 
 function createMockLogger(): pino.Logger {
   const levels = ["trace", "debug", "info", "warn", "error", "fatal"] as const;
@@ -86,18 +85,12 @@ describe("MissionControlService terminal-state guarantee", () => {
       serverId: "test-server",
       hostName: "test-host",
       broadcast,
-      presence: createMissionControlPresenceSource({
-        isAgentFocused: () => false,
-        readStopOrigin: () => null,
-      }),
     });
     await service.start();
     (service as unknown as { bootedAtMs: number }).bootedAtMs = Date.now() - 120_000;
     store = (service as unknown as { store: MissionControlStore }).store;
-    (service as unknown as { approvals: Record<string, unknown> }).approvals = {
-      createProposal,
-      expirePendingForAgent: vi.fn(async () => undefined),
-    };
+    (service as unknown as { deliverMachineryPrompt: unknown }).deliverMachineryPrompt =
+      createProposal;
   });
 
   afterEach(async () => {

@@ -155,7 +155,6 @@ export const ru: TranslationResources = {
       muteVoice: "Отключить голос",
       dictation: "Диктовка",
       interruptBeforeVoice: "Остановите агента перед запуском голосового режима",
-      commanderVoice: "Голос командира",
     },
     attachments: {
       addImage: "Добавить изображение",
@@ -2293,29 +2292,10 @@ export const ru: TranslationResources = {
       host: "Обзор",
     },
     missionControl: {
-      approvalMode: en.settings.missionControl.approvalMode,
-      approvalModeHint: en.settings.missionControl.approvalModeHint,
       verbose: en.settings.missionControl.verbose,
       verboseHint: en.settings.missionControl.verboseHint,
       clearView: en.settings.missionControl.clearView,
       clearViewHint: en.settings.missionControl.clearViewHint,
-      resetCommander: en.settings.missionControl.resetCommander,
-      resetCommanderHint: en.settings.missionControl.resetCommanderHint,
-      memory: "Память",
-      hindsightUrl: "URL Hindsight",
-      hindsightUrlHint:
-        "Базовый URL API Hindsight. Пустое значение отключает память флота (запись журналов запуска и recall).",
-      hindsightBank: "Банк записи",
-      hindsightBankHint: "Банк, в который Paseo записывает журналы запуска.",
-      hindsightSecondaryBank: "Банк recall (вторичный)",
-      hindsightSecondaryBankHint:
-        "Вторичный банк только для чтения, используемый fleet_recall. Пустое значение отключает его.",
-      voiceNodeUrl: "URL голосового узла",
-      voiceNodeUrlHint:
-        "Сервер голоса командира (например, ws://127.0.0.1:8787/ws). Пустое значение скрывает голос командира в редакторе Mission Control.",
-      voiceMode: "Voice tool mode",
-      voiceModeHint:
-        "Relay = voice reads like Commander but routes every change through commander_dispatch. Direct = voice holds the full Commander tool surface, approval-gated. Applies to new voice sessions.",
     },
     plugins: pluginSettings.ru,
     routing: {

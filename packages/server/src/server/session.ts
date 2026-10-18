@@ -59,7 +59,6 @@ import {
 import type { TranscriptSearchService } from "./search/service.js";
 import type { SpeechToTextProvider, TextToSpeechProvider } from "./speech/speech-provider.js";
 import type { TurnDetectionProvider } from "./speech/turn-detection-provider.js";
-import { resolveProjectCommanderInstructions } from "../utils/project-instructions.js";
 import {
   buildConfigOverrides,
   extractTimestamps,
@@ -210,21 +209,17 @@ import type { AutomationService } from "./automation/service.js";
 import { DocThreadsSession, type DocThreadsHost } from "./doc-threads/session.js";
 import type { PeerManager } from "./peers/peer-manager.js";
 import type { MissionControlService } from "./mission-control/service.js";
-import {
-  commanderHomeWorkspaceTitle,
-  remapLegacyCommanderCreateCwd,
-} from "./mission-control/commander-boot.js";
-import { buildCommanderLaunchConfig, buildLocalContextPayload } from "./mission-control/context.js";
-import { resolveLocalSpawnLabels } from "./mission-control/spawn-labels.js";
-import {
-  COMMANDER_TOOL_ALLOWLIST,
-  PEER_EXECUTABLE_TOOL_NAMES,
-  MISSION_CONTROL_LABEL_KEY,
-  MISSION_CONTROL_LABEL_VALUE,
-} from "./mission-control/commander-contract.js";
+import { buildLocalContextPayload } from "./mission-control/context.js";
+
+/** Fleet tools a peer daemon may run on this host (work owned by this host). */
+const PEER_EXECUTABLE_TOOL_NAMES = new Set([
+  "fleet_wait_agent",
+  "fleet_unarchive_agent",
+  "fleet_unarchive_workspace",
+  "fleet_agent_status",
+]);
 import { resolveMissionControlMediaFetch } from "./mission-control/media.js";
 import { moveAgentToWorkspace } from "./mission-control/meta-actions.js";
-import { resolveCommanderUserMessage } from "./mission-control/tagging.js";
 import { ScheduleSession } from "./session/schedule/schedule-session.js";
 import { ProviderCatalogSession } from "./session/provider/provider-catalog-session.js";
 import { UsageSession } from "./session/usage/usage-session.js";
@@ -341,14 +336,6 @@ function errorToFriendlyMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   if (typeof error === "string") return error;
   return "Unknown error";
-}
-
-/**
- * Narrow an unknown value to a JSON-ish plain record (the wire shape of
- * Paseo tool structuredContent). Arrays and null are not records.
- */
-function asPlainRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isAppVersionAtLeast(appVersion: string | null, minVersion: string): boolean {
@@ -775,35 +762,11 @@ function buildFirstAgentContext(
 }
 
 /**
- * The Commander's home workspace is infrastructure: it gets the stable
- * host-derived title, never a message-derived one (live incident: the
- * `<paseo-system>` context pack titled the workspace on every spawn).
+ * Narrow an unknown value to a JSON-ish plain record (the wire shape of
+ * Paseo tool structuredContent). Arrays and null are not records.
  */
-function resolveWorkspacePromptTitle(
-  labels: Record<string, string> | undefined,
-  hostName: string,
-  hostAlias: string | null,
-  firstAgentContext: FirstAgentContext,
-): string | null {
-  if (labels?.[MISSION_CONTROL_LABEL_KEY] === MISSION_CONTROL_LABEL_VALUE) {
-    return commanderHomeWorkspaceTitle(hostName, hostAlias);
-  }
-  return resolveFirstAgentPromptTitle(firstAgentContext);
-}
-
-/**
- * Commander: the context pack snapshot is the first conversation message; a
- * caller-supplied initial prompt (unusual for the Commander) follows it.
- */
-function resolveEffectiveInitialPrompt(
-  firstMessage: string | undefined,
-  trimmedPrompt: string | undefined,
-  initialPrompt: string | undefined,
-): string | undefined {
-  if (firstMessage) {
-    return trimmedPrompt ? `${firstMessage}\n\n${trimmedPrompt}` : firstMessage;
-  }
-  return initialPrompt;
+function asPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /**
@@ -2717,19 +2680,11 @@ export class Session {
     (msg) => this.dispatchMissionControlEventsMessage(msg),
     (msg) => this.dispatchMissionControlContextMessage(msg),
     (msg) => this.dispatchMissionControlLifecycleMessage(msg),
-    (msg) => this.dispatchMissionControlProposalsMessage(msg),
-    (msg) => this.dispatchMissionControlModeMessage(msg),
     (msg) => this.dispatchMissionControlConfigMessage(msg),
-    (msg) => this.dispatchMissionControlVoiceMessage(msg),
     (msg) => this.dispatchMissionControlVoiceReadsMessage(msg),
     (msg) => this.dispatchMissionControlToolsMessage(msg),
-    (msg) => this.dispatchMissionControlCommanderMessage(msg),
-    (msg) => this.dispatchMissionControlSearchMessage(msg),
     (msg) => this.dispatchMissionControlMediaMessage(msg),
     (msg) => this.dispatchMissionControlMetaMessage(msg),
-    (msg) => this.dispatchMissionControlSpawnLabelsMessage(msg),
-    (msg) => this.dispatchMissionControlSpawnMessage(msg),
-    (msg) => this.dispatchMissionControlEventForwardMessage(msg),
     (msg) => this.dispatchMiscMessage(msg),
   ];
 
@@ -2824,8 +2779,6 @@ export class Session {
         return this.handleMissionControlEventsFetchRequest(msg);
       case "mission_control.events.ack.request":
         return this.handleMissionControlEventsAckRequest(msg);
-      case "mission_control.inbox.fetch.request":
-        return this.handleMissionControlInboxFetchRequest(msg);
       default:
         return undefined;
     }
@@ -2853,20 +2806,6 @@ export class Session {
     this.emit({
       type: "mission_control.events.ack.response",
       payload: { requestId: msg.requestId },
-    });
-  }
-
-  private async handleMissionControlInboxFetchRequest(
-    msg: Extract<SessionInboundMessage, { type: "mission_control.inbox.fetch.request" }>,
-  ): Promise<void> {
-    const inbox = (await this.missionControlService?.fetchInbox()) ?? {
-      pendingProposals: [],
-      openClarifications: [],
-      review: [],
-    };
-    this.emit({
-      type: "mission_control.inbox.fetch.response",
-      payload: { requestId: msg.requestId, ...inbox },
     });
   }
 
@@ -2906,79 +2845,9 @@ export class Session {
     switch (msg.type) {
       case "mission_control.lifecycle.set.request":
         return this.handleMissionControlLifecycleSetRequest(msg);
-      case "mission_control.instructions.list.request":
-        return this.handleMissionControlInstructionsListRequest(msg);
-      case "mission_control.instructions.close.request":
-        return this.handleMissionControlInstructionsCloseRequest(msg);
-      case "mission_control.instructions.open.request":
-        return this.handleMissionControlInstructionsOpenRequest(msg);
       default:
         return undefined;
     }
-  }
-
-  /**
-   * M8 instruction ledger: list every instruction row (open + closed, newest
-   * first). Served from the commander host's store; other hosts respond with
-   * an empty list (the ledger is daemon-owned on the commander host).
-   */
-  private async handleMissionControlInstructionsListRequest(
-    msg: Extract<SessionInboundMessage, { type: "mission_control.instructions.list.request" }>,
-  ): Promise<void> {
-    this.emit({
-      type: "mission_control.instructions.list.response",
-      payload: {
-        requestId: msg.requestId,
-        instructions: this.missionControlService?.listInstructions() ?? [],
-      },
-    });
-  }
-
-  /**
-   * M8 instruction ledger (voice P0): open one ledger row per final voice
-   * utterance. The voice node calls this on each final transcription; the
-   * model cites the returned id via respondsTo on cards and emit-time close
-   * closes the row. One row per utterance — the daemon does not attempt
-   * intent splitting. Rows surface to the Commander only when a dispatch
-   * delivers them (deliverCommanderInstruction opens its own row there).
-   */
-  private async handleMissionControlInstructionsOpenRequest(
-    msg: Extract<SessionInboundMessage, { type: "mission_control.instructions.open.request" }>,
-  ): Promise<void> {
-    const instructions = this.missionControlService
-      ? [this.missionControlService.openInstruction({ text: msg.text, source: msg.source })]
-      : [];
-    this.emit({
-      type: "mission_control.instructions.open.response",
-      payload: {
-        requestId: msg.requestId,
-        instructions: instructions.map((instruction) => ({
-          id: instruction.id,
-          text: instruction.text,
-        })),
-      },
-    });
-  }
-
-  /**
-   * M8 instruction ledger: manual close from the verbose thread affordance.
-   * Idempotent — closing an unknown/already-closed row still reports ok (the
-   * row simply leaves the open set).
-   */
-  private async handleMissionControlInstructionsCloseRequest(
-    msg: Extract<SessionInboundMessage, { type: "mission_control.instructions.close.request" }>,
-  ): Promise<void> {
-    const result = this.missionControlService
-      ? await this.missionControlService.closeInstruction(msg.instructionId)
-      : { ok: false as const, error: "Mission Control is not enabled on this host" };
-    this.emit({
-      type: "mission_control.instructions.close.response",
-      payload: {
-        requestId: msg.requestId,
-        ok: result.ok,
-        ...("error" in result && result.error ? { error: result.error } : {}),
-      },
-    });
   }
 
   private async handleMissionControlLifecycleSetRequest(
@@ -3001,105 +2870,6 @@ export class Session {
     });
   }
 
-  private dispatchMissionControlProposalsMessage(
-    msg: SessionInboundMessage,
-  ): Promise<void> | undefined {
-    switch (msg.type) {
-      case "mission_control.proposals.respond.request":
-        return this.handleMissionControlProposalsRespondRequest(msg);
-      case "mission_control.proposals.create.request":
-        return this.handleMissionControlProposalsCreateRequest(msg);
-      default:
-        return undefined;
-    }
-  }
-
-  private async handleMissionControlProposalsCreateRequest(
-    msg: Extract<SessionInboundMessage, { type: "mission_control.proposals.create.request" }>,
-  ): Promise<void> {
-    const result = this.missionControlService
-      ? await this.missionControlService.createBackfillProposalCard({
-          message: msg.message,
-          reason: msg.reason,
-          targetAgentId: msg.targetAgentId ?? null,
-        })
-      : { ok: false as const, error: "Mission Control is not enabled on this host" };
-    this.emit({
-      type: "mission_control.proposals.create.response",
-      payload: {
-        requestId: msg.requestId,
-        ok: result.ok,
-        ...(result.ok ? { proposalId: result.proposalId } : { error: result.error }),
-      },
-    });
-  }
-
-  private async handleMissionControlProposalsRespondRequest(
-    msg: Extract<SessionInboundMessage, { type: "mission_control.proposals.respond.request" }>,
-  ): Promise<void> {
-    const result = this.missionControlService
-      ? await this.missionControlService.respondProposal({
-          proposalId: msg.proposalId,
-          action: msg.action,
-          editedMessage: msg.editedMessage,
-          reason: msg.reason,
-          allowPair: msg.allowPair,
-        })
-      : { ok: false as const, error: "Mission Control is not enabled on this host" };
-    this.emit({
-      type: "mission_control.proposals.respond.response",
-      payload: {
-        requestId: msg.requestId,
-        ok: result.ok,
-        ...(result.ok ? {} : { error: result.error }),
-      },
-    });
-  }
-
-  private dispatchMissionControlModeMessage(msg: SessionInboundMessage): Promise<void> | undefined {
-    switch (msg.type) {
-      case "mission_control.mode.set.request":
-        return this.handleMissionControlModeSetRequest(msg);
-      default:
-        return undefined;
-    }
-  }
-
-  private async handleMissionControlModeSetRequest(
-    msg: Extract<SessionInboundMessage, { type: "mission_control.mode.set.request" }>,
-  ): Promise<void> {
-    try {
-      if (!this.missionControlService) {
-        throw new Error("Mission Control is not enabled on this host");
-      }
-      // Ownership-aware: the designated commander host applies + replicates;
-      // every other host forwards the mode change to it over peering (and
-      // reports an explicit error when it is unreachable — never applies
-      // locally, never silently succeeds).
-      const result = await this.missionControlService.setModeRouted(msg.mode);
-      this.emit({
-        type: "mission_control.mode.set.response",
-        payload: {
-          requestId: msg.requestId,
-          ok: result.ok,
-          ...(result.ok ? {} : { error: result.error }),
-          ...(result.ok || !result.unreachableCommanderHost
-            ? {}
-            : { unreachableCommanderHost: result.unreachableCommanderHost }),
-        },
-      });
-    } catch (error) {
-      this.emit({
-        type: "mission_control.mode.set.response",
-        payload: {
-          requestId: msg.requestId,
-          ok: false,
-          error: getErrorMessageOr(error, "Failed to set Mission Control mode"),
-        },
-      });
-    }
-  }
-
   private dispatchMissionControlConfigMessage(
     msg: SessionInboundMessage,
   ): Promise<void> | undefined {
@@ -3108,8 +2878,6 @@ export class Session {
         return this.handleMissionControlConfigGetRequest(msg);
       case "mission_control.config.patch.request":
         return this.handleMissionControlConfigPatchRequest(msg);
-      case "mission_control.config.replica":
-        return this.handleMissionControlConfigReplica(msg);
       default:
         return undefined;
     }
@@ -3127,29 +2895,6 @@ export class Session {
     });
   }
 
-  /**
-   * Replica receive path (commander host -> this peer): full snapshot replace
-   * (last-writer-wins) into central-config.json + the in-memory store so this
-   * host's consumers (stall detector, hindsight writer, verifier) see the new
-   * fleet policy live. Fire-and-forget (no response pair); failures are
-   * logged, never surfaced to a caller.
-   */
-  private async handleMissionControlConfigReplica(
-    msg: Extract<SessionInboundMessage, { type: "mission_control.config.replica" }>,
-  ): Promise<void> {
-    if (!this.missionControlService) {
-      return;
-    }
-    try {
-      await this.missionControlService.applyCentralConfigReplica(msg.config);
-    } catch (error) {
-      this.sessionLogger.warn(
-        { err: error, from: msg.from ?? null },
-        "Failed to apply central mission control config replica",
-      );
-    }
-  }
-
   private async handleMissionControlConfigPatchRequest(
     msg: Extract<SessionInboundMessage, { type: "mission_control.config.patch.request" }>,
   ): Promise<void> {
@@ -3157,22 +2902,15 @@ export class Session {
       if (!this.missionControlService) {
         throw new Error("Mission Control is not enabled on this host");
       }
-      // Ownership-aware: the designated commander host applies + persists +
-      // replicates to every peer; any other host forwards the patch to the
-      // commander host over peering and returns ITS response (explicit
-      // unreachableCommanderHost error when it cannot be reached — never
-      // apply locally, never silently succeed).
-      const result = await this.missionControlService.patchCentralConfigRouted(msg.patch);
+      // Each host owns its own central config (written by Flotilla); a patch
+      // applies here only.
+      const config = await this.missionControlService.patchCentralConfig(msg.patch);
       this.emit({
         type: "mission_control.config.patch.response",
         payload: {
           requestId: msg.requestId,
-          config: redactCentralConfigForClient(result.config),
-          ok: result.ok,
-          ...(result.ok ? {} : { error: result.error }),
-          ...(result.ok || !result.unreachableCommanderHost
-            ? {}
-            : { unreachableCommanderHost: result.unreachableCommanderHost }),
+          config: redactCentralConfigForClient(config),
+          ok: true,
         },
       });
     } catch (error) {
@@ -3190,57 +2928,6 @@ export class Session {
     }
   }
 
-  private dispatchMissionControlVoiceMessage(
-    msg: SessionInboundMessage,
-  ): Promise<void> | undefined {
-    switch (msg.type) {
-      case "mission_control.voice.mirror.request":
-        return this.handleMissionControlVoiceMirrorRequest(msg);
-      default:
-        return undefined;
-    }
-  }
-
-  /**
-   * M9 voice dialogue mirror (mission_control.voice.mirror): append a heard
-   * user utterance or a spoken voice reply to the Commander thread WITHOUT
-   * running a Commander model turn. The Commander thread is the system of
-   * record for dialogue; mirroring keeps text Commander up to date with what
-   * was decided by mouth. The service appends a plain timeline row — no
-   * instruction is opened, no snapshot is dispatched.
-   */
-  private async handleMissionControlVoiceMirrorRequest(
-    msg: Extract<SessionInboundMessage, { type: "mission_control.voice.mirror.request" }>,
-  ): Promise<void> {
-    try {
-      if (!this.missionControlService) {
-        throw new Error("Mission Control is not enabled on this host");
-      }
-      const result = await this.missionControlService.mirrorVoiceTurn({
-        role: msg.role,
-        text: msg.text,
-        kind: msg.kind,
-      });
-      this.emit({
-        type: "mission_control.voice.mirror.response",
-        payload: {
-          requestId: msg.requestId,
-          ok: result.ok,
-          ...(result.ok ? {} : { error: result.error }),
-        },
-      });
-    } catch (error) {
-      this.emit({
-        type: "mission_control.voice.mirror.response",
-        payload: {
-          requestId: msg.requestId,
-          ok: false,
-          error: getErrorMessageOr(error, "Failed to mirror voice turn into the Commander thread"),
-        },
-      });
-    }
-  }
-
   /**
    * M11 voice read RPCs (mission_control.recall / context.records /
    * tag_message / peer.timeline): the voice node (scripts/commander-voice)
@@ -3253,178 +2940,10 @@ export class Session {
     msg: SessionInboundMessage,
   ): Promise<void> | undefined {
     switch (msg.type) {
-      case "mission_control.recall.request":
-        return this.handleMissionControlRecallRequest(msg);
-      case "mission_control.context.records.request":
-        return this.handleMissionControlContextRecordsRequest(msg);
-      case "mission_control.tag_message.request":
-        return this.handleMissionControlTagMessageRequest(msg);
       case "mission_control.peer.timeline.request":
         return this.handleMissionControlPeerTimelineRequest(msg);
       default:
         return undefined;
-    }
-  }
-
-  /**
-   * M11 fleet_recall for the voice node: semantic recall over the configured
-   * Hindsight bank(s) — exactly what the Commander's fleet_recall tool calls
-   * (service.hindsightRecall). Degrades to { ok:false, reason:"memory
-   * unavailable" } when the bank is unconfigured or unreachable; the voice
-   * node advises routing the question through commander_dispatch then.
-   */
-  private async handleMissionControlRecallRequest(
-    msg: Extract<SessionInboundMessage, { type: "mission_control.recall.request" }>,
-  ): Promise<void> {
-    try {
-      if (!this.missionControlService) {
-        throw new Error("Mission Control is not enabled on this host");
-      }
-      const result = await this.missionControlService.hindsightRecall(msg.query, msg.limit ?? 5);
-      this.emit({
-        type: "mission_control.recall.response",
-        payload: {
-          requestId: msg.requestId,
-          ok: result.ok,
-          ...(result.ok ? { matches: result.matches } : { reason: result.reason }),
-        },
-      });
-    } catch {
-      this.emit({
-        type: "mission_control.recall.response",
-        payload: {
-          requestId: msg.requestId,
-          ok: false,
-          reason: "memory unavailable",
-        },
-      });
-    }
-  }
-
-  /**
-   * M11 fleet_context for the voice node: deterministic run records plus the
-   * matching workspace/project rollup from the local mission-control store.
-   * Selector semantics match the Commander's fleet_context tool: agentId →
-   * that agent's latest runs, workspaceId → workspace rollup + its runs,
-   * projectId → project rollup + its runs, nothing → most recent fleet-wide.
-   */
-  private async handleMissionControlContextRecordsRequest(
-    msg: Extract<SessionInboundMessage, { type: "mission_control.context.records.request" }>,
-  ): Promise<void> {
-    try {
-      if (!this.missionControlService) {
-        throw new Error("Mission Control is not enabled on this host");
-      }
-      const all = this.missionControlService.getRunRecords();
-      let runRecords = all;
-      let workspaceRollup: ReturnType<MissionControlService["getWorkspaceRollup"]> | undefined;
-      let projectRollup: ReturnType<MissionControlService["getProjectRollup"]> | undefined;
-      if (msg.agentId) {
-        runRecords = all.filter((record) => record.agentId === msg.agentId).slice(0, 5);
-      } else if (msg.workspaceId) {
-        runRecords = all.filter((record) => record.workspaceId === msg.workspaceId).slice(0, 5);
-        workspaceRollup =
-          this.missionControlService.getWorkspaceRollup(msg.workspaceId) ?? undefined;
-      } else if (msg.projectId) {
-        runRecords = all.filter((record) => record.projectId === msg.projectId).slice(0, 5);
-        let commanderInstructions: string | null = null;
-        const project = await this.projectRegistry.get(msg.projectId);
-        if (project?.rootPath) {
-          commanderInstructions = await resolveProjectCommanderInstructions(project.rootPath);
-        }
-        projectRollup =
-          this.missionControlService.getProjectRollup(msg.projectId, commanderInstructions) ??
-          undefined;
-      } else {
-        runRecords = all.slice(0, 10);
-      }
-      this.emit({
-        type: "mission_control.context.records.response",
-        payload: {
-          requestId: msg.requestId,
-          ok: true,
-          runRecords,
-          ...(workspaceRollup ? { workspaceRollup } : {}),
-          ...(projectRollup ? { projectRollup } : {}),
-        },
-      });
-    } catch (error) {
-      this.emit({
-        type: "mission_control.context.records.response",
-        payload: {
-          requestId: msg.requestId,
-          ok: false,
-          runRecords: [],
-          error: getErrorMessageOr(error, "Failed to fetch Mission Control run records"),
-        },
-      });
-    }
-  }
-
-  /**
-   * M11 tag_message for the voice node: attribute the latest voice-mirrored
-   * user message on the Commander thread to the given agent ids — the same
-   * record the Commander's tag_message tool writes (the Verifier reads these
-   * tags when auditing a worker). The tag always lands on the COMMANDER's
-   * timeline: the voice node has no agent-scoped session, and every heard
-   * utterance is mirrored there (role "user"). `messageText` (when set) pins
-   * the tag to the most recent Commander user message whose text equals it.
-   */
-  private async handleMissionControlTagMessageRequest(
-    msg: Extract<SessionInboundMessage, { type: "mission_control.tag_message.request" }>,
-  ): Promise<void> {
-    try {
-      if (!this.missionControlService) {
-        throw new Error("Mission Control is not enabled on this host");
-      }
-      const commanderId = await this.missionControlService.getCommanderAgentId();
-      if (!commanderId) {
-        throw new Error("No Commander agent on this host");
-      }
-      const message = resolveCommanderUserMessage(this.agentManager, commanderId);
-      if (!message) {
-        throw new Error("No user message found to tag on the Commander thread");
-      }
-      if (msg.messageText && message.text !== msg.messageText) {
-        // The caller pinned a specific utterance; fall back to scanning the
-        // timeline for it (the newest matching row is the one to tag).
-        const timeline = this.agentManager.getTimeline(commanderId);
-        const pinned = [...timeline]
-          .toReversed()
-          .find(
-            (item): item is Extract<AgentTimelineItem, { type: "user_message" }> =>
-              item.type === "user_message" && item.text === msg.messageText,
-          );
-        if (!pinned) {
-          throw new Error(`No Commander user message matching "${msg.messageText}" found to tag`);
-        }
-        this.missionControlService.recordMessageTags({
-          messageId: pinned.messageId ?? pinned.clientMessageId ?? message.messageId,
-          agentIds: [...new Set(msg.agentIds)],
-          ts: new Date().toISOString(),
-          text: msg.messageText,
-        });
-      } else {
-        this.missionControlService.recordMessageTags({
-          messageId: message.messageId,
-          agentIds: [...new Set(msg.agentIds)],
-          ts: new Date().toISOString(),
-          text: message.text,
-        });
-      }
-      this.emit({
-        type: "mission_control.tag_message.response",
-        payload: { requestId: msg.requestId, ok: true },
-      });
-    } catch (error) {
-      this.emit({
-        type: "mission_control.tag_message.response",
-        payload: {
-          requestId: msg.requestId,
-          ok: false,
-          error: getErrorMessageOr(error, "Failed to tag the user message"),
-        },
-      });
     }
   }
 
@@ -3484,61 +3003,41 @@ export class Session {
   }
 
   /**
-   * M12 ONE catalog path for fleet tools (mission_control.tools.execute):
-   * the Voice node connects to ONE daemon and executes named fleet tools
-   * through the daemon's Paseo tool catalog — the same catalog the Commander
-   * runs, no second implementation. The catalog is built with the Commander
-   * identity (callerLabels paseo.mission-control=commander, voice tools
-   * enabled) so label-gated fleet tools behave exactly as they do for the
-   * Commander. COMMANDER_TOOL_ALLOWLIST gates WHICH names this RPC will run;
-   * Voice still decides which names Gemini sees. Unknown or off-allowlist
-   * names are refused before the catalog is touched.
+   * Peer tool execution (mission_control.tools.execute): another daemon runs a
+   * fleet tool that must execute on the host owning the agent or workspace
+   * (turn-bound waits, unarchives, fresh status). Only those tools run here;
+   * the catalog acts as a remote fleet client, so nothing becomes a child of a
+   * local agent.
    */
   private async handleMissionControlToolsExecuteRequest(
     msg: Extract<SessionInboundMessage, { type: "mission_control.tools.execute.request" }>,
   ): Promise<void> {
+    const respond = (
+      payload: Omit<
+        Extract<
+          SessionOutboundMessage,
+          { type: "mission_control.tools.execute.response" }
+        >["payload"],
+        "requestId" | "name"
+      >,
+    ) =>
+      this.emit({
+        type: "mission_control.tools.execute.response",
+        payload: { requestId: msg.requestId, name: msg.name, ...payload },
+      });
     try {
-      if (
-        !COMMANDER_TOOL_ALLOWLIST.includes(msg.name) &&
-        !PEER_EXECUTABLE_TOOL_NAMES.includes(msg.name)
-      ) {
-        this.emit({
-          type: "mission_control.tools.execute.response",
-          payload: {
-            requestId: msg.requestId,
-            ok: false,
-            name: msg.name,
-            error: `Tool "${msg.name}" is not on the Commander allowlist`,
-          },
-        });
+      if (!PEER_EXECUTABLE_TOOL_NAMES.has(msg.name)) {
+        respond({ ok: false, error: `Tool "${msg.name}" cannot be run by a peer` });
         return;
       }
-      // Voice acts AS the Commander: resolve the live Commander agent so
-      // agent-scoped tools (tag_message) can run — the voice-mirrored user
-      // messages live on the Commander thread. Absent Commander → no
-      // callerAgentId; those tools degrade with their own agent-scoped error.
-      const commanderAgentId = await this.resolveCommanderAgentId();
       const catalog = await this.agentManager.createPaseoToolCatalog({
-        callerLabels: { [MISSION_CONTROL_LABEL_KEY]: MISSION_CONTROL_LABEL_VALUE },
-        ...(commanderAgentId ? { callerAgentId: commanderAgentId } : {}),
-        enableVoiceTools: true,
+        callerLabels: { "paseo.mcp-client": "peer" },
       });
       if (!catalog || !catalog.getTool(msg.name)) {
-        this.emit({
-          type: "mission_control.tools.execute.response",
-          payload: {
-            requestId: msg.requestId,
-            ok: false,
-            name: msg.name,
-            error: `Unknown Paseo tool: ${msg.name}`,
-          },
-        });
+        respond({ ok: false, error: `Unknown Paseo tool: ${msg.name}` });
         return;
       }
       const result = await catalog.executeTool(msg.name, msg.args ?? {}, {
-        // Session-scoped tools (fleet_monitor) key subscriptions on the
-        // daemon session id — the voice node's connection, stable per voice
-        // node process.
         sessionKey: this.sessionId,
       });
       const structuredContent = asPlainRecord(result.structuredContent)
@@ -3549,83 +3048,14 @@ export class Session {
           .map((block) => (typeof block.text === "string" ? block.text : ""))
           .filter((text) => text.length > 0)
           .join("\n") || undefined;
-      this.emit({
-        type: "mission_control.tools.execute.response",
-        payload: {
-          requestId: msg.requestId,
-          ok: !result.isError,
-          name: msg.name,
-          ...(structuredContent ? { structuredContent } : {}),
-          ...(content ? { content } : {}),
-          ...(result.isError ? { error: content ?? "Paseo tool reported a failure" } : {}),
-        },
+      respond({
+        ok: !result.isError,
+        ...(structuredContent ? { structuredContent } : {}),
+        ...(content ? { content } : {}),
+        ...(result.isError ? { error: content ?? "Paseo tool reported a failure" } : {}),
       });
     } catch (error) {
-      this.emit({
-        type: "mission_control.tools.execute.response",
-        payload: {
-          requestId: msg.requestId,
-          ok: false,
-          name: msg.name,
-          error: getErrorMessageOr(error, "Failed to execute tool"),
-        },
-      });
-    }
-  }
-
-  /**
-   * The host's LIVE Commander agent id — the registered agent labeled
-   * paseo.mission-control=commander. The catalog's caller-scoped paths
-   * (list_agents cwd inheritance, tag_message timeline read) require a
-   * registered agent with a readable timeline/config — a stored record that
-   * is not live has neither, so only live agents qualify. Absent a live
-   * Commander, callerAgentId is omitted: label-gated fleet tools still run,
-   * and caller-scoped ones (tag_message) degrade with their own errors.
-   */
-  private async resolveCommanderAgentId(): Promise<string | null> {
-    for (const agent of this.agentManager.listAgents()) {
-      if (agent.labels[MISSION_CONTROL_LABEL_KEY] === MISSION_CONTROL_LABEL_VALUE) {
-        return agent.id;
-      }
-    }
-    return null;
-  }
-
-  private dispatchMissionControlCommanderMessage(
-    msg: SessionInboundMessage,
-  ): Promise<void> | undefined {
-    switch (msg.type) {
-      case "mission_control.commander.reset.request":
-        return this.handleMissionControlCommanderResetRequest(msg);
-      default:
-        return undefined;
-    }
-  }
-
-  private async handleMissionControlCommanderResetRequest(
-    msg: Extract<SessionInboundMessage, { type: "mission_control.commander.reset.request" }>,
-  ): Promise<void> {
-    const result = this.missionControlService
-      ? await this.missionControlService.resetCommander()
-      : { ok: false as const, error: "Mission Control is not enabled on this host" };
-    this.emit({
-      type: "mission_control.commander.reset.response",
-      payload: {
-        requestId: msg.requestId,
-        ok: result.ok,
-        ...(result.ok ? {} : { error: result.error }),
-      },
-    });
-  }
-
-  private dispatchMissionControlSearchMessage(
-    msg: SessionInboundMessage,
-  ): Promise<void> | undefined {
-    switch (msg.type) {
-      case "mission_control.search.request":
-        return this.handleMissionControlSearchRequest(msg);
-      default:
-        return undefined;
+      respond({ ok: false, error: getErrorMessageOr(error, "Failed to execute tool") });
     }
   }
 
@@ -3644,39 +3074,6 @@ export class Session {
     switch (msg.type) {
       case "mission_control.meta.apply.request":
         return this.handleMissionControlMetaApplyRequest(msg);
-      default:
-        return undefined;
-    }
-  }
-
-  private dispatchMissionControlSpawnLabelsMessage(
-    msg: SessionInboundMessage,
-  ): Promise<void> | undefined {
-    switch (msg.type) {
-      case "mission_control.spawn_labels.resolve.request":
-        return this.handleMissionControlSpawnLabelsResolveRequest(msg);
-      default:
-        return undefined;
-    }
-  }
-
-  private dispatchMissionControlSpawnMessage(
-    msg: SessionInboundMessage,
-  ): Promise<void> | undefined {
-    switch (msg.type) {
-      case "mission_control.spawn.apply.request":
-        return this.handleMissionControlSpawnApplyRequest(msg);
-      default:
-        return undefined;
-    }
-  }
-
-  private dispatchMissionControlEventForwardMessage(
-    msg: SessionInboundMessage,
-  ): Promise<void> | undefined {
-    switch (msg.type) {
-      case "mission_control.event.forward.request":
-        return this.handleMissionControlEventForwardRequest(msg);
       default:
         return undefined;
     }
@@ -3712,100 +3109,6 @@ export class Session {
     });
   }
 
-  /**
-   * Cross-host spawn-label resolution (mission_control.spawn_labels.resolve):
-   * the Commander host asks THIS daemon (a peer target of a Commander spawn)
-   * to resolve the human-readable workspace/project labels for the spawn
-   * proposal card. A spawn into a NEW workspace (cwd without workspaceId)
-   * derives its name from this host's own checkout (branch) and registries —
-   * facts the commander host cannot see — so the card renders the exact name
-   * instead of nothing. Read-only; never registers anything. Mirrors
-   * mission_control.meta.apply's peer hop.
-   */
-  private async handleMissionControlSpawnLabelsResolveRequest(
-    msg: Extract<SessionInboundMessage, { type: "mission_control.spawn_labels.resolve.request" }>,
-  ): Promise<void> {
-    const labels = await resolveLocalSpawnLabels(
-      {
-        workspaceRegistry: this.workspaceRegistry,
-        projectRegistry: this.projectRegistry,
-        workspaceGitService: this.workspaceGitService,
-        logger: this.sessionLogger,
-      },
-      {
-        cwd: msg.cwd,
-        workspaceId: msg.workspaceId,
-        baseBranch: msg.baseBranch,
-        branchName: msg.branchName,
-        worktreeSlug: msg.worktreeSlug,
-      },
-    );
-    this.emit({
-      type: "mission_control.spawn_labels.resolve.response",
-      payload: {
-        requestId: msg.requestId,
-        ...(labels ? { labels } : {}),
-      },
-    });
-  }
-
-  /**
-   * Cross-host spawn apply (mission_control.spawn.apply): the commander host
-   * forwards an approved spawn-kind proposal whose plan targets THIS host as
-   * a peer. THIS daemon validates the plan's cwd contract against its own
-   * filesystem, creates the absolute cwd with mkdir recursive when missing,
-   * and creates the agent in its own registry — the mkdir happens here, never
-   * on the commander's disk. Only the APPLY hops; the proposal card lives on
-   * the commander host. The response carries this daemon's own serverId so
-   * the commander's audit trail can record where the spawn actually ran
-   * (mirrors mission_control.meta.apply).
-   */
-  private async handleMissionControlSpawnApplyRequest(
-    msg: Extract<SessionInboundMessage, { type: "mission_control.spawn.apply.request" }>,
-  ): Promise<void> {
-    const result = this.missionControlService
-      ? await this.missionControlService.applySpawnRemote(msg.spawnPlan)
-      : { ok: false as const, error: "Mission Control is not enabled on this host" };
-    this.emit({
-      type: "mission_control.spawn.apply.response",
-      payload: {
-        requestId: msg.requestId,
-        ok: result.ok,
-        ...(result.ok
-          ? { agentId: result.agentId, serverId: this.daemonSession.serverIdValue }
-          : { error: result.error }),
-      },
-    });
-  }
-
-  /**
-   * Cross-host terminal-event ingest (mission_control.event.forward): a
-   * NON-commander host forwards a terminal event (finished/failed/interrupted
-   * or verdict) for one of ITS commander-dispatched workers. The worker's
-   * labels ride the payload, so THIS (commander) host's machinery-turn gate
-   * can decide without a local record. The event is NEVER written to this
-   * host's events store (the feed aggregates per-host via the app) — only the
-   * gate consumes it.
-   */
-  private async handleMissionControlEventForwardRequest(
-    msg: Extract<SessionInboundMessage, { type: "mission_control.event.forward.request" }>,
-  ): Promise<void> {
-    const result = this.missionControlService
-      ? await this.missionControlService.ingestForwardedEvent({
-          event: msg.event,
-          labels: msg.labels ?? null,
-        })
-      : { ok: false as const, error: "Mission Control is not enabled on this host" };
-    this.emit({
-      type: "mission_control.event.forward.response",
-      payload: {
-        requestId: msg.requestId,
-        ok: result.ok,
-        ...(!result.ok ? { error: result.error } : {}),
-      },
-    });
-  }
-
   private async handleMissionControlMediaFetchRequest(
     msg: Extract<SessionInboundMessage, { type: "mission_control.media.fetch.request" }>,
   ): Promise<void> {
@@ -3827,41 +3130,6 @@ export class Session {
         ...(result.data ? { data: result.data } : {}),
       },
     });
-  }
-
-  private async handleMissionControlSearchRequest(
-    msg: Extract<SessionInboundMessage, { type: "mission_control.search.request" }>,
-  ): Promise<void> {
-    try {
-      const { runFleetSearchHost } = await import("./mission-control/search.js");
-      const matches = await runFleetSearchHost({
-        query: msg.query,
-        ...(msg.limit !== undefined ? { limit: msg.limit } : {}),
-        ...(msg.deep !== undefined ? { deep: msg.deep } : {}),
-        deps: {
-          agentManager: this.agentManager,
-          agentStorage: this.agentStorage,
-          missionControlService: this.missionControlService,
-          workspaceRegistry: this.workspaceRegistry,
-          projectRegistry: this.projectRegistry,
-          logger: this.sessionLogger,
-          serverId: this.daemonSession.serverIdValue,
-        },
-      });
-      this.emit({
-        type: "mission_control.search.response",
-        payload: { requestId: msg.requestId, matches },
-      });
-    } catch (error) {
-      this.emit({
-        type: "mission_control.search.response",
-        payload: {
-          requestId: msg.requestId,
-          matches: [],
-          error: getErrorMessageOr(error, "Failed to run Mission Control search"),
-        },
-      });
-    }
   }
 
   private dispatchWorkspaceLifecycleMessage(msg: SessionInboundMessage): Promise<void> | undefined {
@@ -6178,17 +5446,7 @@ export class Session {
     // creation, workspace provisioning, intent resolution, agent-manager validation)
     // sees an absolute path. Matches the MCP create path (resolveMcpInitialCwd) and
     // the provider-snapshot path (resolveSnapshotCwd), which both accept `~`.
-    // Commander-labeled creates with the legacy `~` sentinel are redirected to the
-    // reserved home (`<paseoHome>/commander`) — the app's manual launch and the
-    // archived-recreate path cannot compute it (no RPC exposes paseoHome).
-    const config = {
-      ...rawConfig,
-      cwd: remapLegacyCommanderCreateCwd({
-        labels: msg.labels,
-        requestedCwd: expandUserPath(rawConfig.cwd),
-        paseoHome: this.paseoHome,
-      }),
-    };
+    const config = { ...rawConfig, cwd: expandUserPath(rawConfig.cwd) };
     this.sessionLogger.info(
       { cwd: config.cwd, provider: config.provider, worktreeName },
       `Creating agent in ${config.cwd} (${config.provider})${
@@ -6213,12 +5471,7 @@ export class Session {
       });
 
       const firstAgentContext = buildFirstAgentContext(trimmedPrompt, attachments);
-      const workspacePromptTitle = resolveWorkspacePromptTitle(
-        msg.labels,
-        this.hostName,
-        this.daemonConfigStore.get().missionControl?.hostAlias?.trim() || null,
-        firstAgentContext,
-      );
+      const workspacePromptTitle = resolveFirstAgentPromptTitle(firstAgentContext);
       const intentStartedAt = Date.now();
       const createdWorktree = await this.createAgentLifecycleDispatch.createWorktreeForRequest({
         cwd: config.cwd,
@@ -6238,11 +5491,7 @@ export class Session {
         throw new Error(`Working directory does not exist or is not a directory: ${resolvedCwd}`);
       }
 
-      const effectiveInitialPrompt = resolveEffectiveInitialPrompt(
-        resolvedIntent.firstMessage,
-        trimmedPrompt,
-        initialPrompt,
-      );
+      const effectiveInitialPrompt = initialPrompt;
 
       const createCommandStartedAt = Date.now();
       const { snapshot, liveSnapshot } = await createAgentCommand(
@@ -6374,40 +5623,6 @@ export class Session {
       }),
     });
     config = { ...config, cwd: intent.cwd };
-
-    // The Commander's system prompt is static and built server-side at create
-    // time: the bundled commander-prompt.md plus central commanderInstructions.
-    // The fleet worldview is NOT in the prompt — it is snapshotted as the
-    // first conversation message (context pack), re-injected by digests after
-    // compaction or session restart.
-    if (intent.labels[MISSION_CONTROL_LABEL_KEY] === MISSION_CONTROL_LABEL_VALUE) {
-      const launch = await buildCommanderLaunchConfig({
-        agentManager: this.agentManager,
-        agentStorage: this.agentStorage,
-        workspaceRegistry: this.workspaceRegistry,
-        projectRegistry: this.projectRegistry,
-        providerSnapshotManager: this.providerSnapshotManager,
-        peerManager: this.peerManager,
-        daemonConfigStore: this.daemonConfigStore,
-        centralConfig: () => this.missionControlService?.getCentralConfig() ?? null,
-        getReviewStates: () => this.missionControlService?.getReviewStates() ?? null,
-        getReportEvents: () => this.missionControlService?.fetchEvents() ?? null,
-        serverId: this.daemonSession.serverIdValue ?? "local",
-        hostName: this.hostName,
-        logger: this.sessionLogger,
-      });
-      config = {
-        ...config,
-        systemPromptMode: "replace",
-        systemPrompt: launch.systemPrompt,
-      };
-      return {
-        config,
-        intent,
-        firstMessage: launch.firstMessage,
-        createdDirectoryWorkspace: !createdWorktree && !request.workspaceId && !callerAgent,
-      };
-    }
 
     return {
       config,
@@ -10649,59 +9864,6 @@ export class Session {
 
     try {
       const agentId = resolved.agentId;
-
-      // M8 mailbox: every message to the Commander delivers through the
-      // daemon's single instruction path (idle → run; busy → steer envelope;
-      // NEVER queue, NEVER replaceRunning). The client's dispatchMode is
-      // ignored for Commander targets — the composer's send-mode selector
-      // stops applying here. Chat and voice (commander_dispatch) both land
-      // on this path and get identical semantics. Machinery turns
-      // (dispatchMachineryTurn) are NOT instructions and never open a row.
-      const targetLabels =
-        this.agentManager.getAgent(agentId)?.labels ??
-        (await this.agentStorage.get(agentId).catch(() => null))?.labels;
-      if (
-        this.missionControlService &&
-        targetLabels?.[MISSION_CONTROL_LABEL_KEY] === MISSION_CONTROL_LABEL_VALUE
-      ) {
-        const mailboxResult = await this.missionControlService.deliverCommanderInstruction({
-          text: msg.text,
-          source: msg.source ?? "chat",
-          // The composer's optimistic message id: threaded through the mailbox
-          // so the daemon-appended timeline row carries the same clientMessageId
-          // the client reconciliation compares (one row, not two).
-          ...(msg.messageId ? { messageId: msg.messageId } : {}),
-          ...(msg.attachments && msg.attachments.length > 0
-            ? { attachments: msg.attachments }
-            : {}),
-        });
-        if (!mailboxResult.ok) {
-          this.emit({
-            type: "send_agent_message_response",
-            payload: {
-              requestId: msg.requestId,
-              agentId,
-              accepted: false,
-              error: mailboxResult.error,
-            },
-          });
-          return;
-        }
-        // Steer/run deliveries are accepted immediately: the run may start
-        // after the snapshot turn settles (idle path) or ride the live turn
-        // (steer path), so a run-start wait would race it — mirrors the
-        // steer/queue response semantics below.
-        this.emit({
-          type: "send_agent_message_response",
-          payload: {
-            requestId: msg.requestId,
-            agentId,
-            accepted: true,
-            error: null,
-          },
-        });
-        return;
-      }
 
       const prompt = buildAgentPrompt(msg.text, msg.images, msg.attachments);
       this.sessionLogger.trace(

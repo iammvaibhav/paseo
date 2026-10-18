@@ -1,7 +1,4 @@
-import type {
-  MissionControlCentralConfig,
-  MissionControlMode,
-} from "@getpaseo/protocol/mission-control/types";
+import type { MissionControlCentralConfig } from "@getpaseo/protocol/mission-control/types";
 import type { RoutingConfig, RoutingSecretKey } from "@getpaseo/protocol/routing";
 
 export function missionControlCentralConfigQueryKey(serverId: string | null) {
@@ -14,13 +11,7 @@ export function missionControlCentralConfigQueryKey(serverId: string | null) {
  * keys optional, so the app narrows at the RPC boundary.
  */
 export interface ResolvedMissionControlCentralConfig {
-  commanderHost: string | null;
-  commanderModel: string | null;
-  commanderInstructions: string;
-  verifierModel: string | null;
-  verifierConcurrency: number;
   evaluationScope: "commander" | "all";
-  mode: MissionControlMode;
   retentionDays: number;
   namingTheme: string;
   hideAgentNames: boolean;
@@ -29,53 +20,23 @@ export interface ResolvedMissionControlCentralConfig {
   statusNudgeSeconds: number;
   escalateSeconds: number;
   // Master switch for the stall machinery: when false the daemon never asks
-  // agents for status updates (no silence/status nudges, no escalation) — the
-  // dormant-turn detector still runs as hard-wedge protection.
+  // agents for status updates; the dormant-turn detector still runs as
+  // hard-wedge protection.
   stallDetectionEnabled: boolean;
-  // Dormant-turn detector threshold (mirrors the daemon's resolved central
-  // config): seconds a running agent may sit with no output AND no tool in
-  // flight before the turn is treated as wedged and recovered.
+  // Dormant-turn detector threshold (mirrors the daemon's resolved config):
+  // seconds a running agent may sit with no output AND no tool in flight
+  // before the turn is treated as wedged and recovered.
   dormantTurnSeconds: number;
-  // Default delivery for verifier → worker sends (mirrors the daemon's
-  // resolved central config). Stall nudges unaffected.
-  verifierToWorkerMode: "steer" | "interrupt" | "queue";
-  // Hindsight fleet memory (M6 context architecture). hindsightUrl null =
-  // disabled (run records stay local; fleet_recall degrades to "memory
-  // unavailable"). hindsightBank is the bank run records are written to and
-  // recalled over; hindsightSecondaryBank is the read-only secondary recall
-  // source (omp), null = no secondary source.
-  hindsightUrl: string | null;
-  hindsightBank: string;
-  hindsightSecondaryBank: string | null;
-  // M9 in-app Commander Voice: where the voice node lives (scripts/
-  // commander-voice). The Mission Control composer shows Commander Voice only
-  // when this is set; null/empty = feature hidden.
-  voiceNodeUrl: string | null;
-  // M9 voice tool surface: "relay" (default) = shared read tools plus
-  // commander_dispatch/proposal_respond/pending_updates, mutations via the
-  // Commander; "direct" = full Commander allowlist, every call mirrored.
-  // Applies to NEW voice sessions; an open session keeps its start mode.
-  voiceMode: "relay" | "direct";
-  // Lifecycle-tracking gates (mirror the daemon's resolved central config):
-  // which agent classes emit Mission Control lifecycle events. The Commander
-  // itself is never tracked; root agents are always tracked.
-  trackCommanderWorkers: boolean;
-  trackVerifiers: boolean;
+  // Whether agents spawned by other agents emit Mission Control lifecycle events.
   trackSubagents: boolean;
-  // Placement routing (New workspace auto-selection, suggest_placement).
+  // Placement routing (New workspace auto-selection, fleet_create_agent fill-in).
   routing: RoutingConfig;
-  // Which routing API keys the commander host holds; values never reach clients.
+  // Which routing API keys this host holds; values never reach clients.
   routingSecretsSet: readonly RoutingSecretKey[];
 }
 
 const RESOLVED_DEFAULTS: ResolvedMissionControlCentralConfig = {
-  commanderHost: null,
-  commanderModel: null,
-  commanderInstructions: "",
-  verifierModel: null,
-  verifierConcurrency: 3,
   evaluationScope: "commander",
-  mode: "ask",
   retentionDays: 30,
   namingTheme: "mixed",
   hideAgentNames: false,
@@ -85,22 +46,12 @@ const RESOLVED_DEFAULTS: ResolvedMissionControlCentralConfig = {
   escalateSeconds: 300,
   stallDetectionEnabled: true,
   dormantTurnSeconds: 300,
-  verifierToWorkerMode: "interrupt",
-  hindsightUrl: null,
-  hindsightBank: "paseo-fleet",
-  hindsightSecondaryBank: "omp",
-  voiceNodeUrl: null,
-  voiceMode: "relay",
-  trackCommanderWorkers: true,
-  trackVerifiers: true,
   trackSubagents: true,
   routing: {},
   routingSecretsSet: [],
 };
 
-// Grouped knob resolution (mirrors the server's resolveNullableStringKnobs
-// split in mission-control/config.ts): each group owns its defaults so the
-// composer stays a flat spread.
+// Grouped knob resolution (mirrors the server's split in mission-control/config.ts).
 function resolveStallTimingKnobs(config: MissionControlCentralConfig) {
   const statusNudgeSeconds = config.statusNudgeSeconds ?? config.nudgeSeconds ?? 300;
   return {
@@ -112,22 +63,6 @@ function resolveStallTimingKnobs(config: MissionControlCentralConfig) {
   };
 }
 
-function resolveMemoryKnobs(config: MissionControlCentralConfig) {
-  const hindsightUrl = config.hindsightUrl ?? null;
-  return {
-    hindsightUrl,
-    hindsightBank: config.hindsightBank ?? "paseo-fleet",
-    hindsightSecondaryBank: config.hindsightSecondaryBank ?? "omp",
-  };
-}
-
-function resolveVoiceKnobs(config: MissionControlCentralConfig) {
-  return {
-    voiceNodeUrl: config.voiceNodeUrl ?? null,
-    voiceMode: config.voiceMode ?? "relay",
-  };
-}
-
 export function resolveMissionControlCentralConfig(
   config: MissionControlCentralConfig | null | undefined,
 ): ResolvedMissionControlCentralConfig {
@@ -135,24 +70,13 @@ export function resolveMissionControlCentralConfig(
     return RESOLVED_DEFAULTS;
   }
   return {
-    commanderHost: config.commanderHost ?? null,
-    commanderModel: config.commanderModel ?? null,
-    commanderInstructions: config.commanderInstructions ?? "",
-    verifierModel: config.verifierModel ?? null,
-    verifierConcurrency: config.verifierConcurrency ?? 3,
     evaluationScope: config.evaluationScope ?? "commander",
-    mode: config.mode ?? "ask",
     retentionDays: config.retentionDays ?? 30,
     namingTheme: config.namingTheme ?? "mixed",
     hideAgentNames: config.hideAgentNames ?? false,
     defaultDispatchHost: config.defaultDispatchHost ?? null,
-    verifierToWorkerMode: config.verifierToWorkerMode ?? "interrupt",
-    trackCommanderWorkers: config.trackCommanderWorkers ?? true,
-    trackVerifiers: config.trackVerifiers ?? true,
     trackSubagents: config.trackSubagents ?? true,
     ...resolveStallTimingKnobs(config),
-    ...resolveMemoryKnobs(config),
-    ...resolveVoiceKnobs(config),
     routing: config.routing ?? {},
     routingSecretsSet: config.routingSecretsSet ?? [],
   };

@@ -3,14 +3,12 @@ import { z } from "zod";
 import type { PersistedProjectRecord, PersistedWorkspaceRecord } from "../workspace-registry.js";
 import type { StoredAgentRecord } from "../agent/agent-storage.js";
 import {
-  buildFleetMetaProposalInput,
-  buildSplitMetaProposalInput,
+  buildSplitMetaPlan,
   type SplitMetaLookupDependencies,
   type SplitMetaToolArgs,
   type SplitMetaToolDeps,
 } from "./fleet-meta.js";
 import type { MetaPeerManager } from "./meta-actions.js";
-import { COMMANDER_ADOPTED_AT_LABEL, COMMANDER_TOOL_ALLOWLIST } from "./commander-contract.js";
 import { formatShortId, type FleetIdResolution } from "./fleet-id-index.js";
 import { createPaseoToolCatalog } from "../agent/tools/paseo-tools.js";
 import type { PaseoToolDefinition } from "../agent/tools/types.js";
@@ -21,11 +19,9 @@ import type { AgentStorage } from "../agent/agent-storage.js";
 import type { PeerManager } from "../peers/peer-manager.js";
 
 /**
- * 04 — fleet_meta split tests: the 11 flat per-action tools build the SAME
- * metaPlan proposal payload the old fleet_meta built (zero protocol change),
- * refuse wrong id families and unknown ids with candidate-listing errors
- * (spec 03), and the allowlist drops fleet_meta in favor of the 11 names
- * while the COMPAT alias stays registered (paseo-tools keeps it).
+ * Split meta tools: each per-action tool builds the metaPlan payload, refuses
+ * wrong id families and unknown ids with candidate-listing errors (spec 03),
+ * and applies the plan directly.
  */
 
 // ---------------------------------------------------------------------------
@@ -111,12 +107,7 @@ function buildLookup(
     (
       overrides.agents ?? [
         storedAgent(),
-        storedAgent({
-          id: AGENT_ADOPTED,
-          name: "curious-crab",
-          title: "Worker B",
-          labels: { [COMMANDER_ADOPTED_AT_LABEL]: "2026-08-01T00:00:00.000Z" },
-        }),
+        storedAgent({ id: AGENT_ADOPTED, name: "curious-crab", title: "Worker B" }),
       ]
     ).map((record) => [record.id, record]),
   );
@@ -214,59 +205,22 @@ function buildSplitDeps(
   };
 }
 
-// ---------------------------------------------------------------------------
-// Allowlist (04): fleet_meta gone, the 11 flat tools in
-// ---------------------------------------------------------------------------
-
-describe("COMMANDER_TOOL_ALLOWLIST (04 meta split)", () => {
-  test("lists all 11 split tools", () => {
-    for (const tool of [
-      "fleet_rename_project",
-      "fleet_rename_workspace",
-      "fleet_rename_agent_title",
-      "fleet_archive_project",
-      "fleet_archive_workspace",
-      "fleet_archive_agent",
-      "fleet_create_project",
-      "fleet_move_agent",
-      "fleet_promote_workspace",
-      "fleet_adopt_agent",
-      "fleet_release_agent",
-    ]) {
-      expect(COMMANDER_TOOL_ALLOWLIST).toContain(tool);
-    }
-  });
-
-  test("fleet_meta is REMOVED (the COMPAT alias stays registered for MCP/older callers, see paseo-tools)", () => {
-    expect(COMMANDER_TOOL_ALLOWLIST).not.toContain("fleet_meta");
-  });
-
-  test("the read-only tools are untouched", () => {
-    expect(COMMANDER_TOOL_ALLOWLIST).toContain("fleet_recall");
-    expect(COMMANDER_TOOL_ALLOWLIST).toContain("fleet_context");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Per-tool argument validation (spec 03 error contract)
-// ---------------------------------------------------------------------------
-
-describe("buildSplitMetaProposalInput — id family + candidate errors (03)", () => {
+describe("buildSplitMetaPlan — id family + candidate errors (03)", () => {
   test("missing target id is refused per tool", async () => {
     const deps = buildSplitDeps();
     for (const { args } of SPLIT_TOOL_TABLE) {
       if (args.kind === "create-project") {
         continue;
       }
-      await expect(
-        buildSplitMetaProposalInput(deps, { ...args, targetId: undefined }),
-      ).rejects.toThrow(`${args.action} requires a ${args.kind} id`);
+      await expect(buildSplitMetaPlan(deps, { ...args, targetId: undefined })).rejects.toThrow(
+        `${args.action} requires a ${args.kind} id`,
+      );
     }
   });
 
   test("unknown workspace id lists live candidates + the resolver tool", async () => {
     const deps = buildSplitDeps();
-    const error = await buildSplitMetaProposalInput(deps, {
+    const error = await buildSplitMetaPlan(deps, {
       action: "rename_workspace",
       kind: "workspace",
       targetId: WS_GHOST,
@@ -281,7 +235,7 @@ describe("buildSplitMetaProposalInput — id family + candidate errors (03)", ()
 
   test("unknown agent id lists nearest live candidates + the resolver tool", async () => {
     const deps = buildSplitDeps();
-    const error = await buildSplitMetaProposalInput(deps, {
+    const error = await buildSplitMetaPlan(deps, {
       action: "rename_agent_title",
       kind: "agent",
       targetId: AGENT_GHOST,
@@ -297,7 +251,7 @@ describe("buildSplitMetaProposalInput — id family + candidate errors (03)", ()
   test("wrong id family is refused with family guidance (03)", async () => {
     const deps = buildSplitDeps();
     // An AGENT id passed to a workspace tool: the index knows the family.
-    const error = await buildSplitMetaProposalInput(deps, {
+    const error = await buildSplitMetaPlan(deps, {
       action: "rename_workspace",
       kind: "workspace",
       targetId: AGENT_LOCAL,
@@ -311,7 +265,7 @@ describe("buildSplitMetaProposalInput — id family + candidate errors (03)", ()
 
   test("a host hint that names the wrong host is refused naming the actual host", async () => {
     const deps = buildSplitDeps();
-    const error = await buildSplitMetaProposalInput(deps, {
+    const error = await buildSplitMetaPlan(deps, {
       action: "rename_workspace",
       kind: "workspace",
       targetId: WS_PEER,
@@ -324,7 +278,7 @@ describe("buildSplitMetaProposalInput — id family + candidate errors (03)", ()
   test("an unknown host hint is refused before the gate", async () => {
     const deps = buildSplitDeps();
     await expect(
-      buildSplitMetaProposalInput(deps, {
+      buildSplitMetaPlan(deps, {
         action: "rename_workspace",
         kind: "workspace",
         targetId: WS_A,
@@ -337,7 +291,7 @@ describe("buildSplitMetaProposalInput — id family + candidate errors (03)", ()
   test("create_project refuses an unknown host and a relative path", async () => {
     const deps = buildSplitDeps();
     await expect(
-      buildSplitMetaProposalInput(deps, {
+      buildSplitMetaPlan(deps, {
         action: "create_project",
         kind: "create-project",
         host: "ghost",
@@ -345,7 +299,7 @@ describe("buildSplitMetaProposalInput — id family + candidate errors (03)", ()
       }),
     ).rejects.toThrow('Host "ghost" is not a configured peer or this host');
     await expect(
-      buildSplitMetaProposalInput(deps, {
+      buildSplitMetaPlan(deps, {
         action: "create_project",
         kind: "create-project",
         host: "local",
@@ -356,35 +310,23 @@ describe("buildSplitMetaProposalInput — id family + candidate errors (03)", ()
 
   test("a peer id without a host hint routes through the fleet index", async () => {
     const deps = buildSplitDeps();
-    const input = await buildSplitMetaProposalInput(deps, {
+    const input = await buildSplitMetaPlan(deps, {
       action: "rename_workspace",
       kind: "workspace",
       targetId: WS_PEER,
       newValue: "Lab",
     });
-    expect(input.metaPlan).toMatchObject({
+    expect(input).toMatchObject({
       action: "rename_workspace",
       serverId: "macbook",
       targetId: WS_PEER,
       newValue: "Lab",
     });
   });
-
-  test("respondsTo rides the proposal input (M8 ledger)", async () => {
-    const deps = buildSplitDeps();
-    const input = await buildSplitMetaProposalInput(deps, {
-      action: "rename_workspace",
-      kind: "workspace",
-      targetId: WS_A,
-      newValue: "Lab",
-      respondsTo: "#12",
-    });
-    expect(input.respondsTo).toBe("#12");
-  });
 });
 
 // ---------------------------------------------------------------------------
-// metaPlan payload equivalence vs the old fleet_meta (all 11 actions)
+// metaPlan payload per action
 // ---------------------------------------------------------------------------
 
 interface SplitToolRow {
@@ -501,73 +443,15 @@ const SPLIT_TOOL_TABLE: SplitToolRow[] = [
       targetLabel: "ws-a",
     },
   },
-  {
-    tool: "fleet_adopt_agent",
-    args: { action: "adopt_agent", kind: "agent", targetId: AGENT_LOCAL },
-    metaPlan: {
-      action: "adopt_agent",
-      serverId: "local",
-      targetId: AGENT_LOCAL,
-      targetLabel: "glowing-otter",
-    },
-  },
-  {
-    tool: "fleet_release_agent",
-    args: { action: "release_agent", kind: "agent", targetId: AGENT_ADOPTED },
-    metaPlan: {
-      action: "release_agent",
-      serverId: "local",
-      targetId: AGENT_ADOPTED,
-      targetLabel: "curious-crab",
-    },
-  },
 ];
 
-describe("metaPlan payload equivalence vs old fleet_meta (11 actions)", () => {
+describe("metaPlan payload per action", () => {
   for (const { tool, args, metaPlan } of SPLIT_TOOL_TABLE) {
-    test(`${tool} builds the identical proposal payload the old fleet_meta built`, async () => {
-      const deps = buildSplitDeps();
-      const splitInput = await buildSplitMetaProposalInput(deps, args);
-      // The metaPlan is exactly the payload the old fleet_meta carried
-      // (serverId + targetLabel resolved, same optional fields).
-      expect(splitInput.metaPlan).toEqual(metaPlan);
-      // And feeding that payload through the OLD builder yields the same
-      // ProposalCreateInput byte-for-byte (approval gate, message, targetAgentId,
-      // classification — zero protocol change).
-      const legacyInput = await buildFleetMetaProposalInput({
-        serverId: deps.serverId,
-        hostAlias: deps.hostAlias,
-        peerManager: deps.peerManager,
-        metaPlan: splitInput.metaPlan!,
-        lookup: deps.lookup,
-      });
-      expect(splitInput).toEqual(legacyInput);
+    test(`${tool} builds its metaPlan with the host and target label resolved`, async () => {
+      expect(await buildSplitMetaPlan(buildSplitDeps(), args)).toEqual(metaPlan);
     });
   }
-
-  test("a peer-routed action stays shape-only through both builders (identical input)", async () => {
-    const deps = buildSplitDeps();
-    const splitInput = await buildSplitMetaProposalInput(deps, {
-      action: "rename_workspace",
-      kind: "workspace",
-      targetId: WS_PEER,
-      newValue: "Lab",
-    });
-    expect(splitInput.metaPlan).toMatchObject({ serverId: "macbook" });
-    const legacyInput = await buildFleetMetaProposalInput({
-      serverId: deps.serverId,
-      hostAlias: deps.hostAlias,
-      peerManager: deps.peerManager,
-      metaPlan: splitInput.metaPlan!,
-      lookup: deps.lookup,
-    });
-    expect(splitInput).toEqual(legacyInput);
-  });
 });
-
-// ---------------------------------------------------------------------------
-// Registered-tool schemas (flat, per-tool, host optional except create_project)
-// ---------------------------------------------------------------------------
 
 function createSchemaTestCatalog() {
   return createPaseoToolCatalog({
@@ -587,12 +471,6 @@ function createSchemaTestCatalog() {
   });
 }
 
-/** Same parse path the catalog uses at execution (parseToolInput). */
-function parseWithInputSchema(tool: PaseoToolDefinition, input: unknown) {
-  const schema = z.object(tool.inputSchema as z.ZodRawShape).passthrough();
-  return schema.safeParse(input);
-}
-
 const SCHEMA_ARG_SETS: Record<string, Record<string, unknown>> = {
   fleet_rename_project: { projectId: PRJ_EXP, title: "Lab" },
   fleet_rename_workspace: { workspaceId: WS_A, title: "Lab" },
@@ -603,12 +481,16 @@ const SCHEMA_ARG_SETS: Record<string, Record<string, unknown>> = {
   fleet_create_project: { host: "local", path: "/home/me/new", title: "New" },
   fleet_move_agent: { agentId: AGENT_LOCAL, workspaceId: WS_B },
   fleet_promote_workspace: { workspaceId: WS_A },
-  fleet_adopt_agent: { agentId: AGENT_LOCAL },
-  fleet_release_agent: { agentId: AGENT_LOCAL },
 };
 
+/** Same parse path the catalog uses at execution (parseToolInput). */
+function parseWithInputSchema(tool: PaseoToolDefinition, input: unknown) {
+  const schema = z.object(tool.inputSchema as z.ZodRawShape).passthrough();
+  return schema.safeParse(input);
+}
+
 describe("registered tool schemas (04)", () => {
-  test("all 11 tools are registered with their flat per-action schemas", () => {
+  test("every split tool is registered with its flat per-action schema", () => {
     const catalog = createSchemaTestCatalog();
     for (const tool of [
       "fleet_rename_project",
@@ -620,15 +502,12 @@ describe("registered tool schemas (04)", () => {
       "fleet_create_project",
       "fleet_move_agent",
       "fleet_promote_workspace",
-      "fleet_adopt_agent",
-      "fleet_release_agent",
     ]) {
       const definition = catalog.getTool(tool);
       expect(definition, `${tool} is registered`).toBeDefined();
       expect(definition!.inputSchema).toBeDefined();
     }
-    // The COMPAT alias is still registered for MCP/older callers.
-    expect(catalog.getTool("fleet_meta")).toBeDefined();
+    expect(catalog.getTool("fleet_meta")).toBeUndefined();
   });
 
   test("valid args parse for every tool (host optional except create_project)", () => {
@@ -647,8 +526,6 @@ describe("registered tool schemas (04)", () => {
       "fleet_archive_agent",
       "fleet_move_agent",
       "fleet_promote_workspace",
-      "fleet_adopt_agent",
-      "fleet_release_agent",
     ]) {
       const args = { ...SCHEMA_ARG_SETS[tool] };
       delete args.host;
@@ -705,7 +582,6 @@ describe("registered tool schemas (04)", () => {
       ["fleet_rename_agent_title", { agentId: AGENT_LOCAL }],
       ["fleet_archive_workspace", {}],
       ["fleet_move_agent", { agentId: AGENT_LOCAL }],
-      ["fleet_adopt_agent", {}],
     ];
     for (const [tool, args] of cases) {
       const result = parseWithInputSchema(catalog.getTool(tool)!, args);
@@ -718,55 +594,32 @@ describe("registered tool schemas (04)", () => {
   });
 });
 
-describe("meta tools by caller", () => {
-  const WORKER = "6e7f8a9b-0c1d-4e2f-8a3b-4c5d6e7f8a9b";
-
-  function createCallerCatalog(callerLabels: Record<string, string>) {
+describe("meta tools apply directly", () => {
+  test("rename and archive apply on their host, for any caller", async () => {
     const lookup = buildLookup();
-    const createProposal = vi.fn(async (input: { forceSend?: boolean }) => ({
-      id: "mcp_meta_1",
-      status: input.forceSend ? "sent" : "pending",
-      kind: "meta",
-    }));
+    const applyMetaPlanDirect = vi.fn(async () => ({ ok: true, metaAppliedOnHost: "local" }));
     const catalog = createPaseoToolCatalog({
       agentManager: lookup.agentManager as unknown as AgentManager,
       agentStorage: lookup.agentStorage as unknown as AgentStorage,
       providerSnapshotManager: createProviderSnapshotManagerStub().manager as unknown as never,
-      callerAgentId: WORKER,
-      callerLabels,
+      callerAgentId: "6e7f8a9b-0c1d-4e2f-8a3b-4c5d6e7f8a9b",
       serverId: "server-local",
       workspaceRegistry: lookup.workspaceRegistry as never,
       projectRegistry: lookup.projectRegistry as never,
-      missionControlService: { approvals: { createProposal } } as never,
+      missionControlService: { applyMetaPlanDirect } as never,
       logger: createTestLogger(),
     });
-    return { catalog, createProposal };
-  }
-
-  test("a worker's meta action applies immediately, but a destructive one still asks", async () => {
-    const { catalog, createProposal } = createCallerCatalog({});
 
     const renamed = await catalog.executeTool("fleet_rename_workspace", {
       workspaceId: WS_A,
       title: "Lab",
     });
-    expect(renamed.structuredContent).toMatchObject({ ok: true, status: "sent" });
-    expect(createProposal).toHaveBeenLastCalledWith(expect.objectContaining({ forceSend: true }));
-
+    expect(renamed.structuredContent).toMatchObject({ ok: true, status: "applied" });
     const archived = await catalog.executeTool("fleet_archive_workspace", { workspaceId: WS_B });
-    expect(archived.structuredContent).toMatchObject({ ok: true, status: "pending" });
-    expect(createProposal.mock.lastCall?.[0]).not.toHaveProperty("forceSend");
-  });
-
-  test("the Commander's meta action is a proposal under the approval gate", async () => {
-    const { catalog, createProposal } = createCallerCatalog({
-      "paseo.mission-control": "commander",
-    });
-    const renamed = await catalog.executeTool("fleet_rename_workspace", {
-      workspaceId: WS_A,
-      title: "Lab",
-    });
-    expect(renamed.structuredContent).toMatchObject({ ok: true, status: "pending" });
-    expect(createProposal.mock.lastCall?.[0]).not.toHaveProperty("forceSend");
+    expect(archived.structuredContent).toMatchObject({ ok: true, status: "applied" });
+    expect(applyMetaPlanDirect.mock.calls.map(([plan]) => plan)).toEqual([
+      expect.objectContaining({ action: "rename_workspace", targetId: WS_A, newValue: "Lab" }),
+      expect.objectContaining({ action: "archive_workspace", targetId: WS_B }),
+    ]);
   });
 });

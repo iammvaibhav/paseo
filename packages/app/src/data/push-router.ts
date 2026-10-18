@@ -12,7 +12,6 @@ import { orderCheckoutDiffFiles } from "@/git/diff-order";
 import { daemonConfigQueryKey } from "@/data/daemon-config";
 import { daemonPairingOfferQueryKey } from "@/data/daemon-pairing";
 import { missionControlEventsQueryKey } from "@/data/mission-control-events";
-import { missionControlInstructionsQueryKey } from "@/data/mission-control-instructions";
 import { type ProviderSnapshotCache } from "@/data/provider-snapshot-cache";
 import {
   normalizeProvidersSnapshotCwd,
@@ -107,11 +106,6 @@ const EVENT_STREAMS: Record<EventStreamDomain, EventStream> = {
       if (message.type !== "mission_control_event") return;
       // The feed refetches from the per-host store; a push only marks this host dirty.
       void queryClient.invalidateQueries({ queryKey: missionControlEventsQueryKey(serverId) });
-      // M8 instruction ledger: a citing card closes a row, so the ledger
-      // refreshes with the same push that refreshes the feed.
-      void queryClient.invalidateQueries({
-        queryKey: missionControlInstructionsQueryKey(serverId),
-      });
     },
   },
   providerUsage: {
@@ -207,11 +201,6 @@ const RECONNECT_REPAIR_POLICIES: ReconnectRepairPolicy[] = [
     domain: "missionControlEvents",
     invalidate: ({ queryClient, serverId }) => {
       void queryClient.invalidateQueries({ queryKey: missionControlEventsQueryKey(serverId) });
-      // M8 instruction ledger: a citing card closes a row, so the ledger
-      // refreshes with the same push that refreshes the feed.
-      void queryClient.invalidateQueries({
-        queryKey: missionControlInstructionsQueryKey(serverId),
-      });
     },
   },
 ];

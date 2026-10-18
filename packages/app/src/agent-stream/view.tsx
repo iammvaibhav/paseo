@@ -133,8 +133,6 @@ import { recordRenderProfileReasons } from "@/utils/render-profiler";
 import { useRetainedPanelActive } from "@/components/retained-panel";
 import type { WorkspaceDraftForkSource } from "@/workspace-tabs/model";
 import type { SelectionAskConfig } from "@/selection-ask/use-selection-ask";
-import { ProposalCard } from "@/screens/mission-control/proposal-card";
-import type { FeedCardEvent } from "@/screens/mission-control/feed-card";
 import { useStreamHistoryWindow } from "./use-stream-history-window";
 import { PluginTimelineItemView, useInstalledTimelineTransform } from "@/plugins/timeline";
 
@@ -168,19 +166,13 @@ function BottomOverlayInset({ height }: { height: number }) {
 
 function renderPendingPermissionsNode(input: {
   pendingPermissions: PendingPermission[];
-  pendingProposals: readonly FeedCardEvent[];
   client: DaemonClient | null;
 }): ReactNode {
-  if (input.pendingPermissions.length === 0 && input.pendingProposals.length === 0) {
+  if (input.pendingPermissions.length === 0) {
     return null;
   }
   return (
     <View style={stylesheet.permissionsContainer}>
-      {input.pendingProposals.map((event) =>
-        event.proposal ? (
-          <ProposalCard key={event.id} proposal={event.proposal} event={event} />
-        ) : null,
-      )}
       {input.pendingPermissions.map((permission) => (
         <PermissionRequestCard key={permission.key} permission={permission} client={input.client} />
       ))}
@@ -334,7 +326,6 @@ export interface AgentStreamViewProps {
   streamItems: StreamItem[];
   streamHead?: StreamItem[];
   pendingPermissions: Map<string, PendingPermission>;
-  pendingProposals?: readonly FeedCardEvent[];
   pendingMessageSubmissions?: readonly PendingMessageSubmission[];
   turnPresentation: TurnPresentation;
   routeBottomAnchorRequest?: BottomAnchorRouteRequest | null;
@@ -394,7 +385,6 @@ function useRetainedValue<T>(value: T, active: boolean): T {
   return active ? value : retainedRef.current;
 }
 const EMPTY_PENDING_MESSAGE_SUBMISSIONS: readonly PendingMessageSubmission[] = [];
-const EMPTY_PENDING_PROPOSALS: readonly FeedCardEvent[] = [];
 const GROUPED_TOOL_CALL_DETAIL_MAX_HEIGHT = 200;
 
 /** The source anchor a fork-mode draft submits with. */
@@ -418,7 +408,6 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       streamItems,
       streamHead: providedStreamHead,
       pendingPermissions,
-      pendingProposals = EMPTY_PENDING_PROPOSALS,
       pendingMessageSubmissions = EMPTY_PENDING_MESSAGE_SUBMISSIONS,
       turnPresentation,
       routeBottomAnchorRequest = null,
@@ -1330,10 +1319,9 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       () =>
         renderPendingPermissionsNode({
           pendingPermissions: pendingPermissionItems,
-          pendingProposals,
           client,
         }),
-      [client, pendingPermissionItems, pendingProposals],
+      [client, pendingPermissionItems],
     );
     const turnFooterNode = useMemo(
       () =>
@@ -1664,7 +1652,6 @@ function agentStreamViewPropsEqual(
   if (left.streamItems !== right.streamItems) reasons.push("streamItems");
   if (left.streamHead !== right.streamHead) reasons.push("streamHead");
   if (left.pendingPermissions !== right.pendingPermissions) reasons.push("pendingPermissions");
-  if (left.pendingProposals !== right.pendingProposals) reasons.push("pendingProposals");
   if (left.pendingMessageSubmissions !== right.pendingMessageSubmissions) {
     reasons.push("pendingMessageSubmissions");
   }

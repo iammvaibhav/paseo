@@ -18,7 +18,6 @@ export type AgentRunController = Pick<
   | "replaceAgentRun"
   | "steerOrReplaceActiveTurn"
   | "streamAgent"
-  | "beforeAgentRun"
 > & {
   reloadAgentSession(agentId: string): Promise<unknown>;
 };
@@ -113,19 +112,6 @@ export async function startAgentRun(
     return { disposition: "out_of_band" };
   }
   await refreshProviderSessionBeforeRun(agentManager, agentId, logger);
-  // Per-turn pre-run seam (Commander world-snapshot injection): the hook may
-  // dispatch its own machinery turn ahead of this prompt. Runs after the
-  // dead-runtime recovery so the injected turn starts on a live session, and
-  // after the out-of-band check so OOB commands never trigger injection.
-  // typeof-guarded so manager shims without the seam stay no-ops.
-  if (typeof agentManager.beforeAgentRun === "function") {
-    await agentManager.beforeAgentRun({
-      agentId,
-      prompt,
-      runOptions: options?.runOptions,
-      replaceRunning: options?.replaceRunning,
-    });
-  }
   try {
     return await startAgentRunInner(agentManager, agentId, prompt, logger, options);
   } catch (error) {

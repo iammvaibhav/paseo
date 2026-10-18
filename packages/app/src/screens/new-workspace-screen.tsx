@@ -60,7 +60,6 @@ import {
   type HostRuntimeConnectionStatus,
 } from "@/runtime/host-runtime";
 import { useHostFeature, useHostFeatureMap } from "@/runtime/host-features";
-import { useCommanderHostServerId } from "@/mission-control/central-config";
 import type { HostProfile } from "@/types/host-connection";
 import {
   navigateToWorkspace,
@@ -2060,7 +2059,7 @@ export function NewWorkspaceScreen({
   });
   const composerState = chatDraft.composerState;
   // Without a designated Commander host (standalone), the selected host routes.
-  const routingServerId = useCommanderHostServerId() ?? selectedServerId;
+  const routingServerId = selectedServerId;
   const supportsRouting = useHostFeature(routingServerId, "routingSuggest");
   const projectPicker = useMemo(
     () => ({

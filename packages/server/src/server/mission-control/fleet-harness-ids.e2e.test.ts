@@ -3,6 +3,7 @@ import { describe, expect, test } from "vitest";
 import {
   createFleetHarness,
   fleetExec,
+  fleetTry,
   spawnWorker,
   waitFor,
   waitForAgentRow,
@@ -21,8 +22,8 @@ function peerOffline(harness: FleetHarness, peerName: string): () => Promise<boo
 }
 
 /**
- * Layer 2 scenario group 2 — fleet ids (02), fail-fast spawn (03), dedupe
- * (03), meta split (04). Commander-host RPC surface only.
+ * Layer 2 scenario group 2 — fleet ids (02), fail-fast spawn (03), meta split
+ * (04), driven over /mcp/fleet from host A.
  */
 
 describe("02 fleet ids — bare-id routing", () => {
@@ -56,20 +57,13 @@ describe("02 fleet ids — bare-id routing", () => {
         });
         expect(activity.agentId).toBe(agentId);
 
-        // Bare-id send resolves WITHOUT a host hint → ask-mode proposal → approve routes over peering to C.
-        const send = await harness.clients.A.missionControlToolsExecute({
-          name: "fleet_send_prompt",
-          args: { agentId, prompt: "continue", mode: "steer" },
+        // Bare-id send resolves WITHOUT a host hint and routes over peering to C.
+        const send = await fleetTry(harness.clients.A, "fleet_send_prompt", {
+          agentId,
+          prompt: "continue",
+          mode: "steer",
         });
         expect(send.ok).toBe(true);
-        const sendProposalId = send.structuredContent?.proposalId as string | undefined;
-        expect(sendProposalId).toBeTruthy();
-        expect(send.structuredContent?.guidance ?? "").toMatch(/for approval/i);
-        const approveSend = await harness.clients.A.missionControlProposalsRespond({
-          proposalId: sendProposalId!,
-          action: "approve",
-        });
-        expect(approveSend.ok).toBe(true);
         // Verify prompt landed on C (turn ran and finished).
         await waitForEvent(
           harness.clients.C,
@@ -78,19 +72,12 @@ describe("02 fleet ids — bare-id routing", () => {
             label: "peer send delivered and finished on C",
           },
         );
-        // Bare-id meta rename → proposal → approve → title changes on C.
-        const rename = await harness.clients.A.missionControlToolsExecute({
-          name: "fleet_rename_agent_title",
-          args: { agentId, title: "Renamed from A" },
+        // Bare-id meta rename → title changes on C.
+        const rename = await fleetTry(harness.clients.A, "fleet_rename_agent_title", {
+          agentId,
+          title: "Renamed from A",
         });
         expect(rename.ok).toBe(true);
-        const renameProposalId = rename.structuredContent?.proposalId as string | undefined;
-        expect(renameProposalId).toBeTruthy();
-        const approveRename = await harness.clients.A.missionControlProposalsRespond({
-          proposalId: renameProposalId!,
-          action: "approve",
-        });
-        expect(approveRename.ok).toBe(true);
         const renamed = await waitForAgentRow(
           harness.clients.C,
           agentId,
@@ -102,9 +89,11 @@ describe("02 fleet ids — bare-id routing", () => {
         expect(renamed.title).toBe("Renamed from A");
 
         // Host-hint mismatch: agent is on C, hint says B.
-        const mismatch = await harness.clients.A.missionControlToolsExecute({
-          name: "fleet_send_prompt",
-          args: { agentId, host: "B", prompt: "wrong host", mode: "steer" },
+        const mismatch = await fleetTry(harness.clients.A, "fleet_send_prompt", {
+          agentId,
+          host: "B",
+          prompt: "wrong host",
+          mode: "steer",
         });
         expect(mismatch.ok).toBe(false);
         expect(mismatch.error ?? "").toMatch(/is on host "C", not "B"/);
@@ -117,9 +106,8 @@ describe("02 fleet ids — bare-id routing", () => {
           timeoutMs: 20_000,
           label: "peer C offline on A",
         });
-        const unreachable = await harness.clients.A.missionControlToolsExecute({
-          name: "fleet_get_agent_activity",
-          args: { agentId },
+        const unreachable = await fleetTry(harness.clients.A, "fleet_get_agent_activity", {
+          agentId,
         });
         expect(unreachable.ok).toBe(false);
         expect(unreachable.error ?? "").toMatch(/C unreachable|unreachable/i);
@@ -150,7 +138,7 @@ function findAgentInWorkspace(
 
 describe("03 fail-fast spawn", () => {
   test(
-    "bad workspaceId lists candidates; relative cwd errors; valid wks_ on B → proposal → approve lands agent in that workspace",
+    "bad workspaceId lists candidates; relative cwd errors; valid wks_ on B lands the agent in that workspace",
     { timeout: 240_000 },
     async () => {
       const harness = await createFleetHarness();
@@ -163,121 +151,42 @@ describe("03 fail-fast spawn", () => {
         expect(bWsId).toBeTruthy();
 
         // Unknown workspace id on B: call-time error listing live candidates.
-        const badWs = await harness.clients.A.missionControlToolsExecute({
-          name: "fleet_create_agent",
-          args: {
-            host: "B",
-            workspaceId: "wks_ffffffffffffffff",
-            provider: "claude/test-model",
-            initialPrompt: "nope",
-            title: "Bad workspace",
-          },
+        const badWs = await fleetTry(harness.clients.A, "fleet_create_agent", {
+          host: "B",
+          workspaceId: "wks_ffffffffffffffff",
+          provider: "claude/test-model",
+          initialPrompt: "nope",
+          title: "Bad workspace",
         });
         expect(badWs.ok).toBe(false);
         expect(badWs.error ?? "").toMatch(/workspace not found/i);
         expect(badWs.error ?? "").toMatch(/available workspaces/i);
 
         // Relative cwd: call-time rejection.
-        const relCwd = await harness.clients.A.missionControlToolsExecute({
-          name: "fleet_create_agent",
-          args: {
-            host: "B",
-            cwd: "relative/path",
-            provider: "claude/test-model",
-            initialPrompt: "nope",
-            title: "Relative cwd",
-          },
+        const relCwd = await fleetTry(harness.clients.A, "fleet_create_agent", {
+          host: "B",
+          cwd: "relative/path",
+          provider: "claude/test-model",
+          initialPrompt: "nope",
+          title: "Relative cwd",
         });
         expect(relCwd.ok).toBe(false);
         expect(relCwd.error ?? "").toMatch(/absolute/i);
 
-        // Valid workspace on B: proposal → approve → agent lands in it.
-        const spawn = await harness.clients.A.missionControlToolsExecute({
-          name: "fleet_create_agent",
-          args: {
-            workspaceId: bWsId,
-            provider: "claude/test-model",
-            initialPrompt: "Placed worker",
-            title: "Placed worker",
-          },
+        // Valid workspace on B: the agent lands in it.
+        const spawn = await fleetTry(harness.clients.A, "fleet_create_agent", {
+          workspaceId: bWsId,
+          provider: "claude/test-model",
+          initialPrompt: "Placed worker",
+          title: "Placed worker",
         });
         expect(spawn.ok).toBe(true);
-        const proposalId = spawn.structuredContent?.proposalId as string | undefined;
-        expect(proposalId).toBeTruthy();
-        const approve = await harness.clients.A.missionControlProposalsRespond({
-          proposalId: proposalId!,
-          action: "approve",
-        });
-        expect(approve.ok).toBe(true);
         const placedRow = await waitFor(
           findAgentInWorkspace(harness, bWsId as string),
           (row) => Boolean(row),
           { timeoutMs: 30_000, label: `agent in workspace ${bWsId} on B` },
         );
         expect(placedRow?.workspaceId).toBe(bWsId);
-      } finally {
-        await harness.close();
-      }
-    },
-  );
-});
-
-describe("03 dedupe", () => {
-  test(
-    "identical fleet_create_agent while pending → same proposalId; after resolve → new proposal allowed",
-    { timeout: 240_000 },
-    async () => {
-      const harness = await createFleetHarness();
-      try {
-        const args = {
-          host: "B",
-          provider: "claude/test-model",
-          initialPrompt: "Dedupe worker",
-          title: "Dedupe worker",
-          cwd: harness.daemons.B.paseoHomeRoot,
-        };
-        const first = await harness.clients.A.missionControlToolsExecute({
-          name: "fleet_create_agent",
-          args,
-        });
-        expect(first.ok).toBe(true);
-        const firstProposal = first.structuredContent?.proposalId as string | undefined;
-        expect(firstProposal).toBeTruthy();
-
-        // Identical call while pending: deduped onto the SAME proposal.
-        const second = await harness.clients.A.missionControlToolsExecute({
-          name: "fleet_create_agent",
-          args,
-        });
-        expect(second.ok).toBe(true);
-        const secondProposal = second.structuredContent?.proposalId as string | undefined;
-        expect(secondProposal).toBe(firstProposal);
-        expect(second.structuredContent?.guidance ?? "").toMatch(/already pending/i);
-
-        // Resolve → the dedupe window clears → a new identical call proposes fresh.
-        const approve = await harness.clients.A.missionControlProposalsRespond({
-          proposalId: firstProposal!,
-          action: "approve",
-        });
-        expect(approve.ok).toBe(true);
-        await waitForEvent(
-          harness.clients.A,
-          (e) =>
-            e.kind === "proposal" &&
-            e.proposal?.id === firstProposal &&
-            e.proposal?.spawnedAgentId != null,
-          {
-            label: "spawn executed",
-          },
-        );
-        const third = await harness.clients.A.missionControlToolsExecute({
-          name: "fleet_create_agent",
-          args,
-        });
-        expect(third.ok).toBe(true);
-        const thirdProposal = third.structuredContent?.proposalId as string | undefined;
-        expect(thirdProposal).toBeTruthy();
-        expect(thirdProposal).not.toBe(firstProposal);
       } finally {
         await harness.close();
       }
@@ -308,8 +217,8 @@ describe("04 meta split — peer targets", () => {
           workspaceId: cWsId as string,
         });
 
-        // fleet_rename_agent_title → approve → title on C.
-        await approveMeta(harness, "fleet_rename_agent_title", {
+        // fleet_rename_agent_title → title on C.
+        await applyMeta(harness, "fleet_rename_agent_title", {
           agentId,
           title: "Meta renamed",
           host: "C",
@@ -318,8 +227,8 @@ describe("04 meta split — peer targets", () => {
           label: "title",
         });
 
-        // fleet_rename_workspace → approve → title on C.
-        await approveMeta(harness, "fleet_rename_workspace", {
+        // fleet_rename_workspace → title on C.
+        await applyMeta(harness, "fleet_rename_workspace", {
           workspaceId: cWsId,
           title: "Renamed ws",
           host: "C",
@@ -329,19 +238,18 @@ describe("04 meta split — peer targets", () => {
           wsAfter.entries.some((w) => w.id === cWsId && (w.title ?? w.name) === "Renamed ws"),
         ).toBe(true);
 
-        // fleet_create_project on C → approve → project exists on C.
+        // fleet_create_project on C → project exists on C.
         const projRoot = `${harness.daemons.C.paseoHomeRoot}/new-proj`;
-        const created = await approveMeta(harness, "fleet_create_project", {
+        await applyMeta(harness, "fleet_create_project", {
           host: "C",
           path: projRoot,
           title: "Created project",
         });
-        expect(created).toBe(true);
         const inv = await fleetExec(harness.clients.A, "fleet_list_inventory", { host: "C" });
         const hosts = inv.hosts as { host: string; projects: { id: string; title: string }[] }[];
         expect(hosts[0]!.projects.some((p) => p.title === "Created project")).toBe(true);
 
-        // fleet_move_agent on C → approve → agent workspace moves.
+        // fleet_move_agent on C → agent workspace moves.
         const ws2Path = `${harness.daemons.C.paseoHomeRoot}/ws2`;
         await mkdir(ws2Path, { recursive: true });
         const cWs2 = await harness.clients.C.createWorkspace({
@@ -351,7 +259,7 @@ describe("04 meta split — peer targets", () => {
         const cWs2Id = cWs2.workspace?.id;
         console.log("cWs2 result:", JSON.stringify(cWs2), "cWs2Id:", cWs2Id);
         expect(cWs2Id).toBeTruthy();
-        await approveMeta(harness, "fleet_move_agent", { agentId, workspaceId: cWs2Id, host: "C" });
+        await applyMeta(harness, "fleet_move_agent", { agentId, workspaceId: cWs2Id, host: "C" });
         const movedAgent = await waitForAgentRow(
           harness.clients.C,
           agentId,
@@ -362,36 +270,9 @@ describe("04 meta split — peer targets", () => {
         );
         expect(movedAgent.workspaceId).toBe(cWs2Id);
 
-        // fleet_adopt_agent on C → approve → commander adoption label stamped.
-        await approveMeta(harness, "fleet_adopt_agent", { agentId, host: "C" });
-        const adoptedAgent = await waitForAgentRow(
-          harness.clients.C,
-          agentId,
-          (r) =>
-            Boolean(
-              (r.labels as Record<string, string> | undefined)?.["paseo.commander-adopted-at"],
-            ),
-          { label: "adopted agent" },
-        );
-        expect(
-          (adoptedAgent.labels as Record<string, string>)?.["paseo.commander-adopted-at"],
-        ).toBeTruthy();
-
-        // fleet_release_agent on C → approve → commander adoption label cleared.
-        await approveMeta(harness, "fleet_release_agent", { agentId, host: "C" });
-        const releasedAgent = await waitForAgentRow(
-          harness.clients.C,
-          agentId,
-          (r) => !(r.labels as Record<string, string> | undefined)?.["paseo.commander-adopted-at"],
-          { label: "released agent" },
-        );
-        expect(
-          (releasedAgent.labels as Record<string, string>)?.["paseo.commander-adopted-at"],
-        ).toBeFalsy();
-
-        // fleet_promote_workspace on C → approve (requires experiments workspace).
+        // fleet_promote_workspace on C (requires experiments workspace).
         const expProjPath = `${harness.daemons.C.paseoHomeRoot}/experiments`;
-        await approveMeta(harness, "fleet_create_project", {
+        await applyMeta(harness, "fleet_create_project", {
           host: "C",
           path: expProjPath,
           title: "experiments",
@@ -411,45 +292,45 @@ describe("04 meta split — peer targets", () => {
         });
         const expWsId = expWs.workspace?.id;
         expect(expWsId).toBeTruthy();
-        await approveMeta(harness, "fleet_promote_workspace", { workspaceId: expWsId, host: "C" });
-        await approveMeta(harness, "fleet_archive_agent", { agentId, host: "C" });
+        await applyMeta(harness, "fleet_promote_workspace", { workspaceId: expWsId, host: "C" });
+        await applyMeta(harness, "fleet_archive_agent", { agentId, host: "C" });
         const archivedAgents = await harness.clients.C.fetchAgents({
           filter: { includeArchived: true },
         });
         const archAgentEntry = archivedAgents.entries.find((e) => e.agent.id === agentId);
         expect(archAgentEntry?.agent.archivedAt).toBeTruthy();
 
-        // fleet_archive_workspace on C → approve → workspace archived on C:
+        // fleet_archive_workspace on C → workspace archived on C:
         // the live workspace list (fetchWorkspaces has no archived filter)
         // must no longer contain it.
-        await approveMeta(harness, "fleet_archive_workspace", { workspaceId: cWs2Id, host: "C" });
+        await applyMeta(harness, "fleet_archive_workspace", { workspaceId: cWs2Id, host: "C" });
         const liveWs = await harness.clients.C.fetchWorkspaces({ page: { limit: 200 } });
         expect(liveWs.entries.find((w) => w.id === cWs2Id)).toBeUndefined();
 
-        // fleet_archive_project on C → approve → project archived on C.
+        // fleet_archive_project on C → project archived on C.
         const invC = await fleetExec(harness.clients.A, "fleet_list_inventory", { host: "C" });
         const cProjects = (invC.hosts as { projects: { id: string }[] }[])[0]?.projects ?? [];
         const cProjId = cProjects[0]?.id;
         if (cProjId) {
-          await approveMeta(harness, "fleet_archive_project", { projectId: cProjId, host: "C" });
+          await applyMeta(harness, "fleet_archive_project", { projectId: cProjId, host: "C" });
         }
 
         // Id-family validation errors: a title passed as agentId / workspaceId.
-        const badAgent = await harness.clients.A.missionControlToolsExecute({
-          name: "fleet_rename_agent_title",
-          args: { agentId: "Meta worker", title: "x" },
+        const badAgent = await fleetTry(harness.clients.A, "fleet_rename_agent_title", {
+          agentId: "Meta worker",
+          title: "x",
         });
         expect(badAgent.ok).toBe(false);
         expect(badAgent.error ?? "").toMatch(/agentId must be an agent UUID/i);
-        const badWs = await harness.clients.A.missionControlToolsExecute({
-          name: "fleet_rename_workspace",
-          args: { workspaceId: "Meta workspace", title: "x" },
+        const badWs = await fleetTry(harness.clients.A, "fleet_rename_workspace", {
+          workspaceId: "Meta workspace",
+          title: "x",
         });
         expect(badWs.ok).toBe(false);
         expect(badWs.error ?? "").toMatch(/workspaceId must be a workspace id/i);
-        const badPrj = await harness.clients.A.missionControlToolsExecute({
-          name: "fleet_rename_project",
-          args: { projectId: "prj_nothex", title: "x" },
+        const badPrj = await fleetTry(harness.clients.A, "fleet_rename_project", {
+          projectId: "prj_nothex",
+          title: "x",
         });
         expect(badPrj.ok).toBe(false);
         expect(badPrj.error ?? "").toMatch(/projectId must be a project id/i);
@@ -521,22 +402,13 @@ describe("unarchive — peer targets", () => {
   );
 });
 
-async function approveMeta(
+/** Run a meta tool from A over /mcp/fleet; it applies on the target host. */
+async function applyMeta(
   harness: FleetHarness,
   tool: string,
   args: Record<string, unknown>,
-): Promise<boolean> {
-  const exec = await harness.clients.A.missionControlToolsExecute({ name: tool, args });
-  expect(exec.ok).toBe(true);
-  const proposalId = exec.structuredContent?.proposalId as string | undefined;
-  expect(proposalId).toBeTruthy();
-  const respond = await harness.clients.A.missionControlProposalsRespond({
-    proposalId: proposalId!,
-    action: "approve",
-  });
-  if (!respond.ok) {
-    console.log("approveMeta failed for", tool, "args:", args, "error:", respond.error);
-  }
-  expect(respond.ok).toBe(true);
-  return true;
+): Promise<Record<string, unknown>> {
+  const result = await fleetExec(harness.clients.A, tool, args);
+  expect(result).toMatchObject({ ok: true, status: "applied" });
+  return result;
 }

@@ -16,7 +16,6 @@ describe("fleet-id-index unit tests", () => {
   test("inferIdKind and formatShortId helper functions", () => {
     expect(inferIdKind("wks_1234567890abcdef")).toBe("workspace");
     expect(inferIdKind("prj_1234567890abcdef")).toBe("project");
-    expect(inferIdKind("mcp_01JABCDEF1234567")).toBe("proposal");
     expect(inferIdKind("2b89a1c2-3d4e-5f6a-7b8c-9d0e1f2a3b4c")).toBe("agent");
 
     expect(formatShortId("2b89a1c2-3d4e-5f6a-7b8c-9d0e1f2a3b4c")).toBe("2b89…");
@@ -28,7 +27,6 @@ describe("fleet-id-index unit tests", () => {
     const localAgentId = "2b89a1c2-0000-0000-0000-000000000001";
     const localWorkspaceId = "wks_local_1";
     const localProjectId = "prj_local_1";
-    const proposalId = "mcp_01JABCDEF1234567";
 
     const agentStorage = {
       get: vi.fn(async (id: string) => (id === localAgentId ? { id: localAgentId } : null)),
@@ -74,9 +72,6 @@ describe("fleet-id-index unit tests", () => {
 
     const prjRes = await index.resolveFleetId(localProjectId);
     expect(prjRes).toEqual({ kind: "project", host: "local", id: localProjectId });
-
-    const propRes = await index.resolveFleetId(proposalId);
-    expect(propRes).toEqual({ kind: "proposal", host: "local", id: proposalId });
 
     // Non-duplicate peer entities resolve to peer
     const peerAgentRes = await index.resolveFleetId("peer-agent-1");

@@ -81,7 +81,6 @@ Secrets live in `~/.paseo/deploy.env` (`chmod 600`) on the deploy host:
 - `PASEO_HOST_PASSWORD_<HOST>` — peer passwords for remote hosts (e.g. `PASEO_HOST_PASSWORD_PROD`).
 - `VERCEL_TOKEN` — token for publishing web exports to Vercel (skips Vercel when unset).
 - `GEMINI_API_KEY` — API key for Commander Voice.
-- `PASEO_COMMANDER_VOICE_PASSWORD` — daemon password used by the voice service.
 - `GITHUB_TOKEN` — optional GitHub token to raise rate limits during `omp update`; falls back to `gh auth token`.
 
 ## Change detection
@@ -94,7 +93,6 @@ Component paths live in [`scripts/deploy/plan.ts`](../scripts/deploy/plan.ts):
 - `app`: desktop package, daemon paths, and app UI paths.
 - `vercel`: app UI paths and client dependencies.
 - `code-server`: `scripts/code-server`.
-- `voice`: `scripts/commander-voice`.
 - `omp-proxy`: `scripts/omp-proxy` and `plugins/` (also redeploys when the fleet omp version changes).
 
 ### Routine steps

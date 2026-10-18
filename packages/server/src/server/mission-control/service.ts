@@ -7,10 +7,8 @@ import type {
 } from "../agent/agent-manager.js";
 import type { AgentStorage, StoredAgentRecord } from "../agent/agent-storage.js";
 import type { AgentStreamEvent } from "../agent/agent-sdk-types.js";
-import type { AgentAttachment } from "@getpaseo/protocol/messages";
 import type { AgentTimelineRow } from "../agent/agent-timeline-store-types.js";
-import { dispatchLocalPromptMode, selectAgentModeOnPeer } from "../agent/tools/paseo-tools.js";
-import type { AgentModeId } from "@getpaseo/protocol/agent-modes";
+import { dispatchLocalPromptMode } from "../agent/tools/paseo-tools.js";
 import { formatSystemNotificationPrompt } from "../agent/agent-prompt.js";
 import { archiveAgentCommand } from "../agent/lifecycle-command.js";
 import type { DaemonConfigStore } from "../daemon-config-store.js";
@@ -21,49 +19,26 @@ import type {
 } from "../workspace-registry.js";
 import type { SessionOutboundMessage } from "../messages.js";
 import type {
-  MissionControlCentralConfig,
   MissionControlEvent,
-  MissionControlInstruction,
   MissionControlLifecycleAction,
   MissionControlMetaPlan,
-  MissionControlMode,
-  MissionControlProposal,
-  MissionControlProposalSpawnPlan,
   MissionControlReportStatusInput,
 } from "@getpaseo/protocol/mission-control/types";
 import type { PeerManager } from "../peers/peer-manager.js";
 import { getParentAgentIdFromLabels } from "@getpaseo/protocol/agent-labels";
 import { MISSION_CONTROL_LABEL_PREFIX } from "@getpaseo/protocol/mission-control/system-owned";
-import { MISSION_CONTROL_VERIFIER_LABEL_VALUE } from "./verifier.js";
 import { getErrorMessageOr } from "@getpaseo/protocol/error-utils";
 import { deriveLifecycleBucket, type LifecycleBucket } from "@getpaseo/protocol/agent-state-bucket";
 import { hasMissionControlLabels } from "./naming.js";
-import { resolveMetaTargetHost } from "./meta-actions.js";
 import {
   MissionControlStore,
-  generateProposalId,
   type MissionControlAppendInput,
   type MissionControlFetchOptions,
-  type MissionControlMessageTag,
   type MissionControlObservation,
   type MissionControlReviewStateRecord,
   type MissionControlVerdict,
 } from "./store.js";
 import type { MissionControlEventKind } from "@getpaseo/protocol/mission-control/types";
-import {
-  MissionControlApprovals,
-  ProposalDeliveryAborted,
-  type MissionControlApprovalsOptions,
-} from "./approvals.js";
-import {
-  COMMANDER_ADOPTED_AT_LABEL,
-  COMMANDER_TOOL_ALLOWLIST,
-  MISSION_CONTROL_LABEL_KEY,
-  MISSION_CONTROL_LABEL_VALUE,
-} from "./commander-contract.js";
-import { CommanderInstructionTracker } from "./commander-instruction-tracker.js";
-import { isDesignatedCommanderHost } from "./commander-boot.js";
-import type { MissionControlPresenceSource } from "./presence.js";
 import {
   CentralMissionControlConfigStore,
   type ResolvedMissionControlCentralConfig,
@@ -82,17 +57,6 @@ import {
   type ProjectRollup,
   type WorkspaceRollup,
 } from "./rollups.js";
-import {
-  HindsightClient,
-  type HindsightRecallMatch,
-  type HindsightRecallResult,
-} from "./hindsight.js";
-import {
-  buildMissionControlInbox,
-  type InboxAgentIdentity,
-  type InboxInput,
-  type MissionControlInbox,
-} from "./inbox.js";
 
 const STALL_SWEEP_INTERVAL_MS = 30_000;
 const DAILY_PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000;
@@ -128,52 +92,6 @@ const RUN_RECORD_FINALIZING_KINDS: Record<MissionControlEventKind, boolean> = {
 function isTerminalEventKind(kind: MissionControlEventKind): boolean {
   return kind === "finished" || kind === "failed" || kind === "interrupted";
 }
-/**
- * Honest-steer-delivery verification window: after an out-of-band steer
- * (`tryRunOutOfBand` reported handled), the agent must produce timeline
- * activity within this window or the proposal is marked undelivered and the
- * recovery interrupt is proposed. Measured nudge→response latency: healthy
- * agents 5–90s (median 76s over n=2); the wedged agent's own pathological
- * tail starts at 173s. 90s separates a working loop from a wedged one without
- * ever flagging a healthy one.
- */
-const STEER_DELIVERY_VERIFY_MS = 90_000;
-/**
- * M8 mailbox: speculative auto-recall budget. When a user/voice instruction
- * is delivered to the Commander, the daemon fires a hindsight recall with the
- * raw instruction text IN PARALLEL with delivery under this hard, constant
- * budget. Within budget → a 'Possibly related (auto-recall):' block rides the
- * envelope; timeout / unconfigured / error → attach nothing and deliver
- * regardless (a late result is dropped — no late steers). The budget is the
- * ONLY thing that can delay the envelope, and it is bounded and constant.
- */
-const SPECULATIVE_RECALL_BUDGET_MS = 600;
-/** Auto-recall block caps: ≤3 one-liners, each memory text truncated. */
-const SPECULATIVE_RECALL_MAX_LINES = 3;
-const SPECULATIVE_RECALL_TEXT_CAP = 120;
-/**
- * Commander watchdog: the Commander is excluded from stall nudges/escalation
- * by design, so a Commander looping on a failing tool looks frozen forever.
- * After this many consecutive failed calls of the SAME tool in one turn, with
- * validation/not-configured class errors, a single Needs-you card is emitted.
- * Card only — the Commander is never nudged or interrupted.
- */
-const COMMANDER_TOOL_LOOP_THRESHOLD = 3;
-
-/**
- * Synthetic instruction-answer card caps: the headline follows the event
- * convention (≤ 120 chars, plain language) and the body is the Commander's
- * turn prose, bounded so a long reply never balloons the feed card.
- */
-const SYNTHETIC_ANSWER_HEADLINE_CAP = 120;
-const SYNTHETIC_ANSWER_BODY_CAP = 2000;
-
-/**
- * Commander tools a weak model can echo as literal XML instead of invoking.
- * The allowlist is the authoritative catalog, so a new tool is covered the
- * moment it is added there.
- */
-const LEAKABLE_TOOL_NAMES: readonly string[] = COMMANDER_TOOL_ALLOWLIST;
 
 // ============================================================================
 // fleet_monitor (spec 03): session-scoped watch shapes + the announce-policy
@@ -182,48 +100,6 @@ const LEAKABLE_TOOL_NAMES: readonly string[] = COMMANDER_TOOL_ALLOWLIST;
 // parked P3) is pinned here so the daemon registry and the voice node apply
 // the same table.
 // ============================================================================
-
-export type MonitorScope = "fleet" | "agent";
-
-export interface MonitorWatch {
-  scope: MonitorScope;
-  /** Agent UUID for agent-scope watches; absent for fleet scope. */
-  agentId?: string;
-  /** Optional host hint (peer name or "local"); advisory, never a routing key. */
-  host?: string;
-  /** ISO timestamp when the watch started. */
-  startedAt: string;
-}
-
-/** Terminal/blocked event kinds that announce for MONITORED scope (spec 03). */
-export const MONITOR_ANNOUNCE_KINDS: readonly MissionControlEventKind[] = [
-  "blocked",
-  "failed",
-  "finished",
-];
-
-/** Whether an event kind qualifies for a monitored-scope announcement. */
-export function isMonitorAnnounceKind(kind: MissionControlEventKind): boolean {
-  return MONITOR_ANNOUNCE_KINDS.includes(kind);
-}
-
-/**
- * Spec 03 announce-policy match: does this watch announce this event?
- * proposal/clarification always (independent of the monitor); blocked/failed/
- * finished only for monitored scope; everything else never.
- */
-export function monitorWatchMatchesEvent(watch: MonitorWatch, event: MissionControlEvent): boolean {
-  if (event.kind === "proposal" || event.kind === "clarification") {
-    return true;
-  }
-  if (!isMonitorAnnounceKind(event.kind)) {
-    return false;
-  }
-  if (watch.scope === "fleet") {
-    return true;
-  }
-  return watch.agentId !== undefined && watch.agentId === event.agentId;
-}
 
 /** Running-turn info carried by fleet_agent_status (spec 03). */
 export interface AgentStatusRunningTurn {
@@ -253,149 +129,6 @@ export interface AgentStatusRecord {
   running: AgentStatusRunningTurn | null;
   lastReport: AgentStatusLastReport | null;
   workspaceId: string | null;
-}
-
-/**
- * Mutating tools: when one of these leaks as text, NOTHING happened on the
- * fleet. The turn must not be treated as an answer. 04 meta split: the 11
- * flat per-action tools replace fleet_meta here too.
- */
-const MUTATING_TOOL_NAMES: readonly string[] = [
-  "fleet_create_agent",
-  "fleet_send_prompt",
-  "fleet_rename_project",
-  "fleet_rename_workspace",
-  "fleet_rename_agent_title",
-  "fleet_archive_project",
-  "fleet_archive_workspace",
-  "fleet_archive_agent",
-  "fleet_create_project",
-  "fleet_move_agent",
-  "fleet_promote_workspace",
-  "fleet_adopt_agent",
-  "fleet_release_agent",
-  "fleet_ticketize_agent",
-  "itsaplan_ticketize",
-];
-
-function leakedToolPattern(names: readonly string[]): RegExp {
-  return new RegExp(`<\\/?(?:${names.join("|")})\\b`, "i");
-}
-
-/** Tool names this turn wrote as literal markup instead of calling. */
-export function detectLeakedToolCalls(text: string): string[] {
-  return LEAKABLE_TOOL_NAMES.filter((name) => new RegExp(`<\\/?${name}\\b`, "i").test(text));
-}
-
-/** True when the turn leaked a side-effectful tool call as text. */
-export function hasLeakedMutatingToolCall(text: string): boolean {
-  return leakedToolPattern(MUTATING_TOOL_NAMES).test(text);
-}
-
-/**
- * Drop raw tool-call echoes from card bodies. Covers every Commander tool, not
- * just post_answer: any of them can be emitted as text by a model that fails
- * native function calling, and raw markup must never reach the feed.
- */
-function stripLeakedToolMarkup(text: string): string {
-  let withoutTags = text;
-  for (const name of LEAKABLE_TOOL_NAMES) {
-    withoutTags = withoutTags
-      // Paired element: the inner text is tool arguments, not prose.
-      .replace(new RegExp(`<${name}\\b[^>]*>[\\s\\S]*?<\\/${name}\\s*>`, "gi"), " ")
-      // Self-closing element.
-      .replace(new RegExp(`<${name}\\b[^>]*\\/>`, "gi"), " ")
-      // Any stray opening/closing tag left behind.
-      .replace(new RegExp(`<\\/?${name}\\b[^>]*>`, "gi"), " ");
-  }
-  return withoutTags
-    .replace(/[ \t]+/g, " ")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
-
-/** Best-effort text of a tool-call failure, for the Commander watchdog. */
-function toolCallErrorMessage(error: unknown): string {
-  if (typeof error === "string") {
-    return error;
-  }
-  if (error instanceof Error) {
-    return error.message;
-  }
-  if (
-    typeof error === "object" &&
-    error !== null &&
-    "message" in error &&
-    typeof (error as { message?: unknown }).message === "string"
-  ) {
-    return (error as { message: string }).message;
-  }
-  return String(error);
-}
-
-// The no-prose tail of an M3 machinery turn (mirrors the digest-era and
-// snapshot-turn instructions): the Commander handles the event or acks.
-const MACHINERY_TURN_NO_PROSE_INSTRUCTION =
-  'This is a machinery turn. Handle it per your playbook: route, dispatch, or recover with your tools. If no action is needed from you, reply with a single short acknowledgment token (for example "ok") and nothing else. No summaries, no narration.';
-
-// The no-prose tail of a follow-up machinery turn (a dispatched agent's
-// terminal event or verdict): the Commander decides ONE of the three follow-up
-// moves and acts with its tools — never narration (the feed card already
-// shows the outcome).
-const MACHINERY_FOLLOW_UP_INSTRUCTION =
-  "This is a follow-up on a worker you dispatched. Decide ONE of: (a) propose a follow-up action with your gated tools, (b) post_answer to summarize the outcome to the user, or (c) nothing when the feed card already says it all. Never narrate.";
-
-/** Machinery-turn run-dedupe set cap (guards unbounded memory; keys are run-scoped). */
-const MACHINERY_TURN_RUN_DEDUPE_CAP = 5000;
-
-/**
- * The machinery-turn message body: the needs-you event as a standalone
- * <paseo-system> message (the app renders any user row starting with the
- * envelope as machinery). For dispatched-agent follow-ups the message also
- * carries the worker's last report headline and (when present) the verdict
- * line, and the tail switches from the needs-you ack rule to the follow-up
- * decision rule. The fresh world snapshot arrives as its OWN envelope
- * immediately before this row, injected by the CommanderSnapshot Injector on
- * the same delivery path.
- */
-function buildMachineryTurnMessage(
-  event: MissionControlEvent,
-  serverId: string,
-  hostName: string,
-  extras?: { lastReportHeadline?: string; verdictLine?: string },
-): string {
-  const link = `paseo://h/${serverId}/agent/${event.agentId}`;
-  const detail = event.detail?.trim() ? `\n${event.detail.trim()}` : "";
-  const lastReport = extras?.lastReportHeadline?.trim()
-    ? `\nLast report: "${extras.lastReportHeadline.trim()}"`
-    : "";
-  const verdictLine = extras?.verdictLine?.trim() ? `\n${extras.verdictLine.trim()}` : "";
-  const isFollowUp =
-    event.kind === "finished" ||
-    event.kind === "failed" ||
-    event.kind === "interrupted" ||
-    event.kind === "verdict";
-  return formatSystemNotificationPrompt(
-    [
-      `Needs you: [${event.kind}] ${event.headline} — ${event.agentTitle} (${hostName}) — ${link}${detail}${lastReport}${verdictLine}`,
-      isFollowUp ? MACHINERY_FOLLOW_UP_INSTRUCTION : MACHINERY_TURN_NO_PROSE_INSTRUCTION,
-    ].join("\n\n"),
-  );
-}
-
-/**
- * The provider-rejection classes the Commander watchdog watches for: spawn
- * schema-validation failures ("provider must be provider/model, for example
- * codex/gpt-5.4") and "Provider X is not configured" runtime rejections. These
- * are the errors a looping Commander produces when it cannot find an
- * invocable provider string.
- */
-function isProviderRejectionError(message: string): boolean {
-  return (
-    /not configured/i.test(message) ||
-    /provider must be provider\/model/i.test(message) ||
-    /provider must be <provider>\/<model>/i.test(message)
-  );
 }
 
 interface StallTracking {
@@ -428,13 +161,6 @@ export interface MissionControlServiceOptions {
   serverId: string;
   hostName: string;
   /**
-   * This host's Mission Control alias (daemon config missionControl.hostAlias,
-   * trimmed; null when unset). Central-config ownership resolution
-   * (isDesignatedCommanderHost) matches commanderHost against hostName OR
-   * hostAlias — same resolution commander-boot uses.
-   */
-  hostAlias?: string | null;
-  /**
    * Peer manager for central-config routing: forwarding patches to the
    * designated commander host and pushing replicas to peers. Resolved lazily
    * (the peer manager is constructed after the service in bootstrap), so a
@@ -442,8 +168,6 @@ export interface MissionControlServiceOptions {
    */
   peerManager?: (() => PeerManager | null) | PeerManager | null;
   broadcast: (message: SessionOutboundMessage) => void;
-  /** Presence contract for the approval gate (focused client / user-stop). */
-  presence: MissionControlPresenceSource;
   /**
    * The daemon-wide central config store (constructed once in bootstrap and
    * shared with naming, resetCommander, and commander-boot). Injected so a
@@ -452,44 +176,6 @@ export interface MissionControlServiceOptions {
    * tests without one; when absent the service falls back to its own store.
    */
   centralConfig?: CentralMissionControlConfigStore | null;
-  /**
-   * Ephemeral verifier dispatcher (VerifierSlice's MissionControlVerifierDispatcher).
-   * Optional so the service boots without it; bootstrap wires it.
-   * approveVerifierSpawn continues a spawn-kind verifier proposal once the
-   * user approves it (or auto mode sends it).
-   */
-  verifier?: {
-    start(): void | Promise<void>;
-    stop(): void | Promise<void>;
-    approveVerifierSpawn?: (
-      proposal: MissionControlProposal,
-    ) => Promise<{ ok: true; agentId?: string } | { ok: false; error: string }>;
-    deliverReplyToVerifier?: (proposal: MissionControlProposal) => Promise<void>;
-  } | null;
-  /**
-   * Execute a commander-origin spawn-kind proposal (create_agent /
-   * fleet_create_agent called by the Commander): reconstruct the create from
-   * the proposal's spawnPlan and spawn. Wired by bootstrap where the create
-   * command + fleet client resolution live; absent → spawn proposals resolve
-   * with an error (never bounce back to pending).
-   */
-  spawnFromProposal?: (
-    proposal: MissionControlProposal,
-  ) => Promise<{ ok: true; agentId?: string } | { ok: false; error: string }>;
-  /**
-   * Execute a commander-origin meta-kind proposal (fleet_meta called by the
-   * Commander): apply the fleet meta action described by the proposal's
-   * metaPlan (rename/archive project·workspace·agent, create project, move
-   * agent, promote workspace). Wired by bootstrap where the meta actions
-   * module + move-agent RPC live; absent → meta proposals resolve with an
-   * error (never bounce back to pending). Mirrors spawnFromProposal.
-   * `metaAppliedOnHost` (additive) names the resolved host the action ran on
-   * ("local" or the peer name) so the gate can stamp the proposal record and
-   * its event detail.
-   */
-  metaFromProposal?: (
-    proposal: MissionControlProposal,
-  ) => Promise<{ ok: true; metaAppliedOnHost?: string } | { ok: false; error: string }>;
   /**
    * Apply a meta plan with no proposal at all, routed to the host its
    * serverId names. Used by remote MCP clients (/mcp/fleet), which are never
@@ -512,28 +198,6 @@ export interface MissionControlServiceOptions {
     metaPlan: MissionControlMetaPlan,
   ) => Promise<{ ok: true; summary: string } | { ok: false; error: string }>;
   /**
-   * Apply a spawn plan against THIS daemon's registries, reached over peering:
-   * the commander-host spawn executor routes an approved spawn-kind proposal
-   * whose plan targets this host as a peer here (mission_control.spawn.apply
-   * → fleetSpawnApply). The receiving daemon validates the plan's cwd
-   * contract against its own filesystem, creates the absolute cwd with mkdir
-   * recursive when missing, and creates the agent in ITS OWN registry — the
-   * mkdir happens on the target host, never the commander's. The plan arrives
-   * with paseo.parent-agent-id already stamped by the commander, so the label
-   * persists in this host's registry. Only the APPLY hops (the proposal card
-   * stays on the commander host). Wired by bootstrap; absent → the spawn
-   * apply RPC reports an error.
-   */
-  spawnApplyRemote?: (
-    spawnPlan: MissionControlProposalSpawnPlan,
-  ) => Promise<{ ok: true; agentId: string } | { ok: false; error: string }>;
-  /**
-   * Archive the current Commander and spawn a fresh one with a new context
-   * pack (mission_control.commander.reset). Wired by bootstrap with the full
-   * commander-boot machinery; absent → the reset RPC reports an error.
-   */
-  resetCommander?: () => Promise<{ ok: true; agentId: string } | { ok: false; error: string }>;
-  /**
    * M6 run records: resolve the workspace/project attribution frozen into a
    * run record at assembly time (host registry lookups live in bootstrap).
    * Absent → records carry no workspace/project attribution (rollups then
@@ -544,30 +208,6 @@ export interface MissionControlServiceOptions {
     workspaceId?: string | null;
     cwd?: string | null;
   }) => Promise<MissionControlRunPlacement>;
-  /**
-   * M8 mailbox: hand the speculative-recall block (when one resolved within
-   * budget) to the CommanderSnapshotInjector, which appends it to the NEXT
-   * snapshot dispatch. The idle delivery path sets it immediately before
-   * dispatching the snapshot turn, so the fresh snapshot carries the block;
-   * machinery turns never set it (never trigger recall). Absent → idle
-   * deliveries simply skip the auto-recall block (the ledger block still
-   * rides the snapshot).
-   */
-  setPendingInstructionEnvelope?: (block: string | null) => void;
-  /**
-   * M10 mailbox: dispatch a fresh Commander snapshot turn NOW (the
-   * injector's dispatchSnapshotTurn) and report whether a snapshot turn is
-   * in flight for the idle delivery path to steer the delivered message
-   * into. Absent → the idle path falls back to the plain-run delivery (its
-   * seam still injects a snapshot ahead of the run).
-   */
-  dispatchSnapshotTurn?: (agentId: string) => Promise<boolean>;
-  /**
-   * M10 mailbox: disarm the snapshot turn's ack-drop after the idle delivery
-   * path steered the user message into it — the turn's reply is now the
-   * Commander's real answer, never a retractable machinery ack.
-   */
-  disarmSnapshotAckDrop?: () => void;
   /**
    * F2: a reviewState change re-buckets the agent (spec 01 precedence) but
    * produces no agent lifecycle mutation, so connected clients would hold a
@@ -633,81 +273,6 @@ export type ReviewStateListener = (
 // MissionControlService.hindsightRecall wires them together.
 // ==========================================================================
 
-/**
- * Attribution resolved locally for a recall match carrying an omp
- * `metadata.session_id`: the Paseo agent whose persistence handle stores that
- * session id. Present only when a live agent or stored record matched.
- */
-export interface RecallMatchAttribution {
-  agentId: string;
-  agentName: string;
-  agentTitle: string;
-  workspaceId: string | null;
-}
-
-/**
- * The minimal identity slice the resolver needs. Both live agents
- * (ManagedAgent) and stored records (StoredAgentRecord) satisfy this shape;
- * callers map persistence.sessionId onto it explicitly.
- */
-export interface RecallAttributionSource {
-  id: string;
-  sessionId: string | null;
-  name?: string;
-  title?: string | null;
-  shortDescription?: string;
-  workspaceId?: string | null;
-}
-
-/**
- * Merge a primary and (best-effort) secondary recall: primary matches first,
- * then secondary, overall limit respected. A failed primary IS the failure
- * (the bank contract stands); a failed secondary degrades silently to the
- * primary's matches.
- */
-export function mergeRecallResults(
-  primary: HindsightRecallResult,
-  secondary: HindsightRecallResult | null,
-  limit: number,
-): HindsightRecallResult {
-  if (!primary.ok) {
-    return primary;
-  }
-  const matches = [
-    ...primary.matches,
-    ...(secondary !== null && secondary.ok ? secondary.matches : []),
-  ].slice(0, limit);
-  return { ok: true, matches };
-}
-
-/**
- * Resolve an omp session id to a Paseo agent. Live agents win over stored
- * records (freshest state); either way the match is on the persistence
- * handle's sessionId — the same id omp stamps on bank recall results. Returns
- * null when no agent record carries the session id (the caller passes the raw
- * session_id/entities through so the Commander can fleet_search it).
- */
-export function resolveRecallAttribution(
-  sessionId: string,
-  liveAgents: RecallAttributionSource[],
-  storedRecords: RecallAttributionSource[],
-): RecallMatchAttribution | null {
-  const source =
-    liveAgents.find((agent) => agent.sessionId === sessionId) ??
-    storedRecords.find((record) => record.sessionId === sessionId);
-  if (!source) {
-    return null;
-  }
-  const agentTitle = source.title ?? source.shortDescription ?? source.name;
-  const agentName = source.name ?? agentTitle;
-  return {
-    agentId: source.id,
-    agentName: agentName ?? source.id,
-    agentTitle: agentTitle ?? source.id,
-    workspaceId: source.workspaceId ?? null,
-  };
-}
-
 export class MissionControlService {
   private readonly logger: Logger;
   private readonly store: MissionControlStore;
@@ -716,37 +281,16 @@ export class MissionControlService {
   private readonly daemonConfigStore: DaemonConfigStore;
   private readonly serverId: string;
   private readonly hostName: string;
-  private readonly hostAlias: string | null;
   private readonly peerManagerOption: MissionControlServiceOptions["peerManager"];
   private readonly broadcast: (message: SessionOutboundMessage) => void;
-  private readonly verifier: MissionControlServiceOptions["verifier"];
   private readonly centralConfig: CentralMissionControlConfigStore;
-  private readonly presenceSource: MissionControlPresenceSource;
-  private readonly resetCommanderFn: MissionControlServiceOptions["resetCommander"];
-  private readonly spawnFromProposal: MissionControlServiceOptions["spawnFromProposal"];
-  private readonly metaFromProposal: MissionControlServiceOptions["metaFromProposal"];
   private readonly metaApplyDirect: MissionControlServiceOptions["metaApplyDirect"];
   private readonly metaApplyRemote: MissionControlServiceOptions["metaApplyRemote"];
-  private readonly spawnApplyRemote: MissionControlServiceOptions["spawnApplyRemote"];
   private readonly resolveRunPlacement: MissionControlServiceOptions["resolveRunPlacement"];
-  private readonly setPendingInstructionEnvelope: MissionControlServiceOptions["setPendingInstructionEnvelope"];
-  private readonly dispatchSnapshotTurn: MissionControlServiceOptions["dispatchSnapshotTurn"];
-  private readonly disarmSnapshotAckDrop: MissionControlServiceOptions["disarmSnapshotAckDrop"];
   private readonly onReviewStateChanged: MissionControlServiceOptions["onReviewStateChanged"];
-  readonly approvals: MissionControlApprovals;
   // M6 context architecture: run-record assembly, rollup cache, hindsight sink.
   private readonly rollupCache = new RollupCache();
-  private readonly hindsightClient: HindsightClient;
   private readonly onRunRecordFinalized: ((record: MissionControlRunRecord) => void) | undefined;
-  /**
-   * Per-run machinery-turn dedupe: one follow-up turn per agent per run epoch
-   * for dispatched-agent terminal events and verdicts. Keys
-   * "<agentId>:<runEpoch>:terminal" / "<agentId>:<runEpoch>:verdict" — a new
-   * run (a `started` event bumps the epoch) earns a fresh turn, and repeated
-   * events of the same trigger in one epoch never re-alert the Commander.
-   * The classic needs-you triggers (blocked/stalled) keep their own guards.
-   */
-  private readonly machineryTurnedRunEpochs = new Set<string>();
 
   private readonly timelineRows = new Map<string, AgentTimelineRow[]>();
   /**
@@ -763,21 +307,6 @@ export class MissionControlService {
   private readonly stalledByAgent = new Set<string>();
   private readonly stallTracking = new Map<string, StallTracking>();
   private readonly excludedAgentIds = new Set<string>();
-  /** Commander tool-loop watchdog state, keyed by agentId (see COMMANDER_TOOL_LOOP_THRESHOLD). */
-  private readonly commanderToolLoops = new Map<
-    string,
-    { toolName: string; consecutive: number; lastError: string; cardSent: boolean }
-  >();
-  /**
-   * Per-Commander instruction-ledger fallback: ids staged by the mailbox
-   * right after their ledger rows open, plus the current turn's assistant-row
-   * window, so a turn completion that answered in plain prose (no citing
-   * post_answer / clarify / proposal card) still closes its ledger rows via
-   * synthesized answer cards. Keyed by commander agent id — a Commander reset
-   * archives the old id and spawns a fresh one; tracker state must not leak
-   * across. Entries are deleted at window finalize.
-   */
-  private readonly commanderInstructionTrackers = new Map<string, CommanderInstructionTracker>();
   private readonly reviewStateListeners = new Set<ReviewStateListener>();
   private readonly selfReportListeners = new Set<(event: MissionControlEvent) => void>();
   /** Every emitted feed event, any kind/source — a general fan-out parallel to
@@ -796,10 +325,6 @@ export class MissionControlService {
     | ((workspaceId: string, requestId: string) => Promise<unknown>)
     | null;
   private readonly autoArchivingWorkspaces = new Set<string>();
-  /** fleet_monitor subscriptions keyed by session (voice daemon session id or
-   * Commander turn context). Sessions manage their own watches independently;
-   * a session with no entries is simply absent. */
-  private readonly monitorWatchesBySession = new Map<string, MonitorWatch[]>();
   /** First observation of a dead-runtime running record (periodic scan). */
   private readonly recordDeadSince = new Map<string, number>();
   /**
@@ -820,30 +345,6 @@ export class MissionControlService {
    * dormant detector read honest activity even across a run boundary.
    */
   private readonly lastActivityAtByAgent = new Map<string, number>();
-  /**
-   * Honest-steer-delivery verification: out-of-band steers whose handled
-   * dispatch must be confirmed by real agent activity within the window.
-   * Keyed by agentId; one pending verification per agent (newer replaces).
-   * The 90s clock ONLY starts when no tool call is in flight — a steer
-   * queued behind a legitimately long non-interruptible tool (a 5-minute
-   * build) is correctly pending, never evidence of stranding (see
-   * deferredSteerVerifications).
-   */
-  private readonly steerVerifications = new Map<
-    string,
-    { proposalId: string; armedAt: number; deadline: number }
-  >();
-  /**
-   * Steers that arrived while a tool call was in flight: the verification
-   * clock is suspended until the in-flight tool set empties (trackTurnLifecycle
-   * promotes the entry into steerVerifications at tool termination). Without
-   * this, a steer queued behind a long tool would false-positive "undelivered"
-   * and the recovery interrupt would destroy the healthy in-flight tool call.
-   */
-  private readonly deferredSteerVerifications = new Map<
-    string,
-    { proposalId: string; armedAt: number }
-  >();
   /**
    * Terminal-state guarantee (spec 06): agents whose run just ended with
    * zero self-sourced reports and already received the one status-ask steer
@@ -898,21 +399,11 @@ export class MissionControlService {
     this.daemonConfigStore = options.daemonConfigStore;
     this.serverId = options.serverId;
     this.hostName = options.hostName;
-    this.hostAlias = options.hostAlias?.trim() || null;
     this.peerManagerOption = options.peerManager ?? null;
     this.broadcast = options.broadcast;
-    this.verifier = options.verifier ?? null;
-    this.presenceSource = options.presence;
-    this.resetCommanderFn = options.resetCommander;
-    this.spawnFromProposal = options.spawnFromProposal;
-    this.metaFromProposal = options.metaFromProposal;
     this.metaApplyDirect = options.metaApplyDirect;
     this.metaApplyRemote = options.metaApplyRemote;
-    this.spawnApplyRemote = options.spawnApplyRemote;
     this.resolveRunPlacement = options.resolveRunPlacement;
-    this.setPendingInstructionEnvelope = options.setPendingInstructionEnvelope;
-    this.dispatchSnapshotTurn = options.dispatchSnapshotTurn;
-    this.disarmSnapshotAckDrop = options.disarmSnapshotAckDrop;
     this.onReviewStateChanged = options.onReviewStateChanged;
     this.workspaceRegistry = options.workspaceRegistry ?? null;
     this.onWorkspaceUpdated = options.onWorkspaceUpdated ?? null;
@@ -930,173 +421,7 @@ export class MissionControlService {
         paseoHome: options.paseoHome,
         logger: this.logger,
       });
-    this.approvals = new MissionControlApprovals(this.buildApprovalsOptions());
-    this.hindsightClient = new HindsightClient({ logger: this.logger });
     this.onRunRecordFinalized = options.onRunRecordFinalized;
-  }
-
-  private buildApprovalsOptions(): MissionControlApprovalsOptions {
-    return {
-      store: this.store,
-      presence: this.presenceSource,
-      logger: this.logger,
-      getMode: () => this.centralConfig.get().mode,
-      deliver: async (input) => {
-        // Worker→verifier reply relay: a verifier-origin proposal targeting
-        // the verifier itself must be run by the dispatcher (runVerifierTurn)
-        // so its turn-end tracking stays armed — the generic dispatch below
-        // cannot attach the dispatcher's completion handler.
-        if (
-          input.proposal &&
-          input.proposal.origin === "verifier" &&
-          input.proposal.verifierAgentId &&
-          input.proposal.verifierAgentId === input.agentId &&
-          this.verifier?.deliverReplyToVerifier
-        ) {
-          await this.verifier.deliverReplyToVerifier(input.proposal);
-          return;
-        }
-        // User always outranks: never dispatch machinery to an agent whose
-        // last run was user-stopped — the steer would restart a run the user
-        // explicitly stopped. Checked here, immediately before dispatch, so a
-        // stop landing after proposal creation still wins.
-        if (this.store.getStopOrigin(input.agentId) === "user") {
-          throw new ProposalDeliveryAborted(input.agentId, "user_stopped");
-        }
-        const isLocal =
-          Boolean(this.agentManager.getAgent(input.agentId)) ||
-          Boolean(await this.agentStorage.get(input.agentId).catch(() => null));
-        if (!isLocal) {
-          const peerManager = this.resolvePeerManager();
-          const targetPeerName = await this.resolvePeerDeliveryTarget(
-            peerManager,
-            input.agentId,
-            input.proposal?.serverId,
-          );
-          if (targetPeerName) {
-            await this.tryDeliverToPeer(peerManager, input, targetPeerName);
-            return;
-          }
-        }
-        // live-steered out-of-band (/steer, instant, non-cancelling); idle
-        // agents run normally. A busy provider WITHOUT a native steer path is
-        // interrupted (replaceRunning) — a steer's value is timely delivery,
-        // and queue-until-idle can sit for tens of minutes. "queue" mode
-        // waits for idle instead. Stall nudges always target mid-run agents,
-        // so a busy target must never fail the delivery.
-        //
-        // COMPAT(digest): the digest-era ack-retraction arming for the
-        // delivered Commander turn was removed with the digest queue. The
-        // CommanderSnapshotInjector now owns the retraction primitive and
-        // arms it only for its own snapshot turn — a delivered message's
-        // reply (a proposal decision) is never classified.
-        await dispatchLocalPromptMode({
-          agentManager: this.agentManager,
-          agentStorage: this.agentStorage,
-          agentId: input.agentId,
-          prompt: input.message,
-          mode: input.deliveryMode,
-          classification: input.classification,
-          ...(input.agentMode ? { agentMode: input.agentMode } : {}),
-          // Proposal delivery (escalation recovery, verifier contact,
-          // commander steer) superseding a busy run is machinery-originated:
-          // the superseded run keeps the failure treatment.
-          replaceOrigin: "machinery",
-          recordStopOrigin: (agentId, origin) => this.store.recordStopOrigin(agentId, origin),
-          logger: this.logger,
-          // Honest steer delivery: a handled out-of-band steer must be
-          // confirmed by real agent activity within the verification window.
-          // tryRunOutOfBand returning true means the prompt was handed to
-          // the provider runtime — but the wedged-omp incident showed that
-          // can be a lie: the steer vanished into a parked loop while Paseo
-          // recorded "sent". Arm the verification so a silent agent flips
-          // the proposal to undelivered and escalates instead.
-          onOutOfBandSteer: () => {
-            this.armSteerDeliveryVerification(input.agentId, input.proposal);
-          },
-        });
-        // Commander adoption: a delivered commander-origin send marks the
-        // target as Commander-owned (verifier scope "commander" audits it).
-        // Fires only after the dispatch actually succeeded — a denied,
-        // aborted (user-stopped), or failed delivery never adopts. Stall
-        // nudges and verifier contacts (origins "stall"/"verifier") are
-        // machinery, not Commander take-overs; spawn-kind proposals never
-        // reach the deliver hook. Idempotent: first adoption wins.
-        if (input.proposal?.origin === "commander") {
-          await this.recordCommanderAdoption(input.agentId);
-        }
-      },
-      publishProposalEvent: async (proposal) => {
-        const event = await this.emitProposalEvent(proposal);
-        return { id: event.id };
-      },
-      // EDGE: a denied proposal must never be silent when it carries a
-      // revision (deny + editedMessage) or when it was commander-origin — the
-      // outcome goes back to the Commander through the mailbox (the same path
-      // chat uses, source "chat"), so the ledger opens a row and the
-      // Commander reacts (docs/commander.md: "Edit sends your changes back to
-      // the Commander, which re-proposes"). One delivery per deny: a revision
-      // keeps precedence and the reason rides along in the same message.
-      // Never silent: a missing Commander or a failed delivery logs loudly;
-      // the deny itself has already resolved.
-      deliverDenyOutcome: async ({ proposal, revision, reason }) => {
-        const commanderId = await this.resolveCommanderAgentId();
-        if (!commanderId) {
-          this.logger.warn(
-            { component: "approvals", proposalId: proposal.id },
-            "mission_control.approvals.deny_outcome_no_commander",
-          );
-          return;
-        }
-        let text: string;
-        if (revision) {
-          text = `Your proposal ${proposal.id} was denied with this revision: ${revision}`;
-          if (reason) {
-            text += `; reason: ${reason}`;
-          }
-        } else {
-          const summary = proposal.message.slice(0, 80);
-          text = `Your proposal ${proposal.id} (${summary}) was denied`;
-          if (reason) {
-            text += `; reason: ${reason}`;
-          }
-        }
-        const result = await this.deliverCommanderInstruction({
-          text,
-          source: "chat",
-        });
-        if (!result.ok) {
-          this.logger.warn(
-            { component: "approvals", proposalId: proposal.id, error: result.error },
-            "mission_control.approvals.deny_outcome_delivery_failed",
-          );
-        }
-      },
-      // Single spawn execution path for spawn-kind proposals (approve or auto
-      // mode): verifier spawns continue in the dispatcher; Commander spawns
-      // reconstruct from the proposal's spawnPlan (bootstrap-wired).
-      spawn: async (proposal) => {
-        if (proposal.origin === "verifier") {
-          if (!this.verifier?.approveVerifierSpawn) {
-            return { ok: false, error: "Verifier dispatcher is not available" };
-          }
-          return this.verifier.approveVerifierSpawn(proposal);
-        }
-        if (!this.spawnFromProposal) {
-          return { ok: false, error: "Spawn executor is not available" };
-        }
-        return this.spawnFromProposal(proposal);
-      },
-      // Single execution path for meta-kind proposals (approve or auto mode):
-      // the Commander's fleet_meta actions (rename/archive/move/create/
-      // promote) apply through the bootstrap-wired metaFromProposal hook.
-      applyMeta: async (proposal) => {
-        if (!this.metaFromProposal) {
-          return { ok: false, error: "Meta executor is not available" };
-        }
-        return this.metaFromProposal(proposal);
-      },
-    };
   }
 
   async start(): Promise<void> {
@@ -1125,12 +450,6 @@ export class MissionControlService {
           "Watchdog sweep failed",
         );
       });
-      void this.approvals.expireStale().catch((error: unknown) => {
-        this.logger.warn(
-          { err: error, component: "approvals" },
-          "Failed to sweep expired proposals",
-        );
-      });
     }, STALL_SWEEP_INTERVAL_MS);
     this.pruneTimer = setInterval(() => {
       void this.store.prune(this.readConfig().retentionDays).catch((error) => {
@@ -1139,7 +458,6 @@ export class MissionControlService {
       // Spec 01 ready aging: same daily cadence as the prune sweep.
       this.sweepReadyAging(Date.now());
     }, DAILY_PRUNE_INTERVAL_MS);
-    void this.verifier?.start();
   }
 
   async stop(): Promise<void> {
@@ -1153,7 +471,6 @@ export class MissionControlService {
     }
     this.unsubscribe?.();
     this.unsubscribe = null;
-    void this.verifier?.stop();
   }
 
   fetchEvents(options?: MissionControlFetchOptions): MissionControlEvent[] {
@@ -1232,57 +549,6 @@ export class MissionControlService {
   /** Fire-and-forget feed card emission (verifier retry-exhaustion cards). */
   publishEvent(input: Omit<MissionControlAppendInput, "agentTitle">): void {
     void this.emitEvent(input);
-  }
-
-  /**
-   * M4: emit a Commander interaction card (kind "clarification" or "answer")
-   * to the feed, attributed to the Commander (agentId = the Commander's agent
-   * id, resolved live). These are cards TO the user — a structured question
-   * with options, or a structured fleet answer — never side effects on the
-   * fleet, so they are not approval-gated and never trigger machinery turns.
-   * Returns null when no Commander is resolvable (the card cannot be
-   * attributed); the caller surfaces that as a tool error.
-   */
-  async emitCommanderCard(
-    input:
-      | {
-          kind: "clarification";
-          headline: string;
-          clarification: MissionControlEvent["clarification"];
-        }
-      | {
-          kind: "answer";
-          headline: string;
-          answer: MissionControlEvent["answer"];
-        },
-  ): Promise<MissionControlEvent | null> {
-    const commanderId = await this.resolveCommanderAgentId();
-    if (!commanderId) {
-      this.logger.warn(
-        { component: "commander-card", kind: input.kind },
-        "mission_control.commander_card.no_commander",
-      );
-      return null;
-    }
-    const event = await this.emitEvent({
-      agentId: commanderId,
-      kind: input.kind,
-      source: "system",
-      severity: "info",
-      headline: input.headline,
-      ...("clarification" in input && input.clarification
-        ? { clarification: input.clarification }
-        : {}),
-      ...("answer" in input && input.answer ? { answer: input.answer } : {}),
-    });
-    // M8 instruction ledger: a citing card (respondsTo) closes the row.
-    const respondsTo =
-      (input.kind === "clarification" ? input.clarification?.respondsTo : undefined) ??
-      (input.kind === "answer" ? input.answer?.respondsTo : undefined);
-    if (respondsTo) {
-      this.closeInstructionForCard(respondsTo);
-    }
-    return event;
   }
 
   subscribeReviewState(listener: ReviewStateListener): () => void {
@@ -1450,529 +716,6 @@ export class MissionControlService {
     return { ok: false, error: `Agent ${agentId} not found anywhere in the fleet` };
   }
 
-  // ==========================================================================
-  // v3 approval gate surface
-  // ==========================================================================
-
-  respondProposal(input: {
-    proposalId: string;
-    action: "approve" | "deny";
-    editedMessage?: string;
-    reason?: string;
-    allowPair?: boolean;
-  }): Promise<{ ok: true } | { ok: false; error: string }> {
-    return this.approvals.resolveProposal(input);
-  }
-
-  /**
-   * Emit a commander-origin proposal card (kind "proposal", classification
-   * normal) from the one-time naming backfill — the workspace rename
-   * proposals card. Always lands pending: it never auto-sends, regardless of
-   * ask/auto mode. Approving merely steers the target; applying renames is a
-   * separate manual step driven by the workspace.title.set RPC.
-   */
-  async createBackfillProposalCard(input: {
-    message: string;
-    reason?: string;
-    targetAgentId?: string | null;
-  }): Promise<{ ok: true; proposalId: string } | { ok: false; error: string }> {
-    const targetAgentId = input.targetAgentId ?? (await this.resolveCommanderAgentId());
-    if (!targetAgentId) {
-      return {
-        ok: false,
-        error: "No target agent for the proposal card (no Commander on this host)",
-      };
-    }
-    const proposal: MissionControlProposal = {
-      id: generateProposalId(),
-      createdAt: new Date().toISOString(),
-      origin: "commander",
-      serverId: this.serverId,
-      targetAgentId,
-      message: input.message,
-      deliveryMode: "steer",
-      reason: input.reason?.trim() || "Mission Control",
-      classification: "normal",
-      status: "pending",
-    };
-    await this.store.putProposal(proposal);
-    await this.emitProposalEvent(proposal);
-    this.logger.info(
-      {
-        component: "approvals",
-        proposalId: proposal.id,
-        origin: "commander",
-        targetAgentId,
-        classification: "normal",
-        status: "pending",
-        backfill: true,
-      },
-      "mission_control.approvals.proposal_created",
-    );
-    return { ok: true, proposalId: proposal.id };
-  }
-
-  /**
-   * The Commander's agent id (the agent labeled paseo.mission-control=
-   * commander), if one exists on this host. Public accessor the spawn
-   * executor uses to stamp paseo.parent-agent-id on spawned workers at
-   * execution time (survives restarts — reads storage first, like the
-   * internal resolver).
-   */
-  async getCommanderAgentId(): Promise<string | null> {
-    const id = await this.resolveCommanderAgentId();
-    this.commanderAgentIdCache = id;
-    return id;
-  }
-
-  /**
-   * M9 voice dialogue mirror: append ONE voice turn to the Commander thread
-   * as a plain timeline row WITHOUT running a Commander model turn. Every
-   * heard user utterance (role "user") and every spoken reply (role
-   * "assistant") is mirrored here so text Commander always has what you said
-   * and what voice answered. Append-only: no instruction is opened, no
-   * snapshot is dispatched, no turn is started. kind "qa" = pure Q&A (the
-   * app hides the row unless verbose); "dispatch" = the turn asked the fleet
-   * to do something (visible like any other turn).
-   */
-  async mirrorVoiceTurn(input: {
-    role: "user" | "assistant";
-    text: string;
-    kind: "qa" | "dispatch";
-  }): Promise<{ ok: true } | { ok: false; error: string }> {
-    const commanderId = await this.resolveCommanderAgentId();
-    if (!commanderId) {
-      return { ok: false, error: "No Commander agent on this host" };
-    }
-    try {
-      await this.agentManager.appendTimelineItem(commanderId, {
-        type: input.role === "user" ? "user_message" : "assistant_message",
-        text: input.text.trim(),
-        voiceMirrorKind: input.kind,
-      });
-      this.logger.debug(
-        { commanderId, role: input.role, kind: input.kind },
-        "mission_control.voice.mirror_appended",
-      );
-      return { ok: true };
-    } catch (error) {
-      this.logger.warn(
-        { err: error, commanderId, role: input.role, kind: input.kind },
-        "mission_control.voice.mirror_failed",
-      );
-      return {
-        ok: false,
-        error: getErrorMessageOr(error, "Failed to mirror voice turn into the Commander thread"),
-      };
-    }
-  }
-
-  /** The Commander is the agent labeled paseo.mission-control=commander. */
-  private async resolveCommanderAgentId(): Promise<string | null> {
-    for (const record of await this.agentStorage.list()) {
-      if (
-        !record.archivedAt &&
-        record.labels[MISSION_CONTROL_LABEL_KEY] === MISSION_CONTROL_LABEL_VALUE
-      ) {
-        return record.id;
-      }
-    }
-    for (const agent of this.agentManager.listAgents()) {
-      if (agent.labels[MISSION_CONTROL_LABEL_KEY] === MISSION_CONTROL_LABEL_VALUE) {
-        return agent.id;
-      }
-    }
-    return null;
-  }
-
-  /**
-   * Fleet-wide Commander identity for agent classification on PEER hosts
-   * (spec 06 terminal guarantee over the fleet): the local commander first;
-   * on a peer host with no local Commander, ask the designated commander
-   * host over peering for its commander-labeled agent. Without this, a
-   * commander-dispatched worker running on a peer (parent label = the
-   * commander's id) classifies as a plain subagent, and the terminal
-   * status-ask steer never fires for it. Advisory: any failure → null (the
-   * classification degrades to today's subagent behavior).
-   *
-   * Distinct from resolveCommanderAgentId (local-only): dispatch targets must
-   * be local agents, so the remote id is only ever used for classification.
-   */
-  async resolveFleetCommanderAgentId(): Promise<string | null> {
-    const local = await this.resolveCommanderAgentId();
-    if (local) {
-      return local;
-    }
-    const designated = this.centralConfig.get().commanderHost?.trim() || null;
-    if (designated === null || this.isThisCommanderHost(designated)) {
-      return null;
-    }
-    const peerManager = this.resolvePeerManager();
-    const peerStatus = peerManager?.getPeerStatus(designated) ?? null;
-    const peerClient = peerManager?.getPeerClient(designated) ?? null;
-    if (!peerStatus || peerStatus.state !== "online" || !peerClient) {
-      return null;
-    }
-    try {
-      const roster = await peerClient.fetchAgents({
-        filter: { labels: { [MISSION_CONTROL_LABEL_KEY]: MISSION_CONTROL_LABEL_VALUE } },
-        page: { limit: 200 },
-      });
-      return roster.entries.find((entry) => Boolean(entry.agent?.id))?.agent?.id ?? null;
-    } catch {
-      return null;
-    }
-  }
-
-  /**
-   * Commander adoption: a delivered commander-origin send (fleet_send_prompt)
-   * marks the target as Commander-owned so verifier scope "commander" audits
-   * it. The marker is the ISO timestamp of the FIRST adoption — the moment
-   * the Commander took over — and repeated sends never rewrite it (first
-   * adoption wins, idempotent). Mission-control machinery (Commander,
-   * verifier) is never adopted; an agent that is not live cannot be adopted.
-   * Returns the effective adoption timestamp, or null when nothing was
-   * recorded.
-   */
-  async recordCommanderAdoption(agentId: string): Promise<string | null> {
-    const live = this.agentManager.getAgent(agentId);
-    if (!live) {
-      this.logger.debug({ agentId }, "mission_control.commander_adopt_skipped_not_live");
-      return null;
-    }
-    if (hasMissionControlLabels(live.labels)) {
-      this.logger.debug(
-        { agentId, labels: live.labels },
-        "mission_control.commander_adopt_skipped_machinery",
-      );
-      return null;
-    }
-    const existing = live.labels[COMMANDER_ADOPTED_AT_LABEL];
-    if (typeof existing === "string" && existing.trim().length > 0) {
-      return existing;
-    }
-    const adoptedAt = new Date().toISOString();
-    try {
-      await this.agentManager.setLabels(agentId, { [COMMANDER_ADOPTED_AT_LABEL]: adoptedAt });
-    } catch (error) {
-      this.logger.warn({ err: error, agentId }, "mission_control.commander_adopt_failed");
-      return null;
-    }
-    this.logger.info({ agentId, adoptedAt }, "mission_control.commander_adopted");
-    return adoptedAt;
-  }
-
-  // ==========================================================================
-  // M8 mailbox: ONE delivery path for every message to the Commander
-  // (docs/commander.md "The mailbox"). Chat (app composer), voice
-  // (commander_dispatch), and machinery (dispatchMachineryTurn) all land
-  // here or on the same dispatchLocalPromptMode primitive. Rule: commander
-  // idle → a fresh snapshot turn is dispatched first, then the message is
-  // STEERED into that in-flight turn (join-don't-replace — a replace would
-  // cancel the snapshot turn and the provider would drop the prompt, so the
-  // model never sees the fresh fleet state); commander mid-turn → omp
-  // live-steer (the native steer path — NEVER replaceRunning) wrapping the
-  // message in the ack-and-fold envelope. The daemon owns the envelope, so
-  // chat and voice get identical semantics.
-  // ==========================================================================
-
-  /**
-   * Deliver a user/voice instruction to the Commander through the mailbox.
-   * Opens a ledger row, fires the speculative auto-recall (bounded, in
-   * parallel), then:
-   *  - busy → steer with the envelope: 'New instruction (#<id>)…' + the open
-   *    instruction list + the auto-recall block (when within budget).
-   *  - idle → dispatch a fresh snapshot as its own turn first, then STEER
-   *    the message into that in-flight turn (the snapshot body carries the
-   *    ledger block + the pending auto-recall block, so the steered text is
-   *    the plain message). No snapshot turn in flight (settled fast / busy
-   *    skip / failed dispatch) → the plain-run fallback, whose seam
-   *    re-injects a snapshot ahead of the run.
-   * The client's dispatchMode is IGNORED for Commander targets — there is no
-   * queueing and no interrupt here (session.ts routes commander-targeted
-   * sends through this method).
-   */
-  async deliverCommanderInstruction(input: {
-    text: string;
-    source: "chat" | "voice";
-    /** Composer attachments (descriptors; the daemon resolves them into the
-     *  prompt). The envelope text rides them like any fleet send. */
-    attachments?: AgentAttachment[];
-    /**
-     * The client's optimistic message id (the local user_message's
-     * clientMessageId). Threaded onto the daemon-appended timeline row so the
-     * client reconciliation merges it with the optimistic bubble instead of
-     * rendering a duplicate. Absent (older clients) → no dedupe, exactly as
-     * before.
-     */
-    messageId?: string;
-  }): Promise<
-    { ok: true; instructionId: string; deliveredAs: "run" | "steer" } | { ok: false; error: string }
-  > {
-    const commanderId = await this.resolveCommanderAgentId();
-    if (!commanderId) {
-      return { ok: false, error: "No Commander agent on this host" };
-    }
-    const instruction = this.store.openInstruction({ text: input.text, source: input.source });
-    // Instruction-ledger fallback: stage the id BEFORE any async dispatch so
-    // a turn completion that answers in prose alone still closes this row via
-    // a synthesized answer card. Rolled back if delivery fails (the row itself
-    // stays open — the instruction never reached a turn, so it is neither
-    // delivered nor answered). A busy steer joins the in-flight turn: its
-    // completion must cover this id even when no turn_started is observed.
-    const busy = this.agentManager.hasInFlightRun(commanderId);
-    const unstageInstruction = this.commanderInstructionTracker(commanderId).stage(
-      [instruction.id],
-      { intoActiveTurn: busy },
-    );
-    try {
-      // Speculative auto-recall (user-approved design): fire the dual-bank
-      // recall with the raw instruction text, in parallel with delivery, under
-      // a hard constant budget. Within budget → the block rides the envelope;
-      // timeout / unconfigured / error → nothing is attached and delivery is
-      // never delayed beyond the budget (a late result is dropped — no late
-      // steers). fleet_recall (the Commander's own tool) is untouched.
-      const recallBlock = await this.buildSpeculativeRecallBlock(input.text);
-      if (busy) {
-        const envelope = [
-          `New instruction (${instruction.id}). Acknowledge it in one line, fold it into your open work, prioritize user-facing asks, then continue.`,
-          this.formatOpenInstructionsBlock(),
-          recallBlock,
-        ]
-          .filter((block): block is string => block !== null && block.length > 0)
-          .join("\n\n");
-        await dispatchLocalPromptMode({
-          agentManager: this.agentManager,
-          agentStorage: this.agentStorage,
-          agentId: commanderId,
-          prompt: envelope,
-          attachments: input.attachments,
-          mode: "steer",
-          classification: "instruction",
-          messageId: input.messageId,
-          replaceOrigin: "machinery",
-          recordStopOrigin: (agentId, origin) => this.store.recordStopOrigin(agentId, origin),
-          logger: this.logger,
-          // The Commander's own turn loop is covered by the dormant-turn
-          // detector (machinery turns arm nothing here either); the mailbox
-          // steer never marks the Commander undelivered.
-          onOutOfBandSteer: () => {
-            this.armSteerDeliveryVerification(commanderId, undefined);
-          },
-        });
-        this.logger.info(
-          { instructionId: instruction.id, source: input.source },
-          "mission_control.mailbox.steered",
-        );
-        return { ok: true, instructionId: instruction.id, deliveredAs: "steer" };
-      }
-      // Idle: hand the recall block (if any) to the snapshot injector so the
-      // fresh snapshot carries it alongside the ledger block.
-      this.setPendingInstructionEnvelope?.(recallBlock || null);
-      // M10: dispatch the fresh snapshot as its OWN turn first, then STEER the
-      // message into the in-flight snapshot turn — the same native steer the
-      // busy branch uses (proven to reach the provider session). The plain-run
-      // delivery below starts the user run with replaceRunning, which CANCELS
-      // the snapshot turn; the provider then drops the cancelled prompt, so
-      // the model never sees the fresh fleet state — the timeline row alone
-      // cannot carry it (the launch-pack staleness).
-      const snapshotInFlight = (await this.dispatchSnapshotTurn?.(commanderId)) ?? false;
-      if (snapshotInFlight) {
-        // The snapshot turn exists to carry this message: the ledger and
-        // auto-recall blocks already ride the snapshot body, so the steered
-        // text is the plain message — never the 'New instruction (#N).
-        // Acknowledge…' mid-turn wrapper (that wrapper belongs to steers into
-        // a turn whose primary ask is NOT this message).
-        await dispatchLocalPromptMode({
-          agentManager: this.agentManager,
-          agentStorage: this.agentStorage,
-          agentId: commanderId,
-          prompt: input.text.trim(),
-          attachments: input.attachments,
-          mode: "steer",
-          classification: "instruction",
-          messageId: input.messageId,
-          replaceOrigin: "machinery",
-          recordStopOrigin: (agentId, origin) => this.store.recordStopOrigin(agentId, origin),
-          logger: this.logger,
-          // Mirrors the busy branch: the Commander's own turn loop is covered
-          // by the dormant-turn detector; the mailbox steer never marks the
-          // Commander undelivered (armed with no proposal — a no-op).
-          onOutOfBandSteer: () => {
-            this.armSteerDeliveryVerification(commanderId, undefined);
-          },
-        });
-        // The turn the message just joined is no longer a machinery ack turn:
-        // its reply is the Commander's answer to the user — never retracted.
-        this.disarmSnapshotAckDrop?.();
-        this.logger.info(
-          { instructionId: instruction.id, source: input.source },
-          "mission_control.mailbox.ran",
-        );
-        return { ok: true, instructionId: instruction.id, deliveredAs: "run" };
-      }
-      // No snapshot turn in flight to steer into (already settled — a fast
-      // model — or none was dispatched: busy skip / dispatch failure): the
-      // plain-run fallback. Its seam re-injects a fresh snapshot ahead of the
-      // run (advisory — a failed injection never fails the message).
-      await dispatchLocalPromptMode({
-        agentManager: this.agentManager,
-        agentStorage: this.agentStorage,
-        agentId: commanderId,
-        prompt: input.text.trim(),
-        attachments: input.attachments,
-        mode: "steer",
-        classification: "instruction",
-        messageId: input.messageId,
-        recordStopOrigin: (agentId, origin) => this.store.recordStopOrigin(agentId, origin),
-        logger: this.logger,
-      });
-      this.logger.info(
-        { instructionId: instruction.id, source: input.source },
-        "mission_control.mailbox.ran",
-      );
-      return { ok: true, instructionId: instruction.id, deliveredAs: "run" };
-    } catch (error) {
-      // Delivery failed before the id reached a turn: forget the tracker
-      // state (the ledger row stays open — honest: never delivered, never
-      // answered; the per-turn envelope re-lists it for a later delivery).
-      unstageInstruction();
-      throw error;
-    }
-  }
-
-  /**
-   * M8 ledger (voice P0): open one ledger row for a final voice utterance
-   * WITHOUT dispatching a Commander turn. The voice node calls this on every
-   * final user-utterance transcription; the model cites the returned id via
-   * respondsTo on cards and emit-time close closes the row. Shares the
-   * deliverCommanderInstruction open path (store.openInstruction) — one row
-   * per utterance, no intent splitting.
-   */
-  openInstruction(input: { text: string; source: "chat" | "voice" }): MissionControlInstruction {
-    return this.store.openInstruction({ text: input.text, source: input.source });
-  }
-
-  /**
-   * M8 ledger: every retained instruction row, newest first (the verbose
-   * thread's open list + close affordance reads this).
-   */
-  listInstructions(): MissionControlInstruction[] {
-    return this.store.listInstructions();
-  }
-
-  /**
-   * M8 ledger: manual close from the verbose thread affordance
-   * (mission_control.instructions.close). Idempotent: closing an unknown or
-   * already-closed row is a no-op success (the app re-lists and the row
-   * simply disappears from the open set).
-   */
-  async closeInstruction(
-    instructionId: string,
-  ): Promise<{ ok: true } | { ok: false; error: string }> {
-    this.store.closeInstruction(instructionId, "manual");
-    return { ok: true };
-  }
-
-  /**
-   * M8 ledger block for the per-turn envelope: 'Open instructions:' with the
-   * open rows, regenerated per turn like the snapshot — never accreted. Empty
-   * string when nothing is open. `excludeId` (optional) skips a row that is
-   * about to be listed by its own 'New instruction' line (not used — the
-   * ledger block lists the new row too, since the envelope is the whole
-   * picture; kept for future callers).
-   */
-  formatOpenInstructionsBlock(_excludeId?: string): string {
-    const open = this.store.listOpenInstructions();
-    if (open.length === 0) {
-      return "";
-    }
-    const lines = open.map((instruction) => {
-      const oneLine = instruction.text.replace(/\s+/g, " ").trim();
-      return `- ${instruction.id}: ${oneLine}`;
-    });
-    return `Open instructions:\n${lines.join("\n")}`;
-  }
-
-  /**
-   * Close the ledger row a citing card answers (respondsTo), closedBy
-   * "cardId". A no-op for unknown/already-closed ids. Called when the
-   * Commander emits a proposal, clarification, or answer card carrying
-   * respondsTo.
-   */
-  closeInstructionForCard(respondsTo: string): void {
-    const closed = this.store.closeInstruction(respondsTo, "cardId");
-    if (closed) {
-      this.logger.info(
-        { instructionId: respondsTo, closedBy: "cardId" },
-        "mission_control.instructions.closed_by_card",
-      );
-    }
-  }
-
-  /**
-   * Speculative auto-recall: race the dual-bank hindsight recall (with
-   * attribution) against the hard constant budget and format ≤3 one-liners
-   * when it wins. Null on timeout / unconfigured / error — callers attach
-   * nothing and deliver regardless (the budget bounds any delay; a late
-   * result is dropped, never a late steer).
-   */
-  private async buildSpeculativeRecallBlock(text: string): Promise<string | null> {
-    const recallPromise = this.hindsightRecall(text, SPECULATIVE_RECALL_MAX_LINES);
-    let timer: NodeJS.Timeout | undefined;
-    const timeout = new Promise<null>((resolve) => {
-      timer = setTimeout(() => resolve(null), SPECULATIVE_RECALL_BUDGET_MS);
-    });
-    let result: HindsightRecallResult | null;
-    try {
-      result = await Promise.race([recallPromise, timeout]);
-    } catch (error) {
-      this.logger.debug({ err: error }, "mission_control.mailbox.auto_recall_error");
-      return null;
-    } finally {
-      clearTimeout(timer);
-    }
-    if (!result || !result.ok || result.matches.length === 0) {
-      this.logger.debug({}, "mission_control.mailbox.auto_recall_empty");
-      return null;
-    }
-    // The dual-bank recall enriches omp matches with Paseo-agent attribution
-    // (service.attributeRecallMatches) — the declared result type predates
-    // the enrichment, so narrow here.
-    const matches = result.matches as Array<
-      HindsightRecallMatch & { attribution?: RecallMatchAttribution }
-    >;
-    const lines = matches.slice(0, SPECULATIVE_RECALL_MAX_LINES).map((match) => {
-      const memoryText = match.text
-        .replace(/\s+/g, " ")
-        .trim()
-        .slice(0, SPECULATIVE_RECALL_TEXT_CAP);
-      const attribution = match.attribution
-        ? ` (${match.attribution.agentName || match.attribution.agentId}${
-            match.attribution.workspaceId ? `, ${match.attribution.workspaceId}` : ""
-          })`
-        : "";
-      return `- ${memoryText}${attribution} [${match.bank}]`;
-    });
-    return `Possibly related (auto-recall):\n${lines.join("\n")}`;
-  }
-
-  /**
-   * mission_control.commander.reset: archive the current Commander (the old
-   * conversation stays in History) and spawn a fresh one with a new context
-   * pack, reusing the drift-recreate machinery (commander-boot).
-   */
-  async resetCommander(): Promise<{ ok: true; agentId: string } | { ok: false; error: string }> {
-    if (!this.resetCommanderFn) {
-      return { ok: false, error: "Commander reset is not available on this host" };
-    }
-    return this.resetCommanderFn();
-  }
-
-  getProposal(proposalId: string): MissionControlProposal | null {
-    return this.approvals.getProposal(proposalId);
-  }
-
   /**
    * Apply a meta plan against THIS daemon's registries, reached over peering
    * (mission_control.meta.apply — the commander host forwards an approved
@@ -1989,24 +732,6 @@ export class MissionControlService {
     return this.metaApplyRemote(metaPlan);
   }
 
-  /**
-   * Apply a spawn plan against THIS daemon's registries, reached over peering
-   * (mission_control.spawn.apply — the commander host forwards an approved
-   * spawn-kind proposal whose plan targets this host as a peer). THIS host
-   * validates the cwd contract against its own filesystem, creates the
-   * absolute cwd with mkdir recursive when missing, and creates the agent in
-   * its own registry (the mkdir happens here, never on the commander's disk).
-   * Absent wiring → an error result (never a throw).
-   */
-  async applySpawnRemote(
-    spawnPlan: MissionControlProposalSpawnPlan,
-  ): Promise<{ ok: true; agentId: string } | { ok: false; error: string }> {
-    if (!this.spawnApplyRemote) {
-      return { ok: false, error: "Spawn executor is not available on this host" };
-    }
-    return this.spawnApplyRemote(spawnPlan);
-  }
-
   /** Ungated meta apply for remote MCP clients: no proposal is recorded. */
   async applyMetaPlanDirect(
     metaPlan: MissionControlMetaPlan,
@@ -2017,64 +742,14 @@ export class MissionControlService {
     return this.metaApplyDirect(metaPlan);
   }
 
-  listProposals(): MissionControlProposal[] {
-    return this.approvals.listProposals();
-  }
-
-  onProposalChange(listener: (proposal: MissionControlProposal) => void): () => void {
-    return this.approvals.onProposalChange(listener);
-  }
-
-  /**
-   * The host's pending inbox (mission_control.inbox.fetch) over stored
-   * state: the approval index, the review-state store, and the retained
-   * events. No model call. Clarifications are the local Commander's only;
-   * the dispatch marker resolves the fleet Commander (a peer asks the
-   * commander host, like the lifecycle classification does).
-   */
-  async fetchInbox(): Promise<MissionControlInbox> {
-    const localCommanderId = await this.resolveCommanderAgentId();
-    const fleetCommanderAgentId = localCommanderId ?? (await this.resolveFleetCommanderAgentId());
-    const reviewStates = this.store.getReviewStates();
-    const agents = new Map<string, InboxAgentIdentity>();
-    for (const [agentId, record] of reviewStates) {
-      if (record.reviewState !== "ready") {
-        continue;
-      }
-      const live = this.agentManager.getAgent(agentId);
-      const stored = await this.agentStorage.get(agentId).catch(() => null);
-      if (!live && !stored) {
-        continue;
-      }
-      agents.set(agentId, {
-        labels: live?.labels ?? stored?.labels ?? {},
-        internal: live?.internal ?? stored?.internal === true,
-        archived: Boolean(stored?.archivedAt),
-      });
-    }
-    let localCommander: InboxInput["localCommander"] = null;
-    if (localCommanderId) {
-      // Live registration inherits the stored value, so a live agent is authoritative.
-      const live = this.agentManager.getAgent(localCommanderId);
-      const lastUserMessageAt = live
-        ? (live.lastUserMessageAt?.toISOString() ?? null)
-        : ((await this.agentStorage.get(localCommanderId).catch(() => null))?.lastUserMessageAt ??
-          null);
-      localCommander = { agentId: localCommanderId, lastUserMessageAt };
-    }
-    return buildMissionControlInbox({
-      proposals: this.approvals.listProposals(),
-      events: this.store.fetchEvents({ includeSuperseded: true }),
-      reviewStates,
-      agents,
-      localCommander,
-      fleetCommanderAgentId,
-    });
-  }
-
   // ==========================================================================
   // v3 central config + mode
   // ==========================================================================
+
+  private resolvePeerManager(): PeerManager | null {
+    const option = this.peerManagerOption;
+    return typeof option === "function" ? option() : (option ?? null);
+  }
 
   getCentralConfig(): ResolvedMissionControlCentralConfig {
     return this.centralConfig.get();
@@ -2090,303 +765,8 @@ export class MissionControlService {
     return this.centralConfig.patch(patch);
   }
 
-  async setMode(mode: MissionControlMode): Promise<ResolvedMissionControlCentralConfig> {
-    return this.centralConfig.setMode(mode);
-  }
-
-  // ==========================================================================
-  // Central-config ownership + replication (Wave 2): the host named by
-  // centralConfig.commanderHost owns central-config.json. A daemon receiving
-  // mission_control.config.patch applies + persists + replicates when IT is
-  // the commander host; otherwise it FORWARDS the patch to the commander host
-  // over peering and returns ITS response (never applies locally, never
-  // silently succeeds). Peers receiving mission_control.config.replica
-  // replace their local snapshot (last-writer-wins) so consumers on every
-  // host — stall detector, hindsight writer, verifier — read the same policy.
-  // ==========================================================================
-
-  /**
-   * Ownership-aware central-config write (patch path). Discriminated result
-   * so the session can emit the exact wire payload:
-   *  - ok:true   → applied (owner) or forwarded+applied (non-owner), config resolved.
-   *  - ok:false  → NOT applied anywhere (unreachable commander host), config = the
-   *                local (unchanged) resolved snapshot, unreachableCommanderHost set.
-   */
-  async patchCentralConfigRouted(
-    patch: MissionControlCentralConfigPatch,
-  ): Promise<CentralConfigWriteResult> {
-    const designated = this.centralConfig.get().commanderHost?.trim() || null;
-    // Standalone: no commander host designated — every host keeps its own
-    // central config (current behavior). Local apply, no replication.
-    if (designated === null) {
-      return { ok: true, config: await this.centralConfig.patch(patch) };
-    }
-    if (this.isThisCommanderHost(designated)) {
-      return this.applyCentralConfigPatchAsOwner(patch);
-    }
-    return this.forwardCentralConfigPatch(designated, patch);
-  }
-
-  /** Ownership-aware mode toggle (same write path as patch). */
-  async setModeRouted(mode: MissionControlMode): Promise<CentralConfigWriteResult> {
-    const designated = this.centralConfig.get().commanderHost?.trim() || null;
-    if (designated === null) {
-      return { ok: true, config: await this.centralConfig.setMode(mode) };
-    }
-    if (this.isThisCommanderHost(designated)) {
-      return this.applyCentralConfigPatchAsOwner({ mode });
-    }
-    return this.forwardCentralConfigPatch(designated, { mode });
-  }
-
-  /**
-   * The commander host pushes its current snapshot to a peer that just came
-   * online (sync-on-connect). Only the commander host pushes; every other
-   * host's peer connection is answered by the commander side of that link.
-   */
-  async syncCentralConfigToPeer(peerName: string): Promise<void> {
-    const designated = this.centralConfig.get().commanderHost?.trim() || null;
-    if (designated === null || !this.isThisCommanderHost(designated)) {
-      return;
-    }
-    const peerManager = this.resolvePeerManager();
-    const client = peerManager?.getPeerClient(peerName);
-    if (!client) {
-      this.logger.warn({ peer: peerName }, "mission_control.config.sync_on_connect_no_peer_client");
-      return;
-    }
-    client.missionControlConfigReplica(this.centralConfig.get(), { from: this.hostName });
-    this.logger.info({ peer: peerName }, "mission_control.config.synced_on_connect");
-  }
-
-  /**
-   * Replica receive path: full snapshot replace (last-writer-wins), in-memory
-   * store + persisted file. NEVER re-pushes — a replica is already the
-   * outcome of an owner push; re-pushing would loop.
-   */
-  async applyCentralConfigReplica(snapshot: MissionControlCentralConfig): Promise<void> {
-    await this.centralConfig.replace(snapshot);
-  }
-
-  private isThisCommanderHost(designated: string): boolean {
-    return isDesignatedCommanderHost({
-      central: { commanderHost: designated },
-      hostName: this.hostName,
-      hostAlias: this.hostAlias,
-    });
-  }
-
-  private resolvePeerManager(): PeerManager | null {
-    const option = this.peerManagerOption;
-    return typeof option === "function" ? option() : (option ?? null);
-  }
-
-  /**
-   * Resolve the peer hosting a non-local delivery target: first via the
-   * proposal's serverId (resolveMetaTargetHost), then by scanning online
-   * peers' agent rosters for the id. Returns the peer name or null.
-   */
-  private async resolvePeerDeliveryTarget(
-    peerManager: PeerManager | null,
-    agentId: string,
-    serverId: string | null | undefined,
-  ): Promise<string | null> {
-    if (serverId) {
-      const target = resolveMetaTargetHost(
-        { serverId: this.serverId, hostAlias: this.hostAlias, peerManager },
-        serverId,
-      );
-      if (target.ok && target.kind === "peer") {
-        return target.peerName;
-      }
-    }
-    if (!peerManager) {
-      return null;
-    }
-    for (const peerStatus of peerManager.getPeerStatuses() ?? []) {
-      if (peerStatus.state !== "online") {
-        continue;
-      }
-      const client = peerManager.getPeerClient(peerStatus.name);
-      if (!client) {
-        continue;
-      }
-      try {
-        const res = await client.fetchAgents({
-          filter: { includeArchived: true },
-          page: { limit: 200 },
-        });
-        if (res.entries.some((entry) => entry.agent.id === agentId)) {
-          return peerStatus.name;
-        }
-      } catch {
-        // ignore
-      }
-    }
-    return null;
-  }
-
-  /** Deliver a proposal message over peering to an online peer host, then
-   * apply commander adoption for commander-origin sends. Throws when the
-   * peer is unreachable or has no client. */
-  private async tryDeliverToPeer(
-    peerManager: PeerManager | null,
-    input: {
-      agentId: string;
-      message: string;
-      deliveryMode: "steer" | "interrupt" | "queue";
-      agentMode?: AgentModeId;
-      proposal?: { origin?: string } | null;
-    },
-    targetPeerName: string,
-  ): Promise<void> {
-    const peerStatus = peerManager?.getPeerStatus(targetPeerName) ?? null;
-    if (!peerStatus || peerStatus.state !== "online") {
-      throw new Error(`Host "${targetPeerName}" is not an online peer`);
-    }
-    const peerClient = peerManager?.getPeerClient(targetPeerName) ?? null;
-    if (!peerClient) {
-      throw new Error(`Host "${targetPeerName}" has no peer client`);
-    }
-    if (input.agentMode) {
-      await selectAgentModeOnPeer(peerClient, targetPeerName, input.agentId, input.agentMode);
-    }
-    await peerClient.sendAgentMessage(input.agentId, input.message, {
-      dispatchMode: input.deliveryMode,
-    });
-    if (input.proposal?.origin === "commander") {
-      await this.recordCommanderAdoption(input.agentId);
-    }
-  }
-
-  private async applyCentralConfigPatchAsOwner(
-    patch: MissionControlCentralConfigPatch,
-  ): Promise<CentralConfigWriteResult> {
-    const previous = this.centralConfig.get();
-    const next = await this.centralConfig.patch(patch);
-    const commanderHostChanged =
-      patch.commanderHost !== undefined &&
-      (patch.commanderHost ?? null) !== (previous.commanderHost ?? null);
-    if (commanderHostChanged) {
-      this.logger.warn(
-        {
-          component: "config",
-          from: previous.commanderHost ?? null,
-          to: next.commanderHost ?? null,
-        },
-        "mission_control.config.commander_host_migrated — old owner pushes final snapshot to every peer (one migration hop)",
-      );
-    }
-    await this.replicateCentralConfig(next);
-    return { ok: true, config: next };
-  }
-
-  /** Push the full snapshot to every online peer (fire-and-forget, logged). */
-  private async replicateCentralConfig(config: ResolvedMissionControlCentralConfig): Promise<void> {
-    const peerManager = this.resolvePeerManager();
-    if (!peerManager) {
-      return;
-    }
-    const online = peerManager.getPeerStatuses().filter((peer) => peer.state === "online");
-    if (online.length === 0) {
-      return;
-    }
-    await Promise.all(
-      online.map(async (peer) => {
-        const client = peerManager.getPeerClient(peer.name);
-        if (!client) {
-          return;
-        }
-        try {
-          client.missionControlConfigReplica(config, { from: this.hostName });
-        } catch (error) {
-          this.logger.warn(
-            { err: error, peer: peer.name },
-            "Failed to replicate central config to peer",
-          );
-        }
-      }),
-    );
-  }
-
-  /**
-   * Non-owner write path: forward the patch to the commander host over
-   * peering and return ITS response verbatim. When the commander host is not
-   * a configured peer, not online, or the round-trip fails, return an
-   * explicit error (additive unreachableCommanderHost on the wire) — NEVER
-   * apply locally, NEVER silently succeed.
-   */
-  private async forwardCentralConfigPatch(
-    commanderHost: string,
-    patch: MissionControlCentralConfigPatch,
-  ): Promise<CentralConfigWriteResult> {
-    const peerManager = this.resolvePeerManager();
-    const peerStatus = peerManager?.getPeerStatus(commanderHost) ?? null;
-    const peerClient = peerManager?.getPeerClient(commanderHost) ?? null;
-    const localConfig = this.centralConfig.get();
-    if (!peerStatus || peerStatus.state !== "online" || !peerClient) {
-      const error =
-        peerStatus === null
-          ? `Commander host "${commanderHost}" is not a configured peer; central config was NOT updated`
-          : `Commander host "${commanderHost}" is unreachable (${peerStatus.state}); central config was NOT updated`;
-      this.logger.warn(
-        {
-          commanderHost,
-          state: peerStatus?.state ?? "not-configured",
-          patchKeys: Object.keys(patch),
-        },
-        "mission_control.config.forward_unreachable",
-      );
-      return {
-        ok: false,
-        error,
-        unreachableCommanderHost: commanderHost,
-        config: localConfig,
-      };
-    }
-    try {
-      const response = await peerClient.missionControlConfigPatch(patch);
-      if (!response.ok) {
-        this.logger.warn(
-          { commanderHost, error: response.error },
-          "mission_control.config.forward_rejected",
-        );
-        return {
-          ok: false,
-          error: response.error ?? `Commander host "${commanderHost}" rejected the patch`,
-          ...(response.unreachableCommanderHost
-            ? { unreachableCommanderHost: response.unreachableCommanderHost }
-            : {}),
-          config: localConfig,
-        };
-      }
-      this.logger.info(
-        { commanderHost, patchKeys: Object.keys(patch) },
-        "mission_control.config.forwarded",
-      );
-      return { ok: true, config: response.config };
-    } catch (error) {
-      this.logger.warn({ err: error, commanderHost }, "mission_control.config.forward_failed");
-      return {
-        ok: false,
-        error: `Commander host "${commanderHost}" unreachable: ${getErrorMessageOr(error, "round-trip failed")}; central config was NOT updated`,
-        unreachableCommanderHost: commanderHost,
-        config: localConfig,
-      };
-    }
-  }
-
-  // ==========================================================================
   // v3 user-message tagging (Commander records relatedAgentIds)
   // ==========================================================================
-
-  recordMessageTags(input: Omit<MissionControlMessageTag, "ts"> & { ts?: string }): void {
-    this.store.recordMessageTags(input);
-  }
-
-  allMessageTags(): MissionControlMessageTag[] {
-    return this.store.allMessageTags();
-  }
 
   // ==========================================================================
   // v3 stop origins + dormant derivation
@@ -2398,10 +778,7 @@ export class MissionControlService {
 
   recordStopOrigin(agentId: string, origin: "user" | "machinery" | "system" | null): void {
     this.store.recordStopOrigin(agentId, origin);
-    // A user stop outranks machinery: pending proposals for this agent are
-    // dead — approving them later would restart a run the user stopped.
     if (origin === "user") {
-      void this.approvals.expirePendingForAgent(agentId);
       // A user stop also clears any leftover "ready": a stopped run must read
       // as Done ("Stopped by you"), never as Ready awaiting review (a stale
       // ready would otherwise beat the user-stop derivation).
@@ -2468,83 +845,6 @@ export class MissionControlService {
   // ==========================================================================
 
   /**
-   * start/stop/status a monitor subscription for one session (voice daemon
-   * session id, or a Commander turn context). Agent-scope watches require an
-   * agentId; the caller (fleet_monitor tool) validates the id resolves via
-   * the fleet index before calling. start is idempotent per (scope, agentId);
-   * stop removes the matching watch; status returns the current list.
-   */
-  monitorFleet(input: {
-    action: "start" | "stop" | "status";
-    scope: MonitorScope;
-    agentId?: string;
-    host?: string;
-    sessionKey: string;
-  }):
-    | { ok: true; action: "start" | "stop" | "status"; subscriptions: MonitorWatch[] }
-    | { ok: false; error: string } {
-    const { action, scope, agentId, host, sessionKey } = input;
-    if (action !== "start" && action !== "stop" && action !== "status") {
-      return {
-        ok: false,
-        error: `action must be one of: "start", "stop", "status"; got "${String(action)}"`,
-      };
-    }
-    if (scope !== "fleet" && scope !== "agent") {
-      return {
-        ok: false,
-        error: `scope must be one of: "fleet", "agent"; got "${String(scope)}"`,
-      };
-    }
-    if (
-      action === "start" &&
-      scope === "agent" &&
-      (typeof agentId !== "string" || agentId.trim().length === 0)
-    ) {
-      return {
-        ok: false,
-        error: `scope "agent" requires agentId (an agent UUID from fleet_list_agents); scope "fleet" takes no agentId`,
-      };
-    }
-    const watches = this.monitorWatchesBySession.get(sessionKey) ?? [];
-    if (action === "start") {
-      const watch: MonitorWatch = {
-        scope,
-        ...(agentId !== undefined && agentId.trim().length > 0 ? { agentId: agentId.trim() } : {}),
-        ...(host !== undefined && host.trim().length > 0 ? { host: host.trim() } : {}),
-        startedAt: new Date().toISOString(),
-      };
-      const exists = watches.some(
-        (existing) =>
-          existing.scope === watch.scope &&
-          (watch.agentId === undefined || existing.agentId === watch.agentId),
-      );
-      if (!exists) {
-        watches.push(watch);
-        this.monitorWatchesBySession.set(sessionKey, watches);
-      }
-      return { ok: true, action, subscriptions: [...watches] };
-    }
-    if (action === "stop") {
-      const next = watches.filter(
-        (existing) =>
-          existing.scope !== scope ||
-          (scope === "agent" && agentId !== undefined && existing.agentId !== agentId),
-      );
-      if (next.length !== watches.length) {
-        this.monitorWatchesBySession.set(sessionKey, next);
-      }
-      return { ok: true, action, subscriptions: [...next] };
-    }
-    return { ok: true, action, subscriptions: [...watches] };
-  }
-
-  /** The session's current monitor subscriptions (empty when none). */
-  getMonitorSubscriptions(sessionKey: string): MonitorWatch[] {
-    return [...(this.monitorWatchesBySession.get(sessionKey) ?? [])];
-  }
-
-  /**
    * Canonical lifecycle bucket (spec 01) for one agent, computed from stored
    * state via the shared deriveLifecycleBucket — the same function the roster
    * and fleet_list_agents rows use (BucketCore). Never a client event fold.
@@ -2552,11 +852,6 @@ export class MissionControlService {
   async getLifecycleBucket(agentId: string): Promise<LifecycleBucket> {
     const record = await this.agentStorage.get(agentId);
     const live = this.agentManager.getAgent(agentId);
-    const pendingProposalCount = this.approvals
-      .listProposals()
-      .filter(
-        (proposal) => proposal.targetAgentId === agentId && proposal.status === "pending",
-      ).length;
     const attentionReason =
       live?.attention?.requiresAttention === true
         ? live.attention.attentionReason
@@ -2564,7 +859,7 @@ export class MissionControlService {
     const reviewState = this.store.getReviewState(agentId).reviewState;
     return deriveLifecycleBucket({
       pendingPermissionCount: live ? live.pendingPermissions.size : 0,
-      pendingProposalCount,
+      pendingProposalCount: 0,
       attentionReason: attentionReason ?? null,
       // The live lifecycle outranks the stored record: a live running agent
       // must read as running even when the disk record still says error (or
@@ -2691,12 +986,46 @@ export class MissionControlService {
   }
 
   /**
-   * The canonical status-ask steer (spec 06): an auto-sent, machinery
-   * envelope — user-invisible card (verboseOnly), machinery-classified
-   * timeline row, and the <paseo-system> wrap both timeline renderers hide
-   * in normal mode (verbose shows it). forceSend: a status-ask never sits
-   * pending for approval. Shared by the terminal-state guarantee and
-   * fleet_agent_status fresh:true.
+   * Deliver a machinery prompt (status ask, stall recovery, abort resume) to a
+   * local agent. A user stop always wins: an agent whose last run the user
+   * stopped is never restarted by machinery. Busy agents are live-steered
+   * ("steer"), interrupted ("interrupt"), or waited on ("queue").
+   */
+  private async deliverMachineryPrompt(input: {
+    agentId: string;
+    message: string;
+    deliveryMode: "steer" | "interrupt" | "queue";
+    reason: string;
+    classification?: "machinery";
+  }): Promise<void> {
+    if (this.store.getStopOrigin(input.agentId) === "user") {
+      this.logger.info(
+        { component: "stall", agentId: input.agentId, reason: input.reason },
+        "mission_control.machinery_prompt.skipped_user_stopped",
+      );
+      return;
+    }
+    await dispatchLocalPromptMode({
+      agentManager: this.agentManager,
+      agentStorage: this.agentStorage,
+      agentId: input.agentId,
+      prompt: input.message,
+      mode: input.deliveryMode,
+      ...(input.classification ? { classification: input.classification } : {}),
+      replaceOrigin: "machinery",
+      recordStopOrigin: (agentId, origin) => this.store.recordStopOrigin(agentId, origin),
+      logger: this.logger,
+    });
+    this.logger.info(
+      { component: "stall", agentId: input.agentId, reason: input.reason },
+      "mission_control.machinery_prompt.delivered",
+    );
+  }
+
+  /**
+   * The canonical status-ask steer (spec 06): a machinery-classified timeline
+   * row in the <paseo-system> wrap both timeline renderers hide in normal mode.
+   * Shared by the terminal-state guarantee and fleet_agent_status fresh:true.
    */
   private createStatusAskProposal(
     agentId: string,
@@ -2704,20 +1033,13 @@ export class MissionControlService {
     message: string,
     deliveryMode: "steer" | "queue" = "steer",
   ): Promise<void> {
-    return this.approvals
-      .createProposal({
-        origin: "stall",
-        serverId: this.serverId,
-        targetAgentId: agentId,
-        message: formatSystemNotificationPrompt(message),
-        deliveryMode,
-        reason,
-        classification: "normal",
-        forceSend: true,
-        verboseOnly: true,
-        timelineClassification: "machinery",
-      })
-      .then(() => undefined);
+    return this.deliverMachineryPrompt({
+      agentId,
+      message: formatSystemNotificationPrompt(message),
+      deliveryMode,
+      reason,
+      classification: "machinery",
+    });
   }
 
   // ==========================================================================
@@ -2866,95 +1188,6 @@ export class MissionControlService {
       }
     }
     return latest;
-  }
-
-  /**
-   * Semantic recall over the configured fleet bank, plus (when configured)
-   * the read-only secondary omp bank. Never blocks and never throws: when
-   * the bank is unconfigured or unreachable the caller gets
-   * { ok: false, reason: "memory unavailable" }. Results are merged primary
-   * first with the overall limit respected; a secondary failure degrades
-   * silently to the primary's matches. Every match carrying an omp
-   * `metadata.session_id` is attributed to the Paseo agent whose persistence
-   * handle stores that session id (live agents first, then stored records).
-   */
-  async hindsightRecall(query: string, limit = 5): Promise<HindsightRecallResult> {
-    const config = this.centralConfig.get();
-    if (!HindsightClient.isEnabled(config.hindsightUrl)) {
-      return { ok: false, reason: "memory unavailable", error: "hindsight is not configured" };
-    }
-    const secondaryBank = config.hindsightSecondaryBank?.trim();
-    const [primary, secondary] = await Promise.all([
-      this.hindsightClient.recall({
-        url: config.hindsightUrl,
-        bank: config.hindsightBank,
-        query,
-        limit,
-      }),
-      secondaryBank
-        ? this.hindsightClient.recall({
-            url: config.hindsightUrl,
-            bank: secondaryBank,
-            query,
-            limit,
-          })
-        : Promise.resolve(null),
-    ]);
-    const merged = mergeRecallResults(primary, secondary, limit);
-    if (!merged.ok) {
-      return merged;
-    }
-    return { ok: true, matches: await this.attributeRecallMatches(merged.matches) };
-  }
-
-  /**
-   * Enrich recall matches whose `sessionId` (the omp session id on the bank
-   * memory's metadata) resolves to a Paseo agent: live agents first, then
-   * stored records, both matched on the persistence handle's sessionId.
-   * Unresolved matches pass through untouched (raw session_id/tags/entities
-   * stay on the wire for the Commander to fleet_search).
-   */
-  private async attributeRecallMatches(
-    matches: HindsightRecallMatch[],
-  ): Promise<Array<HindsightRecallMatch & { attribution?: RecallMatchAttribution }>> {
-    const sessionIds = matches
-      .map((match) => match.sessionId)
-      .filter((sessionId): sessionId is string => sessionId !== null);
-    if (sessionIds.length === 0) {
-      return matches;
-    }
-    const liveAgents: RecallAttributionSource[] = this.agentManager.listAgents().map((agent) => ({
-      id: agent.id,
-      sessionId: agent.persistence?.sessionId ?? null,
-      name: agent.name,
-      shortDescription: agent.shortDescription,
-      workspaceId: agent.workspaceId,
-    }));
-    const storedRecords: RecallAttributionSource[] = (await this.agentStorage.list()).map(
-      (record) => ({
-        id: record.id,
-        sessionId: record.persistence?.sessionId ?? null,
-        name: record.name,
-        title: record.title ?? null,
-        shortDescription: record.shortDescription,
-        workspaceId: record.workspaceId,
-      }),
-    );
-    const attributionBySessionId = new Map<string, RecallMatchAttribution>();
-    for (const sessionId of new Set(sessionIds)) {
-      const attribution = resolveRecallAttribution(sessionId, liveAgents, storedRecords);
-      if (attribution) {
-        attributionBySessionId.set(sessionId, attribution);
-      }
-    }
-    if (attributionBySessionId.size === 0) {
-      return matches;
-    }
-    return matches.map((match) => {
-      const attribution =
-        match.sessionId !== null ? attributionBySessionId.get(match.sessionId) : undefined;
-      return attribution ? { ...match, attribution } : match;
-    });
   }
 
   // ==========================================================================
@@ -3118,7 +1351,7 @@ export class MissionControlService {
       const recordAfter = await this.agentStorage.get(agentId).catch(() => null);
       if (!(recordAfter?.shortDescription?.trim() ?? "")) {
         notices.push(
-          "description is missing on your agent record — include a 2-3 sentence `description` in your next report_status so the Commander has your live context",
+          "description is missing on your agent record — include a 2-3 sentence `description` in your next report_status so whoever runs the fleet has your live context",
         );
       }
     }
@@ -3306,9 +1539,6 @@ export class MissionControlService {
 
   private handleAgentState(agent: ManagedAgent): void {
     if (agent.lifecycle !== "running") {
-      // A run boundary (idle, closed, archived) invalidates any in-turn
-      // Commander tool-loop streak.
-      this.commanderToolLoops.delete(agent.id);
     }
     if (this.isExcludedAgent(agent)) {
       // Lifecycle-untracked: the Commander itself and non-verifier machinery
@@ -3334,15 +1564,12 @@ export class MissionControlService {
         // superseded run is a fleet-internal recovery, not a user decision).
         if (agent.pendingReplacementOrigin !== "machinery") {
           void this.store.setReviewState(agent.id, "none");
-          void this.approvals.expirePendingForAgent(agent.id);
           this.notifyReviewState(agent.id);
         }
         // A new run means any in-flight tool state from the previous run is
         // stale (a wedged/interrupted run may never have closed its tools).
         this.inFlightToolsByAgent.delete(agent.id);
         this.toolStartedAtByAgent.delete(agent.id);
-        this.steerVerifications.delete(agent.id);
-        this.deferredSteerVerifications.delete(agent.id);
         const runStartedAt = Date.now();
         // Bounds "this run" for the ready-for-review predicate (scope "all"):
         // kept past run end because stallTracking is torn down at the run
@@ -3385,8 +1612,6 @@ export class MissionControlService {
       // boundary itself is activity).
       this.inFlightToolsByAgent.delete(agent.id);
       this.toolStartedAtByAgent.delete(agent.id);
-      this.steerVerifications.delete(agent.id);
-      this.deferredSteerVerifications.delete(agent.id);
       if (agent.lifecycle === "error" && agent.session?.isRuntimeAlive?.() === false) {
         this.runningSubagentsByAgent.delete(agent.id);
         this.deferredFinishByAgent.delete(agent.id);
@@ -3612,17 +1837,6 @@ export class MissionControlService {
     }
   }
 
-  private trackCommanderInstructionIfApplicable(
-    agentId: string,
-    event: AgentStreamEvent,
-    seq?: number,
-  ): void {
-    const agent = this.agentManager.getAgent(agentId);
-    if (agent?.labels[MISSION_CONTROL_LABEL_KEY] === MISSION_CONTROL_LABEL_VALUE) {
-      this.trackCommanderInstruction(agentId, event, seq);
-    }
-  }
-
   private handleAgentStream(
     agentId: string,
     event: AgentStreamEvent,
@@ -3631,25 +1845,11 @@ export class MissionControlService {
   ): void {
     const now = Date.now();
     if (this.excludedAgentIds.has(agentId) || this.isExcludedAgent(null, agentId)) {
-      // Lifecycle-untracked agents (the Commander, non-verifier machinery,
-      // or a gated-off class) never reach the stall machinery — so the
-      // Commander tool-loop watchdog runs here.
-      this.trackCommanderToolLoop(agentId, event);
-      // Commander stream events still satisfy a pending steer verification
-      // (a steer to the Commander must be verified like any other): record
-      // real activity so an out-of-band steer to an excluded agent is never
-      // falsely marked undelivered. A tool's own terminal row is NOT steer
-      // activity (the tool predates the steer).
+      // Lifecycle-untracked agents (machinery or a gated-off class) never
+      // reach the stall machinery; only their activity is recorded.
       if (!isMachineryRow(event) && !isToolTerminalRow(event)) {
         this.lastActivityAtByAgent.set(agentId, now);
-        this.steerVerifications.delete(agentId);
       }
-      // Instruction-ledger fallback: track the Commander's delivery window
-      // (turn_started / assistant rows / turn completion) so a turn that
-      // answers in plain prose — no citing card — still closes its ledger
-      // rows via synthesized answer cards. Only the Commander is tracked
-      // (verifier streams carry no staged ids and would no-op anyway).
-      this.trackCommanderInstructionIfApplicable(agentId, event, seq);
       return;
     }
     const tracking = this.stallTracking.get(agentId);
@@ -3666,7 +1866,6 @@ export class MissionControlService {
       // the steer's effect (and counting it would let a steer queued behind
       // a long tool pass as "verified" without ever being processed).
       this.lastActivityAtByAgent.set(agentId, now);
-      this.steerVerifications.delete(agentId);
     }
     if (tracking) {
       if (!machineryRow) {
@@ -3752,7 +1951,6 @@ export class MissionControlService {
       // an interrupt mid-tool call): the in-flight set is per-turn.
       this.inFlightToolsByAgent.delete(agentId);
       this.toolStartedAtByAgent.delete(agentId);
-      this.promoteDeferredSteerVerification(agentId, now);
       this.logger.info(
         { component: "turn-lifecycle", agentId, type: event.type, turnAgeMs, runAgeMs },
         "agent.turn.ended",
@@ -3820,9 +2018,6 @@ export class MissionControlService {
     if (startedAt !== null) {
       this.toolStartedAtByAgent.get(agentId)?.delete(item.callId);
     }
-    if ((this.inFlightToolsByAgent.get(agentId)?.size ?? 0) === 0) {
-      this.promoteDeferredSteerVerification(agentId, now);
-    }
     this.logger.debug(
       {
         component: "turn-lifecycle",
@@ -3844,238 +2039,6 @@ export class MissionControlService {
       toolDurationMs: startedAt !== null ? now - startedAt : null,
       runAgeMs,
     });
-  }
-
-  /**
-   * Commander watchdog (narrow coverage for the otherwise-excluded class):
-   * track consecutive failed calls of the SAME tool within one turn whose
-   * errors are provider validation/not-configured rejections. At
-   * COMMANDER_TOOL_LOOP_THRESHOLD, emit exactly ONE Needs-you card naming the
-   * tool and the last error, so a looping Commander surfaces instead of
-   * appearing frozen. Card only — the Commander is never nudged or
-   * interrupted, and worker stall behavior is untouched (only MC-labeled
-   * agents reach this path).
-   */
-  private trackCommanderToolLoop(agentId: string, event: AgentStreamEvent): void {
-    const agent = this.agentManager.getAgent(agentId);
-    if (!agent || !hasMissionControlLabels(agent.labels)) {
-      return;
-    }
-    if (
-      event.type === "turn_completed" ||
-      event.type === "turn_failed" ||
-      event.type === "turn_canceled"
-    ) {
-      // The streak is per-turn: a turn boundary clears it so a fresh turn can
-      // surface again if it loops.
-      this.commanderToolLoops.delete(agentId);
-      return;
-    }
-    if (event.type !== "timeline" || event.item.type !== "tool_call") {
-      return;
-    }
-    const item = event.item;
-    if (item.status === "completed") {
-      // A successful call of the tracked tool breaks the consecutive streak.
-      const tracker = this.commanderToolLoops.get(agentId);
-      if (tracker && tracker.toolName === item.name) {
-        this.commanderToolLoops.delete(agentId);
-      }
-      return;
-    }
-    if (item.status !== "failed") {
-      return;
-    }
-    const message = toolCallErrorMessage(item.error);
-    if (!isProviderRejectionError(message)) {
-      return;
-    }
-    const previous = this.commanderToolLoops.get(agentId);
-    const consecutive = previous && previous.toolName === item.name ? previous.consecutive + 1 : 1;
-    const tracker = {
-      toolName: item.name,
-      consecutive,
-      lastError: message,
-      // One card per turn: keep the sent flag across streak increments so a
-      // turn that keeps failing past the threshold does not re-card.
-      cardSent: previous?.toolName === item.name ? previous.cardSent : false,
-    };
-    this.commanderToolLoops.set(agentId, tracker);
-    if (tracker.consecutive >= COMMANDER_TOOL_LOOP_THRESHOLD && !tracker.cardSent) {
-      tracker.cardSent = true;
-      this.logger.warn(
-        { component: "commander-watchdog", agentId, tool: item.name, consecutive, error: message },
-        "Commander looping on a failing tool; Needs-you card emitted",
-      );
-      void this.emitEvent({
-        agentId,
-        kind: "blocked",
-        source: "system",
-        severity: "blocker",
-        headline: `Commander needs you: "${item.name}" keeps failing`,
-        detail: `${item.name} failed ${consecutive} times in a row this turn — last error: ${message.slice(0, 200)}`,
-      });
-    }
-  }
-
-  /**
-   * Instruction-ledger fallback window tracking for the Commander's stream
-   * (excluded-agent path, Commander only): turn_started binds staged ids to
-   * the turn and opens the assistant-row window; assistant_message rows
-   * accumulate in seq order (the ordered-join convention CommanderAckDrop
-   * uses); turn_completed finalizes the window; turn_failed/turn_canceled
-   * keep the ids pending for the next delivery/recovery window and never
-   * synthesize (a failed turn's prose is not a completed answer).
-   */
-  private trackCommanderInstruction(agentId: string, event: AgentStreamEvent, seq?: number): void {
-    const tracker = this.commanderInstructionTracker(agentId);
-    if (event.type === "turn_started") {
-      tracker.turnStarted();
-      return;
-    }
-    if (event.type === "timeline" && event.item.type === "assistant_message") {
-      if (seq !== undefined) {
-        tracker.assistantRow(seq, event.item.text);
-      }
-      return;
-    }
-    if (event.type === "turn_completed") {
-      this.finalizeCommanderInstructionWindow(agentId, tracker);
-      return;
-    }
-    if (event.type === "turn_failed" || event.type === "turn_canceled") {
-      tracker.fail();
-    }
-  }
-
-  /**
-   * turn_completed: synthesize one generic answer card per still-open tracked
-   * id through the SAME emitCommanderCard path the Commander's own
-   * post_answer/clarify tools use — event format, feed UI, and ledger closure
-   * stay one path. Ids a genuine citing card already closed (respondsTo →
-   * closeInstructionForCard) are filtered out against the store's open set at
-   * this point, so the fallback never duplicates a real card. Machinery turns
-   * and unrelated old ledger rows never enter the tracked set and are never
-   * touched.
-   */
-  private finalizeCommanderInstructionWindow(
-    agentId: string,
-    tracker: CommanderInstructionTracker,
-  ): void {
-    const snapshot = tracker.complete();
-    this.commanderInstructionTrackers.delete(agentId);
-    if (!snapshot) {
-      return;
-    }
-    const openIds = new Set(this.store.listOpenInstructions().map((instruction) => instruction.id));
-    const stillOpen = snapshot.ids.filter((id) => openIds.has(id));
-    if (stillOpen.length === 0) {
-      return;
-    }
-    // A model that fails native function calling writes the call as literal
-    // markup. Nothing ran on the fleet, so synthesizing an answer card here
-    // would close the instruction and report work that never happened. Surface
-    // the failed dispatch instead and leave the row open.
-    if (hasLeakedMutatingToolCall(snapshot.text)) {
-      void this.reportLeakedToolDispatch(agentId, stillOpen, snapshot.text).catch((error) => {
-        this.logger.warn(
-          { err: error, agentId, component: "commander-card" },
-          "mission_control.instructions.leaked_tool_report_failed",
-        );
-      });
-      return;
-    }
-    void this.synthesizeCommanderAnswerCards(agentId, stillOpen, snapshot.text).catch((error) => {
-      this.logger.warn(
-        { err: error, agentId, component: "commander-card" },
-        "mission_control.instructions.synthetic_answer_failed",
-      );
-    });
-  }
-
-  /**
-   * Record a dispatch the Commander only *wrote* instead of calling: emit one
-   * failure card naming the leaked tools so the feed shows the instruction was
-   * not carried out, and leave the ledger row open so it still reads as
-   * unanswered.
-   */
-  private async reportLeakedToolDispatch(
-    agentId: string,
-    ids: string[],
-    text: string,
-  ): Promise<void> {
-    const leaked = detectLeakedToolCalls(text);
-    const headline = `Dispatch not sent: Commander wrote ${
-      leaked.length > 0 ? leaked.join(", ") : "a tool call"
-    } as text`.slice(0, SYNTHETIC_ANSWER_HEADLINE_CAP);
-    const event = await this.emitEvent({
-      agentId,
-      kind: "failed",
-      source: "system",
-      severity: "attention",
-      headline,
-      detail: stripLeakedToolMarkup(text).slice(0, SYNTHETIC_ANSWER_BODY_CAP),
-    });
-    this.logger.warn(
-      {
-        component: "commander-card",
-        eventId: event.id,
-        agentId,
-        instructionIds: ids,
-        leakedTools: leaked,
-      },
-      "mission_control.instructions.leaked_tool_dispatch",
-    );
-  }
-
-  /**
-   * Emit the synthetic answer cards for one finalized delivery window: one
-   * generic answer card per still-open tracked id, body = the turn's prose,
-   * respondsTo = the id (emitCommanderCard closes the ledger row). Headline
-   * follows the ledger's one-line style and the event's ≤120-char convention;
-   * body is capped so a long reply never balloons the feed card.
-   */
-  private async synthesizeCommanderAnswerCards(
-    agentId: string,
-    ids: string[],
-    text: string,
-  ): Promise<void> {
-    const byId = new Map(
-      this.store.listInstructions().map((instruction) => [instruction.id, instruction]),
-    );
-    for (const id of ids) {
-      const oneLine = (byId.get(id)?.text ?? "").replace(/\s+/g, " ").trim();
-      const headline = `Answer to ${id}${oneLine ? `: ${oneLine}` : ""}`.slice(
-        0,
-        SYNTHETIC_ANSWER_HEADLINE_CAP,
-      );
-      const event = await this.emitCommanderCard({
-        kind: "answer",
-        headline,
-        answer: {
-          kind: "generic",
-          headline,
-          body: stripLeakedToolMarkup(text).slice(0, SYNTHETIC_ANSWER_BODY_CAP),
-          respondsTo: id,
-        },
-      });
-      if (event) {
-        this.logger.info(
-          { component: "commander-card", eventId: event.id, instructionId: id, agentId },
-          "mission_control.instructions.synthetic_answer",
-        );
-      }
-    }
-  }
-
-  /** The per-Commander tracker for an agent id, created on first use. */
-  private commanderInstructionTracker(agentId: string): CommanderInstructionTracker {
-    let tracker = this.commanderInstructionTrackers.get(agentId);
-    if (!tracker) {
-      tracker = new CommanderInstructionTracker();
-      this.commanderInstructionTrackers.set(agentId, tracker);
-    }
-    return tracker;
   }
 
   /**
@@ -4125,33 +2088,18 @@ export class MissionControlService {
         this.fireDormantRecovery(agentId, tracking, dormantTurnSeconds);
       }
     }
-    // Honest steer delivery: confirm out-of-band steers produced real agent
-    // activity within the verification window.
-    this.sweepSteerVerifications(now);
   }
 
-  /**
-   * Interrupt-and-send recovery proposal through the approval gate: Ask mode
-   * sits as a card; Auto mode sends; presence/user-stop force ask. One per
-   * call — callers guarantee per-heal/per-lapse once semantics.
-   */
+  /** Interrupt-and-continue recovery. Callers guarantee once-per-heal/lapse. */
   private fireRecoveryProposal(agentId: string, reason: string): void {
-    void this.approvals
-      .createProposal({
-        origin: "stall",
-        serverId: this.serverId,
-        targetAgentId: agentId,
-        message: "Continue whatever you were working on and post a one-line report_status.",
-        deliveryMode: "interrupt",
-        reason,
-        classification: "normal",
-      })
-      .catch((error: unknown) => {
-        this.logger.warn(
-          { err: error, component: "stall", agentId },
-          "Failed to create stall recovery proposal",
-        );
-      });
+    void this.deliverMachineryPrompt({
+      agentId,
+      message: "Continue whatever you were working on and post a one-line report_status.",
+      deliveryMode: "interrupt",
+      reason,
+    }).catch((error: unknown) => {
+      this.logger.warn({ err: error, component: "stall", agentId }, "Stall recovery failed");
+    });
   }
 
   /**
@@ -4204,154 +2152,6 @@ export class MissionControlService {
       lastStreamAt: new Date(tracking.lastStreamAt).toISOString(),
       runAgeMs: Date.now() - tracking.runStartedAt,
     });
-  }
-
-  /**
-   * Honest steer delivery: after a machinery steer reports handled
-   * (tryRunOutOfBand accepted it), the agent must actually produce timeline
-   * activity within the verification window — the wedged-omp incident showed
-   * "handled" can be a lie (three nudges recorded "sent" while the loop was
-   * parked and the prompts vanished). One pending verification per agent; a
-   * newer steer replaces an older one (its proposal is superseded either
-   * way). handleAgentStream clears it on any real activity.
-   *
-   * Tool-in-flight gating (critical — the whole distinction): the 90s clock
-   * starts NOW only when no tool call is in flight. If a tool IS in flight,
-   * the steer is queued behind it (correct omp behavior for non-interruptible
-   * tools — a 5-minute build is not a wedge), so the verification is DEFERRED
-   * and its clock starts when the tool set empties. Only "steer acked + no
-   * tool in flight + no activity" is evidence of stranding — exactly the
-   * state the omp bug produces (the strand happens after the interruptible
-   * tool was ABORTED, so nothing is in flight). Verifying during a live tool
-   * would interrupt healthy agents mid-build.
-   */
-  private armSteerDeliveryVerification(
-    agentId: string,
-    proposal: MissionControlProposal | undefined,
-  ): void {
-    if (!proposal) {
-      return;
-    }
-    const armedAt = Date.now();
-    if ((this.inFlightToolsByAgent.get(agentId)?.size ?? 0) > 0) {
-      this.deferredSteerVerifications.set(agentId, { proposalId: proposal.id, armedAt });
-      this.logger.info(
-        {
-          component: "steer-verify",
-          agentId,
-          proposalId: proposal.id,
-          windowMs: STEER_DELIVERY_VERIFY_MS,
-          deferred: true,
-        },
-        "Out-of-band steer deferred for delivery verification (tool in flight)",
-      );
-      return;
-    }
-    this.steerVerifications.set(agentId, {
-      proposalId: proposal.id,
-      armedAt,
-      deadline: armedAt + STEER_DELIVERY_VERIFY_MS,
-    });
-    this.logger.info(
-      {
-        component: "steer-verify",
-        agentId,
-        proposalId: proposal.id,
-        windowMs: STEER_DELIVERY_VERIFY_MS,
-      },
-      "Out-of-band steer armed for delivery verification",
-    );
-  }
-
-  /**
-   * Start the verification clock for a steer that was deferred behind an
-   * in-flight tool call, now that the in-flight set is empty. The tool's own
-   * terminal row that triggered this is NOT steer activity (it predates the
-   * steer), so the fresh window measures the steer's effect alone.
-   */
-  private promoteDeferredSteerVerification(agentId: string, now: number): void {
-    const deferred = this.deferredSteerVerifications.get(agentId);
-    if (!deferred) {
-      return;
-    }
-    this.deferredSteerVerifications.delete(agentId);
-    this.steerVerifications.set(agentId, {
-      proposalId: deferred.proposalId,
-      armedAt: now,
-      deadline: now + STEER_DELIVERY_VERIFY_MS,
-    });
-    this.logger.info(
-      {
-        component: "steer-verify",
-        agentId,
-        proposalId: deferred.proposalId,
-        windowMs: STEER_DELIVERY_VERIFY_MS,
-      },
-      "Deferred steer verification armed (in-flight tool terminated)",
-    );
-  }
-
-  /**
-   * Verification sweep: an out-of-band steer that produced NO agent activity
-   * within the window was never processed. Never leave the proposal recorded
-   * "sent" for a message that did not land — mark it undelivered (terminal,
-   * auditable) and escalate via the existing recovery interrupt, once per
-   * lapse (shared latch with the stall escalation and dormant-turn detector).
-   */
-  private sweepSteerVerifications(now: number): void {
-    for (const [agentId, verification] of this.steerVerifications) {
-      if (now < verification.deadline) {
-        continue;
-      }
-      this.steerVerifications.delete(agentId);
-      const producedActivity =
-        (this.lastActivityAtByAgent.get(agentId) ?? 0) > verification.armedAt;
-      if (producedActivity) {
-        continue;
-      }
-      const proposal = this.approvals.getProposal(verification.proposalId);
-      this.logger.error(
-        {
-          component: "steer-verify",
-          agentId,
-          proposalId: verification.proposalId,
-          windowMs: STEER_DELIVERY_VERIFY_MS,
-          proposalStatus: proposal?.status ?? null,
-        },
-        "Out-of-band steer reported handled but the agent produced NO activity; marking undelivered and escalating",
-      );
-      this.lifecycleLog.write({
-        event: "steer_unverified",
-        agentId,
-        proposalId: verification.proposalId,
-        windowMs: STEER_DELIVERY_VERIFY_MS,
-      });
-      if (proposal && proposal.status === "sent") {
-        void this.approvals.markUndelivered(proposal.id).catch((error: unknown) => {
-          this.logger.warn(
-            { err: error, component: "steer-verify", agentId, proposalId: proposal.id },
-            "Failed to mark steer proposal undelivered",
-          );
-        });
-      }
-      const tracking = this.stallTracking.get(agentId);
-      if (tracking && tracking.dormantRecoveredAt === null) {
-        tracking.dormantRecoveredAt = now;
-        void this.emitEvent({
-          agentId,
-          kind: "stalled",
-          source: "system",
-          severity: "attention",
-          headline: "Steer undelivered (no agent activity after delivery)",
-        });
-        this.fireRecoveryProposal(
-          agentId,
-          `A steer was reported handled but produced no agent activity for >${Math.round(
-            STEER_DELIVERY_VERIFY_MS / 1000,
-          )}s — the turn loop may be wedged`,
-        );
-      }
-    }
   }
 
   /**
@@ -4555,26 +2355,6 @@ export class MissionControlService {
     );
   }
 
-  private commanderAgentIdCache: string | null | undefined = undefined;
-
-  /** The Commander's agent id, cached for the sync classification path.
-   * Fleet-wide: on a peer host this resolves the designated commander host's
-   * commander over peering (see resolveFleetCommanderAgentId). */
-  private cachedCommanderAgentId(): string | null {
-    if (this.commanderAgentIdCache === undefined) {
-      this.commanderAgentIdCache = null;
-      void this.resolveFleetCommanderAgentId()
-        .then((id) => {
-          this.commanderAgentIdCache = id;
-          return id;
-        })
-        .catch(() => {
-          this.commanderAgentIdCache = null;
-        });
-    }
-    return this.commanderAgentIdCache;
-  }
-
   private classifyAgent(agent: {
     internal?: boolean;
     labels: Record<string, string>;
@@ -4582,14 +2362,14 @@ export class MissionControlService {
     if (agent.internal) {
       return "never";
     }
-    return classifyAgentLabels(agent.labels, this.cachedCommanderAgentId());
+    return classifyAgentLabels(agent.labels);
   }
 
   /**
    * Whether the agent participates in Mission Control lifecycle events
-   * (started/finished/failed cards, run records, review states). Verifier,
-   * Commander-worker, and subagent classes read the central-config gates;
-   * the Commander and other machinery are never tracked; root agents always.
+   * (started/finished/failed cards, run records, review states). Subagents
+   * read the central-config gate; machinery is never tracked; root agents
+   * always.
    */
   private isLifecycleTracked(agent: {
     internal?: boolean;
@@ -4598,10 +2378,6 @@ export class MissionControlService {
     switch (this.classifyAgent(agent)) {
       case "never":
         return false;
-      case "verifier":
-        return this.centralConfig.get().trackVerifiers;
-      case "commander-worker":
-        return this.centralConfig.get().trackCommanderWorkers;
       case "subagent":
         return this.centralConfig.get().trackSubagents;
       case "root":
@@ -4611,18 +2387,12 @@ export class MissionControlService {
 
   /**
    * Whether the agent participates in the stall machinery (nudges, the
-   * dormant-turn detector, dead-runtime reconciliation). Root agents and
-   * Commander workers are stall-tracked; verifiers and plain subagents are
-   * not — their turns have legitimate silence (a verifier reads a worker
-   * timeline; a subagent answers to its parent), so MC must not nudge or
-   * wedge-recover them.
+   * dormant-turn detector, dead-runtime reconciliation). Only root agents are
+   * stall-tracked: a subagent answers to its parent and has legitimate
+   * silence, so MC must not nudge or wedge-recover it.
    */
   private isStallTracked(agent: { internal?: boolean; labels: Record<string, string> }): boolean {
-    const cls = this.classifyAgent(agent);
-    if (cls === "root") {
-      return true;
-    }
-    return cls === "commander-worker" && this.centralConfig.get().trackCommanderWorkers;
+    return this.classifyAgent(agent) === "root";
   }
 
   /**
@@ -4824,23 +2594,18 @@ export class MissionControlService {
       return;
     }
     this.systemAbortRecoveryByRun.add(key);
-    void this.approvals
-      .createProposal({
-        origin: "stall",
-        serverId: this.serverId,
-        targetAgentId: agentId,
-        message:
-          "Your last turn was killed provider-side (request aborted) before it finished. Continue whatever you were working on from where it stopped, then post a one-line report_status.",
-        deliveryMode: "steer",
-        reason: "Provider-side abort killed the turn; one resume proposed",
-        classification: "normal",
-      })
-      .catch((error: unknown) => {
-        this.logger.warn(
-          { err: error, component: "turn-lifecycle", agentId },
-          "Failed to create system-abort resume proposal",
-        );
-      });
+    void this.deliverMachineryPrompt({
+      agentId,
+      message:
+        "Your last turn was killed provider-side (request aborted) before it finished. Continue whatever you were working on from where it stopped, then post a one-line report_status.",
+      deliveryMode: "steer",
+      reason: "Provider-side abort killed the turn; one resume",
+    }).catch((error: unknown) => {
+      this.logger.warn(
+        { err: error, component: "turn-lifecycle", agentId },
+        "System-abort resume failed",
+      );
+    });
   }
 
   private handleProviderSubagentEvent(
@@ -4944,392 +2709,7 @@ export class MissionControlService {
     }
     // M6 run records: a run-end or verdict event finalizes the run's record.
     this.maybeAssembleRunRecordForEvent(event);
-    // M3 runtime model: the feed keeps the event; the Commander no longer
-    // receives event streams as chat. Chat carries only decisions (spec 07):
-    // blocked/stalled events trigger a machinery turn only when they carry a
-    // decision card (pending proposal or clarification), verdict-insufficient
-    // keeps routing, and terminal events (finished / failed / interrupted)
-    // never wake the Commander — the board/feed rail carries the outcome. The
-    // fresh world snapshot rides the same turn via the
-    // CommanderSnapshotInjector's beforeAgentRun seam.
-    this.maybeDispatchMachineryTurn(event);
-    // M9 cross-host follow-through: when THIS daemon is NOT the commander
-    // host, a terminal event for one of its commander-dispatched workers can
-    // never reach the commander host's machinery-turn gate locally (that host
-    // has no record of a peer-host worker). Forward the event over peering so
-    // the commander host runs the gate with the worker's labels from the
-    // payload.
-    this.maybeForwardTerminalEventToCommander(event);
     return event;
-  }
-
-  // --- M3 machinery turns (docs/commander.md "Runtime model") ---
-
-  /**
-   * Event kinds that qualify for a machinery turn, mode aside. Chat carries
-   * only decisions (spec 07): blocked (permission / verification-failed /
-   * tool-loop) and stalled (escalation, dormant-turn, steer-undelivered,
-   * self-heal) qualify ONLY when the event carries a decision card — a
-   * pending proposal or a clarification; a plain blocked/stalled stays
-   * board+badge only. Verdict-insufficient (the verdict does NOT resolve the
-   * item — review state ready/none, and the card is not state-only) keeps
-   * routing. State-only verdicts (user Mark done / Clear, verifier-done,
-   * aged-out) already resolved the item — the board moved, the world
-   * snapshot carries the new bucket on the next user turn, and the
-   * Commander is not consulted. Terminal events (finished / failed /
-   * interrupted) NEVER qualify — even for dispatched agents; the
-   * board/feed rail carries the outcome. started / milestone / finding
-   * never qualify. The mode gate lives in runMachineryTurnGate: ask mode
-   * dispatches only dispatched-agent events (any action the Commander
-   * takes becomes a gated proposal card, so the follow-up is safe), auto
-   * mode dispatches everything that qualifies.
-   */
-  private async shouldDispatchMachineryTurn(
-    event: MissionControlEvent,
-    labelsOverride?: Record<string, string> | null,
-  ): Promise<boolean> {
-    if (event.kind === "blocked" || event.kind === "stalled") {
-      // Board + badge only; chat only when the event carries a decision card
-      // (pending proposal or clarification).
-      return event.clarification !== undefined || event.proposal?.status === "pending";
-    }
-    if (event.kind === "verdict") {
-      // User Mark done / Clear and verifier-done cards stamp stateOnly.
-      // They resolved the item; do not wake the Commander to acknowledge
-      // board bookkeeping. Verdict-insufficient cards carry no flag.
-      if (event.stateOnly === true) {
-        return false;
-      }
-      if (
-        await this.isDispatchedByLabels(labelsOverride ?? (await this.agentLabels(event.agentId)))
-      ) {
-        return true;
-      }
-      const review = this.store.getReviewState(event.agentId);
-      return review?.reviewState === "ready" || review?.reviewState === "none";
-    }
-    return false;
-  }
-
-  /**
-   * Fire-and-forget machinery turn: delivers the qualifying event to the
-   * Commander as a steer-classified machinery message. Ask mode dispatches
-   * only Commander-dispatched-agent events (a machinery turn is safe there
-   * because any action the Commander takes becomes a gated proposal card);
-   * non-dispatched events stay AUTO-mode-only (noise control). Follow-up
-   * turns (verdicts on dispatched agents) are rate-limited to one per agent
-   * per run epoch; decision-carrying blocked/stalled events never claim a
-   * slot. The fresh world snapshot rides the same delivery automatically —
-   * the delivered message goes through startAgentRun, whose beforeAgentRun
-   * seam runs the CommanderSnapshot Injector first. Failures are logged,
-   * never surfaced: the event card already reached the feed, and the event
-   * is never re-queued (payloads are computed at delivery).
-   */
-  private maybeDispatchMachineryTurn(
-    event: MissionControlEvent,
-    labelsOverride?: Record<string, string> | null,
-  ): void {
-    void this.runMachineryTurnGate(event, labelsOverride).catch((error) => {
-      // centralConfig reads and the dispatched check can throw pre-
-      // initialization; never let the event emission path fail on the
-      // machinery-turn side effect.
-      this.logger.warn(
-        { err: error, eventId: event.id },
-        "mission_control.machinery_turn.gate_failed",
-      );
-    });
-  }
-
-  private async runMachineryTurnGate(
-    event: MissionControlEvent,
-    labelsOverride?: Record<string, string> | null,
-  ): Promise<void> {
-    if (!(await this.shouldDispatchMachineryTurn(event, labelsOverride))) {
-      return;
-    }
-    const dispatched = await this.isDispatchedByLabels(
-      labelsOverride ?? (await this.agentLabels(event.agentId)),
-    );
-    if (this.centralConfig.get().mode !== "auto" && !dispatched) {
-      return;
-    }
-    if (dispatched && !this.claimMachineryTurnSlot(event)) {
-      return;
-    }
-    try {
-      await this.dispatchMachineryTurn(event);
-    } catch (error) {
-      this.logger.warn(
-        { err: error, eventId: event.id, kind: event.kind, agentId: event.agentId },
-        "mission_control.machinery_turn.dispatch_failed",
-      );
-    }
-  }
-
-  /**
-   * Whether the Commander dispatched this agent: spawned via fleet_create_agent
-   * (label paseo.parent-agent-id pointing at a Commander-labeled agent) or
-   * adopted via a delivered fleet_send_prompt (paseo.commander-adopted-at).
-   * Live labels first, then the durable stored record (the marker must
-   * survive reloads and agent restarts — same fallback as the Commander
-   * identity check).
-   */
-  /**
-   * Whether the given worker labels mark the agent as Commander-dispatched:
-   * spawned via fleet_create_agent (label paseo.parent-agent-id pointing at a
-   * Commander-labeled agent) or adopted via a delivered fleet_send_prompt
-   * (paseo.commander-adopted-at). Used by the local gate with the worker's
-   * OWN labels AND by the forwarded-event gate with the labels that rode the
-   * mission_control.event.forward payload (the commander host has no local
-   * record of a peer-host worker, but the parent check still resolves — the
-   * parent is the commander agent, which lives HERE).
-   */
-  private async isDispatchedByLabels(labels: Record<string, string> | null): Promise<boolean> {
-    const parentAgentId = getParentAgentIdFromLabels(labels);
-    if (parentAgentId) {
-      const parentLabels = await this.agentLabels(parentAgentId);
-      if (parentLabels?.[MISSION_CONTROL_LABEL_KEY] === MISSION_CONTROL_LABEL_VALUE) {
-        return true;
-      }
-    }
-    const adoptedAt = labels?.[COMMANDER_ADOPTED_AT_LABEL];
-    return typeof adoptedAt === "string" && adoptedAt.trim().length > 0;
-  }
-
-  /** Live labels first, then the durable stored record. */
-  private async agentLabels(agentId: string): Promise<Record<string, string> | null> {
-    const live = this.agentManager.getAgent(agentId);
-    if (live?.labels) {
-      return live.labels;
-    }
-    const record = await this.agentStorage.get(agentId).catch(() => null);
-    return record?.labels ?? null;
-  }
-
-  /**
-   * One follow-up machinery turn per agent per run epoch for verdicts (a
-   * verifier retry posting a second insufficient verdict must not re-alert
-   * the Commander). Terminal events no longer qualify (spec 07) so they never
-   * reach the slot claim; decision-carrying blocked/stalled events keep their
-   * own guards and never claim a slot. Claims the slot before dispatch — one
-   * attempt per epoch, mirroring the run-record dedupe state.
-   */
-  private claimMachineryTurnSlot(event: MissionControlEvent): boolean {
-    if (event.kind !== "verdict") {
-      return true;
-    }
-    const key = `${event.agentId}:${event.runEpoch ?? 0}:verdict`;
-    if (this.machineryTurnedRunEpochs.has(key)) {
-      return false;
-    }
-    this.machineryTurnedRunEpochs.add(key);
-    if (this.machineryTurnedRunEpochs.size > MACHINERY_TURN_RUN_DEDUPE_CAP) {
-      const first = this.machineryTurnedRunEpochs.values().next().value;
-      if (typeof first === "string") {
-        this.machineryTurnedRunEpochs.delete(first);
-      }
-    }
-    return true;
-  }
-
-  private async dispatchMachineryTurn(event: MissionControlEvent): Promise<void> {
-    const commanderId = await this.resolveCommanderAgentId();
-    if (!commanderId) {
-      this.logger.debug(
-        { eventId: event.id, kind: event.kind },
-        "mission_control.machinery_turn.no_commander",
-      );
-      return;
-    }
-    if (event.agentId === commanderId) {
-      // The Commander's own card (e.g. a failed spawn) must not be messaged
-      // back to itself — events the Commander's own follow-up produces about
-      // ITSELF never re-trigger a machinery turn.
-      return;
-    }
-    await dispatchLocalPromptMode({
-      agentManager: this.agentManager,
-      agentStorage: this.agentStorage,
-      agentId: commanderId,
-      prompt: buildMachineryTurnMessage(
-        event,
-        this.serverId,
-        this.hostName,
-        this.machineryTurnExtras(event),
-      ),
-      mode: "steer",
-      classification: "machinery",
-      replaceOrigin: "machinery",
-      recordStopOrigin: (agentId, origin) => this.store.recordStopOrigin(agentId, origin),
-      logger: this.logger,
-      onOutOfBandSteer: () => {
-        this.armSteerDeliveryVerification(commanderId, undefined);
-      },
-    });
-    this.logger.info(
-      { eventId: event.id, kind: event.kind, agentId: event.agentId },
-      "mission_control.machinery_turn.dispatched",
-    );
-  }
-
-  /**
-   * Follow-up message extras: the worker's last report_status headline and
-   * (when present) the verdict line, so the Commander can decide the
-   * follow-up without a look-up round trip.
-   */
-  private machineryTurnExtras(event: MissionControlEvent): {
-    lastReportHeadline?: string;
-    verdictLine?: string;
-  } {
-    const lastReportHeadline = this.lastSelfReportHeadline(event.agentId);
-    const verdict = this.store.getReviewState(event.agentId).verdict;
-    let verdictLine: string | undefined;
-    if (verdict) {
-      verdictLine = `Verdict: ${verdict.summary} (by ${verdict.by})`;
-    } else if (event.kind === "verdict" && event.detail?.trim()) {
-      verdictLine = `Verdict: ${event.detail.trim()}`;
-    }
-    return {
-      ...(lastReportHeadline ? { lastReportHeadline } : {}),
-      ...(verdictLine ? { verdictLine } : {}),
-    };
-  }
-
-  /** Headline of the agent's most recent report_status self-report, if any. */
-  private lastSelfReportHeadline(agentId: string): string | null {
-    for (const event of this.store.fetchEvents({ includeSuperseded: true })) {
-      if (event.agentId === agentId && event.source === "self") {
-        return event.headline;
-      }
-    }
-    return null;
-  }
-
-  // --- M9 cross-host event forwarding (docs/commander.md "Runtime model") ---
-
-  /**
-   * Forward a terminal event to the commander host over peering
-   * (mission_control.event.forward) when THIS daemon is NOT the commander
-   * host and the event's agent is one the Commander dispatched (labeled
-   * paseo.parent-agent-id or paseo.commander-adopted-at — the parent record
-   * lives on the commander host, so presence is the forward-side test). The
-   * commander host runs its machinery-turn gate with the worker's labels from
-   * the payload (it has no local record of a peer-host worker). Fire-and-
-   * forget and advisory: an unreachable commander host is a warn + drop,
-   * never a retry queue in v1.
-   */
-  private maybeForwardTerminalEventToCommander(event: MissionControlEvent): void {
-    void this.runForwardTerminalEventToCommander(event).catch((error) => {
-      this.logger.warn(
-        { err: error, eventId: event.id, kind: event.kind },
-        "mission_control.event_forward.gate_failed",
-      );
-    });
-  }
-
-  private async runForwardTerminalEventToCommander(event: MissionControlEvent): Promise<void> {
-    if (
-      event.kind !== "finished" &&
-      event.kind !== "failed" &&
-      event.kind !== "interrupted" &&
-      event.kind !== "verdict"
-    ) {
-      return;
-    }
-    const designated = this.centralConfig.get().commanderHost?.trim() || null;
-    if (designated === null || this.isThisCommanderHost(designated)) {
-      return;
-    }
-    const labels = await this.agentLabels(event.agentId);
-    if (!labels || !hasCommanderDispatchMarker(labels)) {
-      return;
-    }
-    await this.forwardEventToCommander(designated, event, labels);
-  }
-
-  private async forwardEventToCommander(
-    commanderHost: string,
-    event: MissionControlEvent,
-    labels: Record<string, string>,
-  ): Promise<void> {
-    const peerManager = this.resolvePeerManager();
-    const peerStatus = peerManager?.getPeerStatus(commanderHost) ?? null;
-    const peerClient = peerManager?.getPeerClient(commanderHost) ?? null;
-    if (!peerStatus || peerStatus.state !== "online" || !peerClient) {
-      // Machinery is advisory: unreachable commander host → warn + drop.
-      this.logger.warn(
-        {
-          commanderHost,
-          state: peerStatus?.state ?? "not-configured",
-          eventId: event.id,
-          kind: event.kind,
-          agentId: event.agentId,
-        },
-        "mission_control.event_forward.commander_unreachable",
-      );
-      return;
-    }
-    try {
-      const payload = await peerClient.missionControlEventForward({ event, labels });
-      if (!payload.ok) {
-        this.logger.warn(
-          { commanderHost, eventId: event.id, error: payload.error },
-          "mission_control.event_forward.rejected",
-        );
-      }
-    } catch (error) {
-      this.logger.warn(
-        { err: error, commanderHost, eventId: event.id },
-        "mission_control.event_forward.failed",
-      );
-    }
-  }
-
-  /**
-   * Ingest a terminal event forwarded by a NON-commander host over peering
-   * (mission_control.event.forward — the session handler routes here). The
-   * worker's labels ride the payload so the machinery-turn gate can decide
-   * without a local record of the worker (the parent-commander check still
-   * resolves: the parent is the commander agent, which lives HERE). The event
-   * is NEVER written to this host's events store — the feed aggregates
-   * per-host via the app — and never re-broadcast; only the gate consumes it.
-   */
-  async ingestForwardedEvent(input: {
-    event: MissionControlEvent;
-    labels: Record<string, string> | null;
-  }): Promise<{ ok: true } | { ok: false; error: string }> {
-    this.maybeDispatchMachineryTurn(input.event, input.labels ?? {});
-    return { ok: true };
-  }
-
-  /** Proposal cards ride the feed as kind:"proposal" events. */
-  private async emitProposalEvent(proposal: MissionControlProposal): Promise<MissionControlEvent> {
-    const pending = proposal.status === "pending";
-    // Meta-kind proposals may target fleet objects rather than an agent
-    // (rename/archive project·workspace, create project, promote): their
-    // targetAgentId is "" by convention. The card still needs a real event
-    // identity — fall back to the Commander (the origin of these cards) so
-    // the feed resolves a live agent title and drill-in works.
-    let agentId = proposal.targetAgentId;
-    if (proposal.kind === "meta" && !agentId) {
-      agentId = (await this.resolveCommanderAgentId()) ?? agentId;
-    }
-    return this.emitEvent({
-      agentId,
-      kind: "proposal",
-      source: proposal.origin === "verifier" ? "verifier" : "system",
-      severity: pending ? "blocker" : "info",
-      headline: pending
-        ? `Proposal (${proposal.origin}): ${proposal.reason}`
-        : `Proposal ${proposal.status}`,
-      detail: proposal.message,
-      proposal,
-      // Verifier-origin drill-in: the card opens the verifier's thread.
-      ...(proposal.verifierAgentId ? { verifierAgentId: proposal.verifierAgentId } : {}),
-      // Machinery-only cards (stall status-ask nudges) render in verbose
-      // mode only; everything else is a normal-mode card. Absent → normal.
-      ...(proposal.verboseOnly ? { verboseOnly: true } : {}),
-    });
   }
 
   /** Verdict cards ride the feed as kind:"verdict" events. */
@@ -5608,55 +2988,6 @@ export class MissionControlService {
 type MissionControlCentralConfigPatch = Parameters<CentralMissionControlConfigStore["patch"]>[0];
 
 /**
- * Result of an ownership-aware central-config write (patchCentralConfigRouted
- * / setModeRouted). ok:true config is the resolved config (from this daemon
- * when it is the owner, or the commander host's response when forwarded);
- * ok:false means the write was NOT applied anywhere — unreachableCommanderHost
- * names the host the forward failed on (additive wire field). The config
- * rides the wire as the optional-keyed MissionControlCentralConfig shape
- * (resolved configs are assignable to it; the app resolves defaults again at
- * the RPC boundary).
- */
-export type CentralConfigWriteResult =
-  | {
-      ok: true;
-      config: MissionControlCentralConfig;
-    }
-  | {
-      ok: false;
-      error: string;
-      /** The local (unchanged) resolved snapshot, for the wire response. */
-      config: MissionControlCentralConfig;
-      unreachableCommanderHost?: string;
-    };
-
-function mapReportStatus(input: MissionControlReportStatusInput): {
-  kind: MissionControlAppendInput["kind"];
-  severity: MissionControlAppendInput["severity"];
-  reportKind?: MissionControlReportStatusInput["kind"];
-} {
-  switch (input.status) {
-    case "blocked":
-      return { kind: "blocked", severity: "blocker", reportKind: input.kind };
-    case "completed":
-      return { kind: "finished", severity: "info", reportKind: input.kind };
-    case "inconclusive":
-      return { kind: "diverged", severity: "attention", reportKind: input.kind };
-    case "working":
-      switch (input.kind) {
-        case "finding":
-        case "fix":
-        case "decision":
-          return { kind: "finding", severity: "info", reportKind: input.kind };
-        case "progress":
-        case "milestone":
-        case undefined:
-          return { kind: "milestone", severity: "info", reportKind: input.kind };
-      }
-  }
-}
-
-/**
  * A machinery-originated user row (the status-ask steer's own timeline
  * placeholder) is the tracker's prompt, never agent activity. Used by the
  * stream handler for the silence clock, steer verification, and the dormant
@@ -5684,50 +3015,52 @@ function isToolTerminalRow(event: AgentStreamEvent): boolean {
 }
 
 /**
- * Forward-side dispatched-worker test (M9): the worker carries
- * paseo.parent-agent-id (its parent record — the commander agent — lives on
- * the commander host, so presence is the test here, not a parent-labels
- * lookup) or paseo.commander-adopted-at. The commander host re-checks with
- * the full gate (parent labels resolve there).
- */
-function hasCommanderDispatchMarker(labels: Record<string, string>): boolean {
-  return (
-    getParentAgentIdFromLabels(labels) !== null ||
-    typeof labels[COMMANDER_ADOPTED_AT_LABEL] === "string"
-  );
-}
-
-/**
  * Why an agent participates in Mission Control lifecycle events. The
  * Commander itself and non-verifier machinery (monitors, build-hash stamps)
  * are never tracked; root agents always; verifiers, Commander workers, and
  * plain subagents per the central-config gates.
  */
-export type McTrackingClass = "never" | "verifier" | "commander-worker" | "subagent" | "root";
+export type McTrackingClass = "never" | "subagent" | "root";
 
 /**
  * Pure label classification. `commanderAgentId` is the host's Commander id
  * (cached by the service): a parent-labeled agent whose parent IS the
  * Commander is a Commander worker; any other parent makes it a subagent.
  */
-export function classifyAgentLabels(
-  labels: Record<string, string>,
-  commanderAgentId: string | null,
-): McTrackingClass {
-  if (labels[MISSION_CONTROL_LABEL_KEY] === MISSION_CONTROL_LABEL_VALUE) {
-    return "never"; // the Commander itself
+export function classifyAgentLabels(labels: Record<string, string>): McTrackingClass {
+  if (
+    Object.keys(labels).some(
+      (key) =>
+        key === MISSION_CONTROL_LABEL_PREFIX || key.startsWith(`${MISSION_CONTROL_LABEL_PREFIX}.`),
+    )
+  ) {
+    return "never"; // machinery (old Commander/Verifier records, build-hash stamps)
   }
-  if (labels[MISSION_CONTROL_LABEL_KEY] === MISSION_CONTROL_VERIFIER_LABEL_VALUE) {
-    return "verifier";
+  return getParentAgentIdFromLabels(labels) ? "subagent" : "root";
+}
+
+function mapReportStatus(input: MissionControlReportStatusInput): {
+  kind: MissionControlAppendInput["kind"];
+  severity: MissionControlAppendInput["severity"];
+  reportKind?: MissionControlReportStatusInput["kind"];
+} {
+  switch (input.status) {
+    case "blocked":
+      return { kind: "blocked", severity: "blocker", reportKind: input.kind };
+    case "completed":
+      return { kind: "finished", severity: "info", reportKind: input.kind };
+    case "inconclusive":
+      return { kind: "diverged", severity: "attention", reportKind: input.kind };
+    case "working":
+      switch (input.kind) {
+        case "finding":
+        case "fix":
+        case "decision":
+          return { kind: "finding", severity: "info", reportKind: input.kind };
+        case "progress":
+        case "milestone":
+        case undefined:
+          return { kind: "milestone", severity: "info", reportKind: input.kind };
+      }
   }
-  if (Object.keys(labels).some((key) => key.startsWith(`${MISSION_CONTROL_LABEL_PREFIX}.`))) {
-    return "never"; // other machinery (monitors, build-hash stamps)
-  }
-  const parentAgentId = getParentAgentIdFromLabels(labels);
-  if (parentAgentId) {
-    return commanderAgentId !== null && parentAgentId === commanderAgentId
-      ? "commander-worker"
-      : "subagent";
-  }
-  return "root";
 }

@@ -405,11 +405,10 @@ ${HOST_NODE}
 const SERVICE_SCRIPTS: Partial<Record<Service, string>> = {
   "code-server": 'bash scripts/code-server/install.sh "$BIND"',
   "stall-cron": `${HOST_NODE}; bash scripts/install-stall-cron.sh "$PWD" "$HOME/.paseo" "$NODE"`,
-  voice: 'PASEO_HOME="$HOME/.paseo" bash scripts/commander-voice/install.sh',
   "macbook-watch": 'bash scripts/install-macbook-redeploy-watch.sh "$PWD" "$HOME/.paseo"',
 };
 
-/** Run a service's installer from the kit (or the checkout, for voice and the watch). */
+/** Run a service's installer from the kit (or the checkout, for the watch). */
 async function serviceStep(run: Run, host: Host, service: Service, log: Log): Promise<void> {
   const script = SERVICE_SCRIPTS[service];
   if (!script) return;
@@ -422,7 +421,6 @@ async function serviceStep(run: Run, host: Host, service: Service, log: Log): Pr
       // reached over NetBird only.
       BIND: host.daemon === "desktop" ? "127.0.0.1:8765" : `${host.address}:8765`,
       PASEO_PASSWORD: process.env[passwordVar(host.name)] ?? "",
-      PASEO_COMMANDER_VOICE_PASSWORD: process.env.PASEO_COMMANDER_VOICE_PASSWORD ?? "",
       GEMINI_API_KEY: process.env.GEMINI_API_KEY ?? "",
     },
   });

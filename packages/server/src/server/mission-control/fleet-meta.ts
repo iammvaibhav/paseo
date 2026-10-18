@@ -1,9 +1,7 @@
 import type {
   MissionControlMetaPlan,
-  MissionControlProposal,
   MissionControlProposalMetaPlanAction,
 } from "@getpaseo/protocol/mission-control/types";
-import type { ProposalCreateInput } from "./approvals.js";
 import { formatShortId, type FleetIdResolution } from "./fleet-id-index.js";
 import type { AgentManager } from "../agent/agent-manager.js";
 import type { AgentStorage } from "../agent/agent-storage.js";
@@ -19,28 +17,15 @@ import {
 } from "./meta-actions.js";
 
 /**
- * M5 fleet_meta tool (Commander): the proposal builder for the approval gate.
- * `buildFleetMetaProposalInput` validates the incoming metaPlan against live
- * fleet state (target exists, rename non-empty, promote source is a workspace
- * in the per-host experiments project) and produces the meta-kind
- * ProposalCreateInput the gate decides on. The paseo-tools `fleet_meta`
- * registration routes through `runCommanderGatedAction`, which calls this
- * builder, then creates the proposal (ask mode holds the card, auto mode
- * applies, archive actions classify destructive so they ALWAYS ask). On
- * approval the daemon applies the action through the metaFromProposal hook
- * (bootstrap) — see meta-actions.ts.
+ * Meta-action plans for fleet_meta and the split per-action tools.
+ * `validateFleetMetaPlan` checks a plan against live fleet state (target exists,
+ * rename non-empty, promote source is in the experiments project) before it is
+ * applied (meta-actions.ts).
  *
  * Cross-host: `metaPlan.serverId` names the target host ("local" or a peer
- * name). The builder resolves it through the same fleet map fleet_create_agent
- * uses; an UNKNOWN host is a validation refusal before the gate (tool error,
- * never a card). Local targets validate against THIS host's registries; peer
- * targets can only be shape-validated here (their registry state lives on the
- * target) — the apply routes over peering and the peer validates against ITS
- * registries (see applyMetaFromProposal).
- *
- * targetAgentId convention (M4): "" for project/workspace actions (the
- * proposal card event falls back to the Commander's id), the real agent id
- * for agent-targeted actions (rename_agent_title, archive_agent, move_agent).
+ * name), resolved through the same fleet map fleet_create_agent uses; an unknown
+ * host is refused. Local targets validate against this host's registries; peer
+ * targets are shape-validated here and fully validated by the peer on apply.
  */
 
 export interface BuildFleetMetaProposalInput {
@@ -56,50 +41,14 @@ export interface BuildFleetMetaProposalInput {
   lookup: MetaActionsLookupDependencies;
 }
 
-function describeMetaPlan(plan: MissionControlMetaPlan): string {
-  const target = plan.targetLabel?.trim() || plan.targetId?.trim() || "(target)";
-  const newValue = plan.newValue?.trim() ?? "";
-  const destination = plan.destination?.trim() ?? "";
-  const base = (() => {
-    switch (plan.action) {
-      case "rename_project":
-        return `Rename project ${target} to "${newValue}"`;
-      case "rename_workspace":
-        return `Rename workspace ${target} to "${newValue}"`;
-      case "rename_agent_title":
-        return `Rename agent ${target} title to "${newValue}"`;
-      case "archive_project":
-        return `Archive project ${target}`;
-      case "archive_workspace":
-        return `Archive workspace ${target}`;
-      case "archive_agent":
-        return `Archive agent ${target}`;
-      case "create_project":
-        return `Create project at ${destination}`;
-      case "move_agent":
-        return `Move agent ${target} to workspace ${destination}`;
-      case "promote_workspace":
-        return `Promote workspace ${target} to its own project`;
-      case "adopt_agent":
-        return `Adopt agent ${target} (take over its lifecycle, no message sent)`;
-      case "release_agent":
-        return `Release agent ${target} from Commander management`;
-    }
-  })();
-  // The card must read as fleet-wide: a non-local target names the host it
-  // applies to (the proposal event detail — event.detail — is this message).
-  const host = plan.serverId?.trim();
-  return host && host !== "local" ? `${base} on ${host}` : base;
-}
-
 /**
  * Validate the plan against live state and build the gate payload. Throws a
  * plain Error on invalid plans (the tool surfaces it as a tool error so the
  * Commander can fix the argument and retry — never a proposal for nonsense).
  */
-export async function buildFleetMetaProposalInput(
+export async function validateFleetMetaPlan(
   input: BuildFleetMetaProposalInput,
-): Promise<ProposalCreateInput> {
+): Promise<MissionControlMetaPlan> {
   const { serverId, metaPlan, lookup } = input;
   // Resolve the target host BEFORE any registry validation: a plan aimed at a
   // peer must not be judged against THIS host's registries (the bug that put
@@ -131,35 +80,7 @@ export async function buildFleetMetaProposalInput(
       throw new Error(validation.error);
     }
   }
-  // Agent-targeted actions carry a real targetAgentId on the proposal
-  // (M4 convention); project/workspace actions use "" (the proposal event
-  // falls back to the Commander's id).
-  const agentTargeted =
-    metaPlan.action === "rename_agent_title" ||
-    metaPlan.action === "archive_agent" ||
-    metaPlan.action === "move_agent" ||
-    metaPlan.action === "adopt_agent" ||
-    metaPlan.action === "release_agent";
-  const targetAgentId = agentTargeted ? (metaPlan.targetId?.trim() ?? "") : "";
-  return {
-    origin: "commander",
-    serverId,
-    targetAgentId,
-    message: describeMetaPlan(metaPlan),
-    deliveryMode: "interrupt",
-    reason: "Commander meta action",
-    classification: isDestructiveMetaAction(metaPlan.action) ? "destructive" : "normal",
-    kind: "meta",
-    metaPlan,
-  };
-}
-
-/** Destructive-classification hook for runCommanderGatedAction (authoritative
- *  over the builder's classification). */
-export function classifyFleetMetaAction(
-  metaPlan: MissionControlMetaPlan,
-): "normal" | "destructive" {
-  return isDestructiveMetaAction(metaPlan.action) ? "destructive" : "normal";
+  return metaPlan;
 }
 
 export { isDestructiveMetaAction, resolveExperimentsProject, resolveMetaTargetHost };
@@ -196,8 +117,6 @@ export interface SplitMetaToolArgs {
   newValue?: string;
   /** move_agent target workspace id; create_project root path. */
   destination?: string;
-  /** M8 instruction ledger: the open instruction id this dispatch answers. */
-  respondsTo?: string;
 }
 
 export interface SplitMetaToolDeps {
@@ -360,11 +279,11 @@ async function resolveMetaToolTarget(
  * byte-identical. Throws a plain Error on invalid calls (the tool surfaces
  * it as a tool error so the Commander fixes the argument and retries).
  */
-export async function buildSplitMetaProposalInput(
+export async function buildSplitMetaPlan(
   deps: SplitMetaToolDeps,
   args: SplitMetaToolArgs,
-): Promise<ProposalCreateInput> {
-  const { action, kind, targetId, host, newValue, destination, respondsTo } = args;
+): Promise<MissionControlMetaPlan> {
+  const { action, kind, targetId, host, newValue, destination } = args;
   const metaPlan: MissionControlMetaPlan = { action };
   if (kind === "create-project") {
     // No id: the new project root must land on an explicit host (the schema
@@ -402,38 +321,11 @@ export async function buildSplitMetaProposalInput(
       metaPlan.destination = destination;
     }
   }
-  const proposalInput = await buildFleetMetaProposalInput({
+  return validateFleetMetaPlan({
     serverId: deps.serverId,
     hostAlias: deps.hostAlias,
     peerManager: deps.peerManager,
     metaPlan,
     lookup: deps.lookup,
   });
-  return respondsTo ? { ...proposalInput, respondsTo } : proposalInput;
-}
-
-/** The structured outcome every meta tool reports (same as fleet_meta today):
- *  pending card, applied, or failed (an immediate apply that errored). */
-export function formatMetaToolOutcome(proposal: MissionControlProposal): Record<string, unknown> {
-  if (proposal.status === "failed") {
-    return {
-      ok: false,
-      proposalId: proposal.id,
-      error: proposal.failureReason ?? `Meta action failed (proposal ${proposal.id})`,
-    };
-  }
-  if (proposal.status === "pending") {
-    return {
-      ok: true,
-      status: "pending",
-      proposalId: proposal.id,
-      guidance: `Meta action sent for approval (proposal ${proposal.id}). It will be applied once approved.`,
-    };
-  }
-  return {
-    ok: true,
-    status: "sent",
-    proposalId: proposal.id,
-    guidance: `Meta action applied (proposal ${proposal.id}).`,
-  };
 }

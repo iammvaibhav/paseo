@@ -9,13 +9,11 @@ import { z } from "zod";
 import { hashDaemonPassword } from "../auth.js";
 import type { AgentPromptInput } from "../agent/agent-sdk-types.js";
 import { createTestAgentClients } from "../test-utils/fake-agent-client.js";
-import {
-  createFleetHarness,
-  fleetExec,
-  spawnWorker,
-  waitFor,
-} from "../test-utils/fleet-harness.js";
+import { createFleetHarness, spawnWorker, waitFor } from "../test-utils/fleet-harness.js";
 
+const HarnessConfigSchema = z.looseObject({
+  daemon: z.object({ mcp: z.object({ remoteClients: z.array(z.unknown()) }) }),
+});
 const ContentSchema = z.array(z.looseObject({ type: z.string(), text: z.string().optional() }));
 const UploadedFileBlockSchema = z.object({
   type: z.literal("uploaded_file"),
@@ -46,7 +44,7 @@ function waitForPrompt(prompts: CapturedPrompt[], marker: string): Promise<Captu
 
 describe("images and files cross hosts over /mcp/fleet", () => {
   test(
-    "an MCP client and the Commander deliver uploaded images and files to an agent on a peer",
+    "MCP clients on two hosts deliver uploaded images and files to an agent on a peer",
     { timeout: 240_000 },
     async () => {
       const prompts: CapturedPrompt[] = [];
@@ -62,7 +60,7 @@ describe("images and files cross hosts over /mcp/fleet", () => {
         // Register an MCP client on A (the config is re-read per request).
         const token = "cross-host-images-token";
         const configPath = path.join(harness.daemons.A.paseoHome, "config.json");
-        const config = JSON.parse(await readFile(configPath, "utf8")) as Record<string, unknown>;
+        const config = HarnessConfigSchema.parse(JSON.parse(await readFile(configPath, "utf8")));
         await writeFile(
           configPath,
           JSON.stringify({
@@ -70,7 +68,11 @@ describe("images and files cross hosts over /mcp/fleet", () => {
             daemon: {
               mcp: {
                 enabled: true,
-                remoteClients: [{ name: "grok-bot", tokenHash: hashDaemonPassword(token) }],
+                // Keep the harness's own client: fleetExec still talks to A.
+                remoteClients: [
+                  ...config.daemon.mcp.remoteClients,
+                  { name: "grok-bot", tokenHash: hashDaemonPassword(token) },
+                ],
               },
             },
           }),
@@ -146,28 +148,6 @@ describe("images and files cross hosts over /mcp/fleet", () => {
           data: bShot.toString("base64"),
           mimeType: "image/png",
         });
-
-        // 3. Commander (gated) send with an image: the proposal's message names a
-        // copy on B, so approving delivers a file B's agent can open. Steer never
-        // waits for B's previous run (queue would block the approval on it).
-        const gated = await fleetExec(harness.clients.A, "fleet_send_prompt", {
-          agentId,
-          prompt: "gated send with image",
-          mode: "steer",
-          images: [{ fileId: shotId }],
-        });
-        const proposalId = z.string().parse(gated.proposalId);
-        const approved = await harness.clients.A.missionControlProposalsRespond({
-          proposalId,
-          action: "approve",
-        });
-        expect(approved.ok).toBe(true);
-        const gatedPrompt = JSON.stringify(
-          (await waitForPrompt(prompts, "gated send with image")).prompt,
-        );
-        const gatedPath = /Path: ([^\\]+)\\n/.exec(gatedPrompt)?.[1];
-        expect(gatedPath?.startsWith(path.join(harness.daemons.B.paseoHome, "uploads"))).toBe(true);
-        await expect(readFile(gatedPath!)).resolves.toEqual(shot);
       } finally {
         await mcp.close().catch(() => undefined);
         await harness.close();

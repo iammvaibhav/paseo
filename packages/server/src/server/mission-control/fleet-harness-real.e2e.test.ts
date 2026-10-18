@@ -4,7 +4,6 @@ import {
   fleetExec,
   resolveDeepseekModel,
   waitForAgentRow,
-  waitForEvent,
 } from "../test-utils/fleet-harness.js";
 
 /**
@@ -42,40 +41,17 @@ describe("real-model fleet spawn (deepseek v4 flash)", () => {
           return;
         }
         const targetCwd = `${harness.daemons.B.paseoHomeRoot}/real-worker`;
-        const exec = await harness.clients.A.missionControlToolsExecute({
-          name: "fleet_create_agent",
-          args: {
-            host: "B",
-            provider: model,
-            initialPrompt:
-              "Create a file named fleet-real-proof.txt containing the text PASS, then call report_status with status completed, headline 'real model proof', and description 'real-model fleet spawn proof'.",
-            title: "Real model worker",
-            cwd: targetCwd,
-          },
+        const exec = await fleetExec(harness.clients.A, "fleet_create_agent", {
+          host: "B",
+          provider: model,
+          initialPrompt:
+            "Create a file named fleet-real-proof.txt containing the text PASS, then call report_status with status completed, headline 'real model proof', and description 'real-model fleet spawn proof'.",
+          title: "Real model worker",
+          cwd: targetCwd,
         });
-        expect(exec.ok).toBe(true);
-        const proposalId = exec.structuredContent?.proposalId as string | undefined;
-        let agentId = exec.structuredContent?.agentId as string | undefined;
-        if (proposalId) {
-          const approve = await harness.clients.A.missionControlProposalsRespond({
-            proposalId,
-            action: "approve",
-          });
-          expect(approve.ok).toBe(true);
-          // The call-time payload is pending-approval (agentId null); the
-          // spawned id arrives on the approved proposal event.
-          const proposalEvent = await waitForEvent(
-            harness.clients.A,
-            (e) =>
-              e.kind === "proposal" &&
-              e.proposal?.id === proposalId &&
-              Boolean(e.proposal?.spawnedAgentId),
-            { label: "real spawn executed", timeoutMs: 120_000 },
-          );
-          agentId = proposalEvent.proposal?.spawnedAgentId as string | undefined;
-        }
-        if (!agentId) {
-          throw new Error("real spawn produced no agentId and no proposalId");
+        const agentId = exec.agentId;
+        if (typeof agentId !== "string") {
+          throw new Error(`real spawn produced no agentId: ${JSON.stringify(exec)}`);
         }
         const row = await waitForAgentRow(
           harness.clients.B,

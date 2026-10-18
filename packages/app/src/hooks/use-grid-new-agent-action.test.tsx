@@ -114,7 +114,7 @@ describe("useGridNewAgentAction", () => {
 
   it("does not intercept workspace.new when grid view is not open (commander view)", () => {
     let dispatcher: Dispatcher | null = null;
-    useAgentGridStore.getState().setView("commander");
+    useAgentGridStore.getState().setView("board");
 
     renderHook(
       () => {
@@ -155,7 +155,7 @@ describe("useGridNewAgentAction", () => {
 
   it("falls through to lower-priority global handler when grid is not active", () => {
     let dispatcher: Dispatcher | null = null;
-    useAgentGridStore.getState().setView("commander");
+    useAgentGridStore.getState().setView("board");
     const globalHandler = vi.fn(() => true);
 
     renderHook(

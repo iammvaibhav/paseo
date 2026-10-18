@@ -205,6 +205,13 @@ export interface ItsaplanWebhookResponse {
   body: { ok: boolean; error?: string };
 }
 
+export interface ItsaplanWorkerDispatch {
+  title: string;
+  brief: string;
+  images?: Array<{ data: string; mimeType: string }>;
+  labels: Record<string, string>;
+}
+
 export interface ItsaplanBridgeOptions {
   logger: Logger;
   serverId: string;
@@ -218,17 +225,12 @@ export interface ItsaplanBridgeOptions {
   /** Resolves the Paseo project key for an agent's workspace/cwd. */
   resolvePaseoProjectKey?: (agentId: string) => Promise<string | null>;
   /**
-   * Delivers a machinery-classified prompt to the Commander agent (the same
-   * dispatchLocalPromptMode primitive Mission Control's own machinery turns
-   * use — see service.ts `dispatchMachineryTurn`). Returns false when no
-   * Commander is resolvable. Injected rather than built from a raw
-   * AgentManager/AgentStorage pair so this module stays independently
-   * testable; bootstrap.ts wires the real implementation.
+   * Starts the ticket's worker agent: placed from the brief (host, project,
+   * model, mode) and labeled with the ticket so the bridge tracks it.
+   * Returns the new agent id, or null when it could not be created. Injected
+   * so this module stays testable; bootstrap.ts wires fleet_create_agent.
    */
-  deliverMachineryPrompt: (
-    prompt: string,
-    images?: Array<{ data: string; mimeType: string }>,
-  ) => Promise<boolean>;
+  dispatchWorker: (input: ItsaplanWorkerDispatch) => Promise<string | null>;
   /**
    * Steers the agent the user is answering mid-turn — the same path a user
    * message in Paseo takes for a blocked worker (sendPromptToAgent with
@@ -304,7 +306,6 @@ function formatProofsComment(proofs: MissionControlProof[] | undefined): string 
 }
 
 export interface BuildDispatchPromptInput {
-  issueId: number;
   ticketKey: string;
   title: string;
   body: string;
@@ -323,7 +324,7 @@ export interface BuildDispatchPromptInput {
 
 export function buildDispatchPrompt(input: BuildDispatchPromptInput): string {
   const lines: string[] = [
-    "itsaplan ticket moved to Todo with zero open blockers — ready to dispatch.",
+    `You own itsaplan ticket ${input.ticketKey}. Work it to done and report on it.`,
     `Project: ${input.projectKey}`,
     `Ticket: ${input.ticketKey} — ${input.title}`,
     `URL: ${input.url}`,
@@ -348,8 +349,7 @@ export function buildDispatchPrompt(input: BuildDispatchPromptInput): string {
   if (input.nativeImageCount && input.nativeImageCount > 0) {
     lines.push("");
     lines.push(
-      `${input.nativeImageCount} image${input.nativeImageCount === 1 ? "" : "s"} attached natively (same as composer paste).`,
-      "Pass them through fleet_create_agent images when spinning the worker — do not fetch ticket image URLs.",
+      `${input.nativeImageCount} image${input.nativeImageCount === 1 ? "" : "s"} from the ticket ${input.nativeImageCount === 1 ? "is" : "are"} attached to this message.`,
     );
   }
 
@@ -364,7 +364,7 @@ export function buildDispatchPrompt(input: BuildDispatchPromptInput): string {
   lines.push("");
   lines.push(
     "<instructions>",
-    `Dispatch a worker for this ticket. Label the new agent "${ITSAPLAN_ISSUE_LABEL_KEY}": "${input.issueId}" so the bridge can move the ticket and post progress as the agent's execution state changes.`,
+    "Use the ticketed-work and verifiable-artifact skills. Paseo moves the ticket's column and mirrors your report_status milestones onto it; do not move columns yourself.",
     "</instructions>",
   );
 
@@ -386,10 +386,7 @@ export class ItsaplanBridge {
   private readonly fleet?: ItsaplanBridgeFleet;
   private readonly projectStore: ItsaplanProjectStore;
   private readonly getConfig: () => ItsaplanCentralConfig | null;
-  private readonly deliverMachineryPrompt: (
-    prompt: string,
-    images?: Array<{ data: string; mimeType: string }>,
-  ) => Promise<boolean>;
+  private readonly dispatchWorker: ItsaplanBridgeOptions["dispatchWorker"];
   private readonly steerWorkerPrompt: (agentId: string, prompt: string) => Promise<void>;
   private readonly resolvePaseoProjectKey?: (agentId: string) => Promise<string | null>;
 
@@ -418,7 +415,7 @@ export class ItsaplanBridge {
     if (options.fleet) this.fleet = options.fleet;
     this.projectStore = options.projectStore;
     this.getConfig = options.getConfig;
-    this.deliverMachineryPrompt = options.deliverMachineryPrompt;
+    this.dispatchWorker = options.dispatchWorker;
     this.steerWorkerPrompt = options.steerWorkerPrompt;
     this.resolvePaseoProjectKey = options.resolvePaseoProjectKey;
   }
@@ -702,7 +699,6 @@ export class ItsaplanBridge {
     ]);
 
     const prompt = buildDispatchPrompt({
-      issueId: issue.id,
       ticketKey,
       title: issue.title,
       body: issue.description ?? "",
@@ -712,12 +708,19 @@ export class ItsaplanBridge {
       attachments: attachments.files.length > 0 ? attachments.files : undefined,
       nativeImageCount: attachments.images.length,
     });
-    const delivered = await this.deliverMachineryPrompt(
-      prompt,
-      attachments.images.length > 0 ? attachments.images : undefined,
-    );
-    if (!delivered) {
-      this.logger.warn({ issueId: issue.id }, "itsaplan.bridge.no_commander_to_dispatch_ticket");
+    const agentId = await this.dispatchWorker({
+      title: `${ticketKey} ${issue.title}`.slice(0, 60),
+      brief: prompt,
+      ...(attachments.images.length > 0 ? { images: attachments.images } : {}),
+      labels: { [ITSAPLAN_ISSUE_LABEL_KEY]: String(issue.id) },
+    });
+    if (agentId) {
+      this.logger.info(
+        { issueId: issue.id, ticketKey, agentId },
+        "itsaplan.bridge.worker_dispatched",
+      );
+    } else {
+      this.logger.warn({ issueId: issue.id, ticketKey }, "itsaplan.bridge.worker_dispatch_failed");
     }
   }
 

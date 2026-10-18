@@ -14,8 +14,6 @@ import { useSessionStore } from "@/stores/session-store";
 import { openAgentFromHistory } from "@/workspace/open-agent-from-history";
 import { useWorkspaceOpenState } from "@/mission-control/workspace-open-state";
 import type { Theme } from "@/styles/theme";
-import { useAggregatedMissionControlEvents } from "@/hooks/use-aggregated-mission-control-events";
-import { ProposalCard } from "@/screens/mission-control/proposal-card";
 import { EmbeddedAgentPane } from "./embedded-agent-pane";
 import { useInspectorStore, type InspectorTarget } from "./inspector-store";
 
@@ -109,21 +107,6 @@ export function MissionControlInspector({
   // this host is unavailable (often a wrong-host lookup), not archived — it
   // must never label the agent Archived.
   const showArchivedBanner = isArchived || workspaceIsArchived;
-
-  // Pending approval cards for THIS verifier's exchange (verifier-origin
-  // proposals awaiting Approve/Edit/Deny): shown above the verifier's thread
-  // so the audit conversation and its gate are visible together.
-  const { events: missionControlEvents } = useAggregatedMissionControlEvents();
-  const pendingExchangeCards = useMemo(
-    () =>
-      missionControlEvents.filter(
-        (event) =>
-          event.kind === "proposal" &&
-          event.proposal?.status === "pending" &&
-          event.proposal.verifierAgentId === agentId,
-      ),
-    [agentId, missionControlEvents],
-  );
 
   const openInWorkspaceTrailing = useMemo(
     () => <ThemedArrowUpRight size={14} uniProps={arrowUpRightMutedMapping} />,
@@ -237,15 +220,6 @@ export function MissionControlInspector({
           <Text style={styles.archivedBannerText}>
             {t("missionControl.inspector.archivedBanner")}
           </Text>
-        </View>
-      ) : null}
-      {pendingExchangeCards.length > 0 ? (
-        <View style={styles.pendingCards} testID="mission-control-inspector-pending-exchange">
-          {pendingExchangeCards.map((event) =>
-            event.proposal ? (
-              <ProposalCard key={event.id} proposal={event.proposal} event={event} />
-            ) : null,
-          )}
         </View>
       ) : null}
       <EmbeddedAgentPane

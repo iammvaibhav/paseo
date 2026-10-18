@@ -8,13 +8,13 @@ import { createTestLogger } from "../../test-utils/test-logger.js";
 import type { PersistedProjectRecord } from "../workspace-registry.js";
 import {
   attachItsaplanProjectSync,
+  deriveItsaplanProjectKey,
   ensureItsaplanProjectMapping,
   ensureTodoColumnNoCommanderAutoAssign,
   ItsaplanProjectStore,
   resolveItsaplanConfig,
   runItsaplanProjectResync,
   type ItsaplanCentralConfig,
-  type ItsaplanFleetProjectCandidate,
   type ItsaplanProjectSyncDependencies,
 } from "./projects.js";
 import { ItsaplanClient } from "./client.js";
@@ -359,7 +359,6 @@ describe("itsaplan project sync", () => {
       getConfig: () => config,
       getWebhookUrl: () => "http://127.0.0.1:9999/api/itsaplan/webhook",
       paseoHome,
-      isDesignatedSyncHost: () => true,
       logger: createTestLogger(),
     };
   });
@@ -495,83 +494,15 @@ describe("itsaplan project sync", () => {
       }),
     ];
 
-    const result = await runItsaplanProjectResync({ local: projects, fleet: null }, deps);
+    const result = await runItsaplanProjectResync(projects, deps);
     expect(result).toEqual({ mapped: 2, skipped: 1, failed: 0 });
     expect(fakeServer.createdProjects.map((p) => p.key).sort()).toEqual(["A", "B"]);
     expect(store.list()).toHaveLength(2);
 
     // Idempotent re-run: the same sweep creates nothing new.
-    await runItsaplanProjectResync({ local: projects, fleet: null }, deps);
+    await runItsaplanProjectResync(projects, deps);
     expect(fakeServer.createdProjects).toHaveLength(2);
     expect(fakeServer.registeredWebhooks).toHaveLength(2);
-  });
-
-  test("resync is inert on a non-designated sync host", async () => {
-    const result = await runItsaplanProjectResync(
-      { local: [project()], fleet: [{ hostName: "macbook", projectKey: "MAC", name: "Mac" }] },
-      { ...deps, isDesignatedSyncHost: () => false },
-    );
-    expect(result).toEqual({ mapped: 0, skipped: 0, failed: 0 });
-    expect(fakeServer.createdProjects).toHaveLength(0);
-    expect(
-      await ensureItsaplanProjectMapping(project(), {
-        ...deps,
-        isDesignatedSyncHost: () => false,
-      }),
-    ).toBeNull();
-  });
-
-  test("fleet candidates dedupe by projectKey: a repo on two hosts maps once", async () => {
-    // paseo checked out on two hosts shares the cross-host remote key.
-    const fleet: ItsaplanFleetProjectCandidate[] = [
-      { hostName: "local", projectKey: "remote:github.com/iammvaibhav/paseo", name: "paseo" },
-      { hostName: "macbook", projectKey: "remote:github.com/iammvaibhav/paseo", name: "paseo-dev" },
-      { hostName: "macbook", projectKey: "MAC:/Users/vaibhav", name: "MacBook" },
-    ];
-    const result = await runItsaplanProjectResync({ local: [], fleet }, deps);
-    expect(result).toEqual({ mapped: 2, skipped: 1, failed: 0 });
-    expect(fakeServer.createdProjects.map((p) => p.key).sort()).toEqual(["MACBOOK", "PASEO"]);
-  });
-
-  test("resync drops the rootPath-less fleet copy of a local internal project", async () => {
-    // A reserved home inside a git repo keys as remote:<repo>#subdir:<path>
-    // with no `.paseo` segment, so the fleet key convention cannot catch it —
-    // only the local loop's seenKeys entry (added before `continue`) drops
-    // the rootPath-less copy the fleet inventory re-reports.
-    const internalKey = "remote:github.com/x/y#subdir:.dev/verify/v-1/hosts/commander/commander";
-    const local = [
-      project({
-        projectId: "cmd",
-        projectKey: internalKey,
-        displayName: "commander",
-        rootPath: join(paseoHome, "commander"),
-      }),
-    ];
-    const fleet: ItsaplanFleetProjectCandidate[] = [
-      { hostName: "local", projectKey: internalKey, name: "commander" },
-    ];
-    const result = await runItsaplanProjectResync({ local, fleet }, deps);
-    expect(result).toEqual({ mapped: 0, skipped: 2, failed: 0 });
-    expect(fakeServer.createdProjects).toHaveLength(0);
-    expect(store.list()).toHaveLength(0);
-  });
-
-  test("resync skips peer reserved-home subdir keys but still maps normal subdirs", async () => {
-    const fleet: ItsaplanFleetProjectCandidate[] = [
-      {
-        hostName: "peer",
-        projectKey: "remote:github.com/x/y#subdir:home/.paseo/commander",
-        name: "commander",
-      },
-      {
-        hostName: "peer",
-        projectKey: "remote:github.com/x/y#subdir:packages/app",
-        name: "app",
-      },
-    ];
-    const result = await runItsaplanProjectResync({ local: [], fleet }, deps);
-    expect(result).toEqual({ mapped: 1, skipped: 1, failed: 0 });
-    expect(fakeServer.createdProjects.map((p) => p.key)).toEqual(["APP"]);
   });
 
   test("a create-key 409 adopts our own crashed earlier attempt instead of failing", async () => {
@@ -588,12 +519,31 @@ describe("itsaplan project sync", () => {
     });
     expect(fakeServer.createdProjects).toHaveLength(0);
     expect(store.getByPaseoProjectKey("PROJ")?.itsaplanProjectId).toBe(7);
+    // The crashed attempt never registered a webhook, so this one does.
+    expect(fakeServer.registeredWebhooks).toHaveLength(1);
+  });
+
+  test("a board another host created is adopted without a second webhook", async () => {
+    // The same repo on another host created and wired the board first.
+    fakeServer.projectIdByKey.set("REPO", 7);
+    fakeServer.descriptionByKey.set("REPO", "PROJ");
+    fakeServer.webhooksById.set(3, {
+      id: 3,
+      projectId: 7,
+      url: "http://100.123.36.124:6767/api/itsaplan/webhook",
+      events: [],
+      isActive: true,
+    });
+    const mapping = await ensureItsaplanProjectMapping(project(), deps);
+    expect(mapping).toMatchObject({ itsaplanProjectKey: "REPO", itsaplanProjectId: 7 });
+    expect(mapping?.webhookId).toBeUndefined();
+    expect(fakeServer.registeredWebhooks).toHaveLength(0);
   });
 
   test("a same-named project on another host gets a deterministic suffixed key", async () => {
     // Two hosts each have a project called "experiments": itsaplan enforces
     // project_key_unique globally, so the second must NOT share or adopt the
-    // first's board — it falls back to EXPERIMENTS-<hash-of-its-own-key>.
+    // first's board — it falls back to EXPERI<hash-of-its-own-key>.
     const first = await ensureItsaplanProjectMapping(
       project({ projectId: "a", projectKey: "host:a/experiments", displayName: "experiments" }),
       deps,
@@ -602,8 +552,8 @@ describe("itsaplan project sync", () => {
       project({ projectId: "b", projectKey: "host:b/experiments", displayName: "experiments" }),
       deps,
     );
-    expect(first?.itsaplanProjectKey).toBe("EXPERIMENTS");
-    expect(second?.itsaplanProjectKey).toMatch(/^EXPERIMENTS-[0-9A-F]{4}$/);
+    expect(first?.itsaplanProjectKey).toBe("EXPERIMENT");
+    expect(second?.itsaplanProjectKey).toMatch(/^EXPERI[0-9A-F]{4}$/);
     expect(second?.itsaplanProjectKey).not.toBe(first?.itsaplanProjectKey);
     expect(second?.paseoProjectKey).toBe("host:b/experiments");
     expect(fakeServer.createdProjects.map((p) => p.key)).toHaveLength(2);
@@ -613,7 +563,7 @@ describe("itsaplan project sync", () => {
     fakeServer.projectIdByKey.set("REPO", 9);
     fakeServer.descriptionByKey.set("REPO", ""); // created manually, no paseo stamp
     const mapping = await ensureItsaplanProjectMapping(project(), deps);
-    expect(mapping?.itsaplanProjectKey).toMatch(/^REPO-[0-9A-F]{4}$/);
+    expect(mapping?.itsaplanProjectKey).toMatch(/^REPO[0-9A-F]{4}$/);
     expect(mapping?.itsaplanProjectId).not.toBe(9);
   });
 
@@ -722,6 +672,22 @@ describe("itsaplan project sync", () => {
     expect(conflictMapping?.commanderUsername).toBe(conflictUsername);
     expect(conflictMapping?.commanderAgentId).toBe(99);
     expect(conflictMapping?.commanderApiKey).toBe("itp_agent_regen_99");
+  });
+});
+
+describe("deriveItsaplanProjectKey", () => {
+  test("always yields a key itsaplan accepts", () => {
+    for (const name of [
+      "video-understanding",
+      "2048-game",
+      "paseo",
+      "Ambient AI / StackMod",
+      "--",
+    ]) {
+      expect(deriveItsaplanProjectKey(name)).toMatch(/^[A-Z][A-Z0-9]{0,9}$/);
+    }
+    expect(deriveItsaplanProjectKey("video-understanding")).toBe("VIDEOUNDER");
+    expect(deriveItsaplanProjectKey("2048-game")).toBe("P2048GAME");
   });
 });
 

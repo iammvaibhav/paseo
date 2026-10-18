@@ -558,23 +558,6 @@ export interface AgentManagerOptions {
     initialPrompt?: string;
   }) => Promise<string | null | undefined> | string | null | undefined;
   onWorkspaceStateMayHaveChanged?: (params: { cwd: string }) => void;
-  /**
-   * Per-turn pre-run hook (bootstrap-wired to the Commander snapshot
-   * injector). Invoked by startAgentRun for EVERY run — user messages,
-   * machinery turns, interrupt replacements — before the run starts, so a
-   * hook can dispatch its own machinery turn (a fresh world snapshot) ahead
-   * of the delivered prompt. The hook gates itself by agent labels and must
-   * be cheap for ordinary agents. `replaceRunning` mirrors the startAgentRun
-   * option the delivered message rides with — the injector uses it to tell
-   * the user-message path (replace) from the queue/machinery path (settle
-   * and proceed).
-   */
-  beforeAgentRun?: (input: {
-    agentId: string;
-    prompt: AgentPromptInput;
-    runOptions?: AgentRunOptions;
-    replaceRunning?: boolean;
-  }) => Promise<void> | void;
   durableTimelineStore?: AgentTimelineStore;
   terminalManager?: TerminalManager | null;
   mcpBaseUrl?: string;
@@ -590,18 +573,6 @@ export interface AgentManagerOptions {
    * agents regardless of this flag.
    */
   missionControlSelfReportEnabled?: boolean;
-  /**
-   * Mission Control Commander launch-contract re-derivation (bootstrap-wired
-   * to commander-boot). When present, prepareSessionConfig overlays the
-   * returned contract onto EVERY session build (create, reload, resume,
-   * import) for agents whose labels match — so a Commander session never comes
-   * back from a reload/resume with the default coding prompt or an
-   * unrestricted tool catalog, even when its stored record predates contract
-   * persistence. Returns null for non-Commander agents (workers untouched).
-   */
-  resolveCommanderLaunchContract?: (
-    labels: Record<string, string>,
-  ) => Partial<AgentSessionConfig> | null;
   agentStreamCoalesceWindowMs?: number;
   rescueTimeouts?: AgentManagerRescueTimeouts;
   beforeSteerUnavailableFallback?: (input: {
@@ -1205,14 +1176,12 @@ export class AgentManager {
   private appendSystemPrompt: string;
   private missionControlSelfReportEnabled: boolean;
   private metadataCompletion: ((prompt: string) => Promise<string | null>) | null = null;
-  private resolveCommanderLaunchContract: AgentManagerOptions["resolveCommanderLaunchContract"];
   private resolveDefaultModel: AgentManagerOptions["resolveDefaultModel"];
   private onAgentAttention?: AgentAttentionCallback;
   private onAgentFinished?: AgentFinishedCallback;
   private onAgentArchived?: AgentArchivedCallback;
   private onAgentCreated?: AgentManagerOptions["onAgentCreated"];
   private onWorkspaceStateMayHaveChanged?: (params: { cwd: string }) => void;
-  private beforeAgentRunCallback?: AgentManagerOptions["beforeAgentRun"];
   private logger: Logger;
   private readonly rescueTimeouts: Required<AgentManagerRescueTimeouts>;
   private readonly beforeSteerUnavailableFallback?: AgentManagerOptions["beforeSteerUnavailableFallback"];
@@ -1270,7 +1239,6 @@ export class AgentManager {
     this.onAgentFinished = options?.onAgentFinished;
     this.onAgentCreated = options?.onAgentCreated;
     this.onWorkspaceStateMayHaveChanged = options?.onWorkspaceStateMayHaveChanged;
-    this.beforeAgentRunCallback = options?.beforeAgentRun;
     this.beforeSteerUnavailableFallback = options?.beforeSteerUnavailableFallback;
     this.mcpBaseUrl = options?.mcpBaseUrl ?? null;
     this.mcpAuthToken = options?.mcpAuthToken ?? null;
@@ -1278,7 +1246,6 @@ export class AgentManager {
     this.resolvePaseoToolPolicy = options.resolvePaseoToolPolicy ?? (() => undefined);
     this.appendSystemPrompt = options.appendSystemPrompt ?? "";
     this.missionControlSelfReportEnabled = options.missionControlSelfReportEnabled ?? true;
-    this.resolveCommanderLaunchContract = options.resolveCommanderLaunchContract;
     this.resolveDefaultModel = options.resolveDefaultModel;
     this.logger = options.logger.child({ module: "agent", component: "agent-manager" });
     this.rescueTimeouts = AgentManager.resolveRescueTimeouts(options);
@@ -1794,21 +1761,6 @@ export class AgentManager {
   getAgent(id: string): ManagedAgent | null {
     const agent = this.agents.get(id);
     return agent ? { ...agent } : null;
-  }
-
-  /**
-   * The startAgentRun pre-run seam (wired by agent-prompt): fires the
-   * bootstrap-registered beforeAgentRun hook (the Commander snapshot
-   * injector) for every run, before the delivered prompt starts. The hook
-   * gates itself by agent labels; without a registered hook this is a no-op.
-   */
-  async beforeAgentRun(input: {
-    agentId: string;
-    prompt: AgentPromptInput;
-    runOptions?: AgentRunOptions;
-    replaceRunning?: boolean;
-  }): Promise<void> {
-    await this.beforeAgentRunCallback?.(input);
   }
 
   async waitForAgentClose(agentId: string): Promise<void> {
@@ -7183,20 +7135,10 @@ export class AgentManager {
     } = {},
   ): Promise<PreparedSessionConfig> {
     const { labels } = options;
-    let storedConfig = await this.normalizeConfig(stripInternalPaseoMcpServer(config), {
+    const storedConfig = await this.normalizeConfig(stripInternalPaseoMcpServer(config), {
       env: options.env,
       purpose: options.purpose,
     });
-    const commanderContract = this.resolveCommanderLaunchContract
-      ? this.resolveCommanderLaunchContract(labels ?? {})
-      : null;
-    if (commanderContract) {
-      // Commander launch contract is re-derived per session build (create,
-      // reload, resume, import) so a reloaded Commander NEVER comes back with
-      // the default coding prompt or an unrestricted tool catalog. Applied
-      // after normalization so the contract fields pass through untouched.
-      storedConfig = { ...storedConfig, ...commanderContract };
-    }
     const isReviewer = labels?.[AI_REVIEWER_LABEL] === "true";
     let paseoToolPolicy: ProviderPaseoToolsPolicy | undefined;
     if (isReviewer) {

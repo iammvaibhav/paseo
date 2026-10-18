@@ -12,7 +12,6 @@ import { daemonConfigQueryKey } from "@/data/daemon-config";
 import { daemonPairingOfferQueryKey } from "@/data/daemon-pairing";
 import { providersSnapshotQueryKey } from "@/data/providers-snapshot";
 import { missionControlEventsQueryKey } from "@/data/mission-control-events";
-import { missionControlInstructionsQueryKey } from "@/data/mission-control-instructions";
 import { providerUsageQueryKey } from "@/provider-usage/query-key";
 import {
   checkoutDiffPushRoute,
@@ -354,10 +353,8 @@ describe("server data push router", () => {
     const fake = createFakeClient();
     const serverId = "server-1";
     const eventsKey = missionControlEventsQueryKey(serverId);
-    const instructionsKey = missionControlInstructionsQueryKey(serverId);
     const otherHostKey = missionControlEventsQueryKey("server-2");
     queryClient.setQueryData(eventsKey, []);
-    queryClient.setQueryData(instructionsKey, []);
     queryClient.setQueryData(otherHostKey, []);
     const unmount = mountServerDataPushRouter({ client: fake.client, queryClient, serverId });
 
@@ -394,7 +391,6 @@ describe("server data push router", () => {
       },
     });
     expect(queryClient.getQueryState(eventsKey)?.isInvalidated).toBe(true);
-    expect(queryClient.getQueryState(instructionsKey)?.isInvalidated).toBe(true);
     expect(queryClient.getQueryState(otherHostKey)?.isInvalidated).toBe(false);
 
     unsubscribeObserver();

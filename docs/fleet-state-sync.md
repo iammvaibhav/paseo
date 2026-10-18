@@ -2,7 +2,7 @@
 
 How state crosses host boundaries and system boundaries. Read this before touching any code that projects state between Paseo, itsaplan, and Mission Control.
 
-The fleet is three hosts (`iammvaibhav`, `blrofc3`, `macbook`) and one itsaplan instance. Agents run on any host. Almost every bug in this area comes from one mistake: **code doing fleet work with host-local data**. This doc names who owns each fact, what an edge must do when it crosses a host, and the checks that catch the mistake before it ships.
+The fleet is several hosts (`iammvaibhav`, `blrofc3`, `macbook`, …) and one itsaplan instance. Agents run on any host. Almost every bug in this area comes from one mistake: **code doing fleet work with host-local data**. This doc names who owns each fact, what an edge must do when it crosses a host, and the checks that catch the mistake before it ships.
 
 ## The bug class
 
@@ -21,13 +21,13 @@ None of them threw. Each one degraded into "nothing happened", which is why they
 
 An owner is the one component allowed to write a fact. Everything else projects from it.
 
-| Fact                                | Owner                                       | Notes                                                                                                                                             |
-| ----------------------------------- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Agent lifecycle and bucket          | The daemon running the agent                | `deriveLifecycleBucket` is the only function allowed to compute a bucket.                                                                         |
-| Ticket column                       | itsaplan                                    | Paseo projects onto it; it never becomes Paseo's fact.                                                                                            |
-| The user's Done transition          | The user, in itsaplan                       | The one transition Paseo does not own — and therefore the one it must listen for.                                                                 |
-| Project to board mapping            | itsaplan                                    | Every issue payload carries `identifier` (`AMBIENTAISTA-9`), which encodes the board key. Paseo's `projects.json` is a **cache**, not the source. |
-| Fleet-wide Mission Control settings | `central-config.json` on the Commander host | Per-host keys (`enabled`, `hostAlias`, `hostGlyph`) live in that host's `config.json` and never here.                                             |
+| Fact                       | Owner                                 | Notes                                                                                                                                             |
+| -------------------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Agent lifecycle and bucket | The daemon running the agent          | `deriveLifecycleBucket` is the only function allowed to compute a bucket.                                                                         |
+| Ticket column              | itsaplan                              | Paseo projects onto it; it never becomes Paseo's fact.                                                                                            |
+| The user's Done transition | The user, in itsaplan                 | The one transition Paseo does not own — and therefore the one it must listen for.                                                                 |
+| Project to board mapping   | itsaplan                              | Every issue payload carries `identifier` (`AMBIENTAISTA-9`), which encodes the board key. Paseo's `projects.json` is a **cache**, not the source. |
+| Mission Control settings   | Each host's own `central-config.json` | Flotilla writes every host's copy; daemons never replicate it between each other.                                                                 |
 
 Single writer is a rule about **facts**, not about **directions**. A fact having one writer does not make the edge one-way. Wherever the other system owns a transition, the reverse edge has to exist.
 
@@ -36,7 +36,7 @@ Single writer is a rule about **facts**, not about **directions**. A fact having
 Two properties of the current topology point in opposite directions:
 
 - **Outbound work is distributed.** Every daemon runs a bridge and a reconcile sweep, and each sees only its own agents. That is correct: a host owns its agents' lifecycle.
-- **Inbound work and shared data are centralised.** `isThisHostTheItsaplanSyncHost` resolves to the Commander host, so only that host writes the project mapping — and `getWebhookUrl` derives from that host's own listen target, so every `issue.state_changed` delivery lands there too.
+- **Inbound work is centralised per board.** Every host maps its own projects, but only the host that created a board registers its webhook (`getWebhookUrl` derives from that host's own listen target), so every `issue.state_changed` delivery for that board lands there.
 
 So the host that receives an itsaplan event is usually **not** the host that owns the agent the event concerns. Any handler that reaches for an agent after ingress needs a hop, and any handler that reaches for shared data on a peer finds it missing.
 
@@ -79,7 +79,7 @@ Add these to any change in this area. Each maps to a defect above.
 Ordered by dependency. Each is independently shippable.
 
 1. **Reverse edge for Done.** `issue.state_changed` into a `completed` column sets the linked agent's Mission Control lifecycle, through the existing lifecycle mechanism. Guard the loop: Paseo already projects agent state onto the column, so this closes a cycle. Decide and document what Canceled means separately — it is a different user intent.
-2. **Route ingress to the owning host.** Ingress lands on the Commander host; the agent may be anywhere. Give the bridge an explicit "find the owning host, then act there" path over the peer surface, and delete any assumption that the agent is local. Until this lands, item 1 only works for agents on the Commander host — say so in its tests rather than implying otherwise.
+2. **Route ingress to the owning host.** Ingress lands on the board's webhook host; the agent may be anywhere. Give the bridge an explicit "find the owning host, then act there" path over the peer surface, and delete any assumption that the agent is local. Until this lands, item 1 only works for agents on the webhook host — say so in its tests rather than implying otherwise.
 3. **Make the mapping cache optional everywhere.** The identifier fallback is now in the bridge. Audit every other `getByItsaplanProjectId` caller for the same silent-return shape and give each one the derivation.
 4. **Column identity by name across the board surfaces.** Cross-project views group by column name; moves resolve to the same-named column in the ticket's own project. Remove state-type grouping from user-facing surfaces.
 5. **Guarantee the standard column set.** `Ready to review` on every board and in the new-project template, backfilled idempotently.
@@ -88,8 +88,7 @@ Ordered by dependency. Each is independently shippable.
 
 ## Related
 
-- [mission-control.md](mission-control.md) — buckets, `deriveLifecycleBucket`, where central config lives.
-- [commander.md](commander.md) — the Commander host designation this topology depends on.
+- [mission-control.md](mission-control.md) — buckets, `deriveLifecycleBucket`, per-host config, the itsaplan bridge.
 - [rpc-namespacing.md](rpc-namespacing.md) — naming for any new peer RPC introduced by item 2.
 
 `docs/itsaplan-rollout-plan.md` is a disposable working plan and cites two ADRs (`0001-worktree-per-dispatch`, `0002-itsaplan-two-state-machines`) that **were never written**. Code comments citing "ADR 0002" refer to nothing. Treat this doc as the standing decision until those exist.

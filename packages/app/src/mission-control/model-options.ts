@@ -1,6 +1,5 @@
 import type { ProviderSnapshotEntry } from "@getpaseo/protocol/agent-types";
 import type { ProviderSelectorProvider } from "@/provider-selection/provider-selection";
-import type { HostProfile } from "@/types/host-connection";
 
 /**
  * Builds the set of invocable provider/model strings (`provider/modelId`)
@@ -117,59 +116,4 @@ export function filterProvidersToInvocableStrings(
   }
 
   return filtered;
-}
-
-/**
- * Resolves `config.commanderHost` (a stored hostname, missionControl.hostAlias,
- * label, serverId, or "local") to the matching `HostProfile` serverId.
- * Matching mirrors server-side `isDesignatedCommanderHost`: the central value
- * is trimmed and compared case-sensitively; a host's alias matches only when
- * non-null. The label fallback is app-side (the settings picker's last resort).
- */
-export function resolveCommanderHostServerId(input: {
-  commanderHost: string | null;
-  hosts: readonly HostProfile[];
-  hostnameByServerId: Map<string, string | null>;
-  hostAliasByServerId: Map<string, string | null>;
-  localServerId: string | null;
-}): string | null {
-  const { hosts, hostnameByServerId, hostAliasByServerId, localServerId } = input;
-  const commanderHost = input.commanderHost?.trim() || null;
-  if (commanderHost === null) {
-    return null;
-  }
-
-  if (commanderHost === "local") {
-    if (localServerId && hosts.some((h) => h.serverId === localServerId)) {
-      return localServerId;
-    }
-    return hosts[0]?.serverId ?? null;
-  }
-
-  const directServerId = hosts.find((h) => h.serverId === commanderHost);
-  if (directServerId) {
-    return directServerId.serverId;
-  }
-
-  const byHostname = hosts.find((h) => hostnameByServerId.get(h.serverId) === commanderHost);
-  if (byHostname) {
-    return byHostname.serverId;
-  }
-
-  // Mirrors isDesignatedCommanderHost: null alias never matches; otherwise
-  // exact (case-sensitive) equality on the trimmed value.
-  const byHostAlias = hosts.find((h) => {
-    const alias = hostAliasByServerId.get(h.serverId);
-    return alias !== null && alias === commanderHost;
-  });
-  if (byHostAlias) {
-    return byHostAlias.serverId;
-  }
-
-  const byLabel = hosts.find((h) => h.label === commanderHost);
-  if (byLabel) {
-    return byLabel.serverId;
-  }
-
-  return null;
 }

@@ -177,40 +177,13 @@ export interface ItsaplanProjectSyncDependencies {
    * null, never registered with a placeholder URL.
    */
   getWebhookUrl: () => string | null;
-  /** Daemon home; projects rooted inside it (e.g. the Commander's reserved
-   * home workspace) are Paseo-internal and never synced to itsaplan. */
+  /** Daemon home; projects rooted inside it are Paseo-internal and never
+   * synced to itsaplan. */
   paseoHome: string;
-  /**
-   * Single-writer gate: true only on the host central config designates as
-   * the fleet Commander (isDesignatedCommanderHost — commanderHost matched
-   * against hostname/hostAlias, null designates NO host). itsaplan project
-   * mapping is fleet-wide, so every daemon running this bridge would race
-   * to create the same projects; only the designated host may write.
-   */
-  isDesignatedSyncHost: () => boolean;
-  /**
-   * Fleet-wide project inventory for resyncs — the same hosts/projects data
-   * `fleet_list_inventory` serves (buildFleetContextData), flattened to what
-   * mapping needs. Absent/null fleet input falls back to local-only sweeps.
-   */
-  listFleetProjects?: () => Promise<ItsaplanFleetProjectCandidate[]>;
   logger: Logger;
 }
 
-/** One syncable project as inventoried off the fleet (local or peer). */
-export interface ItsaplanFleetProjectCandidate {
-  /** Inventorying host ("local" for this daemon); diagnostics only. */
-  hostName: string;
-  /**
-   * Cross-host identity from server/project-key.ts. Null when the host
-   * couldn't report one (old daemon that doesn't send inventory keys) —
-   * skipped until that host updates, never guessed from title/path.
-   */
-  projectKey: string | null;
-  name: string;
-}
-
-/** Result summary of a fleet-wide mapping sweep. */
+/** Result summary of a mapping sweep over this host's projects. */
 export interface ItsaplanResyncResult {
   /** Candidates that now have an itsaplan mapping (created or adopted). */
   mapped: number;
@@ -227,20 +200,15 @@ type MappableProject = Pick<
 >;
 
 /**
- * Creates the itsaplan project + registers its webhook exactly once per
- * Paseo project (guarded by the local mapping store, not by asking itsaplan
- * — a project with no `projectKey` yet, or with config absent, is left
- * unmapped). Safe to call repeatedly (boot backfill, every project mutation):
- * a project already present in the store is returned as-is. Inert unless
- * this daemon is the designated itsaplan sync host.
+ * Each host maps its own projects. Creates (or adopts) the itsaplan project
+ * once per Paseo project, guarded by the local mapping store — a project with
+ * no `projectKey` yet, or with config absent, is left unmapped. Safe to call
+ * repeatedly (boot backfill, every project mutation).
  */
 export async function ensureItsaplanProjectMapping(
   project: MappableProject,
   deps: ItsaplanProjectSyncDependencies,
 ): Promise<ItsaplanProjectMapping | null> {
-  if (!deps.isDesignatedSyncHost()) {
-    return null;
-  }
   const config = deps.getConfig();
   if (!config || !project.projectKey) {
     return null;
@@ -257,11 +225,11 @@ export async function ensureItsaplanProjectMapping(
 }
 
 /**
- * Key-keyed core shared by the local-registry path (ensureItsaplanProjectMapping)
- * and fleet-wide resyncs: everything after the per-host eligibility checks,
- * keyed purely by the cross-host paseo projectKey so a repo checked out on
- * several hosts maps to ONE itsaplan project no matter which sweep sees it
- * first.
+ * Key-keyed core shared by project mutations and resyncs, keyed by the
+ * cross-host paseo projectKey: a repo checked out on several hosts maps to ONE
+ * itsaplan project. Only one webhook is registered per board (so a Todo ticket
+ * is dispatched once); a host that adopts a board that already has one only
+ * records the mapping, which lets its bridge write to the board's tickets.
  */
 async function ensureItsaplanProjectMappingForKey(
   projectKey: string,
@@ -279,7 +247,7 @@ async function ensureItsaplanProjectMappingForKey(
     if (mapping.commanderAgentId === undefined || mapping.commanderApiKey === undefined) {
       mapping = await backfillCommanderAgent(mapping, config, deps);
     } else {
-      mapping = await ensureCommanderMentionTrigger(mapping, config, deps);
+      mapping = await ensureBotIdentity(mapping, config, deps);
     }
     if (mapping.commanderUserId) {
       const client = new ItsaplanClient(config);
@@ -298,7 +266,7 @@ async function ensureItsaplanProjectMappingForKey(
     deps.logger.warn({ paseoProjectKey: projectKey }, "itsaplan.project.webhook_url_unavailable");
     return null;
   }
-  const created = await createOrAdoptItsaplanProject(
+  const { project: created, adopted } = await createOrAdoptItsaplanProject(
     client,
     {
       baseKey: deriveItsaplanProjectKey(name),
@@ -307,10 +275,16 @@ async function ensureItsaplanProjectMappingForKey(
     },
     deps,
   );
-  const webhook = await client.registerWebhook(created.key, {
-    url: webhookUrl,
-    events: [...ITSAPLAN_WEBHOOK_EVENTS],
-  });
+  // An adopted board that already has a webhook belongs to the host that
+  // created it; one with none (our own earlier attempt crashed before
+  // registering) gets ours.
+  const ownedElsewhere = adopted && (await client.listWebhooks(created.key)).length > 0;
+  const webhook = ownedElsewhere
+    ? null
+    : await client.registerWebhook(created.key, {
+        url: webhookUrl,
+        events: [...ITSAPLAN_WEBHOOK_EVENTS],
+      });
   const commander = await ensureCommanderAiAgent(
     created.key,
     client,
@@ -322,34 +296,34 @@ async function ensureItsaplanProjectMappingForKey(
     itsaplanProjectId: created.id,
     itsaplanProjectKey: created.key,
     createdAt: new Date().toISOString(),
-    ...(webhook.secret ? { webhookSecret: webhook.secret } : {}),
-    webhookId: webhook.id,
-    webhookEvents: [...ITSAPLAN_WEBHOOK_EVENTS],
-    ...(commander ? { ...commander, commanderMentionEnabled: true } : {}),
+    ...(webhook?.secret ? { webhookSecret: webhook.secret } : {}),
+    ...(webhook ? { webhookId: webhook.id, webhookEvents: [...ITSAPLAN_WEBHOOK_EVENTS] } : {}),
+    ...(commander ? { ...commander, commanderMentionEnabled: false } : {}),
   };
   await deps.store.upsert(mapping);
   deps.logger.info(
-    { paseoProjectKey: projectKey, itsaplanProjectKey: created.key },
+    { paseoProjectKey: projectKey, itsaplanProjectKey: created.key, adopted },
     "itsaplan.project.mapped",
   );
   return mapping;
 }
 
-/** Upper bound on the name-derived portion of an itsaplan project key. */
-const ITSAPLAN_PROJECT_KEY_MAX_BASE = 12;
+/** itsaplan's project-key limit: `^[A-Z][A-Z0-9]{0,9}$`. */
+const ITSAPLAN_PROJECT_KEY_MAX = 10;
+/** Room left for the name when a collision suffix is appended. */
+const ITSAPLAN_PROJECT_KEY_SUFFIXED_BASE = ITSAPLAN_PROJECT_KEY_MAX - 4;
 
 /**
  * Derives the itsaplan project key candidate from the project's display
- * name (`customName ?? displayName`): uppercase alphanumeric only — itsaplan
- * keys are immutable issue-ID prefixes ("MKT" -> "MKT-1") and URL segments,
- * so slashes/colons from a raw cross-host paseoProjectKey never belong here.
+ * name (`customName ?? displayName`): uppercase alphanumeric, starting with a
+ * letter, at most 10 characters — itsaplan keys are immutable issue-ID
+ * prefixes ("MKT" -> "MKT-1") and URL segments.
  */
 export function deriveItsaplanProjectKey(name: string): string {
-  const base = name
-    .toUpperCase()
-    .replace(/[^A-Z0-9]/g, "")
-    .slice(0, ITSAPLAN_PROJECT_KEY_MAX_BASE);
-  return base.length > 0 ? base : "PROJECT";
+  const alnum = name.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  if (alnum.length === 0) return "PROJECT";
+  const lettered = /^[A-Z]/.test(alnum) ? alnum : `P${alnum}`;
+  return lettered.slice(0, ITSAPLAN_PROJECT_KEY_MAX);
 }
 
 /**
@@ -367,6 +341,11 @@ function itsaplanKeyCollisionSuffix(paseoProjectKey: string): string {
   return (hash >>> 0).toString(16).toUpperCase().padStart(8, "0").slice(-4);
 }
 
+/** The collision key: the name trimmed to fit, then the 4-char hash. Still a valid key. */
+function suffixedProjectKey(baseKey: string, paseoProjectKey: string): string {
+  return `${baseKey.slice(0, ITSAPLAN_PROJECT_KEY_SUFFIXED_BASE)}${itsaplanKeyCollisionSuffix(paseoProjectKey)}`;
+}
+
 /**
  * Creates the itsaplan project with the derived friendly key; on a
  * duplicate-key 409 disambiguates by the description this sync always stamps
@@ -374,7 +353,7 @@ function itsaplanKeyCollisionSuffix(paseoProjectKey: string): string {
  * - description matches OURS -> an earlier sync of THIS paseo project crashed
  *   between create and mapping-write; adopt it.
  * - anything else (a manual board, or another host's same-named project) ->
- *   retry once with the deterministic `-<hash>` suffixed key, then adopt only
+ *   retry once with the deterministic hash-suffixed key, then adopt only
  *   if THAT row is ours too. A third collision rethrows rather than ever
  *   letting two distinct paseo projects share one board.
  */
@@ -382,11 +361,11 @@ async function createOrAdoptItsaplanProject(
   client: ItsaplanClient,
   input: { baseKey: string; name: string; paseoProjectKey: string },
   deps: ItsaplanProjectSyncDependencies,
-): Promise<Pick<ItsaplanProject, "id" | "key" | "name">> {
+): Promise<{ project: Pick<ItsaplanProject, "id" | "key" | "name">; adopted: boolean }> {
   const adoptIfOurs = async (
     key: string,
     error: ItsaplanApiError,
-  ): Promise<Pick<ItsaplanProject, "id" | "key" | "name">> => {
+  ): Promise<{ project: Pick<ItsaplanProject, "id" | "key" | "name">; adopted: boolean }> => {
     const existing = await client.getProject(key);
     if (existing?.description !== input.paseoProjectKey) {
       throw error;
@@ -395,14 +374,15 @@ async function createOrAdoptItsaplanProject(
       { paseoProjectKey: input.paseoProjectKey, itsaplanProjectKey: existing.key },
       "itsaplan.project.existing_adopted",
     );
-    return existing;
+    return { project: existing, adopted: true };
   };
   try {
-    return await client.createProject({
+    const project = await client.createProject({
       key: input.baseKey,
       name: input.name,
       description: input.paseoProjectKey,
     });
+    return { project, adopted: false };
   } catch (error) {
     if (!(error instanceof ItsaplanApiError) || error.status !== 409) {
       throw error;
@@ -410,13 +390,14 @@ async function createOrAdoptItsaplanProject(
     try {
       return await adoptIfOurs(input.baseKey, error);
     } catch {
-      const suffixed = `${input.baseKey}-${itsaplanKeyCollisionSuffix(input.paseoProjectKey)}`;
+      const suffixed = suffixedProjectKey(input.baseKey, input.paseoProjectKey);
       try {
-        return await client.createProject({
+        const project = await client.createProject({
           key: suffixed,
           name: input.name,
           description: input.paseoProjectKey,
         });
+        return { project, adopted: false };
       } catch (retryError) {
         if (!(retryError instanceof ItsaplanApiError) || retryError.status !== 409) {
           throw retryError;
@@ -431,24 +412,19 @@ async function createOrAdoptItsaplanProject(
   }
 }
 
-const COMMANDER_AI_AGENT_USERNAME = "commander";
-const COMMANDER_AI_AGENT_NAME = "Commander";
+const COMMANDER_AI_AGENT_USERNAME = "paseo";
+const COMMANDER_AI_AGENT_NAME = "Paseo";
 
 /**
- * Ensures the project's itsaplan-side "Commander" identity (chat-runner.ts):
- * an external `ai_agent` row the Paseo Commander answers itsaplan chat and
- * @mentions through. Best-effort and non-fatal — a create/recover failure
- * here must never fail the (already-committed) project/webhook mapping; the
- * chat-runner simply has nothing to claim for this project until a later
- * sync succeeds (see backfillCommanderAgent). Idempotent: a 409 (username
- * already taken — itsaplan assertUsernameFree) means the agent exists from
- * an earlier attempt whose key this store never captured (mapping predates
- * this field, or a prior write failed after agent creation) — recovered via
- * regenerate-key rather than left permanently unusable.
+ * Ensures the project's itsaplan-side bot user ("Paseo"): an external
+ * `ai_agent` row. Tickets assigned or delegated to it are dispatched, and the
+ * bridge writes its ticket comments with its key. Best-effort and non-fatal —
+ * a create/recover failure must never fail the (already-committed) project
+ * mapping; a later sync retries (see backfillCommanderAgent). Idempotent: a 409
+ * (username already taken) means the agent exists from an earlier attempt
+ * whose key this store never captured — recovered via regenerate-key.
  *
- * `triggerOnMention: true`: itsaplan drains an @mention through its ticket-run
- * queue (`POST /agent-runs/claim`, apps/api/src/modules/agents/runner/index.ts),
- * which chat-runner.ts drains alongside the chat queue.
+ * `triggerOnMention: false`: nothing drains itsaplan's mention run queue.
  */
 export async function ensureCommanderAiAgent(
   itsaplanProjectKey: string,
@@ -465,7 +441,7 @@ export async function ensureCommanderAiAgent(
       name: COMMANDER_AI_AGENT_NAME,
       username,
       kind: "external",
-      triggerOnMention: true,
+      triggerOnMention: false,
     });
     if (!created.apiKey) {
       // Never happens for kind:"external" per itsaplan's own contract; an
@@ -500,7 +476,8 @@ export async function ensureCommanderAiAgent(
     const apiKey = await client.regenerateAiAgentApiKey(itsaplanProjectKey, existingAgent.id);
     try {
       await client.updateAiAgent(itsaplanProjectKey, existingAgent.id, {
-        triggerOnMention: true,
+        triggerOnMention: false,
+        name: COMMANDER_AI_AGENT_NAME,
       });
     } catch (error) {
       logger.warn(
@@ -638,7 +615,7 @@ async function backfillCommanderAgent(
   const updated: ItsaplanProjectMapping = {
     ...existing,
     ...commander,
-    commanderMentionEnabled: true,
+    commanderMentionEnabled: false,
   };
   if (commander.commanderUserId) {
     await ensureTodoColumnNoCommanderAutoAssign(
@@ -656,31 +633,36 @@ async function backfillCommanderAgent(
   return updated;
 }
 
-/** Ensures existing mappings have triggerOnMention enabled on their Commander agent. */
-async function ensureCommanderMentionTrigger(
+/**
+ * Brings an existing bot user up to date once: named "Paseo", mention trigger
+ * off (nothing drains itsaplan's mention run queue since the Commander was
+ * removed). `commanderMentionEnabled: false` records that it was done.
+ */
+async function ensureBotIdentity(
   mapping: ItsaplanProjectMapping,
   config: ItsaplanCentralConfig,
   deps: ItsaplanProjectSyncDependencies,
 ): Promise<ItsaplanProjectMapping> {
-  if (mapping.commanderAgentId === undefined || mapping.commanderMentionEnabled) {
+  if (mapping.commanderAgentId === undefined || mapping.commanderMentionEnabled === false) {
     return mapping;
   }
   const client = new ItsaplanClient(config);
   try {
     await client.updateAiAgent(mapping.itsaplanProjectKey, mapping.commanderAgentId, {
-      triggerOnMention: true,
+      triggerOnMention: false,
+      name: COMMANDER_AI_AGENT_NAME,
     });
-    const updated: ItsaplanProjectMapping = { ...mapping, commanderMentionEnabled: true };
+    const updated: ItsaplanProjectMapping = { ...mapping, commanderMentionEnabled: false };
     await deps.store.upsert(updated);
     deps.logger.info(
       { paseoProjectKey: mapping.paseoProjectKey, itsaplanProjectKey: mapping.itsaplanProjectKey },
-      "itsaplan.project.commander_mention_trigger_patched",
+      "itsaplan.project.bot_identity_updated",
     );
     return updated;
   } catch (error) {
     deps.logger.warn(
       { err: error, itsaplanProjectKey: mapping.itsaplanProjectKey },
-      "itsaplan.project.commander_mention_trigger_patch_failed",
+      "itsaplan.project.bot_identity_update_failed",
     );
     return mapping;
   }
@@ -693,127 +675,37 @@ function isPaseoInternalProject(rootPath: string, paseoHome: string): boolean {
 }
 
 /**
- * Reserved-home check for a project we only know by key.
- *
- * `host:<serverId>:<absolute path>` keys embed the path, so a Commander home
- * is recognisable without a rootPath — which fleet candidates never carry, and
- * which is how `<paseoHome>/commander` reached itsaplan as a ticket board.
- *
- * `remote:<repo>#subdir:<path>` keys embed the repo-relative checkout path
- * (see deriveProjectKey: `<remoteKey>#subdir:<selectedPath>` with `/`
- * separators), so a reserved home checked out inside a git repo is
- * recognisable the same way: any `.paseo` path segment marks it internal.
- *
- * Convention rather than exact: paseoHome is `~/.paseo` unless PASEO_HOME says
- * otherwise, and a peer never tells us its value. Plain `remote:` keys are
- * repos and can never be a daemon home, so they are left alone.
- */
-function isReservedHomeProjectKey(projectKey: string): boolean {
-  if (projectKey.startsWith("host:")) {
-    const path = projectKey.slice(projectKey.indexOf(":", "host:".length) + 1);
-    return path.includes(`${sep}.paseo${sep}`) || path.endsWith(`${sep}.paseo`);
-  }
-  if (projectKey.startsWith("remote:")) {
-    const marker = "#subdir:";
-    const index = projectKey.indexOf(marker);
-    if (index === -1) {
-      return false;
-    }
-    const subdir = projectKey.slice(index + marker.length).replaceAll("\\", "/");
-    return (
-      subdir.includes("/.paseo/") ||
-      subdir.endsWith("/.paseo") ||
-      subdir === ".paseo" ||
-      subdir.startsWith(".paseo/")
-    );
-  }
-  return false;
-}
-
-/**
- * Fleet-wide catch-up sweep: maps every active project — this daemon's AND
- * every reachable peer's, via `listFleetProjects` (the buildFleetContextData
- * assembly `fleet_list_inventory` serves) — that the store doesn't know yet.
- *
- * Candidates are deduped by paseoProjectKey BEFORE any itsaplan call:
- * deriveProjectKey joins the same git remote across hosts into one identity
- * (`remote:github.com/owner/repo`), so a repo checked out on two hosts is
- * ONE itsaplan board — the first host swept wins and the duplicate is
- * counted as skipped, never re-created (which would 409). Host-local keys
- * stay host-scoped by construction. Unreachable peers degrade to empty
- * inventory inside the fleet assembly, so they neither fail nor stall the
- * sweep; with no fleet capability at all it falls back to local-only.
+ * Catch-up sweep over THIS host's active projects: maps every one the store
+ * doesn't know yet. Every host runs its own sweep; a repo checked out on
+ * several hosts shares one paseo projectKey, so the second host adopts the
+ * board the first one created (see ensureItsaplanProjectMappingForKey).
  */
 export async function runItsaplanProjectResync(
-  input: {
-    local: readonly (MappableProject & Pick<PersistedProjectRecord, "archivedAt">)[];
-    fleet: readonly ItsaplanFleetProjectCandidate[] | null;
-  },
+  local: readonly (MappableProject & Pick<PersistedProjectRecord, "archivedAt">)[],
   deps: ItsaplanProjectSyncDependencies,
 ): Promise<ItsaplanResyncResult> {
-  if (!deps.isDesignatedSyncHost()) {
-    deps.logger.info("itsaplan.project.resync_skipped_not_sync_host");
-    return { mapped: 0, skipped: 0, failed: 0 };
-  }
-
   const result: ItsaplanResyncResult = { mapped: 0, skipped: 0, failed: 0 };
+  const config = deps.getConfig();
   const seenKeys = new Set<string>();
-  const consider = (candidate: ItsaplanFleetProjectCandidate): void => {
-    const projectKey = candidate.projectKey;
-    if (!projectKey || seenKeys.has(projectKey)) {
-      result.skipped += 1;
-      return;
-    }
-    seenKeys.add(projectKey);
-    candidates.push({ ...candidate, projectKey });
-  };
-  const candidates: (Omit<ItsaplanFleetProjectCandidate, "projectKey"> & {
-    projectKey: string;
-  })[] = [];
-  for (const project of input.local) {
+  for (const project of local) {
     if (project.archivedAt) {
       continue;
     }
-    // The exact check, available only here: local projects carry a rootPath.
-    // The key still joins seenKeys first: the fleet loop below re-reports this
-    // daemon's projects without rootPath, and without the key the dedupe in
-    // consider() cannot drop that rootPath-less copy.
-    if (isPaseoInternalProject(project.rootPath, deps.paseoHome)) {
-      if (project.projectKey) {
-        seenKeys.add(project.projectKey);
-      }
+    const projectKey = project.projectKey;
+    if (
+      !config ||
+      !projectKey ||
+      seenKeys.has(projectKey) ||
+      isPaseoInternalProject(project.rootPath, deps.paseoHome)
+    ) {
       result.skipped += 1;
       continue;
     }
-    consider({
-      hostName: "local",
-      projectKey: project.projectKey,
-      name: project.customName ?? project.displayName,
-    });
-  }
-  for (const candidate of input.fleet ?? []) {
-    // buildFleetContextData inventories THIS daemon as well as its peers, so a
-    // local project also arrives here — without the rootPath the exact check
-    // above needs. Peers never send one either. Fall back to the reserved-home
-    // path convention, which is what a `host:` key embeds; a peer's own
-    // Commander home is excluded the same way this host's is.
-    if (candidate.projectKey && isReservedHomeProjectKey(candidate.projectKey)) {
-      result.skipped += 1;
-      continue;
-    }
-    consider(candidate);
-  }
-
-  const config = deps.getConfig();
-  if (!config) {
-    result.skipped += candidates.length;
-    return result;
-  }
-  for (const candidate of candidates) {
+    seenKeys.add(projectKey);
     try {
       const mapping = await ensureItsaplanProjectMappingForKey(
-        candidate.projectKey,
-        candidate.name,
+        projectKey,
+        project.customName ?? project.displayName,
         config,
         deps,
       );
@@ -825,15 +717,12 @@ export async function runItsaplanProjectResync(
     } catch (error) {
       result.failed += 1;
       deps.logger.error(
-        { err: error, hostName: candidate.hostName, paseoProjectKey: candidate.projectKey },
+        { err: error, paseoProjectKey: projectKey },
         "itsaplan.project.resync_candidate_failed",
       );
     }
   }
-  deps.logger.info(
-    { mapped: result.mapped, skipped: result.skipped, failed: result.failed },
-    "itsaplan.project.resync_completed",
-  );
+  deps.logger.info(result, "itsaplan.project.resync_completed");
   return result;
 }
 
@@ -846,9 +735,6 @@ export function attachItsaplanProjectSync(
   },
   deps: ItsaplanProjectSyncDependencies,
 ): () => void {
-  if (!deps.isDesignatedSyncHost()) {
-    return (): void => undefined;
-  }
   const unsubscribe = projectRegistry.subscribeToMutations?.((mutation) => {
     if (mutation.kind !== "upsert" || !mutation.project) {
       return;

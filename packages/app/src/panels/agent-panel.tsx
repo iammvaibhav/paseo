@@ -44,7 +44,6 @@ import { useWorkspaceAttachmentScopeKey } from "@/attachments/workspace-attachme
 import { COMPACT_FORM_FACTOR_WIDTH, useIsCompactFormFactor } from "@/constants/layout";
 import { isNative, isWeb } from "@/constants/platform";
 import { useAgentAttentionClear } from "@/hooks/use-agent-attention-clear";
-import { useAggregatedMissionControlEvents } from "@/hooks/use-aggregated-mission-control-events";
 import { useAgentInputDraft, type AgentInputDraft } from "@/composer/draft/input-draft";
 import {
   type AgentScreenAgent,
@@ -109,7 +108,6 @@ import { applyLegacyDaemonWorkspaceOwnership } from "@/workspace/legacy-daemon-w
 import type { WorkspaceFileOpenRequest } from "@/workspace/file-open";
 import { deriveSidebarStateBucket } from "@/utils/sidebar-agent-state";
 import { buildDraftAgentSetup, type ClientSlashCommand } from "@/client-slash-commands";
-import { isPendingProposalForAgent } from "@/screens/mission-control/proposal-card";
 
 interface ChatAgentStateShape {
   serverId: string | null;
@@ -441,7 +439,6 @@ const EMPTY_STREAM_ITEMS: StreamItem[] = [];
 const EMPTY_MESSAGE_SUBMISSIONS = [] as const;
 const EMPTY_PENDING_PERMISSIONS = new Map<string, PendingPermission>();
 const EMPTY_PENDING_PERMISSION_LIST: PendingPermission[] = [];
-const EMPTY_PENDING_PROPOSALS = [] as const;
 
 type RouteBottomAnchorRequest = ReturnType<typeof deriveRouteBottomAnchorRequest>;
 
@@ -1124,32 +1121,6 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
   onOpenWorkspaceFile?: (request: WorkspaceFileOpenRequest) => void;
 }) {
   const { t } = useTranslation();
-  const appToast = useToast();
-  const client = useHostRuntimeClient(serverId);
-  const isConnected = useHostRuntimeIsConnected(serverId);
-  const [isReleasing, setIsReleasing] = useState(false);
-  const adoptedAt = agentState.labels["paseo.commander-adopted-at"]?.trim() || null;
-  const handleReleaseFromCommander = useCallback(async () => {
-    if (!client || !isConnected || isReleasing || !agentId) {
-      return;
-    }
-    setIsReleasing(true);
-    try {
-      const result = await client.fleetMetaApply({
-        action: "release_agent",
-        serverId: "local",
-        targetId: agentId,
-        targetLabel: agentState.id ?? agentId,
-      });
-      if (!result.ok) {
-        throw new Error(result.error ?? "Failed to release agent from Commander");
-      }
-    } catch (error) {
-      appToast.error(toErrorMessage(error));
-    } finally {
-      setIsReleasing(false);
-    }
-  }, [agentId, agentState.id, appToast, client, isConnected, isReleasing]);
   const subagentRows = useSubagentsForParent({ serverId, parentAgentId: agentId });
   const tasks = useSessionStore((state): TodoEntry[] | undefined =>
     state.sessions[serverId]?.agentTasks.get(agentId),
@@ -1272,26 +1243,6 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
   const dockContent = (
     <View style={styles.contentContainer}>
       {streamContent}
-
-      {adoptedAt && !agentState.archivedAt ? (
-        <SidebarCallout
-          title="Managed by Commander"
-          description="This agent was taken over by Mission Control. Release it to stop Commander management and verifier scope."
-          variant="default"
-          testID="agent-commander-managed-banner"
-          actions={[
-            {
-              label: isReleasing ? "Releasing…" : "Release",
-              onPress: () => {
-                void handleReleaseFromCommander();
-              },
-              variant: "secondary",
-              disabled: !isConnected || isReleasing,
-              testID: "agent-commander-release",
-            },
-          ]}
-        />
-      ) : null}
 
       {agentState.providerUnavailable ? (
         <SidebarCallout
@@ -1472,18 +1423,6 @@ const AgentStreamSection = memo(function AgentStreamSection({
     }
     return new Map(pendingPermissionList.map((permission) => [permission.key, permission]));
   }, [pendingPermissionList]);
-  const { events: missionControlEvents } = useAggregatedMissionControlEvents({
-    enabled: Boolean(agentId),
-  });
-  const pendingProposals = useMemo(
-    () =>
-      agentId
-        ? missionControlEvents.filter((event) =>
-            isPendingProposalForAgent(event, agentId, serverId),
-          )
-        : EMPTY_PENDING_PROPOSALS,
-    [agentId, missionControlEvents, serverId],
-  );
 
   const selectionAskConfig = useMemo(
     () =>
@@ -1511,7 +1450,6 @@ const AgentStreamSection = memo(function AgentStreamSection({
       context={agent}
       streamItems={streamItems}
       pendingPermissions={pendingPermissions}
-      pendingProposals={pendingProposals}
       routeBottomAnchorRequest={routeBottomAnchorRequest}
       isAuthoritativeHistoryReady={hasAppliedAuthoritativeHistory}
       bottomOverlayTailClearance={bottomOverlayTailClearance}

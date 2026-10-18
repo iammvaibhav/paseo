@@ -578,7 +578,7 @@ so the port may already be bound. `portScript` takes precedence when both values
 
 ## paseo.json commander instructions
 
-Per-project instructions for the Commander. Loaded from the **project root** (not each worktree) when the Commander resolves the project. The Commander reads them before dispatching and applies them to model choice, spawn conventions, and the worker brief. Doctrine: [commander.md](commander.md#per-project-instructions).
+Per-project instructions for whoever dispatches work into the project (the Commander role in `OPERATING.md`). Loaded from the **project root** (not each worktree) and returned as `commanderInstructions` on the project's `fleet_list_inventory` row, so a bot reads them before dispatching and applies them to model choice, spawn conventions, and the worker brief.
 
 Resolution order:
 

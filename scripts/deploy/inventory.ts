@@ -11,13 +11,7 @@ import { homedir, networkInterfaces } from "node:os";
 import path from "node:path";
 
 export type Platform = "linux-arm64" | "linux-x64" | "darwin-arm64" | "darwin-x64";
-export type Service =
-  | "omp"
-  | "code-server"
-  | "voice"
-  | "stall-cron"
-  | "macbook-watch"
-  | "omp-proxy";
+export type Service = "omp" | "code-server" | "stall-cron" | "macbook-watch" | "omp-proxy";
 
 export interface Host {
   name: string;
@@ -50,8 +44,6 @@ const SERVICES: Record<string, boolean> = {
   "code-server": false,
   "stall-cron": false,
   "omp-proxy": false,
-  // npm-installs its own dependencies from the checkout
-  voice: true,
   // runs scripts/deploy.sh from the checkout
   "macbook-watch": true,
 };

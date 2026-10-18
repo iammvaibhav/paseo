@@ -2,17 +2,13 @@
  * Layer 2 fleet integration harness (spec docs/specs/mc-robustness/08-testing.md).
  *
  * Three in-process daemons with REAL WebSocket peering:
- *   - A = the commander host (central config commanderHost "A"; hostAlias "A")
- *   - B and C = peer workers, peering back to A
+ *   - A peers to B and C; B and C peer back to A (hostAlias = the name)
  *
  * Built on createPaseoDaemon (docs/ad-hoc-daemon-testing.md) with OS-assigned
- * ports; nothing at the peering layer is mocked. The commander agent is
- * boot-ensured by daemon A (fake provider by default), so spawns carry the
- * paseo.parent-agent-id stamp and terminal events forward from B/C to A.
+ * ports; nothing at the peering layer is mocked.
  *
- * Every scenario drives mission_control.tools.execute with the commander
- * labels — the same RPC surface the Commander/voice node use — via the
- * fleetExec helper.
+ * Every scenario drives the fleet tools the way a bot does: over each
+ * daemon's /mcp/fleet endpoint as a remote MCP client (fleetExec).
  */
 import net from "node:net";
 import os from "node:os";
@@ -20,6 +16,9 @@ import path from "node:path";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 
 import pino from "pino";
+import { Client as McpClient } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { hashDaemonPassword } from "../auth.js";
 import { createPaseoDaemon, type PaseoDaemon, type PaseoDaemonConfig } from "../bootstrap.js";
 import type { AgentClient, AgentProvider } from "../agent/agent-sdk-types.js";
 import { createTestAgentClients } from "./fake-agent-client.js";
@@ -31,6 +30,13 @@ export type FleetHostName = (typeof FLEET_HOSTS)[number];
 
 /** The harness appVersion: high enough that non-legacy providers (omp) are visible. */
 export const FLEET_TEST_APP_VERSION = "0.1.90";
+
+/** The remote MCP client every harness daemon accepts on /mcp/fleet. */
+const HARNESS_MCP_CLIENT = "fleet-harness";
+const HARNESS_MCP_TOKEN = "fleet-harness-token";
+
+/** Each harness client's daemon port, so fleetExec reaches the same daemon's /mcp/fleet. */
+const mcpPortByClient = new WeakMap<DaemonClient, number>();
 
 export interface FleetHarnessDaemon {
   name: FleetHostName;
@@ -52,24 +58,18 @@ export interface FleetHarnessOptions {
   agentClients?: Partial<Record<AgentProvider, AgentClient>>;
   providerOverrides?: PaseoDaemonConfig["providerOverrides"];
   mcpEnabled?: boolean;
-  /**
-   * Central config overrides written to the commander host (A) AND replicated
-   * into the peers' central-config.json (the sync-on-connect replica would
-   * arrive async; seeding keeps the sweep/gate decisions deterministic).
-   */
+  /** Central config written to every host's central-config.json (each host owns its own). */
   centralConfig?: Record<string, unknown>;
   /** Which hosts each daemon peers to (default: A peers to B and C; B and C peer to A). */
   peers?: Partial<Record<FleetHostName, FleetHostName[]>>;
   appVersion?: string;
-  /** Startup budget for daemon bring-up + peering + commander ensure (default 60s). */
+  /** Startup budget for daemon bring-up + peering (default 60s). */
   startupTimeoutMs?: number;
 }
 
 export interface FleetHarness {
   daemons: Record<FleetHostName, FleetHarnessDaemon>;
   clients: Record<FleetHostName, DaemonClient>;
-  /** The boot-ensured Commander agent id on A. */
-  commanderId: string;
   close: () => Promise<void>;
 }
 
@@ -131,15 +131,20 @@ async function writeDaemonSeedFiles(input: {
     JSON.stringify({
       peers: peerConfigs,
       missionControl: { hostAlias: name, enabled: true },
+      daemon: {
+        mcp: {
+          enabled: true,
+          remoteClients: [
+            { name: HARNESS_MCP_CLIENT, tokenHash: hashDaemonPassword(HARNESS_MCP_TOKEN) },
+          ],
+        },
+      },
     }),
     "utf8",
   );
-  // Central fleet policy: commanderHost designates A (hostAlias match);
-  // readyAgeOutDays etc. ride along so the peers' sweeps read the same policy
-  // before the async sync-on-connect replica lands.
   await writeFile(
     path.join(paseoHome, "mission-control", "central-config.json"),
-    JSON.stringify({ commanderHost: "A", ...centralConfig }),
+    JSON.stringify(centralConfig),
     "utf8",
   );
   return { paseoHome, staticDir };
@@ -285,6 +290,7 @@ export async function createFleetHarness(options: FleetHarnessOptions = {}): Pro
     await client.connect();
     await client.fetchAgents({ subscribe: {} });
     daemon.client = client;
+    mcpPortByClient.set(client, daemon.port);
   }
   const clients = Object.fromEntries(
     FLEET_HOSTS.map((name) => [name, daemons[name].client]),
@@ -323,25 +329,9 @@ export async function createFleetHarness(options: FleetHarnessOptions = {}): Pro
       { timeoutMs: startupTimeoutMs, label: "peer A online on C" },
     );
 
-    // Phase 3: the commander host boot-ensures the Commander agent (fake
-    // provider). The spawn executor stamps paseo.parent-agent-id from its id,
-    // and terminal events forward from B/C only for commander-dispatched
-    // workers — so every spawn-based scenario waits for it.
-    const commanderId = await waitFor(
-      async () => {
-        const commander = daemons.A.daemon.agentManager
-          .listAgents()
-          .find((agent) => agent.labels["paseo.mission-control"] === "commander");
-        return commander?.id ?? null;
-      },
-      (id): id is string => id !== null,
-      { timeoutMs: startupTimeoutMs, label: "Commander ensured on A" },
-    );
-
     return {
       daemons,
       clients,
-      commanderId,
       close: async () => {
         await teardownDaemons(daemons, cleanupRoots);
       },
@@ -384,7 +374,7 @@ async function teardownDaemons(
 }
 
 // ============================================================================
-// Polling + RPC helpers (the commander/voice surface)
+// Polling + tool helpers
 // ============================================================================
 
 export async function waitFor<T>(
@@ -410,22 +400,53 @@ export async function waitFor<T>(
   }
 }
 
-/** Execute a fleet tool over mission_control.tools.execute (commander labels). */
+/** A fleet tool call's outcome: structured output, or the tool's error text. */
+export type FleetToolOutcome =
+  | { ok: true; structuredContent: Record<string, unknown> }
+  | { ok: false; error: string };
+
+/** Call a fleet tool on the client's daemon over /mcp/fleet, as a remote MCP client. */
+export async function fleetTry(
+  client: DaemonClient,
+  name: string,
+  args: Record<string, unknown> = {},
+): Promise<FleetToolOutcome> {
+  const port = mcpPortByClient.get(client);
+  if (port === undefined) {
+    throw new Error("fleetTry: client is not a fleet harness client");
+  }
+  const mcp = new McpClient({ name: HARNESS_MCP_CLIENT, version: "1.0.0" });
+  await mcp.connect(
+    new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp/fleet`), {
+      requestInit: { headers: { Authorization: `Bearer ${HARNESS_MCP_TOKEN}` } },
+    }),
+  );
+  try {
+    const result = await mcp.callTool({ name, arguments: args });
+    if (result.isError) {
+      const text = Array.isArray(result.content)
+        ? result.content.map((part) => ("text" in part ? part.text : "")).join(" ")
+        : "";
+      return { ok: false, error: text || "unknown error" };
+    }
+    const structured = result.structuredContent;
+    return { ok: true, structuredContent: structured ? { ...structured } : {} };
+  } finally {
+    await mcp.close();
+  }
+}
+
+/** Like fleetTry, but a tool error throws. */
 export async function fleetExec(
   client: DaemonClient,
   name: string,
   args: Record<string, unknown> = {},
-  opts: { requestId?: string } = {},
 ): Promise<Record<string, unknown>> {
-  const result = await client.missionControlToolsExecute({ name, args, requestId: opts.requestId });
-  if (!result.ok) {
-    throw new Error(
-      `fleet tool ${name} failed: ${result.error ?? "unknown error"}${
-        result.structuredContent ? ` (${JSON.stringify(result.structuredContent)})` : ""
-      }`,
-    );
+  const outcome = await fleetTry(client, name, args);
+  if (!outcome.ok) {
+    throw new Error(`fleet tool ${name} failed: ${outcome.error}`);
   }
-  return result.structuredContent ?? {};
+  return outcome.structuredContent;
 }
 
 export interface FleetAgentRow {
@@ -489,11 +510,7 @@ export async function fetchEvents(client: DaemonClient): Promise<MissionControlE
   return payload.events;
 }
 
-/**
- * The common spawn flow: fleet_create_agent from the commander client →
- * proposal (ask mode) → approve → wait for the agent on the target host.
- * Returns the spawned agent id (and proposal id when one was created).
- */
+/** Spawn an agent with fleet_create_agent (a remote MCP client spawns directly). */
 export async function spawnWorker(input: {
   from: DaemonClient;
   host: FleetHostName | "local";
@@ -504,80 +521,24 @@ export async function spawnWorker(input: {
   cwd?: string;
   labels?: Record<string, string>;
   modeId?: string;
-  timeoutMs?: number;
-}): Promise<{ proposalId: string | null; agentId: string }> {
-  const provider = input.provider ?? "claude/test-model";
+}): Promise<{ agentId: string }> {
+  // Harness directories are plain directories, not git checkouts: run in place.
   const args: Record<string, unknown> = {
     host: input.host,
-    provider,
+    provider: input.provider ?? "claude/test-model",
     initialPrompt: input.initialPrompt,
+    title: input.title ?? "Fleet worker",
+    ...(input.workspaceId ? { workspaceId: input.workspaceId } : {}),
+    ...(input.cwd ? { cwd: input.cwd, isolation: "local" } : {}),
+    ...(input.labels ? { labels: input.labels } : {}),
+    ...(input.modeId ? { settings: { modeId: input.modeId } } : {}),
   };
-  if (input.title) {
-    args.title = input.title;
-  }
-  if (input.workspaceId) {
-    args.workspaceId = input.workspaceId;
-  }
-  if (input.cwd) {
-    args.cwd = input.cwd;
-  }
-  if (input.labels) {
-    args.labels = input.labels;
-  }
-  if (input.modeId) {
-    args.settings = { modeId: input.modeId };
-  }
   const result = await fleetExec(input.from, "fleet_create_agent", args);
-  const proposalId = (result.proposalId as string | undefined) ?? null;
-  if (proposalId) {
-    const respond = await input.from.missionControlProposalsRespond({
-      proposalId,
-      action: "approve",
-    });
-    if (!respond.ok) {
-      throw new Error(`approve failed for proposal ${proposalId}: ${respond.error ?? "unknown"}`);
-    }
+  const agentId = result.agentId;
+  if (typeof agentId !== "string") {
+    throw new Error(`fleet_create_agent returned no agentId: ${JSON.stringify(result)}`);
   }
-  const agentId = result.agentId as string | undefined;
-  if (agentId) {
-    return { proposalId, agentId };
-  }
-  if (!proposalId) {
-    throw new Error(
-      `fleet_create_agent returned no agentId or proposalId: ${JSON.stringify(result)}`,
-    );
-  }
-  return {
-    proposalId,
-    agentId: await waitForSpawnedAgentId(input.from, proposalId, input.timeoutMs),
-  };
-}
-
-async function waitForSpawnedAgentId(
-  from: DaemonClient,
-  proposalId: string,
-  timeoutMs?: number,
-): Promise<string> {
-  // The spawned agent carries paseo.parent-agent-id = the commander id; find
-  // the roster row whose parent label points at the commander. Simpler and
-  // deterministic: poll fleet_list_agents for the row whose id appears after
-  // the proposal resolved — the payload echoes spawnedAgentId via the events
-  // feed (proposal card), so read it from the proposal event.
-  const proposalEvent = await waitForEvent(
-    from,
-    (event) =>
-      event.kind === "proposal" &&
-      event.proposal?.id === proposalId &&
-      (event.proposal.status === "approved" || event.proposal.status === "sent"),
-    { timeoutMs: timeoutMs ?? 30_000, label: `proposal ${proposalId} approved event` },
-  );
-  const spawnedAgentId = proposalEvent.proposal?.spawnedAgentId as string | undefined;
-  if (!spawnedAgentId) {
-    throw new Error(
-      `Proposal ${proposalId} approved but no spawnedAgentId on the event: ${JSON.stringify(proposalEvent)}`,
-    );
-  }
-  return spawnedAgentId;
+  return { agentId };
 }
 
 /**

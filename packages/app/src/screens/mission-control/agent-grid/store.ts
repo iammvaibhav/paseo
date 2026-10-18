@@ -9,7 +9,7 @@ import type { AgentGridDirection } from "./layout";
 export const AGENT_GRID_STORAGE_KEY = "@paseo:mission-control-agent-grid";
 export const AGENT_GRID_STORE_VERSION = 1;
 
-export type MissionControlView = "commander" | "grid";
+export type MissionControlView = "board" | "grid";
 
 export const AGENT_GRID_VISIBLE_COUNT_OPTIONS = [1, 2, 4, 6, 8, 9, 12, 16] as const;
 export const AGENT_GRID_DEFAULT_VISIBLE_COUNT = 6;
@@ -65,7 +65,8 @@ export interface AgentGridPersistedState {
 }
 
 const AgentGridPersistedStateSchema = z.strictObject({
-  view: z.enum(["commander", "grid"]).optional(),
+  // "commander" is the pre-board name of the board view.
+  view: z.enum(["board", "commander", "grid"]).optional(),
   visibleCount: z.number().int().positive().optional(),
   direction: z.enum(["horizontal", "vertical"]).optional(),
 });
@@ -74,14 +75,14 @@ export function migrateAgentGridState(persisted: unknown): AgentGridPersistedSta
   const result = AgentGridPersistedStateSchema.safeParse(persisted);
   if (!result.success) {
     return {
-      view: "commander",
+      view: "board",
       visibleCount: AGENT_GRID_DEFAULT_VISIBLE_COUNT,
       direction: "vertical",
     };
   }
 
   return {
-    view: result.data.view ?? "commander",
+    view: result.data.view === "grid" ? "grid" : "board",
     visibleCount: result.data.visibleCount ?? AGENT_GRID_DEFAULT_VISIBLE_COUNT,
     direction: result.data.direction ?? "vertical",
   };
@@ -91,7 +92,7 @@ export const useAgentGridStore: UseBoundStore<StoreApi<AgentGridStoreState>> =
   create<AgentGridStoreState>()(
     persist(
       (set) => ({
-        view: "commander",
+        view: "board",
         visibleCount: AGENT_GRID_DEFAULT_VISIBLE_COUNT,
         direction: "vertical",
         setView: (view) => set({ view }),

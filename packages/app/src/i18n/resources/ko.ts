@@ -154,7 +154,6 @@ export const ko: TranslationResources = {
       muteVoice: "음성 음소거",
       dictation: "받아쓰기",
       interruptBeforeVoice: "음성 모드를 시작하기 전에 에이전트를 중단하세요",
-      commanderVoice: "커맨더 음성",
     },
     attachments: {
       addImage: "이미지 추가",
@@ -2261,29 +2260,10 @@ export const ko: TranslationResources = {
       host: "개요",
     },
     missionControl: {
-      approvalMode: en.settings.missionControl.approvalMode,
-      approvalModeHint: en.settings.missionControl.approvalModeHint,
       verbose: en.settings.missionControl.verbose,
       verboseHint: en.settings.missionControl.verboseHint,
       clearView: en.settings.missionControl.clearView,
       clearViewHint: en.settings.missionControl.clearViewHint,
-      resetCommander: en.settings.missionControl.resetCommander,
-      resetCommanderHint: en.settings.missionControl.resetCommanderHint,
-      memory: "메모리",
-      hindsightUrl: "Hindsight URL",
-      hindsightUrlHint:
-        "Hindsight API 기본 URL입니다. 비워 두면 플릿 메모리(실행 기록 쓰기 및 recall)가 비활성화됩니다.",
-      hindsightBank: "쓰기 뱅크",
-      hindsightBankHint: "Paseo가 실행 기록을 쓰는 뱅크입니다.",
-      hindsightSecondaryBank: "recall 뱅크(보조)",
-      hindsightSecondaryBankHint:
-        "fleet_recall이 참조하는 읽기 전용 보조 뱅크입니다. 비워 두면 비활성화됩니다.",
-      voiceNodeUrl: "음성 노드 URL",
-      voiceNodeUrlHint:
-        "커맨더 음성 서버(예: ws://127.0.0.1:8787/ws). 비워 두면 Mission Control 작성기에서 커맨더 음성이 숨겨집니다.",
-      voiceMode: "Voice tool mode",
-      voiceModeHint:
-        "Relay = voice reads like Commander but routes every change through commander_dispatch. Direct = voice holds the full Commander tool surface, approval-gated. Applies to new voice sessions.",
     },
     plugins: pluginSettings.ko,
     routing: {

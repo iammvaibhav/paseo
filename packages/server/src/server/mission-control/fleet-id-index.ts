@@ -3,14 +3,13 @@ import type { AgentManager } from "../agent/agent-manager.js";
 import type { AgentStorage } from "../agent/agent-storage.js";
 import type { WorkspaceRegistry, ProjectRegistry } from "../workspace-registry.js";
 import type { PeerManager } from "../peers/peer-manager.js";
-import type { MissionControlService } from "./service.js";
 import type { FleetContextData } from "./context.js";
 import type {
   MissionControlContextAgentSummary,
   MissionControlInventory,
 } from "@getpaseo/protocol/mission-control/types";
 
-export type FleetIdKind = "agent" | "workspace" | "project" | "proposal";
+export type FleetIdKind = "agent" | "workspace" | "project";
 
 /** A resolved id carries its canonical `id`: a unique agent-id prefix (the
  * short ids rosters show) expands to the full id callers must route with. */
@@ -39,7 +38,6 @@ export interface FleetIdIndexDependencies {
   agentManager?: Pick<AgentManager, "listAgents" | "getAgent"> | null;
   workspaceRegistry?: Pick<WorkspaceRegistry, "list" | "get"> | null;
   projectRegistry?: Pick<ProjectRegistry, "list" | "get"> | null;
-  missionControlService?: Pick<MissionControlService, "getProposal" | "listProposals"> | null;
   peerManager?: PeerManager | null;
   fleetContext?: () => Promise<FleetContextData>;
   /** Per-peer snapshot fetch bound. Defaults to DEFAULT_PEER_FETCH_TIMEOUT_MS. */
@@ -63,9 +61,6 @@ export function inferIdKind(id: string): FleetIdKind {
   }
   if (id.startsWith("prj_")) {
     return "project";
-  }
-  if (id.startsWith("mcp_")) {
-    return "proposal";
   }
   return "agent";
 }
@@ -253,18 +248,6 @@ export class FleetIdIndex {
   }
 
   private async resolveLocal(id: string): Promise<{ kind: FleetIdKind; host: string } | null> {
-    // Proposal check
-    if (id.startsWith("mcp_")) {
-      const proposal = this.deps.missionControlService?.getProposal?.(id);
-      if (proposal || this.deps.missionControlService?.listProposals?.().some((p) => p.id === id)) {
-        return { kind: "proposal", host: "local" };
-      }
-      // If starts with mcp_ and no service or not found, still proposal family on commander host
-      if (!this.deps.missionControlService) {
-        return { kind: "proposal", host: "local" };
-      }
-    }
-
     // Workspace check
     if (
       await this.matchesLocalRegistry(

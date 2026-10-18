@@ -155,7 +155,6 @@ export const es: TranslationResources = {
       muteVoice: "voz muda",
       dictation: "Dictado",
       interruptBeforeVoice: "Interrumpir al agente antes de iniciar el modo de voz.",
-      commanderVoice: "Voz del Comandante",
     },
     attachments: {
       addImage: "Agregar imagen",
@@ -2308,29 +2307,10 @@ export const es: TranslationResources = {
       host: "Resumen",
     },
     missionControl: {
-      approvalMode: en.settings.missionControl.approvalMode,
-      approvalModeHint: en.settings.missionControl.approvalModeHint,
       verbose: en.settings.missionControl.verbose,
       verboseHint: en.settings.missionControl.verboseHint,
       clearView: en.settings.missionControl.clearView,
       clearViewHint: en.settings.missionControl.clearViewHint,
-      resetCommander: en.settings.missionControl.resetCommander,
-      resetCommanderHint: en.settings.missionControl.resetCommanderHint,
-      memory: "Memoria",
-      hindsightUrl: "URL de Hindsight",
-      hindsightUrlHint:
-        "URL base de la API de Hindsight. Vacía desactiva la memoria de la flota (escritura de registros de ejecución y recall).",
-      hindsightBank: "Banco de escritura",
-      hindsightBankHint: "Banco donde Paseo escribe los registros de ejecución.",
-      hindsightSecondaryBank: "Banco de recall (secundario)",
-      hindsightSecondaryBankHint:
-        "Banco secundario de solo lectura consultado por fleet_recall. Vacío lo desactiva.",
-      voiceNodeUrl: "URL del nodo de voz",
-      voiceNodeUrlHint:
-        "Servidor de Voz del Comandante (p. ej. ws://127.0.0.1:8787/ws). Vacío oculta la voz del Comandante en el compositor de Mission Control.",
-      voiceMode: "Voice tool mode",
-      voiceModeHint:
-        "Relay = voice reads like Commander but routes every change through commander_dispatch. Direct = voice holds the full Commander tool surface, approval-gated. Applies to new voice sessions.",
     },
     plugins: pluginSettings.es,
     routing: {

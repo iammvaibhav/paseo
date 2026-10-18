@@ -6,14 +6,10 @@ import type pino from "pino";
 import type { AgentManager, AgentManagerEvent, ManagedAgent } from "../agent/agent-manager.js";
 import type { AgentStorage } from "../agent/agent-storage.js";
 import type { AgentTimelineItem } from "../agent/agent-sdk-types.js";
-import type { MissionControlProposal } from "@getpaseo/protocol/mission-control/types";
 import type { DaemonConfigStore } from "../daemon-config-store.js";
 import { MissionControlService } from "./service.js";
-import type { MissionControlApprovals } from "./approvals.js";
 import type { CentralMissionControlConfigStore } from "./config.js";
 import { MissionControlStore } from "./store.js";
-import { createMissionControlPresenceSource, isUserViewingAgent } from "./presence.js";
-import type { ClientPresenceState } from "../agent-attention-policy.js";
 
 function createMockLogger(): pino.Logger {
   const levels = ["trace", "debug", "info", "warn", "error", "fatal"] as const;
@@ -51,9 +47,13 @@ describe("MissionControlService stall machinery (dormant-turn recovery + watchdo
   let getRecord: ReturnType<typeof vi.fn>;
   let listRecords: ReturnType<typeof vi.fn>;
   let upsertRecord: ReturnType<typeof vi.fn>;
-  let createProposal: ReturnType<typeof vi.fn>;
-  let expirePendingForAgent: ReturnType<typeof vi.fn>;
-  let realApprovals: MissionControlApprovals;
+  let deliver: ReturnType<typeof vi.fn>;
+  let realDeliver: (input: {
+    agentId: string;
+    message: string;
+    deliveryMode: "steer" | "interrupt" | "queue";
+    reason: string;
+  }) => Promise<void>;
   let logger: ReturnType<typeof createMockLogger>;
 
   async function createService(): Promise<void> {
@@ -83,25 +83,17 @@ describe("MissionControlService stall machinery (dormant-turn recovery + watchdo
       serverId: "test-server",
       hostName: "test-host",
       broadcast,
-      presence: createMissionControlPresenceSource({
-        isAgentFocused: () => false,
-        readStopOrigin: () => null,
-      }),
     });
     await service.start();
     // Bypass the 60s boot restart-grace so sweeps run immediately.
     (service as unknown as { bootedAtMs: number }).bootedAtMs = Date.now() - 120_000;
     store = (service as unknown as { store: MissionControlStore }).store;
-    // Keep the REAL approvals (with the service's deliver guard) for the
-    // user-stop abort test, then swap in the stub for nudge assertions.
-    realApprovals = (service as unknown as { approvals: unknown })
-      .approvals as MissionControlApprovals;
-    createProposal = vi.fn(async () => ({ id: "mcp_test" }));
-    expirePendingForAgent = vi.fn(async () => undefined);
-    (service as unknown as { approvals: Record<string, unknown> }).approvals = {
-      createProposal,
-      expirePendingForAgent,
-    };
+    // Keep the REAL delivery (with its user-stop guard) for the user-stop
+    // test, then swap in a stub for the recovery assertions.
+    const internals = service as unknown as { deliverMachineryPrompt: typeof realDeliver };
+    realDeliver = internals.deliverMachineryPrompt.bind(service);
+    deliver = vi.fn(async () => undefined);
+    internals.deliverMachineryPrompt = deliver;
   }
 
   beforeEach(async () => {
@@ -169,139 +161,6 @@ describe("MissionControlService stall machinery (dormant-turn recovery + watchdo
     });
   }
 
-  function blockedEvents(): Array<{ headline?: string; detail?: string }> {
-    return broadcast.mock.calls
-      .map((call: unknown[]) => (call[0] as { event?: { kind?: string } }).event)
-      .filter((event) => event?.kind === "blocked") as Array<{
-      headline?: string;
-      detail?: string;
-    }>;
-  }
-
-  function commanderAgent(agentId: string): ManagedAgent {
-    return runningAgent(agentId, {
-      labels: { "paseo.mission-control": "commander" },
-    });
-  }
-
-  test("Commander watchdog: N consecutive provider rejections emit exactly one Needs-you card, no nudge", async () => {
-    const commander = commanderAgent("commander-1");
-    getAgent.mockReturnValue(commander);
-    startRunning("commander-1", commander);
-
-    for (let i = 0; i < 5; i++) {
-      streamToolCall(
-        "commander-1",
-        `call-${i}`,
-        "failed",
-        "Provider opencode-zen is not configured",
-      );
-    }
-    await flushBroadcasts();
-    const events = blockedEvents();
-    expect(events).toHaveLength(1);
-    expect(events[0]?.headline).toContain("fleet_create_agent");
-    expect(events[0]?.detail).toContain("Provider opencode-zen is not configured");
-    // Card only — the Commander is never nudged.
-    expect(createProposal).not.toHaveBeenCalled();
-  });
-
-  test("Commander watchdog: schema-validation class errors count too", async () => {
-    const commander = commanderAgent("commander-1");
-    getAgent.mockReturnValue(commander);
-    startRunning("commander-1", commander);
-
-    for (let i = 0; i < 3; i++) {
-      streamToolCall(
-        "commander-1",
-        `call-${i}`,
-        "failed",
-        "provider must be provider/model, for example codex/gpt-5.4",
-      );
-    }
-    await flushBroadcasts();
-    expect(blockedEvents()).toHaveLength(1);
-  });
-
-  test("Commander watchdog: non-provider failures never card", async () => {
-    const commander = commanderAgent("commander-1");
-    getAgent.mockReturnValue(commander);
-    startRunning("commander-1", commander);
-
-    for (let i = 0; i < 6; i++) {
-      streamToolCall("commander-1", `call-${i}`, "failed", "bash: command not found: nope");
-    }
-    await flushBroadcasts();
-    expect(blockedEvents()).toHaveLength(0);
-    expect(createProposal).not.toHaveBeenCalled();
-  });
-
-  test("Commander watchdog: a successful call of the same tool breaks the streak", async () => {
-    const commander = commanderAgent("commander-1");
-    getAgent.mockReturnValue(commander);
-    startRunning("commander-1", commander);
-
-    streamToolCall("commander-1", "call-0", "failed", "Provider opencode-zen is not configured");
-    streamToolCall("commander-1", "call-1", "failed", "Provider opencode-zen is not configured");
-    streamToolCall("commander-1", "call-2", "completed");
-    for (let i = 3; i < 6; i++) {
-      streamToolCall(
-        "commander-1",
-        `call-${i}`,
-        "failed",
-        "Provider opencode-zen is not configured",
-      );
-    }
-    await flushBroadcasts();
-    // Only the post-success streak counts; exactly one card.
-    expect(blockedEvents()).toHaveLength(1);
-  });
-
-  test("Commander watchdog: a turn boundary resets, so each looping turn cards once", async () => {
-    const commander = commanderAgent("commander-1");
-    getAgent.mockReturnValue(commander);
-    startRunning("commander-1", commander);
-
-    for (let i = 0; i < 3; i++) {
-      streamToolCall(
-        "commander-1",
-        `call-${i}`,
-        "failed",
-        "Provider opencode-zen is not configured",
-      );
-    }
-    onEvent?.({
-      type: "agent_stream",
-      agentId: "commander-1",
-      event: { type: "turn_completed", provider: "omp", turnId: "turn-1" },
-    });
-    for (let i = 3; i < 6; i++) {
-      streamToolCall(
-        "commander-1",
-        `call-${i}`,
-        "failed",
-        "Provider opencode-zen is not configured",
-      );
-    }
-    await flushBroadcasts();
-    expect(blockedEvents()).toHaveLength(2);
-  });
-
-  test("Commander watchdog: worker tool failures are untouched", async () => {
-    // A plain worker (not MC-labeled) with the same failure pattern must not
-    // produce a watchdog card — worker stall handling is the stall machinery's
-    // job, and that path is unchanged.
-    const worker = runningAgent("agent-1");
-    getAgent.mockReturnValue(worker);
-    startRunning("agent-1", worker);
-    for (let i = 0; i < 5; i++) {
-      streamToolCall("agent-1", `call-${i}`, "failed", "Provider opencode-zen is not configured");
-    }
-    await flushBroadcasts();
-    expect(blockedEvents()).toHaveLength(0);
-    expect(createProposal).not.toHaveBeenCalled();
-  });
-
   test("watchdog self-heals a dead-runtime running record after 2 minutes", async () => {
     const deadAgent = runningAgent("agent-1", {
       session: { isRuntimeAlive: () => false },
@@ -348,16 +207,14 @@ describe("MissionControlService stall machinery (dormant-turn recovery + watchdo
     ).toBe(true);
     // Recovery proposal for the interrupted run (interrupt-and-send), once
     // per heal, through the normal approval gate.
-    expect(createProposal).toHaveBeenCalledTimes(1);
-    expect(createProposal).toHaveBeenCalledWith(
+    expect(deliver).toHaveBeenCalledTimes(1);
+    expect(deliver).toHaveBeenCalledWith(
       expect.objectContaining({
-        origin: "stall",
-        targetAgentId: "agent-1",
+        agentId: "agent-1",
         deliveryMode: "interrupt",
-        classification: "normal",
       }),
     );
-    expect(createProposal.mock.calls[0][0].message).toBe(
+    expect(deliver.mock.calls[0][0].message).toBe(
       "Continue whatever you were working on and post a one-line report_status.",
     );
     // Loud watchdog log.
@@ -369,7 +226,7 @@ describe("MissionControlService stall machinery (dormant-turn recovery + watchdo
     // Healed: subsequent sweeps do not re-heal or re-propose.
     await (service as unknown as { runWatchdog(): Promise<void> }).runWatchdog();
     expect(upsertRecord).toHaveBeenCalledTimes(1);
-    expect(createProposal).toHaveBeenCalledTimes(1);
+    expect(deliver).toHaveBeenCalledTimes(1);
   });
 
   test("watchdog skips agents whose runtime is alive", async () => {
@@ -411,7 +268,7 @@ describe("MissionControlService stall machinery (dormant-turn recovery + watchdo
     // First observation arms the 2-min window; no self-heal yet.
     await (service as unknown as { runWatchdog(): Promise<void> }).runWatchdog();
     expect(upsertRecord).not.toHaveBeenCalled();
-    expect(createProposal).not.toHaveBeenCalled();
+    expect(deliver).not.toHaveBeenCalled();
     // Dead for >2min now: heal to error, origin system, stalled + recovery.
     const recordDeadSince = (service as unknown as { recordDeadSince: Map<string, number> })
       .recordDeadSince;
@@ -426,18 +283,17 @@ describe("MissionControlService stall machinery (dormant-turn recovery + watchdo
         (call: unknown[]) => (call[0] as { event?: { kind?: string } }).event?.kind === "stalled",
       ),
     ).toBe(true);
-    expect(createProposal).toHaveBeenCalledTimes(1);
-    expect(createProposal).toHaveBeenCalledWith(
+    expect(deliver).toHaveBeenCalledTimes(1);
+    expect(deliver).toHaveBeenCalledWith(
       expect.objectContaining({
-        origin: "stall",
-        targetAgentId: "agent-1",
+        agentId: "agent-1",
         deliveryMode: "interrupt",
       }),
     );
     // Idempotent: healed records no longer match; a second pass heals nothing.
     await (service as unknown as { runWatchdog(): Promise<void> }).runWatchdog();
     expect(upsertRecord).toHaveBeenCalledTimes(1);
-    expect(createProposal).toHaveBeenCalledTimes(1);
+    expect(deliver).toHaveBeenCalledTimes(1);
   });
 
   test("watchdog heals a tracked agent whose live agent vanished (getAgent null)", async () => {
@@ -501,7 +357,7 @@ describe("MissionControlService stall machinery (dormant-turn recovery + watchdo
     // healed nor ignored). agent-commander has no runtime but is excluded →
     // skipped entirely. Nothing heals, nothing is proposed.
     expect(upsertRecord).not.toHaveBeenCalled();
-    expect(createProposal).not.toHaveBeenCalled();
+    expect(deliver).not.toHaveBeenCalled();
     // Test seam: reach the private stall-tracking map (unchecked by design).
     const stallTracking = (service as unknown as { stallTracking: Map<string, unknown> })
       .stallTracking;
@@ -567,7 +423,7 @@ describe("MissionControlService stall machinery (dormant-turn recovery + watchdo
     // sweeps to zero status-ask steers (the terminal-state guarantee is the
     // only status-ask, and it fires at run end, never on a timer).
     sweep();
-    expect(createProposal).not.toHaveBeenCalled();
+    expect(deliver).not.toHaveBeenCalled();
   });
 
   test("boot heal of a dead pre-restart run is unchanged (dead runs heal, never adopt)", async () => {
@@ -624,28 +480,15 @@ describe("MissionControlService stall machinery (dormant-turn recovery + watchdo
         (call: unknown[]) => (call[0] as { event?: { kind?: string } }).event?.kind === "stalled",
       ),
     ).toBe(true);
-    expect(createProposal).toHaveBeenCalledTimes(1);
-    expect(createProposal).toHaveBeenCalledWith(
+    expect(deliver).toHaveBeenCalledTimes(1);
+    expect(deliver).toHaveBeenCalledWith(
       expect.objectContaining({
-        origin: "stall",
-        targetAgentId: "agent-1",
+        agentId: "agent-1",
         deliveryMode: "interrupt",
       }),
     );
     // Still never adopted, even after healing.
     expect(stallTracking.has("agent-1")).toBe(false);
-  });
-
-  test("a user stop expires pending machinery proposals for the agent", async () => {
-    startRunning("agent-1");
-    // The user-originated run start itself expires stale proposals.
-    expect(expirePendingForAgent).toHaveBeenCalledWith("agent-1");
-    service.recordStopOrigin("agent-1", "user");
-    expect(expirePendingForAgent).toHaveBeenCalledTimes(2);
-    // Non-user origins never expire proposals.
-    service.recordStopOrigin("agent-1", null);
-    service.recordStopOrigin("agent-1", "system");
-    expect(expirePendingForAgent).toHaveBeenCalledTimes(2);
   });
 
   test("a machinery-classified row is the tracker's own prompt, never agent activity", async () => {
@@ -680,23 +523,18 @@ describe("MissionControlService stall machinery (dormant-turn recovery + watchdo
     expect(tracking.lastStreamAt).toBeGreaterThan(before);
   });
 
-  test("machinery dispatch aborts for a user-stopped agent: proposal expires, steer never sent", async () => {
+  test("machinery prompts are never delivered to a user-stopped agent", async () => {
     startRunning("agent-1");
     store.recordStopOrigin("agent-1", "user");
-    // Drive the REAL approvals (with the service's deliver guard), not the
-    // stub: the deliver hook must refuse to dispatch to a user-stopped agent.
-    const result = await realApprovals.createProposal({
-      origin: "stall",
-      serverId: "test-server",
-      targetAgentId: "agent-1",
-      message: "Continue whatever you were working on and post a one-line report_status.",
-      deliveryMode: "interrupt",
-      reason: "recovery",
-      classification: "normal",
-      forceSend: true,
-    });
-    expect(result.status).toBe("expired");
-    expect(store.getProposal(result.id)?.status).toBe("expired");
+    // The mock manager cannot run a prompt: delivery resolving proves it was skipped.
+    await expect(
+      realDeliver({
+        agentId: "agent-1",
+        message: "Continue whatever you were working on and post a one-line report_status.",
+        deliveryMode: "interrupt",
+        reason: "recovery",
+      }),
+    ).resolves.toBeUndefined();
   });
 
   test("a new run clears the previous run's stop origin", () => {
@@ -892,13 +730,11 @@ describe("MissionControlService stall machinery (dormant-turn recovery + watchdo
     await flushBroadcasts();
 
     // Recovery via the proven replace-cancel escalation (interrupt delivery).
-    expect(createProposal).toHaveBeenCalledTimes(1);
-    expect(createProposal).toHaveBeenCalledWith(
+    expect(deliver).toHaveBeenCalledTimes(1);
+    expect(deliver).toHaveBeenCalledWith(
       expect.objectContaining({
-        origin: "stall",
-        targetAgentId: "agent-1",
+        agentId: "agent-1",
         deliveryMode: "interrupt",
-        classification: "normal",
         reason: expect.stringContaining("no tool in flight"),
       }),
     );
@@ -910,7 +746,7 @@ describe("MissionControlService stall machinery (dormant-turn recovery + watchdo
     // Once per run: a further sweep does not re-recover (or re-nudge).
     sweep();
     await flushBroadcasts();
-    expect(createProposal).toHaveBeenCalledTimes(1);
+    expect(deliver).toHaveBeenCalledTimes(1);
   });
 
   test("an agent inside a long declared tool call is never flagged dormant", async () => {
@@ -927,7 +763,7 @@ describe("MissionControlService stall machinery (dormant-turn recovery + watchdo
     sweep();
     await flushBroadcasts();
     // Working, not dormant: no hard stop, no stalled event.
-    expect(createProposal).not.toHaveBeenCalled();
+    expect(deliver).not.toHaveBeenCalled();
     expect(stalledCards()).toHaveLength(0);
 
     // The wait ends (terminal tool row closes the in-flight call) and the
@@ -941,8 +777,8 @@ describe("MissionControlService stall machinery (dormant-turn recovery + watchdo
     setSilence("agent-1", 601_000);
     sweep();
     await flushBroadcasts();
-    expect(createProposal).toHaveBeenCalledTimes(1);
-    expect(createProposal).toHaveBeenCalledWith(
+    expect(deliver).toHaveBeenCalledTimes(1);
+    expect(deliver).toHaveBeenCalledWith(
       expect.objectContaining({
         deliveryMode: "interrupt",
         reason: expect.stringContaining("no tool in flight"),
@@ -969,190 +805,8 @@ describe("MissionControlService stall machinery (dormant-turn recovery + watchdo
     setSilence("agent-1", 301_000);
     sweep();
     await flushBroadcasts();
-    expect(createProposal).toHaveBeenCalledTimes(1);
+    expect(deliver).toHaveBeenCalledTimes(1);
   });
-
-  test("steer reported handled but producing no activity is marked undelivered and escalated", async () => {
-    (service as unknown as { approvals: unknown }).approvals = realApprovals;
-    startRunning("agent-1");
-    // A machinery steer already recorded "sent" (tryRunOutOfBand handled).
-    const proposal: MissionControlProposal = {
-      id: "mcp_steer_verify",
-      createdAt: new Date().toISOString(),
-      origin: "stall",
-      serverId: "test-server",
-      targetAgentId: "agent-1",
-      message: "Post a one-line report_status.",
-      deliveryMode: "steer",
-      reason: "status ask",
-      classification: "normal",
-      status: "sent",
-    };
-    await store.putProposal(proposal);
-    const internals = service as unknown as {
-      armSteerDeliveryVerification(agentId: string, p: MissionControlProposal | undefined): void;
-      steerVerifications: Map<string, { proposalId: string; armedAt: number; deadline: number }>;
-    };
-    internals.armSteerDeliveryVerification("agent-1", proposal);
-    // The verification window elapses with NO agent activity.
-    const verification = internals.steerVerifications.get("agent-1");
-    expect(verification).toBeDefined();
-    verification!.deadline = Date.now() - 1;
-    sweep();
-    await flushBroadcasts();
-
-    // The proposal is never left "sent" for a message that did not land.
-    expect(store.getProposal("mcp_steer_verify")?.status).toBe("undelivered");
-    // Escalated via the existing recovery interrupt (ask mode: pending card).
-    expect(stalledCards()).toHaveLength(1);
-    const recoveryCards = broadcast.mock.calls
-      .map(
-        (call: unknown[]) =>
-          (call[0] as { event?: { proposal?: { deliveryMode?: string } } })?.event,
-      )
-      .filter((event) => event?.proposal?.deliveryMode === "interrupt");
-    expect(recoveryCards.length).toBeGreaterThan(0);
-  });
-
-  test("real agent activity satisfies a pending steer verification", async () => {
-    (service as unknown as { approvals: unknown }).approvals = realApprovals;
-    startRunning("agent-1");
-    const proposal: MissionControlProposal = {
-      id: "mcp_steer_ok",
-      createdAt: new Date().toISOString(),
-      origin: "stall",
-      serverId: "test-server",
-      targetAgentId: "agent-1",
-      message: "Post a one-line report_status.",
-      deliveryMode: "steer",
-      reason: "status ask",
-      classification: "normal",
-      status: "sent",
-    };
-    await store.putProposal(proposal);
-    const internals = service as unknown as {
-      armSteerDeliveryVerification(agentId: string, p: MissionControlProposal | undefined): void;
-      steerVerifications: Map<string, { proposalId: string; armedAt: number; deadline: number }>;
-    };
-    internals.armSteerDeliveryVerification("agent-1", proposal);
-    // The agent answers: the verification clears on real activity.
-    streamTimeline("agent-1", { type: "assistant_message", text: "on it" });
-    const verification = internals.steerVerifications.get("agent-1");
-    expect(verification).toBeUndefined();
-    sweep();
-    await flushBroadcasts();
-    expect(store.getProposal("mcp_steer_ok")?.status).toBe("sent");
-    expect(stalledCards()).toHaveLength(0);
-    expect(
-      broadcast.mock.calls.some(
-        (call: unknown[]) =>
-          (call[0] as { event?: { proposal?: { deliveryMode?: string } } })?.event?.proposal
-            ?.deliveryMode === "interrupt",
-      ),
-    ).toBe(false);
-  });
-
-  test("a steer during a long declared tool call is never marked undelivered or escalated", async () => {
-    // A legitimately long NON-interruptible tool (a 5-minute build) is not a
-    // wedge: omp queues the steer and delivers it after the tool completes.
-    // The verification must be DEFERRED while the tool is in flight — arming
-    // the 90s clock against the tool's silence would false-positive
-    // "undelivered" and the recovery interrupt would destroy the healthy
-    // build. Only "steer acked + no tool in flight + no activity" is
-    // evidence of stranding.
-    (service as unknown as { approvals: unknown }).approvals = realApprovals;
-    startRunning("agent-1");
-    const proposal: MissionControlProposal = {
-      id: "mcp_steer_queued",
-      createdAt: new Date().toISOString(),
-      origin: "stall",
-      serverId: "test-server",
-      targetAgentId: "agent-1",
-      message: "Post a one-line report_status.",
-      deliveryMode: "steer",
-      reason: "status ask",
-      classification: "normal",
-      status: "sent",
-    };
-    await store.putProposal(proposal);
-    // The long build is in flight when the steer arrives.
-    streamToolCall("agent-1", "build", "running");
-    const internals = service as unknown as {
-      armSteerDeliveryVerification(agentId: string, p: MissionControlProposal | undefined): void;
-      steerVerifications: Map<string, { proposalId: string; armedAt: number; deadline: number }>;
-      deferredSteerVerifications: Map<string, { proposalId: string; armedAt: number }>;
-    };
-    internals.armSteerDeliveryVerification("agent-1", proposal);
-    // Deferred, not armed: no clock runs while the tool is in flight.
-    expect(internals.steerVerifications.get("agent-1")).toBeUndefined();
-    expect(internals.deferredSteerVerifications.get("agent-1")).toMatchObject({
-      proposalId: "mcp_steer_queued",
-    });
-
-    // Even far past a 90s window, nothing fires while the tool runs.
-    sweep();
-    await flushBroadcasts();
-    expect(store.getProposal("mcp_steer_queued")?.status).toBe("sent");
-    expect(stalledCards()).toHaveLength(0);
-    expect(
-      broadcast.mock.calls.some(
-        (call: unknown[]) =>
-          (call[0] as { event?: { proposal?: { deliveryMode?: string } } })?.event?.proposal
-            ?.deliveryMode === "interrupt",
-      ),
-    ).toBe(false);
-
-    // The build finishes (5 min later): NOW the steer's own window starts.
-    streamToolCall("agent-1", "build", "completed");
-    expect(internals.deferredSteerVerifications.get("agent-1")).toBeUndefined();
-    const armed = internals.steerVerifications.get("agent-1");
-    expect(armed).toBeDefined();
-    expect(armed!.proposalId).toBe("mcp_steer_queued");
-    // The build's terminal row is the tool's conclusion, not the steer's
-    // effect — with no steer response, the fresh window still expires.
-    armed!.deadline = Date.now() - 1;
-    sweep();
-    await flushBroadcasts();
-    expect(store.getProposal("mcp_steer_queued")?.status).toBe("undelivered");
-    expect(stalledCards()).toHaveLength(1);
-  });
-
-  test("a steer deferred behind a tool is verified once the tool ends and the agent responds", async () => {
-    (service as unknown as { approvals: unknown }).approvals = realApprovals;
-    startRunning("agent-1");
-    const proposal: MissionControlProposal = {
-      id: "mcp_steer_queued_ok",
-      createdAt: new Date().toISOString(),
-      origin: "stall",
-      serverId: "test-server",
-      targetAgentId: "agent-1",
-      message: "Post a one-line report_status.",
-      deliveryMode: "steer",
-      reason: "status ask",
-      classification: "normal",
-      status: "sent",
-    };
-    await store.putProposal(proposal);
-    streamToolCall("agent-1", "build", "running");
-    const internals = service as unknown as {
-      armSteerDeliveryVerification(agentId: string, p: MissionControlProposal | undefined): void;
-      steerVerifications: Map<string, { proposalId: string; armedAt: number; deadline: number }>;
-    };
-    internals.armSteerDeliveryVerification("agent-1", proposal);
-    // Tool ends; then the queued steer is processed — the agent responds.
-    streamToolCall("agent-1", "build", "completed");
-    streamTimeline("agent-1", { type: "assistant_message", text: "build done, here's my status" });
-    // The response cleared the verification: proposal stays honestly "sent".
-    expect(internals.steerVerifications.get("agent-1")).toBeUndefined();
-    sweep();
-    await flushBroadcasts();
-    expect(store.getProposal("mcp_steer_queued_ok")?.status).toBe("sent");
-    expect(stalledCards()).toHaveLength(0);
-  });
-
-  // ==========================================================================
-  // Root Causes 2, 4, 5, 7 acceptance criteria
-  // ==========================================================================
 
   test("user message to busy agent produces NO interrupted event and NO stopped chip, while hard stop does", async () => {
     startRunning("agent-1");
@@ -1393,13 +1047,11 @@ describe("MissionControlService stall machinery (dormant-turn recovery + watchdo
         (call: unknown[]) => (call[0] as { event?: { kind?: string } })?.event?.kind === "failed",
       ),
     ).toBe(true);
-    expect(createProposal).toHaveBeenCalledTimes(1);
-    expect(createProposal).toHaveBeenCalledWith(
+    expect(deliver).toHaveBeenCalledTimes(1);
+    expect(deliver).toHaveBeenCalledWith(
       expect.objectContaining({
-        origin: "stall",
-        targetAgentId: "agent-1",
+        agentId: "agent-1",
         deliveryMode: "steer",
-        classification: "normal",
       }),
     );
   });
@@ -1410,7 +1062,7 @@ describe("MissionControlService stall machinery (dormant-turn recovery + watchdo
       "Request was aborted (stopReason=aborted, model=opencode-go/muse-spark-1.3-contributor)",
     );
     await flushBroadcasts();
-    expect(createProposal).toHaveBeenCalledTimes(1);
+    expect(deliver).toHaveBeenCalledTimes(1);
     // Same run epoch erroring again (both stream + state paths funnel here):
     startRunning(
       "agent-1",
@@ -1424,7 +1076,7 @@ describe("MissionControlService stall machinery (dormant-turn recovery + watchdo
       }),
     );
     await flushBroadcasts();
-    expect(createProposal).toHaveBeenCalledTimes(1);
+    expect(deliver).toHaveBeenCalledTimes(1);
     // Fresh run aborts again: new epoch, new proposal.
     startRunning("agent-1");
     failedRun(
@@ -1432,13 +1084,13 @@ describe("MissionControlService stall machinery (dormant-turn recovery + watchdo
       "Request was aborted (stopReason=aborted, model=opencode-go/muse-spark-1.3-contributor)",
     );
     await flushBroadcasts();
-    expect(createProposal).toHaveBeenCalledTimes(2);
+    expect(deliver).toHaveBeenCalledTimes(2);
   });
 
   test("user interrupt noise never proposes a resume", async () => {
     failedRun("agent-1", "Interrupted by user (stopReason=aborted, model=anthropic/claude-opus-5)");
     await flushBroadcasts();
-    expect(createProposal).not.toHaveBeenCalled();
+    expect(deliver).not.toHaveBeenCalled();
   });
 
   test("user stop origin and superseded runs never propose a resume", async () => {
@@ -1456,7 +1108,7 @@ describe("MissionControlService stall machinery (dormant-turn recovery + watchdo
       }),
     );
     await flushBroadcasts();
-    expect(createProposal).not.toHaveBeenCalled();
+    expect(deliver).not.toHaveBeenCalled();
     startRunning("agent-1");
     startRunning(
       "agent-1",
@@ -1470,39 +1122,12 @@ describe("MissionControlService stall machinery (dormant-turn recovery + watchdo
       }),
     );
     await flushBroadcasts();
-    expect(createProposal).not.toHaveBeenCalled();
+    expect(deliver).not.toHaveBeenCalled();
   });
 
   test("plain provider errors never propose a resume", async () => {
     failedRun("agent-1", "provider process crashed");
     await flushBroadcasts();
-    expect(createProposal).not.toHaveBeenCalled();
-  });
-});
-
-describe("presence helper", () => {
-  const states: ClientPresenceState[] = [
-    { appVisible: true, focusedAgentId: "agent-1", focusedTerminalId: null, lastActivityAtMs: 1 },
-    { appVisible: false, focusedAgentId: "agent-2", focusedTerminalId: null, lastActivityAtMs: 1 },
-    { appVisible: true, focusedAgentId: "agent-3", focusedTerminalId: null, lastActivityAtMs: 1 },
-  ];
-
-  test("isUserViewingAgent requires both appVisible and focusedAgentId", () => {
-    expect(isUserViewingAgent("agent-1", states)).toBe(true);
-    expect(isUserViewingAgent("agent-2", states)).toBe(false); // app not visible
-    expect(isUserViewingAgent("agent-3", states)).toBe(true);
-    expect(isUserViewingAgent("agent-4", states)).toBe(false);
-    expect(isUserViewingAgent("agent-1", [])).toBe(false);
-  });
-
-  test("factory exposes isAgentFocused and getStoppedBy from the injected sources", () => {
-    const source = createMissionControlPresenceSource({
-      isAgentFocused: (agentId) => agentId === "agent-1",
-      readStopOrigin: (agentId) => (agentId === "agent-1" ? "user" : null),
-    });
-    expect(source.isAgentFocused("agent-1")).toBe(true);
-    expect(source.isAgentFocused("agent-2")).toBe(false);
-    expect(source.getStoppedBy("agent-1")).toBe("user");
-    expect(source.getStoppedBy("agent-2")).toBeNull();
+    expect(deliver).not.toHaveBeenCalled();
   });
 });

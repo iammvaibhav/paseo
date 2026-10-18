@@ -4,7 +4,6 @@ import { isAgentModeId, type AgentModeId } from "@getpaseo/protocol/agent-modes"
 import type { TerminalManager } from "../../../terminal/terminal-manager.js";
 import type { CreatePaseoWorktreeInput } from "../../paseo-worktree-service.js";
 import { expandUserPath, resolvePathFromBase } from "../../path-utils.js";
-import { remapLegacyCommanderCreateCwd } from "../../mission-control/commander-boot.js";
 import { toWorktreeRequestError } from "../../worktree-errors.js";
 import type {
   AgentWorktreeSetupContinuation,
@@ -343,14 +342,7 @@ async function resolveMcpCreateAgent(
   const parentAgent = input.callerAgentId
     ? requireParentAgent(dependencies.agentManager, input.callerAgentId)
     : null;
-  // Commander-labeled creates with the legacy `~` sentinel cwd are redirected
-  // to the reserved home (`<paseoHome>/commander`) — same remap as the session
-  // create path, so every client lands in the same reserved home.
-  const cwd = remapLegacyCommanderCreateCwd({
-    labels: input.labels,
-    requestedCwd: resolveMcpInitialCwd(input, parentAgent),
-    paseoHome: dependencies.paseoHome,
-  });
+  const cwd = resolveMcpInitialCwd(input, parentAgent);
   const { resolvedCwd, setupContinuation, createdWorkspaceId, createdWorktree } =
     await resolveMcpCwd({
       dependencies,
@@ -370,10 +362,8 @@ async function resolveMcpCreateAgent(
     caller: parentAgent
       ? { id: parentAgent.id, cwd: parentAgent.cwd, workspaceId: parentAgent.workspaceId }
       : null,
-    // The caller's labels are the agent's identity: Mission Control finds the
-    // Commander on a host by its `paseo.mission-control` label. resolveCreateAgentIntent
-    // takes labels optionally, so dropping this argument compiles clean and silently
-    // creates every MCP agent with no labels at all.
+    // resolveCreateAgentIntent takes labels optionally, so dropping this argument
+    // compiles clean and silently creates every MCP agent with no labels at all.
     labels: input.labels,
     childAgentDefaultLabels: input.callerContext?.childAgentDefaultLabels,
     legacyDetached: input.detached ?? false,

@@ -46,7 +46,6 @@ export const COMPONENT_PATHS = {
     ...NOT_TESTS,
   ],
   "code-server": ["scripts/code-server"],
-  voice: ["scripts/commander-voice"],
   "omp-proxy": ["scripts/omp-proxy", "plugins"],
 } satisfies Record<string, string[]>;
 
@@ -55,7 +54,6 @@ export type Component = keyof typeof COMPONENT_PATHS;
 /** Services that are redeployed only when their files changed. */
 const TRACKED_SERVICES: Partial<Record<Service, Component>> = {
   "code-server": "code-server",
-  voice: "voice",
   "omp-proxy": "omp-proxy",
 };
 

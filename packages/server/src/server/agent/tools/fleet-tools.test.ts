@@ -13,11 +13,11 @@ import type { RoutingService } from "../../routing/routing-service.js";
 import type { ProviderSnapshotManager } from "../provider-snapshot-manager.js";
 import type { PeerManager } from "../../peers/peer-manager.js";
 import type { MissionControlService } from "../../mission-control/service.js";
-import { createPaseoToolCatalog, dispatchLocalPromptMode } from "./paseo-tools.js";
 import {
-  MISSION_CONTROL_LABEL_KEY,
-  MISSION_CONTROL_LABEL_VALUE,
-} from "../../mission-control/commander-contract.js";
+  buildMcpSpawnPlan,
+  createPaseoToolCatalog,
+  dispatchLocalPromptMode,
+} from "./paseo-tools.js";
 
 /** UUID-shaped agent id for fleet_send_prompt tests (agentId is the UUID family). */
 const SEND_AGENT_UUID = "5f3c0f4e-9b2a-4d6c-8e7a-1b2c3d4e5f6a";
@@ -954,176 +954,7 @@ function createMissionControlServiceStub(
   } as unknown as MissionControlService;
 }
 
-function createCommanderCatalog(input: {
-  missionControlService: MissionControlService;
-  peerManager?: PeerManager;
-  agentManager?: AgentManager;
-}) {
-  return createPaseoToolCatalog({
-    agentManager: input.agentManager ?? ({} as unknown as AgentManager),
-    agentStorage: { get: async () => null, list: async () => [] } as unknown as AgentStorage,
-    providerSnapshotManager: createProviderSnapshotManagerStub()
-      .manager as unknown as ProviderSnapshotManager,
-    peerManager: input.peerManager ?? ({} as unknown as PeerManager),
-    callerAgentId: "commander-1",
-    callerLabels: { "paseo.mission-control": "commander" },
-    serverId: "host-a",
-    missionControlService: input.missionControlService,
-    logger: createTestLogger(),
-  });
-}
-
-describe("clarify tool", () => {
-  test("emits a clarification event with the full payload for the Commander caller", async () => {
-    const missionControlService = createMissionControlServiceStub();
-    const catalog = createCommanderCatalog({ missionControlService });
-    const result = await catalog.executeTool("clarify", {
-      question: "Which workspace should the backtest run in?",
-      options: ["payments (existing)", "experiments (new worktree)"],
-      allowFreeText: true,
-    });
-    expect(result.structuredContent).toEqual({ ok: true, eventId: "mce_card_1" });
-    expect(missionControlService.emitCommanderCard).toHaveBeenCalledWith({
-      kind: "clarification",
-      headline: "Which workspace should the backtest run in?",
-      clarification: {
-        question: "Which workspace should the backtest run in?",
-        options: ["payments (existing)", "experiments (new worktree)"],
-        allowFreeText: true,
-      },
-    });
-  });
-
-  test("rejects non-Commander callers (label-gated like the fleet_* tools)", async () => {
-    const catalog = createPaseoToolCatalog({
-      agentManager: {} as unknown as AgentManager,
-      agentStorage: { get: async () => null, list: async () => [] } as unknown as AgentStorage,
-      providerSnapshotManager: createProviderSnapshotManagerStub()
-        .manager as unknown as ProviderSnapshotManager,
-      callerAgentId: "worker-1",
-      missionControlService: createMissionControlServiceStub(),
-      logger: createTestLogger(),
-    });
-    await expect(
-      catalog.executeTool("clarify", { question: "q?", options: ["a"], allowFreeText: false }),
-    ).rejects.toThrow("clarify requires a Commander caller");
-  });
-});
-
-describe("post_answer tool", () => {
-  test("emits an agent_status answer card with fields", async () => {
-    const missionControlService = createMissionControlServiceStub();
-    const catalog = createCommanderCatalog({ missionControlService });
-    const result = await catalog.executeTool("post_answer", {
-      kind: "agent_status",
-      agentId: "worker-1",
-      headline: "worker-1 finished the backtest",
-      fields: [
-        { label: "State", value: "done" },
-        { label: "Proof", value: "PR #12" },
-      ],
-    });
-    expect(result.structuredContent).toEqual({ ok: true, eventId: "mce_card_1" });
-    expect(missionControlService.emitCommanderCard).toHaveBeenCalledWith({
-      kind: "answer",
-      headline: "worker-1 finished the backtest",
-      answer: {
-        kind: "agent_status",
-        agentId: "worker-1",
-        headline: "worker-1 finished the backtest",
-        fields: [
-          { label: "State", value: "done" },
-          { label: "Proof", value: "PR #12" },
-        ],
-      },
-    });
-  });
-
-  test("emits a generic answer card with a body and no agentId", async () => {
-    const missionControlService = createMissionControlServiceStub();
-    const catalog = createCommanderCatalog({ missionControlService });
-    const result = await catalog.executeTool("post_answer", {
-      kind: "generic",
-      headline: "Overnight runs: 3 done, 1 blocked",
-      body: "The blocked run waits on credentials.",
-    });
-    expect(result.structuredContent).toEqual({ ok: true, eventId: "mce_card_1" });
-    expect(missionControlService.emitCommanderCard).toHaveBeenCalledWith({
-      kind: "answer",
-      headline: "Overnight runs: 3 done, 1 blocked",
-      answer: {
-        kind: "generic",
-        headline: "Overnight runs: 3 done, 1 blocked",
-        body: "The blocked run waits on credentials.",
-      },
-    });
-  });
-
-  test("rejects agent_status without an agentId", async () => {
-    const missionControlService = createMissionControlServiceStub();
-    const catalog = createCommanderCatalog({ missionControlService });
-    await expect(
-      catalog.executeTool("post_answer", {
-        kind: "agent_status",
-        headline: "no target",
-      }),
-    ).rejects.toThrow("agentId is required when kind is agent_status");
-    expect(missionControlService.emitCommanderCard).not.toHaveBeenCalled();
-  });
-
-  test("rejects non-Commander callers (label-gated like the fleet_* tools)", async () => {
-    const catalog = createPaseoToolCatalog({
-      agentManager: {} as unknown as AgentManager,
-      agentStorage: { get: async () => null, list: async () => [] } as unknown as AgentStorage,
-      providerSnapshotManager: createProviderSnapshotManagerStub()
-        .manager as unknown as ProviderSnapshotManager,
-      callerAgentId: "worker-1",
-      missionControlService: createMissionControlServiceStub(),
-      logger: createTestLogger(),
-    });
-    await expect(
-      catalog.executeTool("post_answer", { kind: "generic", headline: "hi" }),
-    ).rejects.toThrow("post_answer requires a Commander caller");
-  });
-});
-
-describe("approval-gate wrap point (runCommanderGatedAction)", () => {
-  test("fleet_create_agent routes the Commander spawn through approvals.createProposal", async () => {
-    const createProposal = vi.fn(async () => ({
-      id: "mcp_1",
-      status: "pending",
-      kind: "spawn",
-    }));
-    const missionControlService = createMissionControlServiceStub({
-      approvals: { createProposal },
-    });
-    const catalog = createCommanderCatalog({ missionControlService });
-    const result = await catalog.executeTool("fleet_create_agent", {
-      host: "local",
-      provider: "codex/gpt-5.4",
-      initialPrompt: "run the backtest",
-      title: "backtest",
-    });
-    expect(createProposal).toHaveBeenCalledTimes(1);
-    const proposalInput = createProposal.mock.calls[0][0];
-    expect(proposalInput).toMatchObject({
-      origin: "commander",
-      serverId: "host-a",
-      targetAgentId: "",
-      kind: "spawn",
-      classification: "normal",
-    });
-    expect(proposalInput.spawnPlan).toMatchObject({
-      provider: "codex",
-      summary: "Spawn backtest (codex/gpt-5.4) on local",
-    });
-    // Pending card: the tool reports pending-approval, never a spawned agent.
-    expect(result.structuredContent).toMatchObject({
-      agentId: null,
-      status: "pending-approval",
-    });
-  });
-
+describe("fleet spawns and sends", () => {
   test("a remote MCP client (Commander identity) spawns and sends directly, never via a proposal", async () => {
     const createProposal = vi.fn();
     const createAgent = vi.fn(async () => ({
@@ -1167,33 +998,6 @@ describe("approval-gate wrap point (runCommanderGatedAction)", () => {
     expect(created.structuredContent).toMatchObject({ agentId: "peer-agent-1" });
     expect(client.sendAgentMessage).toHaveBeenCalledWith(SEND_AGENT_UUID, "follow up", {
       dispatchMode: "interrupt",
-    });
-  });
-
-  test("agentMode rides the Commander spawn plan and send proposal", async () => {
-    const createProposal = vi.fn(async () => ({ id: "mcp_mode", status: "pending" }));
-    const catalog = createCommanderCatalog({
-      missionControlService: createMissionControlServiceStub({ approvals: { createProposal } }),
-    });
-
-    await catalog.executeTool("fleet_create_agent", {
-      host: "local",
-      provider: "codex/gpt-5.4",
-      initialPrompt: "compare the two caches",
-      title: "cache research",
-      settings: { agentMode: "research" },
-    });
-    await catalog.executeTool("fleet_send_prompt", {
-      host: "local",
-      agentId: SEND_AGENT_UUID,
-      prompt: "review the fix",
-      agentMode: "review",
-    });
-
-    expect(createProposal.mock.calls[0][0].spawnPlan).toMatchObject({ agentMode: "research" });
-    expect(createProposal.mock.calls[1][0]).toMatchObject({
-      targetAgentId: SEND_AGENT_UUID,
-      agentMode: "review",
     });
   });
 
@@ -1286,226 +1090,6 @@ describe("approval-gate wrap point (runCommanderGatedAction)", () => {
       runStarted: true,
       turnId: "peer-turn-1",
     });
-  });
-
-  test("fleet_create_agent copies native images onto the spawn plan", async () => {
-    const createProposal = vi.fn(async () => ({
-      id: "mcp_images",
-      status: "pending",
-      kind: "spawn",
-    }));
-    const missionControlService = createMissionControlServiceStub({
-      approvals: { createProposal },
-    });
-    const catalog = createCommanderCatalog({ missionControlService });
-    const images = [{ data: "aaa", mimeType: "image/png" }];
-    await catalog.executeTool("fleet_create_agent", {
-      host: "local",
-      provider: "codex/gpt-5.4",
-      initialPrompt: "look at this screenshot",
-      title: "image-worker",
-      images,
-    });
-    const proposalInput = createProposal.mock.calls[0][0];
-    expect(proposalInput.spawnPlan.images).toEqual(images);
-  });
-
-  test("a Commander dispatch defaults to its own worktree, branch named after the ask", async () => {
-    const createProposal = vi.fn(async () => ({
-      id: "mcp_default_wt",
-      status: "pending",
-      kind: "spawn",
-    }));
-    const missionControlService = createMissionControlServiceStub({
-      approvals: { createProposal },
-    });
-    const catalog = createCommanderCatalog({ missionControlService });
-    await catalog.executeTool("fleet_create_agent", {
-      host: "local",
-      provider: "codex/gpt-5.4",
-      initialPrompt: "have a look at the flaky watcher test",
-      title: "Fix the login bug",
-    });
-    // No isolation and no workspaceId: the dispatch still gets a worktree, and
-    // the branch name is present so the peer create path can carry it.
-    expect(createProposal.mock.calls[0][0].spawnPlan).toMatchObject({
-      worktree: { action: "branch-off", branchName: "fix-the-login-bug" },
-    });
-  });
-
-  test("a Commander dispatch falls back to a generic branch name when there is no title", async () => {
-    const createProposal = vi.fn(async () => ({
-      id: "mcp_fallback_wt",
-      status: "pending",
-      kind: "spawn",
-    }));
-    const missionControlService = createMissionControlServiceStub({
-      approvals: { createProposal },
-    });
-    const catalog = createCommanderCatalog({ missionControlService });
-    await catalog.executeTool("fleet_create_agent", {
-      host: "local",
-      provider: "codex/gpt-5.4",
-      initialPrompt: "!!!",
-      title: "???",
-    });
-    expect(createProposal.mock.calls[0][0].spawnPlan).toMatchObject({
-      worktree: { action: "branch-off", branchName: "dispatch" },
-    });
-  });
-
-  test("isolation 'local' opts a Commander dispatch out of the worktree default", async () => {
-    const createProposal = vi.fn(async () => ({
-      id: "mcp_local_wt",
-      status: "pending",
-      kind: "spawn",
-    }));
-    const missionControlService = createMissionControlServiceStub({
-      approvals: { createProposal },
-    });
-    const catalog = createCommanderCatalog({ missionControlService });
-    await catalog.executeTool("fleet_create_agent", {
-      host: "local",
-      provider: "codex/gpt-5.4",
-      initialPrompt: "poke around the shared checkout",
-      title: "read only look",
-      isolation: "local",
-    });
-    expect(createProposal.mock.calls[0][0].spawnPlan.worktree).toBeUndefined();
-  });
-
-  test("fleet_create_agent into a NEW workspace on a peer resolves labels over the peer RPC", async () => {
-    const createProposal = vi.fn(async () => ({
-      id: "mcp_new_ws",
-      status: "pending",
-      kind: "spawn",
-    }));
-    const missionControlService = createMissionControlServiceStub({
-      approvals: { createProposal },
-    });
-    // The peer knows its own checkout facts; the Commander host must ask it
-    // (mission_control.spawn_labels.resolve) instead of leaving the card
-    // unnamed — the regression this guards against.
-    const { peerManager } = createFakePeerHarness({
-      client: {
-        missionControlSpawnLabelsResolve: vi.fn(async () => ({
-          labels: { newWorkspace: "feature/alpha", newProject: "new-thing" },
-        })),
-      },
-    });
-    const catalog = createCommanderCatalog({ missionControlService, peerManager });
-    const result = await catalog.executeTool("fleet_create_agent", {
-      host: "macbook",
-      provider: "codex/gpt-5.4",
-      cwd: "/home/ubuntu/new-thing",
-      initialPrompt: "run the backtest",
-      title: "backtest",
-    });
-    expect(createProposal).toHaveBeenCalledTimes(1);
-    expect(createProposal.mock.calls[0][0].spawnPlan).toMatchObject({
-      host: "macbook",
-      cwd: "/home/ubuntu/new-thing",
-      labels: { newWorkspace: "feature/alpha", newProject: "new-thing" },
-    });
-    expect(result.structuredContent).toMatchObject({
-      agentId: null,
-      status: "pending-approval",
-    });
-  });
-
-  test("fleet_send_prompt routes the Commander send through approvals.createProposal", async () => {
-    const createProposal = vi.fn(async () => ({
-      id: "mcp_2",
-      status: "pending",
-      kind: "send",
-    }));
-    const missionControlService = createMissionControlServiceStub({
-      approvals: { createProposal },
-    });
-    const catalog = createCommanderCatalog({ missionControlService });
-    const result = await catalog.executeTool("fleet_send_prompt", {
-      host: "local",
-      agentId: SEND_AGENT_UUID,
-      prompt: "continue the backtest",
-      mode: "steer",
-    });
-    expect(createProposal).toHaveBeenCalledTimes(1);
-    expect(createProposal.mock.calls[0][0]).toMatchObject({
-      origin: "commander",
-      serverId: "host-a",
-      targetAgentId: SEND_AGENT_UUID,
-      message: "continue the backtest",
-      deliveryMode: "steer",
-      reason: "Commander send",
-      classification: "normal",
-      timelineClassification: "instruction",
-    });
-    expect(result.structuredContent).toMatchObject({
-      success: false,
-      deliveryMode: "steer",
-    });
-  });
-
-  test("auto-approved sends report success and skip the pending card", async () => {
-    const createProposal = vi.fn(async () => ({
-      id: "mcp_3",
-      status: "sent",
-      kind: "send",
-    }));
-    const missionControlService = createMissionControlServiceStub({
-      approvals: { createProposal },
-    });
-    const catalog = createCommanderCatalog({ missionControlService });
-    const result = await catalog.executeTool("fleet_send_prompt", {
-      host: "local",
-      agentId: SEND_AGENT_UUID,
-      prompt: "continue",
-    });
-    expect(result.structuredContent).toEqual({ success: true, deliveryMode: "steer" });
-  });
-
-  test("non-Commander callers take the ungated path (gate requires a Commander caller)", async () => {
-    const createProposal = vi.fn();
-    const missionControlService = createMissionControlServiceStub({
-      approvals: { createProposal },
-    });
-    const catalog = createPaseoToolCatalog({
-      agentManager: {} as unknown as AgentManager,
-      agentStorage: { get: async () => null, list: async () => [] } as unknown as AgentStorage,
-      providerSnapshotManager: createProviderSnapshotManagerStub()
-        .manager as unknown as ProviderSnapshotManager,
-      callerAgentId: "worker-1",
-      missionControlService,
-      logger: createTestLogger(),
-    });
-    // A worker calling fleet_create_agent on local spawns directly via
-    // create_agent — never a proposal.
-    await expect(
-      catalog.executeTool("fleet_create_agent", {
-        host: "local",
-        provider: "codex/gpt-5.4",
-        initialPrompt: "subtask",
-      }),
-    ).rejects.toThrow();
-    expect(createProposal).not.toHaveBeenCalled();
-  });
-
-  test("gate failures surface as tool errors with the underlying message", async () => {
-    const missionControlService = createMissionControlServiceStub({
-      approvals: {
-        createProposal: vi.fn(async () => {
-          throw new Error("store write failed");
-        }),
-      },
-    });
-    const catalog = createCommanderCatalog({ missionControlService });
-    await expect(
-      catalog.executeTool("fleet_send_prompt", {
-        host: "local",
-        agentId: SEND_AGENT_UUID,
-        prompt: "continue",
-      }),
-    ).rejects.toThrow("store write failed");
   });
 });
 
@@ -1817,87 +1401,6 @@ describe("fleet_create_agent call-time validation (spec 03)", () => {
   });
 });
 
-describe("mutation dedupe (spec 03)", () => {
-  test("duplicate spawn while pending returns the existing proposalId with 'already pending'", async () => {
-    const createProposal = vi.fn(async () => ({ id: "mcp_d1", status: "pending", kind: "spawn" }));
-    const missionControlService = createMissionControlServiceStub({
-      approvals: { createProposal },
-      getProposal: (id: string) => (id === "mcp_d1" ? { id: "mcp_d1", status: "pending" } : null),
-    });
-    const catalog = createCommanderCatalog({ missionControlService });
-    const args = {
-      host: "local",
-      cwd: "/tmp",
-      provider: "codex/gpt-5.4",
-      initialPrompt: "run the backtest",
-      title: "backtest",
-    };
-    const first = await catalog.executeTool("fleet_create_agent", args);
-    expect(first.structuredContent).toMatchObject({
-      agentId: null,
-      status: "pending-approval",
-      proposalId: "mcp_d1",
-    });
-    const second = await catalog.executeTool("fleet_create_agent", args);
-    expect(second.structuredContent).toMatchObject({
-      agentId: null,
-      status: "pending-approval",
-      proposalId: "mcp_d1",
-    });
-    expect(String(second.structuredContent.guidance)).toContain("already pending");
-    expect(createProposal).toHaveBeenCalledTimes(1);
-  });
-
-  test("duplicate send while pending returns the existing proposalId", async () => {
-    const createProposal = vi.fn(async () => ({ id: "mcp_d2", status: "pending", kind: "send" }));
-    const missionControlService = createMissionControlServiceStub({
-      approvals: { createProposal },
-      getProposal: (id: string) => (id === "mcp_d2" ? { id: "mcp_d2", status: "pending" } : null),
-    });
-    const catalog = createCommanderCatalog({ missionControlService });
-    const args = {
-      host: "local",
-      agentId: SEND_AGENT_UUID,
-      prompt: "continue the backtest",
-      mode: "steer",
-    };
-    const first = await catalog.executeTool("fleet_send_prompt", args);
-    expect(first.structuredContent).toMatchObject({
-      success: false,
-      proposalId: "mcp_d2",
-    });
-    const second = await catalog.executeTool("fleet_send_prompt", args);
-    expect(second.structuredContent).toMatchObject({ proposalId: "mcp_d2" });
-    expect(String(second.structuredContent.guidance)).toContain("already pending");
-    expect(createProposal).toHaveBeenCalledTimes(1);
-  });
-
-  test("dedupe releases once the prior proposal resolves", async () => {
-    const createProposal = vi.fn(async () => ({ id: "mcp_d3", status: "pending", kind: "spawn" }));
-    let proposalStatus = "pending";
-    const missionControlService = createMissionControlServiceStub({
-      approvals: { createProposal },
-      getProposal: (id: string) =>
-        id === "mcp_d3" ? { id: "mcp_d3", status: proposalStatus } : null,
-    });
-    const catalog = createCommanderCatalog({ missionControlService });
-    const args = {
-      host: "local",
-      cwd: "/tmp",
-      provider: "codex/gpt-5.4",
-      initialPrompt: "run the backtest",
-      title: "backtest",
-    };
-    await catalog.executeTool("fleet_create_agent", args);
-    // The proposal resolved (approved/sent): a new identical call creates a
-    // fresh proposal instead of deduping onto the resolved one.
-    proposalStatus = "sent";
-    const retry = await catalog.executeTool("fleet_create_agent", args);
-    expect(retry.structuredContent).toMatchObject({ proposalId: "mcp_d3" });
-    expect(createProposal).toHaveBeenCalledTimes(2);
-  });
-});
-
 describe("fleet_send_prompt agentId contract (spec 03)", () => {
   test("rejects a non-UUID agentId at call time with resolver guidance", async () => {
     const { peerManager } = createFakePeerHarness();
@@ -1976,7 +1479,7 @@ describe("list_agents stored roster (Mission Control caller)", () => {
   }
 
   /** Catalog built the way the Voice node / Commander sees it: caller labels
-   * paseo.mission-control=commander, callerAgentId = the live Commander. */
+   * a remote MCP client (paseo.mcp-client label). */
   function createCommanderStoredRosterCatalog(
     overrides: {
       agentManager?: Partial<AgentManager>;
@@ -2003,13 +1506,13 @@ describe("list_agents stored roster (Mission Control caller)", () => {
       providerSnapshotManager: createProviderSnapshotManagerStub()
         .manager as unknown as ProviderSnapshotManager,
       callerAgentId: "commander-0000-0000-0000-000000000001",
-      callerLabels: { [MISSION_CONTROL_LABEL_KEY]: MISSION_CONTROL_LABEL_VALUE },
+      callerLabels: { "paseo.mcp-client": "grok-bot" },
       peerManager: undefined,
       logger: createTestLogger(),
     });
   }
 
-  test("stored finished agent with a registered provider appears for the Commander caller", async () => {
+  test("stored finished agent with a registered provider appears for a remote MCP caller", async () => {
     const catalog = createCommanderStoredRosterCatalog({
       agentStorage: {
         list: async () => [storedRecord()],
@@ -2055,7 +1558,7 @@ describe("list_agents stored roster (Mission Control caller)", () => {
     });
   });
 
-  test("explicit cwd still scopes a Commander-caller list_agents", async () => {
+  test("explicit cwd still scopes a remote MCP caller list_agents", async () => {
     const catalog = createCommanderStoredRosterCatalog({
       agentStorage: {
         list: async () => [
@@ -2198,5 +1701,43 @@ describe("fleet_create_agent placement and model form from a remote MCP client",
         agentMode: "solo",
       },
     });
+  });
+});
+
+describe("buildMcpSpawnPlan", () => {
+  const base = {
+    serverId: "host-a",
+    host: "local",
+    provider: "codex/gpt-5.4",
+    initialPrompt: "have a look at the flaky watcher test",
+    title: "Fix the login bug",
+  };
+
+  test("a new task gets its own worktree, branch named after the ask", () => {
+    expect(buildMcpSpawnPlan(base)).toMatchObject({
+      provider: "codex",
+      model: "gpt-5.4",
+      worktree: { action: "branch-off", branchName: "fix-the-login-bug" },
+    });
+  });
+
+  test("no usable title falls back to a generic branch name", () => {
+    expect(buildMcpSpawnPlan({ ...base, initialPrompt: "!!!", title: "???" })).toMatchObject({
+      worktree: { action: "branch-off", branchName: "dispatch" },
+    });
+  });
+
+  test("isolation local and an existing workspace opt out of the worktree", () => {
+    expect(buildMcpSpawnPlan({ ...base, isolation: "local" }).worktree).toBeUndefined();
+    expect(
+      buildMcpSpawnPlan({ ...base, workspaceId: "wks_0123456789abcdef" }).worktree,
+    ).toBeUndefined();
+  });
+
+  test("agent mode and native images ride the plan", () => {
+    const images = [{ data: "aaa", mimeType: "image/png" }];
+    expect(
+      buildMcpSpawnPlan({ ...base, images, settings: { agentMode: "research" } }),
+    ).toMatchObject({ agentMode: "research", images });
   });
 });

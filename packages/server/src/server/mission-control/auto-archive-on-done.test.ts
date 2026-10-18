@@ -8,7 +8,6 @@ import type { AgentStorage, StoredAgentRecord } from "../agent/agent-storage.js"
 import type { DaemonConfigStore } from "../daemon-config-store.js";
 import type { WorkspaceRegistry, ProjectRegistry } from "../workspace-registry.js";
 import { MissionControlService } from "./service.js";
-import { createMissionControlPresenceSource } from "./presence.js";
 
 function createMockLogger(): pino.Logger {
   const levels = ["trace", "debug", "info", "warn", "error", "fatal"] as const;
@@ -150,10 +149,6 @@ describe("MissionControlService auto-archive workspace on agent Done (PASEO-21)"
       serverId: "test-server",
       hostName: "test-host",
       broadcast: vi.fn(),
-      presence: createMissionControlPresenceSource({
-        isAgentFocused: () => false,
-        readStopOrigin: () => null,
-      }),
       workspaceRegistry,
       projectRegistry,
       archiveWorkspace: archiveWorkspaceSpy,

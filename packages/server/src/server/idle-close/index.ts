@@ -1,10 +1,6 @@
 import type { Logger } from "pino";
 
 import type { AgentManager } from "../agent/agent-manager.js";
-import {
-  MISSION_CONTROL_LABEL_KEY,
-  MISSION_CONTROL_LABEL_VALUE,
-} from "../mission-control/commander-contract.js";
 import type { DaemonConfigStore } from "../daemon-config-store.js";
 
 // How often the sweep runs.
@@ -30,8 +26,8 @@ export interface IdleCloseOmpOptions {
  * takes effect on the next sweep without a restart. A closed agent resumes
  * from the warm pool on the next send.
  *
- * The sweep only touches idle OMP agents: it skips the Commander, agents with
- * a pending permission prompt, and agents with a running provider subagent.
+ * The sweep only touches idle OMP agents: it skips agents with a pending
+ * permission prompt and agents with a running provider subagent.
  * Non-OMP providers are never closed here.
  */
 export class IdleCloseOmpService {
@@ -104,9 +100,6 @@ export class IdleCloseOmpService {
         continue;
       }
       if (agent.lifecycle !== "idle") {
-        continue;
-      }
-      if (agent.labels[MISSION_CONTROL_LABEL_KEY] === MISSION_CONTROL_LABEL_VALUE) {
         continue;
       }
       if (agent.pendingPermissions.size > 0) {

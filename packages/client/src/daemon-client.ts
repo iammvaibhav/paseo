@@ -145,10 +145,7 @@ import type {
 } from "@getpaseo/protocol/messages";
 import type {
   MissionControlCentralConfig,
-  MissionControlEvent,
   MissionControlMetaPlan,
-  MissionControlMode,
-  MissionControlProposalSpawnPlan,
 } from "@getpaseo/protocol/mission-control/types";
 import { isRelayClientWebSocketUrl } from "@getpaseo/protocol/daemon-endpoints";
 import type { WebhookAuth, WebhookFilter, WebhookTarget } from "@getpaseo/protocol/webhook/types";
@@ -759,25 +756,9 @@ type MissionControlContextFetchPayload = Extract<
   SessionOutboundMessage,
   { type: "mission_control.context.fetch.response" }
 >["payload"];
-type MissionControlSearchPayload = Extract<
-  SessionOutboundMessage,
-  { type: "mission_control.search.response" }
->["payload"];
 type MissionControlMetaApplyPayload = Extract<
   SessionOutboundMessage,
   { type: "mission_control.meta.apply.response" }
->["payload"];
-type MissionControlSpawnLabelsResolvePayload = Extract<
-  SessionOutboundMessage,
-  { type: "mission_control.spawn_labels.resolve.response" }
->["payload"];
-type MissionControlSpawnApplyPayload = Extract<
-  SessionOutboundMessage,
-  { type: "mission_control.spawn.apply.response" }
->["payload"];
-type MissionControlEventForwardPayload = Extract<
-  SessionOutboundMessage,
-  { type: "mission_control.event.forward.response" }
 >["payload"];
 type MissionControlConfigGetPayload = Extract<
   SessionOutboundMessage,
@@ -787,57 +768,13 @@ type MissionControlConfigPatchPayload = Extract<
   SessionOutboundMessage,
   { type: "mission_control.config.patch.response" }
 >["payload"];
-type MissionControlCommanderResetPayload = Extract<
-  SessionOutboundMessage,
-  { type: "mission_control.commander.reset.response" }
->["payload"];
-type MissionControlModeSetPayload = Extract<
-  SessionOutboundMessage,
-  { type: "mission_control.mode.set.response" }
->["payload"];
-type MissionControlVoiceMirrorPayload = Extract<
-  SessionOutboundMessage,
-  { type: "mission_control.voice.mirror.response" }
->["payload"];
-type MissionControlProposalsRespondPayload = Extract<
-  SessionOutboundMessage,
-  { type: "mission_control.proposals.respond.response" }
->["payload"];
-type MissionControlProposalsCreatePayload = Extract<
-  SessionOutboundMessage,
-  { type: "mission_control.proposals.create.response" }
->["payload"];
 type MissionControlLifecycleSetPayload = Extract<
   SessionOutboundMessage,
   { type: "mission_control.lifecycle.set.response" }
 >["payload"];
-type MissionControlInstructionsListPayload = Extract<
-  SessionOutboundMessage,
-  { type: "mission_control.instructions.list.response" }
->["payload"];
-type MissionControlInstructionsClosePayload = Extract<
-  SessionOutboundMessage,
-  { type: "mission_control.instructions.close.response" }
->["payload"];
-type MissionControlInstructionsOpenPayload = Extract<
-  SessionOutboundMessage,
-  { type: "mission_control.instructions.open.response" }
->["payload"];
 type MissionControlMediaFetchPayload = Extract<
   SessionOutboundMessage,
   { type: "mission_control.media.fetch.response" }
->["payload"];
-type MissionControlRecallPayload = Extract<
-  SessionOutboundMessage,
-  { type: "mission_control.recall.response" }
->["payload"];
-type MissionControlContextRecordsPayload = Extract<
-  SessionOutboundMessage,
-  { type: "mission_control.context.records.response" }
->["payload"];
-type MissionControlTagMessagePayload = Extract<
-  SessionOutboundMessage,
-  { type: "mission_control.tag_message.response" }
 >["payload"];
 type MissionControlPeerTimelinePayload = Extract<
   SessionOutboundMessage,
@@ -846,10 +783,6 @@ type MissionControlPeerTimelinePayload = Extract<
 type MissionControlToolsExecutePayload = Extract<
   SessionOutboundMessage,
   { type: "mission_control.tools.execute.response" }
->["payload"];
-type MissionControlInboxFetchPayload = Extract<
-  SessionOutboundMessage,
-  { type: "mission_control.inbox.fetch.response" }
 >["payload"];
 export type FetchAgentTimelinePayload = FetchAgentTimelineResponseMessage["payload"];
 export type AgentForkContextPayload = AgentForkContextResponseMessage["payload"];
@@ -1361,13 +1294,6 @@ const DEFAULT_LIVENESS_TIMEOUT_MS = 5000;
 const LIVENESS_HEARTBEAT_INTERVAL_MS = 10_000;
 const LIVENESS_HEARTBEAT_TIMEOUT_MS = 15_000;
 const LIVENESS_FAILURE_RECONNECT_THRESHOLD = 2;
-
-/**
- * Budget for applying an approved spawn plan on a peer daemon. Must stay
- * above the peer's provisioning budget (git worktree add plus setup plus
- * agent boot); the RPC returns only after the peer created the agent.
- */
-const SPAWN_APPLY_TIMEOUT_MS = 10 * 60_000;
 
 /** Default timeout for waiting for connection before sending queued messages */
 const DEFAULT_SEND_QUEUE_TIMEOUT_MS = DEFAULT_SESSION_RPC_TIMEOUT_MS;
@@ -7076,47 +7002,6 @@ export class DaemonClient {
   }
 
   /**
-   * The host's pending inbox over stored state: pending proposals, the
-   * Commander's open clarifications (Commander host only), and review facts
-   * for ready agents.
-   */
-  async missionControlInboxFetch(requestId?: string): Promise<MissionControlInboxFetchPayload> {
-    // COMPAT(missionControlInbox): added 2026-09-30, remove gate after 2027-03-30.
-    if (this.lastServerInfoMessage?.features?.missionControlInbox !== true) {
-      throw new Error("Update the host to read the Mission Control inbox.");
-    }
-    return this.sendCorrelatedSessionRequest({
-      requestId,
-      message: { type: "mission_control.inbox.fetch.request" },
-      responseType: "mission_control.inbox.fetch.response",
-    });
-  }
-
-  /**
-   * Run the tiered fleet search (mission_control.search) on a daemon. The
-   * Commander-host fleet_search tool proxies this to every online peer and
-   * merges the per-host results. Matches carry host: "local" from the daemon
-   * that ran them; the merging caller re-stamps peer rows with the peer name.
-   */
-  async missionControlSearch(options: {
-    query: string;
-    limit?: number;
-    deep?: boolean;
-    requestId?: string;
-  }): Promise<MissionControlSearchPayload> {
-    return this.sendCorrelatedSessionRequest({
-      requestId: options.requestId,
-      message: {
-        type: "mission_control.search.request",
-        query: options.query,
-        ...(typeof options.limit === "number" ? { limit: options.limit } : {}),
-        ...(options.deep === true ? { deep: true } : {}),
-      },
-      responseType: "mission_control.search.response",
-    });
-  }
-
-  /**
    * Apply a fleet meta action on this daemon (mission_control.meta.apply):
    * the Commander-host metaFromProposal path routes an approved meta-kind
    * proposal whose metaPlan.serverId names THIS host as a peer here. The
@@ -7132,84 +7017,6 @@ export class DaemonClient {
       requestId,
       message: { type: "mission_control.meta.apply.request", metaPlan },
       responseType: "mission_control.meta.apply.response",
-    });
-  }
-
-  /**
-   * Apply a spawn plan on this daemon (mission_control.spawn.apply): the
-   * Commander-host spawn executor routes an approved spawn-kind proposal
-   * (fleet_create_agent) whose plan targets THIS host as a peer here. The
-   * daemon validates the plan's cwd contract against its own filesystem,
-   * creates the absolute cwd with mkdir recursive when missing, and creates
-   * the agent in ITS OWN registry — the mkdir happens on the target host,
-   * never the commander's. The commander already stamped paseo.parent-agent-id
-   * on the plan, so the label persists in this host's registry. Mirrors
-   * fleetMetaApply; only the APPLY hops (the proposal card stays on the
-   * commander host).
-   *
-   * Uses SPAWN_APPLY_TIMEOUT_MS (10m) rather than the session default so the
-   * Commander does not time out while the peer daemon provisions the workspace
-   * (git worktree add, workspace setup scripts) and boots the agent.
-   */
-  async fleetSpawnApply(
-    spawnPlan: MissionControlProposalSpawnPlan,
-    requestId?: string,
-  ): Promise<MissionControlSpawnApplyPayload> {
-    return this.sendCorrelatedSessionRequest({
-      requestId,
-      message: { type: "mission_control.spawn.apply.request", spawnPlan },
-      responseType: "mission_control.spawn.apply.response",
-      timeout: SPAWN_APPLY_TIMEOUT_MS,
-    });
-  }
-
-  /**
-   * Resolve human-readable workspace/project labels for a Commander spawn
-   * proposal on THIS daemon (mission_control.spawn_labels.resolve): the
-   * Commander host asks a PEER whose registries and checkout facts it cannot
-   * see. A spawn into a NEW workspace (cwd without workspaceId) derives its
-   * name from the target's own checkout (branch) and registries; an existing
-   * workspaceId resolves the workspace and project display names. Read-only —
-   * never registers anything.
-   */
-  async missionControlSpawnLabelsResolve(
-    input: {
-      cwd?: string;
-      workspaceId?: string;
-      baseBranch?: string;
-      branchName?: string;
-      worktreeSlug?: string;
-    },
-    requestId?: string,
-  ): Promise<MissionControlSpawnLabelsResolvePayload> {
-    return this.sendCorrelatedSessionRequest({
-      requestId,
-      message: { type: "mission_control.spawn_labels.resolve.request", ...input },
-      responseType: "mission_control.spawn_labels.resolve.response",
-    });
-  }
-
-  /**
-   * Forward a terminal mission-control event to the commander host
-   * (mission_control.event.forward): a NON-commander host emits this when one
-   * of its commander-dispatched workers (labeled paseo.parent-agent-id /
-   * paseo.commander-adopted-at) finishes, fails, is interrupted, or receives
-   * a verdict. The commander host ingests the event into the machinery-turn
-   * gate ONLY — the worker's labels ride the payload so the gate can decide
-   * without a local record — and never writes it into its events store.
-   */
-  async missionControlEventForward(
-    input: { event: MissionControlEvent; labels: Record<string, string> | null },
-    requestId?: string,
-  ): Promise<MissionControlEventForwardPayload> {
-    return this.sendCorrelatedSessionRequest({
-      requestId,
-      message: {
-        type: "mission_control.event.forward.request",
-        event: input.event,
-        labels: input.labels,
-      },
-      responseType: "mission_control.event.forward.response",
     });
   }
 
@@ -7258,151 +7065,6 @@ export class DaemonClient {
       requestId,
       message: { type: "mission_control.config.patch.request", patch },
       responseType: "mission_control.config.patch.response",
-    });
-  }
-
-  /**
-   * Push a FULL central-config snapshot to a peer daemon
-   * (mission_control.config.replica). One-way sync message — there is NO
-   * response pair (unlike the .request/.response RPCs): the receiving daemon
-   * replaces its local central-config.json + in-memory store, last-writer-wins.
-   * Used by the commander host to replicate every patch to peers and to
-   * sync-on-connect when a peer comes online. Fire-and-forget: failures (not
-   * connected) throw like any other send; callers gate on peer online state.
-   */
-  missionControlConfigReplica(
-    config: MissionControlCentralConfig,
-    options?: { from?: string },
-  ): void {
-    this.sendSessionMessage({
-      type: "mission_control.config.replica",
-      ...(options?.from ? { from: options.from } : {}),
-      config,
-    });
-  }
-
-  /**
-   * Archive the current Commander and spawn a fresh one with a new context
-   * pack (mission_control.commander.reset). The old conversation stays in
-   * History. Mirrors the thread overflow "Reset Commander" action.
-   */
-  async missionControlCommanderReset(
-    requestId?: string,
-  ): Promise<MissionControlCommanderResetPayload> {
-    return this.sendCorrelatedSessionRequest({
-      requestId,
-      message: { type: "mission_control.commander.reset.request" },
-      responseType: "mission_control.commander.reset.response",
-    });
-  }
-
-  /**
-   * Flip the approval gate between ask and auto mode. */
-  async missionControlModeSet(
-    mode: MissionControlMode,
-    requestId?: string,
-  ): Promise<MissionControlModeSetPayload> {
-    return this.sendCorrelatedSessionRequest({
-      requestId,
-      message: { type: "mission_control.mode.set.request", mode },
-      responseType: "mission_control.mode.set.response",
-    });
-  }
-
-  /**
-   * M9 voice dialogue mirror (mission_control.voice.mirror): append one voice
-   * turn (a heard user utterance or a spoken reply) to the Commander thread
-   * WITHOUT running a Commander model turn. The Commander thread is the
-   * system of record for dialogue; the voice node calls this after every
-   * heard/spoken turn so text Commander always has what was said. kind "qa"
-   * = pure Q&A (the app hides the row unless verbose); "dispatch" = the turn
-   * asked the fleet to do something (visible).
-   */
-  async missionControlVoiceMirror(input: {
-    role: "user" | "assistant";
-    text: string;
-    kind: "qa" | "dispatch";
-    requestId?: string;
-  }): Promise<MissionControlVoiceMirrorPayload> {
-    return this.sendCorrelatedSessionRequest({
-      requestId: input.requestId,
-      message: {
-        type: "mission_control.voice.mirror.request",
-        role: input.role,
-        text: input.text,
-        kind: input.kind,
-      },
-      responseType: "mission_control.voice.mirror.response",
-    });
-  }
-
-  /**
-   * M11 voice fleet_recall (mission_control.recall): semantic recall over
-   * the configured Hindsight fleet memory bank — the same service call the
-   * Commander's fleet_recall tool makes. The voice node has no MCP catalog,
-   * so it reads over this thin session RPC. Degrades to ok:false with
-   * reason "memory unavailable" when the bank is unconfigured/unreachable.
-   */
-  async missionControlRecall(input: {
-    query: string;
-    limit?: number;
-    requestId?: string;
-  }): Promise<MissionControlRecallPayload> {
-    return this.sendCorrelatedSessionRequest({
-      requestId: input.requestId,
-      message: {
-        type: "mission_control.recall.request",
-        query: input.query,
-        ...(typeof input.limit === "number" ? { limit: input.limit } : {}),
-      },
-      responseType: "mission_control.recall.response",
-    });
-  }
-
-  /**
-   * M11 voice fleet_context (mission_control.context.records): deterministic
-   * run records plus the matching workspace/project rollup from the local
-   * mission-control store. Selector semantics match the Commander's
-   * fleet_context tool (agentId / workspaceId / projectId / none).
-   */
-  async missionControlContextRecords(input: {
-    agentId?: string;
-    workspaceId?: string;
-    projectId?: string;
-    requestId?: string;
-  }): Promise<MissionControlContextRecordsPayload> {
-    return this.sendCorrelatedSessionRequest({
-      requestId: input.requestId,
-      message: {
-        type: "mission_control.context.records.request",
-        ...(input.agentId !== undefined ? { agentId: input.agentId } : {}),
-        ...(input.workspaceId !== undefined ? { workspaceId: input.workspaceId } : {}),
-        ...(input.projectId !== undefined ? { projectId: input.projectId } : {}),
-      },
-      responseType: "mission_control.context.records.response",
-    });
-  }
-
-  /**
-   * M11 voice tag_message (mission_control.tag_message): attribute the
-   * latest voice-mirrored user message on the Commander thread to the given
-   * agent ids — the same tag record the Commander's tag_message tool writes
-   * (the Verifier reads these tags when auditing a worker). messageText pins
-   * the tag to the most recent Commander user message whose text equals it.
-   */
-  async missionControlTagMessage(input: {
-    agentIds: string[];
-    messageText?: string;
-    requestId?: string;
-  }): Promise<MissionControlTagMessagePayload> {
-    return this.sendCorrelatedSessionRequest({
-      requestId: input.requestId,
-      message: {
-        type: "mission_control.tag_message.request",
-        agentIds: input.agentIds,
-        ...(input.messageText !== undefined ? { messageText: input.messageText } : {}),
-      },
-      responseType: "mission_control.tag_message.response",
     });
   }
 
@@ -7458,58 +7120,6 @@ export class DaemonClient {
     });
   }
 
-  /**
-   * Respond to a pending proposal (approval gate): approve (optionally with an
-   * edited message) or deny (optionally with a reason that is delivered back
-   * to the Commander). allowPair auto-approves the rest of a
-   * verifier<->worker exchange.
-   */
-  async missionControlProposalsRespond(options: {
-    proposalId: string;
-    action: "approve" | "deny";
-    editedMessage?: string;
-    reason?: string;
-    allowPair?: boolean;
-    requestId?: string;
-  }): Promise<MissionControlProposalsRespondPayload> {
-    return this.sendCorrelatedSessionRequest({
-      requestId: options.requestId,
-      message: {
-        type: "mission_control.proposals.respond.request",
-        proposalId: options.proposalId,
-        action: options.action,
-        ...(options.editedMessage !== undefined ? { editedMessage: options.editedMessage } : {}),
-        ...(options.reason !== undefined ? { reason: options.reason } : {}),
-        ...(options.allowPair === true ? { allowPair: true } : {}),
-      },
-      responseType: "mission_control.proposals.respond.response",
-    });
-  }
-
-  /**
-   * Emit a commander-origin proposal card (kind "proposal", classification
-   * normal) from the one-time naming backfill — the workspace rename
-   * proposals card. Always lands pending (never auto-sends); the target
-   * defaults to the Commander when omitted.
-   */
-  async missionControlProposalsCreate(options: {
-    message: string;
-    reason?: string;
-    targetAgentId?: string | null;
-    requestId?: string;
-  }): Promise<MissionControlProposalsCreatePayload> {
-    return this.sendCorrelatedSessionRequest({
-      requestId: options.requestId,
-      message: {
-        type: "mission_control.proposals.create.request",
-        message: options.message,
-        ...(options.reason !== undefined ? { reason: options.reason } : {}),
-        ...(options.targetAgentId !== undefined ? { targetAgentId: options.targetAgentId } : {}),
-      },
-      responseType: "mission_control.proposals.create.response",
-    });
-  }
-
   /** Mark done / clear / reopen an agent in the Mission Control lifecycle. */
   async missionControlLifecycleSet(options: {
     serverId: string;
@@ -7528,61 +7138,6 @@ export class DaemonClient {
         action: options.action,
       },
       responseType: "mission_control.lifecycle.set.response",
-    });
-  }
-
-  /**
-   * M8 instruction ledger: list every instruction row (open + closed, newest
-   * first). The Commander thread renders the open rows (verbose mode shows
-   * the manual-close affordance).
-   */
-  async missionControlInstructionsList(
-    requestId?: string,
-  ): Promise<MissionControlInstructionsListPayload> {
-    return this.sendCorrelatedSessionRequest({
-      requestId,
-      message: { type: "mission_control.instructions.list.request" },
-      responseType: "mission_control.instructions.list.response",
-    });
-  }
-
-  /**
-   * M8 instruction ledger: manually close an open instruction row
-   * (verbose-only thread affordance). closedBy "manual".
-   */
-  async missionControlInstructionsClose(options: {
-    instructionId: string;
-    requestId?: string;
-  }): Promise<MissionControlInstructionsClosePayload> {
-    return this.sendCorrelatedSessionRequest({
-      requestId: options.requestId,
-      message: {
-        type: "mission_control.instructions.close.request",
-        instructionId: options.instructionId,
-      },
-      responseType: "mission_control.instructions.close.response",
-    });
-  }
-
-  /**
-   * M8 instruction ledger (voice P0): open one ledger row per final voice
-   * utterance. The voice node calls this on each final transcription; the
-   * model cites the returned ids via respondsTo on cards and emit-time close
-   * closes the rows. One row per utterance, no intent splitting.
-   */
-  async missionControlInstructionsOpen(options: {
-    text: string;
-    source?: "chat" | "voice";
-    requestId?: string;
-  }): Promise<MissionControlInstructionsOpenPayload> {
-    return this.sendCorrelatedSessionRequest({
-      requestId: options.requestId,
-      message: {
-        type: "mission_control.instructions.open.request",
-        text: options.text,
-        ...(options.source ? { source: options.source } : {}),
-      },
-      responseType: "mission_control.instructions.open.response",
     });
   }
 

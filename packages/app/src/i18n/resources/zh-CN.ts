@@ -154,7 +154,6 @@ export const zhCN: TranslationResources = {
       muteVoice: "静音",
       dictation: "听写",
       interruptBeforeVoice: "启动语音模式前请先中断 Agent",
-      commanderVoice: "指挥官语音",
     },
     attachments: {
       addImage: "添加图片",
@@ -2229,27 +2228,10 @@ export const zhCN: TranslationResources = {
       host: "概览",
     },
     missionControl: {
-      approvalMode: en.settings.missionControl.approvalMode,
-      approvalModeHint: en.settings.missionControl.approvalModeHint,
       verbose: en.settings.missionControl.verbose,
       verboseHint: en.settings.missionControl.verboseHint,
       clearView: en.settings.missionControl.clearView,
       clearViewHint: en.settings.missionControl.clearViewHint,
-      resetCommander: en.settings.missionControl.resetCommander,
-      resetCommanderHint: en.settings.missionControl.resetCommanderHint,
-      memory: "记忆",
-      hindsightUrl: "Hindsight URL",
-      hindsightUrlHint: "Hindsight API 基础 URL。留空将禁用集群记忆（运行记录写入和召回）。",
-      hindsightBank: "写入库",
-      hindsightBankHint: "Paseo 写入运行记录的库。",
-      hindsightSecondaryBank: "召回库（辅助）",
-      hindsightSecondaryBankHint: "fleet_recall 查询的只读辅助库。留空将禁用。",
-      voiceNodeUrl: "语音节点 URL",
-      voiceNodeUrlHint:
-        "指挥官语音服务器（例如 ws://127.0.0.1:8787/ws）。留空会在 Mission Control 编辑器里隐藏指挥官语音。",
-      voiceMode: "Voice tool mode",
-      voiceModeHint:
-        "Relay = voice reads like Commander but routes every change through commander_dispatch. Direct = voice holds the full Commander tool surface, approval-gated. Applies to new voice sessions.",
     },
     plugins: pluginSettings["zh-CN"],
     routing: {

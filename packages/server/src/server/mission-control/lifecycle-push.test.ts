@@ -11,7 +11,6 @@ import type { DaemonConfigStore } from "../daemon-config-store.js";
 import { MissionControlService } from "./service.js";
 import { MissionControlStore } from "./store.js";
 import type { MissionControlEvent } from "./store.js";
-import { createMissionControlPresenceSource } from "./presence.js";
 import type { PeerManager } from "../peers/peer-manager.js";
 import type { DaemonClient } from "@getpaseo/client";
 
@@ -77,7 +76,6 @@ describe("MissionControlService lifecycle push", () => {
   let notifyAgentState: ReturnType<typeof vi.fn>;
   let getRecord: ReturnType<typeof vi.fn>;
   let onReviewStateChanged: ReturnType<typeof vi.fn>;
-  let expirePendingForAgent: ReturnType<typeof vi.fn>;
   let archiveAgent: ReturnType<typeof vi.fn>;
   let liveAgent: ManagedAgent | null;
 
@@ -90,7 +88,6 @@ describe("MissionControlService lifecycle push", () => {
     getRecord = vi.fn(async () => null);
     onReviewStateChanged = vi.fn();
     onEvent = null;
-    expirePendingForAgent = vi.fn(async () => undefined);
     archiveAgent = vi.fn(async () => ({ archivedAt: new Date().toISOString() }));
     service = new MissionControlService({
       paseoHome: dir,
@@ -118,20 +115,11 @@ describe("MissionControlService lifecycle push", () => {
       serverId: "test-server",
       hostName: "test-host",
       broadcast,
-      presence: createMissionControlPresenceSource({
-        isAgentFocused: () => false,
-        readStopOrigin: () => null,
-      }),
       onReviewStateChanged,
     });
     await service.start();
     (service as unknown as { bootedAtMs: number }).bootedAtMs = Date.now() - 120_000;
     store = (service as unknown as { store: MissionControlStore }).store;
-    (service as unknown as { approvals: Record<string, unknown> }).approvals = {
-      createProposal: vi.fn(async () => ({ id: "mcp_test" })),
-      expirePendingForAgent,
-      listProposals: vi.fn(() => []),
-    };
   });
 
   afterEach(async () => {
@@ -279,22 +267,6 @@ describe("MissionControlService lifecycle push", () => {
     expect(await service.getLifecycleBucket("agent-1")).toBe("done");
   });
 
-  test("the interrupted event is excluded from the machinery-turn chat gate (spec 07)", async () => {
-    startRunning();
-    store.recordStopOrigin("agent-1", "user");
-    cancelRun();
-    await flush();
-
-    const interrupted = interruptedEvents()[0];
-    expect(interrupted).toBeDefined();
-    const gate = (
-      service as unknown as {
-        shouldDispatchMachineryTurn(event: MissionControlEvent): Promise<boolean>;
-      }
-    ).shouldDispatchMachineryTurn;
-    await expect(gate(interrupted)).resolves.toBe(false);
-  });
-
   // ==========================================================================
   // F2: reviewState changes push fresh agent state
   // ==========================================================================
@@ -436,32 +408,28 @@ describe("MissionControlService lifecycle push", () => {
   // Lifecycle cutover writes (spec 01)
   // ==========================================================================
 
-  test("a user-originated new run clears leftover reviewState and expires pending proposals", async () => {
+  test("a user-originated new run clears leftover reviewState", async () => {
     await store.setReviewState("agent-1", "ready");
-    expirePendingForAgent.mockClear();
 
     startRunning();
 
     // The fresh run resets the previous run's review lifecycle: the leftover
     // ready must not carry into the new run.
     expect(store.getReviewState("agent-1").reviewState).toBe("none");
-    expect(expirePendingForAgent).toHaveBeenCalledWith("agent-1");
   });
 
-  test("a machinery replace does not expire proposals or clear reviewState", async () => {
+  test("a machinery replace does not clear reviewState", async () => {
     startRunning();
     await store.setReviewState("agent-1", "ready");
-    expirePendingForAgent.mockClear();
 
     // A machinery supersede of the in-flight run: the superseded run is a
-    // fleet-internal recovery, not a user decision — proposals survive.
+    // fleet-internal recovery, not a user decision.
     liveAgent = runningAgent("agent-1", {
       pendingReplacement: true,
       pendingReplacementOrigin: "machinery",
     });
     onEvent?.({ type: "agent_state", agent: liveAgent });
 
-    expect(expirePendingForAgent).not.toHaveBeenCalled();
     expect(store.getReviewState("agent-1").reviewState).toBe("ready");
   });
 
@@ -561,10 +529,6 @@ describe("peer-routed lifecycle actions (Defect 1)", () => {
       serverId: "local-server",
       hostName: "local-host",
       broadcast: vi.fn(),
-      presence: createMissionControlPresenceSource({
-        isAgentFocused: () => false,
-        readStopOrigin: () => null,
-      }),
       peerManager: peerManagerMock as unknown as PeerManager,
     });
     await peerService.start();

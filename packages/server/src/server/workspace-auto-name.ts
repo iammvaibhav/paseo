@@ -4,7 +4,7 @@ import type { FirstAgentContext } from "@getpaseo/protocol/messages";
 import { isSystemInjectedEnvelope } from "./agent/agent-prompt.js";
 import { resolveFirstAgentPromptTitle } from "./agent/create-agent-title.js";
 import type { AgentManager } from "./agent/agent-manager.js";
-import { MISSION_CONTROL_LABEL_KEY } from "./mission-control/commander-contract.js";
+import { isSystemOwnedAgentLabels } from "@getpaseo/protocol/mission-control/system-owned";
 import type { ProviderSnapshotManager } from "./agent/provider-snapshot-manager.js";
 import type { StructuredGenerationDaemonConfig } from "./agent/structured-generation-providers.js";
 import {
@@ -43,11 +43,8 @@ interface ScheduleContext {
 
 /**
  * Machinery must never drive a workspace's auto-name: a first message wrapped
- * in the `<paseo-system>` envelope is a system payload (the Commander's
- * context pack, digests, notifications), and mission-control-labeled agents
- * (commander/verifier) are infrastructure, not user work — their workspaces
- * carry stable titles set at provisioning. Live incident: the Commander's
- * context pack titled its home workspace `<paseo-system>` on every spawn.
+ * in the `<paseo-system>` envelope is a system payload (notifications), and
+ * mission-control-labeled agents are infrastructure, not user work.
  */
 function shouldSkipAutoName(input: {
   firstAgentContext: FirstAgentContext;
@@ -57,7 +54,7 @@ function shouldSkipAutoName(input: {
   if (prompt && isSystemInjectedEnvelope(prompt)) {
     return true;
   }
-  return Object.keys(input.labels ?? {}).some((key) => key.startsWith(MISSION_CONTROL_LABEL_KEY));
+  return isSystemOwnedAgentLabels(input.labels ?? undefined);
 }
 
 export class WorkspaceAutoName {

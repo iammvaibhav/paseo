@@ -1,9 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
 
-import {
-  MISSION_CONTROL_LABEL_KEY,
-  MISSION_CONTROL_LABEL_VALUE,
-} from "../mission-control/commander-contract.js";
 import { IdleCloseOmpService } from "./index.js";
 
 interface IdleCloseTestAgent {
@@ -60,18 +56,9 @@ describe("IdleCloseOmpService", () => {
     expect(closed).toEqual(["idle-old"]);
   });
 
-  test("skips running agents, the Commander, and a disabled knob", async () => {
+  test("skips running agents and a disabled knob", async () => {
     const running = createCloser({
       agents: [createAgent({ id: "running", lifecycle: "running" })],
-      thresholdSeconds: 1800,
-    });
-    const commander = createCloser({
-      agents: [
-        createAgent({
-          id: "commander",
-          labels: { [MISSION_CONTROL_LABEL_KEY]: MISSION_CONTROL_LABEL_VALUE },
-        }),
-      ],
       thresholdSeconds: 1800,
     });
     const disabled = createCloser({
@@ -80,11 +67,9 @@ describe("IdleCloseOmpService", () => {
     });
 
     await running.service.sweep();
-    await commander.service.sweep();
     await disabled.service.sweep();
 
     expect(running.closed).toEqual([]);
-    expect(commander.closed).toEqual([]);
     expect(disabled.closed).toEqual([]);
   });
 });

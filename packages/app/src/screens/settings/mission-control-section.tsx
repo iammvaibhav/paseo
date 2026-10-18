@@ -1,28 +1,13 @@
 import { useCallback, useMemo, useRef, useState, type ReactElement } from "react";
 import { useTranslation } from "react-i18next";
-import {
-  Pressable,
-  Text,
-  View,
-  type PressableStateCallbackType,
-  type TextStyle,
-} from "react-native";
+import { Text, View, type PressableStateCallbackType } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { ChevronDown, X } from "lucide-react-native";
-import type { AgentProvider } from "@getpaseo/protocol/agent-types";
-import type {
-  MissionControlCentralConfig,
-  MissionControlMode,
-} from "@getpaseo/protocol/mission-control/types";
+import { ChevronDown } from "lucide-react-native";
+import type { MissionControlCentralConfig } from "@getpaseo/protocol/mission-control/types";
 import { Button } from "@/components/ui/button";
-import { SegmentedControl, type SegmentedControlOption } from "@/components/ui/segmented-control";
-import { confirmDialog } from "@/utils/confirm-dialog";
 import { useClearViewPoint } from "@/mission-control/clear-view";
 import { useMissionControlVerbose } from "@/mission-control/use-mission-control-verbose";
 import { useAppSettings } from "@/hooks/use-settings";
-import { SettingsTextArea } from "@/components/settings-textarea";
-import { CombinedModelSelector } from "@/components/combined-model-selector";
-import { SelectFieldTrigger } from "@/components/ui/select-field";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -35,17 +20,11 @@ import { Switch } from "@/components/ui/switch";
 import { SettingsSection } from "@/components/settings/headings/settings-section";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { useToast } from "@/contexts/toast-context";
-import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
-import { buildSelectableProviderSelectorProviders } from "@/provider-selection/provider-selection";
-import {
-  useCommanderHostServerId,
-  useMissionControlCentralConfig,
-} from "@/mission-control/central-config";
+import { useMissionControlCentralConfig } from "@/mission-control/central-config";
 import { AGENT_MODES } from "@getpaseo/protocol/agent-modes";
 import type { RoutingConfig, RoutingSecretKey } from "@getpaseo/protocol/routing";
 import { useFetchQuery } from "@/data/query";
 import type { ResolvedMissionControlCentralConfig } from "@/mission-control/central-config-resolver";
-import { buildInvocableProviderModelStrings } from "@/mission-control/model-options";
 import { getHostRuntimeStore, useHosts } from "@/runtime/host-runtime";
 import { useSessionStore } from "@/stores/session-store";
 import { settingsStyles } from "@/styles/settings";
@@ -63,7 +42,6 @@ const MISSION_CONTROL_NAMING_THEMES = [
 ] as const;
 
 const ThemedChevronDown = withUnistyles(ChevronDown);
-const ThemedX = withUnistyles(X);
 
 const chevronMutedMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 
@@ -276,43 +254,6 @@ function TextRow({
   );
 }
 
-const APPROVAL_MODE_OPTIONS: SegmentedControlOption<MissionControlMode>[] = [
-  {
-    value: "ask",
-    label: "Ask",
-    testID: "mission-control-settings-approval-mode-ask",
-  },
-  {
-    value: "auto",
-    label: "Auto",
-    testID: "mission-control-settings-approval-mode-auto",
-  },
-];
-
-interface ModeRowProps {
-  mode: MissionControlMode;
-  onSelect: (mode: MissionControlMode) => void;
-}
-
-function ModeRow({ mode, onSelect }: ModeRowProps) {
-  const { t } = useTranslation();
-  return (
-    <View style={settingsStyles.row}>
-      <View style={settingsStyles.rowContent}>
-        <Text style={settingsStyles.rowTitle}>{t("settings.missionControl.approvalMode")}</Text>
-        <Text style={settingsStyles.rowHint}>{t("settings.missionControl.approvalModeHint")}</Text>
-      </View>
-      <SegmentedControl<MissionControlMode>
-        options={APPROVAL_MODE_OPTIONS}
-        value={mode}
-        onValueChange={onSelect}
-        size="sm"
-        testID="mission-control-settings-approval-mode"
-      />
-    </View>
-  );
-}
-
 interface VerboseRowProps {
   value: boolean;
   onChange: () => void;
@@ -382,245 +323,6 @@ function ActionRow({
 }
 
 /**
- * Split a stored "provider/model" override (the wire format the daemon parses)
- * into selector state; a bare model resolves on the host default provider.
- */
-function splitModelOverride(value: string | null): { provider: string; model: string } {
-  if (!value) {
-    return { provider: "", model: "" };
-  }
-  const slashIndex = value.indexOf("/");
-  if (slashIndex > 0) {
-    return {
-      provider: value.slice(0, slashIndex).trim(),
-      model: value.slice(slashIndex + 1).trim(),
-    };
-  }
-  return { provider: "", model: value.trim() };
-}
-
-/**
- * Availability notice under a model override row. A host that cannot serve a
- * model list, and a stored value that host cannot run, are both surfaced —
- * silently showing a broken override as normal is what let an unspawnable
- * Commander model look fine.
- */
-function renderAvailabilityNotice(input: {
-  isHostUnavailable: boolean;
-  isModelListUnavailable: boolean;
-  invalidValue: string | null;
-  hostLabel: string | null | undefined;
-  styles: { rowNotice: TextStyle; rowWarning: TextStyle };
-}): ReactElement | null {
-  const host = input.hostLabel ? `“${input.hostLabel}”` : "this host";
-  if (input.isHostUnavailable) {
-    return (
-      <Text style={input.styles.rowNotice}>
-        Host {input.hostLabel ? `“${input.hostLabel}” ` : ""}is unreachable or model list is
-        unavailable.
-      </Text>
-    );
-  }
-  if (input.isModelListUnavailable) {
-    return <Text style={input.styles.rowNotice}>No models available for {host}.</Text>;
-  }
-  if (input.invalidValue) {
-    return (
-      <Text style={input.styles.rowWarning}>
-        Model “{input.invalidValue}” is not configured or available on {host}.
-      </Text>
-    );
-  }
-  return null;
-}
-
-/**
- * Central-config model override row: the app's CombinedModelSelector (spec —
- * never free-text). Empty = no override (the daemon falls back to the host
- * default / omp modelRoles); the clear button restores that empty state.
- */
-function ModelOverrideRow({
-  title,
-  hint,
-  value,
-  onCommit,
-  serverId,
-  hostLabel,
-  testID,
-  isCompact,
-  first = false,
-}: {
-  title: string;
-  hint: string;
-  value: string | null;
-  onCommit: (next: string | null) => void;
-  serverId: string | null;
-  hostLabel?: string;
-  testID: string;
-  isCompact: boolean;
-  first?: boolean;
-}) {
-  const {
-    entries: snapshotEntries,
-    isLoading,
-    error: snapshotError,
-  } = useProvidersSnapshot(serverId);
-  const providers = useMemo(
-    () => (snapshotEntries ? buildSelectableProviderSelectorProviders(snapshotEntries) : []),
-    [snapshotEntries],
-  );
-  const invocableModels = useMemo(
-    () => buildInvocableProviderModelStrings(snapshotEntries),
-    [snapshotEntries],
-  );
-  const { provider, model } = splitModelOverride(value);
-
-  const isHostUnavailable = !serverId || Boolean(snapshotError);
-  const isModelListUnavailable =
-    !isLoading && !isHostUnavailable && (!snapshotEntries || snapshotEntries.length === 0);
-
-  const isValid = useMemo(() => {
-    if (!value || isHostUnavailable || isModelListUnavailable) {
-      return true;
-    }
-    if (provider) {
-      if (model) {
-        return invocableModels.has(`${provider}/${model}`);
-      }
-      return snapshotEntries?.some((e) => e.enabled && e.provider === provider) ?? false;
-    }
-    if (model) {
-      return Array.from(invocableModels).some((k) => k.endsWith(`/${model}`));
-    }
-    return true;
-  }, [
-    value,
-    isHostUnavailable,
-    isModelListUnavailable,
-    provider,
-    model,
-    invocableModels,
-    snapshotEntries,
-  ]);
-
-  const handleSelect = useCallback(
-    (nextProvider: AgentProvider, nextModel: string) => {
-      onCommit(`${nextProvider}/${nextModel}`);
-    },
-    [onCommit],
-  );
-  const handleClear = useCallback(() => {
-    onCommit(null);
-  }, [onCommit]);
-
-  const renderTrigger = useCallback(
-    ({
-      selectedModelLabel,
-      disabled,
-      isOpen,
-      hovered,
-      pressed,
-    }: {
-      selectedModelLabel: string;
-      onPress: () => void;
-      disabled: boolean;
-      isOpen: boolean;
-      hovered: boolean;
-      pressed: boolean;
-    }) => {
-      let label = "Host default";
-      let isPlaceholder = true;
-
-      if (isHostUnavailable) {
-        label = !serverId ? "No host selected" : "Host unreachable";
-        isPlaceholder = true;
-      } else if (isModelListUnavailable) {
-        label = "Model list unavailable";
-        isPlaceholder = true;
-      } else if (value) {
-        if (!isValid) {
-          label = `${value} (invalid)`;
-          isPlaceholder = false;
-        } else if (provider) {
-          label = selectedModelLabel;
-          isPlaceholder = false;
-        } else {
-          label = value;
-          isPlaceholder = false;
-        }
-      }
-
-      return (
-        <SelectFieldTrigger
-          label={label}
-          isPlaceholder={isPlaceholder}
-          placeholder="Host default"
-          active={hovered || pressed || isOpen}
-          disabled={disabled || isHostUnavailable || isModelListUnavailable}
-          loading={isLoading}
-          size={isCompact ? "md" : "sm"}
-          testID={`${testID}-trigger`}
-        />
-      );
-    },
-    [
-      isCompact,
-      isLoading,
-      isHostUnavailable,
-      isModelListUnavailable,
-      isValid,
-      provider,
-      serverId,
-      testID,
-      value,
-    ],
-  );
-
-  return (
-    <View style={[settingsStyles.row, first ? null : settingsStyles.rowBorder]}>
-      <View style={settingsStyles.rowContent}>
-        <Text style={settingsStyles.rowTitle}>{title}</Text>
-        <Text style={settingsStyles.rowHint}>{hint}</Text>
-        {renderAvailabilityNotice({
-          isHostUnavailable: isHostUnavailable && Boolean(serverId),
-          isModelListUnavailable,
-          invalidValue: !isValid && value ? value : null,
-          hostLabel,
-          styles,
-        })}
-      </View>
-      <View style={styles.modelSelectorSlot}>
-        <View style={styles.modelSelectorField}>
-          <CombinedModelSelector
-            providers={providers}
-            selectedProvider={provider}
-            selectedModel={model}
-            onSelect={handleSelect}
-            isLoading={isLoading}
-            disabled={isHostUnavailable || isModelListUnavailable}
-            triggerFill
-            serverId={serverId}
-            renderTrigger={renderTrigger}
-          />
-        </View>
-        {value ? (
-          <Pressable
-            onPress={handleClear}
-            hitSlop={8}
-            accessibilityRole="button"
-            accessibilityLabel={`Clear ${title}`}
-            testID={`${testID}-clear`}
-            style={styles.modelClearButton}
-          >
-            <ThemedX size={14} uniProps={chevronMutedMapping} />
-          </Pressable>
-        ) : null}
-      </View>
-    </View>
-  );
-}
-
-/**
  * Central Mission Control settings: fleet policy stored on the commander
  * host. The host-page card keeps only per-host keys (enabled, alias); every
  * central key is edited here.
@@ -637,7 +339,6 @@ export function MissionControlSection(): ReactElement {
   const { updateSettings } = useAppSettings();
   const [verbose, toggleVerbose] = useMissionControlVerbose();
   const { setClearViewPoint } = useClearViewPoint();
-  const [isResettingCommander, setIsResettingCommander] = useState(false);
 
   const hostnameByServerId = useMemo(() => {
     const map = new Map<string, string | null>();
@@ -654,29 +355,6 @@ export function MissionControlSection(): ReactElement {
     }
     return map;
   }, [sessions]);
-
-  const commanderHostServerId = useCommanderHostServerId();
-
-  const commanderHostLabel = useMemo(() => {
-    const rawHost = config?.commanderHost;
-    if (!rawHost) {
-      return null;
-    }
-    const host = hosts.find(
-      (h) =>
-        h.serverId === commanderHostServerId ||
-        h.label === rawHost ||
-        hostnameByServerId.get(h.serverId) === rawHost ||
-        hostAliasByServerId.get(h.serverId) === rawHost,
-    );
-    return host?.label ?? rawHost;
-  }, [
-    config?.commanderHost,
-    commanderHostServerId,
-    hostAliasByServerId,
-    hostnameByServerId,
-    hosts,
-  ]);
 
   const hostOptions = useMemo(
     () =>
@@ -699,61 +377,12 @@ export function MissionControlSection(): ReactElement {
     [hostAliasByServerId, hosts],
   );
 
-  // The dropdown shows the option value of the RESOLVED host (alias-first),
-  // so a stored designation that names a hostname/alias/label still renders
-  // its host's label and highlights the matching option without rewriting the
-  // stored value until the user picks.
-  const commanderHostOptionValue = useMemo(() => {
-    if (!commanderHostServerId) {
-      return config?.commanderHost ?? null;
-    }
-    const host = hosts.find((h) => h.serverId === commanderHostServerId);
-    if (!host) {
-      return config?.commanderHost ?? null;
-    }
-    return hostMatchValue(
-      host,
-      hostnameByServerId.get(host.serverId) ?? null,
-      hostAliasByServerId.get(host.serverId) ?? null,
-    );
-  }, [
-    commanderHostServerId,
-    config?.commanderHost,
-    hostAliasByServerId,
-    hostnameByServerId,
-    hosts,
-  ]);
   const namingThemeOptions = useMemo(
     () =>
       MISSION_CONTROL_NAMING_THEMES.map((theme) => ({
         value: theme,
         label: theme,
       })),
-    [],
-  );
-
-  const evaluationScopeOptions = useMemo<DropdownRowOption<"commander" | "all">[]>(
-    () => [
-      { value: "commander", label: "Commander-spawned only" },
-      { value: "all", label: "All agents" },
-    ],
-    [],
-  );
-
-  const deliveryModeOptions = useMemo<DropdownRowOption<"steer" | "interrupt" | "queue">[]>(
-    () => [
-      { value: "steer", label: "Steer" },
-      { value: "interrupt", label: "Interrupt" },
-      { value: "queue", label: "Queue" },
-    ],
-    [],
-  );
-
-  const voiceModeOptions = useMemo<DropdownRowOption<"relay" | "direct">[]>(
-    () => [
-      { value: "relay", label: "Relay" },
-      { value: "direct", label: "Direct" },
-    ],
     [],
   );
 
@@ -773,13 +402,6 @@ export function MissionControlSection(): ReactElement {
     },
     [patchConfig, toast],
   );
-  const handleApprovalModeSelect = useCallback(
-    (next: MissionControlMode) => {
-      void patch({ mode: next });
-      void updateSettings({ missionControlApprovalMode: next });
-    },
-    [patch, updateSettings],
-  );
 
   const handleToggleVerbose = useCallback(() => {
     toggleVerbose();
@@ -791,73 +413,6 @@ export function MissionControlSection(): ReactElement {
     toast.show("View cleared", { testID: "mission-control-clear-view-toast" });
   }, [setClearViewPoint, toast]);
 
-  const handleResetCommander = useCallback(() => {
-    if (isResettingCommander || !commanderHostServerId) {
-      return;
-    }
-    void (async () => {
-      const confirmed = await confirmDialog({
-        title: "Reset Commander?",
-        message:
-          "The current Commander is archived and a fresh one starts with a new context pack. The old conversation stays in History.",
-        confirmLabel: "Reset",
-        destructive: true,
-      });
-      if (!confirmed) {
-        return;
-      }
-      const client = getHostRuntimeStore().getClient(commanderHostServerId);
-      if (!client) {
-        toast.show("Commander host disconnected", { durationMs: 2200 });
-        return;
-      }
-      setIsResettingCommander(true);
-      try {
-        const result = await client.missionControlCommanderReset();
-        if (!result.ok) {
-          throw new Error(result.error ?? "Failed to reset Commander");
-        }
-        toast.show("Commander reset", { testID: "mission-control-reset-toast" });
-      } catch (resetError) {
-        console.error("[MissionControl] Failed to reset Commander:", resetError);
-        toast.show("Unable to reset Commander", {
-          durationMs: 2200,
-          testID: "mission-control-reset-failed-toast",
-        });
-      } finally {
-        setIsResettingCommander(false);
-      }
-    })();
-  }, [commanderHostServerId, isResettingCommander, toast]);
-
-  const handleCommanderHostSelect = useCallback(
-    (next: string) => void patch({ commanderHost: next }),
-    [patch],
-  );
-  const handleCommanderModelCommit = useCallback(
-    (next: string | null) => void patch({ commanderModel: next }),
-    [patch],
-  );
-  const handleCommanderInstructionsChange = useCallback(
-    (next: string) => void patch({ commanderInstructions: next }),
-    [patch],
-  );
-  const handleVerifierModelCommit = useCallback(
-    (next: string | null) => void patch({ verifierModel: next }),
-    [patch],
-  );
-  const handleVerifierConcurrencyCommit = useCallback(
-    (next: number | null) => {
-      if (next !== null) {
-        void patch({ verifierConcurrency: next });
-      }
-    },
-    [patch],
-  );
-  const handleEvaluationScopeSelect = useCallback(
-    (next: "commander" | "all") => void patch({ evaluationScope: next }),
-    [patch],
-  );
   const handleRetentionCommit = useCallback(
     (next: number | null) => {
       if (next !== null) {
@@ -872,14 +427,6 @@ export function MissionControlSection(): ReactElement {
   );
   const handleHideAgentNamesChange = useCallback(
     (next: boolean) => void patch({ hideAgentNames: next }),
-    [patch],
-  );
-  const handleTrackCommanderWorkersChange = useCallback(
-    (next: boolean) => void patch({ trackCommanderWorkers: next }),
-    [patch],
-  );
-  const handleTrackVerifiersChange = useCallback(
-    (next: boolean) => void patch({ trackVerifiers: next }),
     [patch],
   );
   const handleTrackSubagentsChange = useCallback(
@@ -926,34 +473,6 @@ export function MissionControlSection(): ReactElement {
     (next: boolean) => void patch({ stallDetectionEnabled: next }),
     [patch],
   );
-  const handleVerifierToWorkerModeSelect = useCallback(
-    (next: "steer" | "interrupt" | "queue") => void patch({ verifierToWorkerMode: next }),
-    [patch],
-  );
-  const handleHindsightUrlCommit = useCallback(
-    (next: string | null) => void patch({ hindsightUrl: next }),
-    [patch],
-  );
-  const handleHindsightBankCommit = useCallback(
-    (next: string | null) => {
-      if (next !== null && next !== "") {
-        void patch({ hindsightBank: next });
-      }
-    },
-    [patch],
-  );
-  const handleHindsightSecondaryBankCommit = useCallback(
-    (next: string | null) => void patch({ hindsightSecondaryBank: next }),
-    [patch],
-  );
-  const handleVoiceNodeUrlCommit = useCallback(
-    (next: string | null) => void patch({ voiceNodeUrl: next }),
-    [patch],
-  );
-  const handleVoiceModeSelect = useCallback(
-    (next: "relay" | "direct") => void patch({ voiceMode: next }),
-    [patch],
-  );
 
   if (resolvingHost || isLoading) {
     return (
@@ -978,9 +497,8 @@ export function MissionControlSection(): ReactElement {
     <View testID="mission-control-settings">
       {error ? <Text style={styles.error}>{error}</Text> : null}
 
-      <SettingsSection title="Approval">
+      <SettingsSection title="Display">
         <View style={settingsStyles.card}>
-          <ModeRow mode={config.mode} onSelect={handleApprovalModeSelect} />
           <VerboseRow value={verbose} onChange={handleToggleVerbose} />
         </View>
       </SettingsSection>
@@ -994,93 +512,6 @@ export function MissionControlSection(): ReactElement {
             onPress={handleClearView}
             testID="mission-control-settings-clear-view"
             first
-          />
-          <ActionRow
-            title={t("settings.missionControl.resetCommander")}
-            hint={t("settings.missionControl.resetCommanderHint")}
-            buttonLabel={t("settings.missionControl.resetCommander")}
-            onPress={handleResetCommander}
-            destructive
-            disabled={!commanderHostServerId || isResettingCommander}
-            loading={isResettingCommander}
-            testID="mission-control-settings-reset-commander"
-          />
-        </View>
-      </SettingsSection>
-
-      <SettingsSection title="Delivery">
-        <View style={settingsStyles.card}>
-          <DropdownRow
-            title="Verifier → worker"
-            hint="How verifier proof demands reach the worker. Steer = additive clarification request; interrupt = takes over immediately; queue = waits for idle."
-            value={config.verifierToWorkerMode}
-            options={deliveryModeOptions}
-            onSelect={handleVerifierToWorkerModeSelect}
-            testID="mission-control-settings-verifier-to-worker-mode"
-            first
-          />
-        </View>
-      </SettingsSection>
-
-      <SettingsSection title="Commander">
-        <View style={settingsStyles.card}>
-          <DropdownRow
-            title="Commander host"
-            hint="The host that runs the fleet Commander. Only this designated host ensures it; None means no host does until you pick one."
-            value={commanderHostOptionValue}
-            options={hostOptions}
-            onSelect={handleCommanderHostSelect}
-            testID="mission-control-settings-commander-host"
-            first
-          />
-          <ModelOverrideRow
-            title="Commander model"
-            hint="Override; empty uses the host default model."
-            value={config.commanderModel}
-            onCommit={handleCommanderModelCommit}
-            serverId={commanderHostServerId}
-            hostLabel={commanderHostLabel ?? undefined}
-            testID="mission-control-settings-commander-model"
-            isCompact={isCompact}
-          />
-        </View>
-        <SettingsTextArea
-          accessibilityLabel="Commander instructions"
-          value={config.commanderInstructions}
-          onChangeText={handleCommanderInstructionsChange}
-          placeholder="The Commander contract..."
-          testID="mission-control-settings-commander-instructions"
-          style={styles.instructionsInput}
-        />
-      </SettingsSection>
-
-      <SettingsSection title="Verifier">
-        <View style={settingsStyles.card}>
-          <ModelOverrideRow
-            title="Verifier model"
-            hint="Overrides omp modelRoles.verifier; empty = omp config."
-            value={config.verifierModel}
-            onCommit={handleVerifierModelCommit}
-            serverId={hostServerId}
-            testID="mission-control-settings-verifier-model"
-            isCompact={isCompact}
-            first
-          />
-          <NumberRow
-            title="Verifier concurrency"
-            hint="Concurrent verifier agents per host."
-            value={config.verifierConcurrency}
-            onCommit={handleVerifierConcurrencyCommit}
-            testID="mission-control-settings-verifier-concurrency"
-            isCompact={isCompact}
-          />
-          <DropdownRow
-            title="Evaluation scope"
-            hint="Which agents the verifier audits. 'All agents' audits an agent only when it declared completion or was dispatched with a brief and reported progress — a finished chat turn alone never triggers an audit."
-            value={config.evaluationScope}
-            options={evaluationScopeOptions}
-            onSelect={handleEvaluationScopeSelect}
-            testID="mission-control-settings-evaluation-scope"
           />
         </View>
       </SettingsSection>
@@ -1118,7 +549,7 @@ export function MissionControlSection(): ReactElement {
           </View>
           <DropdownRow
             title="Default dispatch host"
-            hint="Host the Commander routes new work to when no host is named."
+            hint="Host new work goes to when the ask names no host."
             value={config.defaultDispatchHost}
             options={hostOptions}
             onSelect={handleDefaultDispatchHostSelect}
@@ -1129,86 +560,9 @@ export function MissionControlSection(): ReactElement {
 
       <RoutingSettings config={config} hosts={routingHosts} patch={patch} isCompact={isCompact} />
 
-      <SettingsSection title={t("settings.missionControl.memory")}>
-        <View style={settingsStyles.card}>
-          <TextRow
-            title={t("settings.missionControl.hindsightUrl")}
-            hint={t("settings.missionControl.hindsightUrlHint")}
-            value={config.hindsightUrl}
-            onCommit={handleHindsightUrlCommit}
-            testID="mission-control-settings-hindsight-url"
-            isCompact={isCompact}
-            first
-            nullable
-          />
-          <TextRow
-            title={t("settings.missionControl.hindsightBank")}
-            hint={t("settings.missionControl.hindsightBankHint")}
-            value={config.hindsightBank}
-            onCommit={handleHindsightBankCommit}
-            testID="mission-control-settings-hindsight-bank"
-            isCompact={isCompact}
-          />
-          <TextRow
-            title={t("settings.missionControl.hindsightSecondaryBank")}
-            hint={t("settings.missionControl.hindsightSecondaryBankHint")}
-            value={config.hindsightSecondaryBank}
-            onCommit={handleHindsightSecondaryBankCommit}
-            testID="mission-control-settings-hindsight-secondary-bank"
-            isCompact={isCompact}
-            nullable
-          />
-          <TextRow
-            title={t("settings.missionControl.voiceNodeUrl")}
-            hint={t("settings.missionControl.voiceNodeUrlHint")}
-            value={config.voiceNodeUrl}
-            onCommit={handleVoiceNodeUrlCommit}
-            testID="mission-control-settings-voice-node-url"
-            isCompact={isCompact}
-            nullable
-          />
-          <DropdownRow
-            title={t("settings.missionControl.voiceMode")}
-            hint={t("settings.missionControl.voiceModeHint")}
-            value={config.voiceMode}
-            options={voiceModeOptions}
-            onSelect={handleVoiceModeSelect}
-            testID="mission-control-settings-voice-mode"
-          />
-        </View>
-      </SettingsSection>
-
       <SettingsSection title="Lifecycle tracking">
         <View style={settingsStyles.card}>
-          <View style={[settingsStyles.row, settingsStyles.rowBorder, { paddingTop: 14 }]}>
-            <View style={settingsStyles.rowContent}>
-              <Text style={settingsStyles.rowTitle}>Commander workers</Text>
-              <Text style={settingsStyles.rowHint}>
-                Lifecycle cards, run records, and review states for agents the Commander spawns.
-              </Text>
-            </View>
-            <Switch
-              value={config.trackCommanderWorkers}
-              onValueChange={handleTrackCommanderWorkersChange}
-              accessibilityLabel="Track Commander workers"
-              testID="mission-control-settings-track-commander-workers"
-            />
-          </View>
-          <View style={[settingsStyles.row, settingsStyles.rowBorder]}>
-            <View style={settingsStyles.rowContent}>
-              <Text style={settingsStyles.rowTitle}>Verifiers</Text>
-              <Text style={settingsStyles.rowHint}>
-                Show when a verifier spins up and completes its audit.
-              </Text>
-            </View>
-            <Switch
-              value={config.trackVerifiers}
-              onValueChange={handleTrackVerifiersChange}
-              accessibilityLabel="Track verifiers"
-              testID="mission-control-settings-track-verifiers"
-            />
-          </View>
-          <View style={[settingsStyles.row, settingsStyles.rowBorder]}>
+          <View style={settingsStyles.row}>
             <View style={settingsStyles.rowContent}>
               <Text style={settingsStyles.rowTitle}>Subagents</Text>
               <Text style={settingsStyles.rowHint}>
@@ -1279,12 +633,6 @@ export function MissionControlSection(): ReactElement {
           />
         </View>
       </SettingsSection>
-
-      {commanderHostServerId === null && config.commanderHost !== null ? (
-        <Text style={styles.staleValue}>
-          Commander host “{config.commanderHost}” is not one of the connected hosts.
-        </Text>
-      ) : null}
     </View>
   );
 }
