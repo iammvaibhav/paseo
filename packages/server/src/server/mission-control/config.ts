@@ -115,8 +115,7 @@ export interface ResolvedMissionControlCentralConfig {
 export const DEFAULT_CENTRAL_MISSION_CONTROL_CONFIG: ResolvedMissionControlCentralConfig = {
   commanderHost: null,
   commanderModel: null,
-  // The shipped contract now lives in the bundled commander-prompt.md; the
-  // central instructions are user overrides appended on top at build time.
+  // Read by nothing since the built-in Commander was removed; kept so stored configs parse.
   commanderInstructions: "",
   verifierModel: null,
   verifierConcurrency: 3,

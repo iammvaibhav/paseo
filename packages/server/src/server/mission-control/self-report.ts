@@ -7,8 +7,7 @@ import { hasMissionControlLabels } from "./naming.js";
  * The self-reporting paragraph appended to every daemon agent's system prompt
  * (via the daemonAppendSystemPrompt path). Shipped as a repo markdown file
  * (self-report-prompt.md) and bundled into the server dist beside this module
- * at build time (see packages/server/package.json build:lib) — the same
- * mechanism commander-prompt.md uses. Self-reporting is the sole status
+ * at build time (see packages/server/package.json build:lib). Self-reporting is the sole status
  * channel; no summarizer backstop exists.
  *
  * Rules (docs/mission-control.md, Status reporting):

@@ -298,11 +298,10 @@ const MissionControlConfigSchema = z
       .strict()
       .nullable()
       .optional(),
-    // Friendly aliases for peer host names ("blrofc3": "work server"), used in
-    // the Commander's fleet map.
+    // Friendly aliases for peer host names ("blrofc3": "work server"), used by
+    // placement routing to match host names in a prompt.
     hostAliases: z.record(z.string(), z.string()).optional(),
-    // Commander contract/instructions overridden from central config; the
-    // shipped default contract lives in the bundled commander-prompt.md.
+    // Read by nothing since the built-in Commander was removed; kept so stored configs parse.
     commanderInstructions: z.string().optional(),
   })
   .strict();
