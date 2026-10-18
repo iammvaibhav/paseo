@@ -7,7 +7,6 @@ import type { MissionControlInventoryProject } from "@getpaseo/protocol/mission-
 import { createTestLogger } from "../../test-utils/test-logger.js";
 import { DEFAULT_CENTRAL_MISSION_CONTROL_CONFIG } from "../mission-control/config.js";
 import type { FleetContextData, FleetHostContext } from "../mission-control/context.js";
-import { HindsightClient } from "../mission-control/hindsight.js";
 import type { PersistedProjectRecord, PersistedWorkspaceRecord } from "../workspace-registry.js";
 import {
   RoutingService,
@@ -91,8 +90,9 @@ const UNUSED_SCRATCH: ScratchProvisioning = {
 function createService(pick: {
   placement: (criteria: Record<string, string>) => string;
   host?: string;
-  isolation?: string;
+  model?: string;
   mode?: string;
+  fleet?: FleetContextData;
 }) {
   const calls: JudgeCall[] = [];
   const fetchImpl = (async (_url: unknown, init?: RequestInit) => {
@@ -107,7 +107,7 @@ function createService(pick: {
     const choices: Record<string, () => string> = {
       placement: () => pick.placement(criteria.placement!),
       host: () => pick.host ?? "not_specified",
-      isolation: () => pick.isolation ?? "local",
+      model: () => pick.model ?? "not_specified",
       mode: () => pick.mode ?? "solo",
     };
     for (const id of Object.keys(criteria)) {
@@ -126,8 +126,7 @@ function createService(pick: {
       routing: ROUTING,
       routingSecrets: { typesafeApiKey: "test-key" },
     }),
-    loadFleet: async () => FLEET,
-    hindsight: new HindsightClient({ logger }),
+    loadFleet: async () => pick.fleet ?? FLEET,
     scratch: UNUSED_SCRATCH,
     fetchImpl,
   });
@@ -154,26 +153,52 @@ describe("RoutingService.suggest", () => {
     expect(Object.keys(placement)).toEqual(expect.arrayContaining(["new_project", "scratch"]));
   });
 
-  test("cuts a worktree only for a git project", async () => {
-    const git = await createService({
-      placement: labelFor("app"),
-      isolation: "worktree",
-    }).service.suggest("fix it");
+  test("cuts a worktree for every git project task, never for non-git or scratch", async () => {
+    const git = await createService({ placement: labelFor("app") }).service.suggest("fix it");
     expect(git.placement).toMatchObject({ kind: "project", projectId: "prj_app" });
     expect(git.isolation).toBe("worktree");
 
-    const nonGit = await createService({
-      placement: labelFor("notes"),
-      isolation: "worktree",
-    }).service.suggest("edit notes");
+    const nonGit = await createService({ placement: labelFor("notes") }).service.suggest(
+      "edit notes",
+    );
     expect(nonGit.placement.projectId).toBe("prj_notes");
     expect(nonGit.isolation).toBe("local");
 
-    const scratch = await createService({
-      placement: () => "scratch",
-      isolation: "worktree",
-    }).service.suggest("quick test");
+    const scratch = await createService({ placement: () => "scratch" }).service.suggest(
+      "quick test",
+    );
     expect(scratch.isolation).toBe("local");
+  });
+
+  test("a named host wins over a project match on another host", async () => {
+    const result = await createService({
+      placement: labelFor("app"),
+      host: WORK,
+    }).service.suggest("in work, fix the app login");
+    expect(result.placement.serverId).toBe(WORK);
+    expect(result.placement.projectId).not.toBe("prj_app");
+  });
+
+  test("uses a model the prompt names, else the mode mapping", async () => {
+    const fleet: FleetContextData = {
+      ...FLEET,
+      hosts: FLEET.hosts.map((entry) => ({
+        ...entry,
+        models: { omp: ["google/gemini-3-flash"], "omp.modelRoles": ["default"] },
+      })),
+    };
+    const named = await createService({
+      placement: labelFor("app"),
+      model: "omp/google/gemini-3-flash",
+      fleet,
+    }).service.suggest("use gemini flash to fix it");
+    expect(named.model).toBe("omp:google/gemini-3-flash");
+
+    const calls = createService({ placement: labelFor("app"), fleet });
+    const unnamed = await calls.service.suggest("fix it");
+    expect(unnamed.model).toBe("omp:personal-default");
+    const criteria = calls.calls.find((call) => call.criteria.model)!.criteria.model!;
+    expect(Object.keys(criteria)).not.toContain("omp.modelRoles/default");
   });
 
   test("puts a new project on the named host, else the default host", async () => {
@@ -255,7 +280,6 @@ describe("RoutingService.ensureScratchWorkspace", () => {
         routingSecrets: {},
       }),
       loadFleet: async () => FLEET,
-      hindsight: new HindsightClient({ logger }),
       scratch,
     });
   }

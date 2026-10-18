@@ -657,24 +657,6 @@ describe("fleet tools with fleet-id-index integration", () => {
       }),
     ).rejects.toThrow(/host is required when workspaceId is omitted/);
   });
-
-  test("fleet_context routes via index to peer when targetId lives on peer", async () => {
-    const { catalog, client } = createCatalogHarness({
-      peerEntities: { peerName: "macbook", agents: ["7c3a0f4e-9b2a-4d6c-8e7a-1b2c3d4e5f02"] },
-    });
-
-    const result = await catalog.executeTool("fleet_context", {
-      agentId: "7c3a0f4e-9b2a-4d6c-8e7a-1b2c3d4e5f02",
-    });
-    expect(client.missionControlContextRecords).toHaveBeenCalledWith({
-      agentId: "7c3a0f4e-9b2a-4d6c-8e7a-1b2c3d4e5f02",
-    });
-    expect(result.structuredContent).toMatchObject({
-      runRecords: expect.arrayContaining([
-        expect.objectContaining({ id: "mcr_1", agentId: "7c3a0f4e-9b2a-4d6c-8e7a-1b2c3d4e5f02" }),
-      ]),
-    });
-  });
 });
 
 describe("in-process daemon integration tests", () => {

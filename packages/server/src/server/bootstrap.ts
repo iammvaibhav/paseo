@@ -12,7 +12,6 @@ import {
   type UnarchiveAgent,
 } from "./agent/tools/fleet-unarchive-tools.js";
 import { readLaunchBrief } from "./mission-control/run-records.js";
-import { HindsightClient } from "./mission-control/hindsight.js";
 import { randomUUID } from "node:crypto";
 import { getHostName } from "./host-name.js";
 import path from "node:path";
@@ -2630,9 +2629,8 @@ export async function createPaseoDaemon(
         serverId,
         hostName: getHostName(),
         logger,
-        inventoryOnly: true,
+        inventoryOnly: false,
       }),
-    hindsight: new HindsightClient({ logger }),
     scratch: {
       registerProject: (directoryPath) =>
         workspaceProvisioning.findOrCreateProjectForDirectory(directoryPath),
@@ -2652,21 +2650,23 @@ export async function createPaseoDaemon(
   });
   agentManager.setMetadataCompletion((prompt) => routingService.completeMetadata(prompt));
   // Once per host: offer the whole history (indexed transcripts and run records) to
-  // fleet-memory, so a host that was asleep or new catches up by itself. Unchanged
-  // items the memory already has are dropped by the outbox.
-  if (memoryService.needsInitialBackfill()) {
-    setTimeout(() => {
-      try {
-        const agents = transcriptSearch?.replayIndexed() ?? 0;
-        const runs = missionControlService.getRunRecords();
-        for (const record of runs) memoryService.pushRunRecord(record);
-        memoryService.markInitialBackfill();
-        logger.info({ agents, runs: runs.length }, "memory.initial_backfill_queued");
-      } catch (error) {
-        logger.warn({ err: error }, "memory.initial_backfill_failed");
-      }
-    }, 60_000).unref();
-  }
+  // fleet-memory, so a host that was asleep, new, or only just pointed at memory
+  // catches up by itself. Checked every 5 minutes; unchanged items the memory
+  // already has are dropped by the outbox.
+  const offerHistoryToMemory = () => {
+    if (!memoryService.needsInitialBackfill()) return;
+    try {
+      const agents = transcriptSearch?.replayIndexed() ?? 0;
+      const runs = missionControlService.getRunRecords();
+      for (const record of runs) memoryService.pushRunRecord(record);
+      memoryService.markInitialBackfill();
+      logger.info({ agents, runs: runs.length }, "memory.initial_backfill_queued");
+    } catch (error) {
+      logger.warn({ err: error }, "memory.initial_backfill_failed");
+    }
+  };
+  setTimeout(offerHistoryToMemory, 60_000).unref();
+  setInterval(offerHistoryToMemory, 5 * 60_000).unref();
   // Every host gets its scratch ("experiments") project and base workspace
   // without waiting for the first scratch placement: History Ask agents and
   // one-off work land there.

@@ -8086,7 +8086,7 @@ describe("mission control tools.execute RPC wire dispatch", () => {
     const executeTool = vi.fn(async () => {
       throw new Error("hindsight is not configured");
     });
-    const createPaseoToolCatalog = vi.fn(async () => catalogFor("fleet_recall", executeTool));
+    const createPaseoToolCatalog = vi.fn(async () => catalogFor("memory_search", executeTool));
     const session = createSessionForTest({
       messages,
       agentManager: { createPaseoToolCatalog },
@@ -8095,7 +8095,7 @@ describe("mission control tools.execute RPC wire dispatch", () => {
     await session.handleMessage({
       type: "mission_control.tools.execute.request",
       requestId: "req-exec-5",
-      name: "fleet_recall",
+      name: "memory_search",
       args: { query: "auth" },
     });
 
@@ -8105,7 +8105,7 @@ describe("mission control tools.execute RPC wire dispatch", () => {
         payload: {
           requestId: "req-exec-5",
           ok: false,
-          name: "fleet_recall",
+          name: "memory_search",
           error: "hindsight is not configured",
         },
       },

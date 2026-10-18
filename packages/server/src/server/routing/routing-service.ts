@@ -16,7 +16,6 @@ import type {
 } from "@getpaseo/protocol/routing";
 import type { ResolvedMissionControlCentralConfig } from "../mission-control/config.js";
 import type { FleetContextData } from "../mission-control/context.js";
-import type { HindsightClient } from "../mission-control/hindsight.js";
 import {
   createProjectDirectory,
   ProjectDirectoryRequestError,
@@ -30,7 +29,6 @@ import {
   type JudgeChoiceQuestion,
 } from "./llm-clients.js";
 
-const HINDSIGHT_BUDGET_MS = 600;
 const RECENT_WORK_PER_PROJECT = 8;
 const ALTERNATIVES = 3;
 const NEW_PROJECT = "new_project";
@@ -43,6 +41,8 @@ export const SCRATCH_PROJECT_DESCRIPTION = "Scratch area for one-off work on thi
 interface CatalogHost {
   serverId: string;
   label: string;
+  /** The name fleet tools take: "local" or the peer name. */
+  hostName: string;
   /** Lowercase names the prompt may use for this host. */
   names: string[];
 }
@@ -61,6 +61,8 @@ interface CatalogProject {
 interface RoutingCatalog {
   hosts: CatalogHost[];
   projects: CatalogProject[];
+  /** Every model any reachable host can run, as "provider/model". */
+  models: string[];
   /** serverId → the scratch project's id, when it exists. */
   scratchProjectIds: Map<string, string>;
 }
@@ -84,7 +86,6 @@ export interface RoutingServiceDependencies {
   logger: Logger;
   getCentralConfig: () => ResolvedMissionControlCentralConfig | null;
   loadFleet: () => Promise<FleetContextData>;
-  hindsight: HindsightClient;
   scratch: ScratchProvisioning;
   fetchImpl?: typeof fetch;
   /** Resolves `aside://` vault references in routing secrets; default reads the Aside vault. */
@@ -102,7 +103,7 @@ export class RoutingNotConfiguredError extends Error {}
 /**
  * Placement routing for a prompt: which project (or a new one, or the host's
  * scratch area), which host, local or worktree, and which agent mode. Two jev
- * calls in parallel (~0.4 s each) plus a Hindsight recall capped at 600 ms.
+ * calls in parallel (~0.4 s each).
  * Also names and creates new projects (nameModel, metadataModel fallback) and
  * serves every other generated text through metadataModel.
  */
@@ -137,10 +138,9 @@ export class RoutingService {
     const rules = routing.rules?.trim() || undefined;
     const judge = { apiKey, signal, fetchImpl: this.deps.fetchImpl };
 
-    // Isolation + mode need only the prompt; they run while the catalog loads
-    // and Hindsight recalls the evidence the placement question uses. The
-    // catalog is fetched fresh every time: in parallel it costs no latency,
-    // and a cache would hide projects added outside routing (Add project,
+    // The mode needs only the prompt, so it is asked while the catalog loads. The
+    // catalog is fetched fresh every time: in parallel it costs no latency, and a
+    // cache would hide projects added outside routing (Add project,
     // fleet_create_project, another host).
     const behaviour = judgeChoices({
       ...judge,
@@ -150,19 +150,12 @@ export class RoutingService {
     // Awaited below; this only keeps a rejection from going unhandled when
     // the catalog load throws first.
     behaviour.catch(() => {});
-    const [fleet, evidence] = await Promise.all([
-      this.deps.loadFleet(),
-      this.recallEvidence(prompt),
-    ]);
+    const fleet = await this.deps.loadFleet();
     const catalog = buildCatalog(fleet, routing);
     const placementAnswers = await judgeChoices({
       ...judge,
-      state: {
-        prompt,
-        ...(rules ? { rules } : {}),
-        ...(evidence ? { related_past_work: evidence } : {}),
-      },
-      questions: buildPlacementQuestions(catalog),
+      state: { prompt, ...(rules ? { rules } : {}) },
+      questions: buildPlacementQuestions(catalog, routing),
     });
     const behaviourAnswers = await behaviour;
 
@@ -170,7 +163,11 @@ export class RoutingService {
       catalog.hosts.find((host) => host.serverId === placementAnswers.host!.choice) ?? null;
     const placementOf = (label: string, probability: number): RoutingPlacement | null =>
       this.resolvePlacement({ label, probability, catalog, routing, namedHost });
-    const { choice: chosenLabel, probabilities } = placementAnswers.placement!;
+    // A host the prompt names wins over a project match on another host: keep only
+    // the options that land on the named host, renormalized.
+    const probabilities = bindToHost(placementAnswers.placement!.probabilities, catalog, namedHost);
+    const chosenLabel =
+      Object.entries(probabilities).sort((a, b) => b[1] - a[1])[0]?.[0] ?? SCRATCH;
     const placement =
       placementOf(chosenLabel, probabilities[chosenLabel] ?? 1) ?? placementOf(SCRATCH, 0);
     if (!placement) {
@@ -187,12 +184,16 @@ export class RoutingService {
       ? behaviourAnswers.mode!.choice
       : DEFAULT_AGENT_MODE_ID;
     const profile = routing.workHosts?.includes(placement.serverId) ? "work" : "personal";
+    const namedModel = placementAnswers.model?.choice;
     return {
       placement,
       alternatives,
-      isolation: resolveIsolation(catalog, placement, behaviourAnswers.isolation!.choice),
+      isolation: resolveIsolation(catalog, placement),
       agentMode,
-      model: resolveModel(routing, agentMode, profile),
+      model:
+        namedModel && namedModel !== HOST_NOT_SPECIFIED
+          ? namedModel.replace("/", ":")
+          : resolveModel(routing, agentMode, profile),
       profile,
       latencyMs: Date.now() - startedAt,
     };
@@ -218,6 +219,7 @@ export class RoutingService {
         kind: label === NEW_PROJECT ? "new_project" : "scratch",
         serverId: host.serverId,
         hostLabel: host.label,
+        hostName: host.hostName,
         projectId: label === SCRATCH ? scratchProjectId : null,
         projectTitle: label === SCRATCH ? "Scratch" : null,
         rootPath:
@@ -234,46 +236,13 @@ export class RoutingService {
       kind: "project",
       serverId: project.serverId,
       hostLabel: project.hostLabel,
+      hostName:
+        catalog.hosts.find((h) => h.serverId === project.serverId)?.hostName ?? project.hostLabel,
       projectId: project.projectId,
       projectTitle: project.title,
       rootPath: project.rootPath,
       probability,
     };
-  }
-
-  /**
-   * Related past work from the Hindsight fleet bank: how often each project
-   * shows up in memories that match the prompt. Never blocks routing longer
-   * than the budget; no Hindsight → no evidence.
-   */
-  private async recallEvidence(prompt: string): Promise<string | null> {
-    const central = this.deps.getCentralConfig();
-    const url = central?.hindsightUrl;
-    if (!url) return null;
-    const recall = this.deps.hindsight.recall({
-      url,
-      bank: central.hindsightBank,
-      query: prompt,
-      limit: 20,
-    });
-    const timeout = new Promise<null>((resolve) =>
-      setTimeout(() => resolve(null), HINDSIGHT_BUDGET_MS),
-    );
-    const result = await Promise.race([recall, timeout]);
-    if (!result || !result.ok) return null;
-    const counts = new Map<string, number>();
-    for (const match of result.matches) {
-      const project = match.tags?.find((tag) => tag.startsWith("project:"))?.slice(8);
-      const host = match.tags?.find((tag) => tag.startsWith("host:"))?.slice(5);
-      if (!project) continue;
-      const key = host ? `${project} (host ${host})` : project;
-      counts.set(key, (counts.get(key) ?? 0) + 1);
-    }
-    if (counts.size === 0) return null;
-    return [...counts.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .map(([key, count]) => `${key}: ${count} related memories`)
-      .join("; ");
   }
 
   /**
@@ -412,17 +381,6 @@ export class RoutingService {
 }
 
 const BEHAVIOUR_QUESTIONS: Record<string, JudgeChoiceQuestion> = {
-  isolation: {
-    type: "choice",
-    instructions:
-      "Will the agent change files? Follow the prompt if it says so explicitly (for example 'just look' or 'make a branch').",
-    criteria: {
-      local:
-        "Read-only: a question, investigation, research, explanation, review, or status check; no file changes",
-      worktree:
-        "Writes code or files: fix, implement, refactor, build, change config, write a script",
-    },
-  },
   mode: {
     type: "choice",
     instructions:
@@ -431,7 +389,10 @@ const BEHAVIOUR_QUESTIONS: Record<string, JudgeChoiceQuestion> = {
   },
 };
 
-function buildPlacementQuestions(catalog: RoutingCatalog): Record<string, JudgeChoiceQuestion> {
+function buildPlacementQuestions(
+  catalog: RoutingCatalog,
+  routing: RoutingConfig,
+): Record<string, JudgeChoiceQuestion> {
   const placement: Record<string, string> = {};
   catalog.projects.forEach((project, index) => {
     placement[`p${index}`] = project.criterion;
@@ -442,7 +403,10 @@ function buildPlacementQuestions(catalog: RoutingCatalog): Record<string, JudgeC
     "Quick one-off or throwaway work, an experiment, or a question about nothing in the projects above: run it in the host's scratch area";
   const hosts: Record<string, string> = {};
   for (const host of catalog.hosts) {
-    hosts[host.serverId] = `the machine called ${host.names.join(" / ")}`;
+    const machine = `the machine called ${host.names.join(" / ")}`;
+    hosts[host.serverId] = routing.workHosts?.includes(host.serverId)
+      ? `${machine}, the work machine. The prompt asks for it with words like 'in work', 'at work', 'on work' or 'the work machine' (not 'work on X' or 'make it work').`
+      : machine;
   }
   hosts[HOST_NOT_SPECIFIED] = "The prompt names no machine";
   return {
@@ -455,26 +419,59 @@ function buildPlacementQuestions(catalog: RoutingCatalog): Record<string, JudgeC
     host: {
       type: "choice",
       instructions:
-        "Which machine does the prompt explicitly ask to run on? Answer not_specified unless the prompt names a machine.",
+        "Which machine does the prompt explicitly ask to run on? Answer not_specified unless the prompt names a machine or says to run it in/at/on work.",
       criteria: hosts,
     },
+    ...(catalog.models.length > 0
+      ? {
+          model: {
+            type: "choice" as const,
+            instructions:
+              "Which model does the prompt explicitly ask the agent to use? Answer not_specified unless the prompt names a model (for example 'use opus', 'with gemini flash', 'on grok 4.7').",
+            criteria: {
+              ...Object.fromEntries(catalog.models.map((id) => [id, `the model ${id}`])),
+              [HOST_NOT_SPECIFIED]: "The prompt names no model",
+            },
+          },
+        }
+      : {}),
   };
 }
 
 /**
- * Worktree only for an existing git project: scratch and brand-new projects
- * have nothing to branch from, and non-git projects cannot cut worktrees.
+ * Every new task gets a fresh worktree when it can: an existing git project. Scratch
+ * and brand-new projects have nothing to branch from, and non-git projects cannot
+ * cut worktrees, so those run in place.
  */
 function resolveIsolation(
   catalog: RoutingCatalog,
   placement: RoutingPlacement,
-  answer: string,
 ): "local" | "worktree" {
-  if (placement.kind !== "project" || answer !== "worktree") return "local";
+  if (placement.kind !== "project") return "local";
   const project = catalog.projects.find(
     (entry) => entry.projectId === placement.projectId && entry.serverId === placement.serverId,
   );
   return project?.isGit ? "worktree" : "local";
+}
+
+/**
+ * A named host binds the placement: project options on other hosts are dropped and
+ * the rest renormalized. new_project and scratch always land on the named host
+ * (resolvePlacement), so they stay. No named host → the answer as given.
+ */
+function bindToHost(
+  probabilities: Record<string, number>,
+  catalog: RoutingCatalog,
+  namedHost: CatalogHost | null,
+): Record<string, number> {
+  if (!namedHost) return probabilities;
+  const kept = Object.entries(probabilities).filter(([label]) => {
+    if (!label.startsWith("p")) return true;
+    return catalog.projects[Number(label.slice(1))]?.serverId === namedHost.serverId;
+  });
+  const total = kept.reduce((sum, [, p]) => sum + p, 0);
+  if (total <= 0) return { [SCRATCH]: 1 };
+  return Object.fromEntries(kept.map(([label, p]) => [label, p / total]));
 }
 
 /** Work overrides first, then the personal mapping; "default" covers unlisted modes. */
@@ -504,9 +501,17 @@ export function slugify(value: string): string {
 
 const COMMANDER_WORKSPACE_TITLE = /^(Commander \(.+\)|<paseo-system>)$/;
 
+function addHostModels(models: Set<string>, hostModels: Record<string, string[]> | undefined) {
+  for (const [provider, ids] of Object.entries(hostModels ?? {})) {
+    if (provider.includes(".")) continue; // omp.modelRoles and similar are not models
+    for (const id of ids) models.add(`${provider}/${id}`);
+  }
+}
+
 function buildCatalog(fleet: FleetContextData, routing: RoutingConfig): RoutingCatalog {
   const hosts: CatalogHost[] = [];
   const projects: CatalogProject[] = [];
+  const models = new Set<string>();
   const scratchProjectIds = new Map<string, string>();
   for (const host of fleet.hosts) {
     if (!host.serverId || !host.reachable) continue;
@@ -514,12 +519,16 @@ function buildCatalog(fleet: FleetContextData, routing: RoutingConfig): RoutingC
       host.alias ?? (host.hostName === "local" ? host.machineName : host.hostName) ?? host.serverId;
     const names = [
       ...new Set(
-        [label, host.hostName, host.machineName].filter(
-          (name): name is string => Boolean(name) && name !== "local",
-        ),
+        [
+          label,
+          host.hostName,
+          host.machineName,
+          ...(routing.hostAliases?.[host.serverId] ?? []),
+        ].filter((name): name is string => Boolean(name) && name !== "local"),
       ),
     ];
-    hosts.push({ serverId: host.serverId, label, names });
+    hosts.push({ serverId: host.serverId, label, hostName: host.hostName, names });
+    addHostModels(models, host.models);
     const scratchRoot = routing.scratchRootByHost?.[host.serverId];
     for (const project of host.inventory.projects) {
       if (isScratchProject(project.rootPath, scratchRoot)) {
@@ -550,7 +559,7 @@ function buildCatalog(fleet: FleetContextData, routing: RoutingConfig): RoutingC
       });
     }
   }
-  return { hosts, projects, scratchProjectIds };
+  return { hosts, projects, models: [...models].sort(), scratchProjectIds };
 }
 
 /** A host without a configured scratch root uses the default, `~/experiments`. */

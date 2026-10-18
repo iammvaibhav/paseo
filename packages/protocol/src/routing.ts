@@ -23,6 +23,9 @@ export const RoutingConfigSchema = z.object({
   scratchRootByHost: z.record(z.string(), z.string()).optional(),
   // serverIds in the work profile; every other host is personal.
   workHosts: z.array(z.string()).optional(),
+  // serverId → extra names people use for that host ("dev", "work"). Given to the
+  // placement classifier as the host's names.
+  hostAliases: z.record(z.string(), z.array(z.string())).optional(),
   // Agent mode id → model as "provider:model" (the ticked-models form, e.g.
   // "omp:anthropic/claude-opus-5-5"). "default" covers unlisted modes.
   modelByMode: z.record(z.string(), z.string()).optional(),
@@ -61,6 +64,9 @@ export const RoutingPlacementSchema = z.object({
   kind: z.enum(["project", "new_project", "scratch"]),
   serverId: z.string(),
   hostLabel: z.string(),
+  // The host name fleet tools take ("local" for the answering daemon, else the
+  // peer name). Optional: older daemons do not send it.
+  hostName: z.string().optional(),
   // Existing project id for kind "project", and for "scratch" once the
   // host's scratch project exists. Null otherwise.
   projectId: z.string().nullable(),

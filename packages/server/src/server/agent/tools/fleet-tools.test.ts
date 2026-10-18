@@ -2133,19 +2133,21 @@ describe("fleet_create_agent placement and model form from a remote MCP client",
     }
   });
 
-  test("suggest_placement returns the model in the provider/model form fleet_create_agent takes", async () => {
+  test("fleet_create_agent dryRun fills omitted placement from routing; a host the caller names wins", async () => {
+    const project = (hostName: string, title: string, rootPath: string) => ({
+      kind: "project",
+      serverId: `srv-${hostName}`,
+      hostLabel: hostName,
+      hostName,
+      projectId: `prj_${title}`,
+      projectTitle: title,
+      rootPath,
+      probability: 0.5,
+    });
     const routingService = {
       suggest: async () => ({
-        placement: {
-          kind: "project",
-          serverId: "host-a",
-          hostLabel: "Personal",
-          projectId: "prj_1",
-          projectTitle: "paseo",
-          rootPath: "/data/paseo",
-          probability: 1,
-        },
-        alternatives: [],
+        placement: project("dev", "paseo", "/data/paseo"),
+        alternatives: [project("blrofc3", "stackmod", "/home/vaibhav/stackmod")],
         isolation: "worktree",
         agentMode: "debug",
         model: "omp:anthropic/claude-opus-5-5",
@@ -2158,15 +2160,43 @@ describe("fleet_create_agent placement and model form from a remote MCP client",
       agentStorage: { get: async () => null, list: async () => [] } as unknown as AgentStorage,
       providerSnapshotManager: createProviderSnapshotManagerStub()
         .manager as unknown as ProviderSnapshotManager,
-      callerAgentId: "commander-1",
-      callerLabels: { "paseo.mission-control": "commander" },
+      callerAgentId: "worker-1",
       serverId: "host-a",
       routingService,
       logger: createTestLogger(),
     });
 
-    const result = await catalog.executeTool("suggest_placement", { prompt: "fix the bug" });
+    const auto = await catalog.executeTool("fleet_create_agent", {
+      title: "Fix it",
+      initialPrompt: "fix the bug",
+      dryRun: true,
+    });
+    expect(auto.structuredContent).toMatchObject({
+      dryRun: true,
+      plan: {
+        host: "dev",
+        cwd: "/data/paseo",
+        isolation: "worktree",
+        provider: "omp/anthropic/claude-opus-5-5",
+        agentMode: "debug",
+      },
+    });
 
-    expect(result.structuredContent).toMatchObject({ model: "omp/anthropic/claude-opus-5-5" });
+    const named = await catalog.executeTool("fleet_create_agent", {
+      title: "Fix it",
+      initialPrompt: "fix the bug",
+      host: "blrofc3",
+      provider: "omp/openai/gpt-5.4",
+      settings: { agentMode: "solo" },
+      dryRun: true,
+    });
+    expect(named.structuredContent).toMatchObject({
+      plan: {
+        host: "blrofc3",
+        cwd: "/home/vaibhav/stackmod",
+        provider: "omp/openai/gpt-5.4",
+        agentMode: "solo",
+      },
+    });
   });
 });

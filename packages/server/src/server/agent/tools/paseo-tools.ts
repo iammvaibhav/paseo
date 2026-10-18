@@ -144,14 +144,12 @@ import {
   registerFleetWaitTools,
   resolvePromptedTurn,
 } from "./fleet-wait.js";
-import { MissionControlSearchMatchSchema } from "@getpaseo/protocol/mission-control/types";
 import type { MissionControlProposalSpawnPlan } from "@getpaseo/protocol/mission-control/types";
 import { MissionControlMetaPlanSchema } from "@getpaseo/protocol/mission-control/types";
 import type { MissionControlMetaPlan } from "@getpaseo/protocol/mission-control/types";
 import { MissionControlModelsSchema } from "@getpaseo/protocol/mission-control/types";
 import type { MissionControlModels } from "@getpaseo/protocol/mission-control/types";
 import type { ComposerPreferences } from "@getpaseo/protocol/composer-preferences";
-import { hasMissionControlLabels } from "../../mission-control/naming.js";
 import {
   classifyFleetMetaAction,
   buildFleetMetaProposalInput,
@@ -167,15 +165,6 @@ import {
   MISSION_CONTROL_LABEL_VALUE,
 } from "../../mission-control/commander-contract.js";
 import { MISSION_CONTROL_VERIFIER_LABEL_VALUE } from "../../mission-control/verifier.js";
-import {
-  SEARCH_TIER3_TIMEOUT_MS,
-  buildFleetHistoryAskBrief,
-  mergeFleetSearchMatches,
-  parseHistoryAskMatches,
-  runFleetSearchHost,
-  type FleetSearchMatch,
-  type FleetSearchTier3Runner,
-} from "../../mission-control/search.js";
 import type { MissionControlService } from "../../mission-control/service.js";
 import {
   buildFleetContextData,
@@ -183,8 +172,6 @@ import {
   OMP_MODEL_ROLES_KEY,
   resolveDefaultWorkerModel,
 } from "../../mission-control/context.js";
-import type { WorkspaceRollup, ProjectRollup } from "../../mission-control/rollups.js";
-import { resolveProjectCommanderInstructions } from "../../../utils/project-instructions.js";
 import type { MissionControlVerifierDispatcher } from "../../mission-control/verifier.js";
 import { MissionControlReportStatusInputSchema } from "@getpaseo/protocol/mission-control/types";
 import type { MissionControlEvent } from "@getpaseo/protocol/mission-control/types";
@@ -203,6 +190,7 @@ import type { ProviderPaseoToolsPolicy } from "@getpaseo/protocol/provider-confi
 import type { RoutingService } from "../../routing/routing-service.js";
 import type { MemoryService } from "../../memory/service.js";
 import { registerMemoryTools } from "./memory-tools.js";
+import { fillPlacement } from "./placement-fill.js";
 import { AGENT_MODE_IDS, type AgentModeId } from "@getpaseo/protocol/agent-modes";
 import { isPaseoToolEnabled } from "../paseo-tool-policy.js";
 
@@ -683,47 +671,6 @@ const TerminalSummarySchema = z.object({
   name: z.string(),
   cwd: z.string(),
 });
-
-const historySearchResultItemSchema = z.object({
-  agentId: z.string(),
-  name: z.string().optional(),
-  title: z.string().nullable().optional(),
-  description: z.string().optional(),
-  cwd: z.string(),
-  status: z.string(),
-  updatedAt: z.string(),
-  link: z.string().optional(),
-});
-
-type HistorySearchResultItem = z.infer<typeof historySearchResultItemSchema>;
-
-interface HistorySearchTarget {
-  name?: string;
-  title?: string | null;
-  shortDescription?: string;
-  cwd: string;
-}
-
-/**
- * Multi-token case-insensitive metadata filter, mirroring the History Ask
- * fuzzy matcher (packages/app/src/history-ask/fuzzy.ts): every whitespace-
- * separated token must match at least one of title/name/description/cwd.
- */
-function matchesHistorySearch(query: string, target: HistorySearchTarget): boolean {
-  const tokens = query
-    .trim()
-    .toLowerCase()
-    .split(/\s+/)
-    .filter((token) => token.length > 0);
-  if (tokens.length === 0) {
-    return false;
-  }
-  const fields = [target.title, target.name, target.shortDescription, target.cwd]
-    .filter((value): value is string => typeof value === "string")
-    .map((value) => value.trim().toLowerCase())
-    .filter((value) => value.length > 0);
-  return tokens.every((token) => fields.some((field) => field.includes(token)));
-}
 
 /**
  * Token filter for fleet_list_inventory, same convention as
@@ -4453,60 +4400,6 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
   );
 
   registerTool(
-    "history_search",
-    {
-      title: "Search history",
-      description:
-        "Search stored agents on this daemon by title, name, description, or working directory. " +
-        "Every whitespace-separated query token must match at least one of those fields (case-insensitive substring). " +
-        "Use for 'have we done X before' questions; check the roster first.",
-      inputSchema: {
-        query: z.string().min(1),
-        sinceHours: z.number().int().positive().optional(),
-        limit: z.number().int().positive().max(50).optional().default(20),
-      },
-      outputSchema: {
-        results: z.array(historySearchResultItemSchema),
-      },
-    },
-    async ({ query, sinceHours, limit = 20 }) => {
-      const sinceMs = sinceHours !== undefined ? Date.now() - sinceHours * 60 * 60 * 1000 : null;
-      const records = await agentStorage.list();
-      const candidates = records
-        .filter((record) => !record.internal && !hasMissionControlLabels(record.labels))
-        .filter((record) => sinceMs === null || Date.parse(record.updatedAt) >= sinceMs)
-        .filter((record) => matchesHistorySearch(query, record))
-        .slice(0, limit);
-      const results: HistorySearchResultItem[] = [];
-      for (const record of candidates) {
-        const item: HistorySearchResultItem = {
-          agentId: record.id,
-          cwd: record.cwd,
-          status: record.lastStatus,
-          updatedAt: record.updatedAt,
-        };
-        if (record.name !== undefined) {
-          item.name = record.name;
-        }
-        if (record.title !== undefined) {
-          item.title = record.title;
-        }
-        if (record.shortDescription !== undefined) {
-          item.description = record.shortDescription;
-        }
-        if (options.serverId) {
-          item.link = `paseo://h/${options.serverId}/agent/${record.id}`;
-        }
-        results.push(item);
-      }
-      return {
-        content: [],
-        structuredContent: ensureValidJson({ results }),
-      };
-    },
-  );
-
-  registerTool(
     "set_agent_mode",
     {
       title: "Set agent session mode",
@@ -4722,10 +4615,19 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         .min(1)
         .optional()
         .describe(
-          "Target host: a peer name from the daemon peers config, or 'local' for this daemon. " +
-            "Optional when workspaceId is provided (derived from the workspace); required when workspaceId is omitted.",
+          "Target host: a peer name. Omit to let Paseo place the agent from the prompt (a host, " +
+            "project, or model the prompt names wins; then the fleet rules). Derived from workspaceId when given.",
         ),
       ...canonicalTopLevelInputSchema,
+      provider: ProviderModelInputSchema.optional().describe(
+        "provider/model, e.g. omp/anthropic/claude-opus-5-5. Omit to use the model the prompt names, else the default.",
+      ),
+      dryRun: z
+        .boolean()
+        .optional()
+        .describe(
+          "Return the placement (host, cwd, isolation, model, agent mode, alternatives) without creating anything.",
+        ),
       workspaceId: z
         .string()
         .min(1)
@@ -4827,86 +4729,6 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     // oldest -> newest) and its last non-system user message, when known.
     reportStatus: z.array(z.string()).max(5).optional(),
     lastUserMessage: z.string().nullable().optional(),
-  });
-
-  // --- M6 context tools: fleet_recall / fleet_context (read-only) -----------
-
-  const runVerdictSchema = z
-    .object({
-      by: z.enum(["verifier", "user"]),
-      summary: z.string(),
-      at: z.string(),
-      verifierAgentId: z.string().optional(),
-    })
-    .nullable();
-
-  const runReportSchema = z.object({
-    ts: z.string(),
-    kind: z.string(),
-    headline: z.string(),
-    detail: z.string().optional(),
-    reportKind: z.string().optional(),
-  });
-
-  const runProofSchema = z.object({
-    kind: z.string(),
-    label: z.string().optional(),
-    url: z.string().optional(),
-    path: z.string().optional(),
-    excerpt: z.string().optional(),
-  });
-
-  const runRecordSchema = z.object({
-    id: z.string(),
-    agentId: z.string(),
-    agentName: z.string(),
-    agentTitle: z.string(),
-    hostAlias: z.string(),
-    serverId: z.string(),
-    workspaceId: z.string().nullable(),
-    workspaceTitle: z.string().nullable(),
-    projectId: z.string().nullable(),
-    projectName: z.string().nullable(),
-    runEpoch: z.number(),
-    startedAt: z.string(),
-    endedAt: z.string(),
-    outcome: z.string(),
-    brief: z.string().nullable(),
-    reports: z.array(runReportSchema),
-    verdict: runVerdictSchema,
-    proofs: z.array(runProofSchema),
-    createdAt: z.string(),
-    updatedAt: z.string(),
-  });
-
-  const runRollupEntrySchema = z.object({
-    agentId: z.string(),
-    agentName: z.string(),
-    endedAt: z.string(),
-    outcome: z.string(),
-    brief: z.string().nullable(),
-    decisions: z.array(z.string()),
-    open: z.array(z.string()),
-    verdict: z.string().nullable(),
-  });
-
-  const workspaceRollupSchema = z.object({
-    kind: z.literal("workspace"),
-    workspaceId: z.string(),
-    workspaceTitle: z.string().nullable(),
-    projectId: z.string().nullable(),
-    projectName: z.string().nullable(),
-    updatedAt: z.string(),
-    runs: z.array(runRollupEntrySchema),
-  });
-
-  const projectRollupSchema = z.object({
-    kind: z.literal("project"),
-    projectId: z.string(),
-    projectName: z.string().nullable(),
-    commanderInstructions: z.string().nullable().optional(),
-    updatedAt: z.string(),
-    runs: z.array(runRollupEntrySchema),
   });
 
   const resolveFleetHost = (host: string): DaemonClient | null => {
@@ -5544,54 +5366,6 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     hostLabel,
   });
 
-  const routingService = options.routingService ?? null;
-  if (routingService) {
-    registerTool(
-      "suggest_placement",
-      {
-        title: "Suggest where a prompt should run",
-        description:
-          "Placement for a new agent from its prompt: the existing project (with host), a new " +
-          "project (with host and parent directory), or the host's scratch area; plus isolation " +
-          "(local or worktree), agent mode, and model. The prompt's explicit instructions win " +
-          "(a named host, project, or way of working). Read-only; use before creating an agent " +
-          "when the user did not say where it should run.",
-        inputSchema: {
-          prompt: z.string().trim().min(1).describe("The task the new agent will receive."),
-        },
-        outputSchema: {
-          placement: z.object({
-            kind: z.enum(["project", "new_project", "scratch"]),
-            serverId: z.string(),
-            hostLabel: z.string(),
-            projectId: z.string().nullable(),
-            projectTitle: z.string().nullable(),
-            rootPath: z.string().nullable(),
-            probability: z.number(),
-          }),
-          alternatives: z.array(z.record(z.string(), z.unknown())),
-          isolation: z.enum(["local", "worktree"]),
-          agentMode: z.string(),
-          model: z
-            .string()
-            .nullable()
-            .describe(
-              "Invocable provider/model; pass it verbatim as fleet_create_agent's provider.",
-            ),
-          profile: z.enum(["personal", "work"]),
-          latencyMs: z.number(),
-        },
-      },
-      async ({ prompt }: { prompt: string }) => {
-        const suggestion = await routingService.suggest(prompt);
-        // routing.modelByMode stores the app's "provider:model" key; MCP callers
-        // spawn with this value, and spawn surfaces take "provider/model".
-        const model = suggestion.model ? canonicalProviderModel(suggestion.model) : null;
-        return { content: [], structuredContent: ensureValidJson({ ...suggestion, model }) };
-      },
-    );
-  }
-
   registerTool(
     "fleet_list_inventory",
     {
@@ -5758,13 +5532,13 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         "Requires provider/model (for example codex/gpt-5.4) and an initial prompt.",
       inputSchema: fleetCreateAgentInputSchema,
       outputSchema: {
-        agentId: z.string(),
-        type: AgentProviderEnum,
-        status: AgentStatusEnum,
-        cwd: z.string(),
+        agentId: z.string().optional(),
+        type: AgentProviderEnum.optional(),
+        status: AgentStatusEnum.optional(),
+        cwd: z.string().optional(),
         workspaceId: z.string().optional(),
-        currentModeId: z.string().nullable(),
-        availableModes: z.array(ProviderModeSchema),
+        currentModeId: z.string().nullable().optional(),
+        availableModes: z.array(ProviderModeSchema).optional(),
         lastMessage: z.string().nullable().optional(),
         // The turn the initial prompt runs in; pass it to fleet_wait_agent.
         turnId: z.string().nullable().optional(),
@@ -5774,9 +5548,29 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         // guidance. Additive.
         proposalId: z.string().optional(),
         guidance: z.string().optional(),
+        // dryRun: the placement that would be used; nothing is created.
+        dryRun: z.boolean().optional(),
+        plan: z.record(z.string(), z.unknown()).nullable().optional(),
       },
     },
-    async (rawArgs, context) => {
+    async (inputArgs, context) => {
+      const { dryRun, ...requested } = inputArgs;
+      const { args: rawArgs, plan: placementPlan } = await fillPlacement(
+        options.routingService ?? null,
+        requested,
+        dryRun === true,
+      );
+      if (dryRun) {
+        return {
+          content: [],
+          structuredContent: ensureValidJson({ dryRun: true, plan: placementPlan }),
+        };
+      }
+      if (!rawArgs.provider) {
+        throw new Error(
+          "provider is required: no model named in the prompt and no default model configured",
+        );
+      }
       // fileId images become inline images here, so every path below (gate,
       // local create, peer create) carries bytes the target host can use.
       const resolvedImages = await resolveFleetImages(rawArgs.images, options.paseoHome);
@@ -6135,210 +5929,6 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       };
     },
   );
-
-  registerTool(
-    "fleet_search",
-    {
-      title: "Search the fleet",
-      description:
-        "Find which agents worked on something, across this daemon and every reachable peer host. " +
-        "Tiered: identity/brief/report context first (instant), then a bounded transcript scan of the last 30 days, " +
-        "and — only with deep:true when the earlier tiers find nothing — a History Ask agent that reads transcripts on disk. " +
-        "Use for 'who worked on X' questions. fleet_list_agents is for rosters, not searching.",
-      inputSchema: {
-        query: z
-          .string()
-          .min(1)
-          .describe("Search text: a name, title, PR URL, or phrase an agent's work would mention."),
-        limit: z
-          .number()
-          .int()
-          .positive()
-          .max(50)
-          .optional()
-          .default(20)
-          .describe("Maximum matches to return, fleet-wide."),
-        deep: z
-          .boolean()
-          .optional()
-          .default(false)
-          .describe(
-            "When true and the deterministic tiers find nothing, spawn a History Ask agent to read stored transcripts. Expensive; ask only when shallow search fails.",
-          ),
-      },
-      outputSchema: {
-        matches: z.array(MissionControlSearchMatchSchema),
-        // Hosts that were not searched (down or not answering). Empty when
-        // every peer answered.
-        warnings: z.array(z.string()),
-      },
-    },
-    async ({ query, limit = 20, deep = false }) => {
-      const startedAt = Date.now();
-      const tier3Runner = buildFleetSearchTier3Runner();
-      const localMatches = await runFleetSearchHost({
-        query,
-        limit,
-        deep,
-        deps: {
-          agentManager,
-          agentStorage,
-          missionControlService: missionControlService ?? null,
-          workspaceRegistry: options.workspaceRegistry,
-          projectRegistry: options.projectRegistry,
-          logger: childLogger,
-          serverId: options.serverId,
-          tier3: deep ? tier3Runner : null,
-        },
-      });
-
-      const allMatches: FleetSearchMatch[] = [...localMatches];
-      const peerWarnings: string[] = [];
-      if (peerManager) {
-        for (const peerStatus of peerManager.getPeerStatuses()) {
-          if (peerStatus.state !== "online") {
-            peerWarnings.push(
-              buildPeerUnreachableError(peerStatus.name, peerStatus.lastSeenAt).message,
-            );
-            continue;
-          }
-          const client = peerManager.getPeerClient(peerStatus.name);
-          if (!client) {
-            continue;
-          }
-          try {
-            const payload = await client.missionControlSearch({ query, limit, deep });
-            for (const row of payload.matches) {
-              allMatches.push({ ...row, host: peerStatus.name });
-            }
-          } catch (error) {
-            childLogger.warn(
-              { err: error, peer: peerStatus.name, component: "search" },
-              "Failed to search peer",
-            );
-            peerWarnings.push(
-              `Host "${peerStatus.name}" did not answer (${error instanceof Error ? error.message : String(error)}); its matches are not included.`,
-            );
-          }
-        }
-      }
-
-      for (const match of allMatches) {
-        if (match.host === "local") {
-          match.host = hostLabel;
-        }
-      }
-      const matches = mergeFleetSearchMatches(allMatches, limit);
-      childLogger.info(
-        {
-          component: "search",
-          query,
-          limit,
-          deep,
-          localMatches: localMatches.length,
-          hosts: [...new Set(matches.map((match) => match.host))],
-          matches: matches.length,
-          durationMs: Date.now() - startedAt,
-        },
-        "mission_control.fleet_search.done",
-      );
-      return {
-        content: [],
-        structuredContent: ensureValidJson({
-          matches,
-          warnings: peerWarnings,
-        }),
-      };
-    },
-  );
-
-  /**
-   * Tier 3 runner for fleet_search: spawns an omp History Ask agent on this
-   * host (the existing History Ask machinery — same labels, same paseo://
-   * citation contract as the app's launcher), waits for its answer, and maps
-   * the citations into fleet search rows. Matches come back host-less;
-   * runFleetSearchHost stamps them "local".
-   */
-  function buildFleetSearchTier3Runner(): FleetSearchTier3Runner {
-    return {
-      async run({ query }) {
-        const localServerId = options.serverId ?? "";
-        const providerIds = providerSnapshotManager.listRegisteredProviderIds();
-        if (providerIds.length === 0) {
-          childLogger.info(
-            { component: "search" },
-            "mission_control.fleet_search.tier3_no_provider",
-          );
-          return null;
-        }
-        const provider = providerIds.includes("omp") ? "omp" : providerIds[0]!;
-        if (!routingService) {
-          childLogger.info(
-            { component: "search" },
-            "mission_control.fleet_search.tier3_no_scratch",
-          );
-          return null;
-        }
-        const cleaned = query.trim().replace(/\s+/g, " ");
-        const title =
-          cleaned.length <= 40
-            ? `Ask: fleet search: ${cleaned}`
-            : `Ask: fleet search: ${cleaned.slice(0, 39)}…`;
-
-        let agentId: string;
-        try {
-          // History Ask agents run in the host's scratch project, not in
-          // whichever workspace happens to be most recent.
-          const { workspace } = await routingService.ensureScratchWorkspace();
-          const created = await createAgentCommand(createAgentDependencies, {
-            kind: "mcp",
-            provider,
-            title,
-            initialPrompt: buildFleetHistoryAskBrief(query, localServerId),
-            cwd: workspace.cwd,
-            workspaceId: workspace.workspaceId,
-            labels: { "paseo.history-ask": "1", "paseo.history-ask.scope": "host" },
-            background: false,
-            notifyOnFinish: false,
-          });
-          agentId = created.snapshot.id;
-        } catch (error) {
-          childLogger.warn(
-            { err: error, component: "search" },
-            "mission_control.fleet_search.tier3_spawn_failed",
-          );
-          return null;
-        }
-
-        const controller = new AbortController();
-        const timer = setTimeout(
-          () => controller.abort(new Error("deep fleet search timed out")),
-          SEARCH_TIER3_TIMEOUT_MS,
-        );
-        try {
-          const result = await agentManager.waitForAgentEvent(agentId, {
-            signal: controller.signal,
-          });
-          const answer =
-            result.lastMessage ?? (await agentManager.getLastAssistantMessage(agentId)) ?? "";
-          const matches = parseHistoryAskMatches(answer, localServerId);
-          childLogger.info(
-            { component: "search", agentId, matches: matches.length },
-            "mission_control.fleet_search.tier3_done",
-          );
-          return matches;
-        } catch (error) {
-          childLogger.warn(
-            { err: error, component: "search", agentId },
-            "mission_control.fleet_search.tier3_failed",
-          );
-          return null;
-        } finally {
-          clearTimeout(timer);
-        }
-      },
-    };
-  }
 
   registerTool(
     "fleet_send_prompt",
@@ -7185,207 +6775,6 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     resolveDocThreads: options.resolveDocThreads,
     callerAgentId,
   });
-
-  registerTool(
-    "fleet_recall",
-    {
-      title: "Recall prior fleet work from memory",
-      description:
-        "Semantic recall over the fleet memory bank (Hindsight): run records written when agents finish — briefs, " +
-        "report histories, decisions, verdicts — plus transcript memories from the read-only omp bank when configured. " +
-        "THE lookup for 'which agent was that' and for pulling related prior work into a brief. Results are tagged with " +
-        "their source `bank` ('paseo-fleet' run records vs 'omp' transcript memories); omp memories carry a sessionId " +
-        "(raw, passthrough) plus an `attribution` block naming the Paseo agent when its persistence handle matches, and " +
-        "`entities` naming agents/workspaces for unmatched ones. When the bank is unconfigured or unreachable this returns " +
-        '{ok:false, reason:"memory unavailable"} — fall back to fleet_search / fleet_get_agent_activity, never guess. ' +
-        "Read-only; never approval-gated.",
-      inputSchema: {
-        query: z
-          .string()
-          .min(1)
-          .describe(
-            "What to recall: an agent, a decision, a piece of work ('who fixed the auth bug').",
-          ),
-        limit: z
-          .number()
-          .int()
-          .positive()
-          .max(20)
-          .optional()
-          .default(5)
-          .describe("Maximum memories to return."),
-      },
-      outputSchema: {
-        ok: z.boolean(),
-        reason: z.string().optional(),
-        matches: z
-          .array(
-            z.object({
-              text: z.string(),
-              // Source bank of the memory: the fleet bank (run records) or
-              // the secondary omp bank (transcript memories).
-              bank: z.string().optional(),
-              context: z.string().nullable().optional(),
-              occurredStart: z.string().nullable().optional(),
-              documentId: z.string().nullable().optional(),
-              tags: z.array(z.string()).nullable().optional(),
-              // omp-bank memories: raw passthrough so unresolved matches can
-              // be fleet_searched. sessionId = the omp session id (same id as
-              // an agent's persistence handle); entities name agents/workspaces.
-              sessionId: z.string().nullable().optional(),
-              entities: z.array(z.string()).nullable().optional(),
-              metadata: z.record(z.string(), z.unknown()).nullable().optional(),
-              // Local attribution when the session id resolved to a Paseo
-              // agent (live or stored). Absent = unresolved — use the raw
-              // session_id/entities and fleet_search.
-              attribution: z
-                .object({
-                  agentId: z.string(),
-                  agentName: z.string(),
-                  agentTitle: z.string(),
-                  workspaceId: z.string().nullable(),
-                })
-                .optional(),
-            }),
-          )
-          .optional(),
-      },
-    },
-    async ({ query, limit = 5 }) => {
-      if (!missionControlService) {
-        return {
-          content: [],
-          structuredContent: ensureValidJson({
-            ok: false,
-            reason: "memory unavailable",
-          }),
-        };
-      }
-      const result = await missionControlService.hindsightRecall(query, limit);
-      return {
-        content: [],
-        structuredContent: ensureValidJson(result),
-      };
-    },
-  );
-
-  const resolveLocalProjectRollup = async (
-    projectId: string,
-  ): Promise<ProjectRollup | undefined> => {
-    if (!missionControlService) return undefined;
-    let commanderInstructions: string | null = null;
-    if (options.projectRegistry && typeof options.projectRegistry.get === "function") {
-      const project = await options.projectRegistry.get(projectId);
-      if (project?.rootPath) {
-        commanderInstructions = await resolveProjectCommanderInstructions(project.rootPath);
-      }
-    }
-    return missionControlService.getProjectRollup(projectId, commanderInstructions) ?? undefined;
-  };
-
-  registerTool(
-    "fleet_context",
-    {
-      title: "Fetch run records and workspace/project rollups",
-      description:
-        "Fetch deterministic run records (brief + report history + verdict + proofs) and workspace/project rollups " +
-        "from the mission-control store. Pass agentId for that agent's latest runs, workspaceId for the " +
-        "workspace rollup + its run records, projectId for the project rollup + its run records, or nothing for the " +
-        "most recent records fleet-wide. All ids are fleet-wide and routed automatically via the fleet index. " +
-        "Use this to warm a worker's brief with prior context. Read-only; never approval-gated.",
-      inputSchema: {
-        workspaceId: z
-          .string()
-          .optional()
-          .describe("Workspace id (wks_…) — fleet-wide, no host needed."),
-        projectId: z
-          .string()
-          .optional()
-          .describe("Project id (prj_…) — fleet-wide, no host needed."),
-        agentId: z
-          .string()
-          .optional()
-          .describe(
-            "Agent UUID from fleet_list_agents/fleet_search data — fleet-wide, no host needed.",
-          ),
-      },
-      outputSchema: {
-        runRecords: z.array(runRecordSchema),
-        workspaceRollup: workspaceRollupSchema.optional(),
-        projectRollup: projectRollupSchema.optional(),
-      },
-    },
-    async (args: { workspaceId?: string; projectId?: string; agentId?: string }) => {
-      const targetId = args.agentId ?? args.workspaceId ?? args.projectId;
-      let targetHost = "local";
-      if (targetId) {
-        const resolution = await fleetIdIndex.resolveFleetId(targetId);
-        if (resolution.kind !== "unknown") {
-          targetHost = resolution.host;
-          if (args.agentId && resolution.kind === "agent") {
-            args = { ...args, agentId: resolution.id };
-          }
-        }
-      }
-      if (isFleetLocalTarget(targetHost)) {
-        if (!missionControlService) {
-          return {
-            content: [],
-            structuredContent: ensureValidJson({
-              ok: false,
-              error: "Mission Control is not enabled on this host",
-            }),
-          };
-        }
-        const all = missionControlService.getRunRecords();
-        let runRecords = all;
-        let workspaceRollup: WorkspaceRollup | undefined;
-        let projectRollup: ProjectRollup | undefined;
-        if (args.agentId) {
-          runRecords = all.filter((record) => record.agentId === args.agentId).slice(0, 5);
-        } else if (args.workspaceId) {
-          runRecords = all.filter((record) => record.workspaceId === args.workspaceId).slice(0, 5);
-          workspaceRollup = missionControlService.getWorkspaceRollup(args.workspaceId) ?? undefined;
-        } else if (args.projectId) {
-          runRecords = all.filter((record) => record.projectId === args.projectId).slice(0, 5);
-          projectRollup = await resolveLocalProjectRollup(args.projectId);
-        } else {
-          runRecords = all.slice(0, 10);
-        }
-        return {
-          content: [],
-          structuredContent: ensureValidJson({
-            runRecords,
-            ...(workspaceRollup ? { workspaceRollup } : {}),
-            ...(projectRollup ? { projectRollup } : {}),
-          }),
-        };
-      }
-
-      const client = resolveFleetHost(targetHost);
-      if (!client) {
-        throw new Error(`Host "${targetHost}" is not a configured peer`);
-      }
-      const payload = await client.missionControlContextRecords(args);
-      if (!payload.ok) {
-        return {
-          content: [],
-          structuredContent: ensureValidJson({
-            ok: false,
-            error: payload.error ?? "Failed to fetch Mission Control context records from peer",
-          }),
-        };
-      }
-      return {
-        content: [],
-        structuredContent: ensureValidJson({
-          runRecords: payload.runRecords,
-          ...(payload.workspaceRollup ? { workspaceRollup: payload.workspaceRollup } : {}),
-          ...(payload.projectRollup ? { projectRollup: payload.projectRollup } : {}),
-        }),
-      };
-    },
-  );
 
   /**
    * fleet_agent_status for an agent on a peer: the status lives in the owning
