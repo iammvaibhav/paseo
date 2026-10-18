@@ -5218,7 +5218,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         plan: z.record(z.string(), z.unknown()).nullable().optional(),
       },
     },
-    async (inputArgs, context) => {
+    async (inputArgs) => {
       const { dryRun, ...requested } = inputArgs;
       const { args: rawArgs, plan: placementPlan } = await fillPlacement(
         options.routingService ?? null,
@@ -5303,10 +5303,10 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         workspaceId,
         workspaceRegistry: options.workspaceRegistry ?? null,
       });
-      // A remote MCP client spawning on this host: run the spawn plan
-      // (placement, worktree, settings) as a top-level agent. Delegating to
-      // create_agent would make it a child of the calling agent.
-      const createLocallyForMcpClient = async (): Promise<PaseoToolResult> => {
+      // A fleet agent on this host: run the spawn plan (placement, worktree,
+      // settings) as a top-level agent for every caller. create_agent is the
+      // tool for an agent's own subagents.
+      const createLocally = async (): Promise<PaseoToolResult> => {
         const spawnPlan = buildMcpSpawnPlan({
           serverId: serverId ?? "",
           host,
@@ -5387,12 +5387,8 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           structuredContent: ensureValidJson({ ...createdAgent.data, ...ticketResult }),
         };
       };
-      if (isMcpClient && isFleetLocalTarget(host)) {
-        return withTicket(await createLocallyForMcpClient());
-      }
       if (isFleetLocalTarget(host)) {
-        const { cwd: _cwd, ticket: _ticket, ask: _ask, ...localArgs } = args;
-        return withTicket(await toCatalog().executeTool("create_agent", localArgs, context));
+        return withTicket(await createLocally());
       }
       // Peer create path: the peer create RPC is the SESSION create path —
       // `provider` must be a plain provider id with `model` passed separately

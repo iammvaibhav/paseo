@@ -208,10 +208,15 @@ import { AutomationSession } from "./automation/session.js";
 import type { AutomationService } from "./automation/service.js";
 import { DocThreadsSession, type DocThreadsHost } from "./doc-threads/session.js";
 import type { PeerManager } from "./peers/peer-manager.js";
-import type { MissionControlService } from "./mission-control/service.js";
+import { type MissionControlService, USER_TURN_PEER_TOOL } from "./mission-control/service.js";
+import { z } from "zod";
 import { buildLocalContextPayload } from "./mission-control/context.js";
 
 /** Fleet tools a peer daemon may run on this host (work owned by this host). */
+const UserTurnPeerArgsSchema = z.object({
+  agentId: z.string().min(1),
+  turnId: z.string().nullable(),
+});
 const PEER_EXECUTABLE_TOOL_NAMES = new Set([
   "fleet_wait_agent",
   "fleet_unarchive_agent",
@@ -3034,6 +3039,16 @@ export class Session {
         payload: { requestId: msg.requestId, name: msg.name, ...payload },
       });
     try {
+      if (msg.name === USER_TURN_PEER_TOOL) {
+        const args = UserTurnPeerArgsSchema.safeParse(msg.args);
+        if (!args.success) {
+          respond({ ok: false, error: `${USER_TURN_PEER_TOOL} needs agentId and turnId` });
+          return;
+        }
+        this.missionControlService?.noteUserPrompt(args.data);
+        respond({ ok: true });
+        return;
+      }
       if (!PEER_EXECUTABLE_TOOL_NAMES.has(msg.name)) {
         respond({ ok: false, error: `Tool "${msg.name}" cannot be run by a peer` });
         return;
@@ -9922,7 +9937,12 @@ export class Session {
         await send();
       }
       if (fromPerson) {
-        this.missionControlService?.noteUserPrompt({ agentId, text: msg.text });
+        const live = this.agentManager.getAgent(agentId);
+        this.missionControlService?.noteUserPrompt({
+          agentId,
+          text: msg.text,
+          turnId: live?.activeTurnId ?? live?.activeForegroundTurnId ?? null,
+        });
       }
 
       this.emit({

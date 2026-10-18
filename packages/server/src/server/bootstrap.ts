@@ -182,7 +182,7 @@ import { ScheduleService } from "./schedule/service.js";
 import { BaseCheckoutSyncService } from "./base-checkout-sync.js";
 import { IdleCloseOmpService } from "./idle-close/index.js";
 import { KeepAwakeService } from "./keep-awake/index.js";
-import { MissionControlService } from "./mission-control/service.js";
+import { MissionControlService, USER_TURN_PEER_TOOL } from "./mission-control/service.js";
 import { getItsaplanIssueIdFromLabels } from "./itsaplan/index.js";
 import { areEquivalentPaths } from "../utils/path.js";
 import { getWorktreeConfiguredBaseRef } from "../utils/worktree.js";
@@ -2695,16 +2695,32 @@ export async function createPaseoDaemon(
       ),
     );
   // Turns Vaibhav starts from the app: the agent's ticket gets his words, and
-  // every bot subscribed to the agent hears when the turn ends (origin "user").
-  const unsubscribeUserPrompts = missionControlService.subscribeUserPrompts(({ agentId, text }) => {
-    void itsaplanBridge.mirrorUserPrompt(agentId, text).catch((error: unknown) => {
-      logger.warn({ err: error, agentId }, "itsaplan.bridge.user_prompt_mirror_failed");
-    });
-    void armUserTurnWatches(agentId).catch((error: unknown) => {
+  // every MCP client subscribed to the agent hears when the turn ends (origin
+  // "user"). Subscriptions live on whichever host the client calls, so the
+  // agent's host also tells its peers (USER_TURN_PEER_TOOL); a peer only arms.
+  const unsubscribeUserPrompts = missionControlService.subscribeUserPrompts((prompt) => {
+    const { agentId, turnId, text } = prompt;
+    if (text !== undefined) {
+      void itsaplanBridge.mirrorUserPrompt(agentId, text).catch((error: unknown) => {
+        logger.warn({ err: error, agentId }, "itsaplan.bridge.user_prompt_mirror_failed");
+      });
+      for (const peer of peerManager?.getPeerStatuses() ?? []) {
+        const client = peer.state === "online" ? peerManager?.getPeerClient(peer.name) : null;
+        void client
+          ?.missionControlToolsExecute({ name: USER_TURN_PEER_TOOL, args: { agentId, turnId } })
+          .catch((error: unknown) => {
+            logger.debug(
+              { err: error, agentId, peer: peer.name },
+              "mcp.finish.user_turn_forward_failed",
+            );
+          });
+      }
+    }
+    void armUserTurnWatches(agentId, turnId).catch((error: unknown) => {
       logger.warn({ err: error, agentId }, "mcp.finish.user_turn_arm_failed");
     });
   });
-  const armUserTurnWatches = async (agentId: string): Promise<void> => {
+  const armUserTurnWatches = async (agentId: string, turnId: string | null): Promise<void> => {
     const persisted = loadPersistedConfig(config.paseoHome).daemon?.mcp;
     for (const client of persisted?.remoteClients ?? []) {
       const subscription = mcpFinishNotifier.subscription(client.name, agentId);
@@ -2719,6 +2735,7 @@ export async function createPaseoDaemon(
         target,
         notifyTarget: subscription.notifyTarget,
         agentId,
+        turnId,
         tool: "user_prompt",
         context: subscription.context,
         origin: "user",

@@ -2070,6 +2070,49 @@ describe("ItsaplanBridge", () => {
       expect(issues.get(ISSUE_ID)?.columnId).toBe(3);
     });
 
+    test("the rest of the turn that reported completed does not move the ticket back", async () => {
+      const agent = Object.assign(
+        fakeAgent("agent-1", { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) }),
+        { activeTurnId: "turn-1" },
+      );
+      agentManagerFake.setAgent(agent);
+      issues.get(ISSUE_ID)!.columnId = 3; // In Progress
+      const report = (seq: number, kind: string) =>
+        missionControlFake.emitSelfReport({
+          id: `mce_t${seq}`,
+          ts: new Date().toISOString(),
+          seq,
+          agentId: "agent-1",
+          agentName: "agent-1",
+          agentTitle: "Agent 1",
+          kind,
+          source: "self",
+          severity: "info",
+          headline: `report ${seq}`,
+        } as unknown as MissionControlEvent);
+
+      report(1, "finished");
+      await waitForCreatedColumn(fakeServer.createdColumns, {
+        projectKey: PROJECT_KEY,
+        name: "Ready to review",
+        stateType: "started",
+      });
+      const readyColumn = findColumnByName(columns, "Ready to review")!;
+      await waitForIssueColumn(issues, ISSUE_ID, readyColumn.id);
+
+      missionControlFake.setBucket("running");
+      report(2, "milestone");
+      await waitForCommentEqual(fakeServer.comments, {
+        issueId: ISSUE_ID,
+        body: "Milestone: report 2",
+      });
+      expect(issues.get(ISSUE_ID)?.columnId).toBe(readyColumn.id);
+
+      agent.activeTurnId = "turn-2";
+      report(3, "milestone");
+      await waitForIssueColumn(issues, ISSUE_ID, 3);
+    });
+
     test("puts a prompt Vaibhav sent the agent directly onto its ticket", async () => {
       agentManagerFake.setAgent(
         fakeAgent("agent-1", { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) }),

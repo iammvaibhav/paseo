@@ -262,11 +262,19 @@ export type SelfReportResult =
     }
   | { ok: false; reason: "excluded" | "rate_limited"; message: string };
 
-/** A prompt a person sent an agent directly. */
+/**
+ * A prompt a person sent an agent directly. `text` is set on the agent's own
+ * host; a peer forwarding the event (so its MCP clients hear about the turn)
+ * sends only the agent and turn.
+ */
 export interface UserPrompt {
   agentId: string;
-  text: string;
+  turnId: string | null;
+  text?: string;
 }
+
+/** The peer-executable name a host uses to tell its peers a user turn started on one of its agents. */
+export const USER_TURN_PEER_TOOL = "paseo.user_turn";
 
 export type ReviewStateListener = (
   agentId: string,

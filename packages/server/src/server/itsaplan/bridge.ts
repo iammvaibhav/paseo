@@ -425,6 +425,8 @@ export class ItsaplanBridge {
 
   private readonly seenAgentIds = new Set<string>();
   private readonly lastBucketByAgentId = new Map<string, LifecycleBucket>();
+  /** The turn each agent reported completed in; the rest of that turn is not new work. */
+  private readonly completedTurnByAgentId = new Map<string, string>();
   private readonly processedWebhookEventIds = new Set<string>();
   /** Agents whose needs_you exit was caused by a ticket comment (vs a direct
    * Paseo answer); drives the convergence-comment wording on bucket exit. */
@@ -1210,6 +1212,11 @@ export class ItsaplanBridge {
       return;
     }
     if (event.kind === "finished") {
+      const live = this.agentManager.getAgent(event.agentId);
+      const turnId = live?.activeTurnId ?? live?.activeForegroundTurnId;
+      if (turnId) {
+        this.completedTurnByAgentId.set(event.agentId, turnId);
+      }
       this.lastBucketByAgentId.set(event.agentId, "ready");
       await this.handleAgentCompleted(event.agentId, issueId, event.proof);
       return;
@@ -1419,6 +1426,14 @@ export class ItsaplanBridge {
       }
     }
     if (bucket === "running") {
+      // An agent reports completed and then ends its turn: the rest of the
+      // reporting turn must not move the ticket back to In Progress.
+      const live = this.agentManager.getAgent(agentId);
+      const turnId = live?.activeTurnId ?? live?.activeForegroundTurnId;
+      if (turnId && this.completedTurnByAgentId.get(agentId) === turnId) {
+        this.lastBucketByAgentId.set(agentId, "ready");
+        return;
+      }
       await this.handleAgentRunning(agentId, issueId);
       return;
     }
