@@ -230,6 +230,7 @@ export interface PaseoToolHostDependencies {
   itsaplanTicketize?: {
     ticketizeAgent: (
       agentId: string,
+      options?: { ticket?: string; ask?: string },
     ) => Promise<{ issueId: number; url: string } | { error: string }>;
   } | null;
   resolveDocThreads?: (() => DocThreadsService) | null;
@@ -1235,6 +1236,30 @@ function resolveCatalogCallerContext(
   return callerAgentId ? (resolveCallerContext?.(callerAgentId) ?? null) : null;
 }
 
+const CREATED_AGENT_SCHEMA = z.object({ agentId: z.string() }).loose();
+
+const ARCHIVE_PREVIEW_AGENT_SCHEMA = z
+  .object({
+    id: z.string(),
+    title: z.string().nullable().optional(),
+    host: z.string(),
+    status: z.string(),
+    bucket: z.string().optional(),
+    workspaceId: z.string().nullable().optional(),
+    projectId: z.string().nullable().optional(),
+    archivedAt: z.string().nullable().optional(),
+  })
+  .loose();
+
+/** The roster field an archive target is matched on. */
+const ARCHIVE_TARGET_FIELD: Partial<
+  Record<MissionControlMetaPlan["action"], "id" | "workspaceId" | "projectId">
+> = {
+  archive_agent: "id",
+  archive_workspace: "workspaceId",
+  archive_project: "projectId",
+};
+
 export function createPaseoToolCatalog(options: PaseoToolHostDependencies): PaseoToolCatalog {
   const {
     agentManager,
@@ -1342,7 +1367,52 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
    * tool resolves its bare id, builds the metaPlan (buildSplitMetaPlan)
    * and applies it directly on its host. Output shape {ok, status, guidance?}.
    */
-  const runMetaGate = async (input: SplitMetaToolArgs & { toolName: string }) => {
+  /**
+   * What an archive would take with it, read from the fleet roster: the agents
+   * in the target (running ones flagged) so the caller can confirm first.
+   */
+  const previewArchive = async (metaPlan: MissionControlMetaPlan): Promise<PaseoToolResult> => {
+    // includeArchived also returns agents whose provider is unavailable on
+    // their host; those archive too, so the preview must list them.
+    const listed = await toCatalog().executeTool("fleet_list_agents", {
+      includeArchived: true,
+      sinceHours: 24 * 30,
+      limit: 200,
+    });
+    const roster = z
+      .object({ agents: z.array(ARCHIVE_PREVIEW_AGENT_SCHEMA) })
+      .parse(listed.structuredContent).agents;
+    const field = ARCHIVE_TARGET_FIELD[metaPlan.action];
+    const affected = field
+      ? roster.filter((agent) => !agent.archivedAt && agent[field] === metaPlan.targetId)
+      : [];
+    const running = affected.filter((agent) => agent.status === "running").length;
+    return {
+      content: [],
+      structuredContent: ensureValidJson({
+        ok: true,
+        status: "dry_run",
+        wouldArchive: {
+          action: metaPlan.action,
+          targetId: metaPlan.targetId,
+          targetLabel: metaPlan.targetLabel,
+          agents: affected.map(({ id, title, host, status, bucket }) => ({
+            id,
+            title,
+            host,
+            status,
+            bucket,
+          })),
+        },
+        guidance:
+          `Nothing was archived. ${affected.length} agent(s) would be archived` +
+          (running > 0 ? `, ${running} of them running now (their runs stop)` : "") +
+          ". Call again without dryRun to archive.",
+      }),
+    };
+  };
+
+  const runMetaGate = async (input: SplitMetaToolArgs & { toolName: string; dryRun?: boolean }) => {
     if (!missionControlService) {
       throw new Error("Mission Control is not enabled on this host");
     }
@@ -1394,7 +1464,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       },
       input,
     );
-    return applyMeta(metaPlan);
+    return input.dryRun ? previewArchive(metaPlan) : applyMeta(metaPlan);
   };
 
   const parseToolInput = async (tool: PaseoToolDefinition, input: unknown): Promise<unknown> => {
@@ -4380,6 +4450,23 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         .describe(
           "Return the placement (host, cwd, isolation, model, agent mode, alternatives) without creating anything.",
         ),
+      ticket: z
+        .string()
+        .trim()
+        .min(1)
+        .optional()
+        .describe(
+          "The agent's itsaplan ticket: \"new\" creates one on the project's board, a key like PASEO-71 links " +
+            "an existing one. Omit for a one-off question (no ticket).",
+        ),
+      ask: z
+        .string()
+        .trim()
+        .min(1)
+        .optional()
+        .describe(
+          "Vaibhav's ask, verbatim. With ticket, it is commented on the ticket (and is a new ticket's description).",
+        ),
       workspaceId: z
         .string()
         .min(1)
@@ -5105,10 +5192,10 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     {
       title: "Create agent on a host",
       description:
-        "Create an agent on a specific host in the fleet, or place it in an existing workspace fleet-wide. " +
-        "When workspaceId is present, host is optional and derived from the workspace via the fleet index. " +
-        "When workspaceId is omitted, host is required (a new worktree must land somewhere). " +
-        "Requires provider/model (for example codex/gpt-5.4) and an initial prompt.",
+        "Create an agent in the fleet. Anything left out is placed from the prompt (host, project, " +
+        "isolation, model, agent mode); a git project root always gets a fresh worktree. workspaceId puts it " +
+        "in that existing workspace. dryRun returns the placement without creating anything. ticket links " +
+        "or creates its itsaplan ticket, with ask commented on it.",
       inputSchema: fleetCreateAgentInputSchema,
       outputSchema: {
         agentId: z.string().optional(),
@@ -5122,11 +5209,10 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         // The turn the initial prompt runs in; pass it to fleet_wait_agent.
         turnId: z.string().nullable().optional(),
         permission: AgentPermissionRequestPayloadSchema.nullable().optional(),
-        // Approval-flow outcome (spec 03): the proposal id when a spawn is
-        // pending (or deduplicated onto an existing one) and self-correcting
-        // guidance. Additive.
         proposalId: z.string().optional(),
         guidance: z.string().optional(),
+        ticket: z.record(z.string(), z.unknown()).optional(),
+        ticketError: z.string().optional(),
         // dryRun: the placement that would be used; nothing is created.
         dryRun: z.boolean().optional(),
         plan: z.record(z.string(), z.unknown()).nullable().optional(),
@@ -5175,6 +5261,8 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         branchName,
         worktreeSlug,
         worktree,
+        ticket,
+        ask,
       } = args;
       // Resolve the spawn's target host: when workspaceId is present, host is
       // optional and derived from the workspace via the fleet index (a host
@@ -5279,12 +5367,32 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           }),
         };
       };
+      // The agent's ticket: linked or created on the agent's host once it
+      // exists, with Vaibhav's ask commented. A failure is reported, not thrown:
+      // the agent is already running.
+      const withTicket = async (created: PaseoToolResult): Promise<PaseoToolResult> => {
+        const createdAgent = CREATED_AGENT_SCHEMA.safeParse(created.structuredContent);
+        if (!ticket || created.isError || !createdAgent.success) return created;
+        const ticketResult = await toCatalog()
+          .executeTool("fleet_ticketize_agent", {
+            agentId: createdAgent.data.agentId,
+            host,
+            ...(ticket === "new" ? {} : { ticket }),
+            ...(ask ? { ask } : {}),
+          })
+          .then((result) => ({ ticket: result.structuredContent }))
+          .catch((error: unknown) => ({ ticketError: String(error) }));
+        return {
+          ...created,
+          structuredContent: ensureValidJson({ ...createdAgent.data, ...ticketResult }),
+        };
+      };
       if (isMcpClient && isFleetLocalTarget(host)) {
-        return createLocallyForMcpClient();
+        return withTicket(await createLocallyForMcpClient());
       }
       if (isFleetLocalTarget(host)) {
-        const { cwd: _cwd, ...localArgs } = args;
-        return toCatalog().executeTool("create_agent", localArgs, context);
+        const { cwd: _cwd, ticket: _ticket, ask: _ask, ...localArgs } = args;
+        return withTicket(await toCatalog().executeTool("create_agent", localArgs, context));
       }
       // Peer create path: the peer create RPC is the SESSION create path —
       // `provider` must be a plain provider id with `model` passed separately
@@ -5325,7 +5433,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         });
         return { content: [], structuredContent };
       };
-      return createAgentOnPeerHost();
+      return withTicket(await createAgentOnPeerHost());
     },
   );
 
@@ -5341,9 +5449,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       inputSchema: {
         agentId: z
           .string()
-          .describe(
-            "Agent UUID from fleet_list_agents/fleet_search data — fleet-wide, no host needed.",
-          ),
+          .describe("Agent UUID from fleet_list_agents data — fleet-wide, no host needed."),
         host: z
           .string()
           .min(1)
@@ -5431,9 +5537,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       inputSchema: {
         agentId: z
           .string()
-          .describe(
-            "Agent UUID from fleet_list_agents/fleet_search data — fleet-wide, no host needed.",
-          ),
+          .describe("Agent UUID from fleet_list_agents data — fleet-wide, no host needed."),
         host: z
           .string()
           .min(1)
@@ -5501,7 +5605,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       // guidance so the model self-corrects in one step.
       if (!AGENT_UUID_PATTERN.test(agentId)) {
         throw new Error(
-          `agentId must be a UUID (the agent id from fleet_list_agents/fleet_search data); got "${agentId}". ` +
+          `agentId must be a UUID (the agent id from fleet_list_agents data); got "${agentId}". ` +
             "Titles and proposal ids are not agent ids — call fleet_list_agents(query) to resolve.",
         );
       }
@@ -5658,12 +5762,33 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
   // schema for old callers and are never returned.
   const META_TOOL_OUTPUT_SCHEMA = {
     ok: z.boolean(),
-    status: z.enum(["pending", "sent", "scheduled", "applied"]).optional(),
+    status: z.enum(["pending", "sent", "scheduled", "applied", "dry_run"]).optional(),
     proposalId: z.string().optional(),
+    wouldArchive: z.record(z.string(), z.unknown()).optional(),
     guidance: z.string().optional(),
     error: z.string().optional(),
   };
   const META_GATE_NOTE = "Applies immediately on the target's host.";
+  const TICKET_REF_SCHEMA = z
+    .string()
+    .trim()
+    .min(1)
+    .optional()
+    .describe("An existing itsaplan ticket to link, e.g. PASEO-71 (or its numeric issue id).");
+  const ASK_SCHEMA = z
+    .string()
+    .trim()
+    .min(1)
+    .optional()
+    .describe(
+      "Vaibhav's ask, verbatim. Commented on the ticket; a new ticket also uses it as its description.",
+    );
+  const ARCHIVE_DRY_RUN_SCHEMA = z
+    .boolean()
+    .optional()
+    .describe(
+      "Preview only: list the agents the archive would take with it (running ones flagged); nothing is archived.",
+    );
   const PROJECT_ID_SCHEMA = z
     .string()
     .regex(
@@ -5680,7 +5805,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     .string()
     .regex(
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
-      "agentId must be an agent UUID from fleet_list_agents/fleet_search data — fleet-wide, no host needed",
+      "agentId must be an agent UUID from fleet_list_agents data — fleet-wide, no host needed",
     );
   const HOST_HINT_SCHEMA = z
     .string()
@@ -5753,7 +5878,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       title: "Rename an agent's title",
       description:
         "Change an agent's TITLE across the fleet (agent names are write-once and never touched). " +
-        "agentId is an agent UUID from fleet_list_agents/fleet_search data — fleet-wide, no host needed. " +
+        "agentId is an agent UUID from fleet_list_agents data — fleet-wide, no host needed. " +
         META_GATE_NOTE,
       inputSchema: {
         agentId: AGENT_ID_SCHEMA,
@@ -5784,12 +5909,14 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       inputSchema: {
         projectId: PROJECT_ID_SCHEMA,
         host: HOST_HINT_SCHEMA,
+        dryRun: ARCHIVE_DRY_RUN_SCHEMA,
       },
       outputSchema: META_TOOL_OUTPUT_SCHEMA,
     },
-    async ({ projectId, host }) =>
+    async ({ projectId, host, dryRun }) =>
       runMetaGate({
         toolName: "fleet_archive_project",
+        dryRun,
         action: "archive_project",
         kind: "project",
         targetId: projectId,
@@ -5808,12 +5935,14 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       inputSchema: {
         workspaceId: WORKSPACE_ID_SCHEMA,
         host: HOST_HINT_SCHEMA,
+        dryRun: ARCHIVE_DRY_RUN_SCHEMA,
       },
       outputSchema: META_TOOL_OUTPUT_SCHEMA,
     },
-    async ({ workspaceId, host }) =>
+    async ({ workspaceId, host, dryRun }) =>
       runMetaGate({
         toolName: "fleet_archive_workspace",
+        dryRun,
         action: "archive_workspace",
         kind: "workspace",
         targetId: workspaceId,
@@ -5831,12 +5960,14 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       inputSchema: {
         agentId: AGENT_ID_SCHEMA,
         host: HOST_HINT_SCHEMA,
+        dryRun: ARCHIVE_DRY_RUN_SCHEMA,
       },
       outputSchema: META_TOOL_OUTPUT_SCHEMA,
     },
-    async ({ agentId, host }) =>
+    async ({ agentId, host, dryRun }) =>
       runMetaGate({
         toolName: "fleet_archive_agent",
+        dryRun,
         action: "archive_agent",
         kind: "agent",
         targetId: agentId,
@@ -5883,7 +6014,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       title: "Move an agent to another workspace",
       description:
         "Move an agent to another workspace, including across projects or across hosts in the fleet. agentId is an " +
-        "agent UUID from fleet_list_agents/fleet_search data; workspaceId is a wks_ id from " +
+        "agent UUID from fleet_list_agents data; workspaceId is a wks_ id from " +
         "fleet_list_inventory — both fleet-wide, no host needed. Refuses another agent while it is running. " +
         "To move yourself, omit agentId: the move applies when your current turn ends and your next " +
         `turn runs in the new workspace directory, with no approval card. ${META_GATE_NOTE}`,
@@ -5939,9 +6070,13 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         "Create an itsaplan ticket from an agent's title and description, link the agent to the ticket with an itsaplan.issue label, " +
         "and post a deep-link comment. Ticket column matches the agent's current lifecycle bucket (running/needs_you -> In Progress, " +
         "ready -> Ready to review, done -> completed, idle -> unstarted/Todo). Idempotent: returns existing ticket if already labeled. " +
-        "agentId is an agent UUID from fleet_list_agents/fleet_search data.",
+        "Pass ticket to link an existing ticket instead, and ask to comment Vaibhav's words on it. " +
+        "agentId is an agent UUID from fleet_list_agents data. Runs on this host; peers run it for their own agents.",
       inputSchema: {
         agentId: AGENT_ID_SCHEMA,
+        ticket: TICKET_REF_SCHEMA,
+        ask: ASK_SCHEMA,
+        host: HOST_HINT_SCHEMA,
       },
       outputSchema: {
         ok: z.boolean(),
@@ -5950,14 +6085,34 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         error: z.string().optional(),
       },
     },
-    async ({ agentId }) => {
+    async ({ agentId, ticket, ask, host }) => {
+      // The agent's labels live on its host, so the ticket is made there.
+      const resolution = host ? null : await fleetIdIndex.resolveFleetId(agentId);
+      const agentHost = host ?? (resolution?.kind === "unknown" ? "local" : resolution?.host);
+      if (agentHost && !isFleetLocalTarget(agentHost)) {
+        const client = resolveFleetHost(agentHost);
+        if (!client) {
+          throw new Error(`Host "${agentHost}" is not a configured peer`);
+        }
+        const peerResult = await executeFleetToolOnPeer(client, "fleet_ticketize_agent", {
+          agentId,
+          ...(ticket ? { ticket } : {}),
+          ...(ask ? { ask } : {}),
+        });
+        if (!peerResult.ok) {
+          throw new Error(
+            `fleet_ticketize_agent on host "${agentHost}" failed: ${peerResult.error}`,
+          );
+        }
+        return { content: [], structuredContent: ensureValidJson(peerResult.structuredContent) };
+      }
       const ticketize = options.itsaplanTicketize;
       if (!ticketize) {
         throw new Error(
           "fleet_ticketize_agent is unavailable: the itsaplan bridge is not configured on this daemon",
         );
       }
-      const result = await ticketize.ticketizeAgent(agentId);
+      const result = await ticketize.ticketizeAgent(agentId, { ticket, ask });
       if ("error" in result) {
         throw new Error(result.error);
       }
@@ -6142,9 +6297,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       inputSchema: {
         agentId: z
           .string()
-          .describe(
-            "Agent UUID from fleet_list_agents/fleet_search data — fleet-wide, no host needed.",
-          ),
+          .describe("Agent UUID from fleet_list_agents data — fleet-wide, no host needed."),
         fresh: z
           .boolean()
           .optional()

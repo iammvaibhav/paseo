@@ -251,6 +251,26 @@ export class RoutingService {
    * directory project, and ensure its base workspace. Scratch is never a git
    * repository. Every daemon runs this at boot, so each host has one.
    */
+  /**
+   * The isolation a task started in `cwd` on `host` gets: "worktree" when cwd
+   * is a git project's root (new tasks never run in a base checkout),
+   * otherwise "local". `host` is a fleet host name ("local" or a peer) or any
+   * name the host answers to.
+   */
+  async isolationForCwd(host: string, cwd: string): Promise<"local" | "worktree"> {
+    const catalog = buildCatalog(await this.deps.loadFleet(), this.config().routing);
+    const name = host.toLowerCase();
+    const target = catalog.hosts.find(
+      (entry) => entry.hostName === host || entry.names.includes(name),
+    );
+    const root = cwd.replace(/\/+$/, "");
+    const project = catalog.projects.find(
+      (entry) =>
+        entry.serverId === target?.serverId && entry.rootPath?.replace(/\/+$/, "") === root,
+    );
+    return project?.isGit ? "worktree" : "local";
+  }
+
   async ensureScratchWorkspace(): Promise<ScratchWorkspace> {
     const root =
       this.config().routing.scratchRootByHost?.[this.deps.serverId] ??

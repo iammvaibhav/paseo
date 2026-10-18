@@ -103,6 +103,8 @@ export interface ArmMcpFinishNotification extends McpClientBinding, McpNotifyAge
   client: string;
   tool: string;
   context: string | null;
+  /** "user" when Vaibhav started the turn directly (not a tool call); default "tool". */
+  origin?: "user" | "tool";
   /** The named target the watch posts to; null → the client's own notify webhook. */
   notifyTarget?: string | null;
 }
@@ -279,6 +281,8 @@ interface ArmedEntry {
   host: string | null;
   tool: string;
   context: string | null;
+  /** Who started the turn; absent (older entries) → "tool". */
+  origin?: "user" | "tool";
   /** The named target the watch posts to; null or absent (older entries) → the client's own webhook. */
   notifyTarget?: string | null;
   /** The turn the watch is bound to: the create/send's turn, else the run in progress. */
@@ -611,6 +615,7 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
       client: armed.client,
       notifyTarget: armed.notifyTarget ?? null,
       context: armed.context,
+      origin: armed.origin ?? "tool",
       agent: agentPayload(armed.agentId, result, armed.turnId),
       trigger: { tool: armed.tool, requestedAt: armed.ts },
     });
@@ -1207,6 +1212,7 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
       host: input.host ?? null,
       tool: input.tool,
       context: input.context,
+      ...(input.origin ? { origin: input.origin } : {}),
       notifyTarget: input.notifyTarget ?? null,
       turnId,
       deadline: now.getTime() + maxWatchMs,

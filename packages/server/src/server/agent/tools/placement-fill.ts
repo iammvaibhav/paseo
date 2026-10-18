@@ -84,10 +84,16 @@ function describePlan(
  */
 export async function fillPlacement<T extends PlacementFields>(
   routing: RoutingService | null,
-  args: T,
+  requested: T,
   force: boolean,
 ): Promise<{ args: T; plan: PlacementPlan | null }> {
-  const needsPlace = !args.workspaceId && (!args.host || !args.cwd);
+  const needsPlace = !requested.workspaceId && (!requested.host || !requested.cwd);
+  // A caller-chosen checkout: a git project root still gets a fresh worktree.
+  const { host, cwd } = requested;
+  const args: T =
+    routing && host && cwd && !requested.workspaceId && !requested.isolation
+      ? { ...requested, isolation: await routing.isolationForCwd(host, cwd).catch(() => undefined) }
+      : requested;
   if (!routing || (!force && !needsPlace && args.provider)) return { args, plan: null };
   const suggestion = await routing.suggest(args.initialPrompt);
   const chosen = choosePlacement(suggestion, args.host);

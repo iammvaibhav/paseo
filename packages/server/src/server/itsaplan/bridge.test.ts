@@ -180,6 +180,17 @@ function startFakeItsaplanServer(options: {
         send(issue ? 200 : 404, issue ?? { error: "not found" });
         return;
       }
+      const issueByKeyMatch = /^\/projects\/([^/]+)\/issues\/(\d+)$/.exec(path);
+      if (req.method === "GET" && issueByKeyMatch) {
+        const projectId = options.projectIdByKey.get(decodeURIComponent(issueByKeyMatch[1]!));
+        const issue = Array.from(options.issues.values()).find(
+          (candidate) =>
+            candidate.projectId === projectId &&
+            candidate.sequenceNumber === Number(issueByKeyMatch[2]),
+        );
+        send(issue ? 200 : 404, issue ?? { error: "not found" });
+        return;
+      }
       if (req.method === "PATCH" && issueMatch) {
         const issue = options.issues.get(Number(issueMatch[1]));
         if (!issue) {
@@ -2031,6 +2042,49 @@ describe("ItsaplanBridge", () => {
       await waitForLastCommentContaining(fakeServer.comments, "PR: https://example.test/pr/1");
     });
 
+    test("mirrors a worker's milestone report onto its ticket without moving the column", async () => {
+      agentManagerFake.setAgent(
+        fakeAgent("agent-1", { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) }),
+      );
+      issues.get(ISSUE_ID)!.columnId = 3; // In Progress
+      fakeServer.comments.length = 0;
+      missionControlFake.emitSelfReport({
+        id: "mce_m1",
+        ts: new Date().toISOString(),
+        seq: 1,
+        agentId: "agent-1",
+        agentName: "agent-1",
+        agentTitle: "Agent 1",
+        kind: "finding",
+        reportKind: "finding",
+        source: "self",
+        severity: "info",
+        headline: "Root cause: stale lock",
+        detail: "The pid lock outlives the process.",
+      } as unknown as MissionControlEvent);
+
+      await waitForCommentEqual(fakeServer.comments, {
+        issueId: ISSUE_ID,
+        body: "Finding: Root cause: stale lock\n\nThe pid lock outlives the process.",
+      });
+      expect(issues.get(ISSUE_ID)?.columnId).toBe(3);
+    });
+
+    test("puts a prompt Vaibhav sent the agent directly onto its ticket", async () => {
+      agentManagerFake.setAgent(
+        fakeAgent("agent-1", { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) }),
+      );
+      fakeServer.comments.length = 0;
+      await bridge.mirrorUserPrompt("agent-1", "use the v2 API\nand add a test");
+      expect(fakeServer.comments).toEqual([
+        expect.objectContaining({
+          body: "Vaibhav, directly to the agent:\n\n> use the v2 API\n> and add a test",
+        }),
+      ]);
+      await bridge.mirrorUserPrompt("agent-unlabeled", "hello");
+      expect(fakeServer.comments).toHaveLength(1);
+    });
+
     test("projects column to In Progress when an agent is created on a host with NO project mapping", async () => {
       const UNMAPPED_PROJECT_ID = 99;
       const UNMAPPED_PROJECT_KEY = "UNMAPPED";
@@ -2363,6 +2417,52 @@ describe("ItsaplanBridge", () => {
           apiKey: "itp_test_key",
         });
       }
+    });
+
+    test("links an existing ticket by key and comments the ask on it", async () => {
+      const agentId = "agent-tick-link";
+      const agent = fakeAgent(agentId, {});
+      agentManagerFake.setAgent(agent);
+      fakeServer.comments.length = 0;
+      const issue = issues.get(ISSUE_ID)!;
+
+      const result = await bridge.ticketizeAgent(agentId, {
+        ticket: `${PROJECT_KEY.toLowerCase()}-${issue.sequenceNumber}`,
+        ask: "fix the login redirect",
+      });
+
+      expect(result).toMatchObject({ issueId: ISSUE_ID });
+      expect(agent.labels[ITSAPLAN_ISSUE_LABEL_KEY]).toBe(String(ISSUE_ID));
+      expect(fakeServer.comments).toContainEqual(
+        expect.objectContaining({
+          issueId: ISSUE_ID,
+          body: "Vaibhav asked:\n\n> fix the login redirect",
+        }),
+      );
+      expect(
+        await bridge.ticketizeAgent(agentId, { ticket: `${PROJECT_KEY}-99999` }),
+      ).toMatchObject({
+        error: expect.stringContaining("not found"),
+      });
+    });
+
+    test("a new ticket takes the ask as its description", async () => {
+      const agentId = "agent-tick-ask";
+      agentManagerFake.setAgent(fakeAgent(agentId, {}));
+      agentStorageRecords.push({
+        id: agentId,
+        title: "Login redirect",
+        shortDescription: "",
+        labels: {},
+        updatedAt: new Date().toISOString(),
+      });
+      missionControlFake.setBucket("running");
+
+      const result = await bridge.ticketizeAgent(agentId, { ask: "fix the login redirect" });
+
+      expect("issueId" in result && issues.get(result.issueId)?.description).toBe(
+        "fix the login redirect",
+      );
     });
 
     test("is idempotent: second call returns existing issue without re-creating", async () => {

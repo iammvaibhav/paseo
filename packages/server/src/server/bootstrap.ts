@@ -2479,7 +2479,8 @@ export async function createPaseoDaemon(
     peerManager,
     missionControlService,
     itsaplanTicketize: {
-      ticketizeAgent: (agentId) => itsaplanBridge.ticketizeAgent(agentId),
+      ticketizeAgent: (agentId, ticketOptions) =>
+        itsaplanBridge.ticketizeAgent(agentId, ticketOptions),
     },
     routingService,
     memoryService,
@@ -2693,6 +2694,38 @@ export async function createPaseoDaemon(
         ({ name, ...target }) => [name, target],
       ),
     );
+  // Turns Vaibhav starts from the app: the agent's ticket gets his words, and
+  // every bot subscribed to the agent hears when the turn ends (origin "user").
+  const unsubscribeUserPrompts = missionControlService.subscribeUserPrompts(({ agentId, text }) => {
+    void itsaplanBridge.mirrorUserPrompt(agentId, text).catch((error: unknown) => {
+      logger.warn({ err: error, agentId }, "itsaplan.bridge.user_prompt_mirror_failed");
+    });
+    void armUserTurnWatches(agentId).catch((error: unknown) => {
+      logger.warn({ err: error, agentId }, "mcp.finish.user_turn_arm_failed");
+    });
+  });
+  const armUserTurnWatches = async (agentId: string): Promise<void> => {
+    const persisted = loadPersistedConfig(config.paseoHome).daemon?.mcp;
+    for (const client of persisted?.remoteClients ?? []) {
+      const subscription = mcpFinishNotifier.subscription(client.name, agentId);
+      if (!subscription) continue;
+      const target = subscription.notifyTarget
+        ? loadNamedNotifyTargets().get(subscription.notifyTarget)
+        : client.notify;
+      if (!target) continue;
+      const { catalog } = await getFleetMcpCatalog(client.name);
+      void mcpFinishNotifier.arm({
+        client: client.name,
+        target,
+        notifyTarget: subscription.notifyTarget,
+        agentId,
+        tool: "user_prompt",
+        context: subscription.context,
+        origin: "user",
+        waitForAgent: createFleetMcpWaitForAgent(catalog),
+      });
+    }
+  };
   const restoreMcpFinishWatches = async () => {
     const { restored } = await mcpFinishNotifier.restore(async (clientName, notifyTarget) => {
       const target = notifyTarget
@@ -3093,6 +3126,7 @@ export async function createPaseoDaemon(
     itsaplanReconcileService.stop();
     itsaplanBridge.stop();
     unsubscribeItsaplanProjectSync();
+    unsubscribeUserPrompts();
     scriptHealthMonitor.stop();
     idleCloseOmpService.stop();
     await keepAwakeService.stop();

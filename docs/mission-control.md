@@ -122,12 +122,12 @@ No wall-clock nudges. What remains is failure recovery, delivered directly as ma
 
 ## Fleet MCP (`/mcp/fleet`) and the Commander role
 
-Remote MCP clients (configured under `daemon.mcp.remoteClients`) get the fleet tools. Every call applies directly: spawns are top-level agents, meta actions (rename, move, archive, promote, create project) run on the target's host. The tool descriptions say to ask Vaibhav before archiving anything he did not name.
+Remote MCP clients (configured under `daemon.mcp.remoteClients`) get the fleet tools. Every call applies directly: spawns are top-level agents, meta actions (rename, move, archive, promote, create project) run on the target's host. The tool descriptions say to ask Vaibhav before archiving anything he did not name; the archive tools take `dryRun: true` to list the agents an archive would take with it (running ones flagged) without archiving.
 
-- `fleet_create_agent` fills whatever the caller left out from one placement call (`RoutingService.suggest`): host, cwd, isolation, model, agent mode. A host the prompt names binds the placement; a model the prompt names wins; git projects always get a fresh worktree. `dryRun: true` returns the plan without creating anything. A cwd that is not a git checkout needs `isolation: "local"`.
+- `fleet_create_agent` fills whatever the caller left out from one placement call (`RoutingService.suggest`): host, cwd, isolation, model, agent mode. A host the prompt names binds the placement; a model the prompt names wins; git projects always get a fresh worktree, including a caller-given cwd that is a git project root (`RoutingService.isolationForCwd`). The base ref is paseo.json `worktree.warmPool.baseRef`, else the remembered base branch, else the repo default. `dryRun: true` returns the plan without creating anything. `ticket: "new"` or a key (`PASEO-71`) gives the agent its ticket on the agent's host (`fleet_ticketize_agent`), and `ask` (Vaibhav's words) is commented on it.
 - `fleet_playbook` returns `OPERATING.md`; `memory_search` / `memory_get` / `memory_write` reach fleet-memory (below).
-- Peers run host-owned work for each other over `mission_control.tools.execute`, limited to `fleet_wait_agent`, `fleet_unarchive_agent`, `fleet_unarchive_workspace`, and `fleet_agent_status`.
-- Finish notifications go to the named notify targets (`daemon.mcp.notifyTargets`) that a create or send armed.
+- Peers run host-owned work for each other over `mission_control.tools.execute`, limited to `fleet_wait_agent`, `fleet_unarchive_agent`, `fleet_unarchive_workspace`, `fleet_agent_status`, and `fleet_ticketize_agent`.
+- Finish notifications go to the named notify targets (`daemon.mcp.notifyTargets`) that a create or send armed. A turn Vaibhav starts from the app (a `mobile` or `browser` session's send) arms the same watch for every client subscribed to the agent, and its `paseo.agent.finished` carries `origin: "user"` (otherwise `"tool"`). Milestones are never sent to bots; they go to the ticket.
 
 ## Memory
 
@@ -136,6 +136,8 @@ fleet-memory is a separate service (on blrofc3, GPU embeddings) behind `memory.u
 ## itsaplan bridge
 
 A Todo ticket with no open blockers, assigned or delegated to the project's bot user ("Paseo"), is dispatched by the bridge on the host that owns the board's webhook: it calls `fleet_create_agent` with the ticket brief and the `itsaplan.issue` label, and routing places the worker. Each host syncs only its own projects; a repo checked out on several hosts maps to one board, and only the host that created it registers the webhook.
+
+The bridge writes the ticket's routine comments: "Dispatched", each `report_status` milestone/finding/inconclusive (`Finding: <headline>`), the agent's open question, "Ready for review" with proofs, and every prompt Vaibhav sends the agent directly from the app.
 
 ## Protocol
 

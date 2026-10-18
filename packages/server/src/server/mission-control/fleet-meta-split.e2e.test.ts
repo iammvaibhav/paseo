@@ -61,6 +61,7 @@ async function seedAgent(): Promise<StoredAgentRecord> {
     title: "Worker Alpha",
     name: "glowing-otter",
     shortDescription: "throwaway e2e agent",
+    provider: "claude",
     labels: {},
     lastStatus: "closed",
   };
@@ -222,6 +223,17 @@ describe("remote MCP clients", () => {
     });
     expect(rename.structuredContent).toMatchObject({ ok: true, status: "applied" });
     expect((await daemon.agentStorage.get(AGENT_ID))?.title).toBe("Runner MCP");
+
+    const preview = await mcpCatalog.executeTool("fleet_archive_agent", {
+      agentId: AGENT_ID,
+      dryRun: true,
+    });
+    expect(preview.structuredContent).toMatchObject({
+      ok: true,
+      status: "dry_run",
+      wouldArchive: { action: "archive_agent", agents: [{ id: AGENT_ID }] },
+    });
+    expect(archiveAgentSpy).not.toHaveBeenCalled();
 
     const archive = await mcpCatalog.executeTool("fleet_archive_agent", { agentId: AGENT_ID });
     expect(archive.structuredContent).toMatchObject({ ok: true, status: "applied" });

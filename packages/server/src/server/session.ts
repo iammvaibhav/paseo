@@ -217,6 +217,7 @@ const PEER_EXECUTABLE_TOOL_NAMES = new Set([
   "fleet_unarchive_agent",
   "fleet_unarchive_workspace",
   "fleet_agent_status",
+  "fleet_ticketize_agent",
 ]);
 import { resolveMissionControlMediaFetch } from "./mission-control/media.js";
 import { moveAgentToWorkspace } from "./mission-control/meta-actions.js";
@@ -513,6 +514,11 @@ export interface SessionOptions {
   /** How the socket that sent a request reached the daemon. */
   resolveSourcePeer?: (source?: object) => SessionSourcePeer | null;
   clientId: string;
+  /**
+   * The hello's clientType. "mobile" and "browser" are a person in the app;
+   * peers and the CLI connect as "cli".
+   */
+  clientType?: "mobile" | "browser" | "cli" | "mcp" | "hub";
   permissions: readonly DaemonPermission[];
   appVersion?: string | null;
   clientCapabilities?: Record<string, unknown> | null;
@@ -892,6 +898,7 @@ export class Session {
   private readonly unarchiveAgent: UnarchiveAgent | null;
   private readonly resolveSourcePeer: (source?: object) => SessionSourcePeer | null;
   private readonly clientId: string;
+  private readonly clientType: SessionOptions["clientType"];
   private readonly authorization: SessionAuthorization;
   private appVersion: string | null;
   private clientCapabilities: ReadonlySet<ClientCapability>;
@@ -1076,6 +1083,7 @@ export class Session {
     this.unarchiveAgent = options.unarchiveAgent ?? null;
     this.resolveSourcePeer = options.resolveSourcePeer ?? (() => null);
     this.clientId = clientId;
+    this.clientType = options.clientType;
     this.authorization = new SessionAuthorization(permissions);
     this.appVersion = appVersion ?? null;
     this.clientCapabilities = parseClientCapabilities(clientCapabilities);
@@ -9891,6 +9899,8 @@ export class Session {
           );
         }
       };
+      // A person typing in the app (not a peer daemon, the CLI, or a bot).
+      const fromPerson = this.clientType === "mobile" || this.clientType === "browser";
       if (msg.messageId) {
         await this.messageReceipts.send({
           agentId,
@@ -9910,6 +9920,9 @@ export class Session {
         });
       } else {
         await send();
+      }
+      if (fromPerson) {
+        this.missionControlService?.noteUserPrompt({ agentId, text: msg.text });
       }
 
       this.emit({

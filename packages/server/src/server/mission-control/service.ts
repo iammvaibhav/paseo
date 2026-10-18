@@ -262,6 +262,12 @@ export type SelfReportResult =
     }
   | { ok: false; reason: "excluded" | "rate_limited"; message: string };
 
+/** A prompt a person sent an agent directly. */
+export interface UserPrompt {
+  agentId: string;
+  text: string;
+}
+
 export type ReviewStateListener = (
   agentId: string,
   record: MissionControlReviewStateRecord,
@@ -309,6 +315,7 @@ export class MissionControlService {
   private readonly excludedAgentIds = new Set<string>();
   private readonly reviewStateListeners = new Set<ReviewStateListener>();
   private readonly selfReportListeners = new Set<(event: MissionControlEvent) => void>();
+  private readonly userPromptListeners = new Set<(prompt: UserPrompt) => void>();
   /** Every emitted feed event, any kind/source — a general fan-out parallel to
    * selfReportListeners (which is scoped to source:"self"). Used by callers that need
    * to observe the Commander's own cards (e.g. the itsaplan chat-runner correlating an
@@ -1469,6 +1476,31 @@ export class MissionControlService {
    * Subscribe to self-reported status events (source "self") — the verifier's
    * worker-reply relay listens here to catch the worker's next report_status.
    */
+  /**
+   * A person sent this agent a prompt from the app (not a bot, a peer daemon,
+   * or machinery). Listeners mirror it to the agent's ticket and notify bots
+   * subscribed to the agent.
+   */
+  noteUserPrompt(prompt: UserPrompt): void {
+    for (const listener of this.userPromptListeners) {
+      try {
+        listener(prompt);
+      } catch (error) {
+        this.logger.warn(
+          { err: error, agentId: prompt.agentId },
+          "mission_control.user_prompt_listener_failed",
+        );
+      }
+    }
+  }
+
+  subscribeUserPrompts(listener: (prompt: UserPrompt) => void): () => void {
+    this.userPromptListeners.add(listener);
+    return () => {
+      this.userPromptListeners.delete(listener);
+    };
+  }
+
   subscribeSelfReports(listener: (event: MissionControlEvent) => void): () => void {
     this.selfReportListeners.add(listener);
     return () => {

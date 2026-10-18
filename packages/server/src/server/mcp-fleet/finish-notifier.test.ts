@@ -135,7 +135,26 @@ describe("createMcpFinishNotifier", () => {
         lastMessage: "Done.",
         error: null,
       },
+      origin: "tool",
       trigger: { tool: "fleet_create_agent" },
+    });
+  });
+
+  it("marks a turn Vaibhav started from the app with origin user", async () => {
+    await notifier().arm({
+      client: "grok-bot",
+      target: { url },
+      agentId: "agent-1",
+      tool: "user_prompt",
+      context: "essay-42",
+      origin: "user",
+      waitForAgent: async () => result({}),
+    });
+    expect(received[0]!.body).toMatchObject({
+      type: "paseo.agent.finished",
+      origin: "user",
+      context: "essay-42",
+      trigger: { tool: "user_prompt" },
     });
   });
 

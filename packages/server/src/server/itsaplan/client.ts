@@ -424,6 +424,16 @@ export class ItsaplanClient {
     return this.request("GET", `/issues/${issueId}`, undefined, ItsaplanIssueSchema);
   }
 
+  /** An issue by its key, e.g. PASEO-71 (project key + per-project sequence number). */
+  async getIssueByKey(projectKey: string, sequenceNumber: number): Promise<ItsaplanIssue> {
+    return this.request(
+      "GET",
+      `/projects/${encodeURIComponent(projectKey)}/issues/${sequenceNumber}`,
+      undefined,
+      ItsaplanIssueSchema,
+    );
+  }
+
   /** Links are not a separate route in itsaplan — they ride `GET /issues/:id`.
    * The wire shape reads each relation from the queried issue (`direction` plus
    * the other end in `issue`); normalize it back to the stored row so callers

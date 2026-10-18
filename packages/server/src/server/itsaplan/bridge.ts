@@ -14,6 +14,7 @@ import {
   findInProgressColumn,
   ITSAPLAN_READY_FOR_REVIEW_COLUMN_NAME,
   ItsaplanClient,
+  type ItsaplanIssue,
 } from "./client.js";
 import {
   resolveTicketAttachments,
@@ -320,6 +321,38 @@ export interface BuildDispatchPromptInput {
     url: string;
   }> | null;
   nativeImageCount?: number;
+}
+
+/** Self-reported progress the bridge mirrors onto the ticket (not blocked/finished: those move columns). */
+function isMilestoneReport(event: MissionControlEvent): boolean {
+  return (
+    event.source === "self" &&
+    (event.kind === "milestone" || event.kind === "finding" || event.kind === "diverged")
+  );
+}
+
+function quote(text: string): string {
+  return text
+    .trim()
+    .split("\n")
+    .map((line) => `> ${line}`)
+    .join("\n");
+}
+
+export function formatAskComment(ask: string): string {
+  return `Vaibhav asked:\n\n${quote(ask)}`;
+}
+
+export function formatUserPromptComment(text: string): string {
+  return `Vaibhav, directly to the agent:\n\n${quote(text)}`;
+}
+
+export function formatMilestoneComment(event: MissionControlEvent): string {
+  const kind = event.reportKind ?? "milestone";
+  const label = kind.charAt(0).toUpperCase() + kind.slice(1);
+  return event.detail
+    ? `${label}: ${event.headline}\n\n${event.detail}`
+    : `${label}: ${event.headline}`;
 }
 
 export function buildDispatchPrompt(input: BuildDispatchPromptInput): string {
@@ -1181,7 +1214,48 @@ export class ItsaplanBridge {
       await this.handleAgentCompleted(event.agentId, issueId, event.proof);
       return;
     }
+    if (isMilestoneReport(event)) {
+      await this.mirrorMilestone(event, issueId);
+    }
     await this.checkLifecycleProjection(event.agentId, issueId);
+  }
+
+  /**
+   * A prompt Vaibhav sent the agent directly (from the app) goes onto the
+   * agent's ticket, so the ticket keeps the whole conversation about the work.
+   */
+  async mirrorUserPrompt(agentId: string, text: string): Promise<void> {
+    const issueId = getItsaplanIssueIdFromLabels(await this.getAgentLabels(agentId));
+    const config = this.getConfig();
+    const numericIssueId = Number(issueId);
+    if (!issueId || !config || !Number.isFinite(numericIssueId)) {
+      return;
+    }
+    const issue = await new ItsaplanClient(config).getIssue(numericIssueId);
+    const commentClient = this.getCommentClient(config, issue.projectId);
+    await this.postDeduplicatedComment(
+      commentClient,
+      numericIssueId,
+      formatUserPromptComment(text),
+    );
+    this.logger.info({ agentId, issueId }, "itsaplan.bridge.user_prompt_mirrored");
+  }
+
+  /** A worker's milestone report becomes a ticket comment, so the ticket is the record of progress. */
+  private async mirrorMilestone(event: MissionControlEvent, issueId: string): Promise<void> {
+    const config = this.getConfig();
+    const numericIssueId = Number(issueId);
+    if (!config || !Number.isFinite(numericIssueId)) {
+      return;
+    }
+    const issue = await new ItsaplanClient(config).getIssue(numericIssueId);
+    const commentClient = this.getCommentClient(config, issue.projectId);
+    await this.postDeduplicatedComment(
+      commentClient,
+      numericIssueId,
+      formatMilestoneComment(event),
+    );
+    this.logger.info({ agentId: event.agentId, issueId }, "itsaplan.bridge.milestone_mirrored");
   }
 
   private async getAgentLabels(agentId: string): Promise<Record<string, string> | null> {
@@ -1494,20 +1568,70 @@ export class ItsaplanBridge {
    * title/description, label the agent with the issue id, and post a
    * deep-link comment. Idempotent: returns existing ticket if already labeled.
    */
+  /**
+   * Give an agent its ticket: link `ticket` (a key like PASEO-71, or an issue
+   * id) when given, else keep the one it has, else create one on its project's
+   * board. `ask` (Vaibhav's words) becomes the new ticket's description and a
+   * comment on the ticket either way.
+   */
   async ticketizeAgent(
     agentId: string,
+    options: { ticket?: string; ask?: string } = {},
   ): Promise<{ issueId: number; url: string } | { error: string }> {
     const config = this.getConfig();
     if (!config) {
       return { error: "itsaplan bridge not configured" };
     }
     const client = new ItsaplanClient(config);
-
-    const existing = await this.existingTicketForAgent(client, config, agentId);
-    if (existing) {
-      return existing;
+    const ticket = options.ticket
+      ? await this.linkTicket(client, config, agentId, options.ticket)
+      : ((await this.existingTicketForAgent(client, config, agentId)) ??
+        (await this.createTicketForAgent(client, config, agentId, options.ask)));
+    if ("error" in ticket || !options.ask?.trim()) {
+      return ticket;
     }
+    const issue = await client.getIssue(ticket.issueId);
+    await this.postDeduplicatedComment(
+      this.getCommentClient(config, issue.projectId),
+      ticket.issueId,
+      formatAskComment(options.ask),
+    );
+    return ticket;
+  }
 
+  /** Label the agent with an existing ticket; the lifecycle projection then moves it and comments. */
+  private async linkTicket(
+    client: ItsaplanClient,
+    config: ItsaplanCentralConfig,
+    agentId: string,
+    ticket: string,
+  ): Promise<{ issueId: number; url: string } | { error: string }> {
+    const keyMatch = /^([A-Za-z][A-Za-z0-9]*)-(\d+)$/.exec(ticket.trim());
+    let issue: ItsaplanIssue;
+    try {
+      issue = keyMatch
+        ? await client.getIssueByKey(keyMatch[1]!.toUpperCase(), Number(keyMatch[2]))
+        : await client.getIssue(Number(ticket));
+    } catch (error) {
+      return { error: `Ticket "${ticket}" not found: ${String(error)}` };
+    }
+    const projectKey = this.resolveProjectKey(issue);
+    if (!projectKey) {
+      return { error: `Ticket "${ticket}" has no resolvable project` };
+    }
+    await this.agentManager.setLabels(agentId, { [ITSAPLAN_ISSUE_LABEL_KEY]: String(issue.id) });
+    return {
+      issueId: issue.id,
+      url: buildItsaplanIssueUrl(config, projectKey, issue.sequenceNumber),
+    };
+  }
+
+  private async createTicketForAgent(
+    client: ItsaplanClient,
+    config: ItsaplanCentralConfig,
+    agentId: string,
+    ask: string | undefined,
+  ): Promise<{ issueId: number; url: string } | { error: string }> {
     const mappingOrError = await this.resolveTicketizeMapping(agentId);
     if ("error" in mappingOrError) {
       return mappingOrError;
@@ -1517,7 +1641,7 @@ export class ItsaplanBridge {
     const live = this.agentManager.getAgent(agentId);
     const stored = await this.agentStorage.get(agentId);
     const title = stored?.title || live?.name || `Agent ${agentId}`;
-    const description = stored?.shortDescription || live?.shortDescription || "";
+    const description = ask?.trim() || stored?.shortDescription || live?.shortDescription || "";
 
     const targetColumnId = await this.resolveTicketizeColumn(
       client,
