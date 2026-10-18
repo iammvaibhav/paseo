@@ -104,8 +104,6 @@ const WATCHDOG_DEAD_RUNTIME_MS = 2 * 60_000;
 const AUTO_DERIVED_DESCRIPTION_CHARS = 400;
 const TIMELINE_BUFFER_CAP = 2000;
 const SELF_REPORT_RATE_LIMIT_MS = 60_000;
-/** Hindsight written-key set cap (guards unbounded memory; keys are run-scoped). */
-const HINDSIGHT_WRITTEN_KEYS_CAP = 5000;
 /** Event kinds that finalize a run record (run end or a verdict landing). */
 const RUN_RECORD_FINALIZING_KINDS: Record<MissionControlEventKind, boolean> = {
   started: false,
@@ -421,6 +419,8 @@ interface StallTracking {
 
 export interface MissionControlServiceOptions {
   paseoHome: string;
+  /** A finalized run record, for fleet-memory (queued; never blocks assembly). */
+  onRunRecordFinalized?: (record: MissionControlRunRecord) => void;
   logger: Logger;
   agentManager: AgentManager;
   agentStorage: AgentStorage;
@@ -737,8 +737,7 @@ export class MissionControlService {
   // M6 context architecture: run-record assembly, rollup cache, hindsight sink.
   private readonly rollupCache = new RollupCache();
   private readonly hindsightClient: HindsightClient;
-  /** Run records already written to the fleet bank (dedupe reassembles). */
-  private readonly hindsightWrittenKeys = new Set<string>();
+  private readonly onRunRecordFinalized: ((record: MissionControlRunRecord) => void) | undefined;
   /**
    * Per-run machinery-turn dedupe: one follow-up turn per agent per run epoch
    * for dispatched-agent terminal events and verdicts. Keys
@@ -933,6 +932,7 @@ export class MissionControlService {
       });
     this.approvals = new MissionControlApprovals(this.buildApprovalsOptions());
     this.hindsightClient = new HindsightClient({ logger: this.logger });
+    this.onRunRecordFinalized = options.onRunRecordFinalized;
   }
 
   private buildApprovalsOptions(): MissionControlApprovalsOptions {
@@ -3565,7 +3565,7 @@ export class MissionControlService {
       });
       this.store.putRunRecord(record);
       this.rollupCache.invalidate();
-      this.maybeWriteRunRecordToHindsight(record);
+      if (isFinalizableRunRecord(record)) this.onRunRecordFinalized?.(record);
     } catch (error) {
       this.logger.warn(
         { err: error, agentId, runEpoch },
@@ -3610,36 +3610,6 @@ export class MissionControlService {
     } catch {
       return [];
     }
-  }
-
-  /**
-   * Write a finalized run record to the fleet bank (fire-and-forget, failures
-   * throttled by the client). Written once per record; a record carrying a
-   * verdict is always re-written (the verdict is the final word on the run).
-   */
-  private maybeWriteRunRecordToHindsight(record: MissionControlRunRecord): void {
-    if (!isFinalizableRunRecord(record)) {
-      return;
-    }
-    const config = this.centralConfig.get();
-    if (!HindsightClient.isEnabled(config.hindsightUrl)) {
-      return;
-    }
-    if (record.verdict === null && this.hindsightWrittenKeys.has(record.id)) {
-      return;
-    }
-    this.hindsightWrittenKeys.add(record.id);
-    if (this.hindsightWrittenKeys.size > HINDSIGHT_WRITTEN_KEYS_CAP) {
-      const first = this.hindsightWrittenKeys.values().next().value;
-      if (typeof first === "string") {
-        this.hindsightWrittenKeys.delete(first);
-      }
-    }
-    void this.hindsightClient
-      .writeRunRecord({ url: config.hindsightUrl, bank: config.hindsightBank, record })
-      .catch(() => {
-        // The client swallows failures already; belt-and-braces for the void path.
-      });
   }
 
   private trackCommanderInstructionIfApplicable(

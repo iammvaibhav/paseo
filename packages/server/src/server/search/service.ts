@@ -3,7 +3,7 @@ import { unlinkSync } from "node:fs";
 import path from "node:path";
 import type { Logger } from "pino";
 import type { AgentStorage } from "../agent/agent-storage.js";
-import { extractChunks } from "./extract.js";
+import { extractChunks, type ExtractedChunk } from "./extract.js";
 import { toFtsQuery } from "./fts-query.js";
 import { TRANSCRIPT_INDEX_DDL, TRANSCRIPT_INDEX_SCHEMA_VERSION } from "./schema.js";
 import { tryLoadNodeSqlite, type SqliteDatabase } from "./sqlite.js";
@@ -18,10 +18,15 @@ export interface TranscriptHit {
   snippet: string;
 }
 
+/** An agent whose transcript was (re)indexed, with every chunk in order. */
+export type IndexedAgentListener = (agentId: string, chunks: readonly ExtractedChunk[]) => void;
+
 export interface TranscriptSearchServiceOptions {
   paseoHome: string;
   agentStorage: AgentStorage;
   logger: Logger;
+  /** Called after an agent is (re)indexed, off the request path (memory push). */
+  onIndexed?: IndexedAgentListener;
 }
 
 /**
@@ -33,6 +38,7 @@ export class TranscriptSearchService {
   private db: SqliteDatabase;
   private readonly agentStorage: AgentStorage;
   private readonly logger: Logger;
+  private readonly onIndexed: IndexedAgentListener | undefined;
   private readonly pending = new Set<string>();
   private draining = false;
   private timer: ReturnType<typeof setInterval> | null = null;
@@ -45,6 +51,7 @@ export class TranscriptSearchService {
     this.db = db;
     this.agentStorage = options.agentStorage;
     this.logger = options.logger;
+    this.onIndexed = options.onIndexed;
   }
 
   static async tryCreate(
@@ -211,6 +218,36 @@ export class TranscriptSearchService {
 
     const chunks = source ? extractChunks(source.entries) : [];
     this.replaceAgentChunks(record.id, chunks, source?.path ?? null, mtimeMs);
+    this.notifyIndexed(record.id, chunks);
+  }
+
+  private notifyIndexed(agentId: string, chunks: readonly ExtractedChunk[]): void {
+    try {
+      this.onIndexed?.(agentId, chunks);
+    } catch (error) {
+      this.logger.warn({ err: error, agentId }, "Transcript index listener failed");
+    }
+  }
+
+  /**
+   * Hand every already-indexed agent's chunks to the listener, without re-reading
+   * transcripts. Used once per host to offer its whole history to fleet-memory.
+   */
+  replayIndexed(): number {
+    const agents = this.db.prepare("SELECT agent_id FROM agent_index").all();
+    const chunkStmt = this.db.prepare(
+      "SELECT role, ts, text FROM chunk WHERE agent_id = ? ORDER BY ord",
+    );
+    for (const row of agents) {
+      const agentId = String(row.agent_id);
+      const chunks = chunkStmt.all(agentId).map((c) => ({
+        role: String(c.role),
+        ts: c.ts === null || c.ts === undefined ? null : Number(c.ts),
+        text: String(c.text),
+      }));
+      this.notifyIndexed(agentId, chunks);
+    }
+    return agents.length;
   }
 
   private replaceAgentChunks(

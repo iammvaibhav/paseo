@@ -54,6 +54,7 @@ The reader scans; they do not read. Every word earns its place. Every fact survi
 
 ## Memory / docs
 
-- Durable decisions and gotchas: retain via Hindsight.
+- Fleet memory is shared by every agent and bot. Before non-trivial work in an existing project, or when asked about past work, call `memory_search` (exact ids, URLs and PR numbers work; `byAgent: true` finds who worked on something).
+- When you report `completed`, put reusable decisions, gotchas and ownership in `report_status` `learnings` (title = topic, body cites tickets/PRs/commits). Use `memory_write` for anything worth keeping at other times. Link related notes with `[[Title]]`. Never store secrets.
 - Versioned project knowledge: update existing repo docs when appropriate.
 - Do not create unsolicited docs folders or markdown writeups.

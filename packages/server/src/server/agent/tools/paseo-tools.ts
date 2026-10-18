@@ -201,6 +201,8 @@ import type {
 } from "./types.js";
 import type { ProviderPaseoToolsPolicy } from "@getpaseo/protocol/provider-config";
 import type { RoutingService } from "../../routing/routing-service.js";
+import type { MemoryService } from "../../memory/service.js";
+import { registerMemoryTools } from "./memory-tools.js";
 import { AGENT_MODE_IDS, type AgentModeId } from "@getpaseo/protocol/agent-modes";
 import { isPaseoToolEnabled } from "../paseo-tool-policy.js";
 
@@ -304,6 +306,8 @@ export interface PaseoToolHostDependencies {
   fleetIdIndex?: FleetIdIndex | null;
   /** Placement routing (suggest_placement). Absent → the tool is not offered. */
   routingService?: RoutingService | null;
+  /** fleet-memory (memory_search/get/write, fleet_playbook). Absent → not offered. */
+  memoryService?: MemoryService | null;
   logger: Logger;
 }
 
@@ -4611,6 +4615,31 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           .string()
           .max(120)
           .describe("Plain-language headline, at most 120 characters, no markdown."),
+        learnings: z
+          .array(
+            z.object({
+              title: z
+                .string()
+                .trim()
+                .min(3)
+                .max(120)
+                .describe("Topic, e.g. 'notifyOnFinish callbacks'."),
+              body: z
+                .string()
+                .trim()
+                .min(1)
+                .describe("What to remember; cite tickets, PRs, commits."),
+              kind: z
+                .enum(["decision", "fact", "howto", "owner", "runbook", "preference", "learning"])
+                .optional(),
+            }),
+          )
+          .max(5)
+          .optional()
+          .describe(
+            "With status completed: reusable learnings and decisions from this run. Each becomes a fleet " +
+              "memory note (same title → an update). Skip routine details; never include secrets.",
+          ),
       }),
       outputSchema: {
         ok: z.boolean(),
@@ -4619,6 +4648,8 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         error: z.string().optional(),
         // Additive guidance: frozen-title notice or missing-description nag.
         notice: z.string().optional(),
+        // Learnings queued for fleet memory (vault notes).
+        learningsQueued: z.number().optional(),
         // Drift-only identity echo: the agent's stored title and short
         // description (null when never set), present ONLY when they differ
         // from what the agent just sent — someone else changed them. Absent
@@ -4634,7 +4665,26 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       if (!missionControlService) {
         throw new Error("Mission Control is not enabled on this host");
       }
-      const result = await missionControlService.reportSelfStatus(callerAgentId, input);
+      const { learnings, ...report } = input;
+      const result = await missionControlService.reportSelfStatus(callerAgentId, report);
+      let learningsQueued = 0;
+      if (result.ok && learnings?.length && options.memoryService) {
+        const agentName = (await options.agentStorage.get(callerAgentId))?.name;
+        for (const learning of learnings) {
+          const queued = options.memoryService.queueNote({
+            title: learning.title,
+            body: learning.body,
+            kind: learning.kind ?? "learning",
+            about: { agent: callerAgentId },
+            source: {
+              agent_id: callerAgentId,
+              ...(agentName ? { agent_name: agentName } : {}),
+              host: options.hostAlias ?? "local",
+            },
+          });
+          if (queued) learningsQueued += 1;
+        }
+      }
       if (!result.ok) {
         return {
           content: [],
@@ -4651,6 +4701,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         structuredContent: ensureValidJson({
           ok: true,
           eventId: result.event.id,
+          ...(learningsQueued > 0 ? { learningsQueued } : {}),
           // Additive guidance: frozen-title notice / missing-description nag.
           ...(result.notice ? { notice: result.notice } : {}),
           // Drift-only identity echo: present only when the stored identity
@@ -5484,6 +5535,14 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       };
     },
   );
+
+  registerMemoryTools({
+    registerTool,
+    memoryService: options.memoryService,
+    callerAgentId,
+    resolveAgentName: async (agentId) => (await options.agentStorage.get(agentId))?.name ?? null,
+    hostLabel,
+  });
 
   const routingService = options.routingService ?? null;
   if (routingService) {

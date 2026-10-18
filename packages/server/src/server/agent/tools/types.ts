@@ -10,6 +10,8 @@ export interface PaseoToolExecutionContext {
    * back to their callerAgentId. Absent → the tool degrades gracefully.
    */
   sessionKey?: string;
+  /** The remote MCP client making the call (/mcp/fleet clientName), for provenance. */
+  callerClient?: string;
 }
 
 export interface PaseoToolResult {

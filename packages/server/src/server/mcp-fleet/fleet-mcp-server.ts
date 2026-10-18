@@ -547,7 +547,12 @@ export async function createFleetMcpServer(options: FleetMcpServerOptions): Prom
     if (name === "fleet_agent_status" && args.notify === true) {
       return handleStatusNotify(name, args, signal);
     }
-    if (!NOTIFY_TOOLS.has(name)) return catalog.executeTool(name, args, { signal });
+    if (!NOTIFY_TOOLS.has(name)) {
+      return catalog.executeTool(name, args, {
+        signal,
+        ...(options.clientName ? { callerClient: options.clientName } : {}),
+      });
+    }
     return handleNotifyOnFinish(name, args, signal);
   };
 

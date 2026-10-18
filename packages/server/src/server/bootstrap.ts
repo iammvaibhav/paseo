@@ -145,6 +145,8 @@ import type { RequestedSpeechProviders } from "./speech/speech-types.js";
 import { createSpeechService } from "./speech/speech-runtime.js";
 import { AgentManager } from "./agent/agent-manager.js";
 import { createTranscriptSearchService } from "./search/service.js";
+import type { ExtractedChunk } from "./search/extract.js";
+import { MemoryService } from "./memory/service.js";
 import { AgentStorage, type StoredAgentRecord } from "./agent/agent-storage.js";
 import { attachAgentStoragePersistence } from "./persistence-hooks.js";
 import { createAgentMcpServer } from "./agent/mcp-server.js";
@@ -1524,10 +1526,60 @@ export async function createPaseoDaemon(
   );
   await agentStorage.initialize();
   logger.info({ elapsed: elapsed() }, "Agent storage initialized");
+  // fleet-memory: turns, run records and learnings are queued to the memory host in
+  // the background (durable outbox, retried until it answers). config.json memory.url
+  // is re-read every 30 s, so Flotilla can point a host at memory without a restart.
+  let memoryUrlRead: { at: number; url: string | null } = { at: 0, url: null };
+  const memoryService = new MemoryService({
+    paseoHome: config.paseoHome,
+    logger,
+    getMemoryUrl: () => {
+      if (Date.now() - memoryUrlRead.at > 30_000) {
+        let url: string | null = null;
+        try {
+          url = loadPersistedConfig(config.paseoHome).memory?.url ?? null;
+        } catch (error) {
+          logger.warn({ err: error }, "memory.config_read_failed");
+        }
+        memoryUrlRead = { at: Date.now(), url };
+      }
+      return memoryUrlRead.url;
+    },
+    hostLabel: () => daemonConfigStore.get().missionControl?.hostAlias?.trim() || getHostName(),
+  });
+  await memoryService.start();
+  const pushAgentTurns = async (agentId: string, chunks: readonly ExtractedChunk[]) => {
+    const record = await agentStorage.get(agentId);
+    if (
+      !record ||
+      record.internal ||
+      Object.keys(record.labels).some(
+        (key) => key.startsWith("paseo.mission-control") || key.startsWith("paseo.history-ask"),
+      )
+    ) {
+      return;
+    }
+    const workspace = record.workspaceId ? await workspaceRegistry.get(record.workspaceId) : null;
+    const project = workspace ? await projectRegistry.get(workspace.projectId) : null;
+    memoryService.pushTurns(
+      {
+        agentId,
+        agentTitle: record.title || record.name || agentId,
+        agentName: record.name ?? null,
+        project: project ? (project.customName ?? project.displayName) : null,
+      },
+      chunks,
+    );
+  };
   const transcriptSearch = await createTranscriptSearchService({
     paseoHome: config.paseoHome,
     agentStorage,
     logger,
+    onIndexed: (agentId, chunks) => {
+      void pushAgentTurns(agentId, chunks).catch((error) => {
+        logger.warn({ err: error, agentId }, "memory.push_turns_failed");
+      });
+    },
   });
   transcriptSearch?.start();
   await bootstrapWorkspaceRegistries({
@@ -2195,6 +2247,7 @@ export async function createPaseoDaemon(
   });
   missionControlService = new MissionControlService({
     paseoHome: config.paseoHome,
+    onRunRecordFinalized: (record) => memoryService.pushRunRecord(record),
     logger,
     agentManager,
     agentStorage,
@@ -2598,6 +2651,22 @@ export async function createPaseoDaemon(
     },
   });
   agentManager.setMetadataCompletion((prompt) => routingService.completeMetadata(prompt));
+  // Once per host: offer the whole history (indexed transcripts and run records) to
+  // fleet-memory, so a host that was asleep or new catches up by itself. Unchanged
+  // items the memory already has are dropped by the outbox.
+  if (memoryService.needsInitialBackfill()) {
+    setTimeout(() => {
+      try {
+        const agents = transcriptSearch?.replayIndexed() ?? 0;
+        const runs = missionControlService.getRunRecords();
+        for (const record of runs) memoryService.pushRunRecord(record);
+        memoryService.markInitialBackfill();
+        logger.info({ agents, runs: runs.length }, "memory.initial_backfill_queued");
+      } catch (error) {
+        logger.warn({ err: error }, "memory.initial_backfill_failed");
+      }
+    }, 60_000).unref();
+  }
   // Every host gets its scratch ("experiments") project and base workspace
   // without waiting for the first scratch placement: History Ask agents and
   // one-off work land there.
@@ -2916,6 +2985,7 @@ export async function createPaseoDaemon(
     },
     verifierDispatcher,
     routingService,
+    memoryService,
     resolveDocThreads: docThreadsHost?.service ? () => docThreadsHost.service! : null,
     serverId,
     hostAlias: missionControlHostAlias,
@@ -3526,6 +3596,7 @@ export async function createPaseoDaemon(
       scriptHealthMonitor.start();
     } catch (error) {
       transcriptSearch?.stop();
+      memoryService.stop();
       localCredential = null;
       await deleteLocalCredential(config.paseoHome);
       unsubscribePluginProviders();
@@ -3591,6 +3662,7 @@ export async function createPaseoDaemon(
       await wsServer.close();
     }
     transcriptSearch?.stop();
+    memoryService.stop();
     await serviceProxy.stopStandalone();
     // Force-drop remaining sockets so httpServer.close() resolves promptly.
     // We've already closed wsServer (which sent ws-layer close frames) and

@@ -515,6 +515,14 @@ export const PersistedConfigSchema = z
 
     missionControl: MissionControlConfigSchema.optional(),
     aiReviewer: AiReviewerConfigSchema.optional(),
+    // fleet-memory: the one fleet memory (search over turns, runs, tickets, notes).
+    // Absent → memory tools report "not configured" and nothing is pushed.
+    memory: z
+      .object({
+        url: z.string().trim().url(),
+      })
+      .strict()
+      .optional(),
 
     // Automations: Linear API key fallback + default poll cadence. Strict
     // schema keeps unknown keys out; an older daemon never sees this file
