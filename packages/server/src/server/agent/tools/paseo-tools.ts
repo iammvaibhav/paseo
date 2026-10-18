@@ -4781,8 +4781,11 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       const isFiltered = Boolean(bucket || query || (statuses && statuses.length > 0));
       // Statuses filter is applied post-hoc (not at fetch) so bucketCounts
       // never shrinks to the caller's status subset.
+      // The fleet roster is host-wide for every caller; list_agents alone scopes an
+      // agent caller to its own workspace subtree, so pass the filesystem root.
       const localResult = await toCatalog().executeTool("list_agents", {
         includeArchived,
+        cwd: "/",
         sinceHours: RETENTION_HOURS,
         limit: 200,
       });

@@ -288,6 +288,42 @@ describe("fleet_list_agents roster enrichment", () => {
     expect(agents[0].lastUserMessage).toBeUndefined();
   });
 
+  test("an agent caller sees every agent on its host, not only its own workspace's", async () => {
+    const { peerManager } = createFakePeerHarness({ statuses: [] });
+    const now = new Date().toISOString();
+    const stored = ["/work/mine", "/work/other"].map((cwd, index) => ({
+      id: `stored-${index}`,
+      provider: "omp",
+      cwd,
+      createdAt: now,
+      updatedAt: now,
+      title: `Agent ${index}`,
+      labels: {},
+      lastStatus: "idle",
+    }));
+    const catalog = createPaseoToolCatalog({
+      agentManager: {
+        listAgents: () => [],
+        getAgent: (id: string) => (id === "caller" ? { id, cwd: "/work/mine" } : undefined),
+        getRegisteredProviderIds: () => ["omp"],
+        getTimeline: () => [],
+      } as unknown as AgentManager,
+      agentStorage: {
+        get: async () => null,
+        list: async () => stored,
+      } as unknown as AgentStorage,
+      providerSnapshotManager: createProviderSnapshotManagerStub()
+        .manager as unknown as ProviderSnapshotManager,
+      peerManager,
+      callerAgentId: "caller",
+      logger: createTestLogger(),
+    });
+
+    const result = await catalog.executeTool("fleet_list_agents", { limit: 50 });
+    const agents = (result.structuredContent as { agents: Array<{ id: string }> }).agents;
+    expect(agents.map((agent) => agent.id).sort()).toEqual(["stored-0", "stored-1"]);
+  });
+
   test("a down host is skipped with a warning; agents on reachable hosts still list", async () => {
     const { client, peerManager } = createFakePeerHarness({
       statuses: [
