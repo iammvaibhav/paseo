@@ -23,6 +23,8 @@ export interface WebhookDeliveryAttempt {
   groupId: string | null;
   turnId: string | null;
   context: string | null;
+  /** Who started the turn ("user" or "tool"); absent on other events and older rows. */
+  origin?: "user" | "tool";
   /** 1-based. */
   attempt: number;
   /** HTTP status; null when the request never got a response. */
@@ -77,29 +79,47 @@ const SentBodySchema = z.object({
   type: z.string(),
   reason: z.string().optional(),
   context: z.string().nullable().optional(),
+  origin: z.enum(["user", "tool"]).optional(),
   agentId: z.string().optional(),
   groupId: z.string().optional(),
   agent: z.object({ id: z.string(), turnId: z.string().nullable().optional() }).optional(),
 });
 
+function parseSentBody(body: string): z.infer<typeof SentBodySchema> | null {
+  try {
+    const result = SentBodySchema.safeParse(JSON.parse(body));
+    return result.success ? result.data : null;
+  } catch {
+    return null;
+  }
+}
+
 /** What a webhook body says it is about, read from the body actually sent. */
 export function describeWebhookBody(
   body: string,
-): Pick<WebhookDeliveryAttempt, "event" | "reason" | "agentId" | "groupId" | "turnId" | "context"> {
-  let parsed: z.infer<typeof SentBodySchema> | null = null;
-  try {
-    const result = SentBodySchema.safeParse(JSON.parse(body));
-    parsed = result.success ? result.data : null;
-  } catch {
-    parsed = null;
+): Pick<
+  WebhookDeliveryAttempt,
+  "event" | "reason" | "agentId" | "groupId" | "turnId" | "context" | "origin"
+> {
+  const parsed = parseSentBody(body);
+  if (!parsed) {
+    return {
+      event: "unknown",
+      reason: null,
+      agentId: null,
+      groupId: null,
+      turnId: null,
+      context: null,
+    };
   }
   return {
-    event: parsed?.type ?? "unknown",
-    reason: parsed?.reason ?? null,
-    agentId: parsed?.agent?.id ?? parsed?.agentId ?? null,
-    groupId: parsed?.groupId ?? null,
-    turnId: parsed?.agent?.turnId ?? null,
-    context: parsed?.context ?? null,
+    event: parsed.type,
+    reason: parsed.reason ?? null,
+    agentId: parsed.agent?.id ?? parsed.agentId ?? null,
+    groupId: parsed.groupId ?? null,
+    turnId: parsed.agent?.turnId ?? null,
+    context: parsed.context ?? null,
+    ...(parsed.origin ? { origin: parsed.origin } : {}),
   };
 }
 

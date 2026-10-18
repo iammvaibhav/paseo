@@ -92,7 +92,10 @@ export async function fillPlacement<T extends PlacementFields>(
   const { host, cwd } = requested;
   const args: T =
     routing && host && cwd && !requested.workspaceId && !requested.isolation
-      ? { ...requested, isolation: await routing.isolationForCwd(host, cwd).catch(() => undefined) }
+      ? {
+          ...requested,
+          isolation: (await routing.describeCwd(host, cwd).catch(() => null))?.isolation,
+        }
       : requested;
   if (!routing || (!force && !needsPlace && args.provider)) return { args, plan: null };
   const suggestion = await routing.suggest(args.initialPrompt);

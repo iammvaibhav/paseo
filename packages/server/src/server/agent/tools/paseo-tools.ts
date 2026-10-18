@@ -173,6 +173,7 @@ import type { ProviderPaseoToolsPolicy } from "@getpaseo/protocol/provider-confi
 import type { RoutingService } from "../../routing/routing-service.js";
 import type { MemoryService } from "../../memory/service.js";
 import { registerMemoryTools } from "./memory-tools.js";
+import { getItsaplanIssueIdFromLabels } from "../../itsaplan/bridge.js";
 import { fillPlacement } from "./placement-fill.js";
 import { AGENT_MODE_IDS, type AgentModeId } from "@getpaseo/protocol/agent-modes";
 import { isPaseoToolEnabled } from "../paseo-tool-policy.js";
@@ -1236,7 +1237,7 @@ function resolveCatalogCallerContext(
   return callerAgentId ? (resolveCallerContext?.(callerAgentId) ?? null) : null;
 }
 
-const CREATED_AGENT_SCHEMA = z.object({ agentId: z.string() }).loose();
+const CREATED_AGENT_SCHEMA = z.object({ agentId: z.string(), cwd: z.string().optional() }).loose();
 
 const ARCHIVE_PREVIEW_AGENT_SCHEMA = z
   .object({
@@ -1248,8 +1249,23 @@ const ARCHIVE_PREVIEW_AGENT_SCHEMA = z
     workspaceId: z.string().nullable().optional(),
     projectId: z.string().nullable().optional(),
     archivedAt: z.string().nullable().optional(),
+    labels: z.record(z.string(), z.string()).optional(),
   })
   .loose();
+
+/**
+ * What OPERATING.md's archive_only_if says must be settled before an agent is
+ * archived, as far as the roster shows it. Uncommitted or unpushed work is the
+ * caller's to check in the workspace.
+ */
+function archiveBlockers(agent: z.infer<typeof ARCHIVE_PREVIEW_AGENT_SCHEMA>): string[] {
+  const blockers: string[] = [];
+  if (agent.status === "running") blockers.push("running");
+  if (agent.bucket === "needs_you") blockers.push("open question");
+  const ticket = agent.labels ? getItsaplanIssueIdFromLabels(agent.labels) : null;
+  if (ticket && agent.bucket !== "done") blockers.push(`open ticket (issue ${ticket})`);
+  return blockers;
+}
 
 /** The roster field an archive target is matched on. */
 const ARCHIVE_TARGET_FIELD: Partial<
@@ -1387,6 +1403,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       ? roster.filter((agent) => !agent.archivedAt && agent[field] === metaPlan.targetId)
       : [];
     const running = affected.filter((agent) => agent.status === "running").length;
+    const blocked = affected.filter((agent) => archiveBlockers(agent).length > 0).length;
     return {
       content: [],
       structuredContent: ensureValidJson({
@@ -1396,18 +1413,20 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           action: metaPlan.action,
           targetId: metaPlan.targetId,
           targetLabel: metaPlan.targetLabel,
-          agents: affected.map(({ id, title, host, status, bucket }) => ({
-            id,
-            title,
-            host,
-            status,
-            bucket,
+          agents: affected.map((agent) => ({
+            id: agent.id,
+            title: agent.title,
+            host: agent.host,
+            status: agent.status,
+            bucket: agent.bucket,
+            blockers: archiveBlockers(agent),
           })),
         },
         guidance:
           `Nothing was archived. ${affected.length} agent(s) would be archived` +
           (running > 0 ? `, ${running} of them running now (their runs stop)` : "") +
-          ". Call again without dryRun to archive.",
+          (blocked > 0 ? `; ${blocked} have blockers (open ticket, question or run)` : "") +
+          ". Check uncommitted or unpushed work in the workspace, then call again without dryRun to archive.",
       }),
     };
   };
@@ -4318,7 +4337,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         'Silence between milestones; never send progress updates. Send "completed" only when everything asked is conclusively done — back ' +
         'completion claims with proofs. When you are blocked on a decision, send "blocked". Use the optional "kind" field ' +
         "(finding, fix, milestone, decision, progress) to flavor the card. " +
-        "Prefer hub-wait over sleep/timeout polling loops. Rate limited to one report per minute per agent. " +
+        "Prefer hub-wait over sleep/timeout polling loops. Rate limited to one report per minute per agent; completed, blocked and inconclusive always go through. " +
         "Identity rules: description is a living 2-3 sentence 'what this agent is doing now' — send a FRESH description on EVERY report " +
         "(replaced, never appended, under ~400 characters); the daemon nags when your record lacks one. Title is WRITE-ONCE: your record " +
         "already has one (frozen at registration) — never resend or retitle it; a title sent when the record has one is ignored with the " +
@@ -5373,6 +5392,21 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       const withTicket = async (created: PaseoToolResult): Promise<PaseoToolResult> => {
         const createdAgent = CREATED_AGENT_SCHEMA.safeParse(created.structuredContent);
         if (!ticket || created.isError || !createdAgent.success) return created;
+        const where = createdAgent.data.cwd ?? cwd;
+        const scratch =
+          options.routingService && where
+            ? (await options.routingService.describeCwd(host, where).catch(() => null))?.scratch
+            : false;
+        if (scratch) {
+          return {
+            ...created,
+            structuredContent: ensureValidJson({
+              ...createdAgent.data,
+              ticketError:
+                "No ticket: scratch work is one-off and has no ticket (OPERATING section 4).",
+            }),
+          };
+        }
         const ticketResult = await toCatalog()
           .executeTool("fleet_ticketize_agent", {
             agentId: createdAgent.data.agentId,
@@ -5406,7 +5440,19 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         if (settings?.agentMode) {
           assertPeerSupportsAgentModes(client, host);
         }
-        const snapshot = await client.createAgent(buildPeerCreateAgentPayload(args));
+        const payload = buildPeerCreateAgentPayload(args);
+        // A directory create without a workspace gets its own: the peer's
+        // create path would otherwise reuse whatever workspace that directory
+        // already has (one task, one workspace).
+        if (!payload.workspaceId && !payload.worktree && !payload.worktreeName && cwd) {
+          const created = await client.createWorkspace({
+            source: { kind: "directory", path: cwd },
+            ...(title ? { title } : {}),
+            ...(initialPrompt ? { firstAgentContext: { prompt: initialPrompt } } : {}),
+          });
+          if (created.workspace) payload.workspaceId = created.workspace.id;
+        }
+        const snapshot = await client.createAgent(payload);
         const turn = initialPrompt
           ? await resolvePromptedTurn({
               client,

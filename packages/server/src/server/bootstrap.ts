@@ -5,7 +5,7 @@ import { createServer as createHTTPServer, type IncomingMessage, type ServerResp
 import { constants, existsSync, mkdirSync, unlinkSync } from "fs";
 import { mkdir, open, rm, stat } from "fs/promises";
 import { buildProjectReadme, ensureGitRepository } from "./project-directory-service.js";
-import { RoutingService } from "./routing/routing-service.js";
+import { isScratchProject, RoutingService } from "./routing/routing-service.js";
 import { AgentSearchService } from "./agent-search/agent-search-service.js";
 import {
   unarchiveAgentOnThisHost,
@@ -2298,6 +2298,11 @@ export async function createPaseoDaemon(
     getConfig: getItsaplanConfig,
     getWebhookUrl: () => createItsaplanWebhookUrl(boundListenTarget),
     paseoHome: config.paseoHome,
+    isScratchRoot: (rootPath: string) =>
+      isScratchProject(
+        rootPath,
+        centralMissionControlConfig.get().routing.scratchRootByHost?.[serverId],
+      ),
     logger,
   };
   const resyncItsaplanProjects = async () =>

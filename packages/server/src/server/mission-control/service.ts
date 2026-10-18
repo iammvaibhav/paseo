@@ -68,6 +68,11 @@ const WATCHDOG_DEAD_RUNTIME_MS = 2 * 60_000;
 const AUTO_DERIVED_DESCRIPTION_CHARS = 400;
 const TIMELINE_BUFFER_CAP = 2000;
 const SELF_REPORT_RATE_LIMIT_MS = 60_000;
+const ENDING_REPORT_KINDS: ReadonlySet<MissionControlEventKind> = new Set([
+  "finished",
+  "blocked",
+  "diverged",
+]);
 /** Event kinds that finalize a run record (run end or a verdict landing). */
 const RUN_RECORD_FINALIZING_KINDS: Record<MissionControlEventKind, boolean> = {
   started: false,
@@ -1434,7 +1439,12 @@ export class MissionControlService {
     kind: MissionControlEventKind,
     observation: MissionControlObservation,
   ): boolean {
-    if (observation.lastSelfReportRunEpoch !== observation.runEpoch) {
+    // Ending reports (done, blocked, inconclusive) are what reporting is for;
+    // a milestone a few seconds earlier must not delay them.
+    if (
+      observation.lastSelfReportRunEpoch !== observation.runEpoch ||
+      ENDING_REPORT_KINDS.has(kind)
+    ) {
       return true;
     }
     const headId = observation.lastEventByKind[kind];

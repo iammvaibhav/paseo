@@ -532,18 +532,24 @@ describe("MissionControlService.reportSelfStatus", () => {
     expect(broadcast).not.toHaveBeenCalled();
   });
 
-  test("rate limits a second self-report within the window", async () => {
+  test("rate limits a second progress report within the window, never an ending report", async () => {
     await service.reportSelfStatus("agent-1", { status: "working", headline: "First" });
     const second = await service.reportSelfStatus("agent-1", {
-      status: "blocked",
-      headline: "Now stuck",
+      status: "working",
+      kind: "finding",
+      headline: "Another finding",
     });
     expect(second).toEqual({
       ok: false,
       reason: "rate_limited",
       message: expect.any(String),
     });
-    expect(broadcast).toHaveBeenCalledTimes(1);
+    const ending = await service.reportSelfStatus("agent-1", {
+      status: "completed",
+      headline: "Done",
+    });
+    expect(ending.ok).toBe(true);
+    expect(broadcast).toHaveBeenCalledTimes(2);
   });
 
   test("a run-boundary self-report within the window is admitted as a fresh card", async () => {

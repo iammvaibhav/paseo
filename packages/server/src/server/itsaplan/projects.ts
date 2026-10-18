@@ -180,6 +180,8 @@ export interface ItsaplanProjectSyncDependencies {
   /** Daemon home; projects rooted inside it are Paseo-internal and never
    * synced to itsaplan. */
   paseoHome: string;
+  /** The host's scratch root: one-off work there has no ticket, so it gets no board. */
+  isScratchRoot?: (rootPath: string) => boolean;
   logger: Logger;
 }
 
@@ -213,7 +215,10 @@ export async function ensureItsaplanProjectMapping(
   if (!config || !project.projectKey) {
     return null;
   }
-  if (isPaseoInternalProject(project.rootPath, deps.paseoHome)) {
+  if (
+    isPaseoInternalProject(project.rootPath, deps.paseoHome) ||
+    deps.isScratchRoot?.(project.rootPath)
+  ) {
     return null;
   }
   return ensureItsaplanProjectMappingForKey(
@@ -696,7 +701,8 @@ export async function runItsaplanProjectResync(
       !config ||
       !projectKey ||
       seenKeys.has(projectKey) ||
-      isPaseoInternalProject(project.rootPath, deps.paseoHome)
+      isPaseoInternalProject(project.rootPath, deps.paseoHome) ||
+      deps.isScratchRoot?.(project.rootPath)
     ) {
       result.skipped += 1;
       continue;

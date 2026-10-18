@@ -231,7 +231,7 @@ describe("remote MCP clients", () => {
     expect(preview.structuredContent).toMatchObject({
       ok: true,
       status: "dry_run",
-      wouldArchive: { action: "archive_agent", agents: [{ id: AGENT_ID }] },
+      wouldArchive: { action: "archive_agent", agents: [{ id: AGENT_ID, blockers: [] }] },
     });
     expect(archiveAgentSpy).not.toHaveBeenCalled();
 

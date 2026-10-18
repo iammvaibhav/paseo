@@ -252,13 +252,18 @@ export class RoutingService {
    * repository. Every daemon runs this at boot, so each host has one.
    */
   /**
-   * The isolation a task started in `cwd` on `host` gets: "worktree" when cwd
-   * is a git project's root (new tasks never run in a base checkout),
-   * otherwise "local". `host` is a fleet host name ("local" or a peer) or any
-   * name the host answers to.
+   * What `cwd` on `host` is: `isolation` is "worktree" when cwd is a git
+   * project's root (new tasks never run in a base checkout), otherwise
+   * "local"; `scratch` when cwd is the host's scratch root (one-off work, no
+   * ticket). `host` is a fleet host name ("local" or a peer) or any name the
+   * host answers to.
    */
-  async isolationForCwd(host: string, cwd: string): Promise<"local" | "worktree"> {
-    const catalog = buildCatalog(await this.deps.loadFleet(), this.config().routing);
+  async describeCwd(
+    host: string,
+    cwd: string,
+  ): Promise<{ isolation: "local" | "worktree"; scratch: boolean }> {
+    const { routing } = this.config();
+    const catalog = buildCatalog(await this.deps.loadFleet(), routing);
     const name = host.toLowerCase();
     const target = catalog.hosts.find(
       (entry) => entry.hostName === host || entry.names.includes(name),
@@ -268,7 +273,11 @@ export class RoutingService {
       (entry) =>
         entry.serverId === target?.serverId && entry.rootPath?.replace(/\/+$/, "") === root,
     );
-    return project?.isGit ? "worktree" : "local";
+    const scratchRoot = target ? routing.scratchRootByHost?.[target.serverId] : undefined;
+    return {
+      isolation: project?.isGit ? "worktree" : "local",
+      scratch: Boolean(target) && isScratchProject(root, scratchRoot),
+    };
   }
 
   async ensureScratchWorkspace(): Promise<ScratchWorkspace> {
@@ -583,7 +592,7 @@ function buildCatalog(fleet: FleetContextData, routing: RoutingConfig): RoutingC
 }
 
 /** A host without a configured scratch root uses the default, `~/experiments`. */
-function isScratchProject(
+export function isScratchProject(
   rootPath: string | null | undefined,
   configuredRoot: string | undefined,
 ): boolean {
