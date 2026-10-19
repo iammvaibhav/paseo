@@ -1,3 +1,4 @@
+import { setTimeout as sleep } from "node:timers/promises";
 import { createHmac } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -199,6 +200,22 @@ function startFakeItsaplanServer(options: {
         }
         Object.assign(issue, body);
         send(200, issue);
+        return;
+      }
+      const feedMatch = /^\/issues\/(\d+)\/feed$/.exec(path);
+      if (req.method === "GET" && feedMatch) {
+        const issueId = Number(feedMatch[1]);
+        const items = comments
+          .map((comment, index) => ({ comment, index }))
+          .filter(({ comment }) => comment.issueId === issueId)
+          .toReversed()
+          .map(({ comment, index }) => ({
+            id: index + 1,
+            kind: "comment",
+            body: comment.body,
+            createdAt: new Date(0).toISOString(),
+          }));
+        send(200, { items, nextCursor: null });
         return;
       }
       const attachmentsMatch = /^\/issues\/(\d+)\/attachments$/.exec(path);
@@ -1982,6 +1999,43 @@ describe("ItsaplanBridge", () => {
           body: "Dispatched: [Agent agent-ticket-format](paseo://h/server-1/agent/agent-ticket-format)",
           apiKey: "itp_test_key",
         },
+      ]);
+    });
+
+    test("a daemon restart does not announce an already-dispatched agent again", async () => {
+      issues.get(ISSUE_ID)!.columnId = 2; // Todo
+      fakeServer.comments.length = 0;
+      const labeled = fakeAgent("agent-restart", { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) });
+      agentManagerFake.emit({ type: "agent_state", agent: labeled });
+      await waitForIssueColumn(issues, ISSUE_ID, 3);
+      await waitForCommentEqual(fakeServer.comments, {
+        issueId: ISSUE_ID,
+        body: "Dispatched: [Agent agent-restart](paseo://h/server-1/agent/agent-restart)",
+      });
+
+      bridge.stop();
+      const restarted = new ItsaplanBridge({
+        logger: createTestLogger(),
+        serverId: "server-1",
+        agentManager: agentManagerFake.manager,
+        agentStorage: createFakeAgentStorage(agentStorageRecords),
+        missionControl: missionControlFake.control,
+        projectStore,
+        getConfig: () => config,
+        resolvePaseoProjectKey: async () => "proj",
+        dispatchWorker,
+        steerWorkerPrompt,
+      });
+      restarted.start();
+      agentManagerFake.emit({ type: "agent_state", agent: labeled });
+      // The restarted bridge reads the ticket before deciding; give it time to post.
+      await sleep(300);
+      restarted.stop();
+
+      expect(fakeServer.comments).toEqual([
+        expect.objectContaining({
+          body: "Dispatched: [Agent agent-restart](paseo://h/server-1/agent/agent-restart)",
+        }),
       ]);
     });
 

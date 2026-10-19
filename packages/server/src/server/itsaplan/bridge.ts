@@ -100,6 +100,8 @@ export function getItsaplanIssueIdFromLabels(
 export const ITSAPLAN_AUTO_CHAIN_LABEL_NAME = "auto-chain";
 
 const MAX_TRACKED_EVENT_IDS = 500;
+/** Feed pages (100 items each) searched for an earlier "Dispatched" comment. */
+const MAX_FEED_PAGES_FOR_DISPATCH_CHECK = 5;
 
 const ItsaplanWebhookIssueDataSchema = z.object({
   id: z.number(),
@@ -1306,11 +1308,45 @@ export class ItsaplanBridge {
     const live = this.agentManager.getAgent(agentId);
     const title = record?.title || live?.name || `Agent ${agentId}`;
     const uri = `paseo://h/${encodeURIComponent(this.serverId)}/agent/${encodeURIComponent(agentId)}`;
+    // "First sighting" is per process: after a daemon restart every labeled
+    // agent is sighted again, so the ticket itself says whether it was announced.
+    if (await this.ticketAnnouncesAgent(client, numericIssueId, uri)) {
+      return;
+    }
     await this.postDeduplicatedComment(
       commentClient,
       numericIssueId,
       `Dispatched: [${title}](${uri})`,
     );
+  }
+
+  /** Whether the ticket already has a "Dispatched" comment linking this agent. Unknown (feed unreadable) → false. */
+  private async ticketAnnouncesAgent(
+    client: ItsaplanClient,
+    issueId: number,
+    agentUri: string,
+  ): Promise<boolean> {
+    let cursor: string | null = null;
+    try {
+      for (let page = 0; page < MAX_FEED_PAGES_FOR_DISPATCH_CHECK; page += 1) {
+        const feed = await client.listIssueFeedPage(issueId, cursor);
+        if (
+          feed.items.some(
+            (item) =>
+              item.kind === "comment" &&
+              item.body?.startsWith("Dispatched:") === true &&
+              item.body.includes(`(${agentUri})`),
+          )
+        ) {
+          return true;
+        }
+        cursor = feed.nextCursor;
+        if (!cursor) return false;
+      }
+    } catch (error) {
+      this.logger.warn({ err: error, issueId }, "itsaplan.bridge.dispatch_check_failed");
+    }
+    return false;
   }
 
   /** Running -> In Progress (bridge-owned edge, ADR 0002). */
