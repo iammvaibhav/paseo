@@ -216,6 +216,7 @@ import { buildLocalContextPayload } from "./mission-control/context.js";
 const UserTurnPeerArgsSchema = z.object({
   agentId: z.string().min(1),
   turnId: z.string().nullable(),
+  text: z.string(),
 });
 const PEER_EXECUTABLE_TOOL_NAMES = new Set([
   "fleet_wait_agent",
@@ -3042,10 +3043,10 @@ export class Session {
       if (msg.name === USER_TURN_PEER_TOOL) {
         const args = UserTurnPeerArgsSchema.safeParse(msg.args);
         if (!args.success) {
-          respond({ ok: false, error: `${USER_TURN_PEER_TOOL} needs agentId and turnId` });
+          respond({ ok: false, error: `${USER_TURN_PEER_TOOL} needs agentId, turnId and text` });
           return;
         }
-        this.missionControlService?.noteUserPrompt(args.data);
+        this.missionControlService?.noteUserPrompt({ ...args.data, forwarded: true });
         respond({ ok: true });
         return;
       }

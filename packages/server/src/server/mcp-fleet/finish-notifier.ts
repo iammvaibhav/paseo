@@ -105,6 +105,8 @@ export interface ArmMcpFinishNotification extends McpClientBinding, McpNotifyAge
   context: string | null;
   /** "user" when Vaibhav started the turn directly (not a tool call); default "tool". */
   origin?: "user" | "tool";
+  /** With origin "user": what he typed, sent as `userPrompt` (capped at USER_PROMPT_MAX_BYTES). */
+  userPrompt?: string;
   /** The named target the watch posts to; null → the client's own notify webhook. */
   notifyTarget?: string | null;
 }
@@ -132,6 +134,22 @@ export interface ArmMcpStatusReportNotification {
   subscribeSelfReports?: (listener: (event: MissionControlEvent) => void) => () => void;
   peerClient?: DaemonClient | null;
   timeoutMs?: number;
+}
+
+/** About 4 KB of what Vaibhav typed rides the finish event; the rest is in the transcript. */
+export const USER_PROMPT_MAX_BYTES = 4096;
+
+export function capUserPrompt(text: string): { userPrompt: string; userPromptTruncated: boolean } {
+  const bytes = Buffer.from(text, "utf8");
+  if (bytes.length <= USER_PROMPT_MAX_BYTES) {
+    return { userPrompt: text, userPromptTruncated: false };
+  }
+  // A cut inside a multi-byte character decodes to U+FFFD; drop it.
+  const cut = bytes
+    .subarray(0, USER_PROMPT_MAX_BYTES)
+    .toString("utf8")
+    .replace(/\uFFFD+$/, "");
+  return { userPrompt: cut, userPromptTruncated: true };
 }
 
 export function eventToReportStatus(
@@ -283,6 +301,9 @@ interface ArmedEntry {
   context: string | null;
   /** Who started the turn; absent (older entries) → "tool". */
   origin?: "user" | "tool";
+  /** The prompt of a user-started turn, already capped. */
+  userPrompt?: string;
+  userPromptTruncated?: boolean;
   /** The named target the watch posts to; null or absent (older entries) → the client's own webhook. */
   notifyTarget?: string | null;
   /** The turn the watch is bound to: the create/send's turn, else the run in progress. */
@@ -616,6 +637,9 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
       notifyTarget: armed.notifyTarget ?? null,
       context: armed.context,
       origin: armed.origin ?? "tool",
+      ...(armed.userPrompt !== undefined
+        ? { userPrompt: armed.userPrompt, userPromptTruncated: armed.userPromptTruncated ?? false }
+        : {}),
       agent: agentPayload(armed.agentId, result, armed.turnId),
       trigger: { tool: armed.tool, requestedAt: armed.ts },
     });
@@ -1213,6 +1237,7 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
       tool: input.tool,
       context: input.context,
       ...(input.origin ? { origin: input.origin } : {}),
+      ...(input.userPrompt !== undefined ? capUserPrompt(input.userPrompt) : {}),
       notifyTarget: input.notifyTarget ?? null,
       turnId,
       deadline: now.getTime() + maxWatchMs,

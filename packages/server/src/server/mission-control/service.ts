@@ -268,14 +268,15 @@ export type SelfReportResult =
   | { ok: false; reason: "excluded" | "rate_limited"; message: string };
 
 /**
- * A prompt a person sent an agent directly. `text` is set on the agent's own
- * host; a peer forwarding the event (so its MCP clients hear about the turn)
- * sends only the agent and turn.
+ * A prompt a person sent an agent directly. `forwarded` marks the copy a peer
+ * receives so its MCP clients hear about the turn; only the agent's own host
+ * comments on the ticket and forwards.
  */
 export interface UserPrompt {
   agentId: string;
   turnId: string | null;
-  text?: string;
+  text: string;
+  forwarded?: boolean;
 }
 
 /** The peer-executable name a host uses to tell its peers a user turn started on one of its agents. */

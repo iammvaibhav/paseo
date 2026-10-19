@@ -2121,7 +2121,7 @@ describe("ItsaplanBridge", () => {
       await bridge.mirrorUserPrompt("agent-1", "use the v2 API\nand add a test");
       expect(fakeServer.comments).toEqual([
         expect.objectContaining({
-          body: "Vaibhav, directly to the agent:\n\n> use the v2 API\n> and add a test",
+          body: "Vaibhav asked (in the app):\n\n> use the v2 API\n> and add a test",
         }),
       ]);
       await bridge.mirrorUserPrompt("agent-unlabeled", "hello");

@@ -344,7 +344,7 @@ export function formatAskComment(ask: string): string {
 }
 
 export function formatUserPromptComment(text: string): string {
-  return `Vaibhav, directly to the agent:\n\n${quote(text)}`;
+  return `Vaibhav asked (in the app):\n\n${quote(text)}`;
 }
 
 export function formatMilestoneComment(event: MissionControlEvent): string {

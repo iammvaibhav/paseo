@@ -2705,14 +2705,17 @@ export async function createPaseoDaemon(
   // agent's host also tells its peers (USER_TURN_PEER_TOOL); a peer only arms.
   const unsubscribeUserPrompts = missionControlService.subscribeUserPrompts((prompt) => {
     const { agentId, turnId, text } = prompt;
-    if (text !== undefined) {
+    if (!prompt.forwarded) {
       void itsaplanBridge.mirrorUserPrompt(agentId, text).catch((error: unknown) => {
         logger.warn({ err: error, agentId }, "itsaplan.bridge.user_prompt_mirror_failed");
       });
       for (const peer of peerManager?.getPeerStatuses() ?? []) {
         const client = peer.state === "online" ? peerManager?.getPeerClient(peer.name) : null;
         void client
-          ?.missionControlToolsExecute({ name: USER_TURN_PEER_TOOL, args: { agentId, turnId } })
+          ?.missionControlToolsExecute({
+            name: USER_TURN_PEER_TOOL,
+            args: { agentId, turnId, text },
+          })
           .catch((error: unknown) => {
             logger.debug(
               { err: error, agentId, peer: peer.name },
@@ -2721,11 +2724,15 @@ export async function createPaseoDaemon(
           });
       }
     }
-    void armUserTurnWatches(agentId, turnId).catch((error: unknown) => {
+    void armUserTurnWatches(agentId, turnId, text).catch((error: unknown) => {
       logger.warn({ err: error, agentId }, "mcp.finish.user_turn_arm_failed");
     });
   });
-  const armUserTurnWatches = async (agentId: string, turnId: string | null): Promise<void> => {
+  const armUserTurnWatches = async (
+    agentId: string,
+    turnId: string | null,
+    userPrompt: string,
+  ): Promise<void> => {
     const persisted = loadPersistedConfig(config.paseoHome).daemon?.mcp;
     for (const client of persisted?.remoteClients ?? []) {
       const subscription = mcpFinishNotifier.subscription(client.name, agentId);
@@ -2744,6 +2751,7 @@ export async function createPaseoDaemon(
         tool: "user_prompt",
         context: subscription.context,
         origin: "user",
+        userPrompt,
         waitForAgent: createFleetMcpWaitForAgent(catalog),
       });
     }

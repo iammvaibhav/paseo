@@ -9,6 +9,7 @@ import pino from "pino";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { FleetAgentWaitResult } from "../agent/tools/fleet-wait.js";
 import {
+  capUserPrompt,
   createMcpFinishNotifier,
   type McpClientBinding,
   type McpFinishLocalAgents,
@@ -148,14 +149,24 @@ describe("createMcpFinishNotifier", () => {
       tool: "user_prompt",
       context: "essay-42",
       origin: "user",
+      userPrompt: "rewrite the intro, keep it under 200 words",
       waitForAgent: async () => result({}),
     });
     expect(received[0]!.body).toMatchObject({
       type: "paseo.agent.finished",
       origin: "user",
+      userPrompt: "rewrite the intro, keep it under 200 words",
+      userPromptTruncated: false,
       context: "essay-42",
       trigger: { tool: "user_prompt" },
     });
+  });
+
+  it("caps a long user prompt at 4 KB on a character boundary and flags it", () => {
+    const capped = capUserPrompt(`${"a".repeat(4095)}é and more`);
+    expect(capped.userPromptTruncated).toBe(true);
+    expect(capped.userPrompt).toBe("a".repeat(4095));
+    expect(capUserPrompt("short")).toEqual({ userPrompt: "short", userPromptTruncated: false });
   });
 
   it("sends needs_permission once while blocked, then the final event", async () => {
