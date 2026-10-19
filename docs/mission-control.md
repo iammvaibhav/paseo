@@ -135,7 +135,7 @@ fleet-memory is a separate service (on blrofc3, GPU embeddings) behind `memory.u
 
 ## itsaplan bridge
 
-A Todo ticket with no open blockers, assigned or delegated to the project's bot user ("Paseo"), is dispatched by the bridge on the host that owns the board's webhook: it calls `fleet_create_agent` with the ticket brief and the `itsaplan.issue` label, and routing places the worker. Each host syncs only its own projects; a repo checked out on several hosts maps to one board, and only the host that created it registers the webhook.
+A Todo ticket with no open blockers, assigned or delegated to the project's bot user ("Paseo"), is dispatched by the bridge on the host that owns the board's webhook: it calls `fleet_create_agent` with the ticket brief and the `itsaplan.issue` label, and routing places the worker. Each host syncs only its own projects; a repo checked out on several hosts maps to one board, and only the host that created it registers the webhook. That board is the oldest unarchived itsaplan project whose description is the Paseo project key; a host adopts it even when its derived key differs (old boards like `AMBIENTAISTA` predate the 10-character key rule), and a mapping that points at a later duplicate moves to it.
 
 The bridge writes the ticket's routine comments: "Dispatched", each `report_status` milestone/finding/inconclusive (`Finding: <headline>`), the agent's open question, "Ready for review" with proofs, and every prompt Vaibhav sends the agent directly from the app ("Vaibhav asked (in the app)").
 

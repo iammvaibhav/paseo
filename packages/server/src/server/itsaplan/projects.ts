@@ -5,7 +5,12 @@ import { z } from "zod";
 import { writeJsonFileAtomic } from "../atomic-file.js";
 import type { ResolvedMissionControlCentralConfig } from "../mission-control/config.js";
 import type { PersistedProjectRecord, ProjectMutation } from "../workspace-registry.js";
-import { ItsaplanApiError, ItsaplanClient, type ItsaplanProject } from "./client.js";
+import {
+  ItsaplanApiError,
+  ItsaplanClient,
+  type ItsaplanProject,
+  type ItsaplanProjectListItem,
+} from "./client.js";
 
 /** Non-null itsaplan connection config; the same shape read off central config. */
 export type ItsaplanCentralConfig = NonNullable<ResolvedMissionControlCentralConfig["itsaplan"]>;
@@ -140,6 +145,10 @@ export class ItsaplanProjectStore {
 
   async upsert(mapping: ItsaplanProjectMapping): Promise<void> {
     const parsed = ItsaplanProjectMappingSchema.parse(mapping);
+    const previous = this.byPaseoKey.get(parsed.paseoProjectKey);
+    if (previous && previous.itsaplanProjectId !== parsed.itsaplanProjectId) {
+      this.byItsaplanProjectId.delete(previous.itsaplanProjectId);
+    }
     this.byPaseoKey.set(parsed.paseoProjectKey, parsed);
     this.byItsaplanProjectId.set(parsed.itsaplanProjectId, parsed);
     await writeJsonFileAtomic(this.filePath, this.list());
@@ -242,7 +251,23 @@ async function ensureItsaplanProjectMappingForKey(
   config: ItsaplanCentralConfig,
   deps: ItsaplanProjectSyncDependencies,
 ): Promise<ItsaplanProjectMapping | null> {
-  const existing = deps.store.getByPaseoProjectKey(projectKey);
+  const client = new ItsaplanClient(config);
+  // One board per Paseo project: the oldest live board whose description is
+  // the project key. Hosts that each sync their own projects must land on it
+  // even when their local mapping is missing or points at a later duplicate.
+  const board = await findBoardForProject(client, projectKey);
+  const stored = deps.store.getByPaseoProjectKey(projectKey);
+  const existing = stored && (!board || board.id === stored.itsaplanProjectId) ? stored : null;
+  if (stored && !existing) {
+    deps.logger.warn(
+      {
+        paseoProjectKey: projectKey,
+        from: stored.itsaplanProjectKey,
+        to: board?.key,
+      },
+      "itsaplan.project.mapping_moved_to_oldest_board",
+    );
+  }
   if (existing) {
     let mapping = existing;
     // A mapping with no usable credential needs the agent-ensure path: either
@@ -255,7 +280,6 @@ async function ensureItsaplanProjectMappingForKey(
       mapping = await ensureBotIdentity(mapping, config, deps);
     }
     if (mapping.commanderUserId) {
-      const client = new ItsaplanClient(config);
       await ensureTodoColumnNoCommanderAutoAssign(
         mapping.itsaplanProjectKey,
         mapping.commanderUserId,
@@ -265,21 +289,22 @@ async function ensureItsaplanProjectMappingForKey(
     }
     return ensureWebhookEventsUpToDate(mapping, config, deps);
   }
-  const client = new ItsaplanClient(config);
   const webhookUrl = deps.getWebhookUrl();
   if (!webhookUrl) {
     deps.logger.warn({ paseoProjectKey: projectKey }, "itsaplan.project.webhook_url_unavailable");
     return null;
   }
-  const { project: created, adopted } = await createOrAdoptItsaplanProject(
-    client,
-    {
-      baseKey: deriveItsaplanProjectKey(name),
-      name,
-      paseoProjectKey: projectKey,
-    },
-    deps,
-  );
+  const { project: created, adopted } = board
+    ? { project: board, adopted: true }
+    : await createOrAdoptItsaplanProject(
+        client,
+        {
+          baseKey: deriveItsaplanProjectKey(name),
+          name,
+          paseoProjectKey: projectKey,
+        },
+        deps,
+      );
   // An adopted board that already has a webhook belongs to the host that
   // created it; one with none (our own earlier attempt crashed before
   // registering) gets ours.
@@ -362,6 +387,18 @@ function suffixedProjectKey(baseKey: string, paseoProjectKey: string): string {
  *   if THAT row is ours too. A third collision rethrows rather than ever
  *   letting two distinct paseo projects share one board.
  */
+async function findBoardForProject(
+  client: ItsaplanClient,
+  paseoProjectKey: string,
+): Promise<ItsaplanProjectListItem | null> {
+  const boards = await client.listProjects();
+  return (
+    boards
+      .filter((board) => !board.archivedAt && board.description === paseoProjectKey)
+      .sort((a, b) => a.id - b.id)[0] ?? null
+  );
+}
+
 async function createOrAdoptItsaplanProject(
   client: ItsaplanClient,
   input: { baseKey: string; name: string; paseoProjectKey: string },

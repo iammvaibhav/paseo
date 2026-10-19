@@ -140,6 +140,7 @@ const ItsaplanProjectListItemSchema = z.object({
   name: z.string(),
   description: z.string().nullable().optional(),
   createdAt: z.string().optional(),
+  archivedAt: z.string().nullable().optional(),
 });
 export type ItsaplanProjectListItem = z.infer<typeof ItsaplanProjectListItemSchema>;
 

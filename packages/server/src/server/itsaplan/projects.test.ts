@@ -78,6 +78,18 @@ function startFakeItsaplanServer(apiKey: string) {
       }
       const url = new URL(req.url ?? "/", "http://localhost");
       const handleProjects = (): boolean => {
+        if (req.method === "GET" && url.pathname === "/projects") {
+          send(
+            200,
+            [...projectIdByKey].map(([key, id]) => ({
+              id,
+              key,
+              name: `name-${id}`,
+              description: descriptionByKey.get(key) ?? "",
+            })),
+          );
+          return true;
+        }
         if (req.method === "POST" && url.pathname === "/projects") {
           const key = String(body.key);
           if (projectIdByKey.has(key)) {
@@ -538,6 +550,33 @@ describe("itsaplan project sync", () => {
     expect(mapping).toMatchObject({ itsaplanProjectKey: "REPO", itsaplanProjectId: 7 });
     expect(mapping?.webhookId).toBeUndefined();
     expect(fakeServer.registeredWebhooks).toHaveLength(0);
+  });
+
+  test("a host maps a repo to its existing board even when the derived key differs", async () => {
+    // The board was created long ago under a key today's derivation no longer
+    // produces (AMBIENTAISTA vs AMBIENTAIS); it must still be the one used.
+    fakeServer.projectIdByKey.set("REPOLEGACY", 4);
+    fakeServer.descriptionByKey.set("REPOLEGACY", "PROJ");
+    const mapping = await ensureItsaplanProjectMapping(project(), deps);
+    expect(mapping).toMatchObject({ itsaplanProjectKey: "REPOLEGACY", itsaplanProjectId: 4 });
+    expect(fakeServer.createdProjects).toHaveLength(0);
+  });
+
+  test("a mapping to a later duplicate board moves to the oldest board for the project", async () => {
+    fakeServer.projectIdByKey.set("REPOLEGACY", 4);
+    fakeServer.descriptionByKey.set("REPOLEGACY", "PROJ");
+    fakeServer.projectIdByKey.set("REPO", 40);
+    fakeServer.descriptionByKey.set("REPO", "PROJ");
+    await store.upsert({
+      paseoProjectKey: "PROJ",
+      itsaplanProjectId: 40,
+      itsaplanProjectKey: "REPO",
+      createdAt: "2026-10-18T00:00:00.000Z",
+    });
+    const mapping = await ensureItsaplanProjectMapping(project(), deps);
+    expect(mapping).toMatchObject({ itsaplanProjectKey: "REPOLEGACY", itsaplanProjectId: 4 });
+    expect(store.getByItsaplanProjectId(40)).toBeNull();
+    expect(store.getByPaseoProjectKey("PROJ")?.itsaplanProjectId).toBe(4);
   });
 
   test("a same-named project on another host gets a deterministic suffixed key", async () => {
