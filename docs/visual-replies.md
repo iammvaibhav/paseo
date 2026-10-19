@@ -40,6 +40,15 @@ The client renders from the `show_page` call in the transcript: `html` and `url`
 
 `buildPageDocument` (`packages/protocol/src/page/kit.ts`) puts the kit first in the page head: `--paseo-*` CSS variables, base styles, helper classes, and a script that reports the content height, routes links and `window.open` to the host, applies live theme updates, and exposes `paseo.chart(el, spec)`. `paseo.chart` loads pinned ECharts and Flint builds from jsDelivr and applies the same ECharts theme as chat charts. The daemon preview and the client use the same builder, so the agent previews what the reader sees.
 
+### Media starts paused
+
+Opening a workspace, switching tabs, or scrolling a page back into view remounts its frame, so anything that starts on load replays every time. Media in a page therefore waits for the reader:
+
+- A `url` that names a video file (`.mp4`, `.m4v`, `.mov`, `.webm`, `.ogv`) renders as a kit page with a paused `<video controls>` (`buildVideoPageHtml`). Framed as is, the file opens in the browser's media document, which Chromium and WebKit mark `autoplay`.
+- The kit removes `autoplay` from `<video>` and `<audio>` and rejects `play()` with `NotAllowedError` until the page sees a trusted pointer, touch, or key event. Native controls do not call `play()`, so they always work.
+
+Electron allows autoplay without a gesture, so the app's browser tests launch Chromium with `--autoplay-policy=no-user-gesture-required` to match.
+
 ### Sandbox
 
 | Surface                   | Sandbox                                                                                                                                                                                      |

@@ -35,7 +35,11 @@ export default defineConfig({
           include: ["src/**/*.browser.{test,spec}.{ts,tsx}"],
           browser: {
             enabled: true,
-            provider: playwright(),
+            // Electron's default: media may start without a user gesture. Chrome's stricter
+            // default would hide autoplay bugs the desktop app shows.
+            provider: playwright({
+              launchOptions: { args: ["--autoplay-policy=no-user-gesture-required"] },
+            }),
             headless: true,
             connectTimeout: 180_000,
             instances: [{ browser: "chromium" }],

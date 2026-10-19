@@ -1,7 +1,18 @@
+import { buildVideoPageHtml } from "@getpaseo/protocol/page/kit";
 import type { PageThemeTokens } from "@getpaseo/protocol/page/theme";
 
 /** An agent page: its own HTML, or a URL the reader's device can load. */
 export type PageSource = { kind: "html"; html: string } | { kind: "url"; url: string };
+
+/**
+ * What the frame loads. A URL naming a video file becomes a paused player page, because the
+ * browser's own media document for that file starts playing as soon as the chat mounts it.
+ */
+export function framedPageSource(source: PageSource): PageSource {
+  if (source.kind !== "url") return source;
+  const html = buildVideoPageHtml(source.url);
+  return html === null ? source : { kind: "html", html };
+}
 
 export interface PageFrameProps {
   source: PageSource;
