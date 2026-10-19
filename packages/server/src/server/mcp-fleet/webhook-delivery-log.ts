@@ -29,8 +29,13 @@ export interface WebhookDeliveryAttempt {
   attempt: number;
   /** HTTP status; null when the request never got a response. */
   status: number | null;
-  /** "retrying": this attempt failed and another follows. "failed": the event was given up on. */
-  outcome: "delivered" | "retrying" | "failed";
+  /**
+   * "retrying": this attempt failed and another follows. "failed": the event was
+   * given up on. "suppressed": deliberately not sent (attempt 0, no request).
+   */
+  outcome: "delivered" | "retrying" | "failed" | "suppressed";
+  /** On a "suppressed" row: why ("chat_open", "own_turns_off"). */
+  suppressedReason?: string;
   /** On a "retrying" row: when the next attempt is due. */
   nextAttemptAt?: string;
   /**
@@ -59,6 +64,8 @@ export interface WebhookDeliveryTotals {
   events: number;
   delivered: number;
   failed: number;
+  /** Events not sent on purpose (e.g. Vaibhav had the agent's chat open). */
+  suppressed: number;
   attempts: number;
   /** Attempts by HTTP status; "none" for attempts without a response. */
   byStatus: Record<string, number>;
@@ -189,18 +196,20 @@ export function createWebhookDeliveryLog(options: {
           (!query.client || row.client === query.client) &&
           (!query.agentId || row.agentId === query.agentId) &&
           (since === null || Date.parse(row.ts) >= since) &&
-          (!query.failedOnly || row.outcome !== "delivered"),
+          (!query.failedOnly || row.outcome === "failed" || row.outcome === "retrying"),
       );
       const totals: WebhookDeliveryTotals = {
         events: new Set(matches.map((row) => row.deliveryId)).size,
         delivered: 0,
         failed: 0,
+        suppressed: 0,
         attempts: matches.length,
         byStatus: {},
       };
       for (const row of matches) {
         if (row.outcome === "delivered") totals.delivered += 1;
         if (row.outcome === "failed") totals.failed += 1;
+        if (row.outcome === "suppressed") totals.suppressed += 1;
         const key = row.status === null ? "none" : String(row.status);
         totals.byStatus[key] = (totals.byStatus[key] ?? 0) + 1;
       }

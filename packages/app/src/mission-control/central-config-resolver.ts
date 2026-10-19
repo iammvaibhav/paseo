@@ -15,6 +15,7 @@ export interface ResolvedMissionControlCentralConfig {
   retentionDays: number;
   namingTheme: string;
   hideAgentNames: boolean;
+  ownTurnNotify: "always" | "not_viewing" | "never";
   defaultDispatchHost: string | null;
   silenceNudgeSeconds: number;
   statusNudgeSeconds: number;
@@ -40,6 +41,7 @@ const RESOLVED_DEFAULTS: ResolvedMissionControlCentralConfig = {
   retentionDays: 30,
   namingTheme: "mixed",
   hideAgentNames: false,
+  ownTurnNotify: "not_viewing",
   defaultDispatchHost: null,
   silenceNudgeSeconds: 120,
   statusNudgeSeconds: 300,
@@ -74,6 +76,7 @@ export function resolveMissionControlCentralConfig(
     retentionDays: config.retentionDays ?? 30,
     namingTheme: config.namingTheme ?? "mixed",
     hideAgentNames: config.hideAgentNames ?? false,
+    ownTurnNotify: config.ownTurnNotify ?? "not_viewing",
     defaultDispatchHost: config.defaultDispatchHost ?? null,
     trackSubagents: config.trackSubagents ?? true,
     ...resolveStallTimingKnobs(config),

@@ -182,7 +182,11 @@ import { ScheduleService } from "./schedule/service.js";
 import { BaseCheckoutSyncService } from "./base-checkout-sync.js";
 import { IdleCloseOmpService } from "./idle-close/index.js";
 import { KeepAwakeService } from "./keep-awake/index.js";
-import { MissionControlService, USER_TURN_PEER_TOOL } from "./mission-control/service.js";
+import {
+  AGENT_VIEWED_PEER_TOOL,
+  MissionControlService,
+  USER_TURN_PEER_TOOL,
+} from "./mission-control/service.js";
 import { getItsaplanIssueIdFromLabels } from "./itsaplan/index.js";
 import { areEquivalentPaths } from "../utils/path.js";
 import { getWorktreeConfiguredBaseRef } from "../utils/worktree.js";
@@ -2679,8 +2683,36 @@ export async function createPaseoDaemon(
     }
     return cached;
   };
+  // Is someone looking at this agent's chat? Only the agent's own host sees
+  // the client heartbeats for it, so ask this host and every online peer.
+  const AgentViewedAnswerSchema = z.object({ viewed: z.boolean() });
+  const isAgentViewedAnywhere = async (agentId: string): Promise<boolean> => {
+    if (missionControlService.agentViews.isViewed(agentId)) return true;
+    const answers = await Promise.all(
+      (peerManager?.getPeerStatuses() ?? [])
+        .filter((peer) => peer.state === "online")
+        .map(async (peer) => {
+          const client = peerManager?.getPeerClient(peer.name);
+          const response = await client
+            ?.missionControlToolsExecute({
+              name: AGENT_VIEWED_PEER_TOOL,
+              args: { agentId },
+              timeoutMs: 5_000,
+            })
+            .catch(() => null);
+          return AgentViewedAnswerSchema.safeParse(response?.structuredContent).data?.viewed;
+        }),
+    );
+    return answers.includes(true);
+  };
   const mcpFinishNotifier = createMcpFinishNotifier({
     resolveSecret: resolveVaultSecret,
+    holdOwnTurn: async ({ agentId }) => {
+      const mode = centralMissionControlConfig.get().ownTurnNotify;
+      if (mode === "never") return "own_turns_off";
+      if (mode === "not_viewing" && (await isAgentViewedAnywhere(agentId))) return "chat_open";
+      return null;
+    },
     logger,
     journalPath: path.join(config.paseoHome, "mcp-fleet", "finish-watches.jsonl"),
     deliveryLogPath: path.join(config.paseoHome, "mcp-fleet", "webhook-deliveries.jsonl"),

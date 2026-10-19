@@ -20,7 +20,10 @@ import { Switch } from "@/components/ui/switch";
 import { SettingsSection } from "@/components/settings/headings/settings-section";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { useToast } from "@/contexts/toast-context";
-import { useMissionControlCentralConfig } from "@/mission-control/central-config";
+import {
+  patchMissionControlConfigOnEveryHost,
+  useMissionControlCentralConfig,
+} from "@/mission-control/central-config";
 import { AGENT_MODES } from "@getpaseo/protocol/agent-modes";
 import type { RoutingConfig, RoutingSecretKey } from "@getpaseo/protocol/routing";
 import { useFetchQuery } from "@/data/query";
@@ -40,6 +43,14 @@ const MISSION_CONTROL_NAMING_THEMES = [
   "mythology",
   "nature",
 ] as const;
+
+type OwnTurnNotifyMode = ResolvedMissionControlCentralConfig["ownTurnNotify"];
+
+const OWN_TURN_NOTIFY_OPTIONS: readonly DropdownRowOption<OwnTurnNotifyMode>[] = [
+  { value: "always", label: "Always" },
+  { value: "not_viewing", label: "When I'm not viewing the agent" },
+  { value: "never", label: "Never" },
+];
 
 const ThemedChevronDown = withUnistyles(ChevronDown);
 
@@ -425,6 +436,20 @@ export function MissionControlSection(): ReactElement {
     (next: string) => void patch({ namingTheme: next }),
     [patch],
   );
+  const handleOwnTurnNotifySelect = useCallback(
+    async (next: OwnTurnNotifyMode) => {
+      await patch({ ownTurnNotify: next });
+      const others = hosts.filter((host) => host.serverId !== hostServerId);
+      const missed = await patchMissionControlConfigOnEveryHost(others, { ownTurnNotify: next });
+      if (missed.length > 0) {
+        toast.error(
+          `Not saved on ${missed.join(", ")} (offline). Set it again once they are back.`,
+        );
+      }
+    },
+    [hostServerId, hosts, patch, toast],
+  );
+
   const handleHideAgentNamesChange = useCallback(
     (next: boolean) => void patch({ hideAgentNames: next }),
     [patch],
@@ -554,6 +579,20 @@ export function MissionControlSection(): ReactElement {
             options={hostOptions}
             onSelect={handleDefaultDispatchHostSelect}
             testID="mission-control-settings-default-dispatch-host"
+          />
+        </View>
+      </SettingsSection>
+
+      <SettingsSection title="Commander notifications">
+        <View style={settingsStyles.card}>
+          <DropdownRow
+            title="My own turns"
+            hint="When the Commander bot hears about a turn you started in the app. Saved on every connected host."
+            value={config.ownTurnNotify}
+            options={OWN_TURN_NOTIFY_OPTIONS}
+            onSelect={handleOwnTurnNotifySelect}
+            testID="mission-control-settings-own-turn-notify"
+            first
           />
         </View>
       </SettingsSection>

@@ -208,11 +208,16 @@ import { AutomationSession } from "./automation/session.js";
 import type { AutomationService } from "./automation/service.js";
 import { DocThreadsSession, type DocThreadsHost } from "./doc-threads/session.js";
 import type { PeerManager } from "./peers/peer-manager.js";
-import { type MissionControlService, USER_TURN_PEER_TOOL } from "./mission-control/service.js";
+import {
+  AGENT_VIEWED_PEER_TOOL,
+  type MissionControlService,
+  USER_TURN_PEER_TOOL,
+} from "./mission-control/service.js";
 import { z } from "zod";
 import { buildLocalContextPayload } from "./mission-control/context.js";
 
 /** Fleet tools a peer daemon may run on this host (work owned by this host). */
+const AgentViewedPeerArgsSchema = z.object({ agentId: z.string().min(1) });
 const UserTurnPeerArgsSchema = z.object({
   agentId: z.string().min(1),
   turnId: z.string().nullable(),
@@ -3040,6 +3045,16 @@ export class Session {
         payload: { requestId: msg.requestId, name: msg.name, ...payload },
       });
     try {
+      if (msg.name === AGENT_VIEWED_PEER_TOOL) {
+        const args = AgentViewedPeerArgsSchema.safeParse(msg.args);
+        if (!args.success) {
+          respond({ ok: false, error: `${AGENT_VIEWED_PEER_TOOL} needs agentId` });
+          return;
+        }
+        const viewed = this.missionControlService?.agentViews.isViewed(args.data.agentId) ?? false;
+        respond({ ok: true, structuredContent: { viewed } });
+        return;
+      }
       if (msg.name === USER_TURN_PEER_TOOL) {
         const args = UserTurnPeerArgsSchema.safeParse(msg.args);
         if (!args.success) {
@@ -6417,6 +6432,10 @@ export class Session {
       appVisible: msg.appVisible,
       appVisibilityChangedAt,
     };
+    this.missionControlService?.agentViews.noteHeartbeat(this.clientId, {
+      agentId: msg.focusedAgentId,
+      appVisible: msg.appVisible,
+    });
     if (msg.appVisible && focusedTerminalId) {
       void this.clearFocusedTerminalAttention(focusedTerminalId);
     }
@@ -10259,6 +10278,7 @@ export class Session {
    * Clean up session resources
    */
   public async cleanup(): Promise<void> {
+    this.missionControlService?.agentViews.noteGone(this.clientId);
     this.sessionLogger.trace({}, "agent.session.lifecycle.cleanup");
     this.isCleanedUp = true;
     await this.delivery.close();
