@@ -579,6 +579,23 @@ describe("itsaplan project sync", () => {
     expect(store.getByPaseoProjectKey("PROJ")?.itsaplanProjectId).toBe(4);
   });
 
+  test("a board deleted in itsaplan is forgotten and never recreated", async () => {
+    const first = await ensureItsaplanProjectMapping(project(), deps);
+    expect(first?.itsaplanProjectKey).toBe("REPO");
+    // Deleted by hand in itsaplan.
+    fakeServer.projectIdByKey.delete("REPO");
+    fakeServer.descriptionByKey.delete("REPO");
+
+    await runItsaplanProjectResync([{ ...project(), archivedAt: null }], deps);
+
+    expect(store.getByPaseoProjectKey("PROJ")).toBeNull();
+    expect(fakeServer.createdProjects).toHaveLength(1);
+    const reloaded = new ItsaplanProjectStore({ paseoHome, logger: createTestLogger() });
+    await reloaded.initialize();
+    expect(reloaded.isBoardDeleted("PROJ")).toBe(true);
+    expect(await ensureItsaplanProjectMapping(project(), { ...deps, store: reloaded })).toBeNull();
+  });
+
   test("a same-named project on another host gets a deterministic suffixed key", async () => {
     // Two hosts each have a project called "experiments": itsaplan enforces
     // project_key_unique globally, so the second must NOT share or adopt the

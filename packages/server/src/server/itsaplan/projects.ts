@@ -38,6 +38,16 @@ export function resolveItsaplanConfig(
 
 const ITSAPLAN_DIR = "itsaplan";
 const PROJECTS_FILENAME = "projects.json";
+/** Projects whose board was deleted in itsaplan; the sync never recreates one for them. */
+const DELETED_BOARDS_FILENAME = "deleted-boards.json";
+
+const DeletedBoardSchema = z.object({
+  paseoProjectKey: z.string(),
+  itsaplanProjectKey: z.string(),
+  itsaplanProjectId: z.number(),
+  deletedAt: z.string(),
+});
+type DeletedBoard = z.infer<typeof DeletedBoardSchema>;
 
 /** Events the bridge needs delivered; registered once per mapped itsaplan project. */
 export const ITSAPLAN_WEBHOOK_EVENTS = [
@@ -96,10 +106,13 @@ export class ItsaplanProjectStore {
   private readonly logger: Logger;
   private readonly byPaseoKey = new Map<string, ItsaplanProjectMapping>();
   private readonly byItsaplanProjectId = new Map<number, ItsaplanProjectMapping>();
+  private readonly deletedBoards = new Map<string, DeletedBoard>();
+  private readonly deletedBoardsPath: string;
   private loaded = false;
 
   constructor(options: { paseoHome: string; logger: Logger }) {
     this.filePath = join(options.paseoHome, ITSAPLAN_DIR, PROJECTS_FILENAME);
+    this.deletedBoardsPath = join(options.paseoHome, ITSAPLAN_DIR, DELETED_BOARDS_FILENAME);
     this.logger = options.logger.child({ module: "itsaplan", component: "projects" });
   }
 
@@ -108,6 +121,9 @@ export class ItsaplanProjectStore {
       return;
     }
     this.loaded = true;
+    for (const board of await readDeletedBoards(this.deletedBoardsPath, this.logger)) {
+      this.deletedBoards.set(board.paseoProjectKey, board);
+    }
     let content: string;
     try {
       content = await readFile(this.filePath, "utf-8");
@@ -141,6 +157,24 @@ export class ItsaplanProjectStore {
 
   getByItsaplanProjectId(itsaplanProjectId: number): ItsaplanProjectMapping | null {
     return this.byItsaplanProjectId.get(itsaplanProjectId) ?? null;
+  }
+
+  /** The project's board was deleted in itsaplan: forget the mapping and never make a new board. */
+  async markBoardDeleted(mapping: ItsaplanProjectMapping): Promise<void> {
+    this.byPaseoKey.delete(mapping.paseoProjectKey);
+    this.byItsaplanProjectId.delete(mapping.itsaplanProjectId);
+    this.deletedBoards.set(mapping.paseoProjectKey, {
+      paseoProjectKey: mapping.paseoProjectKey,
+      itsaplanProjectKey: mapping.itsaplanProjectKey,
+      itsaplanProjectId: mapping.itsaplanProjectId,
+      deletedAt: new Date().toISOString(),
+    });
+    await writeJsonFileAtomic(this.deletedBoardsPath, [...this.deletedBoards.values()]);
+    await writeJsonFileAtomic(this.filePath, this.list());
+  }
+
+  isBoardDeleted(paseoProjectKey: string): boolean {
+    return this.deletedBoards.has(paseoProjectKey);
   }
 
   async upsert(mapping: ItsaplanProjectMapping): Promise<void> {
@@ -256,18 +290,10 @@ async function ensureItsaplanProjectMappingForKey(
   // the project key. Hosts that each sync their own projects must land on it
   // even when their local mapping is missing or points at a later duplicate.
   const board = await findBoardForProject(client, projectKey);
-  const stored = deps.store.getByPaseoProjectKey(projectKey);
-  const existing = stored && (!board || board.id === stored.itsaplanProjectId) ? stored : null;
-  if (stored && !existing) {
-    deps.logger.warn(
-      {
-        paseoProjectKey: projectKey,
-        from: stored.itsaplanProjectKey,
-        to: board?.key,
-      },
-      "itsaplan.project.mapping_moved_to_oldest_board",
-    );
+  if (!board && deps.store.isBoardDeleted(projectKey)) {
+    return null;
   }
+  const existing = storedMappingOnBoard(projectKey, board, deps);
   if (existing) {
     let mapping = existing;
     // A mapping with no usable credential needs the agent-ensure path: either
@@ -387,6 +413,61 @@ function suffixedProjectKey(baseKey: string, paseoProjectKey: string): string {
  *   if THAT row is ours too. A third collision rethrows rather than ever
  *   letting two distinct paseo projects share one board.
  */
+/** The stored mapping, unless a different (older) board is the project's board now. */
+function storedMappingOnBoard(
+  projectKey: string,
+  board: ItsaplanProjectListItem | null,
+  deps: ItsaplanProjectSyncDependencies,
+): ItsaplanProjectMapping | null {
+  const stored = deps.store.getByPaseoProjectKey(projectKey);
+  if (!stored || !board || board.id === stored.itsaplanProjectId) {
+    return stored;
+  }
+  deps.logger.warn(
+    { paseoProjectKey: projectKey, from: stored.itsaplanProjectKey, to: board.key },
+    "itsaplan.project.mapping_moved_to_oldest_board",
+  );
+  return null;
+}
+
+async function readDeletedBoards(path: string, logger: Logger): Promise<DeletedBoard[]> {
+  try {
+    return z.array(DeletedBoardSchema).parse(JSON.parse(await readFile(path, "utf-8")));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      logger.warn({ err: error }, "Failed to load deleted itsaplan boards");
+    }
+    return [];
+  }
+}
+
+/**
+ * Drops mappings whose board no longer exists in itsaplan (deleted by hand),
+ * recording each so the sync does not create a replacement. A board missing
+ * from the live list is confirmed with a direct read: archived boards are not
+ * listed but still exist.
+ */
+export async function pruneDeletedBoards(
+  config: ItsaplanCentralConfig,
+  deps: Pick<ItsaplanProjectSyncDependencies, "store" | "logger">,
+): Promise<number> {
+  const client = new ItsaplanClient(config);
+  const live = new Set((await client.listProjects()).map((board) => board.id));
+  let pruned = 0;
+  for (const mapping of deps.store.list()) {
+    if (live.has(mapping.itsaplanProjectId)) continue;
+    const board = await client.getProject(mapping.itsaplanProjectKey);
+    if (board && board.id === mapping.itsaplanProjectId) continue;
+    await deps.store.markBoardDeleted(mapping);
+    pruned += 1;
+    deps.logger.info(
+      { paseoProjectKey: mapping.paseoProjectKey, itsaplanProjectKey: mapping.itsaplanProjectKey },
+      "itsaplan.project.board_deleted",
+    );
+  }
+  return pruned;
+}
+
 async function findBoardForProject(
   client: ItsaplanClient,
   paseoProjectKey: string,
@@ -728,6 +809,11 @@ export async function runItsaplanProjectResync(
 ): Promise<ItsaplanResyncResult> {
   const result: ItsaplanResyncResult = { mapped: 0, skipped: 0, failed: 0 };
   const config = deps.getConfig();
+  if (config) {
+    await pruneDeletedBoards(config, deps).catch((error: unknown) => {
+      deps.logger.warn({ err: error }, "itsaplan.project.prune_deleted_boards_failed");
+    });
+  }
   const seenKeys = new Set<string>();
   for (const project of local) {
     if (project.archivedAt) {
