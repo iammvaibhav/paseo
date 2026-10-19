@@ -144,6 +144,37 @@ const EFFORT_LABELS: Record<Effort, string> = {
 };
 
 /**
+ * Which sampling fields omp actually sends upstream for this model, so the
+ * Bifrost row grants exactly those. pi-ai's `streamSimple` (`mapOptionsForApi`
+ * in stream.ts) carries `topP` and `presencePenalty` but never `stopSequences`
+ * or `frequencyPenalty`, so `stop` and `frequency_penalty` are never granted.
+ * The per-API checks mirror the providers: anthropic.ts sends `top_p` (only with
+ * thinking off), the Google APIs send both, the OpenAI APIs gate on
+ * `supportsSamplingParams` / `supportsPenaltyAndStopParams`. Codex
+ * (`buildStreamOptions` in dispatch.ts), Cursor and grok-build send none, and
+ * `supportsSamplingParams: false` drops them for every API.
+ */
+function sampling(model: Model<Api>): { topP: boolean; presencePenalty: boolean } {
+	const compat = model.compat as { supportsSamplingParams?: boolean; supportsPenaltyAndStopParams?: boolean };
+	const none = { topP: false, presencePenalty: false };
+	if (compat.supportsSamplingParams === false) return none;
+	switch (model.api) {
+		case "anthropic-messages":
+			return { topP: compat.supportsSamplingParams === true, presencePenalty: false };
+		case "google-gemini-cli":
+		case "google-generative-ai":
+			return { topP: true, presencePenalty: true };
+		case "openai-completions":
+		case "openai-responses": {
+			const allowed = compat.supportsSamplingParams === true;
+			return { topP: allowed, presencePenalty: allowed && compat.supportsPenaltyAndStopParams === true };
+		}
+		default:
+			return none;
+	}
+}
+
+/**
  * One Bifrost model-parameters datasheet row (Model Settings →
  * model_parameters_url). Bifrost reads `reasoning_effort_levels` to stop
  * clamping efforts to low/medium/high, `supports_reasoning_disable` to pass
@@ -155,6 +186,7 @@ const EFFORT_LABELS: Record<Effort, string> = {
  * it. Every omp model takes tools and `tool_choice`, so both are granted.
  * `response_format` and `parallel_tool_calls` stay off: omp's gateway drops them
  * (`buildStreamOptions` in dispatch.ts), so granting them would only hide that.
+ * Sampling fields follow `sampling()`.
  */
 function bifrostRow(key: string, model: Model<Api>, settings: Settings, bifrostProvider: string) {
 	const efforts = getSupportedEfforts(model);
@@ -175,6 +207,25 @@ function bifrostRow(key: string, model: Model<Api>, settings: Settings, bifrostP
 			range: { min: 1, max: model.maxTokens ?? 8192, step: 1 },
 		},
 	];
+	const { topP, presencePenalty } = sampling(model);
+	if (topP) {
+		parameters.push({
+			id: "top_p",
+			label: "Top P",
+			helpText: "Nucleus sampling: only tokens within this cumulative probability are considered.",
+			type: "number",
+			range: { min: 0, max: 1, step: 0.01 },
+		});
+	}
+	if (presencePenalty) {
+		parameters.push({
+			id: "presence_penalty",
+			label: "Presence Penalty",
+			helpText: "Penalizes tokens that already appeared, between -2 and 2.",
+			type: "number",
+			range: { min: -2, max: 2, step: 0.01 },
+		});
+	}
 	if (model.reasoning) {
 		parameters.push({
 			id: "reasoning_effort",
