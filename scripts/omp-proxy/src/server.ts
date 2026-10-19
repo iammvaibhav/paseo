@@ -155,7 +155,8 @@ const EFFORT_LABELS: Record<Effort, string> = {
  * `supportsSamplingParams: false` drops them for every API.
  */
 function sampling(model: Model<Api>): { topP: boolean; presencePenalty: boolean } {
-	const compat = model.compat as { supportsSamplingParams?: boolean; supportsPenaltyAndStopParams?: boolean };
+	// Cursor and grok-build models carry no compat record.
+	const compat = (model.compat ?? {}) as { supportsSamplingParams?: boolean; supportsPenaltyAndStopParams?: boolean };
 	const none = { topP: false, presencePenalty: false };
 	if (compat.supportsSamplingParams === false) return none;
 	switch (model.api) {
