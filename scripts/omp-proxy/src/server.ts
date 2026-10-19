@@ -149,9 +149,11 @@ const EFFORT_LABELS: Record<Effort, string> = {
  * in stream.ts) carries `topP` and `presencePenalty` but never `stopSequences`
  * or `frequencyPenalty`, so `stop` and `frequency_penalty` are never granted.
  * The per-API checks mirror the providers: anthropic.ts sends `top_p` (only with
- * thinking off), the Google APIs send both, the OpenAI APIs gate on
- * `supportsSamplingParams` / `supportsPenaltyAndStopParams`. Codex
- * (`buildStreamOptions` in dispatch.ts), Cursor and grok-build send none, and
+ * thinking off), the OpenAI APIs gate on `supportsSamplingParams` /
+ * `supportsPenaltyAndStopParams`. The Google APIs send both, but Gemini models
+ * on Antigravity answer `presencePenalty` with 400 "Penalty is not enabled for
+ * this model", so Google gets `top_p` only. Codex (`buildStreamOptions` in
+ * dispatch.ts), Cursor and grok-build send none, and
  * `supportsSamplingParams: false` drops them for every API.
  */
 function sampling(model: Model<Api>): { topP: boolean; presencePenalty: boolean } {
@@ -164,7 +166,7 @@ function sampling(model: Model<Api>): { topP: boolean; presencePenalty: boolean 
 			return { topP: compat.supportsSamplingParams === true, presencePenalty: false };
 		case "google-gemini-cli":
 		case "google-generative-ai":
-			return { topP: true, presencePenalty: true };
+			return { topP: true, presencePenalty: false };
 		case "openai-completions":
 		case "openai-responses": {
 			const allowed = compat.supportsSamplingParams === true;
