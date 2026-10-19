@@ -2011,6 +2011,7 @@ export const zhCN: TranslationResources = {
     },
     indicator: "提醒 {{when}}",
   },
+  fileLinkPicker: en.fileLinkPicker,
   notes: en.notes,
   serviceUrl: {
     title: "打开服务 URL",

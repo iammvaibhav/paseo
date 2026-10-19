@@ -2074,6 +2074,7 @@ export const ru: TranslationResources = {
     },
     indicator: "Напоминание {{when}}",
   },
+  fileLinkPicker: en.fileLinkPicker,
   notes: en.notes,
   serviceUrl: {
     title: "Открыть URL сервиса",

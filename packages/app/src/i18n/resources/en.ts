@@ -2457,6 +2457,10 @@ export const en = {
     },
     indicator: "Reminder {{when}}",
   },
+  fileLinkPicker: {
+    title: "Open {{token}}",
+    subtitle: "{{count}} files in this workspace match",
+  },
   notes: {
     nav: {
       label: "Notes",

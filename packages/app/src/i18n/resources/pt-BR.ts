@@ -2074,6 +2074,7 @@ export const ptBR: TranslationResources = {
     },
     indicator: "Lembrete {{when}}",
   },
+  fileLinkPicker: en.fileLinkPicker,
   notes: en.notes,
   serviceUrl: {
     title: "Abrir URL do serviço",

@@ -2090,6 +2090,7 @@ export const es: TranslationResources = {
     },
     indicator: "Recordatorio {{when}}",
   },
+  fileLinkPicker: en.fileLinkPicker,
   notes: en.notes,
   serviceUrl: {
     title: "Servicio abiertoURL",

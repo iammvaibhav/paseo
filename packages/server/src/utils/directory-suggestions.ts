@@ -24,6 +24,8 @@ export interface SearchDirectoryEntriesOptions {
   includeFiles?: boolean;
   includeDirectories?: boolean;
   matchMode?: DirectorySuggestionMatchMode;
+  /** Suffix mode: when several files match, keep the ones that have this line, if any do. */
+  lineHint?: number;
   pathQueryPolicy?: PathQueryPolicy;
   rootAliases?: string[];
   blankQueryBehavior?: BlankQueryBehavior;
@@ -91,6 +93,12 @@ const DEFAULT_LIMIT = 30;
 const MAX_LIMIT = 100;
 const DEFAULT_MAX_DEPTH = 12;
 const DEFAULT_MAX_ENTRIES_SCANNED = 20_000;
+// Suffix mode resolves a file reference, where a file the walk never reaches opens the wrong
+// match or none at all. Its budget covers large monorepos rather than keeping typing snappy.
+const SUFFIX_MAX_DEPTH = 32;
+const SUFFIX_MAX_ENTRIES_SCANNED = 200_000;
+const LINE_COUNT_CHUNK_BYTES = 64 * 1024;
+const NEWLINE_BYTE = 0x0a;
 const DIRECTORY_LIST_CACHE_TTL_MS = 8_000;
 const DIRECTORY_LIST_CACHE_MAX_ENTRIES = 4_000;
 const GIT_IGNORED_PATHS_CACHE_TTL_MS = 8_000;
@@ -177,10 +185,11 @@ export async function searchDirectoryEntries(
   const input = buildSearchInput(options, root, gitIgnoredPaths);
   if (!input) return [];
 
-  const exact =
-    input.plan.browseExactPath || (input.matchMode === "suffix" && input.plan.isPathQuery)
-      ? await findExactEntry(input)
-      : null;
+  if (input.matchMode === "suffix" && input.plan.normalizedQuery && !input.plan.browseExactPath) {
+    return searchSuffix(input);
+  }
+
+  const exact = input.plan.browseExactPath ? await findExactEntry(input) : null;
   if (exact && input.limit === 1) return [exact];
 
   const browsesRoot = input.plan.isPathQuery && !input.plan.normalizedQuery;
@@ -191,6 +200,54 @@ export async function searchDirectoryEntries(
   return exact
     ? [exact, ...results.filter((entry) => !sameEntry(entry, exact))].slice(0, input.limit)
     : results;
+}
+
+// A path that exists as written wins outright: the agent named it. Otherwise every file whose
+// trailing path segments match is a candidate, and the caller decides what to do with several.
+async function searchSuffix(input: SearchInput): Promise<DirectorySuggestionEntry[]> {
+  const exact = await findExactEntry(input);
+  if (exact) return [exact];
+  const matches = await searchTree(input);
+  const candidates =
+    input.lineHint !== undefined && matches.length > 1
+      ? await preferEntriesWithLine(matches, input.lineHint)
+      : matches;
+  return sortAndFormat(candidates, input.root, input.pathFormat).slice(0, input.limit);
+}
+
+// `apps.py:891` names one of the workspace's many `apps.py` files: usually the only one that long.
+// When none is long enough the reference is stale, so every match stays a candidate.
+async function preferEntriesWithLine(entries: RankedEntry[], line: number): Promise<RankedEntry[]> {
+  const hasLine = await Promise.all(
+    entries.map((entry) => (entry.kind === "file" ? fileHasLine(entry.path, line) : false)),
+  );
+  const withLine = entries.filter((_, index) => hasLine[index]);
+  return withLine.length > 0 ? withLine : entries;
+}
+
+function fileHasLine(filePath: string, line: number): Promise<boolean> {
+  return filesystemCalls(async () => {
+    const handle = await fs.open(filePath, "r");
+    try {
+      const buffer = Buffer.allocUnsafe(LINE_COUNT_CHUNK_BYTES);
+      let newlines = 0;
+      let endsInsideLine = false;
+      for (;;) {
+        const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
+        // Line N exists after N-1 newlines only when some text follows the last one.
+        if (bytesRead === 0) return newlines >= line || (newlines === line - 1 && endsInsideLine);
+        let index = buffer.indexOf(NEWLINE_BYTE, 0);
+        while (index >= 0 && index < bytesRead) {
+          newlines += 1;
+          if (newlines >= line) return true;
+          index = buffer.indexOf(NEWLINE_BYTE, index + 1);
+        }
+        endsInsideLine = buffer[bytesRead - 1] !== NEWLINE_BYTE;
+      }
+    } finally {
+      await handle.close();
+    }
+  }).catch(() => false);
 }
 
 function buildSearchInput(
@@ -211,6 +268,7 @@ function buildSearchInput(
     blankBehavior: options.blankQueryBehavior ?? "none",
   });
   if (!plan) return null;
+  const isSuffixMode = options.matchMode === "suffix";
 
   return {
     root,
@@ -218,11 +276,14 @@ function buildSearchInput(
     includeDirectories,
     includeFiles,
     matchMode: options.matchMode ?? "fuzzy",
+    lineHint: options.lineHint,
     pathFormat: options.pathFormat,
     hiddenDirectoryNames: new Set(options.traversableHiddenDirectoryNames ?? []),
     limit: normalizeLimit(options.limit),
-    maxDepth: options.maxDepth ?? DEFAULT_MAX_DEPTH,
-    maxEntriesScanned: options.maxEntriesScanned ?? DEFAULT_MAX_ENTRIES_SCANNED,
+    maxDepth: options.maxDepth ?? (isSuffixMode ? SUFFIX_MAX_DEPTH : DEFAULT_MAX_DEPTH),
+    maxEntriesScanned:
+      options.maxEntriesScanned ??
+      (isSuffixMode ? SUFFIX_MAX_ENTRIES_SCANNED : DEFAULT_MAX_ENTRIES_SCANNED),
     confidentResultScanThreshold: options.confidentResultScanThreshold,
     gitIgnoredPaths,
   };
@@ -252,6 +313,7 @@ interface SearchInput {
   includeDirectories: boolean;
   includeFiles: boolean;
   matchMode: DirectorySuggestionMatchMode;
+  lineHint: number | undefined;
   pathFormat: DirectorySuggestionPathFormat;
   hiddenDirectoryNames: Set<string>;
   limit: number;

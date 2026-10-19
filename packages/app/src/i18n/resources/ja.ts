@@ -2051,6 +2051,7 @@ export const ja: TranslationResources = {
     },
     indicator: "リマインダー {{when}}",
   },
+  fileLinkPicker: en.fileLinkPicker,
   notes: en.notes,
   serviceUrl: {
     title: "サービスURLを開く",

@@ -2043,6 +2043,7 @@ export const ko: TranslationResources = {
     },
     indicator: "알림 {{when}}",
   },
+  fileLinkPicker: en.fileLinkPicker,
   notes: en.notes,
   serviceUrl: {
     title: "서비스 URL 열기",

@@ -2094,6 +2094,7 @@ export const fr: TranslationResources = {
     },
     indicator: "Rappel {{when}}",
   },
+  fileLinkPicker: en.fileLinkPicker,
   notes: en.notes,
   serviceUrl: {
     title: "Service ouvertURL",

@@ -2037,6 +2037,7 @@ export const ar: TranslationResources = {
     },
     indicator: "تذكير {{when}}",
   },
+  fileLinkPicker: en.fileLinkPicker,
   notes: en.notes,
   serviceUrl: {
     title: "افتح الخدمة URL",

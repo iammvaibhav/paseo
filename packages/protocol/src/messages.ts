@@ -2990,6 +2990,9 @@ export const DirectorySuggestionsRequestSchema = z.object({
   includeFiles: z.boolean().optional(),
   includeDirectories: z.boolean().optional(),
   matchMode: z.enum(["fuzzy", "suffix"]).optional(),
+  // Suffix mode only: when several files match, keep the ones long enough to have this line.
+  // Older daemons ignore it and return every match.
+  lineHint: z.number().int().min(1).optional(),
   limit: z.number().int().min(1).max(100).optional(),
   requestId: z.string(),
 });

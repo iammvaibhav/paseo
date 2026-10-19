@@ -5276,6 +5276,7 @@ export class DaemonClient {
       includeFiles?: boolean;
       includeDirectories?: boolean;
       matchMode?: "fuzzy" | "suffix";
+      lineHint?: number;
     },
     requestId?: string,
   ): Promise<DirectorySuggestionsPayload> {
@@ -5288,6 +5289,7 @@ export class DaemonClient {
         includeFiles: options.includeFiles,
         includeDirectories: options.includeDirectories,
         matchMode: options.matchMode,
+        lineHint: options.lineHint,
         limit: options.limit,
       },
       responseType: "directory_suggestions_response",
