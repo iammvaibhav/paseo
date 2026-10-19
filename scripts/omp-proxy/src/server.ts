@@ -149,6 +149,12 @@ const EFFORT_LABELS: Record<Effort, string> = {
  * clamping efforts to low/medium/high, `supports_reasoning_disable` to pass
  * `none` through, and `model_parameters` to draw the Prompt Repository
  * controls; `provider` must name the Bifrost provider that fronts this proxy.
+ *
+ * The row is also Bifrost's parameter allowlist: with `compat.should_drop_params`
+ * on, any request field the row does not grant is stripped before the proxy sees
+ * it. Every omp model takes tools and `tool_choice`, so both are granted.
+ * `response_format` and `parallel_tool_calls` stay off: omp's gateway drops them
+ * (`buildStreamOptions` in dispatch.ts), so granting them would only hide that.
  */
 function bifrostRow(key: string, model: Model<Api>, settings: Settings, bifrostProvider: string) {
 	const efforts = getSupportedEfforts(model);
@@ -196,6 +202,8 @@ function bifrostRow(key: string, model: Model<Api>, settings: Settings, bifrostP
 		...(model.contextWindow ? { max_input_tokens: model.contextWindow } : {}),
 		...(model.maxTokens ? { max_output_tokens: model.maxTokens, max_tokens: model.maxTokens } : {}),
 		supports_vision: model.input.includes("image"),
+		supports_function_calling: true,
+		supports_tool_choice: true,
 		supports_reasoning: model.reasoning,
 		...(model.reasoning ? { reasoning_effort_levels: [...efforts], supports_reasoning_disable: true } : {}),
 		model_parameters: parameters,
