@@ -6,7 +6,7 @@ import {
   parsePageFrameMessage,
   type PageHostThemeMessage,
 } from "@getpaseo/protocol/page/kit";
-import { resolvePageFrameHeight, type PageFrameProps } from "./types";
+import { framedPageSource, resolvePageFrameHeight, type PageFrameProps } from "./types";
 
 // A page is its own opaque origin: it runs scripts and loads the network, but it cannot
 // reach this document, its storage, or the daemon session. No popups: the kit routes
@@ -28,7 +28,7 @@ function urlSandbox(url: string): string {
 
 /** An agent page inline in the chat: a sandboxed iframe on the chat's own background. */
 export function PageFrame({
-  source,
+  source: requestedSource,
   title,
   tokens,
   maxHeight,
@@ -36,6 +36,7 @@ export function PageFrame({
   onOpenUrl,
   testID,
 }: PageFrameProps) {
+  const source = useMemo(() => framedPageSource(requestedSource), [requestedSource]);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const kitTheme = useMemo(() => buildPageKitTheme(tokens), [tokens]);
   // The document is built once per mount; token changes while the row stays mounted go in

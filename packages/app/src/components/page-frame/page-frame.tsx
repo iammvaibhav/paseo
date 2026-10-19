@@ -9,7 +9,7 @@ import {
   parsePageFrameMessage,
   type PageHostThemeMessage,
 } from "@getpaseo/protocol/page/kit";
-import { resolvePageFrameHeight, type PageFrameProps } from "./types";
+import { framedPageSource, resolvePageFrameHeight, type PageFrameProps } from "./types";
 
 const ORIGIN_WHITELIST = ["*"];
 
@@ -23,7 +23,7 @@ function originOf(url: string): string | null {
 
 /** An agent page inline in the chat on iOS and Android: a transparent WebView. */
 export function PageFrame({
-  source,
+  source: requestedSource,
   title,
   tokens,
   maxHeight,
@@ -31,6 +31,7 @@ export function PageFrame({
   onOpenUrl,
   testID,
 }: PageFrameProps) {
+  const source = useMemo(() => framedPageSource(requestedSource), [requestedSource]);
   const webViewRef = useRef<WebView | null>(null);
   const kitTheme = useMemo(() => buildPageKitTheme(tokens), [tokens]);
   // Built once per mount; token changes while mounted are injected, so the page repaints
