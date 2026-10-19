@@ -86,6 +86,7 @@ export function projectAgentSnapshot(agent: Agent): AgentSnapshotPayload {
     attentionTimestamp: agent.attentionTimestamp?.toISOString() ?? null,
     ...(agent.bucket ? { bucket: agent.bucket } : {}),
     archivedAt: agent.archivedAt?.toISOString() ?? null,
+    ...(agent.reminder !== undefined ? { reminder: agent.reminder } : {}),
   };
 }
 
@@ -146,6 +147,7 @@ export function normalizeAgentSnapshot(snapshot: AgentSnapshotPayload, serverId:
     parentAgentId,
     labels: snapshot.labels,
     providerUnavailable: snapshot.providerUnavailable === true,
+    reminder: snapshot.reminder,
   };
 }
 

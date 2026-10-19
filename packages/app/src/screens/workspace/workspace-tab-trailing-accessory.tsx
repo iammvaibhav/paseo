@@ -1,4 +1,4 @@
-import { useMemo, type ReactElement } from "react";
+import { Fragment, useMemo, type ReactElement } from "react";
 import { useTranslation } from "react-i18next";
 import { Text } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import type { WorkspaceTabMenuEntry } from "@/screens/workspace/workspace-tab-menu";
 import type { Theme } from "@/styles/theme";
+import type { AgentReminderMenu } from "@/agent-reminders/reminder-menu";
 
 const ThemedEllipsis = withUnistyles(Ellipsis);
 const ThemedCopy = withUnistyles(Copy);
@@ -104,10 +105,13 @@ export function MobileTabTrailingAccessory({
   menuTestIDBase,
   presentationLabel,
   menuEntries,
+  reminderMenu,
 }: {
   menuTestIDBase: string;
   presentationLabel: string;
   menuEntries: WorkspaceTabMenuEntry[];
+  /** Built by the caller with useAgentReminderMenu; renders at the "remind-me" entry. */
+  reminderMenu?: AgentReminderMenu;
 }): ReactElement {
   const { t } = useTranslation();
   return (
@@ -126,15 +130,19 @@ export function MobileTabTrailingAccessory({
         align="end"
         width={220}
         sheetTitle={presentationLabel}
+        pages={reminderMenu?.pages}
         testID={menuTestIDBase}
       >
-        {menuEntries.map((entry) =>
-          entry.kind === "separator" ? (
-            <DropdownMenuSeparator key={entry.key} />
-          ) : (
-            <MobileTabDropdownMenuItem key={entry.key} entry={entry} />
-          ),
-        )}
+        {menuEntries.map((entry) => {
+          switch (entry.kind) {
+            case "separator":
+              return <DropdownMenuSeparator key={entry.key} />;
+            case "remind-me":
+              return <Fragment key={entry.key}>{reminderMenu?.trigger ?? null}</Fragment>;
+            case "item":
+              return <MobileTabDropdownMenuItem key={entry.key} entry={entry} />;
+          }
+        })}
       </DropdownMenuContent>
     </DropdownMenu>
   );

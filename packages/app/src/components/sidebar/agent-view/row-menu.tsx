@@ -1,4 +1,4 @@
-import { memo, useCallback, type ReactElement } from "react";
+import { Fragment, memo, useCallback, type ReactElement } from "react";
 import { useTranslation } from "react-i18next";
 import { withUnistyles } from "react-native-unistyles";
 import { Archive, CircleCheck, Copy, ExternalLink, Square } from "lucide-react-native";
@@ -11,6 +11,7 @@ import { buildAgentReference, resolveBoardRowMenuActions } from "@/mission-contr
 import { getHostRuntimeStore } from "@/runtime/host-runtime";
 import type { Theme } from "@/styles/theme";
 import { copyToClipboard } from "@/utils/copy-to-clipboard";
+import { useAgentReminderMenu } from "@/agent-reminders/reminder-menu";
 
 const ThemedCircleCheck = withUnistyles(CircleCheck);
 const ThemedArchive = withUnistyles(Archive);
@@ -69,10 +70,17 @@ export const SidebarAgentViewRowMenu = memo(function SidebarAgentViewRowMenu({
     void archiveAgent({ serverId: agent.serverId, agentId: agent.id }).catch(() => {});
   }, [agent.id, agent.serverId, archiveAgent]);
 
+  const reminderMenu = useAgentReminderMenu({
+    serverId: agent.serverId,
+    agentId: agent.id,
+    testIDBase: `sidebar-agent-view-row-${agent.serverId}-${agent.id}`,
+  });
+
   return (
     <ContextMenuContent
       align="start"
       minWidth={180}
+      pages={reminderMenu.pages}
       testID={`sidebar-agent-view-row-menu-${agent.serverId}-${agent.id}`}
     >
       {menuActions.map((action) => {
@@ -90,14 +98,16 @@ export const SidebarAgentViewRowMenu = memo(function SidebarAgentViewRowMenu({
             );
           case "copy-reference":
             return (
-              <ContextMenuItem
-                key={action}
-                leading={MENU_COPY_ICON}
-                onSelect={handleCopyReference}
-                testID={`sidebar-agent-view-row-copy-reference-${agent.serverId}-${agent.id}`}
-              >
-                {t("sidebar.agentView.menu.copyReference")}
-              </ContextMenuItem>
+              <Fragment key={action}>
+                <ContextMenuItem
+                  leading={MENU_COPY_ICON}
+                  onSelect={handleCopyReference}
+                  testID={`sidebar-agent-view-row-copy-reference-${agent.serverId}-${agent.id}`}
+                >
+                  {t("sidebar.agentView.menu.copyReference")}
+                </ContextMenuItem>
+                {reminderMenu.trigger}
+              </Fragment>
             );
           case "stop":
             return (

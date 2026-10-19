@@ -56,6 +56,7 @@ function toAggregatedAgent(agent: Agent, serverId: string, serverLabel: string):
     createdAt: agent.createdAt,
     labels: agent.labels,
     projectPlacement: agent.projectPlacement,
+    reminder: agent.reminder ?? null,
   };
 }
 

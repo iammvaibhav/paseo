@@ -137,6 +137,7 @@ import {
   WorkspaceTabRenameModal,
 } from "@/screens/workspace/use-workspace-tab-rename";
 import { MobileTabTrailingAccessory } from "@/screens/workspace/workspace-tab-trailing-accessory";
+import { useAgentReminderMenu } from "@/agent-reminders/reminder-menu";
 import {
   WorkspaceDesktopTabsRow,
   type WorkspaceDesktopTabRowItem,
@@ -676,6 +677,7 @@ function MobileWorkspaceTabOption({
     tab,
     index: tabIndex,
     tabCount,
+    serverId: normalizedServerId,
     menuTestIDBase,
     showMarkDone,
     onMarkDone: handleMarkDone,
@@ -708,15 +710,21 @@ function MobileWorkspaceTabOption({
     [t],
   );
   const fallbackLabel = getFallbackTabOptionLabel(tab, fallbackLabels);
+  const reminderMenu = useAgentReminderMenu({
+    serverId: normalizedServerId,
+    agentId: tab.target.kind === "agent" ? tab.target.agentId : "",
+    testIDBase: menuTestIDBase,
+  });
   const trailingAccessory = useMemo(
     () => (
       <MobileTabTrailingAccessory
         menuTestIDBase={menuTestIDBase}
         presentationLabel={fallbackLabel}
         menuEntries={menuEntries}
+        reminderMenu={reminderMenu}
       />
     ),
-    [menuTestIDBase, fallbackLabel, menuEntries],
+    [menuTestIDBase, fallbackLabel, menuEntries, reminderMenu],
   );
 
   const renderPresentation = useCallback(

@@ -134,6 +134,8 @@ import { registerDocThreadTools } from "../../doc-threads/tools.js";
 import type { DocThreadsService } from "../../doc-threads/service.js";
 import { registerFleetControlTools } from "./fleet-control-tools.js";
 import { registerFleetUnarchiveTools } from "./fleet-unarchive-tools.js";
+import { registerFleetReminderTools } from "./fleet-reminder-tools.js";
+import type { AgentReminderService } from "../../reminders/agent-reminder-service.js";
 import {
   executeFleetToolOnPeer,
   readCurrentTurn,
@@ -205,6 +207,8 @@ export interface PaseoToolHostDependencies {
   restoreWorkspace?: (workspaceId: string) => Promise<void>;
   /** Push a stored (not live) agent record to every session. */
   emitStoredAgentUpdate?: (record: StoredAgentRecord) => Promise<void>;
+  /** Agent "Remind me" reminders on this host (fleet_remind_agent and friends). */
+  agentReminders?: AgentReminderService | null;
   workspaceRegistry?: Pick<WorkspaceRegistry, "get" | "list" | "upsert">;
   projectRegistry?: Pick<ProjectRegistry, "get" | "list">;
   createDirectoryWorkspace?: (
@@ -5799,6 +5803,15 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
     ...fleetControlOptions,
     paseoHome: options.paseoHome,
     chunkedUploads: options.chunkedUploads,
+  });
+  registerFleetReminderTools({
+    ...fleetControlOptions,
+    agentReminders: options.agentReminders,
+    listOnlinePeerHosts: () =>
+      (peerManager?.getPeerStatuses() ?? [])
+        .filter((peer) => peer.state === "online")
+        .map((peer) => peer.name),
+    callerAgentId,
   });
 
   // The split meta tools share one output contract with fleet_meta. "scheduled"

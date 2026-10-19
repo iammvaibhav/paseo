@@ -222,6 +222,7 @@ describe("notifyOnFinish for MCP clients", () => {
             totals: { events: 0, delivered: 0, failed: 0, attempts: 0, byStatus: {} },
             deliveries: [],
           }),
+          deliver: async () => ({ delivered: true, status: 200, attempts: 1, error: null }),
           armStatusReport: (input) => {
             armedStatusReports.push(input);
           },

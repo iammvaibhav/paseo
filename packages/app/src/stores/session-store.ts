@@ -2,6 +2,7 @@ import equal from "fast-deep-equal";
 import { create } from "zustand";
 import { subscribeWithSelector } from "zustand/middleware";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
+import type { AgentReminder } from "@getpaseo/protocol/agent-reminders";
 import type { ViewedTimelineOwner } from "@/timeline/viewed-timeline-sync";
 import type { AgentDirectoryEntry } from "@/types/agent-directory";
 import {
@@ -113,6 +114,8 @@ export interface Agent {
   labels: Record<string, string>;
   projectPlacement?: ProjectPlacementPayload | null;
   providerUnavailable?: boolean;
+  /** Pending "Remind me" reminder; null when none, absent on older daemons. */
+  reminder?: AgentReminder | null;
 }
 
 export interface WorkspaceDescriptor {
@@ -1942,6 +1945,7 @@ export const useSessionStore = create<SessionStore>()(
             bucket: agent.bucket,
             createdAt: agent.createdAt,
             labels: agent.labels,
+            reminder: agent.reminder ?? null,
           });
         }
         return entries;

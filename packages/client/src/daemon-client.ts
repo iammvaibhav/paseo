@@ -154,6 +154,7 @@ import type { ScheduleCadence } from "@getpaseo/protocol/schedule/types";
 import type { RoutingProjectCreateResponse, RoutingSuggestion } from "@getpaseo/protocol/routing";
 import type { AgentSearchResponse } from "@getpaseo/protocol/agent-search";
 import type { AgentUnarchiveResponse } from "@getpaseo/protocol/agent-unarchive";
+import type { AgentReminder } from "@getpaseo/protocol/agent-reminders";
 import {
   asUint8Array,
   decodeFileTransferFrame,
@@ -3426,6 +3427,41 @@ export class DaemonClient {
       throw new Error(payload.error);
     }
     return payload;
+  }
+
+  /** Set the agent's "Remind me" reminder, replacing a pending one (features.agentReminders). */
+  async setAgentReminder(input: {
+    agentId: string;
+    remindAt: string;
+    note?: string | null;
+  }): Promise<AgentReminder> {
+    const payload = await this.sendCorrelatedSessionRequest({
+      message: {
+        type: "agent.reminder.set.request",
+        agentId: input.agentId,
+        remindAt: input.remindAt,
+        note: input.note ?? null,
+      },
+      responseType: "agent.reminder.set.response",
+      timeout: 10_000,
+    });
+    if (payload.error || !payload.reminder) {
+      throw new Error(payload.error ?? "Setting the reminder failed");
+    }
+    return payload.reminder;
+  }
+
+  /** Cancel the agent's pending reminder; false when it had none (features.agentReminders). */
+  async cancelAgentReminder(agentId: string): Promise<boolean> {
+    const payload = await this.sendCorrelatedSessionRequest({
+      message: { type: "agent.reminder.cancel.request", agentId },
+      responseType: "agent.reminder.cancel.response",
+      timeout: 10_000,
+    });
+    if (payload.error) {
+      throw new Error(payload.error);
+    }
+    return payload.cancelled;
   }
 
   /**

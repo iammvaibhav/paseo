@@ -118,6 +118,7 @@ import type { PageStore } from "./page-tools/page-store.js";
 import type { RoutingService } from "./routing/routing-service.js";
 import type { AgentSearchService } from "./agent-search/agent-search-service.js";
 import type { UnarchiveAgent } from "./agent/tools/fleet-unarchive-tools.js";
+import type { AgentReminderService } from "./reminders/agent-reminder-service.js";
 import type { DaemonRuntimeConfig } from "./session/daemon/daemon-session.js";
 import { DirectorySyncService } from "./directory-sync/index.js";
 import { OWNER_PERMISSIONS, type DaemonPermission } from "./authorization/index.js";
@@ -642,6 +643,7 @@ export class VoiceAssistantWebSocketServer {
   private readonly routingService: RoutingService | null;
   private readonly agentSearchService: AgentSearchService | null;
   private readonly unarchiveAgent: UnarchiveAgent | null;
+  private readonly agentReminders: AgentReminderService | null;
   private readonly hubRelationships: HubRelationshipManagement | null;
   private readonly peerManager: PeerManager | null;
   private readonly missionControlService: MissionControlService | null;
@@ -735,6 +737,7 @@ export class VoiceAssistantWebSocketServer {
       routingService?: RoutingService | null;
       agentSearchService?: AgentSearchService | null;
       unarchiveAgent?: UnarchiveAgent | null;
+      agentReminders?: AgentReminderService | null;
     },
   ) {
     this.onWorkspaceArchived = onWorkspaceArchived;
@@ -753,6 +756,7 @@ export class VoiceAssistantWebSocketServer {
     this.routingService = websocketServices?.routingService ?? null;
     this.agentSearchService = websocketServices?.agentSearchService ?? null;
     this.unarchiveAgent = websocketServices?.unarchiveAgent ?? null;
+    this.agentReminders = websocketServices?.agentReminders ?? null;
     this.hubRelationships = hubRelationships ?? null;
     this.peerManager = peerManager ?? null;
     this.missionControlService = missionControlService ?? null;
@@ -1578,6 +1582,7 @@ export class VoiceAssistantWebSocketServer {
       routingService: this.routingService,
       agentSearchService: this.agentSearchService,
       unarchiveAgent: this.unarchiveAgent,
+      agentReminders: this.agentReminders,
       resolveSourcePeer: (source) => {
         const identity = source ? this.socketIdentities.get(source as WebSocketLike) : undefined;
         return identity
@@ -2142,6 +2147,8 @@ export class VoiceAssistantWebSocketServer {
         ...(this.agentSearchService ? { agentSearch: true } : {}),
         // COMPAT(agentUnarchive): added 2026-10-15, remove gate after 2027-04-15.
         ...(this.unarchiveAgent ? { agentUnarchive: true } : {}),
+        // COMPAT(agentReminders): added 2026-10-19, remove gate after 2027-04-19.
+        ...(this.agentReminders ? { agentReminders: true } : {}),
         // COMPAT(scratchWorkspace): added 2026-10-12, remove gate after 2027-04-12.
         ...(this.routingService ? { scratchWorkspace: true } : {}),
       },

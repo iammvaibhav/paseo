@@ -549,6 +549,43 @@ describe("buildWorkspaceTabMenuEntries", () => {
     expect(onMoveAgent).toHaveBeenCalledWith("agent-123");
   });
 
+  it("adds 'Remind me' after 'Copy agent id' on an agent tab whose host is known", () => {
+    const input = {
+      surface: "desktop" as const,
+      index: 0,
+      tabCount: 1,
+      menuTestIDBase: "workspace-tab-context-agent_123",
+      onCopyResumeCommand: vi.fn(),
+      onCopyAgentId: vi.fn(),
+      onCopyTerminalId: vi.fn(),
+      onCopyFilePath: vi.fn(),
+      onReloadAgent: vi.fn(),
+      onRenameTab: vi.fn(),
+      onCloseTab: vi.fn(),
+      onCloseTabsBefore: vi.fn(),
+      onCloseTabsAfter: vi.fn(),
+      onCloseOtherTabs: vi.fn(),
+    };
+    const keys = buildWorkspaceTabMenuEntries({
+      ...input,
+      tab: createAgentTab(),
+      serverId: "srv-1",
+    }).map((entry) => entry.key);
+    expect(keys.slice(keys.indexOf("copy-agent-id"), keys.indexOf("copy-agent-id") + 2)).toEqual([
+      "copy-agent-id",
+      "remind-me",
+    ]);
+    const remind = buildWorkspaceTabMenuEntries({
+      ...input,
+      tab: createAgentTab(),
+      serverId: "srv-1",
+    }).find((entry) => entry.kind === "remind-me");
+    expect(remind).toMatchObject({ serverId: "srv-1", agentId: "agent-123" });
+    expect(
+      buildWorkspaceTabMenuEntries({ ...input, tab: createAgentTab() }).map((entry) => entry.key),
+    ).not.toContain("remind-me");
+  });
+
   it("omits 'Move to new workspace' for non-agent tabs", () => {
     const onMoveToNewWorkspace = vi.fn();
     const entries = buildWorkspaceTabMenuEntries({
