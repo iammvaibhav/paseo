@@ -53,6 +53,7 @@ async function searchRelativeDirectoryEntries(options: {
   includeFiles?: boolean;
   includeDirectories?: boolean;
   matchMode?: "fuzzy" | "suffix";
+  lineHint?: number;
   maxDepth?: number;
   maxEntriesScanned?: number;
   respectGitIgnore?: boolean;
@@ -64,6 +65,7 @@ async function searchRelativeDirectoryEntries(options: {
     includeFiles: options.includeFiles,
     includeDirectories: options.includeDirectories,
     matchMode: options.matchMode,
+    lineHint: options.lineHint,
     pathQueryPolicy: "slashes",
     blankQueryBehavior: "children",
     traversableHiddenDirectoryNames: WORKSPACE_SEARCH_HIDDEN_DIRECTORIES,
@@ -771,10 +773,131 @@ describe("relative typed-entry configuration", () => {
       { path: "src/file.ts", kind: "file" },
       { path: "packages/app/src/file.ts", kind: "file" },
     ]);
-    expect(suffixResults).toEqual([
-      { path: "src/file.ts", kind: "file" },
-      { path: "packages/app/src/file.ts", kind: "file" },
+    // `src/file.ts` exists as written, so it is the only answer.
+    expect(suffixResults).toEqual([{ path: "src/file.ts", kind: "file" }]);
+  });
+
+  it("suffix mode finds files deeper than the discovery depth budget", async () => {
+    const deepDir = path.join(workspaceDir, ...Array.from({ length: 14 }, (_, i) => `d${i}`));
+    mkdirSync(deepDir, { recursive: true });
+    writeFileSync(path.join(deepDir, "deep_module.py"), "");
+
+    const results = await searchRelativeDirectoryEntries({
+      cwd: workspaceDir,
+      query: "deep_module.py",
+      limit: 50,
+      includeFiles: true,
+      includeDirectories: false,
+      matchMode: "suffix",
+    });
+
+    expect(results.map((entry) => entry.path)).toEqual([
+      `${Array.from({ length: 14 }, (_, i) => `d${i}`).join("/")}/deep_module.py`,
     ]);
+  });
+
+  it("suffix mode keeps only the matches that have the hinted line, unless none do", async () => {
+    mkdirSync(path.join(workspaceDir, "api"), { recursive: true });
+    mkdirSync(path.join(workspaceDir, "portal"), { recursive: true });
+    mkdirSync(path.join(workspaceDir, "feed"), { recursive: true });
+    writeFileSync(path.join(workspaceDir, "api", "apps.py"), "line\n".repeat(20));
+    // Exactly 891 lines, the last one without a trailing newline.
+    writeFileSync(path.join(workspaceDir, "portal", "apps.py"), `${"line\n".repeat(890)}last`);
+    writeFileSync(path.join(workspaceDir, "feed", "apps.py"), "line\n".repeat(890));
+    const search = (lineHint: number) =>
+      searchRelativeDirectoryEntries({
+        cwd: workspaceDir,
+        query: "apps.py",
+        limit: 50,
+        includeFiles: true,
+        includeDirectories: false,
+        matchMode: "suffix",
+        lineHint,
+      });
+
+    expect((await search(891)).map((entry) => entry.path)).toEqual(["portal/apps.py"]);
+    expect((await search(890)).map((entry) => entry.path)).toEqual([
+      "feed/apps.py",
+      "portal/apps.py",
+    ]);
+    // A stale line number past every file still offers every match.
+    expect((await search(5000)).map((entry) => entry.path)).toEqual([
+      "api/apps.py",
+      "feed/apps.py",
+      "portal/apps.py",
+    ]);
+  });
+
+  it("suffix mode prefers a basename that exists at the workspace root", async () => {
+    mkdirSync(path.join(workspaceDir, "nested"), { recursive: true });
+    writeFileSync(path.join(workspaceDir, "review.json"), "{}\n");
+    writeFileSync(path.join(workspaceDir, "nested", "review.json"), "{}\n");
+
+    const results = await searchRelativeDirectoryEntries({
+      cwd: workspaceDir,
+      query: "review.json",
+      limit: 50,
+      includeFiles: true,
+      includeDirectories: false,
+      matchMode: "suffix",
+    });
+
+    expect(results).toEqual([{ path: "review.json", kind: "file" }]);
+  });
+
+  // The references from a real PR review, against the layout of the repo it reviewed.
+  it("resolves each reference from a review message to exactly one file", async () => {
+    const files: Record<string, number> = {
+      "portal/app/portal/schema/mutation/bulk_deactivate_nodes.py": 62,
+      "portal/app/portal/apps.py": 1021,
+      "portal/app/api/apps.py": 40,
+      "portal/app/feed/apps.py": 12,
+      "portal/app/portal/schema/type/node.py": 927,
+      "portal/app/rtb/schema/node.py": 300,
+      "portal/app/portal/schema/query/query.py": 2939,
+      "portal/app/stats/schema/query.py": 200,
+      "portal/app/portal/appliance_schema/query.py": 120,
+      "portal/app/alerts/common.py": 400,
+      "appliance/src/config_manager/utils/common.py": 281,
+      "portal/app/ambient_ai/utils/auth.py": 1750,
+    };
+    for (const [file, lines] of Object.entries(files)) {
+      mkdirSync(path.join(workspaceDir, path.dirname(file)), { recursive: true });
+      writeFileSync(path.join(workspaceDir, file), "x\n".repeat(lines));
+    }
+
+    const resolve = async (query: string, lineHint: number) =>
+      (
+        await searchRelativeDirectoryEntries({
+          cwd: workspaceDir,
+          query,
+          limit: 50,
+          includeFiles: true,
+          includeDirectories: false,
+          matchMode: "suffix",
+          lineHint,
+        })
+      ).map((entry) => entry.path);
+
+    expect({
+      "bulk_deactivate_nodes.py:23": await resolve("bulk_deactivate_nodes.py", 23),
+      "apps.py:891": await resolve("apps.py", 891),
+      "type/node.py:896": await resolve("type/node.py", 896),
+      "query.py:1089-1094": await resolve("query.py", 1094),
+      "appliance_schema/query.py:66": await resolve("appliance_schema/query.py", 66),
+      "alerts/common.py:146": await resolve("alerts/common.py", 146),
+      "ambient_ai/utils/auth.py:51": await resolve("ambient_ai/utils/auth.py", 51),
+      "portal/app/portal/apps.py:891": await resolve("portal/app/portal/apps.py", 891),
+    }).toEqual({
+      "bulk_deactivate_nodes.py:23": ["portal/app/portal/schema/mutation/bulk_deactivate_nodes.py"],
+      "apps.py:891": ["portal/app/portal/apps.py"],
+      "type/node.py:896": ["portal/app/portal/schema/type/node.py"],
+      "query.py:1089-1094": ["portal/app/portal/schema/query/query.py"],
+      "appliance_schema/query.py:66": ["portal/app/portal/appliance_schema/query.py"],
+      "alerts/common.py:146": ["portal/app/alerts/common.py"],
+      "ambient_ai/utils/auth.py:51": ["portal/app/ambient_ai/utils/auth.py"],
+      "portal/app/portal/apps.py:891": ["portal/app/portal/apps.py"],
+    });
   });
 
   it("suffix mode resolves exact workspace file paths before broad traversal", async () => {

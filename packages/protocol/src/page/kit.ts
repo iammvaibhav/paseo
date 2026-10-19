@@ -108,6 +108,9 @@ input,select,textarea{background:var(--paseo-surface-1);border:1px solid var(--p
 /**
  * Runs before the page's own scripts. Reports the content height, routes link clicks to
  * the host (pages cannot open windows), applies theme updates, and exposes `paseo.chart`.
+ * Media starts paused: the kit drops `autoplay` and refuses `play()` until the reader has
+ * interacted with the page, so opening or re-mounting a chat never starts a video. Native
+ * controls do not go through `play()` and keep working.
  * Plain ES5-ish source: it is a string, so no bundler or minifier touches it.
  */
 const KIT_SCRIPT = `
@@ -116,6 +119,37 @@ const KIT_SCRIPT = `
   var theme = __THEME__;
   var charts = [];
   var libs = null;
+  var interacted = false;
+  function markInteracted(event){ if (event.isTrusted) interacted = true; }
+  window.addEventListener("pointerdown", markInteracted, true);
+  window.addEventListener("keydown", markInteracted, true);
+  window.addEventListener("touchstart", markInteracted, true);
+  var mediaProto = window.HTMLMediaElement && window.HTMLMediaElement.prototype;
+  if (mediaProto) {
+    var nativePlay = mediaProto.play;
+    mediaProto.play = function(){
+      if (interacted) return nativePlay.apply(this, arguments);
+      return Promise.reject(new DOMException("Media plays only after the reader interacts with the page.", "NotAllowedError"));
+    };
+    var autoplay = Object.getOwnPropertyDescriptor(mediaProto, "autoplay");
+    if (autoplay && autoplay.configurable) {
+      Object.defineProperty(mediaProto, "autoplay", { configurable: true, enumerable: autoplay.enumerable, get: autoplay.get, set: function(){} });
+    }
+  }
+  function dropAutoplay(node){
+    if (!node || node.nodeType !== 1) return;
+    if (node.hasAttribute("autoplay") && (node.tagName === "VIDEO" || node.tagName === "AUDIO")) node.removeAttribute("autoplay");
+    var nested = node.querySelectorAll ? node.querySelectorAll("video[autoplay],audio[autoplay]") : [];
+    for (var i = 0; i < nested.length; i++) nested[i].removeAttribute("autoplay");
+  }
+  // Records arrive before any media has data to autoplay with, so removal always wins.
+  if (window.MutationObserver) new MutationObserver(function(records){
+    for (var i = 0; i < records.length; i++) {
+      var record = records[i];
+      if (record.type === "attributes") dropAutoplay(record.target);
+      else for (var j = 0; j < record.addedNodes.length; j++) dropAutoplay(record.addedNodes[j]);
+    }
+  }).observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["autoplay"] });
   function post(message){
     message.source = ${JSON.stringify(PAGE_FRAME_SOURCE)};
     try {
@@ -314,4 +348,23 @@ export function buildPageDocument(input: {
   const doctype = DOCTYPE_RE.exec(html)?.[0] ?? "<!doctype html>";
   const body = html.replace(DOCTYPE_RE, "");
   return `${doctype}<html><head>${head}</head><body>${body}</body></html>`;
+}
+
+const VIDEO_PATH_RE = /\.(?:mp4|m4v|mov|webm|ogv)$/i;
+
+/**
+ * The page for a URL that names a video file, or null for any other URL. A frame pointed
+ * at the file itself gets the browser's media document, which autoplays (Chromium and
+ * WebKit both add `autoplay`); this page shows the same video paused, with controls.
+ */
+export function buildVideoPageHtml(url: string): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  if (!VIDEO_PATH_RE.test(parsed.pathname)) return null;
+  const src = parsed.href.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+  return `<video controls playsinline preload="metadata" src="${src}" style="display:block;width:100%;height:auto;background:#000"></video>`;
 }

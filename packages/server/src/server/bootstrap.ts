@@ -158,6 +158,8 @@ import {
   createMcpFinishNotifier,
   type McpNotifyTarget,
 } from "./mcp-fleet/finish-notifier.js";
+import { createAgentReminderService } from "./reminders/agent-reminder-service.js";
+import { createReminderAgentDescriber } from "./reminders/reminder-agent-info.js";
 import { resolveVaultSecret, warmVaultSecrets } from "./secrets/vault-secret.js";
 import {
   createPaseoToolCatalog,
@@ -2285,6 +2287,36 @@ export async function createPaseoDaemon(
       },
       agentId,
     );
+  // "Remind me": reminders live with their agent on this host and POST
+  // paseo.agent.reminder through the finish notifier's delivery path.
+  const agentReminders = createAgentReminderService({
+    filePath: path.join(config.paseoHome, "agent-reminders.json"),
+    logger,
+    hostsAgent: async (agentId) => (await agentStorage.get(agentId)) !== null,
+    resolveTarget: (name) => loadNamedNotifyTargets().get(name) ?? null,
+    describeAgent: createReminderAgentDescriber({
+      agentManager,
+      agentStorage,
+      logger,
+      serverId,
+      hostLabel: () => missionControlHostAlias ?? getHostName(),
+      appBaseUrl: () => appBaseUrl,
+      readBucket: (agentId) => missionControlService.getLifecycleBucket(agentId),
+    }),
+    deliver: (input) => mcpFinishNotifier.deliver(input),
+    onChange: (agentId) => {
+      if (agentManager.getAgent(agentId)) {
+        agentManager.notifyAgentState(agentId);
+        return;
+      }
+      void agentStorage
+        .get(agentId)
+        .then((record) => (record ? emitStoredAgentUpdateExternal(record) : undefined))
+        .catch((error: unknown) => {
+          logger.warn({ err: error, agentId }, "agent reminder push failed");
+        });
+    },
+  });
   // Vault-backed secrets are read once per daemon run: load every aside://
   // reference the config names now (routing keys, MCP client webhooks) so the
   // first request does not pay for the vault. Values are never logged.
@@ -2447,6 +2479,7 @@ export async function createPaseoDaemon(
     emitAgentRemoved: emitAgentRemovedExternal,
     restoreWorkspace: restoreWorkspaceExternal,
     emitStoredAgentUpdate: emitStoredAgentUpdateExternal,
+    agentReminders,
     workspaceRegistry,
     projectRegistry,
     createDirectoryWorkspace: async (cwd, title, projectId) => {
@@ -2939,6 +2972,11 @@ export async function createPaseoDaemon(
       } catch (error) {
         logger.error({ err: error }, "Failed to restore agent finish watches");
       }
+      try {
+        await agentReminders.start();
+      } catch (error) {
+        logger.error({ err: error }, "Failed to start agent reminders");
+      }
 
       // Start main HTTP server
       await new Promise<void>((resolve, reject) => {
@@ -3111,6 +3149,7 @@ export async function createPaseoDaemon(
                 routingService,
                 agentSearchService,
                 unarchiveAgent,
+                agentReminders,
               },
             );
             pluginRuntime.bindPaseoSessionHost(wsServer);
@@ -3195,6 +3234,7 @@ export async function createPaseoDaemon(
     // Freeze both ingress and registration before taking the agent closure snapshot.
     wsServer?.prepareForShutdown();
     agentManager.prepareForShutdown();
+    agentReminders.stop();
     // Before agents close: the shutdown's "closed" state is not the end of a watched run.
     await mcpFinishNotifier.suspend();
     await agentFinishWatches.suspend();

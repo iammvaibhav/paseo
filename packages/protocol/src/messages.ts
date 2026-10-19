@@ -30,6 +30,13 @@ import { WORKSPACE_LABEL_COLORS } from "./workspace-labels.js";
 import { AgentSearchRequestSchema, AgentSearchResponseSchema } from "./agent-search.js";
 import { AgentUnarchiveRequestSchema, AgentUnarchiveResponseSchema } from "./agent-unarchive.js";
 import {
+  AgentReminderCancelRequestSchema,
+  AgentReminderCancelResponseSchema,
+  AgentReminderSchema,
+  AgentReminderSetRequestSchema,
+  AgentReminderSetResponseSchema,
+} from "./agent-reminders.js";
+import {
   AgentModeSetRequestSchema,
   AgentModeSetResponseSchema,
   RoutingProjectCreateRequestSchema,
@@ -1165,6 +1172,9 @@ export const AgentSnapshotPayloadSchema = z.object({
   bucket: z.enum(["needs_you", "running", "ready", "done", "idle"]).optional(),
   archivedAt: z.string().nullable().optional(),
   providerUnavailable: z.boolean().optional(),
+  // The agent's pending "Remind me" reminder; null/absent when none.
+  // COMPAT(agentReminders): added 2026-10-19, remove optional after 2027-04-19.
+  reminder: AgentReminderSchema.nullable().optional(),
 });
 
 export type AgentSnapshotPayload = z.infer<typeof AgentSnapshotPayloadSchema>;
@@ -2980,6 +2990,9 @@ export const DirectorySuggestionsRequestSchema = z.object({
   includeFiles: z.boolean().optional(),
   includeDirectories: z.boolean().optional(),
   matchMode: z.enum(["fuzzy", "suffix"]).optional(),
+  // Suffix mode only: when several files match, keep the ones long enough to have this line.
+  // Older daemons ignore it and return every match.
+  lineHint: z.number().int().min(1).optional(),
   limit: z.number().int().min(1).max(100).optional(),
   requestId: z.string(),
 });
@@ -3737,6 +3750,8 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   RoutingProjectCreateRequestSchema,
   AgentSearchRequestSchema,
   AgentUnarchiveRequestSchema,
+  AgentReminderSetRequestSchema,
+  AgentReminderCancelRequestSchema,
   AgentModeSetRequestSchema,
   ProjectIconSetRequestSchema,
   ProjectRemoveRequestSchema,
@@ -4393,6 +4408,9 @@ export const ServerInfoStatusPayloadSchema = z
         // COMPAT(agentUnarchive): added 2026-10-15, remove gate after 2027-04-15.
         // agent.unarchive.* (unarchive an agent with its workspace and project).
         agentUnarchive: z.boolean().optional(),
+        // COMPAT(agentReminders): added 2026-10-19, remove gate after 2027-04-19.
+        // agent.reminder.* (Remind me) and AgentSnapshotPayload.reminder.
+        agentReminders: z.boolean().optional(),
         // COMPAT(scratchWorkspace): added 2026-10-12, remove gate after 2027-04-12.
         // routing.project.create scratch responses carry the scratch project's
         // baseWorkspaceId (History Ask agents run there).
@@ -7709,6 +7727,8 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   RoutingProjectCreateResponseSchema,
   AgentSearchResponseSchema,
   AgentUnarchiveResponseSchema,
+  AgentReminderSetResponseSchema,
+  AgentReminderCancelResponseSchema,
   AgentModeSetResponseSchema,
   ProjectIconSetResponseSchema,
   ProjectRemoveResponseSchema,

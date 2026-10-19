@@ -72,6 +72,14 @@ export type WorkspaceTabMenuEntry =
   | {
       kind: "separator";
       key: string;
+    }
+  | {
+      /** "Remind me ›": a submenu the renderer builds with useAgentReminderMenu. */
+      kind: "remind-me";
+      key: string;
+      serverId: string;
+      agentId: string;
+      testIDBase: string;
     };
 
 interface BuildWorkspaceTabMenuEntriesInput {
@@ -80,6 +88,8 @@ interface BuildWorkspaceTabMenuEntriesInput {
   index: number;
   tabCount: number;
   menuTestIDBase: string;
+  /** The host the tab's agent runs on; enables the "Remind me" submenu on agent tabs. */
+  serverId?: string;
   /** Show "Mark done" as the first entry for a Ready agent tab (spec). */
   showMarkDone?: boolean;
   /** Invoked when the "Mark done" entry is selected. */
@@ -104,6 +114,8 @@ interface BuildWorkspaceDesktopTabActionsInput {
   tab: WorkspaceTabDescriptor;
   index: number;
   tabCount: number;
+  /** The host the tab's agent runs on; enables the "Remind me" submenu on agent tabs. */
+  serverId?: string;
   /** Show "Mark done" as the first entry for a Ready agent tab (spec). */
   showMarkDone?: boolean;
   /** Invoked when the "Mark done" entry is selected. */
@@ -253,6 +265,15 @@ export function buildWorkspaceTabMenuEntries(
         void onCopyAgentId(agentId);
       },
     });
+    if (input.serverId) {
+      entries.push({
+        kind: "remind-me",
+        key: "remind-me",
+        serverId: input.serverId,
+        agentId,
+        testIDBase: menuTestIDBase,
+      });
+    }
     if (onMoveAgent) {
       entries.push({
         kind: "item",
@@ -412,6 +433,7 @@ export function buildWorkspaceDesktopTabActions(
       index: input.index,
       tabCount: input.tabCount,
       menuTestIDBase: contextMenuTestId,
+      serverId: input.serverId,
       showMarkDone: input.showMarkDone,
       onMarkDone: input.onMarkDone,
       onCopyResumeCommand: input.onCopyResumeCommand,

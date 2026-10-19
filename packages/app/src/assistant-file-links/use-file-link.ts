@@ -125,7 +125,8 @@ export function useFileLink(source: AssistantFileLinkSource): UseFileLinkResult 
     if (resolution.kind === "resolved") {
       return resolution.value.kind === "file" ? resolution.value.target : null;
     }
-    return query.data ?? null;
+    // Several matches have no single path to show until the picker narrows them.
+    return query.data?.length === 1 ? (query.data[0] ?? null) : null;
   }, [query.data, resolution]);
 
   return useMemo(() => ({ target, onHoverIn, onPress, open }), [target, onHoverIn, onPress, open]);
@@ -201,7 +202,7 @@ function openAssistantFileLink(input: {
 
   const run = async () => {
     try {
-      const target = await input.queryClient.fetchQuery({
+      const candidates = await input.queryClient.fetchQuery({
         queryKey: capturedQueryKey,
         queryFn: () =>
           fetchDaemonResolution({
@@ -214,12 +215,23 @@ function openAssistantFileLink(input: {
         retry: 0,
         staleTime: Infinity,
       });
-      await dispatchFileTarget({
-        target,
-        disposition: input.disposition,
-        capturedServerId: capturedConfig.serverId,
-        capturedWorkspaceRoot: capturedConfig.workspaceRoot,
-        context: input.context,
+      const dispatchCandidate = (target: InlinePathTarget) =>
+        dispatchFileTarget({
+          target,
+          disposition: input.disposition,
+          capturedServerId: capturedConfig.serverId,
+          capturedWorkspaceRoot: capturedConfig.workspaceRoot,
+          context: input.context,
+        });
+      const [onlyCandidate] = candidates;
+      if (candidates.length === 1 && onlyCandidate) {
+        await dispatchCandidate(onlyCandidate);
+        return;
+      }
+      input.context.showPicker({
+        token: capturedResolution.token,
+        candidates,
+        onSelect: (target) => void dispatchCandidate(target),
       });
     } catch (error) {
       await dispatchUnresolvedError({

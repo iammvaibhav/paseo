@@ -182,6 +182,8 @@ const INBOUND_PERMISSION = {
   "agent.search.request": "workspace.read",
   // Restores the agent's archived workspace and project too, like workspace.recovery.restore.
   "agent.unarchive.request": "workspace.manage",
+  "agent.reminder.set.request": "workspace.write",
+  "agent.reminder.cancel.request": "workspace.write",
   "routing.project.create.request": "workspace.manage",
   "agent.agent_mode.set.request": "workspace.write",
   "project.github.clone.request": "workspace.manage",
@@ -500,6 +502,8 @@ const OUTBOUND_PERMISSION = {
   "routing.suggest.response": "workspace.read",
   "agent.search.response": "workspace.read",
   "agent.unarchive.response": "workspace.manage",
+  "agent.reminder.set.response": "workspace.write",
+  "agent.reminder.cancel.response": "workspace.write",
   "routing.project.create.response": "workspace.manage",
   "agent.agent_mode.set.response": "workspace.write",
   "project.github.clone.response": "workspace.manage",

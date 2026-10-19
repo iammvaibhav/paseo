@@ -921,13 +921,15 @@ export function TerminalPane({
         return null;
       }
       try {
-        return await fetchDaemonResolution({
+        // A terminal link resolves while hovering and has no picker; it opens the best match.
+        const [bestMatch] = await fetchDaemonResolution({
           ambiguousQuery: resolution.ambiguousQuery,
           token: resolution.token,
           target: resolution.target,
           workspaceRoot: cwd,
           getDirectorySuggestions: (input) => client.getDirectorySuggestions(input),
         });
+        return bestMatch ?? null;
       } catch {
         return null;
       }

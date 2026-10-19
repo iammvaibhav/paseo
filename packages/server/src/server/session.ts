@@ -5,6 +5,7 @@ import type { PageStore } from "./page-tools/page-store.js";
 import type { RoutingService } from "./routing/routing-service.js";
 import type { AgentSearchService } from "./agent-search/agent-search-service.js";
 import type { UnarchiveAgent } from "./agent/tools/fleet-unarchive-tools.js";
+import type { AgentReminderService } from "./reminders/agent-reminder-service.js";
 import { BrowserAutomationHostCapabilitySchema } from "@getpaseo/protocol/browser-automation/capabilities";
 import type {
   SessionEventSubscription,
@@ -229,6 +230,9 @@ const PEER_EXECUTABLE_TOOL_NAMES = new Set([
   "fleet_unarchive_workspace",
   "fleet_agent_status",
   "fleet_ticketize_agent",
+  "fleet_remind_agent",
+  "fleet_cancel_reminder",
+  "fleet_list_reminders",
 ]);
 import { resolveMissionControlMediaFetch } from "./mission-control/media.js";
 import { moveAgentToWorkspace } from "./mission-control/meta-actions.js";
@@ -522,6 +526,8 @@ export interface SessionOptions {
   agentSearchService?: AgentSearchService | null;
   /** Unarchive an agent with its archived workspace (agent.unarchive.*). */
   unarchiveAgent?: UnarchiveAgent | null;
+  /** Agent "Remind me" reminders (agent.reminder.*, AgentSnapshotPayload.reminder). */
+  agentReminders?: AgentReminderService | null;
   /** How the socket that sent a request reached the daemon. */
   resolveSourcePeer?: (source?: object) => SessionSourcePeer | null;
   clientId: string;
@@ -907,6 +913,7 @@ export class Session {
   private readonly routingService: RoutingService | null;
   private readonly agentSearchService: AgentSearchService | null;
   private readonly unarchiveAgent: UnarchiveAgent | null;
+  private readonly agentReminders: AgentReminderService | null;
   private readonly resolveSourcePeer: (source?: object) => SessionSourcePeer | null;
   private readonly clientId: string;
   private readonly clientType: SessionOptions["clientType"];
@@ -1092,6 +1099,7 @@ export class Session {
     this.routingService = options.routingService ?? null;
     this.agentSearchService = options.agentSearchService ?? null;
     this.unarchiveAgent = options.unarchiveAgent ?? null;
+    this.agentReminders = options.agentReminders ?? null;
     this.resolveSourcePeer = options.resolveSourcePeer ?? (() => null);
     this.clientId = clientId;
     this.clientType = options.clientType;
@@ -2378,8 +2386,15 @@ export class Session {
     payload.title = storedRecord?.title ?? null;
     payload.archivedAt = storedRecord?.archivedAt ?? null;
     this.attachStopOrigin(payload);
+    this.attachReminder(payload);
     await this.attachLifecycleBucket(payload);
     return payload;
+  }
+
+  private attachReminder(payload: AgentSnapshotPayload): void {
+    if (this.agentReminders) {
+      payload.reminder = this.agentReminders.getPending(payload.id);
+    }
   }
 
   private async attachLifecycleBucket(payload: AgentSnapshotPayload): Promise<void> {
@@ -2425,6 +2440,7 @@ export class Session {
   ): AgentSnapshotPayload {
     const payload = buildStoredAgentPayload(record, registeredProviderIds);
     this.attachStopOrigin(payload);
+    this.attachReminder(payload);
     return payload;
   }
 
@@ -3646,6 +3662,10 @@ export class Session {
         return this.handleAgentSearchRequest(msg);
       case "agent.unarchive.request":
         return this.handleAgentUnarchiveRequest(msg);
+      case "agent.reminder.set.request":
+        return this.handleAgentReminderSetRequest(msg);
+      case "agent.reminder.cancel.request":
+        return this.handleAgentReminderCancelRequest(msg);
       case "routing.project.create.request":
         return this.handleRoutingProjectCreateRequest(msg);
       case "agent.agent_mode.set.request":
@@ -4581,6 +4601,63 @@ export class Session {
           requestId: request.requestId,
           suggestion: null,
           error: getErrorMessageOr(error, "Routing failed"),
+        },
+      });
+    }
+  }
+
+  private async handleAgentReminderSetRequest(
+    request: Extract<SessionInboundMessage, { type: "agent.reminder.set.request" }>,
+  ): Promise<void> {
+    const { agentId, requestId } = request;
+    try {
+      if (!this.agentReminders) {
+        throw new Error("Reminders are not available on this host");
+      }
+      const { reminder } = await this.agentReminders.set({
+        agentId,
+        remindAt: new Date(request.remindAt),
+        note: request.note ?? null,
+        createdBy: "app",
+      });
+      this.emit({
+        type: "agent.reminder.set.response",
+        payload: { requestId, agentId, reminder, error: null },
+      });
+    } catch (error) {
+      this.emit({
+        type: "agent.reminder.set.response",
+        payload: {
+          requestId,
+          agentId,
+          reminder: null,
+          error: getErrorMessageOr(error, "Setting the reminder failed"),
+        },
+      });
+    }
+  }
+
+  private async handleAgentReminderCancelRequest(
+    request: Extract<SessionInboundMessage, { type: "agent.reminder.cancel.request" }>,
+  ): Promise<void> {
+    const { agentId, requestId } = request;
+    try {
+      if (!this.agentReminders) {
+        throw new Error("Reminders are not available on this host");
+      }
+      const cancelled = await this.agentReminders.cancel(agentId);
+      this.emit({
+        type: "agent.reminder.cancel.response",
+        payload: { requestId, agentId, cancelled: cancelled !== null, error: null },
+      });
+    } catch (error) {
+      this.emit({
+        type: "agent.reminder.cancel.response",
+        payload: {
+          requestId,
+          agentId,
+          cancelled: false,
+          error: getErrorMessageOr(error, "Cancelling the reminder failed"),
         },
       });
     }
@@ -6594,7 +6671,8 @@ export class Session {
   }
 
   private async handleDirectorySuggestionsRequest(msg: DirectorySuggestionsRequest): Promise<void> {
-    const { query, limit, requestId, cwd, includeFiles, includeDirectories, matchMode } = msg;
+    const { query, limit, requestId, cwd, includeFiles, includeDirectories, matchMode, lineHint } =
+      msg;
 
     try {
       const workspaceCwd = cwd?.trim();
@@ -6614,6 +6692,7 @@ export class Session {
         includeFiles,
         includeDirectories,
         matchMode,
+        lineHint,
         limit,
       });
       const directories = entries

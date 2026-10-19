@@ -23,6 +23,7 @@ import { useAgentGridStore } from "@/screens/mission-control/agent-grid/store";
 import { focusAgentInGrid } from "@/screens/mission-control/agent-grid/grid-glow";
 import { SidebarAgentHoverCard } from "./hover-card";
 import { SidebarAgentViewRowMenu } from "./row-menu";
+import { AgentReminderIndicator } from "@/agent-reminders/reminder-indicator";
 
 const needsInputColorMapping = (theme: Theme) => ({
   color: theme.colors.background,
@@ -193,6 +194,10 @@ export const SidebarAgentViewRow = memo(function SidebarAgentViewRow({
             <Text style={titleStyle} numberOfLines={1}>
               {title}
             </Text>
+            <AgentReminderIndicator
+              reminder={agent.reminder}
+              testID={`sidebar-agent-view-row-reminder-${agent.serverId}-${agent.id}`}
+            />
             {timeLabel ? (
               <Text
                 style={styles.time}

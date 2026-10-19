@@ -20,26 +20,25 @@ function resolvedSuggestions(
   return { entries, error: null };
 }
 
+interface RecordedSearch {
+  query: string;
+  cwd: string;
+  matchMode: "suffix";
+  lineHint?: number;
+  limit: number;
+}
+
 function suggestionsFromMap(entriesByQuery: Record<string, DirectorySuggestionEntry[]>): {
   getDirectorySuggestions: GetDirectorySuggestions;
-  searches: Array<{
-    query: string;
-    cwd: string;
-    matchMode: "suffix";
-    limit: number;
-  }>;
+  searches: RecordedSearch[];
 } {
-  const searches: Array<{
-    query: string;
-    cwd: string;
-    matchMode: "suffix";
-    limit: number;
-  }> = [];
+  const searches: RecordedSearch[] = [];
   const getDirectorySuggestions: GetDirectorySuggestions = async (input) => {
     searches.push({
       query: input.query,
       cwd: input.cwd,
       matchMode: input.matchMode,
+      lineHint: input.lineHint,
       limit: input.limit,
     });
     return resolvedSuggestions(entriesByQuery[input.query] ?? []);
@@ -185,39 +184,104 @@ describe("classifyForResolution", () => {
   });
 });
 
-describe("fetchDaemonResolution", () => {
-  it("resolves daemon suggestions into workspace file targets", async () => {
+// Every reference shape from a real review message, written in inline code against a repo whose
+// files live several folders below the workspace root (portal/app/portal/schema/...).
+describe("agent file references in inline code", () => {
+  const REVIEW_ROOT = "/home/dev/stackmod";
+
+  it.each([
+    ["bulk_deactivate_nodes.py:23", "bulk_deactivate_nodes.py", 23, undefined],
+    ["apps.py:891", "apps.py", 891, undefined],
+    ["type/node.py:896", "type/node.py", 896, undefined],
+    ["type/node.py:895-896", "type/node.py", 895, 896],
+    ["query.py:1089-1094", "query.py", 1089, 1094],
+    ["alerts/common.py:146", "alerts/common.py", 146, undefined],
+    ["ambient_ai/utils/auth.py:51", "ambient_ai/utils/auth.py", 51, undefined],
+    ["ambient_ai/utils/auth.py#L51", "ambient_ai/utils/auth.py", 51, undefined],
+    ["query.py#L1089-L1094", "query.py", 1089, 1094],
+    ["portal/app/portal/apps.py:891", "portal/app/portal/apps.py", 891, undefined],
+  ])("%s looks up %s at line %i", async (token, query, lineStart, lineEnd) => {
+    const resolution = classifyForResolution(
+      { href: token, text: token, sourceType: "inline-code" },
+      { workspaceRoot: REVIEW_ROOT },
+    );
+    expect(resolution).toMatchObject({
+      kind: "needsLookup",
+      ambiguousQuery: query,
+      token,
+      target: { lineStart, lineEnd },
+    });
+    if (resolution.kind !== "needsLookup") return;
+
+    const repoPath = `portal/app/portal/schema/${query}`;
     const { getDirectorySuggestions, searches } = suggestionsFromMap({
-      "file.ts": [{ path: "packages/app/src/file.ts", kind: "file" }],
+      [query]: [{ path: repoPath, kind: "file" }],
+    });
+    const candidates = await fetchDaemonResolution({
+      ...resolution,
+      workspaceRoot: REVIEW_ROOT,
+      getDirectorySuggestions,
+    });
+
+    expect(searches[0]?.lineHint).toBe(lineEnd ?? lineStart);
+    expect(candidates).toEqual([
+      { raw: token, path: `${REVIEW_ROOT}/${repoPath}`, lineStart, lineEnd },
+    ]);
+  });
+
+  it("leaves a bare line number unlinked: it names no file", () => {
+    expect(
+      classifyForResolution({ href: ":901", text: ":901", sourceType: "inline-code" }, CONTEXT),
+    ).toEqual({ kind: "resolved", value: { kind: "ignored" } });
+  });
+});
+
+describe("fetchDaemonResolution", () => {
+  it("returns every match as a workspace file target, asking for the referenced line", async () => {
+    const { getDirectorySuggestions, searches } = suggestionsFromMap({
+      "file.ts": [
+        { path: "packages/app/src/file.ts", kind: "file" },
+        { path: "src/file.ts", kind: "file" },
+      ],
     });
 
     const result = await fetchDaemonResolution({
       ambiguousQuery: "file.ts",
-      token: "file.ts:12",
+      token: "file.ts:12-20",
       target: {
-        raw: "file.ts:12",
+        raw: "file.ts:12-20",
         path: "/Users/test/project/file.ts",
         lineStart: 12,
-        lineEnd: undefined,
+        lineEnd: 20,
       },
       workspaceRoot: "/Users/test/project",
       getDirectorySuggestions,
     });
 
+    // The end of a range is the line the file must reach.
     expect(searches).toEqual([
       {
         query: "file.ts",
         cwd: "/Users/test/project",
         matchMode: "suffix",
-        limit: 1,
+        lineHint: 20,
+        limit: 50,
       },
     ]);
-    expect(result).toEqual({
-      raw: "file.ts:12",
-      path: "/Users/test/project/packages/app/src/file.ts",
-      lineStart: 12,
-      lineEnd: undefined,
-    });
+    expect(result).toEqual([
+      {
+        raw: "file.ts:12-20",
+        path: "/Users/test/project/packages/app/src/file.ts",
+        lineStart: 12,
+        lineEnd: 20,
+      },
+      {
+        raw: "file.ts:12-20",
+        path: "/Users/test/project/src/file.ts",
+        lineStart: 12,
+        lineEnd: 20,
+      },
+    ]);
   });
 
   it("throws a typed unresolved error when the daemon finds no match", async () => {

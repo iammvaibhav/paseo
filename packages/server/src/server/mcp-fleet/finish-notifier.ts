@@ -251,6 +251,24 @@ export interface McpFinishNotifier {
   subscription(client: string, agentId: string): McpFinishSubscription | null;
   /** Drop the client's standing request for the agent (a send with notifyOnFinish: false). */
   unsubscribe(client: string, agentId: string): void;
+  /**
+   * POST one event that no watch owns (e.g. paseo.agent.reminder) to a target,
+   * signed and retried like a finish event; every attempt is a delivery-log
+   * row. Settles (never rejects) once delivered or given up on.
+   */
+  deliver(input: {
+    client: string;
+    target: McpNotifyTarget;
+    /** Groups the delivery-log rows: the reminder or request id. */
+    watchId: string;
+    deliveryId: string;
+    body: string;
+  }): Promise<{
+    delivered: boolean;
+    status: number | null;
+    attempts: number;
+    error: string | null;
+  }>;
   /** Recorded webhook POST attempts, newest first; empty without a delivery log. */
   listDeliveries(
     query: WebhookDeliveryQuery,
@@ -777,40 +795,28 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
     }
   };
 
-  const sendStatusReport = async (
-    client: string,
-    target: McpNotifyTarget,
-    requestId: string,
-    body: string,
-    deliveryId: string,
-  ) => {
+  // POSTs one event that belongs to no watch (a status report, a reminder),
+  // retrying with backoff. Every attempt lands in the delivery log.
+  const deliverEvent: McpFinishNotifier["deliver"] = async (input) => {
     const delivery = {
-      client,
-      watchId: requestId,
-      deliveryId,
-      url: target.url,
-      headers: await resolveHeaders(target, body),
-      body,
+      client: input.client,
+      watchId: input.watchId,
+      deliveryId: input.deliveryId,
+      url: input.target.url,
+      headers: await resolveHeaders(input.target, input.body),
+      body: input.body,
     };
+    const ids = { client: input.client, watchId: input.watchId, deliveryId: input.deliveryId };
     for (let attempt = 0; ; attempt += 1) {
       const { ok, status, error, retryInMs } = await attemptPost(delivery, attempt);
       if (ok) {
-        logger.info(
-          { client, requestId, status, attempts: attempt + 1 },
-          "mcp status report notification delivered",
-        );
-        return;
+        logger.info({ ...ids, status, attempts: attempt + 1 }, "mcp event delivered");
+        return { delivered: true, status, attempts: attempt + 1, error: null };
       }
-      logger.warn(
-        { client, requestId, status, err: error, attempt: attempt + 1 },
-        "mcp status report notification attempt failed",
-      );
+      logger.warn({ ...ids, status, err: error, attempt: attempt + 1 }, "mcp event attempt failed");
       if (retryInMs === null) {
-        logger.error(
-          { client, requestId, status, attempts: attempt + 1, error },
-          "mcp status report notification failed permanently",
-        );
-        return;
+        logger.error({ ...ids, status, attempts: attempt + 1, error }, "mcp event delivery failed");
+        return { delivered: false, status, attempts: attempt + 1, error };
       }
       await sleep(retryInMs).catch(() => undefined);
     }
@@ -1395,7 +1401,13 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
         }
         const body = JSON.stringify(payload);
 
-        await sendStatusReport(input.client, input.target, input.requestId, body, deliveryId);
+        await deliverEvent({
+          client: input.client,
+          target: input.target,
+          watchId: input.requestId,
+          body,
+          deliveryId,
+        });
       };
 
       activeStatusWatches.set(input.requestId, cleanup);
@@ -1506,6 +1518,8 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
         client,
       });
     },
+
+    deliver: deliverEvent,
 
     async listDeliveries(query) {
       if (!deliveryLog) {

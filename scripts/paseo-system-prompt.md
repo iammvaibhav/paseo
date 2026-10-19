@@ -26,6 +26,14 @@ The reader scans; they do not read. Every word earns its place. Every fact survi
 - `<details><summary>…</summary>` holds only evidence: logs, long file lists, raw output, sources.
 - Work report order: outcome · Changed (file:line) · Verified (command → result) · Risk · Next.
 
+# File references
+
+Paseo turns `path:line` in inline code into a link that opens the file at that line. It finds the file from the path you write, so:
+
+- Write the path relative to your working directory, with the line: `portal/app/portal/apps.py:891`, not `apps.py:891`. A bare basename can match dozens of files.
+- Ranges: `path:start-end`. Outside the working directory: the absolute path.
+- Repeat the path on every reference. Never a bare `:901` or "same file, line 901".
+
 # Pre-send check
 
 - The first line announces a plan → delete it.

@@ -1,5 +1,13 @@
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
+import type { AgentReminder } from "@getpaseo/protocol/agent-reminders";
+import {
+  useAgentReminder,
+  useAgentReminderMenu,
+  type AgentReminderMenu,
+} from "@/agent-reminders/reminder-menu";
+import { AgentReminderIndicator } from "@/agent-reminders/reminder-indicator";
 import React, {
+  Fragment,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -708,6 +716,8 @@ function TabHandleContent({
   tabLabelSkeletonStyle,
   tabLabelStyle,
   modifiedTestId,
+  reminder,
+  reminderTestId,
 }: {
   presentation: WorkspaceTabPresentation;
   isHighlighted: boolean;
@@ -716,6 +726,8 @@ function TabHandleContent({
   tabLabelSkeletonStyle: React.ComponentProps<typeof View>["style"];
   tabLabelStyle: React.ComponentProps<typeof Text>["style"];
   modifiedTestId: string;
+  reminder: AgentReminder | null;
+  reminderTestId: string;
 }) {
   const { t } = useTranslation();
   const tabHandleDataSet = useMemo(
@@ -745,8 +757,25 @@ function TabHandleContent({
           testID={modifiedTestId}
         />
       ) : null}
+      {showLabel ? <AgentReminderIndicator reminder={reminder} testID={reminderTestId} /> : null}
     </View>
   );
+}
+
+/** The tab's "Remind me" submenu and pending reminder; inert for tabs without an agent. */
+function useTabReminder(
+  menuEntries: WorkspaceTabMenuEntry[],
+  fallbackTestID: string,
+): { menu: AgentReminderMenu; reminder: AgentReminder | null } {
+  const entry = menuEntries.find((candidate) => candidate.kind === "remind-me");
+  const serverId = entry?.serverId ?? "";
+  const agentId = entry?.agentId ?? "";
+  const menu = useAgentReminderMenu({
+    serverId,
+    agentId,
+    testIDBase: entry?.testIDBase ?? fallbackTestID,
+  });
+  return { menu, reminder: useAgentReminder(serverId, agentId) };
 }
 
 function TabChip({
@@ -790,6 +819,10 @@ function TabChip({
 }) {
   const { closeButtonTestId, contextMenuTestId, menuEntries } = resolvedTab;
   const { t } = useTranslation();
+  const { menu: reminderMenu, reminder: tabReminder } = useTabReminder(
+    menuEntries,
+    contextMenuTestId,
+  );
   const middleClickRef = useMiddleClickClose(
     useCallback(() => void onCloseTab(tab.tabId), [onCloseTab, tab.tabId]),
   );
@@ -904,6 +937,8 @@ function TabChip({
                 tabLabelSkeletonStyle={tabLabelSkeletonStyle}
                 tabLabelStyle={tabLabelStyle}
                 modifiedTestId={`workspace-tab-modified-${testIdentity}`}
+                reminder={tabReminder}
+                reminderTestId={`workspace-tab-reminder-${testIdentity}`}
               />
             </ContextMenuTrigger>
           </TooltipTrigger>
@@ -968,14 +1003,22 @@ function TabChip({
           </View>
         ) : null}
 
-        <ContextMenuContent align="start" width={DROPDOWN_WIDTH} testID={contextMenuTestId}>
-          {menuEntries.map((entry) =>
-            entry.kind === "separator" ? (
-              <ContextMenuSeparator key={entry.key} />
-            ) : (
-              <TabContextMenuItem key={entry.key} entry={entry} />
-            ),
-          )}
+        <ContextMenuContent
+          align="start"
+          width={DROPDOWN_WIDTH}
+          pages={reminderMenu.pages}
+          testID={contextMenuTestId}
+        >
+          {menuEntries.map((entry) => {
+            switch (entry.kind) {
+              case "separator":
+                return <ContextMenuSeparator key={entry.key} />;
+              case "remind-me":
+                return <Fragment key={entry.key}>{reminderMenu.trigger}</Fragment>;
+              case "item":
+                return <TabContextMenuItem key={entry.key} entry={entry} />;
+            }
+          })}
         </ContextMenuContent>
       </ContextMenu>
     </View>
@@ -1621,6 +1664,7 @@ function ResolvedDesktopTabChip({
         tab: item.tab,
         index,
         tabCount,
+        serverId: normalizedServerId,
         showMarkDone,
         onMarkDone: handleMarkDone,
         onCopyResumeCommand,
@@ -1658,6 +1702,7 @@ function ResolvedDesktopTabChip({
       handleOpenMoveModal,
       handleOpenInNewWindow,
       tabCount,
+      normalizedServerId,
     ],
   );
 
