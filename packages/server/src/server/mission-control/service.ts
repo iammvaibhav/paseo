@@ -1,3 +1,4 @@
+import { AgentViewTracker } from "./agent-views.js";
 import type { Logger } from "pino";
 import type {
   AgentLifecycleStatus,
@@ -281,6 +282,8 @@ export interface UserPrompt {
 
 /** The peer-executable name a host uses to tell its peers a user turn started on one of its agents. */
 export const USER_TURN_PEER_TOOL = "paseo.user_turn";
+/** Asks a peer whether someone has one of its agents' chat open (AgentViewTracker). */
+export const AGENT_VIEWED_PEER_TOOL = "paseo.agent_viewed";
 
 export type ReviewStateListener = (
   agentId: string,
@@ -330,6 +333,8 @@ export class MissionControlService {
   private readonly reviewStateListeners = new Set<ReviewStateListener>();
   private readonly selfReportListeners = new Set<(event: MissionControlEvent) => void>();
   private readonly userPromptListeners = new Set<(prompt: UserPrompt) => void>();
+  /** Which agents a person has open in a Paseo client on this host. */
+  readonly agentViews = new AgentViewTracker();
   /** Every emitted feed event, any kind/source — a general fan-out parallel to
    * selfReportListeners (which is scoped to source:"self"). Used by callers that need
    * to observe the Commander's own cards (e.g. the itsaplan chat-runner correlating an

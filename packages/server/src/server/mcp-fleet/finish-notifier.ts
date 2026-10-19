@@ -189,8 +189,17 @@ export interface McpFinishLocalAgents {
   hosts(agentId: string): Promise<boolean>;
 }
 
+/** Why a finish event for a turn Vaibhav started himself was not sent. */
+export type OwnTurnHoldReason = "chat_open" | "own_turns_off";
+
 export interface McpFinishNotifierOptions {
   resolveSecret: ResolveSecret;
+  /**
+   * Asked before a final paseo.agent.finished for an origin "user" turn is
+   * sent; a reason keeps it from being sent. needs_permission and tool-started
+   * turns are never asked.
+   */
+  holdOwnTurn?: (agent: { agentId: string }) => Promise<OwnTurnHoldReason | null>;
   logger: Logger;
   fetchImpl?: typeof fetch;
   /** Watch journal (JSONL). Absent → watches live in memory only and restore() finds none. */
@@ -372,6 +381,14 @@ type JournalEntry =
   /** A peer closed the agent mid-run; the watch now waits for the run it resumes. */
   | { event: "interrupted"; ts: string; watchId: string; agentId: string; turnId: string | null }
   | { event: "gave_up"; ts: string; watchId: string; agentId: string; why: string }
+  /** The event was not sent on purpose (see holdOwnTurn); the watch is done. */
+  | {
+      event: "suppressed";
+      ts: string;
+      watchId: string;
+      agentId: string;
+      reason: OwnTurnHoldReason;
+    }
   /** The client asked to stop hearing about the agent's later runs. */
   | { event: "unsubscribed"; ts: string; watchId: string; agentId: string; client: string }
   | GroupArmedEntry
@@ -520,7 +537,7 @@ function pendingFromJournal(entries: readonly JournalEntry[]): {
     }
     const watch = watches.get(entry.watchId);
     if (!watch) continue;
-    if (entry.event === "gave_up") {
+    if (entry.event === "gave_up" || entry.event === "suppressed") {
       watches.delete(entry.watchId);
     } else if (entry.event === "fired") {
       watch.unsent = isFinal(entry) ? entry : null;
@@ -813,6 +830,33 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
   ) => {
     const deliveryId = randomUUID();
     const body = buildBody(watch.armed, reason, final, result, deliveryId);
+    const held =
+      final && watch.armed.origin === "user" && options.holdOwnTurn
+        ? await options.holdOwnTurn({ agentId: watch.armed.agentId }).catch(() => null)
+        : null;
+    if (held) {
+      deliveryLog?.append({
+        ts: new Date().toISOString(),
+        client: watch.armed.client,
+        deliveryId,
+        watchId: watch.armed.watchId,
+        ...describeWebhookBody(body),
+        attempt: 0,
+        status: null,
+        outcome: "suppressed",
+        suppressedReason: held,
+        response: null,
+        durationMs: 0,
+      });
+      record({
+        event: "suppressed",
+        ts: new Date().toISOString(),
+        watchId: watch.armed.watchId,
+        agentId: watch.armed.agentId,
+        reason: held,
+      });
+      return;
+    }
     record({
       event: "fired",
       ts: new Date().toISOString(),
@@ -1480,7 +1524,7 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
     async listDeliveries(query) {
       if (!deliveryLog) {
         return {
-          totals: { events: 0, delivered: 0, failed: 0, attempts: 0, byStatus: {} },
+          totals: { events: 0, delivered: 0, failed: 0, suppressed: 0, attempts: 0, byStatus: {} },
           deliveries: [],
         };
       }

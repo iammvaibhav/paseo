@@ -644,7 +644,9 @@ export async function createFleetMcpServer(options: FleetMcpServerOptions): Prom
         'so you can drop duplicates). "retrying" rows carry nextAttemptAt: Paseo retries network errors, ' +
         "408, 425, 429, 5xx and rate-limited 4xx with backoff, 6 attempts over about 15 minutes. " +
         '"failed" means the event was given up on: failure "exhausted" (every retry failed) or ' +
-        '"not_retryable" (another 4xx). totals counts every match, not just the returned page. ' +
+        '"not_retryable" (another 4xx). "suppressed" rows were never sent on purpose: suppressedReason ' +
+        '"chat_open" (Vaibhav had the agent\'s chat open for a turn he started) or "own_turns_off" ' +
+        "(his setting turns those callbacks off). totals counts every match, not just the returned page. " +
         "Use failedOnly to find events you never received.",
       inputSchema: WEBHOOK_DELIVERIES_INPUT.shape,
     },

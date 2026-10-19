@@ -4,7 +4,12 @@ import { useQueryClient } from "@tanstack/react-query";
 import type { MissionControlCentralConfig } from "@getpaseo/protocol/mission-control/types";
 import { useFetchQuery } from "@/data/query";
 import { useLocalDaemonServerId } from "@/hooks/use-is-local-daemon";
-import { useHostRuntimeClient, useHostRuntimeIsConnected, useHosts } from "@/runtime/host-runtime";
+import {
+  getHostRuntimeStore,
+  useHostRuntimeClient,
+  useHostRuntimeIsConnected,
+  useHosts,
+} from "@/runtime/host-runtime";
 // Pure resolution (types + defaults + resolver) lives apart from the hooks so
 // it stays unit-testable without the RN/hook import chain. The names are
 // imported for in-module use AND re-exported for existing consumers.
@@ -44,6 +49,26 @@ export function useMissionControlCentralConfigHost(): {
     const serverId = known(localServerId) ?? hosts[0]?.serverId ?? null;
     return { serverId, resolving: false };
   }, [hosts, localServerId]);
+}
+
+/**
+ * Writes a fleet-wide setting to every connected host (each host keeps its own
+ * config; the one serving an MCP client decides on its callbacks). Returns the
+ * hosts it could not write, offline or rejected, so the caller can say so.
+ */
+export async function patchMissionControlConfigOnEveryHost(
+  hosts: readonly { serverId: string; label: string }[],
+  patch: Partial<MissionControlCentralConfig>,
+): Promise<string[]> {
+  const results = await Promise.all(
+    hosts.map(async (host) => {
+      const client = getHostRuntimeStore().getClient(host.serverId);
+      if (!client?.isConnected) return host.label;
+      const result = await client.missionControlConfigPatch(patch).catch(() => null);
+      return result?.ok ? null : host.label;
+    }),
+  );
+  return results.filter((label): label is string => label !== null);
 }
 
 export function useMissionControlCentralConfig(): MissionControlCentralConfigState {

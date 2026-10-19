@@ -162,6 +162,63 @@ describe("createMcpFinishNotifier", () => {
     });
   });
 
+  it("holds a user-started turn's finish when told to, logs it, and never holds tool turns or permission asks", async () => {
+    const deliveryLogPath = path.join(dir, "mcp-fleet", "webhook-deliveries.jsonl");
+    const asked: string[] = [];
+    const subject = createMcpFinishNotifier({
+      resolveSecret: async (value) => value,
+      logger: pino({ level: "silent" }),
+      pollMs: 0,
+      retryDelaysMs: [0],
+      deliveryLogPath,
+      holdOwnTurn: async ({ agentId }) => {
+        asked.push(agentId);
+        return "chat_open";
+      },
+    });
+    let calls = 0;
+    // A turn Vaibhav started: a permission ask is sent, the finish is held.
+    await subject.arm({
+      client: "grok-bot",
+      target: { url },
+      agentId: "user-agent",
+      tool: "user_prompt",
+      context: null,
+      origin: "user",
+      userPrompt: "look at this",
+      waitForAgent: async () => {
+        calls += 1;
+        return calls === 1
+          ? result({ status: "permission", finished: false, needsPermission: true })
+          : result({ agentId: "user-agent" });
+      },
+    });
+    // A turn the bot started is sent even while the hold would say chat_open.
+    await subject.arm({
+      client: "grok-bot",
+      target: { url },
+      agentId: "tool-agent",
+      tool: "fleet_send_prompt",
+      context: null,
+      waitForAgent: async () => result({ agentId: "tool-agent" }),
+    });
+
+    expect(received.map((r) => [r.body.type, (r.body.agent as { id: string }).id])).toEqual([
+      ["paseo.agent.needs_permission", "user-agent"],
+      ["paseo.agent.finished", "tool-agent"],
+    ]);
+    expect(asked).toEqual(["user-agent"]);
+    const { totals, deliveries } = await subject.listDeliveries({ limit: 10 });
+    expect(totals).toMatchObject({ delivered: 2, suppressed: 1 });
+    expect(deliveries.find((row) => row.outcome === "suppressed")).toMatchObject({
+      agentId: "user-agent",
+      event: "paseo.agent.finished",
+      origin: "user",
+      suppressedReason: "chat_open",
+      status: null,
+    });
+  });
+
   it("caps a long user prompt at 4 KB on a character boundary and flags it", () => {
     const capped = capUserPrompt(`${"a".repeat(4095)}é and more`);
     expect(capped.userPromptTruncated).toBe(true);
@@ -329,6 +386,7 @@ describe("createMcpFinishNotifier", () => {
       events: 2,
       delivered: 1,
       failed: 1,
+      suppressed: 0,
       attempts: 3,
       byStatus: { "200": 1, "400": 1, "503": 1 },
     });

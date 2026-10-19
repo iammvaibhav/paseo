@@ -691,6 +691,10 @@ export const MissionControlCentralConfigSchema = z.object({
   namingTheme: z.string().optional(),
   // Hide agent name chips, leaving titles.
   hideAgentNames: z.boolean().optional(),
+  // When MCP notify targets (the Commander bot) hear about a turn Vaibhav
+  // started himself from the app: "always", "not_viewing" (only when no
+  // Paseo client has that agent's chat open and visible), or "never".
+  ownTurnNotify: z.enum(["always", "not_viewing", "never"]).optional(),
   // Preferred host when the Commander routes work.
   defaultDispatchHost: z.string().nullable().optional(),
   // Stall detection thresholds (seconds). Two nudge triggers share one
