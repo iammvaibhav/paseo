@@ -336,43 +336,43 @@ export function toLifecycleRow(agent: AggregatedAgent, state: AgentLifecycleStat
     ...state,
     agent,
     // Sort by the same trustworthy activity instant the row displays, so a
-    // time-desc bucket (dormant included) orders by real activity. Unknown
-    // activity (null) sorts last.
-    sortTime: rowActivityMs({ ...state, agent, sortTime: 0 }) ?? 0,
+    // time-desc bucket (dormant included) orders by real activity.
+    sortTime: rowActivityMs({ ...state, agent, sortTime: 0 }),
   };
 }
 
 /**
  * The instant a row's timestamp should read as "when it last did anything".
  *
- * Recorded buckets (Done / Ready / Dormant) read the real evidence — the
- * newest mission-control event (`lastEventAt`; a verdict card IS an event, so
- * verdict time is included) — because the directory `lastActivityAt` is NOT
- * trustworthy for history: the daemon stamps stored records with the
- * registration/restore time whenever an idle agent is loaded across a daemon
- * restart, so every recorded agent that did nothing since the last boot reads
- * the same shared value (live bug). Dormant rows additionally use the agent's
- * last user message as the reliable floor for pre-rollout agents that have no
- * events at all. When no trustworthy instant exists, the true one is unknown
- * — return null so the row renders no age rather than a fabricated one (a
- * wrong age is worse than none).
+ * Recorded buckets (Done / Ready / Dormant) read the newest real evidence: the
+ * newest mission-control event in the client's window (`lastEventAt`; a
+ * verdict card IS an event, so verdict time is included) or the agent's last
+ * user message. The directory `lastActivityAt` is NOT trustworthy for history:
+ * the daemon stamps stored records with the registration/restore time whenever
+ * an idle agent is loaded across a daemon restart, so every recorded agent
+ * that did nothing since the last boot reads the same shared value (live bug).
+ *
+ * The last user message carries rows whose events are out of reach: the
+ * client loads only the newest page of events per host (a few days on a busy
+ * host) and the daemon prunes events past retention, so a Ready row from last
+ * week has no event here. Its last user message is the prompt of the run that
+ * made it Ready, so the row still reads its day. An agent with neither reads
+ * its creation time, the only real instant left.
  *
  * Live buckets (Running / Needs-you) keep the live directory timestamp, which
  * ticks on every timeline row while an agent is running.
  */
-export function rowActivityMs(row: LifecycleRow): number | null {
+export function rowActivityMs(row: LifecycleRow): number {
   if (row.bucket === "done" || row.bucket === "ready" || row.bucket === "dormant") {
     const candidates: number[] = [];
     if (row.lastEventAt !== null) {
       candidates.push(row.lastEventAt);
     }
-    if (row.bucket === "dormant") {
-      const lastUserMessageMs = row.agent.lastUserMessageAt?.getTime();
-      if (lastUserMessageMs !== undefined) {
-        candidates.push(lastUserMessageMs);
-      }
+    const lastUserMessageMs = row.agent.lastUserMessageAt?.getTime();
+    if (lastUserMessageMs !== undefined) {
+      candidates.push(lastUserMessageMs);
     }
-    return candidates.length > 0 ? Math.max(...candidates) : null;
+    return candidates.length > 0 ? Math.max(...candidates) : row.agent.createdAt.getTime();
   }
   return row.agent.lastActivityAt.getTime();
 }

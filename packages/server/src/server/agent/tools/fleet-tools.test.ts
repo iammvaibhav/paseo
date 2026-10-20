@@ -83,6 +83,9 @@ function withoutPendingAgentMode(_agentId: string, prompt: string) {
   return { prompt, carriesMode: false };
 }
 
+/** A fetch_agents page with nothing after it. */
+const LAST_PAGE = { nextCursor: null, prevCursor: null, hasMore: false };
+
 /** Fake peer harness: a stub PeerManager over a stub DaemonClient. */
 function createFakePeerHarness(
   overrides: {
@@ -252,7 +255,7 @@ describe("fleet_list_agents roster enrichment", () => {
           },
         },
       ],
-      page: { limit: 200 },
+      pageInfo: LAST_PAGE,
     }));
     client.missionControlEventsFetch = vi.fn(async () => ({
       requestId: "req-events",
@@ -346,7 +349,7 @@ describe("fleet_list_agents roster enrichment", () => {
           },
         },
       ],
-      page: { limit: 200 },
+      pageInfo: LAST_PAGE,
     }));
     client.missionControlEventsFetch = vi.fn(async () => ({ requestId: "req", events: [] }));
     const catalog = createCatalog(peerManager, {
@@ -384,7 +387,7 @@ describe("fleet_list_agents roster enrichment", () => {
           },
         },
       ],
-      page: { limit: 200 },
+      pageInfo: LAST_PAGE,
     }));
     const peerEvents = Array.from({ length: 7 }, (_, index) =>
       selfEvent("peer-agent-1", `2026-08-08T00:00:0${index}.000Z`, `Headline ${index + 1}`),
@@ -1213,7 +1216,7 @@ describe("fleet_list_agents roster fields (spec 03)", () => {
           },
         },
       ],
-      page: { limit: 200 },
+      pageInfo: LAST_PAGE,
     }));
     client.missionControlEventsFetch = vi.fn(async () => ({ requestId: "req", events: [] }));
     const catalog = createCatalog(peerManager, {
@@ -1253,7 +1256,7 @@ describe("fleet_list_agents roster fields (spec 03)", () => {
           },
         },
       ],
-      page: { limit: 200 },
+      pageInfo: LAST_PAGE,
     }));
     client.missionControlEventsFetch = vi.fn(async () => ({ requestId: "req", events: [] }));
     const catalog = createCatalog(peerManager, {
@@ -1313,7 +1316,7 @@ describe("fleet_list_agents roster fields (spec 03)", () => {
           },
         },
       ],
-      page: { limit: 200 },
+      pageInfo: LAST_PAGE,
     }));
     client.missionControlEventsFetch = vi.fn(async () => ({ requestId: "req", events: [] }));
     const catalog = createCatalog(peerManager, {
@@ -1367,6 +1370,99 @@ describe("fleet_list_agents roster fields (spec 03)", () => {
       agents: Array<Record<string, unknown>>;
     };
     expect(closedPayload.agents).toHaveLength(2);
+  });
+
+  test("a Ready agent stays on the roster at any age, past the first page of its host", async () => {
+    const daysAgo = (days: number) =>
+      new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    const PEER_OLD_READY = "peer-old-ready";
+    const PEER_OLD_DONE = "peer-old-done";
+    const LOCAL_OLD_READY = "local-old-ready";
+    const peerRow = (id: string, bucket: string, updatedAt: string) => ({
+      agent: {
+        id,
+        provider: "omp",
+        cwd: "/tmp",
+        bucket,
+        createdAt: updatedAt,
+        updatedAt,
+        status: "closed",
+        title: id,
+      },
+    });
+    const { client, peerManager } = createFakePeerHarness();
+    // The peer pages newest-first: the 45-day-old rows sit on page 2.
+    client.fetchAgents = vi.fn(async (options?: { page?: { cursor?: string } }) =>
+      options?.page?.cursor === "page-2"
+        ? {
+            entries: [
+              peerRow(PEER_OLD_READY, "ready", daysAgo(45)),
+              peerRow(PEER_OLD_DONE, "done", daysAgo(45)),
+            ],
+            pageInfo: LAST_PAGE,
+          }
+        : {
+            entries: [peerRow("peer-recent-running", "running", daysAgo(0))],
+            pageInfo: { nextCursor: "page-2", prevCursor: null, hasMore: true },
+          },
+    ) as unknown as DaemonClient["fetchAgents"];
+    client.missionControlEventsFetch = vi.fn(async () => ({ requestId: "req", events: [] }));
+    // More local agents than one list_agents page; the oldest is the Ready one.
+    const stored = [
+      ...Array.from({ length: 205 }, (_, index) => ({
+        id: `local-done-${index}`,
+        updatedAt: daysAgo(3),
+      })),
+      { id: LOCAL_OLD_READY, updatedAt: daysAgo(60) },
+    ].map(({ id, updatedAt }) => ({
+      id,
+      provider: "omp",
+      cwd: "/work",
+      createdAt: updatedAt,
+      updatedAt,
+      title: id,
+      labels: {},
+      lastStatus: "closed",
+    }));
+    const catalog = createPaseoToolCatalog({
+      agentManager: {
+        listAgents: () => [],
+        getRegisteredProviderIds: () => ["omp"],
+        getTimeline: () => [],
+      } as unknown as AgentManager,
+      agentStorage: { get: async () => null, list: async () => stored } as unknown as AgentStorage,
+      providerSnapshotManager: createProviderSnapshotManagerStub()
+        .manager as unknown as ProviderSnapshotManager,
+      peerManager,
+      missionControlService: createMissionControlServiceStub({
+        fetchEvents: () => [],
+        getLifecycleBucket: async (agentId: string) =>
+          agentId === LOCAL_OLD_READY ? "ready" : "done",
+      }),
+      logger: createTestLogger(),
+    });
+
+    const ready = await catalog.executeTool("fleet_list_agents", { bucket: "ready", limit: 200 });
+    // Test-local cast: catalog output is loosely typed in this suite.
+    const readyPayload = ready.structuredContent as {
+      agents: Array<{ id: string }>;
+      bucketCounts: Record<string, number>;
+    };
+    expect(readyPayload.agents.map((agent) => agent.id).sort()).toEqual(
+      [LOCAL_OLD_READY, PEER_OLD_READY].sort(),
+    );
+    // Old done rows still age out of the 30-day candidate set.
+    expect(readyPayload.bucketCounts).toEqual({ ready: 2, running: 1, done: 205 });
+    expect(client.fetchAgents).toHaveBeenCalledWith(
+      expect.objectContaining({ page: { limit: 200, cursor: "page-2" } }),
+    );
+
+    const plain = await catalog.executeTool("fleet_list_agents", { limit: 200 });
+    // Test-local cast: catalog output is loosely typed in this suite.
+    const plainPayload = plain.structuredContent as { agents: Array<{ id: string }> };
+    const plainIds = plainPayload.agents.map((agent) => agent.id);
+    expect(plainIds).toEqual(expect.arrayContaining([LOCAL_OLD_READY, PEER_OLD_READY]));
+    expect(plainIds).not.toContain(PEER_OLD_DONE);
   });
 });
 

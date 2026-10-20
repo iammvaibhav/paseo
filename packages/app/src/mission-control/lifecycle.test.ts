@@ -868,16 +868,17 @@ describe("rowActivityMs", () => {
     expect(rowActivityMs(messageRow)).toBe(NOW - 2 * 60_000);
   });
 
-  it("renders no age (null) for a dormant row with no trustworthy timestamp", () => {
-    // No events, no user message: the directory stamp is all we have, and it
-    // is a shared boot value — a fabricated age is worse than none.
+  it("falls back to creation time for a dormant row with no event and no user message, never the boot stamp", () => {
+    // No events, no user message: the directory stamp is a shared boot value,
+    // so the row reads its creation instant instead.
     const dormant = makeAgent({
       lastActivityAt: new Date(NOW - 7 * 60 * 60 * 1000),
       lastUserMessageAt: null,
+      createdAt: new Date(NOW - 40 * DAY_MS),
     });
     const state = derive(dormant, []);
     const row = { ...state, agent: dormant, sortTime: 0, lastEventAt: null };
-    expect(rowActivityMs(row)).toBeNull();
+    expect(rowActivityMs(row)).toBe(NOW - 40 * DAY_MS);
   });
 
   it("keeps the live directory timestamp for non-dormant rows (ticks while running)", () => {
@@ -925,16 +926,48 @@ describe("rowActivityMs", () => {
     expect(rowActivityMs(row)).toBe(NOW - 2 * DAY_MS);
   });
 
-  it("renders no age (null) for a done row with no event evidence", () => {
-    const done = makeAgent({ lastActivityAt: new Date(NOW - 18 * 60_000) });
-    const state = derive(done, []);
-    const row = {
-      ...state,
-      agent: done,
-      sortTime: 0,
-      lastEventAt: null,
-      bucket: "done" as const,
-    };
-    expect(rowActivityMs(row)).toBeNull();
+  it("dates a Ready row whose events are outside the loaded window by its last user message", () => {
+    // Regression: the client loads only the newest page of events per host
+    // (a few days on a busy host), and the daemon prunes events past
+    // retention. A Ready row from weeks ago has no event here; it must still
+    // read its own day, not a blank and not the shared boot stamp.
+    const ready = makeAgent({
+      bucket: "ready",
+      lastActivityAt: new Date(NOW - 7 * 60 * 60 * 1000),
+      lastUserMessageAt: new Date(NOW - 48 * DAY_MS),
+      createdAt: new Date(NOW - 50 * DAY_MS),
+    });
+    const state = deriveAgentLifecycle({
+      agent: ready,
+      events: [],
+      now: NOW,
+      retentionMs: RETENTION_MS,
+    });
+    expect(state.bucket).toBe("ready");
+    const row = toLifecycleRow(ready, state);
+    expect(rowActivityMs(row)).toBe(NOW - 48 * DAY_MS);
+    expect(row.sortTime).toBe(NOW - 48 * DAY_MS);
+  });
+
+  it("never dates a recorded row before its newest event", () => {
+    // A Ready row whose finish card is in the window keeps the finish time,
+    // even though the last user message (the run's prompt) is older.
+    const ready = makeAgent({
+      bucket: "ready",
+      lastUserMessageAt: new Date(NOW - 3 * DAY_MS - 60 * 60 * 1000),
+    });
+    const state = deriveAgentLifecycle({
+      agent: ready,
+      events: [
+        makeEvent({
+          kind: "finished",
+          headline: "Finished",
+          ts: new Date(NOW - 3 * DAY_MS).toISOString(),
+        }),
+      ],
+      now: NOW,
+      retentionMs: RETENTION_MS,
+    });
+    expect(rowActivityMs(toLifecycleRow(ready, state))).toBe(NOW - 3 * DAY_MS);
   });
 });
