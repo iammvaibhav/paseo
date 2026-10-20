@@ -132,7 +132,7 @@ Remote MCP clients (configured under `daemon.mcp.remoteClients`) get the fleet t
 
 ## Memory
 
-fleet-memory is a separate service (on blrofc3, GPU embeddings) behind `memory.url` in each host's `config.json`. The daemon pushes indexed transcripts and finalized run records through a durable per-host outbox (`~/.paseo/memory/outbox.db`) with backoff, and re-offers its whole history every 5 minutes until one full pass lands. Hindsight is no longer written or read.
+fleet-memory is a separate service (`/data/projects/fleet-memory`, running on blrofc3 as the `fleet-memory` user unit) behind `memory.url` in each host's `config.json`. It embeds on the CPU only: EmbeddingGemma 2's text tower, int8, 8 threads, `CUDA_VISIBLE_DEVICES` empty. A doc is re-embedded only when its embedded input (title + text) changes, never for metadata, so re-sent history costs nothing. The daemon pushes indexed transcripts and finalized run records through a durable per-host outbox (`~/.paseo/memory/outbox.db`, deduplicated by item hash) with backoff. It offers its whole history once per host, the first time `memory.url` is set, and retries every 5 minutes until that pass lands. Hindsight is no longer written or read.
 
 ## itsaplan bridge
 
