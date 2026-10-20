@@ -259,6 +259,9 @@ export interface ItsaplanBridgeOptions {
   archiveWorkspace?: (workspaceId: string, requestId: string) => Promise<unknown>;
   /** Cancels a running agent, then archives it (archiveAgentCommand). */
   archiveAgent?: (agentId: string) => Promise<unknown>;
+  /** This daemon's webhook URL: a board whose webhook delivers here is one this
+   * host dispatches (reconcileOwnedBoards). */
+  getWebhookUrl?: () => string | null;
 }
 
 /** `t=<unix-seconds>,v1=<hex hmac>` — itsaplan's webhook signature header. */
@@ -446,6 +449,7 @@ export class ItsaplanBridge {
   private readonly projectRegistry?: ItsaplanBridgeOptions["projectRegistry"];
   private readonly archiveWorkspace?: ItsaplanBridgeOptions["archiveWorkspace"];
   private readonly archiveAgent?: ItsaplanBridgeOptions["archiveAgent"];
+  private readonly getWebhookUrl?: ItsaplanBridgeOptions["getWebhookUrl"];
 
   private readonly seenAgentIds = new Set<string>();
   private readonly lastBucketByAgentId = new Map<string, LifecycleBucket>();
@@ -485,6 +489,7 @@ export class ItsaplanBridge {
     this.projectRegistry = options.projectRegistry;
     this.archiveWorkspace = options.archiveWorkspace;
     this.archiveAgent = options.archiveAgent;
+    this.getWebhookUrl = options.getWebhookUrl;
   }
 
   start(): void {
@@ -849,10 +854,13 @@ export class ItsaplanBridge {
         if (error instanceof ItsaplanApiError && error.status === 429) {
           throw error;
         }
-        this.logger.warn(
-          { err: error, itsaplanProjectKey: mapping.itsaplanProjectKey },
-          "itsaplan.bridge.board_reconcile_failed",
-        );
+        // 404: a deleted board; the next project resync drops its mapping.
+        if (!(error instanceof ItsaplanApiError && error.status === 404)) {
+          this.logger.warn(
+            { err: error, itsaplanProjectKey: mapping.itsaplanProjectKey },
+            "itsaplan.bridge.board_reconcile_failed",
+          );
+        }
       }
     }
   }
@@ -864,7 +872,11 @@ export class ItsaplanBridge {
   ): Promise<void> {
     const webhooks = await client.listWebhooks(mapping.itsaplanProjectKey);
     const mine = webhooks.find((webhook) => webhook.id === mapping.webhookId);
-    if (mine?.isActive === false) {
+    // Only the host itsaplan delivers to dispatches the board's tickets.
+    if (!mine || mine.url !== this.getWebhookUrl?.()) {
+      return;
+    }
+    if (mine.isActive === false) {
       await client.updateWebhook(mine.id, { events: [...ITSAPLAN_WEBHOOK_EVENTS], isActive: true });
       this.logger.info(
         { itsaplanProjectKey: mapping.itsaplanProjectKey, webhookId: mine.id },

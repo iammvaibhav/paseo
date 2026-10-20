@@ -2133,6 +2133,7 @@ export async function createPaseoDaemon(
     archiveWorkspace: archiveWorkspaceByIdExternal,
     archiveAgent: (agentId: string) =>
       archiveAgentCommand({ agentManager, agentStorage, logger }, agentId),
+    getWebhookUrl: () => createItsaplanWebhookUrl(boundListenTarget, networkInterfaces()),
     resolvePaseoProjectKey: async (agentId) => {
       const live = agentManager.getAgent(agentId);
       const workspaceId = live?.workspaceId;

@@ -733,6 +733,7 @@ describe("ItsaplanBridge", () => {
       resolvePaseoProjectKey: async () => "proj",
       dispatchWorker,
       steerWorkerPrompt,
+      getWebhookUrl: () => "http://dev:6767/api/itsaplan/webhook",
     });
     bridge.start();
   });
@@ -1235,6 +1236,13 @@ describe("ItsaplanBridge", () => {
     test("re-enables the webhook itsaplan disabled while the host was down", async () => {
       await bridge.reconcileOwnedBoards();
       expect(webhooks.get(7)?.isActive).toBe(true);
+    });
+
+    test("leaves a board whose webhook delivers to another host to that host", async () => {
+      webhooks.get(7)!.url = "http://work:6767/api/itsaplan/webhook";
+      await bridge.reconcileOwnedBoards();
+      expect(dispatchWorker).not.toHaveBeenCalled();
+      expect(webhooks.get(7)?.isActive).toBe(false);
     });
   });
 
