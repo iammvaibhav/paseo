@@ -280,7 +280,9 @@ export async function refreshMirror(input: {
   doSync: boolean;
 }): Promise<string[]> {
   const db = new Database(input.mergedDbPath);
-  db.run("PRAGMA busy_timeout = 10000");
+  // The live dashboard writes its rollups into this DB; after a large refresh it
+  // can hold the write lock for many seconds while it reindexes.
+  db.run("PRAGMA busy_timeout = 60000");
   const work = mkdtempSync(path.join(tmpdir(), "omp-fleet-"));
   const marker = readMarker(input.markerPath);
   const failed: string[] = [];

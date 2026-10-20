@@ -212,12 +212,14 @@ function formatAsOf(asOf: Date | null): string {
 class OmpStatsFleetManager {
   private server: ChildProcess | null = null;
   private refresh: ChildProcess | null = null;
+  private refreshing: Promise<void> | null = null;
   private window: BrowserWindow | null = null;
   private pending: Promise<OpenOmpStatsFleetResult> | null = null;
 
   /**
    * Shows the dashboard. A repeat press focuses the live window; closing the
-   * window stops the server and any refresh in flight.
+   * window stops the server. A refresh in flight keeps going (it is one SQLite
+   * transaction per host), so the next press opens on fresher data.
    */
   open(): Promise<OpenOmpStatsFleetResult> {
     const window = this.window;
@@ -271,16 +273,19 @@ class OmpStatsFleetManager {
     return { url };
   }
 
-  private async runRefresh(scriptPath: string, port: number): Promise<void> {
-    const run = runScript(scriptPath, ["--merge-only"], port);
-    this.refresh = run.child;
-    try {
-      await waitForRefresh(run);
-    } finally {
-      if (this.refresh === run.child) {
+  /** One refresh at a time: a press during a refresh waits on the same run. */
+  private runRefresh(scriptPath: string, port: number): Promise<void> {
+    this.refreshing ??= (async () => {
+      const run = runScript(scriptPath, ["--merge-only"], port);
+      this.refresh = run.child;
+      try {
+        await waitForRefresh(run);
+      } finally {
         this.refresh = null;
+        this.refreshing = null;
       }
-    }
+    })();
+    return this.refreshing;
   }
 
   /** The dashboard reads SQLite per request, so a reload shows the new rows. */
@@ -347,8 +352,6 @@ class OmpStatsFleetManager {
     window.on("closed", () => {
       if (this.window === window) {
         this.window = null;
-        killChild(this.refresh);
-        this.refresh = null;
         killChild(this.server);
         this.server = null;
       }
