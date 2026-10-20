@@ -30,11 +30,15 @@ export interface ItsaplanEmbedInput {
    */
   configuredOrigin?: string | null;
   /**
-   * Desktop-shell embeds must avoid TLS: Electron silently refuses the
-   * self-signed certificate for a subframe, which renders as an empty white
-   * pane. When set, the resolved origin is rewritten to plain HTTP on
-   * ITSAPLAN_EMBED_HTTP_PORT (hostname preserved); the caller is responsible
-   * for registering that origin via the desktop insecure-origin allowlist.
+   * Desktop-shell embeds of a *derived* origin must avoid TLS: the derived
+   * origin is the self-signed HTTPS proxy, and Electron silently refuses that
+   * certificate for a subframe, which renders as an empty white pane. When set,
+   * a derived origin is rewritten to plain HTTP on ITSAPLAN_EMBED_HTTP_PORT
+   * (hostname preserved); the caller is responsible for registering that
+   * origin via the desktop insecure-origin allowlist. A configured origin is
+   * never rewritten: it names where itsaplan actually serves, scheme and port
+   * included (e.g. a reverse proxy with a trusted certificate), and that port
+   * may belong to an unrelated service.
    */
   insecureHttp?: boolean;
   browserEditorUrl?: string | null;
@@ -106,8 +110,8 @@ export function resolveItsaplanEmbedOrigin(input: ItsaplanEmbedInput): ItsaplanE
         hostProfile: input.hostProfile,
       });
 
-  // Desktop-shell embeds never speak TLS to itsaplan (self-signed certificates
-  // are silently refused inside Electron subframes); see ITSAPLAN_EMBED_HTTP_PORT.
+  // A configured origin wins as-is, scheme and port included; only the derived
+  // self-signed default needs the desktop plain-HTTP transport.
   const insecureHttp = input.insecureHttp === true;
   if (override) {
     if (!input.isLocalDaemon && embedHost) {
@@ -115,13 +119,13 @@ export function resolveItsaplanEmbedOrigin(input: ItsaplanEmbedInput): ItsaplanE
         const url = new URL(override);
         if (isLoopbackHostname(url.hostname)) {
           url.hostname = embedHost;
-          return { origin: toEmbedOrigin(url.origin, insecureHttp), source: "override" };
+          return { origin: url.origin, source: "override" };
         }
       } catch {
         // Unreachable: normalizeItsaplanOrigin already validated this URL.
       }
     }
-    return { origin: toEmbedOrigin(override, insecureHttp), source: "override" };
+    return { origin: override, source: "override" };
   }
 
   if (input.isLocalDaemon) {
@@ -139,7 +143,7 @@ export function resolveItsaplanEmbedOrigin(input: ItsaplanEmbedInput): ItsaplanE
   };
 }
 
-/** Three return paths above must rewrite scheme/port in lockstep. */
+/** Both derived return paths above must rewrite scheme/port in lockstep. */
 function toEmbedOrigin(origin: string, insecureHttp: boolean): string {
   if (!insecureHttp) {
     return origin;

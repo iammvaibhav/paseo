@@ -63,8 +63,8 @@ interface RoutingCatalog {
   projects: CatalogProject[];
   /** Every model any reachable host can run, as "provider/model". */
   models: string[];
-  /** serverId → the scratch project's id, when it exists. */
-  scratchProjectIds: Map<string, string>;
+  /** serverId → the scratch project, when it exists. */
+  scratchProjects: Map<string, { id: string; rootPath: string }>;
 }
 
 /** Project and workspace registry access the scratch project needs on this host. */
@@ -214,18 +214,18 @@ export class RoutingService {
         catalog.hosts.find((entry) => entry.serverId === this.deps.serverId) ??
         catalog.hosts[0];
       if (!host) return null;
-      const scratchProjectId = catalog.scratchProjectIds.get(host.serverId) ?? null;
+      const scratchProject = catalog.scratchProjects.get(host.serverId) ?? null;
       return {
         kind: label === NEW_PROJECT ? "new_project" : "scratch",
         serverId: host.serverId,
         hostLabel: host.label,
         hostName: host.hostName,
-        projectId: label === SCRATCH ? scratchProjectId : null,
+        projectId: label === SCRATCH ? (scratchProject?.id ?? null) : null,
         projectTitle: label === SCRATCH ? "Scratch" : null,
         rootPath:
           (label === NEW_PROJECT
             ? routing.projectRootByHost?.[host.serverId]
-            : routing.scratchRootByHost?.[host.serverId]) ?? null,
+            : scratchRootFor(host.serverId, catalog, routing)) ?? null,
         probability,
       };
     }
@@ -541,7 +541,7 @@ function buildCatalog(fleet: FleetContextData, routing: RoutingConfig): RoutingC
   const hosts: CatalogHost[] = [];
   const projects: CatalogProject[] = [];
   const models = new Set<string>();
-  const scratchProjectIds = new Map<string, string>();
+  const scratchProjects = new Map<string, { id: string; rootPath: string }>();
   for (const host of fleet.hosts) {
     if (!host.serverId || !host.reachable) continue;
     const label =
@@ -560,8 +560,8 @@ function buildCatalog(fleet: FleetContextData, routing: RoutingConfig): RoutingC
     addHostModels(models, host.models);
     const scratchRoot = routing.scratchRootByHost?.[host.serverId];
     for (const project of host.inventory.projects) {
-      if (isScratchProject(project.rootPath, scratchRoot)) {
-        scratchProjectIds.set(host.serverId, project.id);
+      if (project.rootPath && isScratchProject(project.rootPath, scratchRoot)) {
+        scratchProjects.set(host.serverId, { id: project.id, rootPath: project.rootPath });
         continue;
       }
       if (
@@ -588,7 +588,7 @@ function buildCatalog(fleet: FleetContextData, routing: RoutingConfig): RoutingC
       });
     }
   }
-  return { hosts, projects, models: [...models].sort(), scratchProjectIds };
+  return { hosts, projects, models: [...models].sort(), scratchProjects };
 }
 
 /** A host without a configured scratch root uses the default, `~/experiments`. */
@@ -598,4 +598,17 @@ export function isScratchProject(
 ): boolean {
   if (!rootPath) return false;
   return configuredRoot ? rootPath === configuredRoot : basename(rootPath) === SCRATCH_DIRECTORY;
+}
+
+/**
+ * A host with no configured scratch root still has its scratch project
+ * (ensureScratchWorkspace defaults it to ~/experiments). Without this fallback a
+ * scratch placement there had no root path, so the agent ran in the home directory.
+ */
+function scratchRootFor(
+  serverId: string,
+  catalog: RoutingCatalog,
+  routing: RoutingConfig,
+): string | undefined {
+  return routing.scratchRootByHost?.[serverId] ?? catalog.scratchProjects.get(serverId)?.rootPath;
 }

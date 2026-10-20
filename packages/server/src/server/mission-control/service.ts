@@ -791,6 +791,11 @@ export class MissionControlService {
     return this.centralConfig.patch(patch);
   }
 
+  /** Re-reads central config from disk into the in-memory store (e.g. on daemon reload). */
+  reloadCentralConfig(): ResolvedMissionControlCentralConfig {
+    return this.centralConfig.reload();
+  }
+
   // v3 user-message tagging (Commander records relatedAgentIds)
   // ==========================================================================
 

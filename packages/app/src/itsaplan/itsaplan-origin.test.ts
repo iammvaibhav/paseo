@@ -127,18 +127,20 @@ describe("resolveItsaplanEmbedOrigin", () => {
     ).toEqual({ origin: "http://dev-box:3001", source: "derived" });
   });
 
-  it("keeps an override hostname but forces the HTTP transport in the desktop shell", () => {
+  it("keeps a configured origin as-is in the desktop shell", () => {
+    // The port of a configured origin is not necessarily itsaplan's plain-HTTP
+    // port: on a host behind a TLS reverse proxy, :3001 is another service.
     expect(
       resolveItsaplanEmbedOrigin({
         isLocalDaemon: false,
-        configuredOrigin: "https://10.7.0.1:8443",
+        configuredOrigin: "https://itsaplan.example.com",
         hostProfile,
         insecureHttp: true,
       }),
-    ).toEqual({ origin: "http://10.7.0.1:3001", source: "override" });
+    ).toEqual({ origin: "https://itsaplan.example.com", source: "override" });
   });
 
-  it("rewrites a loopback override to the embed host before forcing HTTP", () => {
+  it("rewrites a loopback override to the embed host without forcing HTTP", () => {
     expect(
       resolveItsaplanEmbedOrigin({
         isLocalDaemon: false,
@@ -146,6 +148,6 @@ describe("resolveItsaplanEmbedOrigin", () => {
         hostProfile,
         insecureHttp: true,
       }),
-    ).toEqual({ origin: "http://dev-box:3001", source: "override" });
+    ).toEqual({ origin: "https://dev-box:8443", source: "override" });
   });
 });

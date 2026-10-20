@@ -220,4 +220,40 @@ describe("CentralMissionControlConfigStore stall knobs", () => {
     await store.initialize();
     expect(store.get().namingTheme).toBe("indian");
   });
+
+  test("reload re-reads the persisted file into the live store", async () => {
+    const store = new CentralMissionControlConfigStore({
+      paseoHome: dir,
+      logger: createTestLogger(),
+    });
+    await store.initialize();
+    await store.patch({
+      itsaplan: {
+        baseUrl: "http://100.123.178.38:3000",
+        apiKey: "test-key",
+        webhookSecret: "sec",
+        humanUserId: "u1",
+        webBaseUrl: "http://dev.netbird.cloud:3001",
+      },
+    });
+    expect(store.get().itsaplan?.baseUrl).toBe("http://100.123.178.38:3000");
+
+    // File is updated externally (e.g. by deploy syncConfig)
+    await writeFile(
+      join(dir, "mission-control", "central-config.json"),
+      JSON.stringify({
+        itsaplan: {
+          baseUrl: "https://itsaplan.thevm.space/__api",
+          apiKey: "test-key",
+          webhookSecret: "sec",
+          humanUserId: "u1",
+          webBaseUrl: "https://itsaplan.thevm.space",
+        },
+      }),
+      "utf-8",
+    );
+
+    store.reload();
+    expect(store.get().itsaplan?.baseUrl).toBe("https://itsaplan.thevm.space/__api");
+  });
 });

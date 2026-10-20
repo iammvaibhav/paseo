@@ -671,6 +671,26 @@ function jobsFor(run: Run, plans: HostPlan[]): Job[] {
   return jobs;
 }
 
+/**
+ * Central config (`~/.paseo/mission-control/central-config.json`) is per host and
+ * nothing replicates it, so the deploy host's copy is the fleet's source: a host
+ * that was offline when it changed (macbook kept a dead itsaplan URL for days)
+ * catches up on the next config sync. Written atomically; contents never logged.
+ */
+async function syncCentralConfig(run: Run, host: Host, log: Log): Promise<void> {
+  const src = path.join(PASEO_HOME, "mission-control", "central-config.json");
+  if (host.name === run.self.name || !existsSync(src)) return;
+  const content = readFileSync(src, "utf8");
+  JSON.parse(content); // never ship a corrupt file
+  const file = "$HOME/.paseo/mission-control/central-config.json";
+  await runScript(
+    host,
+    run.self.name,
+    `umask 077; mkdir -p "$(dirname "${file}")" && cat > "${file}.tmp-$$" && mv "${file}.tmp-$$" "${file}"`,
+    { log, input: content },
+  );
+}
+
 /** Peers + system prompt + web UI on every reachable daemon, then reload. */
 async function syncConfig(run: Run, reachable: string[], log: Log): Promise<string[]> {
   const failed: string[] = [];
@@ -678,6 +698,7 @@ async function syncConfig(run: Run, reachable: string[], log: Log): Promise<stri
     try {
       const configLog = new Log(path.join(log.file, "..", `config-${host.name}.log`), false);
       await writeConfig(run, host, configPayload(run, host), configLog);
+      await syncCentralConfig(run, host, configLog);
       await runScript(
         host,
         run.self.name,

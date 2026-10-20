@@ -138,6 +138,10 @@ fleet-memory is a separate service (on blrofc3, GPU embeddings) behind `memory.u
 
 A Todo ticket with no open blockers, assigned or delegated to the project's bot user ("Paseo"), is dispatched by the bridge on the host that owns the board's webhook: it calls `fleet_create_agent` with the ticket brief and the `itsaplan.issue` label, and routing places the worker. Each host syncs only its own projects; a repo checked out on several hosts maps to one board, and only the host that created it registers the webhook. That board is the oldest unarchived itsaplan project whose description is the Paseo project key; a host adopts it even when its derived key differs (old boards like `AMBIENTAISTA` predate the 10-character key rule), and a mapping that points at a later duplicate moves to it. A board deleted in itsaplan is dropped at the next resync (startup, project change, or `POST /api/itsaplan/resync`) and recorded in `itsaplan/deleted-boards.json`, so the sync never makes a replacement for that project.
 
+Boards exist only for real projects: home directories, temp directories, verify-run roots and the daemon home never get one, so each host's `experiments` project (the scratch project) holds the board for one-off work. Ticketizing an agent in a home-directory project fails and asks you to move it first.
+
+Columns follow the agent both ways: running or needs_you → In Progress, ready → Ready to review. A ticket you move to Done or Canceled closes its work: every live agent labeled with it is marked done and archived (a running turn is cancelled), and its workspace is archived unless another live agent works there. Open terminals or editors never block that. The webhook answers before the archive runs, because a worktree archive outlasts itsaplan's 10 s delivery timeout. Each host's reconcile sweep (at boot, then every 60 s) corrects column drift, re-runs the closed-ticket archive for its own agents, and stops fetching tickets itsaplan answers 404 for.
+
 The bridge writes the ticket's routine comments: "Dispatched", each `report_status` milestone/finding/inconclusive (`Finding: <headline>`), the agent's open question, "Ready for review" with proofs, and every prompt Vaibhav sends the agent directly from the app ("Vaibhav asked (in the app)").
 
 ## Protocol
@@ -154,7 +158,7 @@ Per docs/rpc-namespacing.md and docs/protocol-compatibility.md. The Commander-er
 
 ## Config
 
-Per host, all of it. Flotilla writes each host's files; nothing replicates between daemons.
+Per host, all of it; nothing replicates between daemons. Flotilla owns `config.json`'s provider and model keys. `./scripts/deploy.sh` copies the deploy host's `central-config.json` to every reachable host on each config sync (see docs/fleet-state-sync.md).
 
 `config.json`:
 

@@ -2989,9 +2989,9 @@ export class AgentManager {
   }
 
   async setLabels(agentId: string, labels: AgentLabelPatch): Promise<void> {
-    await this.runLifecycleMutation(agentId, async () => {
-      const agent = this.requireAgent(agentId);
-      await this.writeLabels(agent.id, labels);
+    const normalizedId = validateAgentId(agentId, "setLabels");
+    await this.runLifecycleMutation(normalizedId, async () => {
+      await this.writeLabels(normalizedId, labels);
     });
   }
 

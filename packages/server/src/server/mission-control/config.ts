@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Logger } from "pino";
@@ -218,6 +219,34 @@ export class CentralMissionControlConfigStore {
     } catch (error) {
       this.logger.warn({ err: error }, "Failed to parse central mission control config");
     }
+  }
+
+  /** Re-reads the central config from disk into the live store. */
+  reload(): ResolvedMissionControlCentralConfig {
+    let content: string;
+    try {
+      content = readFileSync(join(this.dir, CENTRAL_CONFIG_FILENAME), "utf-8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        this.config = {};
+        return this.get();
+      }
+      this.logger.warn({ err: error }, "Failed to reload central mission control config");
+      return this.get();
+    }
+    try {
+      const parsed: unknown = JSON.parse(content);
+      if (isRecord(parsed)) {
+        this.config = pickCentralConfigKeys(parsed);
+      }
+    } catch (error) {
+      this.logger.warn({ err: error }, "Failed to parse central mission control config on reload");
+    }
+    this.logger.info(
+      { component: "config", keys: Object.keys(this.config) },
+      "mission_control.config.reloaded",
+    );
+    return this.get();
   }
 
   /** Resolved config: stored values over defaults, all keys present. */

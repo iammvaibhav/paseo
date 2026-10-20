@@ -181,14 +181,20 @@ describe("ItsaplanReconcileService", () => {
     await rm(paseoHome, { recursive: true, force: true });
   });
 
+  let closedTickets: string[];
+
   function service(
     agents: Pick<StoredAgentRecord, "id" | "labels" | "updatedAt" | "archivedAt">[],
   ): ItsaplanReconcileService {
+    closedTickets = [];
     return new ItsaplanReconcileService({
       agentStorage: { list: async () => agents },
       missionControl,
       projectStore: store,
       getConfig: () => config,
+      closeTicket: async (issueId) => {
+        closedTickets.push(issueId);
+      },
       logger: createTestLogger(),
     });
   }
@@ -208,7 +214,7 @@ describe("ItsaplanReconcileService", () => {
     expect(issue.columnId).toBe(readyColumn?.id);
   });
 
-  test("never regresses a ticket already at Ready to review back to In Progress", async () => {
+  test("moves a ticket from Ready to review back to In Progress when the agent is running (re-prompted)", async () => {
     const readyColumn: FakeColumn = {
       id: 50,
       projectId: PROJECT_ID,
@@ -217,16 +223,68 @@ describe("ItsaplanReconcileService", () => {
     };
     columns.push(readyColumn);
     issue.columnId = readyColumn.id;
-    bucket = "running"; // a stray non-terminal bucket reading must never regress the column
+    bucket = "running";
     await service([agentRecord("agent-1", ISSUE_ID, "2026-01-01T00:00:00.000Z")]).runSweep();
-    expect(issue.columnId).toBe(readyColumn.id);
+    expect(issue.columnId).toBe(3); // In Progress
   });
 
-  test("never overrides a Done or Cancelled ticket (user-owned terminal columns)", async () => {
+  test("moves a ticket from Ready to review back to In Progress when the agent is needs_you", async () => {
+    const readyColumn: FakeColumn = {
+      id: 50,
+      projectId: PROJECT_ID,
+      name: "Ready to review",
+      stateType: "started",
+    };
+    columns.push(readyColumn);
+    issue.columnId = readyColumn.id;
+    bucket = "needs_you";
+    await service([agentRecord("agent-1", ISSUE_ID, "2026-01-01T00:00:00.000Z")]).runSweep();
+    expect(issue.columnId).toBe(3); // In Progress
+  });
+
+  test("runs an initial sweep immediately on startup when start() is called", async () => {
+    issue.columnId = 2; // Todo
+    bucket = "running";
+    const svc = service([agentRecord("agent-1", ISSUE_ID, "2026-01-01T00:00:00.000Z")]);
+    svc.start();
+    try {
+      if (svc.initialSweepPromise) {
+        await svc.initialSweepPromise;
+      }
+      expect(issue.columnId).toBe(3); // In Progress
+    } finally {
+      svc.stop();
+    }
+  });
+
+  test("never moves a Done ticket and archives its still-live agent instead", async () => {
     issue.columnId = 4; // Done
     bucket = "running";
     await service([agentRecord("agent-1", ISSUE_ID, "2026-01-01T00:00:00.000Z")]).runSweep();
     expect(issue.columnId).toBe(4);
+    expect(closedTickets).toEqual([String(ISSUE_ID)]);
+  });
+
+  test("archives the live agent of a Canceled ticket", async () => {
+    issue.columnId = 5; // Canceled
+    bucket = "ready";
+    await service([agentRecord("agent-1", ISSUE_ID, "2026-01-01T00:00:00.000Z")]).runSweep();
+    expect(issue.columnId).toBe(5);
+    expect(closedTickets).toEqual([String(ISSUE_ID)]);
+  });
+
+  test("leaves an open ticket's agent alone", async () => {
+    issue.columnId = 3;
+    bucket = "ready";
+    await service([agentRecord("agent-1", ISSUE_ID, "2026-01-01T00:00:00.000Z")]).runSweep();
+    expect(closedTickets).toEqual([]);
+  });
+
+  test("stops fetching a ticket that was deleted in itsaplan", async () => {
+    const svc = service([agentRecord("agent-1", 999, "2026-01-01T00:00:00.000Z")]);
+    await svc.runSweep();
+    await svc.runSweep();
+    expect(control.requests.filter((request) => request === "GET /issues/999")).toHaveLength(1);
   });
 
   test("flips the assignee to the configured human when the truth bucket is needs_you", async () => {
@@ -255,6 +313,7 @@ describe("ItsaplanReconcileService", () => {
       missionControl,
       projectStore: store,
       getConfig: () => null,
+      closeTicket: async () => {},
       logger: createTestLogger(),
     });
     await inertService.runSweep();

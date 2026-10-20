@@ -21,13 +21,13 @@ None of them threw. Each one degraded into "nothing happened", which is why they
 
 An owner is the one component allowed to write a fact. Everything else projects from it.
 
-| Fact                       | Owner                                 | Notes                                                                                                                                             |
-| -------------------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Agent lifecycle and bucket | The daemon running the agent          | `deriveLifecycleBucket` is the only function allowed to compute a bucket.                                                                         |
-| Ticket column              | itsaplan                              | Paseo projects onto it; it never becomes Paseo's fact.                                                                                            |
-| The user's Done transition | The user, in itsaplan                 | The one transition Paseo does not own — and therefore the one it must listen for.                                                                 |
-| Project to board mapping   | itsaplan                              | Every issue payload carries `identifier` (`AMBIENTAISTA-9`), which encodes the board key. Paseo's `projects.json` is a **cache**, not the source. |
-| Mission Control settings   | Each host's own `central-config.json` | Flotilla writes every host's copy; daemons never replicate it between each other.                                                                 |
+| Fact                       | Owner                                 | Notes                                                                                                                                                                                                                                  |
+| -------------------------- | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Agent lifecycle and bucket | The daemon running the agent          | `deriveLifecycleBucket` is the only function allowed to compute a bucket.                                                                                                                                                              |
+| Ticket column              | itsaplan                              | Paseo projects onto it; it never becomes Paseo's fact.                                                                                                                                                                                 |
+| The user's Done transition | The user, in itsaplan                 | The one transition Paseo does not own — and therefore the one it must listen for.                                                                                                                                                      |
+| Project to board mapping   | itsaplan                              | Every issue payload carries `identifier` (`AMBIENTAISTA-9`), which encodes the board key. Paseo's `projects.json` is a **cache**, not the source.                                                                                      |
+| Mission Control settings   | Each host's own `central-config.json` | `./scripts/deploy.sh` copies the deploy host's file to every reachable host on each config sync, then reloads. Daemons never replicate it between each other, so a host that is off during a change stays stale until the next deploy. |
 
 Single writer is a rule about **facts**, not about **directions**. A fact having one writer does not make the edge one-way. Wherever the other system owns a transition, the reverse edge has to exist.
 
@@ -78,7 +78,7 @@ Add these to any change in this area. Each maps to a defect above.
 
 Ordered by dependency. Each is independently shippable.
 
-1. **Reverse edge for Done.** `issue.state_changed` into a `completed` column sets the linked agent's Mission Control lifecycle, through the existing lifecycle mechanism. Guard the loop: Paseo already projects agent state onto the column, so this closes a cycle. Decide and document what Canceled means separately — it is a different user intent.
+1. **Reverse edge for Done and Canceled.** Done. A ticket moved into a `completed` or `canceled` column marks every live agent labeled with it done, archives it (cancelling a running turn first), and archives its workspace unless another live agent is in it; open terminals or editors do not block. The webhook only acknowledges and runs the archive in the background (a worktree archive outlasts itsaplan's 10 s delivery timeout). Each host's reconcile sweep re-runs the archive for any of its agents whose ticket sits in a terminal column, which covers missed webhooks and agents on a peer of the webhook host.
 2. **Route ingress to the owning host.** Ingress lands on the board's webhook host; the agent may be anywhere. Give the bridge an explicit "find the owning host, then act there" path over the peer surface, and delete any assumption that the agent is local. Until this lands, item 1 only works for agents on the webhook host — say so in its tests rather than implying otherwise.
 3. **Make the mapping cache optional everywhere.** The identifier fallback is now in the bridge. Audit every other `getByItsaplanProjectId` caller for the same silent-return shape and give each one the derivation.
 4. **Column identity by name across the board surfaces.** Cross-project views group by column name; moves resolve to the same-named column in the ticket's own project. Remove state-type grouping from user-facing surfaces.

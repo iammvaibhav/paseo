@@ -21,10 +21,11 @@ import {
   rewriteMarkdownAttachmentUrls,
   stripNativeMarkdownImages,
 } from "./ticket-images.js";
-import type {
-  ItsaplanCentralConfig,
-  ItsaplanProjectMapping,
-  ItsaplanProjectStore,
+import {
+  isHomeDirectoryRoot,
+  type ItsaplanCentralConfig,
+  type ItsaplanProjectMapping,
+  type ItsaplanProjectStore,
 } from "./projects.js";
 
 /** Agent label carrying the itsaplan issue id this agent was dispatched for. */
@@ -241,6 +242,16 @@ export interface ItsaplanBridgeOptions {
    * fake delivery; bootstrap.ts wires sendPromptToAgent.
    */
   steerWorkerPrompt: (agentId: string, prompt: string) => Promise<void>;
+  /** Closed-ticket archive (handleTicketCompletedOrCanceled). bootstrap.ts wires
+   * the real registries and archive commands; tests leave them out unless they
+   * exercise the archive. */
+  workspaceRegistry?: { get: (id: string) => Promise<{ archivedAt?: string | null } | null> };
+  projectRegistry?: {
+    list: () => Promise<Array<{ baseWorkspaceId?: string | null; archivedAt?: string | null }>>;
+  };
+  archiveWorkspace?: (workspaceId: string, requestId: string) => Promise<unknown>;
+  /** Cancels a running agent, then archives it (archiveAgentCommand). */
+  archiveAgent?: (agentId: string) => Promise<unknown>;
 }
 
 /** `t=<unix-seconds>,v1=<hex hmac>` — itsaplan's webhook signature header. */
@@ -424,12 +435,18 @@ export class ItsaplanBridge {
   private readonly dispatchWorker: ItsaplanBridgeOptions["dispatchWorker"];
   private readonly steerWorkerPrompt: (agentId: string, prompt: string) => Promise<void>;
   private readonly resolvePaseoProjectKey?: (agentId: string) => Promise<string | null>;
+  private readonly workspaceRegistry?: ItsaplanBridgeOptions["workspaceRegistry"];
+  private readonly projectRegistry?: ItsaplanBridgeOptions["projectRegistry"];
+  private readonly archiveWorkspace?: ItsaplanBridgeOptions["archiveWorkspace"];
+  private readonly archiveAgent?: ItsaplanBridgeOptions["archiveAgent"];
 
   private readonly seenAgentIds = new Set<string>();
   private readonly lastBucketByAgentId = new Map<string, LifecycleBucket>();
   /** The turn each agent reported completed in; the rest of that turn is not new work. */
   private readonly completedTurnByAgentId = new Map<string, string>();
   private readonly processedWebhookEventIds = new Set<string>();
+  /** Tickets whose closed-ticket archive is in flight (webhook or reconcile). */
+  private readonly closingIssueIds = new Set<string>();
   /** Agents whose needs_you exit was caused by a ticket comment (vs a direct
    * Paseo answer); drives the convergence-comment wording on bucket exit. */
   private readonly answeredViaTicketComment = new Set<string>();
@@ -455,6 +472,10 @@ export class ItsaplanBridge {
     this.dispatchWorker = options.dispatchWorker;
     this.steerWorkerPrompt = options.steerWorkerPrompt;
     this.resolvePaseoProjectKey = options.resolvePaseoProjectKey;
+    this.workspaceRegistry = options.workspaceRegistry;
+    this.projectRegistry = options.projectRegistry;
+    this.archiveWorkspace = options.archiveWorkspace;
+    this.archiveAgent = options.archiveAgent;
   }
 
   start(): void {
@@ -645,8 +666,8 @@ export class ItsaplanBridge {
       await this.dispatchIssue(mapping, config, issue, client);
       return;
     }
-    if (column.stateType === "completed") {
-      await this.projectCompletedColumnOntoAgent(issue, column);
+    if (column.stateType === "completed" || column.stateType === "canceled") {
+      this.projectCompletedColumnOntoAgent(issue, column);
     }
 
     const isReadyForReview =
@@ -1062,69 +1083,192 @@ export class ItsaplanBridge {
     );
   }
 
-  /** Resolves the itsaplan issue id back to the labeled agent. One ticket can
-   * have N attempts (ADR 0002); the most recently updated one is current,
-   * matching reconcile.ts's rule. */
   /**
-   * A ticket moved into a completed column: mark the agent done in Mission
-   * Control. The agent is looked up locally first, then across the fleet,
-   * because webhook ingress terminates on one host while the agent it refers
-   * to commonly runs on another.
+   * A ticket moved into a completed or canceled column: the ticket's work is
+   * over, so its linked agents are marked done and archived (a running agent is
+   * cancelled first), and each of their workspaces is archived unless another
+   * live agent still works in it. Terminals, editors and other non-agent things
+   * open in the workspace do not keep it alive.
    *
-   * The bucket is read before writing so an inbound move cannot bounce back
-   * out as an outbound projection event.
+   * Agents are looked up locally first, then across the fleet, because webhook
+   * ingress terminates on one host while the agent commonly runs on another. A
+   * peer only gets the done mark from here; its own reconcile sweep archives the
+   * agent and workspace (ItsaplanReconcileService).
+   *
+   * The bucket is read before writing so an inbound move cannot bounce back out
+   * as an outbound projection event.
    */
-  private async projectCompletedColumnOntoAgent(
-    issue: { id: number },
-    column: { id: number; name: string },
+  async handleTicketCompletedOrCanceled(
+    issueId: string | number,
+    column?: { id: number; name: string; stateType?: string },
   ): Promise<void> {
-    const issueId = String(issue.id);
-    const localAgentId = await this.findAgentIdByIssueLabel(issueId);
-    if (localAgentId) {
-      const bucket = await this.missionControl.getLifecycleBucket(localAgentId);
-      if (bucket === "done") {
-        return;
+    const issueIdStr = String(issueId);
+    if (this.closingIssueIds.has(issueIdStr)) {
+      return;
+    }
+    this.closingIssueIds.add(issueIdStr);
+    try {
+      await this.closeTicketAgents(issueIdStr, column);
+    } finally {
+      this.closingIssueIds.delete(issueIdStr);
+    }
+  }
+
+  private async closeTicketAgents(
+    issueId: string,
+    column?: { id: number; name: string; stateType?: string },
+  ): Promise<void> {
+    const localAgents = (await this.findAllAgentsByIssueLabel(issueId)).filter(
+      (record) => !record.archivedAt,
+    );
+    if (localAgents.length > 0) {
+      await this.closeLocalTicketAgents(issueId, localAgents, column);
+      return;
+    }
+    await this.markRemoteTicketAgentDone(issueId, column);
+  }
+
+  private async closeLocalTicketAgents(
+    issueId: string,
+    agents: readonly Pick<StoredAgentRecord, "id" | "workspaceId">[],
+    column?: { id: number; name: string },
+  ): Promise<void> {
+    const workspaceIds = new Set<string>();
+    for (const record of agents) {
+      const bucket = await this.missionControl.getLifecycleBucket(record.id).catch(() => null);
+      if (bucket !== "done") {
+        await this.missionControl.setLifecycle({ agentId: record.id, action: "done" });
       }
-      const result = await this.missionControl.setLifecycle({
-        agentId: localAgentId,
-        action: "done",
-      });
-      this.logCompletedProjection(issue, column, localAgentId, "local", result);
-      return;
-    }
-
-    if (!this.fleet) {
-      this.logger.info(
-        { issueId: issue.id, columnId: column.id, columnName: column.name },
-        "itsaplan.bridge.completed_issue_no_linked_agent",
+      // Marking done can already have archived the workspace (and the agent
+      // with it), so archive only what is still live.
+      const current = await this.agentStorage.get(record.id);
+      if (current && !current.archivedAt && this.archiveAgent) {
+        await this.archiveAgent(record.id).catch((err: unknown) => {
+          this.logger.warn({ err, agentId: record.id }, "itsaplan.bridge.archive_agent_failed");
+        });
+      }
+      const workspaceId = current?.workspaceId ?? record.workspaceId;
+      if (workspaceId) {
+        workspaceIds.add(workspaceId);
+      }
+      this.logCompletedProjection(
+        { id: Number(issueId) },
+        column ?? { id: 0, name: "Done" },
+        record.id,
+        "local",
+        { ok: true },
       );
-      return;
     }
+    for (const workspaceId of workspaceIds) {
+      await this.maybeArchiveWorkspaceForCompletedTicket(workspaceId, issueId);
+    }
+  }
 
+  /** The agent runs on a peer: mark it done there. The peer's own reconcile
+   * sweep archives it and its workspace. */
+  private async markRemoteTicketAgentDone(
+    issueId: string,
+    column?: { id: number; name: string },
+  ): Promise<void> {
     let remote: { agentId: string; host: string } | null = null;
     try {
-      remote = await this.fleet.findAgentByIssue(issueId);
+      remote = (await this.fleet?.findAgentByIssue(issueId)) ?? null;
     } catch (error) {
-      this.logger.warn(
-        { err: error, issueId: issue.id },
-        "itsaplan.bridge.fleet_agent_lookup_failed",
-      );
+      this.logger.warn({ err: error, issueId }, "itsaplan.bridge.fleet_agent_lookup_failed");
       return;
     }
-    if (!remote) {
+    if (!remote || !this.fleet) {
       this.logger.info(
-        { issueId: issue.id, columnId: column.id, columnName: column.name },
+        { issueId, columnId: column?.id, columnName: column?.name },
         "itsaplan.bridge.completed_issue_no_linked_agent",
       );
       return;
     }
-
     const result = await this.fleet.setLifecycle({
       host: remote.host,
       agentId: remote.agentId,
       action: "done",
     });
-    this.logCompletedProjection(issue, column, remote.agentId, remote.host, result);
+    this.logCompletedProjection(
+      { id: Number(issueId) },
+      column ?? { id: 0, name: "Done" },
+      remote.agentId,
+      remote.host,
+      result,
+    );
+  }
+
+  private async maybeArchiveWorkspaceForCompletedTicket(
+    workspaceId: string,
+    issueId: string,
+  ): Promise<void> {
+    if (!this.archiveWorkspace) {
+      return;
+    }
+    if (this.workspaceRegistry) {
+      const workspace = await this.workspaceRegistry.get(workspaceId);
+      if (!workspace || workspace.archivedAt) {
+        return;
+      }
+    }
+    if (this.projectRegistry) {
+      const projects = await this.projectRegistry.list();
+      const isBaseWorkspace = projects.some(
+        (project) => !project.archivedAt && project.baseWorkspaceId === workspaceId,
+      );
+      if (isBaseWorkspace) {
+        this.logger.info(
+          { workspaceId, issueId },
+          "itsaplan.bridge.workspace_archive_skipped_base_workspace",
+        );
+        return;
+      }
+    }
+
+    // Every agent has a stored record; a live agent the store has not caught up
+    // with yet still counts unless the store says it is archived.
+    const storedRecords = await this.agentStorage.list();
+    const archivedIds = new Set(
+      storedRecords.filter((record) => record.archivedAt).map((record) => record.id),
+    );
+    const otherActiveAgents = new Set<string>();
+    for (const record of storedRecords) {
+      if (
+        record.workspaceId === workspaceId &&
+        !record.archivedAt &&
+        getItsaplanIssueIdFromLabels(record.labels) !== issueId
+      ) {
+        otherActiveAgents.add(record.id);
+      }
+    }
+    for (const liveAgent of this.agentManager.listAgents?.() ?? []) {
+      if (
+        liveAgent.workspaceId === workspaceId &&
+        !archivedIds.has(liveAgent.id) &&
+        getItsaplanIssueIdFromLabels(liveAgent.labels) !== issueId
+      ) {
+        otherActiveAgents.add(liveAgent.id);
+      }
+    }
+
+    if (otherActiveAgents.size > 0) {
+      this.logger.info(
+        { workspaceId, issueId, otherActiveAgents: [...otherActiveAgents] },
+        "itsaplan.bridge.workspace_archive_blocked_by_other_agents",
+      );
+      return;
+    }
+
+    const requestId = `auto-archive-workspace-ticket-done-${issueId}-${workspaceId}-${Date.now()}`;
+    this.logger.info({ issueId, workspaceId, requestId }, "itsaplan.bridge.auto_archive_workspace");
+    try {
+      await this.archiveWorkspace(workspaceId, requestId);
+    } catch (error) {
+      this.logger.warn(
+        { err: error, workspaceId, issueId },
+        "itsaplan.bridge.auto_archive_workspace_failed",
+      );
+    }
   }
 
   private logCompletedProjection(
@@ -1147,13 +1291,37 @@ export class ItsaplanBridge {
     );
   }
 
-  private async findAgentIdByIssueLabel(issueId: string): Promise<string | null> {
+  /**
+   * Runs the closed-ticket archive without holding the webhook response: an
+   * archive deletes a worktree and can take far longer than itsaplan's delivery
+   * timeout, and a timed-out delivery is retried. The reconcile sweep re-runs
+   * this for any ticket whose agents are still live, so a failure here heals.
+   */
+  private projectCompletedColumnOntoAgent(
+    issue: { id: number },
+    column: { id: number; name: string; stateType?: string },
+  ): void {
+    void this.handleTicketCompletedOrCanceled(issue.id, column).catch((error: unknown) => {
+      this.logger.error(
+        { err: error, issueId: issue.id },
+        "itsaplan.bridge.closed_ticket_archive_failed",
+      );
+    });
+  }
+
+  private async findAllAgentsByIssueLabel(
+    issueId: string,
+  ): Promise<
+    Pick<StoredAgentRecord, "id" | "labels" | "updatedAt" | "workspaceId" | "archivedAt">[]
+  > {
     const records = await this.agentStorage.list();
-    const latest = records.reduce<Pick<StoredAgentRecord, "id" | "updatedAt"> | null>(
+    return records.filter((record) => getItsaplanIssueIdFromLabels(record.labels) === issueId);
+  }
+
+  private async findAgentIdByIssueLabel(issueId: string): Promise<string | null> {
+    const agents = await this.findAllAgentsByIssueLabel(issueId);
+    const latest = agents.reduce<Pick<StoredAgentRecord, "id" | "updatedAt"> | null>(
       (newest, record) => {
-        if (getItsaplanIssueIdFromLabels(record.labels) !== issueId) {
-          return newest;
-        }
         if (newest && newest.updatedAt >= record.updatedAt) {
           return newest;
         }
@@ -1234,6 +1402,7 @@ export class ItsaplanBridge {
    * agent's ticket, so the ticket keeps the whole conversation about the work.
    */
   async mirrorUserPrompt(agentId: string, text: string): Promise<void> {
+    this.completedTurnByAgentId.delete(agentId);
     const issueId = getItsaplanIssueIdFromLabels(await this.getAgentLabels(agentId));
     const config = this.getConfig();
     const numericIssueId = Number(issueId);
@@ -1450,6 +1619,7 @@ export class ItsaplanBridge {
 
     const humanUserId = config.humanUserId;
     if (bucket === "needs_you") {
+      await this.handleAgentRunning(agentId, issueId);
       if (humanUserId) {
         await this.enterNeedsYou(config, humanUserId, agentId, numericIssueId);
       }
@@ -1785,6 +1955,12 @@ export class ItsaplanBridge {
     }
     const mapping = this.projectStore.getByPaseoProjectKey(paseoProjectKey);
     if (!mapping) {
+      const hostPathMatch = /^host:[^:]+:(.+)$/.exec(paseoProjectKey);
+      if (hostPathMatch && isHomeDirectoryRoot(hostPathMatch[1]!)) {
+        return {
+          error: `Cannot ticketize agent in home folder project (${hostPathMatch[1]}): home directories do not have an itsaplan board. Move agent to a mapped project or experiments first.`,
+        };
+      }
       return { error: `No itsaplan project mapping found for Paseo project ${paseoProjectKey}` };
     }
     return mapping;

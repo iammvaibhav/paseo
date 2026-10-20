@@ -235,10 +235,13 @@ describe("RoutingService.suggest", () => {
     const result = await createService({ placement: () => "scratch", host: WORK }).service.suggest(
       "try a thing on work",
     );
+    // Its root path too: a scratch placement with no rootPath left the agent's
+    // cwd unset, and it ran in the home directory.
     expect(result.placement).toMatchObject({
       kind: "scratch",
       serverId: WORK,
       projectId: "prj_work_scratch",
+      rootPath: "/home/v/experiments",
     });
   });
 

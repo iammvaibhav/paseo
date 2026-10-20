@@ -1341,6 +1341,7 @@ export class Session {
         this.peerManager?.reconcile(
           loadPersistedConfig(this.paseoHome, this.sessionLogger).peers ?? [],
         );
+        this.missionControlService?.reloadCentralConfig();
         return result;
       },
     });

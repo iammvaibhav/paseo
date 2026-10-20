@@ -6185,6 +6185,40 @@ test("setLabels merges and persists labels", async () => {
   });
 });
 
+test("setLabels updates labels on a closed agent without throwing Unknown agent", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-set-labels-closed-"));
+  const storagePath = join(workdir, "agents");
+  const storage = new AgentStorage(storagePath, logger);
+  const manager = new AgentManager({
+    clients: {
+      codex: new TestAgentClient(),
+    },
+    registry: storage,
+    logger,
+    idFactory: () => "00000000-0000-4000-8000-000000000134",
+  });
+
+  const snapshot = await manager.createAgent(
+    {
+      provider: "codex",
+      cwd: workdir,
+      title: "Label test closed",
+    },
+    undefined,
+    { workspaceId: undefined },
+  );
+
+  await manager.closeAgent(snapshot.id);
+  expect(manager.getAgent(snapshot.id)).toBeNull();
+
+  await manager.setLabels(snapshot.id, { "itsaplan.issue": "128" });
+
+  const persisted = await storage.get(snapshot.id);
+  expect(persisted?.labels).toEqual({
+    "itsaplan.issue": "128",
+  });
+});
+
 test("detachAgent removes relationship lifecycle labels from a live agent and emits state", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-detach-live-"));
   const storagePath = join(workdir, "agents");

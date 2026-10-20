@@ -5399,21 +5399,6 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       const withTicket = async (created: PaseoToolResult): Promise<PaseoToolResult> => {
         const createdAgent = CREATED_AGENT_SCHEMA.safeParse(created.structuredContent);
         if (!ticket || created.isError || !createdAgent.success) return created;
-        const where = createdAgent.data.cwd ?? cwd;
-        const scratch =
-          options.routingService && where
-            ? (await options.routingService.describeCwd(host, where).catch(() => null))?.scratch
-            : false;
-        if (scratch) {
-          return {
-            ...created,
-            structuredContent: ensureValidJson({
-              ...createdAgent.data,
-              ticketError:
-                "No ticket: scratch work is one-off and has no ticket (OPERATING section 4).",
-            }),
-          };
-        }
         const ticketResult = await toCatalog()
           .executeTool("fleet_ticketize_agent", {
             agentId: createdAgent.data.agentId,
@@ -6143,10 +6128,14 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         error: z.string().optional(),
       },
     },
-    async ({ agentId, ticket, ask, host }) => {
+    async ({ agentId: requestedAgentId, ticket, ask, host }) => {
       // The agent's labels live on its host, so the ticket is made there.
-      const resolution = host ? null : await fleetIdIndex.resolveFleetId(agentId);
-      const agentHost = host ?? (resolution?.kind === "unknown" ? "local" : resolution?.host);
+      const resolution = await fleetIdIndex.resolveFleetId(requestedAgentId);
+      if (resolution.kind === "unknown" && !host) {
+        throw new Error(resolution.guidance);
+      }
+      const agentId = resolution.kind === "agent" ? resolution.id : requestedAgentId;
+      const agentHost = host ?? (resolution.kind === "unknown" ? "local" : resolution.host);
       if (agentHost && !isFleetLocalTarget(agentHost)) {
         const client = resolveFleetHost(agentHost);
         if (!client) {

@@ -11,6 +11,7 @@ import {
   deriveItsaplanProjectKey,
   ensureItsaplanProjectMapping,
   ensureTodoColumnNoCommanderAutoAssign,
+  isEligibleForItsaplanBoard,
   ItsaplanProjectStore,
   resolveItsaplanConfig,
   runItsaplanProjectResync,
@@ -493,6 +494,29 @@ describe("itsaplan project sync", () => {
     expect(store.getByPaseoProjectKey("CMD")).toBeNull();
   });
 
+  test("never syncs a project rooted in /tmp, verify-runs, or home directories", async () => {
+    for (const rootPath of [
+      "/tmp",
+      "/tmp/notify-test-ws",
+      "/private/tmp",
+      "/data/.paseo/verify-runs/run-1/repo",
+      "/data/.paseo/verify-proofs/proof-1",
+      "/data/paseo/.dev/verify/v-123/repo",
+      join(paseoHome, "verify-runs", "v-99"),
+      "/home/ubuntu",
+      "/Users/vaibhav",
+    ]) {
+      const dummy = project({
+        projectId: "dummy",
+        projectKey: `DUMMY_${rootPath.replace(/[^A-Za-z0-9]/g, "")}`,
+        displayName: "dummy",
+        rootPath,
+      });
+      expect(await ensureItsaplanProjectMapping(dummy, deps)).toBeNull();
+      expect(fakeServer.createdProjects).toHaveLength(0);
+    }
+  });
+
   test("resync maps every unmapped, unarchived, keyed project exactly once", async () => {
     const projects = [
       project({ projectId: "a", projectKey: "AAA", displayName: "A" }),
@@ -822,5 +846,37 @@ describe("ensureTodoColumnNoCommanderAutoAssign", () => {
     await expect(
       ensureTodoColumnNoCommanderAutoAssign("ENG", "bot-user-42", client, createTestLogger()),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe("isEligibleForItsaplanBoard", () => {
+  const home = "/data/.paseo";
+
+  test("rejects temporary directories", () => {
+    expect(isEligibleForItsaplanBoard("/tmp", home)).toBe(false);
+    expect(isEligibleForItsaplanBoard("/tmp/scratch", home)).toBe(false);
+    expect(isEligibleForItsaplanBoard("/private/tmp", home)).toBe(false);
+    expect(isEligibleForItsaplanBoard("/private/tmp/sub", home)).toBe(false);
+  });
+
+  test("rejects verify runs and proof directories derived from paseoHome or structural markers", () => {
+    expect(isEligibleForItsaplanBoard("/data/.paseo/verify-runs/v-1/repo", home)).toBe(false);
+    expect(isEligibleForItsaplanBoard("/data/.dev/verify/run/repo", home)).toBe(false);
+    expect(isEligibleForItsaplanBoard(join(home, "verify-runs", "v-2"), home)).toBe(false);
+    expect(isEligibleForItsaplanBoard(join(home, "verify-proofs", "proof-2"), home)).toBe(false);
+  });
+
+  test("rejects home directories and paseoHome", () => {
+    expect(isEligibleForItsaplanBoard(home, home)).toBe(false);
+    expect(isEligibleForItsaplanBoard(join(home, "commander"), home)).toBe(false);
+    expect(isEligibleForItsaplanBoard("/home/ubuntu", home)).toBe(false);
+    expect(isEligibleForItsaplanBoard("/Users/vaibhav", home)).toBe(false);
+  });
+
+  test("accepts real codebases and experiments", () => {
+    expect(isEligibleForItsaplanBoard("/data/paseo", home)).toBe(true);
+    expect(isEligibleForItsaplanBoard("/data/experiments", home)).toBe(true);
+    expect(isEligibleForItsaplanBoard("/home/ubuntu/experiments", home)).toBe(true);
+    expect(isEligibleForItsaplanBoard("/data/projects/flotilla", home)).toBe(true);
   });
 });

@@ -1,3 +1,4 @@
+import { homedir, tmpdir } from "node:os";
 import { readFile } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import type { Logger } from "pino";
@@ -223,8 +224,6 @@ export interface ItsaplanProjectSyncDependencies {
   /** Daemon home; projects rooted inside it are Paseo-internal and never
    * synced to itsaplan. */
   paseoHome: string;
-  /** The host's scratch root: one-off work there has no ticket, so it gets no board. */
-  isScratchRoot?: (rootPath: string) => boolean;
   logger: Logger;
 }
 
@@ -258,10 +257,7 @@ export async function ensureItsaplanProjectMapping(
   if (!config || !project.projectKey) {
     return null;
   }
-  if (
-    isPaseoInternalProject(project.rootPath, deps.paseoHome) ||
-    deps.isScratchRoot?.(project.rootPath)
-  ) {
+  if (!isEligibleForItsaplanBoard(project.rootPath, deps.paseoHome)) {
     return null;
   }
   return ensureItsaplanProjectMappingForKey(
@@ -797,6 +793,73 @@ function isPaseoInternalProject(rootPath: string, paseoHome: string): boolean {
   return normalizedRoot === normalizedHome || normalizedRoot.startsWith(normalizedHome + sep);
 }
 
+export function isHomeDirectoryRoot(rootPath: string): boolean {
+  const normalized = resolve(rootPath);
+  const home = resolve(homedir());
+  if (normalized === home) {
+    return true;
+  }
+  if (/^\/(?:home|Users)\/[^/]+$/i.test(normalized)) {
+    return true;
+  }
+  if (normalized === "/" || normalized === "/root" || normalized === "/var/root") {
+    return true;
+  }
+  return false;
+}
+
+export function isTemporaryOrTestRoot(rootPath: string, paseoHome?: string): boolean {
+  const normalized = resolve(rootPath);
+  const tmp = resolve(tmpdir());
+  if (
+    normalized === "/tmp" ||
+    normalized.startsWith("/tmp/") ||
+    normalized === "/private/tmp" ||
+    normalized.startsWith("/private/tmp/") ||
+    normalized.startsWith("/var/folders/") ||
+    normalized === tmp ||
+    normalized.startsWith(tmp + sep)
+  ) {
+    return true;
+  }
+  if (
+    normalized.includes("/.paseo/verify-runs/") ||
+    normalized.includes("/.paseo/verify-proofs/") ||
+    normalized.includes("/verify-runs/") ||
+    normalized.includes("/verify-proofs/") ||
+    normalized.includes("/.dev/verify/")
+  ) {
+    return true;
+  }
+  if (paseoHome) {
+    const normalizedPaseo = resolve(paseoHome);
+    const verifyRuns = join(normalizedPaseo, "verify-runs");
+    const verifyProofs = join(normalizedPaseo, "verify-proofs");
+    if (
+      normalized === verifyRuns ||
+      normalized.startsWith(verifyRuns + sep) ||
+      normalized === verifyProofs ||
+      normalized.startsWith(verifyProofs + sep)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function isEligibleForItsaplanBoard(rootPath: string, paseoHome: string): boolean {
+  if (isPaseoInternalProject(rootPath, paseoHome)) {
+    return false;
+  }
+  if (isHomeDirectoryRoot(rootPath)) {
+    return false;
+  }
+  if (isTemporaryOrTestRoot(rootPath, paseoHome)) {
+    return false;
+  }
+  return true;
+}
+
 /**
  * Catch-up sweep over THIS host's active projects: maps every one the store
  * doesn't know yet. Every host runs its own sweep; a repo checked out on
@@ -824,8 +887,7 @@ export async function runItsaplanProjectResync(
       !config ||
       !projectKey ||
       seenKeys.has(projectKey) ||
-      isPaseoInternalProject(project.rootPath, deps.paseoHome) ||
-      deps.isScratchRoot?.(project.rootPath)
+      !isEligibleForItsaplanBoard(project.rootPath, deps.paseoHome)
     ) {
       result.skipped += 1;
       continue;

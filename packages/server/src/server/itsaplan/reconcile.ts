@@ -29,6 +29,9 @@ export interface ItsaplanReconcileOptions {
   missionControl: ItsaplanReconcileMissionControl;
   projectStore: ItsaplanProjectStore;
   getConfig: () => ItsaplanCentralConfig | null;
+  /** Archives the live agents (and their workspaces) of a ticket found in a
+   * completed or canceled column (ItsaplanBridge.handleTicketCompletedOrCanceled). */
+  closeTicket: (issueId: string) => Promise<void>;
   logger: Logger;
   intervalMs?: number;
 }
@@ -73,34 +76,43 @@ function projectKeyFromIdentifier(identifier: string | undefined): string | null
 
 /**
  * ADR 0002 periodic reconciliation sweep: for each itsaplan issue with a
- * labeled Paseo agent, re-projects drift from the agent's execution truth —
- * never the reverse. Column moves are strictly forward (Todo -> In Progress
- * -> Ready to review); a ticket already at or past its truth-implied column,
- * or already Done/Cancelled (user-owned, terminal), is left untouched.
+ * labeled Paseo agent, re-projects drift from the agent's execution truth.
+ * Column moves follow the agent both ways between In Progress and Ready to
+ * review (a re-prompted ready agent goes back to In Progress). Done/Cancelled
+ * columns are user-owned: the sweep never moves a ticket out of them, and a
+ * ticket found there with a live agent gets the closed-ticket archive, so a
+ * missed or failed webhook heals within one sweep.
  *
  * An issue whose latest attempt is archived is history, not drift: the sweep
  * skips it. Without this skip, every archived attempt cost two requests per
- * sweep and the fleet flooded itsaplan into rate limits. A 429 ends the
- * sweep and doubles the delay to the next one (up to 10 minutes); a sweep
- * without a 429 resets the delay.
+ * sweep and the fleet flooded itsaplan into rate limits. An issue deleted in
+ * itsaplan (404) is skipped for the life of the process. A 429 ends the sweep
+ * and doubles the delay to the next one (up to 10 minutes); a sweep without a
+ * 429 resets the delay.
  */
 export class ItsaplanReconcileService {
   private readonly agentStorage: ItsaplanReconcileAgentStorage;
   private readonly missionControl: ItsaplanReconcileMissionControl;
   private readonly projectStore: ItsaplanProjectStore;
   private readonly getConfig: () => ItsaplanCentralConfig | null;
+  private readonly closeTicket: (issueId: string) => Promise<void>;
+  /** Issues itsaplan answered 404 for: deleted tickets, never fetched again. */
+  private readonly deletedIssueIds = new Set<string>();
   private readonly logger: Logger;
   private readonly baseIntervalMs: number;
   private intervalMs: number;
   private started = false;
   private sweepInFlight = false;
   private timer: NodeJS.Timeout | null = null;
+  /** Promise tracking the startup sweep (if currently in flight or completed on boot). */
+  initialSweepPromise: Promise<void> | null = null;
 
   constructor(options: ItsaplanReconcileOptions) {
     this.agentStorage = options.agentStorage;
     this.missionControl = options.missionControl;
     this.projectStore = options.projectStore;
     this.getConfig = options.getConfig;
+    this.closeTicket = options.closeTicket;
     this.logger = options.logger.child({ module: "itsaplan", component: "reconcile" });
     this.baseIntervalMs = options.intervalMs ?? 60_000;
     this.intervalMs = this.baseIntervalMs;
@@ -116,9 +128,20 @@ export class ItsaplanReconcileService {
       return;
     }
     this.started = true;
-    // A sweep still in flight from before stop() schedules the next one.
+    // Run an initial sweep immediately on startup to correct drift that
+    // accumulated while offline, then schedule periodic sweeps.
     if (!this.sweepInFlight) {
-      this.scheduleSweep();
+      this.sweepInFlight = true;
+      this.initialSweepPromise = this.runSweep()
+        .catch((error: unknown) => {
+          this.logger.error({ err: error }, "itsaplan.reconcile.sweep_failed");
+        })
+        .finally(() => {
+          this.sweepInFlight = false;
+          if (this.started) {
+            this.scheduleSweep();
+          }
+        });
     }
   }
 
@@ -172,7 +195,7 @@ export class ItsaplanReconcileService {
       const latest = group.reduce((newest, candidate) =>
         candidate.updatedAt > newest.updatedAt ? candidate : newest,
       );
-      if (latest.archivedAt) {
+      if (latest.archivedAt || this.deletedIssueIds.has(issueId)) {
         continue;
       }
       try {
@@ -185,6 +208,14 @@ export class ItsaplanReconcileService {
             "itsaplan.reconcile.rate_limited",
           );
           return;
+        }
+        if (error instanceof ItsaplanApiError && error.status === 404) {
+          this.deletedIssueIds.add(issueId);
+          this.logger.warn(
+            { issueId, agentId: latest.id },
+            "itsaplan.reconcile.issue_deleted_skipping",
+          );
+          continue;
         }
         this.logger.error({ err: error, issueId }, "itsaplan.reconcile.issue_failed");
       }
@@ -202,7 +233,6 @@ export class ItsaplanReconcileService {
       return;
     }
     const bucket = await this.missionControl.getLifecycleBucket(latest.id);
-    const truthRank = bucket === "ready" || bucket === "done" ? 2 : 1;
 
     const client = new ItsaplanClient(config);
     const issue = await client.getIssue(numericIssueId);
@@ -215,18 +245,26 @@ export class ItsaplanReconcileService {
     const currentColumn = columns.find((column) => column.id === issue.columnId);
     const currentRank = columnRank(currentColumn);
 
-    if (currentRank < 3 && truthRank > currentRank) {
-      const target =
-        truthRank === 2
-          ? await client.ensureColumn(projectKey, ITSAPLAN_READY_FOR_REVIEW_COLUMN_NAME, "started")
-          : findInProgressColumn(columns);
-      if (target && issue.columnId !== target.id) {
-        await client.moveIssueColumn(numericIssueId, target.id);
-        this.logger.info(
-          { issueId, columnId: target.id },
-          "itsaplan.reconcile.column_drift_corrected",
-        );
-      }
+    if (currentRank === 3) {
+      await this.closeTicket(issueId);
+      return;
+    }
+    let target: ItsaplanColumn | undefined;
+    if (bucket === "ready") {
+      target = await client.ensureColumn(
+        projectKey,
+        ITSAPLAN_READY_FOR_REVIEW_COLUMN_NAME,
+        "started",
+      );
+    } else if (bucket === "running" || bucket === "needs_you") {
+      target = findInProgressColumn(columns);
+    }
+    if (target && issue.columnId !== target.id) {
+      await client.moveIssueColumn(numericIssueId, target.id);
+      this.logger.info(
+        { issueId, columnId: target.id, previousColumnId: issue.columnId },
+        "itsaplan.reconcile.column_drift_corrected",
+      );
     }
 
     if (

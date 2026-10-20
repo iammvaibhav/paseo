@@ -409,6 +409,19 @@ function waitForCommentEqual(
   });
 }
 
+/** The closed-ticket archive runs after the webhook answers; wait for it. */
+function waitForLength(items: readonly unknown[], length: number): Promise<void> {
+  return vi.waitFor(() => {
+    expect(items).toHaveLength(length);
+  });
+}
+
+function waitForCall(spy: { mock: { calls: unknown[][] } }): Promise<void> {
+  return vi.waitFor(() => {
+    expect(spy.mock.calls.length).toBeGreaterThan(0);
+  });
+}
+
 function findCommentIncluding(
   comments: Array<{ body: string }>,
   snippet: string,
@@ -1811,6 +1824,7 @@ describe("ItsaplanBridge", () => {
       });
       const result = await bridge.handleWebhookRequest(request);
       expect(result.status).toBe(200);
+      await waitForLength(missionControlFake.lifecycleActions, 1);
       expect(missionControlFake.lifecycleActions).toEqual([
         { agentId: "agent-done-1", action: "done" },
       ]);
@@ -1838,7 +1852,7 @@ describe("ItsaplanBridge", () => {
       request.headers["x-itsaplan-event-id"] = "evt-done-1";
       const first = await bridge.handleWebhookRequest(request);
       expect(first.status).toBe(200);
-      expect(missionControlFake.lifecycleActions).toHaveLength(1);
+      await waitForLength(missionControlFake.lifecycleActions, 1);
 
       // Second webhook delivery with same event id (deduped by event id)
       const second = await bridge.handleWebhookRequest(request);
@@ -1872,37 +1886,6 @@ describe("ItsaplanBridge", () => {
       expect(fakeServer.comments.length).toBe(commentCountBefore);
     });
 
-    test("resolves latest attempt when multiple agents share an issue label", async () => {
-      agentStorageRecords.push(
-        {
-          id: "agent-old-attempt",
-          labels: { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) },
-          updatedAt: "2026-01-01T10:00:00.000Z",
-        },
-        {
-          id: "agent-latest-attempt",
-          labels: { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) },
-          updatedAt: "2026-01-01T12:00:00.000Z",
-        },
-      );
-      missionControlFake.setBucket("ready");
-
-      issues.get(ISSUE_ID)!.columnId = 4;
-      const request = webhookRequest("issue.state_changed", {
-        id: ISSUE_ID,
-        projectId: PROJECT_ID,
-        sequenceNumber: 42,
-        columnId: 4,
-        title: "Fix the bug",
-        description: null,
-      });
-      const result = await bridge.handleWebhookRequest(request);
-      expect(result.status).toBe(200);
-      expect(missionControlFake.lifecycleActions).toEqual([
-        { agentId: "agent-latest-attempt", action: "done" },
-      ]);
-    });
-
     test("ignores completed webhook when no agent is linked to the issue", async () => {
       // agentStorageRecords is empty — no agent with this label
       issues.get(ISSUE_ID)!.columnId = 4;
@@ -1919,13 +1902,33 @@ describe("ItsaplanBridge", () => {
       expect(missionControlFake.lifecycleActions).toHaveLength(0);
     });
 
-    test("Canceled webhook releases dependents but does NOT mark agent lifecycle done", async () => {
+    test("Canceled webhook archives linked agent and workspace (same as Done)", async () => {
+      const workspaceId = "ws-canceled-1";
+      const archiveWorkspaceSpy = vi.fn().mockResolvedValue(undefined);
+      const archiveAgentSpy = vi.fn().mockResolvedValue(undefined);
       agentStorageRecords.push({
         id: "agent-canceled-1",
+        workspaceId,
         labels: { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) },
         updatedAt: new Date().toISOString(),
       });
       missionControlFake.setBucket("running");
+
+      const customBridge = new ItsaplanBridge({
+        logger: createTestLogger(),
+        serverId: "server-1",
+        agentManager: agentManagerFake.manager,
+        agentStorage: createFakeAgentStorage(agentStorageRecords),
+        missionControl: missionControlFake.control,
+        projectStore,
+        getConfig: () => config,
+        resolvePaseoProjectKey: async () => "proj",
+        dispatchWorker,
+        steerWorkerPrompt,
+        archiveWorkspace: archiveWorkspaceSpy,
+        archiveAgent: archiveAgentSpy,
+      });
+      customBridge.start();
 
       issues.get(ISSUE_ID)!.columnId = 5; // Canceled (stateType: "canceled")
       const request = webhookRequest("issue.state_changed", {
@@ -1936,12 +1939,191 @@ describe("ItsaplanBridge", () => {
         title: "Fix the bug",
         description: null,
       });
-      const result = await bridge.handleWebhookRequest(request);
+      const result = await customBridge.handleWebhookRequest(request);
       expect(result.status).toBe(200);
-      expect(missionControlFake.lifecycleActions).toHaveLength(0);
-      expect(await missionControlFake.control.getLifecycleBucket("agent-canceled-1")).toBe(
-        "running",
+      await waitForCall(archiveWorkspaceSpy);
+      expect(archiveWorkspaceSpy).toHaveBeenCalledWith(workspaceId, expect.any(String));
+      expect(archiveAgentSpy).toHaveBeenCalledWith("agent-canceled-1");
+    });
+
+    test("Done webhook archives agent and workspace even when bucket is already done", async () => {
+      const workspaceId = "ws-already-done";
+      const archiveWorkspaceSpy = vi.fn().mockResolvedValue(undefined);
+      const archiveAgentSpy = vi.fn().mockResolvedValue(undefined);
+      agentStorageRecords.push({
+        id: "agent-already-done-1",
+        workspaceId,
+        labels: { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) },
+        updatedAt: new Date().toISOString(),
+      });
+      missionControlFake.setBucket("done"); // Already done!
+
+      const customBridge = new ItsaplanBridge({
+        logger: createTestLogger(),
+        serverId: "server-1",
+        agentManager: agentManagerFake.manager,
+        agentStorage: createFakeAgentStorage(agentStorageRecords),
+        missionControl: missionControlFake.control,
+        projectStore,
+        getConfig: () => config,
+        resolvePaseoProjectKey: async () => "proj",
+        dispatchWorker,
+        steerWorkerPrompt,
+        archiveWorkspace: archiveWorkspaceSpy,
+        archiveAgent: archiveAgentSpy,
+      });
+      customBridge.start();
+
+      issues.get(ISSUE_ID)!.columnId = 4; // Done
+      const request = webhookRequest("issue.state_changed", {
+        id: ISSUE_ID,
+        projectId: PROJECT_ID,
+        sequenceNumber: 42,
+        columnId: 4,
+        title: "Fix the bug",
+        description: null,
+      });
+      const result = await customBridge.handleWebhookRequest(request);
+      expect(result.status).toBe(200);
+      await waitForCall(archiveWorkspaceSpy);
+      expect(archiveWorkspaceSpy).toHaveBeenCalledWith(workspaceId, expect.any(String));
+      expect(archiveAgentSpy).toHaveBeenCalledWith("agent-already-done-1");
+    });
+
+    test("a closed ticket archives its agent but NOT a workspace another live agent shares", async () => {
+      const workspaceId = "ws-multi-agent";
+      const archiveWorkspaceSpy = vi.fn().mockResolvedValue(undefined);
+      const archiveAgentSpy = vi.fn().mockResolvedValue(undefined);
+      agentStorageRecords.push(
+        {
+          id: "agent-ticket-1",
+          workspaceId,
+          labels: { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) },
+          updatedAt: new Date().toISOString(),
+        },
+        {
+          id: "agent-other-active",
+          workspaceId,
+          labels: { [ITSAPLAN_ISSUE_LABEL_KEY]: "9999" },
+          updatedAt: new Date().toISOString(),
+        },
       );
+      missionControlFake.setBucket("ready");
+
+      const customBridge = new ItsaplanBridge({
+        logger: createTestLogger(),
+        serverId: "server-1",
+        agentManager: agentManagerFake.manager,
+        agentStorage: createFakeAgentStorage(agentStorageRecords),
+        missionControl: missionControlFake.control,
+        projectStore,
+        getConfig: () => config,
+        resolvePaseoProjectKey: async () => "proj",
+        dispatchWorker,
+        steerWorkerPrompt,
+        archiveWorkspace: archiveWorkspaceSpy,
+        archiveAgent: archiveAgentSpy,
+      });
+      customBridge.start();
+
+      await customBridge.handleTicketCompletedOrCanceled(ISSUE_ID);
+      expect(archiveAgentSpy).toHaveBeenCalledWith("agent-ticket-1");
+      expect(archiveWorkspaceSpy).not.toHaveBeenCalled();
+    });
+
+    test("Done webhook archives ALL attempts when multiple agents share the issue label", async () => {
+      const workspaceId = "ws-multi-attempt";
+      const archiveWorkspaceSpy = vi.fn().mockResolvedValue(undefined);
+      const archiveAgentSpy = vi.fn().mockResolvedValue(undefined);
+      agentStorageRecords.push(
+        {
+          id: "agent-attempt-1",
+          workspaceId,
+          labels: { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) },
+          updatedAt: "2026-01-01T10:00:00.000Z",
+        },
+        {
+          id: "agent-attempt-2",
+          workspaceId,
+          labels: { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) },
+          updatedAt: "2026-01-01T12:00:00.000Z",
+        },
+      );
+      missionControlFake.setBucket("ready");
+
+      const customBridge = new ItsaplanBridge({
+        logger: createTestLogger(),
+        serverId: "server-1",
+        agentManager: agentManagerFake.manager,
+        agentStorage: createFakeAgentStorage(agentStorageRecords),
+        missionControl: missionControlFake.control,
+        projectStore,
+        getConfig: () => config,
+        resolvePaseoProjectKey: async () => "proj",
+        dispatchWorker,
+        steerWorkerPrompt,
+        archiveWorkspace: archiveWorkspaceSpy,
+        archiveAgent: archiveAgentSpy,
+      });
+      customBridge.start();
+
+      issues.get(ISSUE_ID)!.columnId = 4; // Done
+      const request = webhookRequest("issue.state_changed", {
+        id: ISSUE_ID,
+        projectId: PROJECT_ID,
+        sequenceNumber: 42,
+        columnId: 4,
+        title: "Fix the bug",
+        description: null,
+      });
+      const result = await customBridge.handleWebhookRequest(request);
+      expect(result.status).toBe(200);
+      await waitForCall(archiveWorkspaceSpy);
+      expect(archiveWorkspaceSpy).toHaveBeenCalledWith(workspaceId, expect.any(String));
+      expect(archiveAgentSpy).toHaveBeenCalledWith("agent-attempt-1");
+      expect(archiveAgentSpy).toHaveBeenCalledWith("agent-attempt-2");
+    });
+
+    test("answers the Done webhook before a slow workspace archive finishes", async () => {
+      // itsaplan times a delivery out after 10 s; a worktree archive can take
+      // longer, so the response must not wait for it.
+      const archiveWorkspaceSpy = vi.fn().mockReturnValue(new Promise<void>(() => {}));
+      agentStorageRecords.push({
+        id: "agent-slow-archive",
+        workspaceId: "ws-slow",
+        labels: { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) },
+        updatedAt: new Date().toISOString(),
+      });
+      missionControlFake.setBucket("ready");
+      const customBridge = new ItsaplanBridge({
+        logger: createTestLogger(),
+        serverId: "server-1",
+        agentManager: agentManagerFake.manager,
+        agentStorage: createFakeAgentStorage(agentStorageRecords),
+        missionControl: missionControlFake.control,
+        projectStore,
+        getConfig: () => config,
+        resolvePaseoProjectKey: async () => "proj",
+        dispatchWorker,
+        steerWorkerPrompt,
+        archiveWorkspace: archiveWorkspaceSpy,
+        archiveAgent: vi.fn().mockResolvedValue(undefined),
+      });
+      customBridge.start();
+
+      issues.get(ISSUE_ID)!.columnId = 4; // Done
+      const result = await customBridge.handleWebhookRequest(
+        webhookRequest("issue.state_changed", {
+          id: ISSUE_ID,
+          projectId: PROJECT_ID,
+          sequenceNumber: 42,
+          columnId: 4,
+          title: "Fix the bug",
+          description: null,
+        }),
+      );
+      expect(result.status).toBe(200);
+      await waitForCall(archiveWorkspaceSpy);
     });
   });
 
@@ -2461,6 +2643,55 @@ describe("ItsaplanBridge", () => {
       });
       await waitForIssueColumn(issues, ISSUE_ID, readyCol.id);
     });
+
+    test("re-prompting via mirrorUserPrompt clears completed turn and moves ticket back to In Progress", async () => {
+      const agentId = "agent-prompt-reprompt";
+      agentManagerFake.emit({
+        type: "agent_state",
+        agent: fakeAgent(agentId, { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) }),
+      });
+      await waitForIssueColumn(issues, ISSUE_ID, 3);
+
+      // Finish turn 1
+      agentManagerFake.setAgent({
+        ...fakeAgent(agentId, { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) }),
+        activeTurnId: "turn-completed-1",
+      });
+      missionControlFake.emitSelfReport({
+        id: "mce_prompt_1",
+        ts: new Date().toISOString(),
+        seq: 1,
+        agentId,
+        agentName: agentId,
+        agentTitle: agentId,
+        kind: "finished",
+        source: "self",
+        severity: "info",
+        headline: "Done",
+      } as unknown as MissionControlEvent);
+      await waitForCreatedColumn(fakeServer.createdColumns, {
+        projectKey: PROJECT_KEY,
+        name: "Ready to review",
+        stateType: "started",
+      });
+      const readyCol = findColumnByName(columns, "Ready to review")!;
+      await waitForIssueColumn(issues, ISSUE_ID, readyCol.id);
+
+      // User re-prompts agent via mirrorUserPrompt
+      await bridge.mirrorUserPrompt(agentId, "Please fix the failing test");
+
+      // Agent runs again (even if activeTurnId matches turn-completed-1)
+      missionControlFake.setBucket("running");
+      agentManagerFake.emit({
+        type: "agent_state",
+        agent: {
+          ...fakeAgent(agentId, { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) }),
+          activeTurnId: "turn-completed-1",
+        },
+      });
+      await waitForIssueColumn(issues, ISSUE_ID, 3);
+      expect(issues.get(ISSUE_ID)?.columnId).toBe(3);
+    });
   });
 
   describe("needs_you projection", () => {
@@ -2480,6 +2711,59 @@ describe("ItsaplanBridge", () => {
       await flushAsync();
       await flushAsync();
       expect(issues.get(ISSUE_ID)?.assigneeUserId).toBeNull();
+    });
+
+    test("moves the ticket to In Progress when an existing agent enters needs_you from Todo", async () => {
+      const agentId = "agent-ny-existing";
+      // First sighting while idle / not moving
+      agentManagerFake.emit({
+        type: "agent_state",
+        agent: fakeAgent(agentId, { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) }),
+      });
+      await flushAsync();
+      // Reset column to Todo (column 2)
+      issues.get(ISSUE_ID)!.columnId = 2;
+      expect(issues.get(ISSUE_ID)?.columnId).toBe(2);
+
+      // Now agent transitions to needs_you (not first sighting)
+      missionControlFake.setBucket("needs_you");
+      agentManagerFake.emit({
+        type: "agent_state",
+        agent: fakeAgent(agentId, { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) }),
+      });
+      await waitForIssueColumn(issues, ISSUE_ID, 3);
+      expect(issues.get(ISSUE_ID)?.columnId).toBe(3);
+    });
+
+    test("moves the ticket from Ready to review back to In Progress when entering needs_you", async () => {
+      const agentId = "agent-ny-from-ready";
+      // 1. Agent first runs and completes to Ready to review
+      agentManagerFake.emit({
+        type: "agent_state",
+        agent: fakeAgent(agentId, { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) }),
+      });
+      await waitForIssueColumn(issues, ISSUE_ID, 3);
+      missionControlFake.setBucket("ready");
+      agentManagerFake.emit({
+        type: "agent_state",
+        agent: fakeAgent(agentId, { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) }),
+      });
+      await waitForCreatedColumn(fakeServer.createdColumns, {
+        projectKey: PROJECT_KEY,
+        name: "Ready to review",
+        stateType: "started",
+      });
+      const readyCol = findColumnByName(columns, "Ready to review")!;
+      await waitForIssueColumn(issues, ISSUE_ID, readyCol.id);
+
+      // 2. Now agent transitions from ready to needs_you
+      missionControlFake.setBucket("needs_you");
+      agentManagerFake.emit({
+        type: "agent_state",
+        agent: fakeAgent(agentId, { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) }),
+      });
+      await waitForIssueColumn(issues, ISSUE_ID, 3);
+      expect(issues.get(ISSUE_ID)?.columnId).toBe(3);
     });
   });
 
@@ -2595,6 +2879,45 @@ describe("ItsaplanBridge", () => {
       });
       const result = await unmappedBridge.ticketizeAgent("agent-unmapped");
       expect(result).toEqual({ error: expect.stringContaining("No Paseo project found") });
+    });
+
+    test("ticketizeAgent fails with clear error when agent project is a home directory root", async () => {
+      const homeBridge = new ItsaplanBridge({
+        logger: createTestLogger(),
+        serverId: "server-1",
+        agentManager: agentManagerFake.manager,
+        agentStorage: createFakeAgentStorage(agentStorageRecords),
+        missionControl: missionControlFake.control,
+        projectStore,
+        getConfig: () => config,
+        resolvePaseoProjectKey: async () => "host:srv_test:/home/ubuntu",
+        dispatchWorker,
+        steerWorkerPrompt,
+      });
+      const result = await homeBridge.ticketizeAgent("agent-home-dir");
+      expect(result).toEqual({
+        error: expect.stringContaining("home directories do not have an itsaplan board"),
+      });
+    });
+
+    test("ticketizeAgent succeeds for closed/stored agent using agentStorage record", async () => {
+      const agentId = "agent-closed-stored-1";
+      agentStorageRecords.push({
+        id: agentId,
+        title: "DeepTutor task",
+        shortDescription: "Self-host on prod",
+        labels: {},
+        updatedAt: new Date().toISOString(),
+      });
+      missionControlFake.setBucket("ready");
+
+      const result = await bridge.ticketizeAgent(agentId);
+      expect("issueId" in result).toBe(true);
+      if ("issueId" in result) {
+        const created = issues.get(result.issueId);
+        expect(created?.title).toBe("DeepTutor task");
+        expect(created?.description).toBe("Self-host on prod");
+      }
     });
 
     test("bucket ready -> creates issue in Ready to review column", async () => {
