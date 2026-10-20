@@ -25,7 +25,11 @@ export function FileLinkPickerSheet({ request, workspaceRoot, onClose }: FileLin
   const header = useMemo<SheetHeader>(
     () => ({
       title: t("fileLinkPicker.title", { token: request.token }),
-      subtitle: t("fileLinkPicker.subtitle", { count: request.candidates.length }),
+      subtitle: (
+        <Text style={styles.subtitle} numberOfLines={1}>
+          {t("fileLinkPicker.subtitle", { count: request.candidates.length })}
+        </Text>
+      ),
     }),
     [request.candidates.length, request.token, t],
   );
@@ -87,6 +91,10 @@ function rowStyle({
 }
 
 const styles = StyleSheet.create((theme) => ({
+  subtitle: {
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.sm,
+  },
   list: {
     paddingBottom: theme.spacing[2],
   },

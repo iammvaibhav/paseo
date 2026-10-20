@@ -144,11 +144,52 @@ const EFFORT_LABELS: Record<Effort, string> = {
 };
 
 /**
+ * Which sampling fields omp actually sends upstream for this model, so the
+ * Bifrost row grants exactly those. pi-ai's `streamSimple` (`mapOptionsForApi`
+ * in stream.ts) carries `topP` and `presencePenalty` but never `stopSequences`
+ * or `frequencyPenalty`, so `stop` and `frequency_penalty` are never granted.
+ * The per-API checks mirror the providers: anthropic.ts sends `top_p` (only with
+ * thinking off), the OpenAI APIs gate on `supportsSamplingParams` /
+ * `supportsPenaltyAndStopParams`. The Google APIs send both, but Gemini models
+ * on Antigravity answer `presencePenalty` with 400 "Penalty is not enabled for
+ * this model", so Google gets `top_p` only. Codex (`buildStreamOptions` in
+ * dispatch.ts), Cursor and grok-build send none, and
+ * `supportsSamplingParams: false` drops them for every API.
+ */
+function sampling(model: Model<Api>): { topP: boolean; presencePenalty: boolean } {
+	// Cursor and grok-build models carry no compat record.
+	const compat = (model.compat ?? {}) as { supportsSamplingParams?: boolean; supportsPenaltyAndStopParams?: boolean };
+	const none = { topP: false, presencePenalty: false };
+	if (compat.supportsSamplingParams === false) return none;
+	switch (model.api) {
+		case "anthropic-messages":
+			return { topP: compat.supportsSamplingParams === true, presencePenalty: false };
+		case "google-gemini-cli":
+		case "google-generative-ai":
+			return { topP: true, presencePenalty: false };
+		case "openai-completions":
+		case "openai-responses": {
+			const allowed = compat.supportsSamplingParams === true;
+			return { topP: allowed, presencePenalty: allowed && compat.supportsPenaltyAndStopParams === true };
+		}
+		default:
+			return none;
+	}
+}
+
+/**
  * One Bifrost model-parameters datasheet row (Model Settings →
  * model_parameters_url). Bifrost reads `reasoning_effort_levels` to stop
  * clamping efforts to low/medium/high, `supports_reasoning_disable` to pass
  * `none` through, and `model_parameters` to draw the Prompt Repository
  * controls; `provider` must name the Bifrost provider that fronts this proxy.
+ *
+ * The row is also Bifrost's parameter allowlist: with `compat.should_drop_params`
+ * on, any request field the row does not grant is stripped before the proxy sees
+ * it. Every omp model takes tools and `tool_choice`, so both are granted.
+ * `response_format` and `parallel_tool_calls` stay off: omp's gateway drops them
+ * (`buildStreamOptions` in dispatch.ts), so granting them would only hide that.
+ * Sampling fields follow `sampling()`.
  */
 function bifrostRow(key: string, model: Model<Api>, settings: Settings, bifrostProvider: string) {
 	const efforts = getSupportedEfforts(model);
@@ -169,6 +210,25 @@ function bifrostRow(key: string, model: Model<Api>, settings: Settings, bifrostP
 			range: { min: 1, max: model.maxTokens ?? 8192, step: 1 },
 		},
 	];
+	const { topP, presencePenalty } = sampling(model);
+	if (topP) {
+		parameters.push({
+			id: "top_p",
+			label: "Top P",
+			helpText: "Nucleus sampling: only tokens within this cumulative probability are considered.",
+			type: "number",
+			range: { min: 0, max: 1, step: 0.01 },
+		});
+	}
+	if (presencePenalty) {
+		parameters.push({
+			id: "presence_penalty",
+			label: "Presence Penalty",
+			helpText: "Penalizes tokens that already appeared, between -2 and 2.",
+			type: "number",
+			range: { min: -2, max: 2, step: 0.01 },
+		});
+	}
 	if (model.reasoning) {
 		parameters.push({
 			id: "reasoning_effort",
@@ -196,6 +256,8 @@ function bifrostRow(key: string, model: Model<Api>, settings: Settings, bifrostP
 		...(model.contextWindow ? { max_input_tokens: model.contextWindow } : {}),
 		...(model.maxTokens ? { max_output_tokens: model.maxTokens, max_tokens: model.maxTokens } : {}),
 		supports_vision: model.input.includes("image"),
+		supports_function_calling: true,
+		supports_tool_choice: true,
 		supports_reasoning: model.reasoning,
 		...(model.reasoning ? { reasoning_effort_levels: [...efforts], supports_reasoning_disable: true } : {}),
 		model_parameters: parameters,

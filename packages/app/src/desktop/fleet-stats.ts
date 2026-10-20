@@ -22,9 +22,10 @@ function unwrapInvokeError(error: unknown): string | null {
 }
 
 /**
- * Electron main runs scripts/omp-stats-fleet.sh — parallel ssh snapshots, a
- * sqlite merge, then the stock `omp stats` dashboard in its own desktop window.
- * Tens of seconds is normal, so the caller renders a spinner until it settles.
+ * Electron main opens the stock `omp stats` dashboard on the last fleet refresh
+ * and refreshes it in the background (scripts/omp-stats-fleet.sh). Only the
+ * first press ever waits on a full copy, so the caller renders a spinner until
+ * it settles.
  */
 export function useOpenFleetStats(): { open: () => void; isOpening: boolean } {
   const { t } = useTranslation();

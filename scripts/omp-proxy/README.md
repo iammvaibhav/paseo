@@ -238,6 +238,14 @@ front of omp-proxy. It gives a web UI with login and API keys.
   `config.db` stay but no longer refresh, which is fine while
   `omp-proxy` is the only provider. Bifrost syncs it daily and on Force
   Sync; deploy forces a sync after each proxy restart.
+- The rows are also the allowlist for Bifrost's `compat.should_drop_params`
+  (on): Bifrost strips every request field a row does not grant. Rows grant
+  `tools` and `tool_choice` (`supports_function_calling`,
+  `supports_tool_choice`) for every model. `top_p` and `presence_penalty`
+  are granted only on models where omp sends them upstream and the provider
+  accepts them (see `sampling()` in `src/server.ts`). Rows never grant
+  `stop`, `frequency_penalty`, `response_format` or `parallel_tool_calls`,
+  because omp drops all four before the provider call.
 
 Edits made in the Bifrost UI stay after a restart. If you edit
 `config.json`, the changed sections replace the UI values at the next
