@@ -35,9 +35,13 @@ extraResources:
     to: app-dist
   - from: assets/editor-targets
     to: editor-target-icons
-  # Fork-only: backs the sidebar "Fleet stats" button (docs/omp-fleet-stats.md).
+  # Fork-only: backs the sidebar "Fleet stats" button (scripts/omp-stats-fleet.ts).
   - from: ../../scripts/omp-stats-fleet.sh
     to: scripts/omp-stats-fleet.sh
+  - from: ../../scripts/omp-stats-fleet.ts
+    to: scripts/omp-stats-fleet.ts
+  - from: ../../scripts/omp-stats-fleet-export.mjs
+    to: scripts/omp-stats-fleet-export.mjs
 publish:
   provider: github
   owner: getpaseo

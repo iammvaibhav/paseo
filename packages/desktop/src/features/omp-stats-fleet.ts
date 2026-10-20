@@ -1,11 +1,14 @@
-// Fork-only: runs scripts/omp-stats-fleet.sh, which snapshots every host's omp
-// stats DB over ssh, merges them into a throwaway omp profile, and serves the
-// stock `omp stats` dashboard on loopback. The dashboard gets its own desktop
-// window because the sidebar button that opens it is global, while every in-app
-// browser pane is workspace-scoped. See docs/omp-fleet-stats.md.
+// Fork-only: backs the sidebar "Fleet stats" button with scripts/omp-stats-fleet.sh,
+// which keeps an incrementally refreshed mirror of every host's omp stats DB in
+// a throwaway omp profile and serves the stock `omp stats` dashboard on it. The
+// button opens the dashboard on the last refresh at once and refreshes in the
+// background; only the very first press waits for a refresh. The dashboard gets
+// its own desktop window because the sidebar button is global, while every
+// in-app browser pane is workspace-scoped. Design notes: scripts/omp-stats-fleet.ts.
 import type { ChildProcess } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { connect } from "node:net";
+import { homedir } from "node:os";
 import path from "node:path";
 
 import { spawnProcess } from "@getpaseo/server";
@@ -15,13 +18,18 @@ import log from "electron-log/main";
 import { PASEO_BROWSER_PROFILE_PARTITION } from "./browser-profile.js";
 
 const DEFAULT_PORT = 3848;
-// Three hosts are snapshotted in parallel over ssh, then merged with sqlite.
-// A cold VPN link plus a large stats DB pushes this past any 30s budget.
-const READY_TIMEOUT_MS = 300_000;
-const READY_POLL_INTERVAL_MS = 400;
+// The first refresh copies every host's whole stats DB (tens of MB compressed)
+// over the VPN; later refreshes move only changed rows and take seconds.
+const REFRESH_TIMEOUT_MS = 300_000;
+// `omp stats -p` on an existing DB listens in well under a second.
+const SERVE_TIMEOUT_MS = 30_000;
+const READY_POLL_INTERVAL_MS = 100;
 const PROBE_TIMEOUT_MS = 750;
 const STDERR_TAIL_LIMIT = 4_000;
 const SIGKILL_GRACE_MS = 500;
+const WINDOW_TITLE = "omp fleet stats";
+// `--merge-only` exits 3 when some hosts failed and kept their previous data.
+const REFRESH_PARTIAL_EXIT_CODE = 3;
 
 export interface OpenOmpStatsFleetResult {
   url: string;
@@ -58,6 +66,30 @@ function resolveScriptPath(): string | null {
   return null;
 }
 
+/**
+ * When the mirror was last refreshed, from the marker the script writes next to
+ * the merged DB; null when there is no usable mirror yet.
+ */
+function readLastRefresh(): Date | null {
+  const profile = process.env.OMP_FLEET_PROFILE || "fleet";
+  const markerPath = path.join(homedir(), ".omp", "profiles", profile, "fleet-sync.json");
+  try {
+    const marker: unknown = JSON.parse(readFileSync(markerPath, "utf8"));
+    if (
+      marker &&
+      typeof marker === "object" &&
+      "asOf" in marker &&
+      typeof marker.asOf === "string"
+    ) {
+      const asOf = new Date(marker.asOf);
+      return Number.isNaN(asOf.getTime()) ? null : asOf;
+    }
+  } catch {
+    // No marker yet, or a torn write: treat as no mirror.
+  }
+  return null;
+}
+
 function isPortListening(port: number): Promise<boolean> {
   const { promise, resolve } = Promise.withResolvers<boolean>();
   const socket = connect({ host: "127.0.0.1", port });
@@ -86,33 +118,9 @@ function lastDiagnosticLine(stderr: string): string {
   return lines.at(-1) ?? "";
 }
 
-/**
- * The script never exits in dashboard mode and writes no ready file, so a TCP
- * probe is the only readiness signal. stderr is tailed purely so a failed run
- * (`omp not on PATH`, an unreachable host) reaches the user as a cause instead
- * of a generic timeout.
- */
-async function waitForDashboard(input: {
-  port: number;
-  child: ChildProcess;
-  readStderrTail: () => string;
-}): Promise<void> {
-  const deadline = Date.now() + READY_TIMEOUT_MS;
-  while (Date.now() < deadline) {
-    if (input.child.exitCode !== null || input.child.signalCode !== null) {
-      throw new Error(input.readStderrTail() || "Fleet stats collection exited before serving");
-    }
-    if (await isPortListening(input.port)) {
-      return;
-    }
-    await sleep(READY_POLL_INTERVAL_MS);
-  }
-  throw new Error("Timed out collecting fleet stats");
-}
-
 function killProcessGroup(child: ChildProcess, signal: NodeJS.Signals): void {
-  // The script fans out to ssh/scp children and then `exec`s the omp server, so
-  // signalling the group is what actually stops an in-flight snapshot.
+  // The script fans out to ssh children and the omp server, so signalling the
+  // group is what actually stops them.
   if (child.pid !== undefined && process.platform !== "win32") {
     try {
       process.kill(-child.pid, signal);
@@ -124,15 +132,92 @@ function killProcessGroup(child: ChildProcess, signal: NodeJS.Signals): void {
   child.kill(signal);
 }
 
+function killChild(child: ChildProcess | null): void {
+  if (!child || child.exitCode !== null || child.signalCode !== null) {
+    return;
+  }
+  killProcessGroup(child, "SIGTERM");
+  setTimeout(() => {
+    if (child.exitCode === null && child.signalCode === null) {
+      killProcessGroup(child, "SIGKILL");
+    }
+  }, SIGKILL_GRACE_MS).unref();
+}
+
+interface ScriptRun {
+  child: ChildProcess;
+  readStderrTail: () => string;
+}
+
+function runScript(scriptPath: string, args: string[], port: number): ScriptRun {
+  log.info("[omp-fleet] running", { scriptPath, args, port });
+  // `bash <script>` rather than executing it: extraResources does not
+  // guarantee the exec bit survives packaging.
+  const child = spawnProcess("bash", [scriptPath, ...args], {
+    detached: true,
+    envOverlay: { OMP_FLEET_PORT: String(port) },
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  let stderrTail = "";
+  child.stderr?.setEncoding("utf8");
+  child.stderr?.on("data", (chunk: string) => {
+    stderrTail = `${stderrTail}${chunk}`.slice(-STDERR_TAIL_LIMIT);
+  });
+  return { child, readStderrTail: () => lastDiagnosticLine(stderrTail) };
+}
+
+/** Resolves when a `--merge-only` run updated the mirror (fully or partly). */
+async function waitForRefresh(run: ScriptRun): Promise<void> {
+  const { promise, resolve, reject } = Promise.withResolvers<void>();
+  const timer = setTimeout(() => {
+    killChild(run.child);
+    reject(new Error("Timed out refreshing fleet stats"));
+  }, REFRESH_TIMEOUT_MS);
+  run.child.once("exit", (code) => {
+    clearTimeout(timer);
+    if (code === 0 || code === REFRESH_PARTIAL_EXIT_CODE) {
+      resolve();
+    } else {
+      reject(new Error(run.readStderrTail() || "Fleet stats refresh failed"));
+    }
+  });
+  return promise;
+}
+
+/**
+ * `--serve` never exits and writes no ready file, so a TCP probe is the only
+ * readiness signal. stderr is tailed so a failed start reaches the user as a
+ * cause instead of a generic timeout.
+ */
+async function waitForDashboard(port: number, run: ScriptRun): Promise<void> {
+  const deadline = Date.now() + SERVE_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    if (run.child.exitCode !== null || run.child.signalCode !== null) {
+      throw new Error(run.readStderrTail() || "Fleet stats dashboard exited before serving");
+    }
+    if (await isPortListening(port)) {
+      return;
+    }
+    await sleep(READY_POLL_INTERVAL_MS);
+  }
+  throw new Error("Timed out starting the fleet stats dashboard");
+}
+
+function formatAsOf(asOf: Date | null): string {
+  return asOf
+    ? `as of ${asOf.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}`
+    : "never refreshed";
+}
+
 class OmpStatsFleetManager {
-  private child: ChildProcess | null = null;
+  private server: ChildProcess | null = null;
+  private refresh: ChildProcess | null = null;
   private window: BrowserWindow | null = null;
   private pending: Promise<OpenOmpStatsFleetResult> | null = null;
 
   /**
-   * Collects fleet stats and shows the dashboard. A repeat press focuses the
-   * live window; closing the window stops the server, so the next press
-   * re-collects rather than showing a stale merge.
+   * Shows the dashboard. A repeat press focuses the live window; closing the
+   * window stops the server and any refresh in flight.
    */
   open(): Promise<OpenOmpStatsFleetResult> {
     const window = this.window;
@@ -149,67 +234,100 @@ class OmpStatsFleetManager {
 
   stop(): void {
     this.closeWindow();
-    this.killChild();
+    killChild(this.refresh);
+    this.refresh = null;
+    killChild(this.server);
+    this.server = null;
   }
 
   private async start(): Promise<OpenOmpStatsFleetResult> {
     const port = resolvePort();
     const url = `http://127.0.0.1:${port}`;
-
-    if (this.child === null) {
-      if (await isPortListening(port)) {
-        // A dashboard is already up (a terminal run, or an earlier window we
-        // closed mid-shutdown). Binding again would fail, so show that one.
-        log.info("[omp-fleet] reusing dashboard already listening", { port });
-      } else {
-        await this.collect(port);
-      }
-    }
-
-    this.showWindow(url);
-    return { url };
-  }
-
-  private async collect(port: number): Promise<void> {
     const scriptPath = resolveScriptPath();
     if (!scriptPath) {
       throw new Error("omp-stats-fleet.sh is missing from this Paseo install");
     }
 
-    log.info("[omp-fleet] collecting", { scriptPath, port });
-    // `bash <script>` rather than executing it: extraResources does not
-    // guarantee the exec bit survives packaging.
-    const child = spawnProcess("bash", [scriptPath], {
-      detached: true,
-      envOverlay: { OMP_FLEET_PORT: String(port) },
-      stdio: ["ignore", "ignore", "pipe"],
-    });
-    this.child = child;
+    let refreshedNow = false;
+    if (readLastRefresh() === null) {
+      // Nothing to show yet: the first refresh has to finish before serving.
+      await this.runRefresh(scriptPath, port);
+      refreshedNow = true;
+    }
+    if (this.server === null) {
+      if (await isPortListening(port)) {
+        // A dashboard is already up (a terminal run, or an earlier window we
+        // closed mid-shutdown). Binding again would fail, so show that one.
+        log.info("[omp-fleet] reusing dashboard already listening", { port });
+      } else {
+        await this.serve(scriptPath, port);
+      }
+    }
 
-    let stderrTail = "";
-    child.stderr?.setEncoding("utf8");
-    child.stderr?.on("data", (chunk: string) => {
-      stderrTail = `${stderrTail}${chunk}`.slice(-STDERR_TAIL_LIMIT);
-    });
-    child.once("exit", (code, signal) => {
+    this.showWindow(url, refreshedNow ? formatAsOf(readLastRefresh()) : "refreshing…");
+    if (!refreshedNow) {
+      void this.refreshInBackground(scriptPath, port);
+    }
+    return { url };
+  }
+
+  private async runRefresh(scriptPath: string, port: number): Promise<void> {
+    const run = runScript(scriptPath, ["--merge-only"], port);
+    this.refresh = run.child;
+    try {
+      await waitForRefresh(run);
+    } finally {
+      if (this.refresh === run.child) {
+        this.refresh = null;
+      }
+    }
+  }
+
+  /** The dashboard reads SQLite per request, so a reload shows the new rows. */
+  private async refreshInBackground(scriptPath: string, port: number): Promise<void> {
+    try {
+      await this.runRefresh(scriptPath, port);
+      const window = this.window;
+      if (window && !window.isDestroyed()) {
+        this.setStatus(formatAsOf(readLastRefresh()));
+        window.webContents.reload();
+      }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      log.warn("[omp-fleet] background refresh failed", reason);
+      this.setStatus(`${formatAsOf(readLastRefresh())} · refresh failed: ${reason}`);
+    }
+  }
+
+  private async serve(scriptPath: string, port: number): Promise<void> {
+    const run = runScript(scriptPath, ["--serve"], port);
+    this.server = run.child;
+    run.child.once("exit", (code, signal) => {
       log.info("[omp-fleet] dashboard exited", { code, signal });
-      if (this.child === child) {
-        this.child = null;
+      if (this.server === run.child) {
+        this.server = null;
         this.closeWindow();
       }
     });
-
     try {
-      await waitForDashboard({ port, child, readStderrTail: () => lastDiagnosticLine(stderrTail) });
+      await waitForDashboard(port, run);
     } catch (error) {
-      this.killChild();
+      killChild(run.child);
+      this.server = null;
       throw error;
     }
   }
 
-  private showWindow(url: string): void {
+  private setStatus(status: string): void {
+    const window = this.window;
+    if (window && !window.isDestroyed()) {
+      window.setTitle(`${WINDOW_TITLE} · ${status}`);
+    }
+  }
+
+  private showWindow(url: string, status: string): void {
     const window = new BrowserWindow({
-      title: "omp fleet stats",
+      title: `${WINDOW_TITLE} · ${status}`,
       width: 1440,
       height: 900,
       minWidth: 640,
@@ -224,10 +342,15 @@ class OmpStatsFleetManager {
       },
     });
     this.window = window;
+    // The dashboard's own <title> would replace the "as of" status.
+    window.on("page-title-updated", (event) => event.preventDefault());
     window.on("closed", () => {
       if (this.window === window) {
         this.window = null;
-        this.killChild();
+        killChild(this.refresh);
+        this.refresh = null;
+        killChild(this.server);
+        this.server = null;
       }
     });
     void window.loadURL(url).catch((error: unknown) => {
@@ -242,25 +365,11 @@ class OmpStatsFleetManager {
       window.destroy();
     }
   }
-
-  private killChild(): void {
-    const child = this.child;
-    this.child = null;
-    if (!child || child.exitCode !== null || child.signalCode !== null) {
-      return;
-    }
-    killProcessGroup(child, "SIGTERM");
-    setTimeout(() => {
-      if (child.exitCode === null && child.signalCode === null) {
-        killProcessGroup(child, "SIGKILL");
-      }
-    }, SIGKILL_GRACE_MS).unref();
-  }
 }
 
 let manager: OmpStatsFleetManager | null = null;
 
-/** Collects fleet stats and shows the dashboard window. */
+/** Shows the fleet stats dashboard window, refreshing the data behind it. */
 export function openOmpStatsFleet(): Promise<OpenOmpStatsFleetResult> {
   manager ??= new OmpStatsFleetManager();
   return manager.open();
