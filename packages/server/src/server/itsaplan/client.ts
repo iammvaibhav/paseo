@@ -120,6 +120,7 @@ export type ItsaplanIssue = z.infer<typeof ItsaplanIssueSchema>;
 
 const ItsaplanProjectSchema = z.object({
   id: z.number(),
+  teamId: z.number().optional(),
   key: z.string(),
   name: z.string(),
   // The Paseo sync stamps the full cross-host paseoProjectKey here so a
@@ -255,21 +256,23 @@ const ItsaplanInitiativePageSchema = z.object({
  */
 const ItsaplanProjectScaffoldSchema = z
   .object({
-    project: ItsaplanProjectSchema.optional(),
+    project: ItsaplanProjectSchema,
     columns: z.array(ItsaplanColumnSchema).optional(),
     labels: z.array(ItsaplanLabelSchema).optional(),
   })
   .transform((value) => ({
-    id: value.project?.id,
-    key: value.project?.key,
-    name: value.project?.name,
-    description: value.project?.description,
-    columns: value.columns ?? value.project?.columns ?? [],
-    labels: value.labels ?? value.project?.labels ?? [],
+    id: value.project.id,
+    teamId: value.project.teamId,
+    key: value.project.key,
+    name: value.project.name,
+    description: value.project.description,
+    columns: value.columns ?? value.project.columns ?? [],
+    labels: value.labels ?? value.project.labels ?? [],
   }))
   .or(
     ItsaplanProjectSchema.transform((value) => ({
       id: value.id,
+      teamId: value.teamId,
       key: value.key,
       name: value.name,
       description: value.description,
@@ -292,11 +295,21 @@ export type ItsaplanWebhook = z.infer<typeof ItsaplanWebhookSchema>;
 
 const ItsaplanAiAgentSchema = z.object({
   id: z.number(),
-  projectId: z.number(),
+  teamId: z.number().optional(),
   userId: z.string(),
   username: z.string(),
+  name: z.string().optional(),
   kind: z.enum(["external", "internal"]),
   triggerOnMention: z.boolean().optional(),
+  projects: z
+    .array(
+      z.object({
+        id: z.number(),
+        key: z.string(),
+        name: z.string().optional(),
+      }),
+    )
+    .optional(),
 });
 export type ItsaplanAiAgent = z.infer<typeof ItsaplanAiAgentSchema>;
 
@@ -708,7 +721,11 @@ export class ItsaplanClient {
     name: string;
     description?: string;
   }): Promise<ItsaplanProject> {
-    return this.request("POST", "/projects", input, ItsaplanProjectSchema);
+    const project = await this.request("POST", "/projects", input, ItsaplanProjectSchema);
+    if (project.teamId !== undefined) {
+      this.projectMetaCache.set(project.key, { projectId: project.id, teamId: project.teamId });
+    }
+    return project;
   }
 
   /**
@@ -719,7 +736,7 @@ export class ItsaplanClient {
    */
   async getProject(
     projectKey: string,
-  ): Promise<Pick<ItsaplanProject, "id" | "key" | "name" | "description"> | null> {
+  ): Promise<Pick<ItsaplanProject, "id" | "teamId" | "key" | "name" | "description"> | null> {
     try {
       const scaffold = await this.request(
         "GET",
@@ -730,8 +747,16 @@ export class ItsaplanClient {
       if (scaffold.id === undefined || scaffold.key === undefined) {
         return null;
       }
+      if (scaffold.teamId !== undefined) {
+        this.projectMetaCache.set(scaffold.key, {
+          projectId: scaffold.id,
+          teamId: scaffold.teamId,
+        });
+        this.projectMetaCache.set(projectKey, { projectId: scaffold.id, teamId: scaffold.teamId });
+      }
       return {
         id: scaffold.id,
+        teamId: scaffold.teamId,
         key: scaffold.key,
         name: scaffold.name ?? "",
         description: scaffold.description,
@@ -742,6 +767,35 @@ export class ItsaplanClient {
       }
       throw error;
     }
+  }
+
+  private readonly projectMetaCache = new Map<string, { projectId: number; teamId: number }>();
+
+  async resolveProjectMeta(projectKey: string): Promise<{ projectId: number; teamId: number }> {
+    const cached = this.projectMetaCache.get(projectKey);
+    if (cached) {
+      return cached;
+    }
+    const scaffold = await this.request(
+      "GET",
+      `/projects/${encodeURIComponent(projectKey)}`,
+      undefined,
+      ItsaplanProjectScaffoldSchema,
+    );
+    if (scaffold.id === undefined) {
+      throw new ItsaplanApiError(
+        404,
+        "GET",
+        `/projects/${encodeURIComponent(projectKey)}`,
+        `Project not found: ${projectKey}`,
+      );
+    }
+    if (scaffold.teamId === undefined) {
+      throw new Error(`Project ${projectKey} does not have a teamId`);
+    }
+    const meta = { projectId: scaffold.id, teamId: scaffold.teamId };
+    this.projectMetaCache.set(projectKey, meta);
+    return meta;
   }
 
   /**
@@ -785,30 +839,35 @@ export class ItsaplanClient {
   }
 
   /**
-   * Creates an `ai_agent` row of kind "external" (an itsaplan project-owner
-   * call, authenticated with the project admin key this ItsaplanClient was
-   * constructed with). itsaplan returns the plaintext API key exactly once,
-   * here — never again, not even via GET — so the caller MUST persist it
-   * immediately; `regenerateAiAgentApiKey` is the only way back if it is
-   * lost. Throws `ItsaplanApiError` with status 409 when the username is
-   * already taken in this project (itsaplan `assertUsernameFree`).
+   * Creates an `ai_agent` row of kind "external" under the project's team
+   * (an itsaplan team-owner/manager call, authenticated with the project admin
+   * key this ItsaplanClient was constructed with). itsaplan returns the
+   * plaintext API key exactly once, here — never again, not even via GET —
+   * so the caller MUST persist it immediately; `regenerateAiAgentApiKey` is the
+   * only way back if it is lost. Throws `ItsaplanApiError` with status 409 when
+   * the username is already taken in this team (itsaplan `assertUsernameFree`).
    */
   async createAiAgent(
     projectKey: string,
     input: { name: string; username: string; kind: "external"; triggerOnMention?: boolean },
   ): Promise<{ agent: ItsaplanAiAgent; apiKey: string | null }> {
+    const { projectId, teamId } = await this.resolveProjectMeta(projectKey);
     return this.request(
       "POST",
-      `/projects/${encodeURIComponent(projectKey)}/ai-agents`,
-      input,
+      `/teams/${teamId}/ai-agents`,
+      {
+        ...input,
+        projectIds: [projectId],
+      },
       ItsaplanCreateAiAgentResponseSchema,
     );
   }
 
   async listAiAgents(projectKey: string): Promise<ItsaplanAiAgent[]> {
+    const { projectId, teamId } = await this.resolveProjectMeta(projectKey);
     return this.request(
       "GET",
-      `/projects/${encodeURIComponent(projectKey)}/ai-agents`,
+      `/teams/${teamId}/ai-agents?projectId=${encodeURIComponent(projectId)}`,
       undefined,
       z.array(ItsaplanAiAgentSchema),
     );
@@ -819,9 +878,10 @@ export class ItsaplanClient {
     agentId: number,
     patch: { triggerOnMention?: boolean; name?: string; username?: string },
   ): Promise<ItsaplanAiAgent> {
+    const { teamId } = await this.resolveProjectMeta(projectKey);
     return this.request(
       "PATCH",
-      `/projects/${encodeURIComponent(projectKey)}/ai-agents/${agentId}`,
+      `/teams/${teamId}/ai-agents/${agentId}`,
       patch,
       ItsaplanAiAgentSchema,
     );
@@ -834,9 +894,10 @@ export class ItsaplanClient {
    * daemon's own mapping store lost the original one-time key.
    */
   async regenerateAiAgentApiKey(projectKey: string, agentId: number): Promise<string> {
+    const { teamId } = await this.resolveProjectMeta(projectKey);
     const result = await this.request(
       "POST",
-      `/projects/${encodeURIComponent(projectKey)}/ai-agents/${agentId}/regenerate-key`,
+      `/teams/${teamId}/ai-agents/${agentId}/regenerate-key`,
       undefined,
       ItsaplanRegenerateKeyResponseSchema,
     );

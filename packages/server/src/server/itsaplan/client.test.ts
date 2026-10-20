@@ -80,6 +80,7 @@ function startServer(apiKey: string, state: State) {
     createdIssues: Array<Record<string, unknown>>;
     runHeartbeats: number[];
     runResults: Array<{ runId: number; result: Record<string, unknown> }>;
+    createdAiAgents: Array<Record<string, unknown>>;
   } = {
     comments: [],
     projects: [],
@@ -87,6 +88,7 @@ function startServer(apiKey: string, state: State) {
     createdIssues: [],
     runHeartbeats: [],
     runResults: [],
+    createdAiAgents: [],
   };
   let nextColumnId = 500;
   let nextLabelId = 200;
@@ -156,6 +158,7 @@ function startServer(apiKey: string, state: State) {
       if (req.method === "GET" && path === "/projects/ENG") {
         send(200, {
           id: 1,
+          teamId: 10,
           key: "ENG",
           name: "Engineering",
           columns: state.columns,
@@ -190,16 +193,49 @@ function startServer(apiKey: string, state: State) {
         send(201, issue);
         return;
       }
-      const aiAgentPatchMatch = /^\/projects\/([^/]+)\/ai-agents\/(\d+)$/.exec(path);
+      const aiAgentPatchMatch = /^\/teams\/(\d+)\/ai-agents\/(\d+)$/.exec(path);
       if (req.method === "PATCH" && aiAgentPatchMatch) {
         send(200, {
           id: Number(aiAgentPatchMatch[2]),
-          projectId: 1,
+          teamId: Number(aiAgentPatchMatch[1]),
           userId: "user-agent",
           username: "commander",
           kind: "external",
           ...body,
         });
+        return;
+      }
+      const aiAgentCreateMatch = /^\/teams\/(\d+)\/ai-agents$/.exec(path);
+      if (req.method === "POST" && aiAgentCreateMatch) {
+        posts.createdAiAgents.push(body);
+        send(201, {
+          agent: {
+            id: 5,
+            teamId: Number(aiAgentCreateMatch[1]),
+            userId: "user-agent",
+            username: String(body.username),
+            kind: body.kind ?? "external",
+            triggerOnMention: Boolean(body.triggerOnMention),
+          },
+          apiKey: "secret-api-key",
+        });
+        return;
+      }
+      if (req.method === "GET" && aiAgentCreateMatch) {
+        send(200, [
+          {
+            id: 5,
+            teamId: Number(aiAgentCreateMatch[1]),
+            userId: "user-agent",
+            username: "commander-eng",
+            kind: "external",
+          },
+        ]);
+        return;
+      }
+      const aiAgentRegenMatch = /^\/teams\/(\d+)\/ai-agents\/(\d+)\/regenerate-key$/.exec(path);
+      if (req.method === "POST" && aiAgentRegenMatch) {
+        send(200, { apiKey: "regen-secret-api-key" });
         return;
       }
       if (req.method === "POST" && path === "/agent-runs/claim") {
@@ -645,9 +681,29 @@ describe("ItsaplanClient", () => {
     expect(serverHandle.posts.createdIssues).toHaveLength(1);
   });
 
-  test("updateAiAgent PATCHes agent configuration", async () => {
+  test("createAiAgent, listAiAgents, updateAiAgent, and regenerateAiAgentApiKey use team routes", async () => {
+    const created = await client.createAiAgent("ENG", {
+      name: "Commander",
+      username: "commander-eng",
+      kind: "external",
+    });
+    expect(created.agent).toMatchObject({ id: 5, username: "commander-eng" });
+    expect(created.apiKey).toBe("secret-api-key");
+    expect(serverHandle.posts.createdAiAgents).toContainEqual(
+      expect.objectContaining({
+        username: "commander-eng",
+        projectIds: [1],
+      }),
+    );
+
+    const list = await client.listAiAgents("ENG");
+    expect(list).toEqual([expect.objectContaining({ id: 5, username: "commander-eng" })]);
+
     const updated = await client.updateAiAgent("ENG", 5, { triggerOnMention: true });
     expect(updated).toMatchObject({ id: 5, triggerOnMention: true });
+
+    const regeneratedKey = await client.regenerateAiAgentApiKey("ENG", 5);
+    expect(regeneratedKey).toBe("regen-secret-api-key");
   });
 
   test("claimAgentRun, heartbeatAgentRun, and postAgentRunResult drain runs", async () => {

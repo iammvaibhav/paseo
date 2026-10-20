@@ -558,7 +558,8 @@ export async function ensureCommanderAiAgent(
   ItsaplanProjectMapping,
   "commanderAgentId" | "commanderUsername" | "commanderApiKey" | "commanderUserId"
 > | null> {
-  const username = commanderUsername?.trim() || COMMANDER_AI_AGENT_USERNAME;
+  const rawUsername = commanderUsername?.trim() || COMMANDER_AI_AGENT_USERNAME;
+  const username = `${rawUsername}-${itsaplanProjectKey.toLowerCase()}`;
   try {
     const created = await client.createAiAgent(itsaplanProjectKey, {
       name: COMMANDER_AI_AGENT_NAME,

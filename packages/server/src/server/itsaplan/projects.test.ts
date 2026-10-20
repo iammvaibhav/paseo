@@ -20,6 +20,14 @@ import {
 } from "./projects.js";
 import { ItsaplanClient } from "./client.js";
 
+function toAgentProjects(projectIds: readonly number[]): Array<{ id: number; key: string }> {
+  const result: Array<{ id: number; key: string }> = [];
+  for (const pid of projectIds) {
+    result.push({ id: pid, key: `PROJ-${pid}` });
+  }
+  return result;
+}
+
 function startFakeItsaplanServer(apiKey: string) {
   const createdProjects: Array<{ key: string; name: string; description: string }> = [];
   const registeredWebhooks: Array<{
@@ -57,16 +65,23 @@ function startFakeItsaplanServer(apiKey: string) {
     }>
   >();
   const createdAiAgents: Array<{
-    projectKey: string;
+    teamId: number;
+    projectIds: number[];
     name: string;
     username: string;
     kind: string;
     triggerOnMention?: boolean;
   }> = [];
-  const agentsByProjectKey: Record<
-    string,
-    Array<{ id: number; username: string; userId: string; apiKey: string }>
-  > = {};
+  const teamAgents: Array<{
+    id: number;
+    teamId: number;
+    projectIds: number[];
+    username: string;
+    userId: string;
+    apiKey: string;
+    triggerOnMention?: boolean;
+    name?: string;
+  }> = [];
   let nextAgentId = 1;
   const aiAgents = { enabled: false };
 
@@ -106,6 +121,7 @@ function startFakeItsaplanServer(apiKey: string) {
           }
           const created = {
             id: nextProjectId++,
+            teamId: 1,
             key,
             name: String(body.name),
             description: typeof body.description === "string" ? body.description : "",
@@ -131,6 +147,7 @@ function startFakeItsaplanServer(apiKey: string) {
           send(200, {
             project: {
               id,
+              teamId: 1,
               key: projectKey,
               name: `name-${id}`,
               description: descriptionByKey.get(projectKey) ?? "",
@@ -216,65 +233,84 @@ function startFakeItsaplanServer(apiKey: string) {
         if (!aiAgents.enabled) {
           return false;
         }
-        const agentsMatch = /^\/projects\/([^/]+)\/ai-agents$/.exec(url.pathname);
-        if (req.method === "POST" && agentsMatch) {
-          const projectKey = decodeURIComponent(agentsMatch[1]);
+        const createMatch = /^\/teams\/(\d+)\/ai-agents$/.exec(url.pathname);
+        if (req.method === "POST" && createMatch) {
+          const teamId = Number(createMatch[1]);
           const username = String(body.username);
-          const existing = agentsByProjectKey[projectKey] ?? [];
-          if (existing.some((a) => a.username.toLowerCase() === username.toLowerCase())) {
+          if (
+            teamAgents.some(
+              (a) => a.teamId === teamId && a.username.toLowerCase() === username.toLowerCase(),
+            )
+          ) {
             send(409, { error: "Username already taken" });
             return true;
           }
           const id = nextAgentId++;
+          const projectIds = Array.isArray(body.projectIds) ? (body.projectIds as number[]) : [];
           const agent = {
             id,
+            teamId,
+            projectIds,
             username,
             userId: `user-${username}`,
             apiKey: `itp_agent_${username}_key`,
-          };
-          existing.push(agent);
-          agentsByProjectKey[projectKey] = existing;
-          createdAiAgents.push({
-            projectKey,
-            name: String(body.name),
-            username,
-            kind: String(body.kind),
             triggerOnMention: Boolean(body.triggerOnMention),
+            name: String(body.name),
+          };
+          teamAgents.push(agent);
+          createdAiAgents.push({
+            teamId,
+            projectIds,
+            name: agent.name,
+            username: agent.username,
+            kind: String(body.kind),
+            triggerOnMention: agent.triggerOnMention,
           });
           send(201, {
             agent: {
               id: agent.id,
-              projectId: projectIdByKey.get(projectKey) ?? 1,
+              teamId: agent.teamId,
               userId: agent.userId,
               username: agent.username,
+              name: agent.name,
               kind: "external",
+              triggerOnMention: agent.triggerOnMention,
+              projects: toAgentProjects(agent.projectIds),
             },
             apiKey: agent.apiKey,
           });
           return true;
         }
-        if (req.method === "GET" && agentsMatch) {
-          const projectKey = decodeURIComponent(agentsMatch[1]);
-          const list = agentsByProjectKey[projectKey] ?? [];
-          send(
-            200,
-            list.map((a) => ({
+        if (req.method === "GET" && createMatch) {
+          const teamId = Number(createMatch[1]);
+          const queryProjectId = url.searchParams.get("projectId");
+          const targetProjectId = queryProjectId ? Number(queryProjectId) : null;
+          const filtered = teamAgents.filter(
+            (a) =>
+              a.teamId === teamId &&
+              (targetProjectId === null || a.projectIds.includes(targetProjectId)),
+          );
+          const mappedAgents = [];
+          for (const a of filtered) {
+            mappedAgents.push({
               id: a.id,
-              projectId: projectIdByKey.get(projectKey) ?? 1,
+              teamId: a.teamId,
               userId: a.userId,
               username: a.username,
+              name: a.name,
               kind: "external",
-            })),
-          );
+              triggerOnMention: a.triggerOnMention,
+              projects: toAgentProjects(a.projectIds),
+            });
+          }
+          send(200, mappedAgents);
           return true;
         }
-        const regenMatch = /^\/projects\/([^/]+)\/ai-agents\/(\d+)\/regenerate-key$/.exec(
-          url.pathname,
-        );
+        const regenMatch = /^\/teams\/(\d+)\/ai-agents\/(\d+)\/regenerate-key$/.exec(url.pathname);
         if (req.method === "POST" && regenMatch) {
-          const projectKey = decodeURIComponent(regenMatch[1]);
+          const teamId = Number(regenMatch[1]);
           const agentId = Number(regenMatch[2]);
-          const agent = (agentsByProjectKey[projectKey] ?? []).find((a) => a.id === agentId);
+          const agent = teamAgents.find((a) => a.teamId === teamId && a.id === agentId);
           if (!agent) {
             send(404, { error: "Agent not found" });
             return true;
@@ -283,22 +319,33 @@ function startFakeItsaplanServer(apiKey: string) {
           send(200, { apiKey: agent.apiKey });
           return true;
         }
-        const patchMatch = /^\/projects\/([^/]+)\/ai-agents\/(\d+)$/.exec(url.pathname);
+        const patchMatch = /^\/teams\/(\d+)\/ai-agents\/(\d+)$/.exec(url.pathname);
         if (req.method === "PATCH" && patchMatch) {
-          const projectKey = decodeURIComponent(patchMatch[1]);
+          const teamId = Number(patchMatch[1]);
           const agentId = Number(patchMatch[2]);
-          const agent = (agentsByProjectKey[projectKey] ?? []).find((a) => a.id === agentId);
+          const agent = teamAgents.find((a) => a.teamId === teamId && a.id === agentId);
           if (!agent) {
             send(404, { error: "Agent not found" });
             return true;
           }
+          if (body.triggerOnMention !== undefined) {
+            agent.triggerOnMention = Boolean(body.triggerOnMention);
+          }
+          if (body.name !== undefined) {
+            agent.name = String(body.name);
+          }
+          if (body.username !== undefined) {
+            agent.username = String(body.username);
+          }
           send(200, {
             id: agent.id,
-            projectId: projectIdByKey.get(projectKey) ?? 1,
+            teamId: agent.teamId,
             userId: agent.userId,
             username: agent.username,
+            name: agent.name,
             kind: "external",
-            triggerOnMention: body.triggerOnMention,
+            triggerOnMention: agent.triggerOnMention,
+            projects: toAgentProjects(agent.projectIds),
           });
           return true;
         }
@@ -321,7 +368,7 @@ function startFakeItsaplanServer(apiKey: string) {
     descriptionByKey,
     columnsByProjectKey,
     createdAiAgents,
-    agentsByProjectKey,
+    teamAgents,
     aiAgents,
   };
 }
@@ -747,31 +794,36 @@ describe("itsaplan project sync", () => {
       ...deps,
       getConfig: () => customConfig,
     });
-    expect(mapping?.commanderUsername).toBe(customUsername);
+    const expectedUsername = `${customUsername}-repo`;
+    expect(mapping?.commanderUsername).toBe(expectedUsername);
     expect(fakeServer.createdAiAgents).toContainEqual(
       expect.objectContaining({
-        username: customUsername,
-        projectKey: "REPO",
+        username: expectedUsername,
       }),
     );
 
     // 2. Conflict lookup path: 409 on create triggers listAiAgents and finds agent by configured username
     const conflictUsername = "verify-conflict-agent";
-    fakeServer.agentsByProjectKey["OTHER"] = [
+    const conflictBoardUsername = `${conflictUsername}-other`;
+    fakeServer.teamAgents.push(
       {
         id: 99,
-        username: conflictUsername,
-        userId: `user-${conflictUsername}`,
+        teamId: 1,
+        projectIds: [2],
+        username: conflictBoardUsername,
+        userId: `user-${conflictBoardUsername}`,
         apiKey: "initial-key",
       },
-      // Default "commander" also present to verify we match configured username, not default
+      // Default also present to verify we match configured username, not default
       {
         id: 100,
-        username: "commander",
-        userId: "user-commander",
+        teamId: 1,
+        projectIds: [2],
+        username: "paseo-other",
+        userId: "user-paseo-other",
         apiKey: "commander-key",
       },
-    ];
+    );
     const conflictConfig: ItsaplanCentralConfig = {
       ...config,
       commanderUsername: conflictUsername,
@@ -785,9 +837,21 @@ describe("itsaplan project sync", () => {
       ...deps,
       getConfig: () => conflictConfig,
     });
-    expect(conflictMapping?.commanderUsername).toBe(conflictUsername);
+    expect(conflictMapping?.commanderUsername).toBe(conflictBoardUsername);
     expect(conflictMapping?.commanderAgentId).toBe(99);
     expect(conflictMapping?.commanderApiKey).toBe("itp_agent_regen_99");
+  });
+  test("a board created after the teams upgrade gets a bot", async () => {
+    fakeServer.aiAgents.enabled = true;
+    const newBoard = project({
+      projectId: "proj-flotilla",
+      projectKey: "FLOTILLA",
+      displayName: "Flotilla",
+    });
+    const mapping = await ensureItsaplanProjectMapping(newBoard, deps);
+    expect(mapping?.commanderAgentId).toBeDefined();
+    expect(mapping?.commanderApiKey).toBeDefined();
+    expect(mapping?.commanderUsername).toBe("paseo-flotilla");
   });
 });
 
