@@ -1,10 +1,9 @@
 // Fork-only: backs the sidebar "Fleet stats" button with scripts/omp-stats-fleet.sh,
 // which keeps an incrementally refreshed mirror of every host's omp stats DB in
 // a throwaway omp profile and serves the stock `omp stats` dashboard on it. The
-// button opens the dashboard on the last refresh at once and refreshes in the
-// background; only the very first press waits for a refresh. The dashboard gets
-// its own desktop window because the sidebar button is global, while every
-// in-app browser pane is workspace-scoped. Design notes: scripts/omp-stats-fleet.ts.
+// button opens the dashboard in the system browser on the last refresh at once
+// and refreshes in the background; only the very first press waits for a
+// refresh. Design notes: scripts/omp-stats-fleet.ts.
 import type { ChildProcess } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { connect } from "node:net";
@@ -12,10 +11,8 @@ import { homedir } from "node:os";
 import path from "node:path";
 
 import { spawnProcess } from "@getpaseo/server";
-import { BrowserWindow } from "electron";
+import { shell } from "electron";
 import log from "electron-log/main";
-
-import { PASEO_BROWSER_PROFILE_PARTITION } from "./browser-profile.js";
 
 const DEFAULT_PORT = 3848;
 // The first refresh copies every host's whole stats DB (tens of MB compressed)
@@ -27,7 +24,6 @@ const READY_POLL_INTERVAL_MS = 100;
 const PROBE_TIMEOUT_MS = 750;
 const STDERR_TAIL_LIMIT = 4_000;
 const SIGKILL_GRACE_MS = 500;
-const WINDOW_TITLE = "omp fleet stats";
 // `--merge-only` exits 3 when some hosts failed and kept their previous data.
 const REFRESH_PARTIAL_EXIT_CODE = 3;
 
@@ -203,31 +199,18 @@ async function waitForDashboard(port: number, run: ScriptRun): Promise<void> {
   throw new Error("Timed out starting the fleet stats dashboard");
 }
 
-function formatAsOf(asOf: Date | null): string {
-  return asOf
-    ? `as of ${asOf.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" })}`
-    : "never refreshed";
-}
-
 class OmpStatsFleetManager {
   private server: ChildProcess | null = null;
   private refresh: ChildProcess | null = null;
   private refreshing: Promise<void> | null = null;
-  private window: BrowserWindow | null = null;
   private pending: Promise<OpenOmpStatsFleetResult> | null = null;
 
   /**
-   * Shows the dashboard. A repeat press focuses the live window; closing the
-   * window stops the server. A refresh in flight keeps going (it is one SQLite
-   * transaction per host), so the next press opens on fresher data.
+   * Opens the dashboard in the system browser. The server stays up until the
+   * app quits, so a repeat press only opens the URL again. A refresh in flight
+   * keeps going (one SQLite transaction per host); reloading the page shows it.
    */
   open(): Promise<OpenOmpStatsFleetResult> {
-    const window = this.window;
-    if (window && !window.isDestroyed()) {
-      window.show();
-      window.focus();
-      return Promise.resolve({ url: `http://127.0.0.1:${resolvePort()}` });
-    }
     this.pending ??= this.start().finally(() => {
       this.pending = null;
     });
@@ -235,7 +218,6 @@ class OmpStatsFleetManager {
   }
 
   stop(): void {
-    this.closeWindow();
     killChild(this.refresh);
     this.refresh = null;
     killChild(this.server);
@@ -256,19 +238,17 @@ class OmpStatsFleetManager {
       await this.runRefresh(scriptPath, port);
       refreshedNow = true;
     }
-    if (this.server === null) {
-      if (await isPortListening(port)) {
-        // A dashboard is already up (a terminal run, or an earlier window we
-        // closed mid-shutdown). Binding again would fail, so show that one.
-        log.info("[omp-fleet] reusing dashboard already listening", { port });
-      } else {
-        await this.serve(scriptPath, port);
-      }
+    if (this.server === null && !(await isPortListening(port))) {
+      // `omp stats -p` opens the dashboard in the default browser itself.
+      await this.serve(scriptPath, port);
+    } else {
+      // Already serving (this app, or a terminal run): only open the page.
+      await shell.openExternal(url);
     }
-
-    this.showWindow(url, refreshedNow ? formatAsOf(readLastRefresh()) : "refreshing…");
     if (!refreshedNow) {
-      void this.refreshInBackground(scriptPath, port);
+      this.runRefresh(scriptPath, port).catch((error: unknown) => {
+        log.warn("[omp-fleet] background refresh failed", error);
+      });
     }
     return { url };
   }
@@ -288,22 +268,6 @@ class OmpStatsFleetManager {
     return this.refreshing;
   }
 
-  /** The dashboard reads SQLite per request, so a reload shows the new rows. */
-  private async refreshInBackground(scriptPath: string, port: number): Promise<void> {
-    try {
-      await this.runRefresh(scriptPath, port);
-      const window = this.window;
-      if (window && !window.isDestroyed()) {
-        this.setStatus(formatAsOf(readLastRefresh()));
-        window.webContents.reload();
-      }
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      log.warn("[omp-fleet] background refresh failed", reason);
-      this.setStatus(`${formatAsOf(readLastRefresh())} · refresh failed: ${reason}`);
-    }
-  }
-
   private async serve(scriptPath: string, port: number): Promise<void> {
     const run = runScript(scriptPath, ["--serve"], port);
     this.server = run.child;
@@ -311,7 +275,6 @@ class OmpStatsFleetManager {
       log.info("[omp-fleet] dashboard exited", { code, signal });
       if (this.server === run.child) {
         this.server = null;
-        this.closeWindow();
       }
     });
     try {
@@ -322,57 +285,11 @@ class OmpStatsFleetManager {
       throw error;
     }
   }
-
-  private setStatus(status: string): void {
-    const window = this.window;
-    if (window && !window.isDestroyed()) {
-      window.setTitle(`${WINDOW_TITLE} · ${status}`);
-    }
-  }
-
-  private showWindow(url: string, status: string): void {
-    const window = new BrowserWindow({
-      title: `${WINDOW_TITLE} · ${status}`,
-      width: 1440,
-      height: 900,
-      minWidth: 640,
-      minHeight: 480,
-      autoHideMenuBar: true,
-      webPreferences: {
-        partition: PASEO_BROWSER_PROFILE_PARTITION,
-        contextIsolation: true,
-        nodeIntegration: false,
-        sandbox: true,
-        webviewTag: false,
-      },
-    });
-    this.window = window;
-    // The dashboard's own <title> would replace the "as of" status.
-    window.on("page-title-updated", (event) => event.preventDefault());
-    window.on("closed", () => {
-      if (this.window === window) {
-        this.window = null;
-        killChild(this.server);
-        this.server = null;
-      }
-    });
-    void window.loadURL(url).catch((error: unknown) => {
-      log.warn("[omp-fleet] failed to load dashboard", error);
-    });
-  }
-
-  private closeWindow(): void {
-    const window = this.window;
-    this.window = null;
-    if (window && !window.isDestroyed()) {
-      window.destroy();
-    }
-  }
 }
 
 let manager: OmpStatsFleetManager | null = null;
 
-/** Shows the fleet stats dashboard window, refreshing the data behind it. */
+/** Opens the fleet stats dashboard in the browser, refreshing the data behind it. */
 export function openOmpStatsFleet(): Promise<OpenOmpStatsFleetResult> {
   manager ??= new OmpStatsFleetManager();
   return manager.open();
