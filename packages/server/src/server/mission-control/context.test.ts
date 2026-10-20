@@ -455,15 +455,16 @@ describe("per-project commander instructions in inventory", () => {
     expect(inventory.projects[0]?.defaultBaseBranch).toBe("develop");
   });
 
-  test("resolveRememberedBaseBranch resolves project scope over global", () => {
+  test("resolveRememberedBaseBranch uses the project's own pick, never another repo's", () => {
     const prefs = {
-      baseBranch: "main",
+      baseBranch: "vaibhav/customizations",
       byProject: {
         "proj-a": { baseBranch: "develop" },
       },
     };
     expect(resolveRememberedBaseBranch(prefs, { projectKey: "proj-a" })).toBe("develop");
-    expect(resolveRememberedBaseBranch(prefs, { projectKey: "proj-b" })).toBe("main");
+    // A repo with no pick of its own falls back to its default branch upstream.
+    expect(resolveRememberedBaseBranch(prefs, { projectKey: "proj-b" })).toBeNull();
     expect(resolveRememberedBaseBranch(null)).toBeNull();
   });
 });

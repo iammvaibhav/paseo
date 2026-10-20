@@ -6219,6 +6219,60 @@ test("setLabels updates labels on a closed agent without throwing Unknown agent"
   });
 });
 
+describe("an agent closed by a daemon stop", () => {
+  async function startManager(session: AgentSession) {
+    const workdir = mkdtempSync(join(tmpdir(), "agent-manager-shutdown-"));
+    const storage = new AgentStorage(join(workdir, "agents"), logger);
+    const client = new (class extends TestAgentClient {
+      override async createSession(): Promise<AgentSession> {
+        return session;
+      }
+    })();
+    const manager = new AgentManager({ clients: { codex: client }, registry: storage, logger });
+    const agent = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+      workspaceId: undefined,
+    });
+    return { manager, storage, agentId: agent.id, workdir };
+  }
+
+  test("mid-turn is stored as needing attention, not silently idle", async () => {
+    const { manager, storage, agentId, workdir } = await startManager(
+      new SteeringTestSession({ provider: "codex", cwd: process.cwd() }),
+    );
+    try {
+      const run = manager.streamAgent(agentId, "work");
+      void (async () => {
+        for await (const _event of run) {
+        }
+      })();
+      await manager.waitForAgentRunStart(agentId);
+
+      manager.prepareForShutdown();
+      await manager.closeAgent(agentId);
+
+      const stored = await storage.get(agentId);
+      expect(stored?.lastStatus).toBe("closed");
+      expect(stored?.requiresAttention).toBe(true);
+      expect(stored?.attentionReason).toBe("error");
+    } finally {
+      rmSync(workdir, { recursive: true, force: true });
+    }
+  });
+
+  test("between turns is stored without attention", async () => {
+    const { manager, storage, agentId, workdir } = await startManager(
+      new SteeringTestSession({ provider: "codex", cwd: process.cwd() }),
+    );
+    try {
+      manager.prepareForShutdown();
+      await manager.closeAgent(agentId);
+      expect((await storage.get(agentId))?.requiresAttention).toBe(false);
+    } finally {
+      rmSync(workdir, { recursive: true, force: true });
+    }
+  });
+});
+
 test("detachAgent removes relationship lifecycle labels from a live agent and emits state", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-detach-live-"));
   const storagePath = join(workdir, "agents");

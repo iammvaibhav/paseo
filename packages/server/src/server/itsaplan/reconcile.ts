@@ -80,6 +80,28 @@ function projectKeyFromIdentifier(identifier: string | undefined): string | null
   return lastDash > 0 ? identifier.slice(0, lastDash) : null;
 }
 
+/** The column an open ticket belongs in, given its latest agent's bucket. */
+async function targetColumnFor(
+  bucket: LifecycleBucket,
+  currentRank: number,
+  columns: readonly ItsaplanColumn[],
+  ensureReadyColumn: () => Promise<ItsaplanColumn>,
+): Promise<ItsaplanColumn | undefined> {
+  if (bucket === "ready") {
+    return ensureReadyColumn();
+  }
+  if (bucket === "running" || bucket === "needs_you") {
+    return findInProgressColumn(columns);
+  }
+  // An agent that started work but never finished (a run cut off before this
+  // host recorded any state, or one that predates the projection) still means
+  // the ticket is in progress, not waiting in Todo.
+  if (bucket === "idle" && currentRank < 1) {
+    return findInProgressColumn(columns);
+  }
+  return undefined;
+}
+
 /**
  * ADR 0002 periodic reconciliation sweep: for each itsaplan issue with a
  * labeled Paseo agent, re-projects drift from the agent's execution truth.
@@ -284,16 +306,9 @@ export class ItsaplanReconcileService {
       await this.closeTicket(issueId);
       return;
     }
-    let target: ItsaplanColumn | undefined;
-    if (bucket === "ready") {
-      target = await client.ensureColumn(
-        projectKey,
-        ITSAPLAN_READY_FOR_REVIEW_COLUMN_NAME,
-        "started",
-      );
-    } else if (bucket === "running" || bucket === "needs_you") {
-      target = findInProgressColumn(columns);
-    }
+    const target = await targetColumnFor(bucket, currentRank, columns, () =>
+      client.ensureColumn(projectKey, ITSAPLAN_READY_FOR_REVIEW_COLUMN_NAME, "started"),
+    );
     if (target && issue.columnId !== target.id) {
       await client.moveIssueColumn(numericIssueId, target.id);
       this.logger.info(

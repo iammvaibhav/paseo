@@ -2597,11 +2597,25 @@ export class AgentManager {
       "agent.manager.close.start",
     );
     await this.drainSessionEvents(agentId);
+    // A daemon stop (deploy, OOM, crash) that closes an agent mid-turn ends the
+    // work unfinished. Without a mark the agent comes back idle and nothing
+    // tells anyone it never finished; the error attention makes it a
+    // needs-attention row and moves its ticket to the human.
+    const interruptedByShutdown =
+      !this.acceptingAgentRegistrations && agent.lifecycle === "running" && !agent.internal;
     // Retain ownership until shutdown succeeds. A failed close may still own a
     // native writer, so publishing a resumable closed snapshot would orphan it.
     await agent.session.close();
     this.cancelRunningProviderSubagents(agentId);
     const closedAgent = this.prepareAgentForClosure(agent, "agent closed");
+    if (interruptedByShutdown) {
+      closedAgent.attention = {
+        requiresAttention: true,
+        attentionReason: "error",
+        attentionTimestamp: new Date(),
+      };
+      this.logger.info({ agentId }, "agent.manager.close.interrupted_by_shutdown");
+    }
 
     let persistError: unknown;
     try {
@@ -6801,6 +6815,17 @@ export class AgentManager {
         attentionTimestamp: new Date(),
       };
       this.broadcastAgentAttention(agent, "error");
+      return;
+    }
+
+    // Running again (re-prompted, or resumed after an interrupted run): the
+    // earlier failure no longer describes the agent.
+    if (
+      currentStatus === "running" &&
+      agent.attention.requiresAttention &&
+      agent.attention.attentionReason === "error"
+    ) {
+      agent.attention = { requiresAttention: false };
       return;
     }
 

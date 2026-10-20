@@ -160,7 +160,14 @@ export interface ItsaplanBridgeAgentStorage {
     agentId: string,
   ): Promise<Pick<
     StoredAgentRecord,
-    "labels" | "title" | "name" | "shortDescription" | "cwd" | "workspaceId" | "archivedAt"
+    | "labels"
+    | "title"
+    | "name"
+    | "shortDescription"
+    | "cwd"
+    | "workspaceId"
+    | "archivedAt"
+    | "attentionReason"
   > | null>;
   list(): Promise<
     Pick<StoredAgentRecord, "id" | "labels" | "updatedAt" | "workspaceId" | "archivedAt">[]
@@ -1775,12 +1782,13 @@ export class ItsaplanBridge {
     await this.postDeduplicatedComment(
       commentClient,
       numericIssueId,
-      this.resolvePendingQuestion(agentId),
+      await this.resolvePendingQuestion(agentId),
     );
   }
   /** Question text priority: latest clarification card > latest blocked
-   * report > the live pending-permission prompt > generic fallback. */
-  private resolvePendingQuestion(agentId: string): string {
+   * report > the live pending-permission prompt > a failed or interrupted run
+   * > generic fallback. */
+  private async resolvePendingQuestion(agentId: string): Promise<string> {
     const remembered = this.lastQuestionByAgentId.get(agentId);
     if (remembered) {
       return remembered;
@@ -1794,6 +1802,10 @@ export class ItsaplanBridge {
           return parts.join("\n\n");
         }
       }
+    }
+    const record = await this.agentStorage.get(agentId).catch(() => null);
+    if (record?.attentionReason === "error") {
+      return "The agent stopped before finishing: its run failed or was cut off by a daemon restart. Open it and re-prompt to continue, or move this ticket to Done to archive it.";
     }
     return "Waiting for input.";
   }

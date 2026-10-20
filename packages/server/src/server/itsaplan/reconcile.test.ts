@@ -314,6 +314,29 @@ describe("ItsaplanReconcileService", () => {
     expect(closedTickets).toEqual([]);
   });
 
+  test("moves a ticket still in Todo to In Progress when its agent stopped without finishing", async () => {
+    // PASEO-78: the agent's run was cut off by a daemon stop before any state
+    // reached the ticket; the agent came back idle.
+    issue.columnId = 2; // Todo
+    bucket = "idle";
+    await service([agentRecord("agent-1", ISSUE_ID, "2026-01-01T00:00:00.000Z")]).runSweep();
+    expect(issue.columnId).toBe(3); // In Progress
+  });
+
+  test("leaves an idle agent's ticket in Ready to review", async () => {
+    const readyColumn: FakeColumn = {
+      id: 50,
+      projectId: PROJECT_ID,
+      name: "Ready to review",
+      stateType: "started",
+    };
+    columns.push(readyColumn);
+    issue.columnId = readyColumn.id;
+    bucket = "idle";
+    await service([agentRecord("agent-1", ISSUE_ID, "2026-01-01T00:00:00.000Z")]).runSweep();
+    expect(issue.columnId).toBe(readyColumn.id);
+  });
+
   test("stops fetching a ticket that was deleted in itsaplan", async () => {
     const svc = service([agentRecord("agent-1", 999, "2026-01-01T00:00:00.000Z")]);
     await svc.runSweep();

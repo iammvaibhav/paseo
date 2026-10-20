@@ -716,7 +716,10 @@ function composerScopeSelection(
 }
 
 /**
- * The composer's remembered baseBranch for a scope (workspace -> project -> global).
+ * The composer's remembered baseBranch for a scope (workspace -> project). The
+ * global last pick is never used: a branch belongs to one repository, and the
+ * last pick in paseo (`vaibhav/customizations`) broke every worktree created in
+ * other repos ("Base branch not found").
  */
 export function resolveRememberedBaseBranch(
   preferences: ComposerPreferences | null | undefined,
@@ -731,11 +734,7 @@ export function resolveRememberedBaseBranch(
   }
   const { workspace, project } = composerScopeSelection(preferences, scope);
   const projectIdScope = scope?.projectId ? preferences.byProject?.[scope.projectId] : undefined;
-  const rawBranch =
-    workspace?.baseBranch ??
-    project?.baseBranch ??
-    projectIdScope?.baseBranch ??
-    preferences.baseBranch;
+  const rawBranch = workspace?.baseBranch ?? project?.baseBranch ?? projectIdScope?.baseBranch;
   return typeof rawBranch === "string" && rawBranch.trim().length > 0 ? rawBranch.trim() : null;
 }
 

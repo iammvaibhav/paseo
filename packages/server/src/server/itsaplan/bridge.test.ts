@@ -536,12 +536,22 @@ function createFakeAgentManager(): FakeAgentManagerHandle {
   };
 }
 
-function createFakeAgentStorage(
-  records: Pick<
-    StoredAgentRecord,
-    "id" | "labels" | "updatedAt" | "title" | "name" | "shortDescription" | "cwd" | "workspaceId"
-  >[] = [],
-): ItsaplanBridgeAgentStorage {
+type FakeStoredRecord = Pick<StoredAgentRecord, "id" | "labels" | "updatedAt"> &
+  Partial<
+    Pick<
+      StoredAgentRecord,
+      | "title"
+      | "name"
+      | "shortDescription"
+      | "cwd"
+      | "workspaceId"
+      | "archivedAt"
+      | "attentionReason"
+      | "lastStatus"
+    >
+  >;
+
+function createFakeAgentStorage(records: FakeStoredRecord[] = []): ItsaplanBridgeAgentStorage {
   return {
     get: async (agentId) => records.find((r) => r.id === agentId) ?? null,
     list: async () => records,
@@ -653,7 +663,7 @@ describe("ItsaplanBridge", () => {
   const firstDispatch = () =>
     dispatchWorker.mock.calls[0]?.[0] as { brief: string; images?: unknown } | undefined;
   let steerWorkerPrompt: ReturnType<typeof vi.fn>;
-  let agentStorageRecords: Pick<StoredAgentRecord, "id" | "labels" | "updatedAt">[];
+  let agentStorageRecords: FakeStoredRecord[];
   let agentManagerFake: FakeAgentManagerHandle;
   let missionControlFake: FakeMissionControlHandle;
   let bridge: ItsaplanBridge;
@@ -885,6 +895,19 @@ describe("ItsaplanBridge", () => {
       await flushAsync();
       await flushAsync();
       expect(fakeServer.comments.filter(isNonDispatchComment)).toEqual(entryComments);
+    });
+
+    test("says the run stopped before finishing when the agent was cut off", async () => {
+      // PASEO-78: a daemon stop closed the agent mid-turn; the ticket must say
+      // so instead of a bare "Waiting for input." or nothing at all.
+      agentStorageRecords.push({ ...labeledRecord("agent-cut"), attentionReason: "error" });
+      missionControlFake.setBucket("needs_you");
+      agentManagerFake.emit({
+        type: "agent_state",
+        agent: fakeAgent("agent-cut", { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) }),
+      });
+      await waitForIssueAssignee(issues, ISSUE_ID, "human-1");
+      await waitForLastCommentContaining(fakeServer.comments, "stopped before finishing");
     });
 
     test("quotes the latest clarification card in the entry comment", async () => {
@@ -2049,6 +2072,44 @@ describe("ItsaplanBridge", () => {
       expect(archiveAgentSpy).toHaveBeenCalledWith("agent-canceled-1");
     });
 
+    test("Done archives a closed agent that is no longer loaded", async () => {
+      // The agent's process ended (daemon restart, idle close): only its stored
+      // record remains, and the Done move must still archive it.
+      const archiveWorkspaceSpy = vi.fn().mockResolvedValue(undefined);
+      const archiveAgentSpy = vi.fn().mockResolvedValue(undefined);
+      agentStorageRecords.push({
+        id: "agent-closed-1",
+        workspaceId: "ws-closed",
+        lastStatus: "closed",
+        labels: { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) },
+        updatedAt: new Date().toISOString(),
+      });
+      missionControlFake.setBucket("idle");
+      expect(agentManagerFake.manager.getAgent("agent-closed-1")).toBeNull();
+      const customBridge = new ItsaplanBridge({
+        logger: createTestLogger(),
+        serverId: "server-1",
+        agentManager: agentManagerFake.manager,
+        agentStorage: createFakeAgentStorage(agentStorageRecords),
+        missionControl: missionControlFake.control,
+        projectStore,
+        getConfig: () => config,
+        resolvePaseoProjectKey: async () => "proj",
+        dispatchWorker,
+        steerWorkerPrompt,
+        archiveWorkspace: archiveWorkspaceSpy,
+        archiveAgent: archiveAgentSpy,
+      });
+
+      await customBridge.handleTicketCompletedOrCanceled(ISSUE_ID);
+
+      expect(missionControlFake.lifecycleActions).toContainEqual({
+        agentId: "agent-closed-1",
+        action: "done",
+      });
+      expect(archiveAgentSpy).toHaveBeenCalledWith("agent-closed-1");
+      expect(archiveWorkspaceSpy).toHaveBeenCalledWith("ws-closed", expect.any(String));
+    });
     test("Done webhook archives agent and workspace even when bucket is already done", async () => {
       const workspaceId = "ws-already-done";
       const archiveWorkspaceSpy = vi.fn().mockResolvedValue(undefined);
