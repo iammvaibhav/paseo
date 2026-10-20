@@ -80,7 +80,8 @@ Buckets: **Needs you** (pending permission, error) → **Running** → **Ready f
 - **Ready aging**: when `readyAgeOutDays > 0`, a daily sweep moves old `ready` rows to done with `verdict: "aged-out"`. Default 0 (disabled).
 - **User-stopped ≠ Needs you**: an agent whose last run the user stopped lands in **Done** with a "Stopped by you" chip. **Clear** writes `reviewState: "cleared"`. A new run clears the stop origin.
 - Done is set by the user (Mark done, the itsaplan ticket moving to Done). Clear removes a row from Done; any new run puts the agent back in Running.
-- Board default view: last 30 days; toggle shows all unarchived agents.
+- Needs you, Running and Ready show at any age, on the board, the sidebar, and `fleet_list_agents` (unless the caller passes `sinceHours`); a Ready agent stays until it is reviewed, marked done, or archived. Done shows for 30 days by default; the toggle shows all unarchived agents.
+- The app holds only the newest page of Mission Control events per host (a few days on a busy host), so a row's date cannot come from events alone; see `rowActivityMs` in `packages/app/src/mission-control/lifecycle.ts`.
 
 Store: `reviewState: "none" | "ready" | "done" | "cleared"` + `verdict {by, summary, at}` per agent, persisted in the mission-control store (JSONL + snapshot). `verdict.by: "verifier"` only appears on records from before the Verifier was removed.
 
