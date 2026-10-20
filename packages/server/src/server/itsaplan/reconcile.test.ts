@@ -207,6 +207,7 @@ describe("ItsaplanReconcileService", () => {
       reconcileOwnedBoards: async () => {
         ownedBoardPasses += 1;
       },
+      archiveOrphanedBoards: async () => 0,
       logger: createTestLogger(),
     });
   }
@@ -372,6 +373,7 @@ describe("ItsaplanReconcileService", () => {
       getConfig: () => null,
       closeTicket: async () => {},
       reconcileOwnedBoards: async () => {},
+      archiveOrphanedBoards: async () => 0,
       logger: createTestLogger(),
     });
     await inertService.runSweep();

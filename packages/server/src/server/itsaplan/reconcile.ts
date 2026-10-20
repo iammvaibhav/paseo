@@ -38,6 +38,9 @@ export interface ItsaplanReconcileOptions {
   /** Dispatches Todo tickets whose webhook never arrived and re-enables
    * auto-disabled webhooks (ItsaplanBridge.reconcileOwnedBoards). */
   reconcileOwnedBoards: () => Promise<void>;
+  /** Archives this host's boards whose Paseo project is gone
+   * (archiveOrphanedItsaplanBoards); returns how many. */
+  archiveOrphanedBoards: () => Promise<number>;
   logger: Logger;
   intervalMs?: number;
 }
@@ -125,6 +128,7 @@ export class ItsaplanReconcileService {
   private readonly getConfig: () => ItsaplanCentralConfig | null;
   private readonly closeTicket: (issueId: string) => Promise<void>;
   private readonly reconcileOwnedBoards: () => Promise<void>;
+  private readonly archiveOrphanedBoards: () => Promise<number>;
   /** Issues itsaplan answered 404 for: deleted tickets, never fetched again. */
   private readonly deletedIssueIds = new Set<string>();
   private readonly logger: Logger;
@@ -144,6 +148,7 @@ export class ItsaplanReconcileService {
     this.getConfig = options.getConfig;
     this.closeTicket = options.closeTicket;
     this.reconcileOwnedBoards = options.reconcileOwnedBoards;
+    this.archiveOrphanedBoards = options.archiveOrphanedBoards;
     this.logger = options.logger.child({ module: "itsaplan", component: "reconcile" });
     this.baseIntervalMs = options.intervalMs ?? 60_000;
     this.intervalMs = this.baseIntervalMs;
@@ -209,6 +214,20 @@ export class ItsaplanReconcileService {
     }
     if (!(await this.reconcileLabeledIssues(config))) {
       return;
+    }
+    // One list request per sweep; runs before the owned-board pass so it
+    // never re-enables the webhook of a board whose project is gone.
+    try {
+      const archived = await this.archiveOrphanedBoards();
+      if (archived > 0) {
+        this.logger.info({ archived }, "itsaplan.reconcile.orphaned_boards_archived");
+      }
+    } catch (error) {
+      if (error instanceof ItsaplanApiError && error.status === 429) {
+        this.backOff({ phase: "orphaned_boards" });
+        return;
+      }
+      this.logger.error({ err: error }, "itsaplan.reconcile.orphaned_boards_failed");
     }
     // Listing every owned board costs two requests per board, so Todo tickets
     // and disabled webhooks are checked at boot and then every few sweeps.

@@ -186,7 +186,7 @@ describe("workspace registries", () => {
     expect(mutations).toEqual([
       { kind: "upsert", projectId: active.projectId, project: active },
       { kind: "archive", projectId: active.projectId, project: archived },
-      { kind: "remove", projectId: active.projectId, project: null },
+      { kind: "remove", projectId: active.projectId, project: archived },
     ]);
     unsubscribe();
   });

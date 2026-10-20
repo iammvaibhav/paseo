@@ -5,8 +5,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { createTestLogger } from "../../test-utils/test-logger.js";
-import type { PersistedProjectRecord } from "../workspace-registry.js";
+import type { PersistedProjectRecord, ProjectMutation } from "../workspace-registry.js";
 import {
+  archiveBoardOfLeavingProject,
+  archiveOrphanedItsaplanBoards,
   attachItsaplanProjectSync,
   deriveItsaplanProjectKey,
   ensureItsaplanProjectMapping,
@@ -54,6 +56,7 @@ function startFakeItsaplanServer(apiKey: string) {
   const projectIdByKey = new Map<string, number>();
   // Mirrors real itsaplan: descriptions default to '' when not supplied.
   const descriptionByKey = new Map<string, string>();
+  const archivedProjectIds = new Set<number>();
   const columnsByProjectKey = new Map<
     string,
     Array<{
@@ -104,12 +107,14 @@ function startFakeItsaplanServer(apiKey: string) {
         if (req.method === "GET" && url.pathname === "/projects") {
           send(
             200,
-            [...projectIdByKey].map(([key, id]) => ({
-              id,
-              key,
-              name: `name-${id}`,
-              description: descriptionByKey.get(key) ?? "",
-            })),
+            [...projectIdByKey]
+              .filter(([, id]) => !archivedProjectIds.has(id))
+              .map(([key, id]) => ({
+                id,
+                key,
+                name: `name-${id}`,
+                description: descriptionByKey.get(key) ?? "",
+              })),
           );
           return true;
         }
@@ -151,10 +156,24 @@ function startFakeItsaplanServer(apiKey: string) {
               key: projectKey,
               name: `name-${id}`,
               description: descriptionByKey.get(projectKey) ?? "",
+              archivedAt: archivedProjectIds.has(id) ? "2026-01-02T00:00:00.000Z" : null,
             },
             columns: columnsByProjectKey.get(projectKey) ?? [],
             labels: [],
           });
+          return true;
+        }
+        const archiveMatch = /^\/teams\/\d+\/projects\/(\d+)\/(archive|restore)$/.exec(
+          url.pathname,
+        );
+        if (req.method === "POST" && archiveMatch) {
+          const id = Number(archiveMatch[1]);
+          if (archiveMatch[2] === "archive") {
+            archivedProjectIds.add(id);
+          } else {
+            archivedProjectIds.delete(id);
+          }
+          send(200, { id });
           return true;
         }
         return false;
@@ -207,6 +226,11 @@ function startFakeItsaplanServer(apiKey: string) {
           }
           Object.assign(webhook, body);
           send(200, webhook);
+          return true;
+        }
+        if (req.method === "DELETE" && webhookPatchMatch) {
+          webhooksById.delete(Number(webhookPatchMatch[1]));
+          res.writeHead(204).end();
           return true;
         }
         return false;
@@ -351,8 +375,26 @@ function startFakeItsaplanServer(apiKey: string) {
         }
         return false;
       };
+      const handleAiAgentDelete = (): boolean => {
+        const deleteMatch = /^\/teams\/\d+\/ai-agents\/(\d+)$/.exec(url.pathname);
+        if (!aiAgents.enabled || req.method !== "DELETE" || !deleteMatch) {
+          return false;
+        }
+        teamAgents.splice(
+          teamAgents.findIndex((a) => a.id === Number(deleteMatch[1])),
+          1,
+        );
+        res.writeHead(204).end();
+        return true;
+      };
 
-      if (handleProjects() || handleWebhooks() || handleColumns() || handleAiAgents()) {
+      if (
+        handleProjects() ||
+        handleWebhooks() ||
+        handleColumns() ||
+        handleAiAgents() ||
+        handleAiAgentDelete()
+      ) {
         return;
       }
       send(404, { error: `unhandled ${req.method} ${url.pathname}` });
@@ -366,6 +408,7 @@ function startFakeItsaplanServer(apiKey: string) {
     webhooksById,
     projectIdByKey,
     descriptionByKey,
+    archivedProjectIds,
     columnsByProjectKey,
     createdAiAgents,
     teamAgents,
@@ -426,6 +469,7 @@ describe("itsaplan project sync", () => {
       getConfig: () => config,
       getWebhookUrl: () => "http://127.0.0.1:9999/api/itsaplan/webhook",
       paseoHome,
+      serverId: "srv-this",
       logger: createTestLogger(),
     };
   });
@@ -730,16 +774,11 @@ describe("itsaplan project sync", () => {
     expect(mapping?.itsaplanProjectId).not.toBe(9);
   });
 
-  test("attachItsaplanProjectSync maps a project on a registry upsert mutation", async () => {
-    let listener:
-      | ((mutation: {
-          kind: "upsert" | "archive" | "remove";
-          projectId: string;
-          project: PersistedProjectRecord | null;
-        }) => void)
-      | null = null;
+  function attachWithRegistry(projects: () => PersistedProjectRecord[]) {
+    let listener: ((mutation: ProjectMutation) => void | Promise<void>) | null = null;
     const unsubscribe = attachItsaplanProjectSync(
       {
+        list: async () => projects(),
         subscribeToMutations: (callback) => {
           listener = callback;
           return () => {
@@ -749,11 +788,82 @@ describe("itsaplan project sync", () => {
       },
       deps,
     );
-    listener?.({ kind: "upsert", projectId: "proj-1", project: project() });
+    return {
+      emit: (mutation: ProjectMutation) => listener?.(mutation),
+      unsubscribe,
+    };
+  }
+
+  test("attachItsaplanProjectSync maps a project on a registry upsert mutation", async () => {
+    const registry = attachWithRegistry(() => [project()]);
+    registry.emit({ kind: "upsert", projectId: "proj-1", project: project() });
     await vi.waitFor(() => {
       expect(store.getByPaseoProjectKey("PROJ")).not.toBeNull();
     });
-    unsubscribe();
+    registry.unsubscribe();
+  });
+
+  test("removing a project archives its board with its webhook and bot; re-adding restores it", async () => {
+    fakeServer.aiAgents.enabled = true;
+    const local = project({ projectKey: "host:srv-this:/data/projects" });
+    const mapped = await ensureItsaplanProjectMapping(local, deps);
+    const boardId = mapped?.itsaplanProjectId ?? -1;
+    expect(fakeServer.webhooksById.size).toBe(1);
+    expect(fakeServer.teamAgents).toHaveLength(1);
+
+    const registry = attachWithRegistry(() => []);
+    await registry.emit({ kind: "remove", projectId: local.projectId, project: local });
+    await vi.waitFor(() => {
+      expect(fakeServer.archivedProjectIds.has(boardId)).toBe(true);
+    });
+    expect(fakeServer.webhooksById.size).toBe(0);
+    expect(fakeServer.teamAgents).toHaveLength(0);
+    expect(store.getByPaseoProjectKey(local.projectKey)).toBeNull();
+    registry.unsubscribe();
+
+    const restored = await ensureItsaplanProjectMapping(local, deps);
+    expect(restored?.itsaplanProjectId).toBe(boardId);
+    expect(fakeServer.archivedProjectIds.has(boardId)).toBe(false);
+    expect(fakeServer.webhooksById.size).toBe(1);
+    expect(fakeServer.teamAgents).toHaveLength(1);
+  });
+
+  test("a board stays when its project is still on this host or may be on another", async () => {
+    const repo = project({ projectId: "repo", projectKey: "remote:github.com/acme/repo" });
+    const twin = project({ projectId: "twin", projectKey: "host:srv-this:/twin" });
+    const repoBoard = (await ensureItsaplanProjectMapping(repo, deps))?.itsaplanProjectId;
+    const twinBoard = (await ensureItsaplanProjectMapping(twin, deps))?.itsaplanProjectId;
+    // A second live project with the same key keeps the twin board.
+    const registry = { list: async () => [{ ...twin, projectId: "twin-2" }] };
+    expect(await archiveBoardOfLeavingProject(repo.projectKey, registry, deps)).toBe(false);
+    expect(await archiveBoardOfLeavingProject(twin.projectKey, registry, deps)).toBe(false);
+    expect(fakeServer.archivedProjectIds.has(repoBoard ?? -1)).toBe(false);
+    expect(fakeServer.archivedProjectIds.has(twinBoard ?? -1)).toBe(false);
+  });
+
+  test("the reconcile backstop archives only this host's boards whose project is gone", async () => {
+    const gone = project({ projectId: "gone", projectKey: "host:srv-this:/gone" });
+    const archived = project({ projectId: "old", projectKey: "host:srv-this:/old" });
+    const live = project({ projectId: "live", projectKey: "host:srv-this:/live" });
+    const otherHost = project({ projectId: "other", projectKey: "host:srv-other:/gone" });
+    const repo = project({ projectId: "repo", projectKey: "remote:github.com/acme/repo" });
+    fakeServer.aiAgents.enabled = true;
+    const boards = new Map<string, number>();
+    for (const local of [gone, archived, live, otherHost, repo]) {
+      boards.set(
+        local.projectKey,
+        (await ensureItsaplanProjectMapping(local, deps))?.itsaplanProjectId ?? -1,
+      );
+    }
+    const registry = [{ ...archived, archivedAt: "2026-01-02T00:00:00.000Z" }, live];
+
+    expect(await archiveOrphanedItsaplanBoards(registry, deps)).toBe(2);
+    expect([...fakeServer.archivedProjectIds].sort()).toEqual(
+      [boards.get(gone.projectKey), boards.get(archived.projectKey)].sort(),
+    );
+    // An empty registry means it failed to load: nothing is archived.
+    expect(await archiveOrphanedItsaplanBoards([], deps)).toBe(0);
+    expect(await archiveOrphanedItsaplanBoards(registry, deps)).toBe(0);
   });
 
   test("does nothing when a project has no projectKey", async () => {

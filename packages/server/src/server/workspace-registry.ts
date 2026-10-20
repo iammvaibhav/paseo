@@ -144,6 +144,7 @@ export interface WorkspaceArchiveContext {
 export interface ProjectMutation {
   kind: "upsert" | "archive" | "remove";
   projectId: string;
+  /** The record after the mutation; for "remove", the record that was removed. */
   project: PersistedProjectRecord | null;
 }
 
@@ -519,7 +520,7 @@ export class FileBackedProjectRegistry
   override async remove(projectId: string): Promise<void> {
     const project = await this.removeIfPresent(projectId);
     if (!project) return;
-    await this.notifyMutation({ kind: "remove", projectId, project: null });
+    await this.notifyMutation({ kind: "remove", projectId, project });
   }
 
   private async notifyMutation(mutation: {

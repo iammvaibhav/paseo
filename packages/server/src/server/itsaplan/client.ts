@@ -127,6 +127,7 @@ const ItsaplanProjectSchema = z.object({
   // create-key 409 can tell its own earlier crashed attempt (adopt) from
   // another paseo project whose derived name collides (suffix around it).
   description: z.string().nullable().optional(),
+  archivedAt: z.string().nullable().optional(),
   columns: z.array(ItsaplanColumnSchema).optional(),
   labels: z.array(ItsaplanLabelSchema).optional(),
 });
@@ -266,6 +267,7 @@ const ItsaplanProjectScaffoldSchema = z
     key: value.project.key,
     name: value.project.name,
     description: value.project.description,
+    archivedAt: value.project.archivedAt,
     columns: value.columns ?? value.project.columns ?? [],
     labels: value.labels ?? value.project.labels ?? [],
   }))
@@ -276,6 +278,7 @@ const ItsaplanProjectScaffoldSchema = z
       key: value.key,
       name: value.name,
       description: value.description,
+      archivedAt: value.archivedAt,
       columns: value.columns ?? [],
       labels: value.labels ?? [],
     })),
@@ -736,7 +739,10 @@ export class ItsaplanClient {
    */
   async getProject(
     projectKey: string,
-  ): Promise<Pick<ItsaplanProject, "id" | "teamId" | "key" | "name" | "description"> | null> {
+  ): Promise<Pick<
+    ItsaplanProject,
+    "id" | "teamId" | "key" | "name" | "description" | "archivedAt"
+  > | null> {
     try {
       const scaffold = await this.request(
         "GET",
@@ -760,6 +766,7 @@ export class ItsaplanClient {
         key: scaffold.key,
         name: scaffold.name ?? "",
         description: scaffold.description,
+        archivedAt: scaffold.archivedAt,
       };
     } catch (error) {
       if (error instanceof ItsaplanApiError && error.status === 404) {
@@ -838,6 +845,21 @@ export class ItsaplanClient {
     return this.request("PATCH", `/webhooks/${webhookId}`, input, ItsaplanWebhookSchema);
   }
 
+  async deleteWebhook(webhookId: number): Promise<void> {
+    await this.request("DELETE", `/webhooks/${webhookId}`, undefined, z.unknown());
+  }
+
+  /** Archives or restores a board. Archived boards leave the project list and are read-only. */
+  async setProjectArchived(projectKey: string, archived: boolean): Promise<void> {
+    const { projectId, teamId } = await this.resolveProjectMeta(projectKey);
+    await this.request(
+      "POST",
+      `/teams/${teamId}/projects/${projectId}/${archived ? "archive" : "restore"}`,
+      undefined,
+      z.unknown(),
+    );
+  }
+
   /**
    * Creates an `ai_agent` row of kind "external" under the project's team
    * (an itsaplan team-owner/manager call, authenticated with the project admin
@@ -902,6 +924,12 @@ export class ItsaplanClient {
       ItsaplanRegenerateKeyResponseSchema,
     );
     return result.apiKey;
+  }
+
+  /** Deletes an AI agent together with its bot user. */
+  async deleteAiAgent(projectKey: string, agentId: number): Promise<void> {
+    const { teamId } = await this.resolveProjectMeta(projectKey);
+    await this.request("DELETE", `/teams/${teamId}/ai-agents/${agentId}`, undefined, z.unknown());
   }
 
   // --- Chat-runner surface: call these on a client constructed with the

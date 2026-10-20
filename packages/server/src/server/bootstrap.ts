@@ -204,6 +204,7 @@ import { createWebhookRouteHandler } from "./webhook/route.js";
 import { AutomationService } from "./automation/service.js";
 import { openDocThreads, type DocThreadsHost } from "./doc-threads/index.js";
 import {
+  archiveOrphanedItsaplanBoards,
   attachItsaplanProjectSync,
   createItsaplanResyncRouteHandler,
   createItsaplanWebhookRouteHandler,
@@ -2332,6 +2333,7 @@ export async function createPaseoDaemon(
     // project mapping until a TCP target exists.
     getWebhookUrl: () => createItsaplanWebhookUrl(boundListenTarget, networkInterfaces()),
     paseoHome: config.paseoHome,
+    serverId,
     logger,
   };
   const resyncItsaplanProjects = async () =>
@@ -2352,6 +2354,8 @@ export async function createPaseoDaemon(
     closeTicket: (issueId) =>
       itsaplanBridge?.handleTicketCompletedOrCanceled(issueId) ?? Promise.resolve(),
     reconcileOwnedBoards: () => itsaplanBridge?.reconcileOwnedBoards() ?? Promise.resolve(),
+    archiveOrphanedBoards: async () =>
+      archiveOrphanedItsaplanBoards(await projectRegistry.list(), itsaplanProjectSyncDeps),
     logger,
   });
   itsaplanReconcileService.start();

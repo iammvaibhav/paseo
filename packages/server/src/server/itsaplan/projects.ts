@@ -181,6 +181,13 @@ export class ItsaplanProjectStore {
     return this.deletedBoards.has(paseoProjectKey);
   }
 
+  /** The board was archived with its project: drop the mapping. Re-adding the project restores it. */
+  async forget(mapping: ItsaplanProjectMapping): Promise<void> {
+    this.byPaseoKey.delete(mapping.paseoProjectKey);
+    this.byItsaplanProjectId.delete(mapping.itsaplanProjectId);
+    await writeJsonFileAtomic(this.filePath, this.list());
+  }
+
   async upsert(mapping: ItsaplanProjectMapping): Promise<void> {
     const parsed = ItsaplanProjectMappingSchema.parse(mapping);
     const previous = this.byPaseoKey.get(parsed.paseoProjectKey);
@@ -227,6 +234,8 @@ export interface ItsaplanProjectSyncDependencies {
   /** Daemon home; projects rooted inside it are Paseo-internal and never
    * synced to itsaplan. */
   paseoHome: string;
+  /** This daemon's server id: `host:<serverId>:` project keys are this host's alone. */
+  serverId: string;
   logger: Logger;
 }
 
@@ -493,8 +502,16 @@ async function createOrAdoptItsaplanProject(
     if (existing?.description !== input.paseoProjectKey) {
       throw error;
     }
+    // The project was removed (its board archived) and is back.
+    if (existing.archivedAt) {
+      await client.setProjectArchived(existing.key, false);
+    }
     deps.logger.info(
-      { paseoProjectKey: input.paseoProjectKey, itsaplanProjectKey: existing.key },
+      {
+        paseoProjectKey: input.paseoProjectKey,
+        itsaplanProjectKey: existing.key,
+        restored: Boolean(existing.archivedAt),
+      },
       "itsaplan.project.existing_adopted",
     );
     return { project: existing, adopted: true };
@@ -558,8 +575,7 @@ export async function ensureCommanderAiAgent(
   ItsaplanProjectMapping,
   "commanderAgentId" | "commanderUsername" | "commanderApiKey" | "commanderUserId"
 > | null> {
-  const rawUsername = commanderUsername?.trim() || COMMANDER_AI_AGENT_USERNAME;
-  const username = `${rawUsername}-${itsaplanProjectKey.toLowerCase()}`;
+  const username = boardBotUsername(itsaplanProjectKey, commanderUsername);
   try {
     const created = await client.createAiAgent(itsaplanProjectKey, {
       name: COMMANDER_AI_AGENT_NAME,
@@ -622,6 +638,15 @@ export async function ensureCommanderAiAgent(
     );
     return null;
   }
+}
+
+/** A board's bot is `<commanderUsername>-<boardkey>`, unique within the team. */
+function boardBotUsername(
+  itsaplanProjectKey: string,
+  commanderUsername: string | undefined,
+): string {
+  const rawUsername = commanderUsername?.trim() || COMMANDER_AI_AGENT_USERNAME;
+  return `${rawUsername}-${itsaplanProjectKey.toLowerCase()}`;
 }
 /**
  * Ensures the project's Todo (unstarted) column does not overwrite the human
@@ -940,9 +965,88 @@ export async function runItsaplanProjectResync(
   return result;
 }
 
-/** Wires project-registry upserts (create AND rename/description edits) to the mapper. */
+/** Only this host can have a `host:<serverId>:` project; a repo (`remote:`) key can live on several. */
+function isThisHostsProjectKey(projectKey: string, serverId: string): boolean {
+  return projectKey.startsWith(`host:${serverId}:`);
+}
+
+/**
+ * Archives a board whose Paseo project is gone. Its webhooks and bot go first,
+ * so nothing dispatches a ticket into a project that no longer exists. The
+ * board itself is archived, not deleted: re-adding the project restores it
+ * (createOrAdoptItsaplanProject). Every webhook on a Paseo board is Paseo's.
+ */
+async function archiveBoard(
+  client: ItsaplanClient,
+  board: Pick<ItsaplanProjectListItem, "id" | "key" | "description">,
+  config: ItsaplanCentralConfig,
+  deps: Pick<ItsaplanProjectSyncDependencies, "store" | "logger">,
+): Promise<void> {
+  const mapping = deps.store.getByItsaplanProjectId(board.id);
+  for (const webhook of await client.listWebhooks(board.key)) {
+    await client.deleteWebhook(webhook.id);
+  }
+  const botUsername = boardBotUsername(board.key, config.commanderUsername);
+  for (const agent of await client.listAiAgents(board.key)) {
+    if (agent.id === mapping?.commanderAgentId || agent.username === botUsername) {
+      await client.deleteAiAgent(board.key, agent.id);
+    }
+  }
+  await client.setProjectArchived(board.key, true);
+  if (mapping) {
+    await deps.store.forget(mapping);
+  }
+  deps.logger.info(
+    { paseoProjectKey: board.description, itsaplanProjectKey: board.key },
+    "itsaplan.project.board_archived",
+  );
+}
+
+/**
+ * The reconcile sweep's backstop for project removals the mutation hook
+ * missed (a daemon that was down, an older build, a failed request): archives
+ * this host's boards whose project is gone or archived. Returns the count.
+ */
+export async function archiveOrphanedItsaplanBoards(
+  local: readonly Pick<PersistedProjectRecord, "projectKey" | "archivedAt">[],
+  deps: Pick<ItsaplanProjectSyncDependencies, "store" | "getConfig" | "serverId" | "logger">,
+): Promise<number> {
+  const config = deps.getConfig();
+  const live = new Set(
+    local.filter((project) => !project.archivedAt).map((project) => project.projectKey),
+  );
+  // Every host has at least its experiments project. An empty list means the
+  // registry did not load, never that every project was removed.
+  if (!config || live.size === 0) {
+    return 0;
+  }
+  const client = new ItsaplanClient(config);
+  let archived = 0;
+  for (const board of await client.listProjects()) {
+    const projectKey = board.description;
+    if (
+      board.archivedAt ||
+      !projectKey ||
+      !isThisHostsProjectKey(projectKey, deps.serverId) ||
+      live.has(projectKey)
+    ) {
+      continue;
+    }
+    await archiveBoard(client, board, config, deps);
+    archived += 1;
+  }
+  return archived;
+}
+
+/**
+ * Wires project-registry mutations to itsaplan: upserts (create AND
+ * rename/description edits) map the project to a board; removing or archiving
+ * the project archives its board. A repo board (`remote:` key) is left alone:
+ * other hosts may still have the repo, and this host cannot tell.
+ */
 export function attachItsaplanProjectSync(
   projectRegistry: {
+    list: () => Promise<PersistedProjectRecord[]>;
     subscribeToMutations?: (
       listener: (mutation: ProjectMutation) => void | Promise<void>,
     ) => () => void;
@@ -950,15 +1054,48 @@ export function attachItsaplanProjectSync(
   deps: ItsaplanProjectSyncDependencies,
 ): () => void {
   const unsubscribe = projectRegistry.subscribeToMutations?.((mutation) => {
-    if (mutation.kind !== "upsert" || !mutation.project) {
+    const project = mutation.project;
+    if (!project || (mutation.kind === "upsert" && project.archivedAt)) {
       return;
     }
-    void ensureItsaplanProjectMapping(mutation.project, deps).catch((error) => {
+    const sync =
+      mutation.kind === "upsert"
+        ? ensureItsaplanProjectMapping(project, deps)
+        : archiveBoardOfLeavingProject(project.projectKey, projectRegistry, deps);
+    void sync.catch((error) => {
       deps.logger.error(
-        { err: error, projectId: mutation.projectId },
+        { err: error, projectId: mutation.projectId, mutationKind: mutation.kind },
         "itsaplan.project.sync_failed",
       );
     });
   });
   return unsubscribe ?? ((): void => undefined);
+}
+
+/**
+ * A project was removed or archived on this host: archives its board unless
+ * another live project on this host has the same key. Returns whether it did.
+ */
+export async function archiveBoardOfLeavingProject(
+  projectKey: string | null,
+  projectRegistry: { list: () => Promise<PersistedProjectRecord[]> },
+  deps: ItsaplanProjectSyncDependencies,
+): Promise<boolean> {
+  const config = deps.getConfig();
+  if (!config || !projectKey || !isThisHostsProjectKey(projectKey, deps.serverId)) {
+    return false;
+  }
+  const stillLive = (await projectRegistry.list()).some(
+    (other) => !other.archivedAt && other.projectKey === projectKey,
+  );
+  if (stillLive) {
+    return false;
+  }
+  const client = new ItsaplanClient(config);
+  const board = await findBoardForProject(client, projectKey);
+  if (!board) {
+    return false;
+  }
+  await archiveBoard(client, board, config, deps);
+  return true;
 }

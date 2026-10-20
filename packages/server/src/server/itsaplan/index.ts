@@ -38,6 +38,7 @@ export type {
   TicketNativeImage,
 } from "./ticket-images.js";
 export {
+  archiveOrphanedItsaplanBoards,
   attachItsaplanProjectSync,
   ensureItsaplanProjectMapping,
   ITSAPLAN_WEBHOOK_EVENTS,
