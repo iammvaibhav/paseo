@@ -103,7 +103,11 @@ export function ItsaplanScreen(): ReactElement {
   // certificate failures and error pages, so without this a dead origin would
   // flip straight to "ready" over an empty white frame. An opaque no-cors
   // request resolves on any HTTP response and rejects only when the connection
-  // itself fails (refused, DNS, TLS).
+  // itself fails (refused, DNS, TLS) — or when redirects loop. The origin root
+  // is itsaplan's sign-in bounce (/ → sign-in → /), and this cookie-less probe
+  // never keeps the session cookie, so probing the root looped until the fetch
+  // failed and showed "Cannot reach itsaplan" over a working board. A no-cors
+  // fetch must follow redirects, so probe a static path that has none.
   useEffect(() => {
     const origin = resolved?.origin;
     if (!origin) {
@@ -113,7 +117,11 @@ export function ItsaplanScreen(): ReactElement {
     setStatus("loading");
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), REACHABILITY_TIMEOUT_MS);
-    fetch(origin, { mode: "no-cors", cache: "no-store", signal: controller.signal }).catch(() => {
+    fetch(new URL("/favicon.ico", origin), {
+      mode: "no-cors",
+      cache: "no-store",
+      signal: controller.signal,
+    }).catch(() => {
       if (!cancelled) {
         setStatus("error");
       }
