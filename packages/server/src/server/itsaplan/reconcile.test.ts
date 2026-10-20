@@ -23,6 +23,8 @@ interface FakeServerControl {
   requests: string[];
   // When true, every request is answered 429.
   rateLimited: boolean;
+  // When true, every connection is dropped (itsaplan unreachable).
+  offline: boolean;
 }
 
 function startFakeItsaplanServer(
@@ -55,6 +57,11 @@ function startFakeItsaplanServer(
       const url = new URL(req.url ?? "/", "http://localhost");
       const path = url.pathname;
       control.requests.push(`${req.method} ${path}`);
+      if (control.offline) {
+        // Unreachable itsaplan: the connection drops without a response.
+        req.socket.destroy();
+        return;
+      }
       if (control.rateLimited) {
         send(429, { error: "rate limited" });
         return;
@@ -154,7 +161,7 @@ describe("ItsaplanReconcileService", () => {
       { id: 4, projectId: PROJECT_ID, name: "Done", stateType: "completed" },
       { id: 5, projectId: PROJECT_ID, name: "Canceled", stateType: "canceled" },
     ];
-    control = { requests: [], rateLimited: false };
+    control = { requests: [], rateLimited: false, offline: false };
     server = startFakeItsaplanServer("itp_key", issue, columns, control);
     handle = await listen(server);
     config = {
@@ -182,11 +189,13 @@ describe("ItsaplanReconcileService", () => {
   });
 
   let closedTickets: string[];
+  let ownedBoardPasses: number;
 
   function service(
     agents: Pick<StoredAgentRecord, "id" | "labels" | "updatedAt" | "archivedAt">[],
   ): ItsaplanReconcileService {
     closedTickets = [];
+    ownedBoardPasses = 0;
     return new ItsaplanReconcileService({
       agentStorage: { list: async () => agents },
       missionControl,
@@ -195,9 +204,34 @@ describe("ItsaplanReconcileService", () => {
       closeTicket: async (issueId) => {
         closedTickets.push(issueId);
       },
+      reconcileOwnedBoards: async () => {
+        ownedBoardPasses += 1;
+      },
       logger: createTestLogger(),
     });
   }
+
+  test("a column move missed while itsaplan was unreachable lands once it is back", async () => {
+    issue.columnId = 2; // Todo
+    bucket = "running";
+    const svc = service([agentRecord("agent-1", ISSUE_ID, "2026-01-01T00:00:00.000Z")]);
+
+    control.offline = true;
+    await svc.runSweep();
+    expect(issue.columnId).toBe(2);
+
+    control.offline = false;
+    await svc.runSweep();
+    expect(issue.columnId).toBe(3); // In Progress
+  });
+
+  test("checks owned boards for missed Todo tickets at boot and then every fifth sweep", async () => {
+    const svc = service([]);
+    for (let sweep = 0; sweep < 6; sweep += 1) {
+      await svc.runSweep();
+    }
+    expect(ownedBoardPasses).toBe(2);
+  });
 
   test("corrects a ticket stuck in Todo when its labeled agent is running", async () => {
     bucket = "running";
@@ -314,6 +348,7 @@ describe("ItsaplanReconcileService", () => {
       projectStore: store,
       getConfig: () => null,
       closeTicket: async () => {},
+      reconcileOwnedBoards: async () => {},
       logger: createTestLogger(),
     });
     await inertService.runSweep();

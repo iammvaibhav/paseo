@@ -145,6 +145,10 @@ function startFakeItsaplanServer(options: {
   attachments?: Map<number, FakeAttachment[]>;
   initiatives?: Map<number, FakeInitiative>;
   projectIdByKey: Map<string, number>;
+  webhooks?: Map<
+    number,
+    { id: number; projectId: number; url: string; events: string[]; isActive: boolean }
+  >;
 }): FakeItsaplanServerHandle {
   const comments: Array<{ issueId: number; body: string; apiKey?: string }> = [];
   const createdColumns: Array<{ projectKey: string; name: string; stateType: string }> = [];
@@ -337,6 +341,44 @@ function startFakeItsaplanServer(options: {
         }
         Object.assign(column, body);
         send(200, column);
+        return;
+      }
+      const boardMatch = /^\/projects\/([^/]+)\/issues\/board$/.exec(path);
+      if (req.method === "GET" && boardMatch) {
+        const projectId = options.projectIdByKey.get(decodeURIComponent(boardMatch[1]!));
+        // The board payload is the issue row plus its relations and timestamps.
+        const timestamps = {
+          links: [],
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        };
+        const boardIssues: unknown[] = [];
+        for (const issue of options.issues.values()) {
+          if (issue.projectId === projectId) {
+            boardIssues.push({ ...issue, ...timestamps });
+          }
+        }
+        send(200, { issues: boardIssues });
+        return;
+      }
+      const webhooksMatch = /^\/projects\/([^/]+)\/webhooks$/.exec(path);
+      if (req.method === "GET" && webhooksMatch) {
+        const projectId = options.projectIdByKey.get(decodeURIComponent(webhooksMatch[1]!));
+        send(
+          200,
+          Array.from(options.webhooks?.values() ?? []).filter((w) => w.projectId === projectId),
+        );
+        return;
+      }
+      const webhookMatch = /^\/webhooks\/(\d+)$/.exec(path);
+      if (req.method === "PATCH" && webhookMatch) {
+        const webhook = options.webhooks?.get(Number(webhookMatch[1]));
+        if (!webhook) {
+          send(404, { error: "not found" });
+          return;
+        }
+        Object.assign(webhook, body);
+        send(200, webhook);
         return;
       }
       send(404, { error: `unhandled ${req.method} ${path}` });
@@ -599,6 +641,10 @@ describe("ItsaplanBridge", () => {
   let attachments: Map<number, FakeAttachment[]>;
   let initiatives: Map<number, FakeInitiative>;
   let projectIdByKey: Map<string, number>;
+  let webhooks: Map<
+    number,
+    { id: number; projectId: number; url: string; events: string[]; isActive: boolean }
+  >;
   let fakeServer: FakeItsaplanServerHandle;
   let handle: { baseUrl: string; close: () => Promise<void> };
   let config: ItsaplanCentralConfig;
@@ -642,6 +688,7 @@ describe("ItsaplanBridge", () => {
     labels = new Map([[50, { id: 50, projectId: PROJECT_ID, name: "auto-chain" }]]);
     attachments = new Map();
     initiatives = new Map();
+    webhooks = new Map();
     fakeServer = startFakeItsaplanServer({
       apiKey: "itp_test_key",
       issues,
@@ -650,6 +697,7 @@ describe("ItsaplanBridge", () => {
       attachments,
       initiatives,
       projectIdByKey,
+      webhooks,
     });
     handle = await listen(fakeServer.server);
     config = {
@@ -1140,6 +1188,53 @@ describe("ItsaplanBridge", () => {
       const request = webhookRequest("issue.updated", { id: ISSUE_ID });
       const result = await bridge.handleWebhookRequest(request);
       expect(result.status).toBe(200);
+    });
+  });
+
+  describe("catching up after this host was unreachable", () => {
+    beforeEach(async () => {
+      // This host owns the board's webhook, so it is the board's dispatcher.
+      await projectStore.upsert({
+        paseoProjectKey: "proj",
+        itsaplanProjectId: PROJECT_ID,
+        itsaplanProjectKey: PROJECT_KEY,
+        createdAt: new Date().toISOString(),
+        commanderUserId: "bot-user-1",
+        webhookId: 7,
+      });
+      // itsaplan auto-disables a webhook after repeated failed deliveries.
+      webhooks.set(7, {
+        id: 7,
+        projectId: PROJECT_ID,
+        url: "http://dev:6767/api/itsaplan/webhook",
+        events: ["issue.state_changed"],
+        isActive: false,
+      });
+    });
+
+    test("a Todo ticket whose webhook never arrived is dispatched once and leaves Todo", async () => {
+      await bridge.reconcileOwnedBoards();
+      expect(dispatchWorker).toHaveBeenCalledTimes(1);
+      expect(issues.get(ISSUE_ID)?.columnId).toBe(3); // In Progress
+
+      // The next pass (or a late webhook redelivery) does not start a second worker.
+      await bridge.reconcileOwnedBoards();
+      expect(dispatchWorker).toHaveBeenCalledTimes(1);
+    });
+
+    test("a Todo ticket whose worker already exists is not dispatched again", async () => {
+      agentStorageRecords.push({
+        id: "worker-from-before-the-restart",
+        labels: { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) },
+        updatedAt: new Date().toISOString(),
+      });
+      await bridge.reconcileOwnedBoards();
+      expect(dispatchWorker).not.toHaveBeenCalled();
+    });
+
+    test("re-enables the webhook itsaplan disabled while the host was down", async () => {
+      await bridge.reconcileOwnedBoards();
+      expect(webhooks.get(7)?.isActive).toBe(true);
     });
   });
 

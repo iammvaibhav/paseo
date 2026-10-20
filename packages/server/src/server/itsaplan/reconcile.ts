@@ -20,6 +20,9 @@ export interface ItsaplanReconcileAgentStorage {
 // Upper bound of the sweep interval after repeated rate limits.
 const MAX_SWEEP_INTERVAL_MS = 10 * 60_000;
 
+// Owned-board pass (Todo dispatch, webhook re-enable) runs on sweep 0, 5, 10…
+const OWNED_BOARDS_EVERY_SWEEPS = 5;
+
 export interface ItsaplanReconcileMissionControl {
   getLifecycleBucket(agentId: string): Promise<LifecycleBucket>;
 }
@@ -32,6 +35,9 @@ export interface ItsaplanReconcileOptions {
   /** Archives the live agents (and their workspaces) of a ticket found in a
    * completed or canceled column (ItsaplanBridge.handleTicketCompletedOrCanceled). */
   closeTicket: (issueId: string) => Promise<void>;
+  /** Dispatches Todo tickets whose webhook never arrived and re-enables
+   * auto-disabled webhooks (ItsaplanBridge.reconcileOwnedBoards). */
+  reconcileOwnedBoards: () => Promise<void>;
   logger: Logger;
   intervalMs?: number;
 }
@@ -96,6 +102,7 @@ export class ItsaplanReconcileService {
   private readonly projectStore: ItsaplanProjectStore;
   private readonly getConfig: () => ItsaplanCentralConfig | null;
   private readonly closeTicket: (issueId: string) => Promise<void>;
+  private readonly reconcileOwnedBoards: () => Promise<void>;
   /** Issues itsaplan answered 404 for: deleted tickets, never fetched again. */
   private readonly deletedIssueIds = new Set<string>();
   private readonly logger: Logger;
@@ -104,6 +111,7 @@ export class ItsaplanReconcileService {
   private started = false;
   private sweepInFlight = false;
   private timer: NodeJS.Timeout | null = null;
+  private sweepCount = 0;
   /** Promise tracking the startup sweep (if currently in flight or completed on boot). */
   initialSweepPromise: Promise<void> | null = null;
 
@@ -113,6 +121,7 @@ export class ItsaplanReconcileService {
     this.projectStore = options.projectStore;
     this.getConfig = options.getConfig;
     this.closeTicket = options.closeTicket;
+    this.reconcileOwnedBoards = options.reconcileOwnedBoards;
     this.logger = options.logger.child({ module: "itsaplan", component: "reconcile" });
     this.baseIntervalMs = options.intervalMs ?? 60_000;
     this.intervalMs = this.baseIntervalMs;
@@ -176,6 +185,35 @@ export class ItsaplanReconcileService {
     if (!config) {
       return;
     }
+    if (!(await this.reconcileLabeledIssues(config))) {
+      return;
+    }
+    // Listing every owned board costs two requests per board, so Todo tickets
+    // and disabled webhooks are checked at boot and then every few sweeps.
+    if (this.sweepCount++ % OWNED_BOARDS_EVERY_SWEEPS === 0) {
+      try {
+        await this.reconcileOwnedBoards();
+      } catch (error) {
+        if (error instanceof ItsaplanApiError && error.status === 429) {
+          this.backOff({ phase: "owned_boards" });
+          return;
+        }
+        this.logger.error({ err: error }, "itsaplan.reconcile.owned_boards_failed");
+      }
+    }
+    this.intervalMs = this.baseIntervalMs;
+  }
+
+  private backOff(context: Record<string, unknown>): void {
+    this.intervalMs = Math.min(this.intervalMs * 2, MAX_SWEEP_INTERVAL_MS);
+    this.logger.warn(
+      { ...context, nextSweepDelayMs: this.intervalMs },
+      "itsaplan.reconcile.rate_limited",
+    );
+  }
+
+  /** False when itsaplan rate-limited the sweep (it ends early and backs off). */
+  private async reconcileLabeledIssues(config: ItsaplanCentralConfig): Promise<boolean> {
     const groups = new Map<string, ReconcileAgentRecord[]>();
     for (const record of await this.agentStorage.list()) {
       const issueId = getItsaplanIssueIdFromLabels(record.labels);
@@ -202,12 +240,8 @@ export class ItsaplanReconcileService {
         await this.reconcileIssue(issueId, latest, config);
       } catch (error) {
         if (error instanceof ItsaplanApiError && error.status === 429) {
-          this.intervalMs = Math.min(this.intervalMs * 2, MAX_SWEEP_INTERVAL_MS);
-          this.logger.warn(
-            { issueId, nextSweepDelayMs: this.intervalMs },
-            "itsaplan.reconcile.rate_limited",
-          );
-          return;
+          this.backOff({ issueId });
+          return false;
         }
         if (error instanceof ItsaplanApiError && error.status === 404) {
           this.deletedIssueIds.add(issueId);
@@ -217,10 +251,11 @@ export class ItsaplanReconcileService {
           );
           continue;
         }
+        // itsaplan unreachable lands here too: the next sweep retries.
         this.logger.error({ err: error, issueId }, "itsaplan.reconcile.issue_failed");
       }
     }
-    this.intervalMs = this.baseIntervalMs;
+    return true;
   }
 
   private async reconcileIssue(

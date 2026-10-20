@@ -32,7 +32,14 @@ function startFakeItsaplanServer(apiKey: string) {
   // mutate them (event-set drift repair).
   const webhooksById = new Map<
     number,
-    { id: number; projectId: number; url: string; events: string[]; isActive: boolean }
+    {
+      id: number;
+      projectId: number;
+      url: string;
+      events: string[];
+      isActive: boolean;
+      secret?: string;
+    }
   >();
   let nextWebhookId = 1;
   let nextProjectId = 1;
@@ -391,6 +398,7 @@ describe("itsaplan project sync", () => {
       createdAt: expect.any(String),
       // Read back from itsaplan's response — itsaplan ignores client secrets.
       webhookSecret: "whsec_generated_1",
+      webhookUrl: "http://127.0.0.1:9999/api/itsaplan/webhook",
       webhookId: 1,
       webhookEvents: ["issue.created", "issue.state_changed", "issue.assigned", "comment.created"],
     });
@@ -413,6 +421,34 @@ describe("itsaplan project sync", () => {
     await ensureItsaplanProjectMapping(project(), deps);
     expect(fakeServer.createdProjects).toHaveLength(1);
     expect(fakeServer.registeredWebhooks).toHaveLength(1);
+  });
+
+  test("re-points its own webhook registered at an address itsaplan cannot reach, and backfills the secret", async () => {
+    // LLMGATEWAY on dev: registered as http://127.0.0.1:6767 while itsaplan ran
+    // on prod, so prod's daemon got its deliveries, and the mapping never stored
+    // the secret, so dev would have rejected them anyway.
+    const events = ["issue.created", "issue.state_changed", "issue.assigned", "comment.created"];
+    await store.upsert({
+      paseoProjectKey: "PROJ",
+      itsaplanProjectId: 1,
+      itsaplanProjectKey: "PROJ",
+      createdAt: new Date().toISOString(),
+      webhookId: 1,
+      webhookEvents: events,
+    });
+    fakeServer.projectIdByKey.set("PROJ", 1);
+    fakeServer.webhooksById.set(1, {
+      id: 1,
+      projectId: 1,
+      url: "http://127.0.0.1:6767/api/itsaplan/webhook",
+      events,
+      isActive: true,
+      secret: "whsec_existing",
+    });
+    const updated = await ensureItsaplanProjectMapping(project(), deps);
+    expect(fakeServer.webhooksById.get(1)?.url).toBe(deps.getWebhookUrl());
+    expect(updated?.webhookSecret).toBe("whsec_existing");
+    expect(store.getByPaseoProjectKey("PROJ")?.webhookUrl).toBe(deps.getWebhookUrl());
   });
 
   test("patches issue.created and comment.created onto an existing webhook registered before they existed", async () => {

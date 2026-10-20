@@ -13,6 +13,7 @@ import {
   buildItsaplanIssueUrl,
   findInProgressColumn,
   ITSAPLAN_READY_FOR_REVIEW_COLUMN_NAME,
+  ItsaplanApiError,
   ItsaplanClient,
   type ItsaplanIssue,
 } from "./client.js";
@@ -23,6 +24,7 @@ import {
 } from "./ticket-images.js";
 import {
   isHomeDirectoryRoot,
+  ITSAPLAN_WEBHOOK_EVENTS,
   type ItsaplanCentralConfig,
   type ItsaplanProjectMapping,
   type ItsaplanProjectStore,
@@ -125,6 +127,11 @@ const ItsaplanWebhookIssueDataSchema = z.object({
     .nullable()
     .optional(),
 });
+
+type DispatchableIssue = Pick<
+  z.infer<typeof ItsaplanWebhookIssueDataSchema>,
+  "id" | "sequenceNumber" | "title" | "description" | "initiative" | "initiativeId"
+>;
 
 const ItsaplanWebhookCommentDataSchema = z.object({
   id: z.number(),
@@ -447,6 +454,8 @@ export class ItsaplanBridge {
   private readonly processedWebhookEventIds = new Set<string>();
   /** Tickets whose closed-ticket archive is in flight (webhook or reconcile). */
   private readonly closingIssueIds = new Set<string>();
+  /** Tickets whose worker dispatch is in flight (webhook or reconcile). */
+  private readonly dispatchingIssueIds = new Set<number>();
   /** Agents whose needs_you exit was caused by a ticket comment (vs a direct
    * Paseo answer); drives the convergence-comment wording on bucket exit. */
   private readonly answeredViaTicketComment = new Set<string>();
@@ -729,22 +738,27 @@ export class ItsaplanBridge {
   private async dispatchIssue(
     mapping: ItsaplanProjectMapping,
     config: ItsaplanCentralConfig,
-    issue: {
-      id: number;
-      sequenceNumber: number;
-      title: string;
-      description?: string | null;
-      initiative?: {
-        id: number;
-        title: string;
-        description?: string | null;
-        status?: string;
-      } | null;
-      initiativeId?: number | null;
-    },
+    issue: DispatchableIssue,
     client?: ItsaplanClient,
   ): Promise<void> {
-    const apiClient = client ?? new ItsaplanClient(config);
+    // The webhook and the reconcile pass can reach the same Todo ticket at once.
+    if (this.dispatchingIssueIds.has(issue.id)) {
+      return;
+    }
+    this.dispatchingIssueIds.add(issue.id);
+    try {
+      await this.dispatchIssueOnce(mapping, config, issue, client ?? new ItsaplanClient(config));
+    } finally {
+      this.dispatchingIssueIds.delete(issue.id);
+    }
+  }
+
+  private async dispatchIssueOnce(
+    mapping: ItsaplanProjectMapping,
+    config: ItsaplanCentralConfig,
+    issue: DispatchableIssue,
+    apiClient: ItsaplanClient,
+  ): Promise<void> {
     const ticketKey = `${mapping.itsaplanProjectKey}-${issue.sequenceNumber}`;
     const url = buildItsaplanIssueUrl(config, mapping.itsaplanProjectKey, issue.sequenceNumber);
 
@@ -766,19 +780,106 @@ export class ItsaplanBridge {
       attachments: attachments.files.length > 0 ? attachments.files : undefined,
       nativeImageCount: attachments.images.length,
     });
+    if (await this.hasLiveAgentForIssue(issue.id)) {
+      // A webhook redelivery, or the reconcile pass racing it: the ticket
+      // already has its worker.
+      this.logger.info(
+        { issueId: issue.id, ticketKey },
+        "itsaplan.bridge.dispatch_skipped_has_agent",
+      );
+      return;
+    }
     const agentId = await this.dispatchWorker({
       title: `${ticketKey} ${issue.title}`.slice(0, 60),
       brief: prompt,
       ...(attachments.images.length > 0 ? { images: attachments.images } : {}),
       labels: { [ITSAPLAN_ISSUE_LABEL_KEY]: String(issue.id) },
     });
-    if (agentId) {
-      this.logger.info(
-        { issueId: issue.id, ticketKey, agentId },
-        "itsaplan.bridge.worker_dispatched",
-      );
-    } else {
+    if (!agentId) {
       this.logger.warn({ issueId: issue.id, ticketKey }, "itsaplan.bridge.worker_dispatch_failed");
+      return;
+    }
+    this.logger.info(
+      { issueId: issue.id, ticketKey, agentId },
+      "itsaplan.bridge.worker_dispatched",
+    );
+    // Leaving Todo right away is what makes dispatch idempotent across
+    // restarts: the reconcile pass only dispatches tickets still in Todo, and
+    // the worker may run on a peer whose own projection lands later (or, while
+    // that peer is offline, not at all).
+    const inProgress = findInProgressColumn(
+      await apiClient.listProjectColumns(mapping.itsaplanProjectKey),
+    );
+    if (inProgress) {
+      await apiClient.moveIssueColumn(issue.id, inProgress.id);
+    }
+  }
+
+  /** A non-archived agent labeled with the ticket, here or on a reachable peer. */
+  private async hasLiveAgentForIssue(issueId: number): Promise<boolean> {
+    const local = await this.findAllAgentsByIssueLabel(String(issueId));
+    if (local.some((record) => !record.archivedAt)) {
+      return true;
+    }
+    const remote = await this.fleet?.findAgentByIssue(String(issueId)).catch(() => null);
+    return Boolean(remote);
+  }
+
+  /**
+   * Repair pass over the boards whose webhook this host owns (it is their
+   * dispatcher), run by the reconcile sweep at boot and every few minutes, so a
+   * host that was asleep or unreachable catches up on what itsaplan could not
+   * deliver: a webhook itsaplan auto-disabled after repeated failures is
+   * re-enabled, and every Todo ticket goes through the same path a webhook
+   * takes (dispatch only when assigned to the bot and unblocked, never twice).
+   */
+  async reconcileOwnedBoards(): Promise<void> {
+    const config = this.getConfig();
+    if (!config) {
+      return;
+    }
+    const client = new ItsaplanClient(config);
+    for (const mapping of this.projectStore.list()) {
+      if (mapping.webhookId === undefined) {
+        continue;
+      }
+      try {
+        await this.reconcileOwnedBoard(mapping, config, client);
+      } catch (error) {
+        if (error instanceof ItsaplanApiError && error.status === 429) {
+          throw error;
+        }
+        this.logger.warn(
+          { err: error, itsaplanProjectKey: mapping.itsaplanProjectKey },
+          "itsaplan.bridge.board_reconcile_failed",
+        );
+      }
+    }
+  }
+
+  private async reconcileOwnedBoard(
+    mapping: ItsaplanProjectMapping,
+    config: ItsaplanCentralConfig,
+    client: ItsaplanClient,
+  ): Promise<void> {
+    const webhooks = await client.listWebhooks(mapping.itsaplanProjectKey);
+    const mine = webhooks.find((webhook) => webhook.id === mapping.webhookId);
+    if (mine?.isActive === false) {
+      await client.updateWebhook(mine.id, { events: [...ITSAPLAN_WEBHOOK_EVENTS], isActive: true });
+      this.logger.info(
+        { itsaplanProjectKey: mapping.itsaplanProjectKey, webhookId: mine.id },
+        "itsaplan.bridge.webhook_reactivated",
+      );
+    }
+    const columns = await client.listProjectColumns(mapping.itsaplanProjectKey);
+    const todo = new Set(
+      columns.filter((column) => column.stateType === "unstarted").map((column) => column.id),
+    );
+    const { issues } = await client.listBoardIssues(mapping.itsaplanProjectKey);
+    for (const issue of issues) {
+      if (todo.has(issue.columnId)) {
+        await this.handleIssueStateChanged(issue, config);
+      }
     }
   }
 

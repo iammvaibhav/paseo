@@ -20,6 +20,8 @@ import type { Logger } from "pino";
 import { z } from "zod";
 import { createBranchChangeRouteHandler } from "./script-route-branch-handler.js";
 
+import { networkInterfaces } from "node:os";
+import { createItsaplanWebhookUrl } from "./itsaplan/webhook-url.js";
 export type ListenTarget =
   | { type: "tcp"; host: string; port: number }
   | { type: "socket"; path: string }
@@ -354,20 +356,6 @@ function createTerminalActivityUrl(listenTarget: ListenTarget | null): string | 
   ).toString();
 }
 
-/** This daemon's own itsaplan webhook ingress URL — itsaplan (ADR 0002:
- * self-hosted on the Commander host) POSTs here over loopback/LAN once
- * bound; null (unix-socket-only daemons, or before the listener binds)
- * defers project mapping until a TCP target exists. */
-function createItsaplanWebhookUrl(listenTarget: ListenTarget | null): string | null {
-  if (!listenTarget || listenTarget.type !== "tcp") {
-    return null;
-  }
-  const host = resolveAgentMcpClientHost(listenTarget.host);
-  return new URL(
-    "/api/itsaplan/webhook",
-    `http://${formatHostForHttpUrl(host)}:${listenTarget.port}`,
-  ).toString();
-}
 const TerminalActivityReportSchema = z.object({
   terminalId: z.string().min(1),
   token: z.string().min(1),
@@ -2339,7 +2327,9 @@ export async function createPaseoDaemon(
   const itsaplanProjectSyncDeps = {
     store: itsaplanProjectStore,
     getConfig: getItsaplanConfig,
-    getWebhookUrl: () => createItsaplanWebhookUrl(boundListenTarget),
+    // null (unix-socket-only daemons, or before the listener binds) defers
+    // project mapping until a TCP target exists.
+    getWebhookUrl: () => createItsaplanWebhookUrl(boundListenTarget, networkInterfaces()),
     paseoHome: config.paseoHome,
     logger,
   };
@@ -2360,6 +2350,7 @@ export async function createPaseoDaemon(
     getConfig: getItsaplanConfig,
     closeTicket: (issueId) =>
       itsaplanBridge?.handleTicketCompletedOrCanceled(issueId) ?? Promise.resolve(),
+    reconcileOwnedBoards: () => itsaplanBridge?.reconcileOwnedBoards() ?? Promise.resolve(),
     logger,
   });
   itsaplanReconcileService.start();

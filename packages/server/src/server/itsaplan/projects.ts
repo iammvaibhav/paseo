@@ -68,6 +68,9 @@ const ItsaplanProjectMappingSchema = z.object({
   // is the only way to verify deliveries. Optional: mappings written before
   // the readback existed fall back to central-config webhookSecret.
   webhookSecret: z.string().optional(),
+  // The URL this host registered its webhook with; a change (the daemon's
+  // reachable address moved) re-points the webhook on the next sync.
+  webhookUrl: z.string().optional(),
   // The project's "Commander" external ai_agent (chat-runner.ts): the
   // identity the Paseo Commander answers itsaplan chat/@mentions through.
   // Optional — a mapping written before this field existed, or whose
@@ -349,6 +352,7 @@ async function ensureItsaplanProjectMappingForKey(
     itsaplanProjectKey: created.key,
     createdAt: new Date().toISOString(),
     ...(webhook?.secret ? { webhookSecret: webhook.secret } : {}),
+    ...(webhook ? { webhookUrl: webhook.url } : {}),
     ...(webhook ? { webhookId: webhook.id, webhookEvents: [...ITSAPLAN_WEBHOOK_EVENTS] } : {}),
     ...(commander ? { ...commander, commanderMentionEnabled: false } : {}),
   };
@@ -667,14 +671,19 @@ async function ensureWebhookEventsUpToDate(
   config: ItsaplanCentralConfig,
   deps: ItsaplanProjectSyncDependencies,
 ): Promise<ItsaplanProjectMapping> {
+  const webhookUrl = deps.getWebhookUrl();
+  if (!webhookUrl) {
+    return mapping;
+  }
   const hasAllEvents =
     Array.isArray(mapping.webhookEvents) &&
     ITSAPLAN_WEBHOOK_EVENTS.every((event) => mapping.webhookEvents?.includes(event));
-  if (hasAllEvents && mapping.webhookId !== undefined) {
-    return mapping;
-  }
-  const webhookUrl = deps.getWebhookUrl();
-  if (!webhookUrl) {
+  if (
+    hasAllEvents &&
+    mapping.webhookId !== undefined &&
+    mapping.webhookSecret !== undefined &&
+    mapping.webhookUrl === webhookUrl
+  ) {
     return mapping;
   }
   const client = new ItsaplanClient(config);
@@ -689,18 +698,31 @@ async function ensureWebhookEventsUpToDate(
       return mapping;
     }
     const missing = ITSAPLAN_WEBHOOK_EVENTS.filter((event) => !mine.events.includes(event));
+    // Our own webhook (by id) pointing elsewhere was registered with an address
+    // itsaplan cannot reach this daemon on (see createItsaplanWebhookUrl).
+    const repointed = mine.url !== webhookUrl;
+    if (missing.length > 0 || repointed) {
+      await client.updateWebhook(mine.id, {
+        events: [...ITSAPLAN_WEBHOOK_EVENTS],
+        ...(repointed ? { url: webhookUrl } : {}),
+      });
+      deps.logger.info(
+        {
+          paseoProjectKey: mapping.paseoProjectKey,
+          missing,
+          from: repointed ? mine.url : undefined,
+        },
+        "itsaplan.project.webhook_patched",
+      );
+    }
     const updated: ItsaplanProjectMapping = {
       ...mapping,
       webhookId: mine.id,
       webhookEvents: [...ITSAPLAN_WEBHOOK_EVENTS],
+      webhookUrl,
+      // Without its secret this host rejects every delivery as unsigned.
+      ...(mine.secret ? { webhookSecret: mine.secret } : {}),
     };
-    if (missing.length > 0) {
-      await client.updateWebhook(mine.id, { events: [...ITSAPLAN_WEBHOOK_EVENTS] });
-      deps.logger.info(
-        { paseoProjectKey: mapping.paseoProjectKey, missing },
-        "itsaplan.project.webhook_events_patched",
-      );
-    }
     await deps.store.upsert(updated);
     return updated;
   } catch (error) {

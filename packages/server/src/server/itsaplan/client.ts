@@ -773,12 +773,14 @@ export class ItsaplanClient {
   }
 
   /**
-   * Patches a webhook (itsaplan PATCH /webhooks/:id). Used by the project
-   * sync to bring a webhook registered before `comment.created` existed up
-   * to the full event set without re-creating it (the generated secret —
-   * and therefore delivery verification — survives the patch).
+   * Patches a webhook (itsaplan PATCH /webhooks/:id): the project sync brings
+   * its event set up to date and re-points a webhook registered at an address
+   * itsaplan cannot reach this daemon on. The generated secret survives.
    */
-  async updateWebhook(webhookId: number, input: { events: string[] }): Promise<ItsaplanWebhook> {
+  async updateWebhook(
+    webhookId: number,
+    input: { events: string[]; url?: string; isActive?: boolean },
+  ): Promise<ItsaplanWebhook> {
     return this.request("PATCH", `/webhooks/${webhookId}`, input, ItsaplanWebhookSchema);
   }
 

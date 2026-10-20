@@ -142,6 +142,10 @@ Boards exist only for real projects: home directories, temp directories, verify-
 
 Columns follow the agent both ways: running or needs_you → In Progress, ready → Ready to review. A ticket you move to Done or Canceled closes its work: every live agent labeled with it is marked done and archived (a running turn is cancelled), and its workspace is archived unless another live agent works there. Open terminals or editors never block that. The webhook answers before the archive runs, because a worktree archive outlasts itsaplan's 10 s delivery timeout. Each host's reconcile sweep (at boot, then every 60 s) corrects column drift, re-runs the closed-ticket archive for its own agents, and stops fetching tickets itsaplan answers 404 for.
 
+A host that is asleep or unreachable catches up without losing work. itsaplan retries a failed delivery with backoff and gives up after 8 attempts; after 20 straight failures it disables the webhook. The reconcile sweep is the backstop for both: every sweep projects each labeled agent's state onto its ticket (so a column move made while itsaplan was down lands on the next sweep), and at boot and every fifth sweep the host that owns a board's webhook re-enables a disabled webhook and dispatches any Todo ticket whose webhook never arrived. Dispatch moves the ticket to In Progress right away and skips a ticket that already has a live labeled agent, so a late redelivery or a second pass never starts a duplicate worker. Ticket comments written while itsaplan was down are not replayed.
+
+Webhook URLs name the host's fleet overlay address (100.64.0.0/10) when the daemon listens on a wildcard. Registering `127.0.0.1` sent dev's and blrofc3's boards to prod's daemon once itsaplan moved there. The project sync re-points a host's own webhook when its address changes and backfills a missing signing secret.
+
 The bridge writes the ticket's routine comments: "Dispatched", each `report_status` milestone/finding/inconclusive (`Finding: <headline>`), the agent's open question, "Ready for review" with proofs, and every prompt Vaibhav sends the agent directly from the app ("Vaibhav asked (in the app)").
 
 ## Protocol
