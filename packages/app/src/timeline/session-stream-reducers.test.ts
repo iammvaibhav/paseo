@@ -1259,6 +1259,49 @@ describe("processTimelineResponse", () => {
     expect(repeated.tail.filter((item) => item.kind === "user_message")).toEqual(userMessages);
   });
 
+  it("keeps canonical images when the matched row was restored without them", () => {
+    // The replica cache stores user rows without images, so a cold start restores a
+    // text-only twin of a steered prompt that carried native images.
+    const restored = createUserMessage({
+      clientMessageId: "steer-with-images",
+      messageId: "steer-with-images",
+      timelineCursor: { epoch: "epoch-1", seq: 1 },
+      text: "Attached inline",
+      timestamp: new Date(1000),
+    });
+    const nativeImage = { data: "iVBORw0KGgo=", mimeType: "image/png" };
+
+    const result = processTimelineResponse({
+      ...baseTimelineInput,
+      currentTail: [restored],
+      payload: {
+        ...baseTimelineInput.payload,
+        reset: true,
+        startCursor: { seq: 1 },
+        endCursor: { seq: 1 },
+        entries: [
+          {
+            ...makeTimelineEntry(1, "Attached inline", "user_message"),
+            item: {
+              type: "user_message",
+              text: "Attached inline",
+              messageId: "steer-with-images",
+              clientMessageId: "steer-with-images",
+              images: [nativeImage],
+            },
+          },
+        ],
+      },
+    });
+
+    const userMessages = result.tail.filter((item) => item.kind === "user_message");
+    expect(userMessages).toHaveLength(1);
+    expect(userMessages[0]).toMatchObject({
+      clientMessageId: "steer-with-images",
+      images: [nativeImage],
+    });
+  });
+
   it("keeps an unmatched submitted user message during tail replacement", () => {
     const submitted = makeSubmittedUserMessage("still sending", "submitted-unmatched");
 

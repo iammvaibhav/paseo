@@ -297,12 +297,17 @@ function produceUserMessage(
     throw new Error("User message upsert matched a non-user row");
   }
   const presentation = presentationPolicy === "incoming" ? incoming : existing;
+  const fallback = presentationPolicy === "incoming" ? existing : incoming;
+  // The preferred side decides how media render, but a side that carries none must not
+  // erase the other's: replica-cache restores and text-only echoes have no images.
   const merged = createUserMessage({
     ...presentation,
     clientMessageId: incoming.clientMessageId ?? existing.clientMessageId,
     agentMode: incoming.agentMode ?? existing.agentMode,
     messageId: incoming.messageId ?? existing.messageId,
     timelineCursor: incoming.timelineCursor ?? existing.timelineCursor,
+    images: presentation.images ?? fallback.images,
+    attachments: presentation.attachments ?? fallback.attachments,
   });
   if (isSameUserMessage(existing, merged)) {
     return { items, index, message: existing, matched: true };

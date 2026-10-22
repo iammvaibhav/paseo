@@ -96,6 +96,43 @@ export async function resolveFleetImages(
   );
 }
 
+/** Raster formats every provider accepts as a native image block. */
+const NATIVE_IMAGE_MIME_TYPES: Record<string, true> = {
+  "image/png": true,
+  "image/jpeg": true,
+  "image/gif": true,
+  "image/webp": true,
+};
+
+/**
+ * Native images for a prompt: the explicit images plus every uploaded_file
+ * attachment in a native image format. The attachment stays in the prompt for
+ * its path; the native copy is what the model sees and the user row renders.
+ */
+export async function resolveFleetPromptImages(
+  images: readonly FleetImageInput[] | undefined,
+  attachments: readonly AgentAttachment[] | undefined,
+  paseoHome: string | undefined,
+): Promise<NativeImage[] | undefined> {
+  const explicit = (await resolveFleetImages(images, paseoHome)) ?? [];
+  const attachedImages = await Promise.all(
+    (attachments ?? []).flatMap((attachment) =>
+      attachment.type === "uploaded_file" && NATIVE_IMAGE_MIME_TYPES[attachment.mimeType] === true
+        ? [
+            readFile(attachment.path).then(
+              (bytes): NativeImage => ({
+                data: bytes.toString("base64"),
+                mimeType: attachment.mimeType,
+              }),
+            ),
+          ]
+        : [],
+    ),
+  );
+  const all = [...explicit, ...attachedImages];
+  return all.length > 0 ? all : undefined;
+}
+
 /**
  * Resolves uploaded_file attachments against this host: an id in the upload
  * store wins; otherwise the descriptor's path must exist here. Other

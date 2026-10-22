@@ -50,6 +50,7 @@ import {
   registerFleetFileTools,
   resolveFleetAttachments,
   resolveFleetImages,
+  resolveFleetPromptImages,
 } from "./fleet-files.js";
 import type { ChunkedUploadSessions } from "../../file-upload/index.js";
 import { isStoredAgentProviderAvailable } from "../../persistence-hooks.js";
@@ -5642,7 +5643,8 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
             "Attachments to forward to the agent (composer paste-through). An uploaded_file is given as " +
               '{type: "uploaded_file", id: fileId} (fileId from fleet_upload_file) or as a full descriptor whose ' +
               "path exists on this host; the agent gets the file's name, path and size as text and opens it " +
-              "itself. Agents on another host get a copy in their host's upload store. A missing file is an error.",
+              "itself. A PNG, JPEG, GIF or WebP file is also delivered as a native image. Agents on another " +
+              "host get a copy in their host's upload store. A missing file is an error.",
           ),
       },
       outputSchema: {
@@ -5702,9 +5704,10 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       };
       const targetHost = await resolveSendTargetHost();
       // Resolved on this host before any delivery: fileIds become bytes or
-      // store descriptors, and a file that is not here fails the send.
-      const images = await resolveFleetImages(imageInputs, options.paseoHome);
+      // store descriptors, and a file that is not here fails the send. Image
+      // uploads also ride as native images so the model and the user row see them.
       const attachments = await resolveFleetAttachments(attachmentInputs, options.paseoHome);
+      const images = await resolveFleetPromptImages(imageInputs, attachments, options.paseoHome);
       const requirePeerClient = (peerHost: string): DaemonClient => {
         const client = resolveFleetHost(peerHost);
         if (!client) {

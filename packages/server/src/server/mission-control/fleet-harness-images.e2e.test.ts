@@ -137,7 +137,45 @@ describe("images and files cross hosts over /mcp/fleet", () => {
         );
         await expect(readFile(notesBlock.path, "utf8")).resolves.toBe("notes for B");
 
-        // 2. An image the agent on B saved comes back over MCP as image content.
+        // 2. An image passed only as an uploaded_file also rides as a native image,
+        //    and B's user row carries it so the app renders a thumbnail.
+        await call("fleet_wait_agent", { agentId, timeoutSeconds: 30 });
+        const attachedShot = fakePng(40 * 1024);
+        const uploadedAttached = await call("fleet_upload_file", {
+          fileName: "attached.png",
+          mimeType: "image/png",
+          data: attachedShot.toString("base64"),
+        });
+        const attachedSent = await call("fleet_send_prompt", {
+          agentId,
+          prompt: "mcp send image as file",
+          attachments: [{ type: "uploaded_file", id: field(uploadedAttached, "fileId") }],
+        });
+        expect(attachedSent.isError, JSON.stringify(attachedSent.content)).toBeFalsy();
+        const attachedPrompt = (await waitForPrompt(prompts, "mcp send image as file")).prompt;
+        const attachedBlocks = Array.isArray(attachedPrompt) ? attachedPrompt : [];
+        const attachedImage = {
+          type: "image",
+          data: attachedShot.toString("base64"),
+          mimeType: "image/png",
+        };
+        expect(attachedBlocks).toContainEqual(attachedImage);
+        expect(attachedBlocks.some((block) => block.type === "uploaded_file")).toBe(true);
+        const timeline = await harness.clients.B.fetchAgentTimeline(agentId, {
+          direction: "tail",
+          limit: 50,
+          projection: "projected",
+        });
+        const attachedRow = timeline.entries
+          .map((entry) => entry.item)
+          .find(
+            (item) => item.type === "user_message" && item.text.includes("mcp send image as file"),
+          );
+        expect(attachedRow).toMatchObject({
+          images: [{ data: attachedImage.data, mimeType: attachedImage.mimeType }],
+        });
+
+        // 3. An image the agent on B saved comes back over MCP as image content.
         const bShot = fakePng(20 * 1024);
         const bShotPath = path.join(harness.daemons.B.paseoHomeRoot, "b-screenshot.png");
         await writeFile(bShotPath, bShot);

@@ -57,7 +57,7 @@ Every wait and notification is bound to a **turn**. `fleet_create_agent` and `fl
 
 Everything moves through MCP; never copy files to a host yourself.
 
-- **To an agent:** `fleet_upload_file { fileName, mimeType, data }` (base64) returns a `fileId`. Pass images as `images: [{ fileId }]` to `fleet_create_agent` or `fleet_send_prompt` (busy or idle agents, any host); pass other files as `attachments: [{ type: "uploaded_file", id: fileId }]` to `fleet_send_prompt`. Agents on another host get their own copy. Small images can also go inline as `images: [{ data, mimeType }]`.
+- **To an agent:** `fleet_upload_file { fileName, mimeType, data }` (base64) returns a `fileId`. Pass images as `images: [{ fileId }]` to `fleet_create_agent` or `fleet_send_prompt` (busy or idle agents, any host); pass other files as `attachments: [{ type: "uploaded_file", id: fileId }]` to `fleet_send_prompt`. A PNG, JPEG, GIF or WebP passed as an attachment also reaches the agent as an image. Agents on another host get their own copy. Small images can also go inline as `images: [{ data, mimeType }]`.
 - **Large files:** upload in chunks of a few MB: the first call adds `size` (total bytes) and returns `uploadId`; send the rest as `{ uploadId, data }`. The last chunk returns the `fileId`. A request body over 25 MB is rejected with a JSON-RPC error.
 - **From an agent:** `fleet_read_image { agentId, path }` returns the image (up to 10 MB) as MCP image content. Use the absolute path the agent reported, or an image proof path from `fleet_context`.
 
