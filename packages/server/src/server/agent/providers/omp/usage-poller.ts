@@ -21,30 +21,48 @@ function createScheduler(): OmpUsagePollScheduler {
   };
 }
 
-function toAgentUsage(stats: OmpSessionStats): AgentUsage | undefined {
-  const inputTokens = stats.tokens?.input ?? 0;
-  const cachedInputTokens = stats.tokens?.cacheRead ?? 0;
-  const outputTokens = stats.tokens?.output ?? 0;
-  const totalCostUsd = stats.cost ?? 0;
-  const contextWindowMaxTokens = stats.contextUsage?.contextWindow ?? undefined;
-  const contextWindowUsedTokens = stats.contextUsage?.tokens ?? undefined;
+interface OmpUsageCounters {
+  inputTokens: number;
+  cachedInputTokens: number;
+  cacheWriteTokens: number;
+  outputTokens: number;
+  totalCostUsd: number;
+  contextWindowMaxTokens: number | undefined;
+  contextWindowUsedTokens: number | undefined;
+}
 
-  if (
-    inputTokens === 0 &&
-    cachedInputTokens === 0 &&
-    outputTokens === 0 &&
-    totalCostUsd === 0 &&
-    contextWindowMaxTokens === undefined &&
-    contextWindowUsedTokens === undefined
-  ) {
-    return undefined;
-  }
-
+function readOmpUsageCounters(stats: OmpSessionStats): OmpUsageCounters {
   return {
-    inputTokens,
-    cachedInputTokens,
-    outputTokens,
-    totalCostUsd,
+    inputTokens: stats.tokens?.input ?? 0,
+    cachedInputTokens: stats.tokens?.cacheRead ?? 0,
+    // Turn-metrics: report session cacheWrite alongside the other counters.
+    cacheWriteTokens: stats.tokens?.cacheWrite ?? 0,
+    outputTokens: stats.tokens?.output ?? 0,
+    totalCostUsd: stats.cost ?? 0,
+    contextWindowMaxTokens: stats.contextUsage?.contextWindow ?? undefined,
+    contextWindowUsedTokens: stats.contextUsage?.tokens ?? undefined,
+  };
+}
+
+function hasOmpUsage(counters: OmpUsageCounters): boolean {
+  return (
+    counters.inputTokens !== 0 ||
+    counters.cachedInputTokens !== 0 ||
+    counters.cacheWriteTokens !== 0 ||
+    counters.outputTokens !== 0 ||
+    counters.totalCostUsd !== 0 ||
+    counters.contextWindowMaxTokens !== undefined ||
+    counters.contextWindowUsedTokens !== undefined
+  );
+}
+
+function toAgentUsage(stats: OmpSessionStats): AgentUsage | undefined {
+  const counters = readOmpUsageCounters(stats);
+  if (!hasOmpUsage(counters)) return undefined;
+  const { cacheWriteTokens, contextWindowMaxTokens, contextWindowUsedTokens, ...rest } = counters;
+  return {
+    ...rest,
+    ...(cacheWriteTokens > 0 ? { cacheWriteTokens } : {}),
     ...(typeof contextWindowMaxTokens === "number" ? { contextWindowMaxTokens } : {}),
     ...(typeof contextWindowUsedTokens === "number" ? { contextWindowUsedTokens } : {}),
   };

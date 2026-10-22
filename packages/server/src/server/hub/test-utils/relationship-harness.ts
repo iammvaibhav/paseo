@@ -1588,6 +1588,8 @@ export class HubRelationshipHarness {
             agentStorage: storage,
             logger: pino({ level: "silent" }),
             providerSnapshotManager: providerCatalog,
+            // Hub executions never name an existing workspace here.
+            getWorkspace: async () => null,
           },
           input,
         ),

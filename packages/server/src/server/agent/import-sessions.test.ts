@@ -104,7 +104,7 @@ function makeManagedAgent(args: {
     lastUserMessageAt: null,
     attention: { requiresAttention: false },
     foregroundTurnWaiters: new Set(),
-    finalizedForegroundTurnIds: new Set(),
+    finalizedForegroundTurnIds: new Map(),
     unsubscribeSession: null,
     internal: false,
     labels: {},

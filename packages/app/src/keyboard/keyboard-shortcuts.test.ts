@@ -333,14 +333,6 @@ describe("keyboard-shortcuts", () => {
       action: "message-input.action",
       payload: { kind: "voice-mute-toggle" },
     },
-    {
-      name: "routes Escape to agent interrupt outside terminal focus",
-      event: { key: "Escape", code: "Escape" },
-      context: { focusScope: "message-input" },
-      action: "agent.interrupt",
-      preventDefault: false,
-      stopPropagation: false,
-    },
     // macOS rewrites event.key when Option is held (Option+T -> "†",
     // Option+[ -> "“", Option+Shift+W -> "„", etc.). Every Alt-bound
     // letter / bracket shortcut must still resolve.
@@ -502,14 +494,8 @@ describe("keyboard-shortcuts", () => {
       context: { isMac: false, focusScope: "message-input" },
     },
     {
-      name: "does not interrupt agent when terminal is focused",
+      name: "does not bind Escape to interrupt the agent",
       event: { key: "Escape", code: "Escape" },
-      context: { focusScope: "terminal" },
-    },
-    {
-      name: "does not interrupt agent when command center is open",
-      event: { key: "Escape", code: "Escape" },
-      context: { commandCenterOpen: true },
     },
     {
       name: "does not bind pane shortcuts on non-mac platforms",
@@ -548,6 +534,36 @@ describe("keyboard-shortcuts", () => {
 
   it.each(nonMatchingCases)("$name", ({ event, context }) => {
     expectNoShortcutResolution({ event, context });
+  });
+
+  // A rebound pane-focus shortcut has to fire wherever the user is typing.
+  // Its default combo carries `editable: false` so that Cmd+Shift+Arrow keeps
+  // selecting text (the two cases above), and that guard describes the default
+  // combo rather than the action, so it must not survive the rebind.
+  describe("a rebound pane-focus shortcut", () => {
+    const PANE_FOCUS_DOWN_BINDING = "workspace-pane-focus-down-cmd-shift-down";
+    // macOS emits U+2206 for Option+J; the stored combo comes from the code.
+    const altJ = { key: "\u2206", code: "KeyJ", altKey: true };
+
+    it.each(["message-input", "editable"] as const)("fires with %s focused", (focusScope) => {
+      const result = resolveShortcut({
+        event: altJ,
+        context: { isMac: true, focusScope },
+        bindings: buildEffectiveBindings({ [PANE_FOCUS_DOWN_BINDING]: "Alt+J" }),
+      });
+
+      expect(result.match?.action).toBe("workspace.pane.focus.down");
+    });
+
+    it("still fires outside a text field", () => {
+      const result = resolveShortcut({
+        event: altJ,
+        context: { isMac: true, focusScope: "other" },
+        bindings: buildEffectiveBindings({ [PANE_FOCUS_DOWN_BINDING]: "Alt+J" }),
+      });
+
+      expect(result.match?.action).toBe("workspace.pane.focus.down");
+    });
   });
 
   it("prefers advancing chord candidates over single-combo matches on the same prefix", () => {
@@ -591,6 +607,42 @@ describe("keyboard-shortcuts", () => {
       context: { isDesktop: true, focusScope: "browser" },
       action: "workspace.tab.menu.open",
     });
+  });
+
+  it("completes a chord whose second step carries a modifier", () => {
+    const bindings = buildEffectiveBindings({
+      "command-center-toggle-ctrl-k-non-mac": "Ctrl+K Ctrl+J",
+    });
+
+    // The browser emits a keydown for the bare Control key before every combo,
+    // so the stream for Ctrl+K, release, Ctrl+J is four keydowns, not two.
+    const firstModifier = resolveShortcut({
+      event: { key: "Control", code: "ControlLeft", ctrlKey: true },
+      context: { isMac: false, isDesktop: true },
+      bindings,
+    });
+    const firstStep = resolveShortcut({
+      event: { key: "k", code: "KeyK", ctrlKey: true },
+      context: { isMac: false, isDesktop: true },
+      chordState: firstModifier.nextChordState,
+      bindings,
+    });
+    expect(firstStep.nextChordState.step).toBe(1);
+
+    const secondModifier = resolveShortcut({
+      event: { key: "Control", code: "ControlLeft", ctrlKey: true },
+      context: { isMac: false, isDesktop: true },
+      chordState: firstStep.nextChordState,
+      bindings,
+    });
+    const secondStep = resolveShortcut({
+      event: { key: "j", code: "KeyJ", ctrlKey: true },
+      context: { isMac: false, isDesktop: true },
+      chordState: secondModifier.nextChordState,
+      bindings,
+    });
+
+    expect(secondStep.match?.action).toBe("command-center.toggle");
   });
 
   it("schedules a chord reset timeout for advancing candidates", () => {

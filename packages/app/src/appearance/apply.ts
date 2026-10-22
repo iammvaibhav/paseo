@@ -4,7 +4,10 @@ import {
   DEFAULT_UI_FONT_STACK,
   DEFAULT_MONO_FONT_STACK,
   FONT_SIZE,
+  GLASS_THEME_NAME,
   REGISTERED_THEMES,
+  resolveGlassColors,
+  type GlassTuning,
   type Theme,
 } from "@/styles/theme";
 import { applyRootUiFont } from "./apply-root-font";
@@ -17,7 +20,9 @@ export interface AppearanceInput {
   uiBaseFontSize: number; // already clamped
   contentFontSize: number; // already clamped
   codeFontSize: number; // already clamped
+  contentMaxWidth: number; // already clamped, default resolved
   syntaxTheme: SyntaxThemeId;
+  glassTuning: GlassTuning;
 }
 
 /**
@@ -36,6 +41,7 @@ function scaleFontSize(
 ): Theme["fontSize"] {
   const r = uiBaseSize / FONT_SIZE.base;
   return {
+    xs: Math.round(FONT_SIZE.xs * r),
     sm: Math.round(FONT_SIZE.sm * r),
     base: Math.round(FONT_SIZE.base * r),
     lg: Math.round(FONT_SIZE.lg * r),
@@ -55,7 +61,7 @@ function scaleFontSize(
  * always current and makes ordering vs `setTheme`/`setAdaptiveThemes` irrelevant.
  *
  * The updater preserves the active theme wholesale (surfaces, accents,
- * terminal) and only patches the font ramp and syntax palette.
+ * terminal) and only patches the font ramp, content width, and syntax palette.
  * `updateTheme` replaces the stored theme rather than merging, so we spread
  * `...t` first.
  */
@@ -63,6 +69,7 @@ export function applyAppearance(input: AppearanceInput): void {
   const ui = input.uiFontFamily.trim() || DEFAULT_UI_FONT_STACK;
   const mono = input.monoFontFamily.trim() || DEFAULT_MONO_FONT_STACK;
   const diffLineHeight = Math.round(input.codeFontSize * 1.5); // couple to code size
+  const glass = resolveGlassColors(input.glassTuning);
   const activeTheme = UnistylesRuntime.themeName;
   // Unistyles web emits after each registry patch. Updating the mounted theme
   // first ensures subscribers receive its new numeric tokens in this render;
@@ -86,7 +93,22 @@ export function applyAppearance(input: AppearanceInput): void {
           fontFamily,
           fontSize,
           lineHeight,
+          contentMaxWidth: input.contentMaxWidth,
           colors: { ...t.colors, syntax: resolveSyntaxColors(input.syntaxTheme, t.colorScheme) },
+        };
+      }
+      const syntax = resolveSyntaxColors(input.syntaxTheme, t.colorScheme);
+      // The glass tuning only replaces values derived from the defaults, so repeated applies
+      // never compound.
+      if (key === GLASS_THEME_NAME) {
+        return {
+          ...t,
+          fontFamily,
+          fontSize,
+          lineHeight,
+          contentMaxWidth: input.contentMaxWidth,
+          colors: { ...t.colors, ...glass.colors, syntax },
+          glass: glass.glass,
         };
       }
       return {
@@ -94,7 +116,8 @@ export function applyAppearance(input: AppearanceInput): void {
         fontFamily,
         fontSize,
         lineHeight,
-        colors: { ...t.colors, syntax: resolveSyntaxColors(input.syntaxTheme, t.colorScheme) },
+        contentMaxWidth: input.contentMaxWidth,
+        colors: { ...t.colors, syntax },
       };
     });
   }

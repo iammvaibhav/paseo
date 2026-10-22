@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 
 import { mapOmpModel } from "./map-omp-model.js";
-import type { OmpModel } from "./rpc-types.js";
+import type { OmpModel, OmpThinkingLevel } from "./rpc-types.js";
 
 function baseModel(overrides: Partial<OmpModel> = {}): OmpModel {
   return {
@@ -9,6 +9,26 @@ function baseModel(overrides: Partial<OmpModel> = {}): OmpModel {
     id: "canada-quant/glm-5.2",
     name: "GLM-5.2",
     ...overrides,
+  };
+}
+
+const FULL_SET = ["off", "auto", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+function effortModel(
+  efforts: string[],
+  defaultLevel?: string,
+  settingsDefault: OmpThinkingLevel = "high",
+) {
+  return {
+    model: baseModel({
+      reasoning: true,
+      thinking: {
+        mode: "effort",
+        efforts,
+        ...(defaultLevel === undefined ? {} : { defaultLevel }),
+      },
+    }),
+    settingsDefault,
   };
 }
 
@@ -24,53 +44,131 @@ describe("mapOmpModel thinking options", () => {
       },
     });
 
-    const result = mapOmpModel(model, "omp");
+    const result = mapOmpModel(model, "omp", null);
 
-    expect(result.thinkingOptions?.map((option) => option.id)).toEqual(["high", "xhigh"]);
+    expect(result.thinkingOptions?.map((option) => option.id)).toEqual([
+      "off",
+      "auto",
+      "high",
+      "xhigh",
+    ]);
     expect(result.defaultThinkingOptionId).toBe("xhigh");
     expect(result.thinkingOptions?.find((option) => option.isDefault)?.id).toBe("xhigh");
+  });
+
+  test("orders off, auto, then the model's efforts, as omp cycles them", () => {
+    const { model, settingsDefault } = effortModel(["low", "high"], "high");
+
+    const result = mapOmpModel(model, "omp", settingsDefault);
+
+    expect(result.thinkingOptions?.map((option) => option.id)).toEqual([
+      "off",
+      "auto",
+      "low",
+      "high",
+    ]);
+  });
+
+  test("an explicit settings default wins over the model's defaultLevel", () => {
+    const { model } = effortModel(["low", "medium", "high"], "low");
+
+    const result = mapOmpModel(model, "omp", "auto");
+
+    expect(result.defaultThinkingOptionId).toBe("auto");
+    expect(result.thinkingOptions?.find((option) => option.isDefault)?.id).toBe("auto");
+  });
+
+  test("uses the model's defaultLevel when no settings default is set", () => {
+    const { model } = effortModel(["low", "medium", "high"], "low");
+
+    const result = mapOmpModel(model, "omp", null);
+
+    expect(result.defaultThinkingOptionId).toBe("low");
+  });
+
+  test("falls back to high when neither the settings nor the model name a default", () => {
+    const { model } = effortModel(["low", "medium", "high"]);
+
+    expect(mapOmpModel(model, "omp", null).defaultThinkingOptionId).toBe("high");
+  });
+
+  test("clamps a model default above the offered efforts down", () => {
+    const { model } = effortModel(["low", "high"], "xhigh");
+
+    const result = mapOmpModel(model, "omp", null);
+
+    expect(result.thinkingOptions?.map((option) => option.id)).toEqual([
+      "off",
+      "auto",
+      "low",
+      "high",
+    ]);
+    expect(result.defaultThinkingOptionId).toBe("high");
+    expect(result.thinkingOptions?.find((option) => option.isDefault)?.id).toBe("high");
+  });
+
+  test("uses the settings default when the model reports none", () => {
+    const { model } = effortModel(["low", "high"], undefined, "auto");
+
+    const result = mapOmpModel(model, "omp", "auto");
+
+    expect(result.defaultThinkingOptionId).toBe("auto");
+    expect(result.thinkingOptions?.find((option) => option.isDefault)?.id).toBe("auto");
+  });
+
+  test("clamps the settings default down to the highest offered effort", () => {
+    const { model } = effortModel(["low", "medium"], undefined, "high");
+
+    const result = mapOmpModel(model, "omp", "high");
+
+    expect(result.defaultThinkingOptionId).toBe("medium");
+    expect(result.thinkingOptions?.find((option) => option.isDefault)?.id).toBe("medium");
+  });
+
+  test("clamps the settings default up to the lowest offered effort", () => {
+    const { model } = effortModel(["low", "high"], undefined, "minimal");
+
+    const result = mapOmpModel(model, "omp", "minimal");
+
+    expect(result.defaultThinkingOptionId).toBe("low");
+    expect(result.thinkingOptions?.find((option) => option.isDefault)?.id).toBe("low");
+  });
+
+  test("keeps a settings default of off", () => {
+    const { model } = effortModel(["low", "high"], undefined, "off");
+
+    const result = mapOmpModel(model, "omp", "off");
+
+    expect(result.defaultThinkingOptionId).toBe("off");
+    expect(result.thinkingOptions?.find((option) => option.isDefault)?.id).toBe("off");
   });
 
   test("exposes the full set when reasoning is true but no thinking config is reported", () => {
     const model = baseModel({ reasoning: true });
 
-    const result = mapOmpModel(model, "omp");
+    const result = mapOmpModel(model, "omp", "high");
 
-    expect(result.thinkingOptions?.map((option) => option.id)).toEqual([
-      "off",
-      "minimal",
-      "low",
-      "medium",
-      "high",
-      "xhigh",
-      "max",
-    ]);
-    expect(result.defaultThinkingOptionId).toBe("medium");
+    expect(result.thinkingOptions?.map((option) => option.id)).toEqual(FULL_SET);
+    expect(result.defaultThinkingOptionId).toBe("high");
+    expect(result.thinkingOptions?.find((option) => option.isDefault)?.id).toBe("high");
   });
 
   test("exposes the full set when efforts is empty", () => {
     const model = baseModel({
       reasoning: true,
-      thinking: { mode: "effort", efforts: [], defaultLevel: "high" },
+      thinking: { mode: "effort", efforts: [] },
     });
 
-    const result = mapOmpModel(model, "omp");
+    const result = mapOmpModel(model, "omp", "high");
 
-    expect(result.thinkingOptions?.map((option) => option.id)).toEqual([
-      "off",
-      "minimal",
-      "low",
-      "medium",
-      "high",
-      "xhigh",
-      "max",
-    ]);
+    expect(result.thinkingOptions?.map((option) => option.id)).toEqual(FULL_SET);
+    expect(result.defaultThinkingOptionId).toBe("high");
   });
 
   test("omits thinking options entirely when reasoning is false", () => {
     const model = baseModel({ reasoning: false });
 
-    const result = mapOmpModel(model, "omp");
+    const result = mapOmpModel(model, "omp", "high");
 
     expect(result.thinkingOptions).toBeUndefined();
     expect(result.defaultThinkingOptionId).toBeUndefined();
@@ -79,35 +177,10 @@ describe("mapOmpModel thinking options", () => {
   test("omits thinking options when reasoning is absent", () => {
     const model = baseModel({});
 
-    const result = mapOmpModel(model, "omp");
+    const result = mapOmpModel(model, "omp", "high");
 
     expect(result.thinkingOptions).toBeUndefined();
     expect(result.defaultThinkingOptionId).toBeUndefined();
-  });
-
-  test("falls back to the first available option when defaultLevel is not in efforts", () => {
-    const model = baseModel({
-      reasoning: true,
-      thinking: { mode: "effort", efforts: ["low", "high"], defaultLevel: "xhigh" },
-    });
-
-    const result = mapOmpModel(model, "omp");
-
-    expect(result.thinkingOptions?.map((option) => option.id)).toEqual(["low", "high"]);
-    expect(result.defaultThinkingOptionId).toBe("low");
-    expect(result.thinkingOptions?.find((option) => option.isDefault)?.id).toBe("low");
-  });
-
-  test("uses the first option as default when defaultLevel is absent", () => {
-    const model = baseModel({
-      reasoning: true,
-      thinking: { mode: "effort", efforts: ["low", "medium", "high"] },
-    });
-
-    const result = mapOmpModel(model, "omp");
-
-    expect(result.thinkingOptions?.map((option) => option.id)).toEqual(["low", "medium", "high"]);
-    expect(result.defaultThinkingOptionId).toBe("low");
   });
 
   test("falls back to the full set when every reported effort is unknown", () => {
@@ -116,18 +189,19 @@ describe("mapOmpModel thinking options", () => {
       thinking: { mode: "effort", efforts: ["ultra", "turbo"], defaultLevel: "turbo" },
     });
 
-    const result = mapOmpModel(model, "omp");
+    const result = mapOmpModel(model, "omp", "high");
 
-    expect(result.thinkingOptions?.map((option) => option.id)).toEqual([
-      "off",
-      "minimal",
-      "low",
-      "medium",
-      "high",
-      "xhigh",
-      "max",
-    ]);
-    expect(result.defaultThinkingOptionId).toBe("medium");
+    expect(result.thinkingOptions?.map((option) => option.id)).toEqual(FULL_SET);
+    expect(result.defaultThinkingOptionId).toBe("high");
+  });
+
+  test("offers auto without making it the default when the settings name a level", () => {
+    const { model, settingsDefault } = effortModel(["low", "high"], undefined, "high");
+
+    const result = mapOmpModel(model, "omp", settingsDefault);
+
+    expect(result.thinkingOptions?.map((option) => option.id)).toContain("auto");
+    expect(result.defaultThinkingOptionId).toBe("high");
   });
 
   test("preserves provider and model id in the mapped definition", () => {
@@ -136,7 +210,7 @@ describe("mapOmpModel thinking options", () => {
       thinking: { mode: "effort", efforts: ["high", "xhigh"], defaultLevel: "xhigh" },
     });
 
-    const result = mapOmpModel(model, "omp");
+    const result = mapOmpModel(model, "omp", "high");
 
     expect(result.provider).toBe("omp");
     expect(result.id).toBe("pioneer/canada-quant/glm-5.2");

@@ -7,7 +7,7 @@ import {
   type ProviderSnapshotCache,
 } from "./provider-snapshot-cache";
 import { queryClient as singletonQueryClient } from "./query-client";
-import { replaceProviderSnapshotIcons } from "@/components/provider-icon-name";
+import { replaceProviderSnapshotIcons } from "@/data/provider-icons";
 import { agentCommandsQueryRoot } from "@/hooks/agent-commands-query";
 import type { AgentProvider } from "@getpaseo/protocol/agent-types";
 import { normalizeWorkspacePath } from "@/utils/workspace-identity";
@@ -46,7 +46,7 @@ export function isProvidersSnapshotHomeScope(cwd?: string | null): boolean {
   return normalizeProvidersSnapshotCwd(cwd) === null;
 }
 
-type Snapshot = GetProvidersSnapshotResponseMessage["payload"];
+export type Snapshot = GetProvidersSnapshotResponseMessage["payload"];
 type SnapshotClient = Pick<DaemonClient, "getProvidersSnapshot">;
 
 export async function fetchProvidersSnapshot(input: {

@@ -36,7 +36,13 @@ class FakeLifecycleAgentManager implements LifecycleAgentManager {
   readonly closedAgentIds: string[] = [];
   readonly metadataUpdates: Array<{
     agentId: string;
-    updates: { title?: string; labels?: Record<string, string> };
+    updates: {
+      title?: string;
+      labels?: Record<string, string>;
+      provider?: string;
+      model?: string | null;
+      modeId?: string;
+    };
   }> = [];
   readonly labelUpdates: Array<{ agentId: string; labels: Record<string, string> }> = [];
   readonly notifiedAgentIds: string[] = [];
@@ -155,6 +161,9 @@ class FakeLifecycleAgentManager implements LifecycleAgentManager {
     updates: {
       title?: string;
       labels?: Record<string, string>;
+      provider?: string;
+      model?: string | null;
+      modeId?: string;
     },
   ): Promise<void> {
     this.metadataUpdates.push({ agentId, updates });
@@ -269,7 +278,8 @@ describe("agent lifecycle commands", () => {
       updateAgentCommand({ agentManager: manager }, { agentId: "agent-1", name: "   " }),
     ).resolves.toEqual({
       accepted: false,
-      error: "Nothing to update (provide name and/or labels)",
+      error:
+        "Nothing to update (provide name, title, shortDescription, labels, provider, and/or model)",
     });
 
     expect(storage.upserts).toHaveLength(0);
@@ -279,6 +289,34 @@ describe("agent lifecycle commands", () => {
         updates: {
           title: "Renamed agent",
           labels: { team: "infra" },
+        },
+      },
+    ]);
+  });
+
+  test("applies Mission Control identity fields with explicit title winning over the legacy name alias", async () => {
+    const storage = new FakeLifecycleAgentStorage();
+    storage.records.set("agent-1", storedAgent("agent-1"));
+    const manager = new FakeLifecycleAgentManager(storage);
+
+    await expect(
+      updateAgentCommand(
+        { agentManager: manager },
+        {
+          agentId: "agent-1",
+          name: "legacy-name-should-lose",
+          title: "Fix auth",
+          shortDescription: "  auth worker  ",
+        },
+      ),
+    ).resolves.toEqual({ accepted: true, error: null });
+
+    expect(manager.metadataUpdates).toEqual([
+      {
+        agentId: "agent-1",
+        updates: {
+          title: "Fix auth",
+          shortDescription: "auth worker",
         },
       },
     ]);
@@ -331,6 +369,38 @@ describe("agent lifecycle commands", () => {
     ).resolves.toEqual({ modeId: "plan", notice: null });
 
     expect(manager.modeUpdates).toEqual([{ agentId: "agent-1", modeId: "plan" }]);
+  });
+  test("canceling a phantom agent (stored record running, no live runtime) reconciles the record to error", async () => {
+    const storage = new FakeLifecycleAgentStorage();
+    const manager = new FakeLifecycleAgentManager(storage);
+    storage.records.set("phantom-1", {
+      ...storedAgent("phantom-1"),
+      lastStatus: "running",
+      lastError: null,
+    });
+
+    const result = await cancelAgentRunCommand(
+      { agentManager: manager, agentStorage: storage, logger },
+      "phantom-1",
+    );
+
+    expect(result).toEqual({
+      agent: { id: "phantom-1", cwd: "/workspace/project", lifecycle: "error" },
+      cancelled: true,
+    });
+    // Storage record must be reconciled to terminal state with diagnostic.
+    const record = storage.records.get("phantom-1");
+    expect(record?.lastStatus).toBe("error");
+    expect(record?.lastError).toContain("Provider runtime is no longer alive");
+  });
+
+  test("canceling a non-existent agent that is not stored throws Agent not found", async () => {
+    const storage = new FakeLifecycleAgentStorage();
+    const manager = new FakeLifecycleAgentManager(storage);
+
+    await expect(
+      cancelAgentRunCommand({ agentManager: manager, agentStorage: storage, logger }, "ghost-1"),
+    ).rejects.toThrow("Agent ghost-1 not found");
   });
 });
 

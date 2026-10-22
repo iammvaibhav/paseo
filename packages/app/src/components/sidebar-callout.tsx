@@ -228,7 +228,7 @@ const styles = StyleSheet.create((theme) => ({
     fontWeight: theme.fontWeight.medium,
   },
   actionLabelPrimary: {
-    color: theme.colors.surface0,
+    color: theme.colors.background,
   },
   actionLabelSecondary: {
     color: theme.colors.foreground,

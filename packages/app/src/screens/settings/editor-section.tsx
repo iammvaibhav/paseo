@@ -1,18 +1,35 @@
-import { useCallback } from "react";
+import { Switch, Text, View, type ViewStyle } from "react-native";
+import { useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
-import { Text, View } from "react-native";
-import { Switch } from "@/components/ui/switch";
 import { useAppSettings } from "@/hooks/use-settings";
+import type { DefaultFileOpener } from "@/hooks/use-settings/storage";
 import { settingsStyles } from "@/styles/settings";
 import { SettingsSection } from "@/components/settings/headings/settings-section";
+import { SegmentedControl, type SegmentedControlOption } from "@/components/ui/segmented-control";
+
+const CONTROL_STYLE: ViewStyle = {
+  marginTop: 8,
+};
 
 export function EditorSection() {
   const { t } = useTranslation();
   const { settings, updateSettings } = useAppSettings();
-  const handleChange = useCallback(
+  const handleVimChange = useCallback(
     (vimKeybindings: boolean) => void updateSettings({ vimKeybindings }),
     [updateSettings],
   );
+  const handleDefaultFileOpenerChange = useCallback(
+    (defaultFileOpener: DefaultFileOpener) => void updateSettings({ defaultFileOpener }),
+    [updateSettings],
+  );
+  const defaultFileOpenerOptions = useMemo<Array<SegmentedControlOption<DefaultFileOpener>>>(
+    () => [
+      { value: "paseo", label: t("settings.editor.defaultFileOpenerPaseo") },
+      { value: "vscode-web", label: t("settings.editor.defaultFileOpenerVsCodeWeb") },
+    ],
+    [t],
+  );
+
   return (
     <SettingsSection title={t("settings.editor.title")}>
       <View style={settingsStyles.card}>
@@ -23,10 +40,24 @@ export function EditorSection() {
           </View>
           <Switch
             value={settings.vimKeybindings}
-            onValueChange={handleChange}
+            onValueChange={handleVimChange}
             accessibilityLabel={t("settings.editor.vimKeybindings")}
             testID="vim-keybindings-toggle"
           />
+        </View>
+        <View style={settingsStyles.row}>
+          <View style={settingsStyles.rowContent}>
+            <Text style={settingsStyles.rowTitle}>{t("settings.editor.defaultFileOpener")}</Text>
+            <Text style={settingsStyles.rowHint}>{t("settings.editor.defaultFileOpenerHint")}</Text>
+            <SegmentedControl
+              options={defaultFileOpenerOptions}
+              value={settings.defaultFileOpener}
+              onValueChange={handleDefaultFileOpenerChange}
+              size="sm"
+              style={CONTROL_STYLE}
+              testID="default-file-opener"
+            />
+          </View>
         </View>
       </View>
     </SettingsSection>

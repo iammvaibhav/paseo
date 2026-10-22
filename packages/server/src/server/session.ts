@@ -1,7 +1,17 @@
 import { searchTimeline } from "./agent/chat-search/index.js";
 import type { BrowserToolsBroker } from "./browser-tools/broker.js";
+import type { PagePortProxy } from "./page-tools/port-proxy.js";
+import type { PageStore } from "./page-tools/page-store.js";
+import type { RoutingService } from "./routing/routing-service.js";
+import type { AgentSearchService } from "./agent-search/agent-search-service.js";
+import type { UnarchiveAgent } from "./agent/tools/fleet-unarchive-tools.js";
+import type { AgentReminderService } from "./reminders/agent-reminder-service.js";
 import { BrowserAutomationHostCapabilitySchema } from "@getpaseo/protocol/browser-automation/capabilities";
-import type { SessionEventSubscription } from "@getpaseo/protocol/messages";
+import type {
+  SessionEventSubscription,
+  UsageReportEntry,
+  ProviderUsage,
+} from "@getpaseo/protocol/messages";
 import { relative } from "node:path";
 import { isAbsolute } from "node:path";
 import { CreationService } from "./creation/index.js";
@@ -12,7 +22,7 @@ import { SessionDelivery, type OwnedSubscription } from "./session/owned-subscri
 import { v4 as uuidv4 } from "uuid";
 import { lstat, mkdir, mkdtemp, rename, rm, stat } from "node:fs/promises";
 import { basename, resolve, sep } from "path";
-import { homedir } from "node:os";
+import { homedir, hostname as osHostname } from "node:os";
 import { CLIENT_CAPS, type ClientCapability } from "@getpaseo/protocol/client-capabilities";
 import { formatPluginSourceReference } from "@getpaseo/protocol/plugin-source-reference";
 import {
@@ -22,6 +32,7 @@ import {
   type FirstAgentContext,
   type SessionInboundMessage,
   type SessionOutboundMessage,
+  type ScriptStatusUpdateMessage,
   type GitSetupOptions,
   type StartWorkspaceScriptRequest,
   type WorkspaceScriptListRequest,
@@ -42,21 +53,34 @@ import type { TerminalActivity } from "@getpaseo/protocol/terminal-activity";
 import type { BinaryFrame } from "@getpaseo/protocol/binary-frames/index";
 import { CursorError } from "./pagination/cursor.js";
 import { SortablePager, type SortSpec } from "./pagination/sortable-pager.js";
-import { matchesAgentHistoryQuery } from "./agent-history-search.js";
+import {
+  describeAgentHistoryMatches,
+  rankAgentHistoryWithTranscripts,
+} from "./agent-history-search.js";
+import type { TranscriptSearchService } from "./search/service.js";
 import type { SpeechToTextProvider, TextToSpeechProvider } from "./speech/speech-provider.js";
 import type { TurnDetectionProvider } from "./speech/turn-detection-provider.js";
 import {
   buildConfigOverrides,
+  extractTimestamps,
   isStoredAgentProviderAvailable,
   resolveStoredAgentUpdatedAt,
   toAgentPersistenceHandle,
 } from "./persistence-hooks.js";
 import { ensureAgentLoaded, ensureUnarchivedAgentLoaded } from "./agent/agent-loading.js";
+import { expandUserPath } from "./path-utils.js";
+import {
+  supportsDiskTimeline,
+  tryReadProviderTimelineFromDisk,
+} from "./agent/provider-disk-history.js";
+import type { AgentTimelineItem, AgentUsage } from "./agent/agent-sdk-types.js";
 import {
   sendPromptToAgent,
   waitForAgentRunStartWithTimeout,
   unarchiveAgentState,
 } from "./agent/agent-prompt.js";
+import { forkAgentToSibling } from "./agent/fork-agent.js";
+import { ingestTransferredOmpSession } from "./agent/providers/omp/session-transfer.js";
 import {
   resolveCreateAgentTitles,
   resolveFirstAgentPromptTitle,
@@ -76,6 +100,8 @@ import { releaseWorkspaceServicePortPlan } from "./workspace-service-port-regist
 import { getErrorMessage, getErrorMessageOr } from "@getpaseo/protocol/error-utils";
 import { getAgentStatusPriority } from "@getpaseo/protocol/agent-state-bucket";
 import { getParentAgentIdFromLabels } from "@getpaseo/protocol/agent-labels";
+import { isAgentModeId } from "@getpaseo/protocol/agent-modes";
+import { redactCentralConfigForClient } from "./mission-control/config.js";
 import type { WorkspaceGitRuntimeSnapshot, WorkspaceGitService } from "./workspace-git-service.js";
 import type { ProjectUpdate } from "./workspace-reconciliation-service.js";
 import {
@@ -97,6 +123,7 @@ import {
 import { AgentManager, AgentRunCancellationError } from "./agent/agent-manager.js";
 import { buildTimelinePromptIndex } from "./agent/timeline-prompt-index.js";
 import { ProviderSnapshotManager } from "./agent/provider-snapshot-manager.js";
+import type { ProviderUsageService } from "../services/quota-fetcher/service.js";
 import type {
   AgentManagerEvent,
   AgentTimelineCursor,
@@ -121,7 +148,9 @@ import {
 } from "./agent/timeline-append.js";
 import { assertPluginTimelineDataSize } from "./agent/agent-timeline-content.js";
 import { parsePluginClientId } from "./plugins/plugin-session-identity.js";
-import { buildAgentForkContextAttachment } from "./agent/activity-curator.js";
+import { selectItemsByProjectedLimit } from "./agent/timeline-projection.js";
+import { buildAgentForkContextAttachment, curateAgentActivity } from "./agent/activity-curator.js";
+import type { AgentPromptInput } from "./agent/agent-sdk-types.js";
 import { buildAgentPrompt } from "./agent/prompt-attachments.js";
 import type { StructuredGenerationDaemonConfig } from "./agent/structured-generation-providers.js";
 import {
@@ -131,8 +160,9 @@ import {
   type AgentRunOptions,
   type AgentSessionConfig,
 } from "./agent/agent-sdk-types.js";
-import type { StoredAgentRecord } from "./agent/agent-storage.js";
+import { parseStoredAgentRecord, type StoredAgentRecord } from "./agent/agent-storage.js";
 import type { AgentStorage } from "./agent/agent-storage.js";
+import type { AgentTimelineRow } from "./agent/agent-timeline-store-types.js";
 import {
   ImportSessionsRequestError,
   importProviderSession,
@@ -173,8 +203,42 @@ import {
   createAgentStructuredTextGeneration,
   createGitMetadataGenerator,
 } from "./session/checkout/git-metadata-generator.js";
+import { WebhookSession } from "./session/webhook/webhook-session.js";
+import type { WebhookService } from "./webhook/service.js";
+import { AutomationSession } from "./automation/session.js";
+import type { AutomationService } from "./automation/service.js";
+import { DocThreadsSession, type DocThreadsHost } from "./doc-threads/session.js";
+import type { PeerManager } from "./peers/peer-manager.js";
+import {
+  AGENT_VIEWED_PEER_TOOL,
+  type MissionControlService,
+  USER_TURN_PEER_TOOL,
+} from "./mission-control/service.js";
+import { z } from "zod";
+import { buildLocalContextPayload } from "./mission-control/context.js";
+
+/** Fleet tools a peer daemon may run on this host (work owned by this host). */
+const AgentViewedPeerArgsSchema = z.object({ agentId: z.string().min(1) });
+const UserTurnPeerArgsSchema = z.object({
+  agentId: z.string().min(1),
+  turnId: z.string().nullable(),
+  text: z.string(),
+});
+const PEER_EXECUTABLE_TOOL_NAMES = new Set([
+  "fleet_wait_agent",
+  "fleet_unarchive_agent",
+  "fleet_unarchive_workspace",
+  "fleet_agent_status",
+  "fleet_ticketize_agent",
+  "fleet_remind_agent",
+  "fleet_cancel_reminder",
+  "fleet_list_reminders",
+]);
+import { resolveMissionControlMediaFetch } from "./mission-control/media.js";
+import { moveAgentToWorkspace } from "./mission-control/meta-actions.js";
 import { ScheduleSession } from "./session/schedule/schedule-session.js";
 import { ProviderCatalogSession } from "./session/provider/provider-catalog-session.js";
+import { UsageSession } from "./session/usage/usage-session.js";
 import { WorkspaceFilesSession } from "./session/files/workspace-files-session.js";
 import { AgentConfigSession } from "./session/agent-config/agent-config-session.js";
 import { ProjectConfigSession } from "./session/project-config/project-config-session.js";
@@ -226,7 +290,6 @@ import {
   type GitHubService,
 } from "../services/github-service.js";
 import type { ForgeService } from "../services/forge-service.js";
-import type { ProviderUsageService } from "../services/quota-fetcher/service.js";
 import {
   resolveWorkspaceRootAgent,
   summarizeFetchWorkspacesEntries,
@@ -241,6 +304,7 @@ import {
   type CreatePaseoWorktreeResult,
 } from "./paseo-worktree-service.js";
 import { WorkspaceAutoName } from "./workspace-auto-name.js";
+import type { WarmWorktreePool } from "./warm-worktree-pool.js";
 import {
   buildAgentSessionConfig as buildWorktreeAgentSessionConfig,
   createPaseoWorktreeWorkflow as createWorktreeWorkflow,
@@ -282,6 +346,8 @@ type ProviderSubagentManagerEvent = Extract<
 const LEGACY_PROVIDER_IDS = new Set(["claude", "codex", "opencode"]);
 const MIN_VERSION_ALL_PROVIDERS = "0.1.45";
 const MIN_VERSION_EXPLICIT_WORKSPACE_RECOVERY = "0.1.105";
+/** Logs `workspace.mutation.slow` past this; the registry write waits on every session's handler. */
+const SLOW_WORKSPACE_MUTATION_MS = 250;
 function errorToFriendlyMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   if (typeof error === "string") return error;
@@ -376,6 +442,8 @@ interface ResolvedSessionCreateAgentIntent {
   config: AgentSessionConfig;
   intent: CreateAgentIntent;
   createdDirectoryWorkspace: boolean;
+  /** Commander only: the context pack snapshot, delivered as the first message. */
+  firstMessage?: string;
 }
 
 type FetchWorkspacesRequestMessage = Extract<
@@ -430,12 +498,44 @@ const nodeSessionFileSystem: SessionFileSystem = {
   },
 };
 
+function createWebhookSession(input: {
+  emit: (message: SessionOutboundMessage) => void;
+  webhookService: WebhookService | null | undefined;
+  logger: pino.Logger;
+}): WebhookSession {
+  return new WebhookSession({
+    host: { emit: input.emit },
+    webhookService: input.webhookService ?? null,
+    logger: input.logger,
+  });
+}
+
 // Stub types for features under development (modules not yet available)
 type AgentMcpTransportFactory = () => Promise<unknown>;
 
+export interface SessionSourcePeer {
+  transport: "direct" | "relay" | "hub";
+  remoteAddress?: string;
+}
+
 export interface SessionOptions {
   browserToolsBroker?: BrowserToolsBroker | null;
+  pagePortProxy?: Pick<PagePortProxy, "open"> | null;
+  pageStore?: Pick<PageStore, "get"> | null;
+  routingService?: RoutingService | null;
+  agentSearchService?: AgentSearchService | null;
+  /** Unarchive an agent with its archived workspace (agent.unarchive.*). */
+  unarchiveAgent?: UnarchiveAgent | null;
+  /** Agent "Remind me" reminders (agent.reminder.*, AgentSnapshotPayload.reminder). */
+  agentReminders?: AgentReminderService | null;
+  /** How the socket that sent a request reached the daemon. */
+  resolveSourcePeer?: (source?: object) => SessionSourcePeer | null;
   clientId: string;
+  /**
+   * The hello's clientType. "mobile" and "browser" are a person in the app;
+   * peers and the CLI connect as "cli".
+   */
+  clientType?: "mobile" | "browser" | "cli" | "mcp" | "hub";
   permissions: readonly DaemonPermission[];
   appVersion?: string | null;
   clientCapabilities?: Record<string, unknown> | null;
@@ -446,6 +546,7 @@ export interface SessionOptions {
   getTransportBufferedAmount?: (source?: object) => number | null;
   onLifecycleIntent?: (intent: SessionLifecycleIntent) => void;
   onWorkspaceRecovered?: (workspace: PersistedWorkspaceRecord) => Promise<void>;
+  publishScriptStatusUpdate?: (message: ScriptStatusUpdateMessage) => void;
   logger: pino.Logger;
   downloadTokenStore: DownloadTokenStore;
   pushNotifications: PushNotifications;
@@ -461,6 +562,13 @@ export interface SessionOptions {
   workspaceLabelService?: WorkspaceLabelService;
   filesystem?: SessionFileSystem;
   scheduleService: ScheduleService;
+  webhookService?: WebhookService | null;
+  automationService?: AutomationService | null;
+  // Threaded file comments; null/absent = this daemon has no doc-thread wiring.
+  docThreads?: DocThreadsHost | null;
+  peerManager?: PeerManager | null;
+  missionControlService?: MissionControlService | null;
+  transcriptSearch?: TranscriptSearchService | null;
   checkoutDiffManager: CheckoutDiffManager;
   github?: ForgeService;
   createAgentMcpTransport?: AgentMcpTransportFactory;
@@ -470,6 +578,7 @@ export interface SessionOptions {
   workspaceGitService: WorkspaceGitService;
   workspaceAutoName: WorkspaceAutoName;
   daemonConfigStore: DaemonConfigStore;
+  warmWorktreePool?: WarmWorktreePool;
   pluginRuntime?: {
     before: import("./plugins/lifecycle/index.js").PluginLifecycle["before"];
     emit: import("./plugins/lifecycle/index.js").PluginLifecycle["emit"];
@@ -506,6 +615,11 @@ export interface SessionOptions {
     subscribeSettings?(listener: (pluginId: string, settingsId: string) => void): () => void;
     catalog(): Array<{ id: string; clientBundle: string }>;
     invokePluginRpc(pluginId: string, method: string, input: unknown): Promise<unknown>;
+    listUsageReports(options?: {
+      forceRefresh?: boolean;
+      reportIds?: string[];
+    }): Promise<UsageReportEntry[]>;
+    listLegacyUsage(): Promise<{ fetchedAt: string; providers: ProviderUsage[] }>;
   };
   orchestrationSkills?: import("./orchestration-skills/index.js").OrchestrationSkills;
   mcpBaseUrl?: string | null;
@@ -526,6 +640,7 @@ export interface SessionOptions {
     oldBranch: string | null,
     newBranch: string | null,
   ) => void;
+  onWorkspaceArchived?: (workspaceId: string) => void | Promise<void>;
   getDaemonTcpPort?: () => number | null;
   getDaemonTcpHost?: () => string | null;
   serviceProxyPublicBaseUrl?: string | null;
@@ -546,6 +661,7 @@ export interface SessionOptions {
     getSpeechReadiness?: () => SpeechReadinessSnapshot;
   };
   serverId?: string;
+  hostName?: string;
   daemonVersion?: string;
   daemonRuntimeConfig?: DaemonRuntimeConfig;
   getWebSocketRuntimeMetrics?: () => DaemonWebSocketRuntimeDiagnosticSnapshot | null;
@@ -597,6 +713,36 @@ function sessionRequestId(message: SessionInboundMessage): string | null {
   return null;
 }
 
+/**
+ * Shared selection/curation for the M11 peer-timeline RPC, mirroring the
+ * Commander's fleet_get_agent_activity peer branch (paseo-tools.ts
+ * curateActivitySummary): projected-count limit over the fetched items, then
+ * the same activity curator, with a spoken-friendly count header.
+ */
+function curateVoicePeerActivitySummary(input: { timeline: AgentTimelineItem[]; limit?: number }): {
+  updateCount: number;
+  content: string;
+} {
+  const selection = selectItemsByProjectedLimit({
+    items: input.timeline,
+    direction: "tail",
+    limit: input.limit ?? 0,
+  });
+  const curatedContent = curateAgentActivity(selection.items);
+  const { totalProjected, shownProjected } = selection;
+
+  const noun = totalProjected === 1 ? "activity" : "activities";
+  const countHeader =
+    input.limit && shownProjected < totalProjected
+      ? `Showing ${shownProjected} of ${totalProjected} ${noun} (limited to ${input.limit})`
+      : `Showing all ${totalProjected} ${noun}`;
+
+  return {
+    updateCount: input.timeline.length,
+    content: `${countHeader}\n\n${curatedContent}`,
+  };
+}
+
 type RegistryTransition = "created" | "unarchived" | "existing";
 
 interface ArchivedRecordSnapshot {
@@ -608,6 +754,11 @@ interface WorkspaceUpdateOptions {
   optimisticStatus?: WorkspaceDescriptorPayload["status"];
 }
 
+/** Normalize an optional constructor option to `null` without adding a `??` in hot constructors. */
+function orNull<T>(value: T | null | undefined): T | null {
+  return value ?? null;
+}
+
 function resolveDirectorySync(service: DirectorySyncService | undefined): DirectorySyncService {
   return service ?? new DirectorySyncService();
 }
@@ -617,6 +768,28 @@ function describeRegistryTransition(record: ArchivedRecordSnapshot | null): Regi
     return "created";
   }
   return record.archivedAt ? "unarchived" : "existing";
+}
+
+/**
+ * The first-conversation context for a freshly created agent: the trimmed
+ * prompt and any attachments. Empty when neither is present.
+ */
+function buildFirstAgentContext(
+  trimmedPrompt: string | undefined,
+  attachments: AgentAttachment[] | undefined,
+): FirstAgentContext {
+  return {
+    ...(trimmedPrompt ? { prompt: trimmedPrompt } : {}),
+    ...(attachments && attachments.length > 0 ? { attachments } : {}),
+  };
+}
+
+/**
+ * Narrow an unknown value to a JSON-ish plain record (the wire shape of
+ * Paseo tool structuredContent). Arrays and null are not records.
+ */
+function asPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /**
@@ -660,6 +833,55 @@ interface ClientActivity {
   appVisibilityChangedAt: Date;
 }
 
+// COMPAT(tickets-removed): native tickets removed 2026-10-12, remove after 2027-01-12 once app floor >= 2026-10-12.
+const REMOVED_TICKETS_RESPONSES: Record<string, (error: string) => Record<string, unknown>> = {
+  "tickets.board.list.request": (error) => ({ error, boards: [] }),
+  "tickets.board.ensure.request": (error) => ({ error, board: null }),
+  "tickets.board.update.request": (error) => ({ error, board: null }),
+  "tickets.column.save.request": (error) => ({ error, board: null }),
+  "tickets.column.delete.request": (error) => ({ error, board: null }),
+  "tickets.ticket.list.request": (error) => ({ error, tickets: [], revision: 0 }),
+  "tickets.ticket.get.request": (error) => ({ error, ticket: null }),
+  "tickets.ticket.create.request": (error) => ({ error, ticket: null }),
+  "tickets.ticket.update.request": (error) => ({ error, ticket: null }),
+  "tickets.ticket.move.request": (error) => ({ error, ticket: null }),
+  "tickets.ticket.delete.request": (error) => ({ error }),
+  "tickets.ticket.dispatch.request": (error) => ({ error, ticket: null }),
+  "tickets.link.set.request": (error) => ({ error, ticket: null }),
+  "tickets.comment.add.request": (error) => ({ error, activity: null }),
+  "tickets.comment.update.request": (error) => ({ error, activity: null }),
+  "tickets.comment.delete.request": (error) => ({ error }),
+  "tickets.attachment.add.request": (error) => ({ error, ticket: null }),
+  "tickets.attachment.read.request": (error) => ({
+    error,
+    fileName: null,
+    mimeType: null,
+    dataBase64: null,
+  }),
+  "tickets.attachment.delete.request": (error) => ({ error, ticket: null }),
+  "tickets.initiative.list.request": (error) => ({ error, initiatives: [] }),
+  "tickets.initiative.save.request": (error) => ({ error, initiative: null }),
+  "tickets.initiative.delete.request": (error) => ({ error }),
+  "tickets.import.itsaplan.request": (error) => ({ error, report: null }),
+  "tickets.run.report.request": (error) => ({ error, applied: false }),
+};
+
+// COMPAT(tickets-removed): native notes removed 2026-10-12, remove after 2027-01-12 once app floor >= 2026-10-12.
+const REMOVED_NOTES_RESPONSES: Record<string, (error: string) => Record<string, unknown>> = {
+  "notes.list.request": (error) => ({ error, notes: [], revision: 0 }),
+  "notes.get.request": (error) => ({ error, note: null }),
+  "notes.upsert.request": (error) => ({ error, note: null }),
+  "notes.delete.request": (error) => ({ error }),
+  "notes.image.add.request": (error) => ({ error, note: null }),
+  "notes.image.read.request": (error) => ({
+    error,
+    fileName: null,
+    mimeType: null,
+    dataBase64: null,
+  }),
+  "notes.image.delete.request": (error) => ({ error, note: null }),
+};
+
 export class Session {
   readonly delivery = new SessionDelivery(
     (source, message) => {
@@ -686,7 +908,15 @@ export class Session {
       ),
   );
   private readonly browserToolsBroker: SessionOptions["browserToolsBroker"];
+  private readonly pagePortProxy: Pick<PagePortProxy, "open"> | null;
+  private readonly pageStore: Pick<PageStore, "get"> | null;
+  private readonly routingService: RoutingService | null;
+  private readonly agentSearchService: AgentSearchService | null;
+  private readonly unarchiveAgent: UnarchiveAgent | null;
+  private readonly agentReminders: AgentReminderService | null;
+  private readonly resolveSourcePeer: (source?: object) => SessionSourcePeer | null;
   private readonly clientId: string;
+  private readonly clientType: SessionOptions["clientType"];
   private readonly authorization: SessionAuthorization;
   private appVersion: string | null;
   private clientCapabilities: ReadonlySet<ClientCapability>;
@@ -704,6 +934,7 @@ export class Session {
   private readonly onWorkspaceRecovered:
     | ((workspace: PersistedWorkspaceRecord) => Promise<void>)
     | null;
+  private readonly onWorkspaceArchived: ((workspaceId: string) => void | Promise<void>) | null;
   private readonly sessionLogger: pino.Logger;
   private readonly paseoHome: string;
   private readonly projectIcons: ProjectIconReader;
@@ -777,7 +1008,16 @@ export class Session {
   private readonly voiceSessions: VoiceSessions;
   private readonly checkoutSession: CheckoutSession;
   private readonly scheduleSession: ScheduleSession;
+  private readonly webhookSession: WebhookSession;
+  private readonly automationSession: AutomationSession;
+  private readonly docThreadsSession: DocThreadsSession;
+  private readonly peerManager: PeerManager | null;
+  private readonly missionControlService: MissionControlService | null;
+  private readonly transcriptSearch: TranscriptSearchService | null;
+  private readonly warmWorktreePool?: WarmWorktreePool;
+  private readonly hostName: string;
   private readonly providerCatalogSession: ProviderCatalogSession;
+  private readonly usageSession: UsageSession;
   private readonly workspaceFilesSession: WorkspaceFilesSession;
   private readonly agentConfigSession: AgentConfigSession;
   private readonly projectConfigSession: ProjectConfigSession;
@@ -801,7 +1041,9 @@ export class Session {
       getTransportBufferedAmount,
       onLifecycleIntent,
       onWorkspaceRecovered,
+      publishScriptStatusUpdate,
       logger,
+      onWorkspaceArchived,
       downloadTokenStore,
       pushNotifications,
       paseoHome,
@@ -814,12 +1056,17 @@ export class Session {
       workspaceLabelService,
       filesystem,
       scheduleService,
+      webhookService,
+      peerManager,
+      missionControlService,
+      transcriptSearch,
       checkoutDiffManager,
       github,
       renameCurrentBranch,
       workspaceGitService,
       workspaceAutoName,
       daemonConfigStore,
+      warmWorktreePool,
       pluginRuntime,
       orchestrationSkills,
       stt,
@@ -841,20 +1088,30 @@ export class Session {
       voiceBridge,
       dictation,
       serverId,
+      hostName,
       daemonVersion,
       daemonRuntimeConfig,
       getWebSocketRuntimeMetrics,
     } = options;
     this.browserToolsBroker = options.browserToolsBroker;
+    this.pagePortProxy = options.pagePortProxy ?? null;
+    this.pageStore = options.pageStore ?? null;
+    this.routingService = options.routingService ?? null;
+    this.agentSearchService = options.agentSearchService ?? null;
+    this.unarchiveAgent = options.unarchiveAgent ?? null;
+    this.agentReminders = options.agentReminders ?? null;
+    this.resolveSourcePeer = options.resolveSourcePeer ?? (() => null);
     this.clientId = clientId;
+    this.clientType = options.clientType;
     this.authorization = new SessionAuthorization(permissions);
     this.appVersion = appVersion ?? null;
     this.clientCapabilities = parseClientCapabilities(clientCapabilities);
     this.sessionId = uuidv4();
     this.onMessage = onMessage;
-    this.onMessageToSource = onMessageToSource ?? null;
-    this.onBinaryMessage = onBinaryMessage ?? null;
-    this.onBinaryMessageToSource = onBinaryMessageToSource ?? null;
+    this.warmWorktreePool = warmWorktreePool;
+    this.onMessageToSource = orNull(onMessageToSource);
+    this.onBinaryMessage = orNull(onBinaryMessage);
+    this.onBinaryMessageToSource = orNull(onBinaryMessageToSource);
     this.getTransportBufferedAmount = getTransportBufferedAmount ?? (() => 0);
     this.onLifecycleIntent = onLifecycleIntent ?? null;
     this.onWorkspaceRecovered = onWorkspaceRecovered ?? null;
@@ -885,6 +1142,7 @@ export class Session {
     this.agentStorage = agentStorage;
     this.projectRegistry = projectRegistry;
     this.workspaceRegistry = workspaceRegistry;
+    this.onWorkspaceArchived = onWorkspaceArchived ?? null;
     this.directorySync = resolveDirectorySync(directorySync);
     this.workspaceLabelService = resolveWorkspaceLabelService(workspaceLabelService);
     this.filesystem = filesystem ?? nodeSessionFileSystem;
@@ -902,7 +1160,13 @@ export class Session {
       workspaceRegistry: this.workspaceRegistry,
       projectRegistry: this.projectRegistry,
       workspaceGitService: this.workspaceGitService,
+      isDirectory: (path) => this.filesystem.isDirectory(path),
       logger: this.sessionLogger,
+      paseoHome,
+      getScratchProject: async () => {
+        if (!this.routingService) throw new Error("This host has no scratch project");
+        return (await this.routingService.ensureScratchWorkspace()).project;
+      },
     });
     this.workspaceRecovery = createWorkspaceRecoveryService({
       paseoHome: this.paseoHome,
@@ -951,6 +1215,25 @@ export class Session {
       scheduleService,
       logger: this.sessionLogger,
     });
+    this.webhookSession = createWebhookSession({
+      emit: (msg) => this.emit(msg),
+      webhookService,
+      logger: this.sessionLogger,
+    });
+    this.automationSession = new AutomationSession({
+      host: { emit: (msg) => this.emit(msg) },
+      service: () => orNull(options.automationService),
+      logger: this.sessionLogger,
+    });
+    this.docThreadsSession = new DocThreadsSession({
+      emit: (msg) => this.emit(msg),
+      host: orNull(options.docThreads),
+      logger: this.sessionLogger,
+    });
+    this.peerManager = orNull(peerManager);
+    this.missionControlService = orNull(missionControlService);
+    this.transcriptSearch = orNull(transcriptSearch);
+    this.hostName = hostName ?? osHostname();
     this.providerCatalogSession = new ProviderCatalogSession({
       host: {
         emit: (msg) => this.emit(msg),
@@ -984,6 +1267,11 @@ export class Session {
       },
       providerSnapshotManager,
       providerUsageService,
+      logger: this.sessionLogger,
+    });
+    this.usageSession = new UsageSession({
+      emit: (msg) => this.emit(msg),
+      runtime: pluginRuntime,
       logger: this.sessionLogger,
     });
     this.agentConfigSession = new AgentConfigSession({
@@ -1048,7 +1336,14 @@ export class Session {
       listWorkspaces: () => this.workspaceRegistry.list(),
       logger: this.sessionLogger,
       hubRelationships: options.hubRelationships,
-      reloadConfig: () => daemonConfigStore.reload(),
+      reloadConfig: () => {
+        const result = daemonConfigStore.reload();
+        this.peerManager?.reconcile(
+          loadPersistedConfig(this.paseoHome, this.sessionLogger).peers ?? [],
+        );
+        this.missionControlService?.reloadCentralConfig();
+        return result;
+      },
     });
     this.hubExecutionController = options.hubExecutionAgents
       ? new HubExecutionController({
@@ -1075,6 +1370,12 @@ export class Session {
       emit: (message) => this.emit(message),
       enrichAgentPayload: (payload) => this.enrichAgentPayload(payload),
       buildStoredAgentPayload: (record) => this.buildStoredAgentPayload(record),
+      // F2: stored-record upserts ride the same wire enrichment as live
+      // pushes so a mission-control lifecycle change re-stamps the bucket on
+      // closed agents too (the fetch_agents snapshot attaches it; the stored
+      // push must not lag it). Enrichment failures fall back to the built
+      // payload inside the service.
+      enrichStoredPayload: (payload) => this.enrichAgentPayload(payload),
       isProviderVisibleToClient: (provider) => this.isProviderVisibleToClient(provider),
       buildProjectPlacementForWorkspaceId: (workspaceId) =>
         this.buildProjectPlacementForWorkspaceId(workspaceId),
@@ -1114,14 +1415,14 @@ export class Session {
       logger: this.sessionLogger,
     });
     this.providerSnapshotManager = providerSnapshotManager;
-    this.serviceProxy = serviceProxy ?? null;
-    this.scriptRuntimeStore = scriptRuntimeStore ?? null;
+    this.serviceProxy = orNull(serviceProxy);
+    this.scriptRuntimeStore = orNull(scriptRuntimeStore);
     this.workspaceSetupSnapshots = workspaceSetupSnapshots ?? new Map();
     this.workspaceSetupRuntime = resolveWorkspaceSetupRuntime(workspaceSetupRuntime);
-    this.getDaemonTcpPort = getDaemonTcpPort ?? null;
-    this.getDaemonTcpHost = getDaemonTcpHost ?? null;
-    this.serviceProxyPublicBaseUrl = serviceProxyPublicBaseUrl ?? null;
-    this.resolveScriptHealth = resolveScriptHealth ?? null;
+    this.getDaemonTcpPort = orNull(getDaemonTcpPort);
+    this.getDaemonTcpHost = orNull(getDaemonTcpHost);
+    this.serviceProxyPublicBaseUrl = orNull(serviceProxyPublicBaseUrl);
+    this.resolveScriptHealth = orNull(resolveScriptHealth);
     this.workspaceScripts = createWorkspaceScriptsService({
       serviceProxy: this.serviceProxy,
       scriptRuntimeStore: this.scriptRuntimeStore,
@@ -1135,8 +1436,11 @@ export class Session {
       resolveScriptHealth: this.resolveScriptHealth,
       logger: this.sessionLogger,
       emit: (message) => this.emit(message),
+      publishStatusUpdate: (message) => {
+        if (publishScriptStatusUpdate) publishScriptStatusUpdate(message);
+        else this.emit(message);
+      },
       spawnWorkspaceScript,
-      wantsStatusUpdates: () => this.wantsEvent("script_status_update"),
       assertAutomationAllowed: (workspaceId) =>
         assertWorkspaceAutomationAllowedForWorkspace(this.workspaceRegistry, workspaceId),
       globalServicePorts: loadPersistedConfig(this.paseoHome).worktrees?.servicePorts,
@@ -1177,6 +1481,19 @@ export class Session {
           },
           interruptAgentIfRunning: (agentId) => this.interruptAgentIfRunning(agentId),
           hasActiveAgentRun: (agentId) => this.hasActiveAgentRun(agentId),
+          onAgentBecameIdle: (agentId, listener) => {
+            let wasActive = this.hasActiveAgentRun(agentId);
+            return this.agentManager.subscribe((event) => {
+              if (event.type !== "agent_state" || event.agent.id !== agentId) {
+                return;
+              }
+              const isActive = this.agentManager.hasInFlightRun(agentId);
+              if (wasActive && !isActive) {
+                listener();
+              }
+              wasActive = isActive;
+            });
+          },
         },
         logger: this.sessionLogger,
         sessionId: this.sessionId,
@@ -1415,6 +1732,29 @@ export class Session {
     await this.emitWorkspaceUpdatesForWorkspaceIds(workspaceIds);
   }
 
+  /**
+   * External-mutation agent-update fan-out (mission-control meta actions):
+   * emit an agent_update for a STORED (not-running) agent record mutated by
+   * daemon machinery outside this session (fleet_meta move_agent /
+   * rename_agent_title on closed agents). Live agents need no call — their
+   * agent_state events flow through every session's subscription already.
+   */
+  async emitAgentUpdateForExternalMutation(record: StoredAgentRecord): Promise<void> {
+    if (!this.agentUpdates.hasSubscription()) {
+      return;
+    }
+    const payload = await this.agentUpdates.emitStoredRecord(record);
+    if (payload.workspaceId) {
+      await this.emitWorkspaceUpdateForWorkspaceId(payload.workspaceId);
+    }
+  }
+
+  /** External-mutation agent removal (an agent transferred to a peer host by
+   *  daemon machinery outside this session). */
+  async emitAgentRemovedForExternalMutation(agentId: string): Promise<void> {
+    await this.agentUpdates.removeAgent(agentId);
+  }
+
   async syncWorkspaceGitObserversForExternalWorkspaceIds(
     workspaceIds: Iterable<string>,
   ): Promise<void> {
@@ -1589,6 +1929,18 @@ export class Session {
     return this.agentManager.hasInFlightRun(agentId);
   }
 
+  /**
+   * Bounded wait for an agent to finish its in-flight turn. Used by
+   * dispatchMode "queue": the prompt streams only once the agent is idle,
+   * without ever interrupting.
+   */
+  private async waitForAgentIdle(agentId: string, timeoutMs = 60_000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (this.agentManager.hasInFlightRun(agentId) && Date.now() < deadline) {
+      await new Promise((done) => setTimeout(done, 250));
+    }
+  }
+
   private handleAgentRunError(agentId: string, error: unknown, context: string): void {
     const message = errorToFriendlyMessage(error);
     this.sessionLogger.error({ err: error, agentId, context }, `${context} for agent ${agentId}`);
@@ -1684,6 +2036,8 @@ export class Session {
   }
 
   private async handleWorkspaceMutation(mutation: WorkspaceMutation): Promise<void> {
+    const startedAt = Date.now();
+    let observerMs = 0;
     try {
       if (this.isCleanedUp) {
         return;
@@ -1697,6 +2051,7 @@ export class Session {
       } else {
         await this.syncWorkspaceMutationObserver(mutation);
       }
+      observerMs = Date.now() - startedAt;
       if (this.isCleanedUp) {
         return;
       }
@@ -1704,6 +2059,21 @@ export class Session {
         [mutation.workspaceId],
         mutation.expectsInitialAgent ? { optimisticStatus: "running" } : undefined,
       );
+      // A registry upsert awaits every session's handler, so a slow one here
+      // is latency on the create/update that triggered it.
+      const totalMs = Date.now() - startedAt;
+      if (totalMs >= SLOW_WORKSPACE_MUTATION_MS) {
+        this.sessionLogger.info(
+          {
+            workspaceId: mutation.workspaceId,
+            mutationKind: mutation.kind,
+            observerMs,
+            emitMs: totalMs - observerMs,
+            totalMs,
+          },
+          "workspace.mutation.slow",
+        );
+      }
     } catch (error) {
       this.sessionLogger.warn(
         { err: error, workspaceId: mutation.workspaceId, mutationKind: mutation.kind },
@@ -2016,29 +2386,72 @@ export class Session {
     const storedRecord = await this.agentStorage.get(payload.id);
     payload.title = storedRecord?.title ?? null;
     payload.archivedAt = storedRecord?.archivedAt ?? null;
+    this.attachStopOrigin(payload);
+    this.attachReminder(payload);
+    await this.attachLifecycleBucket(payload);
     return payload;
+  }
+
+  private attachReminder(payload: AgentSnapshotPayload): void {
+    if (this.agentReminders) {
+      payload.reminder = this.agentReminders.getPending(payload.id);
+    }
+  }
+
+  private async attachLifecycleBucket(payload: AgentSnapshotPayload): Promise<void> {
+    if (!this.missionControlService) {
+      return;
+    }
+    try {
+      const bucket = await this.missionControlService.getLifecycleBucket(payload.id);
+      if (bucket) {
+        payload.bucket = bucket;
+      }
+    } catch {
+      // Degrade gracefully
+    }
+  }
+
+  /**
+   * Mission Control stop origin (v3.1): who stopped the agent's last run.
+   * Lives in the mission-control store (cancel_agent_request records "user",
+   * the stall watchdog/boot reconciliation records "system" for abrupt
+   * kills), so it rides the snapshot only at the wire boundary. Omitted when
+   * the agent was never stopped (additive).
+   */
+  private attachStopOrigin(payload: AgentSnapshotPayload): void {
+    const origin = this.missionControlService?.getStopOrigin(payload.id) ?? null;
+    if (origin !== null) {
+      payload.stoppedBy = origin;
+    }
   }
 
   private buildAgentPayload(agent: ManagedAgent): Promise<AgentSnapshotPayload> {
     return this.enrichAgentPayload(toAgentPayload(agent));
   }
 
+  /**
+   * Availability means "this daemon can spawn the provider", i.e. it has a
+   * materialized client. `listRegisteredProviderIds()` would be wrong here:
+   * it returns every known provider definition, disabled ones included.
+   */
   private buildStoredAgentPayload(
     record: StoredAgentRecord,
-    registeredProviderIds = new Set(this.providerSnapshotManager.listRegisteredProviderIds()),
+    registeredProviderIds = new Set(this.agentManager.getRegisteredProviderIds()),
   ): AgentSnapshotPayload {
-    return buildStoredAgentPayload(record, registeredProviderIds);
+    const payload = buildStoredAgentPayload(record, registeredProviderIds);
+    this.attachStopOrigin(payload);
+    this.attachReminder(payload);
+    return payload;
   }
 
   private isProviderVisibleToClient(provider: string): boolean {
-    if (
-      this.supports(CLIENT_CAPS.allProviders) ||
-      clientSupportsAllProviders(
-        this.delivery.currentSource
-          ? (this.clientSources.get(this.delivery.currentSource)?.appVersion ?? null)
-          : this.appVersion,
-      )
-    ) {
+    // Like supportsForSource: a source without registered metadata (e.g. the
+    // delivery default source) inherits the session-level client identity.
+    const source = this.delivery.currentSource;
+    const sourceMetadata = source ? this.clientSources.get(source) : undefined;
+    const appVersion = sourceMetadata ? sourceMetadata.appVersion : this.appVersion;
+    if (this.supports(CLIENT_CAPS.allProviders) || clientSupportsAllProviders(appVersion)) {
       return true;
     }
     return LEGACY_PROVIDER_IDS.has(provider);
@@ -2217,7 +2630,6 @@ export class Session {
   public publish(message: SessionOutboundMessage): void {
     this.emit(message);
   }
-
   private async registerBrowserHost(
     request: Extract<SessionInboundMessage, { type: "browser.host.register.request" }>,
     respond = true,
@@ -2268,28 +2680,512 @@ export class Session {
     return undefined;
   }
 
+  /**
+   * Inbound message routing: first dispatcher that claims the message wins.
+   * A table (not a `??` chain) so the mission-control RPC surface can keep
+   * growing without blowing the complexity budget.
+   */
+  private readonly inboundDispatchers: ReadonlyArray<
+    (msg: SessionInboundMessage, source?: object) => Promise<void> | undefined
+  > = [
+    (msg, source) => this.dispatchSubscriptionMessage(msg, source),
+    (msg, source) => this.dispatchPageProxyMessage(msg, source),
+    (msg, source) => this.dispatchCreationMessage(msg, source),
+    (msg) => this.dispatchVoiceAndControlMessage(msg),
+    (msg, source) => this.dispatchAgentRewindMessage(msg, source),
+    (msg) => this.dispatchAgentRelationshipMessage(msg),
+    (msg, source) => this.dispatchAgentTimelineMessage(msg, source),
+    (msg) => this.dispatchHubExecutionMessage(msg),
+    (msg) => this.dispatchAgentLifecycleMessage(msg),
+    (msg) => this.dispatchProjectMessage(msg),
+    (msg) => this.dispatchAgentConfigMessage(msg),
+    (msg) => this.dispatchCheckoutMessage(msg),
+    (msg) => this.dispatchWorkspaceLifecycleMessage(msg),
+    (msg, source) => this.dispatchWorkspaceFileMessage(msg, source),
+    (msg) => this.dispatchProviderMessage(msg),
+    (msg) => this.dispatchOrchestrationSkillsMessage(msg),
+    (msg) => this.dispatchPluginDirectoryMessage(msg),
+    (msg) => this.dispatchPluginMessage(msg),
+    (msg) => this.dispatchTerminalMessage(msg),
+    (msg) => this.dispatchScheduleMessage(msg),
+    (msg) => this.docThreadsSession.dispatch(msg),
+    (msg) => this.dispatchRemovedTicketsRequest(msg),
+    (msg) => this.automationSession.dispatch(msg),
+    (msg) => this.dispatchRemovedNotesRequest(msg),
+    (msg) => this.dispatchMissionControlPeersMessage(msg),
+    (msg) => this.dispatchMissionControlEventsMessage(msg),
+    (msg) => this.dispatchMissionControlContextMessage(msg),
+    (msg) => this.dispatchMissionControlLifecycleMessage(msg),
+    (msg) => this.dispatchMissionControlConfigMessage(msg),
+    (msg) => this.dispatchMissionControlVoiceReadsMessage(msg),
+    (msg) => this.dispatchMissionControlToolsMessage(msg),
+    (msg) => this.dispatchMissionControlMediaMessage(msg),
+    (msg) => this.dispatchMissionControlMetaMessage(msg),
+    (msg) => this.dispatchMiscMessage(msg),
+  ];
+
   private async dispatchInboundMessage(msg: SessionInboundMessage, source?: object): Promise<void> {
-    const promise =
-      this.dispatchSubscriptionMessage(msg, source) ??
-      this.dispatchVoiceAndControlMessage(msg) ??
-      this.dispatchAgentRewindMessage(msg, source) ??
-      this.dispatchAgentRelationshipMessage(msg) ??
-      this.dispatchAgentTimelineMessage(msg, source) ??
-      this.dispatchHubExecutionMessage(msg) ??
-      this.dispatchCreationMessage(msg, source) ??
-      this.dispatchAgentLifecycleMessage(msg) ??
-      this.dispatchAgentConfigMessage(msg) ??
-      this.dispatchCheckoutMessage(msg) ??
-      this.dispatchWorkspaceLifecycleMessage(msg) ??
-      this.dispatchWorkspaceFileMessage(msg, source) ??
-      this.dispatchProviderMessage(msg) ??
-      this.dispatchOrchestrationSkillsMessage(msg) ??
-      this.dispatchPluginDirectoryMessage(msg) ??
-      this.dispatchPluginMessage(msg) ??
-      this.dispatchTerminalMessage(msg) ??
-      this.dispatchScheduleMessage(msg) ??
-      this.dispatchMiscMessage(msg);
-    if (promise) await promise;
+    for (const dispatcher of this.inboundDispatchers) {
+      const promise = dispatcher(msg, source);
+      if (promise) {
+        await promise;
+        return;
+      }
+    }
+  }
+
+  private async handlePageContentGet(
+    msg: Extract<SessionInboundMessage, { type: "page.content.get.request" }>,
+  ): Promise<void> {
+    const respond = (payload: { html: string | null; error: string | null }) =>
+      this.emit({
+        type: "page.content.get.response",
+        payload: { requestId: msg.requestId, ...payload },
+      });
+    if (!this.pageStore) {
+      respond({ html: null, error: "This host does not store pages" });
+      return;
+    }
+    try {
+      const html = await this.pageStore.get(msg.pageId);
+      respond(html === null ? { html: null, error: "Page not found" } : { html, error: null });
+    } catch (error) {
+      respond({ html: null, error: getErrorMessageOr(error, "Failed to read page") });
+    }
+  }
+
+  private dispatchPageProxyMessage(
+    msg: SessionInboundMessage,
+    source?: object,
+  ): Promise<void> | undefined {
+    if (msg.type === "page.content.get.request") return this.handlePageContentGet(msg);
+    if (msg.type !== "page.proxy.open.request") return undefined;
+    const respond = (payload: { proxyPort: number | null; error: string | null }) =>
+      this.emit({
+        type: "page.proxy.open.response",
+        payload: { requestId: msg.requestId, ...payload },
+      });
+    const peer = this.resolveSourcePeer(source);
+    if (!this.pagePortProxy) {
+      respond({ proxyPort: null, error: "This host does not proxy page ports" });
+      return Promise.resolve();
+    }
+    if (peer?.transport !== "direct" || !peer.remoteAddress) {
+      respond({
+        proxyPort: null,
+        error: "A localhost page needs a direct connection to this host, not the relay",
+      });
+      return Promise.resolve();
+    }
+    return this.pagePortProxy.open({ port: msg.port, clientAddress: peer.remoteAddress }).then(
+      (proxyPort) => respond({ proxyPort, error: null }),
+      (error: unknown) =>
+        respond({ proxyPort: null, error: getErrorMessageOr(error, "Failed to open page proxy") }),
+    );
+  }
+
+  private async handleMissionControlPeersListRequest(
+    msg: Extract<SessionInboundMessage, { type: "mission_control.peers.list.request" }>,
+  ): Promise<void> {
+    this.emit({
+      type: "mission_control.peers.list.response",
+      payload: {
+        requestId: msg.requestId,
+        peers: this.peerManager?.getPeerStatuses() ?? [],
+      },
+    });
+  }
+
+  private dispatchMissionControlPeersMessage(
+    msg: SessionInboundMessage,
+  ): Promise<void> | undefined {
+    switch (msg.type) {
+      case "mission_control.peers.list.request":
+        return this.handleMissionControlPeersListRequest(msg);
+      default:
+        return undefined;
+    }
+  }
+
+  private dispatchMissionControlEventsMessage(
+    msg: SessionInboundMessage,
+  ): Promise<void> | undefined {
+    switch (msg.type) {
+      case "mission_control.events.fetch.request":
+        return this.handleMissionControlEventsFetchRequest(msg);
+      case "mission_control.events.ack.request":
+        return this.handleMissionControlEventsAckRequest(msg);
+      default:
+        return undefined;
+    }
+  }
+
+  private async handleMissionControlEventsFetchRequest(
+    msg: Extract<SessionInboundMessage, { type: "mission_control.events.fetch.request" }>,
+  ): Promise<void> {
+    const events =
+      this.missionControlService?.fetchEvents({
+        sinceTs: msg.sinceTs,
+        beforeSeq: msg.beforeSeq,
+        limit: msg.limit,
+      }) ?? [];
+    this.emit({
+      type: "mission_control.events.fetch.response",
+      payload: { requestId: msg.requestId, events },
+    });
+  }
+
+  private async handleMissionControlEventsAckRequest(
+    msg: Extract<SessionInboundMessage, { type: "mission_control.events.ack.request" }>,
+  ): Promise<void> {
+    this.missionControlService?.ackEvents(msg.eventIds);
+    this.emit({
+      type: "mission_control.events.ack.response",
+      payload: { requestId: msg.requestId },
+    });
+  }
+
+  private dispatchMissionControlContextMessage(
+    msg: SessionInboundMessage,
+  ): Promise<void> | undefined {
+    switch (msg.type) {
+      case "mission_control.context.fetch.request":
+        return this.handleMissionControlContextFetchRequest(msg);
+      default:
+        return undefined;
+    }
+  }
+
+  private async handleMissionControlContextFetchRequest(
+    msg: Extract<SessionInboundMessage, { type: "mission_control.context.fetch.request" }>,
+  ): Promise<void> {
+    const payload = await buildLocalContextPayload({
+      workspaceRegistry: this.workspaceRegistry,
+      projectRegistry: this.projectRegistry,
+      providerSnapshotManager: this.providerSnapshotManager,
+      agentManager: this.agentManager,
+      agentStorage: this.agentStorage,
+      daemonConfigStore: this.daemonConfigStore,
+      serverId: this.daemonSession.serverIdValue ?? "local",
+      inventoryOnly: msg.inventoryOnly === true,
+    });
+    this.emit({
+      type: "mission_control.context.fetch.response",
+      payload: { requestId: msg.requestId, ...payload },
+    });
+  }
+
+  private dispatchMissionControlLifecycleMessage(
+    msg: SessionInboundMessage,
+  ): Promise<void> | undefined {
+    switch (msg.type) {
+      case "mission_control.lifecycle.set.request":
+        return this.handleMissionControlLifecycleSetRequest(msg);
+      default:
+        return undefined;
+    }
+  }
+
+  private async handleMissionControlLifecycleSetRequest(
+    msg: Extract<SessionInboundMessage, { type: "mission_control.lifecycle.set.request" }>,
+  ): Promise<void> {
+    const result = this.missionControlService
+      ? await this.missionControlService.setLifecycle({
+          agentId: msg.agentId,
+          ...(msg.agentIds ? { agentIds: msg.agentIds } : {}),
+          action: msg.action,
+        })
+      : { ok: false as const, error: "Mission Control is not enabled on this host" };
+    this.emit({
+      type: "mission_control.lifecycle.set.response",
+      payload: {
+        requestId: msg.requestId,
+        ok: result.ok,
+        ...(result.ok ? {} : { error: result.error }),
+      },
+    });
+  }
+
+  private dispatchMissionControlConfigMessage(
+    msg: SessionInboundMessage,
+  ): Promise<void> | undefined {
+    switch (msg.type) {
+      case "mission_control.config.get.request":
+        return this.handleMissionControlConfigGetRequest(msg);
+      case "mission_control.config.patch.request":
+        return this.handleMissionControlConfigPatchRequest(msg);
+      default:
+        return undefined;
+    }
+  }
+
+  private async handleMissionControlConfigGetRequest(
+    msg: Extract<SessionInboundMessage, { type: "mission_control.config.get.request" }>,
+  ): Promise<void> {
+    this.emit({
+      type: "mission_control.config.get.response",
+      payload: {
+        requestId: msg.requestId,
+        config: redactCentralConfigForClient(this.missionControlService?.getCentralConfig() ?? {}),
+      },
+    });
+  }
+
+  private async handleMissionControlConfigPatchRequest(
+    msg: Extract<SessionInboundMessage, { type: "mission_control.config.patch.request" }>,
+  ): Promise<void> {
+    try {
+      if (!this.missionControlService) {
+        throw new Error("Mission Control is not enabled on this host");
+      }
+      // Each host owns its own central config (written by Flotilla); a patch
+      // applies here only.
+      const config = await this.missionControlService.patchCentralConfig(msg.patch);
+      this.emit({
+        type: "mission_control.config.patch.response",
+        payload: {
+          requestId: msg.requestId,
+          config: redactCentralConfigForClient(config),
+          ok: true,
+        },
+      });
+    } catch (error) {
+      this.emit({
+        type: "mission_control.config.patch.response",
+        payload: {
+          requestId: msg.requestId,
+          config: redactCentralConfigForClient(
+            this.missionControlService?.getCentralConfig() ?? {},
+          ),
+          ok: false,
+          error: getErrorMessageOr(error, "Failed to patch Mission Control config"),
+        },
+      });
+    }
+  }
+
+  /**
+   * M11 voice read RPCs (mission_control.recall / context.records /
+   * tag_message / peer.timeline): the voice node (scripts/commander-voice)
+   * connects to ONE daemon — it has no peerManager and no MCP tool catalog —
+   * so these thin session RPCs expose the same MissionControlService reads
+   * the Commander's fleet tools use, plus the peer timeline hop
+   * fleet_get_agent_activity performs for non-local hosts.
+   */
+  private dispatchMissionControlVoiceReadsMessage(
+    msg: SessionInboundMessage,
+  ): Promise<void> | undefined {
+    switch (msg.type) {
+      case "mission_control.peer.timeline.request":
+        return this.handleMissionControlPeerTimelineRequest(msg);
+      default:
+        return undefined;
+    }
+  }
+
+  /**
+   * M11 fleet_get_agent_activity(peer) for the voice node: proxy the agent's
+   * timeline from the named peer host over peering and return the same
+   * curated summary the Commander's fleet_get_agent_activity peer branch
+   * produces. Local reads keep using the regular fetchAgentTimeline path.
+   */
+  private async handleMissionControlPeerTimelineRequest(
+    msg: Extract<SessionInboundMessage, { type: "mission_control.peer.timeline.request" }>,
+  ): Promise<void> {
+    try {
+      const client = this.peerManager?.getPeerClient(msg.host) ?? null;
+      if (!client) {
+        throw new Error(`Host "${msg.host}" is not a configured peer`);
+      }
+      const payload = await client.fetchAgentTimeline(msg.agentId, {
+        direction: "tail",
+        ...(typeof msg.limit === "number" && msg.limit > 0 ? { limit: msg.limit } : {}),
+      });
+      if (payload.error) {
+        throw new Error(payload.error);
+      }
+      const timeline = payload.entries.map((entry) => entry.item);
+      const summary = curateVoicePeerActivitySummary({ timeline, limit: msg.limit });
+      this.emit({
+        type: "mission_control.peer.timeline.response",
+        payload: {
+          requestId: msg.requestId,
+          ok: true,
+          content: summary.content,
+          updateCount: summary.updateCount,
+        },
+      });
+    } catch (error) {
+      this.emit({
+        type: "mission_control.peer.timeline.response",
+        payload: {
+          requestId: msg.requestId,
+          ok: false,
+          error: getErrorMessageOr(error, "Failed to read the peer agent's timeline"),
+        },
+      });
+    }
+  }
+
+  private dispatchMissionControlToolsMessage(
+    msg: SessionInboundMessage,
+  ): Promise<void> | undefined {
+    switch (msg.type) {
+      case "mission_control.tools.execute.request":
+        return this.handleMissionControlToolsExecuteRequest(msg);
+      default:
+        return undefined;
+    }
+  }
+
+  /**
+   * Peer tool execution (mission_control.tools.execute): another daemon runs a
+   * fleet tool that must execute on the host owning the agent or workspace
+   * (turn-bound waits, unarchives, fresh status). Only those tools run here;
+   * the catalog acts as a remote fleet client, so nothing becomes a child of a
+   * local agent.
+   */
+  private async handleMissionControlToolsExecuteRequest(
+    msg: Extract<SessionInboundMessage, { type: "mission_control.tools.execute.request" }>,
+  ): Promise<void> {
+    const respond = (
+      payload: Omit<
+        Extract<
+          SessionOutboundMessage,
+          { type: "mission_control.tools.execute.response" }
+        >["payload"],
+        "requestId" | "name"
+      >,
+    ) =>
+      this.emit({
+        type: "mission_control.tools.execute.response",
+        payload: { requestId: msg.requestId, name: msg.name, ...payload },
+      });
+    try {
+      if (msg.name === AGENT_VIEWED_PEER_TOOL) {
+        const args = AgentViewedPeerArgsSchema.safeParse(msg.args);
+        if (!args.success) {
+          respond({ ok: false, error: `${AGENT_VIEWED_PEER_TOOL} needs agentId` });
+          return;
+        }
+        const viewed = this.missionControlService?.agentViews.isViewed(args.data.agentId) ?? false;
+        respond({ ok: true, structuredContent: { viewed } });
+        return;
+      }
+      if (msg.name === USER_TURN_PEER_TOOL) {
+        const args = UserTurnPeerArgsSchema.safeParse(msg.args);
+        if (!args.success) {
+          respond({ ok: false, error: `${USER_TURN_PEER_TOOL} needs agentId, turnId and text` });
+          return;
+        }
+        this.missionControlService?.noteUserPrompt({ ...args.data, forwarded: true });
+        respond({ ok: true });
+        return;
+      }
+      if (!PEER_EXECUTABLE_TOOL_NAMES.has(msg.name)) {
+        respond({ ok: false, error: `Tool "${msg.name}" cannot be run by a peer` });
+        return;
+      }
+      const catalog = await this.agentManager.createPaseoToolCatalog({
+        callerLabels: { "paseo.mcp-client": "peer" },
+      });
+      if (!catalog || !catalog.getTool(msg.name)) {
+        respond({ ok: false, error: `Unknown Paseo tool: ${msg.name}` });
+        return;
+      }
+      const result = await catalog.executeTool(msg.name, msg.args ?? {}, {
+        sessionKey: this.sessionId,
+      });
+      const structuredContent = asPlainRecord(result.structuredContent)
+        ? result.structuredContent
+        : undefined;
+      const content =
+        result.content
+          .map((block) => (typeof block.text === "string" ? block.text : ""))
+          .filter((text) => text.length > 0)
+          .join("\n") || undefined;
+      respond({
+        ok: !result.isError,
+        ...(structuredContent ? { structuredContent } : {}),
+        ...(content ? { content } : {}),
+        ...(result.isError ? { error: content ?? "Paseo tool reported a failure" } : {}),
+      });
+    } catch (error) {
+      respond({ ok: false, error: getErrorMessageOr(error, "Failed to execute tool") });
+    }
+  }
+
+  private dispatchMissionControlMediaMessage(
+    msg: SessionInboundMessage,
+  ): Promise<void> | undefined {
+    switch (msg.type) {
+      case "mission_control.media.fetch.request":
+        return this.handleMissionControlMediaFetchRequest(msg);
+      default:
+        return undefined;
+    }
+  }
+
+  private dispatchMissionControlMetaMessage(msg: SessionInboundMessage): Promise<void> | undefined {
+    switch (msg.type) {
+      case "mission_control.meta.apply.request":
+        return this.handleMissionControlMetaApplyRequest(msg);
+      default:
+        return undefined;
+    }
+  }
+
+  /**
+   * Cross-host meta apply (mission_control.meta.apply): the commander host
+   * forwards an approved meta-kind proposal whose metaPlan.serverId names
+   * THIS host as a peer. Re-validate the plan against this daemon's own
+   * registries and apply it here — only the APPLY hops; the proposal card
+   * lives on the commander host. The response carries this daemon's own
+   * identity so the commander's audit trail records where the action ran.
+   */
+  private async handleMissionControlMetaApplyRequest(
+    msg: Extract<SessionInboundMessage, { type: "mission_control.meta.apply.request" }>,
+  ): Promise<void> {
+    const result = this.missionControlService
+      ? await this.missionControlService.applyMetaRemote(msg.metaPlan)
+      : { ok: false as const, error: "Mission Control is not enabled on this host" };
+    this.emit({
+      type: "mission_control.meta.apply.response",
+      payload: {
+        requestId: msg.requestId,
+        ok: result.ok,
+        ...(result.ok
+          ? {
+              summary: result.summary,
+              serverId: this.daemonSession.serverIdValue,
+              hostName: this.hostName,
+            }
+          : { error: result.error }),
+      },
+    });
+  }
+
+  private async handleMissionControlMediaFetchRequest(
+    msg: Extract<SessionInboundMessage, { type: "mission_control.media.fetch.request" }>,
+  ): Promise<void> {
+    const result = await resolveMissionControlMediaFetch({
+      host: msg.host,
+      path: msg.path,
+      peerManager: this.peerManager,
+      logger: this.sessionLogger,
+    });
+    this.emit({
+      type: "mission_control.media.fetch.response",
+      payload: {
+        requestId: msg.requestId,
+        ok: result.ok,
+        ...(result.error ? { error: result.error } : {}),
+        ...(result.mimeType ? { mimeType: result.mimeType } : {}),
+        ...(result.fileName ? { fileName: result.fileName } : {}),
+        ...(typeof result.sizeBytes === "number" ? { sizeBytes: result.sizeBytes } : {}),
+        ...(result.data ? { data: result.data } : {}),
+      },
+    });
   }
 
   private dispatchWorkspaceLifecycleMessage(msg: SessionInboundMessage): Promise<void> | undefined {
@@ -2553,6 +3449,7 @@ export class Session {
       case "abort_request":
       case "audio_played":
       case "set_voice_mode":
+
       case "dictation_stream_start":
       case "dictation_stream_chunk":
       case "dictation_stream_finish":
@@ -2661,6 +3558,8 @@ export class Session {
       }
       case "agent.fork_context.request":
         return this.handleAgentForkContextRequest(msg);
+      case "agent.fork.request":
+        return this.handleAgentForkRequest(msg);
       default:
         return undefined;
     }
@@ -2712,11 +3611,17 @@ export class Session {
       case "close_items_request":
         return this.handleCloseItemsRequest(msg);
       case "update_agent_request":
-        return this.handleUpdateAgentRequest(msg.agentId, msg.name, msg.labels, msg.requestId);
-      case "project.rename.request":
-        return this.handleProjectRenameRequest(msg.projectId, msg.customName, msg.requestId);
-      case "project.icon.set.request":
-        return this.handleProjectIconSetRequest(msg);
+        return this.handleUpdateAgentRequest(
+          msg.agentId,
+          msg.name,
+          msg.title,
+          msg.shortDescription,
+          msg.labels,
+          msg.provider,
+          msg.model,
+          msg.modeId,
+          msg.requestId,
+        );
       case "send_agent_message_request":
         return this.handleSendAgentMessageRequest(msg);
       case "wait_for_finish_request":
@@ -2735,6 +3640,37 @@ export class Session {
         return this.handleAgentPermissionResponse(msg.agentId, msg.requestId, msg.response);
       case "clear_agent_attention":
         return this.handleClearAgentAttention(msg.agentId, msg.requestId);
+      case "agent.workspace.move.request":
+        return this.handleAgentWorkspaceMoveRequest(msg);
+      case "agent.workspace.transfer.request":
+        return this.handleAgentWorkspaceTransferRequest(msg);
+      default:
+        return undefined;
+    }
+  }
+
+  private dispatchProjectMessage(msg: SessionInboundMessage): Promise<void> | undefined {
+    switch (msg.type) {
+      case "project.rename.request":
+        return this.handleProjectRenameRequest(msg.projectId, msg.customName, msg.requestId);
+      case "project.description.set.request":
+        return this.handleProjectDescriptionSetRequest(msg);
+      case "project.icon.set.request":
+        return this.handleProjectIconSetRequest(msg);
+      case "routing.suggest.request":
+        return this.handleRoutingSuggestRequest(msg);
+      case "agent.search.request":
+        return this.handleAgentSearchRequest(msg);
+      case "agent.unarchive.request":
+        return this.handleAgentUnarchiveRequest(msg);
+      case "agent.reminder.set.request":
+        return this.handleAgentReminderSetRequest(msg);
+      case "agent.reminder.cancel.request":
+        return this.handleAgentReminderCancelRequest(msg);
+      case "routing.project.create.request":
+        return this.handleRoutingProjectCreateRequest(msg);
+      case "agent.agent_mode.set.request":
+        return this.handleAgentModeSetRequest(msg);
       default:
         return undefined;
     }
@@ -2825,6 +3761,8 @@ export class Session {
         return this.checkoutSession.handleCheckoutMergeFromBaseRequest(msg);
       case "checkout_pull_request":
         return this.checkoutSession.handleCheckoutPullRequest(msg);
+      case "checkout_submodules_request":
+        return this.checkoutSession.handleSubmodulesRequest(msg);
       case "checkout_push_request":
         return this.checkoutSession.handleCheckoutPushRequest(msg);
       case "checkout.refresh.request":
@@ -2958,6 +3896,9 @@ export class Session {
       case "file.upload.request":
         this.workspaceFilesSession.handleFileUploadRequest(msg, this.delivery);
         return undefined;
+      case "file.explorer.write.request":
+        this.workspaceFilesSession.handleFileExplorerWriteRequest(msg);
+        return undefined;
       default:
         return undefined;
     }
@@ -2996,6 +3937,8 @@ export class Session {
         return this.providerCatalogSession.handleProviderDiagnosticRequest(msg);
       case "provider.usage.list.request":
         return this.providerCatalogSession.handleProviderUsageListRequest(msg);
+      case "usage.list_reports.request":
+        return this.usageSession.handleListReports(msg);
       default:
         return undefined;
     }
@@ -3036,9 +3979,58 @@ export class Session {
         return this.scheduleSession.handleScheduleRunOnceRequest(msg);
       case "schedule/update":
         return this.scheduleSession.handleScheduleUpdateRequest(msg);
+      case "webhook/create":
+        return this.webhookSession.handleCreateRequest(msg);
+      case "webhook/list":
+        return this.webhookSession.handleListRequest(msg);
+      case "webhook/inspect":
+        return this.webhookSession.handleInspectRequest(msg);
+      case "webhook/delete":
+        return this.webhookSession.handleDeleteRequest(msg);
+      case "webhook/update":
+        return this.webhookSession.handleUpdateRequest(msg);
+      case "webhook/test":
+        return this.webhookSession.handleTestRequest(msg);
+      case "webhook/config":
+        return this.webhookSession.handleConfigRequest(msg);
       default:
         return undefined;
     }
+  }
+  // COMPAT(tickets-removed): native tickets removed 2026-10-12, remove after 2027-01-12 once app floor >= 2026-10-12.
+  private dispatchRemovedTicketsRequest(msg: SessionInboundMessage): Promise<void> | undefined {
+    const buildPayload = REMOVED_TICKETS_RESPONSES[msg.type];
+    if (!buildPayload) {
+      return undefined;
+    }
+    const requestId = "requestId" in msg && typeof msg.requestId === "string" ? msg.requestId : "";
+    const error = "Native tickets have been removed. Itsaplan is the only ticket system.";
+    const responseType = msg.type.replace(
+      /\.request$/,
+      ".response",
+    ) as SessionOutboundMessage["type"];
+    const payload = { requestId, ...buildPayload(error) };
+    const response = { type: responseType, payload } as unknown as SessionOutboundMessage;
+    this.emit(response);
+    return Promise.resolve();
+  }
+
+  // COMPAT(tickets-removed): native notes removed 2026-10-12, remove after 2027-01-12 once app floor >= 2026-10-12.
+  private dispatchRemovedNotesRequest(msg: SessionInboundMessage): Promise<void> | undefined {
+    const buildPayload = REMOVED_NOTES_RESPONSES[msg.type];
+    if (!buildPayload) {
+      return undefined;
+    }
+    const requestId = "requestId" in msg && typeof msg.requestId === "string" ? msg.requestId : "";
+    const error = "Notes have been removed.";
+    const responseType = msg.type.replace(
+      /\.request$/,
+      ".response",
+    ) as SessionOutboundMessage["type"];
+    const payload = { requestId, ...buildPayload(error) };
+    const response = { type: responseType, payload } as unknown as SessionOutboundMessage;
+    this.emit(response);
+    return Promise.resolve();
   }
 
   private async dispatchMiscMessage(msg: SessionInboundMessage): Promise<void> {
@@ -3058,6 +4050,17 @@ export class Session {
           type: "push.unregister.response",
           payload: { requestId: msg.requestId },
         });
+        return;
+      case "client.telemetry.loader_span.report":
+        this.sessionLogger.info(
+          {
+            agentId: msg.agentId,
+            path: msg.path,
+            totalMs: msg.totalMs,
+            startedAt: msg.startedAt,
+          },
+          "client.loader.span",
+        );
         return;
     }
   }
@@ -3353,7 +4356,12 @@ export class Session {
   private async handleUpdateAgentRequest(
     agentId: string,
     name: string | undefined,
+    title: string | undefined,
+    shortDescription: string | undefined,
     labels: Record<string, string> | undefined,
+    provider: string | undefined,
+    model: string | null | undefined,
+    modeId: string | undefined,
     requestId: string,
   ): Promise<void> {
     this.sessionLogger.info(
@@ -3361,7 +4369,12 @@ export class Session {
         agentId,
         requestId,
         hasName: typeof name === "string",
+        hasTitle: typeof title === "string",
+        hasShortDescription: typeof shortDescription === "string",
         labelCount: labels ? Object.keys(labels).length : 0,
+        provider,
+        model,
+        modeId,
       },
       "session: update_agent_request",
     );
@@ -3369,7 +4382,7 @@ export class Session {
     try {
       const result = await updateAgentCommand(
         { agentManager: this.agentManager },
-        { agentId, name, labels },
+        { agentId, name, title, shortDescription, labels, provider, model, modeId },
       );
 
       if (!result.accepted) {
@@ -3497,6 +4510,343 @@ export class Session {
           accepted: false,
           customName: null,
           error: getErrorMessageOr(error, "Failed to rename project"),
+        },
+      });
+    }
+  }
+
+  private async handleProjectDescriptionSetRequest(
+    request: Extract<SessionInboundMessage, { type: "project.description.set.request" }>,
+  ): Promise<void> {
+    const { projectId, requestId } = request;
+    this.sessionLogger.info(
+      { projectId, requestId, hasDescription: typeof request.description === "string" },
+      "session: project.description.set.request",
+    );
+    try {
+      const existing = await this.projectRegistry.get(projectId);
+      if (!existing) {
+        this.emit({
+          type: "project.description.set.response",
+          payload: {
+            requestId,
+            projectId,
+            accepted: false,
+            description: null,
+            error: "Project not found",
+          },
+        });
+        return;
+      }
+      const trimmed = request.description?.trim() ?? "";
+      const nextDescription = trimmed.length === 0 ? null : trimmed;
+      const updated = {
+        ...existing,
+        description: nextDescription,
+        updatedAt: new Date().toISOString(),
+      };
+      await this.projectRegistry.upsert(updated);
+      this.emit({
+        type: "project.description.set.response",
+        payload: {
+          requestId,
+          projectId,
+          accepted: true,
+          description: nextDescription,
+          error: null,
+        },
+      });
+      this.emitProjectUpdate({ kind: "upsert", project: updated });
+      const workspaces = await this.workspaceRegistry.list();
+      const affectedWorkspaceIds = workspaces
+        .filter((workspace) => workspace.projectId === projectId)
+        .map((workspace) => workspace.workspaceId);
+      if (affectedWorkspaceIds.length > 0) {
+        await this.emitWorkspaceUpdatesForWorkspaceIds(affectedWorkspaceIds);
+      }
+    } catch (error) {
+      this.sessionLogger.error(
+        { err: error, projectId, requestId },
+        "session: project.description.set.request error",
+      );
+      this.emit({
+        type: "project.description.set.response",
+        payload: {
+          requestId,
+          projectId,
+          accepted: false,
+          description: null,
+          error: getErrorMessageOr(error, "Failed to set project description"),
+        },
+      });
+    }
+  }
+
+  private async handleRoutingSuggestRequest(
+    request: Extract<SessionInboundMessage, { type: "routing.suggest.request" }>,
+  ): Promise<void> {
+    try {
+      if (!this.routingService) {
+        throw new Error("Routing is not available on this host");
+      }
+      const suggestion = await this.routingService.suggest(request.prompt);
+      this.emit({
+        type: "routing.suggest.response",
+        payload: { requestId: request.requestId, suggestion, error: null },
+      });
+    } catch (error) {
+      this.sessionLogger.warn({ err: error }, "routing.suggest failed");
+      this.emit({
+        type: "routing.suggest.response",
+        payload: {
+          requestId: request.requestId,
+          suggestion: null,
+          error: getErrorMessageOr(error, "Routing failed"),
+        },
+      });
+    }
+  }
+
+  private async handleAgentReminderSetRequest(
+    request: Extract<SessionInboundMessage, { type: "agent.reminder.set.request" }>,
+  ): Promise<void> {
+    const { agentId, requestId } = request;
+    try {
+      if (!this.agentReminders) {
+        throw new Error("Reminders are not available on this host");
+      }
+      const { reminder } = await this.agentReminders.set({
+        agentId,
+        remindAt: new Date(request.remindAt),
+        note: request.note ?? null,
+        createdBy: "app",
+      });
+      this.emit({
+        type: "agent.reminder.set.response",
+        payload: { requestId, agentId, reminder, error: null },
+      });
+    } catch (error) {
+      this.emit({
+        type: "agent.reminder.set.response",
+        payload: {
+          requestId,
+          agentId,
+          reminder: null,
+          error: getErrorMessageOr(error, "Setting the reminder failed"),
+        },
+      });
+    }
+  }
+
+  private async handleAgentReminderCancelRequest(
+    request: Extract<SessionInboundMessage, { type: "agent.reminder.cancel.request" }>,
+  ): Promise<void> {
+    const { agentId, requestId } = request;
+    try {
+      if (!this.agentReminders) {
+        throw new Error("Reminders are not available on this host");
+      }
+      const cancelled = await this.agentReminders.cancel(agentId);
+      this.emit({
+        type: "agent.reminder.cancel.response",
+        payload: { requestId, agentId, cancelled: cancelled !== null, error: null },
+      });
+    } catch (error) {
+      this.emit({
+        type: "agent.reminder.cancel.response",
+        payload: {
+          requestId,
+          agentId,
+          cancelled: false,
+          error: getErrorMessageOr(error, "Cancelling the reminder failed"),
+        },
+      });
+    }
+  }
+
+  private async handleAgentUnarchiveRequest(
+    request: Extract<SessionInboundMessage, { type: "agent.unarchive.request" }>,
+  ): Promise<void> {
+    const { agentId, requestId } = request;
+    try {
+      if (!this.unarchiveAgent) {
+        throw new Error("Unarchiving agents is not available on this host");
+      }
+      const { restoredWorkspaceId } = await this.unarchiveAgent(agentId);
+      const record = await this.agentStorage.get(agentId);
+      this.emit({
+        type: "agent.unarchive.response",
+        payload: {
+          requestId,
+          agentId,
+          restoredWorkspaceId,
+          workspaceId: record?.workspaceId ?? null,
+          error: null,
+        },
+      });
+    } catch (error) {
+      this.sessionLogger.warn({ err: error, agentId }, "agent.unarchive failed");
+      this.emit({
+        type: "agent.unarchive.response",
+        payload: {
+          requestId,
+          agentId,
+          restoredWorkspaceId: null,
+          workspaceId: null,
+          error: getErrorMessageOr(error, "Unarchiving the agent failed"),
+        },
+      });
+    }
+  }
+
+  private async handleAgentSearchRequest(
+    request: Extract<SessionInboundMessage, { type: "agent.search.request" }>,
+  ): Promise<void> {
+    try {
+      if (!this.agentSearchService) {
+        throw new Error("Agent search is not available on this host");
+      }
+      const result = await this.agentSearchService.search({
+        query: request.query,
+        ...(request.includeArchived ? { includeArchived: true } : {}),
+      });
+      this.emit({
+        type: "agent.search.response",
+        payload: { requestId: request.requestId, ...result, error: null },
+      });
+    } catch (error) {
+      this.sessionLogger.warn({ err: error }, "agent.search failed");
+      this.emit({
+        type: "agent.search.response",
+        payload: {
+          requestId: request.requestId,
+          matches: [],
+          semantic: false,
+          candidateCount: 0,
+          latencyMs: 0,
+          error: getErrorMessageOr(error, "Agent search failed"),
+        },
+      });
+    }
+  }
+
+  private async handleRoutingProjectCreateRequest(
+    request: Extract<SessionInboundMessage, { type: "routing.project.create.request" }>,
+  ): Promise<void> {
+    try {
+      if (!this.routingService) {
+        throw new Error("Routing is not available on this host");
+      }
+      if (request.scratch) {
+        const { project, workspace } = await this.routingService.ensureScratchWorkspace();
+        this.emit({
+          type: "routing.project.create.response",
+          payload: {
+            requestId: request.requestId,
+            project: {
+              projectId: project.projectId,
+              rootPath: project.rootPath,
+              title: project.customName ?? project.displayName,
+              description: project.description,
+              baseWorkspaceId: workspace.workspaceId,
+            },
+            error: null,
+          },
+        });
+        return;
+      }
+      const created = await this.routingService.createProjectForPrompt({
+        prompt: request.prompt,
+        ...(request.parentPath ? { parentPath: request.parentPath } : {}),
+        registerProject: (directoryPath) =>
+          this.workspaceProvisioning.findOrCreateProjectForDirectory(directoryPath),
+      });
+      const updated = {
+        ...created.project,
+        customName: created.title,
+        description: created.description,
+        updatedAt: new Date().toISOString(),
+      };
+      await this.projectRegistry.upsert(updated);
+      await this.emitProjectUpdate({ kind: "upsert", project: updated });
+      this.emit({
+        type: "routing.project.create.response",
+        payload: {
+          requestId: request.requestId,
+          project: {
+            projectId: updated.projectId,
+            rootPath: updated.rootPath,
+            title: created.title,
+            description: created.description,
+          },
+          error: null,
+        },
+      });
+      // The name had to exist before the folder; the description can
+      // improve afterwards (metadataModel), without blocking creation.
+      void this.refineNewProjectDescription(updated.projectId, request.prompt, created.title);
+    } catch (error) {
+      this.sessionLogger.warn({ err: error }, "routing.project.create failed");
+      this.emit({
+        type: "routing.project.create.response",
+        payload: {
+          requestId: request.requestId,
+          project: null,
+          error: getErrorMessageOr(error, "Failed to create project"),
+        },
+      });
+    }
+  }
+
+  private async refineNewProjectDescription(
+    projectId: string,
+    prompt: string,
+    title: string,
+  ): Promise<void> {
+    const routing = this.routingService;
+    if (!routing) return;
+    try {
+      const description = await routing.describeProject({ prompt, title });
+      const current = description ? await this.projectRegistry.get(projectId) : null;
+      if (!description || !current) return;
+      const next = { ...current, description, updatedAt: new Date().toISOString() };
+      await this.projectRegistry.upsert(next);
+      await this.emitProjectUpdate({ kind: "upsert", project: next });
+    } catch (error) {
+      this.sessionLogger.warn({ err: error }, "routing.describe_project failed");
+    }
+  }
+
+  private async handleAgentModeSetRequest(
+    request: Extract<SessionInboundMessage, { type: "agent.agent_mode.set.request" }>,
+  ): Promise<void> {
+    try {
+      if (!isAgentModeId(request.agentMode)) {
+        throw new Error(`Unknown agent mode: ${request.agentMode}`);
+      }
+      await ensureAgentLoaded(request.agentId, {
+        agentManager: this.agentManager,
+        agentStorage: this.agentStorage,
+        logger: this.sessionLogger,
+      });
+      await this.agentManager.selectAgentMode(request.agentId, request.agentMode);
+      this.emit({
+        type: "agent.agent_mode.set.response",
+        payload: {
+          requestId: request.requestId,
+          agentId: request.agentId,
+          accepted: true,
+          error: null,
+        },
+      });
+    } catch (error) {
+      this.emit({
+        type: "agent.agent_mode.set.response",
+        payload: {
+          requestId: request.requestId,
+          agentId: request.agentId,
+          accepted: false,
+          error: getErrorMessageOr(error, "Failed to set agent mode"),
         },
       });
     }
@@ -3851,11 +5201,14 @@ export class Session {
     const prompt = buildAgentPrompt(promptText, images, attachments);
 
     try {
+      // Sending new work supersedes the in-flight run; the replacement turn
+      // starts a new run so no user stop origin is recorded.
       await sendPromptToAgent({
         agentManager: this.agentManager,
         agentStorage: this.agentStorage,
         agentId,
         prompt,
+        replaceOrigin: "user",
         messageId,
         runOptions,
         // A typed or spoken message from the human answers any permission the
@@ -4193,7 +5546,7 @@ export class Session {
     onAgentReady?: (agent: AgentSnapshotPayload) => Promise<void>,
   ): Promise<AgentSnapshotPayload> {
     const {
-      config,
+      config: rawConfig,
       worktreeName,
       initialPrompt,
       clientMessageId,
@@ -4205,6 +5558,12 @@ export class Session {
       attachments,
       env,
     } = msg;
+    // Expand `~` (the host-wide cwd contract — e.g. the Mission Control Commander) to
+    // the daemon's home directory so every downstream path (directory check, worktree
+    // creation, workspace provisioning, intent resolution, agent-manager validation)
+    // sees an absolute path. Matches the MCP create path (resolveMcpInitialCwd) and
+    // the provider-snapshot path (resolveSnapshotCwd), which both accept `~`.
+    const config = { ...rawConfig, cwd: expandUserPath(rawConfig.cwd) };
     this.sessionLogger.info(
       { cwd: config.cwd, provider: config.provider, worktreeName },
       `Creating agent in ${config.cwd} (${config.provider})${
@@ -4214,6 +5573,7 @@ export class Session {
 
     let createdWorktreeForCleanup: CreatePaseoWorktreeWorkflowResult | null = null;
     let createdAgentId: string | null = null;
+    const createStartedAt = Date.now();
     try {
       const requestedCwd = resolve(config.cwd);
       const needsRequestedDirectory =
@@ -4227,28 +5587,30 @@ export class Session {
         initialPrompt: trimmedPrompt,
       });
 
-      const firstAgentContext: FirstAgentContext = {
-        ...(trimmedPrompt ? { prompt: trimmedPrompt } : {}),
-        ...(attachments && attachments.length > 0 ? { attachments } : {}),
-      };
+      const firstAgentContext = buildFirstAgentContext(trimmedPrompt, attachments);
       const workspacePromptTitle = resolveFirstAgentPromptTitle(firstAgentContext);
+      const intentStartedAt = Date.now();
       const createdWorktree = await this.createAgentLifecycleDispatch.createWorktreeForRequest({
         cwd: config.cwd,
         target: worktree,
         firstAgentContext,
-        hasLegacyGitOptions: Boolean(git),
+        hasLegacyGitOptions: Boolean(git || worktreeName),
       });
       createdWorktreeForCleanup = createdWorktree;
       const resolvedIntent = await this.resolveSessionCreateAgentIntent({
-        request: msg,
+        request: { ...msg, config },
         createdWorktree,
         workspacePromptTitle,
       });
+      const intentMs = Date.now() - intentStartedAt;
       const resolvedCwd = resolve(resolvedIntent.config.cwd);
       if (!(await this.filesystem.isDirectory(resolvedCwd))) {
         throw new Error(`Working directory does not exist or is not a directory: ${resolvedCwd}`);
       }
 
+      const effectiveInitialPrompt = initialPrompt;
+
+      const createCommandStartedAt = Date.now();
       const { snapshot, liveSnapshot } = await createAgentCommand(
         {
           agentManager: this.agentManager,
@@ -4257,6 +5619,7 @@ export class Session {
           paseoHome: this.paseoHome,
           worktreesRoot: this.worktreesRoot,
           providerSnapshotManager: this.providerSnapshotManager,
+          getWorkspace: (workspaceId) => this.workspaceRegistry.get(workspaceId),
         },
         {
           kind: "session",
@@ -4268,7 +5631,7 @@ export class Session {
           config: resolvedIntent.config,
           workspaceId: resolvedIntent.intent.workspaceId,
           worktreeName,
-          initialPrompt,
+          initialPrompt: effectiveInitialPrompt,
           clientMessageId,
           outputSchema,
           images,
@@ -4276,13 +5639,35 @@ export class Session {
           git,
           labels: resolvedIntent.intent.labels,
           env,
+          ...(isAgentModeId(msg.agentMode) ? { agentMode: msg.agentMode } : {}),
           provisionalTitle,
           firstAgentContext,
           buildSessionConfig: (sessionConfig, gitOptions, legacyWorktreeName, ctx) =>
-            this.buildAgentSessionConfig(sessionConfig, gitOptions, legacyWorktreeName, ctx),
+            this.buildAgentSessionConfig(sessionConfig, gitOptions, legacyWorktreeName, ctx, {
+              // A legacy git/worktreeName worktree is created inside createAgentCommand;
+              // track it so a later failure (mode validation, agent start) removes it.
+              onWorktreeCreated: (created) => {
+                createdWorktreeForCleanup = created;
+              },
+            }),
         },
       );
       createdAgentId = snapshot.id;
+      const createCommandMs = Date.now() - createCommandStartedAt;
+      const totalMs = Date.now() - createStartedAt;
+      const timingPayload = {
+        agentId: snapshot.id,
+        provider: snapshot.provider,
+        transport: "relay",
+        intentMs,
+        createCommandMs,
+        totalMs,
+      };
+      if (totalMs >= 1_000) {
+        this.sessionLogger.warn(timingPayload, "agent.create.session_slow");
+      } else {
+        this.sessionLogger.info(timingPayload, "agent.create.session");
+      }
       await this.agentUpdates.forwardLiveAgent(snapshot);
       if (resolvedIntent.createdDirectoryWorkspace && trimmedPrompt) {
         this.workspaceAutoName.scheduleForDirectory(
@@ -4290,6 +5675,7 @@ export class Session {
             workspaceId: resolvedIntent.intent.workspaceId,
             cwd: resolvedIntent.config.cwd,
             firstAgentContext,
+            labels: msg.labels,
           },
           { currentSelection: this.getFocusedAgentSelectionForCwd(resolvedIntent.config.cwd) },
         );
@@ -4401,7 +5787,20 @@ export class Session {
         : overrides;
       let snapshot: ManagedAgent;
       try {
-        snapshot = await this.agentManager.resumeAgentFromPersistence(handle, effectiveOverrides);
+        // Labels ride the resume options (mission-control.md "Tool serving"
+        // gotcha): the launch-context catalog build is label-gated and the
+        // Commander/verifier launch contract is re-derived from labels on
+        // EVERY session build. A resume that omits them comes back with the
+        // default toolset and an ungated catalog (live incident: a
+        // freshly recreated Commander lost its fleet_* tools). Mirrors
+        // ensureAgentLoaded (agent-loading.ts), which threads
+        // extractTimestamps(record) into the same options.
+        snapshot = await this.agentManager.resumeAgentFromPersistence(
+          handle,
+          effectiveOverrides,
+          undefined,
+          matched ? extractTimestamps(matched.record) : undefined,
+        );
       } catch (error) {
         if (matched?.didUnarchive && matched.originalArchivedAt) {
           await this.agentManager.archiveSnapshot(matched.record.id, matched.originalArchivedAt);
@@ -4520,6 +5919,38 @@ export class Session {
     }
   }
 
+  private async seedUnavailableProviderTimeline(
+    agentId: string,
+    record: Awaited<ReturnType<typeof this.agentStorage.get>> & {},
+  ): Promise<void> {
+    if (this.agentManager.hasTimeline(agentId)) {
+      return;
+    }
+    if (record.turnMetrics) {
+      this.agentManager.initStoredTurnMetrics(agentId, record.turnMetrics);
+    }
+    const seeded = await this.agentManager.seedTimelineForRehydrate(agentId, async () => {
+      const sessionId = record.persistence?.sessionId;
+      if (sessionId && supportsDiskTimeline(record.provider)) {
+        return await tryReadProviderTimelineFromDisk(
+          {
+            provider: record.provider,
+            cwd: record.cwd,
+            sessionId,
+            ...(typeof record.persistence?.nativeHandle === "string"
+              ? { nativeHandle: record.persistence.nativeHandle }
+              : {}),
+          },
+          { logger: this.sessionLogger },
+        );
+      }
+      return null;
+    });
+    this.agentManager.reAttachTurnMetrics(agentId);
+    if (!seeded && !this.agentManager.hasTimeline(agentId)) {
+      this.agentManager.seedTimelineFromItems(agentId, []);
+    }
+  }
   private async handleRefreshAgentRequest(
     msg: Extract<SessionInboundMessage, { type: "refresh_agent_request" }>,
   ): Promise<void> {
@@ -4541,9 +5972,28 @@ export class Session {
         if (!record) {
           throw new Error(`Agent not found: ${agentId}`);
         }
-        const registeredProviderIds = this.providerSnapshotManager.listRegisteredProviderIds();
+        const registeredProviderIds = new Set(this.agentManager.getRegisteredProviderIds());
         if (!isStoredAgentProviderAvailable(record, registeredProviderIds)) {
-          throw new Error(`Agent ${agentId} references unavailable provider '${record.provider}'`);
+          this.sessionLogger.info(
+            { agentId, provider: record.provider },
+            "Refreshing stored agent snapshot without unavailable provider runtime",
+          );
+          await this.seedUnavailableProviderTimeline(agentId, record);
+          // Directory subscribers own agent_update delivery; a bare emit never reaches modern sockets.
+          await this.agentUpdates.emitStoredRecord(record);
+          const timelineSize = this.agentManager.getTimeline(agentId).length;
+          if (requestId) {
+            this.emit({
+              type: "status",
+              payload: {
+                status: "agent_refreshed",
+                agentId,
+                requestId,
+                timelineSize,
+              },
+            });
+          }
+          return;
         }
         if (!toAgentPersistenceHandle(registeredProviderIds, record.persistence)) {
           throw new Error(`Agent ${agentId} cannot be refreshed because it lacks persistence`);
@@ -4600,10 +6050,17 @@ export class Session {
 
   private async handleCancelAgentRequest(agentId: string, requestId?: string): Promise<void> {
     this.sessionLogger.info({ agentId }, `Cancel request received for agent ${agentId}`);
+    // v3: a cancel originating from a client session RPC is a user stop — the
+    // approval gate always asks before touching this agent's next send.
+    this.missionControlService?.recordStopOrigin(agentId, "user");
 
     try {
       await cancelAgentRunCommand(
-        { agentManager: this.agentManager, logger: this.sessionLogger },
+        {
+          agentManager: this.agentManager,
+          agentStorage: this.agentStorage,
+          logger: this.sessionLogger,
+        },
         agentId,
       );
       if (requestId) {
@@ -4747,11 +6204,194 @@ export class Session {
     }
   }
 
+  /**
+   * Move an agent record to another workspace — same host, another project,
+   * or a peer host via transfer. Same validation + mutation path as the
+   * fleet_meta move_agent action.
+   */
+  private async handleAgentWorkspaceMoveRequest(
+    msg: Extract<SessionInboundMessage, { type: "agent.workspace.move.request" }>,
+  ): Promise<void> {
+    const emitResponse = (
+      accepted: boolean,
+      error: string | null,
+      targetServerId?: string,
+    ): void => {
+      this.emit({
+        type: "agent.workspace.move.response",
+        payload: {
+          requestId: msg.requestId,
+          agentId: msg.agentId,
+          workspaceId: msg.workspaceId,
+          accepted,
+          error,
+          ...(targetServerId ? { targetServerId } : {}),
+        },
+      });
+    };
+    try {
+      const result = await moveAgentToWorkspace(
+        {
+          agentManager: this.agentManager,
+          agentStorage: this.agentStorage,
+          workspaceRegistry: this.workspaceRegistry,
+          peerManager: this.peerManager,
+          emitAgentRemove: (agentId) => this.agentUpdates.removeAgent(agentId),
+          emitWorkspaceUpdate: (workspaceId) => this.emitWorkspaceUpdateForWorkspaceId(workspaceId),
+          logger: this.sessionLogger,
+        },
+        {
+          agentId: msg.agentId,
+          workspaceId: msg.workspaceId,
+          targetHost: msg.targetHost,
+          targetServerId: msg.targetServerId,
+        },
+      );
+      emitResponse(true, null, result.targetServerId);
+      if (!result.targetServerId) {
+        if (!result.live) {
+          await this.agentUpdates.emitStoredRecord(result.record);
+        }
+        const affectedWorkspaceIds = [result.fromWorkspaceId, result.toWorkspaceId].filter(
+          (workspaceId): workspaceId is string => workspaceId !== null && workspaceId !== undefined,
+        );
+        if (affectedWorkspaceIds.length > 0) {
+          await this.emitWorkspaceUpdatesForWorkspaceIds(affectedWorkspaceIds);
+        }
+      }
+    } catch (error) {
+      this.sessionLogger.warn(
+        { err: error, agentId: msg.agentId, workspaceId: msg.workspaceId },
+        "agent.workspace.move rejected",
+      );
+      emitResponse(false, error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  private async handleAgentWorkspaceTransferRequest(
+    msg: Extract<SessionInboundMessage, { type: "agent.workspace.transfer.request" }>,
+  ): Promise<void> {
+    const rawAgent = msg.agent;
+    const agentId = String(rawAgent?.id ?? "");
+    const emitResponse = (accepted: boolean, error: string | null): void => {
+      this.emit({
+        type: "agent.workspace.transfer.response",
+        payload: {
+          requestId: msg.requestId,
+          agentId,
+          workspaceId: msg.targetWorkspaceId,
+          accepted,
+          error,
+        },
+      });
+    };
+
+    try {
+      if (!agentId) {
+        throw new Error("Missing agent id in transfer payload");
+      }
+      const targetWorkspace = await this.workspaceRegistry.get(msg.targetWorkspaceId);
+      if (!targetWorkspace) {
+        throw new Error(`Target workspace ${msg.targetWorkspaceId} not found on this host`);
+      }
+      if (targetWorkspace.archivedAt) {
+        throw new Error(`Target workspace ${msg.targetWorkspaceId} is archived`);
+      }
+
+      const existingLive = this.agentManager.getAgent(agentId);
+      if (existingLive && existingLive.lifecycle === "running") {
+        throw new Error(`Agent ${agentId} is already running on this host`);
+      }
+
+      const nextRecord: StoredAgentRecord = parseStoredAgentRecord({
+        ...rawAgent,
+        workspaceId: msg.targetWorkspaceId,
+        cwd: targetWorkspace.cwd,
+        config:
+          rawAgent.config && typeof rawAgent.config === "object"
+            ? { ...(rawAgent.config as Record<string, unknown>), cwd: targetWorkspace.cwd }
+            : null,
+        updatedAt: new Date().toISOString(),
+        lastStatus: rawAgent.lastStatus === "running" ? "idle" : (rawAgent.lastStatus ?? "idle"),
+      });
+
+      const recordToStore = await this.withTransferredProviderSession(
+        nextRecord,
+        msg.providerSession,
+        targetWorkspace.cwd,
+      );
+
+      await this.agentStorage.upsert(recordToStore);
+
+      if (Array.isArray(msg.timeline) && msg.timeline.length > 0) {
+        await this.agentManager.importMigratedTimeline(
+          agentId,
+          msg.timeline as unknown as AgentTimelineRow[],
+        );
+      }
+
+      await this.agentUpdates.emitStoredRecord(recordToStore);
+      await this.emitWorkspaceUpdateForWorkspaceId(msg.targetWorkspaceId);
+
+      emitResponse(true, null);
+    } catch (error) {
+      this.sessionLogger.warn(
+        { err: error, targetWorkspaceId: msg.targetWorkspaceId },
+        "agent.workspace.transfer rejected",
+      );
+      emitResponse(false, error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  /**
+   * Place a provider transcript carried by a cross-host move on THIS host and
+   * repoint the record's resume handle at it.
+   *
+   * The handle is an absolute path on the source host. Left untouched, the
+   * target's `locateOmpSessionFile` cannot find it, `ensureResumableSessionFile`
+   * writes a fresh header, and the agent resumes with an empty conversation —
+   * a silent loss of the whole transcript.
+   */
+  private async withTransferredProviderSession(
+    record: StoredAgentRecord,
+    session:
+      | { provider: string; sessionId?: string; fileName: string; contentBase64: string }
+      | undefined,
+    cwd: string,
+  ): Promise<StoredAgentRecord> {
+    if (!session) {
+      return record;
+    }
+    const handle = record.persistence;
+    if (!handle || handle.provider !== "omp" || session.provider !== "omp") {
+      this.sessionLogger.warn(
+        { carrier: session.provider, handle: handle?.provider ?? null, agentId: record.id },
+        "agent.workspace.transfer carried provider state this host cannot place; transcript not written",
+      );
+      return record;
+    }
+    const sessionFile = await ingestTransferredOmpSession({
+      fileName: session.fileName,
+      contentBase64: session.contentBase64,
+      cwd,
+    });
+    return {
+      ...record,
+      persistence: {
+        ...handle,
+        sessionId: session.sessionId ?? handle.sessionId,
+        nativeHandle: sessionFile,
+        metadata: { ...handle.metadata, cwd },
+      },
+    };
+  }
+
   private async buildAgentSessionConfig(
     config: AgentSessionConfig,
     gitOptions?: GitSetupOptions,
     legacyWorktreeName?: string,
     firstAgentContext?: FirstAgentContext,
+    hooks?: { onWorktreeCreated?: (created: CreatePaseoWorktreeWorkflowResult) => void },
   ): Promise<{
     sessionConfig: AgentSessionConfig;
     setupContinuation?: CreatePaseoWorktreeWorkflowResult["setupContinuation"];
@@ -4763,8 +6403,8 @@ export class Session {
         worktreesRoot: this.worktreesRoot,
         sessionLogger: this.sessionLogger,
         workspaceGitService: this.workspaceGitService,
-        createPaseoWorktree: (input, serviceOptions) =>
-          this.createPaseoWorktreeWorkflow(input, {
+        createPaseoWorktree: async (input, serviceOptions) => {
+          const created = await this.createPaseoWorktreeWorkflow(input, {
             ...serviceOptions,
             setupContinuation: {
               kind: "agent",
@@ -4783,7 +6423,10 @@ export class Session {
                 }),
               logger: this.sessionLogger,
             },
-          }),
+          });
+          hooks?.onWorktreeCreated?.(created);
+          return created;
+        },
         checkoutExistingBranch: (cwd, branch) =>
           this.gitMutation.checkoutExistingBranch(cwd, branch),
         createBranchFromBase: (params) => this.gitMutation.createBranchFromBase(params),
@@ -4826,12 +6469,7 @@ export class Session {
       await Promise.all(agentIds.map((id) => this.agentManager.clearAgentAttention(id)));
       if (requestId) {
         const agents = (
-          await Promise.all(
-            agentIds.map(async (id) => {
-              const agent = this.agentManager.getAgent(id);
-              return agent ? this.buildAgentPayload(agent) : null;
-            }),
-          )
+          await Promise.all(agentIds.map((id) => this.getAgentPayloadById(id)))
         ).filter((payload): payload is NonNullable<typeof payload> => payload !== null);
         this.emit({
           type: "clear_agent_attention_response",
@@ -4872,6 +6510,10 @@ export class Session {
       appVisible: msg.appVisible,
       appVisibilityChangedAt,
     };
+    this.missionControlService?.agentViews.noteHeartbeat(this.clientId, {
+      agentId: msg.focusedAgentId,
+      appVisible: msg.appVisible,
+    });
     if (msg.appVisible && focusedTerminalId) {
       void this.clearFocusedTerminalAttention(focusedTerminalId);
     }
@@ -5030,7 +6672,8 @@ export class Session {
   }
 
   private async handleDirectorySuggestionsRequest(msg: DirectorySuggestionsRequest): Promise<void> {
-    const { query, limit, requestId, cwd, includeFiles, includeDirectories, matchMode } = msg;
+    const { query, limit, requestId, cwd, includeFiles, includeDirectories, matchMode, lineHint } =
+      msg;
 
     try {
       const workspaceCwd = cwd?.trim();
@@ -5050,6 +6693,7 @@ export class Session {
         includeFiles,
         includeDirectories,
         matchMode,
+        lineHint,
         limit,
       });
       const directories = entries
@@ -5103,6 +6747,7 @@ export class Session {
         agentStorage: this.agentStorage,
         findWorkspaceIdForCwd: (cwd) => this.findWorkspaceIdForCwd(cwd),
         listActiveWorkspaces: () => this.listActiveWorkspaceRefs(),
+        projectRegistry: this.projectRegistry,
         archiveWorkspaceRecord: (workspaceId) => this.archiveWorkspaceRecord(workspaceId),
         emit: (message) => this.emit(message),
         emitWorkspaceUpdatesForWorkspaceIds: (workspaceIds) =>
@@ -5163,19 +6808,24 @@ export class Session {
     // (excluding internal agents which are for ephemeral system tasks)
     const registryRecords = await this.agentStorage.list();
     const liveIds = new Set(agentSnapshots.map((a) => a.id));
-    const registeredProviderIds = new Set(this.providerSnapshotManager.listRegisteredProviderIds());
-    const persistedAgents = registryRecords
-      .filter((record) => !liveIds.has(record.id) && !record.internal)
-      // Keep raw-record filters ahead of projection; seeded homes can carry thousands of archived agents.
-      .filter((record) => includeArchived || !record.archivedAt)
-      .filter((record) => labelEntries.every(([key, value]) => record.labels?.[key] === value))
-      .filter(
-        (record) =>
-          filter?.includeUnavailablePersisted === true ||
-          isStoredAgentProviderAvailable(record, registeredProviderIds),
-      )
-      .map((record) => this.buildStoredAgentPayload(record, registeredProviderIds));
-
+    const registeredProviderIds = new Set(this.agentManager.getRegisteredProviderIds());
+    const persistedAgents = await Promise.all(
+      registryRecords
+        .filter((record) => !liveIds.has(record.id) && !record.internal)
+        // Keep raw-record filters ahead of projection; seeded homes can carry thousands of archived agents.
+        .filter((record) => includeArchived || !record.archivedAt)
+        .filter((record) => labelEntries.every(([key, value]) => record.labels?.[key] === value))
+        .filter(
+          (record) =>
+            filter?.includeUnavailablePersisted === true ||
+            isStoredAgentProviderAvailable(record, registeredProviderIds),
+        )
+        .map(async (record) => {
+          const payload = this.buildStoredAgentPayload(record, registeredProviderIds);
+          await this.attachLifecycleBucket(payload);
+          return payload;
+        }),
+    );
     let agents = [...liveAgents, ...persistedAgents];
 
     agents = agents.filter((agent) => this.isProviderVisibleToClient(agent.provider));
@@ -5195,10 +6845,10 @@ export class Session {
 
   private async resolveAgentIdentifier(
     identifier: string,
-  ): Promise<{ ok: true; agentId: string } | { ok: false; error: string }> {
+  ): Promise<{ ok: true; agentId: string } | { ok: false; notFound: boolean; error: string }> {
     const trimmed = identifier.trim();
     if (!trimmed) {
-      return { ok: false, error: "Agent identifier cannot be empty" };
+      return { ok: false, notFound: false, error: "Agent identifier cannot be empty" };
     }
 
     const stored = await this.agentStorage.list();
@@ -5222,6 +6872,7 @@ export class Session {
     if (prefixMatches.length > 1) {
       return {
         ok: false,
+        notFound: false,
         error: `Agent identifier "${trimmed}" is ambiguous (${prefixMatches
           .slice(0, 5)
           .map((id) => id.slice(0, 8))
@@ -5236,6 +6887,7 @@ export class Session {
     if (titleMatches.length > 1) {
       return {
         ok: false,
+        notFound: false,
         error: `Agent title "${trimmed}" is ambiguous (${titleMatches
           .slice(0, 5)
           .map((r) => r.id.slice(0, 8))
@@ -5243,7 +6895,7 @@ export class Session {
       };
     }
 
-    return { ok: false, error: `Agent not found: ${trimmed}` };
+    return { ok: false, notFound: true, error: `Agent not found: ${trimmed}` };
   }
 
   private async getAgentPayloadById(agentId: string): Promise<AgentSnapshotPayload | null> {
@@ -5258,9 +6910,9 @@ export class Session {
       return null;
     }
     const payload = this.buildStoredAgentPayload(record);
+    await this.attachLifecycleBucket(payload);
     return this.isProviderVisibleToClient(payload.provider) ? payload : null;
   }
-
   private async resolveDelegationRootWorkspaceId(agentId: string): Promise<string | null> {
     const seen = new Set<string>();
     let currentAgentId = agentId;
@@ -5325,9 +6977,8 @@ export class Session {
     limit: number;
     getPlacement: (workspaceId: string | undefined) => Promise<ProjectPlacementPayload | null>;
     filter: AgentUpdatesFilter | undefined;
-    search?: string;
   }): Promise<FetchAgentsResponseEntry[]> {
-    const { candidates, limit, getPlacement, filter, search } = params;
+    const { candidates, limit, getPlacement, filter } = params;
     const matchedEntries: FetchAgentsResponseEntry[] = [];
     const batchSize = 25;
     for (
@@ -5355,7 +7006,6 @@ export class Session {
         ) {
           continue;
         }
-        if (search && !matchesAgentHistoryQuery(search, entry)) continue;
         matchedEntries.push(entry);
         if (matchedEntries.length > limit) {
           break;
@@ -5414,6 +7064,19 @@ export class Session {
     };
 
     const search = agentDirectorySearchQuery(request);
+    // History Ask ranks the whole candidate set before paging (transcripts
+    // included); the chronological path below is for every other listing.
+    if (search) {
+      return this.listRankedAgentHistoryEntries({
+        search,
+        agents,
+        sort,
+        filter,
+        getPlacement,
+        page: request.page,
+      });
+    }
+
     let candidates = [...agents];
     candidates.sort((left, right) => this.agentsPager.compare(left, right, sort));
     const cursorToken = request.page?.cursor;
@@ -5431,7 +7094,6 @@ export class Session {
       limit,
       getPlacement,
       filter,
-      search,
     });
 
     const pagedEntries = matchedEntries.slice(0, limit);
@@ -5451,6 +7113,68 @@ export class Session {
     };
   }
 
+  /**
+   * The searched history page. Ranking has to see every candidate before it can
+   * name the best one, so this path resolves placements for the whole set
+   * instead of stopping at the page limit — that is what makes a query answer
+   * from all persisted sessions rather than from the first page of them.
+   */
+  private async listRankedAgentHistoryEntries(params: {
+    search: string;
+    agents: AgentSnapshotPayload[];
+    sort: FetchAgentsRequestSort[];
+    filter: AgentUpdatesFilter | undefined;
+    getPlacement: (workspaceId: string | undefined) => Promise<ProjectPlacementPayload | null>;
+    page: AgentDirectoryRequestMessage["page"];
+  }): Promise<{
+    entries: FetchAgentsResponseEntry[];
+    pageInfo: FetchAgentsResponsePageInfo;
+    searchTruncated: boolean;
+  }> {
+    const { search, agents, sort, filter, getPlacement, page } = params;
+    if (page?.cursor) {
+      // A ranked result set has no pages to walk, so a cursor here is caller
+      // misuse. Returning the ranked head instead would hide it.
+      throw new SessionRequestError(
+        "invalid_cursor",
+        "A history search returns one ranked page; it cannot be paged with a cursor.",
+      );
+    }
+
+    const allEntries = await this.collectFetchAgentsEntries({
+      candidates: agents,
+      limit: Number.MAX_SAFE_INTEGER,
+      getPlacement,
+      filter,
+    });
+
+    const transcriptHits = this.transcriptSearch?.search(search) ?? [];
+    const ranked = rankAgentHistoryWithTranscripts(
+      search,
+      allEntries,
+      transcriptHits,
+      (left, right) => this.agentsPager.compare(left.agent, right.agent, sort),
+    );
+
+    const limit = page?.limit ?? 200;
+    // Ranges are derived only for the rows that will be rendered; ranking
+    // itself never needs them.
+    const entries = ranked.slice(0, limit).map((result) =>
+      Object.assign({}, result.candidate, {
+        searchScore: result.searchScore,
+        searchMatches: describeAgentHistoryMatches(search, result.candidate),
+        ...(result.searchSnippet ? { searchSnippet: result.searchSnippet } : {}),
+      }),
+    );
+
+    return {
+      entries,
+      // No next page exists, so `hasMore` is false and truncation is reported
+      // on its own field. See the note on rankAgentHistoryCandidates.
+      pageInfo: { nextCursor: null, prevCursor: null, hasMore: false },
+      searchTruncated: ranked.length > limit,
+    };
+  }
   private readonly agentsPager = new SortablePager<
     AgentSnapshotPayload,
     FetchAgentsRequestSort["key"]
@@ -5528,6 +7252,7 @@ export class Session {
       status: "done",
       statusEnteredAt: null,
       activityAt: null,
+      createdAt: workspace.createdAt,
       diffStat,
       scripts: this.buildWorkspaceScriptPayloadSnapshot(workspace, resolvedProjectRecord),
       ...(resolvedProjectRecord
@@ -5622,6 +7347,7 @@ export class Session {
       status: "done",
       statusEnteredAt: result.workspace.createdAt,
       activityAt: null,
+      createdAt: result.workspace.createdAt,
       diffStat: { additions: 0, deletions: 0 },
       scripts: [],
       gitRuntime: {
@@ -5782,9 +7508,11 @@ export class Session {
       projectDisplayName: resolveProjectDisplayName(project),
       projectCustomName: project.customName ?? null,
       projectCustomIconRevision: project.customIconRevision ?? null,
+      projectDescription: project.description ?? null,
       projectIconRevision: icon.revision,
       projectRootPath: project.rootPath,
       projectKind: project.kind,
+      baseWorkspaceId: project.baseWorkspaceId,
     };
   }
 
@@ -5838,6 +7566,10 @@ export class Session {
         : {}),
       workspaceGitService: this.workspaceGitService,
       workspaceProvisioning: this.workspaceProvisioning,
+      warmWorktreePool: this.warmWorktreePool,
+      // Move an idle agent process to the tree while the claim cuts the
+      // branch, so the first agent rides it instead of paying `/move`.
+      prewarmAgentCwd: (cwd: string) => this.providerSnapshotManager.prewarmAgentCwd(cwd),
     });
     void Promise.all([
       this.gitMutation.notifyGitMutation(input.cwd, "create-worktree"),
@@ -5867,7 +7599,7 @@ export class Session {
 
   private async archiveWorkspaceRecord(workspaceId: string, archivedAt?: string): Promise<void> {
     const archiveTimestamp = archivedAt ?? new Date().toISOString();
-    const existingWorkspace = await archivePersistedWorkspaceRecord({
+    const { newlyArchived, workspace: existingWorkspace } = await archivePersistedWorkspaceRecord({
       workspaceId,
       archivedAt: archiveTimestamp,
       workspaceRegistry: this.workspaceRegistry,
@@ -5877,7 +7609,7 @@ export class Session {
       return;
     }
 
-    if (!existingWorkspace.archivedAt) {
+    if (newlyArchived) {
       const activeSiblings = (await this.workspaceRegistry.list()).filter(
         (workspace) => workspace.projectId === existingWorkspace.projectId && !workspace.archivedAt,
       );
@@ -5891,6 +7623,14 @@ export class Session {
         },
         "Workspace archived",
       );
+      if (this.onWorkspaceArchived) {
+        void Promise.resolve(this.onWorkspaceArchived(workspaceId)).catch((error) => {
+          this.sessionLogger.error(
+            { err: error, workspaceId },
+            "itsaplan.bridge.workspace_archive_failed",
+          );
+        });
+      }
     }
 
     await this.teardownArchivedWorkspace(existingWorkspace.workspaceId);
@@ -6677,8 +8417,11 @@ export class Session {
       );
     }
 
+    const startedAt = Date.now();
     const sourceCwd = await resolveWorktreeSourceCwd(source, this.projectRegistry);
+    const resolveSourceMs = Date.now() - startedAt;
 
+    const workflowStartedAt = Date.now();
     const result = await this.createPaseoWorktreeWorkflow(
       {
         cwd: sourceCwd,
@@ -6697,8 +8440,27 @@ export class Session {
         ? { resolveDefaultBranch: async () => source.baseBranch as string }
         : undefined,
     );
+    const workflowMs = Date.now() - workflowStartedAt;
 
+    const describeStartedAt = Date.now();
     const descriptor = await this.describeCreatedWorktreeWorkspace(result);
+    const describeMs = Date.now() - describeStartedAt;
+    // Same shape as omp.runtime.acquire: one info row per create so a slow
+    // workspace.create can be split into its phases from daemon.log alone.
+    this.sessionLogger.info(
+      {
+        cwd: result.workspace.cwd,
+        created: result.created,
+        timing: {
+          resolveSourceMs,
+          workflowMs,
+          ...result.timing,
+          describeMs,
+          totalMs: Date.now() - startedAt,
+        },
+      },
+      "workspace.create.timing",
+    );
     await this.emitCreatedWorkspaceUpdate(
       descriptor,
       request.firstAgentContext ? "running" : undefined,
@@ -7232,7 +8994,6 @@ export class Session {
         emit: (message) => this.emit(message),
         sessionLogger: this.sessionLogger,
         terminalManager: this.terminalManager,
-        archiveWorkspaceRecord: (workspaceId) => this.archiveWorkspaceRecord(workspaceId),
         serviceProxy: this.serviceProxy,
         scriptRuntimeStore: this.scriptRuntimeStore,
         getDaemonTcpPort: this.getDaemonTcpPort,
@@ -7279,7 +9040,6 @@ export class Session {
         emit: (message) => this.emit(message),
         sessionLogger: this.sessionLogger,
         terminalManager: this.terminalManager,
-        archiveWorkspaceRecord: (workspaceId) => this.archiveWorkspaceRecord(workspaceId),
         serviceProxy: this.serviceProxy,
         scriptRuntimeStore: this.scriptRuntimeStore,
         getDaemonTcpPort: this.getDaemonTcpPort,
@@ -7311,6 +9071,7 @@ export class Session {
           agentStorage: this.agentStorage,
           findWorkspaceIdForCwd: (cwd) => this.findWorkspaceIdForCwd(cwd),
           getWorkspace: (workspaceId) => this.workspaceRegistry.get(workspaceId),
+          projectRegistry: this.projectRegistry,
           listActiveWorkspaces: () => this.listActiveWorkspaceRefs(),
           archiveWorkspaceRecord: (workspaceId) => this.archiveWorkspaceRecord(workspaceId),
           emitWorkspaceUpdatesForWorkspaceIds: (workspaceIds) =>
@@ -7440,16 +9201,8 @@ export class Session {
             attentionTimestamp: null,
           };
           await this.agentStorage.upsert(nextRecord);
-          const agent = this.buildStoredAgentPayload(nextRecord);
-          const project = await this.buildProjectPlacementForWorkspace(workspace);
-          this.emit({
-            type: "agent_update",
-            payload: {
-              kind: "upsert",
-              agent,
-              project,
-            },
-          });
+          // Directory subscribers own agent_update delivery; a bare emit never reaches modern sockets.
+          await this.agentUpdates.emitStoredRecord(nextRecord);
           clearedAgentIds.push(agentId);
         }
 
@@ -7555,11 +9308,17 @@ export class Session {
   }
 
   private async handleFetchAgent(agentIdOrIdentifier: string, requestId: string): Promise<void> {
+    // An unknown agent is a null agent, not an error. Errors are for empty or ambiguous identifiers.
     const resolved = await this.resolveAgentIdentifier(agentIdOrIdentifier);
     if (!resolved.ok) {
       this.emit({
         type: "fetch_agent_response",
-        payload: { requestId, agent: null, project: null, error: resolved.error },
+        payload: {
+          requestId,
+          agent: null,
+          project: null,
+          error: resolved.notFound ? null : resolved.error,
+        },
       });
       return;
     }
@@ -7568,12 +9327,7 @@ export class Session {
     if (!agent) {
       this.emit({
         type: "fetch_agent_response",
-        payload: {
-          requestId,
-          agent: null,
-          project: null,
-          error: `Agent not found: ${resolved.agentId}`,
-        },
+        payload: { requestId, agent: null, project: null, error: null },
       });
       return;
     }
@@ -7587,6 +9341,96 @@ export class Session {
     });
   }
 
+  /**
+   * Resolve agent payload + ensure timeline rows exist for a fetch.
+   * Prefers offline disk history (Grok/Claude/OMP) so open is instant; spawns the
+   * provider runtime in the background when the agent is not already live.
+   */
+  private async resolveTimelineFetchContext(agentId: string): Promise<{
+    providerId: string;
+    agentPayload: AgentSnapshotPayload;
+  }> {
+    const live = this.agentManager.getAgent(agentId);
+    if (live) {
+      return {
+        providerId: live.provider,
+        agentPayload: await this.buildAgentPayload(live),
+      };
+    }
+
+    const record = await this.agentStorage.get(agentId);
+    if (!record) {
+      throw new Error(`Agent not found: ${agentId}`);
+    }
+
+    if (record.turnMetrics) {
+      this.agentManager.initStoredTurnMetrics(agentId, record.turnMetrics);
+    }
+    const registeredProviderIds = new Set(this.agentManager.getRegisteredProviderIds());
+    const providerAvailable = isStoredAgentProviderAvailable(record, registeredProviderIds);
+
+    await this.agentManager.seedTimelineForRehydrate(agentId, async () => {
+      const sessionId = record.persistence?.sessionId;
+      if (!sessionId || !supportsDiskTimeline(record.provider)) {
+        return null;
+      }
+      const diskItems = await tryReadProviderTimelineFromDisk(
+        {
+          provider: record.provider,
+          cwd: record.cwd,
+          sessionId,
+          ...(typeof record.persistence?.nativeHandle === "string"
+            ? { nativeHandle: record.persistence.nativeHandle }
+            : {}),
+        },
+        { logger: this.sessionLogger },
+      );
+      if (diskItems && diskItems.length > 0) {
+        this.sessionLogger.info(
+          {
+            agentId,
+            provider: record.provider,
+            itemCount: diskItems.length,
+          },
+          "Seeded agent timeline from provider disk history",
+        );
+      }
+      return diskItems;
+    });
+    this.agentManager.reAttachTurnMetrics(agentId);
+
+    // History-only answer when we already have a timeline, or when the provider
+    // is gone and we can only surface the stored agent snapshot.
+    if (this.agentManager.hasTimeline(agentId) || !providerAvailable) {
+      if (!this.agentManager.hasTimeline(agentId)) {
+        // Empty in-memory timeline so fetchTimeline works without a live agent.
+        this.agentManager.seedTimelineFromItems(agentId, []);
+      }
+      if (!providerAvailable) {
+        this.sessionLogger.info(
+          { agentId, provider: record.provider },
+          "Serving agent timeline without unavailable provider runtime",
+        );
+      }
+      const agentPayload = this.buildStoredAgentPayload(record);
+      await this.attachLifecycleBucket(agentPayload);
+      return {
+        providerId: record.provider,
+        agentPayload,
+      };
+    }
+
+    // Supported provider with no disk/durable history — full load (spawn).
+    const snapshot = await ensureAgentLoaded(agentId, {
+      agentManager: this.agentManager,
+      agentStorage: this.agentStorage,
+      logger: this.sessionLogger,
+    });
+    return {
+      providerId: snapshot.provider,
+      agentPayload: await this.buildAgentPayload(snapshot),
+    };
+  }
   private async handleFetchAgentTimelineRequest(
     msg: Extract<SessionInboundMessage, { type: "fetch_agent_timeline_request" }>,
     source?: object,
@@ -7603,12 +9447,7 @@ export class Session {
       : undefined;
 
     try {
-      const snapshot = await ensureAgentLoaded(msg.agentId, {
-        agentManager: this.agentManager,
-        agentStorage: this.agentStorage,
-        logger: this.sessionLogger,
-      });
-      const agentPayload = await this.buildAgentPayload(snapshot);
+      const { providerId, agentPayload } = await this.resolveTimelineFetchContext(msg.agentId);
 
       const fetchedControlTimeline = this.agentManager.fetchTimeline(msg.agentId, {
         direction,
@@ -7656,13 +9495,14 @@ export class Session {
             ...(msg.mergeWindow === true ? { mergeWindow: true } : {}),
             entries: entries.map((entry) => {
               const payloadEntry = {
-                provider: snapshot.provider,
+                provider: providerId,
                 item: entry.item,
                 timestamp: entry.timestamp,
                 seqStart: entry.seqStart,
                 seqEnd: entry.seqEnd,
                 sourceSeqRanges: entry.sourceSeqRanges,
                 turnId: undefined as string | undefined,
+                metrics: undefined as AgentUsage | undefined,
                 collapsed: (
                   source
                     ? this.supportsForSource(CLIENT_CAPS.reasoningMergeEnum, source)
@@ -7672,6 +9512,10 @@ export class Session {
                   : entry.collapsed.filter((value) => value !== "reasoning_merge"),
               };
               payloadEntry.turnId = entry.turnId;
+              // Turn-metrics: per-turn record carried on the projected entry.
+              if (entry.metrics !== undefined) {
+                payloadEntry.metrics = entry.metrics;
+              }
               return payloadEntry;
             }),
             error: null,
@@ -7965,12 +9809,7 @@ export class Session {
     msg: Extract<SessionInboundMessage, { type: "agent.fork_context.request" }>,
   ): Promise<void> {
     try {
-      const snapshot = await ensureAgentLoaded(msg.agentId, {
-        agentManager: this.agentManager,
-        agentStorage: this.agentStorage,
-        logger: this.sessionLogger,
-      });
-      const agentPayload = await this.buildAgentPayload(snapshot);
+      const { agentPayload } = await this.resolveTimelineFetchContext(msg.agentId);
       const timeline = this.agentManager.fetchTimeline(msg.agentId, {
         direction: "tail",
         limit: 0,
@@ -7982,7 +9821,7 @@ export class Session {
           : null,
         boundaryMessageId: msg.boundaryMessageId,
         agentTitle: agentPayload.title,
-        cwd: snapshot.cwd,
+        cwd: agentPayload.cwd,
       });
 
       this.emit({
@@ -8017,6 +9856,106 @@ export class Session {
     }
   }
 
+  private async handleAgentForkRequest(
+    msg: Extract<SessionInboundMessage, { type: "agent.fork.request" }>,
+  ): Promise<void> {
+    try {
+      // Forking only needs the stored record plus a seeded timeline
+      // (`forkAgentToSibling` falls back to storage when the source is not
+      // live). Resolve through the timeline context so an agent whose provider
+      // is currently unavailable can still be forked from its history.
+      await this.resolveTimelineFetchContext(msg.sourceAgentId);
+      const result = await forkAgentToSibling({
+        agentManager: this.agentManager,
+        agentStorage: this.agentStorage,
+        sourceAgentId: msg.sourceAgentId,
+        text: msg.text,
+        images: msg.images,
+        attachments: msg.attachments,
+        messageId: msg.messageId,
+        // `boundaryUserMessageId` only ever addressed a provider-native session
+        // fork, which no longer exists. Old clients still send it; ignore it.
+        ...(msg.boundaryCursor || msg.boundaryMessageId
+          ? {
+              boundary: {
+                ...(msg.boundaryCursor ? { cursor: msg.boundaryCursor } : {}),
+                ...(msg.boundaryMessageId ? { messageId: msg.boundaryMessageId } : {}),
+              },
+            }
+          : {}),
+        ...(msg.labels ? { labels: msg.labels } : {}),
+        ...(msg.overrides ? { overrides: msg.overrides } : {}),
+        logger: this.sessionLogger,
+      });
+      const snapshot = this.agentManager.getAgent(result.agentId);
+      if (snapshot) {
+        await this.agentUpdates.forwardLiveAgent(snapshot);
+      }
+      this.emit({
+        type: "agent.fork.response",
+        payload: {
+          requestId: msg.requestId,
+          sourceAgentId: msg.sourceAgentId,
+          agentId: result.agentId,
+          // "native" cloned the provider's session file and resumed from the
+          // copy; "snapshot" rendered the daemon timeline into a chat-history
+          // attachment. The field stays on the wire for old clients either way.
+          strategy: result.strategy,
+          agent: snapshot ? await this.buildAgentPayload(snapshot) : null,
+          error: null,
+        },
+      });
+    } catch (error) {
+      this.sessionLogger.error(
+        { err: error, sourceAgentId: msg.sourceAgentId },
+        "Failed to handle agent.fork.request",
+      );
+      this.emit({
+        type: "agent.fork.response",
+        payload: {
+          requestId: msg.requestId,
+          sourceAgentId: msg.sourceAgentId,
+          agentId: null,
+          strategy: null,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
+  }
+
+  private async dispatchAgentMessageRun(
+    msg: Extract<SessionInboundMessage, { type: "send_agent_message_request" }>,
+    agentId: string,
+    prompt: AgentPromptInput,
+  ): Promise<{ disposition: "out_of_band" | "steered" | "turn_started" }> {
+    const activeTurnBehavior =
+      msg.activeTurnBehavior ?? (msg.dispatchMode === "steer" ? "steer" : "interrupt");
+    if (msg.dispatchMode === "queue") {
+      // Queue: wait for idle first, then run without replacing. The full send
+      // path restores a closed or archived agent first, like the other modes.
+      await this.waitForAgentIdle(agentId);
+      return sendPromptToAgent({
+        agentManager: this.agentManager,
+        agentStorage: this.agentStorage,
+        agentId,
+        prompt,
+        replaceRunning: false,
+        logger: this.sessionLogger,
+      });
+    }
+    return sendPromptToAgent({
+      agentManager: this.agentManager,
+      agentStorage: this.agentStorage,
+      agentId,
+      prompt,
+      replaceOrigin: "user",
+      messageId: msg.messageId,
+      activeTurnBehavior,
+      clearPendingPermissions: true,
+      logger: this.sessionLogger,
+    });
+  }
+
   private async prepareAgentMessage(agentId: string, text: string): Promise<void> {
     await ensureAgentLoaded(agentId, {
       agentManager: this.agentManager,
@@ -8029,7 +9968,6 @@ export class Session {
       if (provisionalTitle) await this.agentManager.setTitle(agentId, provisionalTitle);
     }
   }
-
   private async handleSendAgentMessageRequest(
     msg: Extract<SessionInboundMessage, { type: "send_agent_message_request" }>,
   ): Promise<void> {
@@ -8061,17 +9999,14 @@ export class Session {
         "agent.session.send_agent_message",
       );
       const send = async () => {
-        const result = await sendPromptToAgent({
-          agentManager: this.agentManager,
-          agentStorage: this.agentStorage,
-          agentId,
-          prompt,
-          messageId: msg.messageId,
-          activeTurnBehavior: msg.activeTurnBehavior ?? "interrupt",
-          clearPendingPermissions: true,
-          logger: this.sessionLogger,
-        });
-        if (result.disposition === "turn_started") {
+        const result = await this.dispatchAgentMessageRun(msg, agentId, prompt);
+        // Steer/queue deliveries are accepted as queued: the run may start only
+        // after the current turn finishes, so a run-start wait would race it.
+        if (
+          result.disposition === "turn_started" &&
+          msg.dispatchMode !== "steer" &&
+          msg.dispatchMode !== "queue"
+        ) {
           await waitForAgentRunStartWithTimeout(
             this.agentManager,
             agentId,
@@ -8079,11 +10014,20 @@ export class Session {
           );
         }
       };
+      // A person typing in the app (not a peer daemon, the CLI, or a bot).
+      const fromPerson = this.clientType === "mobile" || this.clientType === "browser";
       if (msg.messageId) {
         await this.messageReceipts.send({
           agentId,
           messageId: msg.messageId,
-          request: { prompt, activeTurnBehavior: msg.activeTurnBehavior ?? "interrupt" },
+          // The fingerprint must cover the dispatch mode: the same message id
+          // sent as a steer is a different operation from the same text sent
+          // as an interrupt, and must not dedupe against it.
+          request: {
+            prompt,
+            activeTurnBehavior: msg.activeTurnBehavior ?? "interrupt",
+            dispatchMode: msg.dispatchMode,
+          },
           prepare: async () => {
             await this.prepareAgentMessage(agentId, msg.text);
           },
@@ -8091,6 +10035,14 @@ export class Session {
         });
       } else {
         await send();
+      }
+      if (fromPerson) {
+        const live = this.agentManager.getAgent(agentId);
+        this.missionControlService?.noteUserPrompt({
+          agentId,
+          text: msg.text,
+          turnId: live?.activeTurnId ?? live?.activeForegroundTurnId ?? null,
+        });
       }
 
       this.emit({
@@ -8157,6 +10109,7 @@ export class Session {
         return;
       }
       const final = this.buildStoredAgentPayload(record);
+      await this.attachLifecycleBucket(final);
       let status: "permission" | "error" | "idle";
       if (record.attentionReason === "permission") {
         status = "permission";
@@ -8405,6 +10358,7 @@ export class Session {
    * Clean up session resources
    */
   public async cleanup(): Promise<void> {
+    this.missionControlService?.agentViews.noteGone(this.clientId);
     this.sessionLogger.trace({}, "agent.session.lifecycle.cleanup");
     this.isCleanedUp = true;
     await this.delivery.close();
@@ -8486,35 +10440,56 @@ function isValidGitHubRepoSegment(value: string): boolean {
   return /^[A-Za-z0-9._-]+$/u.test(value);
 }
 
+/** Owned-push events whose outbound type is its own subscription name. */
+const PASSTHROUGH_EVENT_CATEGORIES: Record<string, true> = {
+  "project.update": true,
+  providers_snapshot_update: true,
+  agent_attention_required: true,
+  agent_permission_request: true,
+  agent_permission_resolved: true,
+  checkout_status_update: true,
+  script_status_update: true,
+  workspace_setup_progress: true,
+  "agent.provider_subagents.update": true,
+  terminal_attention_required: true,
+  activity_log: true,
+  "hub.execution.agent.update": true,
+  "hub.execution.agent.stream": true,
+  // COMPAT(tickets-removed): retained for old client subscription cleanup. Remove after 2027-01-12.
+  "tickets.changed": true,
+  // COMPAT(tickets-removed): retained for old client subscription cleanup. Remove after 2027-01-12.
+  "notes.changed": true,
+  "doc_threads.changed": true,
+  mission_control_event: true,
+  "provider.usage.updated": true,
+  "automations.changed": true,
+};
+function passthroughEventCategory(
+  type: SessionOutboundMessage["type"],
+): SessionEventSubscription | null {
+  if (PASSTHROUGH_EVENT_CATEGORIES[type] !== true) return null;
+  return type as SessionEventSubscription;
+}
+
 function sessionEventCategory(message: SessionOutboundMessage): SessionEventSubscription | null {
-  switch (message.type) {
-    case "project.update":
-    case "providers_snapshot_update":
-    case "agent_attention_required":
-    case "agent_permission_request":
-    case "agent_permission_resolved":
-    case "checkout_status_update":
-    case "script_status_update":
-    case "workspace_setup_progress":
-    case "agent.provider_subagents.update":
-    case "terminal_attention_required":
-    case "activity_log":
-    case "hub.execution.agent.update":
-    case "hub.execution.agent.stream":
-      return message.type;
-    case "status":
-      switch (message.payload.status) {
-        case "server_info":
-          return "status.server_info";
-        case "daemon_config_changed":
-          return "status.daemon_config_changed";
-        case "plugin_catalog_changed":
-          return "status.plugin_catalog_changed";
-        case "plugin_settings_changed":
-          return "status.plugin_settings_changed";
-        default:
-          return null;
-      }
+  const passthrough = passthroughEventCategory(message.type);
+  if (passthrough) return passthrough;
+  if (message.type === "status") return statusEventCategory(message.payload);
+  return null;
+}
+
+function statusEventCategory(
+  payload: Extract<SessionOutboundMessage, { type: "status" }>["payload"],
+): SessionEventSubscription | null {
+  switch (payload.status) {
+    case "server_info":
+      return "status.server_info";
+    case "daemon_config_changed":
+      return "status.daemon_config_changed";
+    case "plugin_catalog_changed":
+      return "status.plugin_catalog_changed";
+    case "plugin_settings_changed":
+      return "status.plugin_settings_changed";
     default:
       return null;
   }

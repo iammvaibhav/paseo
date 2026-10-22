@@ -516,6 +516,61 @@ describe("processTimelineResponse", () => {
     ]);
   });
 
+  it("replaces an unanchored tail when a cursorless tail page arrives outside init", () => {
+    const stranded: StreamItem = {
+      kind: "thought",
+      id: "thought-stranded",
+      text: "live reasoning that landed before any cursor",
+      timestamp: new Date(500),
+      status: "ready",
+    };
+
+    const result = processTimelineResponse({
+      ...baseTimelineInput,
+      currentTail: [stranded],
+      currentCursor: undefined,
+      payload: {
+        ...baseTimelineInput.payload,
+        direction: "tail",
+        startCursor: { seq: 1 },
+        endCursor: { seq: 2 },
+        entries: [
+          makeTimelineEntry(1, "first prompt", "user_message"),
+          makeTimelineEntry(2, "answer"),
+        ],
+      },
+    });
+
+    expect(result.tail.map((item) => item.kind)).toEqual(["user_message", "assistant_message"]);
+    expect(result.cursor).toEqual({ epoch: "epoch-1", startSeq: 1, endSeq: 2 });
+  });
+
+  it("keeps older loaded history when a tail page arrives with a cursor", () => {
+    const older: StreamItem = {
+      kind: "thought",
+      id: "thought-older",
+      text: "older page",
+      timestamp: new Date(500),
+      status: "ready",
+    };
+
+    const result = processTimelineResponse({
+      ...baseTimelineInput,
+      currentTail: [older],
+      currentCursor: { epoch: "epoch-1", startSeq: 1, endSeq: 5 },
+      payload: {
+        ...baseTimelineInput.payload,
+        direction: "tail",
+        window: { minSeq: 6, maxSeq: 6, nextSeq: 7 },
+        startCursor: { seq: 6 },
+        endCursor: { seq: 6 },
+        entries: [makeTimelineEntry(6, "newest")],
+      },
+    });
+
+    expect(result.tail.map((item) => item.kind)).toEqual(["thought", "assistant_message"]);
+  });
+
   it("returns error path when payload.error is set", () => {
     const result = processTimelineResponse({
       ...baseTimelineInput,
@@ -1202,6 +1257,49 @@ describe("processTimelineResponse", () => {
     });
 
     expect(repeated.tail.filter((item) => item.kind === "user_message")).toEqual(userMessages);
+  });
+
+  it("keeps canonical images when the matched row was restored without them", () => {
+    // The replica cache stores user rows without images, so a cold start restores a
+    // text-only twin of a steered prompt that carried native images.
+    const restored = createUserMessage({
+      clientMessageId: "steer-with-images",
+      messageId: "steer-with-images",
+      timelineCursor: { epoch: "epoch-1", seq: 1 },
+      text: "Attached inline",
+      timestamp: new Date(1000),
+    });
+    const nativeImage = { data: "iVBORw0KGgo=", mimeType: "image/png" };
+
+    const result = processTimelineResponse({
+      ...baseTimelineInput,
+      currentTail: [restored],
+      payload: {
+        ...baseTimelineInput.payload,
+        reset: true,
+        startCursor: { seq: 1 },
+        endCursor: { seq: 1 },
+        entries: [
+          {
+            ...makeTimelineEntry(1, "Attached inline", "user_message"),
+            item: {
+              type: "user_message",
+              text: "Attached inline",
+              messageId: "steer-with-images",
+              clientMessageId: "steer-with-images",
+              images: [nativeImage],
+            },
+          },
+        ],
+      },
+    });
+
+    const userMessages = result.tail.filter((item) => item.kind === "user_message");
+    expect(userMessages).toHaveLength(1);
+    expect(userMessages[0]).toMatchObject({
+      clientMessageId: "steer-with-images",
+      images: [nativeImage],
+    });
   });
 
   it("keeps an unmatched submitted user message during tail replacement", () => {
@@ -2776,6 +2874,49 @@ describe("processTimelineResponse", () => {
     expect(result.sideEffects).not.toContainEqual(expect.objectContaining({ type: "catch_up" }));
   });
 
+  it("closes the gap after a prompt jump once a gap page joins both ranges", () => {
+    const result = processTimelineResponse({
+      ...baseTimelineInput,
+      currentTail: [
+        {
+          kind: "user_message",
+          id: "oldest",
+          text: "oldest",
+          timestamp: new Date(1),
+          timelineCursor: { epoch: "epoch-1", seq: 1 },
+        },
+        {
+          kind: "user_message",
+          id: "newest",
+          text: "newest",
+          timestamp: new Date(1000),
+          timelineCursor: { epoch: "epoch-1", seq: 100 },
+        },
+      ],
+      currentCursor: {
+        epoch: "epoch-1",
+        startSeq: 80,
+        endSeq: 100,
+        retainedRanges: [{ startSeq: 1, endSeq: 40, hasOlder: false }],
+      },
+      payload: {
+        ...baseTimelineInput.payload,
+        direction: "before",
+        mergeWindow: true,
+        epoch: "epoch-1",
+        startCursor: { seq: 41 },
+        endCursor: { seq: 79 },
+        hasOlder: true,
+        hasNewer: true,
+        entries: [makeTimelineEntry(41, "middle", "user_message", 79)],
+      },
+    });
+
+    expect(getUserTexts(result.tail)).toEqual(["oldest", "middle", "newest"]);
+    expect(result.cursor).toEqual({ epoch: "epoch-1", startSeq: 1, endSeq: 100 });
+    expect(result.older).toBe("unchanged");
+  });
+
   it("keeps whole live assistant messages ordered when merging a disjoint prompt-jump window", () => {
     const live = processAgentStreamEvents({
       events: [
@@ -3750,7 +3891,7 @@ describe("processAgentStreamEvent", () => {
     });
   });
 
-  it("drops stale timeline event", () => {
+  it("drops a stale timeline event and requests a re-baseline", () => {
     const existingCursor: TimelineCursor = {
       epoch: "epoch-1",
       startSeq: 1,
@@ -3768,10 +3909,10 @@ describe("processAgentStreamEvent", () => {
     expect(result.cursorChanged).toBe(false);
     expect(result.changedTail).toBe(false);
     expect(result.changedHead).toBe(false);
-    expect(result.sideEffects).toEqual([]);
+    expect(result.sideEffects).toEqual([{ type: "rebaseline" }]);
   });
 
-  it("drops timeline event with epoch mismatch", () => {
+  it("drops a timeline event from a rotated epoch and requests a re-baseline", () => {
     const existingCursor: TimelineCursor = {
       epoch: "epoch-1",
       startSeq: 1,
@@ -3789,7 +3930,28 @@ describe("processAgentStreamEvent", () => {
     expect(result.cursorChanged).toBe(false);
     expect(result.changedTail).toBe(false);
     expect(result.changedHead).toBe(false);
-    expect(result.sideEffects).toEqual([]);
+    expect(result.sideEffects).toEqual([{ type: "rebaseline" }]);
+  });
+
+  it("re-baselines after an epoch rotation mid-turn with a seq far above 1", () => {
+    const existingCursor: TimelineCursor = {
+      epoch: "epoch-1",
+      startSeq: 1,
+      endSeq: 1458,
+    };
+
+    const result = processAgentStreamEvent({
+      ...baseStreamInput,
+      event: makeTimelineEvent("rotated turn output"),
+      seq: 1619,
+      epoch: "epoch-2",
+      currentCursor: existingCursor,
+    });
+
+    expect(result.cursorChanged).toBe(false);
+    expect(result.changedTail).toBe(false);
+    expect(result.changedHead).toBe(false);
+    expect(result.sideEffects).toEqual([{ type: "rebaseline" }]);
   });
 
   it("resets visible timeline when a new epoch starts at seq 1", () => {
@@ -4296,6 +4458,38 @@ describe("processAgentStreamEvents", () => {
     expect(finalAssistantItems[0]?.text).toBe(
       "Call-site API — exactly one primitive. Not gateValue, not filterEnum.",
     );
+  });
+
+  it("emits one rebaseline effect per dropped event of a rotated epoch burst", () => {
+    const existingCursor: TimelineCursor = {
+      epoch: "epoch-1",
+      startSeq: 1,
+      endSeq: 100,
+    };
+
+    const result = processAgentStreamEvents({
+      events: [101, 102, 103, 104].map((seq) => ({
+        event: makeTimelineEvent(`rotated ${seq}`),
+        seq,
+        epoch: "epoch-2",
+        timestamp: new Date(1000 + seq),
+      })),
+      currentTail: [],
+      currentHead: [],
+      currentCursor: existingCursor,
+      hasAuthoritativeBaseline: true,
+    });
+
+    expect(result.changedTail).toBe(false);
+    expect(result.changedHead).toBe(false);
+    expect(result.cursorChanged).toBe(false);
+    expect(result.cursor).toEqual(existingCursor);
+    expect(result.sideEffects).toEqual([
+      { type: "rebaseline" },
+      { type: "rebaseline" },
+      { type: "rebaseline" },
+      { type: "rebaseline" },
+    ]);
   });
 });
 

@@ -31,6 +31,9 @@ export interface LifecycleAgentManager {
     updates: {
       title?: string;
       labels?: Record<string, string>;
+      provider?: string;
+      model?: string | null;
+      modeId?: string;
     },
   ): Promise<void>;
 }
@@ -93,10 +96,56 @@ async function requestAgentRunCancellation(
   };
 }
 
+/**
+ * Reconcile a stored record that claims a busy state but has NO live runtime
+ * (a "phantom": the provider never launched, or the daemon restarted over a
+ * dead run). The record would otherwise stay "running" forever — an explicit
+ * cancel must clear it, mirroring the mission-control watchdog's
+ * selfHealDeadRuntime (record -> error, terminal). Returns the reconciled
+ * snapshot, or null when there is nothing to reconcile (no record, archived,
+ * or already in a terminal state).
+ */
+async function reconcileDeadRunRecord(
+  dependencies: Pick<AgentLifecycleCommandDependencies, "agentManager" | "agentStorage" | "logger">,
+  agentId: string,
+): Promise<LifecycleAgentSnapshot | null> {
+  const { agentStorage, logger } = dependencies;
+  const record = await agentStorage.get(agentId);
+  if (!record || record.archivedAt) {
+    return null;
+  }
+  if (record.lastStatus !== "running" && record.lastStatus !== "initializing") {
+    return null;
+  }
+  await agentStorage.upsert({
+    ...record,
+    lastStatus: "error",
+    // Keep any existing provider error text (a failed launch already carried
+    // it); a dead runtime with none gets a diagnostic so the board explains
+    // the state instead of a bare "running" zombie.
+    lastError: record.lastError ?? "Provider runtime is no longer alive; run interrupted",
+    updatedAt: new Date().toISOString(),
+  });
+  logger.warn(
+    { agentId, previousStatus: record.lastStatus },
+    "cancelAgentRunCommand: reconciled phantom running record to error (no live runtime)",
+  );
+  return { id: agentId, cwd: record.cwd, lifecycle: "error" };
+}
+
 export async function cancelAgentRunCommand(
-  dependencies: Pick<AgentLifecycleCommandDependencies, "agentManager" | "logger">,
+  dependencies: AgentLifecycleCommandDependencies,
   agentId: string,
 ): Promise<CancelAgentRunResult> {
+  // An explicit cancel of an agent whose record says busy but that has NO
+  // live runtime must reconcile the record to a terminal state instead of
+  // reporting "Agent not found" while the record stays "running" forever.
+  if (!dependencies.agentManager.getAgent(agentId)) {
+    const reconciled = await reconcileDeadRunRecord(dependencies, agentId);
+    if (reconciled) {
+      return { agent: reconciled, cancelled: true };
+    }
+  }
   const result = await requestAgentRunCancellation(dependencies, agentId);
   if (result.cancellation.status === "refused") {
     dependencies.logger.warn(
@@ -156,28 +205,67 @@ export interface UpdateAgentResult {
   error: string | null;
 }
 
+/** Identity + runtime metadata the update RPC may patch on an agent. */
+interface UpdateAgentMetadataPatch {
+  title?: string;
+  shortDescription?: string;
+  labels?: Record<string, string>;
+  provider?: string;
+  model?: string | null;
+  modeId?: string;
+}
+
 export async function updateAgentCommand(
   dependencies: Pick<AgentLifecycleCommandDependencies, "agentManager">,
   input: {
     agentId: string;
     name?: string;
+    title?: string;
+    shortDescription?: string;
     labels?: Record<string, string>;
+    provider?: string;
+    model?: string | null;
+    modeId?: string;
   },
 ): Promise<UpdateAgentResult> {
-  const title = input.name?.trim();
+  // Legacy wire `name` is an alias for the display title (pre-v3). The
+  // explicit `title` field wins when both are present.
+  const title = input.title?.trim() ?? input.name?.trim();
+  const shortDescription = input.shortDescription?.trim();
   const labels = input.labels && Object.keys(input.labels).length > 0 ? input.labels : undefined;
+  const provider = input.provider?.trim();
+  const model = input.model;
+  const modeId = input.modeId?.trim();
 
-  if (!title && !labels) {
+  const updates: UpdateAgentMetadataPatch = {};
+  if (title) {
+    updates.title = title;
+  }
+  if (shortDescription) {
+    updates.shortDescription = shortDescription;
+  }
+  if (labels) {
+    updates.labels = labels;
+  }
+  if (provider) {
+    updates.provider = provider;
+  }
+  if (model !== undefined) {
+    updates.model = model;
+  }
+  if (modeId !== undefined) {
+    updates.modeId = modeId;
+  }
+
+  if (Object.keys(updates).length === 0) {
     return {
       accepted: false,
-      error: "Nothing to update (provide name and/or labels)",
+      error:
+        "Nothing to update (provide name, title, shortDescription, labels, provider, and/or model)",
     };
   }
 
-  await dependencies.agentManager.updateAgentMetadata(input.agentId, {
-    ...(title ? { title } : {}),
-    ...(labels ? { labels } : {}),
-  });
+  await dependencies.agentManager.updateAgentMetadata(input.agentId, updates);
 
   return {
     accepted: true,

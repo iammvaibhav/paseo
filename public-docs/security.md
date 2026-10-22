@@ -82,6 +82,8 @@ Configure via `daemon.hostnames` in `config.json`:
 - `['.example.com']`: allow `example.com` and any subdomain, plus defaults
 - `true`: allow any host (not recommended)
 
+The same list guards HTTP (rejected with `403 {"error":"Invalid Host header"}`) and WebSocket upgrades (`403 Host not allowed`). Both rejections are logged at `warn` with the offending `host`. Every DNS name you use to reach the daemon, including the URL you open the bundled web UI on, must be listed. Changes apply on `paseo daemon reload` without a restart. You can also extend the list per launch with `--hostnames` or `PASEO_HOSTNAMES`.
+
 ## Password authentication
 
 By default, anyone who can reach the daemon's listening address can connect. On localhost this is fine, only local processes have access. But if you bind to a network interface (e.g. your LAN IP or `0.0.0.0`), or if you don't fully trust your local network, you can require a password.
@@ -123,7 +125,7 @@ See [Docker](/docs/docker) for Compose and reverse proxy examples.
 
 ## Agent authentication
 
-Paseo wraps agent CLIs (Claude Code, Codex, OpenCode) but does not manage their authentication. Each agent provider handles its own credentials:
+Paseo wraps agent CLIs (Claude Code, Codex, OpenCode, Muse Code) but does not manage their authentication. Each agent provider handles its own credentials:
 
 - **Claude Code**, authenticates via Anthropic's OAuth flow, stored in `~/.claude/`
 - **Codex**, uses your OpenAI API key or OAuth session

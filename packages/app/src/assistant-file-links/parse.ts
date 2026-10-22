@@ -602,12 +602,24 @@ function isPlausibleAssistantLocalPath(pathValue: string): boolean {
     return false;
   }
 
-  if (segments.length > 1) {
-    const lastSegment = segments[segments.length - 1];
-    return !isDomainLikePathSegment(firstSegment) && isPlausibleAssistantFileName(lastSegment);
+  if (isDomainLikePathSegment(firstSegment) && (segments.length > 1 || normalized.endsWith("/"))) {
+    return false;
   }
+  const lastSegment = segments[segments.length - 1];
+  return (
+    isPlausibleAssistantFileName(lastSegment) ||
+    isPlausibleAssistantFolderPath(normalized, segments)
+  );
+}
 
-  return isPlausibleAssistantFileName(firstSegment);
+// Folder links: `src/` or `src/components/` (a trailing slash marks a folder), or
+// three or more plain segments like `packages/app/src`. Two bare segments stay
+// prose ("read/write"), so they need the slash.
+function isPlausibleAssistantFolderPath(normalized: string, segments: string[]): boolean {
+  if (!segments.every((segment) => /^[\w@.-]+$/.test(segment))) {
+    return false;
+  }
+  return normalized.endsWith("/") || segments.length >= 3;
 }
 
 function isPlausibleAssistantFileName(fileName: string | undefined): boolean {

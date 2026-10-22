@@ -42,6 +42,7 @@ export const vscodeTarget: EditorTarget = {
       label: "VS Code",
       kind: "editor",
       icon: await runtime.loadIcon("vscode.png"),
+      supportsRemote: true,
     };
   },
   async isInstalled(runtime) {
@@ -64,5 +65,14 @@ export const vscodeTarget: EditorTarget = {
       return;
     }
     throw new Error("VS Code is not installed");
+  },
+  async launchRemote(input, runtime) {
+    const command = runtime.resolveCommand(commands(runtime));
+    if (!command) {
+      throw new Error("VS Code is not installed");
+    }
+    const remoteArgs = ["--remote", `ssh-remote+${input.sshHost}`];
+    const args = input.cwd ? [...remoteArgs, input.cwd, input.path] : [...remoteArgs, input.path];
+    await runtime.spawnDetached({ command, args });
   },
 };

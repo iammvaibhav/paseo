@@ -1,5 +1,8 @@
 import { type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import {
   AgentSideConnection,
@@ -8,6 +11,7 @@ import {
   RequestError,
   ndJsonStream,
   type Agent,
+  type CreateTerminalRequest,
   PermissionOption,
   PromptResponse,
   RequestPermissionRequest,
@@ -16,10 +20,13 @@ import {
 } from "@agentclientprotocol/sdk";
 
 import {
+  ACP_ALLOW_ALL_MODE,
+  ACP_ALLOW_ALL_MODE_ID,
   ACPAgentClient,
   ACPAgentSession,
   type SpawnedACPProcess,
   type SessionStateResponse,
+  appendSyntheticAllowAllMode,
   buildACPClientCapabilities,
   createLoggedNdJsonStream,
   deriveModelDefinitionsFromACP,
@@ -128,7 +135,13 @@ interface ACPConfiguredOverrideInternals {
   applyConfiguredOverrides(): Promise<void>;
 }
 
-function createSession(terminateProcess?: ProcessTerminator): ACPAgentSession {
+function createSession(
+  options: {
+    terminateProcess?: ProcessTerminator;
+    launchEnv?: Record<string, string>;
+  } = {},
+): ACPAgentSession {
+  const { terminateProcess, launchEnv } = options;
   return new ACPAgentSession(
     {
       provider: "claude-acp",
@@ -148,6 +161,7 @@ function createSession(terminateProcess?: ProcessTerminator): ACPAgentSession {
         supportsToolInvocations: true,
       },
       ...(terminateProcess ? { terminateProcess } : {}),
+      ...(launchEnv ? { launchEnv } : {}),
     },
   );
 }
@@ -660,6 +674,114 @@ describe("ACPAgentSession terminal tools", () => {
     );
   });
 
+  // Terminals the daemon opens for an agent are siblings of the agent process, so
+  // they inherit nothing from it. They carry the agent's identity only if the
+  // session puts its launch environment on them, the way its transport spawn does.
+  describe("agent launch environment", () => {
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    const readLaunchIdentityArgs = [
+      "-e",
+      "process.stdout.write(JSON.stringify({ id: process.env.PASEO_AGENT_ID ?? null, cwd: process.env.PASEO_AGENT_CWD ?? null, extra: process.env.PASEO_TEST_EXTRA ?? null }))",
+    ];
+
+    async function readLaunchIdentity(
+      session: ACPAgentSession,
+      params: Partial<CreateTerminalRequest> = {},
+    ): Promise<{ id: string | null; cwd: string | null; extra: string | null }> {
+      const terminal = await session.createTerminal({
+        sessionId: "session-1",
+        command: process.execPath,
+        args: readLaunchIdentityArgs,
+        cwd: process.cwd(),
+        ...params,
+      });
+      await session.waitForTerminalExit({
+        sessionId: "session-1",
+        terminalId: terminal.terminalId,
+      });
+      const { output } = await session.terminalOutput({
+        sessionId: "session-1",
+        terminalId: terminal.terminalId,
+      });
+      return JSON.parse(output.trim());
+    }
+
+    test("gives the terminal the agent's identity", async () => {
+      // The daemon itself does not run inside a Paseo agent.
+      vi.stubEnv("PASEO_AGENT_ID", undefined);
+      vi.stubEnv("PASEO_AGENT_CWD", undefined);
+      const session = createSession({
+        launchEnv: {
+          PASEO_AGENT_ID: "agent-1",
+          PASEO_AGENT_CWD: "/repo",
+        },
+      });
+
+      await expect(readLaunchIdentity(session)).resolves.toMatchObject({
+        id: "agent-1",
+        cwd: "/repo",
+      });
+    });
+
+    test("prefers the agent's identity over the daemon's own environment", async () => {
+      // A daemon started from inside another Paseo agent carries that agent's id.
+      vi.stubEnv("PASEO_AGENT_ID", "daemon-host-agent");
+      vi.stubEnv("PASEO_AGENT_CWD", "/elsewhere");
+      const session = createSession({
+        launchEnv: {
+          PASEO_AGENT_ID: "agent-1",
+          PASEO_AGENT_CWD: "/repo",
+        },
+      });
+
+      await expect(readLaunchIdentity(session)).resolves.toMatchObject({
+        id: "agent-1",
+        cwd: "/repo",
+      });
+    });
+
+    test("lets the requested terminal environment win over the launch environment", async () => {
+      const session = createSession({
+        launchEnv: {
+          PASEO_AGENT_ID: "agent-1",
+          PASEO_TEST_EXTRA: "from-launch",
+        },
+      });
+
+      await expect(
+        readLaunchIdentity(session, {
+          env: [{ name: "PASEO_TEST_EXTRA", value: "from-request" }],
+        }),
+      ).resolves.toMatchObject({ id: "agent-1", extra: "from-request" });
+    });
+
+    test("carries the agent's identity into single-string shell commands", async () => {
+      const child = createTerminalChildStub();
+      const spawn = vi.spyOn(spawnUtils, "spawnProcess").mockReturnValue(child);
+      const session = createSession({ launchEnv: { PASEO_AGENT_ID: "agent-1" } });
+
+      await session.createTerminal({
+        sessionId: "session-1",
+        command: "paseo heartbeat create --every 5m",
+        cwd: "/repo",
+      });
+
+      expect(spawn).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.any(Array),
+        expect.objectContaining({
+          envOverlay: expect.objectContaining({
+            PASEO_AGENT_ID: "agent-1",
+            BASH_ENV: undefined,
+          }),
+        }),
+      );
+    });
+  });
+
   test("surfaces spawn errors through terminal output and waitForTerminalExit", async () => {
     const child = createTerminalChildStub();
     vi.spyOn(spawnUtils, "spawnProcess").mockReturnValue(child);
@@ -703,6 +825,46 @@ describe("mapACPUsage", () => {
       outputTokens: 7,
       cachedInputTokens: 5,
     });
+  });
+});
+
+describe("ACP context-window usage", () => {
+  async function emitUsageUpdate(update: {
+    used: number;
+    size: number;
+  }): Promise<{ events: unknown[] }> {
+    const session = createSessionWithConfig({ provider: "dsh" });
+    asInternals<ACPSessionInternals>(session).sessionId = "session-1";
+    const events: unknown[] = [];
+    session.subscribe((event) => {
+      if (event.type === "usage_updated") events.push(event);
+    });
+    await session.sessionUpdate({
+      sessionId: "session-1",
+      update: { sessionUpdate: "usage_update", used: update.used, size: update.size },
+    });
+    return { events };
+  }
+
+  test("forwards usage_update as context-window usage state", async () => {
+    const { events } = await emitUsageUpdate({ used: 13_759, size: 1_000_000 });
+
+    expect(events).toEqual([
+      {
+        type: "usage_updated",
+        provider: "dsh",
+        usage: { contextWindowMaxTokens: 1_000_000, contextWindowUsedTokens: 13_759 },
+      },
+    ]);
+  });
+
+  test("emits nothing when size and used cannot both drive a meter", async () => {
+    await expect(
+      emitUsageUpdate({ used: -1, size: 0 }).then((result) => result.events),
+    ).resolves.toEqual([]);
+    await expect(
+      emitUsageUpdate({ used: 13_759, size: 0 }).then((result) => result.events),
+    ).resolves.toEqual([]);
   });
 });
 
@@ -2350,6 +2512,107 @@ describe("ACPAgentSession slash commands", () => {
     await expect(session.listCommands()).resolves.toEqual([]);
   });
 
+  test("keeps available_commands_update that arrives before sessionId is assigned", async () => {
+    // Grok (and possibly other ACP agents) emit available_commands_update with
+    // the new sessionId before session/new resolves. this.sessionId is still
+    // null at that point; dropping the update leaves slash commands empty.
+    const session = new ACPAgentSession(
+      {
+        provider: "grok",
+        cwd: "/tmp/paseo-acp-test",
+      },
+      {
+        provider: "grok",
+        logger: createTestLogger(),
+        defaultCommand: ["grok", "agent", "stdio"],
+        defaultModes: [],
+        capabilities: {
+          supportsStreaming: true,
+          supportsSessionPersistence: true,
+          supportsDynamicModes: true,
+          supportsMcpServers: true,
+          supportsReasoningStream: true,
+          supportsToolInvocations: true,
+        },
+        waitForInitialCommands: false,
+      },
+    );
+
+    await session.sessionUpdate({
+      sessionId: "session-before-assign",
+      update: {
+        sessionUpdate: "available_commands_update",
+        availableCommands: [
+          {
+            name: "check-work",
+            description: "Verify recent changes",
+            input: { hint: "optional scope" },
+          },
+          {
+            name: "compact",
+            description: "Compress conversation history",
+          },
+        ],
+      },
+    });
+
+    await expect(session.listCommands()).resolves.toEqual([
+      {
+        name: "check-work",
+        description: "Verify recent changes",
+        argumentHint: "optional scope",
+        kind: "command",
+      },
+      {
+        name: "compact",
+        description: "Compress conversation history",
+        argumentHint: "",
+        kind: "command",
+      },
+    ]);
+  });
+
+  test("still ignores available_commands_update for a different session after sessionId is set", async () => {
+    const session = new ACPAgentSession(
+      {
+        provider: "grok",
+        cwd: "/tmp/paseo-acp-test",
+      },
+      {
+        provider: "grok",
+        logger: createTestLogger(),
+        defaultCommand: ["grok", "agent", "stdio"],
+        defaultModes: [],
+        capabilities: {
+          supportsStreaming: true,
+          supportsSessionPersistence: true,
+          supportsDynamicModes: true,
+          supportsMcpServers: true,
+          supportsReasoningStream: true,
+          supportsToolInvocations: true,
+        },
+        waitForInitialCommands: false,
+      },
+    );
+
+    asInternals<{ sessionId: string | null }>(session).sessionId = "session-a";
+
+    await session.sessionUpdate({
+      sessionId: "session-b",
+      update: {
+        sessionUpdate: "available_commands_update",
+        availableCommands: [
+          {
+            name: "should-not-appear",
+            description: "From another session",
+          },
+        ],
+      },
+    });
+
+    await expect(session.listCommands()).resolves.toEqual([]);
+  });
+
   test("waits for async available_commands_update when enabled", async () => {
     const session = new ACPAgentSession(
       {
@@ -3327,7 +3590,7 @@ describe("ACPAgentSession close() tree-kill", () => {
 
   test("close() terminates the main child process via the process tree", async () => {
     const terminator = new FakeTerminator();
-    const session = createSession(terminator.terminate);
+    const session = createSession({ terminateProcess: terminator.terminate });
     const internals = asInternals<ACPCloseInternals>(session);
 
     const child = createTerminalChildStub();
@@ -3345,7 +3608,7 @@ describe("ACPAgentSession close() tree-kill", () => {
 
   test("close() terminates running terminal child processes", async () => {
     const terminator = new FakeTerminator();
-    const session = createSession(terminator.terminate);
+    const session = createSession({ terminateProcess: terminator.terminate });
 
     const terminalChild = createTerminalChildStub();
     await startTerminal(session, terminalChild);
@@ -3358,7 +3621,7 @@ describe("ACPAgentSession close() tree-kill", () => {
 
   test("close() terminates terminal child processes in parallel", async () => {
     const terminator = new FakeTerminator("deferred");
-    const session = createSession(terminator.terminate);
+    const session = createSession({ terminateProcess: terminator.terminate });
 
     const firstChild = createTerminalChildStub();
     const secondChild = createTerminalChildStub();
@@ -3376,7 +3639,7 @@ describe("ACPAgentSession close() tree-kill", () => {
 
   test("killTerminal terminates the terminal process tree without a direct SIGTERM", async () => {
     const terminator = new FakeTerminator();
-    const session = createSession(terminator.terminate);
+    const session = createSession({ terminateProcess: terminator.terminate });
 
     const child = createTerminalChildStub();
     const terminalId = await startTerminal(session, child);
@@ -3389,7 +3652,7 @@ describe("ACPAgentSession close() tree-kill", () => {
 
   test("releaseTerminal terminates and removes a running terminal", async () => {
     const terminator = new FakeTerminator();
-    const session = createSession(terminator.terminate);
+    const session = createSession({ terminateProcess: terminator.terminate });
 
     const child = createTerminalChildStub();
     const terminalId = await startTerminal(session, child);
@@ -3405,6 +3668,34 @@ describe("ACPAgentSession close() tree-kill", () => {
 });
 
 describe("ACPAgentSession initialization cleanup", () => {
+  test("rejects a resume whose working directory was deleted instead of crashing", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "paseo-acp-deleted-cwd-"));
+    const deletedCwd = path.join(root, "worktree");
+    const terminator = new FakeTerminator();
+    const session = new ACPAgentSession(
+      { provider: "test-acp", cwd: deletedCwd },
+      {
+        provider: "test-acp",
+        logger: createTestLogger(),
+        defaultCommand: [process.execPath, "-e", "process.stdin.resume()"],
+        defaultModes: [],
+        capabilities: {
+          supportsStreaming: true,
+          supportsSessionPersistence: true,
+        },
+        handle: { provider: "test-acp", sessionId: "archived-session" },
+        terminateProcess: terminator.terminate,
+      },
+    );
+
+    try {
+      await expect(session.initializeResumedSession()).rejects.toThrow("ENOENT");
+      expect(terminator.terminated).toHaveLength(1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test("terminates the ACP process when session/new fails", async () => {
     const terminator = new FakeTerminator();
     const child = createProbeChildStub();
@@ -4031,5 +4322,223 @@ describe("ACP session/load invariant — cwd and mcpServers always passed", () =
       cwd: "/tmp/paseo-acp-test",
       mcpServers: [],
     });
+  });
+});
+
+describe("ACP daemon Allow All mode", () => {
+  const nativeModes = [
+    { id: "default", label: "Default" },
+    { id: "plan", label: "Plan" },
+  ];
+
+  interface ACPSessionStateInternals {
+    applySessionState(response: SessionStateResponse): void;
+  }
+
+  function createAllowAllSession(config: { modeId?: string | null } = {}): ACPAgentSession {
+    return new ACPAgentSession(
+      {
+        provider: "cursor",
+        cwd: "/tmp/paseo-acp-test",
+        modeId: config.modeId ?? undefined,
+      },
+      {
+        provider: "cursor",
+        logger: createTestLogger(),
+        defaultCommand: ["cursor-agent", "acp"],
+        defaultModes: [],
+        capabilities: {
+          supportsStreaming: true,
+          supportsSessionPersistence: true,
+          supportsDynamicModes: true,
+          supportsMcpServers: true,
+          supportsReasoningStream: true,
+          supportsToolInvocations: true,
+        },
+        syntheticAllowAllMode: true,
+      },
+    );
+  }
+
+  test("appendSyntheticAllowAllMode appends only when the agent advertises modes", () => {
+    expect(appendSyntheticAllowAllMode([])).toEqual([]);
+    expect(appendSyntheticAllowAllMode(nativeModes)).toEqual([...nativeModes, ACP_ALLOW_ALL_MODE]);
+    expect(appendSyntheticAllowAllMode([ACP_ALLOW_ALL_MODE])).toEqual([ACP_ALLOW_ALL_MODE]);
+  });
+
+  test("appends Allow All to agent-reported modes on session start", async () => {
+    const session = createAllowAllSession();
+    asInternals<ACPSessionStateInternals>(session).applySessionState({
+      sessionId: "session-1",
+      modes: {
+        currentModeId: "default",
+        availableModes: [
+          { id: "default", name: "Default", description: null },
+          { id: "plan", name: "Plan", description: null },
+        ],
+      },
+    });
+
+    await expect(session.getAvailableModes()).resolves.toEqual([
+      { id: "default", label: "Default", description: undefined },
+      { id: "plan", label: "Plan", description: undefined },
+      ACP_ALLOW_ALL_MODE,
+    ]);
+    await expect(session.getCurrentMode()).resolves.toBe("default");
+  });
+
+  test("selecting Allow All activates daemon-side without provider RPC and auto-approves permissions", async () => {
+    const session = createAllowAllSession();
+    const { setSessionMode, setSessionConfigOption } = prepareConfiguredOverrideSession(session, {
+      currentMode: "default",
+      availableModes: [...nativeModes, ACP_ALLOW_ALL_MODE],
+    });
+    const events: AgentStreamEvent[] = [];
+    const unsubscribe = session.subscribe((event) => events.push(event));
+
+    await session.setMode(ACP_ALLOW_ALL_MODE_ID);
+
+    expect(setSessionMode).not.toHaveBeenCalled();
+    expect(setSessionConfigOption).not.toHaveBeenCalled();
+    await expect(session.getCurrentMode()).resolves.toBe(ACP_ALLOW_ALL_MODE_ID);
+    expect(events).toContainEqual(
+      expect.objectContaining({ type: "mode_changed", currentModeId: ACP_ALLOW_ALL_MODE_ID }),
+    );
+
+    const response = await session.requestPermission({
+      sessionId: "session-1",
+      toolCall: {
+        toolCallId: "tool-1",
+        title: "Run command",
+        kind: "execute",
+        status: "pending",
+      },
+      options: [
+        { optionId: "allow-once", name: "Allow", kind: "allow_once" },
+        { optionId: "allow-always", name: "Always Allow", kind: "allow_always" },
+        { optionId: "reject-once", name: "Reject", kind: "reject_once" },
+      ],
+    } satisfies RequestPermissionRequest);
+    unsubscribe();
+
+    expect(response).toEqual({ outcome: { outcome: "selected", optionId: "allow-once" } });
+    expect(events.some((event) => event.type === "permission_requested")).toBe(false);
+  });
+
+  test("switching away from Allow All writes the native mode and surfaces permissions again", async () => {
+    const session = createAllowAllSession();
+    const { setSessionMode } = prepareConfiguredOverrideSession(session, {
+      currentMode: "default",
+      availableModes: [...nativeModes, ACP_ALLOW_ALL_MODE],
+    });
+
+    await session.setMode(ACP_ALLOW_ALL_MODE_ID);
+    await session.setMode("plan");
+
+    expect(setSessionMode).toHaveBeenCalledWith({ sessionId: "session-1", modeId: "plan" });
+    await expect(session.getCurrentMode()).resolves.toBe("plan");
+
+    const events: Array<{ type: string; request?: { id: string } }> = [];
+    session.subscribe((event) => {
+      events.push(event as { type: string; request?: { id: string } });
+    });
+    const permission = session.requestPermission({
+      sessionId: "session-1",
+      toolCall: {
+        toolCallId: "tool-1",
+        title: "Run command",
+        kind: "execute",
+        status: "pending",
+      },
+      options: [
+        { optionId: "allow-once", name: "Allow", kind: "allow_once" },
+        { optionId: "reject-once", name: "Reject", kind: "reject_once" },
+      ],
+    } satisfies RequestPermissionRequest);
+    await Promise.resolve();
+
+    const requested = events.find((event) => event.type === "permission_requested");
+    expect(requested?.request?.id).toEqual(expect.any(String));
+
+    await session.respondToPermission(requested!.request!.id, { behavior: "allow" });
+    await expect(permission).resolves.toEqual({
+      outcome: { outcome: "selected", optionId: "allow-once" },
+    });
+  });
+
+  test("agent current_mode_update echoes do not deactivate Allow All", async () => {
+    const session = createAllowAllSession();
+    prepareConfiguredOverrideSession(session, {
+      currentMode: "default",
+      availableModes: [...nativeModes, ACP_ALLOW_ALL_MODE],
+    });
+    await session.setMode(ACP_ALLOW_ALL_MODE_ID);
+
+    const events = asInternals<ACPSessionInternals>(session).translateSessionUpdate({
+      sessionUpdate: "current_mode_update",
+      currentModeId: "default",
+    });
+
+    expect(events).toMatchObject([{ type: "mode_changed", currentModeId: ACP_ALLOW_ALL_MODE_ID }]);
+    await expect(session.getCurrentMode()).resolves.toBe(ACP_ALLOW_ALL_MODE_ID);
+  });
+
+  test("applies persisted Allow All mode on session start without provider RPC", async () => {
+    const session = createAllowAllSession({ modeId: ACP_ALLOW_ALL_MODE_ID });
+    const { internals, setSessionMode, setSessionConfigOption } = prepareConfiguredOverrideSession(
+      session,
+      {
+        currentMode: "default",
+        availableModes: [...nativeModes, ACP_ALLOW_ALL_MODE],
+      },
+    );
+
+    await internals.applyConfiguredOverrides();
+
+    expect(setSessionMode).not.toHaveBeenCalled();
+    expect(setSessionConfigOption).not.toHaveBeenCalled();
+    await expect(session.getCurrentMode()).resolves.toBe(ACP_ALLOW_ALL_MODE_ID);
+  });
+
+  test("surfaces the request when Allow All has no allow option to select", async () => {
+    const session = createAllowAllSession();
+    prepareConfiguredOverrideSession(session, {
+      currentMode: "default",
+      availableModes: [...nativeModes, ACP_ALLOW_ALL_MODE],
+    });
+    await session.setMode(ACP_ALLOW_ALL_MODE_ID);
+
+    const events: Array<{ type: string; request?: { id: string } }> = [];
+    session.subscribe((event) => {
+      events.push(event as { type: string; request?: { id: string } });
+    });
+    void session.requestPermission({
+      sessionId: "session-1",
+      toolCall: {
+        toolCallId: "tool-1",
+        title: "Run command",
+        kind: "execute",
+        status: "pending",
+      },
+      options: [{ optionId: "reject-once", name: "Reject", kind: "reject_once" }],
+    } satisfies RequestPermissionRequest);
+    await Promise.resolve();
+
+    expect(events.some((event) => event.type === "permission_requested")).toBe(true);
+  });
+
+  test("sessions without syntheticAllowAllMode do not expose or honor Allow All", async () => {
+    const session = createSessionWithConfig({ provider: "cursor" });
+    asInternals<ACPSessionStateInternals>(session).applySessionState({
+      sessionId: "session-1",
+      modes: {
+        currentModeId: "default",
+        availableModes: [{ id: "default", name: "Default", description: null }],
+      },
+    });
+
+    await expect(session.getAvailableModes()).resolves.toEqual([
+      { id: "default", label: "Default", description: undefined },
+    ]);
   });
 });

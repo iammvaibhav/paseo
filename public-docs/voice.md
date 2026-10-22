@@ -18,7 +18,7 @@ This keeps credentials and execution in your environment and avoids introducing 
 
 ## Architecture
 
-- Speech I/O: STT and TTS providers per feature (`local` or `openai`)
+- Speech I/O: STT and TTS providers per feature (`local`, `openai`, or Fish Audio for TTS)
 - Local speech runtime: ONNX models executed on CPU by default
 - Voice LLM orchestration: hidden agent session using your configured provider (`claude`, `codex`, or `opencode`)
 - Tooling path: MCP stdio bridge for voice tools and agent control
@@ -111,12 +111,47 @@ Paseo uses these paths under the configured OpenAI base URL:
 - voice mode STT: `/v1/audio/transcriptions`
 - voice mode TTS: `/v1/audio/speech`
 
+## Fish Audio Voice TTS
+
+You can use Fish Audio for **voice mode TTS only** (STT/dictation remain local or OpenAI).
+
+```json
+{
+  "version": 1,
+  "features": {
+    "voiceMode": {
+      "tts": {
+        "provider": "fish",
+        "model": "s2.1-pro-free",
+        "voice": "933563129e564b19a115bedd57b7406a",
+        "speed": 1.35
+      }
+    }
+  },
+  "providers": {
+    "fish": {
+      "apiKey": "..."
+    }
+  }
+}
+```
+
+Environment variables:
+
+- `PASEO_VOICE_TTS_PROVIDER=fish`
+- `FISH_AUDIO_API_KEY` (or `providers.fish.apiKey`)
+- optional: `FISH_AUDIO_TTS_MODEL`, `FISH_AUDIO_TTS_VOICE`, `FISH_AUDIO_TTS_LATENCY` (`low` | `balanced` | `normal`), `FISH_AUDIO_TTS_SPEED`, `FISH_AUDIO_BASE_URL`
+
+Defaults when Fish is selected: model `s2.1-pro-free`, Sarah voice id `933563129e564b19a115bedd57b7406a`, `latency=balanced`, `speed=1.35`, streamed MP3.
+
 ## Environment Variables
 
 - `PASEO_VOICE_LLM_PROVIDER`, voice agent provider override
-- `PASEO_DICTATION_STT_PROVIDER`, `PASEO_VOICE_STT_PROVIDER`, `PASEO_VOICE_TTS_PROVIDER`, speech provider selection (`local` or `openai`)
+- `PASEO_DICTATION_STT_PROVIDER`, `PASEO_VOICE_STT_PROVIDER`, `PASEO_VOICE_TTS_PROVIDER`, speech provider selection (`local`, `openai`, or `fish` for voice TTS)
 - `OPENAI_STT_API_KEY`, `OPENAI_STT_BASE_URL`, OpenAI speech-to-text endpoint (dictation + voice mode STT)
 - `OPENAI_TTS_API_KEY`, `OPENAI_TTS_BASE_URL`, OpenAI text-to-speech endpoint (voice mode TTS)
+- `FISH_AUDIO_API_KEY`, Fish Audio text-to-speech credentials (voice mode TTS)
+- `FISH_AUDIO_TTS_MODEL`, `FISH_AUDIO_TTS_VOICE`, `FISH_AUDIO_TTS_LATENCY`, `FISH_AUDIO_TTS_SPEED`, optional Fish TTS knobs
 - `PASEO_LOCAL_MODELS_DIR`, local model storage directory
 - `PASEO_DICTATION_LOCAL_STT_MODEL`, local dictation STT model ID
 - `PASEO_VOICE_LOCAL_STT_MODEL`, `PASEO_VOICE_LOCAL_TTS_MODEL`, local voice STT/TTS model IDs

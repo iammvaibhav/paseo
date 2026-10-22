@@ -16,6 +16,10 @@ The invariants are:
 > agent establishes the daemon's current tail in one bounded request, with older history reachable
 > through backward pagination.
 
+> The timeline epoch identifies one numbering of an agent's rows. It changes only when the daemon
+> renumbers them. Rehydration is not a renumber: it continues the durable epoch and the durable
+> `nextSeq`.
+
 Tool output is bounded before it enters either delivery path. Canonical shell tool output is sliced
 to 64 KiB, and the same bounded item is used for runtime timeline rows and live stream events.
 Provider history hydration applies the same rule so reopening an agent cannot restore an oversized
@@ -63,6 +67,16 @@ the anchored page still leaves the viewport at history start, as with short or c
 that case pagination continues as one loading operation until the page fills the viewport or history
 is exhausted.
 
+A jump to an unloaded message (Chat outline, chat find) merges a window around it with
+`mergeWindow`. The window becomes a retained range beside the contiguous range that reaches the
+newest row, so the loaded coverage can have holes. "Older" means rows above the top of the list,
+which a jump window can own: scrolling up extends the topmost range, and a window that starts at
+the first row leaves nothing older. Rows between two ranges render a "Load more history" row below
+the last loaded row before them; each press loads the next page top-down
+(`planTimelineGapFill`), and the row disappears when the ranges join. Before this row existed, a
+jump to the first message spliced it directly onto the newest page and the turns in between could
+only come back by reloading the chat.
+
 ## Durable item anchors
 
 Provider message IDs are not guaranteed for every displayed item. Paseo-generated system errors are one example. Rendered item indices are not durable either because pagination and projection can merge source rows.
@@ -73,6 +87,24 @@ The daemon validates the epoch and locates the projected item at the selected po
 includes projected items through that checkpoint. If an item spans the checkpoint and changed
 afterward, the daemon refuses that fork with an actionable error: discarded historical payloads
 cannot be reconstructed from sequence metadata. Forking the current context remains available.
+
+## Epoch rotation
+
+Rotate the epoch only when the numbering actually changes, such as a provider-history reconcile, a
+fork, or a rewind.
+
+Rehydration must not rotate it. An idle agent releases its provider process and loses its in-memory
+timeline, so the next prompt or fetch rebuilds it. The durable document is authoritative whenever it
+holds rows, and the rebuild continues that document's epoch and `nextSeq`. A rebuild from provider
+disk history numbers the rows from 1 again, which mutes every connected client and makes the durable
+store reject the batch for a sequence it already holds. That rejection retries forever, so the agent
+stops persisting rows until the daemon restarts.
+
+A client that receives a rotated epoch, or a sequence at or below its cursor, holds a cursor that no
+longer matches the daemon. A forward `after` fetch cannot repair it, because the cursor names a
+numbering the daemon no longer has. The client fetches the latest tail instead. A client that drops
+the event without that fetch shows an empty response for the rest of the turn, while the turn footer
+keeps counting, because turn liveness does not carry a sequence and never passes through the gate.
 
 ## Resume behavior
 

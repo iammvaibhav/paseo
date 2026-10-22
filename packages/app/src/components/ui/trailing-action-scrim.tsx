@@ -28,12 +28,18 @@ function TrailingActionScrimSvg({ gradientId, color }: { gradientId: string; col
 const ThemedTrailingActionScrimSvg = withUnistyles(TrailingActionScrimSvg);
 
 const backdropColorMappings: Record<SurfaceBackdrop, (theme: Theme) => { color: string }> = {
-  surface0: (theme) => ({ color: theme.colors.surface0 }),
-  surface1: (theme) => ({ color: theme.colors.surface1 }),
-  surface2: (theme) => ({ color: theme.colors.surface2 }),
-  surfaceSidebar: (theme) => ({ color: theme.colors.surfaceSidebar }),
-  surfaceSidebarHover: (theme) => ({ color: theme.colors.surfaceSidebarHover }),
-  surfaceSidebarSelected: (theme) => ({ color: theme.colors.surfaceSidebarSelected }),
+  surface0: (theme) => ({ color: theme.glass?.scrim.surface0 ?? theme.colors.surface0 }),
+  surface1: (theme) => ({ color: theme.glass?.scrim.surface1 ?? theme.colors.surface1 }),
+  surface2: (theme) => ({ color: theme.glass?.scrim.surface2 ?? theme.colors.surface2 }),
+  surfaceSidebar: (theme) => ({
+    color: theme.glass?.scrim.surfaceSidebar ?? theme.colors.surfaceSidebar,
+  }),
+  surfaceSidebarHover: (theme) => ({
+    color: theme.glass?.scrim.surfaceSidebarHover ?? theme.colors.surfaceSidebarHover,
+  }),
+  surfaceSidebarSelected: (theme) => ({
+    color: theme.glass?.scrim.surfaceSidebarSelected ?? theme.colors.surfaceSidebarSelected,
+  }),
 };
 
 /** Fades trailing content into the surface beneath an absolutely overlaid action. */

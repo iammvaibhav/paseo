@@ -64,7 +64,9 @@ export class CreateAgentLifecycleDispatch {
     hasLegacyGitOptions: boolean;
   }): Promise<CreatePaseoWorktreeWorkflowResult | null> {
     if (input.target && input.hasLegacyGitOptions) {
-      throw new Error("create_agent_request worktree cannot be combined with git options");
+      throw new Error(
+        "create_agent_request worktree cannot be combined with git options or worktreeName",
+      );
     }
     if (!input.target) {
       return null;

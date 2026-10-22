@@ -3,7 +3,15 @@ import {
   createTestCreationService,
 } from "./test-utils/session-stubs.js";
 import { execSync } from "child_process";
-import { existsSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "fs";
 import { tmpdir } from "os";
 import { join, resolve as resolvePath } from "path";
 import pino from "pino";
@@ -23,6 +31,7 @@ import {
   type FileTransferFrame,
 } from "@getpaseo/protocol/binary-frames/index";
 import { Session } from "./session.js";
+import type { MissionControlService } from "./mission-control/service.js";
 import { OWNER_PERMISSIONS, type DaemonPermission } from "./authorization/index.js";
 import { DownloadTokenStore } from "./file-download/token-store.js";
 import { StructuredAgentFallbackError } from "./agent/agent-response-loop.js";
@@ -58,6 +67,11 @@ import {
 } from "../services/github-service.js";
 import type { CheckDetails, ForgeService } from "../services/forge-service.js";
 import type { GitHubPullRequestStatusFacts } from "../services/github-facts.js";
+
+// An async generator that yields nothing, for stubbing startAgentRun's stream.
+function noopAgentStream() {
+  return (async function* () {})();
+}
 
 interface SessionHandlerInternals {
   interruptAgentIfRunning(agentId: string): Promise<void>;
@@ -127,6 +141,7 @@ test("cancel_agent_request reports refusal only through its response", async () 
   const messages: SessionOutboundMessage[] = [];
   const getAgent = vi
     .fn()
+    .mockReturnValueOnce({ id: agentId, provider: "codex", lifecycle: "running" })
     .mockReturnValueOnce({ id: agentId, provider: "codex", lifecycle: "running" })
     .mockReturnValue(null);
   const session = createSessionForTest({
@@ -324,6 +339,8 @@ interface SessionForTestOptions {
   serverId?: SessionOptions["serverId"];
   daemonVersion?: SessionOptions["daemonVersion"];
   daemonRuntimeConfig?: SessionOptions["daemonRuntimeConfig"];
+  missionControlService?: SessionOptions["missionControlService"];
+  peerManager?: SessionOptions["peerManager"];
   downloadTokenStore?: SessionOptions["downloadTokenStore"];
   pushNotifications?: SessionOptions["pushNotifications"];
   messages?: unknown[];
@@ -388,6 +405,7 @@ function createSessionForTest(options: SessionForTestOptions = {}): Session {
     agentManager: asAgentManager({
       listAgents: vi.fn(() => []),
       listProviderSubagentActivity: vi.fn(() => []),
+      getRegisteredProviderIds: vi.fn(() => []),
       subscribe: vi.fn(() => () => {}),
       ...options.agentManager,
     }),
@@ -439,6 +457,8 @@ function createSessionForTest(options: SessionForTestOptions = {}): Session {
     serverId: options.serverId,
     daemonVersion: options.daemonVersion,
     daemonRuntimeConfig: options.daemonRuntimeConfig,
+    missionControlService: options.missionControlService,
+    peerManager: options.peerManager,
     permissions: options.permissions ?? OWNER_PERMISSIONS,
   };
   return new Session(sessionOptions);
@@ -521,6 +541,8 @@ test("routes plugin requests and releases its owned catalog subscription on clea
     },
     catalog: () => [{ id: "example", clientBundle: "bundle" }],
     invokePluginRpc: async () => ({ ok: true }),
+    listUsageReports: async () => [],
+    listLegacyUsage: async () => ({ fetchedAt: "2026-01-01T00:00:00.000Z", providers: [] }),
   };
   const session = createSessionForTest({ messages, pluginRuntime });
 
@@ -1014,9 +1036,11 @@ describe("project command-center RPCs", () => {
               projectDisplayName: "new-project",
               projectCustomName: null,
               projectCustomIconRevision: null,
+              projectDescription: null,
               projectIconRevision: "automatic:none:v1",
               projectRootPath: directoryPath,
               projectKind: "non_git",
+              baseWorkspaceId: null,
             },
             error: null,
             errorCode: null,
@@ -1557,6 +1581,7 @@ describe("agent detach RPC", () => {
       agentManager: {
         getAgent,
         detachAgent,
+        getRegisteredProviderIds: vi.fn().mockReturnValue(["codex"]),
       },
       agentStorage: {
         list: vi.fn().mockResolvedValue([]),
@@ -1613,6 +1638,177 @@ describe("agent detach RPC", () => {
   });
 });
 
+describe("agent.workspace.move RPC", () => {
+  test("moves a stored agent and emits the response + agent_update", async () => {
+    const messages: unknown[] = [];
+    const workspaceSource = {
+      workspaceId: "workspace-source",
+      projectId: "project-source",
+      cwd: "/tmp/source",
+      kind: "directory" as const,
+      displayName: "Source",
+      title: null,
+      branch: null,
+      baseBranch: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      archivedAt: null,
+    };
+    const workspaceTarget = {
+      workspaceId: "workspace-target",
+      projectId: "project-target",
+      cwd: "/tmp/target",
+      kind: "directory" as const,
+      displayName: "Target",
+      title: null,
+      branch: null,
+      baseBranch: null,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      archivedAt: null,
+    };
+    const agentBefore = createStoredAgentRecord({
+      id: "moving-agent",
+      cwd: "/tmp/source",
+      workspaceId: "workspace-source",
+      title: "Moving",
+      name: "glowing-otter",
+    });
+    const agentAfter = createStoredAgentRecord({
+      ...agentBefore,
+      updatedAt: "2026-01-01T00:00:01.000Z",
+      workspaceId: "workspace-target",
+    });
+    const moveAgentWorkspace = vi.fn().mockResolvedValue(agentAfter);
+    const getAgent = vi.fn(() => null);
+
+    const session = createSessionForTest({
+      messages,
+      agentManager: {
+        getAgent,
+        moveAgentWorkspace,
+        getRegisteredProviderIds: vi.fn().mockReturnValue(["codex"]),
+      },
+      agentStorage: {
+        list: vi.fn().mockResolvedValue([]),
+        get: vi.fn().mockResolvedValue(agentBefore),
+      },
+      workspaceRegistry: {
+        get: vi.fn(async (workspaceId: string) =>
+          workspaceId === "workspace-source" ? workspaceSource : workspaceTarget,
+        ),
+        list: vi.fn().mockResolvedValue([workspaceSource, workspaceTarget]),
+      },
+      projectRegistry: {
+        get: vi.fn(async (projectId: string) =>
+          projectId === "project-target"
+            ? {
+                projectId: "project-target",
+                rootPath: "/tmp/target",
+                kind: "directory",
+                displayName: "Target",
+                customName: null,
+                createdAt: "2026-01-01T00:00:00.000Z",
+                updatedAt: "2026-01-01T00:00:00.000Z",
+                archivedAt: null,
+              }
+            : null,
+        ),
+        list: vi.fn().mockResolvedValue([]),
+      },
+    });
+
+    // Subscribe so the agent_update emission path is live.
+    await session.handleMessage({
+      type: "fetch_agents_request",
+      requestId: "subscribe-agents",
+      subscribe: { subscriptionId: "agents-sub" },
+    });
+    messages.splice(0);
+
+    await session.handleMessage({
+      type: "agent.workspace.move.request",
+      agentId: "moving-agent",
+      workspaceId: "workspace-target",
+      requestId: "move-1",
+    });
+
+    expect(getAgent).toHaveBeenCalledWith("moving-agent");
+    expect(moveAgentWorkspace).toHaveBeenCalledWith(
+      "moving-agent",
+      "workspace-target",
+      "/tmp/target",
+    );
+    expect(messages).toContainEqual({
+      type: "agent.workspace.move.response",
+      payload: {
+        requestId: "move-1",
+        agentId: "moving-agent",
+        workspaceId: "workspace-target",
+        accepted: true,
+        error: null,
+      },
+    });
+    expect(messages).toContainEqual({
+      type: "agent_update",
+      payload: {
+        kind: "upsert",
+        agent: expect.objectContaining({
+          id: "moving-agent",
+          workspaceId: "workspace-target",
+        }),
+        project: expect.anything(),
+      },
+    });
+  });
+
+  test("refuses a move to a missing workspace and answers accepted:false", async () => {
+    const messages: unknown[] = [];
+    const session = createSessionForTest({
+      messages,
+      agentManager: {
+        getAgent: vi.fn(() => null),
+        moveAgentWorkspace: vi.fn(),
+        getRegisteredProviderIds: vi.fn().mockReturnValue(["codex"]),
+      },
+      agentStorage: {
+        list: vi.fn().mockResolvedValue([]),
+        get: vi.fn().mockResolvedValue(
+          createStoredAgentRecord({
+            id: "moving-agent",
+            cwd: "/tmp/source",
+            workspaceId: "workspace-source",
+            title: "Moving",
+          }),
+        ),
+      },
+      workspaceRegistry: {
+        get: vi.fn().mockResolvedValue(null),
+        list: vi.fn().mockResolvedValue([]),
+      },
+    });
+
+    await session.handleMessage({
+      type: "agent.workspace.move.request",
+      agentId: "moving-agent",
+      workspaceId: "workspace-missing",
+      requestId: "move-2",
+    });
+
+    expect(messages).toContainEqual({
+      type: "agent.workspace.move.response",
+      payload: {
+        requestId: "move-2",
+        agentId: "moving-agent",
+        workspaceId: "workspace-missing",
+        accepted: false,
+        error:
+          "Workspace workspace-missing not found on this host and this daemon has no peers configured",
+      },
+    });
+  });
+});
+
 function createProjectRecord(rootPath: string, archivedAt: string | null = null) {
   return {
     projectId: `project:${rootPath}`,
@@ -1624,6 +1820,316 @@ function createProjectRecord(rootPath: string, archivedAt: string | null = null)
     archivedAt,
   };
 }
+
+describe("agent.workspace cross-host move RPC", () => {
+  test("moves an agent across hosts when targetHost is specified", async () => {
+    const messages: unknown[] = [];
+    const transferAgentInbound = vi
+      .fn()
+      .mockResolvedValue({ agentId: "moving-agent", workspaceId: "peer-ws" });
+    const removeStorage = vi.fn().mockResolvedValue(undefined);
+    const deleteAgentState = vi.fn().mockResolvedValue(undefined);
+    const peerClient = { transferAgentInbound };
+    const peerManager = {
+      getPeerStatus: vi.fn(() => ({ name: "peer-b", state: "online" as const })),
+      getPeerClient: vi.fn(() => peerClient),
+      getPeerServerId: vi.fn(() => "srv_peer_b"),
+      getPeerStatuses: vi.fn(() => [{ name: "peer-b", state: "online" as const }]),
+    };
+
+    const session = createSessionForTest({
+      messages,
+      peerManager,
+      agentManager: {
+        getAgent: vi.fn(() => null),
+        moveAgentWorkspace: vi.fn(),
+        getAgentTimelineForExport: vi
+          .fn()
+          .mockResolvedValue([
+            { seq: 1, timestamp: "2026-01-01", item: { type: "user_message", text: "hi" } },
+          ]),
+        deleteAgentState,
+        getRegisteredProviderIds: vi.fn().mockReturnValue(["codex"]),
+      },
+      agentStorage: {
+        list: vi.fn().mockResolvedValue([]),
+        get: vi.fn().mockResolvedValue(
+          createStoredAgentRecord({
+            id: "moving-agent",
+            cwd: "/tmp/source",
+            workspaceId: "workspace-source",
+            title: "Moving",
+          }),
+        ),
+        remove: removeStorage,
+      },
+      workspaceRegistry: {
+        get: vi.fn().mockResolvedValue(null),
+        list: vi.fn().mockResolvedValue([]),
+      },
+    });
+
+    await session.handleMessage({
+      type: "agent.workspace.move.request",
+      agentId: "moving-agent",
+      workspaceId: "peer-ws",
+      targetHost: "peer-b",
+      requestId: "move-cross-1",
+    });
+
+    expect(transferAgentInbound).toHaveBeenCalledWith({
+      targetWorkspaceId: "peer-ws",
+      agent: expect.objectContaining({ id: "moving-agent" }),
+      timeline: expect.arrayContaining([expect.objectContaining({ seq: 1 })]),
+    });
+    expect(removeStorage).toHaveBeenCalledWith("moving-agent");
+    expect(deleteAgentState).toHaveBeenCalledWith("moving-agent");
+    expect(messages).toContainEqual({
+      type: "agent.workspace.move.response",
+      payload: {
+        requestId: "move-cross-1",
+        agentId: "moving-agent",
+        workspaceId: "peer-ws",
+        accepted: true,
+        error: null,
+        targetServerId: "srv_peer_b",
+      },
+    });
+  });
+
+  test("handles inbound agent.workspace.transfer.request and saves agent", async () => {
+    const messages: unknown[] = [];
+    const upsertStorage = vi.fn().mockResolvedValue(undefined);
+    const importMigratedTimeline = vi.fn().mockResolvedValue(undefined);
+    const targetWs = {
+      workspaceId: "target-ws",
+      projectId: "project:test",
+      cwd: "/tmp/imported-target",
+      displayName: "Target",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+      archivedAt: null,
+    };
+
+    const session = createSessionForTest({
+      messages,
+      agentManager: {
+        getAgent: vi.fn(() => null),
+        importMigratedTimeline,
+        getRegisteredProviderIds: vi.fn().mockReturnValue(["codex"]),
+      },
+      agentStorage: {
+        upsert: upsertStorage,
+        list: vi.fn().mockResolvedValue([]),
+        get: vi.fn().mockResolvedValue(null),
+      },
+      workspaceRegistry: {
+        get: vi.fn().mockResolvedValue(targetWs),
+        list: vi.fn().mockResolvedValue([targetWs]),
+      },
+    });
+
+    await session.handleMessage({
+      type: "agent.workspace.transfer.request",
+      targetWorkspaceId: "target-ws",
+      agent: {
+        id: "imported-agent",
+        provider: "codex",
+        title: "Imported",
+        cwd: "/old/path",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      },
+      timeline: [
+        { seq: 1, timestamp: "2026-01-01", item: { type: "user_message", text: "hello" } },
+      ],
+      requestId: "transfer-1",
+    });
+
+    expect(upsertStorage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "imported-agent",
+        workspaceId: "target-ws",
+        cwd: "/tmp/imported-target",
+      }),
+    );
+    expect(importMigratedTimeline).toHaveBeenCalledWith("imported-agent", expect.any(Array));
+    expect(messages).toContainEqual({
+      type: "agent.workspace.transfer.response",
+      payload: {
+        requestId: "transfer-1",
+        agentId: "imported-agent",
+        workspaceId: "target-ws",
+        accepted: true,
+        error: null,
+      },
+    });
+  });
+
+  test("routes by the target's serverId, which is what the app sends", async () => {
+    // The move dialog knows the target host by serverId, not by config peer
+    // name. Resolving only by config name is what produced "Workspace <id> not
+    // found on this host" for a workspace sitting on a reachable peer.
+    const messages: unknown[] = [];
+    const transferAgentInbound = vi
+      .fn()
+      .mockResolvedValue({ agentId: "moving-agent", workspaceId: "peer-ws" });
+    const peerManager = {
+      getPeerStatus: vi.fn(() => ({ name: "peer-b", state: "online" as const })),
+      getPeerClient: vi.fn(() => ({ transferAgentInbound })),
+      getPeerStatuses: vi.fn(() => [{ name: "peer-b", state: "online" as const }]),
+      getPeerServerId: vi.fn(() => "srv_peer_b"),
+      resolvePeerName: vi.fn((name: string) => (name === "srv_peer_b" ? "peer-b" : null)),
+    };
+
+    const session = createSessionForTest({
+      messages,
+      peerManager,
+      agentManager: {
+        getAgent: vi.fn(() => null),
+        moveAgentWorkspace: vi.fn(),
+        getAgentTimelineForExport: vi.fn().mockResolvedValue([]),
+        deleteAgentState: vi.fn().mockResolvedValue(undefined),
+        getRegisteredProviderIds: vi.fn().mockReturnValue(["codex"]),
+      },
+      agentStorage: {
+        list: vi.fn().mockResolvedValue([]),
+        get: vi.fn().mockResolvedValue(
+          createStoredAgentRecord({
+            id: "moving-agent",
+            cwd: "/tmp/source",
+            workspaceId: "workspace-source",
+            title: "Moving",
+          }),
+        ),
+        remove: vi.fn().mockResolvedValue(undefined),
+      },
+      workspaceRegistry: {
+        get: vi.fn().mockResolvedValue(null),
+        list: vi.fn().mockResolvedValue([]),
+      },
+    });
+
+    await session.handleMessage({
+      type: "agent.workspace.move.request",
+      agentId: "moving-agent",
+      workspaceId: "peer-ws",
+      targetServerId: "srv_peer_b",
+      requestId: "move-by-server-id",
+    });
+
+    expect(transferAgentInbound).toHaveBeenCalledWith(
+      expect.objectContaining({ targetWorkspaceId: "peer-ws" }),
+    );
+    expect(messages).toContainEqual({
+      type: "agent.workspace.move.response",
+      payload: {
+        requestId: "move-by-server-id",
+        agentId: "moving-agent",
+        workspaceId: "peer-ws",
+        accepted: true,
+        error: null,
+        targetServerId: "srv_peer_b",
+      },
+    });
+  });
+
+  test("writes a carried OMP transcript and repoints the resume handle at it", async () => {
+    // The inbound handle is an absolute path on the SOURCE host. Left as-is, the
+    // target cannot find it and resumes the agent with an empty conversation.
+    const previousAgentDir = process.env.OMP_AGENT_DIR;
+    const agentDir = mkdtempSync(join(tmpdir(), "paseo-omp-ingest-session-"));
+    // resolveOmpSessionsDir puts sessions under $OMP_AGENT_DIR/sessions.
+    process.env.OMP_AGENT_DIR = agentDir;
+    try {
+      const messages: unknown[] = [];
+      const upsertStorage = vi.fn().mockResolvedValue(undefined);
+      const targetWs = {
+        workspaceId: "target-ws",
+        projectId: "project:test",
+        cwd: join(agentDir, "work", "target"),
+        displayName: "Target",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        archivedAt: null,
+      };
+      const transcript = '{"type":"session","cwd":"/old/path"}\n{"type":"user","text":"hi"}\n';
+      const fileName = "2026-09-16T15-10-42-000Z_019fe24f-c4cc-7000-8961-3d1ca5d87282.jsonl";
+
+      const session = createSessionForTest({
+        messages,
+        agentManager: {
+          getAgent: vi.fn(() => null),
+          importMigratedTimeline: vi.fn().mockResolvedValue(undefined),
+          getRegisteredProviderIds: vi.fn().mockReturnValue(["omp"]),
+        },
+        agentStorage: {
+          upsert: upsertStorage,
+          list: vi.fn().mockResolvedValue([]),
+          get: vi.fn().mockResolvedValue(null),
+        },
+        workspaceRegistry: {
+          get: vi.fn().mockResolvedValue(targetWs),
+          list: vi.fn().mockResolvedValue([targetWs]),
+        },
+      });
+
+      await session.handleMessage({
+        type: "agent.workspace.transfer.request",
+        targetWorkspaceId: "target-ws",
+        agent: {
+          id: "imported-omp-agent",
+          provider: "omp",
+          cwd: "/old/path",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+          persistence: {
+            provider: "omp",
+            sessionId: "019fe24f-c4cc-7000-8961-3d1ca5d87282",
+            nativeHandle:
+              "/source-host/.omp/agent/sessions/-/2026-09-16T15-10-42-000Z_ignored.jsonl",
+            metadata: { cwd: "/old/path", model: "omp/keep-me" },
+          },
+        },
+        providerSession: {
+          provider: "omp",
+          sessionId: "019fe24f-c4cc-7000-8961-3d1ca5d87282",
+          fileName,
+          contentBase64: Buffer.from(transcript, "utf8").toString("base64"),
+        },
+        requestId: "transfer-omp-1",
+      });
+
+      const stored = upsertStorage.mock.calls[0]?.[0] as {
+        persistence: { nativeHandle: string; metadata: Record<string, unknown> };
+      };
+      const written = stored.persistence.nativeHandle;
+      // Repointed at a path on THIS host, under its own omp layout.
+      expect(written.startsWith(agentDir)).toBe(true);
+      expect(written.endsWith(fileName)).toBe(true);
+      expect(readFileSync(written, "utf8")).toBe(transcript);
+      // Provider metadata survives; only the cwd moves with the agent.
+      expect(stored.persistence.metadata).toEqual({ cwd: targetWs.cwd, model: "omp/keep-me" });
+      expect(messages).toContainEqual({
+        type: "agent.workspace.transfer.response",
+        payload: {
+          requestId: "transfer-omp-1",
+          agentId: "imported-omp-agent",
+          workspaceId: "target-ws",
+          accepted: true,
+          error: null,
+        },
+      });
+    } finally {
+      if (previousAgentDir === undefined) {
+        delete process.env.OMP_AGENT_DIR;
+      } else {
+        process.env.OMP_AGENT_DIR = previousAgentDir;
+      }
+      rmSync(agentDir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("project config RPC authorization", () => {
   const tempDirs: string[] = [];
@@ -3905,7 +4411,7 @@ describe("session checkout status handling", () => {
     });
 
     expect(workspaceGitService.getSnapshot).toHaveBeenCalledTimes(1);
-    expect(workspaceGitService.getSnapshot).toHaveBeenCalledWith("/tmp/service-worktree");
+    expect(workspaceGitService.getSnapshot.mock.calls[0]?.[0]).toBe("/tmp/service-worktree");
     expect(checkoutGitMocks.getCheckoutStatus).not.toHaveBeenCalled();
     expect(messages).toContainEqual({
       type: "checkout_status_response",
@@ -5468,9 +5974,11 @@ test("project.list returns every active project descriptor", async () => {
             projectDisplayName: "acme/app",
             projectCustomName: null,
             projectCustomIconRevision: null,
+            projectDescription: null,
             projectIconRevision: "automatic:none:v1",
             projectRootPath: "/tmp/project-active",
             projectKind: "git",
+            baseWorkspaceId: null,
           },
         ],
       },
@@ -5741,6 +6249,757 @@ describe("agent config setters", () => {
         error: "thinking boom",
       },
     });
+  });
+});
+
+describe("unavailable provider agent handling", () => {
+  test("refresh_agent_request succeeds and publishes the stored snapshot to directory subscribers when provider is unavailable", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const agentRecord = {
+      id: "agent-unavailable-1",
+      provider: "claude",
+      cwd: "/tmp/test-repo",
+      workspaceId: "workspace-unavailable",
+      createdAt: "2026-04-16T00:00:00.000Z",
+      updatedAt: "2026-04-16T00:00:00.000Z",
+      lastStatus: "closed",
+    };
+    const workspace = {
+      workspaceId: "workspace-unavailable",
+      projectId: "project-unavailable",
+      cwd: "/tmp/test-repo",
+      kind: "directory" as const,
+      displayName: "Test repo",
+      title: null,
+      branch: null,
+      baseBranch: null,
+      createdAt: "2026-04-16T00:00:00.000Z",
+      updatedAt: "2026-04-16T00:00:00.000Z",
+      archivedAt: null,
+    };
+    const project = {
+      projectId: "project-unavailable",
+      rootPath: "/tmp/test-repo",
+      kind: "non_git" as const,
+      displayName: "Test repo",
+      customName: null,
+      createdAt: "2026-04-16T00:00:00.000Z",
+      updatedAt: "2026-04-16T00:00:00.000Z",
+      archivedAt: null,
+    };
+    const agentStorage = {
+      get: vi.fn().mockResolvedValue(agentRecord),
+      list: vi.fn().mockResolvedValue([]),
+      upsert: vi.fn().mockResolvedValue(undefined),
+    };
+    const providerSnapshotManager = {
+      listRegisteredProviderIds: vi.fn().mockReturnValue(["claude", "codex", "opencode"]),
+      on: vi.fn(),
+      off: vi.fn(),
+    };
+    const agentManager = {
+      getAgent: vi.fn().mockReturnValue(null),
+      // claude is a known provider (registered in the snapshot manager) but
+      // has no materialized client, so it is not spawnable on this daemon.
+      getRegisteredProviderIds: vi.fn().mockReturnValue(["codex", "opencode"]),
+      hasTimeline: vi.fn().mockReturnValue(true),
+      getTimeline: vi.fn().mockReturnValue([{ id: "t1" }]),
+      unarchiveSnapshot: vi.fn().mockResolvedValue(false),
+    };
+
+    const session = createSessionForTest({
+      agentStorage,
+      providerSnapshotManager,
+      agentManager,
+      messages,
+      workspaceRegistry: {
+        get: vi.fn().mockResolvedValue(workspace),
+        list: vi.fn().mockResolvedValue([workspace]),
+      },
+      projectRegistry: {
+        get: vi.fn().mockResolvedValue(project),
+        list: vi.fn().mockResolvedValue([project]),
+      },
+    });
+
+    const source = {};
+    session.updateClientCapabilities({ [CLIENT_CAPS.ownedSubscriptions]: true }, source);
+    await session.handleMessage(
+      { type: "fetch_agents_request", requestId: "subscribe-agents", subscribe: {} },
+      source,
+    );
+    const response = messages.find((m) => m.type === "fetch_agents_response");
+    const subscriptionId =
+      response?.type === "fetch_agents_response" ? response.payload.subscriptionId : undefined;
+    expect(subscriptionId).toEqual(expect.any(String));
+    messages.splice(0);
+
+    await session.handleMessage(
+      {
+        type: "refresh_agent_request",
+        agentId: "agent-unavailable-1",
+        requestId: "req-refresh-unavail",
+      },
+      source,
+    );
+
+    expect(messages.filter((m) => m.type === "agent_update").map((m) => m.payload)).toEqual([
+      expect.objectContaining({
+        subscriptionId,
+        kind: "upsert",
+        agent: expect.objectContaining({ id: "agent-unavailable-1", providerUnavailable: true }),
+      }),
+    ]);
+
+    const statusMsg = messages.find((m) => m.type === "status");
+    expect(statusMsg).toEqual({
+      type: "status",
+      payload: {
+        status: "agent_refreshed",
+        agentId: "agent-unavailable-1",
+        requestId: "req-refresh-unavail",
+        timelineSize: 1,
+      },
+    });
+  });
+
+  test("update_agent_request can switch an agent's provider", async () => {
+    const messages: unknown[] = [];
+    const updateAgentMetadata = vi.fn().mockResolvedValue(undefined);
+    const agentManager = {
+      updateAgentMetadata,
+      getAgent: vi.fn().mockReturnValue(null),
+    };
+    const agentStorage = {
+      get: vi.fn().mockResolvedValue({
+        id: "agent-unavailable-1",
+        provider: "codex",
+        cwd: "/tmp/test-repo",
+        createdAt: "2026-04-16T00:00:00.000Z",
+        updatedAt: "2026-04-16T00:00:00.000Z",
+        lastStatus: "closed",
+      }),
+    };
+    const session = createSessionForTest({
+      agentManager,
+      agentStorage,
+      messages,
+    });
+
+    await session.handleMessage({
+      type: "update_agent_request",
+      agentId: "agent-unavailable-1",
+      provider: "codex",
+      model: "gpt-4o",
+      requestId: "req-update-provider",
+    });
+    expect(updateAgentMetadata).toHaveBeenCalledWith("agent-unavailable-1", {
+      provider: "codex",
+      model: "gpt-4o",
+    });
+    expect(messages).toContainEqual({
+      type: "update_agent_response",
+      payload: {
+        requestId: "req-update-provider",
+        agentId: "agent-unavailable-1",
+        accepted: true,
+        error: null,
+      },
+    });
+  });
+
+  test("fetch_agent_timeline_request serves history-only when the provider is disabled", async () => {
+    const messages: unknown[] = [];
+    const agentRecord = {
+      id: "agent-unavailable-2",
+      provider: "claude",
+      cwd: "/tmp/test-repo",
+      createdAt: "2026-04-16T00:00:00.000Z",
+      updatedAt: "2026-04-16T00:00:00.000Z",
+      lastStatus: "closed",
+    };
+    const agentStorage = {
+      get: vi.fn().mockResolvedValue(agentRecord),
+    };
+    // The snapshot manager's registered list is every *known* provider: claude
+    // is included even though it is disabled on this daemon. The agent
+    // manager's client set is what can actually spawn, and claude is not in it.
+    // This divergence is the regression: availability must follow the client
+    // set, not the known-provider list.
+    const providerSnapshotManager = {
+      listRegisteredProviderIds: vi.fn().mockReturnValue(["claude", "codex", "opencode", "omp"]),
+      on: vi.fn(),
+      off: vi.fn(),
+    };
+    const agentManager = {
+      getAgent: vi.fn().mockReturnValue(null),
+      getRegisteredProviderIds: vi.fn().mockReturnValue(["codex", "opencode"]),
+      hasTimeline: vi.fn().mockReturnValue(false),
+      seedTimelineForRehydrate: vi.fn().mockResolvedValue(false),
+      seedTimelineFromItems: vi.fn(),
+      fetchTimeline: vi.fn().mockReturnValue({
+        epoch: "epoch-1",
+        direction: "tail",
+        reset: false,
+        staleCursor: false,
+        gap: false,
+        window: { minSeq: 0, maxSeq: 0, nextSeq: 0 },
+        hasOlder: false,
+        hasNewer: false,
+        rows: [],
+      }),
+    };
+
+    const session = createSessionForTest({
+      agentStorage,
+      agentManager,
+      providerSnapshotManager,
+      messages,
+    });
+
+    await session.handleMessage({
+      type: "fetch_agent_timeline_request",
+      agentId: "agent-unavailable-2",
+      requestId: "req-timeline-unavail",
+      direction: "tail",
+      projection: "projected",
+    });
+
+    const response = messages.find((m) => m.type === "fetch_agent_timeline_response");
+    expect(response).toBeDefined();
+    expect(response.payload.error).toBeNull();
+    expect(response.payload.agent).toMatchObject({
+      id: "agent-unavailable-2",
+      provider: "claude",
+      providerUnavailable: true,
+    });
+    // The history-only branch seeded an empty timeline instead of spawning.
+    expect(agentManager.seedTimelineFromItems).toHaveBeenCalledWith("agent-unavailable-2", []);
+  });
+
+  test("agent.fork.request passes the availability gate for a disabled-provider source", async () => {
+    const messages: unknown[] = [];
+    const agentRecord = {
+      id: "agent-unavailable-2",
+      provider: "claude",
+      cwd: "/tmp/test-repo",
+      workspaceId: "wks_fork",
+      createdAt: "2026-04-16T00:00:00.000Z",
+      updatedAt: "2026-04-16T00:00:00.000Z",
+      lastStatus: "closed",
+      title: "unavailable source",
+    };
+    // The fork lands on an available provider. The mock only needs the fields
+    // the fork pipeline touches before payload projection (`id` for the agent
+    // map, `provider` for startAgentRun's trace) — `buildAgentPayload` is
+    // stubbed below because this test targets the availability gate, not the
+    // payload shape.
+    const forkedAgent = { id: "forked-agent", provider: "omp" };
+    const agentStorage = {
+      get: vi.fn(async (agentId: string) =>
+        agentId === "agent-unavailable-2" ? agentRecord : null,
+      ),
+    };
+    const agentManager = {
+      getAgent: vi.fn((agentId: string) =>
+        agentId === "agent-unavailable-2" ? null : forkedAgent,
+      ),
+      getRegisteredProviderIds: vi.fn().mockReturnValue(["codex", "omp"]),
+      hasTimeline: vi.fn().mockReturnValue(false),
+      seedTimelineForRehydrate: vi.fn().mockResolvedValue(false),
+      seedTimelineFromItems: vi.fn(),
+      fetchTimeline: vi.fn().mockReturnValue({
+        epoch: "epoch-1",
+        direction: "tail",
+        reset: false,
+        staleCursor: false,
+        gap: false,
+        window: { minSeq: 0, maxSeq: 0, nextSeq: 0 },
+        hasOlder: false,
+        hasNewer: false,
+        rows: [],
+      }),
+      createAgent: vi.fn(async () => forkedAgent),
+      waitForAgentClose: vi.fn().mockResolvedValue(undefined),
+      tryRunOutOfBand: vi.fn().mockReturnValue(false),
+      hasInFlightRun: vi.fn().mockReturnValue(false),
+      streamAgent: vi.fn(noopAgentStream),
+    };
+
+    const session = createSessionForTest({
+      agentStorage,
+      agentManager,
+      messages,
+    });
+    const internals = asSessionInternalsHelper<{
+      agentUpdates: { forwardLiveAgent: () => Promise<void> };
+      buildAgentPayload: (agent: { id?: string; provider?: string }) => Promise<unknown>;
+    }>(session);
+    // Neither surface is under test: the fork response just echoes the created
+    // agent back, and the update stream isn't what this test exercises.
+    internals.agentUpdates.forwardLiveAgent = async () => undefined;
+    internals.buildAgentPayload = async (agent) => ({ id: agent?.id, provider: agent?.provider });
+
+    await session.handleMessage({
+      type: "agent.fork.request",
+      sourceAgentId: "agent-unavailable-2",
+      text: "keep going",
+      requestId: "req-fork-unavail",
+      overrides: { provider: "omp" },
+    });
+
+    const response = messages.find((m) => m.type === "agent.fork.response");
+    expect(response).toBeDefined();
+    expect(response.payload.error).toBeNull();
+    expect(response.payload.agentId).toBe("forked-agent");
+    expect(response.payload.sourceAgentId).toBe("agent-unavailable-2");
+    expect(response.payload.agent).toMatchObject({ id: "forked-agent", provider: "omp" });
+    // Forking a source whose provider is unavailable must not fail before the
+    // fork is created.
+    expect(agentManager.createAgent).toHaveBeenCalledOnce();
+  });
+});
+
+describe("send_agent_message dispatch modes", () => {
+  const agentId = "11111111-1111-4111-8111-111111111111";
+
+  function createDispatchSession(agentManager: {
+    [K in keyof SessionOptions["agentManager"]]?: unknown;
+  }): { session: Session; messages: SessionOutboundMessage[] } {
+    const messages: SessionOutboundMessage[] = [];
+    const session = createSessionForTest({
+      messages,
+      agentManager: {
+        listAgents: vi.fn(() => [{ id: agentId }]),
+        getAgent: vi.fn(() => ({ id: agentId, provider: "omp", lifecycle: "running" })),
+        tryRunOutOfBand: vi.fn(() => false),
+        hasInFlightRun: vi.fn(() => false),
+        streamAgent: vi.fn(noopAgentStream),
+        replaceAgentRun: vi.fn(noopAgentStream),
+        // Upstream replaced the fork's `/steer <text>` out-of-band hack with a
+        // real native steer. "inactive" is what AgentManager returns when there
+        // is no live turn to steer, so the prompt falls through to a normal run.
+        steerOrReplaceActiveTurn: vi.fn(async () => ({ status: "inactive" })),
+        // The full send path (sendPromptToAgent -> ensureAgentLoaded) touches
+        // these on every dispatch that is not an out-of-band steer.
+        waitForAgentClose: vi.fn(async () => undefined),
+        getRegisteredProviderIds: vi.fn(() => ["omp"]),
+        // startAgentRun's per-turn pre-run seam (M2/M3 Commander snapshot
+        // injection): a no-op here — production's hook gates itself by agent
+        // labels, so these dispatch-mode tests never exercise it.
+        ...agentManager,
+      },
+    });
+    return { session, messages };
+  }
+
+  function acceptedResponse(messages: SessionOutboundMessage[]) {
+    return messages.find((m) => m.type === "send_agent_message_response")?.payload;
+  }
+
+  test("steer to a busy agent with a native steer path runs out of band without cancelling", async () => {
+    const steerOrReplaceActiveTurn = vi.fn(async () => ({ status: "steered" }));
+    const replaceAgentRun = vi.fn(noopAgentStream);
+    const streamAgent = vi.fn(noopAgentStream);
+    const { session, messages } = createDispatchSession({
+      steerOrReplaceActiveTurn,
+      replaceAgentRun,
+      streamAgent,
+      hasInFlightRun: vi.fn(() => true),
+    });
+
+    await session.handleMessage({
+      type: "send_agent_message_request",
+      requestId: "req-steer-native",
+      agentId,
+      text: "fix the test",
+      dispatchMode: "steer",
+    });
+
+    // The daemon maps the user's steer onto the provider's native steer, so the
+    // live turn is redirected in place and never cancelled. clearPendingPermissions
+    // rides along: a typed steer answers whatever permission the agent is blocked on.
+    expect(steerOrReplaceActiveTurn).toHaveBeenCalledWith(
+      agentId,
+      "fix the test",
+      expect.objectContaining({ clearPendingPermissions: true }),
+    );
+    expect(replaceAgentRun).not.toHaveBeenCalled();
+    expect(streamAgent).not.toHaveBeenCalled();
+    expect(acceptedResponse(messages)).toMatchObject({
+      requestId: "req-steer-native",
+      accepted: true,
+    });
+  });
+
+  test("steer to a busy agent without a native steer path falls back to an interrupt", async () => {
+    const replaceAgentRun = vi.fn(noopAgentStream);
+    const streamAgent = vi.fn(noopAgentStream);
+    // A provider without steerActiveTurn: the manager admits the steer, then
+    // replaces the turn it admitted and returns the replacement stream.
+    const steerOrReplaceActiveTurn = vi.fn(async () => ({
+      status: "replaced",
+      iterator: noopAgentStream(),
+    }));
+    const { session, messages } = createDispatchSession({
+      steerOrReplaceActiveTurn,
+      replaceAgentRun,
+      streamAgent,
+      hasInFlightRun: vi.fn(() => true),
+    });
+
+    await session.handleMessage({
+      type: "send_agent_message_request",
+      requestId: "req-steer-fallback",
+      agentId,
+      text: "fix the test",
+      dispatchMode: "steer",
+    });
+
+    // A steer's value is timely delivery, not waiting: with no native steer the
+    // running turn is taken over rather than queued behind it.
+    expect(steerOrReplaceActiveTurn).toHaveBeenCalledWith(
+      agentId,
+      "fix the test",
+      expect.objectContaining({ clearPendingPermissions: true }),
+    );
+    expect(streamAgent).not.toHaveBeenCalled();
+    expect(acceptedResponse(messages)).toMatchObject({
+      requestId: "req-steer-fallback",
+      accepted: true,
+    });
+  });
+
+  test("steer to an idle agent just runs the prompt", async () => {
+    const tryRunOutOfBand = vi.fn(() => false);
+    const streamAgent = vi.fn(noopAgentStream);
+    const replaceAgentRun = vi.fn(noopAgentStream);
+    const { session, messages } = createDispatchSession({
+      tryRunOutOfBand,
+      streamAgent,
+      replaceAgentRun,
+      hasInFlightRun: vi.fn(() => false),
+    });
+
+    await session.handleMessage({
+      type: "send_agent_message_request",
+      requestId: "req-steer-idle",
+      agentId,
+      text: "fix the test",
+      dispatchMode: "steer",
+    });
+
+    // Nothing to steer: the steer is attempted, reports no live turn, and the
+    // prompt then starts an ordinary run.
+    expect(tryRunOutOfBand).toHaveBeenCalledWith(agentId, "fix the test", {
+      replaceOrigin: "user",
+    });
+    expect(streamAgent).toHaveBeenCalledTimes(1);
+    expect(replaceAgentRun).not.toHaveBeenCalled();
+    expect(acceptedResponse(messages)).toMatchObject({
+      requestId: "req-steer-idle",
+      accepted: true,
+    });
+  });
+  test("steer to a stored agent with no in-flight run escalates to a fresh run instead of queueing", async () => {
+    const streamAgent = vi.fn(noopAgentStream);
+    const replaceAgentRun = vi.fn(noopAgentStream);
+    const { session, messages } = createDispatchSession({
+      tryRunOutOfBand: vi.fn(() => false),
+      streamAgent,
+      replaceAgentRun,
+      hasInFlightRun: vi.fn(() => false),
+    });
+
+    await session.handleMessage({
+      type: "send_agent_message_request",
+      requestId: "req-steer-phantom-escalate",
+      agentId,
+      text: "steer after restart",
+      dispatchMode: "steer",
+    });
+
+    // Steer with no in-flight run routes through the full send path (starts
+    // a fresh run) rather than queueing or failing raw.
+    expect(streamAgent).toHaveBeenCalledTimes(1);
+    expect(replaceAgentRun).not.toHaveBeenCalled();
+    expect(acceptedResponse(messages)).toMatchObject({
+      requestId: "req-steer-phantom-escalate",
+      accepted: true,
+    });
+  });
+
+  test("queue waits for idle and streams without replacing", async () => {
+    const streamAgent = vi.fn(noopAgentStream);
+    const replaceAgentRun = vi.fn(noopAgentStream);
+    const { session, messages } = createDispatchSession({
+      streamAgent,
+      replaceAgentRun,
+      hasInFlightRun: vi.fn(() => false),
+    });
+
+    await session.handleMessage({
+      type: "send_agent_message_request",
+      requestId: "req-queue",
+      agentId,
+      text: "whenever",
+      dispatchMode: "queue",
+    });
+
+    expect(replaceAgentRun).not.toHaveBeenCalled();
+    expect(streamAgent).toHaveBeenCalledTimes(1);
+    expect(acceptedResponse(messages)).toMatchObject({ requestId: "req-queue", accepted: true });
+  });
+
+  test("a default interrupt send to a busy agent replaces the run — never degrades to a queue", async () => {
+    // sendBehavior "interrupt" (or the default) sends WITHOUT dispatchMode;
+    // the daemon must take the replaceRunning path, never wait for idle.
+    const replaceAgentRun = vi.fn(noopAgentStream);
+    const streamAgent = vi.fn(noopAgentStream);
+    const { session, messages } = createDispatchSession({
+      replaceAgentRun,
+      streamAgent,
+      waitForAgentClose: vi.fn(async () => undefined),
+      waitForAgentRunStart: vi.fn(async () => undefined),
+      hasInFlightRun: vi.fn(() => true),
+    });
+
+    await session.handleMessage({
+      type: "send_agent_message_request",
+      requestId: "req-interrupt",
+      agentId,
+      text: "redirect me",
+    });
+
+    // The interrupt goes through startAgentRun({replaceRunning:true}) →
+    // replaceAgentRun with the USER's replace origin (so the superseded run
+    // reads as "Interrupted by you"). The queue path would have waited for
+    // idle and streamed without replacing — it must never be chosen here.
+    expect(replaceAgentRun).toHaveBeenCalledTimes(1);
+    expect(replaceAgentRun).toHaveBeenCalledWith(
+      agentId,
+      expect.any(String),
+      expect.objectContaining({ replaceOrigin: "user" }),
+    );
+    expect(streamAgent).not.toHaveBeenCalled();
+    expect(acceptedResponse(messages)).toMatchObject({
+      requestId: "req-interrupt",
+      accepted: true,
+    });
+  });
+
+  test("a refused replace on a busy agent surfaces the error — never silently queues", async () => {
+    // A run that will not terminate can refuse the interrupt. The send must
+    // FAIL LOUDLY (accepted: false with the reason), not silently fall back
+    // to queue-until-idle semantics.
+    const replaceAgentRun = vi.fn(async () => {
+      throw new Error("Cannot replace agent: active run cancellation was not acknowledged");
+    });
+    const streamAgent = vi.fn(noopAgentStream);
+    const { session, messages } = createDispatchSession({
+      replaceAgentRun,
+      streamAgent,
+      waitForAgentClose: vi.fn(async () => undefined),
+      hasInFlightRun: vi.fn(() => true),
+    });
+
+    await session.handleMessage({
+      type: "send_agent_message_request",
+      requestId: "req-refused",
+      agentId,
+      text: "redirect me",
+    });
+
+    const response = acceptedResponse(messages);
+    expect(response).toMatchObject({ requestId: "req-refused", accepted: false });
+    expect(String(response?.error)).toContain("replace");
+    // No queue fallback: the prompt was never streamed as a deferred run.
+    expect(streamAgent).not.toHaveBeenCalled();
+  });
+});
+
+// ============================================================================
+// Wave 2: central-config ownership + replication (wire dispatch). The daemon
+// that receives mission_control.config.patch routes it through the service's
+// ownership logic (owner applies + replicates; non-owner forwards); peers
+// receive mission_control.config.replica and replace their local snapshot.
+// These tests pin the SESSION mapping (dispatch + response payloads); the
+// routing/forwarding/replication contract itself is tested at the service
+// level in mission-control/config-replication.test.ts.
+// ============================================================================
+
+describe("mission control central config wire dispatch", () => {
+  test("mission_control.config.patch applies on this host and returns the resolved config", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const patchCentralConfig = vi.fn(async () => ({
+      statusNudgeSeconds: 600,
+      silenceNudgeSeconds: 90,
+    }));
+    const session = createSessionForTest({
+      messages,
+      missionControlService: {
+        patchCentralConfig,
+      } as unknown as MissionControlService,
+    });
+
+    await session.handleMessage({
+      type: "mission_control.config.patch.request",
+      requestId: "req-config-patch-ok",
+      patch: { statusNudgeSeconds: 600 },
+    });
+
+    expect(messages).toEqual([
+      {
+        type: "mission_control.config.patch.response",
+        payload: {
+          requestId: "req-config-patch-ok",
+          config: { statusNudgeSeconds: 600, silenceNudgeSeconds: 90, routingSecretsSet: [] },
+          ok: true,
+        },
+      },
+    ]);
+  });
+
+  test("mission_control.config.get stays a local read", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const getCentralConfig = vi.fn(() => ({
+      statusNudgeSeconds: 480,
+      commanderHost: "commander-a",
+    }));
+    const session = createSessionForTest({
+      messages,
+      missionControlService: {
+        getCentralConfig,
+      } as unknown as MissionControlService,
+    });
+
+    await session.handleMessage({
+      type: "mission_control.config.get.request",
+      requestId: "req-config-get",
+    });
+
+    expect(messages).toEqual([
+      {
+        type: "mission_control.config.get.response",
+        payload: {
+          requestId: "req-config-get",
+          config: { statusNudgeSeconds: 480, commanderHost: "commander-a" },
+        },
+      },
+    ]);
+  });
+});
+
+// ============================================================================
+// M9 voice dialogue mirror (wire dispatch): the session routes
+// mission_control.voice.mirror.request to the service's append-only mirror
+// and answers with ok/error. The service contract (append WITHOUT a model
+// turn) is tested at the service level in mission-control/voice-mirror.test;
+// these tests pin the SESSION mapping.
+// ============================================================================
+
+// ============================================================================
+// Cross-host spawn apply (mission_control.spawn.apply): the commander host
+// forwards an approved spawn-kind proposal whose plan targets THIS host as a
+// peer. THIS daemon validates the cwd contract against its own filesystem,
+// creates the absolute cwd with mkdir recursive when missing, and creates the
+// agent in its own registry — the mkdir happens here, never on the commander's
+// disk. Only the APPLY hops; the proposal card stays on the commander host.
+// ============================================================================
+
+// ============================================================================
+// Cross-host spawn-label resolution (mission_control.spawn_labels.resolve):
+// the Commander host asks THIS daemon (a peer target of a Commander spawn) to
+// resolve the human-readable workspace/project labels for the spawn proposal
+// card. Read-only; the target's own registries and checkout facts answer.
+// ============================================================================
+
+// ============================================================================
+// Cross-host terminal-event ingest (mission_control.event.forward): a
+// NON-commander host forwards a terminal event (finished/failed/interrupted
+// or verdict) for one of ITS commander-dispatched workers. The worker's
+// labels ride the payload so THIS (commander) host's machinery-turn gate can
+// decide without a local record. The event is NEVER written to this host's
+// events store — only the gate consumes it.
+// ============================================================================
+
+// ============================================================================
+// M11 voice read RPCs (mission_control.recall / context.records /
+// tag_message / peer.timeline): the voice node connects to ONE daemon (no
+// peerManager, no MCP catalog) and reads over these thin session RPCs. These
+// tests pin the SESSION mapping — the daemon runs the same
+// MissionControlService calls the Commander's fleet tools use, and hops to
+// peers over peering for fleet_get_agent_activity(peer).
+// ============================================================================
+
+describe("mission control voice read RPCs wire dispatch", () => {
+  test("mission_control.peer.timeline.request hops to the peer and returns the curated summary", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const fetchAgentTimeline = vi.fn(async () => ({
+      entries: [
+        { item: { type: "user_message", text: "do the thing" } },
+        { item: { type: "assistant_message", text: "done" } },
+      ],
+    }));
+    const peerManager = {
+      getPeerClient: vi.fn((name: string) => (name === "macbook" ? { fetchAgentTimeline } : null)),
+    };
+    const session = createSessionForTest({
+      messages,
+      peerManager: peerManager as unknown as SessionOptions["peerManager"],
+    });
+
+    await session.handleMessage({
+      type: "mission_control.peer.timeline.request",
+      requestId: "req-peer-1",
+      host: "macbook",
+      agentId: "agent-a",
+      limit: 10,
+    });
+
+    expect(fetchAgentTimeline).toHaveBeenCalledWith("agent-a", {
+      direction: "tail",
+      limit: 10,
+    });
+    expect(messages).toEqual([
+      {
+        type: "mission_control.peer.timeline.response",
+        payload: {
+          requestId: "req-peer-1",
+          ok: true,
+          content: expect.stringContaining("do the thing") as unknown as string,
+          updateCount: 2,
+        },
+      },
+    ]);
+  });
+
+  test("mission_control.peer.timeline.request surfaces an unconfigured peer", async () => {
+    const messages: SessionOutboundMessage[] = [];
+    const session = createSessionForTest({
+      messages,
+      peerManager: {
+        getPeerClient: vi.fn(() => null),
+      } as unknown as SessionOptions["peerManager"],
+    });
+
+    await session.handleMessage({
+      type: "mission_control.peer.timeline.request",
+      requestId: "req-peer-2",
+      host: "not-a-peer",
+      agentId: "agent-a",
+    });
+
+    expect(messages).toEqual([
+      {
+        type: "mission_control.peer.timeline.response",
+        payload: {
+          requestId: "req-peer-2",
+          ok: false,
+          error: 'Host "not-a-peer" is not a configured peer',
+        },
+      },
+    ]);
   });
 });
 

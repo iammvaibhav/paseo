@@ -1,5 +1,8 @@
 export type GitMetadataScope = "worktree" | "common";
 
+/** Config keys treated as repo-wide even though only one branch's config line changed. */
+export const GIT_METADATA_CONFIG_GLOBAL_PREFIXES = ["remote.", "core.", "extensions."] as const;
+
 type GitMetadataEventRule = {
   id: string;
   scope: GitMetadataScope | "both";
@@ -7,14 +10,18 @@ type GitMetadataEventRule = {
   prune?: true;
 } & (
   | { match: "exact" | "prefix" | "suffix"; route: "ignore" }
-  | { match: "exact" | "prefix" | "suffix"; route: "owner" | "all"; refreshBase: boolean }
+  | { match: "exact" | "prefix" | "suffix"; route: "owner"; refreshBase: boolean }
   | { match: "prefix"; route: "local-ref" | "remote-ref" }
+  | { match: "exact"; route: "config" }
+  | { match: "exact" | "prefix"; route: "packed-refs" }
 );
 
 export type GitMetadataEffect =
   | { kind: "ignore" }
-  | { kind: "owner" | "all"; refreshBase: boolean }
-  | { kind: "ref"; namespace: "local" | "remote"; ref: string };
+  | { kind: "owner"; refreshBase: boolean }
+  | { kind: "ref"; namespace: "local" | "remote"; ref: string }
+  | { kind: "config" }
+  | { kind: "packed-refs" };
 
 export const GIT_METADATA_EVENT_RULES = [
   { id: "lock", scope: "both", match: "suffix", path: ".lock", route: "ignore" },
@@ -85,24 +92,21 @@ export const GIT_METADATA_EVENT_RULES = [
     scope: "common",
     match: "exact",
     path: "packed-refs",
-    route: "all",
-    refreshBase: true,
+    route: "packed-refs",
   },
   {
     id: "reftable",
     scope: "common",
     match: "prefix",
     path: "reftable/",
-    route: "all",
-    refreshBase: true,
+    route: "packed-refs",
   },
   {
     id: "shared-config",
     scope: "common",
     match: "exact",
     path: "config",
-    route: "all",
-    refreshBase: true,
+    route: "config",
   },
   {
     id: "worktree-administration",
@@ -156,9 +160,11 @@ export function classifyGitMetadataPath(
       matchesGitMetadataPath(candidate.match, candidate.path, path),
   );
   if (!rule || rule.route === "ignore") return { kind: "ignore" };
-  if (rule.route === "owner" || rule.route === "all") {
-    return { kind: rule.route, refreshBase: rule.refreshBase };
+  if (rule.route === "owner") {
+    return { kind: "owner", refreshBase: rule.refreshBase };
   }
+  if (rule.route === "config") return { kind: "config" };
+  if (rule.route === "packed-refs") return { kind: "packed-refs" };
   return {
     kind: "ref",
     namespace: rule.route === "local-ref" ? "local" : "remote",

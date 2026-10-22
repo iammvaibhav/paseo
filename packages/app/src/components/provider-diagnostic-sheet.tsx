@@ -1,7 +1,7 @@
 import * as Clipboard from "expo-clipboard";
-import { AlertTriangle, Copy, FileText, Plus, RotateCw, Trash2 } from "lucide-react-native";
+import { AlertTriangle, Check, Copy, FileText, Plus, RotateCw, Trash2 } from "lucide-react-native";
 import type { TFunction } from "i18next";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Pressable, type PressableStateCallbackType, Text, View } from "react-native";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
@@ -19,13 +19,15 @@ import { useToast } from "@/contexts/toast-context";
 import { CODE_SURFACE_DATASET } from "@/styles/code-surface";
 import { useDaemonConfig } from "@/hooks/use-daemon-config";
 import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
+import { useTimeAgo } from "@/hooks/use-time-ago";
 import { useHostRuntimeClient } from "@/runtime/host-runtime";
 import { settingsStyles } from "@/styles/settings";
 import { resolveProviderLabel } from "@/utils/provider-definitions";
-import { formatTimeAgo } from "@/utils/time";
 import { compareMatchScores, scoreTextFields } from "@getpaseo/protocol/search/text-match";
 import type { AgentModelDefinition, AgentProvider } from "@getpaseo/protocol/agent-types";
 import type { ProviderProfileModel } from "@getpaseo/protocol/provider-config";
+import { useDaemonVisibleModels } from "@/provider-selection/use-daemon-visible-models";
+import { buildHiddenModelKey } from "@/provider-selection/hidden-models";
 import {
   resolveProviderDiscoveredModels,
   type ProviderDiscoveredModelsCache,
@@ -43,16 +45,89 @@ function rankModels<T>(items: T[], query: string, fields: (item: T) => string[])
   const scored = items
     .map((item) => ({ item, score: scoreTextFields(query, fields(item)) }))
     .filter(
-      (entry): entry is { item: T; score: NonNullable<typeof entry.score> } => entry.score !== null,
+      (entry): entry is { item: T; score: NonNullable<ReturnType<typeof scoreTextFields>> } =>
+        entry.score !== null,
     );
   scored.sort((a, b) => compareMatchScores(a.score, b.score));
   return scored.map((entry) => entry.item);
 }
 
-function DiscoveredModelRow({ model }: { model: AgentModelDefinition }) {
+function ModelCheckbox({
+  checked,
+  onToggle,
+  disabled,
+  accessibilityLabel,
+  testID,
+}: {
+  checked: boolean;
+  onToggle: () => void;
+  disabled?: boolean;
+  accessibilityLabel: string;
+  testID?: string;
+}) {
+  const { theme } = useUnistyles();
+  const checkboxStyle = useMemo(
+    () => [
+      sheetStyles.checkbox,
+      checked ? sheetStyles.checkboxChecked : null,
+      disabled ? sheetStyles.disabled : null,
+    ],
+    [checked, disabled],
+  );
+
+  const accessibilityState = useMemo(
+    () => ({ checked, disabled: Boolean(disabled) }),
+    [checked, disabled],
+  );
+
+  return (
+    <Pressable
+      onPress={onToggle}
+      disabled={disabled}
+      hitSlop={8}
+      accessibilityRole="checkbox"
+      accessibilityLabel={accessibilityLabel}
+      accessibilityState={accessibilityState}
+      aria-checked={checked}
+      testID={testID}
+      style={sheetStyles.checkboxPressable}
+    >
+      <View style={checkboxStyle}>
+        {checked ? <Check size={14} color={theme.colors.accentForeground} /> : null}
+      </View>
+    </Pressable>
+  );
+}
+
+function DiscoveredModelRow({
+  model,
+  hidden,
+  onToggleHidden,
+}: {
+  model: AgentModelDefinition;
+  hidden: boolean;
+  onToggleHidden: (modelId: string, nextHidden: boolean) => void;
+}) {
+  const { t } = useTranslation();
+  const handleToggle = useCallback(() => {
+    onToggleHidden(model.id, !hidden);
+  }, [model.id, hidden, onToggleHidden]);
+
   return (
     <View style={sheetStyles.modelRow}>
-      <Text style={sheetStyles.modelTitle} numberOfLines={1}>
+      <ModelCheckbox
+        checked={!hidden}
+        onToggle={handleToggle}
+        accessibilityLabel={t(
+          hidden ? "settings.providers.models.showModel" : "settings.providers.models.hideModel",
+          { name: model.label },
+        )}
+        testID={`model-toggle-${model.id}`}
+      />
+      <Text
+        style={[sheetStyles.modelTitle, hidden ? sheetStyles.modelTitleHidden : null]}
+        numberOfLines={1}
+      >
         {model.label}
       </Text>
       <Text
@@ -74,15 +149,22 @@ function DiscoveredModelRow({ model }: { model: AgentModelDefinition }) {
 
 function CustomModelRow({
   model,
+  hidden,
   deleting,
+  onToggleHidden,
   onDelete,
 }: {
   model: ProviderProfileModel;
+  hidden: boolean;
   deleting: boolean;
+  onToggleHidden: (modelId: string, nextHidden: boolean) => void;
   onDelete: (modelId: string) => void;
 }) {
   const { t } = useTranslation();
   const { theme } = useUnistyles();
+  const handleToggle = useCallback(() => {
+    onToggleHidden(model.id, !hidden);
+  }, [model.id, hidden, onToggleHidden]);
   const handleDelete = useCallback(() => onDelete(model.id), [model.id, onDelete]);
   const deleteButtonStyle = useCallback(
     ({ hovered, pressed }: PressableStateCallbackType & { hovered?: boolean }) => [
@@ -95,7 +177,20 @@ function CustomModelRow({
 
   return (
     <View style={sheetStyles.modelRow}>
-      <Text style={sheetStyles.modelTitle} numberOfLines={1}>
+      <ModelCheckbox
+        checked={!hidden}
+        onToggle={handleToggle}
+        disabled={deleting}
+        accessibilityLabel={t(
+          hidden ? "settings.providers.models.showModel" : "settings.providers.models.hideModel",
+          { name: model.label },
+        )}
+        testID={`custom-model-toggle-${model.id}`}
+      />
+      <Text
+        style={[sheetStyles.modelTitle, hidden ? sheetStyles.modelTitleHidden : null]}
+        numberOfLines={1}
+      >
         {model.label}
       </Text>
       <Text
@@ -117,23 +212,6 @@ function CustomModelRow({
       >
         <Trash2 size={theme.iconSize.sm} color={theme.colors.destructive} />
       </Pressable>
-    </View>
-  );
-}
-
-function SectionHeader({ title, count, hint }: { title: string; count?: number; hint?: string }) {
-  return (
-    <View style={sheetStyles.sectionHeader}>
-      <Text style={settingsStyles.sectionHeaderTitle}>{title}</Text>
-      <View style={sheetStyles.sectionHeaderMeta}>
-        {count !== undefined ? (
-          <Text style={settingsStyles.sectionHeaderTitle}>{count}</Text>
-        ) : null}
-        {count !== undefined && hint ? (
-          <Text style={settingsStyles.sectionHeaderTitle}>·</Text>
-        ) : null}
-        {hint ? <Text style={settingsStyles.sectionHeaderTitle}>{hint}</Text> : null}
-      </View>
     </View>
   );
 }
@@ -402,14 +480,20 @@ interface ProviderModalBodyProps {
   searchActive: boolean;
   filteredDiscovered: AgentModelDefinition[];
   filteredCustom: ProviderProfileModel[];
+  hiddenModelIds: ReadonlySet<string>;
   deletingModelId: string | null;
   onRefresh: () => void;
+  onToggleModelHidden: (modelId: string, nextHidden: boolean) => void;
+  onCheckAllDiscovered: () => void;
+  onUncheckAllDiscovered: () => void;
+  onCheckAllCustom: () => void;
+  onUncheckAllCustom: () => void;
   onDeleteCustom: (modelId: string) => void;
   theme: { iconSize: { md: number }; colors: { foregroundMuted: string } };
 }
 
 interface ProviderSheetFooterInput {
-  fetchedAtLabel: string | null;
+  fetchedAt: string | null;
   isCompact: boolean;
   modelsRefreshing: boolean;
   t: TFunction;
@@ -419,7 +503,7 @@ interface ProviderSheetFooterInput {
 }
 
 function renderProviderSheetFooter({
-  fetchedAtLabel,
+  fetchedAt,
   isCompact,
   modelsRefreshing,
   t,
@@ -430,16 +514,10 @@ function renderProviderSheetFooter({
   const contentStyle = isCompact ? sheetStyles.compactFooterContent : sheetStyles.footerContent;
   const actionsStyle = isCompact ? sheetStyles.compactFooterActions : sheetStyles.footerActions;
   const buttonStyle = isCompact ? sheetStyles.compactFooterButton : null;
-  const metaStyle = isCompact
-    ? [sheetStyles.footerMeta, sheetStyles.compactFooterMeta]
-    : sheetStyles.footerMeta;
-
   return (
     <View style={contentStyle}>
-      {fetchedAtLabel || !isCompact ? (
-        <Text style={metaStyle} numberOfLines={1}>
-          {fetchedAtLabel ? t("settings.providers.models.updated", { time: fetchedAtLabel }) : ""}
-        </Text>
+      {fetchedAt || !isCompact ? (
+        <ProviderUpdatedLabel fetchedAt={fetchedAt} isCompact={isCompact} />
       ) : null}
       <View style={actionsStyle}>
         <Button
@@ -477,6 +555,165 @@ function renderProviderSheetFooter({
   );
 }
 
+interface DiscoveredModelsSectionProps {
+  models: AgentModelDefinition[];
+  hiddenModelIds: ReadonlySet<string>;
+  onToggleModelHidden: (modelId: string, nextHidden: boolean) => void;
+  onCheckAll: () => void;
+  onUncheckAll: () => void;
+}
+
+function DiscoveredModelsSection({
+  models,
+  hiddenModelIds,
+  onToggleModelHidden,
+  onCheckAll,
+  onUncheckAll,
+}: DiscoveredModelsSectionProps) {
+  const { t } = useTranslation();
+  const checkAllDisabled = models.every((model) => !hiddenModelIds.has(model.id));
+  const uncheckAllDisabled = models.every((model) => hiddenModelIds.has(model.id));
+
+  return (
+    <View style={sheetStyles.section}>
+      <View style={sheetStyles.sectionHeader}>
+        <View style={sheetStyles.sectionHeaderTitleGroup}>
+          <Text style={settingsStyles.sectionHeaderTitle}>
+            {t("settings.providers.models.discovered")}
+          </Text>
+          <View style={sheetStyles.sectionHeaderMeta}>
+            <Text style={settingsStyles.sectionHeaderTitle}>{models.length}</Text>
+          </View>
+        </View>
+        <View style={sheetStyles.bulkActionButtons}>
+          <Button
+            variant="ghost"
+            size="xs"
+            onPress={onCheckAll}
+            disabled={checkAllDisabled}
+            accessibilityLabel={t("settings.providers.models.checkAll")}
+            testID="models-check-all-discovered"
+          >
+            {t("settings.providers.models.checkAll")}
+          </Button>
+          <Button
+            variant="ghost"
+            size="xs"
+            onPress={onUncheckAll}
+            disabled={uncheckAllDisabled}
+            accessibilityLabel={t("settings.providers.models.uncheckAll")}
+            testID="models-uncheck-all-discovered"
+          >
+            {t("settings.providers.models.uncheckAll")}
+          </Button>
+        </View>
+      </View>
+      <View style={settingsStyles.card}>
+        {models.map((model) => (
+          <DiscoveredModelRow
+            key={model.id}
+            model={model}
+            hidden={hiddenModelIds.has(model.id)}
+            onToggleHidden={onToggleModelHidden}
+          />
+        ))}
+      </View>
+    </View>
+  );
+}
+
+interface CustomModelsSectionProps {
+  models: ProviderProfileModel[];
+  hiddenModelIds: ReadonlySet<string>;
+  deletingModelId: string | null;
+  onToggleModelHidden: (modelId: string, nextHidden: boolean) => void;
+  onCheckAll: () => void;
+  onUncheckAll: () => void;
+  onDeleteCustom: (modelId: string) => void;
+}
+
+function CustomModelsSection({
+  models,
+  hiddenModelIds,
+  deletingModelId,
+  onToggleModelHidden,
+  onCheckAll,
+  onUncheckAll,
+  onDeleteCustom,
+}: CustomModelsSectionProps) {
+  const { t } = useTranslation();
+  const checkAllDisabled = models.every((model) => !hiddenModelIds.has(model.id));
+  const uncheckAllDisabled = models.every((model) => hiddenModelIds.has(model.id));
+
+  return (
+    <View style={sheetStyles.section}>
+      <View style={sheetStyles.sectionHeader}>
+        <View style={sheetStyles.sectionHeaderTitleGroup}>
+          <Text style={settingsStyles.sectionHeaderTitle}>
+            {t("settings.providers.models.custom")}
+          </Text>
+          <View style={sheetStyles.sectionHeaderMeta}>
+            <Text style={settingsStyles.sectionHeaderTitle}>{models.length}</Text>
+          </View>
+        </View>
+        <View style={sheetStyles.bulkActionButtons}>
+          <Button
+            variant="ghost"
+            size="xs"
+            onPress={onCheckAll}
+            disabled={checkAllDisabled}
+            accessibilityLabel={t("settings.providers.models.checkAll")}
+            testID="models-check-all-custom"
+          >
+            {t("settings.providers.models.checkAll")}
+          </Button>
+          <Button
+            variant="ghost"
+            size="xs"
+            onPress={onUncheckAll}
+            disabled={uncheckAllDisabled}
+            accessibilityLabel={t("settings.providers.models.uncheckAll")}
+            testID="models-uncheck-all-custom"
+          >
+            {t("settings.providers.models.uncheckAll")}
+          </Button>
+        </View>
+      </View>
+      <View style={settingsStyles.card}>
+        {models.map((model) => (
+          <CustomModelRow
+            key={model.id}
+            model={model}
+            hidden={hiddenModelIds.has(model.id)}
+            deleting={deletingModelId === model.id}
+            onToggleHidden={onToggleModelHidden}
+            onDelete={onDeleteCustom}
+          />
+        ))}
+      </View>
+    </View>
+  );
+}
+
+function ProviderUpdatedLabel({
+  fetchedAt,
+  isCompact,
+}: {
+  fetchedAt: string | null;
+  isCompact: boolean;
+}) {
+  const { t } = useTranslation();
+  const label = useTimeAgo(fetchedAt ? new Date(fetchedAt) : null);
+  const style = isCompact
+    ? [sheetStyles.footerMeta, sheetStyles.compactFooterMeta]
+    : sheetStyles.footerMeta;
+  return (
+    <Text style={style} numberOfLines={1}>
+      {fetchedAt ? t("settings.providers.models.updated", { time: label }) : ""}
+    </Text>
+  );
+}
+
 function ProviderModalBody(props: ProviderModalBodyProps) {
   const { t } = useTranslation();
   const {
@@ -488,8 +725,14 @@ function ProviderModalBody(props: ProviderModalBodyProps) {
     searchActive,
     filteredDiscovered,
     filteredCustom,
+    hiddenModelIds,
     deletingModelId,
     onRefresh,
+    onToggleModelHidden,
+    onCheckAllDiscovered,
+    onUncheckAllDiscovered,
+    onCheckAllCustom,
+    onUncheckAllCustom,
     onDeleteCustom,
     theme,
   } = props;
@@ -532,35 +775,24 @@ function ProviderModalBody(props: ProviderModalBodyProps) {
   return (
     <>
       {filteredDiscovered.length > 0 ? (
-        <View style={sheetStyles.section}>
-          <SectionHeader
-            title={t("settings.providers.models.discovered")}
-            count={filteredDiscovered.length}
-          />
-          <View style={settingsStyles.card}>
-            {filteredDiscovered.map((model) => (
-              <DiscoveredModelRow key={model.id} model={model} />
-            ))}
-          </View>
-        </View>
+        <DiscoveredModelsSection
+          models={filteredDiscovered}
+          hiddenModelIds={hiddenModelIds}
+          onToggleModelHidden={onToggleModelHidden}
+          onCheckAll={onCheckAllDiscovered}
+          onUncheckAll={onUncheckAllDiscovered}
+        />
       ) : null}
       {filteredCustom.length > 0 ? (
-        <View style={sheetStyles.section}>
-          <SectionHeader
-            title={t("settings.providers.models.custom")}
-            count={filteredCustom.length}
-          />
-          <View style={settingsStyles.card}>
-            {filteredCustom.map((model) => (
-              <CustomModelRow
-                key={model.id}
-                model={model}
-                deleting={deletingModelId === model.id}
-                onDelete={onDeleteCustom}
-              />
-            ))}
-          </View>
-        </View>
+        <CustomModelsSection
+          models={filteredCustom}
+          hiddenModelIds={hiddenModelIds}
+          deletingModelId={deletingModelId}
+          onToggleModelHidden={onToggleModelHidden}
+          onCheckAll={onCheckAllCustom}
+          onUncheckAll={onUncheckAllCustom}
+          onDeleteCustom={onDeleteCustom}
+        />
       ) : null}
     </>
   );
@@ -581,7 +813,6 @@ export function ProviderDiagnosticSheet({
   const [addSheetOpen, setAddSheetOpen] = useState(false);
   const [diagSheetOpen, setDiagSheetOpen] = useState(false);
   const [deletingModelId, setDeletingModelId] = useState<string | null>(null);
-
   const providerLabel = resolveProviderLabel(provider, snapshotEntries);
   const providerEntry = useMemo(
     () => snapshotEntries?.find((entry) => entry.provider === provider),
@@ -608,18 +839,25 @@ export function ProviderDiagnosticSheet({
     previousCache: stableDiscoveredRef.current,
   });
   stableDiscoveredRef.current = nextDiscoveredCache;
-
-  const [clockTick, setClockTick] = useState(0);
-  useEffect(() => {
-    if (!visible) return;
-    const id = setInterval(() => setClockTick((tick) => tick + 1), 10_000);
-    return () => clearInterval(id);
-  }, [visible]);
-  const fetchedAtLabel = useMemo(() => {
-    if (!providerEntry?.fetchedAt) return null;
-    void clockTick;
-    return formatTimeAgo(new Date(providerEntry.fetchedAt));
-  }, [providerEntry?.fetchedAt, clockTick]);
+  const allModelKeys = useMemo(
+    () =>
+      [...discoveredModels, ...additionalModels].map((model) =>
+        buildHiddenModelKey(provider, model.id),
+      ),
+    [discoveredModels, additionalModels, provider],
+  );
+  const { hiddenKeys, setModelHidden, setModelsHidden } = useDaemonVisibleModels(
+    serverId,
+    allModelKeys,
+  );
+  const hiddenModelIds = useMemo(() => {
+    const prefix = `${provider}:`;
+    const ids = new Set<string>();
+    for (const key of hiddenKeys) {
+      if (key.startsWith(prefix)) ids.add(key.slice(prefix.length));
+    }
+    return ids;
+  }, [hiddenKeys, provider]);
 
   useEffect(() => {
     if (!visible) {
@@ -647,6 +885,43 @@ export function ProviderDiagnosticSheet({
   const handleCloseAddSheet = useCallback(() => setAddSheetOpen(false), []);
   const handleOpenDiagSheet = useCallback(() => setDiagSheetOpen(true), []);
   const handleCloseDiagSheet = useCallback(() => setDiagSheetOpen(false), []);
+
+  // Visibility is a client-side display preference, so these write straight to
+  // the local store: no RPC, no catalog refresh, no pending state.
+  const handleToggleModelHidden = useCallback(
+    (modelId: string, nextHidden: boolean) => {
+      setModelHidden(provider, modelId, nextHidden);
+    },
+    [provider, setModelHidden],
+  );
+
+  const handleCheckAllDiscovered = useCallback(() => {
+    setModelsHidden(
+      discoveredModels.map((model) => ({ provider, modelId: model.id })),
+      false,
+    );
+  }, [discoveredModels, provider, setModelsHidden]);
+
+  const handleUncheckAllDiscovered = useCallback(() => {
+    setModelsHidden(
+      discoveredModels.map((model) => ({ provider, modelId: model.id })),
+      true,
+    );
+  }, [discoveredModels, provider, setModelsHidden]);
+
+  const handleCheckAllCustom = useCallback(() => {
+    setModelsHidden(
+      additionalModels.map((model) => ({ provider, modelId: model.id })),
+      false,
+    );
+  }, [additionalModels, provider, setModelsHidden]);
+
+  const handleUncheckAllCustom = useCallback(() => {
+    setModelsHidden(
+      additionalModels.map((model) => ({ provider, modelId: model.id })),
+      true,
+    );
+  }, [additionalModels, provider, setModelsHidden]);
 
   const handleDeleteCustom = useCallback(
     (modelId: string) => {
@@ -686,7 +961,7 @@ export function ProviderDiagnosticSheet({
         onClose={onClose}
         testID="provider-settings-sheet"
         footer={renderProviderSheetFooter({
-          fetchedAtLabel,
+          fetchedAt: providerEntry?.fetchedAt ?? null,
           isCompact,
           modelsRefreshing,
           t,
@@ -705,8 +980,14 @@ export function ProviderDiagnosticSheet({
           searchActive={Boolean(q)}
           filteredDiscovered={filteredDiscovered}
           filteredCustom={filteredCustom}
+          hiddenModelIds={hiddenModelIds}
           deletingModelId={deletingModelId}
           onRefresh={handleRefreshModels}
+          onToggleModelHidden={handleToggleModelHidden}
+          onCheckAllDiscovered={handleCheckAllDiscovered}
+          onUncheckAllDiscovered={handleUncheckAllDiscovered}
+          onCheckAllCustom={handleCheckAllCustom}
+          onUncheckAllCustom={handleUncheckAllCustom}
           onDeleteCustom={handleDeleteCustom}
           theme={theme}
         />
@@ -787,10 +1068,47 @@ const sheetStyles = StyleSheet.create((theme) => ({
     marginBottom: theme.spacing[2],
     marginLeft: theme.spacing[1],
   },
+  sectionHeaderTitleGroup: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[2],
+  },
+  sectionHeaderActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[1],
+  },
+  bulkActionButtons: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[1],
+  },
   sectionHeaderMeta: {
     flexDirection: "row",
     alignItems: "center",
     gap: theme.spacing[1],
+  },
+  checkboxPressable: {
+    padding: theme.spacing[0.5] ?? 2,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  checkbox: {
+    width: 20,
+    height: 20,
+    borderRadius: theme.borderRadius.sm,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface2,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  checkboxChecked: {
+    backgroundColor: theme.colors.accent,
+    borderColor: theme.colors.accent,
+  },
+  modelTitleHidden: {
+    color: theme.colors.foregroundMuted,
   },
   modelRow: {
     flexDirection: "row",

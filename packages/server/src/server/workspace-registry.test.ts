@@ -1,6 +1,6 @@
 import os from "node:os";
 import path from "node:path";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 
 import { beforeEach, afterEach, describe, expect, test } from "vitest";
 
@@ -186,7 +186,7 @@ describe("workspace registries", () => {
     expect(mutations).toEqual([
       { kind: "upsert", projectId: active.projectId, project: active },
       { kind: "archive", projectId: active.projectId, project: archived },
-      { kind: "remove", projectId: active.projectId, project: null },
+      { kind: "remove", projectId: active.projectId, project: archived },
     ]);
     unsubscribe();
   });
@@ -321,29 +321,64 @@ describe("workspace registries", () => {
     expect(await projectRegistry.list()).toEqual([first]);
   });
 
-  test("keeps lexical and symlink root spellings distinct without realpath", async () => {
-    await projectRegistry.initialize();
-    const target = path.join(tmpDir, "target");
-    const link = path.join(tmpDir, "link");
-    mkdirSync(target);
-    symlinkSync(target, link, process.platform === "win32" ? "junction" : "dir");
+  test.skipIf(process.platform === "win32")(
+    "registers a symlinked root at its realpath and reuses it for either spelling",
+    async () => {
+      await projectRegistry.initialize();
+      const target = path.join(realpathSync(tmpDir), "target");
+      const link = path.join(tmpDir, "link");
+      mkdirSync(target);
+      symlinkSync(target, link, "dir");
 
-    const targetProject = await projectRegistry.getOrCreateActiveByRoot({
-      rootPath: target,
-      kind: "non_git",
-      displayName: "target",
-      timestamp: "2026-03-01T00:00:00.000Z",
-    });
-    const linkProject = await projectRegistry.getOrCreateActiveByRoot({
-      rootPath: link,
-      kind: "non_git",
-      displayName: "link",
-      timestamp: "2026-03-02T00:00:00.000Z",
-    });
+      const linkProject = await projectRegistry.getOrCreateActiveByRoot({
+        rootPath: link,
+        kind: "non_git",
+        displayName: "link",
+        timestamp: "2026-03-01T00:00:00.000Z",
+      });
+      const targetProject = await projectRegistry.getOrCreateActiveByRoot({
+        rootPath: target,
+        kind: "non_git",
+        displayName: "target",
+        timestamp: "2026-03-02T00:00:00.000Z",
+      });
 
-    expect(linkProject.projectId).not.toBe(targetProject.projectId);
-    expect(await projectRegistry.list()).toEqual([targetProject, linkProject]);
-  });
+      expect(linkProject.rootPath).toBe(target);
+      expect(targetProject).toEqual(linkProject);
+      expect(await projectRegistry.list()).toEqual([linkProject]);
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "reuses a project stored under a symlink spelling when resolved by its realpath",
+    async () => {
+      const target = path.join(realpathSync(tmpDir), "data-paseo");
+      const link = path.join(tmpDir, "home-paseo");
+      mkdirSync(target);
+      symlinkSync(target, link, "dir");
+      const legacy = createPersistedProjectRecord({
+        projectId: "prj_legacy",
+        rootPath: link,
+        kind: "git",
+        displayName: "paseo",
+        projectKey: "remote:github.com/acme/paseo",
+        createdAt: "2026-03-01T00:00:00.000Z",
+        updatedAt: "2026-03-01T00:00:00.000Z",
+      });
+      await projectRegistry.upsert(legacy);
+
+      const resolved = await projectRegistry.getOrCreateActiveByRoot({
+        rootPath: target,
+        kind: "git",
+        displayName: "paseo",
+        projectKey: "remote:github.com/acme/paseo",
+        timestamp: "2026-03-02T00:00:00.000Z",
+      });
+
+      expect(resolved.projectId).toBe("prj_legacy");
+      expect(await projectRegistry.list()).toHaveLength(1);
+    },
+  );
 
   test("retries a generated project ID collision", async () => {
     const generatedIds = ["prj_collision", "prj_fresh"];

@@ -3,7 +3,11 @@
   "options": {
     "typeAware": false
   },
-  "ignorePatterns": [".dev/**"],
+  // plugins/** holds omp agent plugins, one of them vendored from upstream: they
+  // follow omp's own style (tabs) and must stay diffable against upstream.
+  // scripts/omp-proxy/** is a standalone bun project built against omp's packages,
+  // in the same style.
+  "ignorePatterns": [".dev/**", "plugins/**", "scripts/omp-proxy/**"],
   "plugins": ["react", "react-perf", "unicorn", "typescript", "oxc", "import", "promise"],
   "categories": {
     "correctness": "error",
@@ -85,6 +89,45 @@
   },
   "overrides": [
     {
+      "files": [
+        "plugins/*-provider/server/**/*.ts",
+        "packages/plugin/src/server/acp-internal/**/*.ts"
+      ],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "paths": [
+              {
+                "name": "node:child_process",
+                "importNames": [
+                  "spawn",
+                  "exec",
+                  "execFile",
+                  "spawnSync",
+                  "execSync",
+                  "execFileSync"
+                ],
+                "message": "Use the plugin server process helpers so Windows command scripts and argv are handled consistently."
+              },
+              {
+                "name": "child_process",
+                "importNames": [
+                  "spawn",
+                  "exec",
+                  "execFile",
+                  "spawnSync",
+                  "execSync",
+                  "execFileSync"
+                ],
+                "message": "Use the plugin server process helpers so Windows command scripts and argv are handled consistently."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
       "files": ["packages/app/src/**/*.{ts,tsx}"],
       "rules": {
         // React Native style arrays must read Unistyles proxies during render. Hoisting them to
@@ -140,12 +183,11 @@
         ]
       }
     },
-    // Raw query burn-down: 34 files total; the 28 files below still enforce the useUnistyles ban.
+    // Raw query burn-down: 33 files total; the 27 files below still enforce the useUnistyles ban.
     {
       "files": [
         "packages/app/src/assistant-file-links/use-file-link.ts",
         "packages/app/src/components/message.tsx",
-        "packages/app/src/components/worktree-setup-callout-source.tsx",
         "packages/app/src/desktop/hooks/use-daemon-status.ts",
         "packages/app/src/desktop/hooks/use-install-status.ts",
         "packages/app/src/desktop/settings/desktop-settings.ts",
@@ -192,7 +234,7 @@
         ]
       }
     },
-    // useUnistyles burn-down: 74 files total; the 68 files below still enforce the raw-query ban.
+    // useUnistyles burn-down: 73 files total; the 67 files below still enforce the raw-query ban.
     {
       "files": [
         "packages/app/src/app/_layout.tsx",
@@ -250,7 +292,6 @@
         "packages/app/src/desktop/components/desktop-permissions-section.tsx",
         "packages/app/src/desktop/components/desktop-updates-section.tsx",
         "packages/app/src/desktop/components/integrations-section.tsx",
-        "packages/app/src/desktop/updates/update-callout-source.tsx",
         "packages/app/src/git/actions-split-button.tsx",
         "packages/app/src/hooks/use-web-scrollbar-style.web.ts",
         "packages/app/src/hosts/host-chooser.tsx",

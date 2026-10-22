@@ -29,9 +29,10 @@ import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import type { AgentPermissionResponse } from "@getpaseo/protocol/agent-types";
 import { getHostRuntimeStore, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
 import { useVoiceAudioEngineOptional, useVoiceRuntimeOptional } from "@/contexts/voice-context";
-import type { AudioPlaybackSource } from "@/voice/audio-engine-types";
+import type { AudioPlaybackSource } from "@/audio";
 import {
   selectAgentTimelineState,
+  toDaemonServerInfo,
   useSessionStore,
   type SessionState,
 } from "@/stores/session-store";
@@ -319,31 +320,13 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
   );
 
   useEffect(() => {
-    const serverInfo = client.getLastServerInfoMessage();
-    if (!serverInfo) {
-      return;
-    }
-
-    updateSessionServerInfo(serverId, {
-      serverId: serverInfo.serverId,
-      hostname: serverInfo.hostname,
-      version: serverInfo.version,
-      ...(serverInfo.desktopManaged !== undefined
-        ? { desktopManaged: serverInfo.desktopManaged }
-        : {}),
-      ...(serverInfo.capabilities ? { capabilities: serverInfo.capabilities } : {}),
-      ...(serverInfo.features ? { features: serverInfo.features } : {}),
-    });
-  }, [client, serverId, updateSessionServerInfo]);
-
-  useEffect(() => {
     const unregister = voiceRuntime?.registerSession({
       serverId,
-      setVoiceMode: async (enabled, agentId) => {
+      setVoiceMode: async (enabled, agentId, options) => {
         if (!client) {
           throw new Error(t("common.errors.daemonUnavailable"));
         }
-        await client.setVoiceMode(enabled, agentId);
+        await client.setVoiceMode(enabled, agentId, options);
       },
       sendVoiceAudioChunk: async (audioData, mimeType) => {
         if (!client) {
@@ -568,16 +551,7 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
       if (message.type !== "status") return;
       const serverInfo = parseServerInfoStatusPayload(message.payload);
       if (serverInfo) {
-        updateSessionServerInfo(serverId, {
-          serverId: serverInfo.serverId,
-          hostname: serverInfo.hostname,
-          version: serverInfo.version,
-          ...(serverInfo.desktopManaged !== undefined
-            ? { desktopManaged: serverInfo.desktopManaged }
-            : {}),
-          ...(serverInfo.capabilities ? { capabilities: serverInfo.capabilities } : {}),
-          ...(serverInfo.features ? { features: serverInfo.features } : {}),
-        });
+        updateSessionServerInfo(serverId, toDaemonServerInfo(serverInfo));
         return;
       }
     });

@@ -384,6 +384,7 @@ describe("translation resources", () => {
     expect(en.sessions.title).toBe("History");
     expect(en.sessions.empty).toBe("No sessions yet");
     expect(en.sessions.actions.loadMore).toBe("Load more");
+    expect(en.sessions.actions.askAboutThis).toBe("Ask about this");
     expect(en.agentList.fallbackTitle).toBe("New session");
     expect(en.agentList.dateSections.today).toBe("Today");
     expect(en.agentList.dateSections.older).toBe("Older");
@@ -562,11 +563,6 @@ describe("translation resources", () => {
       "All recent sessions are already imported.",
     );
     expect(en.importSession.empty.noProviderSessions).toBe("No {{provider}} sessions found.");
-    expect(en.sidebar.worktreeSetup.title).toBe("Set up worktree scripts");
-    expect(en.sidebar.worktreeSetup.description).toBe(
-      "Add setup commands so new worktrees can install dependencies and prepare themselves automatically.",
-    );
-    expect(en.sidebar.worktreeSetup.openProjectSettings).toBe("Open project settings");
   });
 
   it("includes remaining small utility chrome keys for the Batch 4O migration", () => {
@@ -584,6 +580,12 @@ describe("translation resources", () => {
     expect(en.message.compaction.completed).toBe("Context compacted");
     expect(en.agentPanel.archived.callout).toBe("This agent is archived");
     expect(en.agentPanel.archived.unarchive).toBe("Unarchive");
+    expect(en.agentPanel.providerUnavailable.callout).toBe(
+      "This agent's provider is no longer available on this host.",
+    );
+    expect(en.agentPanel.providerUnavailable.continueWithAnotherProvider).toBe(
+      "Continue with another provider",
+    );
     expect(en.desktop.quitting.title).toBe("Quitting Paseo...");
     expect(en.desktop.quitting.detail).toBe("Stopping the local daemon.");
     expect(en.composer.attachments.dropImagesHere).toBe("Drop images here");
@@ -631,18 +633,6 @@ describe("translation resources", () => {
     expect(en.desktop.updates.status.failed).toBe("Failed to update app.");
     expect(en.desktop.updates.status.idle).toBe("Update status has not been checked yet.");
     expect(en.desktop.updates.installError).toBe("Unable to install the desktop app update.");
-    expect(en.desktop.updates.callout.installingTitle).toBe("Installing update");
-    expect(en.desktop.updates.callout.failedTitle).toBe("Update failed");
-    expect(en.desktop.updates.callout.availableTitle).toBe("Update available");
-    expect(en.desktop.updates.callout.genericError).toBe("Something went wrong.");
-    expect(en.desktop.updates.callout.whatsNew).toBe("What's new");
-    expect(en.desktop.updates.callout.installAndRestart).toBe("Install & restart");
-    expect(en.desktop.updates.callout.installingDescription).toBe("Installing and restarting...");
-    expect(en.desktop.updates.callout.versionReady).toBe("{{version}} is ready to install.");
-    expect(en.desktop.updates.callout.newVersionReady).toBe("A new version is ready to install.");
-    expect(en.desktop.updates.callout.restartWarning).toBe(
-      "Upgrading the app will stop running agents and close terminal sessions.",
-    );
     expect(en.desktop.rosetta.title).toBe("Download the Apple Silicon build");
     expect(en.desktop.rosetta.runningIntel).toBe(
       "You're running the Intel build of Paseo under Rosetta on Apple Silicon.",

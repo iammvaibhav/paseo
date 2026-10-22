@@ -3,20 +3,15 @@ import { deriveStreamTurnTiming, type StreamTurnTiming } from "@/timeline/turn-t
 import type { StreamItem } from "@/types/stream";
 import { findMountedWindowStart, getMountedRecentStreamItems } from "./history-window";
 import { getWebPartialVirtualizationThreshold } from "./web-virtualization";
-import { orderHeadForStreamRenderStrategy, orderTailForStreamRenderStrategy } from "./strategy";
+import {
+  orderHeadForStreamRenderStrategy,
+  orderTailForStreamRenderStrategy,
+  type StreamHistoryBoundary,
+  type StreamRenderSegments,
+} from "./strategy";
 import { resolveStreamRenderStrategy } from "./strategy-resolver";
 
-export interface StreamRenderSegments {
-  historyVirtualized: StreamItem[];
-  historyMounted: StreamItem[];
-  liveHead: StreamItem[];
-}
-
-export interface StreamHistoryBoundary {
-  hasVirtualizedHistory: boolean;
-  hasMountedHistory: boolean;
-  hasLiveHead: boolean;
-}
+export type { StreamHistoryBoundary, StreamRenderSegments } from "./strategy";
 
 export interface StreamRenderAuxiliary {
   pendingPermissions: ReactNode;

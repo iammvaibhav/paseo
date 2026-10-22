@@ -8,6 +8,7 @@ import {
   invalidatePrPaneTimelineForCheckout,
 } from "@/git/query-keys";
 import { type CheckoutPrStatusPayload, normalizeCheckoutPrStatusPayload } from "@/git/pr-status";
+import { resetDraftAgentCommandsForCheckout } from "@/hooks/agent-commands-query";
 import { expireWorkingDiffComparisons } from "@/git/working-diff-comparison";
 
 export type CheckoutStatusPayload = CheckoutStatusResponse["payload"];
@@ -32,6 +33,14 @@ export async function fetchCheckoutStatus({
 }): Promise<CheckoutStatusPayload> {
   const payload = await client.getCheckoutStatus(cwd);
   expireWorkingDiffComparisons({ serverId, cwd, isDirty: payload.isGit && payload.isDirty });
+  if (payload.error) {
+    // The daemon reports a transient snapshot failure (busy git, cold target,
+    // index lock) as a successful payload with `error` set. Throw instead of
+    // caching it: React Query then retries with backoff and keeps the last
+    // known-good status, so the workspace header actions (Create PR, open in
+    // editor, ...) don't get disabled until the next push or reconnect.
+    throw new Error(payload.error.message);
+  }
   return payload;
 }
 
@@ -67,7 +76,13 @@ export function applyCheckoutStatusUpdateFromEvent({
     ? normalizeCheckoutPrStatusPayload(payload.prStatus)
     : undefined;
   const cachePayload = prStatus ? { ...payload, prStatus } : payload;
+  const previousStatus = queryClient.getQueryData<CheckoutStatusPayload>(
+    checkoutStatusQueryKey(serverId, payload.cwd),
+  );
   queryClient.setQueryData(checkoutStatusQueryKey(serverId, payload.cwd), cachePayload);
+  if (previousStatus?.currentBranch !== payload.currentBranch) {
+    void resetDraftAgentCommandsForCheckout(queryClient, { serverId, cwd: payload.cwd });
+  }
   void queryClient.invalidateQueries({
     queryKey: checkoutCommitsQueryKey(serverId, payload.cwd),
   });

@@ -69,8 +69,19 @@ export async function writeMarkdownToRichClipboard(
   markdown: string,
   environment: MarkdownClipboardEnvironment,
 ): Promise<void> {
+  await writeRichClipboardContent(createMarkdownClipboardContent(markdown), environment);
+}
+
+/**
+ * Writes a pre-built clipboard payload. The Markdown copy shortcut needs this
+ * variant: its html half is already flattened for rich targets, so re-rendering
+ * it from the Markdown source would change what gets pasted.
+ */
+export async function writeRichClipboardContent(
+  content: MarkdownClipboardContent,
+  environment: MarkdownClipboardEnvironment,
+): Promise<void> {
   if (environment.richWriter?.supportsHtml()) {
-    const content = createMarkdownClipboardContent(markdown);
     try {
       await environment.richWriter.write({
         "text/plain": new Blob([content.plainText], { type: "text/plain" }),
@@ -83,5 +94,5 @@ export async function writeMarkdownToRichClipboard(
     }
   }
 
-  await environment.writePlainText(markdown);
+  await environment.writePlainText(content.plainText);
 }

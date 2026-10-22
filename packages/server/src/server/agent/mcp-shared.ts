@@ -8,6 +8,7 @@ import { selectItemsByProjectedLimit } from "./timeline-projection.js";
 import type { AgentStorage } from "./agent-storage.js";
 import { serializeAgentSnapshot } from "../messages.js";
 import { StoredScheduleSchema } from "@getpaseo/protocol/schedule/types";
+import { canonicalProviderModel } from "@getpaseo/protocol/provider-model";
 import type { AgentProvider } from "./agent-sdk-types.js";
 
 export const AgentProviderEnum = z.string();
@@ -68,7 +69,7 @@ export interface ResolvedProviderModel {
 export function resolveRequiredProviderModel(
   providerValue: string,
 ): Required<ResolvedProviderModel> {
-  const providerInput = providerValue.trim();
+  const providerInput = canonicalProviderModel(providerValue);
   const slashIndex = providerInput.indexOf("/");
   if (slashIndex <= 0 || slashIndex === providerInput.length - 1) {
     throw new Error("provider must be provider/model, for example codex/gpt-5.4");
@@ -86,6 +87,11 @@ export function resolveRequiredProviderModel(
   };
 }
 
+export interface AgentWaitWithTimeoutResult extends WaitForAgentResult {
+  /** The wait gave up while the agent was still working. */
+  timedOut: boolean;
+}
+
 /**
  * Wraps agentManager.waitForAgentEvent with a self-imposed timeout.
  * Returns a friendly message when timeout occurs, rather than letting
@@ -98,7 +104,7 @@ export async function waitForAgentWithTimeout(
     signal?: AbortSignal;
     waitForActive?: boolean;
   },
-): Promise<WaitForAgentResult> {
+): Promise<AgentWaitWithTimeoutResult> {
   const timeoutController = new AbortController();
   const combinedController = new AbortController();
 
@@ -133,7 +139,7 @@ export async function waitForAgentWithTimeout(
       signal: combinedController.signal,
       waitForActive: options?.waitForActive,
     });
-    return result;
+    return { ...result, timedOut: false };
   } catch (error) {
     if (error instanceof Error && error.message === "wait timeout") {
       const snapshot = agentManager.getAgent(agentId);
@@ -150,6 +156,7 @@ export async function waitForAgentWithTimeout(
         status: snapshot?.lifecycle ?? "idle",
         permission: null,
         lastMessage: message,
+        timedOut: true,
       };
     }
     throw error;

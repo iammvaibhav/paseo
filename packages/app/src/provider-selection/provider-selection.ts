@@ -5,7 +5,7 @@ import type {
   ProviderSnapshotEntry,
 } from "@getpaseo/protocol/agent-types";
 import type { AgentProviderDefinition } from "@getpaseo/protocol/provider-manifest";
-import type { DraftCommandConfig } from "@/hooks/use-agent-commands-query";
+import type { DraftCommandTarget } from "@/hooks/use-agent-commands-query";
 import { i18n } from "@/i18n/i18next";
 import { compareMatchScores, scoreTextFields } from "@getpaseo/protocol/search/text-match";
 import { filterSelectableModels } from "./model-catalog";
@@ -155,6 +155,41 @@ export function buildSelectableProviderSelectorProviders(
     });
 }
 
+/**
+ * Drops rows the user hid in provider settings. Purely presentational: it runs
+ * where a picker builds its choosable list, never where a selected model is
+ * labelled, so a provider that falls back onto a hidden model still names it.
+ *
+ * The active pick always survives the filter — a picker that cannot show what
+ * is currently selected reads as broken.
+ */
+export function filterHiddenProviderModelRows(input: {
+  providers: ProviderSelectorProvider[];
+  hiddenKeys: ReadonlySet<string>;
+  selectedProvider?: string;
+  selectedModel?: string;
+}): ProviderSelectorProvider[] {
+  if (input.hiddenKeys.size === 0) return input.providers;
+
+  const keptKey =
+    input.selectedProvider && input.selectedModel
+      ? buildModelRowKey(input.selectedProvider, input.selectedModel)
+      : null;
+
+  let changed = false;
+  const filtered = input.providers.map((provider) => {
+    if (provider.modelSelection.kind !== "models") return provider;
+    const rows = provider.modelSelection.rows.filter(
+      (row) => row.favoriteKey === keptKey || !input.hiddenKeys.has(row.favoriteKey),
+    );
+    if (rows.length === provider.modelSelection.rows.length) return provider;
+    changed = true;
+    return { ...provider, modelSelection: { kind: "models" as const, rows } };
+  });
+
+  return changed ? filtered : input.providers;
+}
+
 export function getProviderModelRows(
   provider: ProviderSelectorProvider,
 ): ProviderSelectionModelRow[] {
@@ -286,19 +321,22 @@ export function resolveEffectiveComposerThinkingOptionId(
   return selectedModelDefinition?.defaultThinkingOptionId ?? "";
 }
 
-export function buildDraftCommandConfig(input: {
+export function buildDraftCommandTarget(input: {
   selection: ProviderSelectionState;
   cwd: string;
   effectiveModelId: string;
   effectiveThinkingOptionId: string;
   featureValues?: Record<string, unknown>;
-}): DraftCommandConfig | undefined {
+}): DraftCommandTarget {
   const cwd = input.cwd.trim();
-  if (!input.selection.provider || !cwd) {
-    return undefined;
+  if (!cwd) {
+    return { status: "needs-project" };
+  }
+  if (!input.selection.provider) {
+    return { status: "needs-provider" };
   }
 
-  return {
+  const config = {
     provider: input.selection.provider,
     cwd,
     ...(input.selection.modeOptions.length > 0 && input.selection.modeId !== ""
@@ -310,6 +348,7 @@ export function buildDraftCommandConfig(input: {
       : {}),
     ...(input.featureValues ? { featureValues: input.featureValues } : {}),
   };
+  return { status: "ready", config };
 }
 
 export function resolveSubmissionReadiness(input: {

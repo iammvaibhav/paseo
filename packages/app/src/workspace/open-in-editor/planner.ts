@@ -1,5 +1,6 @@
 import { type Forge, forgeFromRemoteUrl, getForgePresentation } from "@/git/forge";
 import type { DesktopOpenTarget, OpenDesktopTargetInput } from "@/workspace/desktop-open-targets";
+import { buildBrowserEditorUrl } from "@/workspace/browser-editor-url";
 import {
   type ResolvedWorkspaceFilePaths,
   resolveWorkspaceFilePaths,
@@ -29,7 +30,17 @@ export interface PlannedForgeOpenTarget {
   url: string;
 }
 
-export type PlannedWorkspaceOpenTarget = PlannedDesktopOpenTarget | PlannedForgeOpenTarget;
+export interface PlannedBrowserEditorOpenTarget {
+  source: "browser-editor";
+  id: "vscode-web";
+  label: "VS Code Web";
+  url: string;
+}
+
+export type PlannedWorkspaceOpenTarget =
+  | PlannedDesktopOpenTarget
+  | PlannedForgeOpenTarget
+  | PlannedBrowserEditorOpenTarget;
 
 export interface PlanWorkspaceOpenTargetsInput {
   workspaceDirectory: string;
@@ -39,6 +50,8 @@ export interface PlanWorkspaceOpenTargetsInput {
   desktopTargets: readonly DesktopOpenTarget[];
   canUseDesktopBridge: boolean;
   isLocalExecution: boolean;
+  remoteSshHost?: string | null;
+  browserEditorUrl?: string | null;
   checkoutStatus?: CheckoutStatusForOpenTarget | null;
   forge?: Forge | null;
 }
@@ -60,6 +73,35 @@ function resolveActiveFileForOpenTargets(
     : null;
 }
 
+function planRemoteDesktopOpenTargets(input: {
+  workspaceDirectory: string;
+  resolvedFile: ResolvedWorkspaceFilePaths | null;
+  desktopTargets: readonly DesktopOpenTarget[];
+  sshHost: string;
+}): PlannedDesktopOpenTarget[] {
+  return input.desktopTargets
+    .filter((target) => target.kind === "editor" && target.supportsRemote)
+    .map((target) => ({
+      source: "desktop",
+      id: target.id,
+      label: target.label,
+      editorId: target.id,
+      icon: target.icon,
+      openInput: input.resolvedFile
+        ? {
+            editorId: target.id,
+            path: input.resolvedFile.absolutePath,
+            cwd: input.workspaceDirectory,
+            sshHost: input.sshHost,
+          }
+        : {
+            editorId: target.id,
+            path: input.workspaceDirectory,
+            sshHost: input.sshHost,
+          },
+    }));
+}
+
 function planDesktopOpenTargets(input: {
   workspaceDirectory: string;
   directoryPath?: string | null;
@@ -68,9 +110,14 @@ function planDesktopOpenTargets(input: {
   desktopTargets: readonly DesktopOpenTarget[];
   canUseDesktopBridge: boolean;
   isLocalExecution: boolean;
+  remoteSshHost?: string | null;
 }): PlannedDesktopOpenTarget[] {
-  if (!input.canUseDesktopBridge || !input.isLocalExecution) {
+  if (!input.canUseDesktopBridge) {
     return [];
+  }
+  if (!input.isLocalExecution) {
+    const sshHost = input.remoteSshHost?.trim();
+    return sshHost ? planRemoteDesktopOpenTargets({ ...input, sshHost }) : [];
   }
 
   const resolvedDirectory =
@@ -176,11 +223,35 @@ function planForgeOpenTarget(input: {
   };
 }
 
+function planBrowserEditorOpenTarget(input: {
+  workspaceDirectory: string;
+  browserEditorUrl?: string | null;
+}): PlannedBrowserEditorOpenTarget | null {
+  const url = buildBrowserEditorUrl({
+    baseUrl: input.browserEditorUrl ?? "",
+    folderPath: input.workspaceDirectory,
+  });
+  if (!url) {
+    return null;
+  }
+  return {
+    source: "browser-editor",
+    id: "vscode-web",
+    label: "VS Code Web",
+    url,
+  };
+}
+
 export function planWorkspaceOpenTargets(
   input: PlanWorkspaceOpenTargetsInput,
 ): PlannedWorkspaceOpenTarget[] {
   const resolvedFile = resolveActiveFileForOpenTargets(input);
   const desktopTargets = planDesktopOpenTargets({ ...input, resolvedFile });
+  const browserEditorTarget = planBrowserEditorOpenTarget(input);
   const forgeTarget = planForgeOpenTarget({ ...input, resolvedFile });
-  return forgeTarget ? [...desktopTargets, forgeTarget] : desktopTargets;
+  return [
+    ...desktopTargets,
+    ...(browserEditorTarget ? [browserEditorTarget] : []),
+    ...(forgeTarget ? [forgeTarget] : []),
+  ];
 }

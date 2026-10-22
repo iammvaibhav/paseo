@@ -1,6 +1,8 @@
+import { installGlassFrostFilter } from "@/styles/glass-frost-filter";
 import "@/styles/unistyles";
 import { BottomSheetModalProvider } from "@gorhom/bottom-sheet";
 import { PortalProvider } from "@gorhom/portal";
+import { LucideProvider } from "lucide-react-native";
 import * as Linking from "expo-linking";
 import * as Notifications from "expo-notifications";
 import { Stack, useNavigationContainerRef, usePathname, useRouter } from "expo-router";
@@ -26,12 +28,13 @@ import { CommandCenterProvider } from "@/command-center/provider";
 import { CommandCenterWorkspaceActions } from "@/command-center/workspace-registration";
 import { PluginCommandCenterActions } from "@/plugins/command-center/registration";
 import { AddProjectFlowHost } from "@/components/add-project-flow-host";
-import { WorktreeSetupCalloutSource } from "@/components/worktree-setup-callout-source";
 import { DownloadToast } from "@/components/download-toast";
 import { QuittingOverlay } from "@/components/quitting-overlay";
 import { KeyboardShortcutsDialog } from "@/components/keyboard-shortcuts-dialog";
 import { ChangelogHost } from "@/changelog";
 import { AppDiagnosticHost } from "@/components/app-diagnostic-host";
+import { CustomReminderHost } from "@/agent-reminders/custom-reminder-sheet";
+import { MissionControlPersistent } from "@/screens/mission-control-persistent";
 import { AppearanceStyleBoundary } from "@/components/appearance-style-boundary";
 import { LeftSidebar } from "@/components/left-sidebar";
 import { WindowSidebarMenuToggle } from "@/components/headers/menu-header";
@@ -45,6 +48,7 @@ import { WorkspaceSetupDialog } from "@/components/workspace-setup-dialog";
 import { WorkspaceShortcutTargetsSubscriber } from "@/components/workspace-shortcut-targets-subscriber";
 import { FloatingPanelPortalHost } from "@/components/ui/floating-panel-portal";
 import { HostChooserModal, useHostChooser } from "@/hosts/host-chooser";
+import { HostConfirmationSheet } from "@/hosts/host-confirmation-sheet";
 import {
   getIsElectronRuntime,
   HEADER_INNER_HEIGHT,
@@ -81,7 +85,6 @@ import { updateDesktopWindowChrome } from "@/desktop/electron/window";
 import { getDesktopHost } from "@/desktop/host";
 import { loadDesktopSettings } from "@/desktop/settings/desktop-settings";
 import { RosettaCalloutSource } from "@/desktop/updates/rosetta-callout-source";
-import { UpdateCalloutSource } from "@/desktop/updates/update-callout-source";
 import { useActiveWorktreeNewAction } from "@/hooks/use-active-worktree-new-action";
 import { useGlobalNewWorkspaceAction } from "@/hooks/use-global-new-workspace-action";
 import { useLatchedBoolean } from "@/hooks/use-latched-boolean";
@@ -105,7 +108,6 @@ import {
   getHostRuntimeStore,
   hasConfiguredLocalDaemonOverride,
   useHostRegistryLoaded,
-  useHostMutations,
   useHostRuntimeClient,
   useHostRuntimeIsConnected,
   useHosts,
@@ -113,7 +115,7 @@ import {
 import { getDaemonStartService } from "@/runtime/daemon-start-service";
 import { usePanelStore } from "@/stores/panel-store";
 import { flushDraftPersistStorage } from "@/stores/draft-store";
-import { getNextThemePreference } from "@/styles/theme";
+import { getNextThemePreference, ICON_STROKE_WIDTH } from "@/styles/theme";
 import { useSessionStore } from "@/stores/session-store";
 import { installWebScrollbarStyles } from "@/styles/install-web-scrollbar-styles";
 import type { HostProfile } from "@/types/host-connection";
@@ -560,12 +562,12 @@ function AppContainer({ children, chromeEnabled: chromeEnabledOverride }: AppCon
           presentation={explorerSidebarPresentation === "dock" ? "dock" : "overlay"}
         >
           <WindowChromeRegion corners={chromeEnabled ? "both" : appChromeLayout.contentCorners}>
-            <View style={flexStyle}>{children}</View>
+            <View style={layoutStyles.contentFill}>{children}</View>
           </WindowChromeRegion>
         </CompactExplorerSidebarHost>
       ) : (
         <WindowChromeRegion corners={appChromeLayout.contentCorners}>
-          <View style={flexStyle}>{children}</View>
+          <View style={layoutStyles.contentFill}>{children}</View>
         </WindowChromeRegion>
       )}
     </View>
@@ -574,7 +576,7 @@ function AppContainer({ children, chromeEnabled: chromeEnabledOverride }: AppCon
   // Native panel gesture hosts outlive appearance keys, like native navigators.
   // Their tracked styles update in place; web numeric styles still need remounting.
   const surface = (
-    <View style={layoutStyles.surfaceFill}>
+    <View style={layoutStyles.fill}>
       {workspaceChrome}
       <AppearanceStyleBoundary>
         {!isCompactLayout && appChromeLayout.sidebarToggleOwner === "window" ? (
@@ -596,9 +598,7 @@ function AppContainer({ children, chromeEnabled: chromeEnabledOverride }: AppCon
       <AppearanceStyleBoundary>
         <DownloadToast />
         <RosettaCalloutSource />
-        <UpdateCalloutSource />
         <LegacyAgentSkillsMigration />
-        <WorktreeSetupCalloutSource />
         <CommandCenterRootActions />
         <CommandCenterWorkspaceActions />
         <PluginCommandCenterActions />
@@ -607,10 +607,12 @@ function AppContainer({ children, chromeEnabled: chromeEnabledOverride }: AppCon
         <CommandCenter />
         <AddProjectFlowHost />
         <HostChooserModal />
+        <HostConfirmationSheet />
         <ProviderSettingsHost />
         <WorkspaceSetupDialog />
         <KeyboardShortcutsDialog />
         <AppDiagnosticHost />
+        <CustomReminderHost />
         <ChangelogHost />
         <QuittingOverlay />
       </AppearanceStyleBoundary>
@@ -658,7 +660,7 @@ function MobileGestureWrapper({
 
   return (
     <GestureDetector gesture={openGesture} touchAction={MOBILE_WEB_GESTURE_TOUCH_ACTION}>
-      <View collapsable={false} style={layoutStyles.surfaceFill}>
+      <View collapsable={false} style={layoutStyles.fill}>
         {children}
       </View>
     </GestureDetector>
@@ -666,13 +668,11 @@ function MobileGestureWrapper({
 }
 
 function ProvidersWrapper({ children }: { children: ReactNode }) {
-  const { upsertConnectionFromOfferUrl } = useHostMutations();
-
   return (
     <AppearanceProvider>
       <VoiceProvider>
         <DesktopWindowControlsSync />
-        <OfferLinkListener upsertDaemonFromOfferUrl={upsertConnectionFromOfferUrl} />
+        <OfferLinkListener />
         <HostSessionManager />
         <FaviconStatusSync />
         {children}
@@ -684,60 +684,59 @@ function ProvidersWrapper({ children }: { children: ReactNode }) {
 function DesktopWindowControlsSync() {
   const { isLoading } = useAppSettings();
   const { theme } = useUnistyles();
-  const surface0 = theme.colors.surface0;
+  const surfaceApp = theme.colors.surfaceApp;
+  const glass = theme.glass !== null;
 
   useEffect(() => {
     if (isLoading || isNative) return;
+    // A glass theme paints translucent tints over the window's vibrancy, so the window and the
+    // page body must be transparent too.
+    const pageBackground = glass ? "transparent" : "";
+    if (glass) installGlassFrostFilter();
+    document.documentElement.style.backgroundColor = pageBackground;
+    document.body.style.backgroundColor = pageBackground;
     void updateDesktopWindowChrome({
-      backgroundColor: surface0,
+      backgroundColor: glass ? "#00000000" : surfaceApp,
+      vibrancy: glass,
       trafficLightOffsetY: -4,
     }).catch((error) => {
       console.warn("[DesktopWindow] Failed to update window controls overlay", error);
     });
-  }, [isLoading, surface0]);
+  }, [glass, isLoading, surfaceApp]);
 
   return null;
 }
 
-function OfferLinkListener({
-  upsertDaemonFromOfferUrl,
-}: {
-  upsertDaemonFromOfferUrl: (offerUrlOrFragment: string) => Promise<unknown>;
-}) {
+function OfferLinkListener() {
   const router = useRouter();
 
   useEffect(() => {
     let cancelled = false;
-    const handleUrl = (url: string | null) => {
+    const handleUrl = async (url: string | null) => {
       if (!url) return;
-      if (!url.includes("#offer=")) return;
-      void upsertDaemonFromOfferUrl(url)
-        .then((profile) => {
-          if (cancelled) return;
-          const serverId = (profile as { serverId?: unknown } | null)?.serverId;
-          if (typeof serverId !== "string" || !serverId) return;
-          router.replace(buildOpenProjectRoute());
-          return;
-        })
-        .catch((error) => {
-          if (cancelled) return;
-          console.warn("[Linking] Failed to import pairing offer", error);
-        });
+      if (!url.includes("#offer=") && !url.includes("#connect=") && !url.startsWith("relay://"))
+        return;
+      try {
+        const result = await getHostRuntimeStore().importConnectionLink(url, "openProject");
+        if (!cancelled && result.status === "connected") router.replace(buildOpenProjectRoute());
+      } catch (error) {
+        console.warn("[OfferLinkListener] Pairing link failed", error);
+      }
     };
 
     void Linking.getInitialURL()
-      .then(handleUrl)
+      .then((url) => handleUrl(url))
       .catch(() => undefined);
 
     const subscription = Linking.addEventListener("url", (event) => {
-      handleUrl(event.url);
+      void handleUrl(event.url);
     });
 
     return () => {
       cancelled = true;
       subscription.remove();
     };
-  }, [router, upsertDaemonFromOfferUrl]);
+  }, [router]);
 
   return null;
 }
@@ -872,6 +871,11 @@ function AppWithSidebar({ children }: { children: ReactNode }) {
       pathname === "/new" ||
       pathname === "/sessions" ||
       pathname === "/schedules" ||
+      pathname === "/automations" ||
+      pathname === "/mission-control" ||
+      pathname === "/itsaplan" ||
+      pathname === "/webhooks" ||
+      pathname === "/usage" ||
       routeHasKnownHost);
 
   return <AppContainer chromeEnabled={shouldShowAppChrome}>{children}</AppContainer>;
@@ -903,7 +907,12 @@ function RootStack() {
         <Stack.Screen name="new" />
         <Stack.Screen name="open-project" />
         <Stack.Screen name="sessions" />
+        <Stack.Screen name="automations" />
         <Stack.Screen name="schedules" />
+        <Stack.Screen name="itsaplan" />
+        <Stack.Screen name="mission-control" />
+        <Stack.Screen name="webhooks" />
+        <Stack.Screen name="usage" />
         <Stack.Screen name="pair-scan" />
       </Stack.Protected>
       <Stack.Screen name="h/[serverId]" />
@@ -935,6 +944,7 @@ function AppShell() {
         <AppWithSidebar>
           <WorkspaceRouteNavigationBridge />
           <RootStack />
+          <MissionControlPersistent />
         </AppWithSidebar>
       </HorizontalScrollProvider>
     </MobilePanelsProvider>
@@ -980,11 +990,13 @@ function RootAppTree() {
   return (
     <GestureHandlerRootView style={flexStyle}>
       <View style={layoutStyles.surfaceFill}>
-        <RootProviders>
-          <RuntimeProviders>
-            <AppShell />
-          </RuntimeProviders>
-        </RootProviders>
+        <LucideProvider strokeWidth={ICON_STROKE_WIDTH}>
+          <RootProviders>
+            <RuntimeProviders>
+              <AppShell />
+            </RuntimeProviders>
+          </RootProviders>
+        </LucideProvider>
       </View>
     </GestureHandlerRootView>
   );
@@ -1005,9 +1017,18 @@ export default function RootLayout() {
 }
 
 const layoutStyles = StyleSheet.create((theme) => ({
+  // Only the root paints the app surface. A glass theme's surface is translucent, so a second
+  // layer of it would darken the window.
   surfaceFill: {
     flex: 1,
-    backgroundColor: theme.colors.surface0,
+    backgroundColor: theme.colors.surfaceApp,
+  },
+  fill: {
+    flex: 1,
+  },
+  contentFill: {
+    flex: 1,
+    backgroundColor: theme.colors.surfaceContent,
   },
   windowSidebarToggle: {
     position: "absolute",

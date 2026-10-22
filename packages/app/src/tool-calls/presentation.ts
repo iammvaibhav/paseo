@@ -19,6 +19,10 @@ interface BuildToolCallPresentationInput {
   detail?: ToolCallDetail;
   cwd?: string;
   metadata?: Record<string, unknown>;
+  /** agentId → display name for fleet dispatch renderers (live identity join). */
+  agentNames?: Readonly<Record<string, string | undefined>>;
+  /** host → display alias resolver (maps "local" to host alias). */
+  resolveHost?: (host: string) => string;
   resolveIcon: ToolCallIconResolver;
 }
 
@@ -59,6 +63,8 @@ export function buildToolCallPresentation(
     detail: detailForDisplay,
     metadata: input.metadata,
     cwd: input.cwd,
+    agentNames: input.agentNames,
+    resolveHost: input.resolveHost,
   });
   const isLoadingDetails = isPendingToolCallDetail({
     detail: input.detail,

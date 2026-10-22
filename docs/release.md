@@ -81,10 +81,10 @@ short-lived hotfix branch, not another maintained release track.
 
 ACP catalog work enters a release through an explicit user request:
 
-- **Check ACP drift** — run `npm run acp:version-drift:check`. When drift exists,
-  run `npm run acp:version-drift:update`, verify the catalog, and include the
+- **Check ACP drift** — run `pnpm run acp:version-drift:check`. When drift exists,
+  run `pnpm run acp:version-drift:update`, verify the catalog, and include the
   update in the local release-preparation commits.
-- **Update ACP** — run `npm run acp:version-drift:update`, verify the catalog, and
+- **Update ACP** — run `pnpm run acp:version-drift:update`, verify the catalog, and
   include the update in the local release-preparation commits.
 
 The release authorization covers the requested ACP commit. It ships in the same
@@ -95,7 +95,7 @@ release push as the changelog and version commit.
 There are two supported release paths:
 
 1. **Direct stable release**: you are ready to ship the resolved release source to everyone immediately (default `origin/main`).
-2. **Beta flow**: release candidates on the `beta` channel. Each beta carries its own changelog entry, publishes npm only on the explicit `beta` dist-tag, and stays behind the Stable/Beta switch on `/download`.
+2. **Beta flow**: release candidates on the `beta` channel. Each beta folds into the series' single changelog entry, publishes npm only on the explicit `beta` dist-tag, and stays behind the Stable/Beta switch on `/download`.
 
 Paseo has one linear release track even though npm dist-tags are independent
 pointers. The npm invariant is:
@@ -133,13 +133,13 @@ as described in **Fixing a failed release build**.
 Before running any stable release command:
 
 - Make sure the resolved release source passed CI, the approved release inputs are committed locally on the intended branch, and the working tree is clean.
-- **Run `npm run format`, `npm run lint`, and `npm run typecheck` and commit any resulting changes BEFORE you start any `release:*` command.** `release:check` runs `npm install --workspaces --include-workspace-root` as part of `release:prepare`, which can mutate `package-lock.json` (e.g. churning `"dev": true` markers on optional deps). The next step, `version:all:*`, runs `npm version` which aborts when the working tree is dirty. If this happens mid-flight you have to commit the lockfile churn before retrying — and the pre-commit format hook will reject a lockfile-only commit because oxfmt internally skips `package-lock.json` while lefthook's glob still matches it. Avoid the whole mess by running format/lint/typecheck first, then `release:prepare` once on its own to absorb any lockfile churn into a normal commit, then start the release.
+- **Run `pnpm run format`, `pnpm run lint`, and `pnpm run typecheck` and commit any resulting changes BEFORE you start any `release:*` command.** `release:check` runs `pnpm install` as part of `release:prepare`, which can mutate `pnpm-lock.yaml` (e.g. churning `"dev": true` markers on optional deps). The next step, `version:all:*`, runs `npm version` which aborts when the working tree is dirty. If this happens mid-flight you have to commit the lockfile churn before retrying — and the pre-commit format hook will reject a lockfile-only commit because oxfmt internally skips `pnpm-lock.yaml` while lefthook's glob still matches it. Avoid the whole mess by running format/lint/typecheck first, then `release:prepare` once on its own to absorb any lockfile churn into a normal commit, then start the release.
 - Do not use a release command as a substitute for checking whether the current commit is actually ready.
 
 ```bash
 # Run exactly one, matching the approved decision:
-npm run release:patch
-npm run release:minor
+pnpm run release:patch
+pnpm run release:minor
 ```
 
 This bumps the version across all workspaces, runs checks, publishes to npm, and pushes the branch + tag. The tag push triggers `Desktop Release`, `Android APK Release`, `Docker`, and `Release Notes Sync` on GitHub Actions. The workflows create the GitHub Release as a draft while builds and release-note sync run. EAS picks up the same tag via the EAS GitHub app and starts the iOS + Android store builds in parallel (see "Mobile builds (EAS)" below) — there is no mobile-release workflow under `.github/workflows`.
@@ -167,24 +167,24 @@ The production relay is the Elixir service in [getpaseo/paseo-relay](https://git
 ## Manual step-by-step
 
 ```bash
-npm run typecheck            # Verify the exact commit you intend to release
-npm run release:check        # Typecheck, build, dry-run pack
+pnpm run typecheck            # Verify the exact commit you intend to release
+pnpm run release:check        # Typecheck, build, dry-run pack
 # Run exactly one approved version command:
-npm run version:all:patch
-npm run version:all:minor
-npm run release:publish      # Publish to npm
-npm run release:push         # Push HEAD + tag (triggers CI workflows)
+pnpm run version:all:patch
+pnpm run version:all:minor
+pnpm run release:publish      # Publish to npm
+pnpm run release:push         # Push HEAD + tag (triggers CI workflows)
 # Then move npm's beta dist-tag to this stable version using the command above.
 ```
 
 ## Beta flow
 
 ```bash
-npm run release:beta:patch       # Start the next patch beta line
-npm run release:beta:minor       # Start the next minor beta line
+pnpm run release:beta:patch       # Start the next patch beta line
+pnpm run release:beta:minor       # Start the next minor beta line
 # ... test desktop and APK prerelease assets from GitHub Releases ...
-npm run release:beta:next        # Optional: cut X.Y.Z-beta.2, beta.3, ...
-npm run release:promote          # Promote X.Y.Z-beta.N to stable X.Y.Z
+pnpm run release:beta:next        # Optional: cut X.Y.Z-beta.2, beta.3, ...
+pnpm run release:promote          # Promote X.Y.Z-beta.N to stable X.Y.Z
 ```
 
 - Beta tags are published GitHub prereleases like `v0.1.41-beta.1`
@@ -194,7 +194,7 @@ npm run release:promote          # Promote X.Y.Z-beta.N to stable X.Y.Z
 - Desktop assets now come from the Electron package at `packages/desktop`
 - Require the Linux artifact CI checks with both restricted and usable user namespaces to pass before publication; see [packaged desktop smoke](testing.md#packaged-desktop-smoke). Keep the installed-package and AppImage checks together.
 - Beta releases use Electron's `beta` update channel. Users on the stable channel only receive stable releases; users on the beta channel receive beta releases and the final stable release when it is published.
-- **Each beta carries its own changelog entry.** `Release Notes Sync` mirrors the matching `## X.Y.Z-beta.N` entry into that prerelease body. Promotion collapses every beta entry for the version into one final stable entry. See the Changelog policy section.
+- **A beta series has one changelog entry.** Each beta folds into it and renames its heading to the new `## X.Y.Z-beta.N`, which `Release Notes Sync` mirrors into that prerelease body. Promotion renames it to the stable heading. See the Changelog policy section.
 
 Use the beta path when you need to:
 
@@ -218,7 +218,7 @@ Drafts do not appear in GitHub's releases feed. Updater clients continue to see 
 
 ### Default behavior
 
-`npm run release:patch` or `npm run release:minor` → tag push → 36h ramp. No extra action needed.
+`pnpm run release:patch` or `pnpm run release:minor` → tag push → 36h ramp. No extra action needed.
 
 The `rollout_hours` input on `desktop-release.yml` is **only read on `workflow_dispatch`** — tag-push runs always default to 36. To get any other rollout duration on a fresh release, use the post-publish flip below.
 
@@ -228,7 +228,7 @@ For a fresh release that should admit everyone immediately (low-risk change, doc
 
 ```bash
 # 1. Cut and publish (default 36h ramp from tag push).
-npm run release:patch
+pnpm run release:patch
 
 # 2. Immediately queue the flip — runs as soon as finalize-rollout completes.
 gh workflow run desktop-rollout.yml \
@@ -276,7 +276,7 @@ gh workflow run desktop-release.yml \
   -f rollout_hours=6
 ```
 
-This does **not** apply to fresh releases cut via `npm run release:patch` or `npm run release:minor` — those paths always tag-push and stamp 36. For a fresh release with a custom ramp, cut normally and then dispatch `desktop-rollout.yml` (same pattern as the instant-admit flow above, with your chosen `rollout_hours`).
+This does **not** apply to fresh releases cut via `pnpm run release:patch` or `pnpm run release:minor` — those paths always tag-push and stamp 36. For a fresh release with a custom ramp, cut normally and then dispatch `desktop-rollout.yml` (same pattern as the instant-admit flow above, with your chosen `rollout_hours`).
 
 ### Releasing during an active rollout
 
@@ -414,7 +414,7 @@ The GitHub Release body is populated automatically by the `Release Notes Sync` w
 - Homebrew, the Play Store, the App Store, and `app.paseo.sh` have no beta. The Beta view drops those rows, and the whole Web section, rather than showing an inert "stable only" placeholder. When a surface gains a beta path — say a public TestFlight link — add its row back in `packages/website/src/routes/download.tsx`.
 - The default download target only moves when you publish the final stable release tag like `v0.1.41`.
 - The public `/changelog` page renders `CHANGELOG.md` as-is, so the in-flight `-beta.N` entry shows there once it lands on `main` — that's intended, it's where beta users check what's coming. Only the **default download target** stays pinned to the latest stable; the download links read GitHub's releases API, not the changelog, so a `-beta.N` heading on top never affects them.
-- The download page's "What's new" link deep-links the **minor group** anchor (`/changelog#release-0.3`), not the exact entry: promotion collapses the beta entries into one stable entry, so the minor group remains the durable target. A version with no entry in the bundled changelog — a tag whose changelog commit hasn't redeployed the site yet — links the plain `/changelog` instead of a dead anchor.
+- The download page's "What's new" link deep-links the **minor group** anchor (`/changelog#release-0.3`), not the exact entry: the beta entry is renamed on each beta and on promotion, so the minor group remains the durable target. A version with no entry in the bundled changelog — a tag whose changelog commit hasn't redeployed the site yet — links the plain `/changelog` instead of a dead anchor.
 - The website itself is deployed by `Deploy Website` (Cloudflare Workers), which redeploys on the `release: published` event emitted when a stable draft is published and on pushes to `main` that touch `CHANGELOG.md` or `packages/website/**`. Its job condition excludes beta prereleases.
 
 ## Fixing a failed release build
@@ -499,9 +499,9 @@ intentionally unavailable to desktop updater clients.
 ## Notes
 
 - `version:all:*` bumps root + syncs workspace versions and `@getpaseo/*` dependency versions
-- The npm `version` lifecycle regenerates F-Droid changelog files from `CHANGELOG.md` for stable releases only (`npm run fdroid:changelogs`) and stages them, so the release tag carries them. Betas are a no-op. A stable run **aborts the release** if `CHANGELOG.md` has no entry for the version being cut — commit the changelog entry first. See [docs/android.md](android.md) for why these files are generated per ABI.
+- The npm `version` lifecycle regenerates F-Droid changelog files from `CHANGELOG.md` for stable releases only (`pnpm run fdroid:changelogs`) and stages them, so the release tag carries them. Betas are a no-op. A stable run **aborts the release** if `CHANGELOG.md` has no entry for the version being cut — commit the changelog entry first. See [docs/android.md](android.md) for why these files are generated per ABI.
 - `release:prepare` refreshes workspace `node_modules` links to prevent stale types
-- `npm run dev:desktop` and `npm run build:desktop` target the Electron desktop package in `packages/desktop`
+- `pnpm run dev:desktop` and `pnpm run build:desktop` target the Electron desktop package in `packages/desktop`
 - If `release:publish` partially fails, re-run it — npm skips already-published versions
 - If `release:publish:beta` partially fails, re-run it — npm skips already-published versions and keeps prereleases off `latest` because every publish uses `--tag beta`
 - The website uses GitHub's latest published release API for download links, so published beta prereleases do not replace the stable download target.
@@ -521,17 +521,20 @@ No prefix (`v`), no extra text. `Release Notes Sync` matches the `## X.Y.Z` (or 
 
 ## Changelog policy
 
-- `CHANGELOG.md` includes stable releases and every entry in the current beta series.
+- `CHANGELOG.md` holds stable releases and at most one entry for the current beta series.
 - The first beta of a version inserts a top entry like `## 0.1.60-beta.1 - YYYY-MM-DD`.
-- Each subsequent beta inserts a new top entry with the next beta number. Its notes cover the changes since the previous beta tag.
-- Stable promotion replaces every beta entry for that version with one `## 0.1.60 - YYYY-MM-DD` entry.
-- The promoted stable entry covers the full diff from the previous stable tag and collapses internal iterations across the beta series.
+- Each subsequent beta rewrites that entry in place: the heading becomes the new beta number and date, and the body describes the full change from the previous stable release to this beta. Never add a second beta entry.
+- The entry is a list of changes, not of PRs. When a later beta reverts, reworks, or follows up on something an earlier beta added, rewrite the bullet to the current behavior or delete it. A stable user never saw the earlier beta behavior, so fixes to it are not "Fixed" bullets.
+- Anything that already shipped to stable through a patch release on an older line stays out of the beta entry.
+- Stable promotion renames the entry to `## 0.1.60 - YYYY-MM-DD` after a final review.
+
+Older prerelease bodies on GitHub keep the notes they were synced with; `Release Notes Sync` only writes the release whose tag matches the top entry.
 
 ## Changelog ownership
 
 - **The agent running the release writes the changelog entry — beta or stable.** The release context and final wording stay with that agent.
 - **Commit history is only an index of the changes. Never draft the changelog from commit subjects or diffs alone.** For every PR in the release range, read the full PR description and every issue it links to before deciding what changed, why users care, or how changes should be grouped. Use the implementation only to verify the resulting understanding.
-- For the first beta or a direct stable release, draft from the previous stable tag to the release source. For later betas, draft from the previous beta tag to the release source. Promotion replaces the beta series with one entry drafted from the previous stable tag to the release source. Review the result against the changelog policy below, show it to the user, and wait for approval before committing it.
+- Every entry, beta or stable, is drafted from the previous stable release to the release source. For a later beta, read the PRs since the previous beta tag, then rework the existing entry so each bullet still describes current behavior. Review the result against the changelog policy below, show it to the user, and wait for approval before committing it.
 
 ## Changelog wording
 
@@ -563,7 +566,7 @@ that changed, the failure that was fixed, or the capability that was added? If t
 claims a general improvement, rewrite it with the concrete change.
 
 - **Use the entry's release scope.** Include changes within the matching range in **Changelog scope**.
-- **Collapse internal iterations within that scope.** Present a feature added and fixed in one range as working. A later beta can describe a fix to behavior delivered in an earlier beta; promotion folds the complete beta series into the final stable behavior.
+- **Collapse internal iterations within that scope.** Present a feature added and fixed in one range as working.
 - **Cut low-signal entries.** "Toolbar buttons have consistent sizing" is too granular. Combine small polish items or drop them.
 
 ## Changelog conciseness
@@ -631,12 +634,7 @@ Use `git diff <latest-release-tag>..<release-source-sha>` as the review input. T
 
 Changelog scope follows the release being described:
 
-- **First beta**: `previous stable tag → release source`
-- **Later beta**: `previous beta tag → release source`
-- **Direct stable release**: `previous stable tag → release source`
-- **Stable promotion**: replace the full beta series with one entry covering `previous stable tag → release source`
-
-Each beta entry records what its testers receive. Promotion produces the single stable record for the full jump from one stable version to the next.
+Every entry covers `previous stable release → release source`: first beta, later beta, direct stable release, and promotion alike. The beta entry always reads as the stable entry would if the beta were promoted today.
 
 ## Completion checklist
 
@@ -644,10 +642,10 @@ Each beta entry records what its testers receive. Promotion produces the single 
 
 - [ ] The resolved release source is the intended commit (default `origin/main`) and its existing CI is green
 - [ ] Every PR in the release range has been opened, and its full description and every linked issue have been read before drafting the changelog
-- [ ] Add a new `CHANGELOG.md` entry for this beta (heading `## X.Y.Z-beta.N - YYYY-MM-DD`), review it against the changelog policy, get approval, and commit it before cutting the release
+- [ ] Fold this beta into the series' single `CHANGELOG.md` entry (heading `## X.Y.Z-beta.N - YYYY-MM-DD`, previous stable → release source), review it against the changelog policy, get approval, and commit it before cutting the release
 - [ ] The diff from the previous stable to the resolved release source is classified as patch or minor, with the target version and rationale approved
 - [ ] Release preparation stayed local until the approved release command pushed the complete branch and tag
-- [ ] `npm run release:beta:patch`, `npm run release:beta:minor`, or `npm run release:beta:next` completes successfully
+- [ ] `pnpm run release:beta:patch`, `pnpm run release:beta:minor`, or `pnpm run release:beta:next` completes successfully
 - [ ] Every GitHub Actions run for the complete release commit and tag is green
 - [ ] npm shows the version under the `beta` dist-tag, not `latest`
 - [ ] The GitHub prerelease was published only after the three beta manifests were uploaded, and it has the changelog body and every expected macOS, Linux, Windows, and Android APK asset
@@ -666,11 +664,11 @@ Each beta entry records what its testers receive. Promotion produces the single 
 - [ ] The resolved release source is the intended commit (default `origin/main`) and its existing CI is green
 - [ ] Every PR in the release range has been opened, and its full description and every linked issue have been read before drafting the changelog
 - [ ] Ensure the approved release inputs are committed locally and the git worktree is clean before running any release command
-- [ ] Ensure local `npm run typecheck` passes on that exact commit before running any release command
-- [ ] Update `CHANGELOG.md` with user-facing release notes (features, fixes — not refactors). Promotion replaces every `## X.Y.Z-beta.N` entry in the series with one `## X.Y.Z - YYYY-MM-DD` entry covering the full release
+- [ ] Ensure local `pnpm run typecheck` passes on that exact commit before running any release command
+- [ ] Update `CHANGELOG.md` with user-facing release notes (features, fixes — not refactors). Promotion renames the series' `## X.Y.Z-beta.N` entry to `## X.Y.Z - YYYY-MM-DD` and re-checks it covers the full release
 - [ ] Verify the changelog heading follows strict `## X.Y.Z - YYYY-MM-DD` format
 - [ ] Release preparation stayed local until the approved release command pushed the complete branch and tag
-- [ ] `npm run release:patch`, `npm run release:minor`, or `npm run release:promote` completes successfully
+- [ ] `pnpm run release:patch`, `pnpm run release:minor`, or `pnpm run release:promote` completes successfully
 - [ ] Every GitHub Actions run for the complete release commit and tag is green
 - [ ] Move npm's `beta` dist-tag to the new stable version for every published package and verify both `latest` and `beta` resolve to it
 - [ ] The GitHub Release was published only after the three stable manifests were uploaded, and it has the changelog body and every expected macOS, Linux, Windows, and Android APK asset

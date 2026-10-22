@@ -482,4 +482,50 @@ describe("CheckoutDiffManager", () => {
       undefined,
     );
   });
+  test("two overlapping computes for the same target (one via subscribe initial, one via scheduleTargetRefresh) call underlying getCheckoutDiff once", async () => {
+    const inFlightDiff = createDeferred<{
+      diff: string;
+      structured: Array<{
+        path: string;
+        additions: number;
+        deletions: number;
+        status: "modified";
+      }>;
+    }>();
+    const getCheckoutDiff = vi
+      .fn()
+      .mockImplementationOnce(() => inFlightDiff.promise)
+      .mockResolvedValue({
+        diff: "",
+        structured: [],
+      });
+    const { manager } = createManager({
+      getCheckoutDiffImplementation: getCheckoutDiff,
+    });
+
+    const subscribePromise = manager.subscribe(
+      { cwd: "/tmp/repo", compare: { mode: "uncommitted" } },
+      vi.fn(),
+    );
+
+    const seam = manager as unknown as {
+      targets: Map<string, object>;
+      buildTargetKey(cwd: string, compare: { mode: "uncommitted" }): string;
+      scheduleTargetRefresh(target: object): void;
+    };
+    const target = seam.targets.get(seam.buildTargetKey("/tmp/repo", { mode: "uncommitted" }));
+    expect(target).toBeDefined();
+    seam.scheduleTargetRefresh(target as object);
+
+    await vi.advanceTimersByTimeAsync(150);
+
+    inFlightDiff.resolve({
+      diff: "",
+      structured: [{ path: "tracked.ts", additions: 1, deletions: 0, status: "modified" }],
+    });
+
+    const subscription = await subscribePromise;
+    expect(subscription.initial.files).toHaveLength(1);
+    expect(getCheckoutDiff).toHaveBeenCalledTimes(1);
+  });
 });

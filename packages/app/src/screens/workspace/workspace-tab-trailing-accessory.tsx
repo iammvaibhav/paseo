@@ -1,13 +1,17 @@
-import { useMemo, type ReactElement } from "react";
+import { Fragment, useMemo, type ReactElement } from "react";
 import { useTranslation } from "react-i18next";
 import { Text } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import {
   ArrowLeftToLine,
   ArrowRightToLine,
+  CircleCheck,
   Copy,
   CopyX,
   Ellipsis,
+  ExternalLink,
+  FolderPlus,
+  FolderInput,
   Pencil,
   RotateCw,
   X,
@@ -21,9 +25,14 @@ import {
 } from "@/components/ui/dropdown-menu";
 import type { WorkspaceTabMenuEntry } from "@/screens/workspace/workspace-tab-menu";
 import type { Theme } from "@/styles/theme";
+import type { AgentReminderMenu } from "@/agent-reminders/reminder-menu";
 
 const ThemedEllipsis = withUnistyles(Ellipsis);
 const ThemedCopy = withUnistyles(Copy);
+const ThemedCircleCheck = withUnistyles(CircleCheck);
+const ThemedFolderPlus = withUnistyles(FolderPlus);
+const ThemedFolderInput = withUnistyles(FolderInput);
+const ThemedExternalLink = withUnistyles(ExternalLink);
 const ThemedRotateCw = withUnistyles(RotateCw);
 const ThemedArrowLeftToLine = withUnistyles(ArrowLeftToLine);
 const ThemedArrowRightToLine = withUnistyles(ArrowRightToLine);
@@ -59,6 +68,14 @@ function MobileTabDropdownMenuItem({
         return <ThemedCopyX size={16} uniProps={mutedColorMapping} />;
       case "pencil":
         return <ThemedPencil size={16} uniProps={mutedColorMapping} />;
+      case "circle-check":
+        return <ThemedCircleCheck size={16} uniProps={mutedColorMapping} />;
+      case "folder-plus":
+        return <ThemedFolderPlus size={16} uniProps={mutedColorMapping} />;
+      case "folder-input":
+        return <ThemedFolderInput size={16} uniProps={mutedColorMapping} />;
+      case "external-link":
+        return <ThemedExternalLink size={16} uniProps={mutedColorMapping} />;
       case "x":
         return <ThemedX size={16} uniProps={mutedColorMapping} />;
       default:
@@ -88,10 +105,13 @@ export function MobileTabTrailingAccessory({
   menuTestIDBase,
   presentationLabel,
   menuEntries,
+  reminderMenu,
 }: {
   menuTestIDBase: string;
   presentationLabel: string;
   menuEntries: WorkspaceTabMenuEntry[];
+  /** Built by the caller with useAgentReminderMenu; renders at the "remind-me" entry. */
+  reminderMenu?: AgentReminderMenu;
 }): ReactElement {
   const { t } = useTranslation();
   return (
@@ -110,15 +130,19 @@ export function MobileTabTrailingAccessory({
         align="end"
         width={220}
         sheetTitle={presentationLabel}
+        pages={reminderMenu?.pages}
         testID={menuTestIDBase}
       >
-        {menuEntries.map((entry) =>
-          entry.kind === "separator" ? (
-            <DropdownMenuSeparator key={entry.key} />
-          ) : (
-            <MobileTabDropdownMenuItem key={entry.key} entry={entry} />
-          ),
-        )}
+        {menuEntries.map((entry) => {
+          switch (entry.kind) {
+            case "separator":
+              return <DropdownMenuSeparator key={entry.key} />;
+            case "remind-me":
+              return <Fragment key={entry.key}>{reminderMenu?.trigger ?? null}</Fragment>;
+            case "item":
+              return <MobileTabDropdownMenuItem key={entry.key} entry={entry} />;
+          }
+        })}
       </DropdownMenuContent>
     </DropdownMenu>
   );

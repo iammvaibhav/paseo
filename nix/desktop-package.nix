@@ -1,7 +1,8 @@
 {
   lib,
   stdenv,
-  buildNpmPackage,
+  pnpmConfigHook,
+  pnpm,
   nodejs_22,
   python3,
   makeWrapper,
@@ -11,13 +12,13 @@
   electron,
   libuv,
   buildVersion,
-  # Reuse the daemon's prebuilt npm-deps FOD. Same lockfile, same content —
+  # Reuse the daemon's prebuilt pnpm-deps FOD. Same lockfile, same content —
   # without this, the desktop drv produces a separately-named store path
-  # (`paseo-desktop-<v>-npm-deps`) and refetches the entire registry. Override
-  # the upstream hash via `paseo.override { npmDepsHash = "..."; }`.
+  # (`paseo-desktop-<v>-pnpm-deps`) and refetches the entire registry.
+  # Override the upstream hash via `paseo.override { pnpmDepsHash = "..."; }`.
   paseo,
 }:
-buildNpmPackage {
+stdenv.mkDerivation {
   pname = "paseo-desktop";
   version = (builtins.fromJSON (builtins.readFile ../package.json)).version;
 
@@ -57,15 +58,19 @@ buildNpmPackage {
       && baseName != "release";
   };
 
-  nodejs = nodejs_22;
-  inherit (paseo) npmDeps;
+  inherit (paseo) pnpmDeps;
 
-  # Prevent onnxruntime-node's install script from running during automatic
-  # npm rebuild. We manually rebuild only node-pty in buildPhase.
-  npmRebuildFlags = ["--ignore-scripts"];
+  # `pnpmConfigHook`'s `pnpm install` always passes `--ignore-scripts`
+  # unconditionally (see nixpkgs' pnpm-config-hook.sh), so onnxruntime-node's
+  # install script (which tries to download from api.nuget.org and fails in
+  # the sandbox) never runs automatically — no equivalent of
+  # `npmRebuildFlags` is needed. We still manually rebuild node-pty below.
 
   nativeBuildInputs =
     [
+      nodejs_22
+      pnpm
+      pnpmConfigHook
       python3 # for node-gyp (node-pty)
     ]
     ++ lib.optionals stdenv.hostPlatform.isLinux [
@@ -79,8 +84,6 @@ buildNpmPackage {
     stdenv.cc.cc.lib # libstdc++ for sherpa-onnx prebuilt binaries
   ];
 
-  dontNpmBuild = true;
-
   env = {
     EXPO_NO_TELEMETRY = "1";
     # Expo's web build pulls in some pre-bundled assets; ensure it doesn't try
@@ -92,19 +95,19 @@ buildNpmPackage {
     runHook preBuild
 
     # Native deps (terminal emulation; libuv-linked on Linux)
-    npm rebuild node-pty
+    pnpm rebuild node-pty
 
     # Server workspaces (highlight + relay + protocol + client + server + cli)
-    npm run build:server
+    pnpm run build:server
 
     # App workspace deps not covered by build:server
-    npm run build --workspace=@getpaseo/expo-two-way-audio
+    pnpm --filter @getpaseo/expo-two-way-audio run build
 
     # Expo web export for the Electron renderer
     ( cd packages/app && PASEO_WEB_PLATFORM=electron npx expo export --platform web )
 
     # Desktop main process
-    npm run build:main --workspace=@getpaseo/desktop
+    pnpm --filter @getpaseo/desktop run build:main
 
     ${lib.optionalString stdenv.hostPlatform.isDarwin ''
       # Let electron-builder create the native bundle layout (including helper
@@ -174,7 +177,7 @@ buildNpmPackage {
       done
 
       if [ -e $out/share/paseo-desktop/node_modules/electron ]; then
-        echo "desktop runtime trace included npm Electron" >&2
+        echo "desktop runtime trace included Electron" >&2
         exit 1
       fi
 

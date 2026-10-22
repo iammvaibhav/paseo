@@ -4,6 +4,7 @@ import {
   useContext,
   useMemo,
   useRef,
+  useState,
   type MutableRefObject,
   type ReactNode,
 } from "react";
@@ -11,6 +12,7 @@ import React from "react";
 import type { ToastApi } from "@/components/toast-host";
 import type { OpenFileDisposition } from "@/workspace/file-open";
 import type { InlinePathTarget } from "./parse";
+import { FileLinkPickerSheet, type FileLinkPickerRequest } from "./picker-sheet";
 import type { AssistantFileLinkContext, GetDirectorySuggestions } from "./resolver";
 
 export interface AssistantFileLinkDaemonClient {
@@ -32,6 +34,7 @@ export interface AssistantFileLinkResolverProviderProps extends AssistantFileLin
 export interface AssistantFileLinkResolverContextValue {
   configRef: MutableRefObject<AssistantFileLinkResolverConfig>;
   getDirectorySuggestions: GetDirectorySuggestions;
+  showPicker: (request: FileLinkPickerRequest) => void;
 }
 
 const AssistantFileLinkResolverContext =
@@ -64,14 +67,24 @@ export function AssistantFileLinkResolverProvider({
     return { entries: result.entries, error: result.error };
   }, []);
 
+  const [pickerRequest, setPickerRequest] = useState<FileLinkPickerRequest | null>(null);
+  const closePicker = useCallback(() => setPickerRequest(null), []);
+
   const value = useMemo<AssistantFileLinkResolverContextValue>(
-    () => ({ configRef, getDirectorySuggestions }),
+    () => ({ configRef, getDirectorySuggestions, showPicker: setPickerRequest }),
     [getDirectorySuggestions],
   );
 
   return (
     <AssistantFileLinkResolverContext.Provider value={value}>
       {children}
+      {pickerRequest ? (
+        <FileLinkPickerSheet
+          request={pickerRequest}
+          workspaceRoot={workspaceRoot}
+          onClose={closePicker}
+        />
+      ) : null}
     </AssistantFileLinkResolverContext.Provider>
   );
 }

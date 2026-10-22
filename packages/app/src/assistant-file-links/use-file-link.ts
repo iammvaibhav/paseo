@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { useStableEvent } from "@/hooks/use-stable-event";
 import type { OpenFileDisposition } from "@/workspace/file-open";
 import { openExternalUrl } from "@/utils/open-external-url";
+import { parseHistoryAskAgentOpenUrl } from "@/history-ask/open-agent-link-parse";
 import type { InlinePathTarget } from "./parse";
 import {
   useAssistantFileLinkResolverContext,
@@ -59,7 +60,7 @@ export function useFileLink(source: AssistantFileLinkSource): UseFileLinkResult 
         ? assistantFileLinkQueryKey({
             serverId,
             workspaceRoot,
-            ambiguousQuery: resolution.ambiguousQuery,
+            token: resolution.token,
           })
         : DISABLED_QUERY_KEY,
     [resolution, serverId, workspaceRoot],
@@ -124,7 +125,8 @@ export function useFileLink(source: AssistantFileLinkSource): UseFileLinkResult 
     if (resolution.kind === "resolved") {
       return resolution.value.kind === "file" ? resolution.value.target : null;
     }
-    return query.data ?? null;
+    // Several matches have no single path to show until the picker narrows them.
+    return query.data?.length === 1 ? (query.data[0] ?? null) : null;
   }, [query.data, resolution]);
 
   return useMemo(() => ({ target, onHoverIn, onPress, open }), [target, onHoverIn, onPress, open]);
@@ -160,6 +162,22 @@ function openAssistantFileLink(input: {
   queryClient: ReturnType<typeof useQueryClient>;
   formatNoFileFoundMessage: (token: string) => string;
 }): void {
+  // History Ask citations: [Title](paseo://h/{serverId}/agent/{agentId}).
+  // Must not go through openExternalUrl (http/https only) — open like History rows.
+  // Dynamic import keeps this module free of expo-router for unit tests.
+  const href = input.source.href?.trim() ?? "";
+  const text = input.source.text?.trim() ?? "";
+  if (parseHistoryAskAgentOpenUrl(href) || (text.length > 0 && parseHistoryAskAgentOpenUrl(text))) {
+    const openUrl = parseHistoryAskAgentOpenUrl(href) ? href : text;
+    void import("@/history-ask/open-agent-link")
+      .then(({ openHistoryAskAgentLink }) => {
+        openHistoryAskAgentLink(openUrl);
+        return undefined;
+      })
+      .catch(() => undefined);
+    return;
+  }
+
   const capturedConfig = input.context.configRef.current;
   const capturedResolution = classifyForResolution(input.source, {
     workspaceRoot: capturedConfig.workspaceRoot,
@@ -179,12 +197,12 @@ function openAssistantFileLink(input: {
   const capturedQueryKey = assistantFileLinkQueryKey({
     serverId: capturedConfig.serverId,
     workspaceRoot: capturedConfig.workspaceRoot,
-    ambiguousQuery: capturedResolution.ambiguousQuery,
+    token: capturedResolution.token,
   });
 
   const run = async () => {
     try {
-      const target = await input.queryClient.fetchQuery({
+      const candidates = await input.queryClient.fetchQuery({
         queryKey: capturedQueryKey,
         queryFn: () =>
           fetchDaemonResolution({
@@ -197,12 +215,23 @@ function openAssistantFileLink(input: {
         retry: 0,
         staleTime: Infinity,
       });
-      await dispatchFileTarget({
-        target,
-        disposition: input.disposition,
-        capturedServerId: capturedConfig.serverId,
-        capturedWorkspaceRoot: capturedConfig.workspaceRoot,
-        context: input.context,
+      const dispatchCandidate = (target: InlinePathTarget) =>
+        dispatchFileTarget({
+          target,
+          disposition: input.disposition,
+          capturedServerId: capturedConfig.serverId,
+          capturedWorkspaceRoot: capturedConfig.workspaceRoot,
+          context: input.context,
+        });
+      const [onlyCandidate] = candidates;
+      if (candidates.length === 1 && onlyCandidate) {
+        await dispatchCandidate(onlyCandidate);
+        return;
+      }
+      input.context.showPicker({
+        token: capturedResolution.token,
+        candidates,
+        onSelect: (target) => void dispatchCandidate(target),
       });
     } catch (error) {
       await dispatchUnresolvedError({
@@ -222,6 +251,9 @@ function canOpenAssistantFileLink(
   source: AssistantFileLinkSource,
   workspaceRoot: string | undefined,
 ): boolean {
+  if (parseHistoryAskAgentOpenUrl(source.href) || parseHistoryAskAgentOpenUrl(source.text ?? "")) {
+    return true;
+  }
   const resolution = classifyForResolution(source, { workspaceRoot });
   return resolution.kind === "needsLookup" || resolution.value.kind !== "ignored";
 }
@@ -245,14 +277,9 @@ function useStableSource(source: AssistantFileLinkSource): AssistantFileLinkSour
 function assistantFileLinkQueryKey(input: {
   serverId?: string;
   workspaceRoot?: string;
-  ambiguousQuery: string;
+  token: string;
 }): AssistantFileLinkQueryKey {
-  return [
-    "assistantFileLink",
-    input.serverId ?? null,
-    input.workspaceRoot ?? null,
-    input.ambiguousQuery,
-  ];
+  return ["assistantFileLink", input.serverId ?? null, input.workspaceRoot ?? null, input.token];
 }
 
 async function dispatchResolvedLink(input: {

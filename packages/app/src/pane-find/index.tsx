@@ -35,6 +35,7 @@ import { isWeb } from "@/constants/platform";
 import { isImeComposingKeyboardEvent } from "@/utils/keyboard-ime";
 import { getShortcutOs } from "@/utils/shortcut-platform";
 import { isFindShortcut, type FindShortcutPlatform } from "./find-shortcut";
+import { glassFloatingStyle } from "@/styles/theme";
 
 export { isFindShortcut, type FindShortcutPlatform } from "./find-shortcut";
 
@@ -335,6 +336,7 @@ const styles = StyleSheet.create((theme) => {
       borderColor: theme.colors.border,
       borderRadius: theme.borderRadius.lg,
       ...theme.shadow.md,
+      ...glassFloatingStyle(theme),
     },
     // The disclosure column spans both rows so the two fields share a leading rail.
     gutter: { alignItems: "center", justifyContent: "center", flexShrink: 0 },

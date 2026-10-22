@@ -13,6 +13,11 @@ describe("formatAgentModeLabel", () => {
   it("splits compact mode ids when no provider label is available", () => {
     expect(formatAgentModeLabel({ id: "auto-review" })).toBe("Auto review");
   });
+
+  it("formats ai-review with correct casing", () => {
+    expect(formatAgentModeLabel({ id: "ai-review" })).toBe("AI review");
+    expect(formatAgentModeLabel({ id: "ai-review", label: "AI review" })).toBe("AI review");
+  });
 });
 
 describe("formatThinkingOptionLabel", () => {

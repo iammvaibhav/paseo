@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -21,8 +21,6 @@ import type {
   AgentStreamEvent,
 } from "../agent/agent-sdk-types.js";
 import { createTestAgentClients } from "../test-utils/fake-agent-client.js";
-import { validateProviderOptions } from "../agent/provider-options.js";
-import { ClaudeProviderOptionsSchema } from "../agent/providers/claude/options.js";
 import { createTestLogger } from "../../test-utils/test-logger.js";
 import type { ProviderSnapshotManager } from "../agent/provider-snapshot-manager.js";
 import { createWorkspaceProvisioningService } from "../session/workspace-provisioning/workspace-provisioning-service.js";
@@ -41,6 +39,7 @@ import {
 } from "./service.js";
 import { ScheduleStore } from "./store.js";
 import type { ScheduleExecutionResult, StoredSchedule } from "@getpaseo/protocol/schedule/types";
+import { splitAgentModeBlock } from "@getpaseo/protocol/agent-modes";
 
 interface ScheduleServiceInternals {
   executeSchedule(schedule: StoredSchedule, runId: string): Promise<ScheduleExecutionResult>;
@@ -66,12 +65,6 @@ const NO_UNATTENDED_SCHEDULE_POLICY: Pick<ProviderSnapshotManager, "resolveCreat
 
 const TEST_CLAUDE_PROVIDER_DEFINITION = {
   enabled: true,
-  validateOptions: (options: AgentSessionConfig["providerOptions"]) =>
-    validateProviderOptions("claude", ClaudeProviderOptionsSchema, options),
-  applyOptions: (config: AgentSessionConfig, options: AgentSessionConfig["providerOptions"]) => ({
-    ...config,
-    ...(options ? { providerOptions: options } : {}),
-  }),
 };
 
 let workspaceArchiveInProgress = false;
@@ -157,6 +150,22 @@ function createScheduleService(options: TestScheduleServiceOptions): ScheduleSer
       workspaceArchiveInProgress = false;
     }
   };
+  // Every workspace the service creates (default or overridden creator) is
+  // recorded, so the default createAgent can resolve the workspaceId the
+  // service passes it, as the daemon's registry does.
+  const createDirectoryWorkspace = options.createDirectoryWorkspace ?? createDefaultWorkspace;
+  const createPaseoWorktreeWorkspace: ScheduleServiceOptions["createPaseoWorktreeWorkspace"] =
+    options.createPaseoWorktreeWorkspace ??
+    (async (input) => {
+      const workspace = await createDefaultWorkspace(input);
+      return {
+        workspace,
+        worktree: { branchName: "schedule-test", worktreePath: workspace.cwd },
+        intent: { kind: "branch-off", baseBranch: "main", branchName: "schedule-test" },
+        repoRoot: workspace.cwd,
+        created: true,
+      };
+    });
   return new ScheduleService({
     ...options,
     createAgent:
@@ -168,22 +177,20 @@ function createScheduleService(options: TestScheduleServiceOptions): ScheduleSer
             agentStorage: options.agentStorage,
             logger: options.logger,
             providerSnapshotManager: options.providerSnapshotManager as ProviderSnapshotManager,
+            getWorkspace: async (workspaceId) => workspaces.get(workspaceId) ?? null,
           },
           input,
         )),
-    createDirectoryWorkspace: options.createDirectoryWorkspace ?? createDefaultWorkspace,
-    createPaseoWorktreeWorkspace:
-      options.createPaseoWorktreeWorkspace ??
-      (async (input) => {
-        const workspace = await createDefaultWorkspace(input);
-        return {
-          workspace,
-          worktree: { branchName: "schedule-test", worktreePath: workspace.cwd },
-          intent: { kind: "branch-off", baseBranch: "main", branchName: "schedule-test" },
-          repoRoot: workspace.cwd,
-          created: true,
-        };
-      }),
+    createDirectoryWorkspace: async (input) => {
+      const workspace = await createDirectoryWorkspace(input);
+      workspaces.set(workspace.workspaceId, workspace);
+      return workspace;
+    },
+    createPaseoWorktreeWorkspace: async (input) => {
+      const created = await createPaseoWorktreeWorkspace(input);
+      workspaces.set(created.workspace.workspaceId, created.workspace);
+      return created;
+    },
     archiveWorkspace: options.archiveWorkspace ?? archiveDefaultWorkspace,
   });
 }
@@ -212,6 +219,7 @@ async function createRegistryBackedScheduleWorkspaceDeps(rootDir: string): Promi
     projectRegistry,
     workspaceRegistry,
     workspaceGitService,
+    isDirectory: async () => true,
   });
   return {
     workspaceRegistry,
@@ -802,7 +810,7 @@ describe("ScheduleService", () => {
     const runStarted = new Promise<void>((resolve) => {
       releaseRun = resolve;
     });
-    const store = new ScheduleStore(join(tempDir, "schedules"));
+    const store = new ScheduleStore(join(tempDir, "schedules"), createTestLogger());
     const legacy = await store.create({
       name: null,
       prompt: "finish/update race",
@@ -1328,6 +1336,7 @@ describe("ScheduleService", () => {
           provider: "claude",
           model: "test-model",
           cwd: tempDir,
+          agentMode: "research",
         },
       },
       maxRuns: 1,
@@ -1340,7 +1349,11 @@ describe("ScheduleService", () => {
       unsubscribe();
     }
 
-    expect(observedUserMessages).toEqual(["Audit nightly run"]);
+    // The scheduled prompt is a normal user turn (no system envelope) and
+    // carries the schedule's agent mode block.
+    expect(observedUserMessages.map((text) => splitAgentModeBlock(text))).toEqual([
+      { modeId: "research", body: "Audit nightly run" },
+    ]);
     expect((await service.inspect(created.id)).runs[0]?.status).toBe("succeeded");
   });
 
@@ -1901,6 +1914,51 @@ describe("ScheduleService", () => {
     await service2.stop();
   });
 
+  test("starts with the valid schedules when the schedules directory holds files that are not schedules", async () => {
+    const service1 = createScheduleService({
+      paseoHome: tempDir,
+      logger: createTestLogger(),
+      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentStorage,
+      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+      now: () => now,
+      runner: async () => ({ agentId: null, output: "ok" }),
+    });
+    const created = await service1.create({
+      prompt: "Still scheduled",
+      cadence: { type: "every", everyMs: 60_000 },
+      target: {
+        type: "new-agent",
+        config: { provider: "claude", cwd: tempDir },
+      },
+      runOnCreate: false,
+    });
+    await service1.stop();
+
+    const schedulesDir = join(tempDir, "schedules");
+    await writeFile(join(schedulesDir, "notes.json"), JSON.stringify({ hello: "world" }));
+    const { lastRunAt: _omitted, ...withoutLastRunAt } = created;
+    await writeFile(
+      join(schedulesDir, "deadbeef.json"),
+      JSON.stringify({ ...withoutLastRunAt, id: "deadbeef" }),
+    );
+    await writeFile(join(schedulesDir, "broken.json"), "{ not json");
+
+    const service2 = createScheduleService({
+      paseoHome: tempDir,
+      logger: createTestLogger(),
+      agentManager: new AgentManager({ logger: createTestLogger() }),
+      agentStorage,
+      providerSnapshotManager: NO_UNATTENDED_SCHEDULE_POLICY,
+      now: () => now,
+      runner: async () => ({ agentId: null, output: "ok" }),
+    });
+    await service2.start();
+
+    expect((await service2.list()).map((schedule) => schedule.id)).toEqual([created.id]);
+    await service2.stop();
+  });
+
   test("startup recovery archives an interrupted run workspace with an associated agent", async () => {
     const service1 = createScheduleService({
       paseoHome: tempDir,
@@ -1925,7 +1983,7 @@ describe("ScheduleService", () => {
     const interruptedAt = now.toISOString();
     const associatedAgentId = "11111111-1111-4111-8111-111111111111";
     const workspaceId = "wks_interrupted_with_agent";
-    const store = new ScheduleStore(join(tempDir, "schedules"));
+    const store = new ScheduleStore(join(tempDir, "schedules"), createTestLogger());
     await store.update(created.id, (schedule) => ({
       ...schedule,
       runs: [
@@ -1993,7 +2051,7 @@ describe("ScheduleService", () => {
 
     const interruptedAt = now.toISOString();
     const workspaceId = "wks_interrupted_without_agent";
-    const store = new ScheduleStore(join(tempDir, "schedules"));
+    const store = new ScheduleStore(join(tempDir, "schedules"), createTestLogger());
     await store.update(created.id, (schedule) => ({
       ...schedule,
       runs: [

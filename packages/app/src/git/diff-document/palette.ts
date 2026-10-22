@@ -3,9 +3,12 @@ import { hexColorWithAlpha } from "@/utils/color";
 import type { DiffCell, DiffPalette } from "./types";
 
 export function createDiffPalette(theme: Theme): DiffPalette {
+  // Sticky file headers are painted over the lines that scroll under them, so a glass theme's
+  // cleared surface cannot fill them.
+  const headerCover = theme.glass?.cover;
   return {
     surface: theme.colors.surface0,
-    headerSurface: theme.colors.surface0,
+    headerSurface: headerCover ?? theme.colors.surface0,
     border: theme.colors.border,
     foreground: theme.colors.foreground,
     foregroundMuted: theme.colors.foregroundMuted,
@@ -15,7 +18,7 @@ export function createDiffPalette(theme: Theme): DiffPalette {
     deletionBackground: hexColorWithAlpha(theme.colors.statusDanger, 0.1),
     emptyBackground: theme.colors.surface0,
     selection: theme.colors.terminal.blue,
-    headerActiveSurface: theme.colors.surface1,
+    headerActiveSurface: headerCover ?? theme.colors.surface1,
     headerBorder: theme.colors.borderAccent,
     statusSuccess: theme.colors.statusSuccess,
     statusDanger: theme.colors.statusDanger,

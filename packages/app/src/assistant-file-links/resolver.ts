@@ -35,8 +35,12 @@ export type GetDirectorySuggestions = (input: {
   includeFiles: true;
   includeDirectories: false;
   matchMode: "suffix";
+  lineHint?: number;
   limit: number;
 }) => Promise<DirectorySuggestionResult>;
+
+// More matches than this is a bare basename the picker cannot usefully narrow anyway.
+const MAX_FILE_LINK_CANDIDATES = 50;
 
 export type ResolvedAssistantFileLink =
   | { kind: "external"; url: string }
@@ -67,13 +71,17 @@ export class UnresolvedFileLinkError extends Error {
   }
 }
 
+/**
+ * Every workspace file the token can name, best first. The daemon returns only the exact path when
+ * it exists, and drops matches too short to have the referenced line when another has it.
+ */
 export async function fetchDaemonResolution({
   ambiguousQuery,
   token,
   target,
   workspaceRoot,
   getDirectorySuggestions,
-}: FetchDaemonResolutionInput): Promise<InlinePathTarget> {
+}: FetchDaemonResolutionInput): Promise<InlinePathTarget[]> {
   const trimmedRoot = workspaceRoot?.trim();
   if (!trimmedRoot) {
     throw new UnresolvedFileLinkError(token);
@@ -87,21 +95,27 @@ export async function fetchDaemonResolution({
       includeFiles: true,
       includeDirectories: false,
       matchMode: "suffix",
-      limit: 1,
+      lineHint: target.lineEnd ?? target.lineStart,
+      limit: MAX_FILE_LINK_CANDIDATES,
     });
   } catch {
     throw new UnresolvedFileLinkError(token);
   }
 
-  const match = suggestions.entries.find((entry) => entry.kind === "file");
-  if (!match || suggestions.error) {
+  const candidates = suggestions.entries
+    .filter((entry) => entry.kind === "file")
+    .map(
+      (entry): InlinePathTarget => ({
+        raw: target.raw,
+        path: joinWorkspacePath(trimmedRoot, entry.path),
+        lineStart: target.lineStart,
+        lineEnd: target.lineEnd,
+      }),
+    );
+  if (candidates.length === 0 || suggestions.error) {
     throw new UnresolvedFileLinkError(token);
   }
-
-  return {
-    ...target,
-    path: joinWorkspacePath(trimmedRoot, match.path),
-  };
+  return candidates;
 }
 
 export function classifyForResolution(
@@ -184,6 +198,13 @@ export function shouldResolveDirectFileThroughSuggestions(input: {
   }
 
   if (isAbsoluteInlineCodeToken(input.token)) {
+    return false;
+  }
+
+  // The suggestion lookup finds files only; a folder-shaped token (no extension
+  // on its last segment) opens as written and the click checks what it is.
+  const lastSegment = input.token.replace(/\/+$/, "").split("/").pop() ?? "";
+  if (input.token.endsWith("/") || !lastSegment.includes(".")) {
     return false;
   }
 

@@ -6,13 +6,17 @@ export function resolveSubmitAccessibilityLabel(input: {
   canPressLoadingButton: boolean;
   defaultActionQueues: boolean;
   defaultSendBehavior: SendBehavior;
+  /** Out-of-band commands (fork) run against the live turn without canceling it. */
+  sendsOutOfBand: boolean;
   isAgentRunning: boolean;
   t: TFunction;
 }): string {
   if (input.submitButtonAccessibilityLabel) return input.submitButtonAccessibilityLabel;
   if (input.canPressLoadingButton) return input.t("composer.input.interruptAgent");
   if (input.defaultActionQueues) return input.t("composer.input.queueMessage");
-  if (input.isAgentRunning) {
+  // An out-of-band command runs against the live turn without canceling it, so
+  // "send and interrupt" would be wrong even while the agent is running.
+  if (input.isAgentRunning && !input.sendsOutOfBand) {
     return input.t(
       input.defaultSendBehavior === "steer"
         ? "composer.input.sendAndSteer"

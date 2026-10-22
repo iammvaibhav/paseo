@@ -28,9 +28,17 @@ interface SupportedMutableConfigPatch {
   appendSystemPrompt?: string;
   terminalProfiles?: MutableDaemonConfig["terminalProfiles"];
   agentProfiles?: MutableDaemonConfig["agentProfiles"];
+  visibleModels?: MutableDaemonConfig["visibleModels"];
   skills?: MutableDaemonConfig["skills"];
   pluginsEnabled?: boolean;
   plugins?: MutableDaemonConfig["plugins"];
+  missionControl?: MutableDaemonConfig["missionControl"];
+  aiReviewer?: MutableDaemonConfig["aiReviewer"];
+  ompIdleCloseAfterSeconds?: MutableDaemonConfig["ompIdleCloseAfterSeconds"];
+  keepAwakeWhileAgentsRun?: MutableDaemonConfig["keepAwakeWhileAgentsRun"];
+  keepAwakeReleaseGraceMinutes?: MutableDaemonConfig["keepAwakeReleaseGraceMinutes"];
+  keepAwakeBatteryFloorPercent?: MutableDaemonConfig["keepAwakeBatteryFloorPercent"];
+  composerPreferences?: MutableDaemonConfig["composerPreferences"];
 }
 
 interface LoggerLike {
@@ -181,8 +189,12 @@ const RELOADABLE_PATHS = [
   "daemon.autoArchiveAfterMerge",
   "daemon.enableTerminalAgentHooks",
   "daemon.appendSystemPrompt",
+  "daemon.keepAwakeWhileAgentsRun",
+  "daemon.keepAwakeReleaseGraceMinutes",
+  "daemon.keepAwakeBatteryFloorPercent",
   "daemon.terminalProfiles",
   "daemon.agentProfiles",
+  "daemon.visibleModels",
   "app.baseUrl",
   "agents.providers",
   "agents.catalogRefreshTimeoutMs",
@@ -204,8 +216,12 @@ const PERSISTED_TO_MUTABLE_PATH = new Map<string, string>([
   ["daemon.autoArchiveAfterMerge", "autoArchiveAfterMerge"],
   ["daemon.enableTerminalAgentHooks", "enableTerminalAgentHooks"],
   ["daemon.appendSystemPrompt", "appendSystemPrompt"],
+  ["daemon.keepAwakeWhileAgentsRun", "keepAwakeWhileAgentsRun"],
+  ["daemon.keepAwakeReleaseGraceMinutes", "keepAwakeReleaseGraceMinutes"],
+  ["daemon.keepAwakeBatteryFloorPercent", "keepAwakeBatteryFloorPercent"],
   ["daemon.terminalProfiles", "terminalProfiles"],
   ["daemon.agentProfiles", "agentProfiles"],
+  ["daemon.visibleModels", "visibleModels"],
   ["app.baseUrl", "app.baseUrl"],
   ["agents.providers", "providers"],
   ["agents.catalogRefreshTimeoutMs", "catalogRefreshTimeoutMs"],
@@ -250,33 +266,58 @@ function compactOwnedPaths(paths: readonly string[], owners: readonly string[]):
 }
 
 function pickSupportedPatchFields(patch: MutableDaemonConfigPatch): SupportedMutableConfigPatch {
-  return {
-    ...(patch.relay?.enabled !== undefined ? { relay: { enabled: patch.relay.enabled } } : {}),
-    ...(patch.mcp?.injectIntoAgents !== undefined
-      ? { mcp: { injectIntoAgents: patch.mcp.injectIntoAgents } }
-      : {}),
-    ...(patch.browserTools?.enabled !== undefined
-      ? { browserTools: { enabled: patch.browserTools.enabled } }
-      : {}),
-    ...(patch.providers !== undefined ? { providers: patch.providers } : {}),
-    ...(patch.removeProviders !== undefined ? { removeProviders: patch.removeProviders } : {}),
-    ...(patch.metadataGeneration?.providers !== undefined
-      ? { metadataGeneration: { providers: patch.metadataGeneration.providers } }
-      : {}),
-    ...(patch.autoArchiveAfterMerge !== undefined
-      ? { autoArchiveAfterMerge: patch.autoArchiveAfterMerge }
-      : {}),
-    ...(patch.enableTerminalAgentHooks !== undefined
-      ? { enableTerminalAgentHooks: patch.enableTerminalAgentHooks }
-      : {}),
-    ...(patch.appendSystemPrompt !== undefined
-      ? { appendSystemPrompt: patch.appendSystemPrompt }
-      : {}),
-    ...(patch.terminalProfiles !== undefined ? { terminalProfiles: patch.terminalProfiles } : {}),
-    ...(patch.agentProfiles !== undefined ? { agentProfiles: patch.agentProfiles } : {}),
-    ...(patch.pluginsEnabled !== undefined ? { pluginsEnabled: patch.pluginsEnabled } : {}),
-    ...(patch.plugins !== undefined ? { plugins: patch.plugins } : {}),
-  };
+  return { ...pickCorePatchFields(patch), ...pickExtendedPatchFields(patch) };
+}
+
+function pickCorePatchFields(patch: MutableDaemonConfigPatch): SupportedMutableConfigPatch {
+  const out: SupportedMutableConfigPatch = {};
+  if (patch.relay?.enabled !== undefined) out.relay = { enabled: patch.relay.enabled };
+  if (patch.mcp?.injectIntoAgents !== undefined) {
+    out.mcp = { injectIntoAgents: patch.mcp.injectIntoAgents };
+  }
+  if (patch.browserTools?.enabled !== undefined) {
+    out.browserTools = { enabled: patch.browserTools.enabled };
+  }
+  if (patch.providers !== undefined) out.providers = patch.providers;
+  if (patch.removeProviders !== undefined) out.removeProviders = patch.removeProviders;
+  if (patch.metadataGeneration?.providers !== undefined) {
+    out.metadataGeneration = { providers: patch.metadataGeneration.providers };
+  }
+  if (patch.autoArchiveAfterMerge !== undefined) {
+    out.autoArchiveAfterMerge = patch.autoArchiveAfterMerge;
+  }
+  if (patch.enableTerminalAgentHooks !== undefined) {
+    out.enableTerminalAgentHooks = patch.enableTerminalAgentHooks;
+  }
+  return out;
+}
+
+function pickExtendedPatchFields(patch: MutableDaemonConfigPatch): SupportedMutableConfigPatch {
+  const out: SupportedMutableConfigPatch = {};
+  if (patch.appendSystemPrompt !== undefined) out.appendSystemPrompt = patch.appendSystemPrompt;
+  if (patch.terminalProfiles !== undefined) out.terminalProfiles = patch.terminalProfiles;
+  if (patch.agentProfiles !== undefined) out.agentProfiles = patch.agentProfiles;
+  if (patch.visibleModels !== undefined) out.visibleModels = patch.visibleModels;
+  if (patch.pluginsEnabled !== undefined) out.pluginsEnabled = patch.pluginsEnabled;
+  if (patch.plugins !== undefined) out.plugins = patch.plugins;
+  if (patch.missionControl !== undefined) out.missionControl = patch.missionControl;
+  if (patch.aiReviewer !== undefined) out.aiReviewer = patch.aiReviewer;
+  if (patch.ompIdleCloseAfterSeconds !== undefined) {
+    out.ompIdleCloseAfterSeconds = patch.ompIdleCloseAfterSeconds;
+  }
+  if (patch.keepAwakeWhileAgentsRun !== undefined) {
+    out.keepAwakeWhileAgentsRun = patch.keepAwakeWhileAgentsRun;
+  }
+  if (patch.keepAwakeReleaseGraceMinutes !== undefined) {
+    out.keepAwakeReleaseGraceMinutes = patch.keepAwakeReleaseGraceMinutes;
+  }
+  if (patch.keepAwakeBatteryFloorPercent !== undefined) {
+    out.keepAwakeBatteryFloorPercent = patch.keepAwakeBatteryFloorPercent;
+  }
+  if (patch.composerPreferences !== undefined) {
+    out.composerPreferences = patch.composerPreferences;
+  }
+  return out;
 }
 
 export function applyMutableProviderConfigToOverrides(
@@ -421,7 +462,14 @@ export class DaemonConfigStore {
       ),
       resolved.overrideControlledPaths,
     );
-    const appliedPaths = RELOADABLE_PATHS.filter((persistedPath) => {
+    const previousPeers = this.lastKnownPersisted.peers ?? [];
+    const nextPeers = persisted.peers ?? [];
+    const peersChanged = !isEqualValue(previousPeers, nextPeers);
+    const peersOverrideControlled = resolved.overrideControlledPaths.some((owner) =>
+      pathBelongsTo("peers", owner),
+    );
+
+    const appliedPaths: string[] = RELOADABLE_PATHS.filter((persistedPath) => {
       if (resolved.overrideControlledPaths.some((owner) => pathBelongsTo(persistedPath, owner))) {
         return false;
       }
@@ -434,9 +482,13 @@ export class DaemonConfigStore {
         )
       );
     });
+    if (peersChanged && !peersOverrideControlled) {
+      appliedPaths.push("peers");
+    }
     const restartRequiredPaths = compactOwnedPaths(
       diffPaths(this.startupPersisted, persisted).filter((path) => {
         if (path === "$schema" || path === "version") return false;
+        if (pathBelongsTo(path, "peers")) return false;
         if (RELOADABLE_PATHS.some((owner) => pathBelongsTo(path, owner))) return false;
         return !resolved.overrideControlledPaths.some((owner) => pathBelongsTo(path, owner));
       }),
@@ -588,6 +640,10 @@ function mergeMutablePatchIntoPersistedConfig(params: {
     ...persisted,
     ...(patch.pluginsEnabled !== undefined ? { pluginsEnabled: patch.pluginsEnabled } : {}),
     ...(patch.plugins !== undefined ? { plugins: patch.plugins } : {}),
+    ...(patch.missionControl !== undefined ? { missionControl: patch.missionControl } : {}),
+    ...(patch.aiReviewer !== undefined
+      ? { aiReviewer: { ...persisted.aiReviewer, ...patch.aiReviewer } }
+      : {}),
     ...(daemon ? { daemon } : { daemon: undefined }),
     ...(agents ? { agents } : { agents: undefined }),
   } as PersistedConfig;
@@ -661,5 +717,21 @@ function mergeMutableDaemonPatch(
   if (patch.appendSystemPrompt !== undefined) next.appendSystemPrompt = patch.appendSystemPrompt;
   if (patch.terminalProfiles !== undefined) next.terminalProfiles = patch.terminalProfiles;
   if (patch.agentProfiles !== undefined) next.agentProfiles = patch.agentProfiles;
+  if (patch.visibleModels !== undefined) next.visibleModels = patch.visibleModels;
+  if (patch.ompIdleCloseAfterSeconds !== undefined) {
+    next.ompIdleCloseAfterSeconds = patch.ompIdleCloseAfterSeconds;
+  }
+  if (patch.keepAwakeWhileAgentsRun !== undefined) {
+    next.keepAwakeWhileAgentsRun = patch.keepAwakeWhileAgentsRun;
+  }
+  if (patch.keepAwakeReleaseGraceMinutes !== undefined) {
+    next.keepAwakeReleaseGraceMinutes = patch.keepAwakeReleaseGraceMinutes;
+  }
+  if (patch.keepAwakeBatteryFloorPercent !== undefined) {
+    next.keepAwakeBatteryFloorPercent = patch.keepAwakeBatteryFloorPercent;
+  }
+  if (patch.composerPreferences !== undefined) {
+    next.composerPreferences = patch.composerPreferences;
+  }
   return Object.keys(next).length > 0 ? next : undefined;
 }

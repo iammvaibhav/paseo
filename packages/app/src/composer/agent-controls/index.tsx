@@ -6,10 +6,12 @@ import {
   useRef,
   useState,
   type ReactElement,
+  type ReactNode,
   type RefObject,
 } from "react";
 import { useTranslation } from "react-i18next";
 import { router } from "expo-router";
+import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import {
   View,
   Text,
@@ -28,22 +30,31 @@ import { getAgentFeatureIcon, ThinkingIcon } from "@/agent-controls/icons";
 import { formatThinkingOptionLabel } from "@/agent-controls/labels";
 import { ComboboxTrigger } from "@/components/ui/combobox-trigger";
 import { CombinedModelSelector } from "@/components/combined-model-selector";
+import { isSystemOwnedAgentLabels } from "@getpaseo/protocol/mission-control/system-owned";
 import {
-  buildProviderSelectorProviders,
+  resolveUnattendedModeId,
+  type UnattendedModeCandidate,
+} from "@/history-ask/unattended-mode";
+import {
   buildSelectableProviderSelectorProviders,
   type ProviderSelectorProvider,
 } from "@/provider-selection/provider-selection";
 import { filterSelectableModels } from "@/provider-selection/model-catalog";
 import { useSessionStore } from "@/stores/session-store";
 import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
-import { resolveProviderDefinition } from "@/utils/provider-definitions";
-import { mergeProviderPreferences, useFormPreferences } from "@/hooks/use-form-preferences";
+import {
+  mergeProviderPreferencesWithScope,
+  resolveEffectiveFormPreferences,
+  useFormPreferences,
+  type FormPreferenceScope,
+} from "@/hooks/use-form-preferences";
 import { Combobox, ComboboxItem, type ComboboxOption } from "@/components/ui/combobox";
 import {
   AgentModeControl,
   useLiveAgentModeControl,
   type AgentModeControlValue,
 } from "@/composer/agent-controls/mode-control";
+import { LiveAgentModePicker } from "@/composer/agent-controls/agent-mode-picker";
 import { AdaptiveModalSheet, type SheetHeader } from "@/components/adaptive-modal-sheet";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type {
@@ -69,6 +80,7 @@ import {
   type AgentControlCommandCenterSource,
 } from "@/command-center/agent-control-registration";
 import { useComposerKeyboardScope } from "@/composer/keyboard-scope";
+import { formatProviderLabel } from "@/utils/provider-label";
 import { isNative } from "@/constants/platform";
 import {
   resolveComposerControlDensity,
@@ -81,6 +93,12 @@ import { ComposerControlLayoutProvider } from "@/composer/agent-controls/layout-
 import { ComposerToolbarGlyph } from "@/composer/agent-controls/glyph";
 import { AgentControlTrigger } from "@/composer/agent-controls/control";
 import { CompactModelSheet } from "@/composer/agent-controls/model-sheet";
+import { generateDraftId } from "@/stores/draft-keys";
+import {
+  buildDraftWorkspaceAttachmentScopeKey,
+  useWorkspaceAttachmentsStore,
+} from "@/attachments/workspace-attachments-store";
+import { navigateToWorkspace } from "@/stores/navigation-active-workspace-store";
 import {
   useAgentProfileEditor,
   useAgentProfilePicker,
@@ -99,7 +117,33 @@ interface AgentControlOption {
 
 type AgentControlSelector = "provider" | "mode" | "model" | "thinking" | `feature-${string}`;
 
+/** Renders the agent mode (Approach) picker for the toolbar row or the compact sheet. */
+type AgentModePickerSlot = (surface: "toolbar" | "sheet") => ReactNode;
+
 const EMPTY_AGENT_PROVIDER_DEFINITIONS: AgentProviderDefinition[] = [];
+
+/**
+ * Mode to persist when the model picker switches an agent to another provider.
+ * A mode picked on the old provider is meaningless on the new one; map it to
+ * the new provider's unattended equivalent (same mapping History Ask uses for
+ * unattended launches). Returns undefined when the current mode stays valid or
+ * when there is nothing to remap — the daemon then keeps the stored mode and
+ * defensively falls back at launch if the provider rejects it.
+ */
+function resolveModeIdForProviderSwitch(input: {
+  currentModeId: string | null;
+  nextProvider: string;
+  nextProviderModes?: readonly UnattendedModeCandidate[] | null;
+}): string | undefined {
+  const { currentModeId, nextProvider, nextProviderModes } = input;
+  if (!currentModeId) {
+    return undefined;
+  }
+  if (nextProviderModes?.some((mode) => mode.id === currentModeId)) {
+    return undefined;
+  }
+  return resolveUnattendedModeId(nextProvider, nextProviderModes);
+}
 
 interface ControlledAgentControlsProps {
   provider: string;
@@ -128,6 +172,8 @@ interface ControlledAgentControlsProps {
   onRetryModelProvider?: (provider: AgentProvider) => void;
   isRetryingModelProvider?: boolean;
   modeControl?: AgentModeControlValue | null;
+  /** Approach picker (Build, Orchestrate, …), rendered after the access mode control. */
+  agentModePicker?: AgentModePickerSlot;
   modelSelectorServerId?: string | null;
   isCompactLayout?: boolean;
 }
@@ -302,6 +348,113 @@ function resolveAgentProfileEditorActions(
   };
 }
 
+/** Profiles applicable to a live agent (single provider process). */
+function useAgentBoundProfiles(
+  serverId: string,
+  agentId: string,
+  agentProvider?: AgentProvider,
+  snapshotSelectedEntry?: ReturnType<typeof resolveSnapshotSelectedEntry>,
+) {
+  const profileProviders = useMemo(() => (agentProvider ? [agentProvider] : []), [agentProvider]);
+  const profileModeIds = useMemo(
+    () => resolveSnapshotModeIds(snapshotSelectedEntry ?? null),
+    [snapshotSelectedEntry],
+  );
+  const profileTarget = useMemo<AgentProfileApplyTarget>(
+    () => ({ kind: "agent", agentId, availableModeIds: profileModeIds }),
+    [agentId, profileModeIds],
+  );
+  const agentProfiles = useAgentProfilePicker({
+    serverId,
+    availableProviders: profileProviders,
+    target: profileTarget,
+  });
+  const handleEditAgentProfiles = useEditAgentProfilesNavigation(serverId, agentProfiles !== null);
+  return { agentProfiles, handleEditAgentProfiles };
+}
+
+function useLiveAgentPreferenceHandlers(args: {
+  agentId: string;
+  agentProvider?: AgentProvider;
+  activeModelId?: string | null;
+  client: DaemonClient | null;
+  preferenceScope: FormPreferenceScope | null;
+  toast: ReturnType<typeof useToast>;
+  updatePreferences: ReturnType<typeof useFormPreferences>["updatePreferences"];
+}) {
+  const {
+    agentId,
+    agentProvider,
+    activeModelId,
+    client,
+    preferenceScope,
+    toast,
+    updatePreferences,
+  } = args;
+
+  const handleSelectThinkingOption = useCallback(
+    (thinkingOptionId: string) => {
+      if (!client || !agentProvider) {
+        return;
+      }
+      if (activeModelId) {
+        void updatePreferences((current) =>
+          mergeProviderPreferencesWithScope({
+            preferences: current,
+            provider: agentProvider,
+            updates: {
+              model: activeModelId,
+              thinkingByModel: {
+                [activeModelId]: thinkingOptionId,
+              },
+            },
+            scope: preferenceScope,
+          }),
+        ).catch((error) => {
+          console.warn("[AgentControls] persist thinking preference failed", error);
+        });
+      }
+      void client
+        .setAgentThinkingOption(agentId, thinkingOptionId)
+        .then((notice) => showProviderNoticeToast(toast, notice))
+        .catch((error: unknown) => {
+          console.warn("[AgentControls] setAgentThinkingOption failed", error);
+          toast.error(toErrorMessage(error));
+        });
+    },
+    [activeModelId, agentId, agentProvider, client, preferenceScope, toast, updatePreferences],
+  );
+
+  const handleSetFeature = useCallback(
+    (featureId: string, value: unknown) => {
+      if (!client || !agentProvider) {
+        return;
+      }
+      void updatePreferences((current) =>
+        mergeProviderPreferencesWithScope({
+          preferences: current,
+          provider: agentProvider,
+          updates: {
+            featureValues: {
+              [featureId]: value,
+            },
+          },
+          scope: preferenceScope,
+        }),
+      ).catch((error: unknown) => {
+        console.warn("[AgentControls] persist feature preference failed", error);
+      });
+      void client.setAgentFeature(agentId, featureId, value).catch((error: unknown) => {
+        console.warn("[AgentControls] setAgentFeature failed", error);
+        toast.error(toErrorMessage(error));
+      });
+    },
+    [agentId, agentProvider, client, preferenceScope, toast, updatePreferences],
+  );
+
+  return { handleSelectThinkingOption, handleSetFeature };
+}
+
 function buildFallbackModelSelectorProviders(
   provider: string,
   modelOptions: AgentControlOption[] | undefined,
@@ -391,30 +544,64 @@ function pickDesktopModel({
 type AgentControlsSlice = {
   provider: string;
   cwd: string | null;
+  workspaceId: string | null;
+  projectKey: string | null;
   runtimeModelId: string | null;
   model: string | null | undefined;
   features: AgentFeature[] | undefined;
+  runtimeThinkingOptionId: string | null;
   thinkingOptionId: string | null | undefined;
   lastUsage: unknown;
+  title: string | null;
 } | null;
+
+function resolveAgentPreferenceScope(input: {
+  workspaceId: string | null | undefined;
+  projectKey: string | null | undefined;
+}): FormPreferenceScope | null {
+  const workspaceId = input.workspaceId?.trim() || null;
+  const projectKey = input.projectKey?.trim() || null;
+  if (!workspaceId && !projectKey) {
+    return null;
+  }
+  return { workspaceId, projectKey };
+}
+
+function findCurrentAgent(
+  state: ReturnType<typeof useSessionStore.getState>,
+  serverId: string,
+  agentId: string,
+) {
+  const session = state.sessions[serverId];
+  if (!session) return null;
+  return session.agents.get(agentId) ?? session.agentDetails.get(agentId) ?? null;
+}
 
 function selectAgentControlsSlice(
   state: ReturnType<typeof useSessionStore.getState>,
   serverId: string,
   agentId: string,
 ): AgentControlsSlice {
-  const currentAgent = state.sessions[serverId]?.agents?.get(agentId) ?? null;
+  const currentAgent = findCurrentAgent(state, serverId, agentId);
   if (!currentAgent) {
     return null;
   }
+  const session = state.sessions[serverId];
+  const workspaceId = currentAgent.workspaceId ?? null;
+  const workspace = workspaceId && session ? (session.workspaces.get(workspaceId) ?? null) : null;
+  const projectKey = workspace?.projectId ?? workspace?.project?.projectKey ?? null;
   return {
     provider: currentAgent.provider,
     cwd: currentAgent.cwd,
+    workspaceId,
+    projectKey,
     runtimeModelId: currentAgent.runtimeInfo?.model ?? null,
     model: currentAgent.model,
     features: currentAgent.features,
+    runtimeThinkingOptionId: currentAgent.runtimeInfo?.thinkingOptionId ?? null,
     thinkingOptionId: currentAgent.thinkingOptionId,
     lastUsage: currentAgent.lastUsage,
+    title: currentAgent.title,
   };
 }
 
@@ -437,27 +624,6 @@ function resolveSnapshotModeIds(
   return entry.modes.map((mode) => mode.id);
 }
 
-function buildAgentProviderDefinitions(
-  agentProvider: string | undefined,
-  snapshotEntries: ReturnType<typeof useProvidersSnapshot>["entries"],
-): AgentProviderDefinition[] {
-  const definition = agentProvider
-    ? resolveProviderDefinition(agentProvider, snapshotEntries)
-    : undefined;
-  return definition ? [definition] : [];
-}
-
-function buildAgentProviderModels(
-  agentProvider: string | undefined,
-  models: AgentModelDefinition[] | null,
-): Map<string, AgentModelDefinition[]> {
-  const map = new Map<string, AgentModelDefinition[]>();
-  if (agentProvider && models) {
-    map.set(agentProvider, models);
-  }
-  return map;
-}
-
 function buildOpenChangeHandler(
   selector: AgentControlSelector,
   setOpenSelector: (next: AgentControlSelector | null) => void,
@@ -471,6 +637,45 @@ function buildOpenChangeHandler(
   };
 }
 
+function checkCanSelectProvider(
+  onSelectProvider: unknown,
+  providerOptions?: unknown[],
+  modelSelectorProviders?: unknown[],
+): boolean {
+  if (!onSelectProvider) return false;
+  return Boolean(providerOptions?.length || modelSelectorProviders?.length);
+}
+
+function checkCanSelectThinking(
+  onSelectThinkingOption: unknown,
+  thinkingOptions?: unknown[],
+): boolean {
+  if (!onSelectThinkingOption) return false;
+  return Boolean(thinkingOptions?.length);
+}
+
+function resolveDisplayProviderFallback(
+  selectedProviderId: string | undefined | null,
+  fallbackLabel: string,
+): string {
+  if (!selectedProviderId) return fallbackLabel;
+  return `${formatProviderLabel(selectedProviderId)} (Unavailable)`;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function buildFeatureControls(features: any[] | undefined) {
+  if (!features) return [];
+  return features.map((feature) => {
+    if (feature.type === "toggle") return { type: "toggle" as const };
+    const selectedOption = feature.options?.find(
+      (option: { id: string; label: string }) => option.id === feature.value,
+    );
+    return {
+      type: "select" as const,
+      label: selectedOption?.label ?? feature.label,
+    };
+  });
+}
 function ControlledAgentControls({
   provider,
   providerOptions,
@@ -498,6 +703,7 @@ function ControlledAgentControls({
   onRetryModelProvider,
   isRetryingModelProvider = false,
   modeControl,
+  agentModePicker,
   modelSelectorServerId = null,
   isCompactLayout,
 }: ControlledAgentControlsProps) {
@@ -517,18 +723,18 @@ function ControlledAgentControls({
   const _modelAnchorRef = useRef<View>(null);
   const thinkingAnchorRef = useRef<View>(null);
 
-  const canSelectProvider = Boolean(
-    onSelectProvider && providerOptions && providerOptions.length > 0,
+  const canSelectProvider = checkCanSelectProvider(
+    onSelectProvider,
+    providerOptions,
+    modelSelectorProviders,
   );
   const canSelectModel = Boolean(onSelectModel);
-  const canSelectThinking = Boolean(
-    onSelectThinkingOption && thinkingOptions && thinkingOptions.length > 0,
-  );
+  const canSelectThinking = checkCanSelectThinking(onSelectThinkingOption, thinkingOptions);
 
   const displayProvider = findOptionLabel(
     providerOptions,
     selectedProviderId,
-    t("agentControls.provider.fallback"),
+    resolveDisplayProviderFallback(selectedProviderId, t("agentControls.provider.fallback")),
   );
   const formattedThinkingOptions = useMemo(
     () => toThinkingControlOptions(thinkingOptions),
@@ -540,34 +746,24 @@ function ControlledAgentControls({
     formattedThinkingOptions[0]?.label ?? t("agentControls.thinking.unknown"),
   );
 
+  const hasMode = modeControl != null;
   const hasAnyControl = resolveHasAnyControl({
     providerOptions,
     canSelectModel,
     thinkingOptions,
     features,
-    hasMode: modeControl !== null && modeControl !== undefined,
+    hasMode,
   });
-  const featureControls = useMemo(
-    () =>
-      (features ?? []).map((feature) => {
-        if (feature.type === "toggle") return { type: "toggle" as const };
-        const selectedOption = feature.options.find((option) => option.id === feature.value);
-        return {
-          type: "select" as const,
-          label: selectedOption?.label ?? feature.label,
-        };
-      }),
-    [features],
-  );
+  const featureControls = useMemo(() => buildFeatureControls(features), [features]);
   const controlPresence = useMemo(
     () => ({
       hasModel: canSelectModel,
       hasThinking: canSelectThinking,
-      hasMode: modeControl !== null && modeControl !== undefined,
+      hasMode,
       features: featureControls,
       fontScale,
     }),
-    [canSelectModel, canSelectThinking, featureControls, fontScale, modeControl],
+    [canSelectModel, canSelectThinking, featureControls, fontScale, hasMode],
   );
   const presentation = useMemo(() => resolveComposerControlPresentation(density), [density]);
   const layoutContextValue = useMemo(
@@ -778,6 +974,7 @@ function ControlledAgentControls({
             handleNestedOpenChange={handleSheetOpenChange}
             renderThinkingOption={renderThinkingOption}
             modeControl={modeControl}
+            agentModePicker={agentModePicker}
             presentation={presentation}
             glyphSize={layoutContextValue.glyphSize}
             activeSheet={activeSheet}
@@ -818,6 +1015,7 @@ function ControlledAgentControls({
             handleOpenChange={handleSheetOpenChange}
             renderThinkingOption={renderThinkingOption}
             modeControl={modeControl}
+            agentModePicker={agentModePicker}
             glyphSize={layoutContextValue.glyphSize}
             modelSelectorServerId={modelSelectorServerId}
             canSwitchProvider={Boolean(onSelectProviderAndModel)}
@@ -878,6 +1076,7 @@ interface DesktopAgentControlsContentProps {
     onPress: () => void;
   }) => ReactElement;
   modeControl?: AgentModeControlValue | null;
+  agentModePicker?: AgentModePickerSlot;
   presentation: ComposerControlPresentation;
   glyphSize: number;
   activeSheet: ActiveSheet;
@@ -935,6 +1134,7 @@ function DesktopAgentControlsContent(props: DesktopAgentControlsContentProps) {
     handleNestedOpenChange,
     renderThinkingOption,
     modeControl,
+    agentModePicker,
     presentation,
     glyphSize,
     activeSheet,
@@ -1054,6 +1254,7 @@ function DesktopAgentControlsContent(props: DesktopAgentControlsContentProps) {
       ) : null}
 
       {modeControl ? <AgentModeControl {...modeControl} onClose={onDropdownClose} /> : null}
+      {agentModePicker?.("toolbar")}
 
       {presentation.aggregateFeatures && features?.length ? (
         <>
@@ -1141,6 +1342,7 @@ interface SheetAgentControlsContentProps {
     onPress: () => void;
   }) => ReactElement;
   modeControl?: AgentModeControlValue | null;
+  agentModePicker?: AgentModePickerSlot;
   glyphSize: number;
   modelSelectorServerId: string | null;
   canSwitchProvider: boolean;
@@ -1180,6 +1382,7 @@ function SheetAgentControlsContent(props: SheetAgentControlsContentProps) {
     handleOpenChange,
     renderThinkingOption,
     modeControl,
+    agentModePicker,
     glyphSize,
     modelSelectorServerId,
     canSwitchProvider,
@@ -1235,6 +1438,7 @@ function SheetAgentControlsContent(props: SheetAgentControlsContentProps) {
       ) : null}
 
       {modeControl ? <AgentModeControl {...modeControl} surface="sheet" /> : null}
+      {agentModePicker?.("sheet")}
 
       {(features ?? []).map((feature) => (
         <SheetFeatureItem
@@ -1357,6 +1561,10 @@ function DesktopFeatureItem({
   if (feature.type === "select") {
     const FeatureIcon = getAgentFeatureIcon(feature.icon);
     const selectedOption = feature.options.find((o) => o.id === feature.value);
+    const iconOnly = feature.desktopTrigger === "icon";
+    const tooltip = iconOnly
+      ? `${feature.label}: ${selectedOption?.label ?? feature.label}`
+      : getFeatureTooltip(feature);
     return (
       <>
         <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
@@ -1367,15 +1575,16 @@ function DesktopFeatureItem({
               surface="toolbar"
               label={feature.label}
               value={selectedOption?.label ?? feature.label}
+              showToolbarLabel={!iconOnly}
               open={openSelector === featureSelector}
               disabled={disabled}
               onPress={handleSelectPress}
-              accessibilityLabel={getFeatureTooltip(feature)}
+              accessibilityLabel={tooltip}
               testID={`agent-feature-${feature.id}`}
             />
           </TooltipTrigger>
           <TooltipContent side="top" align="center" offset={8}>
-            <Text style={styles.tooltipText}>{getFeatureTooltip(feature)}</Text>
+            <Text style={styles.tooltipText}>{tooltip}</Text>
           </TooltipContent>
         </Tooltip>
         <Combobox
@@ -1534,17 +1743,25 @@ function ThinkingComboboxOption({
   );
 }
 
+// Cross-provider fork (fork) + agent profiles (upstream) keep this control dense.
+// eslint-disable-next-line complexity -- live agent controls orchestrate many surfaces
 export const AgentControls = memo(function AgentControls({
   agentId,
   serverId,
   onDropdownClose,
   isCompactLayout,
 }: AgentControlsProps) {
-  const { updatePreferences } = useFormPreferences();
+  const { t } = useTranslation();
+  const { preferences, updatePreferences } = useFormPreferences(serverId);
   const agent = useSessionStore(
     useShallow((state) => selectAgentControlsSlice(state, serverId, agentId)),
   );
   const client = useSessionStore((state) => state.sessions[serverId]?.client ?? null);
+  const agentLabels = useSessionStore(
+    (state) => state.sessions[serverId]?.agents.get(agentId)?.labels ?? null,
+  );
+  // Machinery agents (mission-control labels) run in a fixed mode.
+  const isSystemOwned = isSystemOwnedAgentLabels(agentLabels ?? undefined);
   const toast = useToast();
   const modeControl = useLiveAgentModeControl(serverId, agentId);
   const commandCenterModes = toCommandCenterModes(modeControl);
@@ -1566,29 +1783,18 @@ export const AgentControls = memo(function AgentControls({
   const models = filterSelectableModels(snapshotSelectedEntry?.models ?? null);
   const selectedProviderIsLoading = snapshotSelectedEntry?.status === "loading";
 
-  const agentProviderDefinitions = useMemo(
-    () => buildAgentProviderDefinitions(agent?.provider, snapshotEntries),
-    [agent?.provider, snapshotEntries],
+  // Live agents still only mutate model on the current provider session, but the
+  // selector lists every available provider so the user can fork into another one.
+  const agentModelSelectorProviders = useMemo(
+    () => buildSelectableProviderSelectorProviders(snapshotEntries),
+    [snapshotEntries],
   );
-
-  const agentProviderModels = useMemo(
-    () => buildAgentProviderModels(agent?.provider, models),
-    [agent?.provider, models],
-  );
-  const agentModelSelectorProviders = useMemo(() => {
-    if (snapshotSelectedEntry) {
-      return buildSelectableProviderSelectorProviders([snapshotSelectedEntry]);
-    }
-    return buildProviderSelectorProviders({
-      providerDefinitions: agentProviderDefinitions,
-      modelsByProvider: agentProviderModels,
-    });
-  }, [agentProviderDefinitions, agentProviderModels, snapshotSelectedEntry]);
 
   const modelSelection = resolveAgentModelSelection({
     models,
     runtimeModelId: agent?.runtimeModelId,
     configuredModelId: agent?.model,
+    runtimeThinkingOptionId: agent?.runtimeThinkingOptionId,
     explicitThinkingOptionId: agent?.thinkingOptionId,
   });
 
@@ -1605,19 +1811,40 @@ export const AgentControls = memo(function AgentControls({
 
   const agentProvider = agent?.provider;
   const activeModelId = modelSelection.activeModelId;
+  const preferenceScope = useMemo(
+    () =>
+      resolveAgentPreferenceScope({
+        workspaceId: agent?.workspaceId,
+        projectKey: agent?.projectKey,
+      }),
+    [agent?.projectKey, agent?.workspaceId],
+  );
 
-  const handleSelectModel = useCallback(
+  const supportsAgentForkContext = useSessionStore(
+    (state) => state.sessions[serverId]?.serverInfo?.features?.agentForkContext === true,
+  );
+
+  const handleSelectSameProviderModel = useCallback(
     async (modelId: string) => {
       if (!client || !agentProvider) {
         return;
       }
       try {
         await client.setAgentModel(agentId, modelId);
+        const preferredThinking =
+          resolveEffectiveFormPreferences(preferences, preferenceScope).providerPreferences?.[
+            agentProvider
+          ]?.thinkingByModel?.[modelId]?.trim() ?? "";
+        if (preferredThinking) {
+          const notice = await client.setAgentThinkingOption(agentId, preferredThinking);
+          showProviderNoticeToast(toast, notice);
+        }
         await updatePreferences((current) =>
-          mergeProviderPreferences({
+          mergeProviderPreferencesWithScope({
             preferences: current,
             provider: agentProvider,
             updates: { model: modelId },
+            scope: preferenceScope,
           }),
         );
       } catch (error) {
@@ -1625,90 +1852,158 @@ export const AgentControls = memo(function AgentControls({
         toast.error(toErrorMessage(error));
       }
     },
-    [agentId, agentProvider, client, toast, updatePreferences],
-  );
-  const handleSelectCommandCenterModel = useCallback(
-    (_provider: AgentProvider, modelId: string) => handleSelectModel(modelId),
-    [handleSelectModel],
+    [agentId, agentProvider, client, preferenceScope, preferences, toast, updatePreferences],
   );
 
-  // A running agent is one provider's process, so only that provider's profiles
-  // can apply to it.
-  const profileProviders = useMemo(() => (agentProvider ? [agentProvider] : []), [agentProvider]);
-  const profileModeIds = useMemo(
-    () => resolveSnapshotModeIds(snapshotSelectedEntry),
-    [snapshotSelectedEntry],
-  );
-  const profileTarget = useMemo<AgentProfileApplyTarget>(
-    () => ({ kind: "agent", agentId, availableModeIds: profileModeIds }),
-    [agentId, profileModeIds],
-  );
-  const agentProfiles = useAgentProfilePicker({
+  const { agentProfiles, handleEditAgentProfiles } = useAgentBoundProfiles(
     serverId,
-    availableProviders: profileProviders,
-    target: profileTarget,
-  });
-  const handleEditAgentProfiles = useEditAgentProfilesNavigation(serverId, agentProfiles !== null);
+    agentId,
+    agentProvider,
+    snapshotSelectedEntry,
+  );
   const profileEditor = useAgentProfileEditor(serverId);
   const profileActions = resolveAgentProfileEditorActions(agentProfiles !== null, profileEditor);
 
-  const handleSelectThinkingOption = useCallback(
-    (thinkingOptionId: string) => {
-      if (!client || !agentProvider) {
+  const handleCrossProviderFork = useCallback(
+    async (nextProvider: string, modelId: string): Promise<void> => {
+      if (!client || !agent) {
         return;
       }
-      if (activeModelId) {
-        void updatePreferences((current) =>
-          mergeProviderPreferences({
-            preferences: current,
-            provider: agentProvider,
-            updates: {
-              model: activeModelId,
-              thinkingByModel: {
-                [activeModelId]: thinkingOptionId,
+      const workspaceId = agent.workspaceId?.trim() || null;
+      if (!workspaceId) {
+        toast.error(t("message.actions.forkMissingWorkspace"));
+        return;
+      }
+      if (!supportsAgentForkContext) {
+        toast.error(t("message.actions.forkUnavailable"));
+        return;
+      }
+      try {
+        const draftId = generateDraftId();
+        const payload = await client.buildAgentForkContext(agentId);
+        if (!payload.attachment) {
+          throw new Error(payload.error ?? t("message.actions.forkFailed"));
+        }
+        useWorkspaceAttachmentsStore.getState().setWorkspaceAttachments({
+          scopeKey: buildDraftWorkspaceAttachmentScopeKey(draftId),
+          attachments: [
+            {
+              kind: "chat_history",
+              id: `chat_history:${draftId}`,
+              attachment: payload.attachment,
+              source: {
+                serverId,
+                agentId,
+                boundaryMessageId: payload.boundaryMessageId,
+                boundaryCursor: payload.boundaryCursor,
+                itemCount: payload.itemCount,
               },
             },
-          }),
-        ).catch((error) => {
-          console.warn("[AgentControls] persist thinking preference failed", error);
+          ],
         });
-      }
-      void client
-        .setAgentThinkingOption(agentId, thinkingOptionId)
-        .then((notice) => showProviderNoticeToast(toast, notice))
-        .catch((error) => {
-          console.warn("[AgentControls] setAgentThinkingOption failed", error);
-          toast.error(toErrorMessage(error));
-        });
-    },
-    [activeModelId, agentId, agentProvider, client, toast, updatePreferences],
-  );
 
-  const handleSetFeature = useCallback(
-    (featureId: string, value: unknown) => {
-      if (!client || !agentProvider) {
-        return;
-      }
-      void updatePreferences((current) =>
-        mergeProviderPreferences({
-          preferences: current,
-          provider: agentProvider,
-          updates: {
-            featureValues: {
-              [featureId]: value,
+        const featureValues: Record<string, unknown> = {};
+        for (const feature of agent.features ?? []) {
+          featureValues[feature.id] = feature.value;
+        }
+
+        navigateToWorkspace({
+          serverId,
+          workspaceId,
+          target: {
+            kind: "draft",
+            draftId,
+            setup: {
+              provider: nextProvider,
+              cwd: agent.cwd ?? "",
+              modeId: null,
+              model: modelId,
+              thinkingOptionId: null,
+              featureValues,
             },
           },
-        }),
-      ).catch((error) => {
-        console.warn("[AgentControls] persist feature preference failed", error);
-      });
-      void client.setAgentFeature(agentId, featureId, value).catch((error) => {
-        console.warn("[AgentControls] setAgentFeature failed", error);
-        toast.error(toErrorMessage(error));
-      });
+        });
+      } catch (error) {
+        console.warn("[AgentControls] cross-provider fork failed", error);
+        toast.error(toErrorMessage(error) || t("message.actions.forkFailed"));
+      }
     },
-    [agentId, agentProvider, client, toast, updatePreferences],
+    [agent, agentId, client, serverId, supportsAgentForkContext, t, toast],
   );
+
+  const handleSelectProviderAndModel = useCallback(
+    async (nextProvider: string, modelId: string) => {
+      if (!client || !agent) {
+        return;
+      }
+      if (nextProvider === agent.provider) {
+        await handleSelectSameProviderModel(modelId);
+        return;
+      }
+
+      // A mode picked on the old provider (e.g. claude `bypassPermissions`) is
+      // meaningless on the new one. Remap it to the new provider's unattended
+      // equivalent so the agent survives the switch; the daemon also remaps
+      // defensively when no mode is sent here.
+      const modeId = resolveModeIdForProviderSwitch({
+        currentModeId: modeControl?.selectedModeId ?? null,
+        nextProvider,
+        nextProviderModes: snapshotEntries?.find((entry) => entry.provider === nextProvider)?.modes,
+      });
+
+      // Try updating the agent's provider in-place first
+      try {
+        await client.updateAgent(agentId, {
+          provider: nextProvider,
+          model: modelId,
+          ...(modeId !== undefined ? { modeId } : {}),
+        });
+        toast.show(
+          t("agentControls.providerSwitched", { provider: formatProviderLabel(nextProvider) }),
+        );
+        return;
+      } catch (updateErr) {
+        console.info(
+          "[AgentControls] in-place provider update failed, falling back to fork",
+          updateErr,
+        );
+      }
+
+      // In-place update failed (the daemon cannot switch a live agent across
+      // providers): fork the agent into a new draft on the new provider.
+      await handleCrossProviderFork(nextProvider, modelId);
+    },
+    [
+      agent,
+      agentId,
+      client,
+      handleCrossProviderFork,
+      handleSelectSameProviderModel,
+      modeControl,
+      snapshotEntries,
+      t,
+      toast,
+    ],
+  );
+  // Selecting a model from the Command Center may cross providers, which forks
+  // the agent into a new draft; `handleSelectProviderAndModel` short-circuits to
+  // a plain model switch when the provider is unchanged.
+  const handleSelectCommandCenterModel = useCallback(
+    (provider: AgentProvider, modelId: string) => {
+      void handleSelectProviderAndModel(provider, modelId);
+    },
+    [handleSelectProviderAndModel],
+  );
+
+  const { handleSelectThinkingOption, handleSetFeature } = useLiveAgentPreferenceHandlers({
+    agentId,
+    agentProvider,
+    activeModelId,
+    client,
+    preferenceScope,
+    toast,
+    updatePreferences,
+  });
 
   const commandCenterControls = useMemo<AgentControlCommandCenterSource>(
     () => ({
@@ -1768,6 +2063,20 @@ export const AgentControls = memo(function AgentControls({
     },
     [refreshSnapshot],
   );
+  const agentModePicker = useMemo<AgentModePickerSlot | undefined>(
+    () =>
+      isSystemOwned
+        ? undefined
+        : (surface) => (
+            <LiveAgentModePicker
+              serverId={serverId}
+              agentId={agentId}
+              disabled={!client}
+              surface={surface}
+            />
+          ),
+    [agentId, client, isSystemOwned, serverId],
+  );
 
   if (!agent) {
     return null;
@@ -1782,7 +2091,8 @@ export const AgentControls = memo(function AgentControls({
         modelSelectorProviders={agentModelSelectorProviders}
         modelOptions={modelOptions}
         selectedModelId={modelSelection.activeModelId ?? undefined}
-        onSelectModel={handleSelectModel}
+        onSelectModel={handleSelectSameProviderModel}
+        onSelectProviderAndModel={handleSelectProviderAndModel}
         agentProfiles={agentProfiles}
         onApplyAgentProfile={agentProfiles?.applyProfile}
         onEditAgentProfiles={handleEditAgentProfiles}
@@ -1800,6 +2110,7 @@ export const AgentControls = memo(function AgentControls({
         onDropdownClose={onDropdownClose}
         disabled={!client}
         modeControl={modeControl}
+        agentModePicker={agentModePicker}
         modelSelectorServerId={serverId}
         isCompactLayout={isCompactLayout}
       />

@@ -60,6 +60,7 @@ export const HighlightedCodeBlock = React.memo(function HighlightedCodeBlock({
   inheritedStyles,
   textStyle,
 }: HighlightedCodeBlockProps) {
+  const isEmpty = !code || code.trim().length === 0;
   // Box styles (bg / padding / border / radius / margin) go on the wrapper View
   // so the absolute copy button positions relative to the visible code area,
   // not to a parent that includes the Text's own marginVertical.
@@ -77,7 +78,10 @@ export const HighlightedCodeBlock = React.memo(function HighlightedCodeBlock({
     () => highlightToKeyedLines(renderedCode, fenceLanguageToExtension(language)),
     [renderedCode, language],
   );
-
+  // A fence with no code (e.g. an orphaned "```" leaked before a tool call)
+  // must not render a styled container — that paints an empty grey box.
+  // The empty check lives here instead of the callers so every fence and
+  // code_block surface shares the guard; hooks stay unconditional above.
   const isCompact = useIsCompactFormFactor();
   const [isHovered, setIsHovered] = useState(false);
   const handlePointerEnter = useCallback(() => setIsHovered(true), []);
@@ -87,6 +91,9 @@ export const HighlightedCodeBlock = React.memo(function HighlightedCodeBlock({
   // and ends in more than one when the author left a blank line before the closing
   // fence; pasting any of them into a terminal runs the last line.
   const getCode = useCallback(() => code.replace(TRAILING_CODE_LINE_BREAKS, ""), [code]);
+  if (isEmpty) {
+    return null;
+  }
 
   return (
     <View

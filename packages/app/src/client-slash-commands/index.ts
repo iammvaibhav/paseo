@@ -75,7 +75,11 @@ export function buildDraftAgentSetup(agent: Agent): WorkspaceDraftTabSetup {
     cwd: agent.cwd,
     modeId: agent.currentModeId ?? agent.runtimeInfo?.modeId ?? null,
     model: agent.model ?? agent.runtimeInfo?.model ?? null,
-    thinkingOptionId: agent.thinkingOptionId ?? agent.runtimeInfo?.thinkingOptionId ?? null,
+    thinkingOptionId:
+      agent.effectiveThinkingOptionId ??
+      agent.runtimeInfo?.thinkingOptionId ??
+      agent.thinkingOptionId ??
+      null,
     featureValues,
   };
 }

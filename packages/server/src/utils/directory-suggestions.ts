@@ -1,6 +1,7 @@
 import type { Dirent, Stats } from "node:fs";
-import { readdir, realpath, stat } from "node:fs/promises";
+import * as fs from "node:fs/promises";
 import path from "node:path";
+import pLimit from "p-limit";
 import { scorePathMatch, type MatchScore } from "@getpaseo/protocol/search/text-match";
 import { isPathInsideRoot } from "./path.js";
 import { runGitCommand } from "./run-git-command.js";
@@ -23,6 +24,8 @@ export interface SearchDirectoryEntriesOptions {
   includeFiles?: boolean;
   includeDirectories?: boolean;
   matchMode?: DirectorySuggestionMatchMode;
+  /** Suffix mode: when several files match, keep the ones that have this line, if any do. */
+  lineHint?: number;
   pathQueryPolicy?: PathQueryPolicy;
   rootAliases?: string[];
   blankQueryBehavior?: BlankQueryBehavior;
@@ -46,6 +49,7 @@ interface ChildEntry {
   name: string;
   resolvedPath: string;
   kind: DirectorySuggestionKind;
+  viaSymlink: boolean;
 }
 
 interface RawChildEntry {
@@ -89,6 +93,12 @@ const DEFAULT_LIMIT = 30;
 const MAX_LIMIT = 100;
 const DEFAULT_MAX_DEPTH = 12;
 const DEFAULT_MAX_ENTRIES_SCANNED = 20_000;
+// Suffix mode resolves a file reference, where a file the walk never reaches opens the wrong
+// match or none at all. Its budget covers large monorepos rather than keeping typing snappy.
+const SUFFIX_MAX_DEPTH = 32;
+const SUFFIX_MAX_ENTRIES_SCANNED = 200_000;
+const LINE_COUNT_CHUNK_BYTES = 64 * 1024;
+const NEWLINE_BYTE = 0x0a;
 const DIRECTORY_LIST_CACHE_TTL_MS = 8_000;
 const DIRECTORY_LIST_CACHE_MAX_ENTRIES = 4_000;
 const GIT_IGNORED_PATHS_CACHE_TTL_MS = 8_000;
@@ -101,6 +111,37 @@ const NO_SEGMENT_INDEX = Number.MAX_SAFE_INTEGER;
 const NO_MATCH_OFFSET = Number.MAX_SAFE_INTEGER;
 const NO_FUZZY_SCORE = Number.MAX_SAFE_INTEGER;
 const NO_MATCH_TIER = 5;
+
+// Each pending fs call holds one of libuv's shared threadpool threads (4 by default), and a read on
+// a hung mount or a protected folder never returns. Searches pile up while the user types, so they
+// share two threads and leave the rest of the pool to the daemon. Searches over one tree walk it
+// in the same order and stop at the same stuck folder, so they share its pending call and hold one
+// thread between them instead of both.
+const filesystemCalls = pLimit(2);
+const pendingFilesystemCalls = new Map<string, Promise<unknown>>();
+
+function sharedFilesystemCall<T>(key: string, call: () => Promise<T>): Promise<T> {
+  const pending = pendingFilesystemCalls.get(key);
+  if (pending) return pending as Promise<T>;
+  const started = filesystemCalls(call).finally(() => pendingFilesystemCalls.delete(key));
+  pendingFilesystemCalls.set(key, started);
+  return started;
+}
+
+function readdir(directory: string): Promise<Dirent[]> {
+  return sharedFilesystemCall(`readdir:${directory}`, () =>
+    fs.readdir(directory, { withFileTypes: true }),
+  );
+}
+
+function realpath(target: string): Promise<string> {
+  return sharedFilesystemCall(`realpath:${target}`, () => fs.realpath(target));
+}
+
+function stat(target: string): Promise<Stats> {
+  return sharedFilesystemCall(`stat:${target}`, () => fs.stat(target));
+}
+
 export const WORKSPACE_SEARCH_HIDDEN_DIRECTORIES = [
   ".agents",
   ".claude",
@@ -144,10 +185,11 @@ export async function searchDirectoryEntries(
   const input = buildSearchInput(options, root, gitIgnoredPaths);
   if (!input) return [];
 
-  const exact =
-    input.plan.browseExactPath || (input.matchMode === "suffix" && input.plan.isPathQuery)
-      ? await findExactEntry(input)
-      : null;
+  if (input.matchMode === "suffix" && input.plan.normalizedQuery && !input.plan.browseExactPath) {
+    return searchSuffix(input);
+  }
+
+  const exact = input.plan.browseExactPath ? await findExactEntry(input) : null;
   if (exact && input.limit === 1) return [exact];
 
   const browsesRoot = input.plan.isPathQuery && !input.plan.normalizedQuery;
@@ -158,6 +200,54 @@ export async function searchDirectoryEntries(
   return exact
     ? [exact, ...results.filter((entry) => !sameEntry(entry, exact))].slice(0, input.limit)
     : results;
+}
+
+// A path that exists as written wins outright: the agent named it. Otherwise every file whose
+// trailing path segments match is a candidate, and the caller decides what to do with several.
+async function searchSuffix(input: SearchInput): Promise<DirectorySuggestionEntry[]> {
+  const exact = await findExactEntry(input);
+  if (exact) return [exact];
+  const matches = await searchTree(input);
+  const candidates =
+    input.lineHint !== undefined && matches.length > 1
+      ? await preferEntriesWithLine(matches, input.lineHint)
+      : matches;
+  return sortAndFormat(candidates, input.root, input.pathFormat).slice(0, input.limit);
+}
+
+// `apps.py:891` names one of the workspace's many `apps.py` files: usually the only one that long.
+// When none is long enough the reference is stale, so every match stays a candidate.
+async function preferEntriesWithLine(entries: RankedEntry[], line: number): Promise<RankedEntry[]> {
+  const hasLine = await Promise.all(
+    entries.map((entry) => (entry.kind === "file" ? fileHasLine(entry.path, line) : false)),
+  );
+  const withLine = entries.filter((_, index) => hasLine[index]);
+  return withLine.length > 0 ? withLine : entries;
+}
+
+function fileHasLine(filePath: string, line: number): Promise<boolean> {
+  return filesystemCalls(async () => {
+    const handle = await fs.open(filePath, "r");
+    try {
+      const buffer = Buffer.allocUnsafe(LINE_COUNT_CHUNK_BYTES);
+      let newlines = 0;
+      let endsInsideLine = false;
+      for (;;) {
+        const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
+        // Line N exists after N-1 newlines only when some text follows the last one.
+        if (bytesRead === 0) return newlines >= line || (newlines === line - 1 && endsInsideLine);
+        let index = buffer.indexOf(NEWLINE_BYTE, 0);
+        while (index >= 0 && index < bytesRead) {
+          newlines += 1;
+          if (newlines >= line) return true;
+          index = buffer.indexOf(NEWLINE_BYTE, index + 1);
+        }
+        endsInsideLine = buffer[bytesRead - 1] !== NEWLINE_BYTE;
+      }
+    } finally {
+      await handle.close();
+    }
+  }).catch(() => false);
 }
 
 function buildSearchInput(
@@ -178,6 +268,7 @@ function buildSearchInput(
     blankBehavior: options.blankQueryBehavior ?? "none",
   });
   if (!plan) return null;
+  const isSuffixMode = options.matchMode === "suffix";
 
   return {
     root,
@@ -185,11 +276,14 @@ function buildSearchInput(
     includeDirectories,
     includeFiles,
     matchMode: options.matchMode ?? "fuzzy",
+    lineHint: options.lineHint,
     pathFormat: options.pathFormat,
     hiddenDirectoryNames: new Set(options.traversableHiddenDirectoryNames ?? []),
     limit: normalizeLimit(options.limit),
-    maxDepth: options.maxDepth ?? DEFAULT_MAX_DEPTH,
-    maxEntriesScanned: options.maxEntriesScanned ?? DEFAULT_MAX_ENTRIES_SCANNED,
+    maxDepth: options.maxDepth ?? (isSuffixMode ? SUFFIX_MAX_DEPTH : DEFAULT_MAX_DEPTH),
+    maxEntriesScanned:
+      options.maxEntriesScanned ??
+      (isSuffixMode ? SUFFIX_MAX_ENTRIES_SCANNED : DEFAULT_MAX_ENTRIES_SCANNED),
     confidentResultScanThreshold: options.confidentResultScanThreshold,
     gitIgnoredPaths,
   };
@@ -219,6 +313,7 @@ interface SearchInput {
   includeDirectories: boolean;
   includeFiles: boolean;
   matchMode: DirectorySuggestionMatchMode;
+  lineHint: number | undefined;
   pathFormat: DirectorySuggestionPathFormat;
   hiddenDirectoryNames: Set<string>;
   limit: number;
@@ -249,7 +344,7 @@ async function searchChildren(input: SearchInput): Promise<RankedEntry[]> {
 async function searchTree(input: SearchInput): Promise<RankedEntry[]> {
   if (!(input.maxEntriesScanned > 0)) return [];
   const roots = (await readChildren(input.root)).filter((entry) =>
-    isPathInsideRoot(input.root, entry.resolvedPath),
+    staysInsideRoot(entry, input.root),
   );
   const visited = new Set<string>([input.root]);
   const branches = roots.flatMap((entry) =>
@@ -294,7 +389,7 @@ async function* walkBranch(
     return;
   visited.add(entry.resolvedPath);
   const children = (await readChildren(entry.resolvedPath)).filter((child) =>
-    isPathInsideRoot(input.root, child.resolvedPath),
+    staysInsideRoot(child, input.root),
   );
   const branches = children.flatMap((child) =>
     shouldDiscover(child, input)
@@ -329,14 +424,28 @@ async function* roundRobin<T>(branches: Array<AsyncGenerator<T>>): AsyncGenerato
   }
 }
 
+// Only a symlink can resolve outside the tree being walked. Every other child is its parent's
+// path plus a name, and the parent was already proved inside the root.
+function staysInsideRoot(entry: ChildEntry, root: string): boolean {
+  return !entry.viaSymlink || isPathInsideRoot(root, entry.resolvedPath);
+}
+
 function shouldDiscover(entry: ChildEntry, input: SearchInput): boolean {
-  if (isGitIgnoredPath(entry.resolvedPath, input)) return false;
+  if (isNewlyGitIgnored(entry, input)) return false;
   if (entry.kind === "file") {
     return input.includeFiles && !entry.name.startsWith(".");
   }
   if (IGNORED_DIRECTORY_NAMES.has(entry.name)) return false;
   if (!entry.name.startsWith(".")) return true;
   return input.hiddenDirectoryNames.has(entry.name);
+}
+
+// Traversal only descends through entries that already passed this check, so every ancestor of
+// a named child is known discoverable and only the entry itself can be newly ignored. A symlink
+// resolves to a path with different ancestors, so it still needs the full walk.
+function isNewlyGitIgnored(entry: ChildEntry, input: SearchInput): boolean {
+  if (entry.viaSymlink) return isGitIgnoredPath(entry.resolvedPath, input);
+  return input.gitIgnoredPaths.has(entry.resolvedPath);
 }
 
 function isGitIgnoredPath(absolutePath: string, input: SearchInput): boolean {
@@ -640,7 +749,7 @@ async function readChildren(directory: string): Promise<ChildEntry[]> {
   ) {
     rawEntries = cached.entries;
   } else {
-    const dirents = await readdir(directory, { withFileTypes: true }).catch(() => [] as Dirent[]);
+    const dirents = await readdir(directory).catch(() => [] as Dirent[]);
     rawEntries = dirents
       .map(toRawChildEntry)
       .filter((entry): entry is RawChildEntry => entry !== null)
@@ -712,14 +821,14 @@ function toRawChildEntry(dirent: Dirent): RawChildEntry | null {
 async function resolveChild(directory: string, entry: RawChildEntry): Promise<ChildEntry | null> {
   const visiblePath = path.join(directory, entry.name);
   if (entry.kind !== "symlink") {
-    return { name: entry.name, resolvedPath: visiblePath, kind: entry.kind };
+    return { name: entry.name, resolvedPath: visiblePath, kind: entry.kind, viaSymlink: false };
   }
 
   const resolvedPath = await realpath(visiblePath).catch(() => null);
   if (!resolvedPath) return null;
   const info = await stat(resolvedPath).catch(() => null);
   const kind = getEntryKind(info);
-  return kind ? { name: entry.name, resolvedPath, kind } : null;
+  return kind ? { name: entry.name, resolvedPath, kind, viaSymlink: true } : null;
 }
 
 function getEntryKind(info: Stats | null): DirectorySuggestionKind | null {
@@ -728,10 +837,9 @@ function getEntryKind(info: Stats | null): DirectorySuggestionKind | null {
   return null;
 }
 
+// Reads already reject stale entries by expiry and by directory metadata, so this only has to
+// bound the map. Sweeping it for expired keys would cost a full pass on every cache miss.
 function pruneCache(): void {
-  if (directoryListCache.size <= DIRECTORY_LIST_CACHE_MAX_ENTRIES) return;
-  for (const [key, entry] of directoryListCache)
-    if (entry.expiresAt <= Date.now()) directoryListCache.delete(key);
   while (directoryListCache.size > DIRECTORY_LIST_CACHE_MAX_ENTRIES) {
     const key = directoryListCache.keys().next().value;
     if (!key) return;

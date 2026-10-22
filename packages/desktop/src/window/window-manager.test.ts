@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  buildSelectionAskContextMenuItems,
   applyMacWindowControlsUpdate,
+  applyMacWindowVibrancy,
   DEFAULT_WINDOW_HEIGHT,
   DEFAULT_WINDOW_WIDTH,
   getMainWindowChromeOptions,
@@ -68,6 +70,39 @@ describe("window-manager", () => {
         trafficLightOffsetY: 1.5,
       });
     });
+
+    it("keeps an explicit vibrancy off so the renderer can clear it", () => {
+      expect(readWindowChromeUpdate({ vibrancy: false })).toEqual({ vibrancy: false });
+      expect(readWindowChromeUpdate({ vibrancy: "sidebar" })).toBeNull();
+    });
+  });
+
+  describe("applyMacWindowVibrancy", () => {
+    it("sets the sidebar material on macOS and clears it when turned off", () => {
+      const setVibrancy = vi.fn();
+      applyMacWindowVibrancy({
+        win: { setVibrancy },
+        update: { vibrancy: true },
+        platform: "darwin",
+      });
+      applyMacWindowVibrancy({
+        win: { setVibrancy },
+        update: { vibrancy: false },
+        platform: "darwin",
+      });
+      expect(setVibrancy.mock.calls).toEqual([["sidebar"], [null]]);
+    });
+
+    it("leaves the window alone off macOS or when the update says nothing", () => {
+      const setVibrancy = vi.fn();
+      applyMacWindowVibrancy({
+        win: { setVibrancy },
+        update: { vibrancy: true },
+        platform: "linux",
+      });
+      applyMacWindowVibrancy({ win: { setVibrancy }, update: {}, platform: "darwin" });
+      expect(setVibrancy).not.toHaveBeenCalled();
+    });
   });
 
   describe("applyMacWindowControlsUpdate", () => {
@@ -120,6 +155,8 @@ describe("window-manager", () => {
         titleBarStyle: "hidden",
         titleBarOverlay: true,
         trafficLightPosition: { x: 16, y: 14 },
+        visualEffectState: "active",
+        vibrancy: "sidebar",
       });
     });
   });
@@ -143,6 +180,28 @@ describe("window-manager", () => {
         width: 1024,
         height: 720,
       });
+    });
+  });
+
+  describe("buildSelectionAskContextMenuItems", () => {
+    it("offers Ask only for selected text outside editable fields", () => {
+      const contents = { executeJavaScript: vi.fn().mockResolvedValue(undefined) };
+      expect(
+        buildSelectionAskContextMenuItems(contents, { isEditable: false, selectionText: "  " }),
+      ).toEqual([]);
+      expect(
+        buildSelectionAskContextMenuItems(contents, { isEditable: true, selectionText: "text" }),
+      ).toEqual([]);
+
+      const [ask] = buildSelectionAskContextMenuItems(contents, {
+        isEditable: false,
+        selectionText: "some text",
+      });
+      expect(ask?.label).toBe("Ask");
+      ask?.click?.({} as never, undefined, {} as never);
+      expect(contents.executeJavaScript).toHaveBeenCalledWith(
+        'window.dispatchEvent(new CustomEvent("paseo:selection-ask"))',
+      );
     });
   });
 });

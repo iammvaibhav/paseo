@@ -9,8 +9,8 @@ import {
 } from "react";
 import { activateKeepAwakeAsync, deactivateKeepAwake } from "expo-keep-awake";
 import { useSessionStore } from "@/stores/session-store";
-import { createAudioEngine } from "@/voice/audio-engine";
-import type { AudioEngine } from "@/voice/audio-engine-types";
+import { createAudioEngine } from "@/audio";
+import type { AudioEngine } from "@/audio";
 import {
   createVoiceRuntime,
   type VoiceRuntime,
@@ -19,10 +19,11 @@ import {
 } from "@/voice/voice-runtime";
 
 interface VoiceContextValue extends VoiceRuntimeSnapshot {
-  startVoice: (serverId: string, agentId: string) => Promise<void>;
+  startVoice: VoiceRuntime["startVoice"];
   stopVoice: () => Promise<void>;
   isVoiceModeForAgent: (serverId: string, agentId: string) => boolean;
   toggleMute: () => void;
+  setSendBehavior: (sendBehavior: VoiceRuntimeSnapshot["sendBehavior"]) => Promise<void>;
 }
 
 const EMPTY_SNAPSHOT: VoiceRuntimeSnapshot = {
@@ -30,6 +31,7 @@ const EMPTY_SNAPSHOT: VoiceRuntimeSnapshot = {
   isVoiceMode: false,
   isVoiceSwitching: false,
   isMuted: false,
+  sendBehavior: "interrupt",
   activeServerId: null,
   activeAgentId: null,
 };
@@ -77,6 +79,7 @@ export function useVoiceOptional(): VoiceContextValue | null {
       stopVoice: runtime.stopVoice,
       isVoiceModeForAgent: runtime.isVoiceModeForAgent,
       toggleMute: runtime.toggleMute,
+      setSendBehavior: runtime.setSendBehavior,
     };
   }, [snapshot, runtime]);
 }

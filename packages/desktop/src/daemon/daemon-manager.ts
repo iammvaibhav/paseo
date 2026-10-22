@@ -9,6 +9,7 @@ import {
   stopDaemonInstance,
   readDaemonInstance,
   isSameDaemonInstance,
+  readLocalCredentialForTarget,
   type DaemonInstance,
 } from "@getpaseo/server/daemon-control";
 import {
@@ -25,6 +26,7 @@ import {
   type AppUpdateCheckIntent,
   type AppReleaseChannel,
 } from "../features/auto-updater.js";
+import { openOmpStatsFleet } from "../features/omp-stats-fleet.js";
 import {
   getBundledCliShimPath,
   getCliInstallStatus,
@@ -223,6 +225,12 @@ export async function resolveDesktopDaemonStatus(): Promise<DesktopDaemonStatus>
   const home = getPaseoHome();
 
   try {
+    // The app polls this while no local daemon runs. Answer that case in-process,
+    // since launching the CLI once per poll keeps spawning processes while idle.
+    if (!(await readDaemonInstance(home))) {
+      return statusFromDaemonProbe({ localDaemon: "stopped" }, home);
+    }
+
     const payload = (await runExternalCliJsonCommand([
       "daemon",
       "status",
@@ -233,7 +241,7 @@ export async function resolveDesktopDaemonStatus(): Promise<DesktopDaemonStatus>
     return statusFromDaemonProbe(payload, home);
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
-    logDesktopDaemonLifecycle("resolveStatus CLI command failed", { error: errorMessage });
+    logDesktopDaemonLifecycle("resolveStatus failed", { error: errorMessage });
     return {
       serverId: "",
       status: "errored",
@@ -399,6 +407,11 @@ export function createDaemonCommandHandlers(): Record<string, DesktopCommandHand
       runningUnderARM64Translation: isRunningUnderARM64Translation(),
     }),
     desktop_daemon_status: () => resolveDesktopDaemonStatus(),
+    desktop_local_credential: async (args) => {
+      const instance = await readDaemonInstance(getPaseoHome());
+      if (!instance?.desktopManaged || typeof args?.listen !== "string") return null;
+      return readLocalCredentialForTarget(getPaseoHome(), args.listen);
+    },
     start_desktop_daemon: () => startDaemon(),
     stop_desktop_daemon: (args) =>
       stopDesktopDaemon(
@@ -457,6 +470,7 @@ export function createDaemonCommandHandlers(): Record<string, DesktopCommandHand
     get_local_daemon_version: () => getLocalDaemonVersion(),
     install_cli: () => installCli(),
     get_cli_install_status: () => getCliInstallStatus(),
+    omp_stats_fleet_open: () => openOmpStatsFleet(),
     read_legacy_skill_selection: () => readLegacySkillSelection(),
     delete_legacy_skill_selection: () => deleteLegacySkillSelection(),
   };

@@ -1,4 +1,6 @@
 import { Platform } from "react-native";
+import { GLASS_FROST_FILTER_ID } from "@/styles/glass-frost-filter";
+import type { SurfaceBackdrop } from "@/styles/surface-backdrop";
 import { darkHighlightColors, lightHighlightColors } from "@getpaseo/highlight";
 
 export const baseColors = {
@@ -159,6 +161,20 @@ const darkStatusColors = {
   statusMerged: "#a890d5",
 };
 
+// Status tints — the fill of a status badge. The status color itself at low opacity, so a
+// badge takes its state's hue from the same source as its text and never drifts from it.
+// Dark surfaces swallow more of the tint, so the dark band runs a little stronger.
+function statusTints(colors: typeof lightStatusColors, alphaHex: string) {
+  return {
+    statusSuccessTint: `${colors.statusSuccess}${alphaHex}`,
+    statusDangerTint: `${colors.statusDanger}${alphaHex}`,
+    statusWarningTint: `${colors.statusWarning}${alphaHex}`,
+  };
+}
+
+const lightStatusTints = statusTints(lightStatusColors, "1f"); // 12%
+const darkStatusTints = statusTints(darkStatusColors, "29"); // 16%
+
 // Status *dot* colors — the small filled discs on a sidebar row, and the glyphs that stand in
 // for them. Same four hues and the same generation rule as the status colors above, but its
 // own band, because a dot is doing a different job than a check icon or a host badge.
@@ -203,7 +219,21 @@ const darkStatusDotColors = {
   statusDotRunning: "#5caaf6",
 };
 
-export interface LightThemeConfig {
+// Optional component tones. A theme sets one only to move that surface off the token it
+// otherwise uses; the builders fall back to that token, so existing themes keep their look.
+interface ComponentToneConfig {
+  /** User message bubble fill. Defaults to surface3. */
+  surfaceUserMessage?: string;
+  /** Assistant prose (paragraphs, list items). Defaults to foreground. */
+  foregroundProse?: string;
+  /** Lines between sidebar groups. Defaults to border. */
+  sidebarDivider?: string;
+  /** The composer send button. Defaults to accent / accentForeground. */
+  primaryAction?: string;
+  primaryActionForeground?: string;
+}
+
+export interface LightThemeConfig extends ComponentToneConfig {
   surface0: string;
   surface1: string;
   surface2: string;
@@ -256,11 +286,23 @@ export function buildLightSemanticColors(tint: LightThemeConfig) {
     surfaceSidebarHover: tint.surface1,
     surfaceSidebarSelected: tint.surface3,
     surfaceWorkspace: tint.surface0,
+    // The window root and the main content pane. A glass theme clears the root so the
+    // window's vibrancy shows behind the sidebar, and paints the content pane instead.
+    surfaceApp: tint.surface0,
+    surfaceContent: "transparent",
+    // Screens and workspace panes inside the content pane. A glass theme clears them so the
+    // content pane's tint shows through.
+    surfacePane: tint.surface0,
+    surfaceUserMessage: tint.surfaceUserMessage ?? tint.surface3,
     interactionHighlight: "rgba(0, 0, 0, 0.06)",
 
     foreground: tint.foreground,
+    foregroundProse: tint.foregroundProse ?? tint.foreground,
     foregroundMuted: tint.foregroundMuted,
     foregroundExtraMuted: tint.foregroundExtraMuted,
+    sidebarDivider: tint.sidebarDivider ?? tint.border,
+    primaryAction: tint.primaryAction ?? tint.accent,
+    primaryActionForeground: tint.primaryActionForeground ?? tint.accentForeground ?? tint.surface0,
 
     border: tint.border,
     borderAccent: tint.borderAccent,
@@ -289,6 +331,7 @@ export function buildLightSemanticColors(tint: LightThemeConfig) {
 
     ...lightDiffColors,
     ...lightStatusColors,
+    ...lightStatusTints,
     ...lightStatusDotColors,
 
     terminal: {
@@ -333,7 +376,7 @@ const lightSemanticColors = buildLightSemanticColors({
 // Dark theme variant builder
 // ---------------------------------------------------------------------------
 
-export interface DarkThemeConfig {
+export interface DarkThemeConfig extends ComponentToneConfig {
   surface0: string;
   surface1: string;
   surface2: string;
@@ -386,11 +429,19 @@ export function buildDarkSemanticColors(tint: DarkThemeConfig) {
     surfaceSidebarHover: tint.surface1,
     surfaceSidebarSelected: tint.surface2,
     surfaceWorkspace: tint.surface1,
+    surfaceApp: tint.surface0,
+    surfaceContent: "transparent",
+    surfacePane: tint.surface0,
+    surfaceUserMessage: tint.surfaceUserMessage ?? tint.surface3,
     interactionHighlight: "rgba(255, 255, 255, 0.08)",
 
     foreground,
+    foregroundProse: tint.foregroundProse ?? foreground,
     foregroundMuted: tint.foregroundMuted,
     foregroundExtraMuted: tint.foregroundExtraMuted,
+    sidebarDivider: tint.sidebarDivider ?? tint.border,
+    primaryAction: tint.primaryAction ?? tint.accent,
+    primaryActionForeground: tint.primaryActionForeground ?? tint.accentForeground ?? "#ffffff",
 
     border: tint.border,
     borderAccent: tint.borderAccent,
@@ -420,6 +471,7 @@ export function buildDarkSemanticColors(tint: DarkThemeConfig) {
 
     ...darkDiffColors,
     ...darkStatusColors,
+    ...darkStatusTints,
     ...darkStatusDotColors,
 
     terminal: {
@@ -541,6 +593,35 @@ const ghosttyDarkColors = buildDarkSemanticColors({
   terminalBrightBlack: "#4a4f5e",
 });
 
+// Mono — neutral gray with no tint and a blue accent, after the MonoCode desktop app.
+// Values are MonoCode's ink-over-background mixes flattened onto #171717: borders are 7% ink,
+// selection 10%, idle labels 55%, prose 78%. Sidebar groups separate by spacing, not lines,
+// and the send button is a white key rather than an accent fill.
+const monoDarkColors = buildDarkSemanticColors({
+  surface0: "#171717",
+  surface1: "#1e1e1e",
+  surface2: "#2a2a2a",
+  surface3: "#3a3a3a",
+  surface4: "#4d4d4d",
+  surfaceDiffEmpty: "#1f1f1f",
+  surfaceSidebar: "#141414",
+  surfaceUserMessage: "#2c2c2c",
+  foreground: "#ebebeb",
+  foregroundProse: "#c9c9c9",
+  foregroundMuted: "#8c8c8c",
+  foregroundExtraMuted: "#636363",
+  border: "#262626",
+  borderAccent: "#2e2e2e",
+  sidebarDivider: "transparent",
+  accent: "#1f7ce0", // hsl(211 76% 50%): white label text clears 4:1 on the fill
+  accentBright: "#6aaef8",
+  primaryAction: "#f5f5f5",
+  primaryActionForeground: "#171717",
+  destructive: "#c44a4a",
+  terminalBlack: "#141414",
+  terminalBrightBlack: "#3a3a3a",
+});
+
 export const SPACING = {
   0: 0,
   0.5: 2,
@@ -559,6 +640,10 @@ export const SPACING = {
 } as const;
 
 export const FONT_SIZE = {
+  // `xs` was dropped from the upstream ramp when the appearance base size landed,
+  // but the fork's Mission Control surfaces still reference it; keep it as a
+  // synonym of the smallest ramp step so both sides typecheck.
+  xs: 12,
   code: 12,
   content: 15,
   sm: 12,
@@ -580,6 +665,8 @@ export const ICON_SIZE = {
   md: 16,
   lg: 20,
 } as const;
+
+export const ICON_STROKE_WIDTH = 1.5;
 
 export const FONT_WEIGHT = {
   normal: "normal" as const,
@@ -626,7 +713,10 @@ export const DEFAULT_MONO_FONT_STACK: string = Platform.select({
   web: "SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
 });
 
-// `fontSize`, `fontFamily`, and `lineHeight` are deliberately widened to plain
+// Chat and markdown content column; the appearance updater patches the user's width in.
+export const DEFAULT_CONTENT_MAX_WIDTH = 820;
+
+// `fontSize`, `fontFamily`, `lineHeight`, and `contentMaxWidth` are deliberately widened to plain
 // `number`/`string` (not narrowed by `as const`) so the appearance updater can patch
 // them at runtime via `UnistylesRuntime.updateTheme`. The remaining tokens keep their
 // literal types.
@@ -635,6 +725,7 @@ interface CommonTheme {
   fontSize: Record<keyof typeof FONT_SIZE, number>;
   fontFamily: { ui: string; mono: string };
   lineHeight: Record<keyof typeof LINE_HEIGHT, number>;
+  contentMaxWidth: number;
   iconSize: typeof ICON_SIZE;
   fontWeight: typeof FONT_WEIGHT;
   borderRadius: typeof BORDER_RADIUS;
@@ -647,6 +738,7 @@ const commonTheme: CommonTheme = {
   fontSize: FONT_SIZE,
   fontFamily: { ui: DEFAULT_UI_FONT_STACK, mono: DEFAULT_MONO_FONT_STACK },
   lineHeight: LINE_HEIGHT,
+  contentMaxWidth: DEFAULT_CONTENT_MAX_WIDTH,
   iconSize: ICON_SIZE,
   fontWeight: FONT_WEIGHT,
   borderRadius: BORDER_RADIUS,
@@ -675,6 +767,44 @@ const darkShadow = {
   },
 } as const;
 
+/**
+ * How a glass theme paints over the macOS window vibrancy. Opaque themes have none.
+ *
+ * Inside a glass theme the region fills (`surface0`, `surfaceSidebar`, the pane surfaces) are
+ * cleared, so the window root and the content pane carry the only tints, and the raised fills
+ * (`surface1`…`surface4`) are light washes. Surfaces that float over content or cover it cannot
+ * be a wash: they read through to whatever is under them.
+ */
+export interface GlassTreatment {
+  /**
+   * Transient surfaces over content (menus, popovers, tooltips, hover cards, dialogs, toasts):
+   * lighter than the pane so they stand out, with the content under them frosted.
+   */
+  floating: string;
+  /**
+   * The frost under `floating`: the SVG filter in `styles/glass-frost-filter.ts`. A plain
+   * `blur()` darkens where the page behind is transparent.
+   */
+  floatingBackdropFilter: string;
+  floatingBorder: string;
+  /**
+   * Overlays that stay mounted over content (composer pills, the scroll-to-bottom button).
+   * Dense instead of frosted: while any `backdrop-filter` is on screen, Chromium composites the
+   * whole frame on the slower non-CoreAnimation path, so it must stay off long-lived elements.
+   */
+  overlay: string;
+  /** An `overlay` in its active or pressed state. */
+  overlayRaised: string;
+  /** Surfaces that must hide what scrolls under them, such as sticky headers. */
+  cover: string;
+  /**
+   * What a translucent fill looks like once composited over the window, for trailing-action
+   * scrims. A scrim repaints the row's fill over the label, and a translucent fill painted twice
+   * shows as a lighter band, so the scrim paints this opaque estimate instead.
+   */
+  scrim: Record<SurfaceBackdrop, string>;
+}
+
 export function buildDarkTheme(semanticColors: ReturnType<typeof buildDarkSemanticColors>) {
   return {
     colorScheme: "dark" as const,
@@ -684,6 +814,7 @@ export function buildDarkTheme(semanticColors: ReturnType<typeof buildDarkSemant
       syntax: darkHighlightColors,
     },
     shadow: darkShadow,
+    glass: null as GlassTreatment | null,
     ...commonTheme,
   } as const;
 }
@@ -693,6 +824,132 @@ export const darkZincTheme = buildDarkTheme(zincDarkColors);
 export const darkMidnightTheme = buildDarkTheme(midnightDarkColors);
 export const darkClaudeTheme = buildDarkTheme(claudeDarkColors);
 export const darkGhosttyTheme = buildDarkTheme(ghosttyDarkColors);
+export const darkMonoTheme = buildDarkTheme(monoDarkColors);
+
+// Mono on a macOS window with sidebar vibrancy. Only the desktop app on macOS selects it
+// (see appearance/provider.tsx): anywhere else the cleared fills would show the page body.
+// The window root carries the sidebar tint and the content pane adds its own over it, so the
+// chat reads denser than the sidebar. Every region fill inside is cleared and the raised fills
+// are white washes, so nothing stacks into an opaque block. See `GlassTreatment`.
+export const GLASS_THEME_NAME = "darkMonoGlass";
+/**
+ * The user-tunable strengths of the glass theme, in percent (Settings → Appearance → Glass).
+ * The chat area sits over the window, so its tint adds to `window`: it always reads denser
+ * than the sidebar.
+ */
+export interface GlassTuning {
+  /** Opacity of the tint over the window vibrancy; the sidebar shows only this. */
+  window: number;
+  /** Opacity of the extra tint over the chat and editor area. */
+  chat: number;
+  /**
+   * How dark the window and chat tints are, independent of their opacity: a see-through window
+   * can still read dark. 0 is a grey tint, 100 is black.
+   */
+  darkness: number;
+  /** Menus, popovers, tooltips, hover cards (frosted). */
+  floating: number;
+  /** Composer pills and other overlays that stay over the transcript (not frosted). */
+  overlay: number;
+  /** Strength of the light washes on code blocks, tables, composer, and user messages. */
+  panels: number;
+}
+
+export const DEFAULT_GLASS_TUNING: GlassTuning = {
+  window: 45,
+  chat: 70,
+  darkness: 50,
+  floating: 42,
+  overlay: 95,
+  panels: 100,
+};
+
+function glassAlpha(percent: number, scale = 1): number {
+  return Math.round(Math.min(Math.max(percent / 100, 0), 1) * scale * 1000) / 1000;
+}
+
+/** The colors a glass tuning changes. Applied over the registered glass theme at runtime. */
+export function resolveGlassColors(tuning: GlassTuning) {
+  const wash = (alpha: number) => `rgba(255, 255, 255, ${glassAlpha(tuning.panels, alpha)})`;
+  const floating = `rgba(58, 58, 58, ${glassAlpha(tuning.floating)})`;
+  // 50% darkness is the original #141414 window tint; the chat tint stays 3 steps lighter.
+  const shade = Math.round(40 * (1 - Math.min(Math.max(tuning.darkness, 0), 100) / 100));
+  const chatShade = Math.min(shade + 3, 255);
+  return {
+    colors: {
+      surfaceApp: `rgba(${shade}, ${shade}, ${shade}, ${glassAlpha(tuning.window)})`,
+      surfaceContent: `rgba(${chatShade}, ${chatShade}, ${chatShade}, ${glassAlpha(tuning.chat)})`,
+      surface1: wash(0.045),
+      surface2: wash(0.08),
+      surface3: wash(0.12),
+      surface4: wash(0.16),
+      surfaceDiffEmpty: wash(0.025),
+      surfaceUserMessage: wash(0.09),
+      popover: floating,
+    },
+    glass: {
+      floating,
+      floatingBackdropFilter: `url(#${GLASS_FROST_FILTER_ID})`,
+      floatingBorder: "rgba(255, 255, 255, 0.12)",
+      overlay: `rgba(46, 46, 46, ${glassAlpha(tuning.overlay)})`,
+      overlayRaised: `rgba(60, 60, 60, ${glassAlpha(tuning.overlay, 1.01)})`,
+      cover: "rgba(28, 28, 28, 0.94)",
+      scrim: {
+        surface0: "#1b1b1b",
+        surface1: "#222222",
+        surface2: "#282828",
+        surfaceSidebar: "#1c1c1c",
+        surfaceSidebarHover: "#262626",
+        surfaceSidebarSelected: "#2e2e2e",
+      },
+    } satisfies GlassTreatment,
+  };
+}
+
+const defaultGlassColors = resolveGlassColors(DEFAULT_GLASS_TUNING);
+
+export const darkMonoGlassTheme = {
+  ...buildDarkTheme({
+    ...monoDarkColors,
+    ...defaultGlassColors.colors,
+    surface0: "transparent",
+    surfaceSidebar: "transparent",
+    // Opaque: sidebar rows carry trailing actions whose scrim must match the row exactly.
+    surfaceSidebarHover: "#262626",
+    surfaceSidebarSelected: "#2e2e2e",
+    surfaceWorkspace: "transparent",
+    surfacePane: "transparent",
+  }),
+  glass: defaultGlassColors.glass,
+};
+
+interface GlassFloatingStyle {
+  backgroundColor?: string;
+  borderColor?: string;
+}
+
+/**
+ * Frosted fill for a transient floating surface in a glass theme; empty for opaque themes, which
+ * keep their own fill. Only for surfaces that close again: see `GlassTreatment.overlay`.
+ */
+export function glassFloatingStyle(theme: Theme): GlassFloatingStyle {
+  if (!theme.glass) return {};
+  // `backdropFilter` is a web style key react-native's style types do not declare.
+  return {
+    backgroundColor: theme.glass.floating,
+    borderColor: theme.glass.floatingBorder,
+    backdropFilter: theme.glass.floatingBackdropFilter,
+  } as GlassFloatingStyle;
+}
+
+/** Dense fill for a glass overlay that stays mounted over content; empty for opaque themes. */
+export function glassOverlayStyle(theme: Theme): GlassFloatingStyle {
+  if (!theme.glass) return {};
+  return {
+    backgroundColor: theme.glass.overlay,
+    borderColor: theme.glass.floatingBorder,
+  };
+}
 
 // Pure black — zero-luminance background with high-contrast surfaces.
 const pureBlackDarkColors = buildDarkSemanticColors({
@@ -746,6 +1003,7 @@ export function buildLightTheme(semanticColors: ReturnType<typeof buildLightSema
       syntax: lightHighlightColors,
     },
     shadow: lightShadow,
+    glass: null as GlassTreatment | null,
     ...commonTheme,
   } as const;
 }
@@ -771,6 +1029,13 @@ export const THEME_OPTIONS = [
     swatch: "#2D8B62",
   },
   { name: "auto", group: "primary" },
+  {
+    name: "mono",
+    group: "variant",
+    unistylesName: "darkMono",
+    theme: darkMonoTheme,
+    swatch: "#459bf7",
+  },
   {
     name: "zinc",
     group: "variant",
@@ -838,6 +1103,7 @@ type RegisteredThemes = {
 } & {
   pluginLight: typeof lightTheme;
   pluginDark: typeof darkTheme;
+  darkMonoGlass: typeof darkMonoGlassTheme;
 };
 
 export const THEME_TO_UNISTYLES = Object.fromEntries(
@@ -854,6 +1120,7 @@ export const REGISTERED_THEMES = {
   ),
   [PLUGIN_THEME_NAMES.light]: lightTheme,
   [PLUGIN_THEME_NAMES.dark]: darkTheme,
+  [GLASS_THEME_NAME]: darkMonoGlassTheme,
 } as RegisteredThemes;
 
 export function getNextThemePreference(current: ThemePreference): ThemePreference {

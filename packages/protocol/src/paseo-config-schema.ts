@@ -43,12 +43,29 @@ export const PaseoScriptEntryRawSchema = z
   })
   .passthrough();
 
+export const PaseoWorktreeWarmPoolConfigRawSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    targetIdle: z.number().int().nonnegative().optional(),
+    // Git ref the warm pool cuts from (branch, tag, or origin/<branch>).
+    // Omitted or blank → repository default branch.
+    baseRef: z
+      .string()
+      .optional()
+      .transform((value) => {
+        const trimmed = value?.trim();
+        return trimmed && trimmed.length > 0 ? trimmed : undefined;
+      }),
+  })
+  .passthrough();
+
 export const PaseoWorktreeConfigRawSchema = z
   .object({
     setup: PaseoLifecycleCommandRawSchema.optional(),
     teardown: PaseoLifecycleCommandRawSchema.optional(),
     terminals: z.unknown().optional(),
     servicePorts: PaseoServicePortAllocationSchema.optional(),
+    warmPool: PaseoWorktreeWarmPoolConfigRawSchema.optional(),
   })
   .passthrough();
 
@@ -71,11 +88,23 @@ export const PaseoMetadataGenerationSchema = z
   .passthrough()
   .catch({});
 
+export const PaseoCommanderConfigRawSchema = z
+  .object({
+    instructions: z.string().optional(),
+    instructionsFile: z.string().optional(),
+  })
+  .passthrough()
+  .catch({});
+
+export const PaseoCommanderConfigSchema = PaseoCommanderConfigRawSchema;
+
 export const PaseoConfigRawSchema = z
   .object({
     worktree: PaseoWorktreeConfigRawSchema.optional(),
     scripts: z.record(z.string(), PaseoScriptEntryRawSchema).optional(),
     metadataGeneration: PaseoMetadataGenerationSchema.optional(),
+    commander: PaseoCommanderConfigRawSchema.optional(),
+    commanderInstructions: z.string().optional(),
   })
   .passthrough();
 
@@ -92,10 +121,11 @@ export const PaseoConfigSchema = PaseoConfigRawSchema.extend({
   worktree: WorktreeConfigSchema.optional(),
   scripts: z.record(z.string(), ScriptEntrySchema).optional().catch({}),
   metadataGeneration: PaseoMetadataGenerationSchema.optional(),
+  commander: PaseoCommanderConfigSchema.optional(),
+  commanderInstructions: z.string().optional(),
 })
   .passthrough()
   .catch({});
-
 export const PaseoConfigRevisionSchema = z.object({
   mtimeMs: z.number(),
   size: z.number(),
@@ -119,3 +149,6 @@ export type PaseoConfigRaw = z.infer<typeof PaseoConfigRawSchema>;
 export type PaseoConfig = z.infer<typeof PaseoConfigSchema>;
 export type PaseoConfigRevision = z.infer<typeof PaseoConfigRevisionSchema>;
 export type ProjectConfigRpcError = z.infer<typeof ProjectConfigRpcErrorSchema>;
+export type PaseoCommanderConfigRaw = z.infer<typeof PaseoCommanderConfigRawSchema>;
+export type PaseoCommanderConfig = z.infer<typeof PaseoCommanderConfigSchema>;
+export type PaseoWorktreeWarmPoolConfigRaw = z.infer<typeof PaseoWorktreeWarmPoolConfigRawSchema>;
