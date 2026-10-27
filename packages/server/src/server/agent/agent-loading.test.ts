@@ -5,7 +5,7 @@ import { expect, test } from "vitest";
 
 import { createTestLogger } from "../../test-utils/test-logger.js";
 import { AgentManager } from "./agent-manager.js";
-import { ensureAgentLoaded } from "./agent-loading.js";
+import { ensureAgentLoaded, waitForPendingAgentLoad } from "./agent-loading.js";
 import { startAgentRun } from "./agent-prompt.js";
 import { AgentStorage } from "./agent-storage.js";
 import type {
@@ -306,6 +306,66 @@ test("loads an archived agent's history after its working directory is removed",
   } finally {
     await manager.closeAgent(agentId).catch(() => undefined);
     await manager.flush().catch(() => undefined);
+    await storage.flush().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a pending load is awaitable until the resumed agent's history is hydrated", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "agent-loading-pending-"));
+  const logger = createTestLogger();
+  const storage = new AgentStorage(path.join(root, "agents"), logger);
+  const agentId = "00000000-0000-4000-8000-000000000601";
+  const writer = new AgentManager({ clients: createTestAgentClients(), registry: storage, logger });
+  // A second manager over the same storage is a restarted daemon: no in-memory timeline.
+  const reader = new AgentManager({ clients: createTestAgentClients(), registry: storage, logger });
+
+  try {
+    const agent = await writer.createAgent({ provider: "codex", cwd: root }, agentId, {
+      workspaceId: "workspace-pending",
+    });
+    await startAgentRun(writer, agent.id, "say something", logger, {});
+    // waitForAgentEvent resolves on the next lifecycle change, which can be the turn starting.
+    while ((await writer.waitForAgentEvent(agent.id)).status !== "idle") {
+      // keep waiting until the turn settles
+    }
+    await writer.closeAgent(agent.id);
+    await writer.flush();
+    await storage.flush();
+
+    const hydrationGate = Promise.withResolvers<void>();
+    const hydrationEntered = Promise.withResolvers<void>();
+    const hydrate = reader.hydrateTimelineFromProvider.bind(reader);
+    reader.hydrateTimelineFromProvider = async (id, options) => {
+      hydrationEntered.resolve();
+      await hydrationGate.promise;
+      await hydrate(id, options);
+    };
+
+    const loading = ensureAgentLoaded(agentId, {
+      agentManager: reader,
+      agentStorage: storage,
+      logger,
+    });
+    await hydrationEntered.promise;
+    // The agent is live but its history is not: this is the window a timeline read must not serve.
+    expect(reader.getAgent(agentId)).toBeTruthy();
+    expect(reader.getTimeline(agentId)).toEqual([]);
+
+    const waiting = waitForPendingAgentLoad(agentId).then(() => "settled" as const);
+    expect(await Promise.race([waiting, Promise.resolve("pending" as const)])).toBe("pending");
+
+    hydrationGate.resolve();
+    expect(await waiting).toBe("settled");
+    expect(reader.getTimeline(agentId).some((item) => item.type === "assistant_message")).toBe(
+      true,
+    );
+    await loading;
+  } finally {
+    await reader.closeAgent(agentId).catch(() => undefined);
+    await writer.closeAgent(agentId).catch(() => undefined);
+    await reader.flush().catch(() => undefined);
+    await writer.flush().catch(() => undefined);
     await storage.flush().catch(() => undefined);
     await rm(root, { recursive: true, force: true });
   }

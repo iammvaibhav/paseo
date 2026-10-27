@@ -19,6 +19,16 @@ interface PendingAgentInitialization {
 
 const pendingAgentInitializations = new Map<string, PendingAgentInitialization>();
 
+/**
+ * Resolves once an in-flight `ensureAgentLoaded` for this agent has settled.
+ * A resumed agent is registered before its history is hydrated, so a reader of
+ * the live timeline must wait here or it can serve that empty window as the
+ * authoritative history. Load failures are left to the loader's caller.
+ */
+export async function waitForPendingAgentLoad(agentId: string): Promise<void> {
+  await pendingAgentInitializations.get(agentId)?.promise.catch(() => undefined);
+}
+
 export type AgentLoaderManager = Pick<
   AgentManager,
   | "createAgent"

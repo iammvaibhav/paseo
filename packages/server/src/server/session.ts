@@ -67,7 +67,11 @@ import {
   resolveStoredAgentUpdatedAt,
   toAgentPersistenceHandle,
 } from "./persistence-hooks.js";
-import { ensureAgentLoaded, ensureUnarchivedAgentLoaded } from "./agent/agent-loading.js";
+import {
+  ensureAgentLoaded,
+  ensureUnarchivedAgentLoaded,
+  waitForPendingAgentLoad,
+} from "./agent/agent-loading.js";
 import { expandUserPath } from "./path-utils.js";
 import {
   supportsDiskTimeline,
@@ -9350,6 +9354,9 @@ export class Session {
     providerId: string;
     agentPayload: AgentSnapshotPayload;
   }> {
+    // A resume registers the agent before hydrating its history; serving the live
+    // timeline inside that window hands the client an empty, authoritative page.
+    await waitForPendingAgentLoad(agentId);
     const live = this.agentManager.getAgent(agentId);
     if (live) {
       return {
