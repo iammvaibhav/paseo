@@ -2,7 +2,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { describe, expect, test } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -236,6 +236,158 @@ describe("Fleet MCP images (/mcp/fleet)", () => {
         .object({ error: z.object({ message: z.string() }) })
         .parse(await oversized.json());
       expect(oversizedBody.error.message).toMatch(/exceeds the 25 MB \/mcp request limit/);
+    } finally {
+      await client.close();
+      await daemon.stop();
+      await rm(paseoHome, { recursive: true, force: true });
+      await rm(staticDir, { recursive: true, force: true });
+      await rm(workDir, { recursive: true, force: true });
+    }
+  }, 120_000);
+
+  test("inline attachments arrive as uploaded files and file content in prompt text is rejected", async () => {
+    const paseoHome = await mkdtemp(path.join(os.tmpdir(), "paseo-home-fleet-att-"));
+    const staticDir = await mkdtemp(path.join(os.tmpdir(), "paseo-static-fleet-att-"));
+    const workDir = await mkdtemp(path.join(os.tmpdir(), "paseo-work-fleet-att-"));
+    const port = await getAvailablePort();
+    const token = "grok-secret-token-attachments";
+    await writeFile(
+      path.join(paseoHome, "config.json"),
+      JSON.stringify({
+        version: 1,
+        daemon: {
+          mcp: {
+            enabled: true,
+            remoteClients: [{ name: "grok-bot", tokenHash: hashDaemonPassword(token) }],
+          },
+        },
+      }),
+      "utf8",
+    );
+    const prompts: AgentPromptInput[] = [];
+    const daemon = await createPaseoDaemon(
+      {
+        listen: `127.0.0.1:${port}`,
+        paseoHome,
+        corsAllowedOrigins: [],
+        hostnames: true,
+        mcpEnabled: true,
+        staticDir,
+        mcpDebug: false,
+        agentClients: createTestAgentClients({
+          onStartTurn: (prompt: AgentPromptInput) => {
+            prompts.push(prompt);
+          },
+        }),
+        agentStoragePath: path.join(paseoHome, "agents"),
+      },
+      pino({ level: "silent" }),
+    );
+    await daemon.start();
+    const url = `http://127.0.0.1:${port}/mcp/fleet`;
+    const client = new Client({ name: "e2e-attachments", version: "1.0.0" });
+    try {
+      await client.connect(
+        new StreamableHTTPClientTransport(new URL(url), {
+          requestInit: { headers: { Authorization: `Bearer ${token}` } },
+        }),
+      );
+      const call = (name: string, args: Record<string, unknown>) =>
+        client.callTool({ name, arguments: args });
+      const blocksOf = (prompt: AgentPromptInput | undefined) =>
+        Array.isArray(prompt) ? prompt : [{ type: "text" as const, text: prompt ?? "" }];
+      const textOfPrompt = (prompt: AgentPromptInput | undefined) =>
+        blocksOf(prompt)
+          .map((block) => (block.type === "text" ? block.text : ""))
+          .join("\n");
+
+      // 1. Create with one inline image and one inline markdown file.
+      const png = fakePng(4 * 1024);
+      const markdown = "# Design\n\nUNIQUE-DOC-BODY-7731\n";
+      const created = await call("fleet_create_agent", {
+        host: "local",
+        cwd: workDir,
+        isolation: "local",
+        provider: "codex/gpt-5.4-mini",
+        title: "attachment worker",
+        initialPrompt: "Review the attached design.md",
+        attachments: [
+          { name: "diagram.png", mimeType: "image/png", base64: png.toString("base64") },
+          {
+            name: "design.md",
+            mimeType: "text/markdown",
+            base64: Buffer.from(markdown).toString("base64"),
+          },
+        ],
+      });
+      expect(created.isError, textOf(created)).toBeFalsy();
+      const agentId = field(created, "agentId");
+      await call("fleet_wait_agent", { agentId, timeoutSeconds: 30 });
+      const first = blocksOf(prompts[0]);
+      const files = first.filter((block) => block.type === "uploaded_file");
+      expect(files.map((block) => block.type === "uploaded_file" && block.fileName)).toEqual([
+        "diagram.png",
+        "design.md",
+      ]);
+      for (const file of files) {
+        if (file.type !== "uploaded_file") continue;
+        expect(file.path.startsWith(path.join(paseoHome, "uploads"))).toBe(true);
+        const expected = file.fileName === "design.md" ? Buffer.from(markdown) : png;
+        expect(await readFile(file.path)).toEqual(expected);
+      }
+      // The image also rides as a native image; neither file's bytes are in the prompt text.
+      expect(first).toContainEqual({
+        type: "image",
+        data: png.toString("base64"),
+        mimeType: "image/png",
+      });
+      expect(textOfPrompt(prompts[0])).not.toContain("UNIQUE-DOC-BODY-7731");
+      expect(textOfPrompt(prompts[0])).not.toContain(png.toString("base64"));
+
+      // 2. A text upload and a {fileId} attachment on send.
+      const log = await call("fleet_upload_file", {
+        fileName: "build.log",
+        mimeType: "text/plain",
+        text: "line one\nline two\n",
+      });
+      expect(log.isError, textOf(log)).toBeFalsy();
+      const sent = await call("fleet_send_prompt", {
+        agentId,
+        prompt: "Read the attached log",
+        attachments: [{ fileId: field(log, "fileId") }],
+      });
+      expect(sent.isError, textOf(sent)).toBeFalsy();
+      await call("fleet_wait_agent", { agentId, timeoutSeconds: 30 });
+      const sentFile = blocksOf(prompts.at(-1)).find((block) => block.type === "uploaded_file");
+      expect(sentFile?.type === "uploaded_file" && sentFile.fileName).toBe("build.log");
+      if (sentFile?.type === "uploaded_file") {
+        expect(await readFile(sentFile.path, "utf8")).toBe("line one\nline two\n");
+      }
+
+      // 3. A data: URI or an oversized prompt is rejected before anything is created or sent.
+      const deliveredBefore = prompts.length;
+      const dataUri = `see ![][image1]\n\n[image1]: <data:image/png;base64,${png.toString("base64")}>`;
+      const rejectedCreate = await call("fleet_create_agent", {
+        host: "local",
+        cwd: workDir,
+        isolation: "local",
+        provider: "codex/gpt-5.4-mini",
+        title: "never created",
+        initialPrompt: dataUri,
+      });
+      expect(rejectedCreate.isError).toBe(true);
+      expect(textOf(rejectedCreate)).toMatch(
+        /initialPrompt contains a base64 data: URI \(image\/png\).*attachments: \[\{name, mimeType, base64\}\].*fleet_upload_file/,
+      );
+      const rejectedSend = await call("fleet_send_prompt", { agentId, prompt: dataUri });
+      expect(rejectedSend.isError).toBe(true);
+      expect(textOf(rejectedSend)).toMatch(/prompt contains a base64 data: URI/);
+      const oversized = await call("fleet_send_prompt", { agentId, prompt: "x".repeat(70_000) });
+      expect(oversized.isError).toBe(true);
+      expect(textOf(oversized)).toMatch(/prompt is 70000 characters; the limit is 65536/);
+      expect(prompts.length).toBe(deliveredBefore);
+      const roster = await call("fleet_list_agents", { query: "never created" });
+      expect(JSON.stringify(roster.structuredContent)).not.toContain("never created");
     } finally {
       await client.close();
       await daemon.stop();

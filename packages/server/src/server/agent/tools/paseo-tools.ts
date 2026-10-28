@@ -44,12 +44,13 @@ import type { StoredAgentRecord } from "../agent-storage.js";
 import { ensureAgentLoaded } from "../agent-loading.js";
 import { seedStoredTimeline, registerFleetTranscriptTool } from "./fleet-transcript.js";
 import {
+  assertFleetPromptText,
+  FLEET_ATTACHMENTS_DESCRIPTION,
   FleetAttachmentInputSchema,
   FleetImageInputSchema,
   forwardUploadedFilesToPeer,
   registerFleetFileTools,
   resolveFleetAttachments,
-  resolveFleetImages,
   resolveFleetPromptImages,
 } from "./fleet-files.js";
 import type { ChunkedUploadSessions } from "../../file-upload/index.js";
@@ -4585,8 +4586,12 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         .array(FleetImageInputSchema)
         .optional()
         .describe(
-          "Native images for the new agent's first prompt: inline {data, mimeType} (base64) or {fileId} from fleet_upload_file. Use when the user or a ticket attached screenshots the worker should see.",
+          "Native images for the new agent's first prompt: inline {data, mimeType} (base64) or {fileId} from fleet_upload_file. Prefer attachments, which takes any file type.",
         ),
+      attachments: z
+        .array(FleetAttachmentInputSchema)
+        .optional()
+        .describe(FLEET_ATTACHMENTS_DESCRIPTION),
     })
     .passthrough();
 
@@ -5283,6 +5288,8 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
       },
     },
     async (inputArgs) => {
+      // Before placement: routing would otherwise send the pasted file to its judge.
+      assertFleetPromptText(inputArgs.initialPrompt, "initialPrompt");
       const { dryRun, ...requested } = inputArgs;
       const { args: rawArgs, plan: placementPlan } = await fillPlacement(
         options.routingService ?? null,
@@ -5300,9 +5307,20 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           "provider is required: no model named in the prompt and no default model configured",
         );
       }
-      // fileId images become inline images here, so every path below (gate,
-      // local create, peer create) carries bytes the target host can use.
-      const resolvedImages = await resolveFleetImages(rawArgs.images, options.paseoHome);
+      // Resolved on this host before any create: inline files land in the
+      // upload store, fileIds become descriptors, and fileId images become
+      // inline images, so every path below (local create, peer create)
+      // carries files the target host can use.
+      const attachments = await resolveFleetAttachments(
+        rawArgs.attachments,
+        options.paseoHome,
+        options.chunkedUploads,
+      );
+      const resolvedImages = await resolveFleetPromptImages(
+        rawArgs.images,
+        attachments,
+        options.paseoHome,
+      );
       // Canonical once, so the gate, dedupe key, proposal card and the peer
       // payload (buildPeerCreateAgentPayload splits on "/" itself) all agree.
       const args = {
@@ -5395,6 +5413,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           title: plan.title ?? "Agent",
           ...(plan.initialPrompt ? { initialPrompt: plan.initialPrompt } : {}),
           ...(plan.images && plan.images.length > 0 ? { images: plan.images } : {}),
+          ...(attachments ? { attachments } : {}),
           ...(plan.cwd ? { cwd: plan.cwd } : {}),
           ...(plan.workspaceId ? { workspaceId: plan.workspaceId } : {}),
           ...(plan.thinking ? { thinking: plan.thinking } : {}),
@@ -5471,6 +5490,8 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
           assertPeerSupportsAgentModes(client, host);
         }
         const payload = buildPeerCreateAgentPayload(args);
+        const peerAttachments = await forwardUploadedFilesToPeer(attachments, client);
+        if (peerAttachments) payload.attachments = peerAttachments;
         // A directory create without a workspace gets its own: the peer's
         // create path would otherwise reuse whatever workspace that directory
         // already has (one task, one workspace).
@@ -5639,13 +5660,7 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         attachments: z
           .array(FleetAttachmentInputSchema)
           .optional()
-          .describe(
-            "Attachments to forward to the agent (composer paste-through). An uploaded_file is given as " +
-              '{type: "uploaded_file", id: fileId} (fileId from fleet_upload_file) or as a full descriptor whose ' +
-              "path exists on this host; the agent gets the file's name, path and size as text and opens it " +
-              "itself. A PNG, JPEG, GIF or WebP file is also delivered as a native image. Agents on another " +
-              "host get a copy in their host's upload store. A missing file is an error.",
-          ),
+          .describe(FLEET_ATTACHMENTS_DESCRIPTION),
       },
       outputSchema: {
         success: z.boolean(),
@@ -5703,10 +5718,16 @@ export function createPaseoToolCatalog(options: PaseoToolHostDependencies): Pase
         return resolution.host;
       };
       const targetHost = await resolveSendTargetHost();
-      // Resolved on this host before any delivery: fileIds become bytes or
-      // store descriptors, and a file that is not here fails the send. Image
-      // uploads also ride as native images so the model and the user row see them.
-      const attachments = await resolveFleetAttachments(attachmentInputs, options.paseoHome);
+      assertFleetPromptText(prompt, "prompt");
+      // Resolved on this host before any delivery: inline files are stored,
+      // fileIds become store descriptors, and a file that is not here fails
+      // the send. Image uploads also ride as native images so the model and
+      // the user row see them.
+      const attachments = await resolveFleetAttachments(
+        attachmentInputs,
+        options.paseoHome,
+        options.chunkedUploads,
+      );
       const images = await resolveFleetPromptImages(imageInputs, attachments, options.paseoHome);
       const requirePeerClient = (peerHost: string): DaemonClient => {
         const client = resolveFleetHost(peerHost);
