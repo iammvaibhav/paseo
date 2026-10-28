@@ -976,6 +976,9 @@ export const AgentTimelineItemPayloadSchema: z.ZodType<AgentTimelineItem, unknow
     // Native images for this user row (composer paste / ticket dispatch).
     // Optional so older daemons still parse timeline rows.
     images: z.array(z.object({ data: z.string(), mimeType: z.string() })).optional(),
+    // Attachments the prompt carried. Lazy: the attachment schemas are declared
+    // further down this file.
+    attachments: z.lazy(() => z.array(AgentAttachmentSchema)).optional(),
   }),
   z.object({
     type: z.literal("assistant_message"),

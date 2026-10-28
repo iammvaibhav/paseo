@@ -22,6 +22,8 @@ import type { PersistedWorkspaceRecord } from "../workspace-registry.js";
 import { projectTimelineRows } from "./timeline-projection.js";
 import { getOpenAgentTabLabel, PARENT_AGENT_ID_LABEL } from "@getpaseo/protocol/agent-labels";
 import { formatSystemNotificationPrompt, startAgentRun } from "./agent-prompt.js";
+import { renderPromptAttachmentAsText } from "./prompt-attachments.js";
+import type { AgentAttachment } from "@getpaseo/protocol/messages";
 import { dispatchLocalPromptMode } from "./tools/paseo-tools.js";
 import { StaleProviderSessionError } from "./stale-provider-session-error.js";
 import { ensureAgentLoaded, ensureUnarchivedAgentLoaded } from "./agent-loading.js";
@@ -12572,6 +12574,96 @@ test("expectPromptClassification stamps the machinery classification on the echo
   expect(rows).toHaveLength(2);
   expect(rows[1]).toMatchObject({ text: "status please" });
   expect(rows[1]).not.toHaveProperty("classification");
+});
+
+test("a prompt with images or attachments is one user row carrying them, and the provider echo reconciles with it", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-prompt-attachments-"));
+
+  // Echoes the submitted prompt the way omp does: attachments rendered into the
+  // text, tagged with the run's client message id when it has one.
+  class AttachmentEchoSession extends TestAgentSession {
+    private echoTurn = 0;
+
+    override async startTurn(
+      prompt: AgentPromptInput,
+      options?: AgentRunOptions,
+    ): Promise<{ turnId: string }> {
+      const turnId = `turn-attachments-${++this.echoTurn}`;
+      const blocks =
+        typeof prompt === "string" ? [{ type: "text" as const, text: prompt }] : prompt;
+      const text = blocks
+        .flatMap((block) => {
+          if (block.type === "image") return [];
+          if (block.type === "text" && !("mimeType" in block)) return [block.text];
+          return [renderPromptAttachmentAsText(block)];
+        })
+        .join("\n\n");
+      this.pushEvent({ type: "turn_started", provider: this.provider, turnId });
+      this.pushEvent({
+        type: "timeline",
+        provider: this.provider,
+        item: {
+          type: "user_message",
+          text,
+          ...(options?.clientMessageId ? { clientMessageId: options.clientMessageId } : {}),
+        },
+        turnId,
+      });
+      this.pushEvent({ type: "turn_completed", provider: this.provider, turnId });
+      return { turnId };
+    }
+  }
+
+  class AttachmentEchoClient implements AgentClient {
+    readonly provider = "codex" as const;
+    readonly capabilities = TEST_CAPABILITIES;
+    async isAvailable(): Promise<boolean> {
+      return true;
+    }
+    async createSession(config: AgentSessionConfig): Promise<AgentSession> {
+      return new AttachmentEchoSession(config);
+    }
+    async resumeSession(): Promise<AgentSession> {
+      throw new Error("unused");
+    }
+  }
+
+  const manager = new AgentManager({ clients: { codex: new AttachmentEchoClient() }, logger });
+  const snapshot = await manager.createAgent({ provider: "codex", cwd: workdir }, undefined, {
+    workspaceId: undefined,
+  });
+  const image = { data: "aW1hZ2U=", mimeType: "image/png" };
+  const doc: AgentAttachment = {
+    type: "uploaded_file",
+    id: "upload_doc",
+    fileName: "design.md",
+    mimeType: "text/markdown",
+    size: 12,
+    path: join(workdir, "design.md"),
+  };
+  try {
+    await manager.runAgent(snapshot.id, [
+      { type: "text", text: "Review the attached doc" },
+      { type: "image", ...image },
+      doc,
+    ]);
+    // No image: the row used to be the echo itself, with the attachment as text.
+    await manager.runAgent(snapshot.id, [{ type: "text", text: "And this one" }, doc]);
+
+    const rows = manager.getTimeline(snapshot.id).filter((item) => item.type === "user_message");
+    expect(rows).toEqual([
+      expect.objectContaining({
+        // The agent's first user message also carries its mode block.
+        text: expect.stringMatching(/\n\nReview the attached doc$/),
+        images: [image],
+        attachments: [doc],
+      }),
+      expect.objectContaining({ text: "And this one", attachments: [doc] }),
+    ]);
+  } finally {
+    await manager.closeAgent(snapshot.id).catch(() => undefined);
+    rmSync(workdir, { recursive: true, force: true });
+  }
 });
 
 test("canonical submitted prompt keeps wire identity while rewind resolves provider identity", async () => {

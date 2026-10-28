@@ -409,6 +409,10 @@ export type AgentTimelineItem =
       // Native images for this user row (composer paste / ticket dispatch).
       // Optional so older daemons still parse timeline rows.
       images?: Array<{ data: string; mimeType: string }>;
+      // Attachments the prompt carried (uploaded files, PRs, reviews), so the
+      // row renders them as it rendered in the composer. Optional so older
+      // daemons still parse timeline rows.
+      attachments?: AgentAttachment[];
     }
   | {
       type: "assistant_message";

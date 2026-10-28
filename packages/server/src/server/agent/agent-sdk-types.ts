@@ -430,6 +430,7 @@ export type AgentTimelineItem =
       classification?: AgentTimelineUserMessageClassification;
       voiceMirrorKind?: AgentTimelineVoiceMirrorKind;
       images?: Array<{ data: string; mimeType: string }>;
+      attachments?: AgentAttachment[];
     }
   | {
       type: "assistant_message";
