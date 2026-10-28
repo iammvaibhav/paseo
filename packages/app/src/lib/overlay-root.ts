@@ -119,6 +119,8 @@ function getFocusableElements(scope: HTMLElement): HTMLElement[] {
     "input:not([disabled])",
     "select:not([disabled])",
     "textarea:not([disabled])",
+    // A page frame in an overlay (the show_page full-size viewer) is a Tab stop.
+    "iframe",
     '[tabindex]:not([tabindex="-1"])',
   ].join(",");
 

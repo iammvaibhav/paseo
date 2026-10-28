@@ -33,6 +33,7 @@ const PAGE_LIBRARIES = [
   "Web Awesome (https://cdn.jsdelivr.net/npm/@awesome.me/webawesome@3): tabs, tooltips, dialogs",
   "Observable Plot (https://cdn.jsdelivr.net/npm/@observablehq/plot@0.6/+esm): quick statistical charts",
   "Cytoscape.js (https://cdn.jsdelivr.net/npm/cytoscape@3/dist/cytoscape.min.js): graphs and networks",
+  'Mermaid (https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs, ESM import): diagrams in a page. initialize({ startOnLoad: false, theme: paseo.theme.colorScheme === "dark" ? "dark" : "default" }), then for each diagram `const { svg } = await mermaid.render(id, source)` and set the container\'s innerHTML to svg. render() measures in a scratch element on body, so diagrams inside hidden tabs still lay out',
   "Grid.js (https://cdn.jsdelivr.net/npm/gridjs@6/dist/gridjs.umd.js): sortable, searchable tables",
   "Motion (https://cdn.jsdelivr.net/npm/motion@12/+esm): transitions",
   "Lucide (https://cdn.jsdelivr.net/npm/lucide@0/dist/umd/lucide.min.js): icons, the app's own icon set",

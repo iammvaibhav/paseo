@@ -10,9 +10,14 @@ import type { PageThemeTokens } from "@getpaseo/protocol/page/theme";
 import { PageFrame } from "@/components/page-frame/page-frame";
 import { buildPageThemeTokens } from "@/components/page-frame/page-theme";
 import { PAGE_URL_DEFAULT_HEIGHT, type PageSource } from "@/components/page-frame/types";
+import { TitlebarDragRegion } from "@/components/desktop/titlebar-drag-region";
+import { HEADER_INNER_HEIGHT, HEADER_INNER_HEIGHT_MOBILE } from "@/constants/layout";
+import { isWeb } from "@/constants/platform";
+import { useGlobalWebOverlayLayer, useWebOverlayRegistration } from "@/lib/overlay-root";
 import { useHostFeature } from "@/runtime/host-features";
 import { useHostRuntimeSnapshot } from "@/runtime/host-runtime";
-import type { Theme } from "@/styles/theme";
+import { SPACING, type Theme } from "@/styles/theme";
+import { WindowChromeRootRegion, WindowChromeSafeArea } from "@/utils/desktop-window";
 import { openExternalUrl } from "@/utils/open-external-url";
 
 const PAGE_MAX_HEIGHT = 2000;
@@ -336,6 +341,23 @@ function PageFullSize({
 }) {
   const { t } = useTranslation();
   const insets = useSafeAreaInsets();
+  const modalLayer = useGlobalWebOverlayLayer("modal", isWeb);
+  const handleWebOverlayKeyDown = useCallback(
+    (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return false;
+      event.preventDefault();
+      event.stopPropagation();
+      onClose();
+      return true;
+    },
+    [onClose],
+  );
+  // Escape with focus in this document; with focus inside the page the frame reports it.
+  const setWebOverlayScope = useWebOverlayRegistration({
+    active: isWeb,
+    layer: modalLayer,
+    onKeyDown: handleWebOverlayKeyDown,
+  });
   const layerStyle = useMemo(
     () => [
       styles.fullSizeLayer,
@@ -350,34 +372,52 @@ function PageFullSize({
   );
   return (
     <Modal transparent animationType="fade" statusBarTranslucent visible onRequestClose={onClose}>
-      <View style={styles.fullSizeBackdrop} />
-      <View style={layerStyle}>
-        <View style={styles.fullSizeHeader}>
-          <Text style={styles.title} numberOfLines={1}>
-            {title}
-          </Text>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={t("message.page.close")}
-            hitSlop={8}
-            onPress={onClose}
-            style={styles.action}
-            testID="show-page-full-size-close"
-          >
-            <X size={16} color={styles.actionIcon.color} />
-          </Pressable>
+      {/* Only the macOS traffic lights draw above this modal. The Windows and Linux window
+          controls are app content, and the modal covers them. */}
+      <WindowChromeRootRegion corners="top-left">
+        <View ref={setWebOverlayScope} style={styles.fullSizeRoot}>
+          <View style={styles.fullSizeBackdrop} testID="show-page-full-size-backdrop" />
+          <View style={layerStyle}>
+            <WindowChromeSafeArea
+              placement="inline"
+              horizontalPadding={SPACING[4]}
+              style={styles.fullSizeHeader}
+              testID="show-page-full-size-header"
+            >
+              <TitlebarDragRegion />
+              <Text
+                style={styles.fullSizeTitle}
+                numberOfLines={1}
+                testID="show-page-full-size-title"
+              >
+                {title}
+              </Text>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={t("message.page.close")}
+                hitSlop={8}
+                onPress={onClose}
+                style={styles.fullSizeClose}
+                testID="show-page-full-size-close"
+              >
+                <X size={16} color={styles.actionIcon.color} />
+              </Pressable>
+            </WindowChromeSafeArea>
+            <View style={styles.fullSizeBody}>
+              <PageFrame
+                source={source}
+                title={title}
+                tokens={tokens}
+                maxHeight={PAGE_MAX_HEIGHT}
+                fill
+                onOpenUrl={onOpenUrl}
+                onEscape={onClose}
+                testID="show-page-full-size-frame"
+              />
+            </View>
+          </View>
         </View>
-        <View style={styles.fullSizeBody}>
-          <PageFrame
-            source={source}
-            title={title}
-            tokens={tokens}
-            maxHeight={PAGE_MAX_HEIGHT}
-            fill
-            onOpenUrl={onOpenUrl}
-          />
-        </View>
-      </View>
+      </WindowChromeRootRegion>
     </Modal>
   );
 }
@@ -416,21 +456,48 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.foregroundMuted,
     fontSize: theme.fontSize.sm,
   },
+  fullSizeRoot: {
+    flex: 1,
+    minHeight: 0,
+    minWidth: 0,
+  },
   fullSizeBackdrop: {
     position: "absolute",
     inset: 0,
     backgroundColor: theme.glass?.cover ?? theme.colors.surface0,
+    // Glass covers are translucent: blur the app behind so it cannot be read through the
+    // page. The frost filter is the one glass floating surfaces use on a vibrancy window.
+    ...(theme.glass ? { backdropFilter: theme.glass.floatingBackdropFilter } : null),
   },
   fullSizeLayer: {
     position: "absolute",
     inset: 0,
   },
+  // As tall as the app's own header row, so it clears the traffic lights and the drag
+  // strips of the headers underneath (an iframe gets no no-drag override).
   fullSizeHeader: {
+    position: "relative",
     flexDirection: "row",
     alignItems: "center",
     gap: theme.spacing[2],
-    paddingHorizontal: theme.spacing[4],
-    paddingVertical: theme.spacing[2],
+    height: {
+      xs: HEADER_INNER_HEIGHT_MOBILE,
+      md: HEADER_INNER_HEIGHT,
+    },
+  },
+  fullSizeTitle: {
+    flex: 1,
+    minWidth: 0,
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.sm,
+    fontWeight: theme.fontWeight.medium,
+  },
+  // Above the absolute drag overlay, so Electron does not take its clicks.
+  fullSizeClose: {
+    position: "relative",
+    zIndex: 1,
+    padding: theme.spacing[1],
+    borderRadius: theme.borderRadius.md,
   },
   fullSizeBody: {
     flex: 1,

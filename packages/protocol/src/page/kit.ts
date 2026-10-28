@@ -27,7 +27,9 @@ export interface PageKitTheme {
 export type PageFrameMessage =
   | { source: typeof PAGE_FRAME_SOURCE; type: "ready" }
   | { source: typeof PAGE_FRAME_SOURCE; type: "height"; height: number }
-  | { source: typeof PAGE_FRAME_SOURCE; type: "open"; url: string };
+  | { source: typeof PAGE_FRAME_SOURCE; type: "open"; url: string }
+  /** Escape pressed in the page and not handled by it. */
+  | { source: typeof PAGE_FRAME_SOURCE; type: "escape" };
 
 export interface PageHostThemeMessage {
   source: typeof PAGE_HOST_SOURCE;
@@ -53,6 +55,7 @@ export function parsePageFrameMessage(value: unknown): PageFrameMessage | null {
   const record = value as Record<string, unknown>;
   if (record.source !== PAGE_FRAME_SOURCE) return null;
   if (record.type === "ready") return { source: PAGE_FRAME_SOURCE, type: "ready" };
+  if (record.type === "escape") return { source: PAGE_FRAME_SOURCE, type: "escape" };
   if (record.type === "height" && typeof record.height === "number" && record.height >= 0) {
     return { source: PAGE_FRAME_SOURCE, type: "height", height: record.height };
   }
@@ -272,6 +275,13 @@ const KIT_SCRIPT = `
       event.preventDefault();
     }
   }, true);
+  // Focus inside the page keeps keys away from the host, so the full-size viewer could not
+  // see Escape. Report it once dispatch is over, unless a page handler consumed it
+  // (preventDefault); the inline frame ignores the report.
+  window.addEventListener("keydown", function(event){
+    if (event.key !== "Escape" || event.isComposing) return;
+    setTimeout(function(){ if (!event.defaultPrevented) post({ type: "escape" }); }, 0);
+  });
   window.open = function(url){ if (url) post({ type: "open", url: String(url) }); return null; };
   applyTheme(theme);
   document.addEventListener("DOMContentLoaded", function(){

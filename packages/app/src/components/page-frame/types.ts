@@ -23,6 +23,8 @@ export interface PageFrameProps {
   /** Fill the parent instead of sizing to the content (the full-size viewer). */
   fill?: boolean;
   onOpenUrl: (url: string) => void;
+  /** Escape pressed inside the page and not handled by it. Only the full-size viewer acts on it. */
+  onEscape?: () => void;
   testID?: string;
 }
 

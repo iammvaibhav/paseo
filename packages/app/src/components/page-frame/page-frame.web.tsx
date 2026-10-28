@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   buildPageDocument,
   buildPageKitTheme,
@@ -26,6 +26,31 @@ function urlSandbox(url: string): string {
   }
 }
 
+/**
+ * True once the element has a layout box. A page runs its scripts once, on load; loaded
+ * under a `display: none` ancestor (a hidden panel or route) it has no layout, so a page
+ * that measures on load lays out zeros. Mermaid then throws "svg element not in render
+ * tree" and leaves "Syntax error in text" diagrams behind.
+ */
+function useRendered(ref: React.RefObject<HTMLElement | null>): boolean {
+  const [rendered, setRendered] = useState(false);
+  useLayoutEffect(() => {
+    const element = ref.current;
+    if (rendered || !element) return;
+    if (element.getClientRects().length > 0) {
+      setRendered(true);
+      return;
+    }
+    // A display: none subtree has a zero box; showing it gives the element a size.
+    const observer = new ResizeObserver(() => {
+      if (element.getClientRects().length > 0) setRendered(true);
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [ref, rendered]);
+  return rendered;
+}
+
 /** An agent page inline in the chat: a sandboxed iframe on the chat's own background. */
 export function PageFrame({
   source: requestedSource,
@@ -34,6 +59,7 @@ export function PageFrame({
   maxHeight,
   fill = false,
   onOpenUrl,
+  onEscape,
   testID,
 }: PageFrameProps) {
   const source = useMemo(() => framedPageSource(requestedSource), [requestedSource]);
@@ -55,6 +81,9 @@ export function PageFrame({
   const [contentHeight, setContentHeight] = useState<number | null>(null);
   const onOpenUrlRef = useRef(onOpenUrl);
   onOpenUrlRef.current = onOpenUrl;
+  const onEscapeRef = useRef(onEscape);
+  onEscapeRef.current = onEscape;
+  const rendered = useRendered(iframeRef);
 
   useEffect(() => {
     function postTheme(): void {
@@ -71,6 +100,7 @@ export function PageFrame({
       if (!message) return;
       if (message.type === "height") setContentHeight(message.height);
       else if (message.type === "open") onOpenUrlRef.current(message.url);
+      else if (message.type === "escape") onEscapeRef.current?.();
       else postTheme();
     }
     window.addEventListener("message", receive);
@@ -109,8 +139,8 @@ export function PageFrame({
       title={title}
       data-testid={testID}
       sandbox={source.kind === "html" ? HTML_SANDBOX : urlSandbox(source.url)}
-      srcDoc={srcDoc}
-      src={source.kind === "url" ? source.url : undefined}
+      srcDoc={rendered ? srcDoc : undefined}
+      src={rendered && source.kind === "url" ? source.url : undefined}
       referrerPolicy="no-referrer"
       style={style}
     />

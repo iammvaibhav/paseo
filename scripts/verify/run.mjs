@@ -604,15 +604,6 @@ function shimClientCompatibility(client) {
       return { workspaces: list, entries: list };
     };
   }
-
-  const originalInstructionsOpen = client.missionControlInstructionsOpen.bind(client);
-  client.missionControlInstructionsOpen = async function (options) {
-    const res = await originalInstructionsOpen(options);
-    if (!res.instruction && Array.isArray(res.instructions) && res.instructions.length > 0) {
-      res.instruction = res.instructions[0];
-    }
-    return res;
-  };
 }
 
 async function connectHostClients(stack, meta) {

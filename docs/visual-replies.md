@@ -26,7 +26,17 @@ Two Paseo MCP tools (`packages/server/src/server/page-tools/`):
 | `show_page`    | Puts a page in the reply from `path`, `html`, or `url`. A `path` page is copied into the daemon's page store (`$PASEO_HOME/pages/pg_<hash>.html`) and the result carries its id. |
 | `preview_page` | Renders the same page (`path`, `html`, or `url`) in the daemon's headless Chromium and returns a screenshot, the content height, and console output.                             |
 
-The page rules, the kit API, and the library list are in the `show_page` tool description, not the system prompt, so they cost tokens only when an agent uses the tool.
+The page rules, the kit API, and the library list are in the `show_page` tool description, not the system prompt, so they cost tokens only when an agent uses the tool. The library list names Mermaid with a loading pattern (`mermaid.render()` per diagram), because a page with diagrams in tabs is the common case and `render()` measures in a scratch element, so hidden tabs still lay out.
+
+### A frame loads once it is on screen
+
+A page runs its scripts once, on load. Loaded under a `display: none` ancestor it has no layout, so a page that measures on load lays out zeros: Mermaid throws `svg element not in render tree` and leaves a pile of "Syntax error in text" diagrams at the bottom of the page. The web frame waits for its iframe to get a layout box before it sets `srcdoc` (`useRendered` in `components/page-frame/page-frame.web.tsx`); the native frame waits for its retained panel to be shown, because native keeps a hidden panel's chat live.
+
+### Full-size viewer
+
+- The header uses `WindowChromeSafeArea`, so the title starts after the macOS traffic lights, and it is as tall as the app's header row, which keeps the page below the drag strips of the headers underneath. An iframe gets no `no-drag` from the `index.html` backstop, so a page under a drag strip would not take clicks.
+- On the glass theme the cover is translucent, so the backdrop also takes the glass frost filter; without it the app behind the page stays readable.
+- Escape closes it. With focus inside the page, the kit reports an Escape that no page handler consumed (`preventDefault`); the inline frame ignores the report, so Escape in an inline page stays with the page.
 
 ### Why `path`
 
@@ -72,3 +82,5 @@ The preview uses Playwright's managed Chromium headless shell. When it is missin
 ## Verification
 
 `node scripts/verify/run.mjs visual-replies --up` seeds a mock agent (`mockTimelineTurns`) whose reply uses every format, runs a real `preview_page` capture, and drives the web UI: the details toggle, a transparent chart canvas, an interactive HTML page with a working `paseo.chart`, an embedded localhost app, and the full-size viewer. Set `VISUAL_REPLIES_KEEP_APP=1` with `--keep` to leave the demo app running.
+
+`node scripts/verify/run.mjs show-page-viewer --up` covers the viewer itself: a runtime-Mermaid page that arrives under a hidden chat, and the full-size viewer's backdrop, header geometry and Escape handling, as the macOS desktop app on the glass theme (a faked desktop host), in a plain browser, and at phone width.

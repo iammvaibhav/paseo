@@ -9,6 +9,7 @@ import {
   parsePageFrameMessage,
   type PageHostThemeMessage,
 } from "@getpaseo/protocol/page/kit";
+import { useRetainedPanelActive } from "@/components/retained-panel";
 import { framedPageSource, resolvePageFrameHeight, type PageFrameProps } from "./types";
 
 const ORIGIN_WHITELIST = ["*"];
@@ -29,6 +30,7 @@ export function PageFrame({
   maxHeight,
   fill = false,
   onOpenUrl,
+  onEscape,
   testID,
 }: PageFrameProps) {
   const source = useMemo(() => framedPageSource(requestedSource), [requestedSource]);
@@ -49,6 +51,12 @@ export function PageFrame({
     [html, source],
   );
   const [contentHeight, setContentHeight] = useState<number | null>(null);
+  // A page runs its scripts once, on load. Native keeps a hidden panel's chat live under
+  // display: none, so wait until the panel has been on screen: a page that measures on load
+  // (Mermaid, D3) has no layout to measure while hidden.
+  const panelActive = useRetainedPanelActive();
+  const shownRef = useRef(panelActive);
+  if (panelActive) shownRef.current = true;
 
   const injectTheme = useCallback(() => {
     const message: PageHostThemeMessage = {
@@ -77,9 +85,10 @@ export function PageFrame({
       if (!message) return;
       if (message.type === "height") setContentHeight(message.height);
       else if (message.type === "open") onOpenUrl(message.url);
+      else if (message.type === "escape") onEscape?.();
       else injectTheme();
     },
-    [injectTheme, onOpenUrl],
+    [injectTheme, onEscape, onOpenUrl],
   );
 
   const pageOrigin = source.kind === "url" ? originOf(source.url) : null;
@@ -107,6 +116,7 @@ export function PageFrame({
     [height],
   );
 
+  if (!shownRef.current) return null;
   return (
     <WebView
       ref={webViewRef}

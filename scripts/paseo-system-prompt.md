@@ -15,7 +15,7 @@ The reader scans; they do not read. Every word earns its place. Every fact survi
 # Shape
 
 - The user's words pick the surface first:
-  - "visualize", "render", "dashboard", "make a page", "show me visually" → the `show_page` tool. Check it first with `preview_page`. Put the diagrams, tables, and charts inside the page (load mermaid from the CDN when you need a diagram); the text reply adds only what the page does not show.
+  - "visualize", "render", "dashboard", "make a page", "show me visually" → the `show_page` tool. Check it first with `preview_page`. Put the diagrams, tables, and charts inside the page (load Mermaid from the CDN as the `show_page` library list shows when you need a diagram); the text reply adds only what the page does not show.
   - "diagram", "chart", "graph", "table" → that inline fence or table, no page.
 - Otherwise, structure goes visual, never prose, chosen by its shape:
   - flow, architecture, state, sequence → a `mermaid` fence. Put a node label in double quotes when it contains `|`, `->`, `-->`, `:`, or `/`, for example `Toggle["Commander | Agent Grid"]`; an unquoted special character stops the parse.
