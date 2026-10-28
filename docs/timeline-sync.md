@@ -237,11 +237,16 @@ Every path that sends a message to an agent — composer send, dictation accept-
 send-now, and the host runtime's automatic queue drain — goes through
 `dispatchComposerAgentMessage` with a submission writer. There is no second transport for the same
 product action: calling `client.sendAgentMessage` directly skips the submitted row and the pending
-footer, and permanently drops attachments because the daemon does not echo them back.
+footer.
 
 A submitted prompt is one `UserMessageItem` row. That row is the authoritative local presentation:
 its stable identity, text, timestamp, images, and attachments do not change when the provider
-acknowledges it. Submission lifecycle is a separate record keyed by agent, not another row shape.
+acknowledges it. The daemon's canonical row carries the prompt's images and attachments too, so a
+prompt sent by another client (an MCP `fleet_create_agent` with attachments, a ticket dispatch)
+renders the same way. A prompt with images or attachments always runs with a client message id:
+providers echo it with the attachments rendered into the text, so only the id reconciles the echo
+with the canonical row. Submission lifecycle is a separate record keyed by agent, not another row
+shape.
 The transaction registry records two independent settlement facts: canonical acknowledgement and RPC
 settlement. Canonical acknowledgement retires optimistic activity immediately. When both facts are
 known, whichever arrives second deletes the record. A canonical acknowledgement that arrives first
