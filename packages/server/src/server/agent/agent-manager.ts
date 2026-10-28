@@ -18,6 +18,7 @@ import {
 } from "@getpaseo/protocol/agent-labels";
 import type { Logger } from "pino";
 import type { ToolPolicy } from "@getpaseo/protocol/agent-types";
+import type { AgentAttachment } from "@getpaseo/protocol/messages";
 import {
   DEFAULT_AGENT_MODE_ID,
   splitAgentModeBlock,
@@ -51,6 +52,7 @@ import {
   type AgentPermissionResult,
   type AgentPersistenceHandle,
   type AgentProviderNotice,
+  type AgentPromptContentBlock,
   type AgentPromptInput,
   type AgentProvider,
   type AgentRunOptions,
@@ -297,6 +299,20 @@ function submittedPromptImages(
     block.type === "image" ? [{ data: block.data, mimeType: block.mimeType }] : [],
   );
   return images.length > 0 ? images : undefined;
+}
+
+// Every block that is neither prompt text nor a native image is an attachment
+// (a text attachment is a "text" block that carries a mimeType).
+function isPromptAttachmentBlock(block: AgentPromptContentBlock): block is AgentAttachment {
+  return block.type !== "image" && (block.type !== "text" || "mimeType" in block);
+}
+
+function submittedPromptAttachments(prompt: AgentPromptInput): AgentAttachment[] | undefined {
+  if (!Array.isArray(prompt)) {
+    return undefined;
+  }
+  const attachments = prompt.filter(isPromptAttachmentBlock);
+  return attachments.length > 0 ? attachments : undefined;
 }
 
 export class AgentManagerShuttingDownError extends Error {
@@ -3742,6 +3758,14 @@ export class AgentManager {
     // path (send, queue, interrupt, steer fallback, scheduled or webhook runs).
     const moded = this.withAgentModePrefix(agentId, prompt);
     const runPrompt = moded.prompt;
+    // A prompt with images or attachments is recorded as its own canonical row.
+    // Providers echo it with the attachments rendered into the text, so the echo
+    // can only reconcile with that row by client message id.
+    const runOptions: AgentRunOptions | undefined =
+      !options?.clientMessageId &&
+      (submittedPromptImages(runPrompt) || submittedPromptAttachments(runPrompt))
+        ? { ...options, clientMessageId: randomUUID() }
+        : options;
     const isReplacement = agent.pendingReplacement;
     agent.lastError = undefined;
 
@@ -3756,7 +3780,7 @@ export class AgentManager {
         agentId,
         pendingRun,
         prompt: runPrompt,
-        options,
+        options: runOptions,
       });
 
       if (isReplacement) {
@@ -3786,7 +3810,7 @@ export class AgentManager {
         agent,
         pendingRun,
         prompt: runPrompt,
-        options,
+        options: runOptions,
         turnId,
       });
       for (const stagedEvent of pendingRun.stagedEvents.splice(0)) {
@@ -6616,11 +6640,11 @@ export class AgentManager {
             event.item.clientMessageId === options.clientMessageId,
         )
       : undefined;
-    const nativeImages = submittedPromptImages(prompt);
-    if (options?.clientMessageId || nativeImages) {
-      const submittedClientMessageId = options?.clientMessageId ?? randomUUID();
-      this.recordSubmittedPrompt(agent, prompt, submittedClientMessageId, {
-        messageId: submittedClientMessageId,
+    // streamAgent gives every prompt with images or attachments a client
+    // message id, so this covers them as well as client submissions.
+    if (options?.clientMessageId) {
+      this.recordSubmittedPrompt(agent, prompt, options.clientMessageId, {
+        messageId: options.clientMessageId,
         turnId,
         providerMessageId:
           stagedSubmittedPromptEcho?.item.type === "user_message"
@@ -6643,12 +6667,14 @@ export class AgentManager {
     this.touchUpdatedAt(agent);
     agent.lastUserMessageAt = new Date();
     const images = submittedPromptImages(prompt);
+    const attachments = submittedPromptAttachments(prompt);
     const item: AgentTimelineItem = {
       type: "user_message",
       text: submittedPromptText(prompt),
       clientMessageId,
       ...(options?.messageId ? { messageId: options.messageId } : {}),
       ...(images ? { images } : {}),
+      ...(attachments ? { attachments } : {}),
     };
     this.recordAndDispatchTimelineItem(agent.id, item, agent.provider, options?.turnId, options);
   }

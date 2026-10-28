@@ -6,25 +6,25 @@ Paseo runs coding agents on several machines ("hosts"). Every host runs a Paseo 
 
 Every Paseo tool is listed directly on this server. Start with these:
 
-| Need                                       | Tool                                                 |
-| ------------------------------------------ | ---------------------------------------------------- |
-| Which hosts, projects and workspaces exist | `fleet_list_inventory`                               |
-| Which agents exist, by state               | `fleet_list_agents`                                  |
-| How one agent is doing                     | `fleet_agent_status`                                 |
-| What an agent did, in brief                | `fleet_get_agent_activity`                           |
-| An agent's full transcript, page by page   | `fleet_get_transcript`                               |
-| Who worked on something                    | `fleet_search`                                       |
-| Which models to use                        | `fleet_list_models` (only the models the owner uses) |
-| Where a new task should run                | `suggest_placement`                                  |
-| Start an agent                             | `fleet_create_agent`                                 |
-| Talk to a running agent                    | `fleet_send_prompt`                                  |
-| Bring back an archived agent or workspace  | `fleet_unarchive_agent`, `fleet_unarchive_workspace` |
-| Wait for one agent's turn to end           | `fleet_wait_agent`                                   |
-| Wait for several agents (any or all)       | `fleet_wait_agents`                                  |
-| Webhook when agents finish                 | `fleet_notify_on_finish`                             |
-| Webhook delivery history (missed events)   | `fleet_webhook_deliveries`                           |
-| Give an agent a screenshot or file         | `fleet_upload_file`, then pass the `fileId`          |
-| See an image an agent produced             | `fleet_read_image`                                   |
+| Need                                       | Tool                                                        |
+| ------------------------------------------ | ----------------------------------------------------------- |
+| Which hosts, projects and workspaces exist | `fleet_list_inventory`                                      |
+| Which agents exist, by state               | `fleet_list_agents`                                         |
+| How one agent is doing                     | `fleet_agent_status`                                        |
+| What an agent did, in brief                | `fleet_get_agent_activity`                                  |
+| An agent's full transcript, page by page   | `fleet_get_transcript`                                      |
+| Who worked on something                    | `fleet_search`                                              |
+| Which models to use                        | `fleet_list_models` (only the models the owner uses)        |
+| Where a new task should run                | `suggest_placement`                                         |
+| Start an agent                             | `fleet_create_agent`                                        |
+| Talk to a running agent                    | `fleet_send_prompt`                                         |
+| Bring back an archived agent or workspace  | `fleet_unarchive_agent`, `fleet_unarchive_workspace`        |
+| Wait for one agent's turn to end           | `fleet_wait_agent`                                          |
+| Wait for several agents (any or all)       | `fleet_wait_agents`                                         |
+| Webhook when agents finish                 | `fleet_notify_on_finish`                                    |
+| Webhook delivery history (missed events)   | `fleet_webhook_deliveries`                                  |
+| Give an agent a document, log or image     | `attachments` on `fleet_create_agent` / `fleet_send_prompt` |
+| See an image an agent produced             | `fleet_read_image`                                          |
 
 The rest cover meta changes (`fleet_rename_*`, `fleet_archive_*`, `fleet_move_agent`, `fleet_create_project`, `fleet_adopt_agent`), control (`fleet_cancel_agent`, `fleet_kill_agent`, `fleet_update_agent`, `respond_to_permission`), schedules and heartbeats, workspace scripts, terminals, browser tabs, memory (`fleet_recall`, `fleet_context`) and Mission Control cards. Tools without the `fleet_` prefix act on this daemon's host only.
 
@@ -57,8 +57,15 @@ Every wait and notification is bound to a **turn**. `fleet_create_agent` and `fl
 
 Everything moves through MCP; never copy files to a host yourself.
 
-- **To an agent:** `fleet_upload_file { fileName, mimeType, data }` (base64) returns a `fileId`. Pass images as `images: [{ fileId }]` to `fleet_create_agent` or `fleet_send_prompt` (busy or idle agents, any host); pass other files as `attachments: [{ type: "uploaded_file", id: fileId }]` to `fleet_send_prompt`. A PNG, JPEG, GIF or WebP passed as an attachment also reaches the agent as an image. Agents on another host get their own copy. Small images can also go inline as `images: [{ data, mimeType }]`.
-- **Large files:** upload in chunks of a few MB: the first call adds `size` (total bytes) and returns `uploadId`; send the rest as `{ uploadId, data }`. The last chunk returns the `fileId`. A request body over 25 MB is rejected with a JSON-RPC error.
+- **To an agent, always as attachments:** pass files in `attachments` on `fleet_create_agent` or `fleet_send_prompt` (busy or idle agents, any host). Each item is one of:
+  - `{ name, mimeType, base64 }`: the file inline, e.g. `{ name: "diagram.png", mimeType: "image/png", base64: "iVBOR…" }`.
+  - `{ name, mimeType, text }`: a text file inline, e.g. `{ name: "design.md", mimeType: "text/markdown", text: "# Design…" }`.
+  - `{ fileId }`: a file uploaded earlier with `fleet_upload_file { fileName, mimeType, data }` (base64) or `{ fileName, mimeType, text }`.
+
+  Any type works: markdown, logs, PDFs, images. The agent gets each file's path in its prompt and opens it itself; PNG, JPEG, GIF and WebP also reach it as native images. Agents on another host get their own copy.
+
+- **Never put file content in the prompt.** A prompt containing a base64 `data:` URI, or longer than 64 KB, is rejected. Keep the prompt to the instructions and refer to the attached file by name. A markdown file with embedded `data:` images: attach each image as its own file, and attach the markdown with those images replaced by their file names.
+- **Large files:** upload in chunks of a few MB: the first call adds `size` (total bytes) and returns `uploadId`; send the rest as `{ uploadId, data }`. The last chunk returns the `fileId`. A request body over 25 MB is rejected with a JSON-RPC error, so inline attachments suit files up to a few MB.
 - **From an agent:** `fleet_read_image { agentId, path }` returns the image (up to 10 MB) as MCP image content. Use the absolute path the agent reported, or an image proof path from `fleet_context`.
 
 ## Rules that keep you out of trouble

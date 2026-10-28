@@ -967,6 +967,7 @@ function appendUserMessage(
   classification?: UserMessageClassification,
   voiceMirrorKind?: VoiceMirrorKind,
   images?: UserMessageImage[],
+  attachments?: AgentAttachment[],
 ): StreamItem[] {
   const { chunk, hasContent } = normalizeChunk(text);
   if (!hasContent) {
@@ -985,6 +986,7 @@ function appendUserMessage(
     text: chunk,
     timestamp,
     ...(images && images.length > 0 ? { images } : {}),
+    ...(attachments && attachments.length > 0 ? { attachments } : {}),
   });
   return upsertUserMessage(state, nextItem);
 }
@@ -1657,6 +1659,7 @@ function reduceTimelineEvent(
           item.classification,
           item.voiceMirrorKind,
           item.images,
+          item.attachments,
         ),
       );
     case "assistant_message":
