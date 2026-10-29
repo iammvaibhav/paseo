@@ -157,6 +157,15 @@ function closestArgName(key: string, known: readonly string[]): string | null {
   return ranked && ranked.distance <= Math.max(2, Math.floor(key.length / 3)) ? ranked.name : null;
 }
 
+// Arguments a tool took before upstream retired them, keyed "tool.arg". The
+// error says what replaced them, since a fixed-shape caller (an n8n node)
+// cannot guess.
+const RETIRED_ARGS: Record<string, string> = {
+  // COMPAT(retired-background-arg): upstream #5039 dropped it (merged 2026-10-29); remove after 2027-01-31.
+  "fleet_create_agent.background":
+    "removed: fleet_create_agent never waits for the run, so drop it; background now only means a hidden workspace, on create_workspace",
+};
+
 /**
  * Unknown arguments are an error on /mcp/fleet: silently dropping one (a
  * misnamed delivery mode) runs the call with defaults the client never chose.
@@ -169,6 +178,8 @@ function describeUnknownArgKeys(
   const unknown = Object.keys(args).filter((key) => !known.includes(key));
   if (unknown.length === 0) return null;
   const named = unknown.map((key) => {
+    const retired = RETIRED_ARGS[`${toolName}.${key}`];
+    if (retired) return `"${key}" (${retired})`;
     const suggestion = closestArgName(key, known);
     return suggestion ? `"${key}" (did you mean "${suggestion}"?)` : `"${key}"`;
   });
@@ -182,8 +193,10 @@ function describeUnknownArgs(
   const object = inputObjectSchema(tool);
   if (!object) return null;
   const known = [
-    ...Object.keys(object.shape),
-    ...(NOTIFY_TOOLS.has(tool.name) ? Object.keys(NOTIFY_INPUT_SHAPE) : []),
+    ...new Set([
+      ...Object.keys(object.shape),
+      ...(NOTIFY_TOOLS.has(tool.name) ? Object.keys(NOTIFY_INPUT_SHAPE) : []),
+    ]),
   ];
   return describeUnknownArgKeys(tool.name, known, args);
 }

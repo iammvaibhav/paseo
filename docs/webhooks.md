@@ -133,7 +133,7 @@ recorded as a skipped delivery and returns `202` (webhook senders should still g
 ## Reliability semantics
 
 - **Ack fast.** The route validates + records the delivery and returns `202` immediately.
-  The agent is created with `background: true`; the HTTP response never waits on the run.
+  Creating the agent returns without waiting on its run, so the HTTP response never waits either.
 - **Idempotency.** If the sender provides a delivery id (`X-GitHub-Delivery`, Linear's
   event id), duplicate deliveries within a window are de-duped so retries don't spawn
   multiple agents.
@@ -194,6 +194,6 @@ daemon simply won't answer the new RPCs.
   allowlist; `/hooks/*` must be exempt (or the hostname added to `hostnames`).
 - **Corporate tailnet.** Funnel publishes to the open internet under the org tailnet;
   confirm policy before enabling on a work machine.
-- **Never block the response** on the agent run — always `202` then `background: true`.
+- **Never block the response** on the agent run — always `202` as soon as the agent is created.
 - **Cap payload size** and **de-dupe delivery ids** to prevent agent storms.
 - **Agents run on the receiving daemon only** — pick the host deliberately.

@@ -2239,7 +2239,6 @@ export async function createPaseoDaemon(
         title,
         initialPrompt: brief,
         labels,
-        background: true,
         ...(images && images.length > 0 ? { images } : {}),
       });
       const created = z.object({ agentId: z.string() }).safeParse(result.structuredContent);

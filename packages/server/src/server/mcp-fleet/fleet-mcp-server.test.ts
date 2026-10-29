@@ -8,6 +8,7 @@ import type {
   ArmMcpFinishNotification,
   ArmMcpGroupNotification,
   ArmMcpStatusReportNotification,
+  McpFinishNotifier,
 } from "./finish-notifier.js";
 import { createFleetMcpServer, FLEET_MCP_INSTRUCTIONS } from "./fleet-mcp-server.js";
 import type { PaseoToolHostDependencies } from "../agent/tools/paseo-tools.js";
@@ -110,6 +111,68 @@ describe("createFleetMcpServer", () => {
 
     expect(result.isError).toBeFalsy();
     expect(extractFirstTextContent(result)).toContain("# Paseo fleet");
+
+    await client.close();
+    await server.close();
+  });
+
+  // The Slack PR-review dispatcher (n8n workflow "PR review dispatcher") sends
+  // exactly these arguments. A merge that drops one from fleet_create_agent's
+  // schema stops every review from starting.
+  test("fleet_create_agent takes the PR-review dispatcher's arguments; background is refused as removed", async () => {
+    const armed: unknown[] = [];
+    const server = await createFleetMcpServer({
+      hostDependencies: createTestHostDependencies(),
+      clientName: "grok-bot",
+      finishNotifier: {
+        arm: async (input: unknown) => {
+          armed.push(input);
+        },
+      } as unknown as McpFinishNotifier,
+      namedNotifyTargets: new Map([
+        ["n8n-reviews", { url: "https://n8n.example/webhook/review", signingSecret: "s" }],
+      ]),
+    });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "test-client", version: "1.0.0" });
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    const dispatcherArgs = {
+      title: "Review portal#10719",
+      provider: "omp/anthropic/claude-opus-5-5",
+      host: "blrofc3",
+      cwd: "/home/vaibhav/stackmod",
+      isolation: "worktree",
+      initialPrompt: "Review https://github.com/AmbientAI/portal/pull/10719. Report only.",
+      settings: { agentMode: "review", thinkingOptionId: "high" },
+      labels: { "pr-review.url": "https://github.com/AmbientAI/portal/pull/10719" },
+      notifyOnFinish: true,
+      notifyTarget: "n8n-reviews",
+      notifyContext: '{"src":"n8n-pr-review"}',
+      // Places nothing; the call still passes the argument check first.
+      dryRun: true,
+    };
+
+    const accepted = await client.callTool({
+      name: "fleet_create_agent",
+      arguments: dispatcherArgs,
+    });
+    expect(extractFirstTextContent(accepted as { content: unknown[] })).not.toContain(
+      "has no argument",
+    );
+    expect(accepted.isError).toBeFalsy();
+    expect(accepted.structuredContent).toMatchObject({ dryRun: true });
+    expect(armed).toEqual([]);
+
+    const stale = await client.callTool({
+      name: "fleet_create_agent",
+      arguments: { ...dispatcherArgs, background: true },
+    });
+    expect(stale.isError).toBe(true);
+    const text = extractFirstTextContent(stale as { content: unknown[] });
+    expect(text).toContain('"background" (removed:');
+    expect(text).toContain("never waits");
+    // Each valid argument is listed once.
+    expect(text.match(/\bnotifyOnFinish\b/g)).toHaveLength(1);
 
     await client.close();
     await server.close();
