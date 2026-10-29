@@ -7,6 +7,7 @@ import {
 } from "@/assistant-file-links";
 import { useFileExplorerActions } from "@/hooks/use-file-explorer-actions";
 import { revealWorkspaceTab } from "@/workspace-tabs/navigation";
+import { recordFocusedWorkspaceTab } from "@/workspace-tabs/tab-history-navigation";
 import type { LayoutChangeEvent } from "react-native";
 import { ExplorerSidebarDock } from "@/screens/workspace/explorer-sidebar";
 import { ExplorerFrame } from "./explorer-sidebar/frame";
@@ -1643,6 +1644,17 @@ function WorkspaceScreenContent({
 
   const activeTabId = focusedPaneTabState.activeTabId;
   const activeTab = focusedPaneTabState.activeTab;
+  useEffect(() => {
+    if (!isRouteFocused || !persistenceKey || !activeTabId) {
+      return;
+    }
+    recordFocusedWorkspaceTab({
+      serverId: normalizedServerId,
+      workspaceId: normalizedWorkspaceId,
+      workspaceKey: persistenceKey,
+      tabId: activeTabId,
+    });
+  }, [activeTabId, isRouteFocused, normalizedServerId, normalizedWorkspaceId, persistenceKey]);
 
   const tabs = useMemo<WorkspaceTabDescriptor[]>(
     () => focusedPaneTabState.tabs.map((tab) => tab.descriptor),

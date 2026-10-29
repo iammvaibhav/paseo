@@ -31,6 +31,7 @@ export type ShortcutAction =
       fallback?: ShortcutAction;
     }
   | { kind: "navigate-workspace"; serverId: string; workspaceId: string }
+  | { kind: "navigate-tab-history"; mode: TabHistoryMode; delta: 1 | -1 }
   | { kind: "navigate-last-workspace" }
   | { kind: "router-replace"; route: string }
   | { kind: "router-back" }
@@ -76,6 +77,14 @@ const SIMPLE_CALLBACKS: Record<string, ShortcutCallbackName> = {
   "sidebar.toggle.left": "toggle-agent-list",
   "sidebar.toggle.both": "toggle-both-sidebars",
   "theme.cycle": "cycle-theme",
+};
+
+/** "history" steps back/forward through focused tabs; "recent" jumps by recency. */
+export type TabHistoryMode = "history" | "recent";
+
+const TAB_HISTORY_MODES: Record<string, TabHistoryMode> = {
+  "tab.history.navigate": "history",
+  "tab.recent.navigate": "recent",
 };
 
 const MESSAGE_INPUT_DISPATCH: Record<
@@ -195,6 +204,13 @@ export function routeKeyboardShortcut(
   const callback = SIMPLE_CALLBACKS[input.action];
   if (callback) {
     return { kind: "callback", name: callback };
+  }
+
+  const tabHistoryMode = TAB_HISTORY_MODES[input.action];
+  if (tabHistoryMode) {
+    return hasPayloadKey(input.payload, "delta")
+      ? { kind: "navigate-tab-history", mode: tabHistoryMode, delta: input.payload.delta }
+      : NONE;
   }
 
   switch (input.action) {

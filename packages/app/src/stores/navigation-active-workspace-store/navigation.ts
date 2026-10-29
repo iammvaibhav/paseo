@@ -127,6 +127,29 @@ export function navigateToWorkspace(
   return route;
 }
 
+export interface NavigateToWorkspaceTabInput {
+  serverId: string;
+  workspaceId: string;
+  workspaceKey: string;
+  tabId: string;
+}
+
+/**
+ * Shows one exact, existing tab, switching workspace when needed. Unlike
+ * `navigateToWorkspace` it never picks a tab for the user (no attention agent),
+ * which is what tab history needs to land on the tab it recorded.
+ */
+export function navigateToWorkspaceTab(
+  input: NavigateToWorkspaceTabInput,
+  deps: Pick<NavigateToWorkspaceDeps, "revealTab" | "rememberLastWorkspace" | "navigateToRoute">,
+): string {
+  deps.revealTab(input.workspaceKey, input.tabId);
+  const route = buildHostWorkspaceRoute(input.serverId, input.workspaceId);
+  deps.rememberLastWorkspace({ serverId: input.serverId, workspaceId: input.workspaceId });
+  deps.navigateToRoute(route);
+  return route;
+}
+
 export function navigateToLastWorkspace(deps: NavigateToLastWorkspaceDeps): boolean {
   const selection = deps.getLastWorkspaceSelection();
   if (!selection) {

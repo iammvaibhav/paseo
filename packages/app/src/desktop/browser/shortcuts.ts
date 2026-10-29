@@ -44,17 +44,25 @@ interface BrowserShortcutPolicyInput {
 
 /**
  * Paseo actions VS Code has a native twin for, which win while VS Code has focus:
- * Search files (Cmd+P → VS Code's Quick Open) and Open project (Cmd+O → VS Code's
- * Open File path browser).
+ * Search files (Cmd+P → VS Code's Quick Open), Open project (Cmd+O → VS Code's
+ * Open File path browser), and previous/next tab (Cmd+Shift+[ / ] → VS Code's
+ * previous/next editor).
  */
 const EDITOR_NATIVE_ACTIONS: Record<string, true> = {
   "command-center.files": true,
   "agent.new": true,
+  "workspace.tab.navigate.relative": true,
 };
 
-/** Paseo actions that win over VS Code's own binding: Cmd+K is a VS Code chord start. */
+/**
+ * Paseo actions that win over VS Code's own binding: Cmd+K is a VS Code chord
+ * start, and tab history (Cmd+[ / ]) and recent tab (Ctrl+Tab) span every tab
+ * in the app, so VS Code's indent and editor switcher give way to them.
+ */
 const EDITOR_PASEO_ACTIONS: Record<string, true> = {
   "command-center.toggle": true,
+  "tab.history.navigate": true,
+  "tab.recent.navigate": true,
 };
 
 export function shouldPublishBrowserShortcutPolicy(input: {
@@ -134,22 +142,10 @@ function prefixFromCombo(
   return prefix.meta || prefix.control || prefix.alt ? prefix : null;
 }
 
-function isBrowserNativeNavigationPrefix(prefix: BrowserShortcutPrefix, isMac: boolean): boolean {
-  return (
-    isMac &&
-    prefix.meta &&
-    !prefix.control &&
-    !prefix.alt &&
-    !prefix.shift &&
-    (prefix.code === "BracketLeft" || prefix.code === "BracketRight")
-  );
-}
-
 function canCrossBrowserBoundary(binding: ParsedShortcutBinding, isMac: boolean): boolean {
-  return binding.parsedChord.every((combo) => {
-    const prefix = prefixFromCombo(combo, isMac, binding.when?.editable);
-    return prefix !== null && !isBrowserNativeNavigationPrefix(prefix, isMac);
-  });
+  return binding.parsedChord.every(
+    (combo) => prefixFromCombo(combo, isMac, binding.when?.editable) !== null,
+  );
 }
 
 function prefixKey(prefix: BrowserShortcutPrefix): string {

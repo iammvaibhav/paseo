@@ -24,6 +24,7 @@ import {
   routeKeyboardShortcut,
   type ShortcutAction,
   type ShortcutCallbackName,
+  type TabHistoryMode,
 } from "@/keyboard/route-shortcut";
 import { getShortcutOs } from "@/utils/shortcut-platform";
 import { useOpenAddProject } from "@/hooks/use-open-add-project";
@@ -43,6 +44,7 @@ import {
   useActiveWorkspaceSelection,
 } from "@/stores/navigation-active-workspace-store";
 import { dispatchTopWebOverlayKeyDown, keyBelongsToDomPopover } from "@/lib/overlay-root";
+import { navigateTabHistory } from "@/workspace-tabs/tab-history-navigation";
 
 export function useKeyboardShortcuts({
   enabled,
@@ -154,7 +156,14 @@ export function useKeyboardShortcuts({
     return true;
   };
 
-  const captureCommandCenterFocusRestore = (event: KeyboardEvent) => {
+  const captureCommandCenterFocusRestore = (
+    event: KeyboardEvent | null,
+    browserFocusRestoreElement: HTMLElement | null,
+  ) => {
+    if (!event) {
+      setCommandCenterFocusRestoreElement(browserFocusRestoreElement);
+      return;
+    }
     const target = event.target instanceof Element ? event.target : null;
     const targetEl =
       target?.closest?.("textarea, input, [contenteditable='true']") ??
@@ -162,6 +171,18 @@ export function useKeyboardShortcuts({
     const active = document.activeElement;
     const activeEl = active instanceof HTMLElement ? active : null;
     setCommandCenterFocusRestoreElement((targetEl as HTMLElement | null) ?? activeEl ?? null);
+  };
+
+  const showTabHistory = (mode: TabHistoryMode, delta: 1 | -1): boolean => {
+    const entry = navigateTabHistory(mode, delta);
+    if (!entry) {
+      return false;
+    }
+    keyboardWorkspaceSelectionRef.current = {
+      serverId: entry.serverId,
+      workspaceId: entry.workspaceId,
+    };
+    return true;
   };
 
   const callbacksByName: Record<ShortcutCallbackName, (() => void) | undefined> = {
@@ -192,6 +213,8 @@ export function useKeyboardShortcuts({
         };
         navigateToWorkspace({ serverId: action.serverId, workspaceId: action.workspaceId });
         return true;
+      case "navigate-tab-history":
+        return showTabHistory(action.mode, action.delta);
       case "navigate-last-workspace":
         if (navigateToLastWorkspace()) {
           return true;
@@ -215,11 +238,7 @@ export function useKeyboardShortcuts({
         return true;
       case "command-center-toggle": {
         if (action.nextOpen) {
-          if (event) {
-            captureCommandCenterFocusRestore(event);
-          } else {
-            setCommandCenterFocusRestoreElement(browserFocusRestoreElement);
-          }
+          captureCommandCenterFocusRestore(event, browserFocusRestoreElement);
         }
         useKeyboardShortcutsStore
           .getState()

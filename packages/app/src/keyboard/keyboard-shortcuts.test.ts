@@ -227,6 +227,48 @@ describe("keyboard-shortcuts", () => {
       payload: { delta: 1 },
     },
     {
+      name: "matches Cmd+[ to tab history back on mac",
+      event: { key: "[", code: "BracketLeft", metaKey: true },
+      context: { isMac: true, isDesktop: true },
+      action: "tab.history.navigate",
+      payload: { delta: -1 },
+    },
+    {
+      name: "matches Cmd+] to tab history forward from a focused terminal",
+      event: { key: "]", code: "BracketRight", metaKey: true },
+      context: { isMac: true, isDesktop: true, focusScope: "terminal" },
+      action: "tab.history.navigate",
+      payload: { delta: 1 },
+    },
+    {
+      name: "matches Cmd+Shift+[ to previous tab in the workspace on mac desktop",
+      event: { key: "{", code: "BracketLeft", metaKey: true, shiftKey: true },
+      context: { isMac: true, isDesktop: true },
+      action: "workspace.tab.navigate.relative",
+      payload: { delta: -1 },
+    },
+    {
+      name: "matches Cmd+Shift+] to next tab in the workspace from a text field",
+      event: { key: "}", code: "BracketRight", metaKey: true, shiftKey: true },
+      context: { isMac: true, isDesktop: true, focusScope: "message-input" },
+      action: "workspace.tab.navigate.relative",
+      payload: { delta: 1 },
+    },
+    {
+      name: "matches Ctrl+Tab to the most recently used tab on desktop",
+      event: { key: "Tab", code: "Tab", ctrlKey: true },
+      context: { isMac: true, isDesktop: true, focusScope: "terminal" },
+      action: "tab.recent.navigate",
+      payload: { delta: 1 },
+    },
+    {
+      name: "matches Ctrl+Shift+Tab to the least recently used tab on desktop",
+      event: { key: "Tab", code: "Tab", ctrlKey: true, shiftKey: true },
+      context: { isMac: false, isDesktop: true },
+      action: "tab.recent.navigate",
+      payload: { delta: -1 },
+    },
+    {
       name: "matches Mod+T to open new tab",
       event: { key: "t", code: "KeyT", metaKey: true },
       context: { isMac: true },
@@ -408,6 +450,26 @@ describe("keyboard-shortcuts", () => {
   });
 
   const nonMatchingCases: NonMatchingShortcutCase[] = [
+    {
+      name: "leaves Ctrl+Tab to the browser on web",
+      event: { key: "Tab", code: "Tab", ctrlKey: true },
+      context: { isMac: true, isDesktop: false },
+    },
+    {
+      name: "leaves Cmd+Shift+[ to the browser's own tabs on web",
+      event: { key: "{", code: "BracketLeft", metaKey: true, shiftKey: true },
+      context: { isMac: true, isDesktop: false },
+    },
+    {
+      name: "does not bind Cmd+Left, which editors and terminals use",
+      event: { key: "ArrowLeft", code: "ArrowLeft", metaKey: true },
+      context: { isMac: true, isDesktop: true },
+    },
+    {
+      name: "does not bind Ctrl+[ on non-mac, where it is Escape in a terminal",
+      event: { key: "[", code: "BracketLeft", ctrlKey: true },
+      context: { isMac: false, isDesktop: true, focusScope: "terminal" },
+    },
     {
       name: "does not keep old Mod+Alt+N binding",
       event: { key: "n", code: "KeyN", metaKey: true, altKey: true },

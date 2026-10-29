@@ -12,9 +12,11 @@ import {
 import {
   navigateToLastWorkspace as navigateToLastWorkspacePure,
   navigateToWorkspace as navigateToWorkspacePure,
+  navigateToWorkspaceTab as navigateToWorkspaceTabPure,
   parseActiveWorkspaceSelection,
   type NavigateToWorkspaceDeps,
   type NavigateToWorkspaceInput,
+  type NavigateToWorkspaceTabInput,
 } from "./navigation";
 import { useSessionStore } from "@/stores/session-store";
 import { useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
@@ -22,7 +24,7 @@ import { stripHostWorkspaceRouteEchoSearchFromBrowserUrlAfterCommit } from "@/ut
 import { navigateToHostWorkspaceRoute } from "@/navigation/workspace-route-navigation";
 
 export type { ActiveWorkspaceSelection } from "@/stores/last-workspace-selection";
-export type { NavigateToWorkspaceInput } from "./navigation";
+export type { NavigateToWorkspaceInput, NavigateToWorkspaceTabInput } from "./navigation";
 
 const lastWorkspaceSelectionStorage: LastWorkspaceSelectionStorage = {
   read: () => AsyncStorage.getItem(LAST_WORKSPACE_SELECTION_STORAGE_KEY),
@@ -70,6 +72,10 @@ export function getIsLastWorkspaceSelectionHydrated(): boolean {
 
 export function navigateToWorkspace(input: NavigateToWorkspaceInput): string {
   return navigateToWorkspacePure(input, navigateDeps());
+}
+
+export function navigateToWorkspaceTab(input: NavigateToWorkspaceTabInput): string {
+  return navigateToWorkspaceTabPure(input, navigateDeps());
 }
 
 export function navigateToLastWorkspace(): boolean {

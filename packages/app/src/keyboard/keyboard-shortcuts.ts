@@ -184,6 +184,10 @@ export const SHORTCUT_HELP_ROW_ORDER: Record<ShortcutSectionId, readonly string[
     "workspace-tab-jump-index",
     "workspace-tab-prev",
     "workspace-tab-next",
+    "tab-history-back",
+    "tab-history-forward",
+    "tab-recent",
+    "tab-least-recent",
     "workspace-pane-split-right",
     "workspace-pane-split-down",
     "workspace-pane-focus-left",
@@ -224,6 +228,10 @@ const SHORTCUT_HELP_LABEL_KEYS: Record<string, string> = {
   "workspace-next": "settings.shortcuts.help.nextWorkspace",
   "workspace-tab-prev": "settings.shortcuts.help.previousTab",
   "workspace-tab-next": "settings.shortcuts.help.nextTab",
+  "tab-history-back": "settings.shortcuts.help.tabHistoryBack",
+  "tab-history-forward": "settings.shortcuts.help.tabHistoryForward",
+  "tab-recent": "settings.shortcuts.help.recentTab",
+  "tab-least-recent": "settings.shortcuts.help.leastRecentTab",
   "workspace-pane-split-right": "settings.shortcuts.help.splitPaneRight",
   "workspace-pane-split-down": "settings.shortcuts.help.splitPaneDown",
   "workspace-pane-focus-left": "settings.shortcuts.help.focusPaneLeft",
@@ -618,10 +626,12 @@ const SHORTCUT_BINDINGS: readonly ShortcutBinding[] = [
   },
 
   // --- Workspace relative navigation ---
+  // Cmd+[ / Cmd+] belong to tab history on macOS, so the mac workspace bindings
+  // ship without keys. The ids stay so saved overrides keep working.
   {
     id: "workspace-navigate-relative-cmd-left-mac",
     action: "workspace.navigate.relative",
-    combo: "Cmd+[",
+    combo: "",
     when: { mac: true, desktop: true, commandCenter: false },
     payload: { type: "delta", delta: -1 },
     help: {
@@ -645,7 +655,7 @@ const SHORTCUT_BINDINGS: readonly ShortcutBinding[] = [
   {
     id: "workspace-navigate-relative-cmd-right-mac",
     action: "workspace.navigate.relative",
-    combo: "Cmd+]",
+    combo: "",
     when: { mac: true, desktop: true, commandCenter: false },
     payload: { type: "delta", delta: 1 },
     help: {
@@ -691,7 +701,110 @@ const SHORTCUT_BINDINGS: readonly ShortcutBinding[] = [
     },
   },
 
+  // --- Tab history (every focused tab, across workspaces) ---
+  {
+    id: "tab-history-back-cmd-left-bracket-mac",
+    action: "tab.history.navigate",
+    combo: "Cmd+[",
+    when: { mac: true, commandCenter: false },
+    payload: { type: "delta", delta: -1 },
+    help: {
+      id: "tab-history-back",
+      section: "tabs-panes",
+      label: "Back to previous tab",
+    },
+  },
+  {
+    // Ctrl+[ is Escape in a terminal, so non-mac ships without keys.
+    id: "tab-history-back-non-mac",
+    action: "tab.history.navigate",
+    combo: "",
+    when: { mac: false, commandCenter: false },
+    payload: { type: "delta", delta: -1 },
+    help: {
+      id: "tab-history-back",
+      section: "tabs-panes",
+      label: "Back to previous tab",
+    },
+  },
+  {
+    id: "tab-history-forward-cmd-right-bracket-mac",
+    action: "tab.history.navigate",
+    combo: "Cmd+]",
+    when: { mac: true, commandCenter: false },
+    payload: { type: "delta", delta: 1 },
+    help: {
+      id: "tab-history-forward",
+      section: "tabs-panes",
+      label: "Forward to next tab",
+    },
+  },
+  {
+    id: "tab-history-forward-non-mac",
+    action: "tab.history.navigate",
+    combo: "",
+    when: { mac: false, commandCenter: false },
+    payload: { type: "delta", delta: 1 },
+    help: {
+      id: "tab-history-forward",
+      section: "tabs-panes",
+      label: "Forward to next tab",
+    },
+  },
+
+  // --- Recently used tab (browsers reserve Ctrl+Tab, so desktop only) ---
+  {
+    id: "tab-recent-ctrl-tab-desktop",
+    action: "tab.recent.navigate",
+    combo: "Ctrl+Tab",
+    when: { desktop: true, commandCenter: false },
+    payload: { type: "delta", delta: 1 },
+    help: {
+      id: "tab-recent",
+      section: "tabs-panes",
+      label: "Most recently used tab",
+    },
+  },
+  {
+    id: "tab-least-recent-ctrl-shift-tab-desktop",
+    action: "tab.recent.navigate",
+    combo: "Ctrl+Shift+Tab",
+    when: { desktop: true, commandCenter: false },
+    payload: { type: "delta", delta: -1 },
+    help: {
+      id: "tab-least-recent",
+      section: "tabs-panes",
+      label: "Least recently used tab",
+    },
+  },
+
   // --- Tab relative navigation ---
+  // Listed before the Alt+Shift pair so the help sheet shows Cmd+Shift on mac desktop.
+  // Browsers keep Cmd+Shift+[ / ] for their own tabs, hence desktop only.
+  {
+    id: "workspace-tab-navigate-relative-cmd-shift-left-mac-desktop",
+    action: "workspace.tab.navigate.relative",
+    combo: "Cmd+Shift+[",
+    when: { mac: true, desktop: true, commandCenter: false },
+    payload: { type: "delta", delta: -1 },
+    help: {
+      id: "workspace-tab-prev",
+      section: "tabs-panes",
+      label: "Previous tab",
+    },
+  },
+  {
+    id: "workspace-tab-navigate-relative-cmd-shift-right-mac-desktop",
+    action: "workspace.tab.navigate.relative",
+    combo: "Cmd+Shift+]",
+    when: { mac: true, desktop: true, commandCenter: false },
+    payload: { type: "delta", delta: 1 },
+    help: {
+      id: "workspace-tab-next",
+      section: "tabs-panes",
+      label: "Next tab",
+    },
+  },
   {
     id: "workspace-tab-navigate-relative-alt-shift-left",
     action: "workspace.tab.navigate.relative",
