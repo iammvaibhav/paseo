@@ -1,7 +1,7 @@
 import type { ComponentType } from "react";
 import { i18n } from "@/i18n/i18next";
 import type { PanelDescriptor, PanelIconProps } from "@/panels/panel-registry";
-import { stripTicketPrefix } from "./agent-tab-presentation";
+import { stripTicketPrefix } from "@/agent-presentation/title";
 
 export function buildDraftPanelDescriptor(input: {
   isCreating: boolean;

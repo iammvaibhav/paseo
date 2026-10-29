@@ -1,13 +1,6 @@
-import { AssistantMarkdownImage } from "@/components/assistant-markdown-image";
+import { MarkdownRenderer } from "@/components/markdown/renderer";
 import { useToolCallImageSource } from "@/tool-calls/image-source-context";
-import React, {
-  createContext,
-  useCallback,
-  useContext,
-  useMemo,
-  useRef,
-  type ReactNode,
-} from "react";
+import { createContext, useCallback, useContext, useMemo, useRef, type ReactNode } from "react";
 import {
   View,
   Text,
@@ -27,7 +20,7 @@ import { fleetToolLeafName } from "@getpaseo/protocol/tool-call-display";
 import {
   buildPaseoToolDetailSections,
   type PaseoToolDetailSection,
-} from "@getpaseo/protocol/paseo-tool-call-detail";
+} from "@getpaseo/protocol/paseo-tool-presentation/index";
 import { buildLineDiff, parseUnifiedDiff, type DiffLine } from "@/utils/tool-call-parsers";
 import { highlightDiffLines } from "@/utils/diff-highlight";
 import { hasMeaningfulToolCallDetail } from "@/utils/tool-call-detail-state";
@@ -425,48 +418,6 @@ function WebSearchDetailSection({ model, ds }: { model: WebSearchDetailModel; ds
           </View>
         ) : null}
       </ScrollView>
-    </View>
-  );
-}
-
-interface WorktreeSetupDetailProps {
-  log: string;
-  branchName: string;
-  worktreePath: string;
-  ds: DetailStyles;
-}
-
-function WorktreeSetupDetailSection({
-  log,
-  branchName,
-  worktreePath,
-  ds,
-}: WorktreeSetupDetailProps) {
-  const setupLog = log.replace(/^\n+/, "");
-  const hasLog = setupLog.length > 0;
-  return (
-    <View style={ds.sectionFillStyle}>
-      <View style={ds.codeBlockFillStyle}>
-        <ScrollView
-          style={ds.codeVerticalScrollStyle}
-          contentContainerStyle={styles.codeVerticalContent}
-          nestedScrollEnabled
-          showsVerticalScrollIndicator
-        >
-          <ScrollView
-            horizontal
-            nestedScrollEnabled
-            showsHorizontalScrollIndicator
-            contentContainerStyle={styles.codeHorizontalContent}
-          >
-            <View style={styles.codeLine} dataSet={CODE_SURFACE_DATASET}>
-              <Text selectable style={styles.scrollText}>
-                {hasLog ? setupLog : `Preparing worktree ${branchName} at ${worktreePath}`}
-              </Text>
-            </View>
-          </ScrollView>
-        </ScrollView>
-      </View>
     </View>
   );
 }
@@ -1036,17 +987,7 @@ function buildDetailSections(
       <ShellDetailSection key="shell" command={detail.command} output={detail.output} ds={ds} />,
     ];
   }
-  if (detail.type === "worktree_setup") {
-    return [
-      <WorktreeSetupDetailSection
-        key="worktree-setup"
-        log={detail.log}
-        branchName={detail.branchName}
-        worktreePath={detail.worktreePath}
-        ds={ds}
-      />,
-    ];
-  }
+  if (detail.type === "worktree_setup") return [];
   if (detail.type === "sub_agent") {
     return [
       <SubAgentDetailSection
@@ -1122,13 +1063,13 @@ const IMAGE_FILE_PATTERN = /\.(png|jpe?g|gif|webp|bmp|avif)$/i;
 /** A read of an image file shows the image itself, loaded from the agent's host. */
 function ReadImageSection({ filePath }: { filePath: string }) {
   const source = useToolCallImageSource();
+  // Angle brackets keep spaces and parentheses in the path inside the image destination.
+  const markdown = useMemo(() => `![${filePath}](<${filePath}>)`, [filePath]);
   return (
     <View style={styles.readImage}>
-      <AssistantMarkdownImage
-        source={filePath}
-        occurrenceKey={`tool-read:${filePath}`}
-        alt={filePath}
-        hasLeadingContent={false}
+      <MarkdownRenderer
+        text={markdown}
+        compact
         client={source?.client}
         serverId={source?.serverId}
         workspaceRoot={source?.workspaceRoot}

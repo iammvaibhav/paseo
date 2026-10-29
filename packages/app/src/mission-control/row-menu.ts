@@ -1,4 +1,4 @@
-import { stripTicketPrefix } from "@/panels/agent-tab-presentation";
+import { stripTicketPrefix } from "@/agent-presentation/title";
 import type { LifecycleRow } from "./lifecycle";
 
 /**

@@ -3,7 +3,6 @@ import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { createNameId } from "mnemonic-id";
 import type { Logger } from "pino";
-import { PaseoWorktreeWarmPoolConfigRawSchema } from "@getpaseo/protocol/paseo-config-schema";
 import type { WorkspaceGitService } from "./workspace-git-service.js";
 import type { ProjectRegistry } from "./workspace-registry.js";
 import {
@@ -21,7 +20,7 @@ import {
   type WorktreeSource,
   type WorktreeSourcePlan,
 } from "../utils/worktree.js";
-import { readPaseoConfigJson } from "../utils/paseo-config-file.js";
+import { readPaseoConfig } from "../utils/paseo-config-file.js";
 import { runGitCommand, runWithGitCommandPriority } from "../utils/run-git-command.js";
 import {
   readPaseoWorktreeRuntimePort,
@@ -55,7 +54,6 @@ export interface WarmWorktreeClaimOptions {
   source: WorktreeSource;
   paseoHome?: string;
   worktreesRoot?: string;
-  runSetup?: boolean;
   /** Called with the tree's path as soon as it is reserved, before the claim's git work. */
   onReserved?: (worktreePath: string) => void;
 }
@@ -139,9 +137,9 @@ const LEGACY_WARM_SLUG_PREFIX = ".warm-";
  * What a tree's setup depends on besides its commit: the setup commands
  * themselves. A claim reuses the provisioning run only when this still matches.
  */
-function computeWorktreeSetupFingerprint(worktreePath: string): string {
+async function computeWorktreeSetupFingerprint(worktreePath: string): Promise<string> {
   return createHash("sha256")
-    .update(JSON.stringify(getWorktreeSetupCommands(worktreePath)))
+    .update(JSON.stringify(await getWorktreeSetupCommands(worktreePath)))
     .digest("hex");
 }
 
@@ -150,9 +148,12 @@ function computeWorktreeSetupFingerprint(worktreePath: string): string {
  * runtime section, so the port setup ran with is carried over: the
  * workspace's services must agree with whatever setup baked in.
  */
-function writeClaimedWorktreeMetadata(worktreePath: string, sourcePlan: WorktreeSourcePlan): void {
-  const provisionedPort = readPaseoWorktreeRuntimePort(worktreePath);
-  writePaseoWorktreeMetadata(worktreePath, {
+async function writeClaimedWorktreeMetadata(
+  worktreePath: string,
+  sourcePlan: WorktreeSourcePlan,
+): Promise<void> {
+  const provisionedPort = await readPaseoWorktreeRuntimePort(worktreePath);
+  await writePaseoWorktreeMetadata(worktreePath, {
     baseRefName: sourcePlan.metadataBaseRefName,
     ...(sourcePlan.metadataBaseRef ? { baseRef: sourcePlan.metadataBaseRef } : {}),
     ...(sourcePlan.changeRequestLookupTarget
@@ -160,7 +161,7 @@ function writeClaimedWorktreeMetadata(worktreePath: string, sourcePlan: Worktree
       : {}),
   });
   if (provisionedPort !== null) {
-    writePaseoWorktreeRuntimeMetadata(worktreePath, { worktreePort: provisionedPort });
+    await writePaseoWorktreeRuntimeMetadata(worktreePath, { worktreePort: provisionedPort });
   }
 }
 
@@ -241,8 +242,8 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
       return null;
     }
     const timer = createPhaseTimer();
-    const repoRoot = normalizePathForOwnership(resolve(options.repoRoot));
-    if (!this.resolvePoolEnabled(repoRoot)) {
+    const repoRoot = await normalizePathForOwnership(resolve(options.repoRoot));
+    if (!(await this.resolvePoolEnabled(repoRoot))) {
       return null;
     }
     // Warm trees are provisioned at their final path under the pool's
@@ -342,31 +343,23 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
       }
       timer.mark("remotesMs");
 
-      writeClaimedWorktreeMetadata(worktreePath, sourcePlan);
+      await writeClaimedWorktreeMetadata(worktreePath, sourcePlan);
 
       await seedPaseoConfigFile({ sourceCwd: repoRoot, targetCwd: worktreePath });
 
       // Setup already ran here during provisioning. It is still valid when the
       // claim kept the same commit and the project's setup commands are
-      // unchanged; otherwise (stale base, other branch, edited setup) it must
-      // run again against what is now checked out.
+      // unchanged; otherwise (stale base, other branch, edited setup) the
+      // workspace's setup runs it again against what is now checked out.
       const setupPrepared =
         headAlreadyAtTarget &&
         reserved.setupFingerprint !== null &&
-        reserved.setupFingerprint === computeWorktreeSetupFingerprint(worktreePath);
+        reserved.setupFingerprint === (await computeWorktreeSetupFingerprint(worktreePath));
       timer.mark("metadataMs");
-
-      if (options.runSetup === true && !setupPrepared) {
-        await runWorktreeSetupCommands({
-          worktreePath,
-          branchName: sourcePlan.branchName,
-          cleanupOnFailure: true,
-        });
-      }
 
       // Unmarking makes the tree a regular Paseo worktree, visible in listings.
       removeWarmWorktreeMarker(worktreePath);
-      timer.mark("setupMs");
+      timer.mark("unmarkMs");
 
       this.logger.info(
         {
@@ -425,7 +418,7 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
         const projects = await this.projectRegistry.list();
         for (const project of projects) {
           if (!project.archivedAt && project.rootPath) {
-            candidateRoots.add(normalizePathForOwnership(resolve(project.rootPath)));
+            candidateRoots.add(await normalizePathForOwnership(resolve(project.rootPath)));
           }
         }
       } catch (error) {
@@ -454,8 +447,8 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
   public async replenish(repoRoot: string): Promise<void> {
     if (this.isStopped) return;
 
-    const normalizedRoot = normalizePathForOwnership(resolve(repoRoot));
-    if (!this.resolvePoolEnabled(normalizedRoot)) return;
+    const normalizedRoot = await normalizePathForOwnership(resolve(repoRoot));
+    if (!(await this.resolvePoolEnabled(normalizedRoot))) return;
 
     const isGit = await this.isGitRepo(normalizedRoot);
     if (!isGit) return;
@@ -463,7 +456,7 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
     const { needed, stale } = await this.withRepoLock(normalizedRoot, async () => {
       await this.discoverExistingWarmWorktrees(normalizedRoot);
 
-      const targetIdle = this.resolveTargetIdle(normalizedRoot);
+      const targetIdle = await this.resolveTargetIdle(normalizedRoot);
       const records = this.pools.get(normalizedRoot) ?? [];
       // A tree is fresh while it sits at the base's current tip. When the
       // base cannot be resolved, treat everything as fresh rather than churn.
@@ -510,7 +503,7 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
 
   public async prune(repoRoot?: string): Promise<void> {
     const rootsToPrune = repoRoot
-      ? [normalizePathForOwnership(resolve(repoRoot))]
+      ? [await normalizePathForOwnership(resolve(repoRoot))]
       : Array.from(this.pools.keys());
 
     for (const root of rootsToPrune) {
@@ -601,41 +594,31 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
     }
   }
 
-  private readProjectWarmPoolConfig(repoRoot: string): {
+  private async readProjectWarmPoolConfig(repoRoot: string): Promise<{
     enabled?: boolean;
     targetIdle?: number;
     baseRef?: string;
-  } {
+  }> {
     try {
-      const raw = readPaseoConfigJson(repoRoot);
-      const parsed = PaseoWorktreeWarmPoolConfigRawSchema.safeParse(
-        raw &&
-          typeof raw === "object" &&
-          "worktree" in raw &&
-          raw.worktree &&
-          typeof raw.worktree === "object" &&
-          "warmPool" in raw.worktree
-          ? raw.worktree.warmPool
-          : undefined,
-      );
-      if (!parsed.success) return {};
+      const result = await readPaseoConfig(repoRoot);
+      const warmPool = result.ok ? result.config?.worktree?.warmPool : undefined;
       return {
-        enabled: parsed.data.enabled,
-        targetIdle: parsed.data.targetIdle,
-        baseRef: parsed.data.baseRef,
+        enabled: warmPool?.enabled,
+        targetIdle: warmPool?.targetIdle,
+        baseRef: warmPool?.baseRef,
       };
     } catch {
       return {};
     }
   }
 
-  private resolvePoolEnabled(repoRoot: string): boolean {
+  private async resolvePoolEnabled(repoRoot: string): Promise<boolean> {
     const config = this.readConfig?.();
     if (config?.enabled !== undefined) {
       return config.enabled;
     }
 
-    const projectWarmPool = this.readProjectWarmPoolConfig(repoRoot);
+    const projectWarmPool = await this.readProjectWarmPoolConfig(repoRoot);
     if (projectWarmPool.enabled !== undefined) {
       return projectWarmPool.enabled;
     }
@@ -643,13 +626,13 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
     return this.defaultEnabled;
   }
 
-  private resolveTargetIdle(repoRoot: string): number {
+  private async resolveTargetIdle(repoRoot: string): Promise<number> {
     const config = this.readConfig?.();
     if (typeof config?.targetIdle === "number" && config.targetIdle >= 0) {
       return config.targetIdle;
     }
 
-    const projectWarmPool = this.readProjectWarmPoolConfig(repoRoot);
+    const projectWarmPool = await this.readProjectWarmPoolConfig(repoRoot);
     if (projectWarmPool.targetIdle !== undefined) {
       return projectWarmPool.targetIdle;
     }
@@ -662,7 +645,7 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
     if (config?.baseRef) {
       return config.baseRef;
     }
-    const projectBaseRef = this.readProjectWarmPoolConfig(repoRoot).baseRef;
+    const projectBaseRef = (await this.readProjectWarmPoolConfig(repoRoot)).baseRef;
     if (projectBaseRef) {
       return projectBaseRef;
     }
@@ -758,7 +741,7 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
       const listedPaths = new Set<string>();
 
       for (const entry of worktrees) {
-        const worktreePath = normalizePathForOwnership(entry.path);
+        const worktreePath = await normalizePathForOwnership(entry.path);
         listedPaths.add(worktreePath);
         if (this.claimingPaths.has(worktreePath)) {
           // Mid-claim: still marked, but already handed to a workspace.
@@ -801,7 +784,7 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
 
       this.pools.set(repoRoot, updatedRecords);
 
-      const projectRoot = normalizePathForOwnership(
+      const projectRoot = await normalizePathForOwnership(
         await getPaseoWorktreesRoot(repoRoot, this.paseoHome, this.worktreesRoot),
       );
       for (const markedPath of listWarmWorktreeMarkedPaths(projectRoot)) {
@@ -838,7 +821,7 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
         const freshCount = records.filter(
           (r) => r.status === "provisioning" || (r.status === "idle" && r.baseSha === baseSha),
         ).length;
-        if (freshCount >= this.resolveTargetIdle(repoRoot)) {
+        if (freshCount >= (await this.resolveTargetIdle(repoRoot))) {
           return null;
         }
 
@@ -853,7 +836,7 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
           this.worktreesRoot,
         );
         mkdirSync(unresolvedRoot, { recursive: true });
-        const projectRoot = normalizePathForOwnership(unresolvedRoot);
+        const projectRoot = await normalizePathForOwnership(unresolvedRoot);
         let slug = createNameId();
         while (
           existsSync(join(projectRoot, slug)) ||
@@ -907,16 +890,16 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
       // Metadata first: setup resolves PASEO_WORKTREE_PORT and persists it into
       // the metadata, and the claim keeps that port, so whatever setup baked in
       // (an .env, a dev-server config) still matches the workspace's services.
-      writePaseoWorktreeMetadata(record.worktreePath, {
+      await writePaseoWorktreeMetadata(record.worktreePath, {
         baseRefName: sourceRef,
       });
 
+      // A failed setup throws into the catch below, which removes the tree.
       await runWorktreeSetupCommands({
         worktreePath: record.worktreePath,
         branchName: sourceRef,
-        cleanupOnFailure: true,
       });
-      const setupFingerprint = computeWorktreeSetupFingerprint(record.worktreePath);
+      const setupFingerprint = await computeWorktreeSetupFingerprint(record.worktreePath);
 
       writeWarmWorktreeMarker(record.worktreePath, {
         version: 1,

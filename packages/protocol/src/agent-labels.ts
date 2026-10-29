@@ -1,3 +1,5 @@
+import type { AgentAddress } from "./addresses.js";
+export const PARENT_SERVER_ID_LABEL = "paseo.parent-server-id";
 export const PARENT_AGENT_ID_LABEL = "paseo.parent-agent-id";
 export const SELECTION_ASK_LABEL = "paseo.selection-ask";
 export const SELECTION_ASK_SOURCE_LABEL = "paseo.selection-ask.source-agent-id";
@@ -109,4 +111,24 @@ export function hasOpenAgentTab(labels: Record<string, unknown> | null | undefin
   return Object.entries(labels ?? {}).some(
     ([label, value]) => isOpenAgentTabLabel(label) && value === "true",
   );
+}
+
+// Absent parent server label means the same host.
+export function getParentAddressFromLabels(
+  labels: Record<string, unknown> | null | undefined,
+  serverId: string,
+): AgentAddress | null {
+  const agentId = getParentAgentIdFromLabels(labels);
+  if (!agentId) return null;
+  const parentServerId = labels?.[PARENT_SERVER_ID_LABEL];
+  return {
+    serverId:
+      typeof parentServerId === "string" && parentServerId.trim()
+        ? parentServerId.trim()
+        : serverId,
+    agentId,
+  };
+}
+export function parentAddressLabels(parent: AgentAddress): Record<string, string> {
+  return { [PARENT_AGENT_ID_LABEL]: parent.agentId, [PARENT_SERVER_ID_LABEL]: parent.serverId };
 }

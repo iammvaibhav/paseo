@@ -32,21 +32,6 @@ vi.mock("@/components/tool-call-sheet", () => {
 
 vi.mock("@/components/markdown/renderer", () => ({
   MarkdownRenderer: () => null,
-  addMathPlugin: () => {},
-  createMathRenderRules: () => ({}),
-}));
-
-vi.mock("@/components/markdown/rich-fence", () => ({
-  renderRichFence: () => null,
-}));
-
-vi.mock("@/components/markdown-text", () => ({
-  MarkdownParagraphView: () => null,
-  MarkdownTextSpan: () => null,
-}));
-
-vi.mock("@/components/markdown-text-selection", () => ({
-  MarkdownTableCellText: () => null,
 }));
 
 vi.mock("expo-clipboard", () => ({
@@ -113,17 +98,9 @@ vi.mock("@/components/attachment-lightbox", () => ({
   AttachmentLightbox: () => null,
 }));
 
-vi.mock("@/assistant-image/use-assistant-image", () => ({
-  useAssistantImage: () => null,
-}));
-
 vi.mock("@/components/attachment-pill", () => ({
   getAttachmentPillContent: () => null,
   AttachmentPill: () => null,
-}));
-
-vi.mock("@/utils/markdown-ast", () => ({
-  markdownNodeContainsType: () => false,
 }));
 
 vi.mock("@/utils/assistant-markdown-parser", () => ({
@@ -132,11 +109,6 @@ vi.mock("@/utils/assistant-markdown-parser", () => ({
 
 vi.mock("@/components/message-compaction-label", () => ({
   getCompactionMarkerLabel: () => null,
-}));
-
-vi.mock("@/utils/markdown-list", () => ({
-  getMarkdownListMarker: () => null,
-  getMarkdownListSpacing: () => undefined,
 }));
 
 vi.mock("@/components/ui/loading-spinner", () => ({
@@ -168,6 +140,8 @@ vi.mock("@/utils/rich-clipboard-default-environment", () => ({
 
 import { ToolCall } from "@/components/message";
 import { ToolCallSheetProvider } from "@/components/tool-call-sheet";
+import { createToolCallExpansion } from "@/tool-calls/expansion";
+import { ToolCallExpansionContext } from "@/tool-calls/expansion-context";
 
 const THOUGHT_TEXT = "step one: inspect the fleet roster before steering";
 
@@ -175,11 +149,20 @@ function renderToolCall(extra: Partial<Parameters<typeof ToolCall>[0]> = {}) {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
+  const expansion = createToolCallExpansion();
   act(() => {
     root.render(
-      <ToolCallSheetProvider>
-        <ToolCall toolName="thinking" args={THOUGHT_TEXT} status="completed" {...extra} />
-      </ToolCallSheetProvider>,
+      <ToolCallExpansionContext.Provider value={expansion}>
+        <ToolCallSheetProvider>
+          <ToolCall
+            itemId="thought"
+            toolName="thinking"
+            args={THOUGHT_TEXT}
+            status="completed"
+            {...extra}
+          />
+        </ToolCallSheetProvider>
+      </ToolCallExpansionContext.Provider>,
     );
   });
   return { container, root };

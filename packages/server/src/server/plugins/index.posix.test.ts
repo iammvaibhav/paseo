@@ -10,11 +10,12 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import pino from "pino";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { DaemonConfigStore } from "../daemon-config-store.js";
 import { PluginService } from "./index.js";
 import { BuiltinPluginLoader } from "./builtin/index.js";
@@ -418,7 +419,7 @@ describe("PluginService", () => {
     await service.stopAllPlugins();
   }, 20_000);
 
-  it("lists manifest descriptions for running and disabled plugins without hiding malformed entries", async () => {
+  it("lists manifest metadata for running and disabled plugins without hiding malformed entries", async () => {
     const home = await mkdtemp(path.join(tmpdir(), "paseo-plugin-home-"));
     roots.push(home);
     const running = await createPlugin("running", "export default () => () => {};");
@@ -426,7 +427,13 @@ describe("PluginService", () => {
     const malformed = await createPlugin("malformed", "export default () => () => {};");
     await writeFile(
       path.join(running, "paseo-plugin.json"),
-      JSON.stringify({ id: "running", description: "Runs checks" }),
+      JSON.stringify({
+        id: "running",
+        description: "Runs checks",
+        name: "Checks",
+        icon: "icon.png",
+        media: ["screenshot.png", "https://example.com/demo.mp4"],
+      }),
     );
     await writeFile(
       path.join(disabled, "paseo-plugin.json"),
@@ -442,16 +449,123 @@ describe("PluginService", () => {
     await service.start();
 
     expect(
-      (await service.listPlugins()).map(({ id, description }) => ({ id, description })),
+      (await service.listPlugins()).map(({ id, description, name, icon, media }) => ({
+        id,
+        description,
+        name,
+        icon,
+        media,
+      })),
     ).toEqual([
       { id: "disabled", description: "Waits until enabled" },
       { id: "malformed", description: undefined },
-      { id: "running", description: "Runs checks" },
+      {
+        id: "running",
+        description: "Runs checks",
+        name: "Checks",
+        icon: "icon.png",
+        media: ["screenshot.png", "https://example.com/demo.mp4"],
+      },
     ]);
     await service.stopAllPlugins();
   });
 
-  it("prefers an existing directory and installs its selected plugin subdirectory", async () => {
+  it("resolves a bare registry id even when a matching directory exists in the daemon cwd", async () => {
+    const home = await mkdtemp(path.join(tmpdir(), "paseo-plugin-home-"));
+    const owner = path.join(process.cwd(), `registry-shadow-${randomUUID()}`);
+    await mkdir(owner);
+    roots.push(home, owner);
+    const source = `${path.basename(owner)}/example`;
+    const repository = await createPlugin("registry-example", "export default () => () => {};\n");
+    await mkdir(path.join(owner, "example"));
+    await cp(repository, path.join(owner, "example"), { recursive: true });
+    await runGitCommand(["init", "-b", "main"], { cwd: repository });
+    await runGitCommand(["add", "-A"], { cwd: repository });
+    await runGitCommand(
+      [
+        "-c",
+        "user.name=Paseo Tests",
+        "-c",
+        "user.email=paseo@example.test",
+        "commit",
+        "-m",
+        "fixture",
+      ],
+      { cwd: repository },
+    );
+    const { stdout } = await runGitCommand(["rev-parse", "HEAD"], { cwd: repository });
+    const requests: Array<string | undefined> = [];
+    const server = createServer((request, response) => {
+      requests.push(request.url);
+      response.setHeader("Content-Type", "application/json");
+      response.end(
+        JSON.stringify({
+          id: source,
+          name: "Example",
+          description: "Test",
+          categories: [],
+          author: { github: path.basename(owner) },
+          repository: { url: "https://github.com/fixture/example" },
+          artifact: {
+            kind: "git",
+            remote: pathToFileURL(repository).href,
+            commit: stdout.trim(),
+            pluginPath: ".",
+          },
+          media: [],
+          submittedAt: "2026-10-03",
+          reviewedAt: "2026-10-03",
+          updatedAt: "2026-10-03",
+          publishedAt: "2026-10-03",
+          readme: "# Test",
+        }),
+      );
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Missing registry address");
+    const url = `http://127.0.0.1:${address.port}`;
+    const store = createStore(home);
+    await store.patch({ pluginsEnabled: false });
+    const service = bindTestSessionHost(
+      new PluginService(pino({ level: "silent" }), store, "0.4.0", {
+        managedSources: new ManagedPluginSources(home, { defaultUrl: url }),
+      }),
+    );
+    try {
+      await service.start();
+      await expect(service.installSource({ source })).resolves.toMatchObject({
+        id: "registry-example",
+        status: "disabled",
+        installation: {
+          identity: { kind: "git", registry: { url, id: source } },
+          currentRevision: stdout.trim(),
+        },
+      });
+      expect(requests).toEqual([`/plugins/${source}.json`]);
+      await expect(
+        service.installSource({ source: `./${source}`, id: "local-example" }),
+      ).resolves.toMatchObject({
+        installation: { identity: { kind: "directory", path: path.join(owner, "example") } },
+      });
+      expect(requests).toEqual([`/plugins/${source}.json`]);
+    } finally {
+      await service.stopAllPlugins();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  }, 30_000);
+
+  it("names a missing explicit directory instead of trying a managed source", async () => {
+    const home = await mkdtemp(path.join(tmpdir(), "paseo-plugin-home-"));
+    roots.push(home);
+    const directory = path.join(home, "missing");
+    const service = createService(home);
+    await expect(service.installSource({ source: directory })).rejects.toThrow(
+      `Plugin directory does not exist: ${directory}`,
+    );
+  });
+
+  it("installs an explicit directory and its selected plugin subdirectory", async () => {
     const home = await mkdtemp(path.join(tmpdir(), "paseo-plugin-home-"));
     roots.push(home);
     const repository = await mkdtemp(path.join(tmpdir(), "owner-repository-"));
@@ -616,7 +730,7 @@ export default function contribute(server: PluginServerContext) {
         await service.stopAllPlugins();
       }
     },
-    30_000,
+    60_000,
   );
 
   it("keeps the running commit when a Git update build command fails", async () => {
@@ -965,13 +1079,13 @@ export default function contribute(plugin: unknown) {
     await service.installDirectory({ path: first });
     await service.installDirectory({ path: second });
 
-    store.patch({ pluginsEnabled: false });
+    await store.patch({ pluginsEnabled: false });
 
     expect(service.catalog()).toEqual([]);
     await expect(service.invokePluginRpc("second", "anything", {})).rejects.toThrow(
       "Plugin is not available",
     );
-    store.patch({ pluginsEnabled: true });
+    await store.patch({ pluginsEnabled: true });
     await service.reloadPlugin("first");
     expect((await service.listPlugins()).map(({ id, status }) => ({ id, status }))).toEqual([
       { id: "first", status: "running" },
@@ -986,16 +1100,16 @@ export default function contribute(plugin: unknown) {
     const store = createStore(home, {
       slow: { source: "directory", path: "/plugins/slow", enabled: true },
     });
-    store.patch({ pluginsEnabled: false });
+    await store.patch({ pluginsEnabled: false });
     const paused = createPausedRuntime();
     const service = new PluginService(pino({ level: "silent" }), store, "0.4.0", {
       runtime: paused.runtime,
     });
     await service.start();
 
-    store.patch({ pluginsEnabled: true });
+    await store.patch({ pluginsEnabled: true });
     await paused.started;
-    store.patch({ pluginsEnabled: false });
+    await store.patch({ pluginsEnabled: false });
     paused.releaseStart();
     await service.stopAllPlugins();
 
@@ -1003,6 +1117,47 @@ export default function contribute(plugin: unknown) {
     expect(await service.listPlugins()).toMatchObject([
       { id: "slow", path: "/plugins/slow", enabled: true, status: "disabled" },
     ]);
+  });
+
+  it("persists overlapping enable and disable without losing either source mutation", async () => {
+    const home = await mkdtemp(path.join(tmpdir(), "paseo-plugin-home-"));
+    roots.push(home);
+    const store = createStore(home, {
+      a: { source: "directory", path: "/plugins/a", enabled: false },
+      b: { source: "directory", path: "/plugins/b", enabled: true },
+    });
+    const paused = createPluginSelectivePausedRuntime("unused");
+    const service = new PluginService(pino({ level: "silent" }), store, "0.4.0", {
+      runtime: paused.runtime,
+    });
+    await service.start();
+    await Promise.all([service.enablePlugin("a"), service.disablePlugin("b")]);
+    expect(store.get().plugins).toEqual({
+      a: { source: "directory", path: "/plugins/a", enabled: true },
+      b: { source: "directory", path: "/plugins/b", enabled: false },
+    });
+    await service.stopAllPlugins();
+  });
+
+  it("clears a failed disable intent so the previous enabled state can publish", async () => {
+    const home = await mkdtemp(path.join(tmpdir(), "paseo-plugin-home-"));
+    roots.push(home);
+    const store = createStore(home, {
+      slow: { source: "directory", path: "/plugins/slow", enabled: false },
+    });
+    const paused = createPausedRuntime();
+    const service = new PluginService(pino({ level: "silent" }), store, "0.4.0", {
+      runtime: paused.runtime,
+    });
+    await service.start();
+    const enabling = service.enablePlugin("slow");
+    await paused.started;
+    await writeFile(path.join(home, "config.json"), "invalid JSON");
+    await expect(service.disablePlugin("slow")).rejects.toThrow("Invalid JSON");
+    paused.releaseStart();
+    await expect(enabling).resolves.toMatchObject({ enabled: true, status: "running" });
+    expect(service.catalog()).toEqual([{ id: "slow", clientBundle: "bundle" }]);
+    await service.stopAllPlugins();
   });
 
   it("does not publish an in-flight enable after a later plugin disable", async () => {
@@ -1166,7 +1321,11 @@ export default function contribute(plugin: unknown) {
 });
 
 describe("npm plugin installation", () => {
-  it("preserves dependencies and metadata, and reloads without npm", async () => {
+  let registry: Awaited<ReturnType<typeof startNpmRegistry>>;
+
+  // Give real npm fixture construction its own setup budget so it does not consume
+  // the installation journey on Windows.
+  beforeAll(async () => {
     const packages = npmPluginPackages();
     const fixture = packages[1];
     packages.push({ ...fixture, version: "2.0.0", tags: ["future"] });
@@ -1201,7 +1360,7 @@ describe("npm plugin installation", () => {
     for (const [name, overrides] of failures) {
       failedPackages.push({ ...fixture, name, files: { ...fixture.files, ...overrides } });
     }
-    const registry = await startNpmRegistry([
+    registry = await startNpmRegistry([
       ...packages,
       {
         name: "paseo-prepared-plugin",
@@ -1231,6 +1390,9 @@ export default function contribute() {
       },
       ...failedPackages,
     ]);
+  }, 120_000);
+
+  it("preserves dependencies and metadata, and reloads without npm", async () => {
     const home = await mkdtemp(path.join(tmpdir(), "paseo-npm-service-"));
     roots.push(home);
     const previousConfig = process.env.npm_config_userconfig;

@@ -13,6 +13,10 @@ interface IpcHandlerRegistry {
   handle(channel: string, listener: (event: unknown, ...args: unknown[]) => unknown): void;
 }
 
+const EditorTargetListInputSchema = z.object({
+  workspacePath: z.string().trim().min(1).optional(),
+});
+
 // Accepts both the local shape (workspacePath/filePath/line/column) and the
 // remote shape (path/cwd/sshHost); the handler branches on `sshHost`.
 const EditorTargetOpenInputSchema = z.object({
@@ -36,9 +40,10 @@ export function registerEditorTargetHandlers(
   const ipc = options.ipc ?? ipcMain;
   const runtime = options.runtime ?? createEditorTargetRuntime();
 
-  ipc.handle("paseo:editor:listTargets", () =>
-    listAvailableEditorTargets(runtime, options.targets),
-  );
+  ipc.handle("paseo:editor:listTargets", (_event, payload: unknown) => {
+    const { workspacePath } = EditorTargetListInputSchema.parse(payload ?? {});
+    return listAvailableEditorTargets(runtime, options.targets, { workspacePath });
+  });
   ipc.handle("paseo:editor:openTarget", async (_event, payload: unknown) => {
     const input = EditorTargetOpenInputSchema.parse(payload);
     if (input.sshHost) {

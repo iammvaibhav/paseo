@@ -10,7 +10,6 @@ import { useTranslation } from "react-i18next";
 import type { PressableStateCallbackType } from "react-native";
 import { withUnistyles } from "react-native-unistyles";
 import {
-  ArrowDownAZ,
   Captions,
   Circle,
   CircleCheck,
@@ -21,8 +20,6 @@ import {
   GitBranch,
   GitPullRequest,
   Globe,
-  GripVertical,
-  History,
   Server,
   Settings2,
   Tag,
@@ -48,7 +45,7 @@ import {
   type SidebarGroupMode,
 } from "@/stores/sidebar-view-store";
 import { workspaceLabelKey, type WorkspaceLabelColor } from "@getpaseo/protocol/workspace-labels";
-import type { SidebarWorkspaceSort, WorkspaceTitleSource } from "@/hooks/use-settings";
+import type { WorkspaceTitleSource } from "@/hooks/use-settings";
 import { SIDEBAR_CHECKS_DISPLAYS, type SidebarChecksDisplay } from "./checks-display";
 import { useSidebarDisplayPreferences, type SidebarTrailingChoice } from "./model";
 import { SIDEBAR_ROW_ITEMS, type SidebarRowItem } from "./row-items";
@@ -115,16 +112,9 @@ const TRAILING_ICONS: Record<SidebarTrailingChoice, OptionIcon> = {
   timestamp: withUnistyles(Clock),
 };
 
-const WORKSPACE_SORT_ICONS: Record<SidebarWorkspaceSort, OptionIcon> = {
-  manual: withUnistyles(GripVertical),
-  activity: withUnistyles(History),
-  created: withUnistyles(ArrowDownAZ),
-};
-
 const GROUPING_MODES: readonly SidebarGroupMode[] = ["project", "status"];
 const TITLE_SOURCES: readonly WorkspaceTitleSource[] = ["title", "branch"];
 const TRAILING_CHOICES: readonly SidebarTrailingChoice[] = ["timestamp"];
-const WORKSPACE_SORTS: readonly SidebarWorkspaceSort[] = ["manual", "activity", "created"];
 const GROUPING_LABEL_KEYS: Record<SidebarGroupMode, string> = {
   project: "sidebar.display.grouping.project",
   status: "sidebar.display.grouping.status",
@@ -154,11 +144,6 @@ const TRAILING_LABEL_KEYS: Record<SidebarTrailingChoice, string> = {
   timestamp: "sidebar.display.show.timestamp",
 };
 
-const WORKSPACE_SORT_LABEL_KEYS: Record<SidebarWorkspaceSort, string> = {
-  manual: "sidebar.display.workspaceSort.manual",
-  activity: "sidebar.display.workspaceSort.activity",
-  created: "sidebar.display.workspaceSort.created",
-};
 /**
  * What the sidebar shows and how it is arranged.
  *
@@ -172,7 +157,7 @@ export function SidebarDisplayPreferencesMenu(): ReactElement {
   const hosts = useHosts();
   // `allProjects`, never `projects`: the model's `projects` is already filtered, so a picker fed
   // from it would lose the row that undoes the filter as soon as the filter narrowed to one.
-  const { allProjects, resolvedProjectFilters } = useSidebarModel();
+  const { allProjects, resolvedProjectFilters, workspaceSortSupported } = useSidebarModel();
   const { labels } = useWorkspaceLabelProjection();
   const [managerOpen, setManagerOpen] = useState(false);
   const openManager = useCallback(() => setManagerOpen(true), []);
@@ -225,20 +210,6 @@ export function SidebarDisplayPreferencesMenu(): ReactElement {
         ),
       },
       {
-        id: "workspaceSort",
-        title: t("sidebar.display.workspaceSort.label"),
-        content: (
-          <OptionList
-            values={WORKSPACE_SORTS}
-            icons={WORKSPACE_SORT_ICONS}
-            labelKeys={WORKSPACE_SORT_LABEL_KEYS}
-            selectedValue={preferences.workspaceSort}
-            onSelect={preferences.setWorkspaceSort}
-            testIDPrefix="sidebar-workspace-sort"
-          />
-        ),
-      },
-      {
         id: "show",
         title: t("sidebar.display.show.label"),
         content: <ShowPage preferences={preferences} />,
@@ -258,6 +229,16 @@ export function SidebarDisplayPreferencesMenu(): ReactElement {
         ),
       },
     ];
+
+    if (preferences.grouping === "project") {
+      definitions.push({
+        id: "sort",
+        title: t("sidebar.display.sort.label"),
+        content: (
+          <SortPage preferences={preferences} automaticSortSupported={workspaceSortSupported} />
+        ),
+      });
+    }
 
     if (showHostFilter) {
       definitions.push({
@@ -302,6 +283,7 @@ export function SidebarDisplayPreferencesMenu(): ReactElement {
   }, [
     t,
     preferences,
+    workspaceSortSupported,
     hosts,
     showHostFilter,
     showProjectFilter,
@@ -337,19 +319,24 @@ export function SidebarDisplayPreferencesMenu(): ReactElement {
           >
             {t("sidebar.display.grouping.label")}
           </MenuSubTrigger>
+          {preferences.grouping === "project" ? (
+            <MenuSubTrigger
+              id="sort"
+              value={
+                workspaceSortSupported || preferences.workspaceSort === "manual"
+                  ? t(`sidebar.display.sort.${preferences.workspaceSort}`)
+                  : undefined
+              }
+            >
+              {t("sidebar.display.sort.label")}
+            </MenuSubTrigger>
+          ) : null}
           <MenuSubTrigger
             id="titleSource"
             value={t(TITLE_SOURCE_LABEL_KEYS[preferences.titleSource])}
             testID="sidebar-display-title-source"
           >
             {t("sidebar.display.titleSource.label")}
-          </MenuSubTrigger>
-          <MenuSubTrigger
-            id="workspaceSort"
-            value={t(WORKSPACE_SORT_LABEL_KEYS[preferences.workspaceSort])}
-            testID="sidebar-display-workspace-sort"
-          >
-            {t("sidebar.display.workspaceSort.label")}
           </MenuSubTrigger>
           <MenuSubTrigger id="show" testID="sidebar-display-show">
             {t("sidebar.display.show.label")}
@@ -395,9 +382,53 @@ export function SidebarDisplayPreferencesMenu(): ReactElement {
               </MenuSubTrigger>
             </>
           ) : null}
+          <MenuSeparator />
+          <MenuItem
+            selected={preferences.showBackground}
+            closeOnSelect={false}
+            onSelect={preferences.toggleBackground}
+          >
+            {t("sidebar.display.showBackground")}
+          </MenuItem>
         </MenuSurface>
       </MenuRoot>
       <WorkspaceLabelManagerModal visible={managerOpen} onClose={closeManager} />
+    </>
+  );
+}
+
+function SortPage({
+  preferences,
+  automaticSortSupported,
+}: {
+  preferences: Preferences;
+  automaticSortSupported: boolean;
+}): ReactElement {
+  const { t } = useTranslation();
+  const { setWorkspaceSort } = preferences;
+  const selectManual = useCallback(() => setWorkspaceSort("manual"), [setWorkspaceSort]);
+  const selectCreated = useCallback(() => setWorkspaceSort("created"), [setWorkspaceSort]);
+  const selectLastPrompt = useCallback(() => setWorkspaceSort("lastPrompt"), [setWorkspaceSort]);
+  return (
+    <>
+      <MenuItem selected={preferences.workspaceSort === "manual"} onSelect={selectManual}>
+        {t("sidebar.display.sort.manual")}
+      </MenuItem>
+      {automaticSortSupported ? (
+        <>
+          <MenuItem selected={preferences.workspaceSort === "created"} onSelect={selectCreated}>
+            {t("sidebar.display.sort.created")}
+          </MenuItem>
+          <MenuItem
+            selected={preferences.workspaceSort === "lastPrompt"}
+            onSelect={selectLastPrompt}
+          >
+            {t("sidebar.display.sort.lastPrompt")}
+          </MenuItem>
+        </>
+      ) : (
+        <MenuItem disabled>{t("sidebar.display.sort.updateHost")}</MenuItem>
+      )}
     </>
   );
 }

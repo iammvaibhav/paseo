@@ -1,6 +1,6 @@
 import type { AgentSnapshotPayload } from "@getpaseo/protocol/messages";
 import type { AgentPermissionRequest } from "@getpaseo/protocol/agent-types";
-import { getParentAgentIdFromLabels } from "@getpaseo/protocol/agent-labels";
+import { getParentAddressFromLabels } from "@getpaseo/protocol/agent-labels";
 import type { Agent, SessionState } from "@/stores/session-store";
 import {
   TURN_LIVENESS_IDLE,
@@ -90,17 +90,18 @@ export function projectAgentSnapshot(agent: Agent): AgentSnapshotPayload {
   };
 }
 
+function parseOptionalDate(value: string | null | undefined): Date | null {
+  return value ? new Date(value) : null;
+}
+
 export function normalizeAgentSnapshot(snapshot: AgentSnapshotPayload, serverId: string) {
   const createdAt = new Date(snapshot.createdAt);
   const updatedAt = new Date(snapshot.updatedAt);
-  const lastUserMessageAt = snapshot.lastUserMessageAt
-    ? new Date(snapshot.lastUserMessageAt)
-    : null;
-  const attentionTimestamp = snapshot.attentionTimestamp
-    ? new Date(snapshot.attentionTimestamp)
-    : null;
-  const archivedAt = snapshot.archivedAt ? new Date(snapshot.archivedAt) : null;
-  const parentAgentId = getParentAgentIdFromLabels(snapshot.labels);
+  const lastUserMessageAt = parseOptionalDate(snapshot.lastUserMessageAt);
+  const attentionTimestamp = parseOptionalDate(snapshot.attentionTimestamp);
+  const archivedAt = parseOptionalDate(snapshot.archivedAt);
+  const parent = getParentAddressFromLabels(snapshot.labels, serverId);
+  const parentAgentId = parent?.serverId === serverId ? parent.agentId : null;
   // COMPAT(agentTurnIdentity): added in v0.2.6, remove after 2027-01-31 once daemon floor >= v0.2.6.
   // Old daemons expose only status. Normalize that legacy signal once so the rest
   // of the app consumes one activity shape.

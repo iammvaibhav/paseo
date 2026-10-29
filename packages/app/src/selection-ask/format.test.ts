@@ -17,7 +17,7 @@ function userMessage(id: string, text: string): StreamItem {
 function assistantMessage(
   id: string,
   text: string,
-  extra: { messageId?: string; blockGroupId?: string } = {},
+  extra: { messageId?: string } = {},
 ): StreamItem {
   return {
     kind: "assistant_message",
@@ -25,7 +25,6 @@ function assistantMessage(
     text,
     timestamp: new Date(0),
     ...(extra.messageId ? { messageId: extra.messageId } : {}),
-    ...(extra.blockGroupId ? { blockGroupId: extra.blockGroupId } : {}),
   };
 }
 
@@ -182,23 +181,6 @@ describe("buildAskThreadMessages", () => {
     expect(buildAskThreadMessages(tail, head)).toEqual([
       { id: "prompt", role: "user", text: "hi" },
       { id: "a1", role: "assistant", text: "partial, then more" },
-    ]);
-  });
-
-  it("joins block-group rows (promoted blocks plus the live head block) into one reply", () => {
-    const tail = [
-      userMessage("prompt", "hi"),
-      assistantMessage("b1", "First block", { blockGroupId: "g1" }),
-      assistantMessage("b2", "Second block", { blockGroupId: "g1" }),
-    ];
-    const head = [assistantMessage("b3-live", "Third block", { blockGroupId: "g1" })];
-    expect(buildAskThreadMessages(tail, head)).toEqual([
-      { id: "prompt", role: "user", text: "hi" },
-      {
-        id: "b1",
-        role: "assistant",
-        text: "First block\n\nSecond block\n\nThird block",
-      },
     ]);
   });
 

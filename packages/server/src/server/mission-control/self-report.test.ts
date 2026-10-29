@@ -653,7 +653,7 @@ describe("report_status tool", () => {
         identity: { title: "Drifted title", description: "Drifted description" },
       }));
     const catalog = createPaseoToolCatalog({
-      agentManager: {} as unknown as AgentManager,
+      agentManager: { getPluginTools: () => [] } as unknown as AgentManager,
       agentStorage: {} as unknown as AgentStorage,
       providerSnapshotManager: createProviderSnapshotManagerStub()
         .manager as unknown as ProviderSnapshotManager,

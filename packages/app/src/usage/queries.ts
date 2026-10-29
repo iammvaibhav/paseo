@@ -1,3 +1,4 @@
+import { useTranslation } from "react-i18next";
 import { supportsUsageReports } from "@getpaseo/client/internal/daemon-client";
 import { useCallback, useMemo } from "react";
 import {
@@ -98,10 +99,14 @@ async function getReport(
   serverId: string,
   reportId: string,
   forceRefresh = false,
+  agentId?: string,
 ): Promise<UsageReportEntry | null> {
   return (
-    (await requireClient(serverId).listUsageReports({ reportIds: [reportId], forceRefresh }))
-      .reports[0] ?? null
+    (
+      await requireClient(serverId).listUsageReports(
+        agentId === undefined ? { reportIds: [reportId], forceRefresh } : { agentId, forceRefresh },
+      )
+    ).reports.find((report) => report.id === reportId) ?? null
   );
 }
 
@@ -140,13 +145,17 @@ export function useHostUsage(serverId: string): { view: UsageView; refresh: () =
   const refresh = useCallback(() => {
     void refreshReports(queryClient, serverId).catch(() => undefined);
   }, [queryClient, serverId]);
+  const { t } = useTranslation();
   const hostLabel = useHosts().find((host) => host.serverId === serverId)?.label ?? serverId;
-  const view = resolveUsageView({
-    hostLabel,
-    isConnected,
-    supportsUsage: isSupported,
-    query: toQueryState(query),
-  });
+  const view = resolveUsageView(
+    {
+      hostLabel,
+      isConnected,
+      supportsUsage: isSupported,
+      query: toQueryState(query),
+    },
+    t,
+  );
   return { view, refresh };
 }
 
@@ -192,7 +201,8 @@ export function useAgentUsage(serverId: string, agentId: string): AgentUsageView
     retry: false,
     staleTimeMs: REPORTS_STALE_TIME_MS,
   });
-  return resolveAgentUsageView({ canReport, query: toQueryState(query) });
+  const { t } = useTranslation();
+  return resolveAgentUsageView({ canReport, query: toQueryState(query) }, t);
 }
 
 /** Whether a host is connected and reports usage, read without fetching anything. */
@@ -223,20 +233,22 @@ export function useUsageHosts(): UsageHost[] {
 }
 
 /**
- * Forces the source to fetch one report, and only that report. The result replaces the report
- * in every list of its host that holds it, the host's and each agent's, so every surface showing
- * it moves together; until then the previous report stays on screen.
+ * Refreshes a host report, or the agent's session reports. The result replaces the card
+ * in the requesting view. Host and agent views can use different logins of the same account.
  */
 export function useReportRefresh(
   serverId: string,
   reportId: string,
+  agentId?: string,
 ): { refresh: () => void; refreshState: UsageRefresh } {
   const queryClient = useQueryClient();
   const mutation = useMutation({
-    mutationFn: () => getReport(serverId, reportId, true),
+    mutationFn: () => getReport(serverId, reportId, true, agentId),
     onSuccess: (report) => {
-      queryClient.setQueriesData<UsageReportEntry[]>(
-        { queryKey: hostUsageQueryKey(serverId) },
+      queryClient.setQueryData<UsageReportEntry[]>(
+        agentId === undefined
+          ? usageReportsQueryKey(serverId)
+          : agentUsageQueryKey(serverId, agentId),
         (reports) => (reports ? replaceReport(reports, reportId, report) : reports),
       );
     },

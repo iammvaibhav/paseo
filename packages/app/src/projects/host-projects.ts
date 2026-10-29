@@ -24,6 +24,6 @@ export function useHostProjects(
   serverIds: string[],
   options?: { hideSystemOwnedWorkspaces?: boolean },
 ): HostProjectListItem[] {
-  const workspaceStructure = useWorkspaceStructure(serverIds, options);
+  const workspaceStructure = useWorkspaceStructure(serverIds, undefined, options);
   return workspaceStructure.projects;
 }

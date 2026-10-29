@@ -1,7 +1,7 @@
 import type pino from "pino";
 import type { FirstAgentContext } from "@getpaseo/protocol/messages";
 
-import { isSystemInjectedEnvelope } from "./agent/agent-prompt.js";
+import { isSystemInjectedEnvelope } from "./agent/agent-messages/index.js";
 import { resolveFirstAgentPromptTitle } from "./agent/create-agent-title.js";
 import type { AgentManager } from "./agent/agent-manager.js";
 import { isSystemOwnedAgentLabels } from "@getpaseo/protocol/mission-control/system-owned";

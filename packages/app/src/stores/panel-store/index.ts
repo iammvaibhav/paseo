@@ -1,17 +1,8 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import {
-  buildExplorerCheckoutKey,
-  coerceExplorerTabForCheckout,
-  resolveExplorerTabForCheckout,
-  type ExplorerTab,
-} from "../explorer-tab-memory";
 import { setSelectedSubmoduleEntry } from "../explorer-submodule-memory";
-import { type ExplorerCheckoutContext } from "../explorer-checkout-context";
 import {
-  buildOpenFileExplorerPatch,
-  buildToggleFileExplorerPatch,
   clampBoardRailWidth,
   clampTreeRailWidth,
   clampInspectorWidth,
@@ -41,8 +32,6 @@ import {
 } from "./state";
 import { isWeb } from "@/constants/platform";
 import { createValidatedPersistStorage } from "@/storage/validated-persist-storage";
-export type { ExplorerTab } from "../explorer-tab-memory";
-export type { ExplorerCheckoutContext } from "../explorer-checkout-context";
 export type {
   DesktopSidebarState,
   MobilePanelView,
@@ -80,8 +69,6 @@ export interface PanelState {
   desktop: DesktopSidebarState;
 
   // File explorer settings (shared between mobile/desktop)
-  explorerTab: ExplorerTab;
-  explorerTabByCheckout: Record<string, ExplorerTab>;
   selectedSubmoduleByCheckout: Record<string, string>;
   expandedPathsByWorkspace: Record<string, string[]>;
   /**
@@ -113,6 +100,7 @@ export interface PanelState {
   exitFocusMode: () => void;
   showMobileAgent: () => void;
   showMobileAgentList: () => void;
+  showMobileFileExplorer: () => void;
   toggleMobileAgentList: () => void;
   openDesktopAgentList: () => void;
   closeDesktopAgentList: () => void;
@@ -120,12 +108,8 @@ export interface PanelState {
   openAgentListForLayout: (input: PanelLayoutInput) => void;
   closeAgentListForLayout: (input: PanelLayoutInput) => void;
   toggleAgentListForLayout: (input: PanelLayoutInput) => void;
-  openCompactFileExplorer: (checkout: ExplorerCheckoutContext) => void;
-  toggleCompactFileExplorer: (checkout: ExplorerCheckoutContext) => void;
 
   // File explorer settings actions
-  setExplorerTab: (tab: ExplorerTab) => void;
-  setExplorerTabForCheckout: (params: ExplorerCheckoutContext & { tab: ExplorerTab }) => void;
   setSelectedSubmoduleForCheckout: (params: {
     serverId: string;
     cwd: string;
@@ -135,7 +119,6 @@ export interface PanelState {
   setExplorerBrowseRoot: (workspaceKey: string, root: string | null) => void;
   setDiffCollapsedFoldersForWorkspace: (workspaceKey: string, dirPaths: string[]) => void;
   setCollapsedFilePathsForWorkspace: (workspaceKey: string, paths: string[]) => void;
-  activateExplorerTabForCheckout: (checkout: ExplorerCheckoutContext) => void;
   setSidebarWidth: (width: number) => void;
   setExplorerSortOption: (option: SortOption) => void;
   toggleExplorerShowHiddenFiles: () => void;
@@ -170,8 +153,6 @@ export const usePanelStore = create<PanelState>()(
       },
 
       // File explorer defaults
-      explorerTab: "changes",
-      explorerTabByCheckout: {},
       selectedSubmoduleByCheckout: {},
       expandedPathsByWorkspace: {},
       explorerBrowseRootByWorkspace: {},
@@ -201,6 +182,8 @@ export const usePanelStore = create<PanelState>()(
       showMobileAgent: () => set((state) => setMobilePanelTargetPatch(state, "agent")),
 
       showMobileAgentList: () => set((state) => setMobilePanelTargetPatch(state, "agent-list")),
+      showMobileFileExplorer: () =>
+        set((state) => setMobilePanelTargetPatch(state, "file-explorer")),
 
       toggleMobileAgentList: () =>
         set((state) =>
@@ -264,29 +247,6 @@ export const usePanelStore = create<PanelState>()(
           };
         }),
 
-      openCompactFileExplorer: (checkout) =>
-        set((state) => buildOpenFileExplorerPatch(state, checkout)),
-
-      toggleCompactFileExplorer: (checkout) =>
-        set((state) => buildToggleFileExplorerPatch(state, checkout)),
-
-      setExplorerTab: (tab) => set({ explorerTab: tab }),
-      setExplorerTabForCheckout: ({ serverId, cwd, isGit, tab }) =>
-        set((state) => {
-          const resolvedTab = coerceExplorerTabForCheckout(tab, isGit);
-          const key = buildExplorerCheckoutKey(serverId, cwd);
-          const nextState: Partial<PanelState> = { explorerTab: resolvedTab };
-          if (key) {
-            const current = state.explorerTabByCheckout[key];
-            if (current !== resolvedTab) {
-              nextState.explorerTabByCheckout = {
-                ...state.explorerTabByCheckout,
-                [key]: resolvedTab,
-              };
-            }
-          }
-          return nextState;
-        }),
       setSelectedSubmoduleForCheckout: (params) =>
         set((state) => {
           const next = setSelectedSubmoduleEntry(state.selectedSubmoduleByCheckout, params);
@@ -329,15 +289,6 @@ export const usePanelStore = create<PanelState>()(
             [workspaceKey]: paths,
           },
         })),
-      activateExplorerTabForCheckout: (checkout) =>
-        set((state) => ({
-          explorerTab: resolveExplorerTabForCheckout({
-            serverId: checkout.serverId,
-            cwd: checkout.cwd,
-            isGit: checkout.isGit,
-            explorerTabByCheckout: state.explorerTabByCheckout,
-          }),
-        })),
       setSidebarWidth: (width) => set({ sidebarWidth: clampSidebarWidth(width) }),
       setBoardRailWidth: (width) => set({ boardRailWidth: clampBoardRailWidth(width) }),
       setInspectorWidth: (width) => set({ inspectorWidth: clampInspectorWidth(width) }),
@@ -352,13 +303,11 @@ export const usePanelStore = create<PanelState>()(
     }),
     {
       name: "panel-state",
-      version: 16,
+      version: 17,
       storage: createValidatedPersistStorage(AsyncStorage, PanelPersistedStateSchema),
       migrate: (persistedState, version) => migratePanelState(persistedState, version),
       partialize: (state) => ({
         desktop: state.desktop,
-        explorerTab: state.explorerTab,
-        explorerTabByCheckout: state.explorerTabByCheckout,
         selectedSubmoduleByCheckout: state.selectedSubmoduleByCheckout,
         expandedPathsByWorkspace: state.expandedPathsByWorkspace,
         diffCollapsedFoldersByWorkspace: state.diffCollapsedFoldersByWorkspace,

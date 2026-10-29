@@ -1,3 +1,4 @@
+import type { AgentMessage } from "@getpaseo/protocol/agent-message";
 import type {
   AgentProvider,
   AgentTimelineItem,
@@ -118,6 +119,8 @@ export type UserMessageClassification = "machinery" | "instruction";
 export type VoiceMirrorKind = "qa" | "dispatch";
 
 export interface UserMessageItem {
+  /** Attribution added by presentation for received agent messages. */
+  sender?: AgentMessage["sender"];
   kind: "user_message";
   id: string;
   clientMessageId?: string;
@@ -773,8 +776,6 @@ export interface AssistantMessageItem {
    */
   metrics?: AgentUsage;
   /** Display-only fields, assigned after source-item plugin transforms. */
-  blockGroupId?: string;
-  blockIndex?: number;
 }
 
 export interface TimelinePosition {
@@ -807,6 +808,7 @@ interface OrchestratorToolCallData {
 }
 
 export interface AgentToolCallData {
+  agentMessage?: AgentMessage;
   provider: AgentProvider;
   callId: string;
   name: string;
@@ -832,6 +834,12 @@ export interface ToolCallItem {
 export type AgentToolCallItem = ToolCallItem & {
   payload: { source: "agent"; data: AgentToolCallData };
 };
+
+/** Find and scrolling address a plugin row by the source it replaces. */
+export function getStreamItemMessageId(item: StreamItem): string {
+  if (item.kind === "plugin") return item.sourceId ?? item.id;
+  return item.id;
+}
 
 export function isAgentToolCallItem(item: StreamItem): item is AgentToolCallItem {
   return item.kind === "tool_call" && item.payload.source === "agent";
@@ -876,6 +884,8 @@ export interface AiReviewDecisionItem {
 export interface PluginTimelineStreamItem {
   kind: "plugin";
   id: string;
+  /** The id of the stream item a timeline transformer replaced; set only by projection. */
+  sourceId?: string;
   timelineCursor?: TimelinePosition;
   turnId?: string;
   timestamp: Date;
@@ -1095,6 +1105,7 @@ function appendThought(
   text: string,
   timestamp: Date,
   timelineCursor?: TimelinePosition,
+  turnId?: string,
 ): StreamItem[] {
   const { chunk, hasContent } = normalizeChunk(text);
   if (!chunk) {
@@ -1102,7 +1113,7 @@ function appendThought(
   }
 
   const last = state[state.length - 1];
-  if (last && last.kind === "thought") {
+  if (last && last.kind === "thought" && last.turnId === turnId) {
     const updated: ThoughtItem = {
       ...last,
       ...(timelineCursor ? { timelineCursor } : {}),
@@ -1564,6 +1575,7 @@ function reduceTimelineToolCall(
       error: item.error,
       detail: item.detail,
       metadata: item.metadata,
+      ...(item.agentMessage ? { agentMessage: item.agentMessage } : {}),
     },
     timestamp,
     timelineCursor,
@@ -1646,51 +1658,43 @@ function reduceTimelineEvent(
   const item = event.item;
   switch (item.type) {
     case "user_message":
-      return finalizeActiveThoughts(
-        appendUserMessage(
-          state,
-          item.text,
-          timestamp,
-          source,
-          item.messageId,
-          item.clientMessageId,
-          timelineCursor,
-          event.turnId,
-          item.classification,
-          item.voiceMirrorKind,
-          item.images,
-          item.attachments,
-        ),
+      return appendUserMessage(
+        state,
+        item.text,
+        timestamp,
+        source,
+        item.messageId,
+        item.clientMessageId,
+        timelineCursor,
+        event.turnId,
+        item.classification,
+        item.voiceMirrorKind,
+        item.images,
+        item.attachments,
       );
     case "assistant_message":
       if (isIrcMessageText(item.text)) {
         const toolItem = convertIrcMessageToTimelineToolCall(item.text, item.messageId);
-        return finalizeActiveThoughts(
-          reduceTimelineToolCall(state, event, toolItem, timestamp, timelineCursor),
-        );
+        return reduceTimelineToolCall(state, event, toolItem, timestamp, timelineCursor);
       }
-      return finalizeActiveThoughts(
-        appendAssistantMessage(
-          state,
-          item.text,
-          timestamp,
-          source,
-          item.messageId,
-          reservedItemIds,
-          timelineCursor,
-          item.voiceMirrorKind,
-          event.turnId,
-          "metrics" in event && event.metrics !== undefined
-            ? (event.metrics as AgentUsage)
-            : undefined,
-        ),
+      return appendAssistantMessage(
+        state,
+        item.text,
+        timestamp,
+        source,
+        item.messageId,
+        reservedItemIds,
+        timelineCursor,
+        item.voiceMirrorKind,
+        event.turnId,
+        "metrics" in event && event.metrics !== undefined
+          ? (event.metrics as AgentUsage)
+          : undefined,
       );
     case "reasoning":
-      return appendThought(state, item.text, timestamp, timelineCursor);
+      return appendThought(state, item.text, timestamp, timelineCursor, event.turnId);
     case "tool_call":
-      return finalizeActiveThoughts(
-        reduceTimelineToolCall(state, event, item, timestamp, timelineCursor),
-      );
+      return reduceTimelineToolCall(state, event, item, timestamp, timelineCursor);
     case "todo": {
       const items: TodoEntry[] = (item.items ?? []).map((todo) => ({
         text: todo.text,
@@ -1699,9 +1703,7 @@ function reduceTimelineEvent(
         status: todo.status,
         activeForm: todo.activeForm,
       }));
-      return finalizeActiveThoughts(
-        appendTodoList(state, event.provider, items, timestamp, timelineCursor),
-      );
+      return appendTodoList(state, event.provider, items, timestamp, timelineCursor);
     }
     case "error": {
       const notification: NotificationItem = {
@@ -1713,7 +1715,7 @@ function reduceTimelineEvent(
         level: "error",
         message: item.message ?? "Unknown error",
       };
-      return finalizeActiveThoughts(appendNotification(state, notification));
+      return appendNotification(state, notification);
     }
     case "notification": {
       const notification: NotificationItem = {
@@ -1725,20 +1727,14 @@ function reduceTimelineEvent(
         level: item.level,
         message: item.message,
       };
-      return finalizeActiveThoughts(appendNotification(state, notification));
+      return appendNotification(state, notification);
     }
     case "compaction":
-      return finalizeActiveThoughts(
-        reduceTimelineCompaction(state, item, timestamp, timelineCursor),
-      );
+      return reduceTimelineCompaction(state, item, timestamp, timelineCursor);
     case "ai_review_decision":
-      return finalizeActiveThoughts(
-        appendAiReviewDecision(state, item, timestamp, timelineCursor, event.turnId),
-      );
+      return appendAiReviewDecision(state, item, timestamp, timelineCursor, event.turnId);
     case "plugin":
-      return finalizeActiveThoughts(
-        appendPluginTimelineItem(state, item, timestamp, timelineCursor),
-      );
+      return appendPluginTimelineItem(state, item, timestamp, timelineCursor);
     default:
       return state;
   }
@@ -1783,8 +1779,9 @@ export function reduceStreamUpdate(
 ): StreamItem[] {
   const source = options?.source ?? "live";
   switch (event.type) {
-    case "timeline":
-      return applyTimelineTurnId(
+    case "timeline": {
+      const updated = applyTimelineTurnId(
+        state,
         reduceTimelineEvent(
           state,
           event,
@@ -1795,6 +1792,8 @@ export function reduceStreamUpdate(
         ),
         event,
       );
+      return event.item.type === "reasoning" ? updated : finalizeActiveThoughts(updated);
+    }
     case "thread_started":
     case "turn_started":
     case "turn_failed":
@@ -1811,6 +1810,7 @@ export function reduceStreamUpdate(
 }
 
 function applyTimelineTurnId(
+  previous: StreamItem[],
   items: StreamItem[],
   event: Extract<AgentStreamEventPayload, { type: "timeline" }>,
 ): StreamItem[] {
@@ -1820,15 +1820,14 @@ function applyTimelineTurnId(
     return reconcileCanonicalUserTurnMembership(items, clientMessageId, event.turnId);
   }
 
-  if (!event.turnId || items.length === 0) return items;
-  const index = items.length - 1;
-  const last = items[index];
-  if (!last || last.turnId === event.turnId) return items;
-  return [
-    ...items.slice(0, index),
-    { ...last, turnId: event.turnId } as StreamItem,
-    ...items.slice(index + 1),
-  ];
+  if (!event.turnId || items === previous) return items;
+  // Assign membership only to rows written by this event, before finalizing
+  // unrelated reasoning rows. Late lifecycle updates can replace an earlier row.
+  return items.map((item, index) =>
+    item === previous[index] || item.turnId === event.turnId
+      ? item
+      : ({ ...item, turnId: event.turnId } as StreamItem),
+  );
 }
 
 function reconcileCanonicalUserTurnMembership(

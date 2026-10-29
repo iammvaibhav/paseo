@@ -1,5 +1,5 @@
 import type { AgentTimelineRow } from "./agent-timeline-store-types.js";
-import { isSystemInjectedEnvelope } from "./agent-prompt.js";
+import { isSystemInjectedEnvelope } from "./agent-messages/index.js";
 
 const PROMPT_PREVIEW_MAX_LENGTH = 120;
 

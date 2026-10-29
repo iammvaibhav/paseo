@@ -188,7 +188,7 @@ describe("WarmWorktreePoolManager", () => {
     await manager.replenish(repoDir);
     const warmPath = manager.getStatus().pools[0].worktrees[0].path;
     // Setup ran with this port; the workspace's services must get the same one.
-    const provisionedPort = readPaseoWorktreeRuntimePort(warmPath);
+    const provisionedPort = await readPaseoWorktreeRuntimePort(warmPath);
     expect(provisionedPort).not.toBeNull();
 
     const source: WorktreeSource = {
@@ -203,7 +203,6 @@ describe("WarmWorktreePoolManager", () => {
       source,
       paseoHome,
       worktreesRoot,
-      runSetup: true,
     });
 
     expect(result?.claimed).toBe(true);
@@ -218,8 +217,8 @@ describe("WarmWorktreePoolManager", () => {
       .toString()
       .trim();
     expect(currentBranch).toBe("feature-warm-test");
-    expect(readPaseoWorktreeMetadata(warmPath).baseRefName).toBe("main");
-    expect(readPaseoWorktreeRuntimePort(warmPath)).toBe(provisionedPort);
+    expect((await readPaseoWorktreeMetadata(warmPath))?.baseRefName).toBe("main");
+    expect(await readPaseoWorktreeRuntimePort(warmPath)).toBe(provisionedPort);
 
     // Claimed trees are ordinary worktrees again.
     const listed = await listPaseoWorktrees({ cwd: repoDir, paseoHome, worktreesRoot });

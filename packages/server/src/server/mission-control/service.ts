@@ -10,7 +10,7 @@ import type { AgentStorage, StoredAgentRecord } from "../agent/agent-storage.js"
 import type { AgentStreamEvent } from "../agent/agent-sdk-types.js";
 import type { AgentTimelineRow } from "../agent/agent-timeline-store-types.js";
 import { dispatchLocalPromptMode } from "../agent/tools/paseo-tools.js";
-import { formatSystemNotificationPrompt } from "../agent/agent-prompt.js";
+import { formatSystemNotificationPrompt } from "../agent/agent-messages/index.js";
 import { archiveAgentCommand } from "../agent/lifecycle-command.js";
 import type { DaemonConfigStore } from "../daemon-config-store.js";
 import type {
@@ -416,6 +416,8 @@ export class MissionControlService {
   private unsubscribe: (() => void) | null = null;
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
   private pruneTimer: ReturnType<typeof setInterval> | null = null;
+  /** Set by stop(): runs that end during or after shutdown write nothing. */
+  private stopped = false;
   private readonly bootedAtMs: number;
 
   constructor(options: MissionControlServiceOptions) {
@@ -487,6 +489,7 @@ export class MissionControlService {
   }
 
   async stop(): Promise<void> {
+    this.stopped = true;
     if (this.sweepTimer) {
       clearInterval(this.sweepTimer);
       this.sweepTimer = null;
@@ -1579,7 +1582,7 @@ export class MissionControlService {
    */
   handleAgentFinished(params: { agentId: string }): void {
     const agent = this.agentManager.getAgent(params.agentId);
-    if (!agent || this.isExcludedAgent(agent)) {
+    if (this.stopped || !agent || this.isExcludedAgent(agent)) {
       return;
     }
     const runStartedAt = this.runStartedAtByAgent.get(agent.id);

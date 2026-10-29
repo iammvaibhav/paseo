@@ -24,6 +24,7 @@ import { useRetainedPanelActive } from "@/components/retained-panel";
 import type { Theme } from "@/styles/theme";
 import { useStableEvent } from "@/hooks/use-stable-event";
 import { useKeyboardStreamInset } from "@/keyboard/shift";
+import { shouldAnimateNativeScrollToBottom } from "./native-scroll-animation";
 import { useRevisedHistoryRows } from "./history-row-revision";
 import { type BottomAnchorMode, useBottomAnchorController } from "./bottom-anchor-controller";
 import { useScrollKeyboardDismiss } from "./scroll-keyboard-dismiss/use-scroll-keyboard-dismiss";
@@ -44,6 +45,7 @@ import {
   type HistoryStartPaginationInput,
   type HistoryStartPaginationTransition,
 } from "./history-start-pagination";
+import { useStreamTopOverlayInset } from "./top-overlay";
 import {
   createHistoryStartSettleScheduler,
   type HistoryStartSettleScheduler,
@@ -70,6 +72,7 @@ interface SavedNativeScrollPosition {
 }
 
 const HISTORY_START_SETTLE_FRAMES = 2;
+const NATIVE_STREAM_WINDOW_SIZE = 10;
 
 function NativeStreamViewport<T>(props: StreamRenderInput<T> & { strategy: StreamStrategy }) {
   const {
@@ -254,7 +257,13 @@ function NativeStreamViewport<T>(props: StreamRenderInput<T> & { strategy: Strea
       programmaticScrollEventBudgetRef.current = 3;
       flatListRef.current?.scrollToOffset({
         offset: 0,
-        animated,
+        animated:
+          animated &&
+          shouldAnimateNativeScrollToBottom({
+            offsetY: scrollOffsetYRef.current,
+            viewportHeight: streamViewportMetricsRef.current.viewportHeight,
+            windowSize: NATIVE_STREAM_WINDOW_SIZE,
+          }),
       });
       scrollOffsetYRef.current = 0;
       streamViewportMetricsRef.current = {
@@ -291,12 +300,20 @@ function NativeStreamViewport<T>(props: StreamRenderInput<T> & { strategy: Strea
     Platform.OS === "android" && bottomAnchorController.mode === "sticky-bottom"
       ? undefined
       : DEFAULT_MAINTAIN_VISIBLE_CONTENT_POSITION;
+  const topOverlayInset = useStreamTopOverlayInset();
+  // The list is inverted, so its content's bottom padding is the visual top.
   const listContentContainerStyle = useMemo(
     () => [
       baseListContentContainerStyle,
-      { paddingBottom: streamKeyboardInset.contentContainerPaddingBottom },
+      {
+        paddingBottom: streamKeyboardInset.contentContainerPaddingBottom + topOverlayInset,
+      },
     ],
-    [baseListContentContainerStyle, streamKeyboardInset.contentContainerPaddingBottom],
+    [
+      baseListContentContainerStyle,
+      streamKeyboardInset.contentContainerPaddingBottom,
+      topOverlayInset,
+    ],
   );
   const listInsetProps = useMemo(
     () =>
@@ -465,6 +482,7 @@ function NativeStreamViewport<T>(props: StreamRenderInput<T> & { strategy: Strea
         bottomAnchorController.prepareForStickyViewportChange();
         markNativeViewportSettling();
       },
+      holdReadingPosition: () => bottomAnchorController.detachByUser(),
     };
     viewportRef.current = handle;
     return () => {
@@ -734,8 +752,11 @@ function NativeStreamViewport<T>(props: StreamRenderInput<T> & { strategy: Strea
       scrollEventThrottle={16}
       onContentSizeChange={handleContentSizeChange}
       maintainVisibleContentPosition={maintainVisibleContentPosition}
-      initialNumToRender={12}
-      windowSize={10}
+      // Tall Markdown rows exhaust a shallow window during flings. Keep the initial
+      // render small, then refill a deeper window in batches large enough to keep up.
+      initialNumToRender={2}
+      maxToRenderPerBatch={10}
+      windowSize={NATIVE_STREAM_WINDOW_SIZE}
       removeClippedSubviews={false}
       scrollEnabled={scrollEnabled}
       showsVerticalScrollIndicator

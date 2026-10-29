@@ -1,7 +1,6 @@
-import { existsSync, readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
-import { PaseoConfigSchema } from "@getpaseo/protocol/paseo-config-schema";
-import { readPaseoConfigJson } from "./paseo-config-file.js";
+import { readPaseoConfig } from "./paseo-config-file.js";
 
 const DEFAULT_INSTRUCTION_FILENAMES = [
   "COMMANDER.md",
@@ -10,39 +9,34 @@ const DEFAULT_INSTRUCTION_FILENAMES = [
   "commander.md",
 ];
 
-function readProjectFileContent(rootPath: string, relativeOrSubPath: string): string | null {
+async function readProjectFileContent(
+  rootPath: string,
+  relativeOrSubPath: string,
+): Promise<string | null> {
   try {
     const resolved = resolve(rootPath, relativeOrSubPath);
     const rel = relative(rootPath, resolved);
     if (rel.startsWith("..") || isAbsolute(rel)) {
       return null;
     }
-    if (!existsSync(resolved)) {
-      return null;
-    }
-    const content = readFileSync(resolved, "utf8");
-    const trimmed = content.trim();
+    const trimmed = (await readFile(resolved, "utf8")).trim();
     return trimmed.length > 0 ? trimmed : null;
   } catch {
     return null;
   }
 }
 
-function resolveInstructionsFromPaseoConfig(rootPath: string): string | null {
+async function resolveInstructionsFromPaseoConfig(rootPath: string): Promise<string | null> {
   try {
-    const json = readPaseoConfigJson(rootPath);
-    if (json === null || typeof json !== "object") {
+    const result = await readPaseoConfig(rootPath);
+    if (!result.ok || !result.config) {
       return null;
     }
-    const parsed = PaseoConfigSchema.safeParse(json);
-    if (!parsed.success) {
-      return null;
-    }
-    const config = parsed.data;
+    const config = result.config;
 
     // 1. Check commander.instructionsFile
     if (typeof config.commander?.instructionsFile === "string") {
-      const fileContent = readProjectFileContent(
+      const fileContent = await readProjectFileContent(
         rootPath,
         config.commander.instructionsFile.trim(),
       );
@@ -55,7 +49,7 @@ function resolveInstructionsFromPaseoConfig(rootPath: string): string | null {
     const direct = config.commander?.instructions ?? config.commanderInstructions;
     if (typeof direct === "string" && direct.trim().length > 0) {
       const trimmed = direct.trim();
-      const fileContent = readProjectFileContent(rootPath, trimmed);
+      const fileContent = await readProjectFileContent(rootPath, trimmed);
       return fileContent !== null ? fileContent : trimmed;
     }
     return null;
@@ -81,14 +75,14 @@ export async function resolveProjectCommanderInstructions(
     return null;
   }
 
-  const fromConfig = resolveInstructionsFromPaseoConfig(rootPath);
+  const fromConfig = await resolveInstructionsFromPaseoConfig(rootPath);
   if (fromConfig !== null) {
     return fromConfig;
   }
 
   // Fall back to default instruction files in project root
   for (const filename of DEFAULT_INSTRUCTION_FILENAMES) {
-    const content = readProjectFileContent(rootPath, filename);
+    const content = await readProjectFileContent(rootPath, filename);
     if (content !== null) {
       return content;
     }

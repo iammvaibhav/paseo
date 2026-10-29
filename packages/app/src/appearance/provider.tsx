@@ -27,6 +27,7 @@ import {
 } from "@/styles/theme";
 import { isGlassThemePreference } from "./glass";
 import { applyAppearance } from "./apply";
+import { AppearanceSystemBars } from "./system-bars";
 
 interface ContributedThemes {
   options: PluginThemeOption[];
@@ -120,7 +121,10 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
   if (!hasAppliedAppearance) return null;
 
   return (
-    <ContributedThemesContext.Provider value={value}>{children}</ContributedThemesContext.Provider>
+    <ContributedThemesContext.Provider value={value}>
+      <AppearanceSystemBars />
+      {children}
+    </ContributedThemesContext.Provider>
   );
 }
 

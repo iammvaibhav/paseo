@@ -20,7 +20,6 @@ export interface AskMessage {
 
 /** Internal shape: extra fields used to coalesce a streamed reply into one row. */
 interface AskThreadMessage extends AskMessage {
-  blockGroupId?: string;
   messageId?: string;
 }
 
@@ -29,10 +28,9 @@ interface AskThreadMessage extends AskMessage {
  * `user_message` and `assistant_message` rows participate (tool calls and
  * thoughts are dropped). The head is the still-streaming tail, so an
  * assistant row there is coalesced into the thread's trailing assistant row
- * when it is a continuation — same block group (block promotion keeps
- * completed blocks in the tail while the live block streams in the head),
- * same provider message id (a resumed stream after a flush), or a plain text
- * prefix — instead of appending a duplicate bubble.
+ * when it is a continuation — same provider message id (a resumed stream
+ * after a flush) or a plain text prefix — instead of appending a duplicate
+ * bubble.
  */
 export function buildAskThreadMessages(
   tail: readonly StreamItem[] | undefined,
@@ -42,10 +40,6 @@ export function buildAskThreadMessages(
   const appendAssistant = (item: AssistantMessageItem) => {
     const last = messages[messages.length - 1];
     if (last && last.role === "assistant") {
-      if (item.blockGroupId && last.blockGroupId === item.blockGroupId) {
-        last.text = `${last.text}\n\n${item.text}`;
-        return;
-      }
       if (item.messageId && last.messageId === item.messageId) {
         last.text = item.text;
         return;
@@ -59,7 +53,6 @@ export function buildAskThreadMessages(
       id: item.id,
       role: "assistant",
       text: item.text,
-      blockGroupId: item.blockGroupId,
       messageId: item.messageId,
     });
   };

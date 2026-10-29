@@ -324,10 +324,11 @@ export const steps = [
         project.baseWorkspaceId === orphanWorkspaceId && atFolder.length === 1,
         `restored workspace is the project's only one: base ${project.baseWorkspaceId}, active at folder ${atFolder.map((workspace) => workspace.id)}`,
       );
-      await page.waitForSelector('[data-testid="message-input-root"]', {
-        state: "visible",
-        timeout: 20_000,
-      });
+      // Earlier workspaces stay mounted as hidden retained panels; wait for the visible composer.
+      await page
+        .locator('[data-testid="message-input-root"]:visible')
+        .first()
+        .waitFor({ state: "visible", timeout: 20_000 });
       ctx.expect(
         !(await page.getByText("Workspace unavailable", { exact: true }).isVisible()),
         "no 'Workspace unavailable' dead end",
@@ -387,10 +388,10 @@ export const steps = [
           ) ?? null,
         "project recreated for the stranded workspace",
       );
-      await page.waitForSelector('[data-testid="message-input-root"]', {
-        state: "visible",
-        timeout: 20_000,
-      });
+      await page
+        .locator('[data-testid="message-input-root"]:visible')
+        .first()
+        .waitFor({ state: "visible", timeout: 20_000 });
       ctx.expect(
         !(await page.getByText("Workspace unavailable", { exact: true }).isVisible()),
         "no 'Workspace unavailable' dead end",

@@ -1,7 +1,6 @@
 import { getHostRuntimeStore } from "@/runtime/host-runtime";
 import { Button } from "@/components/ui/button";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
-import { useMissionControlCentralConfig } from "@/mission-control/central-config";
 import type { TFunction } from "i18next";
 import { SquarePen } from "lucide-react-native";
 import React, {
@@ -20,6 +19,7 @@ import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import invariant from "tiny-invariant";
 import { shallow, useShallow } from "zustand/shallow";
 import { useStoreWithEqualityFn } from "zustand/traditional";
+import { useAgentStreamTail } from "@/agent-stream/use-agent-stream-tail";
 import { AgentStreamView, type AgentStreamViewHandle } from "@/agent-stream/view";
 import { ArchivedAgentCallout } from "@/components/archived-agent-callout";
 import { SidebarCallout } from "@/components/sidebar-callout";
@@ -29,7 +29,11 @@ import { FileDropZone } from "@/components/file-drop/file-drop-zone";
 import { useRetainedPanelActive } from "@/components/retained-panel";
 import { RetainedChatContent } from "./retained-chat-content";
 import { Composer } from "@/composer";
-import { formatProviderLabel } from "@/utils/provider-label";
+import {
+  useComposerEditingSession,
+  useComposerFullscreen,
+  type ComposerEditingSession,
+} from "@/composer/editing-session";
 import { useWorkspaceHasDiffStat } from "@/composer/workspace-diff-stat";
 import {
   resolveComposerTrackControlClearance,
@@ -37,11 +41,11 @@ import {
 } from "@/composer/pill-styles";
 import { getActiveMessageSubmissions } from "@/composer/submission/model";
 import { RewindComposerRestoreProvider } from "@/components/rewind/composer-restore";
-import { useProviderIcon } from "@/components/provider-icons";
+import { useAgentDescriptor } from "@/agent-presentation";
 import { useToastHost, type ToastApi, type ToastState } from "@/components/toast-host";
 import type { WorkspaceComposerAttachment } from "@/attachments/types";
 import { useWorkspaceAttachmentScopeKey } from "@/attachments/workspace-attachments-store";
-import { COMPACT_FORM_FACTOR_WIDTH, useIsCompactFormFactor } from "@/constants/layout";
+import { COMPACT_CONTENT_WIDTH, useIsCompactFormFactor } from "@/constants/layout";
 import { isNative, isWeb } from "@/constants/platform";
 import { useAgentAttentionClear } from "@/hooks/use-agent-attention-clear";
 import { useAgentInputDraft, type AgentInputDraft } from "@/composer/draft/input-draft";
@@ -58,7 +62,9 @@ import { useContainerWidthBelow } from "@/hooks/use-container-width";
 import { reconcileMissingAgentStateWithPresentAgent } from "@/panels/agent-panel-load-state";
 import { TimelineSyncStatus } from "@/timeline/sync-status";
 import { usePaneContext, usePaneFocus } from "@/panels/pane-context";
-import { definePanel, type PanelDescriptor } from "@/panels/panel-registry";
+import { useAgentFactsLine } from "@/panels/agent-facts-line";
+import { PaneSubtitle } from "@/panels/pane-subtitle";
+import { definePanel } from "@/panels/panel-registry";
 import { RenderProfile } from "@/utils/render-profiler";
 import { useHasPluginComposerPills } from "@/plugins";
 import { buildDraftPanelDescriptor } from "@/panels/draft-panel-descriptor";
@@ -82,13 +88,13 @@ import { toErrorMessage } from "@/utils/error-messages";
 import { AgentTracks, hasAgentTracks } from "@/panels/agent-tracks";
 import { selectSelectionAsks } from "@/selection-ask";
 
+import { ParentAgentCallout, useParentAgentId } from "@/subagents/parent";
 import { useCreateFlowStore } from "@/stores/create-flow-store";
 import { buildDraftStoreKey, generateDraftId } from "@/stores/draft-keys";
 import {
   selectAgentTimelineState,
   selectAgentTurnPresentation,
   type Agent,
-  type SessionState,
   useSessionStore,
 } from "@/stores/session-store";
 import { useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
@@ -106,7 +112,6 @@ import { isSystemOwnedAgentLabels } from "@getpaseo/protocol/mission-control/sys
 import { storeFetchedAgentDetail } from "@/utils/hydrate-fetched-agent";
 import { applyLegacyDaemonWorkspaceOwnership } from "@/workspace/legacy-daemon-workspaces";
 import type { WorkspaceFileOpenRequest } from "@/workspace/file-open";
-import { deriveSidebarStateBucket } from "@/utils/sidebar-agent-state";
 import { buildDraftAgentSetup, type ClientSlashCommand } from "@/client-slash-commands";
 
 interface ChatAgentStateShape {
@@ -188,36 +193,6 @@ function selectChatAgentState(
   };
 }
 
-function selectAgentDescriptor(
-  state: { sessions: Record<string, SessionState> },
-  serverId: string,
-  agentId: string,
-): {
-  provider: Agent["provider"];
-  title: string | null;
-  name: string | null;
-  status: Agent["status"] | null;
-  pendingPermissionCount: number;
-  attentionReason: Agent["attentionReason"];
-  stoppedBy: Agent["stoppedBy"];
-  bucket: Agent["bucket"];
-  isTurnActive: boolean;
-} {
-  const session = state.sessions[serverId];
-  const agent = resolveSessionAgent(session, agentId);
-  return {
-    provider: agent?.provider ?? "codex",
-    title: agent?.title ?? null,
-    name: agent?.name ?? null,
-    status: agent?.status ?? null,
-    pendingPermissionCount: agent?.pendingPermissions.length ?? 0,
-    attentionReason: agent?.attentionReason ?? null,
-    stoppedBy: agent?.stoppedBy ?? null,
-    bucket: agent?.bucket,
-    isTurnActive: selectAgentTurnPresentation(session, agentId).isActive,
-  };
-}
-
 function buildChatAgentFromState(
   state: ChatAgentStateShape,
   projectPlacement: Agent["projectPlacement"] | null,
@@ -290,51 +265,6 @@ function renderChatAgentNonReadyView(args: {
   }
   return null;
 }
-export {
-  stripTicketPrefix,
-  resolveWorkspaceAgentTabLabel,
-  resolveAgentTabTooltip,
-} from "./agent-tab-presentation";
-import { resolveWorkspaceAgentTabLabel, resolveAgentTabTooltip } from "./agent-tab-presentation";
-
-function useAgentPanelDescriptor(
-  target: { kind: "agent"; agentId: string },
-  context: { serverId: string },
-): PanelDescriptor {
-  const descriptorState = useSessionStore(
-    useShallow((state) => selectAgentDescriptor(state, context.serverId, target.agentId)),
-  );
-  const provider = descriptorState.provider;
-  const label = resolveWorkspaceAgentTabLabel(descriptorState.title, descriptorState.name);
-  const icon = useProviderIcon(provider, context.serverId);
-  // Agent tab tooltips (spec "Names"): "Name — Title" when names are enabled,
-  // title only when hideAgentNames is set (the central Mission Control toggle).
-  const hideAgentNames = useMissionControlCentralConfig().config?.hideAgentNames === true;
-  const fallbackTooltip = `${formatProviderLabel(provider)} agent`;
-  const tooltip = resolveAgentTabTooltip({
-    label,
-    name: descriptorState.name,
-    fallbackTooltip,
-    hideAgentNames,
-  });
-
-  return {
-    label: label ?? "",
-    subtitle: `${formatProviderLabel(provider)} agent`,
-    tooltip,
-    titleState: label ? "ready" : "loading",
-    icon,
-    statusBucket: descriptorState.status
-      ? deriveSidebarStateBucket({
-          bucket: descriptorState.bucket,
-          status: descriptorState.isTurnActive ? "running" : descriptorState.status,
-          pendingPermissionCount: descriptorState.pendingPermissionCount,
-          attentionReason: descriptorState.attentionReason,
-          stoppedBy: descriptorState.stoppedBy,
-        })
-      : null,
-  };
-}
 
 function AgentPanel() {
   const { serverId, workspaceId, target, openFileInWorkspace } = usePaneContext();
@@ -406,7 +336,7 @@ export function AgentConversationPanel() {
 
 export const agentPanelRegistration = definePanel("agent", {
   component: AgentConversationPanel,
-  useDescriptor: useAgentPanelDescriptor,
+  useDescriptor: useAgentDescriptor,
 });
 
 export function useDraftPanelDescriptor(
@@ -1121,6 +1051,11 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
   onOpenWorkspaceFile?: (request: WorkspaceFileOpenRequest) => void;
 }) {
   const { t } = useTranslation();
+  // The workspace sheet is for looking; Open as tab brings the agent back with its composer.
+  const showsComposer = usePaneContext().host !== "sheet";
+  // The dock lays out fullscreen for the same session the composer edits in.
+  const composerEditingSession = useComposerEditingSession("chat");
+  const isComposerFullscreen = useComposerFullscreen(composerEditingSession);
   const subagentRows = useSubagentsForParent({ serverId, parentAgentId: agentId });
   const tasks = useSessionStore((state): TodoEntry[] | undefined =>
     state.sessions[serverId]?.agentTasks.get(agentId),
@@ -1135,7 +1070,11 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
     useShallow((state) => selectSelectionAsks(state, serverId, agentId)),
   );
   const hasActiveComposer = !agentState.archivedAt && !isArchivingCurrentAgent;
+  const parentAgentId = useParentAgentId(serverId, agentId);
+  // With a composer the parent is a pill above it; without one, the box takes the composer's place.
+  const parentPillAgentId = showsComposer ? parentAgentId : null;
   const hasVisibleAgentTracks = hasAgentTracks({
+    parentAgentId: parentPillAgentId,
     subagentRows,
     tasks,
     archiveFinishedStatus: archiveFinishedSubagents.status,
@@ -1188,7 +1127,10 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
       composerState,
     ],
   );
-  const composerSection = (
+  const parentCallout = parentAgentId ? (
+    <ParentAgentCallout serverId={serverId} parentAgentId={parentAgentId} />
+  ) : null;
+  const composerSection = showsComposer ? (
     <RenderProfile id={`AgentComposerSection:${agentId}`}>
       <AgentComposerSection
         agentId={agentId}
@@ -1200,15 +1142,19 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
         cwd={cwd}
         isSubmitLoading={false}
         agentInputDraft={agentInputDraft}
+        editingSession={composerEditingSession}
         onAttentionInputFocus={onAttentionInputFocus}
         onAttentionPromptSend={onAttentionPromptSend}
         onComposerHeightChange={handleComposerHeightChange}
         onMessageSent={handleMessageSent}
       />
     </RenderProfile>
+  ) : (
+    parentCallout
   );
   const streamContent = (
     <View style={animatedStaticStyles.content}>
+      {showsComposer ? null : <SheetAgentFacts serverId={serverId} agentId={agentId} />}
       <RenderProfile id={`AgentStreamSection:${agentId}`}>
         <AgentStreamSection
           streamViewRef={streamViewRef}
@@ -1229,7 +1175,7 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
           serverId={serverId}
           agentId={agentId}
           workspaceId={workspaceId}
-          cwd={cwd}
+          parentAgentId={parentPillAgentId}
           subagentRows={subagentRows}
           tasks={tasks}
           archiveFinishedStatus={archiveFinishedSubagents.status}
@@ -1272,7 +1218,7 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
   );
 
   const dock = (
-    <ChatSurface disabled={isArchivingCurrentAgent}>
+    <ChatSurface disabled={isArchivingCurrentAgent} fullscreen={isComposerFullscreen}>
       {dockContent}
       {composerSection}
       {dockOverlay}
@@ -1303,13 +1249,15 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
 function ChatSurface({
   children,
   disabled,
+  fullscreen,
 }: {
   children: [ReactNode, ReactNode, ReactNode];
   disabled: boolean;
+  fullscreen: boolean;
 }) {
   return (
     <FileDropZone style={styles.container} disabled={disabled}>
-      <ComposerDock>{children}</ComposerDock>
+      <ComposerDock fullscreen={fullscreen}>{children}</ComposerDock>
     </FileDropZone>
   );
 }
@@ -1342,6 +1290,15 @@ function TimelineSyncErrorCallout({
       </View>
     </View>
   );
+}
+
+/**
+ * What the composer's controls and context meter would show, as one line, for an agent shown
+ * without its composer.
+ */
+function SheetAgentFacts({ serverId, agentId }: { serverId: string; agentId: string }) {
+  const text = useAgentFactsLine(serverId, agentId);
+  return text ? <PaneSubtitle text={text} testID="agent-pane-subtitle" /> : null;
 }
 
 const AgentStreamSection = memo(function AgentStreamSection({
@@ -1379,9 +1336,7 @@ const AgentStreamSection = memo(function AgentStreamSection({
   const bottomOverlayControlClearance = hasVisibleComposerTracks
     ? resolveComposerTrackControlClearance(isCompactFormFactor)
     : 0;
-  const streamItemsRaw = useSessionStore((state) =>
-    agentId ? state.sessions[serverId]?.agentStreamTail?.get(agentId) : undefined,
-  );
+  const streamItemsRaw = useAgentStreamTail(serverId, agentId);
   const pendingMessageSubmissions = useSessionStore(
     useShallow((state) =>
       agentId
@@ -1473,6 +1428,7 @@ const AgentComposerSection = memo(function AgentComposerSection({
   cwd,
   isSubmitLoading,
   agentInputDraft,
+  editingSession,
   onAttentionInputFocus,
   onAttentionPromptSend,
   onComposerHeightChange,
@@ -1487,6 +1443,7 @@ const AgentComposerSection = memo(function AgentComposerSection({
   cwd: string;
   isSubmitLoading: boolean;
   agentInputDraft: AgentInputDraft;
+  editingSession: ComposerEditingSession;
   onAttentionInputFocus: () => void;
   onAttentionPromptSend: () => void;
   onComposerHeightChange: (height: number) => void;
@@ -1531,6 +1488,7 @@ const AgentComposerSection = memo(function AgentComposerSection({
       cwd={cwd}
       isSubmitLoading={isSubmitLoading}
       agentInputDraft={agentInputDraft}
+      editingSession={editingSession}
       onAttentionInputFocus={onAttentionInputFocus}
       onAttentionPromptSend={onAttentionPromptSend}
       onComposerHeightChange={onComposerHeightChange}
@@ -1546,6 +1504,7 @@ function ActiveAgentComposer({
   cwd,
   isSubmitLoading,
   agentInputDraft,
+  editingSession,
   onAttentionInputFocus,
   onAttentionPromptSend,
   onComposerHeightChange,
@@ -1557,6 +1516,7 @@ function ActiveAgentComposer({
   cwd: string;
   isSubmitLoading: boolean;
   agentInputDraft: AgentInputDraft;
+  editingSession: ComposerEditingSession;
   onAttentionInputFocus: () => void;
   onAttentionPromptSend: () => void;
   onComposerHeightChange: (height: number) => void;
@@ -1564,7 +1524,7 @@ function ActiveAgentComposer({
 }) {
   const isCompactFormFactor = useIsCompactFormFactor();
   const { onLayout: onInputAreaLayout, isBelow: isCompactComposerLayout } = useContainerWidthBelow(
-    COMPACT_FORM_FACTOR_WIDTH,
+    COMPACT_CONTENT_WIDTH,
     { initialIsBelow: isCompactFormFactor },
   );
   const paneContext = usePaneContext();
@@ -1591,11 +1551,10 @@ function ActiveAgentComposer({
       openWorkspaceChanges({
         isCompact: isCompactFormFactor,
         workspaceKey: buildWorkspaceTabPersistenceKey({ serverId, workspaceId }),
-        checkout: { serverId, cwd, isGit: true },
         preferences: openInSidePane,
       });
     },
-    [cwd, isCompactFormFactor, openInSidePane, serverId, workspaceId],
+    [isCompactFormFactor, openInSidePane, serverId, workspaceId],
   );
 
   const handleClientSlashCommand = useCallback(
@@ -1721,6 +1680,7 @@ function ActiveAgentComposer({
         onChangeAttachments={agentInputDraft.setAttachments}
         cwd={cwd}
         clearDraft={agentInputDraft.clear}
+        editingSession={editingSession}
         autoFocus
         autoFocusKey={String(agentInputDraft.attachmentFocusRequestId)}
         isSubmitLoading={isSubmitLoading}
@@ -1813,6 +1773,8 @@ const animatedStaticStyles = RNStyleSheet.create({
   inputAreaWrapper: {
     width: "100%",
     flexShrink: 1,
+    // Content-sized inline; fills the dock's fullscreen slot.
+    flexGrow: 1,
   },
 });
 

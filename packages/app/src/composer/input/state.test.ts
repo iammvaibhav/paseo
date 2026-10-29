@@ -2,8 +2,14 @@ import { describe, expect, it, vi } from "vitest";
 import {
   applyDictationTranscript,
   computeCanStartDictation,
+  type MessageInputEnterContext,
   resolveActiveSendBehavior,
   resolveComposerSurfacePresentation,
+  resolveComposerSurfaceText,
+  resolveGlyphRailOffset,
+  resolveMessageInputEnterAction,
+  resolveRetainedSelection,
+  resolveAlternateSendAction,
   runAlternateSendAction,
   runDefaultSendAction,
   runMessageInputKeyboardAction,
@@ -386,6 +392,208 @@ describe("composer send behavior", () => {
     expect(defaultAction.calls).toEqual(["send"]);
     expect(alternateAction.calls).toEqual(["send"]);
   });
+
+  it("offers the other non-destructive action only while a turn runs in band", () => {
+    const running = { isAgentRunning: true, sendsOutOfBand: false, onQueue: () => undefined };
+    expect(resolveAlternateSendAction({ ...running, defaultSendBehavior: "steer" })).toBe("queue");
+    expect(resolveAlternateSendAction({ ...running, defaultSendBehavior: "interrupt" })).toBe(
+      "queue",
+    );
+    expect(resolveAlternateSendAction({ ...running, defaultSendBehavior: "queue" })).toBe("steer");
+    expect(
+      resolveAlternateSendAction({
+        ...running,
+        defaultSendBehavior: "steer",
+        isAgentRunning: false,
+      }),
+    ).toBeNull();
+    expect(
+      resolveAlternateSendAction({
+        ...running,
+        defaultSendBehavior: "steer",
+        sendsOutOfBand: true,
+      }),
+    ).toBeNull();
+  });
+});
+
+describe("resolveMessageInputEnterAction", () => {
+  function enterContext(
+    overrides: Partial<MessageInputEnterContext> = {},
+  ): MessageInputEnterContext {
+    return {
+      submitOnEnter: true,
+      sendShortcut: "enter",
+      shiftKey: false,
+      metaKey: false,
+      ctrlKey: false,
+      isAgentRunning: false,
+      ...overrides,
+    };
+  }
+
+  it("returns null for plain, Shift, and modifier Enter when submit on enter is disabled", () => {
+    expect(resolveMessageInputEnterAction(enterContext({ submitOnEnter: false }))).toBeNull();
+    expect(
+      resolveMessageInputEnterAction(enterContext({ submitOnEnter: false, shiftKey: true })),
+    ).toBeNull();
+    expect(
+      resolveMessageInputEnterAction(enterContext({ submitOnEnter: false, metaKey: true })),
+    ).toBeNull();
+    expect(
+      resolveMessageInputEnterAction(enterContext({ submitOnEnter: false, ctrlKey: true })),
+    ).toBeNull();
+  });
+
+  it("still returns null when modifier Enter sends and submit on enter is disabled", () => {
+    expect(
+      resolveMessageInputEnterAction(
+        enterContext({ sendShortcut: "mod-enter", submitOnEnter: false, metaKey: true }),
+      ),
+    ).toBeNull();
+    expect(
+      resolveMessageInputEnterAction(
+        enterContext({ sendShortcut: "mod-enter", submitOnEnter: false }),
+      ),
+    ).toBeNull();
+  });
+
+  it("sends on plain Enter when Enter sends", () => {
+    expect(resolveMessageInputEnterAction(enterContext())).toBe("default-send");
+  });
+
+  it("returns null for Shift+Enter when Enter sends", () => {
+    expect(resolveMessageInputEnterAction(enterContext({ shiftKey: true }))).toBeNull();
+  });
+
+  it("returns null for Shift+Cmd+Enter and Shift+Ctrl+Enter so Shift keeps its newline", () => {
+    expect(
+      resolveMessageInputEnterAction(
+        enterContext({ shiftKey: true, metaKey: true, isAgentRunning: true }),
+      ),
+    ).toBeNull();
+    expect(
+      resolveMessageInputEnterAction(
+        enterContext({ shiftKey: true, ctrlKey: true, isAgentRunning: true }),
+      ),
+    ).toBeNull();
+  });
+
+  it("sends on Cmd+Enter and Ctrl+Enter while idle", () => {
+    expect(resolveMessageInputEnterAction(enterContext({ metaKey: true }))).toBe("default-send");
+    expect(resolveMessageInputEnterAction(enterContext({ ctrlKey: true }))).toBe("default-send");
+  });
+
+  it("takes the alternate send on Cmd+Enter and Ctrl+Enter while the agent is running", () => {
+    expect(
+      resolveMessageInputEnterAction(enterContext({ metaKey: true, isAgentRunning: true })),
+    ).toBe("alternate-send");
+    expect(
+      resolveMessageInputEnterAction(enterContext({ ctrlKey: true, isAgentRunning: true })),
+    ).toBe("alternate-send");
+  });
+
+  it("returns null for plain and Shift+Enter when modifier Enter sends", () => {
+    expect(resolveMessageInputEnterAction(enterContext({ sendShortcut: "mod-enter" }))).toBeNull();
+    expect(
+      resolveMessageInputEnterAction(enterContext({ sendShortcut: "mod-enter", shiftKey: true })),
+    ).toBeNull();
+  });
+
+  it("returns null for Shift+Cmd+Enter and Shift+Ctrl+Enter when modifier Enter sends", () => {
+    expect(
+      resolveMessageInputEnterAction(
+        enterContext({ sendShortcut: "mod-enter", shiftKey: true, metaKey: true }),
+      ),
+    ).toBeNull();
+    expect(
+      resolveMessageInputEnterAction(
+        enterContext({ sendShortcut: "mod-enter", shiftKey: true, ctrlKey: true }),
+      ),
+    ).toBeNull();
+  });
+
+  it("sends on Cmd+Enter and Ctrl+Enter while idle when modifier Enter sends", () => {
+    expect(
+      resolveMessageInputEnterAction(enterContext({ sendShortcut: "mod-enter", metaKey: true })),
+    ).toBe("default-send");
+    expect(
+      resolveMessageInputEnterAction(enterContext({ sendShortcut: "mod-enter", ctrlKey: true })),
+    ).toBe("default-send");
+  });
+
+  it("uses the default action on modifier Enter while running when modifier Enter sends", () => {
+    expect(
+      resolveMessageInputEnterAction(
+        enterContext({ sendShortcut: "mod-enter", metaKey: true, isAgentRunning: true }),
+      ),
+    ).toBe("default-send");
+    expect(
+      resolveMessageInputEnterAction(
+        enterContext({ sendShortcut: "mod-enter", ctrlKey: true, isAgentRunning: true }),
+      ),
+    ).toBe("default-send");
+  });
+
+  describe("composed with the send actions", () => {
+    function actions() {
+      const calls: string[] = [];
+      return {
+        calls,
+        sendsOutOfBand: false,
+        handleSendMessage: () => calls.push("send"),
+        handleSteerSendMessage: () => calls.push("steer"),
+        handleQueueMessage: () => calls.push("queue"),
+        onQueue: () => undefined,
+      };
+    }
+
+    function resolveCommandEnterToSendModifierEnter() {
+      return resolveMessageInputEnterAction(
+        enterContext({ sendShortcut: "mod-enter", metaKey: true, isAgentRunning: true }),
+      );
+    }
+
+    it("queues through the default send action when queue behavior is selected and the agent is running", () => {
+      const sendAction = actions();
+
+      expect(resolveCommandEnterToSendModifierEnter()).toBe("default-send");
+
+      runDefaultSendAction({ ...sendAction, defaultSendBehavior: "queue", isAgentRunning: true });
+
+      expect(sendAction.calls).toEqual(["queue"]);
+    });
+
+    it("sends through the default send action when queue behavior is selected and the agent is idle", () => {
+      const sendAction = actions();
+
+      expect(
+        resolveMessageInputEnterAction(
+          enterContext({ sendShortcut: "mod-enter", metaKey: true, isAgentRunning: false }),
+        ),
+      ).toBe("default-send");
+
+      runDefaultSendAction({ ...sendAction, defaultSendBehavior: "queue", isAgentRunning: false });
+
+      expect(sendAction.calls).toEqual(["send"]);
+    });
+
+    it.each([
+      { defaultSendBehavior: "steer", expected: "steer" },
+      { defaultSendBehavior: "interrupt", expected: "send" },
+    ] as const)(
+      "follows the $defaultSendBehavior behavior through the default send action while the agent is running",
+      ({ defaultSendBehavior, expected }) => {
+        const sendAction = actions();
+
+        expect(resolveCommandEnterToSendModifierEnter()).toBe("default-send");
+
+        runDefaultSendAction({ ...sendAction, defaultSendBehavior, isAgentRunning: true });
+
+        expect(sendAction.calls).toEqual([expected]);
+      },
+    );
+  });
 });
 
 describe("stopRealtimeVoice", () => {
@@ -427,5 +635,48 @@ describe("stopRealtimeVoice", () => {
     });
 
     expect(calls).toEqual(["cancel agent", "stop voice"]);
+  });
+});
+
+describe("composer surface text", () => {
+  it("measures a new nonempty replacement before it reaches the editing handle", () => {
+    const replacement = { kind: "replace" as const, key: "draft:2", text: "First\nSecond\nThird" };
+    expect(resolveComposerSurfaceText("Short draft", replacement, "draft:1")).toBe(
+      replacement.text,
+    );
+  });
+
+  it("keeps live typing once the replacement is applied", () => {
+    const replacement = { kind: "replace" as const, key: "draft:2", text: "First\nSecond\nThird" };
+    expect(resolveComposerSurfaceText("Edited live draft", replacement, "draft:2")).toBe(
+      "Edited live draft",
+    );
+  });
+
+  it("keeps the live buffer when the initial publication is already applied", () => {
+    const replacement = { kind: "initial" as const, key: "draft:0", text: "Stale publication" };
+    expect(resolveComposerSurfaceText("Live edited draft", replacement, "draft:0")).toBe(
+      "Live edited draft",
+    );
+  });
+});
+
+describe("retained selection", () => {
+  it("keeps a caret that fits and clamps one that no longer does", () => {
+    expect(resolveRetainedSelection({ start: 4, end: 17 }, 40)).toEqual({ start: 4, end: 17 });
+    expect(resolveRetainedSelection({ start: 4, end: 17 }, 10)).toEqual({ start: 4, end: 10 });
+    expect(resolveRetainedSelection({ start: 12, end: 17 }, 10)).toEqual({ start: 10, end: 10 });
+    expect(resolveRetainedSelection({ start: -1, end: 3 }, 10)).toEqual({ start: 0, end: 3 });
+  });
+});
+
+describe("fullscreen glyph rail", () => {
+  it("nudges 16px fullscreen glyphs onto the Send arrow's ink edge", () => {
+    expect(
+      resolveGlyphRailOffset({ controlSize: 28, sendIconSize: 16, glyphIconSize: 16 }),
+    ).toBeCloseTo(4 / 3);
+    expect(
+      resolveGlyphRailOffset({ controlSize: 28, sendIconSize: 20, glyphIconSize: 16 }),
+    ).toBeCloseTo(1 / 6);
   });
 });

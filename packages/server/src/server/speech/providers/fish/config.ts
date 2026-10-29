@@ -34,13 +34,6 @@ function isFishProviderActive(provider: { enabled?: boolean; provider: string })
   return provider.enabled !== false && provider.provider === "fish";
 }
 
-function pickIfFish<T>(
-  provider: { enabled?: boolean; provider: string },
-  value: T | undefined,
-): T | undefined {
-  return isFishProviderActive(provider) ? value : undefined;
-}
-
 function firstDefined<T>(values: Array<T | null | undefined>): T | undefined {
   for (const value of values) {
     if (value === undefined || value === null) {
@@ -97,7 +90,8 @@ export function resolveFishSpeechConfig(params: {
 
   const fish = params.persisted.providers?.fish;
   const voiceModeTts = params.persisted.features?.voiceMode?.tts;
-  const voiceTts = params.providers.voiceTts;
+  // Site fields belong to the site's own provider.
+  const fishSite = voiceModeTts?.provider === "fish" ? voiceModeTts : undefined;
 
   const apiKey = optionalTrimmed(
     firstDefined<string>([fish?.apiKey, params.env.FISH_AUDIO_API_KEY, params.env.FISH_API_KEY]),
@@ -118,7 +112,7 @@ export function resolveFishSpeechConfig(params: {
     firstDefined<string>([
       params.env.FISH_AUDIO_TTS_MODEL,
       params.env.PASEO_VOICE_FISH_TTS_MODEL,
-      pickIfFish(voiceTts, voiceModeTts?.model),
+      fishSite?.model,
       fish?.model,
       DEFAULT_FISH_TTS_MODEL,
     ]),
@@ -127,7 +121,7 @@ export function resolveFishSpeechConfig(params: {
     firstDefined<string>([
       params.env.FISH_AUDIO_TTS_VOICE,
       params.env.PASEO_VOICE_FISH_TTS_VOICE,
-      pickIfFish(voiceTts, voiceModeTts?.voice),
+      fishSite?.voice,
       fish?.voice,
       DEFAULT_FISH_TTS_VOICE,
     ]),
@@ -143,7 +137,7 @@ export function resolveFishSpeechConfig(params: {
     firstDefined<string | number>([
       params.env.FISH_AUDIO_TTS_SPEED,
       params.env.PASEO_VOICE_FISH_TTS_SPEED,
-      pickIfFish(voiceTts, voiceModeTts?.speed),
+      fishSite?.speed,
       fish?.speed,
       DEFAULT_FISH_TTS_SPEED,
     ]),

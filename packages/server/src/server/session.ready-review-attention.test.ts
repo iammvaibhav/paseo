@@ -2,6 +2,7 @@ import { describe, expect, test, vi } from "vitest";
 import pino from "pino";
 import { CLIENT_CAPS } from "@getpaseo/protocol/client-capabilities";
 import { Session } from "./session.js";
+import { createWorkspaceRuntimeStore } from "./workspace-runtime-store/index.js";
 import type { StoredAgentRecord } from "./agent/agent-storage.js";
 import type { MissionControlService } from "./mission-control/service.js";
 import type { ManagedAgent } from "./agent/agent-manager.js";
@@ -120,6 +121,7 @@ function createHarness(options: TestHarnessOptions) {
       }
     }),
     hasTimeline: vi.fn(() => false),
+    getLastAssistantMessage: vi.fn(async () => null),
     seedTimelineForRehydrate: vi.fn(async (_id: string, cb: () => Promise<unknown>) => cb()),
     createAgent: vi.fn(async () => {
       const agent = {
@@ -228,6 +230,7 @@ function createHarness(options: TestHarnessOptions) {
     providerSnapshotManager: createProviderSnapshotManagerStub().manager,
     missionControlService: mockMissionControlService,
     terminalManager: null,
+    workspaceRuntimeStore: createWorkspaceRuntimeStore(),
     stt: null,
     tts: null,
   });

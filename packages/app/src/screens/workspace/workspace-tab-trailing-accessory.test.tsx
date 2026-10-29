@@ -36,6 +36,8 @@ vi.mock("lucide-react-native", () => {
     Copy: StubIcon,
     CopyX: StubIcon,
     Ellipsis: StubIcon,
+    ExternalLink: StubIcon,
+    FolderInput: StubIcon,
     FolderPlus: StubIcon,
     Pencil: StubIcon,
     RotateCw: StubIcon,

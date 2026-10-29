@@ -33,7 +33,7 @@ function createSteerRespondingClients(): SteerClients {
     // A self-reporting agent: the launch brief carries the marker, so the
     // FIRST run lands a report (under the real daemon-side agent id, passed
     // by the seam) before finishing — tier 1, zero steers.
-    onStartTurn: async (prompt, agentId) => {
+    onStartTurn: async (prompt, _config, agentId) => {
       const text = typeof prompt === "string" ? prompt : JSON.stringify(prompt);
       if (!text.includes("SELF_REPORT_MARKER")) {
         return;

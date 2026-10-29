@@ -23,6 +23,7 @@ function createWorkspace(
     statusEnteredAt: null,
     activityAt: null,
     createdAt: null,
+    lastUserMessageAt: null,
     diffStat: null,
     scripts: [],
   };

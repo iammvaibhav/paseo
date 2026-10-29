@@ -16,7 +16,6 @@ import { FadeIn, FadeOut } from "react-native-reanimated";
 import { StyleSheet } from "react-native-unistyles";
 import { createPortal } from "react-dom";
 import { Portal } from "@gorhom/portal";
-import { useBottomSheetModalInternal } from "@gorhom/bottom-sheet";
 import {
   getOverlayRoot,
   OverlayLayerProvider,
@@ -24,6 +23,10 @@ import {
   useWebOverlayRegistration,
 } from "@/lib/overlay-root";
 import { FloatingSurface } from "@/components/ui/floating";
+import {
+  measureFloatingPanelPortalHost,
+  useFloatingPanelPortalHostName,
+} from "@/components/ui/floating-panel-portal";
 import { isWeb } from "@/constants/platform";
 import { useHoverSafeZone } from "@/hooks/use-hover-safe-zone";
 import {
@@ -92,6 +95,8 @@ function WebHoverCard({
   const contentRef = useRef<View>(null);
   const [open, setOpen] = useState(false);
   const graceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Read when focus arrives: by focusout the element losing focus no longer matches :focus-visible.
+  const keyboardFocusedRef = useRef(false);
 
   const clearGraceTimer = useCallback(() => {
     if (graceTimerRef.current) {
@@ -108,14 +113,21 @@ function WebHoverCard({
     );
   }, []);
 
+  // Keyboard focus keeps the card open for keyboard users; the focus a pointer click leaves
+  // behind on the trigger or a button in the card does not outlast the pointer leaving.
+  const keyboardFocusInside = useCallback(() => {
+    return focusInside() && document.activeElement?.matches(":focus-visible") === true;
+  }, [focusInside]);
+
   const scheduleClose = useCallback(() => {
-    if (focusInside()) return;
+    if (keyboardFocusInside()) return;
     if (graceTimerRef.current) return;
     graceTimerRef.current = setTimeout(() => {
       graceTimerRef.current = null;
+      if (keyboardFocusInside()) return;
       setOpen(false);
     }, CLOSE_GRACE_MS);
-  }, [focusInside]);
+  }, [keyboardFocusInside]);
 
   const openNow = useCallback(() => {
     clearGraceTimer();
@@ -179,16 +191,20 @@ function WebHoverCard({
       setOpen(false);
     };
     const focusEntered = (event: FocusEvent) => {
-      const target = event.target as Node;
+      const target = event.target as Element;
+      keyboardFocusedRef.current = target.matches(":focus-visible");
       if (trigger.contains(target)) {
         openNow();
       } else if ((contentRef.current as unknown as HTMLElement | null)?.contains(target)) {
         clearGraceTimer();
       }
     };
+    // Only keyboard focus keeps the card open, so only losing keyboard focus closes it. A button
+    // that disables itself on press drops pointer focus while the pointer is still on the card.
     const focusLeft = (event: FocusEvent) => {
       const next = event.relatedTarget as Node | null;
       if (
+        keyboardFocusedRef.current &&
         !trigger.contains(next) &&
         !(contentRef.current as unknown as HTMLElement | null)?.contains(next)
       ) {
@@ -341,28 +357,31 @@ function HoverCardSurface({
   triggerRef: RefObject<View | null>;
   contentRef: RefObject<View | null>;
 }): ReactElement {
-  const bottomSheetInternal = useBottomSheetModalInternal(true);
-  const [triggerRect, setTriggerRect] = useState<Rect | null>(null);
+  const portalHostName = useFloatingPanelPortalHostName();
+  const [anchor, setAnchor] = useState<{ triggerRect: Rect; hostRect: Rect } | null>(null);
   const [contentSize, setContentSize] = useState<Size | null>(null);
   const [position, setPosition] = useState<{ x: number; y: number } | null>(null);
 
   useEffect(() => {
     if (!triggerRef.current) return;
     let cancelled = false;
-    void measureElement(triggerRef.current).then((rect) => {
-      if (!cancelled) setTriggerRect(rect);
+    void Promise.all([
+      measureElement(triggerRef.current),
+      measureFloatingPanelPortalHost(portalHostName),
+    ]).then(([triggerRect, hostRect]) => {
+      if (!cancelled && hostRect) setAnchor({ triggerRect, hostRect });
       return undefined;
     });
     return () => {
       cancelled = true;
     };
-  }, [triggerRef]);
+  }, [portalHostName, triggerRef]);
 
   useEffect(() => {
-    if (!triggerRect || !contentSize) return;
+    if (!anchor || !contentSize) return;
     const { width, height } = Dimensions.get("window");
     const { x, y } = computePosition({
-      triggerRect,
+      triggerRect: anchor.triggerRect,
       contentSize,
       displayArea: { x: 0, y: 0, width, height },
       placement,
@@ -370,8 +389,8 @@ function HoverCardSurface({
       alignment,
       offset,
     });
-    setPosition({ x, y });
-  }, [alignment, contentSize, offset, placement, triggerRect]);
+    setPosition({ x: x - anchor.hostRect.x, y: y - anchor.hostRect.y });
+  }, [alignment, anchor, contentSize, offset, placement]);
 
   const handleLayout = useCallback(
     (event: { nativeEvent: { layout: { width: number; height: number } } }) => {
@@ -412,7 +431,7 @@ function HoverCardSurface({
   // On web the card goes in the shared overlay root like menus and tooltips. The app tree sits
   // on the same plane as embedded browser panes, so a card portaled there paints under VS Code.
   if (isWeb) return createPortal(overlay, getOverlayRoot());
-  return <Portal hostName={bottomSheetInternal?.hostName}>{overlay}</Portal>;
+  return <Portal hostName={portalHostName}>{overlay}</Portal>;
 }
 
 const styles = StyleSheet.create((theme) => ({

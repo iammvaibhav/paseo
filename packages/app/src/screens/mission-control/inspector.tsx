@@ -3,7 +3,7 @@ import { Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { ArrowUpRight, Archive, X } from "lucide-react-native";
-import { BackHeader } from "@/components/headers/back-header";
+import { CompactHeader } from "@/components/headers/compact-header";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useIsCompactFormFactor } from "@/constants/layout";
@@ -162,7 +162,7 @@ export function MissionControlInspector({
   // clears the inspected agent (target → null unmounts the pane). Width prefs
   // are owned by the resizable rail and are untouched; the focused-agent
   // heartbeat cleanup on unmount stops reporting this agent. Compact has its
-  // own BackHeader back button (same action).
+  // own back button (same action).
   const closeInspectorButton = useMemo(
     () => (
       <Button
@@ -187,10 +187,11 @@ export function MissionControlInspector({
   );
 
   const header = isCompact ? (
-    <BackHeader
+    <CompactHeader
+      navigation="back"
       title={primaryLabel}
-      titleAccessory={headerTitleAccessory}
-      rightContent={openInWorkspaceButton}
+      subtitle={headerTitleAccessory}
+      actions={openInWorkspaceButton}
       onBack={closeInspector}
     />
   ) : (

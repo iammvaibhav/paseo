@@ -1,3 +1,4 @@
+import { parentAddressLabels } from "@getpaseo/protocol/agent-labels";
 import { describe, expect, it } from "vitest";
 import { isWorkspaceRootAgent } from "./workspace-root-policy";
 
@@ -27,5 +28,12 @@ describe("isWorkspaceRootAgent", () => {
     expect(isWorkspaceRootAgent({ parentAgentId: "p1", workspaceId: "wks_2" }, undefined)).toBe(
       true,
     );
+  });
+
+  it("keeps a child nested while a parent labelled on this host is still loading", () => {
+    const labels = parentAddressLabels({ serverId: "srv_local", agentId: "p1" });
+    expect(
+      isWorkspaceRootAgent({ parentAgentId: "p1", workspaceId: "wks_2", labels }, undefined),
+    ).toBe(false);
   });
 });

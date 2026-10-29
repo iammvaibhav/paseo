@@ -189,6 +189,7 @@ class TimelineWorld {
           direction: "tail",
           limit: 40,
           projection: "projected",
+          wholeTurns: true,
         });
       } finally {
         this.forcedTimelineTailReplacements.delete(agentId);
@@ -341,7 +342,12 @@ test("uses a tail fetch when an agent becomes visible", async () => {
   membership.succeed();
 
   const fetch = await world.nextFetch("agent-a");
-  expect(fetch.request).toEqual({ direction: "tail", limit: 40, projection: "projected" });
+  expect(fetch.request).toEqual({
+    direction: "tail",
+    limit: 40,
+    projection: "projected",
+    wholeTurns: true,
+  });
   fetch.respond({ hasNewer: false });
 });
 
@@ -366,6 +372,7 @@ test("loads the cache before choosing the authoritative network request", async 
     cursor: { epoch: "cached-epoch", seq: 17 },
     limit: 40,
     projection: "projected",
+    wholeTurns: true,
   });
   fetch.respond({ hasNewer: false });
 });
@@ -384,6 +391,7 @@ test("catches up after the restored cursor when an agent becomes visible", async
     cursor: { epoch: "epoch-agent-a", seq: 42 },
     limit: 40,
     projection: "projected",
+    wholeTurns: true,
   });
   fetch.respond({ hasNewer: false });
 });
@@ -401,7 +409,12 @@ test("falls back to the latest tail when a restored cursor has more than one cat
   probe.respond({ hasNewer: true, seq: 82 });
 
   const fallback = await world.nextFetch("agent-a");
-  expect(fallback.request).toEqual({ direction: "tail", limit: 40, projection: "projected" });
+  expect(fallback.request).toEqual({
+    direction: "tail",
+    limit: 40,
+    projection: "projected",
+    wholeTurns: true,
+  });
   expect(
     world.applyTimelineResponse({
       requestId: "fallback-tail",
@@ -444,6 +457,7 @@ test("a gap absorbed by a running tail is recovered after the tail completes", a
     cursor: { epoch: "epoch-agent-a", seq: 9 },
     limit: 40,
     projection: "projected",
+    wholeTurns: true,
   });
   recovery.respond({ hasNewer: false });
   await vi.waitFor(() => expect(world.sync.getAgentTimelineStatus("agent-a")).toBe("ready"));
@@ -527,6 +541,7 @@ test("unchanged visible-set publication does not cancel paged catch-up", async (
     cursor: { epoch: "epoch-agent-a", seq: 5 },
     limit: 40,
     projection: "projected",
+    wholeTurns: true,
   });
   world.expectNoPendingMembership();
 });
@@ -897,12 +912,14 @@ test("gap recovery supersedes completed catch-up and pages through the current t
       cursor: { epoch: "epoch-agent-a", seq: 10 },
       limit: 40,
       projection: "projected",
+      wholeTurns: true,
     },
     {
       direction: "after",
       cursor: { epoch: "epoch-agent-a", seq: 15 },
       limit: 40,
       projection: "projected",
+      wholeTurns: true,
     },
   ]);
 });
@@ -926,6 +943,8 @@ test("repeated recovery for the same running gap reuses the in-flight fetch", as
   gapPage.respond({ hasNewer: false });
 });
 
+const TAIL_FETCH = { direction: "tail", limit: 40, projection: "projected", wholeTurns: true };
+
 test("a burst of dropped events triggers exactly one authoritative tail re-baseline", async () => {
   const world = new TimelineWorld();
   world.sync.setConnected(true);
@@ -942,7 +961,7 @@ test("a burst of dropped events triggers exactly one authoritative tail re-basel
   world.sync.recoverBaseline("agent-a");
 
   const baseline = await world.nextFetch("agent-a");
-  expect(baseline.request).toEqual({ direction: "tail", limit: 40, projection: "projected" });
+  expect(baseline.request).toEqual(TAIL_FETCH);
   world.expectNoPendingFetch();
   baseline.respond({ hasNewer: false });
   await vi.waitFor(() => expect(world.sync.getAgentTimelineStatus("agent-a")).toBe("ready"));
@@ -956,8 +975,9 @@ test("a re-baseline for a non-desired agent is parked until the agent is acknowl
   world.expectNoPendingFetch();
 
   world.sync.replaceVisibleAgentIds("workspace", ["agent-a"]);
+  (await world.nextMembership()).succeed();
   const baseline = await world.nextFetch("agent-a");
-  expect(baseline.request).toEqual({ direction: "tail", limit: 40, projection: "projected" });
+  expect(baseline.request).toEqual(TAIL_FETCH);
   baseline.respond({ hasNewer: false });
   await vi.waitFor(() => expect(world.sync.getAgentTimelineStatus("agent-a")).toBe("ready"));
 });
@@ -979,7 +999,7 @@ test("a failed re-baseline retries the authoritative tail fetch", async () => {
 
   retryBaseline();
   const retry = await world.nextFetch("agent-a");
-  expect(retry.request).toEqual({ direction: "tail", limit: 40, projection: "projected" });
+  expect(retry.request).toEqual(TAIL_FETCH);
   retry.respond({ hasNewer: false });
   await vi.waitFor(() => expect(world.sync.getAgentTimelineStatus("agent-a")).toBe("ready"));
 

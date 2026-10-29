@@ -32,6 +32,8 @@ export interface ResolveOrCreateWorkspaceIdInput {
   requestedWorkspaceId?: string;
   cwd: string;
   initialTitle: string | null;
+  background?: boolean;
+  callerWorkspaceId?: string;
 }
 
 export interface ImportWorkspaceInput {
@@ -56,6 +58,8 @@ export interface CreateWorktreeWorkspaceInput {
   title: string | null;
   expectsInitialAgent?: boolean;
   untrustedSource?: UntrustedWorkspaceSource;
+  background?: boolean;
+  callerWorkspaceId?: string;
 }
 
 export interface WorkspaceProvisioningService {
@@ -69,7 +73,12 @@ export interface WorkspaceProvisioningService {
     cwd: string,
     title?: string | null,
     projectId?: string,
-    context?: { expectsInitialAgent?: boolean; workspaceId?: string },
+    context?: {
+      expectsInitialAgent?: boolean;
+      workspaceId?: string;
+      background?: boolean;
+      callerWorkspaceId?: string;
+    },
   ): Promise<PersistedWorkspaceRecord>;
   createWorkspaceForWorktree(
     input: CreateWorktreeWorkspaceInput,
@@ -269,11 +278,27 @@ export function createWorkspaceProvisioningService(deps: {
     return project;
   }
 
+  async function resolveBackground(input?: {
+    background?: boolean;
+    callerWorkspaceId?: string;
+  }): Promise<boolean> {
+    if (input?.background !== undefined) return input.background;
+    if (!input?.callerWorkspaceId) return false;
+    const callerWorkspace = await workspaceRegistry.get(input.callerWorkspaceId);
+    if (!callerWorkspace) throw new Error(`Caller workspace ${input.callerWorkspaceId} not found`);
+    return callerWorkspace.background;
+  }
+
   async function createWorkspaceForDirectory(
     cwd: string,
     title?: string | null,
     projectId?: string,
-    context?: { expectsInitialAgent?: boolean; workspaceId?: string },
+    context?: {
+      expectsInitialAgent?: boolean;
+      workspaceId?: string;
+      background?: boolean;
+      callerWorkspaceId?: string;
+    },
   ): Promise<PersistedWorkspaceRecord> {
     const normalizedCwd = canonicalizePath(cwd);
     const checkout = await workspaceGitService.getCheckout(normalizedCwd);
@@ -289,9 +314,12 @@ export function createWorkspaceProvisioningService(deps: {
       title: title?.trim() || null,
       createdAt: timestamp,
       updatedAt: timestamp,
+      background: await resolveBackground(context),
     });
-    await workspaceRegistry.upsert(workspace, context);
-    deps.lifecycle?.emit("workspace.created", { workspace: describeHookWorkspace(workspace) });
+    await workspaceRegistry.upsert(workspace, {
+      expectsInitialAgent: context?.expectsInitialAgent,
+    });
+    emitWorkspaceCreated(workspace);
     return workspace;
   }
 
@@ -325,14 +353,21 @@ export function createWorkspaceProvisioningService(deps: {
       createdAt: timestamp,
       updatedAt: timestamp,
       ...(input.untrustedSource ? { untrustedSource: input.untrustedSource } : {}),
+      background: await resolveBackground(input),
     });
     await workspaceRegistry.upsert(workspace, {
       expectsInitialAgent: input.expectsInitialAgent,
       ...(options?.timer ? { timer: options.timer } : {}),
     });
-    deps.lifecycle?.emit("workspace.created", { workspace: describeHookWorkspace(workspace) });
+    emitWorkspaceCreated(workspace);
     options?.timer?.mark("lifecycleMs");
     return workspace;
+  }
+
+  function emitWorkspaceCreated(workspace: PersistedWorkspaceRecord): void {
+    deps.lifecycle?.emit("workspace.create.after", {
+      workspace: describeHookWorkspace(workspace),
+    });
   }
 
   async function resolveSourceProjectForWorktree(input: {
@@ -427,25 +462,22 @@ export function createWorkspaceProvisioningService(deps: {
 
   async function findOrCreateWorkspaceForDirectory(cwd: string): Promise<PersistedWorkspaceRecord> {
     const normalizedCwd = canonicalizePath(cwd);
-    const workspaces = (await workspaceRegistry.list()).filter((workspace) =>
-      // Records may predate canonicalization and hold a symlink spelling.
-      areEquivalentPaths(canonicalizePath(workspace.cwd), normalizedCwd),
-    );
-    const active = workspaces
-      .filter((workspace) => !workspace.archivedAt)
+    // Path-based discovery selects public work; explicit-ID recovery bypasses this selector.
+    // Records may predate canonicalization and hold a symlink spelling.
+    const workspaces = (await workspaceRegistry.list())
+      .filter(
+        (workspace) =>
+          !workspace.background &&
+          areEquivalentPaths(canonicalizePath(workspace.cwd), normalizedCwd),
+      )
       .sort(
         (left, right) =>
           Date.parse(left.createdAt) - Date.parse(right.createdAt) ||
           left.workspaceId.localeCompare(right.workspaceId),
-      )[0];
+      );
+    const active = workspaces.find((workspace) => !workspace.archivedAt);
     if (active) return refreshWorkspaceRecord(active);
-    const archived = workspaces
-      .filter((workspace) => workspace.archivedAt)
-      .sort(
-        (left, right) =>
-          Date.parse(left.createdAt) - Date.parse(right.createdAt) ||
-          left.workspaceId.localeCompare(right.workspaceId),
-      )[0];
+    const archived = workspaces.find((workspace) => workspace.archivedAt);
     if (archived) {
       const project = await projectRegistry.get(archived.projectId);
       if (project && !project.archivedAt) return ensureWorkspaceRecordUnarchived(archived);
@@ -458,6 +490,16 @@ export function createWorkspaceProvisioningService(deps: {
   ): Promise<string> {
     if (input.createdWorktree) return input.createdWorktree.workspace.workspaceId;
     if (input.requestedWorkspaceId) return input.requestedWorkspaceId;
+    // Background work always gets its own workspace; public work reuses the
+    // directory's workspace instead of adding one per agent.
+    if (await resolveBackground(input)) {
+      return (
+        await createWorkspaceForDirectory(input.cwd, input.initialTitle, undefined, {
+          expectsInitialAgent: true,
+          background: true,
+        })
+      ).workspaceId;
+    }
     const existing = await findOrCreateWorkspaceForDirectory(input.cwd);
     if (input.initialTitle && !existing.title) {
       await workspaceRegistry.upsert({ ...existing, title: input.initialTitle.trim() });

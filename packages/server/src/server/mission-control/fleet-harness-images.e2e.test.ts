@@ -50,7 +50,7 @@ describe("images and files cross hosts over /mcp/fleet", () => {
       const prompts: CapturedPrompt[] = [];
       const harness = await createFleetHarness({
         agentClients: createTestAgentClients({
-          onStartTurn: (prompt, agentId) => {
+          onStartTurn: (prompt, _config, agentId) => {
             prompts.push({ agentId, prompt });
           },
         }),

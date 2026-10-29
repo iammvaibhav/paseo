@@ -4,10 +4,9 @@ import { resolveSelectedSubmoduleForCheckout } from "@/stores/explorer-submodule
 import { findSubmodule, useSubmodulesQuery } from "./use-submodules-query";
 
 /**
- * Shared submodule context for the explorer surfaces (sidebar header picker
- * and the workspace Changes pane). The selected submodule is remembered per
- * checkout in the panel store, so every git surface rooted at the checkout
- * follows the same selection.
+ * Submodule context for the Changes pane picker, on desktop and in the compact
+ * Explorer. The selected submodule is remembered per checkout in the panel
+ * store, so every Changes pane rooted at the checkout follows the same selection.
  */
 export function useSubmoduleContext({
   serverId,

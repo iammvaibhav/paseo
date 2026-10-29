@@ -1,6 +1,6 @@
 {
   "name": "@getpaseo/plugin",
-  "version": "0.11.0-beta.4",
+  "version": "0.14.0-beta.1",
   "description": "Paseo plugin SDK package",
   "files": [
     "dist",
@@ -52,6 +52,11 @@
       "types": "./dist/client/index.d.ts",
       "source": "./src/client/index.ts",
       "default": "./dist/client/index.js"
+    },
+    "./internal/lifecycle": {
+      "types": "./dist/server/lifecycle.d.ts",
+      "source": "./src/server/lifecycle.ts",
+      "default": "./dist/server/lifecycle.js"
     }
   },
   "publishConfig": {
@@ -62,11 +67,13 @@
     "build": "sh ../../scripts/cpu-slot.sh build tsc -p tsconfig.json --incremental false",
     "build:clean": "pnpm run clean && pnpm run build",
     "prepack": "pnpm run build:clean",
-    "typecheck": "sh ../../scripts/cpu-slot.sh typecheck tsgo --noEmit && sh ../../scripts/cpu-slot.sh typecheck tsgo -p tsconfig.examples.json --noEmit",
-    "test": "vitest run"
+    "typecheck": "sh ../../scripts/cpu-slot.sh typecheck tsgo --noEmit && pnpm run typecheck:examples",
+    "test": "vitest run",
+    "typecheck:examples": "sh ../../scripts/cpu-slot.sh typecheck tsgo -p tsconfig.examples.json --noEmit"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^1.4.0",
+    "i18next": "^26.3.0",
     "use-sync-external-store": "^1.6.0"
   },
   "devDependencies": {
@@ -75,8 +82,8 @@
     "@getpaseo/protocol": "workspace:*",
     "@types/node": "^20.9.0",
     "@types/react": "~19.2.0",
-    "react": "19.1.0",
-    "react-native": "0.81.5",
+    "react": "19.2.3",
+    "react-native": "0.86.3",
     "typescript": "^5.9.3",
     "vitest": "^4.1.6",
     "zod": "^4.4.3"
@@ -84,7 +91,7 @@
   "peerDependencies": {
     "@getpaseo/client": "workspace:*",
     "@getpaseo/protocol": "workspace:*",
-    "react": "~19.1.0",
+    "react": ">=19.1.0 <20",
     "react-native": ">=0.81.5",
     "zod": "^4.4.3"
   },

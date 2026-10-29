@@ -37,7 +37,7 @@ export async function hoverContextWindowMeter(page: Page, name = METER_NAME): Pr
   await page.getByRole("img", { name, exact: true }).hover({ timeout: 30_000 });
   const card = contextWindowDetails(page);
   await expect(card).toBeVisible();
-  await expect(card).toBeInViewport();
+  await expect(card).toBeInViewport({ ratio: 1 });
   return card;
 }
 
@@ -134,8 +134,8 @@ export interface AgentUsageScript {
   stopReportingUsage(): void;
   /** The agent of each agent usage request, in order. */
   agentRequests(): string[];
-  /** Each report Refresh, by report ID. */
-  refreshedReports(): string[][];
+  /** Each scoped agent Refresh, by agent ID. */
+  refreshedAgents(): string[];
 }
 
 /**
@@ -162,8 +162,10 @@ export async function scriptAgentUsage(page: Page): Promise<AgentUsageScript> {
       supported = false;
     },
     agentRequests: () => usage.listRequests().flatMap((request) => request.agentId ?? []),
-    refreshedReports: () =>
-      usage.listRequests().flatMap((request) => (request.reportIds ? [request.reportIds] : [])),
+    refreshedAgents: () =>
+      usage
+        .listRequests()
+        .flatMap((request) => (request.forceRefresh && request.agentId ? [request.agentId] : [])),
   };
 }
 

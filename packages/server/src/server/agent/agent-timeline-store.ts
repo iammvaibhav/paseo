@@ -1,9 +1,5 @@
 import { randomUUID } from "node:crypto";
-import {
-  TimelineProjection,
-  selectProjectedTimelinePage,
-  type ProjectedTimelineRow,
-} from "./timeline-projection.js";
+import { TimelineProjection, type ProjectedTimelineRow } from "./timeline-projection.js";
 import type { AgentTimelineItem, AgentUsage } from "./agent-sdk-types.js";
 import type {
   AgentTimelineFetchOptions,
@@ -23,6 +19,8 @@ interface AgentTimelineState {
   epoch: string;
   projection: TimelineProjection;
   committed: AgentTimelineRow[];
+  /** seqStart of the oldest projected row; 0 while the timeline is empty. */
+  minSeq: number;
   nextSeq: number;
 }
 const DEFAULT_TIMELINE_FETCH_LIMIT = 200;
@@ -38,8 +36,11 @@ export class InMemoryAgentTimelineStore {
   }
   initialize(agentId: string, options?: SeedAgentTimelineOptions): void {
     const timestamp = options?.timestamp ?? new Date().toISOString();
+    const seedRows = options?.rows?.length ? options.rows.map(cloneRow) : null;
+    // The projection keeps the projected fields of rehydrated rows; `committed` keeps
+    // the raw rows that retraction and metrics updates re-project from.
     const committed =
-      options?.rows?.map((row) => ({
+      seedRows?.map((row) => ({
         seq: row.seq,
         timestamp: row.timestamp,
         item: row.item,
@@ -53,12 +54,12 @@ export class InMemoryAgentTimelineStore {
       (next, row) => Math.max(next, row.seq + 1),
       options?.nextSeq ?? 1,
     );
-    const projection = new TimelineProjection();
-    for (const row of committed) projection.append(row);
+    const projection = new TimelineProjection(seedRows ?? committed);
     this.states.set(agentId, {
       epoch: options?.epoch ?? randomUUID(),
       projection,
       committed,
+      minSeq: projection.getRows()[0]?.seqStart ?? 0,
       nextSeq,
     });
   }
@@ -129,9 +130,7 @@ export class InMemoryAgentTimelineStore {
       return [];
     }
     state.committed = state.committed.filter((row) => !drop.has(row.seq));
-    const rebuilt = new TimelineProjection();
-    for (const row of state.committed) rebuilt.append(row);
-    state.projection = rebuilt;
+    this.reproject(state);
     return removed.map(cloneRow);
   }
 
@@ -154,23 +153,24 @@ export class InMemoryAgentTimelineStore {
     const state = this.requireState(agentId);
     const direction = options?.direction ?? "tail";
     const cursor = options?.cursor;
-    const rows = state.projection.getRows();
-    const minSeq = rows[0]?.seqStart ?? state.nextSeq;
+    // Retraction (removeRows) re-projects, so minSeq follows the oldest retained row.
+    const hasRows = state.minSeq !== 0;
+    const minSeq = hasRows ? state.minSeq : state.nextSeq;
     const window = { minSeq, maxSeq: state.nextSeq - 1, nextSeq: state.nextSeq };
     const staleCursor = cursor !== undefined && cursor.epoch !== state.epoch;
     const gap =
       !staleCursor &&
       direction === "after" &&
       cursor !== undefined &&
-      rows.length > 0 &&
+      hasRows &&
       cursor.seq < minSeq - 1;
     const reset = staleCursor || gap;
-    const page = selectProjectedTimelinePage({
-      rows,
+    const page = state.projection.selectPage({
       bounds: window,
       direction: reset ? "tail" : direction,
       cursorSeq: cursor?.seq,
       limit: options?.limit ?? DEFAULT_TIMELINE_FETCH_LIMIT,
+      wholeTurns: options?.wholeTurns,
     });
     return {
       epoch: state.epoch,
@@ -208,6 +208,7 @@ export class InMemoryAgentTimelineStore {
     };
     state.nextSeq += 1;
     state.committed.push(row);
+    if (state.minSeq === 0) state.minSeq = row.seq;
     state.projection.append(row);
     return cloneRow(row);
   }
@@ -232,9 +233,7 @@ export class InMemoryAgentTimelineStore {
     state.committed = state.committed.map((candidate) =>
       candidate.seq === row.seq ? updated : candidate,
     );
-    const rebuilt = new TimelineProjection();
-    for (const candidate of state.committed) rebuilt.append(candidate);
-    state.projection = rebuilt;
+    this.reproject(state);
     return cloneRow(updated);
   }
 
@@ -275,24 +274,24 @@ export class InMemoryAgentTimelineStore {
         const metrics = updatedSeqs.get(candidate.seq);
         return metrics !== undefined ? { ...candidate, metrics } : candidate;
       });
-      const rebuilt = new TimelineProjection();
-      for (const candidate of state.committed) rebuilt.append(candidate);
-      state.projection = rebuilt;
+      this.reproject(state);
     }
 
     return { attachedCount, droppedKeys };
   }
 
+  private reproject(state: AgentTimelineState): void {
+    state.projection = new TimelineProjection(state.committed);
+    state.minSeq = state.projection.getRows()[0]?.seqStart ?? 0;
+  }
+
   getLastItem(agentId: string): AgentTimelineItem | null {
     const state = this.requireState(agentId);
-    return state.projection.getRows().find((row) => row.seqEnd === state.nextSeq - 1)?.item ?? null;
+    return state.projection.getLastItem(state.nextSeq - 1);
   }
 
   getLastAssistantMessage(agentId: string): string | null {
-    const row = this.requireState(agentId)
-      .projection.getRows()
-      .findLast((candidate) => candidate.item.type === "assistant_message");
-    return row?.item.type === "assistant_message" ? row.item.text : null;
+    return this.requireState(agentId).projection.getLastAssistantMessage();
   }
 
   private requireState(agentId: string): AgentTimelineState {

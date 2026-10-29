@@ -3,9 +3,12 @@ import {
   PluginRegistryIndexSchema,
   PublishedPluginDetailSchema,
 } from "@getpaseo/protocol/plugin-registry";
+import { languageAlternates, LOCALES, localizePath } from "~/i18n";
+import { SITE_ORIGIN } from "~/meta";
 import { getBlockingColdCache, type WebsiteCacheContext } from "../github-cache";
+import { handlePluginThumbnailRequest } from "./thumbnails";
 import { CATEGORIES } from "./categories";
-import { type InstallCounts, readInstallCounts, recordInstall } from "./installs";
+import { type InstallCounts, readInstallCounts, recordClientInstall } from "./installs";
 export interface RegistryEnvironment {
   PLUGINS_REGISTRY_URL?: string;
   WEBSITE_CACHE?: KVNamespace;
@@ -63,6 +66,10 @@ export async function handlePluginRegistryRequest(
   const url = new URL(request.url);
   if (request.method !== "GET") return null;
   const base = env.PLUGINS_REGISTRY_URL ?? "https://getpaseo.github.io/plugins";
+  if (url.pathname.startsWith("/plugins/thumb/")) {
+    const index = await loadRegistryIndex(base, context);
+    return handlePluginThumbnailRequest(request, index.plugins);
+  }
   if (url.hostname === "plugins.paseo.sh" && url.pathname === "/index.json")
     return Response.json(await loadRegistryIndex(base, context));
   if (url.pathname === "/sitemap-plugins.xml") {
@@ -70,16 +77,27 @@ export async function handlePluginRegistryRequest(
     // IDs are validated owner/slug strings, so these paths contain no XML metacharacters.
     const paths = new Set<string>(["/plugins", "/plugins/all"]);
     for (const category of CATEGORIES) {
-      if (index.plugins.some((plugin) => plugin.categories.includes(category.slug)))
-        paths.add(`/plugins/category/${category.slug}`);
+      if (index.plugins.some((plugin) => plugin.categories.includes(category)))
+        paths.add(`/plugins/category/${category}`);
     }
     for (const plugin of index.plugins) {
       paths.add(`/plugins/${plugin.id.split("/")[0]}`);
       paths.add(`/plugins/${plugin.id}`);
     }
-    const urls = [...paths].sort().map((path) => `<url><loc>https://paseo.sh${path}</loc></url>`);
+    const urls = [...paths].sort().flatMap((path) => {
+      const alternates = languageAlternates(path)
+        .map(
+          (alternate) =>
+            `<xhtml:link rel="alternate" hreflang="${alternate.hreflang}" href="${SITE_ORIGIN}${alternate.path}"/>`,
+        )
+        .join("");
+      return LOCALES.map(
+        (locale) =>
+          `<url><loc>${SITE_ORIGIN}${localizePath(path, locale)}</loc>${alternates}</url>`,
+      );
+    });
     return new Response(
-      `<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${urls.join("")}</urlset>`,
+      `<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">${urls.join("")}</urlset>`,
       {
         headers: {
           "content-type": "application/xml; charset=utf-8",
@@ -111,7 +129,12 @@ export async function handlePluginRegistryRequest(
     url.searchParams.get("intent") === "install"
   ) {
     const cache = context.cache;
-    if (cache) context.waitUntil(recordInstall(cache, id, new Date()).catch(() => undefined));
+    if (cache)
+      context.waitUntil(
+        recordClientInstall({ cache, id, ip: request.headers.get("CF-Connecting-IP") }).catch(
+          () => undefined,
+        ),
+      );
   }
   return Response.json(plugin);
 }

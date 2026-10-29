@@ -188,13 +188,17 @@ function CustomModelRow({
         testID={`custom-model-toggle-${model.id}`}
       />
       <Text
-        style={[sheetStyles.modelTitle, hidden ? sheetStyles.modelTitleHidden : null]}
+        style={[
+          sheetStyles.modelTitle,
+          sheetStyles.customModelText,
+          hidden ? sheetStyles.modelTitleHidden : null,
+        ]}
         numberOfLines={1}
       >
         {model.label}
       </Text>
       <Text
-        style={sheetStyles.monoHint}
+        style={[sheetStyles.monoHint, sheetStyles.customModelText]}
         numberOfLines={1}
         selectable
         dataSet={CODE_SURFACE_DATASET}
@@ -1042,6 +1046,7 @@ const sheetStyles = StyleSheet.create((theme) => ({
   iconButton: {
     width: 28,
     height: 28,
+    flexShrink: 0,
     borderRadius: theme.borderRadius.full,
     alignItems: "center",
     justifyContent: "center",
@@ -1123,6 +1128,10 @@ const sheetStyles = StyleSheet.create((theme) => ({
     color: theme.colors.foreground,
     fontSize: theme.fontSize.base,
     flexShrink: 0,
+  },
+  customModelText: {
+    flexShrink: 1,
+    minWidth: 0,
   },
   modelRowFiller: {
     flex: 1,

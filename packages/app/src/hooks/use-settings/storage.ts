@@ -35,6 +35,8 @@ import { migrateAppSettings } from "./migrations";
 export { APP_SETTINGS_KEY } from "./keys";
 export const APP_SETTINGS_QUERY_KEY = ["app-settings"];
 
+export type SendShortcut = "enter" | "mod-enter";
+
 export type SendBehavior = ActiveTurnBehavior | "queue";
 export type ReleaseChannel = "stable" | "beta";
 export type ServiceUrlBehavior = "ask" | "in-app" | "external";
@@ -42,9 +44,8 @@ export type WorkspaceTitleSource = "title" | "branch";
 export type PullRequestOpenLocation = "main" | "side" | "explorer";
 /** What a sidebar workspace row shows in the space to the right of its title. */
 export type SidebarWorkspaceTrailing = "timestamp" | "none";
-/** How workspaces inside a project are ordered in the sidebar. */
-export type SidebarWorkspaceSort = "manual" | "activity" | "created";
-export type ToolCallDetailLevel = "overview" | "detailed";
+/** How much of an agent's work the chat shows between the user's message and the reply. */
+export type ChatDisplay = "full" | "collapseToolCalls" | "collapseTurns";
 export type DefaultFileOpener = "paseo" | "vscode-web";
 
 export type AgentGridDirection = "horizontal" | "vertical";
@@ -112,7 +113,6 @@ export interface AppSettings {
   sendBehavior: SendBehavior;
   serviceUrlBehavior: ServiceUrlBehavior;
   terminalScrollbackLines: number;
-  useLegacyTerminalRenderer: boolean;
   uiFontFamily: string; // "" = platform default UI stack
   monoFontFamily: string; // "" = platform default mono stack
   uiBaseFontSize: number; // clamped px, platform default 14 or 15
@@ -130,7 +130,6 @@ export interface AppSettings {
   glassTuning: GlassTuning;
   workspaceTitleSource: WorkspaceTitleSource;
   sidebarWorkspaceTrailing: SidebarWorkspaceTrailing;
-  sidebarWorkspaceSort: SidebarWorkspaceSort;
   sidebarRowItems: SidebarRowItems;
   sidebarChecksDisplay: SidebarChecksDisplay;
   /** Top-level sidebar rows in display order; empty means the default order, all visible. */
@@ -140,7 +139,7 @@ export interface AppSettings {
   /** How usage reads and which windows the sidebar summary shows. */
   usage: UsagePreferences;
   autoExpandReasoning: boolean;
-  toolCallDetailLevel: ToolCallDetailLevel;
+  chatDisplay: ChatDisplay;
   chatOutlineEnabled: boolean;
   vimKeybindings: boolean;
   /** Preferred destination for ordinary file opens. Explicit side-pane opens remain in Paseo. */
@@ -150,6 +149,9 @@ export interface AppSettings {
    * Empty derives it from the host profile.
    */
   itsaplanOrigin: string;
+  sendShortcut: SendShortcut;
+  filePanelAssociations: Record<string, string>;
+  /** Desktop-only preferences for implicit opens into the ordinary side pane. */
   openInSidePane: OpenInSidePanePreferences;
   pullRequestOpenLocation: PullRequestOpenLocation;
   missionControlApprovalMode: MissionControlApprovalMode;
@@ -189,7 +191,6 @@ export const DEFAULT_CLIENT_SETTINGS: AppSettings = {
   sendBehavior: "steer",
   serviceUrlBehavior: "ask",
   terminalScrollbackLines: DEFAULT_TERMINAL_SCROLLBACK_LINES,
-  useLegacyTerminalRenderer: false,
   uiFontFamily: "",
   monoFontFamily: "",
   uiBaseFontSize: DEFAULT_UI_BASE_FONT_SIZE,
@@ -204,18 +205,19 @@ export const DEFAULT_CLIENT_SETTINGS: AppSettings = {
   glassTuning: DEFAULT_GLASS_TUNING,
   workspaceTitleSource: "title",
   sidebarWorkspaceTrailing: "timestamp",
-  sidebarWorkspaceSort: "manual",
   sidebarRowItems: DEFAULT_SIDEBAR_ROW_ITEMS,
   sidebarChecksDisplay: DEFAULT_SIDEBAR_CHECKS_DISPLAY,
   sidebarNavItems: [],
   sidebarFooterItems: [],
   usage: DEFAULT_USAGE_PREFERENCES,
   autoExpandReasoning: false,
-  toolCallDetailLevel: "overview",
+  chatDisplay: "collapseTurns",
   chatOutlineEnabled: true,
   vimKeybindings: false,
   defaultFileOpener: "paseo",
   itsaplanOrigin: "",
+  sendShortcut: "enter",
+  filePanelAssociations: {},
   openInSidePane: DEFAULT_OPEN_IN_SIDE_PANE_PREFERENCES,
   pullRequestOpenLocation: "explorer",
   missionControlApprovalMode: DEFAULT_MISSION_CONTROL_APPROVAL_MODE,
@@ -257,6 +259,7 @@ const SidebarRowItemsSchema = z
 type StoredAppSettingsFallback = AppSettings & {
   uiFontSize?: number;
   compactToolCalls?: boolean;
+  toolCallDetailLevel?: "overview" | "detailed";
   manageBuiltInDaemon?: boolean;
   releaseChannel?: ReleaseChannel;
   needsWrite: boolean;
@@ -280,7 +283,6 @@ const StoredAppSettingsSchema = z
       MIN_TERMINAL_SCROLLBACK_LINES,
       MAX_TERMINAL_SCROLLBACK_LINES,
     ).catch(DEFAULT_TERMINAL_SCROLLBACK_LINES),
-    useLegacyTerminalRenderer: z.boolean().catch(false),
     uiFontFamily: sanitizedFontFamily().catch(""),
     monoFontFamily: sanitizedFontFamily().catch(""),
     uiBaseFontSize: clampedNumber(MIN_UI_BASE_FONT_SIZE, MAX_UI_BASE_FONT_SIZE)
@@ -292,6 +294,9 @@ const StoredAppSettingsSchema = z
     agentGridFontSize: clampedNumber(MIN_AGENT_GRID_FONT_SIZE, MAX_AGENT_GRID_FONT_SIZE).catch(
       DEFAULT_AGENT_GRID_FONT_SIZE,
     ),
+    codeFontSize: clampedNumber(MIN_CODE_FONT_SIZE, MAX_CODE_FONT_SIZE).catch(
+      DEFAULT_CODE_FONT_SIZE,
+    ),
     agentGridDirection: z.enum(["horizontal", "vertical"]).catch(DEFAULT_AGENT_GRID_DIRECTION),
     agentGridVisibleCount: clampedNumber(
       MIN_AGENT_GRID_VISIBLE_COUNT,
@@ -300,9 +305,6 @@ const StoredAppSettingsSchema = z
     agentGridHoverComposer: z.boolean().catch(false),
     // COMPAT(uiFontSizeScale): replaced by the literal base size in v0.4, remove after 2027-08-17.
     uiFontSize: clampedNumber(11, 24).optional().catch(undefined),
-    codeFontSize: clampedNumber(MIN_CODE_FONT_SIZE, MAX_CODE_FONT_SIZE).catch(
-      DEFAULT_CODE_FONT_SIZE,
-    ),
     contentMaxWidth: z
       .null()
       .or(clampedNumber(MIN_CONTENT_MAX_WIDTH, MAX_CONTENT_MAX_WIDTH))
@@ -324,7 +326,6 @@ const StoredAppSettingsSchema = z
       // COMPAT(sidebarDiffTrailing): diff-stat choice removed in v0.11; remove after 2027-04-08.
       .or(z.literal("diff").transform(() => "none" as const))
       .catch("timestamp"),
-    sidebarWorkspaceSort: z.enum(["manual", "activity", "created"]).catch("manual"),
     sidebarRowItems: SidebarRowItemsSchema,
     sidebarChecksDisplay: z
       .enum(["iconAndText", "icon", "none"])
@@ -334,11 +335,13 @@ const StoredAppSettingsSchema = z
     sidebarFooterItems: z.array(z.object({ key: z.string(), visible: z.boolean() })).catch([]),
     usage: UsagePreferencesSchema,
     autoExpandReasoning: z.boolean().catch(false),
+    chatDisplay: z.enum(["full", "collapseToolCalls", "collapseTurns"]).optional().catch("full"),
+    // COMPAT(toolCallDetailLevel): replaced by chatDisplay in v0.13, remove after 2027-04-24.
     toolCallDetailLevel: z
       .enum(["overview", "detailed"])
       .or(z.literal("concise").transform(() => "overview" as const))
       .optional()
-      .catch("overview"),
+      .catch(undefined),
     // COMPAT(compactToolCalls): migrated in v0.1.105, remove after 2027-01-12.
     compactToolCalls: z.boolean().optional().catch(undefined),
     chatOutlineEnabled: z.boolean().catch(true),
@@ -346,6 +349,8 @@ const StoredAppSettingsSchema = z
     // COMPAT(defaultFileOpener): accept legacy stored value to migrate it.
     defaultFileOpener: z.enum(["paseo", "vscode-web"]).optional().catch("paseo"),
     itsaplanOrigin: z.string().catch(""),
+    sendShortcut: z.enum(["enter", "mod-enter"]).catch("enter"),
+    filePanelAssociations: z.record(z.string(), z.string()).catch({}),
     openInSidePane: z
       .object({
         explorerFiles: z.boolean().catch(false),
@@ -403,8 +408,10 @@ const StoredAppSettingsSchema = z
       (isChecksHiddenByLegacyRowItem(stored.sidebarRowItems)
         ? "none"
         : DEFAULT_SIDEBAR_CHECKS_DISPLAY);
-    const toolCallDetailLevel =
-      stored.toolCallDetailLevel ?? (stored.compactToolCalls === false ? "detailed" : "overview");
+    const groupsToolCalls = stored.toolCallDetailLevel
+      ? stored.toolCallDetailLevel === "overview"
+      : stored.compactToolCalls === true;
+    const chatDisplay = stored.chatDisplay ?? (groupsToolCalls ? "collapseToolCalls" : "full");
     const rawStored = stored as Record<string, unknown>;
     const legacyMarkdownKey = ["openMarkdownIn", "Plan", "notator"].join("");
     let defaultFileOpener = stored.defaultFileOpener ?? DEFAULT_CLIENT_SETTINGS.defaultFileOpener;
@@ -433,7 +440,7 @@ const StoredAppSettingsSchema = z
           stored.sidebarRowItems.services ??
           (stored.sidebarRowItems.scripts === false ? false : DEFAULT_SIDEBAR_ROW_ITEMS.services),
       },
-      toolCallDetailLevel,
+      chatDisplay,
       defaultFileOpener,
       needsWrite,
     };
@@ -562,6 +569,7 @@ export function normalizeAppSettings(value: unknown): AppSettings {
     manageBuiltInDaemon: _manageBuiltInDaemon,
     releaseChannel: _releaseChannel,
     compactToolCalls: _compactToolCalls,
+    toolCallDetailLevel: _toolCallDetailLevel,
     uiFontSize: _uiFontSize,
     ...settings
   } = StoredAppSettingsSchema.parse(value);
@@ -635,7 +643,24 @@ export function sanitizeFontFamily(value: unknown): string | null {
   if ([...trimmed].some((char) => char.charCodeAt(0) <= 0x1f)) {
     return null; // control chars would corrupt the font-family string
   }
-  return trimmed; // quotes/commas are legit in stacks
+  // Unistyles serializes theme values into one shared stylesheet. An unfinished
+  // string, escape, comment, or block consumes the declarations that follow.
+  let quote: string | null = null;
+  let escaped = false;
+  for (const char of trimmed) {
+    if (escaped) {
+      escaped = false;
+    } else if (char === "\\") {
+      escaped = true;
+    } else if (quote !== null) {
+      if (char === quote) quote = null;
+    } else if (char === "'" || char === '"') {
+      quote = char;
+    } else if (/[()[\]/*]/.test(char)) {
+      return null;
+    }
+  }
+  return quote === null && !escaped ? trimmed : null;
 }
 
 async function loadLegacyDesktopSettingsFromStorage(storage: KeyValueStorage): Promise<{

@@ -1,16 +1,10 @@
-import { createRequire } from "node:module";
 import { existsSync } from "node:fs";
+import { delimiter, resolve } from "node:path";
 import type { ProcessEnvRecord } from "../server/paseo-env.js";
 import { execCommand } from "../utils/spawn.js";
+import which from "which";
 import { windowsExecutableResolution } from "./windows.js";
 
-type Which = (
-  command: string,
-  options: { all: true; path?: string; pathExt?: string },
-) => Promise<string[]>;
-
-const require = createRequire(import.meta.url);
-const which = require("which") as Which;
 const PROBE_TIMEOUT_MS = 2000;
 
 function hasPathSeparator(value: string): boolean {
@@ -129,6 +123,28 @@ export function executableExists(
  */
 const EXECUTABLE_CACHE_TTL_MS = 60_000;
 const executableCache = new Map<string, { path: string | null; at: number }>();
+// PATH lookup that never runs the candidate, unlike findExecutable which probes
+// each one with `--version`. A terminal spawn path cannot afford that probe: it
+// would execute the profile command once before the terminal even opens.
+// `path` overrides the PATH to search, so a caller can resolve against the
+// environment its child process will actually get rather than the daemon's own.
+export async function findExecutableWithoutProbing(
+  name: string,
+  options: { path?: string; cwd: string },
+): Promise<string | null> {
+  if (!name) {
+    return null;
+  }
+  const path =
+    options.path === undefined
+      ? undefined
+      : options.path
+          .split(delimiter)
+          .map((entry) => resolve(options.cwd, entry))
+          .join(delimiter);
+  const candidates = await enumerateCandidatesViaLibrary(name, { PATH: path });
+  return candidates[0] ?? null;
+}
 export interface ExecutableResolutionOptions {
   probeTimeoutMs?: number;
   env?: ProcessEnvRecord;

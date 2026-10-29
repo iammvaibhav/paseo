@@ -34,6 +34,7 @@ import { extraMutedIconColorMapping } from "@/components/ui/icon-button-chrome";
 interface WorkspaceOpenInEditorButtonProps {
   serverId: string;
   cwd: string;
+  projectId: string | null;
   activeFile?: WorkspaceFileLocation | null;
   hideLabels?: boolean;
   onOpenBrowserEditorUrl?: (url: string) => void;
@@ -86,6 +87,7 @@ function OpenTargetMenuItem({ target, isPreferred, onSelect }: OpenTargetMenuIte
 export function WorkspaceOpenInEditorButton({
   serverId,
   cwd,
+  projectId,
   activeFile,
   hideLabels,
   onOpenBrowserEditorUrl,
@@ -98,11 +100,12 @@ export function WorkspaceOpenInEditorButton({
   const hostProfile = hosts.find((host) => host.serverId === serverId);
   const remoteSshHost = isLocalDaemon ? null : (hostProfile?.sshHost ?? null);
   const browserEditorUrl = hostProfile?.browserEditorUrl ?? null;
-  const { preferredEditorId, updatePreferredEditor } = usePreferredEditor();
+  const { preferredEditorId, updatePreferredEditor } = usePreferredEditor({ serverId, projectId });
   const { targets: desktopOpenTargets, isAvailable: isDesktopOpenAvailable } =
     useDesktopOpenTargets({
       isLocalExecution: isLocalDaemon,
       remoteSshHost,
+      workspacePath: cwd,
     });
 
   const resolvedFile = useMemo(
@@ -215,9 +218,11 @@ export function WorkspaceOpenInEditorButton({
 
   const handleSelectTarget = useCallback(
     (target: OpenTarget) => {
-      void updatePreferredEditor(target.id).catch(() => undefined);
+      void updatePreferredEditor(target.id).catch((error: unknown) => {
+        toast.error(error instanceof Error ? error.message : t("common.errors.unableToSave"));
+      });
     },
-    [updatePreferredEditor],
+    [updatePreferredEditor, toast, t],
   );
 
   const primaryPressableStyle = useCallback(

@@ -1,7 +1,7 @@
 import type { AgentUsage } from "@getpaseo/protocol/agent-types";
 import type { TurnTiming } from "@/timeline/turn-time";
 import type { StreamItem } from "@/types/stream";
-import { getAssistantBlockSpacing, getGapBetweenStreamItems } from "./spacing";
+import { getAssistantMessageSpacing, getGapBetweenStreamItems } from "./spacing";
 import type { StreamFrameChildOrder, StreamStrategy } from "./strategy";
 import { continuesResponse, continuesTurn, isResponseBoundary } from "./turn-membership";
 
@@ -41,13 +41,13 @@ export interface StreamLayoutInput {
   isTurnActive: boolean;
   history: StreamItem[];
   liveHead: StreamItem[];
-  timingByAssistantId: Map<string, TurnTiming>;
+  timingByItemId: Map<string, TurnTiming>;
 }
 
 interface LayoutSegmentInput {
   strategy: StreamStrategy;
   items: StreamItem[];
-  timingByAssistantId: Map<string, TurnTiming>;
+  timingByItemId: Map<string, TurnTiming>;
   auxiliaryTurnFooter: TurnFooterHost | null;
   hasAuxiliaryFooter: boolean;
   frameOrder: StreamFrameChildOrder;
@@ -59,8 +59,8 @@ interface LayoutSegmentInput {
   phase: "streaming" | "complete";
 }
 
-interface AssistantFooterSource {
-  item: Extract<StreamItem, { kind: "assistant_message" }>;
+interface TurnFooterSource {
+  item: StreamItem;
   items: StreamItem[];
   index: number;
 }
@@ -69,25 +69,28 @@ function createTurnFooterHost(input: {
   item: StreamItem;
   items: StreamItem[];
   index: number;
-  timingByAssistantId: Map<string, TurnTiming>;
+  timingByItemId: Map<string, TurnTiming>;
 }): TurnFooterHost {
   const assistantItem = input.item.kind === "assistant_message" ? input.item : null;
   return {
     itemId: input.item.id,
     items: input.items,
-    timing: input.timingByAssistantId.get(input.item.id),
+    timing: input.timingByItemId.get(input.item.id),
     startIndex: input.index,
     metrics: assistantItem?.metrics,
   };
 }
 
-function findLatestAssistantInResponse(input: {
+function findTurnFooterSource(input: {
   strategy: StreamStrategy;
   items: StreamItem[];
   startIndex: number;
   boundaryAboveItems?: StreamItem[] | null;
   boundaryAboveIndex?: number | null;
-}): AssistantFooterSource | null {
+}): TurnFooterSource | null {
+  const last = input.items[input.startIndex];
+  const toolFallback: TurnFooterSource | null =
+    last?.kind === "tool_call" ? { item: last, items: input.items, index: input.startIndex } : null;
   let items = input.items;
   let index = input.startIndex;
   let canCrossBoundary = true;
@@ -101,7 +104,7 @@ function findLatestAssistantInResponse(input: {
     ) {
       const item = items[index];
       if (!item || (laterItem && !continuesResponse(item, laterItem))) {
-        return null;
+        return toolFallback;
       }
       if (item.kind === "assistant_message") {
         return { item, items, index };
@@ -115,7 +118,7 @@ function findLatestAssistantInResponse(input: {
       input.boundaryAboveIndex === null ||
       input.boundaryAboveIndex === undefined
     ) {
-      return null;
+      return toolFallback;
     }
 
     items = input.boundaryAboveItems;
@@ -135,20 +138,20 @@ function resolveAuxiliaryTurnFooter(input: StreamLayoutInput): TurnFooterHost | 
     return null;
   }
 
-  const assistant = findLatestAssistantInResponse({
+  const source = findTurnFooterSource({
     strategy: input.strategy,
     items: footerItems,
     startIndex: latestIndex,
   });
-  if (!assistant) {
+  if (!source) {
     return null;
   }
 
   return createTurnFooterHost({
-    item: assistant.item,
-    items: assistant.items,
-    index: assistant.index,
-    timingByAssistantId: input.timingByAssistantId,
+    item: source.item,
+    items: source.items,
+    index: source.index,
+    timingByItemId: input.timingByItemId,
   });
 }
 
@@ -158,7 +161,7 @@ function resolveCompletedFooter(input: {
   index: number;
   item: StreamItem;
   belowItem: StreamItem | null;
-  timingByAssistantId: Map<string, TurnTiming>;
+  timingByItemId: Map<string, TurnTiming>;
   auxiliaryTurnFooter: TurnFooterHost | null;
   boundaryAboveItems: StreamItem[] | null;
   boundaryAboveIndex: number | null;
@@ -167,21 +170,21 @@ function resolveCompletedFooter(input: {
     return null;
   }
 
-  const assistant = findLatestAssistantInResponse({
+  const source = findTurnFooterSource({
     strategy: input.strategy,
     items: input.items,
     startIndex: input.index,
     boundaryAboveItems: input.boundaryAboveItems,
     boundaryAboveIndex: input.boundaryAboveIndex,
   });
-  if (!assistant || input.auxiliaryTurnFooter?.itemId === assistant.item.id) {
+  if (!source || input.auxiliaryTurnFooter?.itemId === source.item.id) {
     return null;
   }
   return createTurnFooterHost({
-    item: assistant.item,
-    items: assistant.items,
-    index: assistant.index,
-    timingByAssistantId: input.timingByAssistantId,
+    item: source.item,
+    items: source.items,
+    index: source.index,
+    timingByItemId: input.timingByItemId,
   });
 }
 
@@ -311,15 +314,13 @@ function layoutSegmentItem(
     index,
     item,
     belowItem,
-    timingByAssistantId: input.timingByAssistantId,
+    timingByItemId: input.timingByItemId,
     auxiliaryTurnFooter: input.auxiliaryTurnFooter,
     boundaryAboveItems: input.boundaryAboveItems,
     boundaryAboveIndex: input.boundaryAboveIndex,
   });
-  const assistantSpacing = getAssistantBlockSpacing({
+  const assistantSpacing = getAssistantMessageSpacing({
     item,
-    aboveItem,
-    belowItem,
     hasFooterBelow: completedFooter !== null || (input.hasAuxiliaryFooter && belowItem === null),
   });
 
@@ -382,7 +383,7 @@ export function layoutStream(input: StreamLayoutInput): StreamLayout {
       history = layoutSegment({
         strategy: input.strategy,
         items: input.history,
-        timingByAssistantId: input.timingByAssistantId,
+        timingByItemId: input.timingByItemId,
         auxiliaryTurnFooter,
         hasAuxiliaryFooter,
         frameOrder,
@@ -402,7 +403,7 @@ export function layoutStream(input: StreamLayoutInput): StreamLayout {
   const liveHead = layoutSegment({
     strategy: input.strategy,
     items: input.liveHead,
-    timingByAssistantId: input.timingByAssistantId,
+    timingByItemId: input.timingByItemId,
     auxiliaryTurnFooter,
     hasAuxiliaryFooter,
     frameOrder,

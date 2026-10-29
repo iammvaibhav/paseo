@@ -1,9 +1,10 @@
+import { isTurnTrigger, isTurnBoundary } from "@/agent-stream/turn-membership";
 import type { ToolCallDetail } from "@getpaseo/protocol/agent-types";
 import {
   getPaseoToolLeafName,
   normalizeToolName,
 } from "@getpaseo/protocol/tool-name-normalization";
-import type { StreamItem, ThoughtItem, ToolCallItem } from "@/types/stream";
+import type { StreamItem, ToolCallItem, ThoughtItem } from "@/types/stream";
 
 export interface ToolCallDescriptor {
   detail: ToolCallDetail;
@@ -14,7 +15,7 @@ export interface ToolCallDescriptor {
 }
 
 /** A step of agent work that folds into a group: a tool call, or the thinking between calls. */
-export type ToolRunItem = ToolCallItem | ThoughtItem;
+export type GroupableItem = ToolCallItem | ThoughtItem;
 
 /**
  * One uninterrupted stretch of agent work: consecutive tool calls and the thoughts between
@@ -23,15 +24,15 @@ export type ToolRunItem = ToolCallItem | ThoughtItem;
  */
 export interface ToolCallRun {
   id: string;
-  items: readonly ToolRunItem[];
-  latest: ToolRunItem;
+  calls: readonly GroupableItem[];
+  latest: GroupableItem;
   isSealed: boolean;
 }
 
 export interface GroupedHistory<TGroup> {
   tail: StreamItem[];
   groupsByHostId: Map<string, TGroup>;
-  pendingItems: readonly ToolRunItem[];
+  pendingCalls: readonly GroupableItem[];
 }
 
 export interface GroupedToolCalls<TGroup> {
@@ -89,114 +90,112 @@ export function isShowPageToolCall(item: ToolCallItem): boolean {
   return (getPaseoToolLeafName(name) ?? normalizeToolName(name)) === "show_page";
 }
 
-function isGroupableItem(item: StreamItem): item is ToolRunItem {
-  if (item.kind === "thought") {
-    return true;
-  }
-  if (item.kind !== "tool_call" || isStatusReportToolCall(item) || isShowPageToolCall(item)) {
+export function isGroupableToolCall(
+  item: StreamItem,
+  autoExpandReasoning = false,
+): item is GroupableItem {
+  if (item.kind === "thought") return !autoExpandReasoning;
+  if (
+    item.kind !== "tool_call" ||
+    isTurnTrigger(item) ||
+    isStatusReportToolCall(item) ||
+    isShowPageToolCall(item)
+  ) {
     return false;
   }
   const descriptor = describeToolCall(item);
   return descriptor.detail.type !== "plan" && descriptor.name.trim().toLowerCase() !== "speak";
 }
 
-function hasToolCall(items: readonly ToolRunItem[]): boolean {
-  return items.some((item) => item.kind === "tool_call");
+function hasToolCall(calls: readonly GroupableItem[]): boolean {
+  return calls.some((call) => call.kind === "tool_call");
 }
 
-function createRun(items: readonly ToolRunItem[], isSealed: boolean): ToolCallRun {
-  const first = items[0];
-  const latest = items.at(-1);
+function createRun(calls: readonly GroupableItem[], isSealed: boolean): ToolCallRun {
+  const first = calls[0];
+  const latest = calls.at(-1);
   if (!first || !latest) {
     throw new Error("Cannot group an empty tool call run");
   }
-  return { id: first.id, items, latest, isSealed };
+  return { id: first.id, calls, latest, isSealed };
 }
 
-function createHost(run: ToolCallRun): ToolRunItem {
-  if (run.items.length === 1) {
+function createHost(run: ToolCallRun): GroupableItem {
+  if (run.calls.length === 1) {
     return run.latest;
   }
   return { ...run.latest, id: run.id };
 }
 
-function isRunning(item: ToolRunItem): boolean {
-  if (item.kind === "thought") {
-    return item.status === "loading";
-  }
-  const status = describeToolCall(item).status;
+function isRunning(call: GroupableItem): boolean {
+  if (call.kind === "thought") return call.status !== "ready";
+  const status = describeToolCall(call).status;
   return status === "running" || status === "executing";
 }
 
 function appendRun<TGroup>(input: {
-  items: readonly ToolRunItem[];
+  calls: readonly GroupableItem[];
   isSealed: boolean;
   output: StreamItem[];
   groups: Map<string, TGroup>;
   buildGroup: (run: ToolCallRun) => TGroup;
 }): void {
-  if (input.items.length === 0) {
+  if (input.calls.length === 0) {
     return;
   }
-  if (!hasToolCall(input.items)) {
-    input.output.push(...input.items);
+  if (!hasToolCall(input.calls)) {
+    input.output.push(...input.calls);
     return;
   }
-  const run = createRun(input.items, input.isSealed);
+  const run = createRun(input.calls, input.isSealed);
   const host = createHost(run);
   input.output.push(host);
-  input.groups.set(host.id, input.buildGroup(run));
+  if (run.calls.length > 1) input.groups.set(host.id, input.buildGroup(run));
 }
 
 export function prepareGroupedHistory<TGroup>(input: {
   tail: StreamItem[];
   buildGroup: (run: ToolCallRun) => TGroup;
+  autoExpandReasoning?: boolean;
   /** Rows a run must end at: the last loaded row before a history gap. */
   runEndIds?: ReadonlySet<string>;
 }): GroupedHistory<TGroup> {
   const output: StreamItem[] = [];
   const groups = new Map<string, TGroup>();
-  let pending: ToolRunItem[] = [];
+  let pending: GroupableItem[] = [];
 
-  for (const item of input.tail) {
-    if (isGroupableItem(item)) {
-      pending.push(item);
-      if (!input.runEndIds?.has(item.id)) continue;
-      appendRun({
-        items: pending,
-        isSealed: true,
-        output,
-        groups,
-        buildGroup: input.buildGroup,
-      });
-      pending = [];
-      continue;
-    }
+  const sealPending = () => {
     appendRun({
-      items: pending,
+      calls: pending,
       isSealed: true,
       output,
       groups,
       buildGroup: input.buildGroup,
     });
     pending = [];
-    output.push(item);
+  };
+
+  for (const item of input.tail) {
+    const isGroupable = isGroupableToolCall(item, input.autoExpandReasoning);
+    if (!isGroupable || isTurnBoundary(pending.at(-1) ?? null, item)) sealPending();
+    if (!isGroupable) {
+      output.push(item);
+      continue;
+    }
+    pending.push(item);
+    // A run never reaches across unloaded history.
+    if (input.runEndIds?.has(item.id)) sealPending();
   }
 
-  appendRun({
-    items: pending,
-    isSealed: true,
-    output,
-    groups,
-    buildGroup: input.buildGroup,
-  });
+  const trailing = pending;
+  sealPending();
 
   return {
     tail: groups.size > 0 ? output : input.tail,
     groupsByHostId: groups,
     // Thinking that ended history without a tool call is already a plain row; a later
     // tool call starts its own run rather than reaching back into it.
-    pendingItems: hasToolCall(pending) ? pending : [],
+    pendingCalls: hasToolCall(trailing) ? trailing : [],
   };
 }
 
@@ -205,10 +204,11 @@ export function groupLiveToolCalls<TGroup>(input: {
   head: StreamItem[];
   isTurnActive: boolean;
   buildGroup: (run: ToolCallRun) => TGroup;
+  autoExpandReasoning?: boolean;
 }): GroupedToolCalls<TGroup> {
   const head: StreamItem[] = [];
   const liveGroups = new Map<string, TGroup>();
-  let pending = [...input.history.pendingItems];
+  let pending = [...input.history.pendingCalls];
   let hostPlacement: "history" | "head" | null = pending.length > 0 ? "history" : null;
   let pendingIncludesHead = false;
 
@@ -223,7 +223,8 @@ export function groupLiveToolCalls<TGroup>(input: {
       if (hostPlacement === "head") {
         head.push(createHost(run));
       }
-      if (hostPlacement === "head" || pendingIncludesHead || !isSealed) {
+      const needsLiveGroup = hostPlacement === "head" || pendingIncludesHead || !isSealed;
+      if (run.calls.length > 1 && needsLiveGroup) {
         liveGroups.set(run.id, input.buildGroup(run));
       }
     }
@@ -233,7 +234,8 @@ export function groupLiveToolCalls<TGroup>(input: {
   };
 
   for (const item of input.head) {
-    if (isGroupableItem(item)) {
+    if (isTurnBoundary(pending.at(-1) ?? null, item)) flush(true);
+    if (isGroupableToolCall(item, input.autoExpandReasoning)) {
       if (pending.length === 0) {
         hostPlacement = "head";
       }
@@ -260,19 +262,13 @@ export function groupLiveToolCalls<TGroup>(input: {
       historyGroupUpdatesByHostId: EMPTY_GROUPS,
     };
   }
-  if (input.history.groupsByHostId.size === 0) {
-    return {
-      tail: input.history.tail,
-      head,
-      groupsByHostId: liveGroups,
-      historyGroupUpdatesByHostId: EMPTY_GROUPS,
-    };
-  }
   const groupsByHostId = new Map(input.history.groupsByHostId);
   let historyGroupUpdatesByHostId: Map<string, TGroup> | null = null;
   for (const [id, group] of liveGroups) {
     groupsByHostId.set(id, group);
-    if (input.history.groupsByHostId.has(id)) {
+    const isHistoryHost =
+      input.history.groupsByHostId.has(id) || input.history.pendingCalls[0]?.id === id;
+    if (isHistoryHost) {
       historyGroupUpdatesByHostId ??= new Map();
       historyGroupUpdatesByHostId.set(id, group);
     }

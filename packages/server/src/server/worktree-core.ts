@@ -1,8 +1,11 @@
+import type { PluginWorktreeCreateRequest } from "@getpaseo/plugin/server";
+import type { PluginLifecycle } from "./plugins/lifecycle/index.js";
 import { createNameId } from "mnemonic-id";
 
 import type { ForgeService } from "../services/forge-service.js";
 import {
   createWorktree,
+  resolveDefaultWorktreePath,
   slugify,
   validateBranchSlug,
   type CreatedWorktree,
@@ -30,10 +33,10 @@ export interface CreateWorktreeCoreInput {
   firstAgentContext?: FirstAgentContext;
   paseoHome?: string;
   worktreesRoot?: string;
-  runSetup?: boolean;
 }
 
 export interface CreateWorktreeCoreDeps {
+  lifecycle?: Pick<PluginLifecycle, "before">;
   github: ForgeService;
   workspaceGitService?: Pick<
     WorkspaceGitService,
@@ -55,8 +58,8 @@ export interface CreateWorktreeCoreResult {
   /** Set when a warm-pool tree already ran worktree.setup at this commit; skip running it again. */
   setupPrepared?: true;
   /**
-   * Milliseconds per phase: repoRootMs, intentMs, then either warm claim
-   * phases (prefixed `claim.`) or fetchMs + createMs for a cold create.
+   * Milliseconds per phase: repoRootMs, intentMs, placementMs, then either warm
+   * claim phases (prefixed `claim.`) or fetchMs + createMs for a cold create.
    */
   timing: Record<string, number>;
 }
@@ -110,7 +113,7 @@ async function createWorktreeCoreWithPriority(
   const intentInput = buildWorktreeCreationIntentInput(input, requestedWorktreeSlug);
 
   const forge = await resolveForgeForWorktreeCreate(input, repoRoot, deps, intentInput);
-  const intent = await resolveWorktreeCreationIntent(intentInput, repoRoot, {
+  let intent = await resolveWorktreeCreationIntent(intentInput, repoRoot, {
     forge: forge.forge,
     forgeService: forge.service,
     resolveDefaultBranch: (root) => resolveDefaultBranch(root, deps),
@@ -135,18 +138,41 @@ async function createWorktreeCoreWithPriority(
   }
   timer.mark("intentMs");
 
+  const defaultPath = await resolveDefaultWorktreePath({
+    cwd: repoRoot,
+    paseoHome: input.paseoHome,
+    worktreesRoot: input.worktreesRoot,
+    worktreeSlug: normalizedSlug,
+  });
+  const { stdout: sourceRoot } = await runGitCommand(["rev-parse", "--show-toplevel"], {
+    cwd: input.cwd,
+  });
+  const sourceCheckout = sourceRoot.trim();
+  const request = describeCreationRequest(intent, {
+    repoRoot,
+    sourceCheckout,
+    slug: normalizedSlug,
+    path: defaultPath,
+  });
+  const transformed = deps.lifecycle
+    ? await deps.lifecycle.before("worktree.create.before", request)
+    : request;
+  normalizedSlug = validateWorktreeSlug(transformed.slug);
+  intent = creationIntentFromRequest(transformed, intent);
+  timer.mark("placementMs");
+
   // Claim before the origin fetch. A warm worktree is already checked out at a
   // recent SHA; waiting up to DISPATCH_BASE_BRANCH_FETCH_TIMEOUT_MS here made
   // every "instant" create pay a 1–3s git fetch even when the pool hit.
   // ADR 0001's fetch still runs on the cold path so a miss branches from origin.
-  if (deps.warmWorktreePool) {
+  // Warm trees keep their pool path, so a plugin-chosen path always creates cold.
+  if (deps.warmWorktreePool && transformed.path === defaultPath) {
     const warmClaimResult = await deps.warmWorktreePool.claim({
       repoRoot,
       worktreeSlug: normalizedSlug,
       source: intent,
       paseoHome: input.paseoHome,
       worktreesRoot: input.worktreesRoot,
-      runSetup: input.runSetup,
       // Warm trees never move, so the agent process can start its `/move`
       // while the claim is still cutting the branch.
       ...(deps.prewarmAgentCwd ? { onReserved: deps.prewarmAgentCwd } : {}),
@@ -176,8 +202,8 @@ async function createWorktreeCoreWithPriority(
   const worktree = await createWorktree({
     cwd: repoRoot,
     worktreeSlug: normalizedSlug,
+    worktreePath: transformed.path,
     source: intent,
-    runSetup: input.runSetup ?? true,
     paseoHome: input.paseoHome,
     worktreesRoot: input.worktreesRoot,
   });
@@ -197,6 +223,62 @@ async function resolveForgeForWorktreeCreate(
     return { forge: "github", service: deps.github };
   }
   return resolveForge(repoRoot, deps, intentInput);
+}
+
+function describeCreationRequest(
+  intent: WorktreeCreationIntent,
+  placement: Pick<PluginWorktreeCreateRequest, "repoRoot" | "sourceCheckout" | "slug" | "path">,
+): PluginWorktreeCreateRequest {
+  if (intent.kind === "branch-off")
+    return {
+      ...placement,
+      kind: intent.kind,
+      branch: intent.branchName,
+      // Intent resolution always fills the base; only direct primitive callers omit it.
+      baseRef: intent.baseBranch ?? "",
+    };
+  if (intent.kind === "checkout-branch")
+    return { ...placement, kind: intent.kind, branch: intent.branchName };
+  const { localBranchName, baseRefName, ...facts } = intent;
+  return {
+    ...placement,
+    ...facts,
+    branch: localBranchName ?? intent.headRef,
+    baseRef: baseRefName,
+  };
+}
+
+function creationIntentFromRequest(
+  request: PluginWorktreeCreateRequest,
+  original: WorktreeCreationIntent,
+): WorktreeCreationIntent {
+  if (request.kind === "branch-off") {
+    return { kind: request.kind, branchName: request.branch, baseBranch: request.baseRef };
+  }
+  if (request.kind === "checkout-branch") {
+    return {
+      kind: request.kind,
+      branchName: request.branch,
+    };
+  }
+  const {
+    repoRoot: _repoRoot,
+    sourceCheckout: _checkout,
+    slug: _slug,
+    path: _path,
+    branch,
+    baseRef,
+    ...facts
+  } = request;
+  const keepLocalBranchName =
+    branch !== request.headRef ||
+    ((original.kind === "checkout-change-request" || original.kind === "checkout-github-pr") &&
+      original.localBranchName !== undefined);
+  return {
+    ...facts,
+    ...(keepLocalBranchName ? { localBranchName: branch } : {}),
+    baseRefName: baseRef,
+  };
 }
 
 async function resolveForge(

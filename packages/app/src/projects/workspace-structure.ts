@@ -132,6 +132,14 @@ export interface WorkspaceStructureSession {
   agents?: Iterable<WorkspaceAgentForSidebar>;
 }
 
+export type WorkspaceSort = "manual" | "created" | "lastPrompt";
+
+interface WorkspaceSortItem {
+  workspaceName: string;
+  workspaceKey: string;
+  sortTime: number;
+}
+
 interface ProjectDraft {
   viewKey: string;
   projectKey: string | null;
@@ -140,7 +148,7 @@ interface ProjectDraft {
   projectKind: WorkspaceDescriptor["projectKind"];
   iconWorkingDir: string;
   hosts: Map<string, WorkspaceStructureHostPlacement>;
-  workspaces: Array<{ workspaceId: string; workspaceName: string; workspaceKey: string }>;
+  workspaces: WorkspaceSortItem[];
 }
 
 /** The single app boundary that turns host-local projects into grouped display projects. */
@@ -148,6 +156,7 @@ export function buildWorkspaceStructureProjects(input: {
   sessions: WorkspaceStructureSession[];
   /** Default hidden; Mission Control verbose mode passes false. */
   hideSystemOwnedWorkspaces?: boolean;
+  workspaceSort?: WorkspaceSort;
 }): WorkspaceStructureProject[] {
   const { hideSystemOwnedWorkspaces = true } = input;
   const byProject = new Map<string, ProjectDraft>();
@@ -190,6 +199,7 @@ export function buildWorkspaceStructureProjects(input: {
       byProject,
       viewKeyByServerProjectId,
       hideSystemOwnedWorkspaces,
+      workspaceSort: input.workspaceSort,
     });
   }
 
@@ -202,7 +212,7 @@ export function buildWorkspaceStructureProjects(input: {
       iconWorkingDir: draft.iconWorkingDir,
       hosts: Array.from(draft.hosts.values()),
       workspaceKeys: draft.workspaces
-        .sort(compareWorkspaceStructureItems)
+        .sort(input.workspaceSort ? compareWorkspaceTimes : compareWorkspaceStructureItems)
         .map((workspace) => workspace.workspaceKey),
     }))
     .sort(
@@ -219,8 +229,10 @@ function appendSessionWorkspaces(input: {
   byProject: Map<string, ProjectDraft>;
   viewKeyByServerProjectId: Map<string, Map<string, string>>;
   hideSystemOwnedWorkspaces: boolean;
+  workspaceSort: WorkspaceSort | undefined;
 }): void {
-  const { session, byProject, viewKeyByServerProjectId, hideSystemOwnedWorkspaces } = input;
+  const { session, byProject, viewKeyByServerProjectId, hideSystemOwnedWorkspaces, workspaceSort } =
+    input;
   const agentsByWorkspaceId = new Map<string, WorkspaceAgentForSidebar[]>();
   if (session.agents) {
     for (const agent of session.agents) {
@@ -250,7 +262,7 @@ function appendSessionWorkspaces(input: {
     const draft = byProject.get(viewKey);
     if (!draft) continue;
     draft.workspaces.push({
-      workspaceId: workspace.id,
+      sortTime: workspaceSortTime(workspace, workspaceSort),
       workspaceName: workspace.name,
       workspaceKey: `${session.serverId}:${workspace.id}`,
     });
@@ -342,14 +354,27 @@ function getOrCreate<K, V>(map: Map<K, V>, key: K, create: () => V): V {
   return value;
 }
 
-function compareWorkspaceStructureItems(
-  left: { workspaceId: string; workspaceName: string },
-  right: { workspaceId: string; workspaceName: string },
-): number {
+function compareWorkspaceStructureItems(left: WorkspaceSortItem, right: WorkspaceSortItem): number {
   return (
     left.workspaceName.localeCompare(right.workspaceName, undefined, {
       numeric: true,
       sensitivity: "base",
-    }) || left.workspaceId.localeCompare(right.workspaceId, undefined, { sensitivity: "base" })
+    }) || left.workspaceKey.localeCompare(right.workspaceKey)
   );
+}
+
+function workspaceSortTime(
+  workspace: WorkspaceDescriptor,
+  sort: WorkspaceSort | undefined,
+): number {
+  if (!sort) return 0;
+  const time =
+    sort === "lastPrompt"
+      ? (workspace.lastUserMessageAt ?? workspace.createdAt)
+      : workspace.createdAt;
+  return time?.getTime() ?? 0;
+}
+
+function compareWorkspaceTimes(left: WorkspaceSortItem, right: WorkspaceSortItem): number {
+  return right.sortTime - left.sortTime || left.workspaceKey.localeCompare(right.workspaceKey);
 }

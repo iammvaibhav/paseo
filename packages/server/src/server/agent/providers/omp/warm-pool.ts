@@ -111,7 +111,7 @@ export async function moveOmpSession(
   // `/move` is slower than a liveness ping — do not wrap it in the 2s
   // getState budget. A timeout here used to discard a live process and
   // cold-start (~12s) instead of finishing the retarget (~1.3s).
-  await withTimeout(session.prompt(`/move ${cwd}`), WARM_POOL_MOVE_TIMEOUT_MS);
+  await withTimeout(session.prompt({ message: `/move ${cwd}` }), WARM_POOL_MOVE_TIMEOUT_MS);
   const deadline = Date.now() + WARM_POOL_MOVE_TIMEOUT_MS;
   for (;;) {
     const state = await withTimeout(session.getState(), WARM_POOL_LIVENESS_TIMEOUT_MS);

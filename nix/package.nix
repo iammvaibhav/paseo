@@ -129,6 +129,9 @@ stdenv.mkDerivation rec {
       cp -a "$path" "$out/lib/paseo/$path"
     done < daemon-files.txt
 
+    # Shell hooks invoke the retained CLI bin directly, without a system Node.
+    patchShebangs --build "$out/lib/paseo"
+
     # Root package.json lets node resolve the workspace layout when the
     # CLI/server bin starts from $out.
     cp package.json $out/lib/paseo/
@@ -154,7 +157,7 @@ stdenv.mkDerivation rec {
   meta = {
     description = "Self-hosted daemon for Claude Code, Codex, and OpenCode";
     homepage = "https://github.com/getpaseo/paseo";
-    license = lib.licenses.agpl3Plus;
+    license = lib.licenses.asl20;
     mainProgram = "paseo";
     platforms = lib.platforms.linux ++ lib.platforms.darwin;
   };

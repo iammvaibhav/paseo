@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { buildExplorerCheckoutKey } from "@/stores/explorer-tab-memory";
 import {
+  buildExplorerCheckoutKey,
   resolveSelectedSubmoduleForCheckout,
   sanitizeSelectedSubmoduleByCheckout,
   setSelectedSubmoduleEntry,

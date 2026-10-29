@@ -23,6 +23,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import type { FilePanelOpenWithMenu } from "@/file-panels";
 import type { WorkspaceTabMenuEntry } from "@/screens/workspace/workspace-tab-menu";
 import type { Theme } from "@/styles/theme";
 import type { AgentReminderMenu } from "@/agent-reminders/reminder-menu";
@@ -106,14 +107,21 @@ export function MobileTabTrailingAccessory({
   presentationLabel,
   menuEntries,
   reminderMenu,
+  openWith,
 }: {
   menuTestIDBase: string;
   presentationLabel: string;
   menuEntries: WorkspaceTabMenuEntry[];
   /** Built by the caller with useAgentReminderMenu; renders at the "remind-me" entry. */
   reminderMenu?: AgentReminderMenu;
+  /** A file tab's "Open with…" row and its page. */
+  openWith?: FilePanelOpenWithMenu;
 }): ReactElement {
   const { t } = useTranslation();
+  const pages = useMemo(
+    () => [...(reminderMenu?.pages ?? []), ...(openWith?.pages ?? [])],
+    [openWith?.pages, reminderMenu?.pages],
+  );
   return (
     <DropdownMenu compactMode="sheet">
       <DropdownMenuTrigger
@@ -130,7 +138,7 @@ export function MobileTabTrailingAccessory({
         align="end"
         width={220}
         sheetTitle={presentationLabel}
-        pages={reminderMenu?.pages}
+        pages={pages}
         testID={menuTestIDBase}
       >
         {menuEntries.map((entry) => {
@@ -139,6 +147,8 @@ export function MobileTabTrailingAccessory({
               return <DropdownMenuSeparator key={entry.key} />;
             case "remind-me":
               return <Fragment key={entry.key}>{reminderMenu?.trigger ?? null}</Fragment>;
+            case "file-panel-open-with":
+              return <Fragment key={entry.key}>{openWith?.trigger ?? null}</Fragment>;
             case "item":
               return <MobileTabDropdownMenuItem key={entry.key} entry={entry} />;
           }

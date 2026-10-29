@@ -310,6 +310,7 @@ describe("fleet_list_agents roster enrichment", () => {
         getAgent: (id: string) => (id === "caller" ? { id, cwd: "/work/mine" } : undefined),
         getRegisteredProviderIds: () => ["omp"],
         getTimeline: () => [],
+        getPluginTools: () => [],
       } as unknown as AgentManager,
       agentStorage: {
         get: async () => null,
@@ -711,6 +712,7 @@ describe("fleet_send_prompt mode", () => {
         prompt,
         carriesMode: false,
       })),
+      reloadStalePluginSession: vi.fn(async () => undefined),
     } as unknown as AgentManager;
 
     // The interrupt path echoes the submitted prompt as a natural user row;
@@ -742,6 +744,7 @@ describe("fleet_send_prompt mode", () => {
       waitForAgentRunStart: vi.fn(async () => undefined),
       tryRunOutOfBand,
       replaceAgentRun,
+      reloadStalePluginSession: vi.fn(async () => undefined),
     } as unknown as AgentManager;
     const catalog = createPaseoToolCatalog({
       agentManager,
@@ -922,6 +925,7 @@ describe("fleet_send_prompt mode", () => {
         prompt,
         carriesMode: false,
       })),
+      reloadStalePluginSession: vi.fn(async () => undefined),
     } as unknown as AgentManager;
     const catalog = createPaseoToolCatalog({
       agentManager,
@@ -1007,7 +1011,7 @@ describe("fleet spawns and sends", () => {
     }));
     const { client, peerManager } = createFakePeerHarness({ client: { createAgent } });
     const catalog = createPaseoToolCatalog({
-      agentManager: {} as unknown as AgentManager,
+      agentManager: { getPluginTools: () => [] } as unknown as AgentManager,
       agentStorage: { get: async () => null, list: async () => [] } as unknown as AgentStorage,
       providerSnapshotManager: createProviderSnapshotManagerStub()
         .manager as unknown as ProviderSnapshotManager,
@@ -1470,7 +1474,7 @@ describe("fleet_create_agent call-time validation (spec 03)", () => {
   function createCommanderWithWorkspaces(overrides: Record<string, unknown> = {}) {
     const missionControlService = createMissionControlServiceStub(overrides);
     const catalog = createPaseoToolCatalog({
-      agentManager: {} as unknown as AgentManager,
+      agentManager: { getPluginTools: () => [] } as unknown as AgentManager,
       agentStorage: { get: async () => null, list: async () => [] } as unknown as AgentStorage,
       workspaceRegistry: {
         get: async (id: string) =>
@@ -1625,6 +1629,7 @@ describe("list_agents stored roster (Mission Control caller)", () => {
       getTimeline: () => {
         throw new Error("no timeline in unit test");
       },
+      getPluginTools: () => [],
       ...overrides.agentManager,
     } as unknown as AgentManager;
     const agentStorage = {
@@ -1791,7 +1796,7 @@ describe("fleet_create_agent placement and model form from a remote MCP client",
       }),
     } as unknown as RoutingService;
     const catalog = createPaseoToolCatalog({
-      agentManager: {} as unknown as AgentManager,
+      agentManager: { getPluginTools: () => [] } as unknown as AgentManager,
       agentStorage: { get: async () => null, list: async () => [] } as unknown as AgentStorage,
       providerSnapshotManager: createProviderSnapshotManagerStub()
         .manager as unknown as ProviderSnapshotManager,

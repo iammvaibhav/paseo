@@ -389,7 +389,6 @@ export class WebhookService {
       features: config.featureValues,
       unattended: true,
       promptFailure: "return-error",
-      background: true,
       notifyOnFinish: false,
     });
     await input.onAgentId(created.snapshot.id, workspace.workspaceId);

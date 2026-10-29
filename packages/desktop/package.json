@@ -1,6 +1,6 @@
 {
   "name": "@getpaseo/desktop",
-  "version": "0.11.0-beta.4",
+  "version": "0.14.0-beta.1",
   "private": true,
   "description": "Paseo desktop app (Electron wrapper)",
   "homepage": "https://paseo.sh",
@@ -26,7 +26,8 @@
     "verify:electron-cdp": "node ./scripts/verify-electron-cdp.mjs",
     "test": "install-electron && vitest run --exclude \"e2e/**\"",
     "typecheck": "sh ../../scripts/cpu-slot.sh typecheck tsgo --noEmit -p tsconfig.json",
-    "test:e2e:lifecycle": "pnpm run build:main && node ./e2e/daemon-lifecycle.e2e.mjs"
+    "test:e2e:lifecycle": "pnpm run build:main && node ./e2e/daemon-lifecycle.e2e.mjs",
+    "test:e2e:window-startup": "pnpm run build:main && node ./e2e/window-startup.e2e.mjs"
   },
   "dependencies": {
     "@getpaseo/cli": "workspace:*",

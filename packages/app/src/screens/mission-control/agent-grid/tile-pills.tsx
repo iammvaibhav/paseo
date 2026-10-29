@@ -1,3 +1,4 @@
+import type { AgentAddress } from "@getpaseo/protocol/addresses";
 import { memo, useCallback, type ReactElement } from "react";
 import { View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
@@ -29,6 +30,11 @@ export const TILE_PILLS_MAX_HEIGHT = COMPOSER_PILL_MIN_HEIGHT + 8; // 40px
  * Maximum height allocated to the docked composer column reserve in a grid tile.
  */
 export const TILE_COMPOSER_MAX_RESERVE = 180;
+
+/** A grid tile has no pane to host a subagent sheet, so every row navigates to its agent. */
+function noSubagentSheet(): null {
+  return null;
+}
 
 /**
  * Tail clearance required for the transcript view when ambient pills are rendered,
@@ -137,24 +143,24 @@ export const TilePills = memo(function TilePills({
     hasDiffStat,
   });
 
-  const archiveSubagent = useArchiveSubagent({ serverId });
-  const detachSubagent = useDetachSubagent({ serverId });
+  const archiveSubagent = useArchiveSubagent();
+  const detachSubagent = useDetachSubagent();
 
   const handleOpenSubagent = useCallback(
-    (subagentId: string) => {
-      const session = useSessionStore.getState().sessions[serverId];
+    ({ serverId: subagentServerId, agentId: subagentId }: AgentAddress) => {
+      const session = useSessionStore.getState().sessions[subagentServerId];
       const subagent = session?.agents.get(subagentId) ?? session?.agentDetails.get(subagentId);
 
-      notifyNavigatedFromGrid({ serverId, agentId: subagentId });
+      notifyNavigatedFromGrid({ serverId: subagentServerId, agentId: subagentId });
 
       void openAgentFromHistory({
-        serverId,
+        serverId: subagentServerId,
         agentId: subagentId,
         workspaceId: subagent?.workspaceId ?? workspaceId ?? null,
         archived: Boolean(subagent?.archivedAt),
       });
     },
-    [serverId, workspaceId],
+    [workspaceId],
   );
 
   const handleOpenProviderSubagent = useCallback(
@@ -202,6 +208,7 @@ export const TilePills = memo(function TilePills({
           rows={subagentRows}
           onOpenSubagent={handleOpenSubagent}
           onOpenProviderSubagent={handleOpenProviderSubagent}
+          sheetTabFor={noSubagentSheet}
           onArchiveSubagent={archiveSubagent}
           onDetachSubagent={detachSubagent}
         />

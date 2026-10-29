@@ -78,9 +78,12 @@ async function call(ctx, name, args, { callerAgentId } = {}) {
 
 async function transcriptText(ctx, agentId) {
   const page = (await call(ctx, "fleet_get_transcript", { agentId, limit: 200 })).structuredContent;
+  // Agent notifications land as agent_message tool rows; user rows hold the prompts.
   return (page.entries ?? [])
-    .filter((entry) => entry.item?.type === "user_message")
-    .map((entry) => entry.item?.text ?? "")
+    .map((entry) =>
+      entry.item?.type === "user_message" ? entry.item.text : entry.item?.agentMessage?.text,
+    )
+    .filter(Boolean)
     .join("\n----\n");
 }
 

@@ -42,6 +42,14 @@ const test = base.extend<{ agent: MockAgentSession }>({
   },
 });
 
+// The outer meter owns the accessible usage label; its SVG is decorative.
+async function expectDecorativeContextRing(meter: Locator): Promise<void> {
+  const ring = meter.locator("svg");
+  await expect(ring).toHaveAttribute("aria-hidden", "true");
+  await expect(ring).not.toHaveAttribute("accessibilityElementsHidden");
+  await expect(ring).not.toHaveAttribute("importantForAccessibility");
+}
+
 // Where the progress arc is painted, as its centroid relative to the ring's centre in pixels.
 // Reads the rendered pixels, so any rotation that does not reach the screen counts as none.
 async function progressArcCentroid(meter: Locator): Promise<{ x: number; y: number }> {
@@ -100,6 +108,7 @@ test.describe("context window meter", () => {
       const meter = page.getByTestId("context-window-meter");
       await expect(meter).toHaveAccessibleName(/25%/, { timeout: 30_000 });
 
+      await expectDecorativeContextRing(meter);
       const centroid = await progressArcCentroid(meter);
       expect(centroid.x).toBeGreaterThan(1);
       expect(centroid.y).toBeLessThan(-1);
@@ -149,7 +158,7 @@ for (const layout of [
           await expect(details.getByText(/tokens$/)).toHaveCount(0);
           const account = usageCard(details, "login-journey:account");
           await expect(account.getByText("Session", { exact: true })).toBeVisible();
-          await expect(account.getByText("31%", { exact: true })).toBeVisible();
+          await expect(account.getByText("31% used", { exact: true })).toBeVisible();
           await qaScreenshot(page, `context-without-data-${layout.name}`);
           await layout.close(page);
         });
@@ -161,7 +170,7 @@ for (const layout of [
           await expect(details.getByText("32k / 128k tokens", { exact: true })).toBeVisible();
           await expect(details.getByText("No context data", { exact: true })).toHaveCount(0);
           await expect(
-            usageCard(details, "login-journey:account").getByText("31%", { exact: true }),
+            usageCard(details, "login-journey:account").getByText("31% used", { exact: true }),
           ).toBeVisible();
         });
       } finally {
@@ -268,12 +277,18 @@ for (const theme of ["light", "dark"] as const) {
       await expect(card).toBeVisible();
     });
 
-    await test.step("Refresh replaces the card with the source's new report", async () => {
-      usage.answerNext([expiredLogin(onWorkLogin(claude!))]);
+    await test.step("Refresh keeps the card open and replaces it with the new report", async () => {
+      const refreshed = gate();
+      usage.answerNext({ stream: [refreshed.promise, expiredLogin(onWorkLogin(claude!))] });
       const card = contextWindowDetails(page);
       await refreshUsageCard(card, "Claude");
+      await expect(card.getByRole("button", { name: "Refresh Claude" })).toBeDisabled();
+      // Past the card's close grace, with the pointer still on the card.
+      await page.waitForTimeout(500);
+      await expect(card).toBeVisible();
+      refreshed.open();
       await expect(card.getByText(LOGIN_EXPIRED)).toBeVisible();
-      expect(usage.refreshedReports()).toEqual([["claude:work"]]);
+      expect(usage.refreshedAgents()).toEqual([agent.agentId]);
     });
 
     await test.step("after a resume under another login, only that login shows", async () => {
@@ -321,7 +336,7 @@ for (const theme of ["light", "dark"] as const) {
     await test.step("a host without usage reports shows only the context window", async () => {
       await expectOnlyContextWindowWithoutUsage(page, usage, hoverContextWindowMeter, shot);
       // One request per open that had usage; this one sends none.
-      expect(usage.agentRequests()).toHaveLength(5);
+      expect(usage.agentRequests()).toHaveLength(6);
     });
   });
 
@@ -351,7 +366,7 @@ for (const theme of ["light", "dark"] as const) {
       const sheet = contextWindowDetails(page);
       await refreshUsageCard(sheet, "Claude");
       await expect(sheet.getByText(LOGIN_EXPIRED)).toBeVisible();
-      expect(usage.refreshedReports()).toEqual([["claude:work"]]);
+      expect(usage.refreshedAgents()).toEqual([agent.agentId]);
       await shot("problem");
     });
 
@@ -365,7 +380,7 @@ for (const theme of ["light", "dark"] as const) {
 
     await test.step("a host without usage reports shows only the context window", async () => {
       await expectOnlyContextWindowWithoutUsage(page, usage, pressContextWindowMeter, shot);
-      expect(usage.agentRequests()).toHaveLength(2);
+      expect(usage.agentRequests()).toHaveLength(3);
     });
   });
 }

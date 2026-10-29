@@ -5,6 +5,8 @@ import { resolveWorkspaceRouteState } from "./workspace-route-state";
 
 function createWorkspaceDescriptor(): WorkspaceDescriptor {
   return {
+    createdAt: null,
+    lastUserMessageAt: null,
     id: "workspace-1",
     projectId: "project-1",
     projectDisplayName: "Project",
@@ -19,7 +21,6 @@ function createWorkspaceDescriptor(): WorkspaceDescriptor {
     archivingAt: null,
     statusEnteredAt: null,
     activityAt: null,
-    createdAt: null,
   };
 }
 

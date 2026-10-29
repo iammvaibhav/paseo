@@ -1,4 +1,5 @@
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { readdir, stat } from "node:fs/promises";
+import { setImmediate } from "node:timers/promises";
 import { basename, extname, join } from "node:path";
 import type { AgentProvider, AgentStreamEvent, AgentTimelineItem } from "../../agent-sdk-types.js";
 import { normalizeProviderReplayTimestamp } from "../../provider-history-timestamps.js";
@@ -17,6 +18,10 @@ import { mapOmpTodoPhases } from "./todo-mapper.js";
 import { OmpTodoPhaseSchema } from "./rpc-types.js";
 
 export { readActiveOmpEntryChain, type OmpSessionEntry };
+
+type OmpReplayEntry =
+  | { entry: OmpSessionEntry; message: OmpAgentMessage }
+  | { entry: OmpSessionEntry; item: AgentTimelineItem };
 
 export async function readOmpHistoryTodoState(
   sessionFile: string,
@@ -60,6 +65,33 @@ function buildOmpModelId(provider: unknown, model: unknown): string | null {
   return normalizedProvider && normalizedModel ? `${normalizedProvider}/${normalizedModel}` : null;
 }
 
+/** Maps session entries to replayable messages, yielding to the event loop between batches. */
+async function prepareOmpReplay(entries: OmpSessionEntry[]): Promise<{
+  messages: OmpAgentMessage[];
+  replayEntries: OmpReplayEntry[];
+  userEntries: OmpCapturedUserMessageEntry[];
+}> {
+  const messages: OmpAgentMessage[] = [];
+  const replayEntries: OmpReplayEntry[] = [];
+  const userEntries: OmpCapturedUserMessageEntry[] = [];
+  let prepared = 0;
+  for (const entry of entries) {
+    if (++prepared % 32 === 0) await setImmediate();
+    if (entry.type === "compaction") {
+      replayEntries.push({ entry, item: mapCompactionEntry(entry) });
+      continue;
+    }
+    const mapped = mapEntryMessage(entry);
+    if (!mapped) continue;
+    messages.push(mapped);
+    replayEntries.push({ entry, message: mapped });
+    if (mapped.role === "user" && entry.id) {
+      userEntries.push({ id: entry.id, text: textOf(mapped.content) });
+    }
+  }
+  return { messages, replayEntries, userEntries };
+}
+
 export async function* streamOmpHistory(input: {
   sessionFile?: string;
   runtimeSession?: OmpRuntimeSession;
@@ -70,7 +102,7 @@ export async function* streamOmpHistory(input: {
   if (!input.sessionFile) {
     return;
   }
-  const sessionFile = existsSync(input.sessionFile)
+  const sessionFile = (await isFile(input.sessionFile))
     ? input.sessionFile
     : await locateOmpSessionFile(input.sessionFile);
   const visitedSessionFiles = input.visitedSessionFiles ?? new Set<string>();
@@ -87,31 +119,26 @@ export async function* streamOmpHistory(input: {
     }
     throw error;
   }
-  const messages: OmpAgentMessage[] = [];
-  const messageEntries: OmpSessionEntry[] = [];
-  const userEntries: OmpCapturedUserMessageEntry[] = [];
-  for (const entry of entries) {
-    const mapped = mapEntryMessage(entry);
-    if (!mapped) continue;
-    messages.push(mapped);
-    messageEntries.push(entry);
-    if (mapped.role === "user" && entry.id) {
-      userEntries.push({ id: entry.id, text: textOf(mapped.content) });
-    }
-  }
+  const { messages, replayEntries, userEntries } = await prepareOmpReplay(entries);
   const mapper = new OmpHistoryMapper(
     input.provider,
     userEntries,
     OMP_HISTORY_MAPPER_HOOKS,
     input.bridgedTools,
   );
-  for (let index = 0; index < messages.length; index += 1) {
-    const timestamp = normalizeProviderReplayTimestamp(messageEntries[index]?.timestamp);
-    for (const event of mapper.mapMessages([messages[index]!])) {
+  let replayed = 0;
+  for (const replayEntry of replayEntries) {
+    if (++replayed % 32 === 0) await setImmediate();
+    const timestamp = normalizeProviderReplayTimestamp(replayEntry.entry.timestamp);
+    const events: AgentStreamEvent[] =
+      "item" in replayEntry
+        ? [{ type: "timeline", provider: input.provider, item: replayEntry.item }]
+        : mapper.mapMessages([replayEntry.message]);
+    for (const event of events) {
       yield timestamp && event.type === "timeline" ? { ...event, timestamp } : event;
     }
   }
-  for (const transcript of readSubagentTranscripts(messages, input.sessionFile)) {
+  for (const transcript of await readSubagentTranscripts(messages, input.sessionFile)) {
     yield* replaySubagentTranscript(transcript, input.provider, visitedSessionFiles);
   }
 }
@@ -183,10 +210,10 @@ interface OmpSubagentTranscript {
   status: "completed" | "failed" | "canceled";
 }
 
-function readSubagentTranscripts(
+async function readSubagentTranscripts(
   messages: readonly OmpAgentMessage[],
   parentSessionFile: string,
-): OmpSubagentTranscript[] {
+): Promise<OmpSubagentTranscript[]> {
   const taskCalls = collectTaskCalls(messages);
   const transcripts: OmpSubagentTranscript[] = [];
   const completedToolCallIds = new Set<string>();
@@ -215,25 +242,37 @@ function readSubagentTranscripts(
     }
   }
   transcripts.push(
-    ...readInterruptedSubagentTranscripts(taskCalls, completedToolCallIds, parentSessionFile),
+    ...(await readInterruptedSubagentTranscripts(
+      taskCalls,
+      completedToolCallIds,
+      parentSessionFile,
+    )),
   );
   return transcripts;
 }
 
-function readInterruptedSubagentTranscripts(
+async function isFile(filePath: string): Promise<boolean> {
+  return stat(filePath).then(
+    (stats) => stats.isFile(),
+    () => false,
+  );
+}
+
+async function readInterruptedSubagentTranscripts(
   taskCalls: Map<string, { title: string }>,
   completedToolCallIds: Set<string>,
   parentSessionFile: string,
-): OmpSubagentTranscript[] {
+): Promise<OmpSubagentTranscript[]> {
   const childSessionDir = stripExtension(parentSessionFile);
-  if (!existsSync(childSessionDir) || !statSync(childSessionDir).isDirectory()) return [];
+  const childEntries = await readdir(childSessionDir, { withFileTypes: true }).catch(() => null);
+  if (!childEntries) return [];
 
   const claimedIds = new Set<string>();
   const transcripts: OmpSubagentTranscript[] = [];
   for (const [toolCallId, call] of taskCalls) {
     if (completedToolCallIds.has(toolCallId)) continue;
     const sessionFile = join(childSessionDir, `${basename(call.title)}.jsonl`);
-    if (!existsSync(sessionFile)) continue;
+    if (!(await isFile(sessionFile))) continue;
     const id = basename(sessionFile, ".jsonl");
     claimedIds.add(id);
     transcripts.push({
@@ -247,7 +286,7 @@ function readInterruptedSubagentTranscripts(
 
   if (transcripts.length > 0) return transcripts;
 
-  const leftoverFiles = readdirSync(childSessionDir, { withFileTypes: true })
+  const leftoverFiles = childEntries
     .filter(
       (entry) =>
         entry.isFile() &&
@@ -392,8 +431,7 @@ function mapEntryMessage(entry: OmpSessionEntry): OmpAgentMessage | null {
         content.length === 1 &&
         content[0]?.type === "text" &&
         typeof content[0].text === "string" &&
-        content[0].text.trimStart().startsWith("<system-reminder>") &&
-        content[0].text.trimEnd().endsWith("</system-reminder>")
+        isSystemReminder(content[0].text)
       ) {
         return null;
       }
@@ -401,6 +439,19 @@ function mapEntryMessage(entry: OmpSessionEntry): OmpAgentMessage | null {
     }
     if (["user", "assistant", "toolResult", "custom", "bashExecution"].includes(message.role)) {
       return message as unknown as OmpAgentMessage;
+    }
+    // OMP roles the live timeline does not render either, such as the fileMention that carries
+    // an @-mentioned file's content.
+    if (
+      [
+        "pythonExecution",
+        "hookMessage",
+        "branchSummary",
+        "compactionSummary",
+        "fileMention",
+      ].includes(message.role)
+    ) {
+      return null;
     }
     return visibleFallback(message.role, message);
   }
@@ -411,6 +462,16 @@ function mapEntryMessage(entry: OmpSessionEntry): OmpAgentMessage | null {
     return null;
   }
   return visibleFallback(entry.type, entry);
+}
+
+// OMP persists a compaction as a top-level entry; the live timeline shows it as a compaction row.
+// The entry does not record whether a manual /compact or auto-compaction produced it.
+function mapCompactionEntry(entry: OmpSessionEntry): AgentTimelineItem {
+  return {
+    type: "compaction",
+    status: "completed",
+    ...(typeof entry.tokensBefore === "number" ? { preTokens: entry.tokensBefore } : {}),
+  };
 }
 
 // omp 18.1+ persists injected rows (skill prompts, hub messages, job notices) as top-level
@@ -431,6 +492,13 @@ function mapCustomMessageEntry(entry: OmpSessionEntry): OmpAgentMessage | null {
   } as OmpAgentMessage;
 }
 
+// OMP's rule-violation reminder carries attributes: <system-reminder reason="rule_violation" ...>
+function isSystemReminder(text: string): boolean {
+  return (
+    /^<system-reminder[\s>]/.test(text.trimStart()) && text.trimEnd().endsWith("</system-reminder>")
+  );
+}
+
 function isControlEntryType(type: string): boolean {
   return (
     type === "session" ||
@@ -442,20 +510,19 @@ function isControlEntryType(type: string): boolean {
     type === "system_prompt" ||
     type === "model_change" ||
     type === "thinking_level_change" ||
+    type === "ttsr_injection" ||
     type === "tool_execution" ||
     // Auth plumbing written when an OAuth account is pinned to a session
     // (e.g. omp-account-routing). Carries only provider + credential hash,
     // never conversation content.
     type === "credential_pin" ||
-    // Session bookkeeping omp writes beside the conversation: service tier and
-    // rule-injection markers, per-call usage of helper models, the summary stub
-    // left by a discarded branch, and compaction checkpoints. None is a turn the
-    // user wrote or the agent said.
+    // Session bookkeeping omp writes beside the conversation: service tier
+    // markers, per-call usage of helper models, and the summary stub left by a
+    // discarded branch. None is a turn the user wrote or the agent said.
+    // Compaction entries replay as compaction rows before reaching this check.
     type === "service_tier_change" ||
-    type === "ttsr_injection" ||
     type === "model_usage" ||
     type === "branch_summary" ||
-    type === "compaction" ||
     type.startsWith("tool_execution_")
   );
 }

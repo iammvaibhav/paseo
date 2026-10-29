@@ -119,6 +119,7 @@ function buildLookup(
   return {
     agentManager: {
       getAgent: () => null,
+      getPluginTools: () => [],
     },
     agentStorage: {
       get: async (agentId: string) => agents.get(agentId) ?? null,
@@ -455,7 +456,7 @@ describe("metaPlan payload per action", () => {
 
 function createSchemaTestCatalog() {
   return createPaseoToolCatalog({
-    agentManager: {} as unknown as AgentManager,
+    agentManager: { getPluginTools: () => [] } as unknown as AgentManager,
     agentStorage: {
       get: async () => null,
       list: async () => [],

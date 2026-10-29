@@ -11,7 +11,7 @@ import {
 // needs its imperative handle for both, so migrating it is its own change, not merge work.
 // eslint-disable-next-line no-restricted-imports -- migrate to EditingTextInput separately
 import { View, Text, TextInput, ActivityIndicator } from "react-native";
-import { useIsFocused } from "@react-navigation/native";
+import { useIsFocused } from "expo-router/react-navigation";
 import { router } from "expo-router";
 import { StyleSheet } from "react-native-unistyles";
 import { ChevronLeft, Import } from "lucide-react-native";

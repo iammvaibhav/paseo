@@ -1,6 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { ChildProcess } from "node:child_process";
-import { existsSync } from "node:fs";
 import type { Logger } from "pino";
 import type { ProcessEnvRecord } from "../server/paseo-env.js";
 import {
@@ -315,7 +314,6 @@ function executeGitCommand<Output>(
             command: "git",
             args,
             cwd: options.cwd,
-            cwdExists: existsSync(options.cwd),
             timeout,
             maxOutputBytes,
             acceptExitCodes,
@@ -407,16 +405,10 @@ function executeGitCommand<Output>(
             cwd: options.cwd,
             envOverlay,
             shell: false,
-            stdio: [options.input !== undefined ? "pipe" : "ignore", "pipe", "pipe"],
+            stdio: [options.input === undefined ? "ignore" : "pipe", "pipe", "pipe"],
           },
         );
         spawnGitCommandTrace(commandTrace, child.pid);
-        if (options.input !== undefined && child.stdin) {
-          // EPIPE can fire if the process exits before stdin drains (e.g. `--batch`
-          // rejecting a malformed spec); the exit/close handlers already report that.
-          child.stdin.on("error", () => {});
-          child.stdin.end(options.input);
-        }
       } catch (error) {
         rejectSpawnFailure(error);
         return;

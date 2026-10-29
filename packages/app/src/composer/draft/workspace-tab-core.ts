@@ -6,6 +6,7 @@ import { resolveSubmissionReadiness } from "@/provider-selection/provider-select
 import { buildWorkspaceDraftAgentConfig } from "@/screens/workspace/workspace-draft-agent-config";
 import type { UserMessageImageAttachment } from "@/types/stream";
 import { encodeImages } from "@/utils/encode-images";
+import { useWorkspaceDraftSubmissionStore } from "@/stores/workspace-draft-submission-store";
 import type { WorkspaceDraftForkSource } from "@/workspace-tabs/model";
 
 export interface WorkspaceDraftAutoSubmitConfig {
@@ -35,7 +36,7 @@ export function validateDraftSubmission(input: {
   };
   autoSubmitConfig: WorkspaceDraftAutoSubmitConfig | null;
   workspaceDirectory: string | null;
-  hasClient: boolean;
+  isConnected: boolean;
 }): string | null {
   const {
     text,
@@ -43,7 +44,7 @@ export function validateDraftSubmission(input: {
     composerState,
     autoSubmitConfig,
     workspaceDirectory,
-    hasClient,
+    isConnected,
   } = input;
   const readiness = resolveSubmissionReadiness({
     text,
@@ -57,51 +58,35 @@ export function validateDraftSubmission(input: {
     },
     autoSubmitConfig,
     workspaceDirectory,
-    hasClient,
+    isConnected,
   });
   return readiness.ok ? null : (readiness.reason ?? null);
 }
 
-// Reconcile the form's selected mode against the currently discovered modes.
-// The mode picker displays modeOptions[0] when the stored mode isn't in the
-// list (e.g. a globally-remembered "plan" that this workspace's OpenCode config
-// no longer defines), so the submitted mode must match that display — otherwise
-// we'd send a stale mode the provider rejects while the UI showed a valid one.
-function reconcileSelectedMode(modeOptionIds: readonly string[], selectedMode: string): string {
-  if (modeOptionIds.length === 0) {
-    return "";
-  }
-  return modeOptionIds.includes(selectedMode) ? selectedMode : (modeOptionIds[0] ?? "");
-}
-
 function resolveDraftModeIdOverride(input: {
   autoSubmitConfig: WorkspaceDraftAutoSubmitConfig | null;
-  modeOptionIds: readonly string[];
-  selectedMode: string;
+  effectiveModeId: string;
 }): { modeId: string } | Record<string, never> {
-  const { autoSubmitConfig, modeOptionIds, selectedMode } = input;
+  const { autoSubmitConfig, effectiveModeId } = input;
   if (autoSubmitConfig?.modeId) {
     return { modeId: autoSubmitConfig.modeId };
   }
-  const reconciled = reconcileSelectedMode(modeOptionIds, selectedMode);
-  if (reconciled !== "") {
-    return { modeId: reconciled };
+  if (effectiveModeId !== "") {
+    return { modeId: effectiveModeId };
   }
   return {};
 }
 
 export function resolveDraftModeId(input: {
   autoSubmitConfig: WorkspaceDraftAutoSubmitConfig | null;
-  modeOptionIds: readonly string[];
-  selectedMode: string;
+  effectiveModeId: string;
 }): string | null {
-  const { autoSubmitConfig, modeOptionIds, selectedMode } = input;
+  const { autoSubmitConfig, effectiveModeId } = input;
   if (autoSubmitConfig?.modeId !== undefined) {
     return autoSubmitConfig.modeId;
   }
-  const reconciled = reconcileSelectedMode(modeOptionIds, selectedMode);
-  if (reconciled !== "") {
-    return reconciled;
+  if (effectiveModeId !== "") {
+    return effectiveModeId;
   }
   return null;
 }
@@ -109,6 +94,7 @@ export function resolveDraftModeId(input: {
 export type WorkspaceDraftSubmitClient = Pick<DaemonClient, "createAgent" | "forkAgent">;
 
 export async function submitDraftCreateRequest(input: {
+  draftId: string;
   attempt: { clientMessageId: string };
   text: string;
   images?: UserMessageImageAttachment[];
@@ -123,8 +109,7 @@ export async function submitDraftCreateRequest(input: {
   forkSource?: WorkspaceDraftForkSource;
   composerState: {
     selectedProvider: string | null;
-    selectedMode: string;
-    modeOptions: readonly { id: string }[];
+    effectiveModeId: string;
     effectiveModelId: string | null;
     effectiveThinkingOptionId: string | null;
     featureValues: Record<string, unknown> | undefined;
@@ -149,14 +134,21 @@ export async function submitDraftCreateRequest(input: {
       forkFailedMessage: input.forkFailedMessage,
     });
   }
-  const result = await submit.client.createAgent({
+  const options = {
+    // The draft id names this creation across retries, so a retry after a lost
+    // response reattaches to the agent the daemon already created.
+    idempotencyKey: input.draftId,
     config: submit.config,
     workspaceId: submit.workspaceId,
     ...(text ? { initialPrompt: text } : {}),
     clientMessageId: attempt.clientMessageId,
     ...(imagesData && imagesData.length > 0 ? { images: imagesData } : {}),
     ...(attachmentsArray && attachmentsArray.length > 0 ? { attachments: attachmentsArray } : {}),
-  });
+  };
+  const creation = useWorkspaceDraftSubmissionStore.getState().creationByDraftId[input.draftId];
+  const result = creation
+    ? await creation.retry(options)
+    : await submit.client.createAgent(options);
   return { agentId: result.id, result };
 }
 
@@ -169,8 +161,7 @@ function resolveDraftSubmitTarget(input: {
   forkSource?: WorkspaceDraftForkSource;
   composerState: {
     selectedProvider: string | null;
-    selectedMode: string;
-    modeOptions: readonly { id: string }[];
+    effectiveModeId: string;
     effectiveModelId: string | null;
     effectiveThinkingOptionId: string | null;
     featureValues: Record<string, unknown> | undefined;
@@ -210,8 +201,7 @@ function resolveDraftSubmitTarget(input: {
   }
   const modeIdOverride = resolveDraftModeIdOverride({
     autoSubmitConfig,
-    modeOptionIds: composerState.modeOptions.map((mode) => mode.id),
-    selectedMode: composerState.selectedMode,
+    effectiveModeId: composerState.effectiveModeId,
   });
   const config = buildWorkspaceDraftAgentConfig({
     provider,

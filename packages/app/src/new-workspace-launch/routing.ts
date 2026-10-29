@@ -38,7 +38,7 @@ const TARGET_PRESENTATION: Record<
   scratch: { label: "Scratch", optionId: SCRATCH_OPTION_ID },
 };
 
-type RoutingStatus = "idle" | "waiting" | "loading" | "ready" | "error";
+export type RoutingStatus = "idle" | "waiting" | "loading" | "ready" | "error";
 
 // Keyed by the fleet's project list as well as the prompt: a project added
 // since (any host, any path) makes every cached answer stale.

@@ -119,6 +119,8 @@ const PersistedWorkspaceRecordSchema = z.object({
     .transform((value) => value ?? null),
   labels: z.array(z.string()).optional(),
   untrustedSource: UntrustedWorkspaceSourceSchema.optional(),
+  // Public discovery visibility. Contents retain their ordinary lifecycle.
+  background: z.boolean().optional().default(false),
 });
 
 export type PersistedProjectRecord = z.infer<typeof PersistedProjectRecordSchema>;
@@ -187,7 +189,7 @@ export interface WorkspaceRegistry {
     workspaceId: string,
     archivedAt: string,
     context?: WorkspaceArchiveContext,
-  ): Promise<void>;
+  ): Promise<boolean>;
   remove(workspaceId: string): Promise<void>;
   /** Central lifecycle seam for daemon-global workspace observers. */
   subscribeToMutations?(
@@ -262,20 +264,6 @@ class FileBackedRegistry<TRecord extends RegistryRecord> {
       const existing = records.get(id);
       if (!existing) return null;
       const next = this.schema.parse(updater(existing));
-      records.set(id, next);
-      return next;
-    });
-  }
-
-  async archive(id: string, archivedAt: string): Promise<void> {
-    await this.archiveIfPresent(id, archivedAt);
-  }
-
-  protected async archiveIfPresent(id: string, archivedAt: string): Promise<TRecord | null> {
-    return this.mutateCache((records) => {
-      const existing = records.get(id);
-      if (!existing) return null;
-      const next = this.schema.parse({ ...existing, updatedAt: archivedAt, archivedAt });
       records.set(id, next);
       return next;
     });
@@ -511,7 +499,7 @@ export class FileBackedProjectRegistry
     return project;
   }
 
-  override async archive(projectId: string, archivedAt: string): Promise<void> {
+  async archive(projectId: string, archivedAt: string): Promise<void> {
     const project = await this.archiveIfActive(projectId, archivedAt);
     if (!project) return;
     await this.notifyMutation({ kind: "archive", projectId, project });
@@ -593,27 +581,34 @@ export class FileBackedWorkspaceRegistry
     context?.timer?.mark("registry.notifyMs");
   }
 
-  override async archive(
+  async archive(
     workspaceId: string,
     archivedAt: string,
     context?: WorkspaceArchiveContext,
-  ): Promise<void> {
-    const workspace = await super.update(workspaceId, (existing) => ({
-      ...existing,
-      updatedAt: archivedAt,
-      archivedAt,
-      ...(context?.autoArchivedChangeRequestUrl
-        ? { autoArchivedChangeRequestUrl: context.autoArchivedChangeRequestUrl }
-        : {}),
-    }));
-    if (!workspace) return;
+  ): Promise<boolean> {
+    const [workspace] = await this.mutateMany((records) => {
+      const existing = records.get(workspaceId);
+      if (!existing || existing.archivedAt) return [];
+      return [
+        {
+          ...existing,
+          updatedAt: archivedAt,
+          archivedAt,
+          ...(context?.autoArchivedChangeRequestUrl
+            ? { autoArchivedChangeRequestUrl: context.autoArchivedChangeRequestUrl }
+            : {}),
+        },
+      ];
+    });
+    if (!workspace) return false;
     await this.notifyMutation({ kind: "archive", workspaceId, workspace });
+    return true;
   }
 
   override async remove(workspaceId: string): Promise<void> {
     const workspace = await this.removeIfPresent(workspaceId);
     if (!workspace) return;
-    await this.notifyMutation({ kind: "remove", workspaceId, workspace: null });
+    await this.notifyMutation({ kind: "remove", workspaceId, workspace });
   }
 
   async commitWorkspaceLabelMutation<TResult>(input: {
@@ -720,9 +715,12 @@ export function createPersistedWorkspaceRecord(input: {
   pinnedAt?: string | null;
   labels?: string[];
   untrustedSource?: UntrustedWorkspaceSource;
+  background?: boolean;
 }): PersistedWorkspaceRecord {
+  const { background, ...rest } = input;
   return PersistedWorkspaceRecordSchema.parse({
-    ...input,
+    ...rest,
+    background: background ?? false,
     title: input.title ?? null,
     branch: input.branch ?? null,
     worktreeRoot: input.worktreeRoot ?? null,

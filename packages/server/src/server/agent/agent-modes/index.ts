@@ -25,7 +25,8 @@ export function canCarryAgentModeBlock(prompt: AgentPromptInput): boolean {
       : (prompt.find((block): block is { type: "text"; text: string } => block.type === "text")
           ?.text ?? "");
   const trimmed = firstText.trimStart();
-  return !trimmed.startsWith("/") && !trimmed.startsWith("<paseo-system>");
+  // Both `<paseo-system>` notices and versioned `<paseo-system version="1" …>` agent messages.
+  return !trimmed.startsWith("/") && !/^<paseo-system[\s>]/.test(trimmed);
 }
 
 export function prependToPrompt(prompt: AgentPromptInput, prefix: string): AgentPromptInput {

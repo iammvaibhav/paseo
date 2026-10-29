@@ -550,7 +550,7 @@ function SelectionAskAnswerBody({
                 </View>
               ) : (
                 <View key={message.id} style={styles.assistantMessage}>
-                  <MarkdownRenderer text={message.text} compact enableHtmlish={false} />
+                  <MarkdownRenderer text={message.text} compact />
                 </View>
               ),
             )

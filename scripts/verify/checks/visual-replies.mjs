@@ -362,6 +362,20 @@ export const steps = [
       const host = ctx.host();
       const url = `${host.httpUrl}/h/${encodeURIComponent(host.serverId)}/workspace/${encodeURIComponent(state.workspaceId)}?open=agent:${encodeURIComponent(state.agentId)}`;
       await page.goto(url, { waitUntil: "domcontentloaded", timeout: UI_TIMEOUT_MS });
+      // A finished turn folds the work before its last message; its pages stay in the chat.
+      await page
+        .getByTestId("show-page-card")
+        .first()
+        .waitFor({ state: "visible", timeout: UI_TIMEOUT_MS });
+      // Scroll up to the summary line under the user message, wheeling over the feed's
+      // margin: wheel input over an embedded page never reaches the feed's listeners, so
+      // the feed would keep following output and snap back to the bottom.
+      const feed = await page.getByTestId("agent-chat-scroll").boundingBox();
+      await page.mouse.move(feed.x + 12, feed.y + feed.height / 2);
+      for (let step = 0; step < 10; step += 1) await page.mouse.wheel(0, -1500);
+      const turnSummary = page.getByTestId("turn-summary").first();
+      await turnSummary.waitFor({ state: "visible", timeout: UI_TIMEOUT_MS });
+      await turnSummary.click();
       await page
         .getByText("Fleet healthy. 7 running", { exact: false })
         .first()
@@ -408,7 +422,8 @@ export const steps = [
       });
       ctx.expect(cornerAlpha === 0, `chart canvas corner alpha ${cornerAlpha}, expected 0`);
       // The chat list mounts only rows near the viewport; the diagram is at the top of the reply.
-      const diagram = page.locator('[aria-label="Mermaid diagram"] svg').first();
+      // Mermaid renders inside its sandboxed runtime frame within the diagram viewport.
+      const diagram = page.locator('[data-testid="mermaid-viewport"] iframe').first();
       const scroller = page.locator('[data-testid="agent-chat-scroll"]:visible').first();
       for (let attempt = 0; attempt < 20 && (await diagram.count()) === 0; attempt++) {
         await scroller.evaluate((element) => element.scrollBy(0, -600));

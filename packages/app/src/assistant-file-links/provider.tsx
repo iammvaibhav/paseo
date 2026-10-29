@@ -16,6 +16,7 @@ import { FileLinkPickerSheet, type FileLinkPickerRequest } from "./picker-sheet"
 import type { AssistantFileLinkContext, GetDirectorySuggestions } from "./resolver";
 
 export interface AssistantFileLinkDaemonClient {
+  readFile?: import("@getpaseo/client/internal/daemon-client").DaemonClient["readFile"];
   getDirectorySuggestions: GetDirectorySuggestions;
 }
 
@@ -23,6 +24,7 @@ export interface AssistantFileLinkResolverConfig {
   client?: AssistantFileLinkDaemonClient | null;
   serverId?: string;
   workspaceRoot?: string;
+  relativePathBase?: string;
   onOpenWorkspaceFile?: (target: InlinePathTarget, disposition: OpenFileDisposition) => void;
   toast?: ToastApi | null;
 }
@@ -40,10 +42,23 @@ export interface AssistantFileLinkResolverContextValue {
 const AssistantFileLinkResolverContext =
   createContext<AssistantFileLinkResolverContextValue | null>(null);
 
+export function useAssistantFileLinkEnvironmentBridge() {
+  const value = useContext(AssistantFileLinkResolverContext);
+  return useCallback(
+    (children: ReactNode) => (
+      <AssistantFileLinkResolverContext.Provider value={value}>
+        {children}
+      </AssistantFileLinkResolverContext.Provider>
+    ),
+    [value],
+  );
+}
+
 export function AssistantFileLinkResolverProvider({
   client,
   serverId,
   workspaceRoot,
+  relativePathBase,
   onOpenWorkspaceFile,
   toast,
   children,
@@ -52,10 +67,18 @@ export function AssistantFileLinkResolverProvider({
     client,
     serverId,
     workspaceRoot,
+    relativePathBase,
     onOpenWorkspaceFile,
     toast,
   });
-  configRef.current = { client, serverId, workspaceRoot, onOpenWorkspaceFile, toast };
+  configRef.current = {
+    client,
+    serverId,
+    workspaceRoot,
+    relativePathBase,
+    onOpenWorkspaceFile,
+    toast,
+  };
 
   const getDirectorySuggestions = useCallback<GetDirectorySuggestions>(async (input) => {
     const activeClient = configRef.current.client;
@@ -91,10 +114,17 @@ export function AssistantFileLinkResolverProvider({
 
 export function useAssistantFileLinkResolverContext(): AssistantFileLinkResolverContextValue {
   const context = useContext(AssistantFileLinkResolverContext);
-  if (!context) {
-    throw new Error("AssistantFileLinkResolverProvider is required for assistant file links.");
-  }
-  return context;
+  return context ?? EMPTY_CONTEXT;
 }
 
 export type { AssistantFileLinkContext };
+
+const EMPTY_CONTEXT: AssistantFileLinkResolverContextValue = {
+  configRef: { current: {} },
+  getDirectorySuggestions: async () => ({ entries: [], error: null }),
+  showPicker: () => {},
+};
+
+export function useAssistantFileLinkEnvironment() {
+  return useAssistantFileLinkResolverContext().configRef.current;
+}

@@ -1,11 +1,11 @@
-import React, { Children, isValidElement, memo, useCallback, useMemo, type ReactNode } from "react";
+import React, { Children, isValidElement, memo, useCallback, type ReactNode } from "react";
 import { View } from "react-native";
-import { useTranslation } from "react-i18next";
 import { ChevronRight } from "lucide-react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { EXPANDABLE_BADGE_ICON_SLOT, ExpandableBadge } from "@/components/message";
 import { useIsCompactFormFactor } from "@/constants/layout";
-import { type OverviewSummary, type OverviewToolCallGroup } from "./model";
+import { useOverviewSummaryLabel } from "./label";
+import type { OverviewToolCallGroup } from "./model";
 import { OverviewToolCallGroupSheet } from "./sheet";
 
 interface OverviewGroupProps {
@@ -16,35 +16,6 @@ interface OverviewGroupProps {
   children: ReactNode;
 }
 
-const SUMMARY_SEPARATOR = " · ";
-
-// "Thought 3 times · ran 2 commands · read 4 files": one segment per kind of work, in a
-// fixed order, so runs read the same way down a transcript.
-function useOverviewSummary(summary: OverviewSummary): string {
-  const { t } = useTranslation();
-  return useMemo(() => {
-    const parts: string[] = [];
-    const entries = [
-      [summary.thoughtCount, "toolCallGroup.thoughts"],
-      [summary.commandCount, "toolCallGroup.commands"],
-      [summary.editedFileCount, "toolCallGroup.editedFiles"],
-      [summary.readFileCount, "toolCallGroup.readFiles"],
-      [summary.searchCount, "toolCallGroup.searches"],
-      [summary.fetchCount, "toolCallGroup.fetches"],
-      [summary.paseoCallCount, "toolCallGroup.paseoCalls"],
-      [summary.otherToolCount, "toolCallGroup.otherTools"],
-      [summary.failedCount, "toolCallGroup.failed"],
-    ] as const;
-    for (const [count, key] of entries) {
-      if (count > 0) {
-        parts.push(t(`${key}.${count === 1 ? "one" : "other"}`, { count }));
-      }
-    }
-    const joined = parts.join(SUMMARY_SEPARATOR);
-    return joined ? `${joined[0]?.toLocaleUpperCase()}${joined.slice(1)}` : joined;
-  }, [summary, t]);
-}
-
 export const OverviewToolCallGroupView = memo(function OverviewToolCallGroupView({
   group,
   expanded,
@@ -53,7 +24,7 @@ export const OverviewToolCallGroupView = memo(function OverviewToolCallGroupView
   children,
 }: OverviewGroupProps) {
   const isCompact = useIsCompactFormFactor();
-  const aggregateSummary = useOverviewSummary(group.summary);
+  const aggregateSummary = useOverviewSummaryLabel(group.summary);
   const toggle = useCallback(() => {
     onExpandedChange(group.run.id, !expanded);
   }, [expanded, group.run.id, onExpandedChange]);

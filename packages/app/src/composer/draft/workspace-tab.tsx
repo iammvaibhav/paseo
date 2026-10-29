@@ -7,6 +7,7 @@ import { ComposerDock } from "@/composer/dock";
 import { useContainerWidthBelow } from "@/hooks/use-container-width";
 import invariant from "tiny-invariant";
 import { Composer } from "@/composer";
+import { useComposerEditingSession, useComposerFullscreen } from "@/composer/editing-session";
 import { FileDropZone } from "@/components/file-drop/file-drop-zone";
 import { ComposerImportPill } from "@/composer/draft/import-pill";
 import { COMPOSER_PILL_CLEARANCE } from "@/composer/pill-styles";
@@ -20,6 +21,7 @@ import { useToast } from "@/contexts/toast-context";
 import { toErrorMessage } from "@/utils/error-messages";
 import { resolveTurnPresentation, TURN_LIVENESS_IDLE } from "@/timeline/turn-liveness";
 import { useHostRuntimeClient, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
+
 import { buildDraftStoreKey } from "@/stores/draft-keys";
 import { useCreateFlowStore } from "@/stores/create-flow-store";
 import type { Agent } from "@/stores/session-store";
@@ -44,7 +46,7 @@ import {
   useWorkspaceAttachmentScopeKey,
   useWorkspaceAttachmentsStore,
 } from "@/attachments/workspace-attachments-store";
-import { COMPACT_FORM_FACTOR_WIDTH, useIsCompactFormFactor } from "@/constants/layout";
+import { COMPACT_CONTENT_WIDTH, useIsCompactFormFactor } from "@/constants/layout";
 import { isWeb } from "@/constants/platform";
 import {
   buildWorkspaceTabPersistenceKey,
@@ -92,8 +94,7 @@ function buildDraftAgentSnapshot(input: {
   composerState: {
     effectiveModelId: string | null;
     effectiveThinkingOptionId: string | null;
-    modeOptions: readonly { id: string }[];
-    selectedMode: string;
+    effectiveModeId: string;
     selectedProvider: string | null;
     agentControls: { features?: Agent["features"] };
   };
@@ -107,8 +108,7 @@ function buildDraftAgentSnapshot(input: {
     autoSubmitConfig?.thinkingOptionId ?? (composerState.effectiveThinkingOptionId || null);
   const modeId = resolveDraftModeId({
     autoSubmitConfig,
-    modeOptionIds: composerState.modeOptions.map((mode) => mode.id),
-    selectedMode: composerState.selectedMode,
+    effectiveModeId: composerState.effectiveModeId,
   });
   const provider = autoSubmitConfig?.provider ?? composerState.selectedProvider;
   if (!provider) {
@@ -185,6 +185,22 @@ function resolveImportPillPress(
     return null;
   }
   return onOpenImportSheet ?? null;
+}
+
+function isDraftReadyForAutoSubmit(input: {
+  pendingAutoSubmit: unknown;
+  isHydrated: boolean;
+  workingDirectory: string | null | undefined;
+  client: unknown;
+  isModelLoading: boolean;
+}): boolean {
+  return Boolean(
+    input.pendingAutoSubmit &&
+    input.isHydrated &&
+    input.workingDirectory &&
+    input.client &&
+    !input.isModelLoading,
+  );
 }
 
 export function WorkspaceDraftAgentTab({
@@ -293,8 +309,10 @@ export function WorkspaceDraftAgentTab({
   }, [pendingCreateAttempt]);
   const allowsEmptyAutoSubmit = pendingAutoSubmit?.allowEmptyText === true;
   const isCompactFormFactor = useIsCompactFormFactor();
+  const editingSession = useComposerEditingSession("chat");
+  const isComposerFullscreen = useComposerFullscreen(editingSession);
   const { onLayout: onInputAreaLayout, isBelow: isCompactComposerLayout } = useContainerWidthBelow(
-    COMPACT_FORM_FACTOR_WIDTH,
+    COMPACT_CONTENT_WIDTH,
     { initialIsBelow: isCompactFormFactor },
   );
   const workspaceAttachmentScopeKey = useWorkspaceAttachmentScopeKey({
@@ -319,11 +337,10 @@ export function WorkspaceDraftAgentTab({
       openWorkspaceChanges({
         isCompact: isCompactFormFactor,
         workspaceKey: buildWorkspaceTabPersistenceKey({ serverId, workspaceId: workspaceId ?? "" }),
-        checkout: { serverId, cwd: composerState.workingDir, isGit: true },
         preferences: openInSidePane,
       });
     },
-    [composerState.workingDir, isCompactFormFactor, openInSidePane, serverId, workspaceId],
+    [isCompactFormFactor, openInSidePane, serverId, workspaceId],
   );
 
   const {
@@ -352,7 +369,7 @@ export function WorkspaceDraftAgentTab({
         composerState,
         autoSubmitConfig,
         workspaceDirectory: draftWorkingDirectory,
-        hasClient: Boolean(client),
+        isConnected,
       });
     },
     onBeforeSubmit: async () => {
@@ -378,6 +395,7 @@ export function WorkspaceDraftAgentTab({
         return { agentId: result.id, result };
       }
       return submitDraftCreateRequest({
+        draftId,
         attempt,
         text,
         images,
@@ -470,13 +488,13 @@ export function WorkspaceDraftAgentTab({
       },
     },
   });
-  const isReadyForPendingAutoSubmit = Boolean(
-    pendingAutoSubmit &&
-    draftInput.isHydrated &&
-    draftWorkingDirectory &&
-    client &&
-    !composerState.isModelLoading,
-  );
+  const isReadyForPendingAutoSubmit = isDraftReadyForAutoSubmit({
+    pendingAutoSubmit,
+    isHydrated: draftInput.isHydrated,
+    workingDirectory: draftWorkingDirectory,
+    client,
+    isModelLoading: composerState.isModelLoading,
+  });
   const autoSubmitKeyRef = useRef<string | null>(null);
   useEffect(() => {
     if (!isReadyForPendingAutoSubmit) {
@@ -550,7 +568,7 @@ export function WorkspaceDraftAgentTab({
   );
   return (
     <FileDropZone style={styles.container}>
-      <ComposerDock>
+      <ComposerDock fullscreen={isComposerFullscreen}>
         <View style={styles.contentContainer}>
           {isSubmitting && draftAgent ? (
             <View style={styles.streamContainer}>
@@ -582,7 +600,7 @@ export function WorkspaceDraftAgentTab({
         </View>
 
         <View style={inputAreaWrapperStyle} onLayout={onInputAreaLayout}>
-          {importPillPress ? (
+          {importPillPress && !isComposerFullscreen ? (
             <View style={styles.importPillRow}>
               <View style={styles.importPillContent}>
                 <ComposerImportPill onPress={importPillPress} />
@@ -606,6 +624,7 @@ export function WorkspaceDraftAgentTab({
             onChangeAttachments={draftInput.setAttachments}
             cwd={composerState.workingDir}
             clearDraft={draftInput.clear}
+            editingSession={editingSession}
             autoFocus={shouldAutoFocusWorkspaceDraftComposer({ isPaneFocused, isSubmitting })}
             autoFocusKey={String(draftInput.attachmentFocusRequestId)}
             onFocusInput={handleFocusInputCallback}
@@ -624,6 +643,8 @@ const animatedStaticStyles = RNStyleSheet.create({
   inputAreaWrapper: {
     width: "100%",
     flexShrink: 1,
+    // Content-sized inline; fills the dock's fullscreen slot.
+    flexGrow: 1,
   },
 });
 

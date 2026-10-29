@@ -6,7 +6,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { RetainedPanelActivity } from "@/components/retained-panel";
-import type { StreamItem } from "@/types/stream";
+import { reduceStreamUpdate, type StreamItem } from "@/types/stream";
 import type { StreamRenderInput, StreamSegmentRenderers, StreamViewportHandle } from "./strategy";
 import { createWebStreamStrategy } from "./strategy-web";
 
@@ -31,7 +31,7 @@ vi.mock("react-native-unistyles", () => ({
   withUnistyles: (Component: React.ComponentType) => Component,
 }));
 
-function userMessage(index: number): StreamItem {
+function userMessage(index: number): Extract<StreamItem, { kind: "user_message" }> {
   return {
     kind: "user_message",
     id: `message-${index}`,
@@ -52,6 +52,30 @@ function createRenderers(onRowRender: () => void): StreamSegmentRenderers {
     renderLiveHeadRow: (item) => <div>{item.id}</div>,
     renderLiveAuxiliary: () => null,
   };
+}
+
+function MeasuredTestRow({ item }: { item: StreamItem }) {
+  const [loaded, setLoaded] = React.useState(false);
+  const load = React.useCallback(() => setLoaded(true), []);
+  const height = item.kind === "user_message" && item.text === "grown" ? 120 : 24;
+  const measure = React.useCallback(
+    (node: HTMLDivElement | null) => {
+      if (!node?.parentElement) return;
+      Object.defineProperty(node.parentElement, "offsetHeight", {
+        configurable: true,
+        value: height,
+      });
+    },
+    [height],
+  );
+  return (
+    <div ref={measure}>
+      <button type="button" onClick={load}>
+        {loaded ? "Loaded" : "Load"}
+      </button>
+      {item.id}
+    </div>
+  );
 }
 
 describe("createWebStreamStrategy", () => {
@@ -106,6 +130,78 @@ describe("createWebStreamStrategy", () => {
     vi.restoreAllMocks();
   });
 
+  it.each(["liveHead", "historyMounted"] as const)(
+    "keeps one rendered tool row after late prior-turn updates in %s",
+    (lane) => {
+      const strategy = createWebStreamStrategy({ isMobileBreakpoint: true });
+      container = document.createElement("div");
+      document.body.appendChild(container);
+      root = createRoot(container);
+      const input: StreamRenderInput = {
+        agentId: "agent",
+        segments: { historyVirtualized: [], historyMounted: [], liveHead: [] },
+        boundary: {
+          hasVirtualizedHistory: false,
+          hasMountedHistory: lane === "historyMounted",
+          hasLiveHead: lane === "liveHead",
+        },
+        renderers: createRenderers(() => {}),
+        listEmptyComponent: null,
+        viewportRef: React.createRef<StreamViewportHandle>(),
+        routeBottomAnchorRequest: null,
+        isAuthoritativeHistoryReady: true,
+        onNearBottomChange: () => {},
+        onNearHistoryStart: () => true,
+        isLoadingOlderHistory: false,
+        hasOlderHistory: false,
+        olderHistoryProgressKey: null,
+        scrollEnabled: true,
+        listStyle: null,
+        baseListContentContainerStyle: null,
+        forwardListContentContainerStyle: null,
+      };
+      let items: StreamItem[] = [];
+      const updates = [
+        { callId: "background", turnId: "old", status: "running" },
+        { callId: "exec", turnId: "current", status: "running" },
+        { callId: "background", turnId: "old", status: "completed" },
+        { callId: "exec", turnId: "current", status: "completed" },
+      ] as const;
+      for (const [index, update] of updates.entries()) {
+        items = reduceStreamUpdate(
+          items,
+          {
+            type: "timeline",
+            provider: "codex",
+            turnId: update.turnId,
+            item: {
+              type: "tool_call",
+              callId: update.callId,
+              name: "exec_command",
+              status: update.status,
+              error: null,
+              detail: { type: "shell", command: update.callId },
+            },
+          },
+          new Date(index),
+        );
+        act(() =>
+          root?.render(
+            strategy.render({
+              ...input,
+              segments: { ...input.segments, [lane]: items },
+            }),
+          ),
+        );
+      }
+      const rows = [...container.querySelectorAll("[data-history-row-id]")];
+      expect(rows.map((row) => row.getAttribute("data-history-row-id"))).toEqual([
+        "agent_tool_turn:old/background",
+        "agent_tool_turn:current/exec",
+      ]);
+    },
+  );
+
   it("mounts virtualized history without recursive row measurement updates", () => {
     const rowRenderCount = vi.fn();
     const strategy = createWebStreamStrategy({ isMobileBreakpoint: true });
@@ -151,6 +247,74 @@ describe("createWebStreamStrategy", () => {
 
     expect(rowRenderCount.mock.calls.length).toBeGreaterThan(0);
     expect(rowRenderCount.mock.calls.length).toBeLessThanOrEqual(historyVirtualized.length);
+  });
+
+  it("retains a row's DOM and local state when recent history becomes virtualized", () => {
+    const strategy = createWebStreamStrategy({ isMobileBreakpoint: true });
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    const item = userMessage(0);
+    const renderRow = (rowItem: StreamItem) => <MeasuredTestRow item={rowItem} />;
+    const input: StreamRenderInput = {
+      agentId: "agent",
+      segments: { historyVirtualized: [], historyMounted: [item], liveHead: [] },
+      boundary: { hasVirtualizedHistory: false, hasMountedHistory: true, hasLiveHead: false },
+      renderers: {
+        renderHistoryVirtualizedRow: renderRow,
+        renderHistoryMountedRow: renderRow,
+        renderLiveHeadRow: renderRow,
+        renderLiveAuxiliary: () => null,
+      },
+      listEmptyComponent: null,
+      viewportRef: React.createRef<StreamViewportHandle>(),
+      routeBottomAnchorRequest: null,
+      isAuthoritativeHistoryReady: true,
+      onNearBottomChange: () => {},
+      onNearHistoryStart: () => true,
+      isLoadingOlderHistory: false,
+      hasOlderHistory: false,
+      olderHistoryProgressKey: null,
+      scrollEnabled: true,
+      listStyle: null,
+      baseListContentContainerStyle: null,
+      forwardListContentContainerStyle: null,
+    };
+    act(() => root?.render(strategy.render(input)));
+    const row = container.querySelector('[data-history-row-id="message-0"]')!;
+    act(() => row.querySelector("button")!.click());
+    expect(row.querySelector("button")!.textContent).toBe("Loaded");
+    const viewport = container.querySelector('[data-testid="agent-chat-scroll"]')!;
+    Object.defineProperty(viewport, "clientHeight", { configurable: true, value: 500 });
+    act(() =>
+      root?.render(
+        strategy.render({
+          ...input,
+          segments: { historyVirtualized: [item], historyMounted: [userMessage(1)], liveHead: [] },
+          boundary: { ...input.boundary, hasVirtualizedHistory: true },
+        }),
+      ),
+    );
+    expect(container.querySelector('[data-history-row-id="message-0"]')).toBe(row);
+    expect(row.isConnected).toBe(true);
+    expect(row.querySelector("button")!.textContent).toBe("Loaded");
+    act(() =>
+      root?.render(
+        strategy.render({
+          ...input,
+          segments: {
+            historyVirtualized: [{ ...item, text: "grown" }, userMessage(1)],
+            historyMounted: [userMessage(2)],
+            liveHead: [],
+          },
+          boundary: { ...input.boundary, hasVirtualizedHistory: true },
+        }),
+      ),
+    );
+    expect(
+      (container.querySelector('[data-history-row-id="message-1"]') as HTMLElement).style.transform,
+    ).toBe("translateY(120px)");
+    expect(row.querySelector("button")!.textContent).toBe("Loaded");
   });
 
   it("keeps the timeline width stable with an overlay scrollbar", () => {

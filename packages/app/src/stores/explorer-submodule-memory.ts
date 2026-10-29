@@ -1,10 +1,16 @@
-import { buildExplorerCheckoutKey } from "./explorer-tab-memory";
+export function buildExplorerCheckoutKey(serverId: string, cwd: string): string | null {
+  const trimmedServerId = serverId.trim();
+  const trimmedCwd = cwd.trim();
+  if (!trimmedServerId || !trimmedCwd) {
+    return null;
+  }
+  return `${trimmedServerId}::${trimmedCwd}`;
+}
 
 /**
- * Per-checkout memory of the submodule selected in the explorer header picker.
- * Keyed the same way as the explorer tab memory (serverId + workspace root), so
- * reopening a workspace lands on the submodule the user last looked at instead
- * of resetting to the superproject root.
+ * Per-checkout memory of the submodule selected in the Changes pane picker, keyed by
+ * serverId + workspace root, so reopening a workspace lands on the submodule the user
+ * last looked at instead of resetting to the superproject root.
  *
  * `null` is the root checkout and is stored as an absent key, not an entry. A
  * remembered path that no longer exists in the checkout is ignored by the caller

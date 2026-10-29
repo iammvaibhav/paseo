@@ -1,3 +1,4 @@
+import { resolveChangesPresentation } from "./changes/presentation";
 import { useCallback, useMemo, type ReactNode } from "react";
 import { Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
@@ -7,7 +8,7 @@ import invariant from "tiny-invariant";
 import { useRetainedPanelActive } from "@/components/retained-panel";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { PaneContentToolbar } from "@/components/ui/pane-content-toolbar";
-import { isWeb } from "@/constants/platform";
+import { isWeb, isNative } from "@/constants/platform";
 import { DiffDocument } from "@/git/diff-document";
 import { ChangesSurface, DiffLayoutToggle, resolveDiffLayout } from "@/git/diff-pane";
 import { useSubmoduleContext } from "@/git/submodule-context";
@@ -79,14 +80,6 @@ function PanelState({
   );
 }
 
-function resolveChangesPresentation(
-  isTree: boolean,
-  inlineDiff: boolean,
-): "tree" | "diff" | "combined" {
-  if (!isTree) return "diff";
-  return inlineDiff ? "combined" : "tree";
-}
-
 function ChangesPanel() {
   const { t } = useTranslation();
   const {
@@ -109,6 +102,7 @@ function ChangesPanel() {
     "ChangesPanel requires working_diff or changes_tree target",
   );
   const isTree = target.kind === "changes_tree";
+  const isCompact = useIsCompactFormFactor();
 
   // The workspace Changes pane is a git surface, so the submodule context is
   // always available. The picker lives in the diff header; switching the
@@ -174,7 +168,12 @@ function ChangesPanel() {
     return <PanelState message={t("panels.diff.directoryMissing")} />;
   }
 
-  const presentation = resolveChangesPresentation(isTree, preferences.inlineDiff);
+  const presentation = resolveChangesPresentation({
+    isTree,
+    inlineDiff: preferences.inlineDiff,
+    isCompact,
+    isNative,
+  });
   const testID = isTree ? "changes-tree-panel" : "working-diff-panel";
   const profileId = isTree ? `ChangesTreePanel:${tabId}` : `WorkingDiffPanel:${tabId}`;
 

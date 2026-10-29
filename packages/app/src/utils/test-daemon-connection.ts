@@ -132,13 +132,14 @@ function resolveConnectionCredentials(
 export async function buildClientConfig(
   connection: HostConnection,
   serverId?: string,
-  options?: {
+  options: {
     clientId?: string;
     capabilities?: DaemonClientConfig["capabilities"];
     trace?: DaemonClientConfig["trace"];
+    createPluginClientBundleStore?: DaemonClientConfig["createPluginClientBundleStore"];
     password?: string;
     localCredential?: DaemonClientConfig["localCredential"];
-  },
+  } = {},
   deps: Pick<
     DaemonConnectionDependencies<DaemonProbeClient>,
     | "getClientId"
@@ -147,7 +148,9 @@ export async function buildClientConfig(
     | "buildDesktopTransportUrl"
   > = defaultDaemonConnectionDependencies,
 ): Promise<DaemonClientConfig> {
-  const clientId = options?.clientId ?? (await deps.getClientId());
+  if (connection.type === "routed")
+    throw new Error("Routed host connections are resolved by HostRuntime");
+  const clientId = options.clientId ?? (await deps.getClientId());
   const desktopTransportFactory = deps.createDesktopTransportFactory();
   // Both desktop transports take the same factory and the same URL builder, so
   // the test was duplicated between `base` and the dispatch below.
@@ -159,8 +162,9 @@ export async function buildClientConfig(
     suppressSendErrors: true,
     reconnect: { enabled: false },
     ...resolveConnectionCredentials(connection, options),
-    ...(options?.capabilities ? { capabilities: options.capabilities } : {}),
-    ...(options?.trace ? { trace: options.trace } : {}),
+    ...(options.capabilities ? { capabilities: options.capabilities } : {}),
+    ...(options.trace ? { trace: options.trace } : {}),
+    createPluginClientBundleStore: options.createPluginClientBundleStore,
     ...(isDesktopTransport && desktopTransportFactory
       ? { transportFactory: desktopTransportFactory }
       : {}),
@@ -203,7 +207,11 @@ export async function buildClientConfig(
       useTls: connection.useTls ?? shouldUseTlsForDefaultHostedRelay(connection.relayEndpoint),
       serverId,
     }),
-    e2ee: { enabled: true, daemonPublicKeyB64: connection.daemonPublicKeyB64 },
+    e2ee: {
+      enabled: true,
+      daemonPublicKeyB64: connection.daemonPublicKeyB64,
+      ...(connection.minimumSecurityMode ? { minimumMode: connection.minimumSecurityMode } : {}),
+    },
   };
 }
 
@@ -286,6 +294,7 @@ interface ProbeOptions {
   localCredential?: DaemonClientConfig["localCredential"];
   capabilities?: DaemonClientConfig["capabilities"];
   trace?: DaemonClientConfig["trace"];
+  createPluginClientBundleStore?: DaemonClientConfig["createPluginClientBundleStore"];
 }
 
 function resolveTimeout(connection: HostConnection, options?: ProbeOptions): number {
