@@ -157,7 +157,7 @@ const MarkdownPart = memo(function MarkdownPart({
     (environment.client?.readFile
       ? { readFile: environment.client.readFile.bind(environment.client) }
       : undefined);
-  const renderMath = isWeb && math;
+  const renderMath = math;
   const mathSource = useMemo(
     () => (renderMath ? normalizeMathDelimiters(text) : text),
     [renderMath, text],

@@ -191,7 +191,7 @@
     "ws": "^8.20.0"
   },
   "enriched-markdown": {
-    "enableMath": false,
+    "enableMath": true,
     "enableCodeHighlight": true,
     "codeHighlightLanguages": [
       "json",
