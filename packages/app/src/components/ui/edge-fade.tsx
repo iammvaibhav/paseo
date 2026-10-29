@@ -4,12 +4,13 @@ import Svg, { Defs, LinearGradient as SvgLinearGradient, Rect, Stop } from "reac
 import { withUnistyles } from "react-native-unistyles";
 import type { Theme } from "@/styles/theme";
 
-type EdgeFadeBackdrop = "surface0" | "surfaceWorkspace" | "surface3";
+type EdgeFadeBackdrop = "surface0" | "surfaceWorkspace" | "surface3" | "surfaceUserMessage";
 
 const backdropColorMappings: Record<EdgeFadeBackdrop, (theme: Theme) => { color: string }> = {
   surface3: (theme) => ({ color: theme.colors.surface3 }),
   surface0: (theme) => ({ color: theme.colors.surface0 }),
   surfaceWorkspace: (theme) => ({ color: theme.colors.surfaceWorkspace }),
+  surfaceUserMessage: (theme) => ({ color: theme.colors.surfaceUserMessage }),
 };
 
 interface EdgeFadeSvgProps {

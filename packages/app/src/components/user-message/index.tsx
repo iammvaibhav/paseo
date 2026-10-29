@@ -17,6 +17,10 @@ const previewStyle: ViewStyle = {
   maxHeight: PREVIEW_HEIGHT,
   overflow: isNative ? "scroll" : "hidden",
 };
+// Web fades the text itself, so the fade matches any bubble fill, including glass tints.
+const FADE_MASK = "linear-gradient(to bottom, black calc(100% - 48px), transparent)";
+// React Native Web passes CSS mask properties through; ViewStyle has no type for them.
+const webFadeStyle = { maskImage: FADE_MASK, WebkitMaskImage: FADE_MASK } as unknown as ViewStyle;
 
 export function MessagePreview({ children }: { children: ReactNode }) {
   const { t } = useTranslation();
@@ -30,12 +34,19 @@ export function MessagePreview({ children }: { children: ReactNode }) {
   const accessibilityState = useMemo(() => ({ expanded }), [expanded]);
   return (
     <>
-      <View style={!expanded && previewStyle}>
+      <View
+        style={[!expanded && previewStyle, !isNative && overflowing && !expanded && webFadeStyle]}
+      >
         <View style={styles.body} onLayout={measure}>
           {children}
         </View>
-        {overflowing && !expanded ? (
-          <EdgeFade edge="bottom" solidFraction={0} backdrop="surface3" style={styles.fade} />
+        {isNative && overflowing && !expanded ? (
+          <EdgeFade
+            edge="bottom"
+            solidFraction={0}
+            backdrop="surfaceUserMessage"
+            style={styles.fade}
+          />
         ) : null}
       </View>
       {overflowing ? (
