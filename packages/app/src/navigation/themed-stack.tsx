@@ -1,5 +1,6 @@
-import { DefaultTheme, ThemeProvider, type Theme } from "@react-navigation/native";
-import { Stack } from "expo-router";
+// expo-router vendors its own react-navigation; only its ThemeProvider reaches its Stack.
+import { DefaultTheme, Stack, ThemeProvider } from "expo-router";
+import type { Theme } from "@react-navigation/native";
 import {
   isValidElement,
   type ComponentProps,
