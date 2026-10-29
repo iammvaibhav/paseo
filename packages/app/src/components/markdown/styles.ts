@@ -116,7 +116,8 @@ export function createMarkdownStyles(
         borderColor: theme.colors.foregroundMuted,
       },
       inlineImage: { size: paragraph.lineHeight },
-      math: { ...block, color: paragraph.color },
+      // The engine's default display-math fill is light; math sits on the chat surface.
+      math: { ...block, color: paragraph.color, backgroundColor: "transparent" },
       inlineMath: { color: paragraph.color },
       image: { ...block, height: 320, resizeMode: "contain", borderRadius: 8 },
       thematicBreak: { ...block, color: theme.colors.border, height: 1 },

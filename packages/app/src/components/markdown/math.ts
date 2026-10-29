@@ -8,8 +8,9 @@ const MATH_SYNTAX = new RegExp(
     String.raw`\\\(([^${CODE_MASK}\n]+?)\\\)`,
     // A bare "[" line, TeX lines, then a "]" line. Some models (Grok) drop the backslashes.
     String.raw`^[ \t]*\[[ \t]*\n([^${CODE_MASK}]+?)\n[ \t]*\][ \t]*$`,
-    // A lone "$" before whitespace: a shell prompt or a price, never a math opener.
-    String.raw`(?<![\\$])\$(?!\$)(?=[ \t])`,
+    // A lone "$" between whitespace: a shell prompt or a price, never a math opener. The
+    // closing "$" of `$r$ is` is followed by a space too, so it must not count.
+    String.raw`(?<=^|[ \t])\$(?!\$)(?=[ \t])`,
   ].join("|"),
   "gm",
 );
