@@ -25,7 +25,10 @@ function git(args: string[], cwd?: string): void {
 }
 
 function commit(repoDir: string, message: string): void {
-  git(["-c", "commit.gpgsign=false", "commit", "-m", message], repoDir);
+  git(
+    ["-c", "commit.gpgsign=false", "commit", "--author=Test User <test@test.com>", "-m", message],
+    repoDir,
+  );
 }
 
 function commitFile(repoDir: string, name: string, content: string, message: string): void {
@@ -92,6 +95,30 @@ function addBareRemote(repoDir: string, tempDir: string): string {
 }
 
 describe("listCheckoutCommits", () => {
+  it("keeps fixture authors independent of command-scoped Git configuration", async () => {
+    const overrides = {
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "user.name",
+      GIT_CONFIG_VALUE_0: "Other User",
+    };
+    const previous = Object.fromEntries(
+      Object.keys(overrides).map((key) => [key, process.env[key]]),
+    );
+    let repoDir: string;
+    try {
+      Object.assign(process.env, overrides);
+      ({ repoDir } = initRepoOnMain());
+    } finally {
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+
+    const { commits } = await listCheckoutCommits({ cwd: repoDir });
+    expect(commits[0]?.authorName).toBe("Test User");
+  });
+
   it("lists recent commits newest-first with on-remote flags and file stats", async () => {
     const { repoDir, tempDir } = initRepoOnMain();
     git(["checkout", "-b", "feature"], repoDir);
@@ -145,7 +172,7 @@ describe("listCheckoutCommits", () => {
     mkdirSync(join(worktreesRoot, "repo-hash"), { recursive: true });
     git(["worktree", "add", "-b", "feature", worktreeDir], repoDir);
     commitFile(worktreeDir, "feature.txt", "feature\n", "Feature work");
-    writePaseoWorktreeMetadata(worktreeDir, { baseRefName: "deleted-base" });
+    await writePaseoWorktreeMetadata(worktreeDir, { baseRefName: "deleted-base" });
 
     const { baseRef, commits } = await listCheckoutCommits({
       cwd: worktreeDir,
@@ -270,6 +297,25 @@ describe("listCheckoutCommits", () => {
     expect(commits.every((entry) => entry.isOnBase === true)).toBe(true);
   });
 
+  it("limits workspace history to 50 commits on long-lived branches", async () => {
+    const { repoDir } = initRepoOnMain();
+    git(["checkout", "-b", "feature"], repoDir);
+    importLinearHistory({
+      repoDir,
+      branch: "feature",
+      file: "feature-history.txt",
+      subject: "Feature",
+      count: 65,
+    });
+
+    const { commits } = await listCheckoutCommits({ cwd: repoDir });
+
+    const workspaceCommits = commits.filter((c) => !c.isOnBase);
+    expect(workspaceCommits).toHaveLength(50);
+    expect(workspaceCommits[0]?.subject).toBe("Feature 65");
+    expect(workspaceCommits[49]?.subject).toBe("Feature 16");
+  });
+
   it("shows merged branch commits and compares the merge against its first parent", async () => {
     const { repoDir } = initRepoOnMain();
     git(["checkout", "-b", "feature"], repoDir);
@@ -320,5 +366,38 @@ describe("listCheckoutCommits", () => {
     expect(commits[1]?.files).toEqual([
       { path: "README.md", additions: 1, deletions: 0, status: "modified" },
     ]);
+  });
+
+  it("populates parents array with parent commit shas for root, single-parent, and merge commits", async () => {
+    const { repoDir } = initRepoOnMain();
+    git(["checkout", "-b", "feature"], repoDir);
+    commitFile(repoDir, "feature.txt", "feature\n", "Add feature");
+    git(["checkout", "main"], repoDir);
+    commitFile(repoDir, "main.txt", "main\n", "Advance main");
+    git(["merge", "--no-ff", "feature", "-m", "Merge feature"], repoDir);
+
+    const { commits } = await listCheckoutCommits({ cwd: repoDir });
+
+    expect(commits.map((entry) => entry.subject)).toEqual([
+      "Merge feature",
+      "Advance main",
+      "Add feature",
+      "initial",
+    ]);
+
+    const mergeCommit = commits[0]!;
+    const advanceCommit = commits[1]!;
+    const featureCommit = commits[2]!;
+    const initialCommit = commits[3]!;
+
+    // Initial commit is a root commit (zero parents)
+    expect(initialCommit.parents).toEqual([]);
+
+    // Single-parent commits
+    expect(featureCommit.parents).toEqual([initialCommit.sha]);
+    expect(advanceCommit.parents).toEqual([initialCommit.sha]);
+
+    // Merge commit has two parents (first parent is Advance main, second parent is Add feature)
+    expect(mergeCommit.parents).toEqual([advanceCommit.sha, featureCommit.sha]);
   });
 });

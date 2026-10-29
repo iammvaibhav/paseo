@@ -1,4 +1,6 @@
-import { statSync, watch as watchPath } from "node:fs";
+import { watch as watchPath } from "node:fs";
+import { stat } from "node:fs/promises";
+import { setImmediate as yieldToLoop } from "node:timers/promises";
 import type { ProjectCheckoutLitePayload } from "@getpaseo/protocol/messages";
 import type pino from "pino";
 import type {
@@ -19,6 +21,8 @@ import { deriveProjectKey } from "./project-key.js";
 
 const DEFAULT_RESCAN_INTERVAL_MS = 5 * 60_000;
 const DEFAULT_DEBOUNCE_MS = 100;
+const INSPECTION_CONCURRENCY = 2;
+const DEFAULT_INSPECTION_TIMEOUT_MS = 5000;
 
 export type ProjectUpdate =
   | { kind: "upsert"; project: PersistedProjectRecord }
@@ -81,6 +85,10 @@ export interface ReconciliationResult {
   durationMs: number;
 }
 
+export interface BaseWorkspaceProvisioning {
+  findOrCreateWorkspaceForDirectory(cwd: string): Promise<PersistedWorkspaceRecord>;
+}
+
 export interface WorkspaceReconciliationServiceOptions {
   serverId?: string;
   projectRegistry: ProjectRegistry;
@@ -91,10 +99,16 @@ export interface WorkspaceReconciliationServiceOptions {
   onProjectUpdate?: (update: ProjectUpdate) => void;
   onWorkspaceArchived?: (workspaceId: string) => void | Promise<void>;
   onWorkspacesChanged?: (workspaceIds: string[]) => Promise<void>;
+  // ADR 0001: ensures every active project has a base workspace over its
+  // root checkout. Optional so existing tests / callers that don't care
+  // about base-workspace backfill keep working unchanged.
+  workspaceProvisioning?: BaseWorkspaceProvisioning;
   watchProjectRoot?: ProjectRootWatch;
   clock?: ReconciliationClock;
   rescanIntervalMs?: number;
   debounceMs?: number;
+  inspectDirectory?: (targetPath: string) => Promise<DirectoryState>;
+  inspectionTimeoutMs?: number;
 }
 
 interface ProjectReconciliationInput {
@@ -110,9 +124,17 @@ interface CachedCheckoutRead {
   checkout: Promise<ProjectCheckoutLitePayload>;
 }
 
-type DirectoryState = "directory" | "missing" | "unreadable";
+export type DirectoryState = "directory" | "missing" | "unreadable";
 
 export class WorkspaceReconciliationService {
+  // Timed-out fs operations retain their slot until the OS returns. Never use
+  // the deadline to admit more work into libuv's shared threadpool.
+  private readonly timedOutPaths = new Set<string>();
+  private inspectionSaturated = false;
+  private readonly inspectionWaiters = new Set<() => void>();
+  private readonly pendingInspections = new Map<string, Promise<DirectoryState>>();
+  private readonly directoryInspection: (targetPath: string) => Promise<DirectoryState>;
+  private readonly inspectionTimeoutMs: number;
   private readonly serverId: string | undefined;
   private readonly projectRegistry: ProjectRegistry;
   private readonly workspaceRegistry: WorkspaceRegistry;
@@ -122,11 +144,13 @@ export class WorkspaceReconciliationService {
   private readonly onProjectUpdate: ((update: ProjectUpdate) => void) | null;
   private readonly onWorkspaceArchived: ((workspaceId: string) => void | Promise<void>) | null;
   private readonly onWorkspacesChanged: ((workspaceIds: string[]) => Promise<void>) | null;
+  private readonly workspaceProvisioning: BaseWorkspaceProvisioning | null;
   private readonly watchProjectRoot: ProjectRootWatch;
   private readonly clock: ReconciliationClock;
   private readonly rescanIntervalMs: number;
   private readonly debounceMs: number;
   private readonly watchers: Array<{ rootPath: string; watcher: ProjectRootWatcher }> = [];
+  private readonly baseWorkspaceEnsures = new Map<string, Promise<void>>();
   private unsubscribeRegistry: (() => void) | null = null;
   private rescanTimer: ReconciliationTimer | null = null;
   private debounceTimer: ReconciliationTimer | null = null;
@@ -136,6 +160,10 @@ export class WorkspaceReconciliationService {
   private reconcileQueuedMode: "metadata" | "full" | null = null;
 
   constructor(options: WorkspaceReconciliationServiceOptions) {
+    this.directoryInspection =
+      options.inspectDirectory ??
+      (async (targetPath) => ((await stat(targetPath)).isDirectory() ? "directory" : "missing"));
+    this.inspectionTimeoutMs = options.inspectionTimeoutMs ?? DEFAULT_INSPECTION_TIMEOUT_MS;
     this.serverId = options.serverId;
     this.projectRegistry = options.projectRegistry;
     this.workspaceRegistry = options.workspaceRegistry;
@@ -145,6 +173,7 @@ export class WorkspaceReconciliationService {
     this.onProjectUpdate = options.onProjectUpdate ?? null;
     this.onWorkspaceArchived = options.onWorkspaceArchived ?? null;
     this.onWorkspacesChanged = options.onWorkspacesChanged ?? null;
+    this.workspaceProvisioning = options.workspaceProvisioning ?? null;
     this.watchProjectRoot = options.watchProjectRoot ?? watchProjectRoot;
     this.clock = options.clock ?? systemClock;
     this.rescanIntervalMs = options.rescanIntervalMs ?? DEFAULT_RESCAN_INTERVAL_MS;
@@ -162,6 +191,15 @@ export class WorkspaceReconciliationService {
           await this.syncProjectRootWatches();
           if (this.disposed) return;
           if (mutation.kind === "upsert" && mutation.project && !mutation.project.archivedAt) {
+            // Fire-and-forget, NOT awaited: ensureBaseWorkspace can itself
+            // write through projectRegistry (a nested upsert re-fires this
+            // very listener, synchronously, before this call returns).
+            // Awaiting it here deadlocks against
+            // FileBackedProjectRegistry.getOrCreateActiveByRoot's
+            // allocation-queue lock whenever the mutation that woke us is
+            // itself still inside that lock — the common "new project"
+            // path. ensureBaseWorkspace never throws (errors are logged).
+            void this.ensureBaseWorkspace(mutation.project);
             this.onProjectUpdate?.({ kind: "upsert", project: mutation.project });
           } else {
             this.onProjectUpdate?.({ kind: "remove", projectId: mutation.projectId });
@@ -171,6 +209,16 @@ export class WorkspaceReconciliationService {
         }
       }) ?? null;
     await this.syncProjectRootWatches();
+    // Boot-time backfill (ADR 0001): projects created before base-workspace
+    // support existed, or whose mutation-triggered ensure failed
+    // transiently, get a base workspace on every daemon start.
+    // ensureBaseWorkspace is idempotent — it no-ops once
+    // project.baseWorkspaceId is set, and dedupes concurrent callers.
+    await Promise.all(
+      (await this.projectRegistry.list())
+        .filter((project) => !project.archivedAt && !project.baseWorkspaceId)
+        .map((project) => this.ensureBaseWorkspace(project)),
+    );
     this.rescanTimer = this.clock.setInterval(
       () => this.reconcileObservedGitMetadata("full"),
       this.rescanIntervalMs,
@@ -178,8 +226,69 @@ export class WorkspaceReconciliationService {
     this.rescanTimer.unref?.();
   }
 
+  /**
+   * Ensures the project's base workspace through the same per-project chain
+   * the mutation listener uses, so callers that need the workspace now never
+   * race it into a duplicate. Returns the base workspace id, or null when the
+   * project is unknown, archived, or provisioning failed (logged).
+   */
+  async ensureProjectBaseWorkspace(projectId: string): Promise<string | null> {
+    const project = await this.projectRegistry.get(projectId);
+    if (!project || project.archivedAt) return null;
+    await this.ensureBaseWorkspace(project);
+    return (await this.projectRegistry.get(projectId))?.baseWorkspaceId ?? null;
+  }
+
+  // ADR 0001: every active project gets a base workspace over its root
+  // checkout — find-or-create so a same-cwd workspace created some other
+  // way (e.g. via open_project_request) is adopted, never duplicated.
+  // Errors are logged and swallowed: base-workspace trouble never fails
+  // project creation or reconciliation.
+  //
+  // Callers for the SAME projectId are chained (not merely deduped while
+  // "in flight"): ensureBaseWorkspaceNow does a read-then-write with no
+  // atomic compare-and-swap, so two independent calls that both read before
+  // either writes would both provision. Chaining guarantees call N+1's read
+  // only starts after call N's write has fully committed, so it always
+  // observes N's result and no-ops.
+  private ensureBaseWorkspace(project: PersistedProjectRecord): Promise<void> {
+    if (!this.workspaceProvisioning || project.archivedAt || project.baseWorkspaceId) {
+      return Promise.resolve();
+    }
+    const projectId = project.projectId;
+    const previous = this.baseWorkspaceEnsures.get(projectId) ?? Promise.resolve();
+    const next = previous.then(() => this.ensureBaseWorkspaceNow(projectId));
+    this.baseWorkspaceEnsures.set(projectId, next);
+    void next.finally(() => {
+      if (this.baseWorkspaceEnsures.get(projectId) === next) {
+        this.baseWorkspaceEnsures.delete(projectId);
+      }
+    });
+    return next;
+  }
+
+  private async ensureBaseWorkspaceNow(projectId: string): Promise<void> {
+    const workspaceProvisioning = this.workspaceProvisioning;
+    if (!workspaceProvisioning) return;
+    try {
+      // Re-read: a concurrent ensure (or the mutation that triggered this
+      // one) may have already set the pointer while we were queued.
+      const current = await this.projectRegistry.get(projectId);
+      if (!current || current.archivedAt || current.baseWorkspaceId) return;
+      const workspace = await workspaceProvisioning.findOrCreateWorkspaceForDirectory(
+        current.rootPath,
+      );
+      await this.projectRegistry.update(projectId, (record) =>
+        record.baseWorkspaceId ? record : { ...record, baseWorkspaceId: workspace.workspaceId },
+      );
+    } catch (error) {
+      this.logger.warn({ err: error, projectId }, "Failed to ensure base workspace for project");
+    }
+  }
+
   dispose(): void {
     this.disposed = true;
+    this.wakeInspectionWaiters();
     this.unsubscribeRegistry?.();
     this.unsubscribeRegistry = null;
     if (this.rescanTimer) this.clock.clearInterval(this.rescanTimer);
@@ -197,16 +306,23 @@ export class WorkspaceReconciliationService {
       this.workspaceRegistry.list(),
     ]);
     const workspacesByProject = new Map<string, PersistedWorkspaceRecord[]>();
-    for (const workspace of workspaces) {
-      if (workspace.archivedAt || this.inspectDirectory(workspace.cwd) !== "directory") continue;
+    const workspaceStates = await mapBounded(
+      workspaces.filter((w) => !w.archivedAt),
+      async (workspace) => ({ workspace, state: await this.inspectDirectory(workspace.cwd) }),
+    );
+    for (const { workspace, state } of workspaceStates) {
+      if (state !== "directory") continue;
+      if ((await this.workspaceRegistry.get(workspace.workspaceId))?.archivedAt !== null) continue;
       const siblings = workspacesByProject.get(workspace.projectId) ?? [];
       siblings.push(workspace);
       workspacesByProject.set(workspace.projectId, siblings);
     }
+    const projectStates = await mapBounded(
+      projects.filter((p) => !p.archivedAt),
+      async (project) => ({ project, state: await this.inspectDirectory(project.rootPath) }),
+    );
     await this.reconcileGitMetadataForProjects(
-      projects.filter(
-        (project) => !project.archivedAt && this.inspectDirectory(project.rootPath) === "directory",
-      ),
+      projectStates.filter(({ state }) => state === "directory").map(({ project }) => project),
       workspacesByProject,
       changes,
     );
@@ -222,50 +338,75 @@ export class WorkspaceReconciliationService {
     const allWorkspaces = await this.workspaceRegistry.list();
 
     const activeProjects = allProjects.filter((p) => !p.archivedAt);
+    const activeProjectsById = new Map(
+      activeProjects.map((project) => [project.projectId, project]),
+    );
     const activeWorkspaces = allWorkspaces.filter((w) => !w.archivedAt);
-    const workspaceDirectoryStates = activeWorkspaces.map((workspace) => ({
+    const workspaceDirectoryStates = await mapBounded(activeWorkspaces, async (workspace) => ({
       workspace,
-      state: this.inspectDirectory(workspace.cwd),
+      state: await this.inspectDirectory(workspace.cwd),
     }));
+    // Read project roots after workspaces: losing a volume can withhold an
+    // archive, never turn a workspace's absence into proof of deletion.
+    const projectStates = await mapBounded(activeProjects, async (project) => ({
+      project,
+      state: await this.inspectDirectory(project.rootPath),
+    }));
+    const reachableProjectIds = new Set(
+      projectStates
+        .filter(({ state }) => state === "directory")
+        .map(({ project }) => project.projectId),
+    );
 
     const workspacesByProject = new Map<string, PersistedWorkspaceRecord[]>();
     for (const { workspace, state } of workspaceDirectoryStates) {
       if (state !== "directory") continue;
+      if ((await this.workspaceRegistry.get(workspace.workspaceId))?.archivedAt !== null) continue;
       const list = workspacesByProject.get(workspace.projectId) ?? [];
       list.push(workspace);
       workspacesByProject.set(workspace.projectId, list);
     }
 
-    // 1. Archive workspaces whose directories no longer exist
+    // 1. Archive workspaces whose directories no longer exist, but only when the
+    //    project they belong to is still reachable. A missing project root means the
+    //    whole location is unavailable - an unmounted volume, an offline share, a disk
+    //    that has not appeared yet - and absence there proves nothing about the
+    //    workspace. Projects already persist through that; their workspaces do too.
     const missingWorkspaces = workspaceDirectoryStates
-      .filter(({ state }) => state === "missing")
+      .filter(
+        ({ workspace, state }) =>
+          state === "missing" && reachableProjectIds.has(workspace.projectId),
+      )
       .map(({ workspace }) => workspace);
-    await Promise.all(
-      missingWorkspaces.map(async (workspace) => {
-        const timestamp = new Date().toISOString();
-        await this.workspaceRegistry.archive(workspace.workspaceId, timestamp);
-        await this.onWorkspaceArchived?.(workspace.workspaceId);
-        changes.push({
-          kind: "workspace_archived",
-          workspaceId: workspace.workspaceId,
-          directory: workspace.cwd,
-          reason: "directory_missing",
-        });
-
-        // Update the in-memory list for the project orphan check below
-        const siblings = workspacesByProject.get(workspace.projectId);
-        if (siblings) {
-          const updated = siblings.filter((w) => w.workspaceId !== workspace.workspaceId);
-          workspacesByProject.set(workspace.projectId, updated);
-        }
-      }),
-    );
+    await mapBounded(missingWorkspaces, async (workspace) => {
+      const current = await this.workspaceRegistry.get(workspace.workspaceId);
+      const project = await this.projectRegistry.get(workspace.projectId);
+      if (
+        !current ||
+        current.archivedAt ||
+        current.cwd !== workspace.cwd ||
+        current.projectId !== workspace.projectId ||
+        !project ||
+        project.archivedAt ||
+        project.rootPath !== activeProjectsById.get(project.projectId)?.rootPath
+      )
+        return;
+      const timestamp = new Date().toISOString();
+      if (!(await this.workspaceRegistry.archive(workspace.workspaceId, timestamp))) return;
+      await this.onWorkspaceArchived?.(workspace.workspaceId);
+      changes.push({
+        kind: "workspace_archived",
+        workspaceId: workspace.workspaceId,
+        directory: workspace.cwd,
+        reason: "directory_missing",
+      });
+    });
 
     // 2. Reconcile mutable git metadata without changing identity or membership.
     //    Projects persist until explicitly removed, even when they currently have
     //    zero active workspaces, so they still reconcile their own metadata.
     await this.reconcileGitMetadataForProjects(
-      activeProjects.filter((project) => this.inspectDirectory(project.rootPath) === "directory"),
+      activeProjects.filter((project) => reachableProjectIds.has(project.projectId)),
       workspacesByProject,
       changes,
     );
@@ -336,13 +477,17 @@ export class WorkspaceReconciliationService {
   }
 
   private async reconcileProject(input: ProjectReconciliationInput): Promise<void> {
-    const { project, siblings, currentGit, readCheckout, changes } = input;
+    const { siblings, currentGit, readCheckout, changes } = input;
     const workspaceCheckouts = await Promise.all(
-      siblings.map(async (workspace) => ({
-        workspace,
-        checkout: await readCheckout(workspace.cwd),
-      })),
+      siblings.map(async (workspace) => {
+        const current = await this.workspaceRegistry.get(workspace.workspaceId);
+        if (!current || current.cwd !== workspace.cwd || current.projectId !== workspace.projectId)
+          return null;
+        return { workspace: current, checkout: await readCheckout(current.cwd) };
+      }),
     );
+    const project = await this.projectRegistry.get(input.project.projectId);
+    if (!project || project.archivedAt || project.rootPath !== input.project.rootPath) return;
     const projectUpdates: Partial<Pick<PersistedProjectRecord, "kind" | "projectKey">> = {};
     const mappedKind = deriveProjectKind(currentGit);
     const projectKey = deriveProjectKey({
@@ -362,40 +507,47 @@ export class WorkspaceReconciliationService {
 
     if (Object.keys(projectUpdates).length > 0) {
       const timestamp = new Date().toISOString();
-      await this.projectRegistry.upsert({
-        ...project,
-        ...projectUpdates,
-        updatedAt: timestamp,
+      let applied = false;
+      await this.projectRegistry.update(project.projectId, (current) => {
+        if (current.archivedAt || current.rootPath !== project.rootPath) return current;
+        applied = true;
+        return { ...current, ...projectUpdates, updatedAt: timestamp };
       });
-      changes.push({
-        kind: "project_updated",
-        projectId: project.projectId,
-        directory: project.rootPath,
-        fields: projectUpdates,
-      });
+      if (applied)
+        changes.push({
+          kind: "project_updated",
+          projectId: project.projectId,
+          directory: project.rootPath,
+          fields: projectUpdates,
+        });
     }
 
     await Promise.all(
-      workspaceCheckouts.map(async ({ workspace, checkout: wsGit }) => {
+      workspaceCheckouts.map(async (entry) => {
+        if (!entry) return;
+        const { workspace, checkout: wsGit } = entry;
         const timestamp = new Date().toISOString();
-        const update = reconcileWorkspacePlacement({
-          workspace,
-          checkout: wsGit,
-          updatedAt: timestamp,
+        if (!reconcileWorkspacePlacement({ workspace, checkout: wsGit, updatedAt: timestamp }))
+          return;
+        let fields: Partial<MutableWorkspacePlacement> | null = null;
+        await this.workspaceRegistry.update(workspace.workspaceId, (current) => {
+          if (current.cwd !== workspace.cwd || current.projectId !== workspace.projectId)
+            return current;
+          const update = reconcileWorkspacePlacement({
+            workspace: current,
+            checkout: wsGit,
+            updatedAt: timestamp,
+          });
+          if (!update) return current;
+          fields = update.fields;
+          return { ...current, ...fields, updatedAt: timestamp };
         });
-        if (!update) return;
-
-        const updated = await this.workspaceRegistry.update(workspace.workspaceId, (current) => ({
-          ...current,
-          ...update.fields,
-          updatedAt: timestamp,
-        }));
-        if (!updated) return;
+        if (!fields) return;
         changes.push({
           kind: "workspace_updated",
           workspaceId: workspace.workspaceId,
           directory: workspace.cwd,
-          fields: update.fields,
+          fields,
         });
       }),
     );
@@ -522,16 +674,74 @@ export class WorkspaceReconciliationService {
     return this.workspaceGitService.getCheckout(cwd);
   }
 
-  private inspectDirectory(targetPath: string): DirectoryState {
+  private wakeInspectionWaiters(): void {
+    for (const wake of this.inspectionWaiters) wake();
+    this.inspectionWaiters.clear();
+  }
+
+  private async inspectDirectory(targetPath: string): Promise<DirectoryState> {
+    // A healthy in-flight inspection owns capacity temporarily. Wait for it;
+    // only unresolved operations that have all timed out justify skipping paths.
+    while (
+      !this.disposed &&
+      !this.pendingInspections.has(targetPath) &&
+      this.pendingInspections.size >= INSPECTION_CONCURRENCY
+    ) {
+      if (this.timedOutPaths.size === INSPECTION_CONCURRENCY) return "unreadable";
+      await new Promise<void>((resolve) => this.inspectionWaiters.add(resolve));
+    }
+    if (this.disposed) return "unreadable";
+    let pending = this.pendingInspections.get(targetPath);
+    if (!pending) {
+      pending = Promise.resolve()
+        .then(() => this.directoryInspection(targetPath))
+        .catch((error) => {
+          if (isMissingPathError(error)) return "missing" as const;
+          this.logger.warn(
+            { err: error, targetPath },
+            "Skipped workspace reconciliation after directory inspection failed",
+          );
+          return "unreadable" as const;
+        })
+        .finally(() => {
+          this.pendingInspections.delete(targetPath);
+          this.timedOutPaths.delete(targetPath);
+          this.wakeInspectionWaiters();
+          if (this.inspectionSaturated && this.timedOutPaths.size === 0) {
+            this.inspectionSaturated = false;
+            this.logger.info(
+              {},
+              "Timed-out workspace directory inspections drained; reconciliation capacity restored",
+            );
+          }
+        });
+      this.pendingInspections.set(targetPath, pending);
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      return statSync(targetPath).isDirectory() ? "directory" : "missing";
-    } catch (error) {
-      if (isMissingPathError(error)) return "missing";
-      this.logger.warn(
-        { err: error, targetPath },
-        "Skipped workspace reconciliation after directory inspection failed",
-      );
-      return "unreadable";
+      return await Promise.race([
+        pending,
+        new Promise<DirectoryState>((resolve) => {
+          timer = setTimeout(() => {
+            this.timedOutPaths.add(targetPath);
+            this.wakeInspectionWaiters();
+            if (!this.inspectionSaturated && this.timedOutPaths.size === INSPECTION_CONCURRENCY) {
+              this.inspectionSaturated = true;
+              this.logger.warn(
+                { paths: [...this.timedOutPaths] },
+                "Workspace directory inspection saturated; preserving uninspected workspaces",
+              );
+            }
+            this.logger.warn(
+              { targetPath },
+              "Skipped workspace reconciliation after directory inspection timed out",
+            );
+            resolve("unreadable");
+          }, this.inspectionTimeoutMs);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
     }
   }
 }
@@ -539,4 +749,22 @@ export class WorkspaceReconciliationService {
 function isMissingPathError(error: unknown): boolean {
   if (typeof error !== "object" || error === null || !("code" in error)) return false;
   return error.code === "ENOENT" || error.code === "ENOTDIR";
+}
+
+// Two workers bound admission; yielding also bounds passes whose adapters settle
+// immediately (including unavailable paths after both IO slots time out).
+async function mapBounded<T, R>(items: T[], visit: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = [];
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(INSPECTION_CONCURRENCY, items.length) }, async () => {
+      let count = 0;
+      while (next < items.length) {
+        const index = next++;
+        results[index] = await visit(items[index]!);
+        if (++count % 32 === 0) await yieldToLoop();
+      }
+    }),
+  );
+  return results;
 }

@@ -1,15 +1,20 @@
 import { describe, expect, test } from "vitest";
 import { z } from "zod";
 import {
+  MutableDaemonConfigSchema,
+  MutableDaemonConfigPatchSchema,
+  UsageReportEntrySchema,
   AgentSnapshotPayloadSchema,
   AgentTimelineItemPayloadSchema,
   ServerInfoStatusPayloadSchema,
+  SessionInboundMessageSchema,
   SessionOutboundMessageSchema,
   WSHelloMessageSchema,
   WorkspaceSetupSnapshotSchema,
   WorkspaceSetupProgressMessageSchema,
   AgentTimelineEntryPayloadSchema,
 } from "./messages.js";
+import { MissionControlProposalsRespondRequestSchema } from "./mission-control/types.js";
 
 test("terminal listings accept older rows and retain new per-terminal directories", () => {
   const response = {
@@ -138,6 +143,88 @@ describe("wire schema compatibility", () => {
       version: null,
       features: { agentTurnIdentity: true },
     });
+  });
+
+  test("mission_control.proposals.respond round-trips the optional deny reason", () => {
+    // Old app (no reason) still parses on the new daemon.
+    const legacy = SessionInboundMessageSchema.parse({
+      type: "mission_control.proposals.respond.request",
+      requestId: "req-legacy",
+      proposalId: "mcp_1",
+      action: "deny",
+    });
+    expect(legacy).toEqual({
+      type: "mission_control.proposals.respond.request",
+      requestId: "req-legacy",
+      proposalId: "mcp_1",
+      action: "deny",
+    });
+    // New app (with reason) parses on the new daemon and keeps the field.
+    const withReason = MissionControlProposalsRespondRequestSchema.parse({
+      type: "mission_control.proposals.respond.request",
+      requestId: "req-reason",
+      proposalId: "mcp_1",
+      action: "deny",
+      reason: "Run it on gamma instead.",
+    });
+    expect(withReason).toMatchObject({ action: "deny", reason: "Run it on gamma instead." });
+    // A six-month-old daemon schema (no reason field) strips the unknown key
+    // instead of failing, so a new app against an old daemon keeps working.
+    const LegacyRespondRequestSchema = z.object({
+      type: z.literal("mission_control.proposals.respond.request"),
+      requestId: z.string(),
+      proposalId: z.string(),
+      action: z.enum(["approve", "deny"]),
+      editedMessage: z.string().optional(),
+      allowPair: z.boolean().optional(),
+    });
+    expect(
+      LegacyRespondRequestSchema.parse({
+        type: "mission_control.proposals.respond.request",
+        requestId: "req-old-daemon",
+        proposalId: "mcp_1",
+        action: "deny",
+        reason: "Run it on gamma instead.",
+      }),
+    ).toEqual({
+      type: "mission_control.proposals.respond.request",
+      requestId: "req-old-daemon",
+      proposalId: "mcp_1",
+      action: "deny",
+    });
+  });
+
+  test("server info accepts missionControlHostAlias with and without the field", () => {
+    // With the field: trimmed, junk normalized to null, never required.
+    expect(
+      ServerInfoStatusPayloadSchema.parse({
+        status: "server_info",
+        serverId: "alias-server",
+        missionControlHostAlias: "  fleet-lead  ",
+        features: {},
+      }),
+    ).toMatchObject({
+      status: "server_info",
+      serverId: "alias-server",
+      missionControlHostAlias: "fleet-lead",
+      features: {},
+    });
+    expect(
+      ServerInfoStatusPayloadSchema.parse({
+        status: "server_info",
+        serverId: "alias-server",
+        missionControlHostAlias: 42,
+        features: {},
+      }).missionControlHostAlias,
+    ).toBeNull();
+    // Without the field: absent, so old daemons and old payloads stay valid.
+    expect(
+      ServerInfoStatusPayloadSchema.parse({
+        status: "server_info",
+        serverId: "plain-server",
+        features: {},
+      }).missionControlHostAlias,
+    ).toBeUndefined();
   });
 
   test("assistant timeline message ids are optional on the wire", () => {
@@ -388,4 +475,186 @@ test("blocked setup preserves the legacy failed shape and optional provenance", 
   expect(WorkspaceSetupSnapshotSchema.parse(legacySnapshot.parse(failed))).toEqual(
     legacySnapshot.parse(failed),
   );
+});
+
+test("usage login errors are additive and older reports still parse", () => {
+  const entry = {
+    id: "codex:account",
+    account: {},
+    fetchedAt: "2026-10-05T00:00:00.000Z",
+    sourceId: "codex",
+    sourceLabel: "Codex",
+    report: { status: "error", error: "Usage API returned 500" },
+  };
+  const legacy = z.object({
+    type: z.literal("usage.list_reports.update"),
+    payload: z.object({
+      requestId: z.string(),
+      report: z.object({
+        id: z.string(),
+        account: z.object({ label: z.string().optional() }),
+        fetchedAt: z.string(),
+        sourceId: z.string(),
+        sourceLabel: z.string(),
+        icon: z.string().optional(),
+        report: z.discriminatedUnion("status", [
+          z.object({ status: z.literal("available"), windows: z.array(z.unknown()) }),
+          z.object({ status: z.literal("unavailable"), problem: z.unknown() }),
+          z.object({ status: z.literal("error"), error: z.string() }),
+        ]),
+      }),
+    }),
+  });
+  const oldMessage = {
+    type: "usage.list_reports.update",
+    payload: { requestId: "usage", report: entry },
+  };
+  const newMessage = {
+    ...oldMessage,
+    payload: {
+      ...oldMessage.payload,
+      report: {
+        ...entry,
+        loginErrors: [{ harness: "Codex", report: entry.report }],
+      },
+    },
+  };
+  expect(SessionOutboundMessageSchema.parse(oldMessage)).toEqual(oldMessage);
+  expect(SessionOutboundMessageSchema.parse(newMessage)).toEqual(newMessage);
+  expect(legacy.parse(newMessage)).toEqual(oldMessage);
+});
+
+test("usage entries accept older failures and additive successful snapshots", () => {
+  const oldEntry = {
+    id: "source:account",
+    sourceId: "source",
+    sourceLabel: "Source",
+    account: {},
+    fetchedAt: "2026-10-17T10:06:00Z",
+    report: { status: "error", error: "Rate limited" },
+  };
+  expect(UsageReportEntrySchema.parse(oldEntry)).toEqual(oldEntry);
+  const retained = {
+    ...oldEntry,
+    lastSuccessful: {
+      fetchedAt: "2026-10-17T10:00:00Z",
+      report: { status: "available", windows: [{ id: "weekly", label: "Weekly", usedPct: 42 }] },
+    },
+  };
+  expect(UsageReportEntrySchema.parse(retained)).toEqual(retained);
+  const available = {
+    ...oldEntry,
+    report: retained.lastSuccessful.report,
+    successfulAt: "2026-10-17T10:00:15Z",
+  };
+  expect(UsageReportEntrySchema.parse(available)).toEqual(available);
+  expect(
+    UsageReportEntrySchema.omit({ lastSuccessful: true, successfulAt: true }).parse(available),
+  ).toEqual({ ...oldEntry, report: available.report });
+  // An older client's entry shape strips the additive snapshot and still sees the failure.
+  expect(UsageReportEntrySchema.omit({ lastSuccessful: true }).parse(retained)).toEqual(oldEntry);
+  expect(
+    UsageReportEntrySchema.safeParse({
+      ...oldEntry,
+      lastSuccessful: { fetchedAt: oldEntry.fetchedAt, report: oldEntry.report },
+    }).success,
+  ).toBe(false);
+});
+
+// Frozen setup detail shape from v0.8.0: log is required, command output is optional.
+const ReleasedSetupDetailSchema = z.object({
+  type: z.literal("worktree_setup"),
+  worktreePath: z.string(),
+  branchName: z.string(),
+  log: z.string(),
+  commands: z.array(
+    z.object({
+      index: z.number().int().positive(),
+      command: z.string(),
+      cwd: z.string(),
+      log: z.string().optional().default(""),
+      status: z.enum(["running", "completed", "failed"]),
+      exitCode: z.number().nullable(),
+      durationMs: z.number().nonnegative().optional(),
+    }),
+  ),
+  truncated: z.boolean().optional(),
+});
+
+test("released setup clients parse empty combined logs and retain command output", () => {
+  const detail = {
+    type: "worktree_setup",
+    worktreePath: "/workspace",
+    branchName: "feature",
+    log: "",
+    commands: [
+      {
+        index: 1,
+        command: "echo ready",
+        cwd: "/workspace",
+        log: "ready\n",
+        status: "completed",
+        exitCode: 0,
+      },
+    ],
+  };
+  const parsed = ReleasedSetupDetailSchema.parse(JSON.parse(JSON.stringify(detail)));
+  expect(parsed).toEqual(detail);
+  expect(parsed.commands[0]?.log).toBe("ready\n");
+  const { log: _log, ...withoutLegacyField } = detail;
+  expect(ReleasedSetupDetailSchema.safeParse(withoutLegacyField).success).toBe(false);
+  expect(
+    WorkspaceSetupSnapshotSchema.parse({
+      status: "completed",
+      detail: { ...detail, log: "old daemon combined output" },
+      error: null,
+    }).detail.log,
+  ).toBe("old daemon combined output");
+});
+
+test("local STT language survives wire reads and patches", () => {
+  const patch = {
+    features: {
+      dictation: { stt: { provider: "local", language: "fr" } },
+      voiceMode: { stt: { provider: "local", language: null } },
+    },
+  };
+  expect(MutableDaemonConfigPatchSchema.parse(patch)).toEqual(patch);
+});
+
+test("speech config reads remain compatible with clients before features and future providers", () => {
+  const oldSchema = MutableDaemonConfigSchema.omit({ features: true, envOverrides: true });
+  const oldRead = oldSchema.parse({
+    providers: {},
+    relay: { enabled: false },
+    mcp: { enabled: true, injectIntoAgents: true },
+  });
+  const read = {
+    ...oldRead,
+    features: {
+      dictation: { enabled: true, stt: { provider: "local", language: "fr" } },
+      voiceMode: {
+        enabled: false,
+        stt: { provider: "future", model: "future-model", region: "eu" },
+        tts: { provider: "openai", hasApiKey: false },
+      },
+    },
+    envOverrides: { "features.voiceMode.stt.provider": "PASEO_VOICE_STT_PROVIDER" },
+  };
+  expect(oldSchema.parse(read)).toEqual(read);
+  expect(MutableDaemonConfigSchema.parse(oldRead)).toEqual(oldRead);
+  expect(MutableDaemonConfigSchema.parse(read).features?.dictation.stt).toEqual(
+    read.features.dictation.stt,
+  );
+  expect(MutableDaemonConfigSchema.parse(read).features?.voiceMode.stt).toEqual(
+    read.features.voiceMode.stt,
+  );
+  const oldPatchSchema = MutableDaemonConfigPatchSchema.omit({ features: true });
+  const oldPatch = oldPatchSchema.parse({ relay: { enabled: true } });
+  expect(MutableDaemonConfigPatchSchema.parse(oldPatch)).toEqual(oldPatch);
+  expect(
+    MutableDaemonConfigPatchSchema.parse({
+      features: { voiceMode: { stt: { provider: "future", region: "eu" } } },
+    }).features?.voiceMode?.stt,
+  ).toEqual({ provider: "future", region: "eu" });
 });

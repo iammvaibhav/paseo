@@ -31,6 +31,8 @@ function workspaceDescriptor(input: {
   statusEnteredAt?: Date | null;
 }): WorkspaceDescriptor {
   return {
+    createdAt: null,
+    lastUserMessageAt: null,
     id: input.id,
     projectId: input.projectId ?? "project-1",
     projectDisplayName: input.projectDisplayName ?? "Project 1",
@@ -42,6 +44,7 @@ function workspaceDescriptor(input: {
     status: input.status ?? "done",
     archivingAt: null,
     statusEnteredAt: input.statusEnteredAt ?? null,
+    activityAt: null,
     diffStat: null,
     scripts: [],
   };
@@ -86,7 +89,6 @@ describe("WorkspaceShortcutTargetsSubscriber", () => {
     });
     useSidebarOrderStore.setState({
       projectOrder: [],
-      workspaceOrderByProject: {},
     });
     useSidebarViewStore.setState({
       groupMode: "project",

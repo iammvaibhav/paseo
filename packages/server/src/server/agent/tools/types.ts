@@ -1,9 +1,29 @@
 import type { z } from "zod";
 import type { ProviderPaseoToolsPolicy } from "@getpaseo/protocol/provider-config";
 
+export class PaseoToolInputError extends Error {
+  readonly status = 400;
+
+  constructor(
+    message: string,
+    readonly issues?: z.ZodError["issues"],
+  ) {
+    super(message);
+    this.name = "PaseoToolInputError";
+  }
+}
+
 export interface PaseoToolExecutionContext {
   signal?: AbortSignal;
   sendUpdate?: (update: PaseoToolResult) => void;
+  /**
+   * Session-scoped tools (fleet_monitor) key their subscriptions on this.
+   * The session RPC front passes the daemon session id; agent callers fall
+   * back to their callerAgentId. Absent → the tool degrades gracefully.
+   */
+  sessionKey?: string;
+  /** The remote MCP client making the call (/mcp/fleet clientName), for provenance. */
+  callerClient?: string;
 }
 
 export interface PaseoToolResult {
@@ -37,6 +57,12 @@ export interface PaseoToolCatalog {
 
 export interface PaseoToolRuntimeContext {
   callerAgentId?: string;
+  /**
+   * Labels of the caller when known at catalog-build time. Launch contexts
+   * are built BEFORE the agent registers, so label-gated tools (verifier)
+   * must read these instead of racing the registry lookup.
+   */
+  callerLabels?: Readonly<Record<string, string>>;
   paseoToolPolicy?: ProviderPaseoToolsPolicy;
   enableVoiceTools?: boolean;
   voiceOnly?: boolean;

@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DaemonClientConfig } from "@getpaseo/client/internal/daemon-client";
+import { DaemonAuthenticationError } from "@getpaseo/client/internal/daemon-client";
 import type { DaemonConnectionDependencies, DaemonProbeClient } from "./test-daemon-connection";
 
 class FakeDaemonClient implements DaemonProbeClient {
@@ -70,6 +71,15 @@ class FakeDaemonProbe {
 describe("test-daemon-connection connectToDaemon", () => {
   let probe: FakeDaemonProbe;
 
+  // Every test imports the module under test dynamically so it sees the stubbed
+  // __DEV__. The first of those imports pays the whole transform for this module
+  // graph, which is several seconds - long enough to blow the default 5s test
+  // timeout and fail whichever test happened to run first. Pay it once, here.
+  beforeAll(async () => {
+    vi.stubGlobal("__DEV__", false);
+    await import("./test-daemon-connection");
+  });
+
   beforeEach(() => {
     vi.stubGlobal("__DEV__", false);
     probe = new FakeDaemonProbe();
@@ -128,6 +138,23 @@ describe("test-daemon-connection connectToDaemon", () => {
     expect(probe.createdConfigs()[0]?.transportFactory).toBeUndefined();
   });
 
+  it("keeps the bundle cache factory on a probe client that the host runtime can adopt", async () => {
+    const { connectToDaemon } = await import("./test-daemon-connection");
+    const createPluginClientBundleStore = () => ({
+      async load() {
+        return [];
+      },
+      async replace() {},
+    });
+    const { client } = await connectToDaemon(
+      { id: "direct:lan:6767", type: "directTcp", endpoint: "lan:6767" },
+      { createPluginClientBundleStore },
+      probe.deps,
+    );
+    expect(client.config.createPluginClientBundleStore).toBe(createPluginClientBundleStore);
+    await client.close();
+  });
+
   it("encodes the local socket target into the client config", async () => {
     const { connectToDaemon } = await import("./test-daemon-connection");
     const result = await connectToDaemon(
@@ -169,16 +196,15 @@ describe("test-daemon-connection connectToDaemon", () => {
     });
   });
 
-  it("passes direct TCP connection passwords into the client config", async () => {
+  it("passes the host password into the client config", async () => {
     const { connectToDaemon } = await import("./test-daemon-connection");
     const result = await connectToDaemon(
       {
         id: "direct:lan:6767",
         type: "directTcp",
         endpoint: "lan:6767",
-        password: "shared-secret",
       },
-      undefined,
+      { password: "shared-secret" },
       probe.deps,
     );
     await result.client.close();
@@ -242,7 +268,7 @@ describe("test-daemon-connection connectToDaemon", () => {
   it("surfaces auth rejection as an incorrect password", async () => {
     const { connectToDaemon } = await import("./test-daemon-connection");
     probe.failNextConnection(
-      new Error("Transport closed (code 4001)"),
+      new DaemonAuthenticationError("incorrect_password"),
       "Transport closed (code 4001)",
     );
 
@@ -252,13 +278,13 @@ describe("test-daemon-connection connectToDaemon", () => {
           id: "direct:lan:6767",
           type: "directTcp",
           endpoint: "lan:6767",
-          password: "wrong-secret",
         },
-        undefined,
+        { password: "wrong-secret" },
         probe.deps,
       ),
     ).rejects.toMatchObject({
       message: "Incorrect password",
+      authFailureReason: "incorrect_password",
     });
   });
 
@@ -272,9 +298,8 @@ describe("test-daemon-connection connectToDaemon", () => {
           id: "direct:lan:6767",
           type: "directTcp",
           endpoint: "lan:6767",
-          password: "shared-secret",
         },
-        undefined,
+        { password: "shared-secret" },
         probe.deps,
       ),
     ).rejects.toMatchObject({

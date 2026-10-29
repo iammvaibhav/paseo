@@ -1,0 +1,14 @@
+[Unit]
+Description=Bifrost AI gateway (UI + OpenAI-compatible API, upstream omp-proxy)
+After=omp-proxy.service network-online.target
+Wants=network-online.target omp-proxy.service
+
+[Service]
+Type=simple
+# Loopback only; Caddy fronts it.
+ExecStart=%h/.local/bin/bifrost-http -host 127.0.0.1 -port 8080 -app-dir %h/.bifrost -log-level info
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

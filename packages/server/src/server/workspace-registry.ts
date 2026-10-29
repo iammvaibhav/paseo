@@ -4,7 +4,8 @@ import type { Logger } from "pino";
 import { z } from "zod";
 
 import { writeJsonFileAtomic } from "./atomic-file.js";
-import { areEquivalentPaths } from "../utils/path.js";
+import { areEquivalentPaths, canonicalizePath } from "../utils/path.js";
+import type { PhaseTimer } from "../utils/phase-timer.js";
 import {
   generateProjectId,
   type PersistedProjectKind,
@@ -39,6 +40,22 @@ const PersistedProjectRecordSchema = z.object({
     .transform((value) => value ?? null),
   // Identifies the project's stored custom icon; null means automatic.
   customIconRevision: z
+    .string()
+    .nullable()
+    .optional()
+    .transform((value) => value ?? null),
+  // Living project description (v3): injected into the Commander context pack
+  // for routing; editable from the project edit sheet. Null = none.
+  description: z
+    .string()
+    .nullable()
+    .optional()
+    .transform((value) => value ?? null),
+  // Project-anchored base workspace pointer (ADR 0001): the workspace over
+  // the project's root checkout, created with the project, unarchivable
+  // while the project is active. Null until the reconciliation service
+  // backfills it. Added 2026-08-25.
+  baseWorkspaceId: z
     .string()
     .nullable()
     .optional()
@@ -102,6 +119,8 @@ const PersistedWorkspaceRecordSchema = z.object({
     .transform((value) => value ?? null),
   labels: z.array(z.string()).optional(),
   untrustedSource: UntrustedWorkspaceSourceSchema.optional(),
+  // Public discovery visibility. Contents retain their ordinary lifecycle.
+  background: z.boolean().optional().default(false),
 });
 
 export type PersistedProjectRecord = z.infer<typeof PersistedProjectRecordSchema>;
@@ -116,6 +135,8 @@ export interface WorkspaceMutation {
 
 export interface WorkspaceMutationContext {
   expectsInitialAgent?: boolean;
+  /** Splits the upsert into `registry.persistMs` and `registry.notifyMs` for latency logs. */
+  timer?: PhaseTimer;
 }
 
 export interface WorkspaceArchiveContext {
@@ -125,6 +146,7 @@ export interface WorkspaceArchiveContext {
 export interface ProjectMutation {
   kind: "upsert" | "archive" | "remove";
   projectId: string;
+  /** The record after the mutation; for "remove", the record that was removed. */
   project: PersistedProjectRecord | null;
 }
 
@@ -138,6 +160,8 @@ export interface ProjectRegistry {
     kind: PersistedProjectKind;
     displayName: string;
     projectKey?: string;
+    /** Set only when a new project is created: an existing workspace over its root. */
+    baseWorkspaceId?: string;
     timestamp: string;
   }): Promise<PersistedProjectRecord>;
   upsert(record: PersistedProjectRecord): Promise<void>;
@@ -165,7 +189,7 @@ export interface WorkspaceRegistry {
     workspaceId: string,
     archivedAt: string,
     context?: WorkspaceArchiveContext,
-  ): Promise<void>;
+  ): Promise<boolean>;
   remove(workspaceId: string): Promise<void>;
   /** Central lifecycle seam for daemon-global workspace observers. */
   subscribeToMutations?(
@@ -240,20 +264,6 @@ class FileBackedRegistry<TRecord extends RegistryRecord> {
       const existing = records.get(id);
       if (!existing) return null;
       const next = this.schema.parse(updater(existing));
-      records.set(id, next);
-      return next;
-    });
-  }
-
-  async archive(id: string, archivedAt: string): Promise<void> {
-    await this.archiveIfPresent(id, archivedAt);
-  }
-
-  protected async archiveIfPresent(id: string, archivedAt: string): Promise<TRecord | null> {
-    return this.mutateCache((records) => {
-      const existing = records.get(id);
-      if (!existing) return null;
-      const next = this.schema.parse({ ...existing, updatedAt: archivedAt, archivedAt });
       records.set(id, next);
       return next;
     });
@@ -408,6 +418,7 @@ export class FileBackedProjectRegistry
     kind: PersistedProjectKind;
     displayName: string;
     projectKey?: string;
+    baseWorkspaceId?: string;
     timestamp: string;
   }): Promise<PersistedProjectRecord> {
     const previous = this.allocationQueue;
@@ -415,9 +426,13 @@ export class FileBackedProjectRegistry
     this.allocationQueue = new Promise<void>((resolve) => (release = resolve));
     await previous;
     try {
+      // A symlinked spelling (e.g. ~/paseo -> /data/paseo) names the same root;
+      // records written before canonicalization may still hold the link path.
+      const rootPath = canonicalizePath(input.rootPath);
       const active = (await this.list())
         .filter(
-          (project) => !project.archivedAt && areEquivalentPaths(project.rootPath, input.rootPath),
+          (project) =>
+            !project.archivedAt && areEquivalentPaths(canonicalizePath(project.rootPath), rootPath),
         )
         .sort(
           (left, right) =>
@@ -442,10 +457,11 @@ export class FileBackedProjectRegistry
         if (await this.get(projectId)) continue;
         const record = createPersistedProjectRecord({
           projectId,
-          rootPath: input.rootPath,
+          rootPath,
           kind: input.kind,
           displayName: input.displayName,
           projectKey: input.projectKey ?? null,
+          baseWorkspaceId: input.baseWorkspaceId ?? null,
           createdAt: input.timestamp,
           updatedAt: input.timestamp,
         });
@@ -483,7 +499,7 @@ export class FileBackedProjectRegistry
     return project;
   }
 
-  override async archive(projectId: string, archivedAt: string): Promise<void> {
+  async archive(projectId: string, archivedAt: string): Promise<void> {
     const project = await this.archiveIfActive(projectId, archivedAt);
     if (!project) return;
     await this.notifyMutation({ kind: "archive", projectId, project });
@@ -492,7 +508,7 @@ export class FileBackedProjectRegistry
   override async remove(projectId: string): Promise<void> {
     const project = await this.removeIfPresent(projectId);
     if (!project) return;
-    await this.notifyMutation({ kind: "remove", projectId, project: null });
+    await this.notifyMutation({ kind: "remove", projectId, project });
   }
 
   private async notifyMutation(mutation: {
@@ -555,35 +571,44 @@ export class FileBackedWorkspaceRegistry
     context?: WorkspaceMutationContext,
   ): Promise<void> {
     await super.upsert(record);
+    context?.timer?.mark("registry.persistMs");
     await this.notifyMutation({
       kind: "upsert",
       workspaceId: record.workspaceId,
       workspace: record,
       ...(context?.expectsInitialAgent ? { expectsInitialAgent: true } : {}),
     });
+    context?.timer?.mark("registry.notifyMs");
   }
 
-  override async archive(
+  async archive(
     workspaceId: string,
     archivedAt: string,
     context?: WorkspaceArchiveContext,
-  ): Promise<void> {
-    const workspace = await super.update(workspaceId, (existing) => ({
-      ...existing,
-      updatedAt: archivedAt,
-      archivedAt,
-      ...(context?.autoArchivedChangeRequestUrl
-        ? { autoArchivedChangeRequestUrl: context.autoArchivedChangeRequestUrl }
-        : {}),
-    }));
-    if (!workspace) return;
+  ): Promise<boolean> {
+    const [workspace] = await this.mutateMany((records) => {
+      const existing = records.get(workspaceId);
+      if (!existing || existing.archivedAt) return [];
+      return [
+        {
+          ...existing,
+          updatedAt: archivedAt,
+          archivedAt,
+          ...(context?.autoArchivedChangeRequestUrl
+            ? { autoArchivedChangeRequestUrl: context.autoArchivedChangeRequestUrl }
+            : {}),
+        },
+      ];
+    });
+    if (!workspace) return false;
     await this.notifyMutation({ kind: "archive", workspaceId, workspace });
+    return true;
   }
 
   override async remove(workspaceId: string): Promise<void> {
     const workspace = await this.removeIfPresent(workspaceId);
     if (!workspace) return;
-    await this.notifyMutation({ kind: "remove", workspaceId, workspace: null });
+    await this.notifyMutation({ kind: "remove", workspaceId, workspace });
   }
 
   async commitWorkspaceLabelMutation<TResult>(input: {
@@ -648,6 +673,8 @@ export function createPersistedProjectRecord(input: {
   customName?: string | null;
   projectKey?: string | null;
   customIconRevision?: string | null;
+  description?: string | null;
+  baseWorkspaceId?: string | null;
   createdAt: string;
   updatedAt: string;
   archivedAt?: string | null;
@@ -657,11 +684,15 @@ export function createPersistedProjectRecord(input: {
     customName: input.customName ?? null,
     projectKey: input.projectKey ?? null,
     customIconRevision: input.customIconRevision ?? null,
+    description: input.description ?? null,
+    baseWorkspaceId: input.baseWorkspaceId ?? null,
     archivedAt: input.archivedAt ?? null,
   });
 }
 
-export function resolveProjectDisplayName(record: PersistedProjectRecord): string {
+export function resolveProjectDisplayName(
+  record: Pick<PersistedProjectRecord, "displayName" | "customName">,
+): string {
   return record.customName ?? record.displayName;
 }
 
@@ -684,9 +715,12 @@ export function createPersistedWorkspaceRecord(input: {
   pinnedAt?: string | null;
   labels?: string[];
   untrustedSource?: UntrustedWorkspaceSource;
+  background?: boolean;
 }): PersistedWorkspaceRecord {
+  const { background, ...rest } = input;
   return PersistedWorkspaceRecordSchema.parse({
-    ...input,
+    ...rest,
+    background: background ?? false,
     title: input.title ?? null,
     branch: input.branch ?? null,
     worktreeRoot: input.worktreeRoot ?? null,

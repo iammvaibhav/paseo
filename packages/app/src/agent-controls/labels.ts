@@ -29,15 +29,17 @@ function formatControlLabel(option: ControlLabelInput, splitHyphen: boolean): st
 }
 
 export function formatAgentModeLabel(mode: ControlLabelInput): string {
+  if (mode.id === "ai-review") {
+    return mode.label || "AI review";
+  }
   return formatControlLabel(mode, mode.label == null);
 }
 
 export function formatThinkingOptionLabel(option: ControlLabelInput): string {
   const rawLabel = (option.label ?? option.id).trim();
-  const compactId = option.id.replace(/[\s_-]+/g, "").toLowerCase();
   const compactLabel = rawLabel.replace(/[\s_-]+/g, "").toLowerCase();
 
-  if (compactId === "xhigh" || compactLabel === "xhigh") {
+  if (compactLabel === "xhigh" || compactLabel === "extrahigh") {
     return i18n.t("agentControls.thinking.extraHigh");
   }
 

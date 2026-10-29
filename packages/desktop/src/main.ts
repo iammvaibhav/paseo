@@ -1,7 +1,11 @@
+import { protectConsoleStreams } from "./diagnostics/console-streams.js";
+protectConsoleStreams();
+
 process.emitWarning = (() => {}) as typeof process.emitWarning;
 
 import log from "electron-log/main";
-log.transports.console.level = "info";
+import { configureDesktopProcessLogging } from "./desktop-log.js";
+configureDesktopProcessLogging(log);
 log.initialize({ spyRendererConsole: true });
 
 import { inheritLoginShellEnv } from "./login-shell-env.js";
@@ -43,6 +47,7 @@ import {
   buildStandardContextMenuItems,
 } from "./window/window-manager.js";
 import { setupDarwinCompositorWatchdog } from "./window/compositor-watchdog/index.js";
+import { showWindowWhenReady } from "./window/show-when-ready.js";
 import { resolveDesktopWindowChromeMode, windowChromeModeArgument } from "./window/chrome.js";
 import { registerDialogHandlers } from "./features/dialogs.js";
 import {
@@ -51,6 +56,10 @@ import {
 } from "./features/notifications.js";
 import { createExternalUrlOpener } from "./features/opener.js";
 import { createBrowserCaptureService } from "./features/browser-capture.js";
+import {
+  applyBrowserEditorInsecureOriginsAtStartup,
+  registerBrowserEditorOriginIpc,
+} from "./features/browser-editor-origins.js";
 import { registerEditorTargetHandlers } from "./features/editor-targets/ipc.js";
 import { resolveAppIconPath } from "./features/stamped-icon.js";
 import { setupApplicationMenu } from "./features/menu.js";
@@ -106,6 +115,7 @@ import {
   type AgentDeepLinkTarget,
 } from "@getpaseo/protocol/agent-deep-link";
 import { AgentNavigationInbox, parseAgentDeepLinkFromArgv } from "./agent-navigation.js";
+import { stopOmpStatsFleet } from "./features/omp-stats-fleet.js";
 
 const DEV_SERVER_URL = process.env.EXPO_DEV_URL ?? "http://localhost:8081";
 const APP_SCHEME = "paseo";
@@ -260,6 +270,10 @@ function installBrowserWindowOpenHandler(input: {
     if (decision.kind === "deny") {
       return { action: "deny" };
     }
+    if (decision.kind === "paseo-agent") {
+      receiveAgentDeepLink(decision.url);
+      return { action: "deny" };
+    }
     if (decision.kind === "popup") {
       return {
         action: "allow",
@@ -281,7 +295,9 @@ function installBrowserWindowOpenHandler(input: {
 
   contents.on("did-create-window", (popupWindow) => {
     const popupContents = popupWindow.webContents;
-    registerBrowserWebviewNavigationGuards(popupContents);
+    registerBrowserWebviewNavigationGuards(popupContents, {
+      onPaseoAgentUrl: receiveAgentDeepLink,
+    });
     popupContents.on("context-menu", (_event, params) => {
       showBrowserWebviewContextMenu(popupWindow, popupContents, params);
     });
@@ -351,6 +367,11 @@ if (process.platform === "linux") {
     reason: process.env.PASEO_DESKTOP_SANDBOX_REASON ?? "Chromium default",
   });
 }
+
+// VS Code Web over http://VPN-IP needs Chromium to treat those origins as
+// secure (service workers / webviews). Origins are written by the renderer
+// from each host's browserEditorUrl setting.
+applyBrowserEditorInsecureOriginsAtStartup();
 
 let pendingOpenProjectPath = parseOpenProjectPathFromArgv({
   argv: process.argv,
@@ -770,11 +791,13 @@ async function createWindow(
     contents.on("context-menu", (_contextMenuEvent, params) => {
       showBrowserWebviewContextMenu(mainWindow, contents, params);
     });
-    registerBrowserWebviewNavigationGuards(contents);
+    registerBrowserWebviewNavigationGuards(contents, {
+      onPaseoAgentUrl: receiveAgentDeepLink,
+    });
   });
 
-  mainWindow.once("ready-to-show", () => {
-    mainWindow.show();
+  showWindowWhenReady(mainWindow, {
+    showOnLoad: process.platform === "linux",
   });
 
   if (!app.isPackaged) {
@@ -967,18 +990,29 @@ async function bootstrap(): Promise<void> {
   registerNotificationHandlers();
   const openExternalUrl = createExternalUrlOpener({ open: shell.openExternal });
   ipcMain.handle("paseo:opener:openUrl", (_event, value: unknown) => openExternalUrl(value));
+  registerBrowserEditorOriginIpc();
   registerEditorTargetHandlers();
   registerBrowserAutomationIpc();
 
   // In-app "Open in new window": opens a window that lands on the given project
   // via the same open-project flow as a CLI launch (no move, no ownership).
   ipcMain.handle("paseo:window:openNew", async (_event, options?: unknown) => {
-    const pendingPath =
-      options && typeof options === "object" && "pendingOpenProjectPath" in options
-        ? (options as { pendingOpenProjectPath?: unknown }).pendingOpenProjectPath
-        : null;
+    let pendingProjectPath: string | null = null;
+    let initialRoute: string | null = null;
+    if (options && typeof options === "object") {
+      if (
+        "pendingOpenProjectPath" in options &&
+        typeof options.pendingOpenProjectPath === "string"
+      ) {
+        pendingProjectPath = options.pendingOpenProjectPath;
+      }
+      if ("initialRoute" in options && typeof options.initialRoute === "string") {
+        initialRoute = options.initialRoute;
+      }
+    }
     await desktopWindowOwner.openAdditional({
-      pendingProjectPath: typeof pendingPath === "string" ? pendingPath : null,
+      pendingProjectPath,
+      initialRoute,
     });
   });
 
@@ -1059,6 +1093,9 @@ electronAutoUpdater.on("before-quit-for-update", () => {
   quitLifecycle.handleBeforeQuitForUpdate();
 });
 app.on("before-quit", quitLifecycle.handleBeforeQuit);
+app.on("before-quit", () => {
+  stopOmpStatsFleet();
+});
 registerExternalQuitSignals({ signals: process, quit: () => app.quit() });
 
 app.on("window-all-closed", () => {

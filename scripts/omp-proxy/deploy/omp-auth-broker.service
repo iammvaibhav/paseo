@@ -1,0 +1,13 @@
+[Unit]
+Description=omp auth broker (credential vault)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/omp auth-broker serve --bind=100.123.97.105:8770
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

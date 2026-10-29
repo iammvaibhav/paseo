@@ -35,13 +35,20 @@ export interface AutonomousAgentRun {
 
 export type TrackedAgentRun = PendingForegroundRun | AutonomousAgentRun;
 
+/** The terminal event that ended a foreground turn; null when it was finalized without one. */
+export type ForegroundTurnEnd = "turn_completed" | "turn_failed" | "turn_canceled" | null;
+
 export interface ForegroundRunAgentState {
   foregroundTurnWaiters: Set<ForegroundTurnWaiter>;
-  finalizedForegroundTurnIds: Set<string>;
+  /** The last 50 finalized foreground turns, oldest first, with how each ended. */
+  finalizedForegroundTurnIds: Map<string, ForegroundTurnEnd>;
 }
 
 export class AgentRunState {
   private readonly runs = new Map<string, TrackedAgentRun>();
+
+  /** Called after a tracked run leaves the registry (settled, cleared, or closed). */
+  constructor(private readonly onRunCleared?: (agentId: string) => void) {}
 
   createPendingRun(agentId: string): PendingForegroundRun {
     const pendingRun = createPendingForegroundRun();
@@ -195,13 +202,17 @@ export class AgentRunState {
     agent.foregroundTurnWaiters.clear();
   }
 
-  rememberFinalizedTurn(agent: ForegroundRunAgentState, turnId: string): void {
-    agent.finalizedForegroundTurnIds.add(turnId);
+  rememberFinalizedTurn(
+    agent: ForegroundRunAgentState,
+    turnId: string,
+    end: ForegroundTurnEnd = null,
+  ): void {
+    agent.finalizedForegroundTurnIds.set(turnId, end);
     if (agent.finalizedForegroundTurnIds.size <= 50) {
       return;
     }
 
-    const oldest = agent.finalizedForegroundTurnIds.values().next().value;
+    const oldest = agent.finalizedForegroundTurnIds.keys().next().value;
     if (oldest) {
       agent.finalizedForegroundTurnIds.delete(oldest);
     }
@@ -214,6 +225,7 @@ export class AgentRunState {
   private clearRun(agentId: string, run: TrackedAgentRun): void {
     this.runs.delete(agentId);
     settleTrackedRun(run);
+    this.onRunCleared?.(agentId);
   }
 }
 

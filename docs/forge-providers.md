@@ -184,9 +184,9 @@ To add `acme`:
    checkout PR schema, app forge URL/presentation tests, app merge capability,
    and any PR-pane native data tests touched.
 
-Run `npm run typecheck` after each implementation slice. If protocol or client
-declarations are stale, run `npm run build:client`; if server/CLI declarations
-are stale, run `npm run build:server`.
+Run `pnpm run typecheck` after each implementation slice. If protocol or client
+declarations are stale, run `pnpm run build:client`; if server/CLI declarations
+are stale, run `pnpm run build:server`.
 
 ## Gotchas
 

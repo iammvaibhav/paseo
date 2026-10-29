@@ -1,12 +1,20 @@
+import { lightHighlightColors } from "@getpaseo/highlight";
+
 const testTheme = {
   colorScheme: "light",
   colors: {
+    syntax: lightHighlightColors,
     foreground: "#111111",
     foregroundMuted: "#666666",
+    foregroundExtraMuted: "#9ca3af",
     statusSuccess: "#15803d",
     statusDanger: "#b91c1c",
     statusWarning: "#d97706",
     statusMerged: "#7c3aed",
+    // Same rule as the real theme: the status color at 12%.
+    statusSuccessTint: "#15803d1f",
+    statusDangerTint: "#b91c1c1f",
+    statusWarningTint: "#d977061f",
     // The light band's values, so a test can name the colour it expects.
     statusDotSuccess: "#299f51",
     statusDotDanger: "#f12e2f",
@@ -20,6 +28,9 @@ const testTheme = {
     surface2: "#f4f4f5",
     surface3: "#e4e4e7",
     border: "#e4e4e7",
+    accentMuted: "#93c5fd",
+    diffAddition: "#15803d",
+    diffDeletion: "#b91c1c",
     borderAccent: "#a1a1aa",
     palette: {
       amber: { 500: "#f59e0b" },
@@ -29,29 +40,44 @@ const testTheme = {
       white: "#ffffff",
     },
   },
-  borderWidth: { 1: 1 },
   spacing: [0, 4, 8, 12, 16, 20, 24, 28, 32],
+  fontFamily: {
+    ui: "system-ui",
+    mono: "monospace",
+  },
   fontSize: {
     xs: 12,
+    code: 12,
     sm: 14,
     base: 16,
-  },
-  fontFamily: {
-    ui: "sans-serif",
-    mono: "monospace",
+    lg: 18,
+    xl: 20,
+    "2xl": 22,
+    "3xl": 26,
   },
   fontWeight: {
     normal: "400",
     medium: "500",
+    semibold: "600",
+    bold: "bold",
   },
   borderRadius: {
+    none: 0,
+    sm: 2,
     base: 4,
     md: 6,
     lg: 8,
     xl: 12,
+    "2xl": 16,
     full: 9999,
   },
+  borderWidth: {
+    0: 0,
+    1: 1,
+    2: 2,
+  },
   iconSize: { sm: 16, md: 20 },
+
   opacity: { 50: 0.5 },
   shadow: {
     sm: {

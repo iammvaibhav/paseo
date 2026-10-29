@@ -42,10 +42,26 @@ const fakeSpawnController = vi.hoisted<FakeSpawnController>(() => ({
   },
 }));
 
+class FakeWritableStdin extends EventEmitter {
+  public chunks: string[] = [];
+  public ended = false;
+
+  public write(chunk: string): boolean {
+    this.chunks.push(chunk);
+    return true;
+  }
+
+  public end(chunk?: string): void {
+    if (chunk !== undefined) this.chunks.push(chunk);
+    this.ended = true;
+  }
+}
+
 class FakeChildProcess extends EventEmitter {
   public readonly pid: number;
   public readonly stderr = new EventEmitter();
   public readonly stdout = new EventEmitter();
+  public readonly stdin = new FakeWritableStdin();
   public killed = false;
   public killSignals: NodeJS.Signals[] = [];
   public closed = false;
@@ -507,7 +523,6 @@ describe("runGitCommand", () => {
         command: "git",
         args: ["status", "--short"],
         cwd: process.cwd(),
-        cwdExists: true,
         timeout: 30_000,
         maxOutputBytes: 20 * 1024 * 1024,
         acceptExitCodes: [0, 1],
@@ -520,7 +535,6 @@ describe("runGitCommand", () => {
         command: "git",
         args: ["status", "--short"],
         cwd: process.cwd(),
-        cwdExists: true,
         durationMs: expect.any(Number),
         exitCode: 0,
         signal: null,
@@ -530,6 +544,9 @@ describe("runGitCommand", () => {
       }),
       "Git command closed",
     );
+    for (const [record] of trace.mock.calls) {
+      expect(record).not.toHaveProperty("cwdExists");
+    }
   });
 
   it("rejects non-zero exit codes that are not accepted and frees the slot", async () => {
@@ -655,5 +672,32 @@ describe("runGitCommand", () => {
       expect.objectContaining({ exitCode: 0, stdout: "third", truncated: false }),
       expect.objectContaining({ exitCode: 0, stdout: "fourth", truncated: false }),
     ]);
+  });
+
+  it("pipes options.input to the process stdin and closes it", async () => {
+    const { runGitCommand } = await loadRunGitCommand(4);
+
+    enqueueSpawnBehaviors({ delayMs: 0, stdoutData: "" });
+
+    await runGitCommand(["cat-file", "--batch"], {
+      cwd: process.cwd(),
+      input: "HEAD:foo.txt\nHEAD:bar.txt\n",
+    });
+
+    const child = fakeSpawnController.processes[0];
+    expect(child?.stdin.chunks.join("")).toBe("HEAD:foo.txt\nHEAD:bar.txt\n");
+    expect(child?.stdin.ended).toBe(true);
+  });
+
+  it("does not write to stdin when options.input is omitted", async () => {
+    const { runGitCommand } = await loadRunGitCommand(4);
+
+    enqueueSpawnBehaviors({ delayMs: 0, stdoutData: "ok" });
+
+    await runGitCommand(["status"], { cwd: process.cwd() });
+
+    const child = fakeSpawnController.processes[0];
+    expect(child?.stdin.chunks).toEqual([]);
+    expect(child?.stdin.ended).toBe(false);
   });
 });

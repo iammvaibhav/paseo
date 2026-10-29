@@ -30,6 +30,8 @@ describe("GitProcessScheduler", () => {
     const scheduler = new GitProcessScheduler({
       maxProcessesPerSecond: 100,
       maxProcessConcurrency: 2,
+      // Testing raw concurrency, not the reserved high-priority lane.
+      reservedHighPrioritySlots: 0,
     });
     const releases: Array<() => void> = [];
     const started: number[] = [];
@@ -42,6 +44,41 @@ describe("GitProcessScheduler", () => {
     await vi.waitFor(() => expect(started).toContain(2));
     releases.shift()?.();
     await Promise.all(tasks);
+
+    expect(scheduler.activeCount).toBe(0);
+    expect(scheduler.pendingCount).toBe(0);
+  });
+
+  test("admits a high-priority job while normal jobs saturate the reserved lane", async () => {
+    const scheduler = new GitProcessScheduler({
+      maxProcessesPerSecond: 100,
+      maxProcessConcurrency: 8,
+    });
+    const releases: Array<() => void> = [];
+    const started: number[] = [];
+    const holdingTask = (index: number) => () => {
+      started.push(index);
+      const completed = new Promise<void>((resolve) => releases.push(resolve));
+      return { result: completed, exited: completed };
+    };
+
+    const normalJobs = Array.from({ length: 8 }, (_, index) => scheduler.run(holdingTask(index)));
+    // Two reserved slots hold back the 7th and 8th normal jobs even though
+    // the hard concurrency cap (8) has headroom.
+    await vi.waitFor(() => expect(started).toHaveLength(6));
+    expect(scheduler.activeCount).toBe(6);
+    expect(scheduler.pendingCount).toBe(2);
+
+    const highPriorityJob = scheduler.run(holdingTask(100), { priority: "high" });
+    await vi.waitFor(() => expect(started).toContain(100));
+
+    expect(scheduler.activeCount).toBe(7);
+    expect(scheduler.pendingCount).toBe(2);
+
+    releases.splice(0).forEach((release) => release());
+    await vi.waitFor(() => expect(started).toHaveLength(9));
+    releases.splice(0).forEach((release) => release());
+    await Promise.all([...normalJobs, highPriorityJob]);
 
     expect(scheduler.activeCount).toBe(0);
     expect(scheduler.pendingCount).toBe(0);
@@ -166,6 +203,10 @@ describe("resolveGitProcessPolicy", () => {
         },
         persisted: { maxProcessesPerSecond: 5, maxProcessConcurrency: 4 },
       }),
-    ).toEqual({ maxProcessesPerSecond: 12, maxProcessConcurrency: 7 });
+    ).toEqual({
+      maxProcessesPerSecond: 12,
+      maxProcessConcurrency: 7,
+      reservedHighPrioritySlots: 2,
+    });
   });
 });

@@ -1,3 +1,5 @@
+import { revealWorkspaceTab } from "@/workspace-tabs/navigation";
+import { usePanelStore } from "@/stores/panel-store";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useLocalSearchParams, usePathname } from "expo-router";
 import { useEffect, useSyncExternalStore } from "react";
@@ -10,9 +12,11 @@ import {
 import {
   navigateToLastWorkspace as navigateToLastWorkspacePure,
   navigateToWorkspace as navigateToWorkspacePure,
+  navigateToWorkspaceTab as navigateToWorkspaceTabPure,
   parseActiveWorkspaceSelection,
   type NavigateToWorkspaceDeps,
   type NavigateToWorkspaceInput,
+  type NavigateToWorkspaceTabInput,
 } from "./navigation";
 import { useSessionStore } from "@/stores/session-store";
 import { useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
@@ -20,7 +24,7 @@ import { stripHostWorkspaceRouteEchoSearchFromBrowserUrlAfterCommit } from "@/ut
 import { navigateToHostWorkspaceRoute } from "@/navigation/workspace-route-navigation";
 
 export type { ActiveWorkspaceSelection } from "@/stores/last-workspace-selection";
-export type { NavigateToWorkspaceInput } from "./navigation";
+export type { NavigateToWorkspaceInput, NavigateToWorkspaceTabInput } from "./navigation";
 
 const lastWorkspaceSelectionStorage: LastWorkspaceSelectionStorage = {
   read: () => AsyncStorage.getItem(LAST_WORKSPACE_SELECTION_STORAGE_KEY),
@@ -34,10 +38,17 @@ const lastWorkspaceSelectionStore = createLastWorkspaceSelectionStore(
 
 function navigateDeps(): NavigateToWorkspaceDeps {
   return {
+    revealTab: revealWorkspaceTab,
+    revealWorkspace: () => {
+      if (useWorkspaceLayoutStore.getState().layoutMode === "compact") {
+        usePanelStore.getState().showMobileAgent();
+      }
+    },
     getSessionWorkspaces: (serverId) => useSessionStore.getState().sessions[serverId]?.workspaces,
     getSessionAgents: (serverId) =>
       useSessionStore.getState().sessions[serverId]?.agents.values() ?? [],
     isWorkspaceLayoutHydrated: () => useWorkspaceLayoutStore.persist.hasHydrated(),
+    deferOpenTab: (input) => useWorkspaceLayoutStore.getState().deferOpenTab(input),
     openTab: (input) => useWorkspaceLayoutStore.getState().openTab(input),
     rememberLastWorkspace: (selection) => lastWorkspaceSelectionStore.remember(selection),
     navigateToRoute: (route) => {
@@ -61,6 +72,10 @@ export function getIsLastWorkspaceSelectionHydrated(): boolean {
 
 export function navigateToWorkspace(input: NavigateToWorkspaceInput): string {
   return navigateToWorkspacePure(input, navigateDeps());
+}
+
+export function navigateToWorkspaceTab(input: NavigateToWorkspaceTabInput): string {
+  return navigateToWorkspaceTabPure(input, navigateDeps());
 }
 
 export function navigateToLastWorkspace(): boolean {

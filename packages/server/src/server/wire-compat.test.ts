@@ -1,3 +1,5 @@
+import { createWorkspaceRuntimeStore } from "./workspace-runtime-store/index.js";
+import { createAgentMessageDeliveryStub } from "./test-utils/session-stubs.js";
 import {
   createMessageReceiptsStub,
   createTestCreationService,
@@ -12,9 +14,11 @@ import {
   FetchAgentTimelineResponseMessageSchema,
   SessionInboundMessageSchema,
   SessionOutboundMessageSchema,
+  type SessionEventSubscription,
   type SessionOutboundMessage,
 } from "@getpaseo/protocol/messages";
 import { Session, type SessionOptions } from "./session.js";
+import { WorkspaceSetupObservation } from "./workspace-setup-observation.js";
 import { OWNER_PERMISSIONS } from "./authorization/index.js";
 import { DirectorySyncService } from "./directory-sync/index.js";
 import { createProviderSnapshotManagerStub } from "./test-utils/session-stubs.js";
@@ -103,7 +107,7 @@ class InMemoryAgentManager {
       lastError: undefined,
       attention: { requiresAttention: false, attentionReason: null, attentionTimestamp: null },
       foregroundTurnWaiters: new Set(),
-      finalizedForegroundTurnIds: new Set(),
+      finalizedForegroundTurnIds: new Map(),
       unsubscribeSession: null,
       session: null,
       activeForegroundTurnId: null,
@@ -190,6 +194,7 @@ function createSessionForWireCompatTest(options?: {
   messages?: SessionOutboundMessage[];
   onMessageToSource?: SessionOptions["onMessageToSource"];
   rows?: AgentTimelineRow[];
+  workspaceRegistry?: SessionOptions["workspaceRegistry"];
 }): Session {
   const messages = options?.messages ?? [];
   const rows: AgentTimelineRow[] = [
@@ -211,7 +216,9 @@ function createSessionForWireCompatTest(options?: {
   ];
 
   const session = new Session({
+    workspaceRuntimeStore: createWorkspaceRuntimeStore(),
     messageReceipts: createMessageReceiptsStub(),
+    agentMessages: createAgentMessageDeliveryStub(),
     creationService: createTestCreationService(),
     clientId: "wire-compat-client",
     permissions: OWNER_PERMISSIONS,
@@ -228,7 +235,8 @@ function createSessionForWireCompatTest(options?: {
     agentStorage: new EmptyAgentStorage() as unknown as SessionOptions["agentStorage"],
     projectRegistry: new EmptyProjectRegistry() as unknown as SessionOptions["projectRegistry"],
     workspaceRegistry:
-      new EmptyWorkspaceRegistry() as unknown as SessionOptions["workspaceRegistry"],
+      options?.workspaceRegistry ??
+      (new EmptyWorkspaceRegistry() as unknown as SessionOptions["workspaceRegistry"]),
     directorySync: options?.directorySync,
     scheduleService: {} as SessionOptions["scheduleService"],
     checkoutDiffManager: {
@@ -257,9 +265,7 @@ function createSessionForWireCompatTest(options?: {
       async listStashes() {
         return [];
       },
-      peekSnapshot() {
-        return null;
-      },
+
       async validateBranchRef() {
         return { ok: false, error: "not found" };
       },
@@ -355,9 +361,11 @@ describe("wire compatibility", () => {
             projectDisplayName: "Favorite project",
             projectCustomName: "Favorite project",
             projectCustomIconRevision: null,
+            projectDescription: null,
             projectIconRevision: "automatic:none:v1",
             projectRootPath: "/tmp/project",
             projectKind: "git",
+            baseWorkspaceId: null,
           },
         },
       },
@@ -547,7 +555,7 @@ describe("wire compatibility", () => {
       refName: undefined,
       action: undefined,
       githubPrNumber: undefined,
-      runSetup: false,
+
       paseoHome: "/tmp/paseo-home",
     });
   });
@@ -640,4 +648,226 @@ test("setup progress is adapted per socket without changing the canonical snapsh
   ]);
   expect(message.payload.status).toBe("blocked");
   await session.cleanup();
+});
+
+test.each<SessionOutboundMessage>([
+  {
+    type: "mission_control_event",
+    event: {
+      id: "mce_1",
+      ts: "2026-09-30T00:00:00.000Z",
+      agentId: "agent-1",
+      agentTitle: "Worker",
+      kind: "finished",
+      source: "system",
+      severity: "info",
+      headline: "Finished",
+    },
+  },
+  {
+    type: "provider.usage.updated",
+    payload: { fetchedAt: "2026-09-30T00:00:00.000Z", providers: [] },
+  },
+])("$type reaches only its owned subscribers and every legacy socket", async (message) => {
+  const legacy = {};
+  const subscribed = {};
+  const other = {};
+  const delivered = new Map<object, SessionOutboundMessage[]>();
+  const session = createSessionForWireCompatTest({
+    onMessageToSource: (source, sent) =>
+      delivered.set(source, [...(delivered.get(source) ?? []), sent]),
+  });
+  session.updateClientCapabilities({ owned_subscriptions: false }, legacy);
+  const subscriptionIds = new Map<object, string | undefined>();
+  const subscribers: Array<[object, SessionEventSubscription[]]> = [
+    [subscribed, [message.type as SessionEventSubscription]],
+    [other, ["tickets.changed"]],
+  ];
+  for (const [source, events] of subscribers) {
+    session.updateClientCapabilities({ owned_subscriptions: true }, source);
+    await session.handleMessage(
+      { type: "session.events.set_subscription.request", requestId: "events", events },
+      source,
+    );
+    const response = delivered.get(source)?.[0];
+    if (response?.type !== "session.events.set_subscription.response")
+      throw new Error(`expected a subscription response, got ${response?.type}`);
+    subscriptionIds.set(source, response.payload.subscriptionId);
+  }
+  delivered.clear();
+
+  session.publish(message);
+
+  const subscriptionId = subscriptionIds.get(subscribed);
+  expect(subscriptionId).toEqual(expect.any(String));
+  expect(delivered.get(subscribed)).toEqual([
+    "payload" in message
+      ? { ...message, payload: { ...message.payload, subscriptionId } }
+      : { ...message, subscriptionId },
+  ]);
+  expect(delivered.get(other)).toBeUndefined();
+  expect(delivered.get(legacy)).toEqual([message]);
+  await session.cleanup();
+});
+
+test("scoped setup clients never receive session-wide setup output", async () => {
+  const messages: SessionOutboundMessage[] = [];
+  const session = createSessionForWireCompatTest({
+    messages,
+    clientCapabilities: { owned_subscriptions: true, workspace_setup_observation: true },
+  });
+  const source = {};
+  session.updateClientCapabilities(
+    { owned_subscriptions: true, workspace_setup_observation: true },
+    source,
+  );
+  await session.handleMessage(
+    {
+      type: "session.events.set_subscription.request",
+      requestId: "events",
+      events: ["workspace_setup_progress"],
+    },
+    source,
+  );
+  messages.length = 0;
+  for (const workspaceId of ["setup-a", "setup-b", "setup-c"]) {
+    for (let chunk = 0; chunk < 10; chunk++) {
+      session.publish({
+        type: "workspace_setup_progress",
+        payload: {
+          workspaceId,
+          status: "running",
+          error: null,
+          detail: {
+            type: "worktree_setup",
+            worktreePath: "/workspace",
+            branchName: "setup",
+            log: "output".repeat(chunk * 1000),
+            commands: [],
+          },
+        },
+      });
+    }
+  }
+  expect(messages).toEqual([]);
+  await session.cleanup();
+});
+
+test("setup output invalidates directory metadata only when visible setup status changes", () => {
+  const setup = new WorkspaceSetupObservation();
+  const earlier = {
+    status: "failed" as const,
+    error: "failed before any connection",
+    detail: {
+      type: "worktree_setup" as const,
+      worktreePath: "/workspace",
+      branchName: "test",
+      log: "earlier output",
+      commands: [],
+    },
+  };
+  setup.publish("earlier", earlier);
+  expect(setup.get("earlier")).toEqual(earlier);
+  expect(setup.status({ workspaceId: "earlier", untrustedSource: null })).toBe("failed");
+  const changes: boolean[] = [];
+  setup.subscribe((_workspaceId, _snapshot, changed) => changes.push(changed));
+  const detail = {
+    type: "worktree_setup" as const,
+    worktreePath: "/workspace",
+    branchName: "test",
+    log: "",
+    commands: [
+      {
+        index: 0,
+        command: "setup",
+        cwd: "/workspace",
+        log: "",
+        status: "running" as const,
+        exitCode: null,
+      },
+    ],
+  };
+  for (const log of ["", "one", "one two", "one two three"])
+    setup.publish("workspace", { status: "running", error: null, detail: { ...detail, log } });
+  setup.publish("workspace", { status: "failed", error: "failed", detail });
+  expect(changes).toEqual([true, false, false, false, true]);
+  expect(setup.status({ workspaceId: "workspace", untrustedSource: null })).toBe("failed");
+  expect(setup.status({ workspaceId: "empty", untrustedSource: null })).toBeNull();
+  setup.publish("empty", { status: "completed", error: null, detail: { ...detail, commands: [] } });
+  expect(setup.status({ workspaceId: "empty", untrustedSource: null })).toBeNull();
+});
+
+test("setup observation includes a transition that happens during its initial registry read", async () => {
+  let completeRead!: (value: null) => void;
+  let readStarted!: () => void;
+  const started = new Promise<void>((resolve) => {
+    readStarted = resolve;
+  });
+  const pendingRead = new Promise<null>((resolve) => {
+    completeRead = resolve;
+  });
+  const messages: SessionOutboundMessage[] = [];
+  const source = {};
+  const session = createSessionForWireCompatTest({
+    messages,
+    clientCapabilities: { owned_subscriptions: true, workspace_setup_observation: true },
+    workspaceRegistry: {
+      get: () => {
+        readStarted();
+        return pendingRead;
+      },
+      list: () => [],
+    } as unknown as SessionOptions["workspaceRegistry"],
+  });
+  session.updateClientCapabilities(
+    { owned_subscriptions: true, workspace_setup_observation: true },
+    source,
+  );
+  try {
+    const request = session.handleMessage(
+      { type: "workspace.setup.subscribe.request", workspaceId: "setup", requestId: "observe" },
+      source,
+    );
+    await started;
+    session.publish({
+      type: "workspace_setup_progress",
+      payload: {
+        workspaceId: "setup",
+        status: "failed",
+        error: "bootstrap failure",
+        detail: {
+          type: "worktree_setup",
+          worktreePath: "/workspace",
+          branchName: "test",
+          log: "failure output",
+          commands: [],
+        },
+      },
+    });
+    completeRead(null);
+    await request;
+    expect(messages).toEqual([
+      {
+        type: "workspace.setup.subscribe.response",
+        payload: {
+          requestId: "observe",
+          workspaceId: "setup",
+          subscriptionId: expect.any(String),
+          snapshot: {
+            status: "failed",
+            error: "bootstrap failure",
+            detail: {
+              type: "worktree_setup",
+              worktreePath: "/workspace",
+              branchName: "test",
+              log: "failure output",
+              commands: [],
+            },
+          },
+        },
+      },
+    ]);
+  } finally {
+    await session.cleanup();
+  }
 });

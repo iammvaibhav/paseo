@@ -1,10 +1,4 @@
-import {
-  buildExplorerCheckoutKey,
-  isExplorerTab,
-  resolveExplorerTabForCheckout,
-  type ExplorerTab,
-} from "../explorer-tab-memory";
-import { type ExplorerCheckoutContext } from "../explorer-checkout-context";
+import { sanitizeSelectedSubmoduleByCheckout } from "../explorer-submodule-memory";
 import { z } from "zod";
 
 export type MobilePanelView = "agent" | "agent-list" | "file-explorer";
@@ -29,6 +23,21 @@ export const DEFAULT_TREE_RAIL_WIDTH = 260;
 export const MIN_TREE_RAIL_WIDTH = 180;
 export const MAX_TREE_RAIL_WIDTH = 600;
 
+// Mission Control board rail (drag-resizable, persisted). Default matches the
+// rail's historic hardcoded width; bounds keep the thread column readable.
+export const DEFAULT_BOARD_RAIL_WIDTH = 300;
+export const MIN_BOARD_RAIL_WIDTH = 240;
+export const MAX_BOARD_RAIL_WIDTH = 480;
+
+// Mission Control inspector (drag-resizable, persisted). Default matches the
+// inspector's historic hardcoded width; bounds keep the thread column and the
+// board rail readable.
+export const DEFAULT_INSPECTOR_WIDTH = 400;
+export const MIN_INSPECTOR_WIDTH = 280;
+// No hard ceiling: inspector fills free space when the board is collapsed.
+// Soft default only; clamp uses a large upper bound so drag is unbounded in practice.
+export const MAX_INSPECTOR_WIDTH = 10_000;
+
 export interface PanelLayoutInput {
   isCompact: boolean;
 }
@@ -36,8 +45,6 @@ export interface PanelLayoutInput {
 export interface PanelCoreState {
   mobilePanel: MobilePanelSelection;
   desktop: DesktopSidebarState;
-  explorerTab: ExplorerTab;
-  explorerTabByCheckout: Record<string, ExplorerTab>;
 }
 
 function clampNumber(value: number, min: number, max: number): number {
@@ -49,6 +56,14 @@ function clampNumber(value: number, min: number, max: number): number {
 
 export function clampSidebarWidth(width: number): number {
   return clampNumber(width, MIN_SIDEBAR_WIDTH, MAX_SIDEBAR_WIDTH);
+}
+
+export function clampBoardRailWidth(width: number): number {
+  return clampNumber(width, MIN_BOARD_RAIL_WIDTH, MAX_BOARD_RAIL_WIDTH);
+}
+
+export function clampInspectorWidth(width: number): number {
+  return clampNumber(width, MIN_INSPECTOR_WIDTH, MAX_INSPECTOR_WIDTH);
 }
 
 export function clampTreeRailWidth(width: number): number {
@@ -77,45 +92,6 @@ export function setMobilePanelTarget(
   return { target, revision: selection.revision + 1 };
 }
 
-function resolveExplorerTabFromCheckout(
-  state: PanelCoreState,
-  checkout: ExplorerCheckoutContext,
-): ExplorerTab {
-  return resolveExplorerTabForCheckout({
-    serverId: checkout.serverId,
-    cwd: checkout.cwd,
-    isGit: checkout.isGit,
-    explorerTabByCheckout: state.explorerTabByCheckout,
-  });
-}
-
-export interface OpenFileExplorerPatch {
-  mobilePanel: MobilePanelSelection;
-  explorerTab: ExplorerTab;
-}
-
-export function buildOpenFileExplorerPatch(
-  state: PanelCoreState,
-  checkout: ExplorerCheckoutContext,
-): OpenFileExplorerPatch {
-  return {
-    mobilePanel: setMobilePanelTarget(state.mobilePanel, "file-explorer"),
-    explorerTab: resolveExplorerTabFromCheckout(state, checkout),
-  };
-}
-
-export type ToggleFileExplorerPatch = OpenFileExplorerPatch | { mobilePanel: MobilePanelSelection };
-
-export function buildToggleFileExplorerPatch(
-  state: PanelCoreState,
-  checkout: ExplorerCheckoutContext,
-): ToggleFileExplorerPatch {
-  if (!selectIsCompactFileExplorerOpen(state)) {
-    return buildOpenFileExplorerPatch(state, checkout);
-  }
-  return { mobilePanel: setMobilePanelTarget(state.mobilePanel, "agent") };
-}
-
 const ExplorerTabSchema = z.enum(["changes", "files", "pr"]);
 const DesktopSidebarStorageSchema = z.strictObject({
   agentListOpen: z.boolean().optional(),
@@ -139,6 +115,7 @@ export const PanelPersistedStateSchema = z.strictObject({
   desktop: DesktopSidebarStorageSchema.optional(),
   explorerTab: ExplorerTabSchema.optional(),
   explorerTabByCheckout: z.record(z.string(), ExplorerTabSchema).optional(),
+  selectedSubmoduleByCheckout: z.record(z.string(), z.unknown()).optional(),
   expandedPathsByWorkspace: z.record(z.string(), z.array(z.string())).optional(),
   // Accepted only so migration can discard the former per-file diff expansion state.
   diffExpandedPathsByWorkspace: z.record(z.string(), z.array(z.string())).optional(),
@@ -151,30 +128,21 @@ export const PanelPersistedStateSchema = z.strictObject({
   explorerShowHiddenFiles: z.boolean().optional(),
   explorerFilesSplitRatio: z.number().optional(),
   treeRailWidth: z.number().optional(),
+  boardRailWidth: z.number().optional(),
+  inspectorWidth: z.number().optional(),
+  boardRailCollapsed: z.boolean().optional(),
   fileTreeVisible: z.boolean().optional(),
 });
 
-type MigratablePanelState = z.infer<typeof PanelPersistedStateSchema>;
-
-function migratePanelExplorerTabByCheckout(state: MigratablePanelState, version: number): void {
-  if (
-    version < 4 ||
-    typeof state.explorerTabByCheckout !== "object" ||
-    !state.explorerTabByCheckout
-  ) {
-    state.explorerTabByCheckout = {};
-    return;
-  }
-  const entries = Object.entries(state.explorerTabByCheckout);
-  const next: Record<string, ExplorerTab> = {};
-  for (const [key, value] of entries) {
-    if (!isExplorerTab(value)) {
-      continue;
-    }
-    next[key] = value;
-  }
-  state.explorerTabByCheckout = next;
-}
+type MigratablePanelState = Omit<
+  z.infer<typeof PanelPersistedStateSchema>,
+  "selectedSubmoduleByCheckout"
+> & {
+  selectedSubmoduleByCheckout?: Record<string, string>;
+  boardRailWidth?: number;
+  inspectorWidth?: number;
+  boardRailCollapsed?: boolean;
+};
 
 function migratePanelDesktopFocusMode(state: MigratablePanelState): void {
   const desktop = state.desktop;
@@ -194,38 +162,22 @@ function migratePanelDesktopFocusMode(state: MigratablePanelState): void {
   }
 }
 
-// v16 narrowed the rail. Existing installs almost all carry the old 320 default,
-// so the reset is what makes the narrower rail visible to anyone but a new user.
-function migrateTreeRailWidth(state: MigratablePanelState, version: number): void {
-  if (version < 16 || typeof state.treeRailWidth !== "number") {
-    delete state.explorerFilesSplitRatio;
-    state.treeRailWidth = DEFAULT_TREE_RAIL_WIDTH;
-    return;
-  }
-  state.treeRailWidth = clampTreeRailWidth(state.treeRailWidth);
-}
-
-export function migratePanelState(persistedState: unknown, version: number): MigratablePanelState {
-  const result = PanelPersistedStateSchema.safeParse(persistedState);
-  const state: MigratablePanelState = result.success ? result.data : {};
-
-  // The docked explorer sidebar is gone; wider layouts render the explorer as
-  // workspace tabs. Left behind, `fileExplorerOpen` kept drawing a sidebar that
-  // nothing could close.
-  delete state.explorerWidth;
-  if (state.desktop) {
-    delete state.desktop.fileExplorerOpen;
-  }
-  if (!isExplorerTab(state.explorerTab)) {
-    state.explorerTab = "changes";
-  }
-  migratePanelExplorerTabByCheckout(state, version);
-  if (version < 8) {
-    migratePanelDesktopFocusMode(state);
-  }
+function migratePanelLayoutDimensions(state: MigratablePanelState, version: number): void {
   if (version < 6 || typeof state.sidebarWidth !== "number") {
     state.sidebarWidth = DEFAULT_SIDEBAR_WIDTH;
   }
+  if (typeof state.boardRailWidth !== "number") {
+    state.boardRailWidth = DEFAULT_BOARD_RAIL_WIDTH;
+  }
+  if (typeof state.inspectorWidth !== "number") {
+    state.inspectorWidth = DEFAULT_INSPECTOR_WIDTH;
+  }
+  if (typeof state.boardRailCollapsed !== "boolean") {
+    state.boardRailCollapsed = false;
+  }
+}
+
+function migratePanelWorkspaceExpansionMaps(state: MigratablePanelState, version: number): void {
   if (
     version < 9 ||
     typeof state.expandedPathsByWorkspace !== "object" ||
@@ -247,6 +199,44 @@ export function migratePanelState(persistedState: unknown, version: number): Mig
   ) {
     state.collapsedFilePathsByWorkspace = {};
   }
+}
+
+// v16 narrowed the rail. Existing installs almost all carry the old 320 default,
+// so the reset is what makes the narrower rail visible to anyone but a new user.
+function migrateTreeRailWidth(state: MigratablePanelState, version: number): void {
+  if (version < 16 || typeof state.treeRailWidth !== "number") {
+    delete state.explorerFilesSplitRatio;
+    state.treeRailWidth = DEFAULT_TREE_RAIL_WIDTH;
+    return;
+  }
+  state.treeRailWidth = clampTreeRailWidth(state.treeRailWidth);
+}
+
+export function migratePanelState(persistedState: unknown, version: number): MigratablePanelState {
+  const result = PanelPersistedStateSchema.safeParse(persistedState);
+  const rawState = (result.success ? result.data : {}) as z.infer<typeof PanelPersistedStateSchema>;
+  const state: MigratablePanelState = {
+    ...rawState,
+    selectedSubmoduleByCheckout: sanitizeSelectedSubmoduleByCheckout(
+      rawState.selectedSubmoduleByCheckout,
+    ),
+  };
+
+  // The docked explorer sidebar is gone; wider layouts render the explorer as
+  // workspace tabs. Left behind, `fileExplorerOpen` kept drawing a sidebar that
+  // nothing could close.
+  delete state.explorerWidth;
+  if (state.desktop) {
+    delete state.desktop.fileExplorerOpen;
+  }
+  delete state.explorerTab;
+  delete state.explorerTabByCheckout;
+  if (version < 8) {
+    migratePanelDesktopFocusMode(state);
+  }
+  migratePanelLayoutDimensions(state, version);
+  migratePanelWorkspaceExpansionMaps(state, version);
+
   if (typeof state.explorerShowHiddenFiles !== "boolean") {
     state.explorerShowHiddenFiles = true;
   }
@@ -263,6 +253,3 @@ export function migratePanelState(persistedState: unknown, version: number): Mig
 
   return state;
 }
-
-export { buildExplorerCheckoutKey, resolveExplorerTabForCheckout };
-export type { ExplorerTab, ExplorerCheckoutContext };

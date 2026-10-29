@@ -8,7 +8,7 @@ import {
   invalidatePrPaneTimelineForCheckout,
 } from "@/git/query-keys";
 import { type CheckoutPrStatusPayload, normalizeCheckoutPrStatusPayload } from "@/git/pr-status";
-import { expireWorkingDiffComparisons } from "@/git/working-diff-comparison";
+import { resetDraftAgentCommandsForCheckout } from "@/hooks/agent-commands-query";
 
 export type CheckoutStatusPayload = CheckoutStatusResponse["payload"];
 export type { CheckoutPrStatusPayload } from "@/git/pr-status";
@@ -17,13 +17,8 @@ export interface CheckoutStatusClient {
   getCheckoutStatus: (cwd: string) => Promise<CheckoutStatusPayload>;
 }
 
-// Checkout status enters the app through exactly two doors: daemon pushes
-// (applyCheckoutStatusUpdateFromEvent) and query fetches (fetchCheckoutStatus). Both run
-// the dirty-state reactions, so they hold regardless of which screens are mounted.
-
 export async function fetchCheckoutStatus({
   client,
-  serverId,
   cwd,
 }: {
   client: CheckoutStatusClient;
@@ -31,7 +26,14 @@ export async function fetchCheckoutStatus({
   cwd: string;
 }): Promise<CheckoutStatusPayload> {
   const payload = await client.getCheckoutStatus(cwd);
-  expireWorkingDiffComparisons({ serverId, cwd, isDirty: payload.isGit && payload.isDirty });
+  if (payload.error) {
+    // The daemon reports a transient snapshot failure (busy git, cold target,
+    // index lock) as a successful payload with `error` set. Throw instead of
+    // caching it: React Query then retries with backoff and keeps the last
+    // known-good status, so the workspace header actions (Create PR, open in
+    // editor, ...) don't get disabled until the next push or reconnect.
+    throw new Error(payload.error.message);
+  }
   return payload;
 }
 
@@ -67,14 +69,15 @@ export function applyCheckoutStatusUpdateFromEvent({
     ? normalizeCheckoutPrStatusPayload(payload.prStatus)
     : undefined;
   const cachePayload = prStatus ? { ...payload, prStatus } : payload;
+  const previousStatus = queryClient.getQueryData<CheckoutStatusPayload>(
+    checkoutStatusQueryKey(serverId, payload.cwd),
+  );
   queryClient.setQueryData(checkoutStatusQueryKey(serverId, payload.cwd), cachePayload);
+  if (previousStatus?.currentBranch !== payload.currentBranch) {
+    void resetDraftAgentCommandsForCheckout(queryClient, { serverId, cwd: payload.cwd });
+  }
   void queryClient.invalidateQueries({
     queryKey: checkoutCommitsQueryKey(serverId, payload.cwd),
-  });
-  expireWorkingDiffComparisons({
-    serverId,
-    cwd: payload.cwd,
-    isDirty: payload.isGit && payload.isDirty,
   });
 
   if (!prStatus) {

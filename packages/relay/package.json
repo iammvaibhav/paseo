@@ -1,6 +1,6 @@
 {
   "name": "@getpaseo/relay",
-  "version": "0.9.0",
+  "version": "0.14.0-beta.1",
   "description": "Paseo relay for bridging daemon and client connections",
   "files": [
     "dist",
@@ -11,21 +11,15 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "node": "./dist/index.js",
-      "import": "./src/index.ts",
-      "default": "./src/index.ts"
+      "default": "./dist/index.js"
     },
     "./e2ee": {
       "types": "./dist/e2ee.d.ts",
-      "node": "./dist/e2ee.js",
-      "import": "./src/e2ee.ts",
-      "default": "./src/e2ee.ts"
+      "default": "./dist/e2ee.js"
     },
     "./cloudflare": {
       "types": "./dist/cloudflare-adapter.d.ts",
-      "node": "./dist/cloudflare-adapter.js",
-      "import": "./src/cloudflare-adapter.ts",
-      "default": "./src/cloudflare-adapter.ts"
+      "default": "./dist/cloudflare-adapter.js"
     }
   },
   "publishConfig": {
@@ -33,14 +27,17 @@
   },
   "scripts": {
     "clean": "node ../../scripts/clean-package-dist.mjs",
-    "build": "tsc -p tsconfig.json --incremental false",
-    "build:clean": "npm run clean && npm run build",
-    "prepack": "npm run build:clean",
-    "typecheck": "tsgo --noEmit",
+    "build": "sh ../../scripts/cpu-slot.sh build tsc -p tsconfig.json --incremental false",
+    "build:clean": "pnpm run clean && pnpm run build",
+    "prepack": "pnpm run build:clean",
+    "typecheck": "sh ../../scripts/cpu-slot.sh typecheck tsgo --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@noble/ciphers": "^2.4.0",
+    "@noble/curves": "^2.4.0",
+    "@noble/hashes": "^2.4.0",
     "base64-js": "^1.5.1",
     "tweetnacl": "^1.0.3",
     "ws": "^8.14.2"

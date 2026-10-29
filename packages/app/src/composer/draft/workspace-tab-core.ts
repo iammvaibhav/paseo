@@ -1,8 +1,20 @@
+import invariant from "tiny-invariant";
+import type { AgentSessionConfig } from "@getpaseo/protocol/agent-types";
+import type { AgentAttachment, AgentSnapshotPayload } from "@getpaseo/protocol/messages";
+import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { resolveSubmissionReadiness } from "@/provider-selection/provider-selection";
+import { buildWorkspaceDraftAgentConfig } from "@/screens/workspace/workspace-draft-agent-config";
+import type { UserMessageImageAttachment } from "@/types/stream";
+import { encodeImages } from "@/utils/encode-images";
+import { useWorkspaceDraftSubmissionStore } from "@/stores/workspace-draft-submission-store";
+import type { WorkspaceDraftForkSource } from "@/workspace-tabs/model";
 
 export interface WorkspaceDraftAutoSubmitConfig {
   provider: string;
+  modeId: string | null;
   model: string | null;
+  thinkingOptionId: string | null;
+  featureValues: Record<string, unknown>;
 }
 
 export function shouldAllowEmptyDraftText(input: {
@@ -24,7 +36,7 @@ export function validateDraftSubmission(input: {
   };
   autoSubmitConfig: WorkspaceDraftAutoSubmitConfig | null;
   workspaceDirectory: string | null;
-  hasClient: boolean;
+  isConnected: boolean;
 }): string | null {
   const {
     text,
@@ -32,7 +44,7 @@ export function validateDraftSubmission(input: {
     composerState,
     autoSubmitConfig,
     workspaceDirectory,
-    hasClient,
+    isConnected,
   } = input;
   const readiness = resolveSubmissionReadiness({
     text,
@@ -46,7 +58,211 @@ export function validateDraftSubmission(input: {
     },
     autoSubmitConfig,
     workspaceDirectory,
-    hasClient,
+    isConnected,
   });
   return readiness.ok ? null : (readiness.reason ?? null);
+}
+
+function resolveDraftModeIdOverride(input: {
+  autoSubmitConfig: WorkspaceDraftAutoSubmitConfig | null;
+  effectiveModeId: string;
+}): { modeId: string } | Record<string, never> {
+  const { autoSubmitConfig, effectiveModeId } = input;
+  if (autoSubmitConfig?.modeId) {
+    return { modeId: autoSubmitConfig.modeId };
+  }
+  if (effectiveModeId !== "") {
+    return { modeId: effectiveModeId };
+  }
+  return {};
+}
+
+export function resolveDraftModeId(input: {
+  autoSubmitConfig: WorkspaceDraftAutoSubmitConfig | null;
+  effectiveModeId: string;
+}): string | null {
+  const { autoSubmitConfig, effectiveModeId } = input;
+  if (autoSubmitConfig?.modeId !== undefined) {
+    return autoSubmitConfig.modeId;
+  }
+  if (effectiveModeId !== "") {
+    return effectiveModeId;
+  }
+  return null;
+}
+
+export type WorkspaceDraftSubmitClient = Pick<DaemonClient, "createAgent" | "forkAgent">;
+
+export async function submitDraftCreateRequest(input: {
+  draftId: string;
+  attempt: { clientMessageId: string };
+  text: string;
+  images?: UserMessageImageAttachment[];
+  attachments?: unknown;
+  cwd: string;
+  client: WorkspaceDraftSubmitClient | null;
+  workspaceDirectory: string | null;
+  workspaceId: string | null;
+  autoSubmitConfig: WorkspaceDraftAutoSubmitConfig | null;
+  // Set when this draft was opened by "fork chat into a new tab": the daemon
+  // creates the agent by forking the source session instead of from scratch.
+  forkSource?: WorkspaceDraftForkSource;
+  composerState: {
+    selectedProvider: string | null;
+    effectiveModeId: string;
+    effectiveModelId: string | null;
+    effectiveThinkingOptionId: string | null;
+    featureValues: Record<string, unknown> | undefined;
+  };
+  hostDisconnectedMessage: string;
+  selectModelMessage: string;
+  forkFailedMessage: string;
+}): Promise<{ agentId: string | null; result: AgentSnapshotPayload }> {
+  const { attempt, text, images, attachments } = input;
+  const submit = resolveDraftSubmitTarget(input);
+  const imagesData = await encodeImages(images);
+  const attachmentsArray = Array.isArray(attachments) ? attachments : undefined;
+  if (submit.kind === "fork") {
+    return await submitDraftForkRequest({
+      attempt,
+      text,
+      images: imagesData,
+      attachments: attachmentsArray,
+      client: submit.client,
+      forkSource: submit.forkSource,
+      config: submit.config,
+      forkFailedMessage: input.forkFailedMessage,
+    });
+  }
+  const options = {
+    // The draft id names this creation across retries, so a retry after a lost
+    // response reattaches to the agent the daemon already created.
+    idempotencyKey: input.draftId,
+    config: submit.config,
+    workspaceId: submit.workspaceId,
+    ...(text ? { initialPrompt: text } : {}),
+    clientMessageId: attempt.clientMessageId,
+    ...(imagesData && imagesData.length > 0 ? { images: imagesData } : {}),
+    ...(attachmentsArray && attachmentsArray.length > 0 ? { attachments: attachmentsArray } : {}),
+  };
+  const creation = useWorkspaceDraftSubmissionStore.getState().creationByDraftId[input.draftId];
+  const result = creation
+    ? await creation.retry(options)
+    : await submit.client.createAgent(options);
+  return { agentId: result.id, result };
+}
+
+function resolveDraftSubmitTarget(input: {
+  cwd: string;
+  client: WorkspaceDraftSubmitClient | null;
+  workspaceDirectory: string | null;
+  workspaceId: string | null;
+  autoSubmitConfig: WorkspaceDraftAutoSubmitConfig | null;
+  forkSource?: WorkspaceDraftForkSource;
+  composerState: {
+    selectedProvider: string | null;
+    effectiveModeId: string;
+    effectiveModelId: string | null;
+    effectiveThinkingOptionId: string | null;
+    featureValues: Record<string, unknown> | undefined;
+  };
+  hostDisconnectedMessage: string;
+  selectModelMessage: string;
+}):
+  | {
+      kind: "fork";
+      client: WorkspaceDraftSubmitClient;
+      forkSource: WorkspaceDraftForkSource;
+      config: AgentSessionConfig;
+    }
+  | {
+      kind: "create";
+      client: WorkspaceDraftSubmitClient;
+      workspaceId: string;
+      config: AgentSessionConfig;
+    } {
+  const {
+    cwd,
+    client,
+    workspaceDirectory,
+    workspaceId,
+    autoSubmitConfig,
+    forkSource,
+    composerState,
+  } = input;
+  invariant(workspaceDirectory, "Workspace directory is required");
+  invariant(workspaceId, "Workspace id is required");
+  if (!client) {
+    throw new Error(input.hostDisconnectedMessage);
+  }
+  const provider = autoSubmitConfig?.provider ?? composerState.selectedProvider;
+  if (!provider) {
+    throw new Error(input.selectModelMessage);
+  }
+  const modeIdOverride = resolveDraftModeIdOverride({
+    autoSubmitConfig,
+    effectiveModeId: composerState.effectiveModeId,
+  });
+  const config = buildWorkspaceDraftAgentConfig({
+    provider,
+    cwd,
+    ...modeIdOverride,
+    model: autoSubmitConfig?.model ?? (composerState.effectiveModelId || undefined),
+    thinkingOptionId:
+      autoSubmitConfig?.thinkingOptionId ?? (composerState.effectiveThinkingOptionId || undefined),
+    featureValues: autoSubmitConfig?.featureValues ?? composerState.featureValues,
+  });
+  if (forkSource) {
+    return { kind: "fork", client, forkSource, config };
+  }
+  return { kind: "create", client, workspaceId, config };
+}
+
+/**
+ * Fork the source agent at the draft's boundary. The fork's history is a
+ * transcript attachment, not a resumed provider session, so the composer's
+ * provider choice travels with it — a fork may land on a different provider
+ * than the source. Only `cwd` stays pinned to the source's workspace.
+ */
+async function submitDraftForkRequest(input: {
+  attempt: { clientMessageId: string };
+  text: string;
+  images: Array<{ data: string; mimeType: string }> | undefined;
+  attachments: AgentAttachment[] | undefined;
+  client: WorkspaceDraftSubmitClient;
+  forkSource: WorkspaceDraftForkSource;
+  config: AgentSessionConfig;
+  forkFailedMessage: string;
+}): Promise<{ agentId: string | null; result: AgentSnapshotPayload }> {
+  const { attempt, text, images, attachments, client, forkSource, config } = input;
+  const overrides: Partial<AgentSessionConfig> = {
+    provider: config.provider,
+    ...(config.modeId ? { modeId: config.modeId } : {}),
+    ...(config.model ? { model: config.model } : {}),
+    ...(config.thinkingOptionId ? { thinkingOptionId: config.thinkingOptionId } : {}),
+    ...(config.featureValues ? { featureValues: config.featureValues } : {}),
+  };
+  const fork = await client.forkAgent(forkSource.sourceAgentId, text, {
+    messageId: attempt.clientMessageId,
+    ...(images && images.length > 0 ? { images } : {}),
+    // The chat-history pill on a fork draft is a preview: the daemon renders
+    // the transcript itself from the fork boundary at submit time, so sending
+    // it would attach the conversation twice to the fork's first message.
+    ...(attachments && attachments.length > 0
+      ? {
+          attachments: attachments.filter(
+            (attachment) => attachment.type !== "text" || attachment.contextKind !== "chat_history",
+          ),
+        }
+      : {}),
+    ...(forkSource.boundaryCursor ? { boundaryCursor: forkSource.boundaryCursor } : {}),
+    ...(forkSource.boundaryMessageId ? { boundaryMessageId: forkSource.boundaryMessageId } : {}),
+    ...(Object.keys(overrides).length > 0 ? { overrides } : {}),
+  });
+  if (!fork.agent) {
+    // Without a snapshot the draft tab cannot swap to the forked agent, and
+    // silently creating a plain agent would drop the forked history.
+    throw new Error(input.forkFailedMessage);
+  }
+  return { agentId: fork.agentId, result: fork.agent };
 }

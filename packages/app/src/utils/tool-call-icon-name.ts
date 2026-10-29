@@ -1,3 +1,4 @@
+import type { AgentMessage } from "@getpaseo/protocol/agent-message";
 import type { ToolCallDetail, ToolCallIconName } from "@getpaseo/protocol/agent-types";
 import { isPaseoToolName } from "@getpaseo/protocol/tool-name-normalization";
 
@@ -17,7 +18,15 @@ const TOOL_DETAIL_ICON_NAMES: Record<ToolCallDetail["type"], ToolCallIcon> = {
   unknown: "wrench",
 };
 
-export function resolveToolCallIconName(toolName: string, detail?: ToolCallDetail): ToolCallIcon {
+export function resolveToolCallIconName(
+  toolName: string,
+  detail?: ToolCallDetail,
+  agentMessage?: AgentMessage,
+): ToolCallIcon {
+  // Agent messages are Paseo deliveries; the wire detail's legacy "bot" icon is for old clients.
+  if (agentMessage) {
+    return "paseo";
+  }
   const lowerName = toolName.trim().toLowerCase();
 
   if (detail?.type === "plain_text" && detail.icon) {
@@ -30,6 +39,14 @@ export function resolveToolCallIconName(toolName: string, detail?: ToolCallDetai
   }
   if (lowerName === "speak") {
     return "mic_vocal";
+  }
+  // Oh My Pi's code-cell kernel; the detail payload is `unknown`, which would
+  // otherwise resolve to the generic wrench.
+  if (lowerName === "eval") {
+    return "square_terminal";
+  }
+  if (lowerName === "web_search" || lowerName === "websearch" || lowerName === "web-search") {
+    return "search";
   }
   if (isPaseoToolName(lowerName)) {
     return "paseo";

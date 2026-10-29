@@ -22,7 +22,7 @@ import { ProviderOverrideSchema } from "./agent/provider-launch-config.js";
 import { AgentProviderSchema } from "@getpaseo/protocol/provider-manifest";
 import { hashDaemonPassword } from "./auth.js";
 import { resolveSpeechConfig } from "./speech/speech-config-resolver.js";
-import type { RequestedSpeechProviders } from "./speech/speech-types.js";
+import { readSpeechSettings } from "./speech/speech-settings.js";
 import { mergeHostnames, parseHostnamesEnv, type HostnamesConfig } from "./hostnames.js";
 import { resolveGitProcessPolicy } from "../utils/git-process-scheduler.js";
 
@@ -275,6 +275,7 @@ interface ResolveRelayInput {
 interface ResolvedRelay {
   enabled: boolean;
   enabledMutable: boolean;
+  requireProtectedSecurity: boolean;
   endpoint: string;
   publicEndpoint: string;
   useTls: boolean;
@@ -297,6 +298,21 @@ function resolveTlsFromEnv(
   return persistedValue ?? fallback;
 }
 
+function resolveRelayEndpoints(input: ResolveRelayInput): {
+  endpoint: string;
+  publicEndpoint: string;
+} {
+  const endpoint =
+    input.env.PASEO_RELAY_ENDPOINT ??
+    input.persisted.daemon?.relay?.endpoint ??
+    DEFAULT_RELAY_ENDPOINT;
+  const publicEndpoint =
+    input.env.PASEO_RELAY_PUBLIC_ENDPOINT ??
+    input.persisted.daemon?.relay?.publicEndpoint ??
+    endpoint;
+  return { endpoint, publicEndpoint };
+}
+
 function resolveRelayConfig(input: ResolveRelayInput): ResolvedRelay {
   const environmentEnabled = parseBooleanEnv(input.env.PASEO_RELAY_ENABLED);
   // COMPAT(relayOptInDefault): daemons whose startup config omitted this field
@@ -306,14 +322,7 @@ function resolveRelayConfig(input: ResolveRelayInput): ResolvedRelay {
     environmentEnabled ??
     input.persisted.daemon?.relay?.enabled ??
     input.enabledFallback;
-  const endpoint =
-    input.env.PASEO_RELAY_ENDPOINT ??
-    input.persisted.daemon?.relay?.endpoint ??
-    DEFAULT_RELAY_ENDPOINT;
-  const publicEndpoint =
-    input.env.PASEO_RELAY_PUBLIC_ENDPOINT ??
-    input.persisted.daemon?.relay?.publicEndpoint ??
-    endpoint;
+  const { endpoint, publicEndpoint } = resolveRelayEndpoints(input);
   const useTls =
     input.cliRelayUseTls ??
     resolveTlsFromEnv(
@@ -329,6 +338,7 @@ function resolveRelayConfig(input: ResolveRelayInput): ResolvedRelay {
   return {
     enabled,
     enabledMutable: input.cliRelayEnabled === undefined && environmentEnabled === undefined,
+    requireProtectedSecurity: input.persisted.daemon?.relay?.requireProtectedSecurity ?? false,
     endpoint,
     publicEndpoint,
     useTls,
@@ -375,6 +385,66 @@ function resolveServiceProxyConfig(
     : null;
 
   return { publicBaseUrl, standaloneListen };
+}
+
+// The local address the tunnel forwards to. The daemon may bind to a non-loopback
+// address (e.g. its Tailscale IP), so the tunnel target is the daemon's actual
+// host:port — not merely 127.0.0.1:<port>. Wildcard binds collapse to loopback.
+function parseListenTarget(listen: string, fallbackPort: number): { host: string; port: number } {
+  const match = listen.match(/^(.*):(\d+)$/);
+  let host = match?.[1]?.trim() || "127.0.0.1";
+  const port = match ? Number.parseInt(match[2], 10) || fallbackPort : fallbackPort;
+  host = host.replace(/^\[|\]$/g, "");
+  if (host === "0.0.0.0" || host === "::" || host === "") {
+    host = "127.0.0.1";
+  }
+  return { host, port };
+}
+
+type ResolvedTunnel = NonNullable<PaseoDaemonConfig["tunnel"]>;
+
+function resolveTunnelProvider(candidate: string | undefined): ResolvedTunnel["provider"] {
+  return candidate === "tailscale-funnel" || candidate === "cloudflared" ? candidate : "none";
+}
+
+interface PersistedCloudflared {
+  hostname?: string;
+  bin?: string;
+  configFile?: string;
+  token?: string;
+  tunnel?: string;
+}
+
+function resolveCloudflaredConfig(
+  cloudflared: PersistedCloudflared | undefined,
+): ResolvedTunnel["cloudflared"] {
+  const cf = cloudflared ?? {};
+  return {
+    hostname: cf.hostname ?? null,
+    bin: cf.bin ?? null,
+    configFile: cf.configFile ?? null,
+    token: cf.token ?? null,
+    tunnel: cf.tunnel ?? null,
+  };
+}
+
+function resolveTunnelConfig(
+  env: NodeJS.ProcessEnv,
+  persisted: ReturnType<typeof loadPersistedConfig>,
+  listen: string,
+): ResolvedTunnel {
+  const tunnel = persisted.daemon?.tunnel;
+  const listenTarget = parseListenTarget(listen, 6767);
+  const localPort = tunnel?.localPort ?? listenTarget.port;
+  return {
+    provider: resolveTunnelProvider(env.PASEO_TUNNEL_PROVIDER ?? tunnel?.provider),
+    localPort,
+    localTarget: tunnel?.localTarget ?? `${listenTarget.host}:${localPort}`,
+    autoStart: parseBooleanEnv(env.PASEO_TUNNEL_AUTOSTART) ?? tunnel?.autoStart ?? false,
+    publicBaseUrl: (env.PASEO_TUNNEL_PUBLIC_BASE_URL ?? tunnel?.publicBaseUrl ?? "").trim() || null,
+    tailscaleBin: tunnel?.tailscaleBin ?? null,
+    cloudflared: resolveCloudflaredConfig(tunnel?.cloudflared),
+  };
 }
 
 interface ResolvedWebUi {
@@ -526,6 +596,11 @@ function resolveProfileLists(persisted: ReturnType<typeof loadPersistedConfig>) 
   return {
     terminalProfiles: persisted.daemon?.terminalProfiles,
     agentProfiles: persisted.daemon?.agentProfiles,
+    visibleModels: persisted.daemon?.visibleModels,
+    ompIdleCloseAfterSeconds: persisted.daemon?.ompIdleCloseAfterSeconds ?? 1800,
+    keepAwakeWhileAgentsRun: persisted.daemon?.keepAwakeWhileAgentsRun ?? "idle",
+    keepAwakeReleaseGraceMinutes: persisted.daemon?.keepAwakeReleaseGraceMinutes ?? 5,
+    keepAwakeBatteryFloorPercent: persisted.daemon?.keepAwakeBatteryFloorPercent ?? 10,
   };
 }
 
@@ -558,31 +633,50 @@ interface ResolveConfigFromPersistedOptions {
   relayEnabledFallback?: boolean;
 }
 
+// Startup values, including authentication, never enter runtime settings resolution.
+export type ResolvedDaemonSettings = Pick<
+  PaseoDaemonConfig,
+  | "corsAllowedOrigins"
+  | "hostnames"
+  | "trustedProxies"
+  | "mcpEnabled"
+  | "mcpInjectIntoAgents"
+  | "browserToolsEnabled"
+  | "git"
+  | "autoArchiveAfterMerge"
+  | "enableTerminalAgentHooks"
+  | "appendSystemPrompt"
+  | "terminalProfiles"
+  | "agentProfiles"
+  | "skillSelection"
+  | "pluginsEnabled"
+  | "plugins"
+  | "relayEnabled"
+  | "relayRequireProtectedSecurity"
+  | "appBaseUrl"
+  | "idleRuntimeCleanup"
+  | "providerCatalogRefreshTimeoutMs"
+  | "metadataGeneration"
+  | "providerOverrides"
+  | "visibleModels"
+  | "ompIdleCloseAfterSeconds"
+  | "keepAwakeWhileAgentsRun"
+  | "keepAwakeReleaseGraceMinutes"
+  | "keepAwakeBatteryFloorPercent"
+  | "aiReviewer"
+  | "missionControl"
+>;
+
 export function resolveConfigFromPersisted(
   paseoHome: string,
   persisted: PersistedConfig,
   options?: ResolveConfigFromPersistedOptions,
 ): PaseoDaemonConfig {
-  const resolvedOptions = options ?? {};
-  const env = configurationEnvironment(resolvedOptions.env ?? process.env);
-  const cli = resolvedOptions.cli;
+  const env = configurationEnvironment(options?.env ?? process.env);
+  const cli = options?.cli;
   const relayEnabledFallback =
-    resolvedOptions.relayEnabledFallback ?? persisted.daemon?.relay?.enabled === undefined;
-
-  const listen = resolveListenAddress(env, cli, persisted);
-  const {
-    mcpEnabled,
-    mcpInjectIntoAgents,
-    browserToolsEnabled,
-    autoArchiveAfterMerge,
-    appendSystemPrompt,
-    terminalProfiles,
-    agentProfiles,
-    hostnames,
-    trustedProxies,
-    appBaseUrl,
-  } = resolveStaticLoadConfigSettings(env, cli, persisted);
-
+    options?.relayEnabledFallback ?? persisted.daemon?.relay?.enabled === undefined;
+  const { overrideControlledPaths, ...settings } = resolveReloadableConfig(persisted, options);
   const relay = resolveRelayConfig({
     env,
     persisted,
@@ -590,66 +684,39 @@ export function resolveConfigFromPersisted(
     cliRelayUseTls: cli?.relayUseTls,
     enabledFallback: relayEnabledFallback,
   });
-  const serviceProxy = resolveServiceProxyConfig(env, persisted);
-  const webUi = resolveWebUiConfig(paseoHome, env, cli, persisted);
-
-  const { openai, speech } = resolveSpeechConfig({
-    paseoHome,
-    env,
-    persisted,
-  });
-
+  const tunnel = resolveTunnelConfig(env, persisted, resolveListenAddress(env, cli, persisted));
+  const { openai, fish, speech } = resolveSpeechConfig({ paseoHome, env, persisted });
   const voiceLlm = resolveVoiceLlmConfig(env, persisted);
-  const providerOverrides = extractProviderOverrides(
-    persisted.agents?.providers as Record<string, unknown> | undefined,
-  );
-
-  const overrideControlledPaths = resolveOverrideControlledPaths(env, cli, speech.providers);
-
   return {
-    listen,
+    ...settings,
+    listen: resolveListenAddress(env, cli, persisted),
     paseoHome,
     desktopManaged: env.PASEO_DESKTOP_MANAGED === "1",
     worktreesRoot: resolveWorktreesRoot(paseoHome, persisted),
-    corsAllowedOrigins: resolveCorsAllowedOrigins(env, persisted),
-    hostnames,
-    trustedProxies,
-    mcpEnabled,
-    mcpInjectIntoAgents,
-    browserToolsEnabled,
-    git: resolveGitProcessConfig(env, persisted),
-    autoArchiveAfterMerge,
-    enableTerminalAgentHooks: persisted.daemon?.enableTerminalAgentHooks ?? false,
-    appendSystemPrompt,
-    terminalProfiles,
-    agentProfiles,
-    skillSelection: persisted.agents?.skills?.selection,
-    pluginsEnabled: persisted.pluginsEnabled ?? false,
-    plugins: persisted.plugins,
+
+    pluginRegistries: persisted.pluginRegistries,
+    pluginRegistryUrl: env.PASEO_PLUGIN_REGISTRY,
     mcpDebug: env.MCP_DEBUG === "1",
     isDev: resolvePaseoNodeEnv(env) === "development",
     agentStoragePath: path.join(paseoHome, "agents"),
     staticDir: "public",
     agentClients: {},
-    relayEnabled: relay.enabled,
     relayEnabledMutable: relay.enabledMutable,
     relayEndpoint: relay.endpoint,
     relayPublicEndpoint: relay.publicEndpoint,
     relayUseTls: relay.useTls,
     relayPublicUseTls: relay.publicUseTls,
-    serviceProxy,
-    webUi,
-    appBaseUrl,
+    serviceProxy: resolveServiceProxyConfig(env, persisted),
+    tunnel,
+    webUi: resolveWebUiConfig(paseoHome, env, cli, persisted),
     auth: resolveAuthConfig(env, persisted),
     openai,
+    fish,
     speech,
     voiceLlmProvider: voiceLlm.provider,
     voiceLlmProviderExplicit: voiceLlm.providerExplicit,
     voiceLlmModel: voiceLlm.model,
-    agentProviderSettings: extractAgentProviderSettings(providerOverrides),
-    providerCatalogRefreshTimeoutMs: persisted.agents?.catalogRefreshTimeoutMs,
-    metadataGeneration: persisted.agents?.metadataGeneration,
-    providerOverrides,
+    agentProviderSettings: extractAgentProviderSettings(settings.providerOverrides),
     log: resolveLogConfigFromEnv(env, persisted),
     configReload: {
       env: { ...env },
@@ -658,6 +725,42 @@ export function resolveConfigFromPersisted(
       relayEnabledFallback,
       startupPersisted: persisted,
     },
+  };
+}
+
+export function resolveReloadableConfig(
+  persisted: PersistedConfig,
+  options?: ResolveConfigFromPersistedOptions,
+): ResolvedDaemonSettings & { overrideControlledPaths: string[] } {
+  const env = configurationEnvironment(options?.env ?? process.env);
+  const cli = options?.cli;
+  const relay = resolveRelayConfig({
+    env,
+    persisted,
+    cliRelayEnabled: cli?.relayEnabled,
+    cliRelayUseTls: cli?.relayUseTls,
+    enabledFallback:
+      options?.relayEnabledFallback ?? persisted.daemon?.relay?.enabled === undefined,
+  });
+  return {
+    ...resolveStaticLoadConfigSettings(env, cli, persisted),
+    corsAllowedOrigins: resolveCorsAllowedOrigins(env, persisted),
+    git: resolveGitProcessConfig(env, persisted),
+    enableTerminalAgentHooks: persisted.daemon?.enableTerminalAgentHooks ?? false,
+    skillSelection: persisted.agents?.skills?.selection,
+    pluginsEnabled: persisted.pluginsEnabled ?? false,
+    plugins: persisted.plugins,
+    relayEnabled: relay.enabled,
+    relayRequireProtectedSecurity: relay.requireProtectedSecurity,
+    idleRuntimeCleanup: persisted.agents?.idleRuntimeCleanup ?? true,
+    providerCatalogRefreshTimeoutMs: persisted.agents?.catalogRefreshTimeoutMs,
+    metadataGeneration: persisted.agents?.metadataGeneration,
+    aiReviewer: persisted.aiReviewer,
+    missionControl: persisted.missionControl,
+    providerOverrides: extractProviderOverrides(
+      persisted.agents?.providers as Record<string, unknown> | undefined,
+    ),
+    overrideControlledPaths: resolveOverrideControlledPaths(env, cli, persisted),
   };
 }
 
@@ -678,13 +781,13 @@ function parsePositiveGitOverride(value: string | undefined): boolean {
 function resolveOverrideControlledPaths(
   env: NodeJS.ProcessEnv,
   cli: CliConfigOverrides | undefined,
-  speechProviders: RequestedSpeechProviders,
+  persisted: PersistedConfig,
 ): string[] {
   return Array.from(
     new Set([
       ...resolveDaemonOverrideControlledPaths(env, cli),
       ...resolveLogOverrideControlledPaths(env),
-      ...resolveSpeechOverrideControlledPaths(env, speechProviders),
+      ...resolveSpeechOverrideControlledPaths(env, persisted),
     ]),
   ).sort();
 }
@@ -793,67 +896,12 @@ function resolveLogOverrideControlledPaths(env: NodeJS.ProcessEnv): string[] {
   return paths;
 }
 
-function isEnabledSpeechProvider(
-  provider: RequestedSpeechProviders[keyof RequestedSpeechProviders],
-  expected: "local" | "openai",
-): boolean {
-  return provider.enabled !== false && provider.provider === expected;
-}
-
 function resolveSpeechOverrideControlledPaths(
   env: NodeJS.ProcessEnv,
-  providers: RequestedSpeechProviders,
+  persisted: PersistedConfig,
 ): string[] {
-  const paths: string[] = [];
-  const add = (envName: string, ...configPaths: string[]) => {
-    if (env[envName] !== undefined) paths.push(...configPaths);
-  };
-
-  add("PASEO_DICTATION_ENABLED", "features.dictation.enabled");
-  add("PASEO_DICTATION_STT_PROVIDER", "features.dictation.stt.provider");
-  if (
-    env.PASEO_DICTATION_LOCAL_STT_MODEL !== undefined &&
-    isEnabledSpeechProvider(providers.dictationStt, "local")
-  ) {
-    paths.push("features.dictation.stt.model");
-  }
-  add("PASEO_DICTATION_LANGUAGE", "features.dictation.stt.language");
-  add("PASEO_VOICE_MODE_ENABLED", "features.voiceMode.enabled");
-  add("PASEO_VOICE_LLM_PROVIDER", "features.voiceMode.llm.provider");
-  add("PASEO_VOICE_STT_PROVIDER", "features.voiceMode.stt.provider");
-  if (
-    env.PASEO_VOICE_LOCAL_STT_MODEL !== undefined &&
-    isEnabledSpeechProvider(providers.voiceStt, "local")
-  ) {
-    paths.push("features.voiceMode.stt.model");
-  }
-  add("PASEO_VOICE_LANGUAGE", "features.voiceMode.stt.language");
-  add("PASEO_VOICE_TURN_DETECTION_PROVIDER", "features.voiceMode.turnDetection.provider");
-  add("PASEO_VOICE_TTS_PROVIDER", "features.voiceMode.tts.provider");
-  if (
-    env.PASEO_VOICE_LOCAL_TTS_MODEL !== undefined &&
-    isEnabledSpeechProvider(providers.voiceTts, "local")
-  ) {
-    paths.push("features.voiceMode.tts.model");
-  }
-  add("PASEO_VOICE_LOCAL_TTS_SPEAKER_ID", "features.voiceMode.tts.speakerId");
-  add("PASEO_VOICE_LOCAL_TTS_SPEED", "features.voiceMode.tts.speed");
-  add("PASEO_LOCAL_MODELS_DIR", "providers.local.modelsDir");
-  const openAiDictationStt = isEnabledSpeechProvider(providers.dictationStt, "openai");
-  const openAiVoiceStt = isEnabledSpeechProvider(providers.voiceStt, "openai");
-  if (env.STT_CONFIDENCE_THRESHOLD !== undefined && (openAiDictationStt || openAiVoiceStt)) {
-    paths.push("features.dictation.stt.confidenceThreshold");
-  }
-  if (env.STT_MODEL !== undefined) {
-    if (openAiDictationStt) paths.push("features.dictation.stt.model");
-    if (openAiVoiceStt) paths.push("features.voiceMode.stt.model");
-  }
-  if (isEnabledSpeechProvider(providers.voiceTts, "openai")) {
-    add("TTS_MODEL", "features.voiceMode.tts.model");
-    add("TTS_VOICE", "features.voiceMode.tts.voice");
-  }
-  if (env.PASEO_DICTATION_LANGUAGE !== undefined && env.PASEO_VOICE_LANGUAGE === undefined) {
-    paths.push("features.voiceMode.stt.language");
-  }
+  const paths = Object.keys(readSpeechSettings(persisted, env).envOverrides);
+  if (env.PASEO_VOICE_LLM_PROVIDER !== undefined) paths.push("features.voiceMode.llm.provider");
+  if (env.PASEO_LOCAL_MODELS_DIR !== undefined) paths.push("providers.local.modelsDir");
   return paths;
 }

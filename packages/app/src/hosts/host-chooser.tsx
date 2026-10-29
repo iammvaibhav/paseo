@@ -1,3 +1,4 @@
+import { usePanelStore } from "@/stores/panel-store";
 import { createElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Modal,
@@ -15,7 +16,7 @@ import { router } from "expo-router";
 import { Server } from "lucide-react-native";
 import { create } from "zustand";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
-import { HostStatusDotSlot } from "@/components/hosts/host-picker";
+import { HostGlyphSlot } from "@/components/hosts/host-picker";
 import { isWeb } from "@/constants/platform";
 import { useLocalDaemonServerId } from "@/hooks/use-is-local-daemon";
 import {
@@ -26,6 +27,7 @@ import {
 import { useHosts } from "@/runtime/host-runtime";
 import { orderHostsLocalFirst, type HostProfile } from "@/types/host-connection";
 import { buildSettingsAddHostRoute } from "@/utils/host-routes";
+import { glassFloatingStyle } from "@/styles/theme";
 
 type HostFilter = (host: HostProfile) => boolean;
 type HostChoiceHandler = (serverId: string) => void | Promise<void>;
@@ -81,7 +83,13 @@ export function useHostChooser() {
       );
 
       if (availableHosts.length === 0) {
-        (input.onNoHosts ?? (() => router.push(buildSettingsAddHostRoute(Date.now()))))();
+        (
+          input.onNoHosts ??
+          (() => {
+            usePanelStore.getState().showMobileAgent();
+            router.push(buildSettingsAddHostRoute(Date.now()));
+          })
+        )();
         return false;
       }
 
@@ -128,7 +136,7 @@ function HostChooserRow({
       testID={`host-chooser-row-${host.serverId}`}
     >
       <View style={styles.rowIconSlot}>
-        <HostStatusDotSlot serverId={host.serverId} />
+        <HostGlyphSlot serverId={host.serverId} label={host.label} />
       </View>
       <View style={styles.rowText}>
         <Text style={styles.rowTitle} numberOfLines={1}>
@@ -292,7 +300,7 @@ const styles = StyleSheet.create((theme) => ({
     paddingTop: theme.spacing[12],
   },
   backdrop: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: "rgba(0, 0, 0, 0.5)",
   },
   panel: {
@@ -305,6 +313,7 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.surface0,
     overflow: "hidden",
     ...theme.shadow.lg,
+    ...glassFloatingStyle(theme),
   },
   header: {
     gap: theme.spacing[3],

@@ -8,14 +8,26 @@ import {
   useState,
 } from "react";
 import { UnistylesRuntime } from "react-native-unistyles";
-import { DEFAULT_THEME_PREFERENCE, useAppSettings, type AppSettings } from "@/hooks/use-settings";
+import {
+  DEFAULT_THEME_PREFERENCE,
+  resolveContentMaxWidth,
+  useAppSettings,
+  type AppSettings,
+} from "@/hooks/use-settings";
 import {
   rememberPluginThemeHost,
   usePluginThemeCatalog,
   type PluginThemeOption,
 } from "@/plugins/themes";
-import { PLUGIN_THEME_NAMES, PLUGIN_THEME_PREFERENCE, THEME_TO_UNISTYLES } from "@/styles/theme";
+import {
+  GLASS_THEME_NAME,
+  PLUGIN_THEME_NAMES,
+  PLUGIN_THEME_PREFERENCE,
+  THEME_TO_UNISTYLES,
+} from "@/styles/theme";
+import { isGlassThemePreference } from "./glass";
 import { applyAppearance } from "./apply";
+import { AppearanceSystemBars } from "./system-bars";
 
 interface ContributedThemes {
   options: PluginThemeOption[];
@@ -47,6 +59,11 @@ function applyTheme({ preference, contributedTheme }: ApplyThemeInput): void {
   }
 
   UnistylesRuntime.setAdaptiveThemes(false);
+  // Mono gets the window's sidebar vibrancy only where the window can provide it.
+  if (isGlassThemePreference(builtInPreference)) {
+    UnistylesRuntime.setTheme(GLASS_THEME_NAME);
+    return;
+  }
   UnistylesRuntime.setTheme(THEME_TO_UNISTYLES[builtInPreference]);
 }
 
@@ -68,7 +85,9 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
       uiBaseFontSize: settings.uiBaseFontSize,
       contentFontSize: settings.contentFontSize,
       codeFontSize: settings.codeFontSize,
+      contentMaxWidth: resolveContentMaxWidth({ contentMaxWidth: settings.contentMaxWidth }),
       syntaxTheme: settings.syntaxTheme,
+      glassTuning: settings.glassTuning,
     });
     setHasAppliedAppearance(true);
   }, [
@@ -80,7 +99,9 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
     settings.uiBaseFontSize,
     settings.contentFontSize,
     settings.codeFontSize,
+    settings.contentMaxWidth,
     settings.syntaxTheme,
+    settings.glassTuning,
   ]);
 
   const select = useCallback(
@@ -100,7 +121,10 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
   if (!hasAppliedAppearance) return null;
 
   return (
-    <ContributedThemesContext.Provider value={value}>{children}</ContributedThemesContext.Provider>
+    <ContributedThemesContext.Provider value={value}>
+      <AppearanceSystemBars />
+      {children}
+    </ContributedThemesContext.Provider>
   );
 }
 

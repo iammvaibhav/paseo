@@ -1,6 +1,6 @@
 import os from "node:os";
 import path from "node:path";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 
 import { beforeEach, afterEach, describe, expect, test } from "vitest";
 
@@ -13,6 +13,7 @@ import {
   FileBackedWorkspaceRegistry,
   resolveWorkspaceDisplayName,
   resolveWorkspaceName,
+  type WorkspaceMutation,
 } from "./workspace-registry.js";
 
 describe("resolveWorkspaceName", () => {
@@ -26,6 +27,21 @@ describe("resolveWorkspaceName", () => {
     expect(resolveWorkspaceName({ title: null, derivedDisplayName: "feature/payments" })).toBe(
       "feature/payments",
     );
+  });
+
+  test("createPersistedWorkspaceRecord defaults background to false and preserves explicit intent", () => {
+    const base = {
+      workspaceId: "ws-1",
+      projectId: "proj-1",
+      cwd: "/tmp/repo",
+      kind: "local_checkout" as const,
+      displayName: "main",
+      createdAt: "2026-03-01T00:00:00.000Z",
+      updatedAt: "2026-03-01T00:00:00.000Z",
+    };
+    expect(createPersistedWorkspaceRecord(base).background).toBe(false);
+    expect(createPersistedWorkspaceRecord({ ...base, background: false }).background).toBe(false);
+    expect(createPersistedWorkspaceRecord({ ...base, background: true }).background).toBe(true);
   });
 
   test("resolveWorkspaceDisplayName applies the same rule over the persisted record", () => {
@@ -98,6 +114,35 @@ describe("workspace registries", () => {
     await projectRegistry.remove("remote:github.com/acme/repo");
     expect(await projectRegistry.get("remote:github.com/acme/repo")).toBeNull();
     expect(await projectRegistry.list()).toEqual([]);
+  });
+
+  test("writes once per mutation and skips missing-record mutations", async () => {
+    let writes = 0;
+    const registry = new FileBackedProjectRegistry(
+      path.join(tmpDir, "projects", "write-count.json"),
+      logger,
+      {
+        writeRecords: async (filePath, records) => {
+          writes++;
+          await writeJsonFileAtomic(filePath, records);
+        },
+      },
+    );
+    const project = createPersistedProjectRecord({
+      projectId: "counted",
+      rootPath: tmpDir,
+      kind: "git",
+      displayName: "Counted",
+      createdAt: "2026-03-01T00:00:00.000Z",
+      updatedAt: "2026-03-01T00:00:00.000Z",
+    });
+    await registry.upsert(project);
+    expect(writes).toBe(1);
+    await registry.update("missing", (current) => current);
+    await registry.remove("missing");
+    expect(writes).toBe(1);
+    await registry.update(project.projectId, (current) => ({ ...current, customName: "Changed" }));
+    expect(writes).toBe(2);
   });
 
   test("preserves a concurrent project update when archiving", async () => {
@@ -186,7 +231,7 @@ describe("workspace registries", () => {
     expect(mutations).toEqual([
       { kind: "upsert", projectId: active.projectId, project: active },
       { kind: "archive", projectId: active.projectId, project: archived },
-      { kind: "remove", projectId: active.projectId, project: null },
+      { kind: "remove", projectId: active.projectId, project: archived },
     ]);
     unsubscribe();
   });
@@ -321,29 +366,64 @@ describe("workspace registries", () => {
     expect(await projectRegistry.list()).toEqual([first]);
   });
 
-  test("keeps lexical and symlink root spellings distinct without realpath", async () => {
-    await projectRegistry.initialize();
-    const target = path.join(tmpDir, "target");
-    const link = path.join(tmpDir, "link");
-    mkdirSync(target);
-    symlinkSync(target, link, process.platform === "win32" ? "junction" : "dir");
+  test.skipIf(process.platform === "win32")(
+    "registers a symlinked root at its realpath and reuses it for either spelling",
+    async () => {
+      await projectRegistry.initialize();
+      const target = path.join(realpathSync(tmpDir), "target");
+      const link = path.join(tmpDir, "link");
+      mkdirSync(target);
+      symlinkSync(target, link, "dir");
 
-    const targetProject = await projectRegistry.getOrCreateActiveByRoot({
-      rootPath: target,
-      kind: "non_git",
-      displayName: "target",
-      timestamp: "2026-03-01T00:00:00.000Z",
-    });
-    const linkProject = await projectRegistry.getOrCreateActiveByRoot({
-      rootPath: link,
-      kind: "non_git",
-      displayName: "link",
-      timestamp: "2026-03-02T00:00:00.000Z",
-    });
+      const linkProject = await projectRegistry.getOrCreateActiveByRoot({
+        rootPath: link,
+        kind: "non_git",
+        displayName: "link",
+        timestamp: "2026-03-01T00:00:00.000Z",
+      });
+      const targetProject = await projectRegistry.getOrCreateActiveByRoot({
+        rootPath: target,
+        kind: "non_git",
+        displayName: "target",
+        timestamp: "2026-03-02T00:00:00.000Z",
+      });
 
-    expect(linkProject.projectId).not.toBe(targetProject.projectId);
-    expect(await projectRegistry.list()).toEqual([targetProject, linkProject]);
-  });
+      expect(linkProject.rootPath).toBe(target);
+      expect(targetProject).toEqual(linkProject);
+      expect(await projectRegistry.list()).toEqual([linkProject]);
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "reuses a project stored under a symlink spelling when resolved by its realpath",
+    async () => {
+      const target = path.join(realpathSync(tmpDir), "data-paseo");
+      const link = path.join(tmpDir, "home-paseo");
+      mkdirSync(target);
+      symlinkSync(target, link, "dir");
+      const legacy = createPersistedProjectRecord({
+        projectId: "prj_legacy",
+        rootPath: link,
+        kind: "git",
+        displayName: "paseo",
+        projectKey: "remote:github.com/acme/paseo",
+        createdAt: "2026-03-01T00:00:00.000Z",
+        updatedAt: "2026-03-01T00:00:00.000Z",
+      });
+      await projectRegistry.upsert(legacy);
+
+      const resolved = await projectRegistry.getOrCreateActiveByRoot({
+        rootPath: target,
+        kind: "git",
+        displayName: "paseo",
+        projectKey: "remote:github.com/acme/paseo",
+        timestamp: "2026-03-02T00:00:00.000Z",
+      });
+
+      expect(resolved.projectId).toBe("prj_legacy");
+      expect(await projectRegistry.list()).toHaveLength(1);
+    },
+  );
 
   test("retries a generated project ID collision", async () => {
     const generatedIds = ["prj_collision", "prj_fresh"];
@@ -415,6 +495,10 @@ describe("workspace registries", () => {
 
   test("creates, updates, archives, deletes, and lists workspace records", async () => {
     await workspaceRegistry.initialize();
+    const mutations: WorkspaceMutation[] = [];
+    workspaceRegistry.subscribeToMutations((mutation) => {
+      mutations.push(mutation);
+    });
     await workspaceRegistry.upsert(
       createPersistedWorkspaceRecord({
         workspaceId: "/tmp/repo",
@@ -445,11 +529,16 @@ describe("workspace registries", () => {
     expect(archived?.archivedAt).toBe("2026-03-03T00:00:00.000Z");
 
     await workspaceRegistry.remove("/tmp/repo");
+    expect(mutations.at(-1)).toEqual({
+      kind: "remove",
+      workspaceId: "/tmp/repo",
+      workspace: archived,
+    });
     expect(await workspaceRegistry.get("/tmp/repo")).toBeNull();
     expect(await workspaceRegistry.list()).toEqual([]);
   });
 
-  test("refreshes workspace archive timestamps when an archive is repeated", async () => {
+  test("preserves the first workspace archive and reports whether a queued archive applied", async () => {
     await workspaceRegistry.initialize();
     await workspaceRegistry.upsert(
       createPersistedWorkspaceRecord({
@@ -463,12 +552,24 @@ describe("workspace registries", () => {
       }),
     );
 
-    await workspaceRegistry.archive("workspace-one", "2026-03-02T00:00:00.000Z");
-    await workspaceRegistry.archive("workspace-one", "2026-03-03T00:00:00.000Z");
-
-    expect(await workspaceRegistry.get("workspace-one")).toMatchObject({
-      archivedAt: "2026-03-03T00:00:00.000Z",
-      updatedAt: "2026-03-03T00:00:00.000Z",
+    const events: WorkspaceMutation[] = [];
+    workspaceRegistry.subscribeToMutations((event) => {
+      events.push(event);
+    });
+    expect(
+      await Promise.all([
+        workspaceRegistry.archive("workspace-one", "2026-03-02T00:00:00.000Z"),
+        workspaceRegistry.archive("workspace-one", "2026-03-03T00:00:00.000Z"),
+      ]),
+    ).toEqual([true, false]);
+    expect(events.map((event) => event.kind)).toEqual(["archive"]);
+    const reloaded = new FileBackedWorkspaceRegistry(
+      path.join(tmpDir, "projects", "workspaces.json"),
+      logger,
+    );
+    expect(await reloaded.get("workspace-one")).toMatchObject({
+      archivedAt: "2026-03-02T00:00:00.000Z",
+      updatedAt: "2026-03-02T00:00:00.000Z",
     });
   });
 

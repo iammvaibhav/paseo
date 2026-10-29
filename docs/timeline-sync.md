@@ -10,11 +10,20 @@ then replaces the previous tool state or merges into the current text item. Inte
 are never retained for history or catch-up. Provider history is the durable transcript authority
 and rebuilds the projection when an agent resumes.
 
+Pagination bounds each read, not total resident history. Active and idle agents retain their
+projected transcript; archive releases it and later history reads rebuild it from the provider.
+Streaming overhead must remain proportional to the retained transcript. Cumulative text snapshots
+must be released after their deltas have been consumed.
+
 The invariants are:
 
 > A continuously subscribed client applies every committed row in order. Opening or resuming an
-> agent establishes the daemon's current tail in one bounded request, with older history reachable
+> agent establishes the daemon's current tail in one complete-turn request, with older history reachable
 > through backward pagination.
+
+> The timeline epoch identifies one numbering of an agent's rows. It changes only when the daemon
+> renumbers them. Rehydration is not a renumber: it continues the durable epoch and the durable
+> `nextSeq`.
 
 Tool output is bounded before it enters either delivery path. Canonical shell tool output is sliced
 to 64 KiB, and the same bounded item is used for runtime timeline rows and live stream events.
@@ -44,7 +53,21 @@ recovery is complete only when `hasNewer: false`.
 
 Initialization timeouts guard lack of catch-up progress, not the full multi-page sync. A successful page that queues the next `after` page refreshes the watchdog.
 
-Opening or resuming an agent fetches one bounded latest tail page. Older history remains
+Opening or resuming an agent fetches the latest available turns with a soft target of 40
+projected items. Backward pages and prompt-jump windows also include whole turns, including
+all currently available rows of an active run. There is no per-turn cap: a large run can
+exceed the target. Local history mounting uses the same boundaries so revealing older rows
+does not change the collapse state of a turn already displayed.
+
+`wholeTurns` is a preference negotiated once at the client fetch boundary. Hosts advertising
+`features.wholeTurnTimeline` receive it; other hosts receive the existing item-based request.
+Reading history remains available on older hosts, whose pages can still split turns. Forward
+catch-up stays incremental, but its reset snapshot honors a supported whole-turn request.
+Source coverage still includes interleaved tool updates.
+
+Canonical IDs define runs. With missing IDs, human prompts, heartbeats and typed received
+agent messages each start a fallback turn. This deterministic fallback is shared by paging
+and presentation; it cannot recover historical batching or steering. Older history remains
 user-driven by scrolling upward.
 
 A failed catch-up or subscription reconcile retries on its own, doubling from 1s to a 30s ceiling.
@@ -63,6 +86,16 @@ the anchored page still leaves the viewport at history start, as with short or c
 that case pagination continues as one loading operation until the page fills the viewport or history
 is exhausted.
 
+A jump to an unloaded message (Chat outline, chat find) merges a window around it with
+`mergeWindow`. The window becomes a retained range beside the contiguous range that reaches the
+newest row, so the loaded coverage can have holes. "Older" means rows above the top of the list,
+which a jump window can own: scrolling up extends the topmost range, and a window that starts at
+the first row leaves nothing older. Rows between two ranges render a "Load more history" row below
+the last loaded row before them; each press loads the next page top-down
+(`planTimelineGapFill`), and the row disappears when the ranges join. Before this row existed, a
+jump to the first message spliced it directly onto the newest page and the turns in between could
+only come back by reloading the chat.
+
 ## Durable item anchors
 
 Provider message IDs are not guaranteed for every displayed item. Paseo-generated system errors are one example. Rendered item indices are not durable either because pagination and projection can merge source rows.
@@ -73,6 +106,24 @@ The daemon validates the epoch and locates the projected item at the selected po
 includes projected items through that checkpoint. If an item spans the checkpoint and changed
 afterward, the daemon refuses that fork with an actionable error: discarded historical payloads
 cannot be reconstructed from sequence metadata. Forking the current context remains available.
+
+## Epoch rotation
+
+Rotate the epoch only when the numbering actually changes, such as a provider-history reconcile, a
+fork, or a rewind.
+
+Rehydration must not rotate it. An idle agent releases its provider process and loses its in-memory
+timeline, so the next prompt or fetch rebuilds it. The durable document is authoritative whenever it
+holds rows, and the rebuild continues that document's epoch and `nextSeq`. A rebuild from provider
+disk history numbers the rows from 1 again, which mutes every connected client and makes the durable
+store reject the batch for a sequence it already holds. That rejection retries forever, so the agent
+stops persisting rows until the daemon restarts.
+
+A client that receives a rotated epoch, or a sequence at or below its cursor, holds a cursor that no
+longer matches the daemon. A forward `after` fetch cannot repair it, because the cursor names a
+numbering the daemon no longer has. The client fetches the latest tail instead. A client that drops
+the event without that fetch shows an empty response for the rest of the turn, while the turn footer
+keeps counting, because turn liveness does not carry a sequence and never passes through the gate.
 
 ## Resume behavior
 
@@ -149,12 +200,13 @@ range describes those exact items: `startSeq` drives older pagination and `endSe
 catch-up. The owner requests `after endSeq`, and requests `before startSeq` when the user loads older
 history. Code outside the owner does not distinguish cached and network timelines.
 
-The first resume request is bounded. If it reports more newer history, fetch one latest bounded tail
+The first resume request is bounded. If it reports more newer history, fetch one latest complete-turn tail
 instead of replaying every missed page. Live gap recovery still pages forward until current.
 
-If the canonical window exceeds the cache item limit, contains a discontiguous retained range, has a
+If the canonical window exceeds the cache item target, contains a discontiguous retained range, has a
 live head, or includes presentation data the cache cannot encode losslessly, persistence drops the
-range and keeps a display-only tail. Never slice items while retaining the pre-slice range; that
+range and keeps a display-only tail of complete available turns. The item target is soft;
+the byte budget still evicts entire cache rows. Never slice items while retaining the pre-slice range; that
 falsely certifies discarded source rows. A display-only row paints without granting synchronization
 authority, so the owner uses the ordinary bounded `tail` bootstrap.
 
@@ -205,11 +257,16 @@ Every path that sends a message to an agent — composer send, dictation accept-
 send-now, and the host runtime's automatic queue drain — goes through
 `dispatchComposerAgentMessage` with a submission writer. There is no second transport for the same
 product action: calling `client.sendAgentMessage` directly skips the submitted row and the pending
-footer, and permanently drops attachments because the daemon does not echo them back.
+footer.
 
 A submitted prompt is one `UserMessageItem` row. That row is the authoritative local presentation:
 its stable identity, text, timestamp, images, and attachments do not change when the provider
-acknowledges it. Submission lifecycle is a separate record keyed by agent, not another row shape.
+acknowledges it. The daemon's canonical row carries the prompt's images and attachments too, so a
+prompt sent by another client (an MCP `fleet_create_agent` with attachments, a ticket dispatch)
+renders the same way. A prompt with images or attachments always runs with a client message id:
+providers echo it with the attachments rendered into the text, so only the id reconciles the echo
+with the canonical row. Submission lifecycle is a separate record keyed by agent, not another row
+shape.
 The transaction registry records two independent settlement facts: canonical acknowledgement and RPC
 settlement. Canonical acknowledgement retires optimistic activity immediately. When both facts are
 known, whichever arrives second deletes the record. A canonical acknowledgement that arrives first
@@ -223,7 +280,7 @@ submission. Overlapping sends settle independently rather than collapsing to one
 message.
 
 Daemons advertising `server_info.features.canonicalSubmittedPrompts` guarantee that every accepted
-prompt carrying a client message id is recorded and streamed as a canonical `user_message` with that
+human prompt carrying a client message id is recorded and streamed as a canonical `user_message` with that
 same id. This includes daemon-handled commands that do not allocate a foreground turn; their submitted
 row is recorded before handler output. The app tracks submission transactions only for hosts with this
 capability. Older hosts keep the shipped untracked optimistic-row behavior and roll that row back on RPC
@@ -238,10 +295,25 @@ foreground control ownership remains a separate daemon concern. Cancellation req
 with that record rather than in a React component, so an old request cannot clear a newer one. Submissions
 remain a separate pre-turn registry and retire on canonical acknowledgement.
 
-Canonical turns and visible responses are different boundaries. System-injected prompts are absent from
-the Paseo timeline, so one visible response can span several canonical turns without a user message
-between them. Layout and copy group that response together; lifecycle, timing, tool sequences, and exact
-fork positions retain the canonical `turnId` boundaries.
+Every canonical run owns a visible turn, including heartbeats and agent notifications.
+Notifications delivered during a run stay inside it; batched notifications share the run
+that starts or accepts them. Received messages retain sender attribution, while lifecycle
+notifications remain visible events. Collapse, timing and locally mounted history share
+these boundaries.
+
+Agent-message XML belongs to the daemon's `agent/agent-messages` boundary. Prompt delivery encodes
+provenance; acceptance, provider echoes, import, and replay share its projection. The delivery ID is
+also the projected call ID, so a provider echo cannot create a second row. Sender IDs are opaque and
+do not imply local ownership or authorization. Capture the sender title at delivery: archived or
+removed senders must remain understandable without a live directory lookup.
+
+The optional `agentMessage` payload carries event, sender, and delivered text. Shared client
+presentation (`protocol/paseo-tool-presentation`) owns its heading and expanded details, next to the
+labels for every Paseo MCP tool. The daemon
+must not construct UI labels or prepend sender labels to the semantic message body. The existing
+`tool_call` / `plain_text` envelope is a compatibility adapter: older clients still parse the row and
+expand its body. New clients use the typed payload, never infer the event from a tool name or parse
+XML. Stream reduction and disk-cache serialization preserve the payload without rendering it.
 
 The compatibility boundary for older daemons is snapshot normalization: running/idle status becomes an
 anonymous active turn or idle state once, and downstream code consumes the same activity shape. The app
@@ -250,7 +322,7 @@ second running state. Disconnect preserves the last replicated turn until cache 
 advances it; replica removal remains the destructive close boundary. Elapsed time comes only from turn
 liveness, never from submission records or whichever timeline rows happen to be mounted.
 
-The daemon records one canonical submitted user row at acceptance. Its wire `messageId` is the
+For human prompts, the daemon records one canonical submitted user row at acceptance. Its wire `messageId` is the
 submission's `clientMessageId`, so the row is born with its final identity and remains immutable on
 the wire. A correlated provider echo records the provider's native identity internally without
 dispatching another timeline event. Rewind resolves the wire identity to that provider identity at

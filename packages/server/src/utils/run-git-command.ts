@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { existsSync } from "node:fs";
+import type { ChildProcess } from "node:child_process";
 import type { Logger } from "pino";
 import type { ProcessEnvRecord } from "../server/paseo-env.js";
 import {
@@ -53,10 +53,13 @@ export interface GitCommandOptions {
   timeout?: number;
   maxOutputBytes?: number;
   acceptExitCodes?: number[];
+  /** When true, preserves the raw un-decoded stdout Buffer in `result.stdoutBuffer`. */
+  rawOutput?: boolean;
 }
 
 export interface GitCommandResult<Output = string> {
   stdout: Output;
+  stdoutBuffer?: Buffer;
   stderr: string;
   truncated: boolean;
   exitCode: number | null;
@@ -311,7 +314,6 @@ function executeGitCommand<Output>(
             command: "git",
             args,
             cwd: options.cwd,
-            cwdExists: existsSync(options.cwd),
             timeout,
             maxOutputBytes,
             acceptExitCodes,
@@ -391,7 +393,7 @@ function executeGitCommand<Output>(
         settle(() => reject(processError));
       };
 
-      let child: ReturnType<typeof spawnProcess>;
+      let child: ChildProcess;
       try {
         // `core.quotepath=false` makes git emit raw UTF-8 paths instead of
         // octal-escaping non-ASCII bytes (e.g. `测试文件.txt` vs `"\346\265\213..."`).
@@ -498,8 +500,10 @@ function executeGitCommand<Output>(
 
       child.on("close", (exitCode, signal) => {
         markProcessExited(exitCode, signal);
+        const stdoutBuffer = Buffer.concat(stdoutChunks);
         const result: GitCommandResult<Output> = {
-          stdout: decode(Buffer.concat(stdoutChunks)),
+          stdout: decode(stdoutBuffer),
+          stdoutBuffer: options.rawOutput ? stdoutBuffer : undefined,
           stderr: Buffer.concat(stderrChunks).toString("utf8"),
           truncated,
           exitCode,

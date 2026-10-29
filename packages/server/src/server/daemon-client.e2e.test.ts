@@ -157,15 +157,19 @@ test("DaemonClient uploads file bytes to daemon temp storage", async () => {
       chunkSize: 5,
     });
 
+    const uploadId = result.file?.id ?? "";
+    expect(uploadId).toMatch(
+      /^upload_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+    );
     expect(result).toEqual({
       requestId: "req-upload-e2e",
       file: {
         type: "uploaded_file",
-        id: "upload_req-upload-e2e",
+        id: uploadId,
         fileName: "notes.txt",
         mimeType: "text/plain",
         size: 11,
-        path: path.join(daemon.paseoHome, "uploads", "upload_req-upload-e2e", "notes.txt"),
+        path: path.join(daemon.paseoHome, "uploads", uploadId, "notes.txt"),
       },
       error: null,
     });
@@ -831,6 +835,53 @@ test("send_agent_message auto-unarchives archived agents", async () => {
   }
 }, 180000);
 
+test("a queued send_agent_message unarchives an archived agent and runs it", async () => {
+  const cwd = tmpCwd();
+  try {
+    const created = await ctx.client.createAgent({
+      config: {
+        ...getFullAccessConfig("codex"),
+        cwd,
+      },
+    });
+
+    await ctx.client.archiveAgent(created.id);
+    await ctx.client.sendAgentMessage(created.id, "Say hello and nothing else", {
+      dispatchMode: "queue",
+    });
+    const finalState = await ctx.client.waitForFinish(created.id, 120000);
+    expect(finalState.status).toBe("idle");
+
+    const refreshed = await ctx.client.fetchAgent({ agentId: created.id });
+    expect(refreshed?.agent.archivedAt).toBeNull();
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+}, 180000);
+
+test("send_agent_message leaves an archived agent archived when its directory is gone", async () => {
+  const cwd = tmpCwd();
+  try {
+    const created = await ctx.client.createAgent({
+      config: {
+        ...getFullAccessConfig("codex"),
+        cwd,
+      },
+    });
+    const archived = await ctx.client.archiveAgent(created.id);
+    rmSync(cwd, { recursive: true, force: true });
+
+    await expect(ctx.client.sendMessage(created.id, "hello")).rejects.toThrow(
+      "Working directory does not exist",
+    );
+
+    const afterSend = await ctx.client.fetchAgent({ agentId: created.id });
+    expect(afterSend?.agent.archivedAt).toBe(archived.archivedAt);
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+}, 30000);
+
 test("refresh_agent auto-unarchives archived agents", async () => {
   const cwd = tmpCwd();
   try {
@@ -1238,6 +1289,7 @@ test("receives server_info on websocket connect", async () => {
   expect(serverInfo?.features?.hubRelationship).toBe(true);
   expect(serverInfo?.features?.commitsList).toBe(true);
   expect(serverInfo?.features?.commitBaseClassification).toBe(true);
+  expect(serverInfo?.features?.commitParents).toBe(true);
   expect(serverInfo?.desktopManaged).toBe(false);
   expect(serverInfo?.features?.daemonSelfUpdate).toBe(true);
   expect(serverInfo?.features?.worktreeRestore).toBe(true);
@@ -1291,9 +1343,9 @@ test("emits disabled voice capability reasons on fresh daemon startup", async ()
     expect(voice).toBeTruthy();
 
     expect(voice?.dictation.enabled).toBe(false);
-    expect(voice?.dictation.reason).toBe("Dictation is disabled in daemon config.");
+    expect(voice?.dictation.reason).toBe("Dictation is off. Turn it on in Settings > Voice.");
     expect(voice?.voice.enabled).toBe(false);
-    expect(voice?.voice.reason).toBe("Realtime voice is disabled in daemon config.");
+    expect(voice?.voice.reason).toBe("Voice mode is off. Turn it on in Settings > Voice.");
   } finally {
     await client.close().catch(() => undefined);
     await isolatedCtx.cleanup();

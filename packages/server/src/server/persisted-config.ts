@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+import { PluginRegistriesSchema } from "@getpaseo/protocol/plugin-registry";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
@@ -8,11 +10,18 @@ import {
   ProviderOverridesSchema,
 } from "./agent/provider-launch-config.js";
 import type { AgentProviderRuntimeSettingsMap } from "./agent/provider-launch-config.js";
-import { ensurePrivateFile, writePrivateFileAtomicSync } from "./private-files.js";
+import {
+  ensurePrivateFile,
+  ensurePrivateFileAsync,
+  writePrivateFileAtomic,
+  writePrivateFileAtomicSync,
+} from "./private-files.js";
 import { AgentProfileSchema, AgentSkillSelectionSchema } from "@getpaseo/protocol/agent-profile";
 import { PluginIdSchema, PluginSourceSchema } from "@getpaseo/protocol/plugin-config";
 import { TerminalProfileSchema } from "@getpaseo/protocol/terminal-profile";
+import { ComposerPreferencesSchema } from "@getpaseo/protocol/composer-preferences";
 import { PaseoServicePortAllocationSchema } from "@getpaseo/protocol/paseo-config-schema";
+import { PeerConfigSchema } from "./peers/types.js";
 
 export const LogLevelSchema = z.enum(["trace", "debug", "info", "warn", "error", "fatal"]);
 export const LogFormatSchema = z.enum(["pretty", "json"]);
@@ -48,32 +57,27 @@ const LogConfigSchema = z
   })
   .strict();
 
-const OpenAiSpeechEndpointSchema = z
-  .object({
-    apiKey: z.string().trim().min(1).optional(),
-    baseUrl: z.string().trim().min(1).optional(),
-  })
-  .strict();
-
-const OpenAiProviderSchema = z
-  .object({
-    apiKey: z.string().min(1).optional(),
-    baseUrl: z.string().trim().min(1).optional(),
-    stt: OpenAiSpeechEndpointSchema.optional(),
-    tts: OpenAiSpeechEndpointSchema.optional(),
-  })
-  .strict();
-
 const LocalSpeechProviderSchema = z
   .object({
     modelsDir: z.string().min(1).optional(),
   })
   .strict();
 
+const FishProviderSchema = z
+  .object({
+    apiKey: z.string().trim().min(1).optional(),
+    baseUrl: z.string().trim().min(1).optional(),
+    model: z.string().min(1).optional(),
+    voice: z.string().min(1).optional(),
+    latency: z.enum(["low", "balanced", "normal"]).optional(),
+    speed: z.number().optional(),
+  })
+  .strict();
+
 const ProvidersSchema = z
   .object({
-    openai: OpenAiProviderSchema.optional(),
     local: LocalSpeechProviderSchema.optional(),
+    fish: FishProviderSchema.optional(),
   })
   .strict();
 
@@ -94,24 +98,107 @@ const DaemonAuthSchema = z
   })
   .strict();
 
+export const RemoteMcpClientSchema = z
+  .object({
+    name: z.string().min(1),
+    tokenHash: BcryptHashSchema,
+    /**
+     * Where finish notifications for this client go (notifyOnFinish on
+     * /mcp/fleet). Header values may embed an Aside vault reference,
+     * e.g. "Bearer aside://<account>/<itemId>"; it is resolved at send time.
+     */
+    notify: z
+      .object({
+        url: z.string().url(),
+        headers: z.record(z.string(), z.string()).optional(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict();
+
+export type RemoteMcpClient = z.infer<typeof RemoteMcpClientSchema>;
+
+/**
+ * A named finish-notification webhook a /mcp/fleet caller selects with
+ * notifyTarget, independent of which client token it authenticated with.
+ * signingSecret (usually an aside:// reference) signs each POST body with
+ * HMAC-SHA256 into the X-Paseo-Signature-256 header.
+ */
+export const NotifyTargetSchema = z
+  .object({
+    name: z.string().min(1),
+    url: z.string().url(),
+    headers: z.record(z.string(), z.string()).optional(),
+    signingSecret: z.string().min(1).optional(),
+  })
+  .strict();
+
+export type NotifyTargetConfig = z.infer<typeof NotifyTargetSchema>;
+
 const SpeechProviderIdSchema = z
   .string()
   .trim()
   .toLowerCase()
-  .pipe(z.enum(["openai", "local"]));
+  .pipe(z.enum(["openai", "local", "fish"]));
+
+const SpeechModelSchema = z.string().min(1).optional();
+const OpenAiConnectionFields = {
+  apiKey: z.string().trim().min(1).optional(),
+  baseUrl: z.string().trim().min(1).optional(),
+};
+
+export const SpeechSttConfigSchema = z.discriminatedUnion("provider", [
+  z
+    .object({
+      provider: z.literal("local"),
+      model: SpeechModelSchema,
+      language: z.string().trim().min(1).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      provider: z.literal("openai"),
+      ...OpenAiConnectionFields,
+      model: SpeechModelSchema,
+      language: z.string().trim().min(1).optional(),
+      confidenceThreshold: z.number().optional(),
+    })
+    .strict(),
+]);
+
+export const SpeechTtsConfigSchema = z.discriminatedUnion("provider", [
+  z
+    .object({
+      provider: z.literal("local"),
+      model: SpeechModelSchema,
+      speakerId: z.number().int().optional(),
+      speed: z.number().optional(),
+    })
+    .strict(),
+  z
+    .object({
+      provider: z.literal("openai"),
+      ...OpenAiConnectionFields,
+      model: SpeechModelSchema,
+      voice: z.string().trim().min(1).optional(),
+    })
+    .strict(),
+  // Fish Audio TTS (fork). Credentials live under `providers.fish` or FISH_AUDIO_API_KEY.
+  z
+    .object({
+      provider: z.literal("fish"),
+      model: SpeechModelSchema,
+      voice: z.string().trim().min(1).optional(),
+      speed: z.number().optional(),
+    })
+    .strict(),
+]);
 
 const FeatureDictationSchema = z
   .object({
     enabled: z.boolean().optional(),
-    stt: z
-      .object({
-        provider: SpeechProviderIdSchema.optional(),
-        model: z.string().min(1).optional(),
-        language: z.string().trim().min(1).optional(),
-        confidenceThreshold: z.number().optional(),
-      })
-      .strict()
-      .optional(),
+    stt: SpeechSttConfigSchema.optional(),
   })
   .strict();
 
@@ -125,30 +212,14 @@ const FeatureVoiceModeSchema = z
       })
       .strict()
       .optional(),
-    stt: z
-      .object({
-        provider: SpeechProviderIdSchema.optional(),
-        model: z.string().min(1).optional(),
-        language: z.string().trim().min(1).optional(),
-      })
-      .strict()
-      .optional(),
+    stt: SpeechSttConfigSchema.optional(),
     turnDetection: z
       .object({
         provider: SpeechProviderIdSchema.optional(),
       })
       .strict()
       .optional(),
-    tts: z
-      .object({
-        provider: SpeechProviderIdSchema.optional(),
-        model: z.string().min(1).optional(),
-        voice: z.enum(["alloy", "echo", "fable", "onyx", "nova", "shimmer"]).optional(),
-        speakerId: z.number().int().optional(),
-        speed: z.number().optional(),
-      })
-      .strict()
-      .optional(),
+    tts: SpeechTtsConfigSchema.optional(),
   })
   .strict();
 
@@ -156,6 +227,100 @@ const FeatureWebUiSchema = z
   .object({
     enabled: z.boolean().optional(),
     distDir: z.string().min(1).optional(),
+  })
+  .strict();
+
+// Optional per-host AI permission reviewer (disabled unless explicitly enabled).
+const AiReviewerConfigSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    provider: z.string().optional(),
+    model: z.string().optional(),
+    policy: z.string().optional(),
+  })
+  .strict();
+
+// COMPAT(missionControlV3): summarizer/autopilot judgment machinery was
+// removed with v3. The schemas stay accepted so pre-v3 config files keep
+// parsing; nothing reads them anymore.
+const MissionControlSummarizerConfigSchema = z
+  .object({
+    enabled: z.boolean().default(true),
+    baseUrl: z.string().nullable().default(null),
+    apiKey: z.string().nullable().default(null),
+    model: z.string().default("extract"),
+    minNewItems: z.number().int().positive().default(12),
+    debounceSeconds: z.number().int().positive().default(30),
+    backend: z.enum(["gateway", "omp"]).default("gateway"),
+  })
+  .strict();
+
+// COMPAT(missionControlV3): same COMPAT treatment as the summarizer schema —
+// accepted for old configs, unused by v3 code.
+const MissionControlAutopilotConfigSchema = z
+  .object({
+    mode: z.enum(["off", "observe", "act"]).default("off"),
+    model: z.string().nullable().optional(),
+    scope: z.enum(["commander-spawned", "all"]).default("commander-spawned"),
+    maxNudgesPerAgent: z.number().int().positive().default(2),
+  })
+  .strict();
+
+// COMPAT(missionControlV3): summarizer/autopilot keys above are accepted for
+// old configs only; v3 code does not read them. Absent config = feature on
+// with defaults.
+const MissionControlConfigSchema = z
+  .object({
+    retentionDays: z.number().int().positive().default(30),
+    // Zod 3 `.default()` requires the object's *output* type; all fields defaulted
+    // makes that output all-required, so `{}` is not assignable. `.optional()` keeps
+    // field-level defaults (partial configs normalize); the service's `readConfig()`
+    // applies central-config defaults when the whole section is absent.
+    summarizer: MissionControlSummarizerConfigSchema.optional(),
+    autopilot: MissionControlAutopilotConfigSchema.optional(),
+    // Self-reporting kill-switch: when false, the report_status prompt
+    // paragraph is not injected into agent system prompts (default true).
+    selfReport: z
+      .object({
+        enabled: z.boolean().default(true),
+      })
+      .strict()
+      .optional(),
+    // Identity: naming theme for the daemon naming service; "mixed" default lives
+    // server-side (mission-control/naming.ts).
+    naming: z
+      .object({
+        theme: z
+          .enum(["mixed", "indian", "cartoon", "scientists", "astronauts", "mythology", "nature"])
+          .optional(),
+      })
+      .strict()
+      .optional(),
+    // Commander dispatch: preferred host when the Commander routes work. Null
+    // (default) means the Commander decides from the fleet map.
+    defaultHost: z.string().nullable().optional(),
+    // v3 per-host keys: this machine's own fleet-map alias + feature switch.
+    // Fleet aliases assemble from each host's own declaration — never from a
+    // commander-host hardcoded list.
+    hostAlias: z.string().optional(),
+    enabled: z.boolean().optional(),
+    // Per-host glyph identity (host settings): custom initials (1–2 chars,
+    // emoji allowed) + an identity-color name from the app's palette. Null
+    // clears a previous override. The app owns the palette and validates on
+    // read; this schema only persists it.
+    hostGlyph: z
+      .object({
+        initials: z.string().max(4).optional(),
+        color: z.string().optional(),
+      })
+      .strict()
+      .nullable()
+      .optional(),
+    // Friendly aliases for peer host names ("blrofc3": "work server"), used by
+    // placement routing to match host names in a prompt.
+    hostAliases: z.record(z.string(), z.string()).optional(),
+    // Read by nothing since the built-in Commander was removed; kept so stored configs parse.
+    commanderInstructions: z.string().optional(),
   })
   .strict();
 
@@ -236,11 +401,18 @@ export const PersistedConfigSchema = z
         listen: z.string().optional(),
         hostnames: z.union([z.literal(true), z.array(z.string())]).optional(),
         allowedHosts: z.union([z.literal(true), z.array(z.string())]).optional(),
-        trustedProxies: z.union([z.literal(true), z.array(z.string())]).optional(),
+        trustedProxies: z
+          .union([z.literal(true), z.array(z.string())])
+          .optional()
+          .describe(
+            'Express trusted proxy setting for X-Forwarded-* headers. Defaults to ["loopback"]. Use true only when the final trusted proxy overwrites client-supplied forwarded headers.',
+          ),
         mcp: z
           .object({
             enabled: z.boolean().optional(),
             injectIntoAgents: z.boolean().optional(),
+            remoteClients: z.array(RemoteMcpClientSchema).optional(),
+            notifyTargets: z.array(NotifyTargetSchema).optional(),
           })
           .passthrough()
           .optional(),
@@ -258,10 +430,20 @@ export const PersistedConfigSchema = z
           .strict()
           .optional(),
         autoArchiveAfterMerge: z.boolean().optional(),
+        // Close idle OMP processes after this many seconds; 0 turns the sweep off.
+        ompIdleCloseAfterSeconds: z.number().int().min(0).optional(),
+        // macOS: keep the host awake while agents run ("off" | "idle" | "lid-closed").
+        keepAwakeWhileAgentsRun: z.enum(["off", "idle", "lid-closed"]).optional(),
+        // Minutes to keep holding after the last agent stops (default 5).
+        keepAwakeReleaseGraceMinutes: z.number().int().min(0).optional(),
+        // "lid-closed" on battery: release SleepDisabled at or below this charge (default 10).
+        keepAwakeBatteryFloorPercent: z.number().int().min(1).max(99).optional(),
         enableTerminalAgentHooks: z.boolean().optional(),
         appendSystemPrompt: z.string().optional(),
         terminalProfiles: z.array(TerminalProfileSchema).optional(),
         agentProfiles: z.array(AgentProfileSchema).optional(),
+        visibleModels: z.array(z.string()).optional(),
+        composerPreferences: ComposerPreferencesSchema.optional(),
         cors: z
           .object({
             allowedOrigins: z.array(z.string()).optional(),
@@ -271,6 +453,12 @@ export const PersistedConfigSchema = z
         relay: z
           .object({
             enabled: z.boolean().optional(),
+            requireProtectedSecurity: z
+              .boolean()
+              .optional()
+              .describe(
+                "Admit only relay clients that negotiate protected endpoint security (replay protection). Defaults to false; older clients still connect while it is off.",
+              ),
             endpoint: z.string().optional(),
             publicEndpoint: z.string().optional(),
             useTls: z.boolean().optional(),
@@ -283,9 +471,45 @@ export const PersistedConfigSchema = z
             // COMPAT(serviceProxyEnabled): added 2026-06-02, remove after 2026-12-02.
             // Parsed only to suppress optional public/listen layers for old configs;
             // localhost service proxying remains always enabled.
-            enabled: z.boolean().optional(),
-            listen: z.string().optional(),
-            publicBaseUrl: z.url().optional(),
+            enabled: z
+              .boolean()
+              .optional()
+              .describe(
+                "Compatibility shim. false suppresses optional service proxy listen/public layers only; localhost proxying remains enabled.",
+              ),
+            listen: z
+              .string()
+              .optional()
+              .describe(
+                "Optional service-only listener address. Presence enables the standalone service proxy listener.",
+              ),
+            publicBaseUrl: z
+              .url()
+              .optional()
+              .describe("Optional public base URL for service host aliases."),
+          })
+          .strict()
+          .optional(),
+        tunnel: z
+          .object({
+            provider: z.enum(["tailscale-funnel", "cloudflared", "none"]).optional(),
+            localPort: z.number().int().positive().optional(),
+            // host:port the tunnel forwards to; defaults to the daemon's listen address.
+            localTarget: z.string().optional(),
+            autoStart: z.boolean().optional(),
+            // Explicit public base URL for `none`, or an override for the others.
+            publicBaseUrl: z.string().optional(),
+            tailscaleBin: z.string().optional(),
+            cloudflared: z
+              .object({
+                hostname: z.string().optional(),
+                bin: z.string().optional(),
+                configFile: z.string().optional(),
+                token: z.string().optional(),
+                tunnel: z.string().optional(),
+              })
+              .strict()
+              .optional(),
           })
           .strict()
           .optional(),
@@ -306,23 +530,48 @@ export const PersistedConfigSchema = z
       .optional(),
 
     providers: ProvidersSchema.optional(),
+    pluginRegistries: PluginRegistriesSchema.optional(),
     pluginsEnabled: z.boolean().optional(),
     plugins: z.record(PluginIdSchema, PluginSourceSchema).optional(),
     worktrees: WorktreesConfigSchema.optional(),
     agents: z
       .object({
         providers: z.preprocess(normalizeAgentProviders, ProviderOverridesSchema).optional(),
+        idleRuntimeCleanup: z.boolean().optional(),
         catalogRefreshTimeoutMs: z.number().int().positive().max(2_147_483_647).optional(),
         metadataGeneration: AgentMetadataGenerationSchema.optional(),
         skills: z.object({ selection: AgentSkillSelectionSchema.optional() }).strict().optional(),
       })
       .strict()
       .optional(),
+    peers: z.array(PeerConfigSchema).optional(),
     features: z
       .object({
         dictation: FeatureDictationSchema.optional(),
         voiceMode: FeatureVoiceModeSchema.optional(),
         webUi: FeatureWebUiSchema.optional(),
+      })
+      .strict()
+      .optional(),
+
+    missionControl: MissionControlConfigSchema.optional(),
+    aiReviewer: AiReviewerConfigSchema.optional(),
+    // fleet-memory: the one fleet memory (search over turns, runs, tickets, notes).
+    // Absent → memory tools report "not configured" and nothing is pushed.
+    memory: z
+      .object({
+        url: z.string().trim().url(),
+      })
+      .strict()
+      .optional(),
+
+    // Automations: Linear API key fallback + default poll cadence. Strict
+    // schema keeps unknown keys out; an older daemon never sees this file
+    // section because only the new daemon writes it.
+    automations: z
+      .object({
+        linearApiKey: z.string().trim().min(1).optional(),
+        defaultPollIntervalSec: z.number().int().positive().optional(),
       })
       .strict()
       .optional(),
@@ -359,6 +608,7 @@ const DEFAULT_PERSISTED_CONFIG = PersistedConfigSchema.parse({
 interface LoggerLike {
   child(bindings: Record<string, unknown>): LoggerLike;
   info(...args: unknown[]): void;
+  warn?(...args: unknown[]): void;
 }
 
 function getConfigPath(paseoHome: string): string {
@@ -369,43 +619,95 @@ function getLogger(logger: LoggerLike | undefined): LoggerLike | undefined {
   return logger?.child({ module: "config" });
 }
 
-// Removed config fields are stripped before parsing so the strict schema does not
-// reject a config written by an older release. The stripped values are discarded,
-// not migrated — there is no back-compat for the removed `providers.openai.voice`
-// block (use `providers.openai.stt` / `providers.openai.tts`).
-function stripRemovedConfigFields(parsed: unknown): unknown {
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return parsed;
+function isConfigRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function configRecord(value: unknown): Record<string, unknown> | undefined {
+  return isConfigRecord(value) ? value : undefined;
+}
+
+// COMPAT(speechProviderConfig): added in v0.12.0, remove after 2027-04-26.
+// Fold shared credentials once at the file boundary; consumers see only the strict
+// per-site shape. Never include credential values in diagnostics.
+function normalizeSpeechProviderConfig(parsed: unknown, logger?: LoggerLike): unknown {
+  if (!isConfigRecord(parsed)) return parsed;
+  const root = structuredClone(parsed);
+  const providers = configRecord(root.providers);
+  const legacy = configRecord(providers?.openai);
+  const features = configRecord(root.features);
+  const foldedKeys = new Set<string>();
+  for (const [feature, kind] of [
+    ["dictation", "stt"],
+    ["voiceMode", "stt"],
+    ["voiceMode", "tts"],
+  ] as const) {
+    const site = configRecord(configRecord(features?.[feature])?.[kind]);
+    if (site) normalizeSpeechSite(site, kind, legacy, foldedKeys);
   }
-
-  const root = { ...(parsed as Record<string, unknown>) };
-  const providers = root.providers;
-  if (!providers || typeof providers !== "object" || Array.isArray(providers)) {
-    return root;
+  if (legacy) warnDiscardedSpeechKeys(legacy, foldedKeys, logger);
+  if (providers) {
+    delete providers.openai;
+    const local = configRecord(providers.local);
+    if (local) delete local.autoDownload;
   }
-
-  const providersRecord = { ...(providers as Record<string, unknown>) };
-
-  const local = providersRecord.local;
-  if (local && typeof local === "object" && !Array.isArray(local)) {
-    const localRecord = { ...(local as Record<string, unknown>) };
-    delete localRecord.autoDownload;
-    providersRecord.local = localRecord;
-  }
-
-  const openai = providersRecord.openai;
-  if (openai && typeof openai === "object" && !Array.isArray(openai)) {
-    const openaiRecord = { ...(openai as Record<string, unknown>) };
-    // COMPAT(openaiVoiceConfig): added 2026-06-30, remove after 2026-12-30.
-    // Drop a `providers.openai.voice` block left by an older release so the strict
-    // schema doesn't reject it. The value is discarded, not migrated — there is no
-    // back-compat; configure `providers.openai.stt` / `providers.openai.tts` instead.
-    delete openaiRecord.voice;
-    providersRecord.openai = openaiRecord;
-  }
-
-  root.providers = providersRecord;
   return root;
+}
+
+function normalizeSpeechSite(
+  site: Record<string, unknown>,
+  kind: "stt" | "tts",
+  legacy: Record<string, unknown> | undefined,
+  foldedKeys: Set<string>,
+) {
+  site.provider =
+    typeof site.provider === "string"
+      ? site.provider.trim().toLowerCase()
+      : (site.provider ?? "local");
+  if (kind === "stt" && site.provider === "local") {
+    delete site.confidenceThreshold;
+  }
+  if (kind === "tts") {
+    if (site.provider === "local") delete site.voice;
+    if (site.provider === "openai") {
+      delete site.speakerId;
+      delete site.speed;
+    }
+    if (site.provider === "fish") delete site.speakerId;
+  }
+  if (site.provider !== "openai" || !legacy) return;
+  const endpoint = configRecord(legacy[kind]);
+  for (const field of ["apiKey", "baseUrl"] as const) {
+    if (site[field] !== undefined) continue;
+    if (endpoint?.[field] !== undefined) {
+      site[field] = endpoint[field];
+      foldedKeys.add(`providers.openai.${kind}.${field}`);
+    } else if (legacy[field] !== undefined) {
+      site[field] = legacy[field];
+      foldedKeys.add(`providers.openai.${field}`);
+    }
+  }
+}
+
+function warnDiscardedSpeechKeys(
+  legacy: Record<string, unknown>,
+  foldedKeys: Set<string>,
+  logger?: LoggerLike,
+) {
+  const keys = [
+    ["providers.openai.apiKey", legacy.apiKey],
+    ...["stt", "tts"].map((kind) => [
+      `providers.openai.${kind}.apiKey`,
+      configRecord(legacy[kind])?.apiKey,
+    ]),
+  ] as const;
+  for (const [keyPath, key] of keys) {
+    if (key && typeof keyPath === "string" && !foldedKeys.has(keyPath)) {
+      const message = `Dropped ${keyPath}: no use site in config.json selects OpenAI; re-enter it when selecting OpenAI.`;
+      if (logger?.warn) logger.warn(message);
+      else console.warn(message);
+    }
+  }
 }
 
 export function loadPersistedConfig(paseoHome: string, logger?: LoggerLike): PersistedConfig {
@@ -436,27 +738,43 @@ export function loadPersistedConfig(paseoHome: string, logger?: LoggerLike): Per
     });
   }
 
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    throw new Error(`[Config] Invalid JSON in ${configPath}: ${message}`, {
-      cause: err,
-    });
-  }
-
-  const migrated = stripRemovedConfigFields(parsed);
-  const result = PersistedConfigSchema.safeParse(migrated);
-  if (!result.success) {
-    const issues = result.error.issues
-      .map((i) => `  - ${i.path.join(".")}: ${i.message}`)
-      .join("\n");
-    throw new Error(`[Config] Invalid config in ${configPath}:\n${issues}`);
-  }
-
+  const config = parseConfigFile(configPath, raw, log);
   log?.info(`Loaded from ${configPath}`);
-  return result.data as PersistedConfig;
+  return config;
+}
+
+/** Runtime config IO. Startup and offline CLI consumers retain their synchronous entry points. */
+export async function loadPersistedConfigAsync(
+  paseoHome: string,
+  logger?: LoggerLike,
+): Promise<PersistedConfig> {
+  const log = getLogger(logger);
+  const configPath = getConfigPath(paseoHome);
+  let raw: string;
+  await ensurePrivateFileAsync(configPath);
+  try {
+    raw = await readFile(configPath, "utf-8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw new Error(
+        `[Config] Failed to read ${configPath}: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
+      );
+    }
+    try {
+      raw = JSON.stringify(DEFAULT_PERSISTED_CONFIG, null, 2) + "\n";
+      await writePrivateFileAtomic(configPath, raw);
+      log?.info(`Initialized config file at ${configPath}`);
+    } catch (initializationError) {
+      throw new Error(
+        `[Config] Failed to initialize ${configPath}: ${initializationError instanceof Error ? initializationError.message : String(initializationError)}`,
+        { cause: initializationError },
+      );
+    }
+  }
+  const config = parseConfigFile(configPath, raw, log);
+  log?.info(`Loaded from ${configPath}`);
+  return config;
 }
 
 /** Observe the file without initializing a home, identity, or default configuration. */
@@ -464,15 +782,42 @@ export function readPersistedConfig(
   paseoHome: string,
   options: { defaultsIfMissing?: boolean } = {},
 ): PersistedConfig {
+  const configPath = getConfigPath(paseoHome);
   let raw: string;
   try {
-    raw = readFileSync(getConfigPath(paseoHome), "utf8");
+    raw = readFileSync(configPath, "utf8");
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT")
       return options.defaultsIfMissing ? structuredClone(DEFAULT_PERSISTED_CONFIG) : {};
     throw error;
   }
-  return PersistedConfigSchema.parse(stripRemovedConfigFields(JSON.parse(raw))) as PersistedConfig;
+  return parseConfigFile(configPath, raw);
+}
+
+function parseConfigFile(configPath: string, raw: string, logger?: LoggerLike): PersistedConfig {
+  let parsed: unknown;
+  try {
+    parsed = parseConfigText(raw);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`[Config] Invalid JSON in ${configPath}: ${message}`, {
+      cause: err,
+    });
+  }
+
+  const result = PersistedConfigSchema.safeParse(normalizeSpeechProviderConfig(parsed, logger));
+  if (!result.success) {
+    const issues = result.error.issues
+      .map((i) => `  - ${i.path.join(".")}: ${i.message}`)
+      .join("\n");
+    throw new Error(`[Config] Invalid config in ${configPath}:\n${issues}`);
+  }
+  return result.data as PersistedConfig;
+}
+
+/** Editors such as Windows Notepad save UTF-8 with a byte order mark, which JSON.parse rejects. */
+function parseConfigText(raw: string): unknown {
+  return JSON.parse(raw.replace(/^\uFEFF/, ""));
 }
 
 function configPathParts(field: string): string[] {
@@ -488,6 +833,12 @@ function configPathParts(field: string): string[] {
       schema instanceof z.ZodPipe
     )
       schema = (schema instanceof z.ZodPipe ? schema.in : schema.unwrap()) as z.ZodType;
+    if (schema instanceof z.ZodUnion) {
+      const variant = schema.options.find(
+        (option) => option instanceof z.ZodObject && Object.hasOwn(option.shape, part),
+      );
+      if (variant instanceof z.ZodObject) schema = variant;
+    }
     if (!(schema instanceof z.ZodObject) || !Object.hasOwn(schema.shape, part)) {
       throw new Error(
         `Unknown configuration path: ${field}. Replace its containing object with JSON for dynamic keys.`,
@@ -545,6 +896,20 @@ export function savePersistedConfig(
   const log = getLogger(logger);
   const configPath = getConfigPath(paseoHome);
 
+  const data = serializePersistedConfig(config);
+
+  try {
+    writePrivateFileAtomicSync(configPath, data);
+    log?.info(`Saved to ${configPath}`);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`[Config] Failed to write ${configPath}: ${message}`, {
+      cause: err,
+    });
+  }
+}
+
+function serializePersistedConfig(config: PersistedConfig): string {
   const result = PersistedConfigSchema.safeParse(config);
   if (!result.success) {
     const issues = result.error.issues
@@ -553,13 +918,23 @@ export function savePersistedConfig(
     throw new Error(`[Config] Invalid config to save:\n${issues}`);
   }
 
+  return JSON.stringify(result.data, null, 2) + "\n";
+}
+
+export async function savePersistedConfigAsync(
+  paseoHome: string,
+  config: PersistedConfig,
+  logger?: LoggerLike,
+): Promise<void> {
+  const configPath = getConfigPath(paseoHome);
+  const data = serializePersistedConfig(config);
   try {
-    writePrivateFileAtomicSync(configPath, JSON.stringify(result.data, null, 2) + "\n");
-    log?.info(`Saved to ${configPath}`);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    throw new Error(`[Config] Failed to write ${configPath}: ${message}`, {
-      cause: err,
-    });
+    await writePrivateFileAtomic(configPath, data);
+    getLogger(logger)?.info(`Saved to ${configPath}`);
+  } catch (error) {
+    throw new Error(
+      `[Config] Failed to write ${configPath}: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
+    );
   }
 }

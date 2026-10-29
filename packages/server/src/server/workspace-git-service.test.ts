@@ -1,3 +1,4 @@
+import { createWorkspaceRuntimeStore } from "./workspace-runtime-store/index.js";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import os from "node:os";
 import path, { join } from "node:path";
@@ -334,6 +335,8 @@ describe("WorkspaceGitServiceImpl", () => {
 
   test("registerWorkspace returns a subscription without an initial snapshot contract", async () => {
     const service = createService();
+    const workspaceRuntimeStore = createWorkspaceRuntimeStore();
+    service.onSnapshotUpdated((snapshot) => workspaceRuntimeStore.set(snapshot));
 
     const listener = vi.fn();
     const subscription = service.registerWorkspace({ cwd: REPO_CWD }, listener);
@@ -341,34 +344,124 @@ describe("WorkspaceGitServiceImpl", () => {
     expect(subscription).toEqual({ unsubscribe: expect.any(Function) });
     expect("initial" in subscription).toBe(false);
     expect(listener).not.toHaveBeenCalled();
-    expect(service.peekSnapshot(REPO_CWD)).toBeNull();
+    expect(workspaceRuntimeStore.get(REPO_CWD)).toBeNull();
 
     subscription.unsubscribe();
     service.dispose();
   });
 
-  test("onSnapshotUpdated emits only for observed workspace snapshots and can unsubscribe", async () => {
+  test("shared watches publish to the runtime store before listeners and retain data after teardown", async () => {
+    const subscribe = vi.fn(async () => createAsyncSubscription());
+    const getPullRequestStatus = vi.fn(async () => createPullRequestStatusResult());
+    const service = createService({ subscribe, getPullRequestStatus });
+    const store = createWorkspaceRuntimeStore();
+    service.onSnapshotUpdated((snapshot) => store.set(snapshot));
+    const observed: WorkspaceGitRuntimeSnapshot[] = [];
+    const listener = (snapshot: WorkspaceGitRuntimeSnapshot) => {
+      expect(store.get(REPO_CWD)).toBe(snapshot);
+      observed.push(snapshot);
+    };
+    const first = service.registerWorkspace({ cwd: REPO_CWD }, listener);
+    const second = service.registerWorkspace({ cwd: join(REPO_CWD, ".") }, (snapshot) =>
+      listener(snapshot),
+    );
+    await service.getSnapshot(REPO_CWD, { force: true, reason: "runtime-store" });
+    await flushPromises();
+    expect(observed.length).toBeGreaterThan(0);
+    expect(service.getMetrics().workspaceTargetCount).toBe(1);
+    const subscriptionCount = subscribe.mock.calls.length;
+    const snapshot = store.get(REPO_CWD);
+    expect(snapshot?.forge.pullRequest).not.toBeNull();
+    first.unsubscribe();
+    expect(service.getMetrics().workspaceListenerCount).toBe(1);
+    second.unsubscribe();
+    expect(service.getMetrics().workspaceTargetCount).toBe(0);
+    const pollCount = getPullRequestStatus.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(360_000);
+    expect(getPullRequestStatus).toHaveBeenCalledTimes(pollCount);
+    expect(subscribe).toHaveBeenCalledTimes(subscriptionCount);
+    expect(store.get(REPO_CWD)).toBe(snapshot);
+    await service.dispose();
+  });
+
+  test("onSnapshotUpdated delivers without workspace subscribers and can unsubscribe", async () => {
     const service = createService();
-    const snapshotListener = vi.fn();
-    const snapshotSubscription = service.onSnapshotUpdated(snapshotListener);
+    const snapshots: WorkspaceGitRuntimeSnapshot[] = [];
+    const subscription = service.onSnapshotUpdated((snapshot) => snapshots.push(snapshot));
+    try {
+      const initial = await service.getSnapshot(REPO_CWD);
+      expect(snapshots).toEqual([initial]);
+      expect(service.getMetrics().workspaceListenerCount).toBe(0);
 
-    await service.getSnapshot(REPO_CWD, { force: true, reason: "unobserved" });
+      await service.getSnapshot(REPO_CWD);
+      expect(snapshots).toEqual([initial]);
 
-    expect(snapshotListener).not.toHaveBeenCalled();
+      const refreshed = await service.getSnapshot(REPO_CWD, {
+        force: true,
+        reason: "unobserved-refresh",
+      });
+      expect(snapshots).toEqual([initial, refreshed]);
 
-    const workspaceSubscription = service.registerWorkspace({ cwd: REPO_CWD }, vi.fn());
-    await service.getSnapshot(REPO_CWD, { force: true, reason: "observed" });
+      subscription.unsubscribe();
+      await service.getSnapshot(REPO_CWD, { force: true, reason: "after-unsubscribe" });
+      expect(snapshots).toEqual([initial, refreshed]);
+    } finally {
+      await service.dispose();
+    }
+  });
 
-    expect(snapshotListener).toHaveBeenCalledTimes(1);
-    expect(snapshotListener).toHaveBeenCalledWith(createSnapshot(REPO_CWD));
+  test("a retired target's late refresh cannot overwrite the runtime store's newer snapshot", async () => {
+    const retiredRead = createDeferred<PullRequestStatusResult>();
+    const retiredReadStarted = createDeferred<void>();
+    const merged = createPullRequestStatusResult();
+    if (!merged.status) throw new Error("Expected pull request status");
+    merged.status = { ...merged.status, state: "merged", isMerged: true };
+    let reads = 0;
+    const service = new WorkspaceGitServiceImpl({
+      logger: createLogger() as unknown as pino.Logger,
+      paseoHome: "/tmp/paseo-test",
+      deps: {
+        ...buildDefaultTestServiceDeps(),
+        getPullRequestStatus: async () => {
+          reads += 1;
+          if (reads === 1) {
+            retiredReadStarted.resolve();
+            return retiredRead.promise;
+          }
+          return merged;
+        },
+      },
+    });
+    const store = createWorkspaceRuntimeStore();
+    const published: WorkspaceGitRuntimeSnapshot[] = [];
+    service.onSnapshotUpdated((snapshot) => {
+      store.set(snapshot);
+      published.push(snapshot);
+    });
+    const subscription = service.registerWorkspace({ cwd: REPO_CWD }, () => {});
+    const oldRefresh = service.getSnapshot(REPO_CWD, { force: true, reason: "retiring-target" });
+    try {
+      await retiredReadStarted.promise;
+      subscription.unsubscribe();
+      expect(service.getMetrics().workspaceTargetCount).toBe(0);
 
-    snapshotSubscription.unsubscribe();
-    await service.getSnapshot(REPO_CWD, { force: true, reason: "after-unsubscribe" });
+      const latest = await service.getSnapshot(REPO_CWD, {
+        force: true,
+        reason: "replacement-target",
+      });
+      expect(latest.forge.pullRequest).toMatchObject({ state: "merged", isMerged: true });
+      expect(store.get(REPO_CWD)).toBe(latest);
 
-    expect(snapshotListener).toHaveBeenCalledTimes(1);
-
-    workspaceSubscription.unsubscribe();
-    service.dispose();
+      retiredRead.resolve(createPullRequestStatusResult());
+      const retired = await oldRefresh;
+      expect(retired.forge.pullRequest).toMatchObject({ state: "open", isMerged: false });
+      expect(store.get(REPO_CWD)).toBe(latest);
+      expect(published).toEqual([latest]);
+    } finally {
+      retiredRead.resolve(createPullRequestStatusResult());
+      await oldRefresh;
+      await service.dispose();
+    }
   });
 
   test("getSnapshot populates github pull request state in the runtime snapshot", async () => {
@@ -516,7 +609,6 @@ describe("WorkspaceGitServiceImpl", () => {
     expect(getCheckoutStatus).toHaveBeenCalledTimes(1);
     expect(getPullRequestStatus).toHaveBeenCalledTimes(1);
     expect(resolveAbsoluteGitDir).toHaveBeenCalledTimes(0);
-    expect(service.peekSnapshot(REPO_CWD)).toEqual(createSnapshot(REPO_CWD));
 
     await expect(service.getSnapshot(REPO_CWD)).resolves.toEqual(createSnapshot(REPO_CWD));
     expect(getCheckoutStatus).toHaveBeenCalledTimes(1);
@@ -704,15 +796,21 @@ describe("WorkspaceGitServiceImpl", () => {
     const service = createService({ getCheckoutStatus, subscribe, runGitCommand });
 
     cwds.forEach((cwd) => service.registerWorkspace({ cwd }, vi.fn()));
-    await vi.waitFor(() => {
-      expect(service.getMetrics()).toMatchObject({
-        workspaceRefreshAdmissionActiveCount: WORKSPACE_GIT_REFRESH_CONCURRENCY,
-        workspaceRefreshAdmissionPendingCount: 1,
-        workspaceObservationSetupAdmissionActiveCount: WORKSPACE_GIT_OBSERVATION_SETUP_CONCURRENCY,
-        workspaceObservationSetupAdmissionPendingCount:
-          cwds.length - WORKSPACE_GIT_OBSERVATION_SETUP_CONCURRENCY,
-      });
-    });
+    await vi.waitFor(
+      () => {
+        expect(service.getMetrics()).toMatchObject({
+          workspaceRefreshAdmissionActiveCount: WORKSPACE_GIT_REFRESH_CONCURRENCY,
+          workspaceRefreshAdmissionPendingCount: 1,
+          workspaceObservationSetupAdmissionActiveCount:
+            WORKSPACE_GIT_OBSERVATION_SETUP_CONCURRENCY,
+          workspaceObservationSetupAdmissionPendingCount:
+            cwds.length - WORKSPACE_GIT_OBSERVATION_SETUP_CONCURRENCY,
+        });
+        // Admission precedes asynchronous path setup; dispose only once watchers are pending.
+        expect(subscribe).toHaveBeenCalledTimes(WORKSPACE_GIT_OBSERVATION_SETUP_CONCURRENCY);
+      },
+      { timeout: 10_000 },
+    );
     const queuedRefreshSettlement = service.getSnapshot(cwds.at(-1)!).then(
       () => ({ status: "fulfilled" as const, error: null }),
       (error: unknown) => ({ status: "rejected" as const, error }),
@@ -834,13 +932,15 @@ describe("WorkspaceGitServiceImpl", () => {
       resolveAbsoluteGitDir,
       now: () => new Date(nowMs),
     });
+    const workspaceRuntimeStore = createWorkspaceRuntimeStore();
+    service.onSnapshotUpdated((snapshot) => workspaceRuntimeStore.set(snapshot));
 
     const subscription = service.registerWorkspace({ cwd: join(REPO_CWD, ".") }, vi.fn());
 
     await expect(service.getSnapshot(join(REPO_CWD, "."))).resolves.toEqual(
       createSnapshot(REPO_CWD),
     );
-    expect(service.peekSnapshot(REPO_CWD)).toEqual(createSnapshot(REPO_CWD));
+    expect(workspaceRuntimeStore.get(REPO_CWD)).toEqual(createSnapshot(REPO_CWD));
 
     nowMs += 3_000;
     await service.refresh(REPO_CWD);
@@ -1011,12 +1111,23 @@ describe("WorkspaceGitServiceImpl", () => {
       { cwd: join(REPO_CWD, "packages", "server") },
       vi.fn(),
     );
-    await vi.waitFor(() => {
-      expect(getCheckoutSnapshotFacts).toHaveBeenCalledTimes(2);
-    });
+    await vi.waitFor(
+      () => {
+        expect(getCheckoutSnapshotFacts).toHaveBeenCalledTimes(2);
+        expect(service.getMetrics()).toMatchObject({
+          repositoryWorkspaceLinkCount: 2,
+          workspaceObservationSetupInFlightCount: 0,
+          workspaceRefreshInFlightCount: 0,
+          fetchInFlightCount: 1,
+        });
+      },
+      { timeout: 10_000 },
+    );
 
     releaseFetch.resolve();
-    await flushPromises();
+    await vi.waitFor(() => {
+      expect(service.getMetrics().fetchInFlightCount).toBe(0);
+    });
     await vi.advanceTimersByTimeAsync(1_000);
     await vi.waitFor(() => {
       expect(getCheckoutSnapshotFacts).toHaveBeenCalledTimes(4);
@@ -1434,6 +1545,35 @@ describe("WorkspaceGitServiceImpl", () => {
 
     await service.getCheckoutDiff("/tmp/repo-0", { mode: "uncommitted" });
     expect(getCheckoutDiff).toHaveBeenCalledTimes(CACHE_MAX + OVERFLOW + 1);
+
+    service.dispose();
+  });
+
+  test("forced getCheckoutDiff attaches to in-flight non-forced load without starting a duplicate load", async () => {
+    vi.useRealTimers();
+    let resolveDiff!: (val: { diff: string }) => void;
+    const inFlight = new Promise<{ diff: string }>((resolve) => {
+      resolveDiff = resolve;
+    });
+    const getCheckoutDiff = vi.fn(() => inFlight);
+    const service = createService({
+      getCheckoutDiff: getCheckoutDiff as unknown as ReturnType<typeof vi.fn>,
+    });
+
+    const normalPromise = service.getCheckoutDiff("/tmp/repo-dedupe", { mode: "uncommitted" });
+    const forcedPromise = service.getCheckoutDiff(
+      "/tmp/repo-dedupe",
+      { mode: "uncommitted" },
+      { force: true, reason: "working-tree-watch" },
+    );
+
+    expect(getCheckoutDiff).toHaveBeenCalledTimes(1);
+
+    resolveDiff({ diff: "resolved diff" });
+    const [normalResult, forcedResult] = await Promise.all([normalPromise, forcedPromise]);
+    expect(normalResult).toEqual({ diff: "resolved diff" });
+    expect(forcedResult).toEqual({ diff: "resolved diff" });
+    expect(getCheckoutDiff).toHaveBeenCalledTimes(1);
 
     service.dispose();
   });

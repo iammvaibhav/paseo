@@ -1,4 +1,10 @@
-import { useMemo, type ComponentProps, type PropsWithChildren, type ReactNode } from "react";
+import {
+  useCallback,
+  useMemo,
+  type ComponentProps,
+  type PropsWithChildren,
+  type ReactNode,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { type PressableStateCallbackType } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
@@ -7,16 +13,22 @@ import {
   Circle,
   CircleCheck,
   Copy,
+  MessageCircleQuestion,
   MoreVertical,
   Pencil,
   Pin,
   PinOff,
   Tag,
+  ExternalLink,
 } from "lucide-react-native";
-import { isWeb } from "@/constants/platform";
+import { getIsElectron, isWeb } from "@/constants/platform";
+import { getDesktopHost } from "@/desktop/host";
+import { buildHostWorkspaceRoute } from "@/utils/host-routes";
+import { useToast } from "@/contexts/toast-context";
 import { getForgePresentation, normalizeForge } from "@/git/forge";
 import type { SidebarWorkspaceEntry } from "@/hooks/use-sidebar-workspaces-list";
 import { useAppSettings } from "@/hooks/use-settings";
+import { densityIconProps } from "@/styles/density";
 import type { Theme } from "@/styles/theme";
 import type { ShortcutKey } from "@/utils/format-shortcut";
 import {
@@ -58,8 +70,9 @@ const ThemedPencil = withUnistyles(Pencil);
 const ThemedCircleCheck = withUnistyles(CircleCheck);
 const ThemedPin = withUnistyles(Pin);
 const ThemedPinOff = withUnistyles(PinOff);
+const ThemedMessageCircleQuestion = withUnistyles(MessageCircleQuestion);
 const ThemedTag = withUnistyles(Tag);
-
+const ThemedExternalLink = withUnistyles(ExternalLink);
 const copyLeadingIcon = <ThemedCopy size={14} uniProps={foregroundMutedColorMapping} />;
 const renameLeadingIcon = <ThemedPencil size={14} uniProps={foregroundMutedColorMapping} />;
 const markAsReadLeadingIcon = (
@@ -69,14 +82,18 @@ const markAsUnreadLeadingIcon = <ThemedCircle size={14} uniProps={foregroundMute
 const archiveLeadingIcon = <ThemedArchive size={14} uniProps={foregroundMutedColorMapping} />;
 const pinLeadingIcon = <ThemedPin size={14} uniProps={foregroundMutedColorMapping} />;
 const unpinLeadingIcon = <ThemedPinOff size={14} uniProps={foregroundMutedColorMapping} />;
+const askHistoryLeadingIcon = (
+  <ThemedMessageCircleQuestion size={14} uniProps={foregroundMutedColorMapping} />
+);
+const openInNewWindowLeadingIcon = (
+  <ThemedExternalLink size={14} uniProps={foregroundMutedColorMapping} />
+);
+
+const triggerIconProps = densityIconProps("sm", foregroundMutedColorMapping);
+const triggerIconHoveredProps = densityIconProps("sm", foregroundColorMapping);
 
 function renderTriggerIcon({ hovered }: { hovered?: boolean }) {
-  return (
-    <ThemedMoreVertical
-      size={14}
-      uniProps={hovered ? foregroundColorMapping : foregroundMutedColorMapping}
-    />
-  );
+  return <ThemedMoreVertical uniProps={hovered ? triggerIconHoveredProps : triggerIconProps} />;
 }
 
 export interface SidebarWorkspaceMenuProps {
@@ -88,6 +105,7 @@ export interface SidebarWorkspaceMenuProps {
   onCopyBranchName?: () => void;
   onRename?: () => void;
   onMarkAsRead?: () => void;
+  onAskHistory?: () => void;
   onMarkAsUnread?: () => void;
   onArchive: () => void;
   archiveLabel?: string;
@@ -97,6 +115,7 @@ export interface SidebarWorkspaceMenuProps {
   isPinned?: boolean;
   onTogglePin?: () => void;
   openInFileManagerPath?: string | null;
+  onOpenInNewWindow?: () => void;
   /**
    * Lifted so the row that reveals the kebab can keep it mounted while its menu is up. See
    * `useOpenKebabMenuVisibility`.
@@ -136,6 +155,7 @@ function SidebarWorkspaceMenuItems({
   onCopyBranchName,
   onRename,
   onMarkAsRead,
+  onAskHistory,
   onMarkAsUnread,
   onArchive,
   archiveLabel,
@@ -145,8 +165,40 @@ function SidebarWorkspaceMenuItems({
   isPinned,
   onTogglePin,
   openInFileManagerPath,
+  onOpenInNewWindow,
 }: SidebarWorkspaceMenuItemsProps & { surface: MenuSurface }): ReactNode {
   const { t } = useTranslation();
+  const toast = useToast();
+
+  const handleOpenInNewWindow = useCallback(() => {
+    if (!serverId || !workspaceId) return;
+    const route = buildHostWorkspaceRoute(serverId, workspaceId);
+    if (getIsElectron()) {
+      void getDesktopHost()
+        ?.window?.openNew?.({
+          initialRoute: route,
+          pendingOpenProjectPath: openInFileManagerPath?.trim() || null,
+        })
+        ?.catch((error) => {
+          console.warn("[sidebar] openNew failed", error);
+          toast.error(t("sidebar.workspace.actions.openNewWindowFailed"));
+        });
+      return;
+    }
+    if (isWeb && typeof window !== "undefined") {
+      try {
+        window.open(route, "_blank");
+      } catch (error) {
+        console.warn("[sidebar] window.open failed", error);
+        toast.error(t("sidebar.workspace.actions.openNewWindowFailed"));
+      }
+    }
+  }, [openInFileManagerPath, serverId, t, toast, workspaceId]);
+
+  const canOpenInNewWindow = Boolean(isWeb || getIsElectron());
+  const openInNewWindowAction =
+    onOpenInNewWindow ??
+    (canOpenInNewWindow && serverId && workspaceId ? handleOpenInNewWindow : undefined);
   const archiveTrailing = useMemo(
     () => (archiveShortcutKeys ? <Shortcut chord={archiveShortcutKeys} /> : null),
     [archiveShortcutKeys],
@@ -218,6 +270,16 @@ function SidebarWorkspaceMenuItems({
           {isPinned ? t("sidebar.workspace.actions.unpin") : t("sidebar.workspace.actions.pin")}
         </WorkspaceMenuItem>
       ) : null}
+      {onAskHistory ? (
+        <WorkspaceMenuItem
+          surface={surface}
+          testID={`sidebar-workspace-menu-ask-history-${workspaceKey}`}
+          leading={askHistoryLeadingIcon}
+          onSelect={onAskHistory}
+        >
+          {t("sidebar.workspace.actions.askHistory")}
+        </WorkspaceMenuItem>
+      ) : null}
       {serverId && workspaceId ? (
         <DropdownMenuSubTrigger
           id={WORKSPACE_LABEL_PAGE_ID}
@@ -232,6 +294,16 @@ function SidebarWorkspaceMenuItems({
         path={openInFileManagerPath}
         testID={`sidebar-workspace-menu-open-folder-${workspaceKey}`}
       />
+      {openInNewWindowAction ? (
+        <WorkspaceMenuItem
+          surface={surface}
+          testID={`sidebar-workspace-menu-open-new-window-${workspaceKey}`}
+          leading={openInNewWindowLeadingIcon}
+          onSelect={openInNewWindowAction}
+        >
+          {t("sidebar.workspace.actions.openNewWindow")}
+        </WorkspaceMenuItem>
+      ) : null}
       {onArchive ? (
         <WorkspaceMenuItem
           surface={surface}
@@ -258,6 +330,7 @@ export function SidebarWorkspaceMenu({
   onCopyBranchName,
   onRename,
   onMarkAsRead,
+  onAskHistory,
   onMarkAsUnread,
   onArchive,
   archiveLabel,
@@ -304,6 +377,7 @@ export function SidebarWorkspaceMenu({
           onCopyBranchName={onCopyBranchName}
           onRename={onRename}
           onMarkAsRead={onMarkAsRead}
+          onAskHistory={onAskHistory}
           onMarkAsUnread={onMarkAsUnread}
           onArchive={onArchive}
           archiveLabel={archiveLabel}
@@ -337,6 +411,7 @@ export function SidebarWorkspaceContextMenu({
   onCopyBranchName,
   onRename,
   onMarkAsRead,
+  onAskHistory,
   onMarkAsUnread,
   onArchive,
   archiveLabel,
@@ -380,6 +455,7 @@ export function SidebarWorkspaceContextMenu({
     serviceLabel: serviceSummary
       ? t(workspaceServiceLabelKey(serviceSummary), { name: serviceSummary.name })
       : null,
+    t,
   });
   const workspaceTarget = useMemo<WorkspaceLabelTarget>(
     () => ({
@@ -417,6 +493,7 @@ export function SidebarWorkspaceContextMenu({
           onCopyBranchName={onCopyBranchName}
           onRename={onRename}
           onMarkAsRead={onMarkAsRead}
+          onAskHistory={onAskHistory}
           onMarkAsUnread={onMarkAsUnread}
           onArchive={onArchive}
           archiveLabel={archiveLabel}
@@ -438,12 +515,18 @@ function triggerStyle({ hovered = false }: PressableStateCallbackType & { hovere
 
 const styles = StyleSheet.create((theme) => ({
   trigger: {
-    padding: 2,
+    // Larger on compact so the kebab is an easy tap target.
+    width: { xs: 32, md: 18 },
+    height: { xs: 32, md: 18 },
+    alignItems: "center",
+    justifyContent: "center",
     borderRadius: 4,
     marginLeft: 2,
+    // Center the compact box on the 20px title line it is anchored to.
+    marginTop: { xs: -6, md: 0 },
     // MoreVertical paints only around the center of its SVG. Keep the padded hit box, but
     // pull the painted dots through that unused view-box space onto the trailing-content rail.
-    marginRight: -7,
+    marginRight: { xs: -14, md: -7 },
   },
   triggerHovered: {
     backgroundColor: theme.colors.surface2,

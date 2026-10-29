@@ -1,3 +1,4 @@
+import type { WorkspaceSort } from "@/projects/workspace-structure";
 import { useMemo } from "react";
 import { useStoreWithEqualityFn } from "zustand/traditional";
 import { useSidebarOrderStore } from "@/stores/sidebar-order-store";
@@ -15,13 +16,13 @@ import {
   selectWorkspaceExists,
   selectWorkspaceFields,
   selectWorkspaceKeys,
-  selectWorkspaceOrderByScope,
   selectWorkspaceStatusesForBadges,
   workspaceEqualityFns,
   type WorkspaceStructure,
 } from "./selectors";
 import { useSessionStore, type WorkspaceDescriptor } from "../session-store";
 import type { DesktopBadgeWorkspaceStatus } from "@/utils/desktop-badge-state";
+import { useMissionControlVerbose } from "@/mission-control/use-mission-control-verbose";
 
 // These are the ONLY supported ways to read workspaces from the session store.
 // Do not write raw `useSessionStore` selectors that return the workspaces Map, a session object,
@@ -99,10 +100,18 @@ export function useWorkspaceDirectory(
   );
 }
 
-export function useWorkspaceStructure(serverIds: string[]): WorkspaceStructure {
+export function useWorkspaceStructure(
+  serverIds: string[],
+  workspaceSort?: WorkspaceSort,
+  options?: { hideSystemOwnedWorkspaces?: boolean },
+): WorkspaceStructure {
+  const { hideSystemOwnedWorkspaces = true } = options ?? {};
   const selectProjects = useMemo(
-    () => createWorkspaceStructureProjectsSelector(serverIds),
-    [serverIds],
+    () =>
+      createWorkspaceStructureProjectsSelector(serverIds, workspaceSort, {
+        hideSystemOwnedWorkspaces,
+      }),
+    [hideSystemOwnedWorkspaces, serverIds, workspaceSort],
   );
   const projects = useStoreWithEqualityFn(
     useSessionStore,
@@ -114,20 +123,17 @@ export function useWorkspaceStructure(serverIds: string[]): WorkspaceStructure {
     (state) => selectProjectOrder(state),
     workspaceEqualityFns.deep,
   );
-  const workspaceOrderByScope = useStoreWithEqualityFn(
-    useSidebarOrderStore,
-    (state) => selectWorkspaceOrderByScope(state),
-    workspaceEqualityFns.deep,
+  const workspaceOrderByProject = useSidebarOrderStore((state) =>
+    workspaceSort === "manual" ? state.workspaceOrderByProject : undefined,
   );
-
   return useMemo(
     () =>
       composeWorkspaceStructure({
         projects,
         projectOrder,
-        workspaceOrderByScope,
+        workspaceOrderByProject,
       }),
-    [projectOrder, projects, workspaceOrderByScope],
+    [projectOrder, projects, workspaceOrderByProject],
   );
 }
 
@@ -156,9 +162,13 @@ export function useHasWorkspaces(serverId: string | null): boolean {
 }
 
 export function useWorkspaceStatusesForBadges(): DesktopBadgeWorkspaceStatus[] {
+  // Mission Control verbose gate: while OFF, system-owned workspaces (the
+  // Commander's home + machinery-only workspaces) are excluded from badge
+  // counts so hidden machinery never surfaces as a dock/favicon count.
+  const [verbose] = useMissionControlVerbose();
   return useStoreWithEqualityFn(
     useSessionStore,
-    (state) => selectWorkspaceStatusesForBadges(state),
+    (state) => selectWorkspaceStatusesForBadges(state, { hideSystemOwnedWorkspaces: !verbose }),
     workspaceEqualityFns.deep,
   );
 }

@@ -1,4 +1,9 @@
-import { DaemonClient } from "@getpaseo/client/internal/daemon-client";
+import {
+  DaemonAuthenticationError,
+  DaemonClient,
+  getDaemonAuthFailureReason,
+  type DaemonAuthFailureReason,
+} from "@getpaseo/client/internal/daemon-client";
 import type { DaemonClientConfig } from "@getpaseo/client/internal/daemon-client";
 import type { HostConnection } from "@/types/host-connection";
 import { getOrCreateClientId } from "./client-id";
@@ -16,6 +21,7 @@ import type { DesktopDaemonTransportTarget } from "@/desktop/daemon/desktop-daem
 
 export interface DaemonProbeClient {
   readonly lastError: string | null;
+  readonly authFailureReason?: DaemonAuthFailureReason | null;
   connect(): Promise<void>;
   close(): Promise<void>;
   getLastServerInfoMessage(): { serverId: string; hostname: string | null } | null;
@@ -84,42 +90,56 @@ function pickBestReason(reason: string | null, lastError: string | null): string
   return "Unable to connect";
 }
 
-function isIncorrectPasswordFailure(input: {
-  config: DaemonClientConfig;
-  reason: string | null;
-  lastError: string | null;
-}): boolean {
-  if (!input.config.password) {
-    return false;
-  }
-  const details = [input.reason, input.lastError].filter(Boolean).join("\n").toLowerCase();
-  return (
-    details.includes("401") ||
-    details.includes("4001") ||
-    details.includes("unauthorized") ||
-    details.includes("code 1006")
-  );
-}
-
 export class DaemonConnectionTestError extends Error {
   reason: string | null;
   lastError: string | null;
+  authFailureReason: DaemonAuthFailureReason | null;
 
-  constructor(message: string, details: { reason: string | null; lastError: string | null }) {
+  constructor(
+    message: string,
+    details: {
+      reason: string | null;
+      lastError: string | null;
+      authFailureReason?: DaemonAuthFailureReason | null;
+    },
+  ) {
     super(message);
     this.name = "DaemonConnectionTestError";
     this.reason = details.reason;
     this.lastError = details.lastError;
+    this.authFailureReason = details.authFailureReason ?? null;
   }
+}
+
+export function getConnectionAuthFailureReason(error: unknown): DaemonAuthFailureReason | null {
+  if (error instanceof DaemonConnectionTestError) return error.authFailureReason;
+  return getDaemonAuthFailureReason(error);
+}
+
+function resolveConnectionCredentials(
+  connection: HostConnection,
+  options:
+    | { password?: string; localCredential?: DaemonClientConfig["localCredential"] }
+    | undefined,
+): Pick<DaemonClientConfig, "password" | "localCredential"> {
+  const password = options?.password;
+  return {
+    ...(password ? { password } : {}),
+    ...(options?.localCredential ? { localCredential: options.localCredential } : {}),
+  };
 }
 
 export async function buildClientConfig(
   connection: HostConnection,
   serverId?: string,
-  options?: {
+  options: {
+    clientId?: string;
     capabilities?: DaemonClientConfig["capabilities"];
     trace?: DaemonClientConfig["trace"];
-  },
+    createPluginClientBundleStore?: DaemonClientConfig["createPluginClientBundleStore"];
+    password?: string;
+    localCredential?: DaemonClientConfig["localCredential"];
+  } = {},
   deps: Pick<
     DaemonConnectionDependencies<DaemonProbeClient>,
     | "getClientId"
@@ -128,23 +148,29 @@ export async function buildClientConfig(
     | "buildDesktopTransportUrl"
   > = defaultDaemonConnectionDependencies,
 ): Promise<DaemonClientConfig> {
-  const clientId = await deps.getClientId();
+  if (connection.type === "routed")
+    throw new Error("Routed host connections are resolved by HostRuntime");
+  const clientId = options.clientId ?? (await deps.getClientId());
   const desktopTransportFactory = deps.createDesktopTransportFactory();
+  // Both desktop transports take the same factory and the same URL builder, so
+  // the test was duplicated between `base` and the dispatch below.
+  const isDesktopTransport = connection.type === "directSocket" || connection.type === "directPipe";
   const base = {
     clientId,
     clientType: "mobile" as const,
     appVersion: deps.resolveAppVersion() ?? undefined,
     suppressSendErrors: true,
     reconnect: { enabled: false },
-    ...(options?.capabilities ? { capabilities: options.capabilities } : {}),
-    ...(options?.trace ? { trace: options.trace } : {}),
-    ...((connection.type === "directSocket" || connection.type === "directPipe") &&
-    desktopTransportFactory
+    ...resolveConnectionCredentials(connection, options),
+    ...(options.capabilities ? { capabilities: options.capabilities } : {}),
+    ...(options.trace ? { trace: options.trace } : {}),
+    createPluginClientBundleStore: options.createPluginClientBundleStore,
+    ...(isDesktopTransport && desktopTransportFactory
       ? { transportFactory: desktopTransportFactory }
       : {}),
   };
 
-  if (connection.type === "directSocket" || connection.type === "directPipe") {
+  if (isDesktopTransport) {
     return {
       ...base,
       url: deps.buildDesktopTransportUrl({
@@ -167,7 +193,6 @@ export async function buildClientConfig(
     return {
       ...base,
       url: buildDaemonWebSocketUrl(connection.endpoint, { useTls: connection.useTls ?? false }),
-      ...(connection.password ? { password: connection.password } : {}),
     };
   }
 
@@ -182,7 +207,11 @@ export async function buildClientConfig(
       useTls: connection.useTls ?? shouldUseTlsForDefaultHostedRelay(connection.relayEndpoint),
       serverId,
     }),
-    e2ee: { enabled: true, daemonPublicKeyB64: connection.daemonPublicKeyB64 },
+    e2ee: {
+      enabled: true,
+      daemonPublicKeyB64: connection.daemonPublicKeyB64,
+      ...(connection.minimumSecurityMode ? { minimumMode: connection.minimumSecurityMode } : {}),
+    },
   };
 }
 
@@ -245,11 +274,13 @@ export function connectAndProbe(
             error instanceof Error ? error.message : String(error),
           );
           const lastError = normalizeNonEmptyString(client.lastError);
-          const message = isIncorrectPasswordFailure({ config, reason, lastError })
-            ? "Incorrect password"
+          const authFailureReason =
+            getDaemonAuthFailureReason(error) ?? client.authFailureReason ?? null;
+          const message = authFailureReason
+            ? new DaemonAuthenticationError(authFailureReason).message
             : pickBestReason(reason, lastError);
           void client.close().catch(() => undefined);
-          reject(new DaemonConnectionTestError(message, { reason, lastError }));
+          reject(new DaemonConnectionTestError(message, { reason, lastError, authFailureReason }));
         });
     },
   );
@@ -258,8 +289,12 @@ export function connectAndProbe(
 interface ProbeOptions {
   serverId?: string;
   timeoutMs?: number;
+  clientId?: string;
+  password?: string;
+  localCredential?: DaemonClientConfig["localCredential"];
   capabilities?: DaemonClientConfig["capabilities"];
   trace?: DaemonClientConfig["trace"];
+  createPluginClientBundleStore?: DaemonClientConfig["createPluginClientBundleStore"];
 }
 
 function resolveTimeout(connection: HostConnection, options?: ProbeOptions): number {

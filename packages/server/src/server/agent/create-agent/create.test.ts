@@ -11,6 +11,7 @@ import { AgentStorage } from "../agent-storage.js";
 import type { CreatePaseoWorktreeWorkflowResult } from "../../worktree-session.js";
 import { createAgentCommand } from "./create.js";
 import type { ManagedAgent } from "../agent-manager.js";
+import { ITSAPLAN_ISSUE_LABEL_KEY } from "@getpaseo/protocol/agent-labels";
 
 const logger = createTestLogger();
 
@@ -52,7 +53,6 @@ function fakeWorktreeCreator(args: { repoRoot: string; createdWorkspaceId: strin
       workspace: { workspaceId: args.createdWorkspaceId, cwd: workspaceCwd },
       repoRoot: args.repoRoot,
       created: true,
-      setupContinuation: { kind: "agent" as const, startAfterAgentCreate: () => {} },
     }) as unknown as CreatePaseoWorktreeWorkflowResult;
 }
 
@@ -70,8 +70,13 @@ test("session create forwards clientMessageId to the initial prompt run options"
       getAgent: vi.fn(() => snapshot),
       tryRunOutOfBand: vi.fn(() => false),
       hasInFlightRun: vi.fn(() => false),
+      reloadStalePluginSession: async () => {},
       streamAgent,
       waitForAgentRunStart: vi.fn(async () => undefined),
+      withAgentModePrefix: vi.fn((_agentId: string, prompt: unknown) => ({
+        prompt,
+        carriesMode: false,
+      })),
     } as unknown as Parameters<typeof createAgentCommand>[0]["agentManager"],
     agentStorage: {} as Parameters<typeof createAgentCommand>[0]["agentStorage"],
     logger: createTestLogger(),
@@ -87,12 +92,61 @@ test("session create forwards clientMessageId to the initial prompt run options"
     labels: {},
     provisionalTitle: null,
     firstAgentContext: { attachments: [] },
-    buildSessionConfig: async (config) => ({ sessionConfig: config }),
   });
 
   expect(streamAgent).toHaveBeenCalledWith("agent-1", "hello from create", {
     clientMessageId: "msg-create-1",
   });
+});
+
+test("mcp create attaches native images to the initial prompt", async () => {
+  const snapshot = {
+    id: "agent-mcp-images",
+    provider: "codex",
+    cwd: "/tmp/paseo-create-test",
+    runtimeInfo: null,
+  } as ManagedAgent;
+  const streamAgent = vi.fn(() => (async function* noop() {})());
+  const dependencies: Parameters<typeof createAgentCommand>[0] = {
+    agentManager: {
+      createAgent: vi.fn(async () => snapshot),
+      getAgent: vi.fn(() => snapshot),
+      tryRunOutOfBand: vi.fn(() => false),
+      hasInFlightRun: vi.fn(() => false),
+      streamAgent,
+      waitForAgentRunStart: vi.fn(async () => undefined),
+      reloadStalePluginSession: vi.fn(async () => undefined),
+      withAgentModePrefix: vi.fn((_agentId: string, prompt: unknown) => ({
+        prompt,
+        carriesMode: false,
+      })),
+    } as unknown as Parameters<typeof createAgentCommand>[0]["agentManager"],
+    agentStorage: {} as Parameters<typeof createAgentCommand>[0]["agentStorage"],
+    logger: createTestLogger(),
+    providerSnapshotManager: createProviderSnapshotManagerStub().manager,
+    ensureWorkspaceForCreate: async () => "ws-mcp-images",
+  };
+
+  const image = { data: "aaa", mimeType: "image/png" };
+  await createAgentCommand(dependencies, {
+    kind: "mcp",
+    provider: "codex/gpt-5.4",
+    title: "image-worker",
+    cwd: "/tmp/paseo-create-test",
+    initialPrompt: "look at this screenshot",
+    images: [image],
+    background: true,
+    notifyOnFinish: false,
+  });
+
+  expect(streamAgent).toHaveBeenCalledWith(
+    "agent-mcp-images",
+    [
+      { type: "text", text: "look at this screenshot" },
+      { type: "image", data: "aaa", mimeType: "image/png" },
+    ],
+    expect.anything(),
+  );
 });
 
 test("session create validates the requested mode against the provider's modes", async () => {
@@ -124,7 +178,6 @@ test("session create validates the requested mode against the provider's modes",
       labels: {},
       provisionalTitle: null,
       firstAgentContext: { attachments: [] },
-      buildSessionConfig: async (config) => ({ sessionConfig: config }),
     }),
   ).rejects.toThrow("Invalid mode 'plan'");
 
@@ -168,7 +221,6 @@ test("session create applies the resolved mode from the provider create config",
     labels: {},
     provisionalTitle: null,
     firstAgentContext: { attachments: [] },
-    buildSessionConfig: async (config) => ({ sessionConfig: config }),
   });
 
   expect(createAgent).toHaveBeenCalledWith(
@@ -202,6 +254,7 @@ test("mcp create accepts provider-only internal input and leaves model undefined
         return {};
       }),
     } as Parameters<typeof createAgentCommand>[0]["providerSnapshotManager"],
+    getWorkspace: async () => ({ cwd: "/tmp/paseo-create-test", archivedAt: null }),
   };
 
   await createAgentCommand(dependencies, {
@@ -211,7 +264,6 @@ test("mcp create accepts provider-only internal input and leaves model undefined
     workspaceId: "ws-create-test",
     title: "provider default",
     initialPrompt: "hello",
-    background: true,
     notifyOnFinish: false,
   });
 
@@ -224,6 +276,93 @@ test("mcp create accepts provider-only internal input and leaves model undefined
     expect.objectContaining({
       workspaceId: "ws-create-test",
     }),
+  );
+});
+
+function createMcpCreateHarness(workspace: { cwd: string; archivedAt: string | null } | null) {
+  const snapshot = {
+    id: "agent-1",
+    provider: "omp",
+    cwd: "/tmp/paseo-create-test",
+    runtimeInfo: null,
+  } as ManagedAgent;
+  const createAgent = vi.fn(async () => snapshot);
+  const dependencies: Parameters<typeof createAgentCommand>[0] = {
+    agentManager: {
+      createAgent,
+      getAgent: vi.fn(() => snapshot),
+    } as unknown as Parameters<typeof createAgentCommand>[0]["agentManager"],
+    agentStorage: {} as Parameters<typeof createAgentCommand>[0]["agentStorage"],
+    logger: createTestLogger(),
+    providerSnapshotManager: createProviderSnapshotManagerStub().manager,
+    getWorkspace: async () => workspace,
+  };
+  return { createAgent, dependencies };
+}
+
+test("mcp create accepts the provider:model form routing config and the app use", async () => {
+  const { createAgent, dependencies } = createMcpCreateHarness({
+    cwd: "/tmp/paseo-create-test",
+    archivedAt: null,
+  });
+
+  await createAgentCommand(dependencies, {
+    kind: "mcp",
+    provider: "omp:anthropic/claude-opus-5-5",
+    workspaceId: "ws-create-test",
+    title: "colon form",
+    background: true,
+    notifyOnFinish: false,
+  });
+
+  expect(createAgent).toHaveBeenCalledWith(
+    expect.objectContaining({ provider: "omp", model: "anthropic/claude-opus-5-5" }),
+    undefined,
+    expect.anything(),
+  );
+});
+
+test("mcp create keeps a colon that belongs to the model id", async () => {
+  const { createAgent, dependencies } = createMcpCreateHarness({
+    cwd: "/tmp/paseo-create-test",
+    archivedAt: null,
+  });
+
+  await createAgentCommand(dependencies, {
+    kind: "mcp",
+    provider: "opencode/ollama/llama3:8b",
+    workspaceId: "ws-create-test",
+    title: "colon in model",
+    background: true,
+    notifyOnFinish: false,
+  });
+
+  expect(createAgent).toHaveBeenCalledWith(
+    expect.objectContaining({ provider: "opencode", model: "ollama/llama3:8b" }),
+    undefined,
+    expect.anything(),
+  );
+});
+
+test("mcp create naming a workspace without a cwd runs in that workspace, not the daemon cwd", async () => {
+  const { createAgent, dependencies } = createMcpCreateHarness({
+    cwd: "/data/worktrees/eager-cougar",
+    archivedAt: null,
+  });
+
+  await createAgentCommand(dependencies, {
+    kind: "mcp",
+    provider: "omp/anthropic/claude-opus-5-5",
+    workspaceId: "wks_worktree",
+    title: "named workspace",
+    background: true,
+    notifyOnFinish: false,
+  });
+
+  expect(createAgent).toHaveBeenCalledWith(
+    expect.objectContaining({ cwd: "/data/worktrees/eager-cougar" }),
+    undefined,
+    expect.objectContaining({ workspaceId: "wks_worktree" }),
   );
 });
 
@@ -247,47 +386,11 @@ test("session create stamps the requested workspaceId when no worktree setup run
         labels: {},
         provisionalTitle: null,
         firstAgentContext: { attachments: [] },
-        buildSessionConfig: async (config) => ({ sessionConfig: config }),
       },
     );
 
     const stored = await storage.get(snapshot.id);
     expect(stored?.workspaceId).toBe("ws-source");
-  } finally {
-    await removeRealAgentManagerWorkdir({ agentManager, storage, workdir });
-  }
-});
-
-test("session create stamps the new worktree's workspaceId when a setup continuation runs", async () => {
-  const workdir = mkdtempSync(join(tmpdir(), "create-agent-test-"));
-  const storage = new AgentStorage(join(workdir, "agents"), logger);
-  const agentManager = createRealAgentManager(storage);
-
-  try {
-    const { snapshot } = await createAgentCommand(
-      {
-        agentManager,
-        agentStorage: storage,
-        logger,
-        providerSnapshotManager: createProviderSnapshotManagerStub().manager,
-      },
-      {
-        kind: "session",
-        config: { provider: "codex", cwd: workdir },
-        workspaceId: "ws-source",
-        labels: {},
-        provisionalTitle: null,
-        firstAgentContext: { attachments: [] },
-        buildSessionConfig: async (config) => ({
-          sessionConfig: config,
-          setupContinuation: { kind: "agent", startAfterAgentCreate: () => {} },
-          createdWorkspaceId: "ws-new-worktree",
-        }),
-      },
-    );
-
-    const stored = await storage.get(snapshot.id);
-    expect(stored?.workspaceId).toBe("ws-new-worktree");
   } finally {
     await removeRealAgentManagerWorkdir({ agentManager, storage, workdir });
   }
@@ -309,7 +412,6 @@ test("mcp create stamps the new worktree's workspaceId, not the parent's", async
         labels: {},
         provisionalTitle: null,
         firstAgentContext: { attachments: [] },
-        buildSessionConfig: async (config) => ({ sessionConfig: config }),
       },
     );
 
@@ -329,7 +431,6 @@ test("mcp create stamps the new worktree's workspaceId, not the parent's", async
         provider: "codex/gpt-5.4",
         title: "child",
         initialPrompt: "do the thing",
-        background: true,
         notifyOnFinish: false,
         callerAgentId: parent.id,
         worktree: { worktreeName: "feature", baseBranch: "main" },
@@ -378,7 +479,6 @@ test("mcp create exposes the created worktree before dispatching the initial pro
         cwd: workdir,
         title: "worktree callback",
         initialPrompt: "Say done.",
-        background: true,
         notifyOnFinish: false,
         worktree: { worktreeName: "feature", baseBranch: "main" },
         onCreated: ({ agentId, createdWorktree: callbackWorktree }) => {
@@ -418,7 +518,6 @@ test("session create keeps the prompt title after the initial prompt settles", a
         labels: {},
         provisionalTitle: title,
         firstAgentContext: { attachments: [] },
-        buildSessionConfig: async (config) => ({ sessionConfig: config }),
       },
     );
 
@@ -456,7 +555,6 @@ test("session create keeps an explicit title after the initial prompt settles", 
         labels: {},
         provisionalTitle: title,
         firstAgentContext: { attachments: [] },
-        buildSessionConfig: async (config) => ({ sessionConfig: config }),
       },
     );
 
@@ -470,4 +568,298 @@ test("session create keeps an explicit title after the initial prompt settles", 
   } finally {
     await removeRealAgentManagerWorkdir({ agentManager, storage, workdir });
   }
+});
+
+test("mcp create with isolation 'worktree' produces a worktree-kind workspace", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "create-agent-worktree-isolation-test-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const agentManager = createRealAgentManager(storage);
+  const providerSnapshotManager = createProviderSnapshotManagerStub().manager;
+  const createPaseoWorktree = vi.fn(
+    fakeWorktreeCreator({
+      repoRoot: workdir,
+      createdWorkspaceId: "ws-isolated-worktree",
+    }),
+  );
+
+  try {
+    const { snapshot } = await createAgentCommand(
+      {
+        agentManager,
+        agentStorage: storage,
+        logger,
+        providerSnapshotManager,
+        createPaseoWorktree,
+      },
+      {
+        kind: "mcp",
+        provider: "codex/gpt-5.4",
+        title: "worktree-isolated-worker",
+        cwd: workdir,
+        initialPrompt: "Say hi in worktree",
+        isolation: "worktree",
+        background: true,
+        notifyOnFinish: false,
+      },
+    );
+
+    expect(createPaseoWorktree).toHaveBeenCalledTimes(1);
+    const storedAgent = await storage.get(snapshot.id);
+    expect(storedAgent?.workspaceId).toBe("ws-isolated-worktree");
+    expect(snapshot.cwd).toBe(join(workdir, "worktree", "packages", "app"));
+  } finally {
+    await removeRealAgentManagerWorkdir({ agentManager, storage, workdir });
+  }
+});
+
+test("mcp create persists the caller's labels, which is how Mission Control finds the Commander", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "create-agent-labels-test-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const agentManager = createRealAgentManager(storage);
+  const providerSnapshotManager = createProviderSnapshotManagerStub().manager;
+  // The Commander always passes an explicit workspaceId (its reserved home), so
+  // this mirrors the real call rather than exercising fresh provisioning.
+  const ensureWorkspaceForCreate = vi.fn(async () => "ws-commander-home");
+
+  try {
+    const { snapshot } = await createAgentCommand(
+      {
+        agentManager,
+        agentStorage: storage,
+        logger,
+        providerSnapshotManager,
+        ensureWorkspaceForCreate,
+      },
+      {
+        kind: "mcp",
+        provider: "codex/gpt-5.4",
+        title: "Commander",
+        cwd: workdir,
+        initialPrompt: "boot the commander",
+        labels: {
+          "paseo.mission-control": "commander",
+          "paseo.mission-control.build-hash": "deadbeef",
+        },
+        background: true,
+        notifyOnFinish: false,
+      },
+    );
+
+    // The persisted record carries the labels verbatim. StoredAgentRecord
+    // defaults labels to {}, so a dropped label set is silently empty rather
+    // than a validation error, and the host then reports no Commander at all.
+    const stored = await storage.get(snapshot.id);
+    expect(stored?.labels).toMatchObject({
+      "paseo.mission-control": "commander",
+      "paseo.mission-control.build-hash": "deadbeef",
+    });
+  } finally {
+    await removeRealAgentManagerWorkdir({ agentManager, storage, workdir });
+  }
+});
+
+test("ticket dispatch default on a git project creates a worktree instead of the shared checkout", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "create-agent-ticket-default-test-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const agentManager = createRealAgentManager(storage);
+  const providerSnapshotManager = createProviderSnapshotManagerStub().manager;
+  const createPaseoWorktree = vi.fn(
+    fakeWorktreeCreator({
+      repoRoot: workdir,
+      createdWorkspaceId: "ws-ticket-worktree",
+    }),
+  );
+  const ensureWorkspaceForCreate = vi.fn(async () => "ws-shared-checkout");
+
+  try {
+    // 1. Ticket dispatch on a git project (createPaseoWorktree available, no explicit isolation/workspaceId)
+    const { snapshot: ticketAgent } = await createAgentCommand(
+      {
+        agentManager,
+        agentStorage: storage,
+        logger,
+        providerSnapshotManager,
+        createPaseoWorktree,
+        ensureWorkspaceForCreate,
+      },
+      {
+        kind: "mcp",
+        provider: "codex/gpt-5.4",
+        title: "ticket-worker",
+        cwd: workdir,
+        initialPrompt: "Work on ticket AMBIENTAISTA-12",
+        labels: { [ITSAPLAN_ISSUE_LABEL_KEY]: "12" },
+        background: true,
+        notifyOnFinish: false,
+      },
+    );
+
+    expect(createPaseoWorktree).toHaveBeenCalledTimes(1);
+    expect(createPaseoWorktree).toHaveBeenCalledWith(
+      expect.objectContaining({ title: "ticket-worker" }),
+      expect.anything(),
+    );
+    expect(ensureWorkspaceForCreate).not.toHaveBeenCalled();
+    const storedTicketAgent = await storage.get(ticketAgent.id);
+    expect(storedTicketAgent?.workspaceId).toBe("ws-ticket-worktree");
+    expect(ticketAgent.cwd).toBe(join(workdir, "worktree", "packages", "app"));
+
+    // 2. If isolation is explicitly "local", it respects local checkout
+    createPaseoWorktree.mockClear();
+    const { snapshot: localAgent } = await createAgentCommand(
+      {
+        agentManager,
+        agentStorage: storage,
+        logger,
+        providerSnapshotManager,
+        createPaseoWorktree,
+        ensureWorkspaceForCreate,
+      },
+      {
+        kind: "mcp",
+        provider: "codex/gpt-5.4",
+        title: "local-ticket-worker",
+        cwd: workdir,
+        initialPrompt: "Work on ticket locally",
+        labels: { [ITSAPLAN_ISSUE_LABEL_KEY]: "13" },
+        isolation: "local",
+        background: true,
+        notifyOnFinish: false,
+      },
+    );
+
+    expect(createPaseoWorktree).not.toHaveBeenCalled();
+    expect(ensureWorkspaceForCreate).toHaveBeenCalledTimes(1);
+    const storedLocalAgent = await storage.get(localAgent.id);
+    expect(storedLocalAgent?.workspaceId).toBe("ws-shared-checkout");
+    expect(localAgent.cwd).toBe(workdir);
+  } finally {
+    await removeRealAgentManagerWorkdir({ agentManager, storage, workdir });
+  }
+});
+
+test("ticket dispatch on a non-git directory quietly falls back to directory workspace", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "create-agent-nongit-fallback-test-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const agentManager = createRealAgentManager(storage);
+  const providerSnapshotManager = createProviderSnapshotManagerStub().manager;
+  const createPaseoWorktree = vi.fn(async () => {
+    throw new Error("Create worktree requires a git repository");
+  });
+  const ensureWorkspaceForCreate = vi.fn(async () => "ws-nongit-directory");
+
+  try {
+    const { snapshot } = await createAgentCommand(
+      {
+        agentManager,
+        agentStorage: storage,
+        logger,
+        providerSnapshotManager,
+        createPaseoWorktree,
+        ensureWorkspaceForCreate,
+      },
+      {
+        kind: "mcp",
+        provider: "codex/gpt-5.4",
+        title: "nongit-ticket-worker",
+        cwd: workdir,
+        initialPrompt: "Work on ticket in non-git directory",
+        labels: { [ITSAPLAN_ISSUE_LABEL_KEY]: "14" },
+        background: true,
+        notifyOnFinish: false,
+      },
+    );
+
+    expect(createPaseoWorktree).toHaveBeenCalledTimes(1);
+    expect(ensureWorkspaceForCreate).toHaveBeenCalledTimes(1);
+    const storedAgent = await storage.get(snapshot.id);
+    expect(storedAgent?.workspaceId).toBe("ws-nongit-directory");
+    expect(snapshot.cwd).toBe(workdir);
+  } finally {
+    await removeRealAgentManagerWorkdir({ agentManager, storage, workdir });
+  }
+});
+
+test("ticket dispatch on a git project surfaces genuine worktree creation failures instead of silently falling back", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "create-agent-git-failure-test-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  const agentManager = createRealAgentManager(storage);
+  const providerSnapshotManager = createProviderSnapshotManagerStub().manager;
+  const createPaseoWorktree = vi.fn(async () => {
+    throw new Error("ENOSPC: no space left on device, write");
+  });
+  const ensureWorkspaceForCreate = vi.fn(async () => "ws-shared-checkout");
+
+  try {
+    await expect(
+      createAgentCommand(
+        {
+          agentManager,
+          agentStorage: storage,
+          logger,
+          providerSnapshotManager,
+          createPaseoWorktree,
+          ensureWorkspaceForCreate,
+        },
+        {
+          kind: "mcp",
+          provider: "codex/gpt-5.4",
+          title: "failing-ticket-worker",
+          cwd: workdir,
+          initialPrompt: "Work on ticket on full disk",
+          labels: { [ITSAPLAN_ISSUE_LABEL_KEY]: "15" },
+          background: true,
+          notifyOnFinish: false,
+        },
+      ),
+    ).rejects.toThrow("ENOSPC: no space left on device, write");
+
+    expect(createPaseoWorktree).toHaveBeenCalledTimes(1);
+    expect(ensureWorkspaceForCreate).not.toHaveBeenCalled();
+  } finally {
+    await removeRealAgentManagerWorkdir({ agentManager, storage, workdir });
+  }
+});
+
+test("session create with an internal config skips provider session persistence", async () => {
+  const snapshot = {
+    id: "agent-1",
+    provider: "codex",
+    cwd: "/tmp/paseo-create-test",
+    runtimeInfo: null,
+  } as ManagedAgent;
+  const createAgent = vi.fn(async () => snapshot);
+  const dependencies: Parameters<typeof createAgentCommand>[0] = {
+    agentManager: {
+      createAgent,
+    } as unknown as Parameters<typeof createAgentCommand>[0]["agentManager"],
+    agentStorage: {} as Parameters<typeof createAgentCommand>[0]["agentStorage"],
+    logger: createTestLogger(),
+    providerSnapshotManager: createProviderSnapshotManagerStub().manager,
+  };
+  const input = {
+    kind: "session" as const,
+    workspaceId: "ws-create-test",
+    labels: {},
+    provisionalTitle: null,
+    firstAgentContext: { attachments: [] },
+  };
+
+  await createAgentCommand(dependencies, {
+    ...input,
+    config: { provider: "codex", cwd: "/tmp/paseo-create-test", internal: true },
+  });
+  await createAgentCommand(dependencies, {
+    ...input,
+    config: { provider: "codex", cwd: "/tmp/paseo-create-test" },
+  });
+
+  expect(createAgent).toHaveBeenNthCalledWith(
+    1,
+    expect.objectContaining({ provider: "codex", internal: true }),
+    undefined,
+    expect.objectContaining({ persistSession: false }),
+  );
+  expect(createAgent.mock.calls[1]?.[0]).not.toHaveProperty("internal");
+  expect(createAgent.mock.calls[1]?.[2]).not.toHaveProperty("persistSession");
 });

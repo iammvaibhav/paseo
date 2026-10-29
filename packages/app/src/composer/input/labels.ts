@@ -1,18 +1,23 @@
 import type { TFunction } from "i18next";
 import type { SendBehavior } from "@/hooks/use-settings/storage";
+import type { AlternateSendAction } from "./state";
 
 export function resolveSubmitAccessibilityLabel(input: {
   submitButtonAccessibilityLabel: string | undefined;
   canPressLoadingButton: boolean;
   defaultActionQueues: boolean;
   defaultSendBehavior: SendBehavior;
+  /** Out-of-band commands (fork) run against the live turn without canceling it. */
+  sendsOutOfBand: boolean;
   isAgentRunning: boolean;
   t: TFunction;
 }): string {
   if (input.submitButtonAccessibilityLabel) return input.submitButtonAccessibilityLabel;
   if (input.canPressLoadingButton) return input.t("composer.input.interruptAgent");
   if (input.defaultActionQueues) return input.t("composer.input.queueMessage");
-  if (input.isAgentRunning) {
+  // An out-of-band command runs against the live turn without canceling it, so
+  // "send and interrupt" would be wrong even while the agent is running.
+  if (input.isAgentRunning && !input.sendsOutOfBand) {
     return input.t(
       input.defaultSendBehavior === "steer"
         ? "composer.input.sendAndSteer"
@@ -20,6 +25,19 @@ export function resolveSubmitAccessibilityLabel(input: {
     );
   }
   return input.t("composer.input.sendMessage");
+}
+
+export function resolveSubmitAccessibilityHint(input: {
+  canPressLoadingButton: boolean;
+  alternateSendAction: AlternateSendAction | null;
+  t: TFunction;
+}): string | undefined {
+  if (input.canPressLoadingButton || !input.alternateSendAction) return undefined;
+  return input.t(
+    input.alternateSendAction === "queue"
+      ? "composer.input.longPressToQueue"
+      : "composer.input.longPressToSendNow",
+  );
 }
 
 export function resolveVoiceAccessibilityLabel(input: {

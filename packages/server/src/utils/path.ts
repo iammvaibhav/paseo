@@ -58,13 +58,51 @@ export function createRealpathAwarePathMatcher(target: string): (candidate: stri
   };
 }
 
+let pathContainmentChecks: number | null = null;
+
+// Containment is re-derived from scratch on every call. A tree walk that asks it per entry, or
+// per ancestor of every entry, costs more than reading the tree does, so tests count the calls.
+export function startPathContainmentMetrics(): void {
+  pathContainmentChecks = 0;
+}
+
+export function stopPathContainmentMetrics(): number {
+  const checks = pathContainmentChecks ?? 0;
+  pathContainmentChecks = null;
+  return checks;
+}
+
 export function isPathInsideRoot(root: string, candidate: string): boolean {
+  if (pathContainmentChecks !== null) pathContainmentChecks += 1;
   return getRelativePathInsideRoot(root, candidate) !== null;
 }
 
 export function normalizePathForIdentity(value: string): string {
   const canonicalPath = resolveRealpathVariants(value)[0] ?? value;
   return normalizePathForComparison(canonicalPath, looksLikeDefiniteWindowsPath(canonicalPath));
+}
+
+/**
+ * Canonical on-disk spelling of a directory: absolute, with every symlink in
+ * its existing prefix resolved. Segments that do not exist yet are appended
+ * lexically, so a root canonicalizes the same way before and after mkdir.
+ * Windows-shaped paths on a POSIX host cannot be resolved and stay as given.
+ */
+export function canonicalizePath(value: string): string {
+  if (process.platform !== "win32" && looksLikeDefiniteWindowsPath(value)) return value;
+  const absolute = nodePath.resolve(value);
+  const missingSegments: string[] = [];
+  let existing = absolute;
+  for (;;) {
+    try {
+      return nodePath.join(realpathSync.native(existing), ...missingSegments);
+    } catch {
+      const parent = nodePath.dirname(existing);
+      if (parent === existing) return absolute;
+      missingSegments.unshift(nodePath.basename(existing));
+      existing = parent;
+    }
+  }
 }
 
 /**
@@ -92,17 +130,18 @@ export function isRealpathInsideRoot(root: string, candidate: string): boolean {
   return getRealpathAwareRelativePath(root, candidate) !== null;
 }
 
-function getRelativePathInsideRoot(root: string, candidate: string): string | null {
+export function getRelativePathInsideRoot(root: string, candidate: string): string | null {
   const compareAsWindows = shouldCompareAsWindows(root, candidate);
   const platformPath = compareAsWindows ? nodePath.win32 : nodePath.posix;
   const normalizedRoot = normalizePathForComparison(root, compareAsWindows);
   const normalizedCandidate = normalizePathForComparison(candidate, compareAsWindows);
   const comparableRelative = platformPath.relative(normalizedRoot, normalizedCandidate);
 
-  if (
-    comparableRelative !== "" &&
-    (comparableRelative.startsWith("..") || platformPath.isAbsolute(comparableRelative))
-  ) {
+  const isOutsideRoot =
+    comparableRelative === ".." ||
+    comparableRelative.startsWith(`..${platformPath.sep}`) ||
+    platformPath.isAbsolute(comparableRelative);
+  if (isOutsideRoot) {
     return null;
   }
 
@@ -138,7 +177,15 @@ function shouldCompareAsWindows(left: string, right: string): boolean {
   return looksLikeDefiniteWindowsPath(left) || looksLikeDefiniteWindowsPath(right);
 }
 
-function looksLikeDefiniteWindowsPath(value: string): boolean {
+/**
+ * True when `value`'s shape identifies it as a Windows path (drive letter,
+ * `\\?\` device namespace, or UNC), independent of the host platform. Callers
+ * that fold case for Windows-looking paths (this module's own comparisons,
+ * and `pruneKnownDirectories` in `workspace-git-service.ts`, which needs the
+ * same decision without paying for a realpath syscall) must all agree on this
+ * one rule — do not reimplement the pattern.
+ */
+export function looksLikeDefiniteWindowsPath(value: string): boolean {
   return (
     /^[a-zA-Z]:[\\/]/u.test(value) ||
     /^[/\\]{2}\?[/\\]/u.test(value) ||
@@ -151,7 +198,7 @@ function normalizePathForComparison(value: string, compareAsWindows: boolean): s
   return compareAsWindows ? normalized.toLowerCase() : normalized;
 }
 
-function normalizePathPreservingCase(value: string, compareAsWindows: boolean): string {
+export function normalizePathPreservingCase(value: string, compareAsWindows: boolean): string {
   const platformPath = compareAsWindows ? nodePath.win32 : nodePath.posix;
   const comparableValue = compareAsWindows ? stripWindowsNamespacePrefix(value) : value;
   const platformNormalized = platformPath.normalize(comparableValue);

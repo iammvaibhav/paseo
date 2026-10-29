@@ -1,21 +1,33 @@
-import { router } from "expo-router";
-import { FolderPlus, GitBranch, Import, Server, Settings, X } from "lucide-react-native";
+import { router, usePathname } from "expo-router";
+import {
+  ChartColumn,
+  CircleGauge,
+  FolderPlus,
+  GitBranch,
+  Radar,
+  Server,
+  Settings,
+  SquareKanban,
+  Webhook,
+  type LucideIcon,
+} from "lucide-react-native";
 import { useTranslation } from "react-i18next";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import {
   Pressable,
+  ScrollView,
   StyleSheet as RNStyleSheet,
   Text,
   useWindowDimensions,
   View,
-  type PressableStateCallbackType,
 } from "react-native";
 import { Gesture } from "react-native-gesture-handler";
 import Animated, { runOnJS, useAnimatedStyle, useSharedValue } from "react-native-reanimated";
 import { scheduleOnRN } from "react-native-worklets";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { StyleSheet, useUnistyles } from "react-native-unistyles";
+import { StyleSheet, useUnistyles, withUnistyles } from "react-native-unistyles";
 import { TitlebarDragRegion } from "@/components/desktop/titlebar-drag-region";
+import { SidebarCloseButton } from "@/components/headers/sidebar-close-button";
 import { resolveDesktopSidebarWidth } from "@/components/desktop-sidebar-layout";
 import {
   SIDEBAR_RESIZE_ACTIVATION_OFFSET,
@@ -23,41 +35,95 @@ import {
 } from "@/components/sidebar-resize-handle-layout";
 import { HostPicker } from "@/components/hosts/host-picker";
 import { SidebarDisplayPreferencesMenu } from "@/components/sidebar/display-preferences/menu";
+import { SidebarAgentViewPreferencesMenu } from "@/components/sidebar/agent-view/menu";
+import { SidebarViewToggle } from "@/components/sidebar/sidebar-view-toggle";
+import { SidebarSearchPanel, SidebarSearchToggle } from "@/components/sidebar/sidebar-search-bar";
+import { SidebarAgentViewList } from "@/components/sidebar/agent-view/list";
+import { SidebarSeparator } from "@/components/sidebar/sidebar-separator";
 import { SidebarNavRows } from "@/components/sidebar/sidebar-nav-rows";
+import { SidebarFooterIconHighlight } from "@/components/sidebar/sidebar-footer-icon-highlight";
 import { SidebarHelpMenu } from "@/components/sidebar/sidebar-help-menu";
+import { SidebarProviderUsageMenu } from "@/provider-usage/sidebar-menu";
 import { SidebarResizeHandle } from "@/components/sidebar-resize-handle";
+import { SyncedLoader } from "@/components/synced-loader";
+import { DensityIcon } from "@/components/ui/density-icon";
+import { SidebarSectionHeader } from "@/components/sidebar/sidebar-section-header";
 import { Shortcut } from "@/components/ui/shortcut";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { HEADER_INNER_HEIGHT, useIsCompactFormFactor } from "@/constants/layout";
+import { getIsElectron } from "@/constants/platform";
+import { useOpenFleetStats } from "@/desktop/fleet-stats";
 import { useOpenAddProject } from "@/hooks/use-open-add-project";
 import { useImportSession } from "@/hooks/use-import-session";
 import { useShortcutKeys } from "@/hooks/use-shortcut-keys";
+import { useHostFeatureMap } from "@/runtime/host-features";
 import {
   type SidebarProjectEntry,
   type SidebarWorkspaceEntry,
 } from "@/hooks/use-sidebar-workspaces-list";
+import { density, densityIconSize } from "@/styles/density";
+import type { Theme } from "@/styles/theme";
 import { useSidebarModel } from "@/components/sidebar/sidebar-model";
 import type { PinnedSidebarGroups } from "@/hooks/use-sidebar-pins";
 import { RetainedPanelActivity } from "@/components/retained-panel";
 import type { SidebarWorkspaceGroup } from "@/components/sidebar/sidebar-labels";
 import type { SidebarProjectIconTarget } from "@/utils/sidebar-project-row-model";
-import { type SidebarGroupMode, useSidebarViewStore } from "@/stores/sidebar-view-store";
-import { useHosts } from "@/runtime/host-runtime";
+import {
+  type SidebarGroupMode,
+  type SidebarViewMode,
+  useSidebarViewStore,
+} from "@/stores/sidebar-view-store";
+import { SidebarHeaderRow } from "@/components/sidebar/sidebar-header-row";
+import { useHostRuntimeConnectionStatuses, useHosts } from "@/runtime/host-runtime";
+import { PluginSidebarItem } from "@/plugins/sidebar-items";
+import { builtinSidebarNavLabelKey } from "@/sidebar-nav/model";
+import { useSidebarNavItems } from "@/sidebar-nav/use-sidebar-nav-items";
 import { usePanelStore } from "@/stores/panel-store";
 import { useOwnsWindowChromeCorner, WindowChromeSafeArea } from "@/utils/desktop-window";
 import { useCloseAgentListGesture } from "@/mobile-panels/gestures";
 import { MobilePanelOverlay } from "@/mobile-panels/presentation";
-import { buildSettingsAddHostRoute, buildSettingsRoute } from "@/utils/host-routes";
+import {
+  buildItsaplanRoute,
+  buildMissionControlRoute,
+  buildSettingsAddHostRoute,
+  buildSettingsRoute,
+  buildWebhooksRoute,
+} from "@/utils/host-routes";
 import { openHostOverview } from "@/navigation/settings-navigation";
+import {
+  UsageSidebarItem,
+  UsageSidebarRoot,
+  useHasUsageSummary,
+  useOpenSidebarUsage,
+} from "@/usage";
 import { SidebarAgentListSkeleton } from "./sidebar-agent-list-skeleton";
 import { SidebarCalloutSlot } from "./sidebar-callout-slot";
 import { SidebarWorkspaceList } from "./sidebar-workspace-list";
 
 type SidebarTheme = ReturnType<typeof useUnistyles>["theme"];
 
+const ThemedSyncedLoader = withUnistyles(SyncedLoader);
+const busyLoaderMapping = (theme: Theme, rt: { breakpoint?: string }) => ({
+  size: densityIconSize(rt, "md"),
+  color: theme.colors.foreground,
+});
+
+interface SidebarLabels {
+  addProject: string;
+  hosts: string;
+  settings: string;
+  searchHosts: string;
+  itsaplan: string;
+  missionControl: string;
+  webhooks: string;
+  usage: string;
+  closeSidebar: string;
+}
+
 const DEV_BUILD_LABEL = process.env.EXPO_PUBLIC_PASEO_DEV_BUILD_LABEL?.trim() || null;
 
 interface SidebarSharedProps {
+  viewMode: SidebarViewMode;
   theme: SidebarTheme;
   workspaceGroups: SidebarWorkspaceGroup[];
   projectIconTargets: SidebarProjectIconTarget[];
@@ -80,15 +146,9 @@ interface SidebarSharedProps {
   labels: SidebarLabels;
   handleAddHost: () => void;
   handleOpenHostSettings: (serverId: string) => void;
-}
-
-interface SidebarLabels {
-  addProject: string;
-  hosts: string;
-  importSession: string;
-  settings: string;
-  searchHosts: string;
-  closeSidebar: string;
+  /** Any connected host advertises features.missionControl — gates the row. */
+  hasMissionControl: boolean;
+  /** Two-segment badge: working + ready-for-review counts across all hosts. */
 }
 
 interface MobileSidebarProps extends SidebarSharedProps {
@@ -96,11 +156,17 @@ interface MobileSidebarProps extends SidebarSharedProps {
   insetsTop: number;
   insetsBottom: number;
   closeSidebar: () => void;
+  handleViewWebhooksNavigate: () => void;
+  handleViewItsaplanNavigate: () => void;
+  handleViewMissionControlNavigate: () => void;
 }
 
 interface DesktopSidebarProps extends SidebarSharedProps {
   insetsTop: number;
   active: boolean;
+  handleViewWebhooks: () => void;
+  handleViewItsaplan: () => void;
+  handleViewMissionControl: () => void;
 }
 
 export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boolean }) {
@@ -145,9 +211,8 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
   const { open: openImportSession, sheet: importSessionSheet } = useImportSession();
 
   const handleOpenProjectMobile = useCallback(() => {
-    showMobileAgent();
     void openProjectPicker();
-  }, [showMobileAgent, openProjectPicker]);
+  }, [openProjectPicker]);
 
   const handleOpenProjectDesktop = useCallback(() => {
     void openProjectPicker();
@@ -184,23 +249,53 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
   }, []);
 
   const handleImportSessionMobile = useCallback(() => {
-    showMobileAgent();
     openImportSession();
-  }, [openImportSession, showMobileAgent]);
+  }, [openImportSession]);
 
+  const handleViewWebhooksNavigate = useCallback(() => {
+    router.push(buildWebhooksRoute());
+  }, []);
+
+  const handleViewItsaplanNavigate = useCallback(() => {
+    router.push(buildItsaplanRoute());
+  }, []);
+
+  const handleViewMissionControlNavigate = useCallback(() => {
+    router.push(buildMissionControlRoute());
+  }, []);
+
+  const hosts = useHosts();
+  const hostServerIds = useMemo(() => hosts.map((host) => host.serverId), [hosts]);
+  const missionControlFeatureMap = useHostFeatureMap(hostServerIds, "missionControl");
+  const hostConnectionStatuses = useHostRuntimeConnectionStatuses(hostServerIds);
+  const hasMissionControl = useMemo(
+    () =>
+      hosts.some(
+        (host) =>
+          hostConnectionStatuses.get(host.serverId) === "online" &&
+          missionControlFeatureMap.get(host.serverId) === true,
+      ),
+    [hostConnectionStatuses, hosts, missionControlFeatureMap],
+  );
   const labels = useMemo(
     (): SidebarLabels => ({
       addProject: t("sidebar.actions.addProject"),
       hosts: t("sidebar.actions.hosts"),
-      importSession: t("importSession.title"),
       settings: t("sidebar.actions.settings"),
       searchHosts: t("sidebar.host.searchPlaceholder"),
+      itsaplan: t("sidebar.sections.itsaplan"),
+      missionControl: t("sidebar.sections.missionControl"),
+      webhooks: t("sidebar.sections.webhooks"),
+      usage: t(builtinSidebarNavLabelKey("usage")),
       closeSidebar: t("sidebar.actions.closeSidebar"),
     }),
     [t],
   );
 
+  const viewMode = useSidebarViewStore((state) => state.viewMode);
+
   const sharedProps = {
+    viewMode,
     theme,
     workspaceGroups,
     projectIconTargets,
@@ -218,6 +313,7 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
     toggleProjectCollapsed,
     handleRefresh,
     labels,
+    hasMissionControl,
   };
 
   if (isCompactLayout) {
@@ -235,6 +331,9 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
             handleSettings={handleSettingsMobile}
             handleAddHost={handleAddHostMobile}
             handleOpenHostSettings={handleOpenHostSettingsMobile}
+            handleViewWebhooksNavigate={handleViewWebhooksNavigate}
+            handleViewItsaplanNavigate={handleViewItsaplanNavigate}
+            handleViewMissionControlNavigate={handleViewMissionControlNavigate}
           />
         </RetainedPanelActivity>
         {importSessionSheet}
@@ -254,6 +353,9 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
           handleSettings={handleSettingsDesktop}
           handleAddHost={handleAddHostDesktop}
           handleOpenHostSettings={handleOpenHostSettingsDesktop}
+          handleViewWebhooks={handleViewWebhooksNavigate}
+          handleViewItsaplan={handleViewItsaplanNavigate}
+          handleViewMissionControl={handleViewMissionControlNavigate}
         />
       </RetainedPanelActivity>
       {importSessionSheet}
@@ -270,18 +372,20 @@ function FooterIconButton({
   onPress,
   testID,
   label,
-  icon: Icon,
-  iconSize,
+  icon,
+  isBusy,
+  iconSizeAdjustment = 0,
   shortcutKeys,
-  theme,
 }: {
   onPress: () => void;
   testID: string;
   label: string;
-  icon: typeof FolderPlus;
-  iconSize?: number;
+  icon: LucideIcon;
+  /** Swaps the icon for a spinner and swallows presses while an action runs. */
+  isBusy?: boolean;
+  /** Only for a glyph that reads larger than the others at the same size. */
+  iconSizeAdjustment?: number;
   shortcutKeys?: ReturnType<typeof useShortcutKeys>;
-  theme: SidebarTheme;
   buttonRef?: RefObject<View | null>;
 }) {
   return (
@@ -296,75 +400,27 @@ function FooterIconButton({
           accessible
           accessibilityLabel={label}
           accessibilityRole="button"
+          disabled={isBusy}
           onPress={onPress}
         >
-          {({ hovered }) => (
-            <Icon
-              size={iconSize ?? theme.iconSize.md}
-              color={hovered ? theme.colors.foreground : theme.colors.foregroundMuted}
-            />
-          )}
-        </Pressable>
-      </TooltipTrigger>
-      <TooltipContent side="top" align="center" offset={8}>
-        <IconTooltipContent label={label} shortcutKeys={shortcutKeys} />
-      </TooltipContent>
-    </Tooltip>
-  );
-}
-
-function footerAddProjectButtonStyle({
-  hovered,
-}: PressableStateCallbackType & { hovered?: boolean }) {
-  return [styles.footerAddProjectButton, Boolean(hovered) && styles.footerAddProjectButtonHovered];
-}
-
-function FooterAddProjectButton({
-  onPress,
-  label,
-  shortcutKeys,
-  theme,
-}: {
-  onPress: () => void;
-  label: string;
-  shortcutKeys: ReturnType<typeof useShortcutKeys>;
-  theme: SidebarTheme;
-}) {
-  return (
-    <Tooltip delayDuration={300}>
-      <TooltipTrigger asChild>
-        <Pressable
-          style={footerAddProjectButtonStyle}
-          testID="sidebar-add-project"
-          nativeID="sidebar-add-project"
-          accessible
-          accessibilityLabel={label}
-          accessibilityRole="button"
-          onPress={onPress}
-        >
-          {({ hovered }) => {
-            const isHovered = Boolean(hovered);
-            return (
+          {({ hovered, pressed }) =>
+            isBusy ? (
+              <ThemedSyncedLoader uniProps={busyLoaderMapping} />
+            ) : (
               <>
-                <FolderPlus
-                  size={theme.iconSize.sm}
-                  color={isHovered ? theme.colors.foreground : theme.colors.foregroundMuted}
+                <SidebarFooterIconHighlight visible={pressed} />
+                <DensityIcon
+                  icon={icon}
+                  size="md"
+                  sizeAdjustment={iconSizeAdjustment}
+                  color={hovered ? "foreground" : "foregroundMuted"}
                 />
-                <Text
-                  numberOfLines={1}
-                  style={[
-                    styles.footerAddProjectLabel,
-                    isHovered && styles.footerAddProjectLabelHovered,
-                  ]}
-                >
-                  {label}
-                </Text>
               </>
-            );
-          }}
+            )
+          }
         </Pressable>
       </TooltipTrigger>
-      <TooltipContent side="top" align="center" offset={8}>
+      <TooltipContent side="top" align="center" offset={8} testID={`${testID}-tooltip`}>
         <IconTooltipContent label={label} shortcutKeys={shortcutKeys} />
       </TooltipContent>
     </Tooltip>
@@ -372,12 +428,10 @@ function FooterAddProjectButton({
 }
 
 function SidebarHostPicker({
-  theme,
   label,
   onAddHost,
   onOpenHostSettings,
 }: {
-  theme: SidebarTheme;
   label: string;
   onAddHost: () => void;
   onOpenHostSettings: (serverId: string) => void;
@@ -419,8 +473,8 @@ function SidebarHostPicker({
         testID="sidebar-hosts-trigger"
         label={label}
         icon={Server}
-        iconSize={theme.iconSize.sm}
-        theme={theme}
+        // Server's two boxes fill more of the square than the other glyphs.
+        iconSizeAdjustment={-1}
       />
     </HostPicker>
   );
@@ -441,70 +495,137 @@ function IconTooltipContent({
   );
 }
 
+/**
+ * Fork-only, Electron-only: collects omp stats across every host and shows the
+ * merged dashboard in its own desktop window (docs/omp-fleet-stats.md).
+ */
+function SidebarFleetStatsButton() {
+  const { t } = useTranslation();
+  const { open, isOpening } = useOpenFleetStats();
+
+  if (!getIsElectron()) {
+    return null;
+  }
+  return (
+    <FooterIconButton
+      onPress={open}
+      testID="sidebar-fleet-stats"
+      label={isOpening ? t("sidebar.fleetStats.collecting") : t("sidebar.fleetStats.label")}
+      icon={ChartColumn}
+      isBusy={isOpening}
+    />
+  );
+}
+
 function SidebarFooter({
-  theme,
   handleOpenProject,
-  handleImportSession,
   handleSettings,
   labels,
   handleAddHost,
   handleOpenHostSettings,
+  onBeforeNavigate,
 }: {
-  theme: SidebarTheme;
   handleOpenProject: () => void;
-  handleImportSession: () => void;
   handleSettings: () => void;
   labels: {
     addProject: string;
     hosts: string;
-    importSession: string;
     settings: string;
     searchHosts: string;
+    usage: string;
   };
   handleAddHost: () => void;
   handleOpenHostSettings: (serverId: string) => void;
+  onBeforeNavigate?: () => void;
 }) {
   const newAgentKeys = useShortcutKeys("new-agent");
   const settingsKeys = useShortcutKeys("toggle-settings");
 
+  // One line of icons: Add project, Usage, Hosts, then Help and Settings at the end.
   return (
-    <View style={styles.sidebarFooter}>
-      <FooterAddProjectButton
-        onPress={handleOpenProject}
-        label={labels.addProject}
-        shortcutKeys={newAgentKeys}
-        theme={theme}
-      />
-      <View style={styles.footerIconRow}>
-        <SidebarHostPicker
-          theme={theme}
-          label={labels.hosts}
-          onAddHost={handleAddHost}
-          onOpenHostSettings={handleOpenHostSettings}
-        />
-        <FooterIconButton
-          onPress={handleImportSession}
-          testID="sidebar-import-session"
-          label={labels.importSession}
-          icon={Import}
-          theme={theme}
-        />
-        <SidebarHelpMenu />
-        <FooterIconButton
-          onPress={handleSettings}
-          testID="sidebar-settings"
-          label={labels.settings}
-          icon={Settings}
-          shortcutKeys={settingsKeys}
-          theme={theme}
-        />
+    <UsageSidebarRoot>
+      <View style={styles.footerContainer} testID="sidebar-footer">
+        <SidebarFooterRows onBeforeNavigate={onBeforeNavigate} />
+        <View style={styles.sidebarFooter} testID="sidebar-footer-bottom-line">
+          <FooterIconButton
+            onPress={handleOpenProject}
+            testID="sidebar-add-project"
+            label={labels.addProject}
+            icon={FolderPlus}
+            shortcutKeys={newAgentKeys}
+          />
+          <SidebarUsageIcon label={labels.usage} />
+          <SidebarHostPicker
+            label={labels.hosts}
+            onAddHost={handleAddHost}
+            onOpenHostSettings={handleOpenHostSettings}
+          />
+          <SidebarFleetStatsButton />
+          <SidebarProviderUsageMenu />
+          <View style={styles.footerSpacer} />
+          <SidebarHelpMenu />
+          <FooterIconButton
+            onPress={handleSettings}
+            testID="sidebar-settings"
+            label={labels.settings}
+            icon={Settings}
+            shortcutKeys={settingsKeys}
+          />
+        </View>
       </View>
-    </View>
+    </UsageSidebarRoot>
+  );
+}
+
+function SidebarUsageIcon({ label }: { label: string }) {
+  const openUsage = useOpenSidebarUsage();
+  return (
+    <FooterIconButton
+      onPress={openUsage}
+      testID="sidebar-usage-icon"
+      label={label}
+      icon={CircleGauge}
+    />
+  );
+}
+
+/**
+ * The footer rows in the user's `sidebarFooterItems` order: the Usage item and plugin rows. The
+ * Usage item is left out while it has no summary to show.
+ */
+function SidebarFooterRows({ onBeforeNavigate }: { onBeforeNavigate?: () => void }) {
+  const { items } = useSidebarNavItems("footer");
+  const hasUsageSummary = useHasUsageSummary();
+  const rowsRef = useRef<View | null>(null);
+  const visibleItems = items.filter(
+    (item) => item.visible && (item.kind === "plugin" || hasUsageSummary),
+  );
+  if (visibleItems.length === 0) return null;
+  return (
+    <>
+      <View ref={rowsRef} collapsable={false} style={styles.footerRows}>
+        {visibleItems.map((item) =>
+          item.kind === "plugin" ? (
+            <PluginSidebarItem
+              key={item.key}
+              group={item.group}
+              section="footer"
+              fallbackAnchorRef={rowsRef}
+              onBeforeNavigate={onBeforeNavigate}
+            />
+          ) : (
+            <UsageSidebarItem key={item.key} />
+          ),
+        )}
+      </View>
+      <SidebarSeparator testID="sidebar-footer-separator" />
+    </>
   );
 }
 
 function MobileSidebar({
   active,
+  viewMode,
   theme,
   workspaceGroups,
   projectIconTargets,
@@ -530,13 +651,50 @@ function MobileSidebar({
   insetsTop,
   insetsBottom,
   closeSidebar,
+  hasMissionControl,
+  handleViewWebhooksNavigate,
+  handleViewItsaplanNavigate,
+  handleViewMissionControlNavigate,
 }: MobileSidebarProps) {
   const hasActiveHostFilter = useSidebarViewStore((state) => state.hostFilters.length > 0);
+  const showWorkspaceSkeleton = isInitialLoad && !hasActiveHostFilter;
+  const pathname = usePathname();
+  const isWebhooksActive = pathname.includes("/webhooks");
+  const isItsaplanActive = pathname.includes("/itsaplan");
+  const isMissionControlActive = pathname.includes("/mission-control");
   const { gesture: closeGesture, gestureRef: closeGestureRef } = useCloseAgentListGesture();
+
+  const handleViewWebhooks = useCallback(() => {
+    closeSidebar();
+    handleViewWebhooksNavigate();
+  }, [closeSidebar, handleViewWebhooksNavigate]);
+
+  const handleViewItsaplan = useCallback(() => {
+    closeSidebar();
+    handleViewItsaplanNavigate();
+  }, [closeSidebar, handleViewItsaplanNavigate]);
+
+  const handleViewMissionControl = useCallback(() => {
+    closeSidebar();
+    handleViewMissionControlNavigate();
+  }, [closeSidebar, handleViewMissionControlNavigate]);
 
   const handleWorkspacePress = useCallback(() => {
     closeSidebar();
   }, [closeSidebar]);
+
+  const closeButton = useMemo(
+    () => (
+      <SidebarCloseButton
+        label={labels.closeSidebar}
+        onPress={closeSidebar}
+        testID="sidebar-close"
+        nativeID="sidebar-close"
+        style={styles.mobileCloseButton}
+      />
+    ),
+    [labels.closeSidebar, closeSidebar],
+  );
 
   const mobileSidebarInsetStyle = useMemo(
     () => ({
@@ -555,30 +713,61 @@ function MobileSidebar({
     >
       <View style={styles.sidebarContent} pointerEvents="auto">
         <WindowChromeSafeArea placement="below" />
-        <SidebarNavRows style={styles.sidebarHeaderGroup} onBeforeNavigate={closeSidebar} />
-        <WindowChromeSafeArea placement="inline" style={styles.mobileCloseButtonRow}>
-          <Pressable
-            style={styles.mobileCloseButton}
-            onPress={closeSidebar}
-            testID="sidebar-close"
-            nativeID="sidebar-close"
-            accessible
-            accessibilityRole="button"
-            accessibilityLabel={labels.closeSidebar}
-            hitSlop={8}
-          >
-            {({ hovered, pressed }) => (
-              <X
-                size={theme.iconSize.md}
-                color={hovered || pressed ? theme.colors.foreground : theme.colors.foregroundMuted}
-              />
-            )}
-          </Pressable>
-        </WindowChromeSafeArea>
+        <SidebarNavRows
+          style={styles.sidebarHeaderGroup}
+          onBeforeNavigate={closeSidebar}
+          firstRowTrailing={closeButton}
+        />
+        <View style={styles.sidebarHeaderGroup}>
+          <SidebarHeaderRow
+            icon={SquareKanban}
+            label={labels.itsaplan}
+            onPress={handleViewItsaplan}
+            isActive={isItsaplanActive}
+            testID="sidebar-itsaplan"
+            variant="compact"
+          />
+          {hasMissionControl ? (
+            <SidebarHeaderRow
+              icon={Radar}
+              label={labels.missionControl}
+              onPress={handleViewMissionControl}
+              isActive={isMissionControlActive}
+              testID="sidebar-mission-control"
+              variant="compact"
+            />
+          ) : null}
+          <SidebarHeaderRow
+            icon={Webhook}
+            label={labels.webhooks}
+            onPress={handleViewWebhooks}
+            isActive={isWebhooksActive}
+            testID="sidebar-webhooks"
+            variant="compact"
+          />
+        </View>
 
-        {isInitialLoad && !hasActiveHostFilter ? (
-          <SidebarAgentListSkeleton />
-        ) : (
+        {viewMode === "agents" ? (
+          <SidebarAgentViewList
+            active={active}
+            listHeaderComponent={sidebarSectionHeaderElement}
+            onAgentPress={handleWorkspacePress}
+            parentGestureRef={closeGestureRef}
+          />
+        ) : null}
+        {viewMode === "workspaces" && showWorkspaceSkeleton ? (
+          <View style={styles.sidebarContent}>
+            <ScrollView
+              style={styles.sidebarContent}
+              contentContainerStyle={styles.workspaceSkeletonContent}
+              showsVerticalScrollIndicator={false}
+            >
+              {sidebarSectionHeaderElement}
+              <SidebarAgentListSkeleton />
+            </ScrollView>
+          </View>
+        ) : null}
+        {viewMode === "workspaces" && !showWorkspaceSkeleton ? (
           <SidebarWorkspaceList
             collapsedProjectKeys={collapsedProjectKeys}
             onToggleProjectCollapsed={toggleProjectCollapsed}
@@ -598,18 +787,17 @@ function MobileSidebar({
             onImportSession={handleImportSession}
             parentGestureRef={closeGestureRef}
             dragGestureHostActive={active}
-            listHeaderComponent={workspacesSectionHeaderElement}
+            listHeaderComponent={sidebarSectionHeaderElement}
           />
-        )}
+        ) : null}
 
         <SidebarFooter
-          theme={theme}
           handleOpenProject={handleOpenProject}
-          handleImportSession={handleImportSession}
           handleSettings={handleSettings}
           labels={labels}
           handleAddHost={handleAddHost}
           handleOpenHostSettings={handleOpenHostSettings}
+          onBeforeNavigate={closeSidebar}
         />
       </View>
     </MobilePanelOverlay>
@@ -618,6 +806,7 @@ function MobileSidebar({
 
 function DesktopSidebar({
   theme,
+  viewMode,
   workspaceGroups,
   projectIconTargets,
   pinnedGroups,
@@ -641,12 +830,23 @@ function DesktopSidebar({
   handleOpenHostSettings,
   insetsTop,
   active,
+  hasMissionControl,
+  handleViewWebhooks,
+  handleViewItsaplan,
+  handleViewMissionControl,
 }: DesktopSidebarProps) {
   const ownsTopLeft = useOwnsWindowChromeCorner("top-left");
   const hasActiveHostFilter = useSidebarViewStore((state) => state.hostFilters.length > 0);
+  const showWorkspaceSkeleton = isInitialLoad && !hasActiveHostFilter;
+  const pathname = usePathname();
+  const isWebhooksActive = pathname.includes("/webhooks");
+  const isItsaplanActive = pathname.includes("/itsaplan");
+  const isMissionControlActive = pathname.includes("/mission-control");
   const sidebarWidth = usePanelStore((state) => state.sidebarWidth);
   const setSidebarWidth = usePanelStore((state) => state.setSidebarWidth);
-  const { width: viewportWidth } = useWindowDimensions();
+  const { width: windowWidth } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
+  const viewportWidth = windowWidth - insets.left - insets.right;
   const visibleSidebarWidth = resolveDesktopSidebarWidth({
     requestedWidth: sidebarWidth,
     viewportWidth,
@@ -715,8 +915,11 @@ function DesktopSidebar({
     [active, resizeAnimatedStyle],
   );
   const desktopSidebarBorderStyle = useMemo(
-    () => [styles.desktopSidebarBorder, { flex: 1, paddingTop: insetsTop }],
-    [insetsTop],
+    () => [
+      styles.desktopSidebarBorder,
+      { flex: 1, paddingTop: insetsTop, paddingBottom: insets.bottom },
+    ],
+    [insetsTop, insets.bottom],
   );
   const sidebarHeaderGroupStyle = useMemo(
     () => [styles.sidebarHeaderGroup, ownsTopLeft && styles.sidebarHeaderGroupBelowChrome],
@@ -724,8 +927,7 @@ function DesktopSidebar({
   );
   return (
     <Animated.View
-      accessibilityElementsHidden={!active}
-      importantForAccessibility={active ? "auto" : "no-hide-descendants"}
+      aria-hidden={!active}
       pointerEvents={active ? "auto" : "none"}
       style={desktopSidebarStyle}
     >
@@ -752,11 +954,52 @@ function DesktopSidebar({
             <TitlebarDragRegion />
           )}
           <SidebarNavRows style={sidebarHeaderGroupStyle} />
+          <View style={styles.sidebarHeaderGroup}>
+            <SidebarHeaderRow
+              icon={SquareKanban}
+              label={labels.itsaplan}
+              onPress={handleViewItsaplan}
+              isActive={isItsaplanActive}
+              testID="sidebar-itsaplan"
+              variant="compact"
+            />
+            {hasMissionControl ? (
+              <SidebarHeaderRow
+                icon={Radar}
+                label={labels.missionControl}
+                onPress={handleViewMissionControl}
+                isActive={isMissionControlActive}
+                testID="sidebar-mission-control"
+                variant="compact"
+              />
+            ) : null}
+            <SidebarHeaderRow
+              icon={Webhook}
+              label={labels.webhooks}
+              onPress={handleViewWebhooks}
+              isActive={isWebhooksActive}
+              testID="sidebar-webhooks"
+              variant="compact"
+            />
+          </View>
         </View>
 
-        {isInitialLoad && !hasActiveHostFilter ? (
-          <SidebarAgentListSkeleton />
-        ) : (
+        {viewMode === "agents" ? (
+          <SidebarAgentViewList active={active} listHeaderComponent={sidebarSectionHeaderElement} />
+        ) : null}
+        {viewMode === "workspaces" && showWorkspaceSkeleton ? (
+          <View style={styles.sidebarContent}>
+            <ScrollView
+              style={styles.sidebarContent}
+              contentContainerStyle={styles.workspaceSkeletonContent}
+              showsVerticalScrollIndicator={false}
+            >
+              {sidebarSectionHeaderElement}
+              <SidebarAgentListSkeleton />
+            </ScrollView>
+          </View>
+        ) : null}
+        {viewMode === "workspaces" && !showWorkspaceSkeleton ? (
           <SidebarWorkspaceList
             collapsedProjectKeys={collapsedProjectKeys}
             onToggleProjectCollapsed={toggleProjectCollapsed}
@@ -773,16 +1016,14 @@ function DesktopSidebar({
             onRefresh={handleRefresh}
             onAddProject={handleOpenProject}
             onImportSession={handleImportSession}
-            listHeaderComponent={workspacesSectionHeaderElement}
+            listHeaderComponent={sidebarSectionHeaderElement}
           />
-        )}
+        ) : null}
 
         <SidebarCalloutSlot />
 
         <SidebarFooter
-          theme={theme}
           handleOpenProject={handleOpenProject}
-          handleImportSession={handleImportSession}
           handleSettings={handleSettings}
           labels={labels}
           handleAddHost={handleAddHost}
@@ -800,29 +1041,41 @@ function DesktopSidebar({
   );
 }
 
-function WorkspacesSectionHeader() {
+function SidebarListHeader() {
+  const { t } = useTranslation();
+  const viewMode = useSidebarViewStore((state) => state.viewMode);
+  const isAgentView = viewMode === "agents";
+
   return (
-    <View style={styles.workspacesSectionHeader}>
-      <Text style={styles.workspacesSectionTitle}>Workspaces</Text>
-      <View style={styles.workspacesSectionActions}>
+    <View>
+      <SidebarSectionHeader title={isAgentView ? t("sidebar.agentView.title") : "Workspaces"}>
+        <SidebarSearchToggle />
+        <SidebarViewToggle />
         <Tooltip delayDuration={300}>
           <TooltipTrigger asChild>
             <View>
-              <SidebarDisplayPreferencesMenu />
+              {isAgentView ? (
+                <SidebarAgentViewPreferencesMenu />
+              ) : (
+                <SidebarDisplayPreferencesMenu />
+              )}
             </View>
           </TooltipTrigger>
           <TooltipContent side="bottom" align="center" offset={8}>
-            <IconTooltipContent label="Display preferences" />
+            <IconTooltipContent
+              label={isAgentView ? t("sidebar.agentView.display.trigger") : "Display preferences"}
+            />
           </TooltipContent>
         </Tooltip>
-      </View>
+      </SidebarSectionHeader>
+      <SidebarSearchPanel />
     </View>
   );
 }
 
 // Stable element so the sidebar list's listHeaderComponent prop keeps identity across
-// renders (WorkspacesSectionHeader takes no props).
-const workspacesSectionHeaderElement = <WorkspacesSectionHeader />;
+// renders (SidebarListHeader takes no props).
+const sidebarSectionHeaderElement = <SidebarListHeader />;
 
 // Static styles for Animated.Views — must NOT use Unistyles dynamic theme to
 // avoid the "Unable to find node on an unmounted component" crash when Unistyles
@@ -842,57 +1095,22 @@ const styles = StyleSheet.create((theme) => ({
     gap: 2,
     paddingBottom: theme.spacing[1.5],
     borderBottomWidth: 1,
-    borderBottomColor: theme.colors.border,
+    borderBottomColor: theme.colors.sidebarDivider,
   },
   sidebarHeaderGroupBelowChrome: {
     paddingTop: 0,
-  },
-  workspacesSectionHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: theme.spacing[2],
-    // Rendered inside the scroll's listContent (paddingHorizontal spacing[2]). The title
-    // lands at spacing[2] left to align with project icons. Settings2's painted path stops
-    // inside its 14px SVG, so 4px aligns the ink rather than the SVG box to the row rail.
-    paddingLeft: theme.spacing[2],
-    paddingRight: 4,
-    paddingTop: theme.spacing[1],
-    paddingBottom: theme.spacing[1],
-  },
-  workspacesSectionTitle: {
-    color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.sm,
-    fontWeight: theme.fontWeight.normal,
-  },
-  workspacesSectionActions: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: theme.spacing[1],
   },
   sidebarContent: {
     flex: 1,
     minHeight: 0,
   },
-  mobileCloseButtonRow: {
-    position: "absolute",
-    top: theme.spacing[3],
-    left: 0,
-    right: 0,
-    zIndex: 2,
-    alignItems: "flex-end",
-    pointerEvents: "box-none",
+  workspaceSkeletonContent: {
+    paddingHorizontal: theme.spacing[2],
+    paddingTop: 2,
+    paddingBottom: theme.spacing[4],
   },
   mobileCloseButton: {
-    // The 16px X paints farther inside its 32px hit target than the 14px Settings2 glyph.
-    // This optical inset puts their painted right edges on the same sidebar rail.
-    marginRight: theme.spacing[2] + 1.5,
-    width: 32,
-    height: 32,
-    alignItems: "center",
-    justifyContent: "center",
-    borderRadius: theme.borderRadius.lg,
-    backgroundColor: theme.colors.surfaceSidebar,
+    marginRight: theme.spacing[2],
   },
   desktopSidebarBorder: {
     borderRightWidth: 1,
@@ -929,48 +1147,30 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.sm,
     fontWeight: theme.fontWeight.medium,
   },
+  footerContainer: {
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.sidebarDivider,
+  },
+  // Buttons sit edge to edge; their own inset spaces the glyphs.
   sidebarFooter: {
     flexDirection: "row",
     alignItems: "center",
-    gap: theme.spacing[2],
     paddingHorizontal: theme.spacing[2],
-    paddingVertical: theme.spacing[3],
-    borderTopWidth: 1,
-    borderTopColor: theme.colors.border,
-  },
-  footerIconRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: theme.spacing[2],
-    flexShrink: 0,
-  },
-  footerAddProjectButton: {
-    minWidth: 0,
-    minHeight: 32,
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: theme.spacing[2],
     paddingVertical: theme.spacing[1.5],
+  },
+  // Pushes Help and Settings to the end of the icon line.
+  footerSpacer: {
+    flex: 1,
+  },
+  // Usage and plugin rows sit above the footer's icon line, spaced like the header nav rows.
+  footerRows: {
     paddingHorizontal: theme.spacing[2],
-    borderRadius: theme.borderRadius.lg,
-  },
-  footerAddProjectButtonHovered: {
-    backgroundColor: theme.colors.surfaceSidebarHover,
-  },
-  footerAddProjectLabel: {
-    minWidth: 0,
-    flexShrink: 1,
-    fontSize: theme.fontSize.base,
-    fontWeight: theme.fontWeight.normal,
-    color: theme.colors.foregroundMuted,
-  },
-  footerAddProjectLabelHovered: {
-    color: theme.colors.foreground,
+    paddingVertical: theme.spacing[1.5],
+    gap: 2,
   },
   footerIconButton: {
-    width: 28,
-    height: 28,
+    width: density.iconButton,
+    height: density.iconButton,
     alignItems: "center",
     justifyContent: "center",
     paddingVertical: theme.spacing[1],

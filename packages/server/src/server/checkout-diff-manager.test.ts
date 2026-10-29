@@ -1,3 +1,4 @@
+import { createWorkspaceRuntimeStore } from "./workspace-runtime-store/index.js";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 const { toCheckoutErrorMock } = vi.hoisted(() => ({
@@ -67,7 +68,7 @@ function createPendingManager() {
   const workspaceGitService = {
     getCheckoutDiff: async () => ({ diff: "", structured: [] }),
     getSnapshot: async () => createWorkspaceSnapshot(),
-    peekSnapshot: () => null,
+
     registerWorkspace: () => ({ unsubscribe: () => {} }),
     requestWorkingTreeWatch: (cwd: string, onChange: () => void) => {
       const pending = createDeferred<{ repoRoot: string | null; unsubscribe: () => void }>();
@@ -90,6 +91,7 @@ function createPendingManager() {
   };
   const logger = { child: () => logger, warn: () => {} };
   const manager = new CheckoutDiffManager({
+    workspaceRuntimeStore: createWorkspaceRuntimeStore(),
     logger: logger as unknown as pino.Logger,
     paseoHome: "/tmp/paseo-test",
     workspaceGitService,
@@ -125,7 +127,7 @@ describe("CheckoutDiffManager", () => {
 
     const workspaceGitService = {
       subscribe: vi.fn(),
-      peekSnapshot: vi.fn(),
+
       registerWorkspace: vi.fn(
         (_params: { cwd: string }, listener: (snapshot: WorkspaceGitRuntimeSnapshot) => void) => {
           onWorkspaceSnapshot = listener;
@@ -147,6 +149,7 @@ describe("CheckoutDiffManager", () => {
     };
 
     const manager = new CheckoutDiffManager({
+      workspaceRuntimeStore: createWorkspaceRuntimeStore(),
       logger: logger as unknown as pino.Logger,
       paseoHome: "/tmp/paseo-test",
       workspaceGitService: workspaceGitService as unknown as WorkspaceGitService,
@@ -481,5 +484,51 @@ describe("CheckoutDiffManager", () => {
       expect.objectContaining({ mode: "uncommitted", includeStructured: true }),
       undefined,
     );
+  });
+  test("two overlapping computes for the same target (one via subscribe initial, one via scheduleTargetRefresh) call underlying getCheckoutDiff once", async () => {
+    const inFlightDiff = createDeferred<{
+      diff: string;
+      structured: Array<{
+        path: string;
+        additions: number;
+        deletions: number;
+        status: "modified";
+      }>;
+    }>();
+    const getCheckoutDiff = vi
+      .fn()
+      .mockImplementationOnce(() => inFlightDiff.promise)
+      .mockResolvedValue({
+        diff: "",
+        structured: [],
+      });
+    const { manager } = createManager({
+      getCheckoutDiffImplementation: getCheckoutDiff,
+    });
+
+    const subscribePromise = manager.subscribe(
+      { cwd: "/tmp/repo", compare: { mode: "uncommitted" } },
+      vi.fn(),
+    );
+
+    const seam = manager as unknown as {
+      targets: Map<string, object>;
+      buildTargetKey(cwd: string, compare: { mode: "uncommitted" }): string;
+      scheduleTargetRefresh(target: object): void;
+    };
+    const target = seam.targets.get(seam.buildTargetKey("/tmp/repo", { mode: "uncommitted" }));
+    expect(target).toBeDefined();
+    seam.scheduleTargetRefresh(target as object);
+
+    await vi.advanceTimersByTimeAsync(150);
+
+    inFlightDiff.resolve({
+      diff: "",
+      structured: [{ path: "tracked.ts", additions: 1, deletions: 0, status: "modified" }],
+    });
+
+    const subscription = await subscribePromise;
+    expect(subscription.initial.files).toHaveLength(1);
+    expect(getCheckoutDiff).toHaveBeenCalledTimes(1);
   });
 });

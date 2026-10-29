@@ -118,8 +118,8 @@ export function ChatFind({
   }, [active, isInteractive, model]);
   const close = useCallback(() => {
     model.close();
-    root.current?.focus({ preventScroll: true });
-  }, [model]);
+    viewportRef.current?.focus?.();
+  }, [model, viewportRef]);
   let status = "";
   if (state.phase === "searching") status = t("paneFind.searching");
   else if (state.phase === "loading") status = t("paneFind.loading");
@@ -172,5 +172,5 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.surface1,
   },
   errorText: { color: theme.colors.foreground, fontSize: theme.fontSize.sm, flex: 1 },
-  highlight: { backgroundColor: theme.colors.statusWarning, color: theme.colors.surface0 },
+  highlight: { backgroundColor: theme.colors.statusWarning, color: theme.colors.background },
 }));

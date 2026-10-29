@@ -12,12 +12,29 @@ import {
   toAgentPersistenceHandle,
 } from "../persistence-hooks.js";
 
+export class AgentNotFoundError extends Error {
+  constructor(agentId: string) {
+    super(`Agent not found: ${agentId}`);
+    this.name = "AgentNotFoundError";
+  }
+}
+
 interface PendingAgentInitialization {
   promise: Promise<ManagedAgent>;
   options: { broadcastTimeline: boolean };
 }
 
 const pendingAgentInitializations = new Map<string, PendingAgentInitialization>();
+
+/**
+ * Resolves once an in-flight `ensureAgentLoaded` for this agent has settled.
+ * A resumed agent is registered before its history is hydrated, so a reader of
+ * the live timeline must wait here or it can serve that empty window as the
+ * authoritative history. Load failures are left to the loader's caller.
+ */
+export async function waitForPendingAgentLoad(agentId: string): Promise<void> {
+  await pendingAgentInitializations.get(agentId)?.promise.catch(() => undefined);
+}
 
 export type AgentLoaderManager = Pick<
   AgentManager,
@@ -94,7 +111,7 @@ export async function ensureAgentLoaded(
   const initPromise = (async () => {
     const record = await deps.agentStorage.get(agentId);
     if (!record) {
-      throw new Error(`Agent not found: ${agentId}`);
+      throw new AgentNotFoundError(agentId);
     }
 
     const validProviders = deps.validProviders ?? deps.agentManager.getRegisteredProviderIds();
@@ -110,7 +127,16 @@ export async function ensureAgentLoaded(
         handle,
         buildConfigOverrides(record),
         agentId,
-        { ...extractTimestamps(record), attention: extractAttention(record) },
+        // Labels ride extractTimestamps into the launch options so the
+        // launch-context catalog build sees the caller labels (verifier/
+        // Commander tools are label-gated: a resumed verifier session must
+        // keep contact_worker/submit_verdict).
+        {
+          ...extractTimestamps(record),
+          attention: extractAttention(record),
+          ...(record.agentMode ? { agentMode: record.agentMode } : {}),
+          ...(record.appliedAgentMode ? { appliedAgentMode: record.appliedAgentMode } : {}),
+        },
         record.archivedAt ? { purpose: "history" } : undefined,
       );
       deps.logger.info({ agentId, provider: record.provider }, "Agent resumed from persistence");
@@ -127,6 +153,7 @@ export async function ensureAgentLoaded(
       snapshot = await deps.agentManager.createAgent(config, agentId, {
         labels: record.labels,
         workspaceId: record.workspaceId,
+        ...(record.agentMode ? { agentMode: record.agentMode } : {}),
         owner: record.owner,
       });
       deps.logger.info({ agentId, provider: record.provider }, "Agent created from stored config");
@@ -134,6 +161,7 @@ export async function ensureAgentLoaded(
 
     await deps.agentManager.hydrateTimelineFromProvider(agentId, {
       broadcast: () => pendingOptions.broadcastTimeline,
+      providerSubagents: true,
     });
     return deps.agentManager.getAgent(agentId) ?? snapshot;
   })();

@@ -1,0 +1,18 @@
+{
+  "name": "@getpaseo/builtin-plugins",
+  "version": "0.14.0-beta.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "sh ../scripts/cpu-slot.sh typecheck tsgo -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@getpaseo/plugin": "workspace:*",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20.9.0",
+    "vitest": "^4.1.6"
+  }
+}

@@ -1,3 +1,4 @@
+import { ComposerEditingScope } from "@/composer/editing-session";
 import React, { useMemo, type ComponentType } from "react";
 import invariant from "tiny-invariant";
 import {
@@ -8,7 +9,6 @@ import {
 } from "@/panels/pane-context";
 import { useStableEvent } from "@/hooks/use-stable-event";
 import { getPanelRegistration } from "@/panels/panel-registry";
-import { ensurePanelsRegistered } from "@/panels/register-panels";
 import type { WorkspaceTabDescriptor } from "@/screens/workspace/workspace-tabs-types";
 import { RenderProfile } from "@/utils/render-profiler";
 import type { WorkspaceFileOpenRequest } from "@/workspace/file-open";
@@ -26,7 +26,7 @@ export interface BuildWorkspacePaneContentModelInput {
   normalizedServerId: string;
   normalizedWorkspaceId: string;
   host: PaneHost;
-  fileNavigationRevision?: number;
+  panelRevision?: number;
   onOpenTab: (target: WorkspaceTabDescriptor["target"]) => void;
   onOpenPreferredTarget: (
     target: WorkspaceTabDescriptor["target"],
@@ -37,6 +37,7 @@ export interface BuildWorkspacePaneContentModelInput {
   onRetargetCurrentTab: (target: WorkspaceTabDescriptor["target"]) => void;
   onSetCurrentTabState: (state: WorkspaceTabDescriptor["state"]) => void;
   onOpenWorkspaceFile: (request: WorkspaceFileOpenRequest) => void;
+  onOpenDiff?: (path: string, baseRef: string | null) => void;
   onOpenImportSheet: () => void;
 }
 
@@ -45,7 +46,7 @@ export function buildWorkspacePaneContentModel({
   normalizedServerId,
   normalizedWorkspaceId,
   host,
-  fileNavigationRevision,
+  panelRevision,
   onOpenTab,
   onOpenPreferredTarget,
   onOpenTargetToSide,
@@ -53,9 +54,9 @@ export function buildWorkspacePaneContentModel({
   onRetargetCurrentTab,
   onSetCurrentTabState,
   onOpenWorkspaceFile,
+  onOpenDiff,
   onOpenImportSheet,
 }: BuildWorkspacePaneContentModelInput): WorkspacePaneContentModel {
-  ensurePanelsRegistered();
   const registration = getPanelRegistration(tab.kind);
   invariant(registration, `No panel registration for kind: ${tab.kind}`);
   return {
@@ -68,7 +69,7 @@ export function buildWorkspacePaneContentModel({
       tabId: tab.tabId,
       target: tab.target,
       state: tab.state,
-      fileNavigationRevision,
+      panelRevision,
       openTab: onOpenTab,
       openPreferredTarget: onOpenPreferredTarget,
       openTargetToSide: onOpenTargetToSide,
@@ -76,6 +77,7 @@ export function buildWorkspacePaneContentModel({
       retargetCurrentTab: onRetargetCurrentTab,
       setCurrentTabState: onSetCurrentTabState,
       openFileInWorkspace: onOpenWorkspaceFile,
+      openDiffInBrowserEditor: onOpenDiff,
       openImportSheet: onOpenImportSheet,
     },
   };
@@ -98,6 +100,9 @@ export function WorkspacePaneContent({
   const openTab = useStableEvent(paneContextValue.openTab);
   const openPreferredTarget = useStableEvent(paneContextValue.openPreferredTarget);
   const openTargetToSide = useStableEvent(paneContextValue.openTargetToSide ?? (() => undefined));
+  const openDiffInBrowserEditor = useStableEvent(
+    paneContextValue.openDiffInBrowserEditor ?? (() => undefined),
+  );
   const closeCurrentTab = useStableEvent(paneContextValue.closeCurrentTab);
   const retargetCurrentTab = useStableEvent(paneContextValue.retargetCurrentTab);
   const setCurrentTabState = useStableEvent(paneContextValue.setCurrentTabState);
@@ -111,10 +116,13 @@ export function WorkspacePaneContent({
       tabId: paneContextValue.tabId,
       target: paneContextValue.target,
       state: paneContextValue.state,
-      fileNavigationRevision: paneContextValue.fileNavigationRevision,
+      panelRevision: paneContextValue.panelRevision,
       openTab,
       openPreferredTarget,
       openTargetToSide: paneContextValue.openTargetToSide ? openTargetToSide : undefined,
+      openDiffInBrowserEditor: paneContextValue.openDiffInBrowserEditor
+        ? openDiffInBrowserEditor
+        : undefined,
       closeCurrentTab,
       retargetCurrentTab,
       setCurrentTabState,
@@ -128,14 +136,16 @@ export function WorkspacePaneContent({
       openTab,
       openPreferredTarget,
       openTargetToSide,
+      openDiffInBrowserEditor,
       paneContextValue.serverId,
-      paneContextValue.fileNavigationRevision,
+      paneContextValue.panelRevision,
       paneContextValue.tabId,
       paneContextValue.target,
       paneContextValue.state,
       paneContextValue.workspaceId,
       paneContextValue.host,
       paneContextValue.openTargetToSide,
+      paneContextValue.openDiffInBrowserEditor,
       retargetCurrentTab,
       setCurrentTabState,
     ],
@@ -156,7 +166,12 @@ export function WorkspacePaneContent({
     >
       <PaneProvider value={stablePaneContextValue}>
         <PaneFocusProvider value={paneFocusValue}>
-          <Component key={key} />
+          <ComposerEditingScope
+            tabId={paneContextValue.tabId}
+            targetKey={JSON.stringify(paneContextValue.target)}
+          >
+            <Component key={key} />
+          </ComposerEditingScope>
         </PaneFocusProvider>
       </PaneProvider>
     </RenderProfile>

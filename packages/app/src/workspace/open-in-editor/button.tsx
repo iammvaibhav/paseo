@@ -5,6 +5,7 @@ import { Pressable, Text, View, type PressableStateCallbackType } from "react-na
 import { useMutation } from "@tanstack/react-query";
 import { Check, ChevronDown } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
+import { EditorAppIcon } from "@/components/icons/editor-app-icons";
 import { EditorTargetIcon } from "@/components/icons/editor-target-icon";
 import {
   DropdownMenu,
@@ -16,7 +17,7 @@ import { useToast } from "@/contexts/toast-context";
 import { useCheckoutStatusQuery } from "@/git/use-status-query";
 import { useCheckoutPrStatusQuery } from "@/git/use-pr-status-query";
 import { useIsLocalDaemon } from "@/hooks/use-is-local-daemon";
-import { useHostRuntimeIsConnected } from "@/runtime/host-runtime";
+import { useHostRuntimeIsConnected, useHosts } from "@/runtime/host-runtime";
 import { resolvePreferredEditorId, usePreferredEditor } from "@/hooks/use-preferred-editor";
 import { openExternalUrl } from "@/utils/open-external-url";
 import { isAbsolutePath } from "@/utils/path";
@@ -33,8 +34,10 @@ import { extraMutedIconColorMapping } from "@/components/ui/icon-button-chrome";
 interface WorkspaceOpenInEditorButtonProps {
   serverId: string;
   cwd: string;
+  projectId: string | null;
   activeFile?: WorkspaceFileLocation | null;
   hideLabels?: boolean;
+  onOpenBrowserEditorUrl?: (url: string) => void;
 }
 
 interface OpenTarget {
@@ -45,6 +48,7 @@ interface OpenTarget {
 }
 
 const ThemedLoadingSpinner = withUnistyles(LoadingSpinner);
+const ThemedEditorAppIcon = withUnistyles(EditorAppIcon);
 const ThemedEditorTargetIcon = withUnistyles(EditorTargetIcon);
 const ThemedChevronDown = withUnistyles(ChevronDown);
 const ThemedCheckIcon = withUnistyles(Check);
@@ -83,17 +87,25 @@ function OpenTargetMenuItem({ target, isPreferred, onSelect }: OpenTargetMenuIte
 export function WorkspaceOpenInEditorButton({
   serverId,
   cwd,
+  projectId,
   activeFile,
   hideLabels,
+  onOpenBrowserEditorUrl,
 }: WorkspaceOpenInEditorButtonProps) {
   const { t } = useTranslation();
   const toast = useToast();
   const isConnected = useHostRuntimeIsConnected(serverId);
   const isLocalDaemon = useIsLocalDaemon(serverId);
-  const { preferredEditorId, updatePreferredEditor } = usePreferredEditor();
+  const hosts = useHosts();
+  const hostProfile = hosts.find((host) => host.serverId === serverId);
+  const remoteSshHost = isLocalDaemon ? null : (hostProfile?.sshHost ?? null);
+  const browserEditorUrl = hostProfile?.browserEditorUrl ?? null;
+  const { preferredEditorId, updatePreferredEditor } = usePreferredEditor({ serverId, projectId });
   const { targets: desktopOpenTargets, isAvailable: isDesktopOpenAvailable } =
     useDesktopOpenTargets({
       isLocalExecution: isLocalDaemon,
+      remoteSshHost,
+      workspacePath: cwd,
     });
 
   const resolvedFile = useMemo(
@@ -127,6 +139,8 @@ export function WorkspaceOpenInEditorButton({
         desktopTargets: desktopOpenTargets,
         canUseDesktopBridge: isDesktopOpenAvailable,
         isLocalExecution: isLocalDaemon,
+        remoteSshHost,
+        browserEditorUrl,
         checkoutStatus,
         forge: resolvedForge,
       }).map((target) => {
@@ -137,6 +151,22 @@ export function WorkspaceOpenInEditorButton({
             label: target.label,
             icon: renderForgeOpenTargetIcon(presentation.icon),
             onOpen: () => openExternalUrl(target.url),
+          };
+        }
+        if (target.source === "browser-editor") {
+          return {
+            id: target.id,
+            label: target.label,
+            icon: (
+              <ThemedEditorAppIcon editorId="vscode-web" size={16} uniProps={mutedColorMapping} />
+            ),
+            onOpen: () => {
+              if (onOpenBrowserEditorUrl) {
+                onOpenBrowserEditorUrl(target.url);
+                return;
+              }
+              return openExternalUrl(target.url);
+            },
           };
         }
         return {
@@ -150,12 +180,15 @@ export function WorkspaceOpenInEditorButton({
       }),
     [
       activeFile,
+      browserEditorUrl,
       checkoutStatus,
       cwd,
       desktopOpenTargets,
       resolvedForge,
       isDesktopOpenAvailable,
       isLocalDaemon,
+      onOpenBrowserEditorUrl,
+      remoteSshHost,
       resolvedFile,
     ],
   );
@@ -185,9 +218,11 @@ export function WorkspaceOpenInEditorButton({
 
   const handleSelectTarget = useCallback(
     (target: OpenTarget) => {
-      void updatePreferredEditor(target.id).catch(() => undefined);
+      void updatePreferredEditor(target.id).catch((error: unknown) => {
+        toast.error(error instanceof Error ? error.message : t("common.errors.unableToSave"));
+      });
     },
-    [updatePreferredEditor],
+    [updatePreferredEditor, toast, t],
   );
 
   const primaryPressableStyle = useCallback(

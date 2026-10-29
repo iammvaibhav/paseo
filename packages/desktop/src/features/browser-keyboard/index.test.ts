@@ -238,8 +238,17 @@ describe("BrowserKeyboard", () => {
           shift: false,
         },
       ],
+      editorOrigins: [],
+      editorPrefixes: [],
+      editorPaseoPrefixes: [],
     };
-    const latestPolicy = { menuPrefixes: [], prefixes: [] };
+    const latestPolicy = {
+      menuPrefixes: [],
+      prefixes: [],
+      editorOrigins: [],
+      editorPrefixes: [],
+      editorPaseoPrefixes: [],
+    };
     keyboard.publish(host.id, initialPolicy);
     attach({ browserId: "browser-a", contents: guest, hostContents: host });
     keyboard.publish(host.id, latestPolicy);
@@ -270,7 +279,13 @@ describe("BrowserKeyboard", () => {
     const guest = new FakeBrowserContents(71);
     const host = new FakeBrowserContents(72);
     attach({ browserId: "browser-a", contents: guest, hostContents: host });
-    keyboard.publish(host.id, { menuPrefixes: [], prefixes: [] });
+    keyboard.publish(host.id, {
+      menuPrefixes: [],
+      prefixes: [],
+      editorOrigins: [],
+      editorPrefixes: [],
+      editorPaseoPrefixes: [],
+    });
 
     host.destroy();
     guest.domReady();
@@ -278,7 +293,14 @@ describe("BrowserKeyboard", () => {
     expect(guest.sent).toEqual([
       {
         channel: "paseo:browser-keyboard-policy",
-        payload: { browserId: "browser-a", menuPrefixes: [], prefixes: [] },
+        payload: {
+          browserId: "browser-a",
+          menuPrefixes: [],
+          prefixes: [],
+          editorOrigins: [],
+          editorPrefixes: [],
+          editorPaseoPrefixes: [],
+        },
       },
     ]);
   });

@@ -9,6 +9,7 @@ import {
 } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { useSessionStore } from "@/stores/session-store";
+import { isSystemOwnedAgentLabels } from "@getpaseo/protocol/mission-control/system-owned";
 import { agentHistoryQueryKey, allAgentHistoryQueryRootKey } from "./agent-history-query-key";
 
 export const ARCHIVE_AGENT_PENDING_QUERY_KEY = ["archive-agent-pending"] as const;
@@ -367,6 +368,11 @@ function useArchiveAgentPendingQuery() {
   });
 }
 
+export function usePendingArchiveAgentKeys(): ReadonlySet<string> {
+  const pendingQuery = useArchiveAgentPendingQuery();
+  return useMemo(() => new Set(Object.keys(pendingQuery.data ?? {})), [pendingQuery.data]);
+}
+
 export function usePendingArchiveAgentIds(serverId: string): ReadonlySet<string> {
   const pendingQuery = useArchiveAgentPendingQuery();
   return useMemo(
@@ -386,6 +392,12 @@ export function useArchiveAgent() {
       const client = useSessionStore.getState().sessions[input.serverId]?.client ?? null;
       if (!client) {
         throw new Error(t("common.errors.daemonClientUnavailable"));
+      }
+      // System-owned agents (Commander, verifiers, machinery) are never
+      // archivable from any UI surface — every affordance routes through this hook.
+      const agent = useSessionStore.getState().sessions[input.serverId]?.agents.get(input.agentId);
+      if (agent && isSystemOwnedAgentLabels(agent.labels)) {
+        throw new Error("Mission Control agents cannot be archived");
       }
       return await client.archiveAgent(input.agentId);
     },

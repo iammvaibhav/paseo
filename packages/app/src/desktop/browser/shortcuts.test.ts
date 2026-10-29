@@ -161,19 +161,20 @@ describe("buildBrowserKeyboardPolicy", () => {
     });
   });
 
-  it("leaves macOS browser back and forward shortcuts in the guest", () => {
+  it("sends macOS Cmd+[ and Cmd+] from the guest to Paseo's tab history", () => {
     const bindings = buildEffectiveBindings({});
 
     const policy = buildBrowserKeyboardPolicy({ bindings, isMac: true, isDesktop: true });
 
     for (const code of ["BracketLeft", "BracketRight"]) {
-      expect(policy.prefixes).not.toContainEqual({
+      expect(policy.prefixes).toContainEqual({
         alt: false,
         code,
         control: false,
         key: code === "BracketLeft" ? "[" : "]",
         meta: true,
         shift: false,
+        shiftedKey: code === "BracketLeft" ? "{" : "}",
       });
     }
   });
@@ -190,6 +191,55 @@ describe("buildBrowserKeyboardPolicy", () => {
       meta: true,
       shift: true,
     });
+  });
+
+  it("splits shared shortcuts between VS Code pages and Paseo, following user rebinds", () => {
+    const keyOf = (prefix: {
+      code: string;
+      meta: boolean;
+      control: boolean;
+      alt: boolean;
+      shift: boolean;
+    }) =>
+      `${prefix.meta ? "Meta+" : ""}${prefix.control ? "Ctrl+" : ""}${prefix.alt ? "Alt+" : ""}${prefix.shift ? "Shift+" : ""}${prefix.code}`;
+    const defaults = buildBrowserKeyboardPolicy({
+      bindings: buildEffectiveBindings({}),
+      isMac: true,
+      isDesktop: true,
+      editorOrigins: ["http://dev.netbird.cloud:8765"],
+    });
+    expect(defaults.editorOrigins).toEqual(["http://dev.netbird.cloud:8765"]);
+    // VS Code keeps Quick Open, Open File, and its own previous/next editor.
+    expect(defaults.editorPrefixes.map(keyOf).sort()).toEqual([
+      "Alt+Shift+BracketLeft",
+      "Alt+Shift+BracketRight",
+      "Meta+KeyO",
+      "Meta+KeyP",
+      "Meta+Shift+BracketLeft",
+      "Meta+Shift+BracketRight",
+    ]);
+    // Paseo takes the command center, tab history, and recent tab before VS Code sees them.
+    expect(defaults.editorPaseoPrefixes.map(keyOf).sort()).toEqual([
+      "Ctrl+Shift+Tab",
+      "Ctrl+Tab",
+      "Meta+BracketLeft",
+      "Meta+BracketRight",
+      "Meta+KeyK",
+      "Meta+Shift+KeyK",
+    ]);
+
+    const rebound = buildBrowserKeyboardPolicy({
+      bindings: buildEffectiveBindings({
+        "workspace-project-pick-cmd-p-mac": "Cmd+Shift+F",
+        "tab-history-back-cmd-left-bracket-mac": "Cmd+Alt+ArrowLeft",
+      }),
+      isMac: true,
+      isDesktop: true,
+    });
+    expect(rebound.editorPrefixes.map(keyOf)).toContain("Meta+Shift+KeyF");
+    expect(rebound.editorPrefixes.map(keyOf)).not.toContain("Meta+KeyP");
+    expect(rebound.editorPaseoPrefixes.map(keyOf)).toContain("Meta+Alt+ArrowLeft");
+    expect(rebound.editorPaseoPrefixes.map(keyOf)).not.toContain("Meta+BracketLeft");
   });
 
   it("does not publish plain browser keys", () => {

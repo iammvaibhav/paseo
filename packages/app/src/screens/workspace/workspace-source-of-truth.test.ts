@@ -14,6 +14,8 @@ import type { WorkspaceDescriptor } from "@/stores/session-store";
 
 function createWorkspaceDescriptor(input: Partial<WorkspaceDescriptor> = {}): WorkspaceDescriptor {
   return {
+    createdAt: null,
+    lastUserMessageAt: null,
     id: "/repo/main",
     projectId: "remote:github.com/getpaseo/paseo",
     projectDisplayName: "getpaseo/paseo",
@@ -26,6 +28,7 @@ function createWorkspaceDescriptor(input: Partial<WorkspaceDescriptor> = {}): Wo
     diffStat: null,
     scripts: [],
     statusEnteredAt: null,
+    activityAt: null,
     ...input,
     archivingAt: input.archivingAt ?? null,
   };
