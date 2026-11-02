@@ -1468,6 +1468,45 @@ describe("OMP agent client and session", () => {
     });
   });
 
+  test("a pooled process seeded with Paseo tools drops them for a launch that has none", async () => {
+    // Paseo tools can be turned off for a provider while the daemon runs. The
+    // pool was seeded with the old catalog at fill time, so a claim without a
+    // catalog must clear it rather than hand the agent tools nothing serves.
+    const runtime = new FakeOmp();
+    const model = { provider: "opencode-zen", id: "deepseek-v4-flash-free" };
+    for (let launch = 0; launch < 4; launch++) {
+      runtime.queueSessionSetup((session) => {
+        session.setModelResult = model;
+      });
+    }
+    const client = new OmpAgentClient({ logger: createTestLogger(), runtime, warmPool: true });
+    const config = {
+      provider: "omp",
+      cwd: "/workspace/project",
+      model: "opencode-zen/deepseek-v4-flash-free",
+    };
+    const seeded = [expect.objectContaining({ name: "create_agent" })];
+    const hostToolRequests = () =>
+      runtime.allSessions().map((session) => session.hostToolSetRequests);
+    // AgentManager always passes a launch context; the catalog is absent when tools are off.
+    const enabled = await client.createSession(config, { paseoTools: createToolCatalog() });
+    onTestFinished(() => enabled.close());
+    await vi.waitFor(() => {
+      expect(hostToolRequests()).toEqual([[seeded], [seeded], [seeded]]);
+    });
+
+    const disabled = await client.createSession(config, {});
+    onTestFinished(() => disabled.close());
+
+    expect(hostToolRequests()).toContainEqual([seeded, []]);
+    // The refill behind the claim follows the latest launch, not the old catalog.
+    await vi.waitFor(() => {
+      expect(runtime.allSessions()).toHaveLength(4);
+    });
+    await waitForImmediate();
+    expect(runtime.allSessions()[3]?.hostToolSetRequests).toEqual([]);
+  });
+
   test("cold-starts a resume when the session carries a tool allowlist", async () => {
     const omp = new OmpHarness();
     await omp.resume(

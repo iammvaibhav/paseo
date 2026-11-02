@@ -2720,7 +2720,7 @@ export class OmpAgentClient implements AgentClient {
   private readonly providerIdleDeadlineMs?: number;
   private readonly runtime?: OmpRuntime;
   private readonly warmPool: OmpWarmPool | null;
-  /** Most recently seen (unfiltered) host-tool catalog from a create/resume; pool-eligible launches always run allowlist-free, so this is exactly what the pool should seed a fill with. Undefined until the first such request lands. */
+  /** Host-tool catalog (unfiltered) of the most recent non-internal create/resume, undefined when that launch had none (Paseo tools off); pool-eligible launches always run allowlist-free, so this is exactly what the pool should seed a fill with. Undefined until the first such request lands. */
   private lastKnownPaseoTools: PaseoToolCatalog | undefined;
   /**
    * Most recently requested model from a pool-eligible create, used as the
@@ -2798,9 +2798,15 @@ export class OmpAgentClient implements AgentClient {
     catalog: PaseoToolCatalog | undefined,
     config: AgentSessionConfig,
     launchEnv?: NodeJS.ProcessEnv,
-    options?: { register?: boolean },
+    options?: { register?: boolean; registeredToolNames?: ReadonlySet<string> | null },
   ): Promise<OmpHostToolRouter | undefined> {
     if (!catalog && !config.mcpServers) {
+      // A pooled process keeps the catalog it was seeded with at fill time.
+      // With Paseo tools since turned off, clear it so the agent never sees
+      // host tools that no router serves.
+      if (options?.registeredToolNames?.size) {
+        await runtimeSession.setHostTools([]);
+      }
       return;
     }
     const bridge = await OmpMcpBridge.connect(config.mcpServers, config.cwd, this.logger, {
@@ -2857,7 +2863,7 @@ export class OmpAgentClient implements AgentClient {
   ): Promise<AgentSession> {
     const launchMode = this.resolveLaunchMode(config.modeId, config.providerOptions);
     const systemPrompt = this.composeLaunchSystemPrompt(config);
-    if (launchContext?.paseoTools) {
+    if (launchContext && config.internal !== true) {
       this.lastKnownPaseoTools = launchContext.paseoTools;
     }
     const paseoTools = filterPaseoToolsByAllowlist(launchContext?.paseoTools, config.toolAllowlist);
@@ -2887,6 +2893,7 @@ export class OmpAgentClient implements AgentClient {
       const [router, rawState] = await Promise.all([
         this.configureNativePaseoTools(acquired.session, paseoTools, config, startInput.env, {
           register: !skippedHostTools,
+          registeredToolNames: acquired.hostToolNames,
         }),
         acquired.session.getState(),
       ]);
@@ -3103,7 +3110,7 @@ export class OmpAgentClient implements AgentClient {
       resumeConfig.modeId,
       resumeConfig.config.providerOptions,
     );
-    if (launchContext?.paseoTools) {
+    if (launchContext && resumeConfig.config.internal !== true) {
       this.lastKnownPaseoTools = launchContext.paseoTools;
     }
     const startInput = buildResumeStartInput({
@@ -3136,7 +3143,7 @@ export class OmpAgentClient implements AgentClient {
         paseoTools,
         resumeConfig.config,
         startInput.env,
-        { register: !skippedHostTools },
+        { register: !skippedHostTools, registeredToolNames: acquired.hostToolNames },
       );
       this.logAcquire({ ...acquired.logInput, skippedHostTools });
       await this.relocateResumedSession(acquired.session, sessionFile, resumeConfig.cwd);
