@@ -121,10 +121,8 @@ function MissionControlHeaderActions({
 }
 
 /**
- * Mission Control: the fleet board (every host's agents by lifecycle bucket,
- * with the agent inspector) and the Agent Grid. The Commander that used to run
- * the fleet from a thread here is a role now (OPERATING.md), held by a bot that
- * talks to the fleet MCP tools.
+ * The Agent grid (the sidebar entry), with the fleet board (every host's
+ * agents by lifecycle bucket, with the agent inspector) one toggle away.
  */
 export function MissionControlScreen(): ReactElement {
   const isFocused = useMissionControlActive();
@@ -203,7 +201,7 @@ export function MissionControlScreen(): ReactElement {
   );
 
   const header = useMemo(
-    () => <MenuHeader title="Mission Control" rightContent={headerRightContent} />,
+    () => <MenuHeader title="Agent grid" rightContent={headerRightContent} />,
     [headerRightContent],
   );
 

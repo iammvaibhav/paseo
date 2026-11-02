@@ -75,14 +75,14 @@ export function migrateAgentGridState(persisted: unknown): AgentGridPersistedSta
   const result = AgentGridPersistedStateSchema.safeParse(persisted);
   if (!result.success) {
     return {
-      view: "board",
+      view: "grid",
       visibleCount: AGENT_GRID_DEFAULT_VISIBLE_COUNT,
       direction: "vertical",
     };
   }
 
   return {
-    view: result.data.view === "grid" ? "grid" : "board",
+    view: result.data.view === "board" || result.data.view === "commander" ? "board" : "grid",
     visibleCount: result.data.visibleCount ?? AGENT_GRID_DEFAULT_VISIBLE_COUNT,
     direction: result.data.direction ?? "vertical",
   };
@@ -92,7 +92,7 @@ export const useAgentGridStore: UseBoundStore<StoreApi<AgentGridStoreState>> =
   create<AgentGridStoreState>()(
     persist(
       (set) => ({
-        view: "board",
+        view: "grid",
         visibleCount: AGENT_GRID_DEFAULT_VISIBLE_COUNT,
         direction: "vertical",
         setView: (view) => set({ view }),

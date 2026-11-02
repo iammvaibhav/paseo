@@ -1426,7 +1426,7 @@ export const ar: TranslationResources = {
       sessions: "السجل",
       search: "بحث",
       schedules: "الجداول",
-      missionControl: "Mission Control",
+      agentGrid: "Agent grid",
       itsaplan: "itsaplan",
       webhooks: "Webhooks",
     },

@@ -4,7 +4,7 @@ import {
   CircleGauge,
   FolderPlus,
   GitBranch,
-  Radar,
+  LayoutGrid,
   Server,
   Settings,
   SquareKanban,
@@ -79,6 +79,7 @@ import { PluginSidebarItem } from "@/plugins/sidebar-items";
 import { builtinSidebarNavLabelKey } from "@/sidebar-nav/model";
 import { useSidebarNavItems } from "@/sidebar-nav/use-sidebar-nav-items";
 import { usePanelStore } from "@/stores/panel-store";
+import { useAgentGridStore } from "@/screens/mission-control/agent-grid/store";
 import { useOwnsWindowChromeCorner, WindowChromeSafeArea } from "@/utils/desktop-window";
 import { useCloseAgentListGesture } from "@/mobile-panels/gestures";
 import { MobilePanelOverlay } from "@/mobile-panels/presentation";
@@ -114,7 +115,7 @@ interface SidebarLabels {
   settings: string;
   searchHosts: string;
   itsaplan: string;
-  missionControl: string;
+  agentGrid: string;
   webhooks: string;
   usage: string;
   closeSidebar: string;
@@ -261,6 +262,8 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
   }, []);
 
   const handleViewMissionControlNavigate = useCallback(() => {
+    // The sidebar entry is the Agent grid; the board stays one toggle away.
+    useAgentGridStore.getState().setView("grid");
     router.push(buildMissionControlRoute());
   }, []);
 
@@ -284,7 +287,7 @@ export const LeftSidebar = memo(function LeftSidebar({ active }: { active: boole
       settings: t("sidebar.actions.settings"),
       searchHosts: t("sidebar.host.searchPlaceholder"),
       itsaplan: t("sidebar.sections.itsaplan"),
-      missionControl: t("sidebar.sections.missionControl"),
+      agentGrid: t("sidebar.sections.agentGrid"),
       webhooks: t("sidebar.sections.webhooks"),
       usage: t(builtinSidebarNavLabelKey("usage")),
       closeSidebar: t("sidebar.actions.closeSidebar"),
@@ -729,8 +732,8 @@ function MobileSidebar({
           />
           {hasMissionControl ? (
             <SidebarHeaderRow
-              icon={Radar}
-              label={labels.missionControl}
+              icon={LayoutGrid}
+              label={labels.agentGrid}
               onPress={handleViewMissionControl}
               isActive={isMissionControlActive}
               testID="sidebar-mission-control"
@@ -965,8 +968,8 @@ function DesktopSidebar({
             />
             {hasMissionControl ? (
               <SidebarHeaderRow
-                icon={Radar}
-                label={labels.missionControl}
+                icon={LayoutGrid}
+                label={labels.agentGrid}
                 onPress={handleViewMissionControl}
                 isActive={isMissionControlActive}
                 testID="sidebar-mission-control"

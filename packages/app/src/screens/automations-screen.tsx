@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type ReactElement } from "react";
 import { ScrollView, Text, View } from "react-native";
-import { useIsFocused } from "@react-navigation/native";
+import { useIsFocused } from "expo-router/react-navigation";
 import { CalendarClock, GitBranch, Plus, Webhook } from "lucide-react-native";
 import { getForgeIconComponent } from "@/git/forge-icon";
 import { StyleSheet } from "react-native-unistyles";

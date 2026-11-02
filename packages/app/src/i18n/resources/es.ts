@@ -1468,7 +1468,7 @@ export const es: TranslationResources = {
       sessions: "Historial",
       search: "Buscar",
       schedules: "Horarios",
-      missionControl: "Mission Control",
+      agentGrid: "Agent grid",
       itsaplan: "itsaplan",
       webhooks: "Webhooks",
     },

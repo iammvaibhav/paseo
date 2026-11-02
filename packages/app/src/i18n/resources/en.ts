@@ -1447,7 +1447,7 @@ export const en = {
       sessions: "History",
       search: "Search",
       schedules: "Schedules",
-      missionControl: "Mission Control",
+      agentGrid: "Agent grid",
       itsaplan: "itsaplan",
       webhooks: "Webhooks",
     },

@@ -1436,7 +1436,7 @@ export const ja: TranslationResources = {
       sessions: "履歴",
       search: "検索",
       schedules: "スケジュール",
-      missionControl: "Mission Control",
+      agentGrid: "Agent grid",
       itsaplan: "itsaplan",
       webhooks: "Webhooks",
     },

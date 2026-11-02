@@ -383,6 +383,11 @@
                 "name": "react-native-unistyles",
                 "importNames": ["useUnistyles"],
                 "message": "useUnistyles is banned by docs/unistyles.md. Grandfathered files may only leave the override burn-down list."
+              },
+              {
+                "name": "@react-navigation/native",
+                "importNames": ["useIsFocused", "useNavigation", "useFocusEffect", "useRoute"],
+                "message": "Import navigation hooks from expo-router/react-navigation. expo-router ships its own navigation context, so @react-navigation/native hooks throw \"Couldn't find a navigation object\" on native."
               }
             ]
           }

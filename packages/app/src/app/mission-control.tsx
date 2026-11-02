@@ -1,5 +1,5 @@
 import type { ReactElement } from "react";
-import { useIsFocused } from "@react-navigation/native";
+import { useIsFocused } from "expo-router/react-navigation";
 import { HostRouteBootstrapBoundary } from "@/components/host-route-bootstrap-boundary";
 import { isWeb } from "@/constants/platform";
 import { MissionControlActiveContext } from "@/screens/mission-control/focus-context";

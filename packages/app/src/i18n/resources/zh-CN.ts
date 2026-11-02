@@ -1413,7 +1413,7 @@ export const zhCN: TranslationResources = {
       sessions: "历史",
       search: "搜索",
       schedules: "计划",
-      missionControl: "Mission Control",
+      agentGrid: "Agent grid",
       itsaplan: "itsaplan",
       webhooks: "Webhooks",
     },
