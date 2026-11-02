@@ -1371,8 +1371,6 @@ export async function createPaseoDaemon(
     providerDefinitions: initialAgentManagerState.providerDefinitions,
     registry: agentStorage,
     appendSystemPrompt: config.appendSystemPrompt,
-    missionControlSelfReportEnabled:
-      daemonConfigStore.get().missionControl?.selfReport?.enabled ?? true,
     resolveDefaultModel: (input) => providerSnapshotManager.resolveDefaultModel(input),
     onAgentCreated: (params) => agentNamingService.assignNameForCreatedAgent(params),
     onWorkspaceStateMayHaveChanged: ({ cwd }) => {

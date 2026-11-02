@@ -36,7 +36,6 @@ import {
   canCarryAgentModeBlock,
   prependToPrompt,
 } from "./agent-modes/index.js";
-import { buildSelfReportSystemPrompt } from "../mission-control/self-report.js";
 import { isSystemOwnedAgentLabels } from "@getpaseo/protocol/mission-control/system-owned";
 
 import {
@@ -596,13 +595,6 @@ export interface AgentManagerOptions {
   paseoToolCatalogFactory?: PaseoToolCatalogFactory;
   resolvePaseoToolPolicy?: (provider: AgentProvider) => ProviderPaseoToolsPolicy | undefined;
   appendSystemPrompt?: string;
-  /**
-   * Kill-switch for the Mission Control self-report paragraph in the daemon
-   * append system prompt (missionControl.selfReport.enabled; default true).
-   * The paragraph is additionally omitted for paseo.mission-control=* labeled
-   * agents regardless of this flag.
-   */
-  missionControlSelfReportEnabled?: boolean;
   agentStreamCoalesceWindowMs?: number;
   rescueTimeouts?: AgentManagerRescueTimeouts;
   beforeSteerUnavailableFallback?: (input: {
@@ -1229,7 +1221,6 @@ export class AgentManager {
     provider: AgentProvider,
   ) => ProviderPaseoToolsPolicy | undefined;
   private appendSystemPrompt: string;
-  private missionControlSelfReportEnabled: boolean;
   private metadataCompletion: ((prompt: string) => Promise<string | null>) | null = null;
   private resolveDefaultModel: AgentManagerOptions["resolveDefaultModel"];
   private onAgentAttention?: AgentAttentionCallback;
@@ -1302,7 +1293,6 @@ export class AgentManager {
     this.configurePaseoTools(options);
     this.resolvePaseoToolPolicy = options.resolvePaseoToolPolicy ?? (() => undefined);
     this.appendSystemPrompt = options.appendSystemPrompt ?? "";
-    this.missionControlSelfReportEnabled = options.missionControlSelfReportEnabled ?? true;
     this.resolveDefaultModel = options.resolveDefaultModel;
     this.logger = options.logger.child({ module: "agent", component: "agent-manager" });
     this.rescueTimeouts = AgentManager.resolveRescueTimeouts(options);
@@ -7543,7 +7533,6 @@ export class AgentManager {
         mcpBaseUrl: reviewerMcpBaseUrl,
         mcpAuthToken: this.mcpAuthToken,
       }),
-      labels ?? {},
     );
     if (storedConfig.modeId === AI_REVIEW_MODE_ID) {
       const { modeId: _strippedModeId, ...rest } = launchConfig;
@@ -7552,26 +7541,11 @@ export class AgentManager {
     return { storedConfig, launchConfig, paseoToolPolicy };
   }
 
-  private applyDaemonAppendSystemPrompt(
-    config: AgentSessionConfig,
-    labels: Record<string, string>,
-  ): AgentSessionConfig {
+  private applyDaemonAppendSystemPrompt(config: AgentSessionConfig): AgentSessionConfig {
     const next = { ...config };
     delete next.daemonAppendSystemPrompt;
-    const selfReportPrompt = buildSelfReportSystemPrompt(
-      labels,
-      this.missionControlSelfReportEnabled,
-    );
-    const daemonAppendSystemPrompt = [this.appendSystemPrompt.trim(), selfReportPrompt]
-      .filter((part): part is string => Boolean(part))
-      .join("\n\n");
-
-    return daemonAppendSystemPrompt
-      ? {
-          ...next,
-          daemonAppendSystemPrompt,
-        }
-      : next;
+    const daemonAppendSystemPrompt = this.appendSystemPrompt.trim();
+    return daemonAppendSystemPrompt ? { ...next, daemonAppendSystemPrompt } : next;
   }
 
   private async buildLaunchContext(

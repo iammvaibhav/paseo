@@ -278,8 +278,9 @@ const MissionControlConfigSchema = z
     // applies central-config defaults when the whole section is absent.
     summarizer: MissionControlSummarizerConfigSchema.optional(),
     autopilot: MissionControlAutopilotConfigSchema.optional(),
-    // Self-reporting kill-switch: when false, the report_status prompt
-    // paragraph is not injected into agent system prompts (default true).
+    // COMPAT(selfReport): the daemon no longer injects a self-report paragraph (the
+    // daemon append prompt carries the report_status guidance), so this is ignored.
+    // Kept so existing configs still parse; remove after 2027-02-01.
     selfReport: z
       .object({
         enabled: z.boolean().default(true),

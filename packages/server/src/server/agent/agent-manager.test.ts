@@ -22,7 +22,6 @@ import {
 import { AgentStorage } from "./agent-storage.js";
 import { InMemoryAgentTimelineStore } from "./agent-timeline-store.js";
 import { toAgentPayload } from "./agent-projections.js";
-import { buildSelfReportSystemPrompt } from "../mission-control/self-report.js";
 import { moveAgentWhenRunSettles } from "../mission-control/meta-actions.js";
 import type { PersistedWorkspaceRecord } from "../workspace-registry.js";
 import { projectTimelineRows } from "./timeline-projection.js";
@@ -2320,9 +2319,7 @@ test("createAgent injects daemon append system prompt at runtime only", async ()
   const record = await storage.get(snapshot.id);
 
   expect(client.createdConfigs[0]?.systemPrompt).toBe("Agent instructions.");
-  expect(client.createdConfigs[0]?.daemonAppendSystemPrompt).toBe(
-    `Daemon instructions.\n\n${buildSelfReportSystemPrompt({}, true)}`,
-  );
+  expect(client.createdConfigs[0]?.daemonAppendSystemPrompt).toBe("Daemon instructions.");
   expect(snapshot.config).not.toHaveProperty("daemonAppendSystemPrompt");
   expect(record?.config?.systemPrompt).toBe("Agent instructions.");
   expect(record?.config).not.toHaveProperty("daemonAppendSystemPrompt");
@@ -2349,65 +2346,6 @@ test("daemon append system prompt is injected into Pi configs", async () => {
   await manager.createAgent(
     {
       provider: "pi",
-      cwd: workdir,
-      systemPrompt: "Agent instructions.",
-    },
-    undefined,
-    { workspaceId: undefined },
-  );
-
-  expect(client.createdConfigs[0]?.daemonAppendSystemPrompt).toBe(
-    `Daemon instructions.\n\n${buildSelfReportSystemPrompt({}, true)}`,
-  );
-});
-
-test("self-report paragraph is omitted for mission-control-labeled agents", async () => {
-  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-test-"));
-  const storagePath = join(workdir, "agents");
-  const storage = new AgentStorage(storagePath, logger);
-  const client = new TestAgentClient();
-  const manager = new AgentManager({
-    clients: {
-      codex: client,
-    },
-    registry: storage,
-    logger,
-    appendSystemPrompt: "Daemon instructions.",
-    idFactory: () => "00000000-0000-4000-8000-000000000105",
-  });
-
-  await manager.createAgent(
-    {
-      provider: "codex",
-      cwd: workdir,
-      systemPrompt: "Agent instructions.",
-    },
-    undefined,
-    { workspaceId: undefined, labels: { "paseo.mission-control": "commander" } },
-  );
-
-  expect(client.createdConfigs[0]?.daemonAppendSystemPrompt).toBe("Daemon instructions.");
-});
-
-test("self-report paragraph is omitted when the kill-switch is off", async () => {
-  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-test-"));
-  const storagePath = join(workdir, "agents");
-  const storage = new AgentStorage(storagePath, logger);
-  const client = new TestAgentClient();
-  const manager = new AgentManager({
-    clients: {
-      codex: client,
-    },
-    registry: storage,
-    logger,
-    appendSystemPrompt: "Daemon instructions.",
-    missionControlSelfReportEnabled: false,
-    idFactory: () => "00000000-0000-4000-8000-000000000106",
-  });
-
-  await manager.createAgent(
-    {
-      provider: "codex",
       cwd: workdir,
       systemPrompt: "Agent instructions.",
     },
@@ -3326,7 +3264,6 @@ test("createAgent passes daemon launch env through the provider launch context",
     provider: "codex",
     cwd: workdir,
     model: "gpt-5.4",
-    daemonAppendSystemPrompt: buildSelfReportSystemPrompt({}, true),
   });
   expect(client.lastLaunchContext).toEqual({
     agentId: snapshot.id,
@@ -5657,7 +5594,7 @@ test("reloadAgentSession preserves current title when config title is unset", as
   expect(afterReload?.config?.title).toBeUndefined();
 });
 
-test("reloadAgentSession keeps the static self-report append (no per-agent identity seed)", async () => {
+test("reloadAgentSession keeps the daemon append static across title changes", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-manager-reload-identity-seed-"));
   const storagePath = join(workdir, "agents");
   const storage = new AgentStorage(storagePath, logger);
@@ -5668,6 +5605,7 @@ test("reloadAgentSession keeps the static self-report append (no per-agent ident
     },
     registry: storage,
     logger,
+    appendSystemPrompt: "Daemon instructions.",
     idFactory: () => "00000000-0000-4000-8000-000000000127",
   });
 
@@ -5682,18 +5620,15 @@ test("reloadAgentSession keeps the static self-report append (no per-agent ident
   await manager.setTitle(snapshot.id, "Fix auth");
   await manager.setAgentShortDescription(snapshot.id, "Reproducing the login failure");
 
-  // The append is static: no identity seed, so every pool-eligible agent
+  // The append carries no per-agent identity, so every pool-eligible agent
   // shares the same composed prompt (and the same OMP warm-pool key).
-  const staticAppend = buildSelfReportSystemPrompt({}, true);
-  const firstConfig = client.createdConfigs[0];
-  expect(firstConfig?.daemonAppendSystemPrompt).toBe(staticAppend);
+  expect(client.createdConfigs[0]?.daemonAppendSystemPrompt).toBe("Daemon instructions.");
 
   await manager.reloadAgentSession(snapshot.id);
 
   // Reload does not change the append either — title/description changes must
   // never re-key the pool.
-  const reloadedConfig = client.resumeOverrides.at(-1);
-  expect(reloadedConfig?.daemonAppendSystemPrompt).toBe(staticAppend);
+  expect(client.resumeOverrides.at(-1)?.daemonAppendSystemPrompt).toBe("Daemon instructions.");
 });
 
 test("setTitle bumps updatedAt and persists title in the same snapshot write", async () => {
