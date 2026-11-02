@@ -133,7 +133,7 @@ describe("OmpWarmPool", () => {
 
   // Exercises the real fs.watch backend: the watcher wiring is the behavior
   // under test, so the clock cannot be faked. waitFor polls the condition.
-  test.each(["config.yml", "models.yml", "agents/new-agent.md"])(
+  test.each(["config.yml", "models.yml", "mcp.json", ".mcp.json", "agents/new-agent.md"])(
     "a change to omp's %s retires idle processes and boots replacements",
     async (changedFile) => {
       const configDir = await mkdtemp(path.join(tmpdir(), "paseo-omp-config-"));

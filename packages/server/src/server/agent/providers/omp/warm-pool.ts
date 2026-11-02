@@ -67,7 +67,12 @@ const OMP_CONFIG_CHANGE_DEBOUNCE_MS = 500;
  * whatever it booted with, so a change to any of these (or to the custom agent
  * definitions under `agents/`) retires the pool.
  */
-const OMP_BOOT_CONFIG_FILES: Record<string, true> = { "config.yml": true, "models.yml": true };
+const OMP_BOOT_CONFIG_FILES: Record<string, true> = {
+  "config.yml": true,
+  "models.yml": true,
+  "mcp.json": true,
+  ".mcp.json": true,
+};
 const OMP_AGENTS_DIR_NAME = "agents";
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
@@ -297,9 +302,10 @@ export class OmpWarmPool {
   }
 
   /**
-   * Watch omp's boot-time config. omp reads config.yml, models.yml and the
-   * custom agent definitions once at launch, so idle pooled processes would
-   * otherwise keep serving creates with the config they booted with.
+   * Watch omp's boot-time config. omp reads config.yml, models.yml, its user
+   * MCP servers (mcp.json) and the custom agent definitions once at launch, so
+   * idle pooled processes would otherwise keep serving creates with the config
+   * they booted with.
    */
   private watchOmpConfig(): void {
     const configDir = this.configDir;
