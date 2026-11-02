@@ -37,9 +37,18 @@ const PAGE_LIBRARIES = [
   "Grid.js (https://cdn.jsdelivr.net/npm/gridjs@6/dist/gridjs.umd.js): sortable, searchable tables",
   "Motion (https://cdn.jsdelivr.net/npm/motion@12/+esm): transitions",
   "Lucide (https://cdn.jsdelivr.net/npm/lucide@0/dist/umd/lucide.min.js): icons, the app's own icon set",
+  "Vega-Lite via vega-embed (https://cdn.jsdelivr.net/npm/vega-embed@6/+esm): declarative charts from one JSON spec; set background to transparent and colors from the kit vars",
+  "KaTeX (https://cdn.jsdelivr.net/npm/katex@0.16/dist/katex.min.js + katex.min.css): math",
+  'Shiki (https://esm.sh/shiki@3, `codeToHtml(code, { lang, theme: paseo.theme.colorScheme === "dark" ? "github-dark" : "github-light" })`): highlighted code',
+  "diff2html (https://cdn.jsdelivr.net/npm/diff2html@3/bundles/js/diff2html-ui.min.js + bundles/css/diff2html.min.css): unified diffs, side by side or line by line",
+  "Reveal.js (https://cdn.jsdelivr.net/npm/reveal.js@5/dist/reveal.js + reveal.css, `embedded: true`): step-by-step walkthroughs as slides",
+  "MapLibre GL (https://cdn.jsdelivr.net/npm/maplibre-gl@5/dist/maplibre-gl.js + maplibre-gl.css; style https://demotiles.maplibre.org/style.json): maps",
+  'ELK for Cytoscape (https://cdn.jsdelivr.net/npm/elkjs@0.10/lib/elk.bundled.js, then https://cdn.jsdelivr.net/npm/cytoscape-elk@2/dist/cytoscape-elk.js, layout { name: "elk" }): clean layered layouts for large graphs and architectures',
 ];
 
 const PAGE_RULES = [
+  "Choose the form that shows this information best: diagram, chart, map, table, timeline, cards, slides, or a mix. The library list below is a starting point, not a limit; any https CDN library works if it uses the kit's theme variables.",
+  "Make it a designed page, not a data dump: one clear headline idea, visual hierarchy, generous spacing, the kit's colors, and interaction (tabs, filters, hover detail) where it helps the reader explore.",
   "Write one self-contained HTML document or fragment with inline <style> and <script>. Pages may load https CDN libraries and fetch any URL the reader's device can reach, including localhost.",
   "Paseo injects a kit before your code. CSS variables follow the reader's theme live: --paseo-fg, --paseo-muted, --paseo-faint, --paseo-border, --paseo-accent, --paseo-surface-1..3 (in-flow panels, cards, rows), --paseo-floating and --paseo-floating-border (anything over content: tooltips, menus), --paseo-cover, --paseo-background (opaque), --paseo-success, --paseo-warning, --paseo-danger, --paseo-chart-1..8, --paseo-font-ui, --paseo-font-mono, --paseo-radius.",
   "Base styles for text, tables, code, buttons, and inputs are already set. Helper classes: .p-card, .p-floating, .p-muted, .p-faint, .p-row, .p-grid, .p-stat, .p-badge (.ok/.warn/.bad), .p-chart.",
@@ -160,8 +169,8 @@ export function registerPageTools(options: RegisterPageToolsOptions): void {
     {
       title: "Show page",
       description: [
-        "Show an interactive HTML page inline in this chat, in the reply, above your final text. Use it when the answer needs interaction (filter, sort, tabs, hover), a table of more than 15 rows, a many-attribute comparison, a gallery, a mockup, a dashboard, or a running app (url). Prefer markdown, mermaid, or a flint fence for anything simpler.",
-        "Workflow: write the page to a file, check it with preview_page({ path }), fix and re-check, then show_page({ title, path }). The file is read when you call, so you never paste the markup into a tool call; later edits to the file do not change a page already shown. Use html only for a small page you write once.",
+        "Show an interactive HTML page inline in this chat, in the reply, above your final text. Use it for anything beyond a short, direct answer: comparisons, options, plans, architecture, flows, timelines, numbers, audits, findings, galleries, mockups, dashboards, or a running app (url).",
+        "Workflow: write the page to a file, then show_page({ title, path }). Check it with preview_page({ path }) first only when it runs scripts that could fail (charts, diagrams, maps, data fetching). The file is read when you call, so you never paste the markup into a tool call; later edits to the file do not change a page already shown. Use html only for a small page you write once.",
         "Call show_page as its own tool call. The reader's app renders the page from that call, so a call made from inside eval, a script, or a subagent never reaches the chat.",
         "The reader already sees the page, so the text reply must not announce it, describe where it is, or restate it: add only what the page does not show.",
         ...PAGE_RULES,
