@@ -1,0 +1,26 @@
+{
+  "name": "omp-toolhive",
+  "version": "0.1.0",
+  "description": "ToolHive's find_tool, call_tool and execute_tool_script as always-loaded Oh My Pi tools",
+  "license": "MIT",
+  "type": "module",
+  "keywords": [
+    "oh-my-pi",
+    "omp",
+    "extension",
+    "mcp",
+    "toolhive"
+  ],
+  "omp": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "peerDependencies": {
+    "@oh-my-pi/pi-coding-agent": "*"
+  }
+}

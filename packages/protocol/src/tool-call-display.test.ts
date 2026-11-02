@@ -280,6 +280,11 @@ describe("shared tool-call display mapping", () => {
     expect(
       display("toolhive / execute_tool_script", { reason: "two lookups", script: "return 1" }),
     ).toEqual({ displayName: "Tool script", summary: "two lookups" });
+    // The omp-toolhive plugin's always-loaded tools.
+    expect(display("toolhive_find_tool", { tool_description: "slack" })).toEqual({
+      displayName: "Find tool",
+      summary: "slack",
+    });
     expect(display("mcp__github_call_tool", { tool_name: "x" }).displayName).not.toBe("Call tool");
   });
   it("builds Web Search display for search detail with web_search toolName", () => {

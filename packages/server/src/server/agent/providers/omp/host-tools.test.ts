@@ -135,13 +135,13 @@ class OmpHostToolHarness {
 }
 
 describe("OMP host tools", () => {
-  test("marks every caller-scoped Paseo tool essential for direct invocation", () => {
+  test("keeps the everyday Paseo tools top-level and the rest on demand", () => {
     const catalog = createCatalog([
       {
-        name: "create_agent",
-        title: "Create agent",
-        description: "Create a Paseo agent.",
-        inputSchema: { initialPrompt: z.string().describe("Prompt for the new agent.") },
+        name: "report_status",
+        title: "Report status",
+        description: "Report status.",
+        inputSchema: { headline: z.string().describe("Headline.") },
         handler: async () => ({ content: [] }),
       },
       {
@@ -153,16 +153,16 @@ describe("OMP host tools", () => {
 
     expect(serializeOmpHostTools(catalog)).toEqual([
       {
-        name: "create_agent",
-        label: "Create agent",
-        description: "Create a Paseo agent.",
+        name: "report_status",
+        label: "Report status",
+        description: "Report status.",
         loadMode: "essential",
-        parameters: expect.objectContaining({ type: "object", required: ["initialPrompt"] }),
+        parameters: expect.objectContaining({ type: "object", required: ["headline"] }),
       },
       {
         name: "browser_list_tabs",
         description: "List browser tabs.",
-        loadMode: "essential",
+        loadMode: "discoverable",
         parameters: expect.objectContaining({ type: "object" }),
       },
     ]);

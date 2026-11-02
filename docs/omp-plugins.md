@@ -4,10 +4,11 @@ The `plugins/` directory contains Oh My Pi (omp) plugins versioned in this repos
 
 ## Included plugins
 
-| Plugin                | Source   | Purpose                                                                                                                                                          |
-| --------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `omp-account-routing` | In-house | Per-host and per-project OAuth account routing for omp. Strategy reference: [`plugins/omp-account-routing/README.md`](../plugins/omp-account-routing/README.md). |
-| `omp-grok-build`      | Vendored | Grok Build OAuth provider integration. Provenance and local changes: [`plugins/omp-grok-build/UPSTREAM.md`](../plugins/omp-grok-build/UPSTREAM.md).              |
+| Plugin                | Source   | Purpose                                                                                                                                                                                                                                                                                                                                                      |
+| --------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `omp-account-routing` | In-house | Per-host and per-project OAuth account routing for omp. Strategy reference: [`plugins/omp-account-routing/README.md`](../plugins/omp-account-routing/README.md).                                                                                                                                                                                             |
+| `omp-grok-build`      | Vendored | Grok Build OAuth provider integration. Provenance and local changes: [`plugins/omp-grok-build/UPSTREAM.md`](../plugins/omp-grok-build/UPSTREAM.md).                                                                                                                                                                                                          |
+| `omp-toolhive`        | In-house | ToolHive's `find_tool`, `call_tool` and `execute_tool_script` as always-loaded omp tools (`toolhive_*`). omp mounts every MCP server's tools under `xd://` and has no per-server override, so ToolHive is reached through this plugin, configured by `~/.omp/agent/toolhive.json` (`url`, `token`; written by flotilla), and must not also be in `mcp.json`. |
 
 ## Plugin loading in omp
 

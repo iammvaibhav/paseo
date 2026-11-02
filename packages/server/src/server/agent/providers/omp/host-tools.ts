@@ -30,12 +30,26 @@ interface OmpHostToolRouterInput {
   logger: Logger;
 }
 
+/**
+ * Paseo tools every agent reaches for, kept as full top-level definitions.
+ * The rest (browser, terminals, workspace scripts, permissions, workspaces…)
+ * are rare, so omp lists them by name under `xd://` and an agent reads a
+ * definition only when it needs one, which keeps their schemas out of every
+ * prompt.
+ */
+const ESSENTIAL_PASEO_TOOLS: Record<string, true> = {
+  report_status: true,
+  show_page: true,
+  preview_page: true,
+  fleet_move_agent: true,
+};
+
 export function serializeOmpHostTools(catalog: PaseoToolCatalog): OmpRpcHostToolDefinition[] {
   return [...catalog.tools.values()].map((tool) => {
     const definition: OmpRpcHostToolDefinition = {
       name: tool.name,
       description: tool.description,
-      loadMode: "essential",
+      loadMode: Object.hasOwn(ESSENTIAL_PASEO_TOOLS, tool.name) ? "essential" : "discoverable",
       parameters: serializePaseoToolInputParameters(tool),
     };
     if (tool.title) {

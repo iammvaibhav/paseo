@@ -11,5 +11,5 @@
     "jsx": "react-jsx"
   },
   "include": ["**/*.ts", "**/*.tsx"],
-  "exclude": ["node_modules", "**/*.test.ts", "omp-account-routing", "omp-grok-build"]
+  "exclude": ["node_modules", "**/*.test.ts", "omp-account-routing", "omp-grok-build", "omp-toolhive"]
 }
