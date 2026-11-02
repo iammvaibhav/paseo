@@ -105,8 +105,15 @@ function git(...args: string[]): string {
  * KEY=value lines from ~/.paseo/deploy.env (the existing environment wins),
  * and ~/.local/bin on PATH: omp, gh and cloudflared live there, and shells
  * spawned by agents, timers and flotilla often lack it.
+ *
+ * Deploy always manages each host's ~/.paseo daemon, so variables that pick
+ * another Paseo instance are dropped first. Agent shells in a worktree often
+ * export PASEO_HOME=<worktree>/.dev/paseo-home; this host's scripts run
+ * locally with this environment, and activate-runtime.sh would write that
+ * home into paseo-daemon.service, leaving ~/.paseo with no daemon.
  */
 function loadDeployEnv(): void {
+  for (const key of ["PASEO_HOME", "PASEO_HOST", "PASEO_LISTEN"]) delete process.env[key];
   const localBin = path.join(homedir(), ".local", "bin");
   if (!(process.env.PATH ?? "").split(path.delimiter).includes(localBin)) {
     process.env.PATH = `${process.env.PATH ?? ""}${path.delimiter}${localBin}`;
