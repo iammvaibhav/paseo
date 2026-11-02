@@ -481,8 +481,14 @@ function mapWriteToolDetail(args: WriteToolInput, result: OmpToolResult): ToolCa
   }
 
   // A write to `xd://` runs a tool, not a file write. Its content is the tool's JSON
-  // arguments; label the row with their stated intent, else the invoked tool's name.
+  // arguments. While it runs, carry them in the same `unknown` shape the finished call
+  // gets from `details.xdev`: a typed placeholder would win the timeline merge and
+  // drop the finished call's input and output.
   if (args.path.startsWith("xd://")) {
+    const deviceArgs = result ? undefined : parseXdToolArgs(args.content);
+    if (deviceArgs) {
+      return { type: "unknown", input: deviceArgs, output: null };
+    }
     return {
       type: "plain_text",
       label: readXdToolIntent(args.content) ?? args.path.slice("xd://".length).split(/[/?#]/, 1)[0],
@@ -497,17 +503,20 @@ function mapWriteToolDetail(args: WriteToolInput, result: OmpToolResult): ToolCa
   };
 }
 
-function readXdToolIntent(content: string): string | undefined {
+function parseXdToolArgs(content: string): Record<string, unknown> | undefined {
   let parsed: unknown;
   try {
     parsed = JSON.parse(content);
   } catch {
     return undefined;
   }
-  if (!parsed || typeof parsed !== "object" || !("i" in parsed)) {
-    return undefined;
-  }
-  const intent = parsed.i;
+  return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+    ? (parsed as Record<string, unknown>)
+    : undefined;
+}
+
+function readXdToolIntent(content: string): string | undefined {
+  const intent = parseXdToolArgs(content)?.i;
   return typeof intent === "string" && intent.trim() ? intent.trim() : undefined;
 }
 

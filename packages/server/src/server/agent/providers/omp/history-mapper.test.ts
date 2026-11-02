@@ -748,7 +748,7 @@ describe("OMP history mapper", () => {
           ? [event.item.detail.type]
           : [],
       ),
-    ).toEqual(["plain_text", "unknown"]);
+    ).toEqual(["unknown", "unknown"]);
   });
 
   test("maps only the active JSONL chain with native user ids and visible unknown roles", async () => {

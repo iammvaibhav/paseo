@@ -274,14 +274,61 @@ describe("OMP tool call mapper", () => {
     ).toMatchObject({ type: "fetch", url: "https://example.com/" });
   });
 
-  test("names virtual device calls from their path on failure and while running", () => {
+  test("names virtual device reads from their path while running", () => {
     expect(mapOmpToolDetail(parseToolArgs("read", { path: "xd://ast_grep" }), null)).toMatchObject({
       type: "plain_text",
       label: "ast_grep",
     });
+  });
+
+  test("keeps a device call's arguments while it runs and its result when it ends", () => {
+    // The running and finished rows share the `unknown` shape, so the timeline merge
+    // replaces the running arguments with the finished input and output.
+    const call = parseToolArgs("write", {
+      path: "xd://mcp__toolhive_find_tool",
+      content: '{"tool_description":"list paseo agents"}',
+    });
+    expect(mapOmpToolDetail(call, null)).toEqual({
+      type: "unknown",
+      input: { tool_description: "list paseo agents" },
+      output: null,
+    });
     expect(
-      mapOmpToolDetail(parseToolArgs("write", { path: "xd://lsp", content: "{}" }), null),
-    ).toMatchObject({ type: "plain_text", label: "lsp" });
+      mapOmpToolDetail(
+        call,
+        parseToolResult({
+          content: [{ type: "text", text: '{"tools":[]}' }],
+          details: {
+            xdev: {
+              tool: "mcp__toolhive_find_tool",
+              mode: "execute",
+              args: { tool_description: "list paseo agents" },
+              inner: { serverName: "toolhive", mcpToolName: "find_tool" },
+            },
+          },
+        }),
+      ),
+    ).toMatchObject({
+      type: "unknown",
+      input: { tool_description: "list paseo agents" },
+      output: { content: [{ type: "text", text: '{"tools":[]}' }] },
+    });
+  });
+
+  test("keeps eval calls as unknown so their cells can render", () => {
+    expect(
+      mapOmpToolDetail(
+        parseToolArgs("eval", { language: "py", code: "print(1+1)", title: "Add" }),
+        parseToolResult({
+          content: [{ type: "text", text: "2" }],
+          details: { cells: [{ index: 0, code: "print(1+1)", output: "2", status: "complete" }] },
+        }),
+      ),
+    ).toMatchObject({
+      type: "unknown",
+      input: { code: "print(1+1)", title: "Add" },
+      output: { details: { cells: [{ output: "2" }] } },
+    });
   });
 
   test("renders executed OMP device tools with readable action and output", () => {

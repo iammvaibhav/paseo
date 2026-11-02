@@ -163,7 +163,7 @@ function mapOmpOpaqueToolDetail(
 const OPAQUE_TEXT_TOOLS = new Set([
   "ast_edit",
   "debug",
-  "eval",
+  // Not eval: it stays `unknown` (args + result) so the app can render its cells.
   "github",
   "checkpoint",
   "rewind",
