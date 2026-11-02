@@ -31,6 +31,8 @@ import { parseEvalToolCallDetail, type EvalCell, type EvalDetailModel } from "@/
 import { parseWebSearchToolCallDetail, type WebSearchDetailModel } from "@/utils/web-search-detail";
 import { parseHubToolCallDetail, type HubDetailModel } from "@/utils/hub-detail";
 import { parsePreviewPageToolCallDetail } from "@/utils/preview-page-detail";
+import { parseToolHiveToolCallDetail } from "@/utils/toolhive-detail";
+import { ToolHiveDetail } from "./toolhive-tool-details";
 import { PreviewPageDetail } from "./preview-page-detail";
 import { HighlightedLines } from "./highlighted-content";
 import { DiffViewer } from "./diff-viewer";
@@ -1134,11 +1136,15 @@ export function ToolCallDetailsContent({
     () => parsePreviewPageToolCallDetail(detail, toolName),
     [detail, toolName],
   );
+  const toolHiveModel = useMemo(
+    () => parseToolHiveToolCallDetail(detail, toolName),
+    [detail, toolName],
+  );
   const ds = useDetailStyles(
     detail,
     resolvedMaxHeight,
     fillAvailableHeight,
-    evalModel !== null || webSearchModel !== null || hubModel !== null,
+    evalModel !== null || webSearchModel !== null || hubModel !== null || toolHiveModel !== null,
   );
   const diffLines = useDiffLines(detail);
 
@@ -1152,6 +1158,19 @@ export function ToolCallDetailsContent({
             <ScrollableTextSection content={previewPageModel.html} ds={ds} filePath="page.html" />
           </View>
         ) : null}
+        {errorText ? <ErrorSection errorText={errorText} ds={ds} /> : null}
+      </View>
+    );
+  }
+
+  if (toolHiveModel) {
+    return (
+      <View style={ds.fullBleedContainerStyle}>
+        <ToolHiveDetail
+          model={toolHiveModel}
+          fillStyle={ds.sectionFillStyle}
+          scrollStyle={ds.codeVerticalScrollStyle}
+        />
         {errorText ? <ErrorSection errorText={errorText} ds={ds} /> : null}
       </View>
     );

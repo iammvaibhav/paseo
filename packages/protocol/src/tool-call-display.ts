@@ -446,8 +446,44 @@ function buildGenericUnknownSummary(input: ToolCallDisplayInput): string | undef
   );
 }
 
+export type ToolHiveOperation = "find" | "call" | "script";
+
+const TOOLHIVE_TOOL_PATTERN =
+  /toolhive(?:__|_|\s*\/\s*)(find_tool|call_tool|execute_tool_script)$/i;
+const TOOLHIVE_OPERATIONS: Record<string, ToolHiveOperation> = {
+  find_tool: "find",
+  call_tool: "call",
+  execute_tool_script: "script",
+};
+
+/** Which ToolHive meta tool a call is, from its MCP tool name (`mcp__toolhive_find_tool`). */
+export function toolHiveOperation(toolName: string): ToolHiveOperation | null {
+  const match = toolName.trim().match(TOOLHIVE_TOOL_PATTERN);
+  return match ? (TOOLHIVE_OPERATIONS[match[1]!.toLowerCase()] ?? null) : null;
+}
+
+// ToolHive's three meta tools front every shared MCP server; the row names what was
+// searched, which tool ran, or why a script ran, not the meta tool.
+function buildToolHiveDisplay(input: ToolCallDisplayInput): DetailDisplay | null {
+  const op = toolHiveOperation(input.name);
+  if (!op) return null;
+  const args =
+    input.detail.type === "unknown" && isRecord(input.detail.input) ? input.detail.input : {};
+  if (op === "find") {
+    return { displayName: "Find tool", summary: readString(args.tool_description) };
+  }
+  if (op === "call") {
+    return { displayName: "Call tool", summary: readString(args.tool_name) };
+  }
+  return { displayName: "Tool script", summary: readString(args.reason) };
+}
+
 function buildUnknownDetailOverride(input: ToolCallDisplayInput): DetailDisplay {
   const lowerName = input.name.trim().toLowerCase();
+  const toolHiveDisplay = buildToolHiveDisplay(input);
+  if (toolHiveDisplay) {
+    return toolHiveDisplay;
+  }
   if (lowerName === "eval") {
     return {
       summary: buildEvalSummary(input.detail),

@@ -261,6 +261,27 @@ describe("shared tool-call display mapping", () => {
     });
     expect(display.summary).toBe("await Bun.file('x').text()");
   });
+
+  it("names ToolHive rows by what was searched, called, or scripted", () => {
+    const display = (name: string, input: Record<string, unknown>) =>
+      buildToolCallDisplayModel({
+        name,
+        status: "completed",
+        error: null,
+        detail: { type: "unknown", input, output: null },
+      });
+    expect(display("mcp__toolhive_find_tool", { tool_description: "slack mentions" })).toEqual({
+      displayName: "Find tool",
+      summary: "slack mentions",
+    });
+    expect(
+      display("mcp__toolhive_call_tool", { tool_name: "n8n-get_workflow", parameters: {} }),
+    ).toEqual({ displayName: "Call tool", summary: "n8n-get_workflow" });
+    expect(
+      display("toolhive / execute_tool_script", { reason: "two lookups", script: "return 1" }),
+    ).toEqual({ displayName: "Tool script", summary: "two lookups" });
+    expect(display("mcp__github_call_tool", { tool_name: "x" }).displayName).not.toBe("Call tool");
+  });
   it("builds Web Search display for search detail with web_search toolName", () => {
     const display = buildToolCallDisplayModel({
       name: "web_search",
