@@ -4468,17 +4468,14 @@ function createToolCatalog(
     {
       title: "Report status",
       description:
-        "Report status to Mission Control at major steps only: root cause found, a fix landed, tests green, blocked, direction changed, done. " +
-        'Silence between milestones; never send progress updates. Send "completed" only when everything asked is conclusively done — back ' +
-        'completion claims with proofs. When you are blocked on a decision, send "blocked". Use the optional "kind" field ' +
-        "(finding, fix, milestone, decision, progress) to flavor the card. " +
-        "Prefer hub-wait over sleep/timeout polling loops. Rate limited to one report per minute per agent; completed, blocked and inconclusive always go through. " +
-        "Identity rules: description is a living 2-3 sentence 'what this agent is doing now' — send a FRESH description on EVERY report " +
-        "(replaced, never appended, under ~400 characters); the daemon nags when your record lacks one. Title is WRITE-ONCE: your record " +
-        "already has one (frozen at registration) — never resend or retitle it; a title sent when the record has one is ignored with the " +
-        "notice 'title is fixed; description updated', and the only rename path is fleet_rename_agent_title. Send title ONLY as backfill " +
-        "when the daemon tells you the record has none. The result echoes your stored title/description only when they drifted from what " +
-        "you sent (changed externally), and carries a notice when your title was ignored or your description is missing.",
+        "Report your status at major steps only: root cause found, a fix landed, tests green, blocked, direction changed, done. " +
+        'No progress updates between milestones. Send "completed" only when everything asked is done, backed by proofs; send "blocked" ' +
+        'when you need a decision. The optional "kind" (finding, fix, milestone, decision, progress) labels the report. ' +
+        "One report per minute per agent; completed, blocked and inconclusive always go through. " +
+        "Send a fresh description on every report: 2-3 sentences, under ~400 characters, on what you are doing now (it replaces the old one). " +
+        "Title is write-once: send it only when the result says your record has none; otherwise it is ignored with the notice " +
+        "'title is fixed; description updated', and fleet_rename_agent_title is the only rename path. The result echoes your stored " +
+        "title/description only when someone else changed them.",
       inputSchema: MissionControlReportStatusInputSchema.extend({
         headline: z
           .string()
