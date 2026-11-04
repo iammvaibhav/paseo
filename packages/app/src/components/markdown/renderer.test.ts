@@ -106,6 +106,94 @@ it("preserves empty table cells while escaping spoilers in cell text", () => {
   );
 });
 
+// A reply from a real agent run (staging migrations analysis). Its table follows the
+// caption line with no blank line between them, as agents often write it.
+const TABLE_AFTER_CAPTION_MESSAGE = [
+  "✅ Staging migrations didn't fail, and it wasn't an authz problem: two pipelines deployed `web-migration` at the same time, and the newer one replaced Zoeb's mid-rollout.",
+  "",
+  "**Zoeb's run** (`clouddeploy-portal-web-staging`, execution `754594dd`, image `master-c2f8a085`):",
+  "| Step | Time (IST) | Result |",
+  "|---|---|---|",
+  "| `Run-django-migration` | 10:54–10:59 | **Succeeded** (`django-migration:d4c0f258…`) |",
+  "| `Run-starrocks-migration` | 10:54–10:56 | Succeeded |",
+  '| `main-DeployToECS-web-migration-staging` (`web-migration:2251`) | 10:59–11:10 | **Failed:** "The new deployment has failed and rolled back." |',
+  "",
+  "**Why that ECS step failed:**",
+  "1. 10:59:25: Zoeb's pipeline registered `web-migration:2251` and started rolling it out. Its task came up at 11:01, migrated (`No migrations to apply`, reconcile changed nothing) and passed health checks at 11:02.",
+  "2. 11:06:05: the auto pipeline `cicd-portal-all-staging` (same commit, image `master-cicd-c2f8a085`) registered `web-migration:2252` and deployed it before Zoeb's rollout had finished.",
+  "3. 11:09: ECS stopped Zoeb's task (`2251`) and started `2252`. Zoeb's deployment never finished, so his pipeline reported it as failed.",
+  "4. The auto pipeline finished cleanly at 11:18 IST, and the whole run succeeded at 11:32 IST.",
+  "",
+  "**Staging now:** `web-migration` is on `2252` and steady. The rest of portal is on `master-cicd-c2f8a085`, the same commit Zoeb wanted, so there's nothing for him to redeploy.",
+  "",
+  "**Side effect:** both pipelines' `django-migration` steps overlapped from 10:58 to 10:59 IST. It did no harm today because there were no migrations to apply. If a migration had been pending, it's the same race that left yesterday's tables half-created.",
+  "",
+  "Draft reply for Zoeb's thread (not posted; say the word and I'll post it):",
+  "> Migrations actually succeeded (both `django-migration` runs: no migrations to apply). What failed is the `web-migration` ECS step: your manual `clouddeploy-portal-web-staging` run (10:59) was superseded at 11:06 by the auto `cicd-portal-all-staging` run for the same commit `c2f8a085`, which finished at 11:32. Staging is already on that commit, so nothing to redo. Please avoid the manual staging pipeline while the auto one deploys every master push: two concurrent migration runs is what broke the authz migration yesterday.",
+  "",
+  "Separately: execution `62593a1f` of `clouddeploy-portal-web-staging` has been `InProgress` since 2026-11-02 20:27 IST (started by you). Stop it so it doesn't resume later and deploy an old image.",
+].join("\n");
+
+const RENDERER_MD4C_FLAGS = { hardSoftBreaks: true, latexMath: false, admonitions: true };
+
+function markdownText(node: ASTNode): string {
+  return (node.content ?? "") + (node.children ?? []).map(markdownText).join("");
+}
+
+function tableRows(node: ASTNode): string[][] {
+  if (node.type === "TableRow") return [(node.children ?? []).map(markdownText)];
+  return (node.children ?? []).flatMap(tableRows);
+}
+
+describe("tables that directly follow a paragraph line", () => {
+  it("render the agent message's table as a table, not paragraph text", async () => {
+    const tree = await parseMarkdown(
+      prepareMarkdownSource(TABLE_AFTER_CAPTION_MESSAGE).render(),
+      RENDERER_MD4C_FLAGS,
+    );
+    const blocks = tree.children ?? [];
+    expect(blocks.map((block) => block.type).slice(0, 4)).toEqual([
+      "Paragraph",
+      "Paragraph",
+      "Table",
+      "Paragraph",
+    ]);
+    expect(markdownText(blocks[1]!)).toBe(
+      "Zoeb's run (clouddeploy-portal-web-staging, execution 754594dd, image master-c2f8a085):",
+    );
+    expect(tableRows(blocks[2]!)).toEqual([
+      ["Step", "Time (IST)", "Result"],
+      ["Run-django-migration", "10:54–10:59", "Succeeded (django-migration:d4c0f258…)"],
+      ["Run-starrocks-migration", "10:54–10:56", "Succeeded"],
+      [
+        "main-DeployToECS-web-migration-staging (web-migration:2251)",
+        "10:59–11:10",
+        'Failed: "The new deployment has failed and rolled back."',
+      ],
+    ]);
+    expect(
+      blocks.some((block) => block.type === "Paragraph" && markdownText(block).includes("|")),
+    ).toBe(false);
+  });
+
+  it.each([
+    ["a quote", "> Intro:\n> | A | B |\n> |---|---|\n> | 1 | 2 |", "Blockquote"],
+    ["a list item", "- Intro:\n  | A | B |\n  |---|---|\n  | 1 | 2 |", "UnorderedList"],
+  ])("keep the table inside %s", async (_container, source, containerType) => {
+    const tree = await parseMarkdown(prepareMarkdownSource(source).render(), RENDERER_MD4C_FLAGS);
+    expect(tree.children?.map((block) => block.type)).toEqual([containerType]);
+    expect(tableRows(tree)).toEqual([
+      ["A", "B"],
+      ["1", "2"],
+    ]);
+  });
+
+  it("leave table-shaped lines inside a code fence untouched", () => {
+    const source = "```md\nIntro:\n| A | B |\n|---|---|\n```";
+    expect(prepareMarkdownSource(source).render()).toBe(source);
+  });
+});
+
 it.each([
   "src/components/message.tsx",
   "C:\\repo\\file.ts",

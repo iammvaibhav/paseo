@@ -40,6 +40,9 @@ const URL_GROUP = String.raw`\(${URL_CHARACTER}*\)`;
 const BARE_URL = String.raw`https?://(?:${URL_CHARACTER}|${URL_GROUP})*(?:[^\s<>()"'\x60.,;:!?]|${URL_GROUP})`;
 
 const FILE_PATTERN = createFilePattern(PROSE_PATH);
+// Two non-blank lines then a GFM delimiter row: a table header that may follow a
+// paragraph line with no blank line between them.
+const TABLE_AFTER_PARAGRAPH_LINE = /^.*\S.*\n.*\S.*\n[ \t>]*\|?[ \t]*:?-+:?[ \t]*\|/m;
 function linkMetadata(inlineCodePaths: ReadonlySet<string>) {
   // The engine accepts regexes on both platforms. Classify complete code spans
   // first, then pass literal matches rather than maintaining a second path grammar.
@@ -129,7 +132,8 @@ export function prepareMarkdownSource(
     !source.includes("![") &&
     !source.includes("||") &&
     !source.includes("&") &&
-    !(workspaceRoot && source.includes("]("))
+    !(workspaceRoot && source.includes("](")) &&
+    !TABLE_AFTER_PARAGRAPH_LINE.test(source)
   ) {
     return { images, ...metadata, render: () => source };
   }
@@ -166,6 +170,15 @@ export function prepareMarkdownSource(
   }
   // Line boundaries already turned into paragraph breaks, by offset of their newline.
   const splitBoundaries = new Set<number>();
+  // Continuation lines inside quotes and lists keep their quote markers on the blank line.
+  function splitLines(boundary: number, linePrefix: string) {
+    if (splitBoundaries.has(boundary)) return;
+    splitBoundaries.add(boundary);
+    const blank = linePrefix.replace(/[^>]/g, " ").trimEnd();
+    // A trailing backslash was a hard break; at a paragraph end it would render literally.
+    const cut = source[boundary - 1] === "\\" ? boundary - 1 : boundary;
+    edits.push({ start: cut, end: boundary + 1, text: `\n${blank}\n` });
+  }
   function isImageLike(node: PhrasingContent): boolean {
     if (node.type === "image" || node.type === "imageReference") return true;
     return (
@@ -190,18 +203,18 @@ export function prepareMarkdownSource(
       const aloneBefore = childStart === start || /^[\s>]*$/.test(prefix);
       const aloneAfter = /^\s*\\?$/.test(suffix);
       if (!aloneBefore || !aloneAfter) continue;
-      // Continuation lines inside quotes and lists keep their quote markers on the blank line.
-      const blank = prefix.replace(/[^>]/g, " ").trimEnd();
-      const split = (boundary: number) => {
-        if (splitBoundaries.has(boundary)) return;
-        splitBoundaries.add(boundary);
-        // A trailing backslash was a hard break; at a paragraph end it would render literally.
-        const cut = source[boundary - 1] === "\\" ? boundary - 1 : boundary;
-        edits.push({ start: cut, end: boundary + 1, text: `\n${blank}\n` });
-      };
-      if (lineStart > start) split(lineStart - 1);
-      if (lineEnd < end) split(lineEnd);
+      if (lineStart > start) splitLines(lineStart - 1, prefix);
+      if (lineEnd < end) splitLines(lineEnd, prefix);
     }
+  }
+  // GFM lets a table interrupt a paragraph, but MD4C only starts a table on the first
+  // line of a block, so "Intro:\n| A |\n|---|" would render as one paragraph of raw rows.
+  function splitTableFromParagraph(table: Nodes, previous: Nodes | undefined) {
+    const tableStart = table.position?.start;
+    if (previous?.type !== "paragraph" || tableStart?.offset === undefined) return;
+    if (previous.position?.end.line !== tableStart.line - 1) return;
+    const lineStart = source.lastIndexOf("\n", tableStart.offset - 1) + 1;
+    splitLines(lineStart - 1, source.slice(lineStart, tableStart.offset));
   }
   function visit(node: Nodes) {
     const start = node.position?.start.offset;
@@ -235,7 +248,11 @@ export function prepareMarkdownSource(
         if (text !== source.slice(start, end)) edits.push({ start, end, text });
       }
     }
-    if ("children" in node) node.children.forEach(visit);
+    if ("children" in node)
+      node.children.forEach((child: Nodes, index: number) => {
+        if (child.type === "table") splitTableFromParagraph(child, node.children[index - 1]);
+        visit(child);
+      });
   }
   visit(getTree());
   return {
