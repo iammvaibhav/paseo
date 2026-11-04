@@ -24,12 +24,12 @@ interface FleetInventoryHost {
 
 /** Local daemon records: one stackmod project with a single worktree workspace. */
 function localRecords(): {
-  workspaceRegistry: { list: () => Promise<PersistedWorkspaceRecord[]> };
+  workspaceRegistry: { listAll: () => Promise<PersistedWorkspaceRecord[]> };
   projectRegistry: { list: () => Promise<PersistedProjectRecord[]> };
 } {
   return {
     workspaceRegistry: {
-      list: async () => [
+      listAll: async () => [
         {
           workspaceId: "wks_stackmod",
           projectId: "prj_stackmod",
@@ -100,7 +100,7 @@ function createCatalog(
 ) {
   return createPaseoToolCatalog({
     agentManager: { listAgents: async () => [] } as unknown as AgentManager,
-    agentStorage: { list: async () => [] } as unknown as AgentStorage,
+    agentStorage: { listAll: async () => [] } as unknown as AgentStorage,
     providerSnapshotManager: createProviderSnapshotManagerStub()
       .manager as unknown as ProviderSnapshotManager,
     workspaceRegistry: registries.workspaceRegistry as never,

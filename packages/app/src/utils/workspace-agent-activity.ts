@@ -25,6 +25,7 @@ export function buildWorkspaceAgentActivityIndex(
     const parentAgent = agent.parentAgentId ? agents.get(agent.parentAgentId) : undefined;
     if (
       agent.archivedAt ||
+      agent.background ||
       !agent.workspaceId ||
       !isWorkspaceRootAgent(agent, parentAgent) ||
       isHistoryAskAgent(agent.labels)

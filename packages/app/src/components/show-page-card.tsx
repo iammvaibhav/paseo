@@ -13,7 +13,8 @@ import { PAGE_URL_DEFAULT_HEIGHT, type PageSource } from "@/components/page-fram
 import { TitlebarDragRegion } from "@/components/desktop/titlebar-drag-region";
 import { HEADER_INNER_HEIGHT, HEADER_INNER_HEIGHT_MOBILE } from "@/constants/layout";
 import { isWeb } from "@/constants/platform";
-import { useGlobalWebOverlayLayer, useWebOverlayRegistration } from "@/lib/overlay-root";
+import { useOverlayRegistration, type KeyboardInputEvent } from "@/keyboard";
+import { useGlobalOverlayLayer } from "@/lib/overlay-root";
 import { useHostFeature } from "@/runtime/host-features";
 import { useHostRuntimeSnapshot } from "@/runtime/host-runtime";
 import { SPACING, type Theme } from "@/styles/theme";
@@ -341,9 +342,9 @@ function PageFullSize({
 }) {
   const { t } = useTranslation();
   const insets = useSafeAreaInsets();
-  const modalLayer = useGlobalWebOverlayLayer("modal", isWeb);
+  const modalLayer = useGlobalOverlayLayer("modal", isWeb);
   const handleWebOverlayKeyDown = useCallback(
-    (event: KeyboardEvent) => {
+    (event: KeyboardInputEvent) => {
       if (event.key !== "Escape") return false;
       event.preventDefault();
       event.stopPropagation();
@@ -353,7 +354,8 @@ function PageFullSize({
     [onClose],
   );
   // Escape with focus in this document; with focus inside the page the frame reports it.
-  const setWebOverlayScope = useWebOverlayRegistration({
+  const setWebOverlayScope = useOverlayRegistration({
+    keys: ["Escape"],
     active: isWeb,
     layer: modalLayer,
     onKeyDown: handleWebOverlayKeyDown,

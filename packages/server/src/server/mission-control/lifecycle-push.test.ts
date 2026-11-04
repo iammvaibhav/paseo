@@ -108,7 +108,7 @@ describe("MissionControlService lifecycle push", () => {
       } as unknown as AgentManager,
       agentStorage: {
         get: getRecord,
-        list: vi.fn(async () => []),
+        listAll: vi.fn(async () => []),
         upsert: vi.fn(async () => undefined),
       } as unknown as AgentStorage,
       daemonConfigStore: { get: () => ({}) } as unknown as DaemonConfigStore,
@@ -522,7 +522,7 @@ describe("peer-routed lifecycle actions (Defect 1)", () => {
         get: vi.fn(async (id: string) =>
           id === "local-agent-1" ? storedRecord("local-agent-1") : null,
         ),
-        list: vi.fn(async () => []),
+        listAll: vi.fn(async () => []),
         upsert: vi.fn(async () => undefined),
       } as unknown as AgentStorage,
       daemonConfigStore: { get: () => ({}) } as unknown as DaemonConfigStore,

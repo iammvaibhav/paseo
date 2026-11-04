@@ -130,7 +130,7 @@ export function AiReviewerSection({ serverId }: { serverId: string }) {
             {selected.model ? (
               <Button
                 variant="ghost"
-                size="xs"
+                size="sm"
                 onPress={handleClearModel}
                 accessibilityLabel="Clear reviewer model"
                 testID="host-page-ai-reviewer-model-clear"

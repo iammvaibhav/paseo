@@ -224,7 +224,7 @@ export interface MissionControlServiceOptions {
    * push is skipped (tests without the hook keep their current behavior).
    */
   onReviewStateChanged?: (agentId: string) => void;
-  workspaceRegistry?: Pick<WorkspaceRegistry, "get" | "list" | "update" | "upsert"> | null;
+  workspaceRegistry?: Pick<WorkspaceRegistry, "get" | "listAll" | "update" | "upsert"> | null;
   projectRegistry?: Pick<ProjectRegistry, "get" | "list"> | null;
   onWorkspaceUpdated?: (workspaceId: string) => Promise<void> | void;
   archiveWorkspace?: ((workspaceId: string, requestId: string) => Promise<unknown>) | null;
@@ -343,7 +343,7 @@ export class MissionControlService {
   private readonly eventListeners = new Set<(event: MissionControlEvent) => void>();
   private readonly workspaceRegistry: Pick<
     WorkspaceRegistry,
-    "get" | "list" | "update" | "upsert"
+    "get" | "listAll" | "update" | "upsert"
   > | null;
   private readonly onWorkspaceUpdated?: ((workspaceId: string) => Promise<void> | void) | null;
   private readonly projectRegistry: Pick<ProjectRegistry, "get" | "list"> | null;
@@ -2284,7 +2284,7 @@ export class MissionControlService {
    * never match again.
    */
   private async reconcileRunningRecords(now: number): Promise<void> {
-    const records = await this.agentStorage.list();
+    const records = await this.agentStorage.listAll();
     let adopted = 0;
     for (const record of records) {
       if (record.lastStatus !== "running") {
@@ -2998,7 +2998,7 @@ export class MissionControlService {
       if (!isProvisionalWorkspaceTitle) {
         return;
       }
-      const recordsInWorkspace = (await this.agentStorage.list()).filter(
+      const recordsInWorkspace = (await this.agentStorage.listAll()).filter(
         (r) => r.workspaceId === workspaceId && !r.internal && !r.archivedAt,
       );
       if (recordsInWorkspace.length > 1) {

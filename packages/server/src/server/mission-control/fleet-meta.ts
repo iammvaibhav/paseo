@@ -100,8 +100,8 @@ export { isDestructiveMetaAction, resolveExperimentsProject, resolveMetaTargetHo
  *  buildFleetMetaProposalInput. */
 export interface SplitMetaLookupDependencies {
   agentManager: Pick<AgentManager, "getAgent">;
-  agentStorage: Pick<AgentStorage, "get" | "list">;
-  workspaceRegistry: Pick<WorkspaceRegistry, "get" | "list">;
+  agentStorage: Pick<AgentStorage, "get" | "listAll">;
+  workspaceRegistry: Pick<WorkspaceRegistry, "get" | "listAll">;
   projectRegistry: Pick<ProjectRegistry, "get" | "list">;
 }
 
@@ -175,7 +175,7 @@ async function metaTargetCandidatesError(
 ): Promise<string> {
   const short = formatShortId(id);
   if (kind === "agent") {
-    const records = await deps.lookup.agentStorage.list();
+    const records = await deps.lookup.agentStorage.listAll();
     const nearest = records
       .filter((record) => !record.archivedAt)
       .slice(0, 3)
@@ -184,7 +184,7 @@ async function metaTargetCandidatesError(
     return `Agent ${short} not found on this host.${candidates} Call fleet_list_agents(query) to resolve.`;
   }
   if (kind === "workspace") {
-    const records = await deps.lookup.workspaceRegistry.list();
+    const records = await deps.lookup.workspaceRegistry.listAll();
     const listed = records
       .filter((record) => !record.archivedAt)
       .slice(0, 5)

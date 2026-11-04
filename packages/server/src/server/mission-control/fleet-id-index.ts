@@ -34,9 +34,9 @@ export interface PeerSnapshotEntry {
 }
 
 export interface FleetIdIndexDependencies {
-  agentStorage?: Pick<AgentStorage, "list" | "get">;
+  agentStorage?: Pick<AgentStorage, "listAll" | "get">;
   agentManager?: Pick<AgentManager, "listAgents" | "getAgent"> | null;
-  workspaceRegistry?: Pick<WorkspaceRegistry, "list" | "get"> | null;
+  workspaceRegistry?: Pick<WorkspaceRegistry, "listAll" | "get"> | null;
   projectRegistry?: Pick<ProjectRegistry, "list" | "get"> | null;
   peerManager?: PeerManager | null;
   fleetContext?: () => Promise<FleetContextData>;
@@ -228,7 +228,7 @@ export class FleetIdIndex {
       this.logger?.debug({ err }, "Error listing live agents for prefix lookup");
     }
     try {
-      for (const record of (await agentStorage?.list()) ?? []) {
+      for (const record of (await agentStorage?.listAll()) ?? []) {
         ids.add(record.id);
       }
     } catch (err) {

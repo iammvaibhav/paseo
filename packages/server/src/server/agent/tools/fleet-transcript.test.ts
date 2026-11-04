@@ -70,7 +70,7 @@ function createHarness(
   const agentStorage = {
     get: async (id: string) =>
       id === AGENT_ID ? { id, provider: "omp", cwd: "/work", lastStatus: "closed" } : null,
-    list: async () => [{ id: AGENT_ID }],
+    listAll: async () => [{ id: AGENT_ID }],
   } as unknown as AgentStorage;
   const client = {
     fetchAgentTimeline: vi.fn(async () => ({ entries: [], error: null })),

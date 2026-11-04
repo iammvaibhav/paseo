@@ -255,6 +255,8 @@ const StoredAgentSnapshotSchema = z.strictObject({
   lastError: z.string().optional(),
   title: z.string().nullable(),
   labels: z.record(z.string(), z.string()),
+  // Optional: clients without background_agents never received a background agent to cache.
+  background: z.boolean().optional(),
   requiresAttention: z.boolean().optional(),
   attentionReason: z.enum(["finished", "error", "permission"]).nullable().optional(),
   attentionTimestamp: IsoDateSchema.nullable().optional(),
@@ -626,7 +628,22 @@ function deserializeBuiltinTimelineItem(
   }
 }
 
-function serializeAgentCapabilities(capabilities: Agent["capabilities"]) {
+function serializeProjectPlacement(agent: Agent): StoredAgent["projectPlacement"] {
+  return agent.projectPlacement ?? null;
+}
+
+function serializeAgentTurn(agent: Agent): NonNullable<StoredAgent["turn"]> {
+  if (agent.turn.phase === "idle") return { phase: "idle" };
+  return {
+    phase: "open",
+    turnId: agent.turn.turnId,
+    startedAt: agent.turn.startedAt?.toISOString() ?? null,
+  };
+}
+
+function serializeAgentCapabilities(
+  capabilities: Agent["capabilities"],
+): StoredAgent["snapshot"]["capabilities"] {
   return {
     supportsStreaming: capabilities.supportsStreaming,
     supportsSessionPersistence: capabilities.supportsSessionPersistence,
@@ -649,16 +666,13 @@ function serializeAgentCapabilities(capabilities: Agent["capabilities"]) {
   };
 }
 
-function serializeProjectPlacement(agent: Agent): StoredAgent["projectPlacement"] {
-  return agent.projectPlacement ?? null;
-}
-
-function serializeAgentTurn(agent: Agent): NonNullable<StoredAgent["turn"]> {
-  if (agent.turn.phase === "idle") return { phase: "idle" };
+/** Mission Control identity and lifecycle fields; each is omitted while unset. */
+function serializeMissionControlFields(agent: Agent) {
   return {
-    phase: "open",
-    turnId: agent.turn.turnId,
-    startedAt: agent.turn.startedAt?.toISOString() ?? null,
+    ...(agent.name ? { name: agent.name } : {}),
+    ...(agent.shortDescription ? { shortDescription: agent.shortDescription } : {}),
+    ...(agent.stoppedBy ? { stoppedBy: agent.stoppedBy } : {}),
+    ...(agent.bucket ? { bucket: agent.bucket } : {}),
   };
 }
 
@@ -689,14 +703,12 @@ function serializeAgent(agent: Agent): StoredAgent {
     persistence: null,
     ...(agent.lastError ? { lastError: agent.lastError } : {}),
     title: agent.title,
-    ...(agent.name ? { name: agent.name } : {}),
-    ...(agent.shortDescription ? { shortDescription: agent.shortDescription } : {}),
+    ...serializeMissionControlFields(agent),
     labels: agent.labels,
+    ...(agent.background ? { background: true } : {}),
     requiresAttention: agent.requiresAttention ?? false,
     attentionReason: agent.attentionReason ?? null,
     attentionTimestamp: agent.attentionTimestamp?.toISOString() ?? null,
-    ...(agent.stoppedBy ? { stoppedBy: agent.stoppedBy } : {}),
-    ...(agent.bucket ? { bucket: agent.bucket } : {}),
     archivedAt: agent.archivedAt?.toISOString() ?? null,
   };
   return {

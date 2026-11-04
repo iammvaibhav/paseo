@@ -76,7 +76,10 @@ function extractToolDetailTexts(detail: ToolCallDetail): string[] {
     case "worktree_setup":
       return worktreeSetupTexts(detail);
     case "sub_agent":
-      return [...(detail.description ? [detail.description] : []), truncate(detail.log)];
+      return [
+        ...(detail.description ? [detail.description] : []),
+        ...(detail.log ? [truncate(detail.log)] : []),
+      ];
     case "plain_text":
       return detail.text ? [truncate(detail.text)] : [];
     case "plan":

@@ -2,6 +2,7 @@ import React, { Children, isValidElement, memo, useCallback, type ReactNode } fr
 import { View } from "react-native";
 import { ChevronRight } from "lucide-react-native";
 import { StyleSheet } from "react-native-unistyles";
+import { useDisclosureHold } from "@/agent-stream/disclosure";
 import { EXPANDABLE_BADGE_ICON_SLOT, ExpandableBadge } from "@/components/message";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { useOverviewSummaryLabel } from "./label";
@@ -25,9 +26,13 @@ export const OverviewToolCallGroupView = memo(function OverviewToolCallGroupView
 }: OverviewGroupProps) {
   const isCompact = useIsCompactFormFactor();
   const aggregateSummary = useOverviewSummaryLabel(group.summary);
+  const hold = useDisclosureHold();
   const toggle = useCallback(() => {
-    onExpandedChange(group.run.id, !expanded);
-  }, [expanded, group.run.id, onExpandedChange]);
+    const apply = () => onExpandedChange(group.run.id, !expanded);
+    // Compact opens a sheet; nothing in the timeline moves.
+    if (isCompact) apply();
+    else hold(apply);
+  }, [expanded, group.run.id, hold, isCompact, onExpandedChange]);
   const close = useCallback(() => {
     onExpandedChange(group.run.id, false);
   }, [group.run.id, onExpandedChange]);

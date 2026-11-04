@@ -37,7 +37,7 @@ function createCatalog(
 ) {
   return createPaseoToolCatalog({
     agentManager: {} as unknown as AgentManager,
-    agentStorage: { get: async () => null, list: async () => [] } as unknown as AgentStorage,
+    agentStorage: { get: async () => null, listAll: async () => [] } as unknown as AgentStorage,
     providerSnapshotManager: createProviderSnapshotManagerStub()
       .manager as unknown as ProviderSnapshotManager,
     peerManager,
@@ -272,7 +272,7 @@ describe("fleet_list_models tool", () => {
     } as unknown as Pick<DaemonConfigStore, "get">;
     const catalog = createPaseoToolCatalog({
       agentManager: {} as unknown as AgentManager,
-      agentStorage: { get: async () => null, list: async () => [] } as unknown as AgentStorage,
+      agentStorage: { get: async () => null, listAll: async () => [] } as unknown as AgentStorage,
       providerSnapshotManager: stub.manager as unknown as ProviderSnapshotManager,
       daemonConfigStore,
       logger: createTestLogger(),

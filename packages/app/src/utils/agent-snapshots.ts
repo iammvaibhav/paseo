@@ -87,6 +87,7 @@ export function projectAgentSnapshot(agent: Agent): AgentSnapshotPayload {
     ...(agent.bucket ? { bucket: agent.bucket } : {}),
     archivedAt: agent.archivedAt?.toISOString() ?? null,
     ...(agent.reminder !== undefined ? { reminder: agent.reminder } : {}),
+    ...(agent.background ? { background: true } : {}),
   };
 }
 
@@ -145,6 +146,7 @@ export function normalizeAgentSnapshot(snapshot: AgentSnapshotPayload, serverId:
     stoppedBy: snapshot.stoppedBy ?? null,
     bucket: snapshot.bucket,
     archivedAt,
+    background: snapshot.background === true,
     parentAgentId,
     labels: snapshot.labels,
     providerUnavailable: snapshot.providerUnavailable === true,

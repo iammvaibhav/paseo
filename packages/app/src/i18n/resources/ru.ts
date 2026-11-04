@@ -754,6 +754,7 @@ export const ru: TranslationResources = {
     terminal: {
       hostDisconnected: "Хост не подключён",
       updateHost: "Обновите хост, чтобы использовать нативный рендерер терминала.",
+      restoreRequiresUpdate: "Обновите хост, чтобы просматривать терминалы.",
       unableToSubscribe: "Не удалось подключиться к терминалу",
       fileUploaded: "Файл загружен",
       pasteFileFailed: "Не удалось вставить файл: {{reason}}",
@@ -1747,6 +1748,9 @@ export const ru: TranslationResources = {
       cli: {
         statusFailed: "Не удалось проверить состояние установки CLI.",
         installFailed: "Не удалось установить Paseo CLI.",
+        uninstallFailed: "Не удалось удалить Paseo CLI.",
+        keptForeign:
+          "Команда paseo, установленная не Paseo, оставлена. Чтобы удалить её, сделайте это вручную.",
       },
     },
   },
@@ -1852,6 +1856,61 @@ export const ru: TranslationResources = {
     },
   },
   onboarding: {
+    setup: {
+      title: "Paseo",
+      stepCounter: "Шаг {{current}} из {{total}}",
+      skip: "Пропустить настройку",
+      continue: "Продолжить",
+      finish: "Готово",
+      steps: {
+        appearance: {
+          label: "Оформление",
+          title: "Добро пожаловать в Paseo",
+          description: "Начнём с выбора оформления",
+        },
+        providers: {
+          label: "Провайдеры",
+          title: "Ваши агенты",
+          description: "Paseo использует CLI агентов, уже установленные на этом компьютере",
+        },
+        projects: {
+          label: "Проекты",
+          title: "Добавьте проекты",
+          description: "Где будут работать ваши агенты",
+          addProject: "Добавить проект",
+          added: "Добавлено",
+          suggestions: {
+            loading: "Ищем папки, в которых вы работали",
+            empty: "Недавних проектов не найдено",
+            lastUsed: "Последнее использование {{time}}",
+            addSelected_one: "Добавить {{count}} проект",
+            addSelected_other: "Добавить проекты: {{count}}",
+            adding: "Добавляем…",
+            addFailed: "Не удалось добавить эту папку",
+          },
+        },
+        orchestration: {
+          label: "Оркестрация",
+          title: "Дайте агентам доступ к Paseo",
+          description:
+            "Разрешите агентам создавать рабочие пространства и общаться с другими агентами",
+        },
+        phone: {
+          label: "Мобильный",
+          title: "Агенты всегда под рукой",
+          description:
+            "Полнофункциональное нативное мобильное приложение позволяет управлять любым компьютером с Paseo с телефона",
+          appStore: "App Store",
+          googlePlay: "Google Play",
+          connectTitle: "Выберите способ подключения",
+          connectDocs: "Документация",
+          openConnectDocs: "Открыть документацию по подключению",
+          recommended: "Рекомендуется",
+          relay: { title: "Ретранслятор", hint: "Сквозное шифрование, отсканируйте QR-код" },
+          tailscale: { title: "Tailscale", hint: "Требует небольшой настройки" },
+        },
+      },
+    },
     title: "Добро пожаловать в Paseo",
     subtitle: "Подключите компьютер, чтобы начать",
     actions: {
@@ -2073,6 +2132,8 @@ export const ru: TranslationResources = {
       notNow: "Не сейчас",
       directConnectionHint:
         "Без ретранслятора подключайтесь напрямую через TCP, Tailscale или другую VPN. QR-код создаваться не будет.",
+      tailscaleDocs: "Настроить Tailscale",
+      tailscaleDocsAccessibility: "Узнать, как подключиться через Tailscale",
       updateRequired: "Обновите хост, чтобы включить ретранслятор из Paseo Desktop.",
       unavailable: "Данные для сопряжения недоступны.",
       hint: "Отсканируйте этот QR-код с помощью Paseo на телефоне или скопируйте ссылку ниже.",
@@ -2294,7 +2355,6 @@ export const ru: TranslationResources = {
     previewPage: en.toolCallDetails.previewPage,
     error: "Ошибка",
     empty: "Дополнительные сведения отсутствуют",
-    subAgentActivity: "Активность субагента",
     input: "Входные данные",
     output: "Выходные данные",
   },
@@ -2385,6 +2445,11 @@ export const ru: TranslationResources = {
     },
   },
   providerUsage: {
+    checkUsage: "Проверять использование",
+    checkUsageHint: "Применяется к {{host}} на всех устройствах",
+    off: "Проверка использования отключена на {{host}}.",
+    turnOn: "Включить",
+
     options: "Настройки",
     refreshFailed: "Не удалось обновить использование",
     noHosts: "Нет подключённых хостов",
@@ -2432,6 +2497,7 @@ export const ru: TranslationResources = {
       days: "{{value}} дн.",
       hours: "{{value}} ч",
       minutes: "{{value}} мин",
+      pair: "{{first}} {{second}}",
     },
     timing: {
       lastUpdated: "Последнее обновление {{relativeTime}}",
@@ -2439,6 +2505,8 @@ export const ru: TranslationResources = {
       resetTimePassed: "Время сброса прошло",
       resettingNow: "сброс сейчас",
       resetsIn: "сброс через {{duration}}",
+      resetsAtWeekday: "{{weekday}} {{time}}",
+      resetsAtDate: "{{date}}, {{time}}",
       runsOutNow: "закончится сейчас",
       runsOutIn: "закончится через {{duration}}",
       justNow: "только что",
@@ -2657,6 +2725,11 @@ export const ru: TranslationResources = {
     general: {
       title: "Основные",
       sending: "Отправка",
+      setup: {
+        label: "Первоначальная настройка",
+        description: "Снова пройти оформление, провайдеры, проекты и привязку телефона",
+        action: "Показать настройку снова",
+      },
       browserData: {
         title: "Данные браузера",
         siteData: "Файлы cookie и данные сайтов",
@@ -2971,11 +3044,7 @@ export const ru: TranslationResources = {
       commandLine: {
         title: "Командная строка",
         description: "Управляйте агентами и автоматизируйте их работу из терминала",
-      },
-      actions: {
-        install: "Установить",
-        installing: "Установка...",
-        installed: "Установлено",
+        accessibilityLabel: "Установить Paseo CLI",
       },
     },
     permissions: {
@@ -3054,14 +3123,13 @@ export const ru: TranslationResources = {
       skills: {
         sectionTitle: "Навыки оркестрации",
         title: "Навыки оркестрации",
-        description: "Научите агентов координировать работу через CLI",
+        description: "Научите агентов пользоваться инструментами Paseo",
         docs: "Навыки",
         openDocs: "Открыть документацию по навыкам",
         unavailable: "Подключитесь к этому хосту, чтобы управлять навыками оркестрации",
         unsupported: "Обновите этот хост, чтобы управлять навыками оркестрации",
         updateAvailable: "Доступно обновление",
         updateTitle: "Обновить навыки Paseo?",
-        updateFallback: "Встроенные навыки будут синхронизированы с этим хостом.",
         uninstallTitle: "Удалить навыки Paseo?",
         uninstallMessage:
           "Удаляет все навыки оркестрации Paseo из ~/.agents, ~/.claude и ~/.codex на этом хосте.",
@@ -3079,9 +3147,6 @@ export const ru: TranslationResources = {
         uninstallFailed: "Не удалось удалить навыки оркестрации.",
         saveSelectionFailed: "Не удалось сохранить выбор навыков оркестрации.",
         actions: {
-          install: "Установить",
-          installing: "Установка...",
-          installed: "Установлено",
           update: "Обновить",
           working: "Выполняется...",
           remove: "Удалить",
@@ -3103,6 +3168,7 @@ export const ru: TranslationResources = {
           title: "Включить инструменты Paseo",
           hint: "Агенты смогут управлять worktree, агентами и расписаниями.",
           accessibilityLabel: "Добавить инструменты Paseo",
+          updateFailed: "Не удалось обновить инструменты Paseo.",
         },
         systemPrompt: {
           title: "Системный промпт",
@@ -3118,6 +3184,14 @@ export const ru: TranslationResources = {
       },
       agents: {
         unavailable: "Подключитесь к этому хосту, чтобы управлять агентами",
+        resumeOnStartup: {
+          title: "Возобновлять агентов после перезапуска",
+          info: "Открывает агентов, которые работали при остановке хоста, и отправляет сообщение для продолжения. Применяется после обычного перезапуска и сбоя.",
+          hint: "Автоматически продолжать прерванную работу.",
+          prompt: "Сообщение для продолжения",
+          edit: "Редактировать",
+          editAccessibilityLabel: "Изменить сообщение",
+        },
         idleRuntimeCleanup: {
           title: "Освобождать неактивных агентов",
           hint: "Освобождает память после часа бездействия.",

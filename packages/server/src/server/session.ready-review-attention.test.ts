@@ -156,7 +156,7 @@ function createHarness(options: TestHarnessOptions) {
 
   const agentStorage = asAgentStorage({
     get: vi.fn(async (id: string) => (id === stored.id ? { ...stored } : null)),
-    list: vi.fn(async () => [{ ...stored }]),
+    listAll: vi.fn(async () => [{ ...stored }]),
     upsert: vi.fn(async (record: StoredAgentRecord) => {
       stored = { ...record };
     }),
@@ -187,7 +187,7 @@ function createHarness(options: TestHarnessOptions) {
     },
     workspaceRegistry: {
       get: vi.fn().mockResolvedValue(workspace),
-      list: vi.fn().mockResolvedValue([workspace]),
+      listAll: vi.fn().mockResolvedValue([workspace]),
     },
     scheduleService: asScheduleService(),
     checkoutDiffManager: asCheckoutDiffManager({

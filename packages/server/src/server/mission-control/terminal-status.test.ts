@@ -78,7 +78,7 @@ describe("MissionControlService terminal-state guarantee", () => {
       } as unknown as AgentManager,
       agentStorage: {
         get: getRecord,
-        list: vi.fn(async () => []),
+        listAll: vi.fn(async () => []),
         upsert: upsertRecord,
       } as unknown as AgentStorage,
       daemonConfigStore: { get: () => ({}) } as unknown as DaemonConfigStore,

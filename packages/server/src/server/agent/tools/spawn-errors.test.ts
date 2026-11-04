@@ -59,7 +59,7 @@ function createHarness(
     workspaceRegistry: {
       get: async (id: string) =>
         id === "ws-test" ? { workspaceId: "ws-test", cwd: process.cwd(), archivedAt: null } : null,
-      list: async () => [],
+      listAll: async () => [],
     } as never,
     peerManager,
     logger: createTestLogger(),

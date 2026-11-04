@@ -29,7 +29,7 @@ export function SidebarViewToggle(): ReactElement {
 
   return (
     <SegmentedControl
-      size="xs"
+      size="sm"
       hideLabels
       value={viewMode}
       onValueChange={setViewMode}

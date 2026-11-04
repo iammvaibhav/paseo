@@ -141,10 +141,10 @@ function buildDependencies(options: TestFleetOptions = {}): FleetContextDependen
 
   return {
     agentManager: { listAgents: () => live } as unknown as Pick<AgentManager, "listAgents">,
-    agentStorage: { list: async () => records } as unknown as Pick<AgentStorage, "list">,
-    workspaceRegistry: { list: async () => workspaces } as unknown as Pick<
+    agentStorage: { listAll: async () => records } as unknown as Pick<AgentStorage, "listAll">,
+    workspaceRegistry: { listAll: async () => workspaces } as unknown as Pick<
       WorkspaceRegistry,
-      "list"
+      "listAll"
     >,
     projectRegistry: { list: async () => projects } as unknown as Pick<ProjectRegistry, "list">,
     providerSnapshotManager: {
@@ -414,7 +414,7 @@ describe("per-project commander instructions in inventory", () => {
             },
           ],
         },
-        workspaceRegistry: { list: async () => [] },
+        workspaceRegistry: { listAll: async () => [] },
         serverId: "server-local",
       });
 
@@ -443,7 +443,7 @@ describe("per-project commander instructions in inventory", () => {
           },
         ],
       },
-      workspaceRegistry: { list: async () => [] },
+      workspaceRegistry: { listAll: async () => [] },
       serverId: "server-local",
       composerPreferences: {
         byProject: {

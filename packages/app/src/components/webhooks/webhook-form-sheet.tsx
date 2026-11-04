@@ -19,9 +19,8 @@ import { AdaptiveModalSheet, type SheetHeader } from "@/components/adaptive-moda
 import { ComboboxItem } from "@/components/ui/combobox";
 import { Button } from "@/components/ui/button";
 import { CombinedModelSelector } from "@/components/combined-model-selector";
-import { useIsCompactFormFactor } from "@/constants/layout";
 import { HostGlyphSlot } from "@/components/hosts/host-picker";
-import { createControlGeometry, type FieldControlSize } from "@/components/ui/control-geometry";
+import { createControlGeometry, type ControlSize } from "@/components/ui/control-geometry";
 import { Field, FormTextInput } from "@/components/ui/form-field";
 import { SegmentedControl } from "@/components/ui/segmented-control";
 import { Switch } from "@/components/ui/switch";
@@ -237,7 +236,7 @@ function OpenWebhookFormSheet({
   mode,
   webhook,
 }: WebhookFormSheetProps & { onDismiss: () => void }): ReactElement {
-  const controlSize: FieldControlSize = useIsCompactFormFactor() ? "md" : "sm";
+  const controlSize: ControlSize = "md";
   const { projects } = useProjects();
   const hostProfiles = useHosts();
   const hosts = useStoreWithEqualityFn(
@@ -456,7 +455,7 @@ interface WebhookFormFieldsProps {
   state: WebhookFormState;
   providerSnapshot: ReturnType<typeof useWebhookFormProviderSnapshot>;
   agentTargetLabel: string | null;
-  controlSize: FieldControlSize;
+  controlSize: ControlSize;
   mutationServerId: string;
 }
 
@@ -532,7 +531,7 @@ function WebhookFilterFields({
 }: {
   model: WebhookFormModel;
   state: WebhookFormState;
-  controlSize: FieldControlSize;
+  controlSize: ControlSize;
 }): ReactElement {
   return (
     <Field label="Filter">
@@ -564,7 +563,7 @@ function WebhookFilterRuleRow({
 }: {
   rule: WebhookFilterRule;
   model: WebhookFormModel;
-  controlSize: FieldControlSize;
+  controlSize: ControlSize;
 }): ReactElement {
   const handleChangePath = useCallback(
     (value: string) => model.updateFilterRule(rule.id, { path: value }),
@@ -612,7 +611,7 @@ function WebhookAuthFields({
 }: {
   model: WebhookFormModel;
   state: WebhookFormState;
-  controlSize: FieldControlSize;
+  controlSize: ControlSize;
 }): ReactElement {
   return (
     <>
@@ -650,7 +649,7 @@ interface WebhookTargetFieldsProps {
   state: WebhookFormState;
   providerSnapshot: ReturnType<typeof useWebhookFormProviderSnapshot>;
   agentTargetLabel: string | null;
-  controlSize: FieldControlSize;
+  controlSize: ControlSize;
   mutationServerId: string;
 }
 
@@ -912,7 +911,7 @@ function WebhookIsolationField({
 }: {
   model: WebhookFormModel;
   state: WebhookFormState;
-  size: FieldControlSize;
+  size: ControlSize;
 }): ReactElement {
   const options = useMemo<SelectFieldOption<"local" | "worktree">[]>(
     () => [
@@ -985,7 +984,7 @@ function WebhookAgentTargetField({
   size,
 }: {
   label: string | null;
-  size: FieldControlSize;
+  size: ControlSize;
 }): ReactElement {
   const fieldStyle = useMemo(
     () => [styles.readonlyField, size === "sm" ? styles.readonlyFieldSm : styles.readonlyFieldMd],

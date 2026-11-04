@@ -174,7 +174,7 @@ describe.skipIf(process.platform === "win32")("dedupeEquivalentProjectRoots", ()
       baseWorkspaceId: "wks_old_base",
       projectKey: "remote:github.com/acme/paseo",
     });
-    const workspaces = await workspaceRegistry.list();
+    const workspaces = await workspaceRegistry.listAll();
     expect(workspaces.every((w) => w.projectId === "prj_old")).toBe(true);
     expect((await workspaceRegistry.get("wks_new_worktree"))?.archivedAt).toBeNull();
   });
@@ -234,11 +234,11 @@ describe.skipIf(process.platform === "win32")("dedupeEquivalentProjectRoots", ()
 
     expect(await migrate()).toEqual([{ projectId: "prj_old", mergedProjectIds: ["prj_new"] }]);
     const projectsAfterFirstRun = await projectRegistry.list();
-    const workspacesAfterFirstRun = await workspaceRegistry.list();
+    const workspacesAfterFirstRun = await workspaceRegistry.listAll();
 
     expect(await migrate()).toEqual([]);
     expect(await projectRegistry.list()).toEqual(projectsAfterFirstRun);
-    expect(await workspaceRegistry.list()).toEqual(workspacesAfterFirstRun);
+    expect(await workspaceRegistry.listAll()).toEqual(workspacesAfterFirstRun);
     expect((await projectRegistry.get("prj_other"))?.rootPath).toBe(otherRoot);
   });
 });

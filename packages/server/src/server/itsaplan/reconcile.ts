@@ -14,7 +14,7 @@ import { getItsaplanIssueIdFromLabels } from "./bridge.js";
 type ReconcileAgentRecord = Pick<StoredAgentRecord, "id" | "labels" | "updatedAt" | "archivedAt">;
 
 export interface ItsaplanReconcileAgentStorage {
-  list(): Promise<ReconcileAgentRecord[]>;
+  listAll(): Promise<ReconcileAgentRecord[]>;
 }
 
 // Upper bound of the sweep interval after repeated rate limits.
@@ -256,7 +256,7 @@ export class ItsaplanReconcileService {
   /** False when itsaplan rate-limited the sweep (it ends early and backs off). */
   private async reconcileLabeledIssues(config: ItsaplanCentralConfig): Promise<boolean> {
     const groups = new Map<string, ReconcileAgentRecord[]>();
-    for (const record of await this.agentStorage.list()) {
+    for (const record of await this.agentStorage.listAll()) {
       const issueId = getItsaplanIssueIdFromLabels(record.labels);
       if (!issueId) {
         continue;

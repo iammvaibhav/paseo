@@ -169,7 +169,7 @@ export interface ItsaplanBridgeAgentStorage {
     | "archivedAt"
     | "attentionReason"
   > | null>;
-  list(): Promise<
+  listAll(): Promise<
     Pick<StoredAgentRecord, "id" | "labels" | "updatedAt" | "workspaceId" | "archivedAt">[]
   >;
 }
@@ -1347,7 +1347,7 @@ export class ItsaplanBridge {
 
     // Every agent has a stored record; a live agent the store has not caught up
     // with yet still counts unless the store says it is archived.
-    const storedRecords = await this.agentStorage.list();
+    const storedRecords = await this.agentStorage.listAll();
     const archivedIds = new Set(
       storedRecords.filter((record) => record.archivedAt).map((record) => record.id),
     );
@@ -1434,7 +1434,7 @@ export class ItsaplanBridge {
   ): Promise<
     Pick<StoredAgentRecord, "id" | "labels" | "updatedAt" | "workspaceId" | "archivedAt">[]
   > {
-    const records = await this.agentStorage.list();
+    const records = await this.agentStorage.listAll();
     return records.filter((record) => getItsaplanIssueIdFromLabels(record.labels) === issueId);
   }
 
@@ -1844,7 +1844,7 @@ export class ItsaplanBridge {
     const liveAgents = (this.agentManager.listAgents?.() ?? []).filter(
       (agent) => agent.workspaceId === workspaceId,
     );
-    const storedAgents = await this.agentStorage.list();
+    const storedAgents = await this.agentStorage.listAll();
     const workspaceStoredAgents = storedAgents.filter((agent) => agent.workspaceId === workspaceId);
 
     for (const agent of liveAgents) {

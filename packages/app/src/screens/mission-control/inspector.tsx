@@ -129,7 +129,7 @@ export function MissionControlInspector({
     const button = (
       <Button
         variant="ghost"
-        size="xs"
+        size="sm"
         trailing={openInWorkspaceTrailing}
         onPress={handleOpenInWorkspace}
         disabled={workspaceArchivedOrMissing}
@@ -167,7 +167,7 @@ export function MissionControlInspector({
     () => (
       <Button
         variant="ghost"
-        size="xs"
+        size="sm"
         leftIcon={CLOSE_INSPECTOR_ICON}
         onPress={closeInspector}
         testID="mission-control-inspector-close"

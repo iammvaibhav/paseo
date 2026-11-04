@@ -139,6 +139,14 @@
           },
           "additionalProperties": {}
         },
+        "usage": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            }
+          }
+        },
         "browserTools": {
           "type": "object",
           "properties": {
@@ -955,6 +963,12 @@
         },
         "idleRuntimeCleanup": {
           "type": "boolean"
+        },
+        "resumeOnStartup": {
+          "type": "boolean"
+        },
+        "resumePrompt": {
+          "type": "string"
         },
         "catalogRefreshTimeoutMs": {
           "type": "integer",

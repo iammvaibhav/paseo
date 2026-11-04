@@ -187,7 +187,7 @@ export class TranscriptSearchService {
 
   private async reconcile(): Promise<void> {
     if (this.stopped) return;
-    const records = await this.agentStorage.list();
+    const records = await this.agentStorage.listAll();
     const live = new Set(records.map((record) => record.id));
     for (const record of records) {
       if (this.stopped) return;

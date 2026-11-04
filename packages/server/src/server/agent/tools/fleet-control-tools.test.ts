@@ -53,10 +53,7 @@ function createCatalog(
     agentManager: agentManager ?? ({} as unknown as AgentManager),
     agentStorage:
       agentStorage ??
-      ({
-        get: async () => null,
-        list: async () => [],
-      } as unknown as AgentStorage),
+      ({ get: async () => null, listAll: async () => [] } as unknown as AgentStorage),
     providerSnapshotManager: createProviderSnapshotManagerStub()
       .manager as unknown as ProviderSnapshotManager,
     peerManager,

@@ -59,7 +59,7 @@ export interface MissionControlContextPayload {
 }
 
 export interface LocalInventoryInput {
-  workspaceRegistry: Pick<WorkspaceRegistry, "list">;
+  workspaceRegistry: Pick<WorkspaceRegistry, "listAll">;
   projectRegistry: Pick<ProjectRegistry, "list">;
   serverId: string;
   composerPreferences?: ComposerPreferences;
@@ -75,7 +75,7 @@ export interface LocalModelsInput {
 }
 
 export interface LocalRecentAgentsInput {
-  agentStorage: Pick<AgentStorage, "list">;
+  agentStorage: Pick<AgentStorage, "listAll">;
   agentManager: Pick<AgentManager, "listAgents">;
   serverId: string;
   /**
@@ -185,7 +185,7 @@ export async function buildLocalInventory(
 ): Promise<MissionControlInventory> {
   const [projects, workspaces] = await Promise.all([
     input.projectRegistry.list(),
-    input.workspaceRegistry.list(),
+    input.workspaceRegistry.listAll(),
   ]);
   const projectById = new Map(projects.map((project) => [project.projectId, project]));
   const { workspacesByProject, orphanProjects } = partitionInventoryWorkspaces(
@@ -263,7 +263,7 @@ export async function buildLocalRosterData(
   input: LocalRecentAgentsInput,
 ): Promise<LocalRosterData> {
   const [records, live, reviewStates, events] = await Promise.all([
-    input.agentStorage.list(),
+    input.agentStorage.listAll(),
     Promise.resolve(input.agentManager.listAgents()),
     Promise.resolve(input.getReviewStates?.() ?? null),
     Promise.resolve(input.getReportEvents?.() ?? null),
@@ -474,8 +474,8 @@ export interface FleetContextData {
 
 export interface FleetContextDependencies {
   agentManager: Pick<AgentManager, "listAgents">;
-  agentStorage: Pick<AgentStorage, "list">;
-  workspaceRegistry: Pick<WorkspaceRegistry, "list">;
+  agentStorage: Pick<AgentStorage, "listAll">;
+  workspaceRegistry: Pick<WorkspaceRegistry, "listAll">;
   projectRegistry: Pick<ProjectRegistry, "list">;
   providerSnapshotManager: Pick<
     ProviderSnapshotManager,

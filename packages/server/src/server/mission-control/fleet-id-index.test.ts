@@ -30,14 +30,14 @@ describe("fleet-id-index unit tests", () => {
 
     const agentStorage = {
       get: vi.fn(async (id: string) => (id === localAgentId ? { id: localAgentId } : null)),
-      list: vi.fn(async () => [{ id: localAgentId }]),
+      listAll: vi.fn(async () => [{ id: localAgentId }]),
     } as unknown as AgentStorage;
 
     const workspaceRegistry = {
       get: vi.fn(async (id: string) =>
         id === localWorkspaceId ? { workspaceId: localWorkspaceId } : null,
       ),
-      list: vi.fn(async () => [{ workspaceId: localWorkspaceId }]),
+      listAll: vi.fn(async () => [{ workspaceId: localWorkspaceId }]),
     } as unknown as WorkspaceRegistry;
 
     const projectRegistry = {
@@ -226,7 +226,7 @@ describe("agent id prefixes with unreachable peers", () => {
     const index = createFleetIdIndex({
       agentStorage: {
         get: async () => null,
-        list: async () => [{ id: localTwinId }],
+        listAll: async () => [{ id: localTwinId }],
       } as unknown as AgentStorage,
       peerManager: peerManagerWith([{ name: "blrofc3", state: "online" }], {
         blrofc3: peerClientWithAgents([blrofc3AgentId]),
@@ -325,7 +325,7 @@ describe("fleet tools with fleet-id-index integration", () => {
 
     const agentStorage = {
       get: vi.fn(async (id: string) => (localAgents.includes(id) ? { id } : null)),
-      list: vi.fn(async () => localAgents.map((id) => ({ id }))),
+      listAll: vi.fn(async () => localAgents.map((id) => ({ id }))),
     } as unknown as AgentStorage;
 
     const agentManager = {
@@ -364,7 +364,7 @@ describe("fleet tools with fleet-id-index integration", () => {
 
     const workspaceRegistry = {
       get: vi.fn(async (id: string) => (localWorkspaces.includes(id) ? { workspaceId: id } : null)),
-      list: vi.fn(async () =>
+      listAll: vi.fn(async () =>
         localWorkspaces.map((id) => ({
           workspaceId: id,
           projectId: "prj_1",

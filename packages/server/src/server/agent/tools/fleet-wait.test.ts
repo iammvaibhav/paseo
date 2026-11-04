@@ -60,7 +60,7 @@ function createHarness(input: {
   } as unknown as AgentManager;
   const agentStorage = {
     get: async (id: string) => (agents[id] ? { id, title: `title ${id}` } : null),
-    list: async () => [],
+    listAll: async () => [],
   } as unknown as AgentStorage;
   const client = {
     fetchAgents: vi.fn(async () => ({ entries: [] })),

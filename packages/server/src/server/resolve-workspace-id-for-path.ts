@@ -13,7 +13,7 @@ import type { PersistedWorkspaceRecord } from "./workspace-registry.js";
 // agents under a workspace — those are keyed by `workspaceId`, and git facts
 // derive from a workspace's OWN cwd (id → cwd).
 //
-// Resolution: an exact directory match wins; otherwise the deepest enclosing
+// Resolution: active exact match, archived exact match, then the deepest enclosing
 // workspace directory, never the home directory; null when nothing encloses it.
 export function resolveWorkspaceIdForPath(
   cwd: string,
@@ -26,7 +26,8 @@ export function resolveWorkspaceIdForPath(
     canonicalCwd: canonicalizePath(workspace.cwd),
   }));
   const resolvedCwd = canonicalizePath(cwd);
-  const exactMatch = workspaceRecords.find(({ canonicalCwd }) => canonicalCwd === resolvedCwd);
+  const exactMatches = workspaceRecords.filter(({ canonicalCwd }) => canonicalCwd === resolvedCwd);
+  const exactMatch = exactMatches.find(({ workspace }) => !workspace.archivedAt) ?? exactMatches[0];
   if (exactMatch) {
     return exactMatch.workspace.workspaceId;
   }

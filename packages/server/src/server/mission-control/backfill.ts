@@ -37,7 +37,7 @@ export interface IdentityBackfillOptions {
   agentStorage: AgentStorage;
   naming: AgentNamingService;
   providerSnapshotManager: Pick<ProviderSnapshotManager, "listProviders">;
-  workspaceRegistry: Pick<WorkspaceRegistry, "list" | "upsert">;
+  workspaceRegistry: Pick<WorkspaceRegistry, "listAll" | "upsert">;
   workspaceGitService?: Pick<WorkspaceGitService, "resolveRepoRoot">;
   readDaemonConfig: () => StructuredGenerationDaemonConfig;
   logger: Logger;
@@ -111,7 +111,7 @@ async function backfillMissingDescriptions(input: {
 }): Promise<number> {
   const { options, logger, report } = input;
   let budget = input.budget;
-  const records = await options.agentStorage.list();
+  const records = await options.agentStorage.listAll();
   const closedAgents = records.filter(
     (record) => record.lastStatus === "closed" && !record.shortDescription,
   );
@@ -158,8 +158,8 @@ async function backfillMissingWorkspaceTitles(input: {
 }): Promise<number> {
   const { options, logger, report } = input;
   let budget = input.budget;
-  const workspaces = await options.workspaceRegistry.list();
-  const agentsByWorkspace = groupAgentTitlesByWorkspace(await options.agentStorage.list());
+  const workspaces = await options.workspaceRegistry.listAll();
+  const agentsByWorkspace = groupAgentTitlesByWorkspace(await options.agentStorage.listAll());
   for (const workspace of workspaces) {
     if (budget <= 0) {
       report.generationSkipped += 1;

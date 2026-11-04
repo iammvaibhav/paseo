@@ -73,5 +73,12 @@ overrides:
   react-native-gesture-handler: "~2.32.0"
   react-native-reanimated: "4.5.5"
   react-native-worklets: "0.10.4"
+  # Upstream pins these in npm `overrides` (#8749, #8787) because the registry
+  # served incomplete signature attestations for pkijs 3.4.3, semver 5.7.3 and
+  # semver 6.3.2, which fails `pnpm audit signatures` in CI. Keyed by range so
+  # other semver majors under the same parents keep resolving normally.
+  "@electron/get@^3.0.0>semver@^6": "6.3.1"
+  pkijs: "3.4.2"
+  "tiny-async-pool>semver@^5": "5.7.2"
 
 hoistWorkspacePackages: true

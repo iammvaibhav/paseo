@@ -1,3 +1,4 @@
+import { useOverlayRegistration, type KeyboardInputEvent } from "@/keyboard";
 import {
   createContext,
   useCallback,
@@ -16,12 +17,7 @@ import { FadeIn, FadeOut } from "react-native-reanimated";
 import { StyleSheet } from "react-native-unistyles";
 import { createPortal } from "react-dom";
 import { Portal } from "@gorhom/portal";
-import {
-  getOverlayRoot,
-  OverlayLayerProvider,
-  useOverlayLayer,
-  useWebOverlayRegistration,
-} from "@/lib/overlay-root";
+import { getOverlayRoot, OverlayLayerProvider, useOverlayLayer } from "@/lib/overlay-root";
 import { FloatingSurface } from "@/components/ui/floating";
 import {
   measureFloatingPanelPortalHost,
@@ -137,7 +133,7 @@ function WebHoverCard({
   }, [clearGraceTimer, disabled]);
 
   const keyPressed = useCallback(
-    (event: KeyboardEvent): boolean => {
+    (event: KeyboardInputEvent): boolean => {
       if (!isWeb) return false;
       const trigger = triggerRef.current as unknown as HTMLElement | null;
       if (!trigger) return false;
@@ -149,7 +145,7 @@ function WebHoverCard({
         return true;
       } else if (
         focusInside() &&
-        event.target === trigger &&
+        document.activeElement === trigger &&
         ["ArrowDown", "Enter", " "].includes(event.key)
       ) {
         event.preventDefault();
@@ -168,7 +164,8 @@ function WebHoverCard({
     [clearGraceTimer, focusInside, open, openNow],
   );
 
-  const setOverlayScope = useWebOverlayRegistration({
+  const setOverlayScope = useOverlayRegistration({
+    keys: ["Escape"],
     active: !disabled && open,
     layer,
     onKeyDown: keyPressed,
@@ -220,9 +217,9 @@ function WebHoverCard({
       )
         keyPressed(event);
     };
+    // Only a scroll that moves the trigger detaches the card. A streaming chat beside it does not.
     const scrolled = (event: Event) => {
-      if (!(contentRef.current as unknown as HTMLElement | null)?.contains(event.target as Node))
-        close();
+      if ((event.target as Node).contains(trigger)) close();
     };
     document.addEventListener("focusin", focusEntered);
     document.addEventListener("focusout", focusLeft);

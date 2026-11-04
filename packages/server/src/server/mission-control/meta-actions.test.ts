@@ -174,7 +174,7 @@ function build(
     },
     agentStorage: {
       get: async (agentId: string) => harness.storedAgents.get(agentId) ?? null,
-      list: async () => Array.from(harness.storedAgents.values()),
+      listAll: async () => Array.from(harness.storedAgents.values()),
     },
     workspaceRegistry: {
       get: async (workspaceId: string) => harness.workspaces.get(workspaceId) ?? null,
@@ -190,7 +190,7 @@ function build(
       upsert: async (record: PersistedWorkspaceRecord) => {
         harness.workspaces.set(record.workspaceId, record);
       },
-      list: async () => Array.from(harness.workspaces.values()),
+      listAll: async () => Array.from(harness.workspaces.values()),
     },
     projectRegistry: {
       get: async (projectId: string) => harness.projects.get(projectId) ?? null,

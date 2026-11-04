@@ -417,8 +417,8 @@ export interface MetaActionsDependencies
     | "getAgentTimelineForExport"
     | "deleteAgentState"
   >;
-  agentStorage: Pick<AgentStorage, "get" | "list" | "remove">;
-  workspaceRegistry: Pick<WorkspaceRegistry, "get" | "update" | "upsert" | "list">;
+  agentStorage: Pick<AgentStorage, "get" | "listAll" | "remove">;
+  workspaceRegistry: Pick<WorkspaceRegistry, "get" | "update" | "upsert" | "listAll">;
   projectRegistry: Pick<
     ProjectRegistry,
     "get" | "list" | "getOrCreateActiveByRoot" | "update" | "archive"
@@ -973,7 +973,7 @@ async function applyArchiveProject(
 ): Promise<MetaPlanActionResult> {
   const projectId = plan.targetId!;
   const requestId = `meta-archive-project-${projectId}`;
-  const workspaces = (await deps.workspaceRegistry.list()).filter(
+  const workspaces = (await deps.workspaceRegistry.listAll()).filter(
     (workspace) => workspace.projectId === projectId && !workspace.archivedAt,
   );
   // Archive the project record FIRST: the cascade below may include the
@@ -1106,7 +1106,7 @@ async function applyPromoteWorkspace(
     projectId: project.projectId,
     updatedAt: new Date().toISOString(),
   }));
-  const agentIds = (await deps.agentStorage.list())
+  const agentIds = (await deps.agentStorage.listAll())
     .filter((record) => record.workspaceId === workspaceId && !record.archivedAt)
     .map((record) => record.id);
   logMetaEvent(deps, plan, "mission_control.meta.promote_workspace_applied", {

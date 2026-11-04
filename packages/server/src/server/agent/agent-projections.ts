@@ -106,6 +106,17 @@ function buildStoredAttentionState(attention: AttentionState): {
   };
 }
 
+/** Mission Control identity and agent-mode fields; each is omitted while unset. */
+function storedIdentityFields(agent: ManagedAgent, titleAutoDerived: boolean | undefined) {
+  return {
+    ...(titleAutoDerived !== undefined ? { titleAutoDerived } : {}),
+    ...(agent.name !== undefined ? { name: agent.name } : {}),
+    ...(agent.shortDescription !== undefined ? { shortDescription: agent.shortDescription } : {}),
+    ...(agent.agentMode ? { agentMode: agent.agentMode } : {}),
+    ...(agent.appliedAgentMode ? { appliedAgentMode: agent.appliedAgentMode } : {}),
+  };
+}
+
 export function toStoredAgentRecord(
   agent: ManagedAgent,
   options?: ProjectionOptions,
@@ -127,15 +138,12 @@ export function toStoredAgentRecord(
     lastActivityAt: agent.updatedAt.toISOString(),
     lastUserMessageAt: agent.lastUserMessageAt ? agent.lastUserMessageAt.toISOString() : null,
     title: options?.title ?? null,
-    ...(titleAutoDerived !== undefined ? { titleAutoDerived } : {}),
-    ...(agent.name !== undefined ? { name: agent.name } : {}),
-    ...(agent.shortDescription !== undefined ? { shortDescription: agent.shortDescription } : {}),
-    ...(agent.agentMode ? { agentMode: agent.agentMode } : {}),
-    ...(agent.appliedAgentMode ? { appliedAgentMode: agent.appliedAgentMode } : {}),
+    ...storedIdentityFields(agent, titleAutoDerived),
     labels: agent.labels,
     lastStatus: agent.lifecycle,
     lastModeId: agent.currentModeId ?? config?.modeId ?? null,
     config: config ?? null,
+    launchEnv: agent.launchEnv ? { ...agent.launchEnv } : undefined,
     runtimeInfo,
     features: normalizeFeatures(agent.features),
     persistence,
@@ -147,6 +155,7 @@ export function toStoredAgentRecord(
       ? { turnMetrics: sanitizeTurnMetrics(agent.turnMetrics) }
       : {}),
     internal: options?.internal,
+    ...(agent.background ? { background: true } : {}),
     owner: agent.owner,
   } satisfies StoredAgentRecord;
 }
@@ -193,7 +202,7 @@ export function toAgentPayload(
     ...(agent.agentMode ? { agentMode: agent.agentMode } : {}),
     labels: agent.labels,
     archivedAt: options?.archivedAt ?? null,
-    ...(agent.internal ? { internal: true } : {}),
+    ...visibilityFlags(agent),
   };
 
   const usage = sanitizeUsage(agent.lastUsage);
@@ -271,6 +280,17 @@ function buildStoredAgentOptionalFields(
   };
 }
 
+/** The wire carries `internal` and `background` only when set. */
+function visibilityFlags(agent: {
+  internal?: boolean;
+  background?: boolean;
+}): Pick<AgentSnapshotPayload, "internal" | "background"> {
+  return {
+    ...(agent.internal ? { internal: true } : {}),
+    ...(agent.background ? { background: true } : {}),
+  };
+}
+
 export function buildStoredAgentPayload(
   record: StoredAgentRecord,
   validProviders: Iterable<AgentProvider>,
@@ -322,7 +342,7 @@ export function buildStoredAgentPayload(
     attentionReason: record.attentionReason ?? null,
     attentionTimestamp: record.attentionTimestamp ?? null,
     archivedAt: record.archivedAt ?? null,
-    ...(record.internal ? { internal: true } : {}),
+    ...visibilityFlags(record),
     labels: normalizeLabels(record.labels),
     ...buildStoredAgentOptionalFields(record, runtimeInfo, providerAvailable, bucket),
   };

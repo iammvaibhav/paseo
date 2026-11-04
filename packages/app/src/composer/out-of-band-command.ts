@@ -1,4 +1,4 @@
-import type { AgentSlashCommand } from "@/hooks/use-agent-commands-query";
+import type { AgentSlashCommand } from "@/agent-commands";
 
 /**
  * Leading slash command in a draft, or null when the draft is not a command

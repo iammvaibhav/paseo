@@ -129,12 +129,21 @@ class InMemoryAgentManager {
 }
 
 class EmptyAgentStorage {
-  async list() {
+  async listActive() {
     return [];
   }
 
   async get() {
     return null;
+  }
+  async listByWorkspaces() {
+    return [];
+  }
+  async lastUserMessageAtByWorkspace() {
+    return new Map<string, string>();
+  }
+  async listAll() {
+    return [];
   }
 }
 
@@ -157,6 +166,12 @@ class EmptyProjectRegistry {
 }
 
 class EmptyWorkspaceRegistry {
+  listActive() {
+    return [];
+  }
+  listAll() {
+    return [];
+  }
   get() {
     return null;
   }
@@ -816,7 +831,7 @@ test("setup observation includes a transition that happens during its initial re
         readStarted();
         return pendingRead;
       },
-      list: () => [],
+      listActive: () => [],
     } as unknown as SessionOptions["workspaceRegistry"],
   });
   session.updateClientCapabilities(

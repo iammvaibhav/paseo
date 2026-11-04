@@ -304,10 +304,10 @@ function AddCustomModelSubSheet({
         />
         {error ? <Text style={sheetStyles.errorText}>{error}</Text> : null}
         <View style={sheetStyles.formActions}>
-          <Button variant="secondary" size="sm" onPress={onClose} disabled={saving}>
+          <Button variant="secondary" onPress={onClose} disabled={saving}>
             {t("common.actions.cancel")}
           </Button>
-          <Button variant="default" size="sm" onPress={handleAdd} disabled={!canAdd || saving}>
+          <Button variant="default" onPress={handleAdd} disabled={!canAdd || saving}>
             {saving ? t("settings.providers.models.adding") : t("settings.providers.models.add")}
           </Button>
         </View>
@@ -524,18 +524,11 @@ function renderProviderSheetFooter({
         <ProviderUpdatedLabel fetchedAt={fetchedAt} isCompact={isCompact} />
       ) : null}
       <View style={actionsStyle}>
-        <Button
-          variant="secondary"
-          size="sm"
-          leftIcon={Plus}
-          onPress={onOpenAddSheet}
-          style={buttonStyle}
-        >
+        <Button variant="secondary" leftIcon={Plus} onPress={onOpenAddSheet} style={buttonStyle}>
           {t("settings.providers.models.addModel")}
         </Button>
         <Button
           variant="secondary"
-          size="sm"
           leftIcon={FileText}
           onPress={onOpenDiagSheet}
           style={buttonStyle}
@@ -544,7 +537,6 @@ function renderProviderSheetFooter({
         </Button>
         <Button
           variant="default"
-          size="sm"
           leftIcon={modelsRefreshing ? undefined : RotateCw}
           onPress={onRefreshModels}
           disabled={modelsRefreshing}
@@ -592,7 +584,7 @@ function DiscoveredModelsSection({
         <View style={sheetStyles.bulkActionButtons}>
           <Button
             variant="ghost"
-            size="xs"
+            size="sm"
             onPress={onCheckAll}
             disabled={checkAllDisabled}
             accessibilityLabel={t("settings.providers.models.checkAll")}
@@ -602,7 +594,7 @@ function DiscoveredModelsSection({
           </Button>
           <Button
             variant="ghost"
-            size="xs"
+            size="sm"
             onPress={onUncheckAll}
             disabled={uncheckAllDisabled}
             accessibilityLabel={t("settings.providers.models.uncheckAll")}
@@ -663,7 +655,7 @@ function CustomModelsSection({
         <View style={sheetStyles.bulkActionButtons}>
           <Button
             variant="ghost"
-            size="xs"
+            size="sm"
             onPress={onCheckAll}
             disabled={checkAllDisabled}
             accessibilityLabel={t("settings.providers.models.checkAll")}
@@ -673,7 +665,7 @@ function CustomModelsSection({
           </Button>
           <Button
             variant="ghost"
-            size="xs"
+            size="sm"
             onPress={onUncheckAll}
             disabled={uncheckAllDisabled}
             accessibilityLabel={t("settings.providers.models.uncheckAll")}
@@ -754,7 +746,7 @@ function ProviderModalBody(props: ProviderModalBodyProps) {
       <View style={sheetStyles.emptyState}>
         <AlertTriangle size={theme.iconSize.md} color={theme.colors.foregroundMuted} />
         <Text style={sheetStyles.mutedText}>{providerErrorMessage}</Text>
-        <Button variant="default" size="sm" onPress={onRefresh} disabled={modelsRefreshing}>
+        <Button variant="default" onPress={onRefresh} disabled={modelsRefreshing}>
           {modelsRefreshing
             ? t("settings.providers.models.retrying")
             : t("settings.providers.models.retry")}

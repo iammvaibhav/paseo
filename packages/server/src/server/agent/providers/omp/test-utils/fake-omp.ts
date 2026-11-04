@@ -397,6 +397,8 @@ export class FakeOmpSession implements OmpRuntimeSession {
 
   async setThinkingLevel(level: OmpThinkingLevel): Promise<void> {
     this.setThinkingLevelRequests.push(level);
+    // omp applies the level to the session, so a later get_state reports it.
+    this.state = { ...this.state, thinkingLevel: level };
   }
 
   newSessionRequestCount = 0;

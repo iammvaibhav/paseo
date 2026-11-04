@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { AgentSlashCommand } from "@/hooks/use-agent-commands-query";
+import type { AgentSlashCommand } from "@/agent-commands";
 import { isOutOfBandCommandDraft, parseLeadingSlashCommandName } from "./out-of-band-command";
 
 const commands: AgentSlashCommand[] = [

@@ -924,7 +924,7 @@ export class AgentNamingService {
    * count of agents named.
    */
   async backfillMissingNames(): Promise<number> {
-    const records = await this.agentStorage.list();
+    const records = await this.agentStorage.listAll();
     const missing = records.filter(
       (record) => !record.name && !record.internal && !hasMissionControlLabels(record.labels),
     );
@@ -970,7 +970,7 @@ export class AgentNamingService {
         used.add(agent.name);
       }
     }
-    for (const record of await this.agentStorage.list()) {
+    for (const record of await this.agentStorage.listAll()) {
       if (record.name) {
         used.add(record.name);
       }

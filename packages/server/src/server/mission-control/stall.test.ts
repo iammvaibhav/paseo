@@ -76,7 +76,7 @@ describe("MissionControlService stall machinery (dormant-turn recovery + watchdo
       } as unknown as AgentManager,
       agentStorage: {
         get: getRecord,
-        list: listRecords,
+        listAll: listRecords,
         upsert: upsertRecord,
       } as unknown as AgentStorage,
       daemonConfigStore: { get: () => ({}) } as unknown as DaemonConfigStore,

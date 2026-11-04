@@ -91,7 +91,7 @@ describe("WorkspaceReconciliationService base workspace ensure (ADR 0001)", () =
     });
 
     expect(provisioningCalls).toBe(1);
-    const workspacesAfterCreate = await workspaceRegistry.list();
+    const workspacesAfterCreate = await workspaceRegistry.listAll();
     expect(workspacesAfterCreate).toHaveLength(1);
     expect(workspacesAfterCreate[0]?.workspaceId).toBe(settled.baseWorkspaceId);
     expect(workspacesAfterCreate[0]?.cwd).toBe(rootPath);
@@ -102,7 +102,7 @@ describe("WorkspaceReconciliationService base workspace ensure (ADR 0001)", () =
     // polling is needed here to observe that provisioning was skipped.
     await projectRegistry.upsert(settled);
     expect(provisioningCalls).toBe(1);
-    expect(await workspaceRegistry.list()).toHaveLength(1);
+    expect(await workspaceRegistry.listAll()).toHaveLength(1);
 
     // Concurrent race, on a SECOND, brand-new project: two upserts of the
     // exact same never-before-seen record (both baseWorkspaceId: null) firing
@@ -127,7 +127,7 @@ describe("WorkspaceReconciliationService base workspace ensure (ADR 0001)", () =
         throw new Error("second project's base workspace not yet ensured");
     });
     expect(provisioningCalls).toBe(2);
-    const secondProjectWorkspaces = (await workspaceRegistry.list()).filter(
+    const secondProjectWorkspaces = (await workspaceRegistry.listAll()).filter(
       (workspace) => workspace.projectId === freshProject.projectId,
     );
     expect(secondProjectWorkspaces).toHaveLength(1);
@@ -170,7 +170,7 @@ describe("WorkspaceReconciliationService base workspace ensure (ADR 0001)", () =
 
     const afterSweep = await projectRegistry.get(project.projectId);
     expect(afterSweep?.baseWorkspaceId).toBe("ws_preexisting");
-    const workspaces = await workspaceRegistry.list();
+    const workspaces = await workspaceRegistry.listAll();
     expect(workspaces).toHaveLength(1);
     expect(workspaces[0]?.workspaceId).toBe("ws_preexisting");
   });
@@ -197,6 +197,6 @@ describe("WorkspaceReconciliationService base workspace ensure (ADR 0001)", () =
     await service.start();
 
     expect((await projectRegistry.get(project.projectId))?.baseWorkspaceId).toBeNull();
-    expect(await workspaceRegistry.list()).toHaveLength(0);
+    expect(await workspaceRegistry.listAll()).toHaveLength(0);
   });
 });

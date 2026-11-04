@@ -25,10 +25,16 @@ The invariants are:
 > renumbers them. Rehydration is not a renumber: it continues the durable epoch and the durable
 > `nextSeq`.
 
-Tool output is bounded before it enters either delivery path. Canonical shell tool output is sliced
-to 64 KiB, and the same bounded item is used for runtime timeline rows and live stream events.
-Provider history hydration applies the same rule so reopening an agent cannot restore an oversized
-tool payload.
+Every item is bounded before it enters either delivery path, because a timeline page is one
+WebSocket message and the daemon closes a socket whose outbound buffer passes 64 MiB. Tool calls get
+64 KiB and other items 256 KiB. Over budget, the largest strings are cut to a shared length with a
+`…[truncated 12.3 MB]` marker, and an oversized `data:` URL is replaced by the marker. Strings up
+to 1 KiB stay whole, so ids and paths survive. Arrays drop their trailing elements without a marker
+element, so typed arrays still match the wire schema. Limiting an item twice gives the same item. The
+budget does not bound wide objects or multi-byte text. The same
+bounded item is used for runtime timeline rows and live stream events. Provider history hydration
+applies the same rule so reopening an agent cannot restore an oversized payload. Fetches apply it
+again to assistant and reasoning rows the projection merges from many chunks.
 
 ## Presence is not delivery
 
@@ -103,9 +109,10 @@ Provider message IDs are not guaranteed for every displayed item. Paseo-generate
 Actions that address a point in chat history, such as Fork, use the daemon timeline `epoch` plus the projected item's `seqEnd`. The app carries that position on the rendered assistant item for both live and fetched history. When adjacent projected chunks merge, the merged item retains the newer chunk's position.
 
 The daemon validates the epoch and locates the projected item at the selected position. A fork
-includes projected items through that checkpoint. If an item spans the checkpoint and changed
-afterward, the daemon refuses that fork with an actionable error: discarded historical payloads
-cannot be reconstructed from sequence metadata. Forking the current context remains available.
+includes projected items through that checkpoint. If an item the fork copies spans the checkpoint
+and changed afterward, the daemon refuses that fork with an actionable error: discarded historical
+payloads cannot be reconstructed from sequence metadata. Plugin cards are not copied, so a card
+updated after the checkpoint does not block it. Forking the current context remains available.
 
 ## Epoch rotation
 

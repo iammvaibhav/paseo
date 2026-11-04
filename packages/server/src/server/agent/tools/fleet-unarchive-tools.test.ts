@@ -61,7 +61,7 @@ function createHarness(
       .manager as unknown as ProviderSnapshotManager,
     workspaceRegistry: {
       get: async (workspaceId: string) => workspaces[workspaceId] ?? null,
-      list: async () => Object.values(workspaces),
+      listAll: async () => Object.values(workspaces),
       upsert: async () => undefined,
     } as never,
     restoreWorkspace,

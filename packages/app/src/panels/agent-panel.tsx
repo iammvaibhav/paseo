@@ -29,12 +29,12 @@ import { FileDropZone } from "@/components/file-drop/file-drop-zone";
 import { useRetainedPanelActive } from "@/components/retained-panel";
 import { RetainedChatContent } from "./retained-chat-content";
 import { Composer } from "@/composer";
+import { AgentCommandsProvider } from "@/agent-commands";
 import {
   useComposerEditingSession,
   useComposerFullscreen,
   type ComposerEditingSession,
 } from "@/composer/editing-session";
-import { useWorkspaceHasDiffStat } from "@/composer/workspace-diff-stat";
 import {
   resolveComposerTrackControlClearance,
   resolveComposerTrackTailClearance,
@@ -66,7 +66,6 @@ import { useAgentFactsLine } from "@/panels/agent-facts-line";
 import { PaneSubtitle } from "@/panels/pane-subtitle";
 import { definePanel } from "@/panels/panel-registry";
 import { RenderProfile } from "@/utils/render-profiler";
-import { useHasPluginComposerPills } from "@/plugins";
 import { buildDraftPanelDescriptor } from "@/panels/draft-panel-descriptor";
 import {
   type HostRuntimeConnectionStatus,
@@ -85,9 +84,7 @@ import { useVoiceOptional } from "@/contexts/voice-context";
 import { useAppSettings } from "@/hooks/use-settings";
 import { useToast } from "@/contexts/toast-context";
 import { toErrorMessage } from "@/utils/error-messages";
-import { AgentTracks, hasAgentTracks } from "@/panels/agent-tracks";
-import { selectSelectionAsks } from "@/selection-ask";
-
+import { AgentTracks } from "@/panels/agent-tracks";
 import { ParentAgentCallout, useParentAgentId } from "@/subagents/parent";
 import { useCreateFlowStore } from "@/stores/create-flow-store";
 import { buildDraftStoreKey, generateDraftId } from "@/stores/draft-keys";
@@ -226,7 +223,7 @@ function AgentLoadErrorView({ message, onRetry }: { message: string; onRetry: ()
         <Text style={styles.errorText}>{t("agentPanel.states.failedToLoad")}</Text>
         <Text style={styles.statusText}>{message}</Text>
         <View style={styles.errorAction}>
-          <Button size="sm" variant="secondary" onPress={onRetry} testID="agent-load-error-retry">
+          <Button variant="secondary" onPress={onRetry} testID="agent-load-error-retry">
             {t("common.actions.retry")}
           </Button>
         </View>
@@ -1065,22 +1062,12 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
     parentAgentId: agentId,
     rows: subagentRows,
   });
-  const hasPluginComposerPills = useHasPluginComposerPills(serverId, workspaceId, agentId);
-  const selectionAsks = useSessionStore(
-    useShallow((state) => selectSelectionAsks(state, serverId, agentId)),
-  );
+
   const hasActiveComposer = !agentState.archivedAt && !isArchivingCurrentAgent;
   const parentAgentId = useParentAgentId(serverId, agentId);
   // With a composer the parent is a pill above it; without one, the box takes the composer's place.
   const parentPillAgentId = showsComposer ? parentAgentId : null;
-  const hasVisibleAgentTracks = hasAgentTracks({
-    parentAgentId: parentPillAgentId,
-    subagentRows,
-    tasks,
-    archiveFinishedStatus: archiveFinishedSubagents.status,
-    hasPluginComposerPills,
-    hasSelectionAsks: selectionAsks.length > 0,
-  });
+
   const rawAgentInputDraft = useAgentInputDraft({
     draftKey: buildDraftStoreKey({
       serverId,
@@ -1159,13 +1146,11 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
         <AgentStreamSection
           streamViewRef={streamViewRef}
           serverId={serverId}
-          workspaceId={workspaceId}
           agentId={agentId}
           agent={effectiveAgent}
           routeBottomAnchorRequest={routeBottomAnchorRequest}
           hasAppliedAuthoritativeHistory={hasAppliedAuthoritativeHistory}
           hasActiveComposer={hasActiveComposer}
-          hasVisibleAgentTracks={hasVisibleAgentTracks}
           toast={toastApi}
           onOpenWorkspaceFile={onOpenWorkspaceFile}
         />
@@ -1180,7 +1165,6 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
           tasks={tasks}
           archiveFinishedStatus={archiveFinishedSubagents.status}
           onArchiveFinished={archiveFinishedSubagents.archiveFinished}
-          hasPluginComposerPills={hasPluginComposerPills}
         />
       ) : null}
     </View>
@@ -1225,7 +1209,7 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
     </ChatSurface>
   );
 
-  return (
+  const content = (
     <RewindComposerRestoreProvider
       textSource={agentInputDraft.textSource}
       setText={agentInputDraft.replaceText}
@@ -1244,7 +1228,39 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
       </View>
     </RewindComposerRestoreProvider>
   );
+  return wrapAgentCommandProvider({
+    enabled: showsComposer && hasActiveComposer,
+    serverId,
+    agentId,
+    editingSession: composerEditingSession,
+    children: content,
+  });
 });
+
+function wrapAgentCommandProvider({
+  enabled,
+  serverId,
+  agentId,
+  editingSession,
+  children,
+}: {
+  enabled: boolean;
+  serverId: string;
+  agentId: string;
+  editingSession: ComposerEditingSession;
+  children: ReactNode;
+}) {
+  return (
+    <AgentCommandsProvider
+      serverId={serverId}
+      agentId={agentId}
+      editingSession={editingSession}
+      enabled={enabled}
+    >
+      {children}
+    </AgentCommandsProvider>
+  );
+}
 
 function ChatSurface({
   children,
@@ -1278,7 +1294,6 @@ function TimelineSyncErrorCallout({
             {t("agentPanel.states.timelineSyncFailed")}
           </Text>
           <Button
-            size="sm"
             variant="secondary"
             onPress={onRetry}
             disabled={isRetrying}
@@ -1304,36 +1319,31 @@ function SheetAgentFacts({ serverId, agentId }: { serverId: string; agentId: str
 const AgentStreamSection = memo(function AgentStreamSection({
   streamViewRef,
   serverId,
-  workspaceId,
   agentId,
   agent,
   routeBottomAnchorRequest,
   hasAppliedAuthoritativeHistory,
   hasActiveComposer,
-  hasVisibleAgentTracks,
   toast,
   onOpenWorkspaceFile,
 }: {
   streamViewRef: React.RefObject<AgentStreamViewHandle | null>;
   serverId: string;
-  workspaceId: string;
   agentId?: string;
   agent: AgentScreenAgent;
   routeBottomAnchorRequest: RouteBottomAnchorRequest;
   hasAppliedAuthoritativeHistory: boolean;
   hasActiveComposer: boolean;
-  hasVisibleAgentTracks: boolean;
   toast: ReturnType<typeof useToastHost>["api"];
   onOpenWorkspaceFile?: (request: WorkspaceFileOpenRequest) => void;
 }) {
   const isCompactFormFactor = useIsCompactFormFactor();
-  const hasWorkspaceDiffStat = useWorkspaceHasDiffStat(serverId, workspaceId);
-  const hasVisibleComposerTracks =
-    hasActiveComposer && (hasVisibleAgentTracks || hasWorkspaceDiffStat);
-  const bottomOverlayTailClearance = hasVisibleComposerTracks
+  // The track bar's space is reserved whenever the bar is mounted, pills or not: pills come and go
+  // every turn, and the transcript must not jump with them.
+  const bottomOverlayTailClearance = hasActiveComposer
     ? resolveComposerTrackTailClearance(isCompactFormFactor)
     : 0;
-  const bottomOverlayControlClearance = hasVisibleComposerTracks
+  const bottomOverlayControlClearance = hasActiveComposer
     ? resolveComposerTrackControlClearance(isCompactFormFactor)
     : 0;
   const streamItemsRaw = useAgentStreamTail(serverId, agentId);

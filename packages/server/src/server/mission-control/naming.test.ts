@@ -40,7 +40,7 @@ function createNamingHarness(options: NamingHarnessOptions = {}) {
     (options.liveAgents ?? []).map((agent) => Object.assign({ labels: {} }, agent)),
   );
   const agentStorage = {
-    list: vi.fn(async () =>
+    listAll: vi.fn(async () =>
       (options.storedRecords ?? []).map((record) => ({
         id: record.id,
         provider: "omp",
@@ -177,7 +177,7 @@ describe("AgentNamingService theme changes affect future assignments only", () =
       // assignments must see the theme as of call time, not boot time.
       const service = new AgentNamingService({
         agentStorage: {
-          list: vi.fn(async () => [
+          listAll: vi.fn(async () => [
             {
               id: "existing",
               provider: "omp",

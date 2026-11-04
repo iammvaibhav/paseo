@@ -66,7 +66,7 @@ describe("fleet reminder tools", () => {
       agentManager,
       agentStorage: {
         get: async (id: string) => (id === LOCAL_AGENT_ID ? { id, title: "Worker" } : null),
-        list: async () => [],
+        listAll: async () => [],
       } as unknown as AgentStorage,
       providerSnapshotManager: createProviderSnapshotManagerStub()
         .manager as unknown as ProviderSnapshotManager,

@@ -431,7 +431,7 @@ function BucketHeader({
         {onMoveAll ? (
           <Button
             variant="ghost"
-            size="xs"
+            size="sm"
             onPress={onMoveAll}
             testID="mission-control-move-all-ready-to-done"
           >
@@ -441,7 +441,7 @@ function BucketHeader({
         {onClearAll ? (
           <Button
             variant="ghost"
-            size="xs"
+            size="sm"
             onPress={onClearAll}
             testID={`mission-control-clear-${bucket}`}
           >
@@ -969,7 +969,7 @@ function AgentRowImpl({
             {isDone ? (
               <Button
                 variant="ghost"
-                size="xs"
+                size="sm"
                 onPress={handleClear}
                 testID={`mission-control-clear-agent-${agent.id}`}
               >

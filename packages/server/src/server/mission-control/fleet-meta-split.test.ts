@@ -123,12 +123,12 @@ function buildLookup(
     },
     agentStorage: {
       get: async (agentId: string) => agents.get(agentId) ?? null,
-      list: async () => [...agents.values()],
+      listAll: async () => [...agents.values()],
     },
     workspaceRegistry: {
       get: async (workspaceId: string) =>
         workspaces.find((record) => record.workspaceId === workspaceId) ?? null,
-      list: async () => workspaces,
+      listAll: async () => workspaces,
     },
     projectRegistry: {
       get: async (projectId: string) =>
@@ -457,16 +457,13 @@ describe("metaPlan payload per action", () => {
 function createSchemaTestCatalog() {
   return createPaseoToolCatalog({
     agentManager: { getPluginTools: () => [] } as unknown as AgentManager,
-    agentStorage: {
-      get: async () => null,
-      list: async () => [],
-    } as unknown as AgentStorage,
+    agentStorage: { get: async () => null, listAll: async () => [] } as unknown as AgentStorage,
     providerSnapshotManager: createProviderSnapshotManagerStub().manager as unknown as never,
     peerManager: {} as unknown as PeerManager,
     callerAgentId: "commander-1",
     callerLabels: { "paseo.mission-control": "commander" },
     serverId: "server-local",
-    workspaceRegistry: { get: async () => null, list: async () => [] } as never,
+    workspaceRegistry: { get: async () => null, listAll: async () => [] } as never,
     projectRegistry: { get: async () => null, list: async () => [] } as never,
     logger: createTestLogger(),
   });

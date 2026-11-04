@@ -554,7 +554,7 @@ type FakeStoredRecord = Pick<StoredAgentRecord, "id" | "labels" | "updatedAt"> &
 function createFakeAgentStorage(records: FakeStoredRecord[] = []): ItsaplanBridgeAgentStorage {
   return {
     get: async (agentId) => records.find((r) => r.id === agentId) ?? null,
-    list: async () => records,
+    listAll: async () => records,
   };
 }
 

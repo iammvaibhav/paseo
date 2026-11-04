@@ -67,7 +67,7 @@ async function mergeDuplicates(input: {
   timestamp: string;
 }): Promise<void> {
   const { survivor, duplicates, timestamp } = input;
-  const workspaces = await input.workspaceRegistry.list();
+  const workspaces = await input.workspaceRegistry.listAll();
   const survivorBase = workspaces.find(
     (workspace) => workspace.workspaceId === survivor.baseWorkspaceId && !workspace.archivedAt,
   );

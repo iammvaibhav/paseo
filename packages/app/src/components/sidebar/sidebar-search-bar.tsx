@@ -194,10 +194,10 @@ export function SidebarSearchEmptyState(): ReactElement | null {
       <Text style={styles.emptyTitle}>{t("sidebar.search.emptyTitle")}</Text>
       <Text style={styles.emptyDescription}>{t("sidebar.search.emptyDescription")}</Text>
       <View style={styles.emptyActions}>
-        <Button variant="secondary" size="xs" onPress={deepSearch} testID="sidebar-search-deep">
+        <Button variant="secondary" size="sm" onPress={deepSearch} testID="sidebar-search-deep">
           {t("sidebar.search.deepSearch")}
         </Button>
-        <Button variant="ghost" size="xs" onPress={close}>
+        <Button variant="ghost" size="sm" onPress={close}>
           {t("sidebar.search.clear")}
         </Button>
       </View>

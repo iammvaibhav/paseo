@@ -384,6 +384,8 @@ function WebStreamViewport<T>(props: StreamRenderInput<T> & { isMobileBreakpoint
   const wasFollowOutputLayoutActiveRef = useRef(false);
   const resumedUnchangedLayoutRef = useRef(false);
   const pendingResumeGeometryCheckRef = useRef(false);
+  // Set by holdRow; the next reading reconcile sees the disclosure's layout.
+  const disclosurePendingRef = useRef(false);
   const shouldUseVirtualizer = segments.historyVirtualized.length > 0;
   const {
     renderHistoryVirtualizedRow,
@@ -841,22 +843,27 @@ function WebStreamViewport<T>(props: StreamRenderInput<T> & { isMobileBreakpoint
     onNearBottomChange,
   });
 
-  const reconcileReadingPosition = useStableEvent(() => {
+  // Row tops in content coordinates, which survive scrolling.
+  const measureRows = useStableEvent(() => {
     const container = scrollContainerRef.current;
     const content = contentRef.current;
-    if (!isActiveRef.current || !container || !content) return;
+    if (!container || !content) return null;
     const viewportTop = container.getBoundingClientRect().top;
     const scrollTop = container.scrollTop;
     const width = content.getBoundingClientRect().width;
-    const rows = Array.from(
-      content.querySelectorAll<HTMLElement>("[data-history-row-id]"),
-      (element) => {
-        const bounds = element.getBoundingClientRect();
-        const id = element.dataset.historyRowId!;
-        measuredRowHeights.current.set(id, { width, height: bounds.height });
-        return { id, top: bounds.top - viewportTop + scrollTop, height: bounds.height };
-      },
-    );
+    return Array.from(content.querySelectorAll<HTMLElement>("[data-history-row-id]"), (element) => {
+      const bounds = element.getBoundingClientRect();
+      const id = element.dataset.historyRowId!;
+      measuredRowHeights.current.set(id, { width, height: bounds.height });
+      return { id, top: bounds.top - viewportTop + scrollTop, height: bounds.height };
+    });
+  });
+
+  const reconcileReadingPosition = useStableEvent(() => {
+    const container = scrollContainerRef.current;
+    if (!isActiveRef.current || !container) return;
+    const rows = measureRows();
+    if (!rows) return;
     const shouldAnchor = !followOutputRef.current && !isJumpSettling();
     if (!shouldAnchor) readingAnchor.reset();
     const correctedTop = readingAnchor.reconcile(
@@ -875,6 +882,11 @@ function WebStreamViewport<T>(props: StreamRenderInput<T> & { isMobileBreakpoint
       // The DOM scroll event arrives later. Fill the corrected virtual range in
       // this layout so the reader does not get a frame containing only the pin.
       virtualOffsetListener.current?.(container.scrollTop, false);
+    }
+    // A disclosure that closes back to the end of the list rejoins the output.
+    if (disclosurePendingRef.current) {
+      disclosurePendingRef.current = false;
+      if (isScrollContainerAtBottom(container)) setFollowOutput(true);
     }
   });
 
@@ -1318,10 +1330,13 @@ function WebStreamViewport<T>(props: StreamRenderInput<T> & { isMobileBreakpoint
         }
         scheduleStickToBottom();
       },
-      holdReadingPosition: () => {
+      holdRow: (rowId, apply) => {
         cancelPendingStickToBottom();
         setFollowOutput(false);
-        readingAnchor.scroll(scrollContainerRef.current?.scrollTop ?? 0);
+        const row = measureRows()?.find((candidate) => candidate.id === rowId);
+        if (row) readingAnchor.pin(row);
+        disclosurePendingRef.current = true;
+        apply();
       },
       scrollToMessage,
     };
@@ -1335,6 +1350,7 @@ function WebStreamViewport<T>(props: StreamRenderInput<T> & { isMobileBreakpoint
   }, [
     cancelPendingStickToBottom,
     forceStickToBottom,
+    measureRows,
     readingAnchor,
     scheduleStickToBottom,
     scrollToMessage,
@@ -1536,9 +1552,6 @@ export function createWebStreamStrategy(input: CreateWebStreamStrategyInput): St
     historyLiveBoundaryEdge: "last",
     liveHeadHistoryBoundaryEdge: "first",
     frameChildOrder: "content-then-footer",
-    flatListInverted: false,
-    overlayScrollbarInverted: false,
-    maintainVisibleContentPosition: undefined,
     bottomAnchorTransportBehavior: {
       verificationDelayFrames: 0,
       verificationRetryMode: "rescroll",

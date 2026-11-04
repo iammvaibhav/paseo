@@ -3,7 +3,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, test, vi } from "vitest";
 import { createTestLogger } from "../../../test-utils/test-logger.js";
-import { createProviderSnapshotManagerStub } from "../../test-utils/session-stubs.js";
+import {
+  asAgentStorage,
+  createProviderSnapshotManagerStub,
+} from "../../test-utils/session-stubs.js";
 import { createTestAgentClients } from "../../test-utils/fake-agent-client.js";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import type { ServerInfoStatusPayload } from "@getpaseo/protocol/messages";
@@ -130,7 +133,10 @@ function createCatalog(
 ) {
   return createPaseoToolCatalog({
     agentManager: agentManager ?? ({} as unknown as AgentManager),
-    agentStorage: { get: async () => null, list: async () => [] } as unknown as AgentStorage,
+    agentStorage: asAgentStorage({
+      get: async () => null,
+      listAll: async () => [],
+    }) as unknown as AgentStorage,
     providerSnapshotManager: createProviderSnapshotManagerStub()
       .manager as unknown as ProviderSnapshotManager,
     peerManager,
@@ -312,10 +318,10 @@ describe("fleet_list_agents roster enrichment", () => {
         getTimeline: () => [],
         getPluginTools: () => [],
       } as unknown as AgentManager,
-      agentStorage: {
+      agentStorage: asAgentStorage({
         get: async () => null,
-        list: async () => stored,
-      } as unknown as AgentStorage,
+        listAll: async () => stored,
+      }) as unknown as AgentStorage,
       providerSnapshotManager: createProviderSnapshotManagerStub()
         .manager as unknown as ProviderSnapshotManager,
       peerManager,
@@ -422,9 +428,9 @@ describe("fleet_list_agents roster enrichment", () => {
         getRegisteredProviderIds: () => ["omp"],
         getTimeline: () => [],
       } as unknown as AgentManager,
-      agentStorage: {
+      agentStorage: asAgentStorage({
         get: async () => null,
-        list: async () => [
+        listAll: async () => [
           {
             id: "local-1",
             provider: "omp",
@@ -436,7 +442,7 @@ describe("fleet_list_agents roster enrichment", () => {
             title: "Local agent",
           },
         ],
-      } as unknown as AgentStorage,
+      }) as unknown as AgentStorage,
       providerSnapshotManager: createProviderSnapshotManagerStub()
         .manager as unknown as ProviderSnapshotManager,
       peerManager,
@@ -456,7 +462,10 @@ describe("fleet_send_prompt mode", () => {
     const { client, peerManager } = createFakePeerHarness();
     const catalog = createPaseoToolCatalog({
       agentManager: {} as unknown as AgentManager,
-      agentStorage: { get: async () => null, list: async () => [] } as unknown as AgentStorage,
+      agentStorage: asAgentStorage({
+        get: async () => null,
+        listAll: async () => [],
+      }) as unknown as AgentStorage,
       providerSnapshotManager: createProviderSnapshotManagerStub()
         .manager as unknown as ProviderSnapshotManager,
       peerManager,
@@ -598,7 +607,10 @@ describe("fleet_send_prompt mode", () => {
     } as unknown as AgentManager;
     const catalog = createPaseoToolCatalog({
       agentManager,
-      agentStorage: { get: async () => null, list: async () => [] } as unknown as AgentStorage,
+      agentStorage: asAgentStorage({
+        get: async () => null,
+        listAll: async () => [],
+      }) as unknown as AgentStorage,
       providerSnapshotManager: createProviderSnapshotManagerStub()
         .manager as unknown as ProviderSnapshotManager,
       logger: createTestLogger(),
@@ -638,7 +650,10 @@ describe("fleet_send_prompt mode", () => {
 
     const catalog = createPaseoToolCatalog({
       agentManager,
-      agentStorage: { get: async () => null, list: async () => [] } as unknown as AgentStorage,
+      agentStorage: asAgentStorage({
+        get: async () => null,
+        listAll: async () => [],
+      }) as unknown as AgentStorage,
       providerSnapshotManager: createProviderSnapshotManagerStub()
         .manager as unknown as ProviderSnapshotManager,
       logger: createTestLogger(),
@@ -681,7 +696,10 @@ describe("fleet_send_prompt mode", () => {
     // from the mission-control approval path with an explicit classification.
     const result = await dispatchLocalPromptMode({
       agentManager,
-      agentStorage: { get: async () => null, list: async () => [] } as unknown as AgentStorage,
+      agentStorage: asAgentStorage({
+        get: async () => null,
+        listAll: async () => [],
+      }) as unknown as AgentStorage,
       agentId: "agent-1",
       prompt: "You've been quiet for a while. Post a one-line report_status.",
       mode: "steer",
@@ -719,7 +737,10 @@ describe("fleet_send_prompt mode", () => {
     // the machinery classification rides an expectation that stamps that echo.
     await dispatchLocalPromptMode({
       agentManager,
-      agentStorage: { get: async () => null, list: async () => [] } as unknown as AgentStorage,
+      agentStorage: asAgentStorage({
+        get: async () => null,
+        listAll: async () => [],
+      }) as unknown as AgentStorage,
       agentId: "agent-1",
       prompt: "status please",
       mode: "interrupt",
@@ -748,7 +769,10 @@ describe("fleet_send_prompt mode", () => {
     } as unknown as AgentManager;
     const catalog = createPaseoToolCatalog({
       agentManager,
-      agentStorage: { get: async () => null, list: async () => [] } as unknown as AgentStorage,
+      agentStorage: asAgentStorage({
+        get: async () => null,
+        listAll: async () => [],
+      }) as unknown as AgentStorage,
       providerSnapshotManager: createProviderSnapshotManagerStub()
         .manager as unknown as ProviderSnapshotManager,
       logger: createTestLogger(),
@@ -799,7 +823,10 @@ describe("fleet_send_prompt mode", () => {
 
     const result = await dispatchLocalPromptMode({
       agentManager,
-      agentStorage: { get: async () => null, list: async () => [] } as unknown as AgentStorage,
+      agentStorage: asAgentStorage({
+        get: async () => null,
+        listAll: async () => [],
+      }) as unknown as AgentStorage,
       agentId: "agent-1",
       prompt: "see this screenshot",
       images: [{ data: "aaa", mimeType: "image/png" }],
@@ -929,7 +956,10 @@ describe("fleet_send_prompt mode", () => {
     } as unknown as AgentManager;
     const catalog = createPaseoToolCatalog({
       agentManager,
-      agentStorage: { get: async () => null, list: async () => [] } as unknown as AgentStorage,
+      agentStorage: asAgentStorage({
+        get: async () => null,
+        listAll: async () => [],
+      }) as unknown as AgentStorage,
       providerSnapshotManager: createProviderSnapshotManagerStub()
         .manager as unknown as ProviderSnapshotManager,
       logger: createTestLogger(),
@@ -1012,7 +1042,10 @@ describe("fleet spawns and sends", () => {
     const { client, peerManager } = createFakePeerHarness({ client: { createAgent } });
     const catalog = createPaseoToolCatalog({
       agentManager: { getPluginTools: () => [] } as unknown as AgentManager,
-      agentStorage: { get: async () => null, list: async () => [] } as unknown as AgentStorage,
+      agentStorage: asAgentStorage({
+        get: async () => null,
+        listAll: async () => [],
+      }) as unknown as AgentStorage,
       providerSnapshotManager: createProviderSnapshotManagerStub()
         .manager as unknown as ProviderSnapshotManager,
       peerManager,
@@ -1153,9 +1186,9 @@ describe("fleet_list_agents roster fields (spec 03)", () => {
         getRegisteredProviderIds: () => ["omp"],
         getTimeline: () => [],
       } as unknown as AgentManager,
-      agentStorage: {
+      agentStorage: asAgentStorage({
         get: async () => null,
-        list: async () => [
+        listAll: async () => [
           {
             id: "local-agent-uuid-0001",
             provider: "omp",
@@ -1170,10 +1203,10 @@ describe("fleet_list_agents roster fields (spec 03)", () => {
             shortDescription: "local desc",
           },
         ],
-      } as unknown as AgentStorage,
+      }) as unknown as AgentStorage,
       workspaceRegistry: {
         get: async () => null,
-        list: async () => [
+        listAll: async () => [
           { workspaceId: "wks_local", projectId: "prj_local", displayName: "Local" },
         ],
       } as unknown as AgentStorage,
@@ -1434,7 +1467,10 @@ describe("fleet_list_agents roster fields (spec 03)", () => {
         getRegisteredProviderIds: () => ["omp"],
         getTimeline: () => [],
       } as unknown as AgentManager,
-      agentStorage: { get: async () => null, list: async () => stored } as unknown as AgentStorage,
+      agentStorage: asAgentStorage({
+        get: async () => null,
+        listAll: async () => stored,
+      }) as unknown as AgentStorage,
       providerSnapshotManager: createProviderSnapshotManagerStub()
         .manager as unknown as ProviderSnapshotManager,
       peerManager,
@@ -1475,13 +1511,16 @@ describe("fleet_create_agent call-time validation (spec 03)", () => {
     const missionControlService = createMissionControlServiceStub(overrides);
     const catalog = createPaseoToolCatalog({
       agentManager: { getPluginTools: () => [] } as unknown as AgentManager,
-      agentStorage: { get: async () => null, list: async () => [] } as unknown as AgentStorage,
+      agentStorage: asAgentStorage({
+        get: async () => null,
+        listAll: async () => [],
+      }) as unknown as AgentStorage,
       workspaceRegistry: {
         get: async (id: string) =>
           id === "wks_a0fd1234567890abcd"
             ? { workspaceId: "wks_a0fd1234567890abcd", projectId: "prj_1", archivedAt: null }
             : null,
-        list: async () => [
+        listAll: async () => [
           {
             workspaceId: "wks_a0fd1234567890abcd",
             projectId: "prj_1",
@@ -1572,7 +1611,10 @@ describe("fleet_send_prompt agentId contract (spec 03)", () => {
         ],
         getRegisteredProviderIds: () => [],
       } as unknown as AgentManager,
-      agentStorage: { get: async () => null, list: async () => [] } as unknown as AgentStorage,
+      agentStorage: asAgentStorage({
+        get: async () => null,
+        listAll: async () => [],
+      }) as unknown as AgentStorage,
       providerSnapshotManager: createProviderSnapshotManagerStub()
         .manager as unknown as ProviderSnapshotManager,
       peerManager,
@@ -1634,7 +1676,8 @@ describe("list_agents stored roster (Mission Control caller)", () => {
     } as unknown as AgentManager;
     const agentStorage = {
       get: async () => null,
-      list: async () => [],
+      listAll: async () => [],
+      listActive: async () => [],
       ...overrides.agentStorage,
     } as unknown as AgentStorage;
     return createPaseoToolCatalog({
@@ -1652,7 +1695,7 @@ describe("list_agents stored roster (Mission Control caller)", () => {
   test("stored finished agent with a registered provider appears for a remote MCP caller", async () => {
     const catalog = createCommanderStoredRosterCatalog({
       agentStorage: {
-        list: async () => [storedRecord()],
+        listActive: async () => [storedRecord()],
       },
     });
 
@@ -1680,7 +1723,7 @@ describe("list_agents stored roster (Mission Control caller)", () => {
   test("stored agent with a genuinely unregistered provider stays hidden unless includeArchived", async () => {
     const catalog = createCommanderStoredRosterCatalog({
       agentStorage: {
-        list: async () => [
+        listActive: async () => [
           storedRecord({ id: "stored-gone-provider", provider: "ancient-provider" }),
         ],
       },
@@ -1698,7 +1741,7 @@ describe("list_agents stored roster (Mission Control caller)", () => {
   test("explicit cwd still scopes a remote MCP caller list_agents", async () => {
     const catalog = createCommanderStoredRosterCatalog({
       agentStorage: {
-        list: async () => [
+        listActive: async () => [
           storedRecord({ id: "in-ws", cwd: "/srv/fleet/worker-ws" }),
           storedRecord({ id: "other-ws", cwd: "/srv/elsewhere" }),
         ],
@@ -1736,7 +1779,7 @@ describe("fleet_create_agent placement and model form from a remote MCP client",
       agentStorage: storage,
       workspaceRegistry: {
         get: async (id: string) => (id === WORKSPACE_ID ? workspace : null),
-        list: async () => [workspace],
+        listAll: async () => [workspace],
       } as never,
       providerSnapshotManager: createProviderSnapshotManagerStub()
         .manager as unknown as ProviderSnapshotManager,
@@ -1797,7 +1840,10 @@ describe("fleet_create_agent placement and model form from a remote MCP client",
     } as unknown as RoutingService;
     const catalog = createPaseoToolCatalog({
       agentManager: { getPluginTools: () => [] } as unknown as AgentManager,
-      agentStorage: { get: async () => null, list: async () => [] } as unknown as AgentStorage,
+      agentStorage: asAgentStorage({
+        get: async () => null,
+        listAll: async () => [],
+      }) as unknown as AgentStorage,
       providerSnapshotManager: createProviderSnapshotManagerStub()
         .manager as unknown as ProviderSnapshotManager,
       callerAgentId: "worker-1",

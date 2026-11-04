@@ -197,7 +197,7 @@ describe("ItsaplanReconcileService", () => {
     closedTickets = [];
     ownedBoardPasses = 0;
     return new ItsaplanReconcileService({
-      agentStorage: { list: async () => agents },
+      agentStorage: { listAll: async () => agents },
       missionControl,
       projectStore: store,
       getConfig: () => config,
@@ -366,7 +366,7 @@ describe("ItsaplanReconcileService", () => {
   test("does nothing when itsaplan config is absent", async () => {
     const inertService = new ItsaplanReconcileService({
       agentStorage: {
-        list: async () => [agentRecord("agent-1", ISSUE_ID, "2026-01-01T00:00:00.000Z")],
+        listAll: async () => [agentRecord("agent-1", ISSUE_ID, "2026-01-01T00:00:00.000Z")],
       },
       missionControl,
       projectStore: store,

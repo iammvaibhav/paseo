@@ -93,7 +93,7 @@ describe("MissionControlService auto-archive workspace on agent Done (PASEO-21)"
 
     const workspaceRegistry = {
       get: vi.fn(async (workspaceId: string) => workspaces.get(workspaceId) ?? null),
-      list: vi.fn(async () => Array.from(workspaces.values())),
+      listAll: vi.fn(async () => Array.from(workspaces.values())),
     } as unknown as WorkspaceRegistry;
 
     const projectRegistry = {
@@ -103,7 +103,7 @@ describe("MissionControlService auto-archive workspace on agent Done (PASEO-21)"
 
     const agentStorage = {
       get: vi.fn(async (agentId: string) => storedRecords.get(agentId) ?? null),
-      list: vi.fn(async () => Array.from(storedRecords.values())),
+      listAll: vi.fn(async () => Array.from(storedRecords.values())),
       listByWorkspace: vi.fn(async (workspaceId: string) =>
         filterRecordsByWorkspace(storedRecords.values(), workspaceId),
       ),

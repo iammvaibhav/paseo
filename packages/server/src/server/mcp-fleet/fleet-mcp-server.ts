@@ -163,7 +163,7 @@ function closestArgName(key: string, known: readonly string[]): string | null {
 const RETIRED_ARGS: Record<string, string> = {
   // COMPAT(retired-background-arg): upstream #5039 dropped it (merged 2026-10-29); remove after 2027-01-31.
   "fleet_create_agent.background":
-    "removed: fleet_create_agent never waits for the run, so drop it; background now only means a hidden workspace, on create_workspace",
+    "removed: fleet_create_agent never waits for the run, so drop it; background now marks a hidden agent on create_agent or a hidden workspace on create_workspace",
 };
 
 /**

@@ -507,7 +507,7 @@ export const AgentGridDraftTile = memo(function AgentGridDraftTile({
         <View style={styles.headerAction}>
           <Button
             variant="ghost"
-            size="xs"
+            size="sm"
             leftIcon={ThemedX}
             onPress={onClose}
             accessibilityLabel="Close draft"

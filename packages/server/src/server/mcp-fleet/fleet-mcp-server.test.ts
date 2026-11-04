@@ -13,7 +13,7 @@ import type {
 import { createFleetMcpServer, FLEET_MCP_INSTRUCTIONS } from "./fleet-mcp-server.js";
 import type { PaseoToolHostDependencies } from "../agent/tools/paseo-tools.js";
 import { createPaseoToolCatalog } from "../agent/tools/paseo-tools.js";
-import { createProviderSnapshotManagerStub } from "../test-utils/session-stubs.js";
+import { asAgentStorage, createProviderSnapshotManagerStub } from "../test-utils/session-stubs.js";
 import { createTestLogger } from "../../test-utils/test-logger.js";
 import type { AgentManager } from "../agent/agent-manager.js";
 import type { AgentStorage } from "../agent/agent-storage.js";
@@ -27,10 +27,10 @@ function createTestHostDependencies(): PaseoToolHostDependencies {
       getPaseoToolPolicy: () => undefined,
       getRegisteredProviderIds: () => [],
     } as unknown as AgentManager,
-    agentStorage: {
+    agentStorage: asAgentStorage({
       get: async () => null,
-      list: async () => [],
-    } as unknown as AgentStorage,
+      listAll: async () => [],
+    }) as unknown as AgentStorage,
     providerSnapshotManager: createProviderSnapshotManagerStub()
       .manager as unknown as ProviderSnapshotManager,
     logger: createTestLogger(),

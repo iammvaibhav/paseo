@@ -1,3 +1,4 @@
+import { useDisclosureHold } from "@/agent-stream/disclosure";
 import { MessagePreview, MessageSender } from "@/components/user-message";
 import { formatTurnMetricsLine } from "@/agent-stream/turn-metrics";
 import { persistAttachmentFromBytes } from "@/attachments/service";
@@ -1266,6 +1267,7 @@ export const AssistantMessage = memo(function AssistantMessage({
     >
       <MarkdownRenderer
         text={revealedMessage}
+        agentCommands
         streaming={phase !== "complete" || revealedMessage.length < renderedMessage.text.length}
         math
         client={client}
@@ -1624,9 +1626,9 @@ export const TodoListCard = memo(function TodoListCard({
     };
   }, [activity, t]);
 
-  const handleToggle = useCallback(() => {
-    setIsExpanded((prev) => !prev);
-  }, []);
+  const hold = useDisclosureHold();
+  const toggleExpanded = useCallback(() => setIsExpanded((prev) => !prev), []);
+  const handleToggle = useCallback(() => hold(toggleExpanded), [hold, toggleExpanded]);
 
   const renderDetails = useCallback(() => {
     return (
@@ -2430,6 +2432,7 @@ export const ToolCall = memo(function ToolCall({
   const isMobile = useIsCompactFormFactor();
   const shouldRenderInline = !isMobile || forceInline;
   const isRunning = status === "running" || status === "executing";
+  const hold = useDisclosureHold();
 
   const effectiveDetail = useMemo<ToolCallDetail | undefined>(() => {
     if (detail) {
@@ -2494,9 +2497,10 @@ export const ToolCall = memo(function ToolCall({
         showLoadingSkeleton: presentation.isLoadingDetails,
       });
     } else {
-      toggleExpanded();
+      hold(toggleExpanded);
     }
   }, [
+    hold,
     shouldRenderInline,
     toggleExpanded,
     openToolCall,

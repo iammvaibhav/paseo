@@ -25,7 +25,18 @@ import { normalizeClientMessageId, resolveClientMessageId } from "../../client-m
 import { canonicalProviderModel } from "@getpaseo/protocol/provider-model";
 import { resolveRequiredProviderModel, type ResolvedProviderModel } from "../mcp-shared.js";
 import { getItsaplanIssueIdFromLabels } from "../../itsaplan/bridge.js";
-import { resolveCreateAgentIntent, type CreateAgentPlacement } from "./intent.js";
+import {
+  inheritAgentBackground,
+  inheritWorkspaceBackground,
+  resolveCreateAgentIntent,
+  type CreateAgentPlacement,
+} from "./intent.js";
+
+/** How a workspace this creation makes inherits its creator's visibility. */
+interface McpWorkspaceIntent {
+  background?: boolean;
+  callerWorkspaceId?: string;
+}
 
 export interface CreateAgentCommandDependencies {
   finishSubscriptions?: FinishSubscriptions;
@@ -50,7 +61,7 @@ export interface CreateAgentCommandDependencies {
 export type EnsureWorkspaceForCreate = (
   cwd: string,
   firstAgentContext?: FirstAgentContext,
-  context?: { callerWorkspaceId?: string },
+  context?: { background?: boolean; callerWorkspaceId?: string },
 ) => Promise<string>;
 
 /**
@@ -67,6 +78,7 @@ export interface CreateAgentFromSessionInput {
   agentId?: string;
   config: AgentSessionConfig;
   workspaceId: string;
+  background: boolean;
   initialPrompt?: string;
   source?: AgentPromptSource;
   clientMessageId?: string;
@@ -107,6 +119,8 @@ export interface CreateAgentFromMcpInput {
   promptFailure?: CreateAgentPromptFailureMode;
   notifyOnFinish: boolean;
   internal?: boolean;
+  /** Omitted with a caller, the caller agent's own background applies. */
+  background?: boolean;
   detached?: boolean;
   owner?: AgentOwner;
   env?: Record<string, string>;
@@ -286,6 +300,7 @@ async function resolveSessionCreateAgent(
       // provider session either. Same as the daemon's own ephemeral helpers.
       ...(sessionConfig.internal ? { persistSession: false } : {}),
       workspaceId: requireResolvedWorkspaceId(workspaceId),
+      background: input.background,
     },
     prompt: hasPromptContent ? prompt : undefined,
     source: input.source,
@@ -308,6 +323,10 @@ async function resolveMcpCreateAgent(
     ? requireParentAgent(dependencies.agentManager, input.callerAgentId)
     : null;
   const cwd = resolveMcpInitialCwd(input, parentAgent);
+  const workspaceIntent = {
+    background: inheritWorkspaceBackground(input.background, parentAgent),
+    callerWorkspaceId: parentAgent?.workspaceId,
+  };
   const { resolvedCwd, createdWorkspaceId, createdWorktree } = await resolveMcpCwd({
     dependencies,
     cwd,
@@ -317,7 +336,7 @@ async function resolveMcpCreateAgent(
     workspaceId: input.workspaceId,
     labels: input.labels,
     initialPrompt: input.initialPrompt ?? "",
-    callerWorkspaceId: parentAgent?.workspaceId,
+    workspaceIntent,
   });
   if (createdWorktree) input.onWorktreeCreated?.(createdWorktree);
   const intent = await resolveCreateAgentIntent({
@@ -347,7 +366,7 @@ async function resolveMcpCreateAgent(
           dependencies,
           resolvedCwd,
           input.initialPrompt ?? "",
-          parentAgent?.workspaceId,
+          workspaceIntent,
         ),
       ),
       cwd: resolvedCwd,
@@ -378,6 +397,7 @@ async function resolveMcpCreateAgent(
       ...(Object.keys(intent.labels).length > 0 ? { labels: intent.labels } : {}),
       workspaceId: intent.workspaceId,
       owner: input.owner,
+      background: inheritAgentBackground(input.background, parentAgent),
       env: input.env,
       ...(isAgentModeId(input.agentMode) ? { agentMode: input.agentMode } : {}),
     },
@@ -492,16 +512,12 @@ async function ensureWorkspaceForMcpCreate(
   dependencies: CreateAgentCommandDependencies,
   cwd: string,
   initialPrompt: string,
-  callerWorkspaceId?: string,
+  workspaceIntent: McpWorkspaceIntent,
 ): Promise<string | undefined> {
   if (!dependencies.ensureWorkspaceForCreate) {
     return undefined;
   }
-  return dependencies.ensureWorkspaceForCreate(
-    cwd,
-    { prompt: initialPrompt },
-    { callerWorkspaceId },
-  );
+  return dependencies.ensureWorkspaceForCreate(cwd, { prompt: initialPrompt }, workspaceIntent);
 }
 
 async function sendInitialPrompt(
@@ -634,7 +650,7 @@ async function resolveMcpCwd(params: {
   cwd: string;
   title?: string;
   initialPrompt: string;
-  callerWorkspaceId?: string;
+  workspaceIntent: McpWorkspaceIntent;
   worktree?: CreateAgentFromMcpInput["worktree"];
   isolation?: CreateAgentFromMcpInput["isolation"];
   workspaceId?: string;
@@ -661,7 +677,7 @@ async function resolveMcpCwd(params: {
     const createdWorktree = await createMcpWorktree({
       input: {
         cwd: params.cwd,
-        callerWorkspaceId: params.callerWorkspaceId,
+        ...params.workspaceIntent,
         title: params.title,
         worktreeSlug: worktree?.worktreeName,
         branchName: worktree?.branchName,
