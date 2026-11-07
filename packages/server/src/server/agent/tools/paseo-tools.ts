@@ -150,6 +150,16 @@ import { registerPageTools } from "../../page-tools/tools.js";
 import type { PagePreviewBrowser } from "../../page-tools/preview-browser.js";
 import type { PageStore } from "../../page-tools/page-store.js";
 import { buildPeerUnreachableError, type PeerManager } from "../../peers/peer-manager.js";
+import {
+  createFleetHostResolver,
+  describeFleetHosts,
+  FLEET_HOST_DESCRIPTION,
+  FLEET_HOST_HINT_DESCRIPTION,
+  isSameFleetHost,
+  listFleetHosts,
+  LOCAL_FLEET_HOST,
+  type FleetHostResolver,
+} from "../../peers/fleet-hosts.js";
 import { registerDocThreadTools } from "../../doc-threads/tools.js";
 import type { DocThreadsService } from "../../doc-threads/service.js";
 import { registerFleetControlTools } from "./fleet-control-tools.js";
@@ -167,12 +177,7 @@ import type { MissionControlMetaPlan } from "@getpaseo/protocol/mission-control/
 import { MissionControlModelsSchema } from "@getpaseo/protocol/mission-control/types";
 import type { MissionControlModels } from "@getpaseo/protocol/mission-control/types";
 import type { ComposerPreferences } from "@getpaseo/protocol/composer-preferences";
-import {
-  buildSplitMetaPlan,
-  resolveMetaTargetHost,
-  type SplitMetaToolArgs,
-} from "../../mission-control/fleet-meta.js";
-import type { ResolvedMetaTarget } from "../../mission-control/meta-actions.js";
+import { buildSplitMetaPlan, type SplitMetaToolArgs } from "../../mission-control/fleet-meta.js";
 import { scheduleAgentSelfMove } from "./self-move.js";
 import type { MissionControlService } from "../../mission-control/service.js";
 import {
@@ -281,6 +286,12 @@ export interface PaseoToolHostDependencies {
    * render "local" as a host). Absent → keep "local" (the UI resolves it).
    */
   hostAlias?: string | null;
+  /** This daemon's OS hostname: one of the names fleet tools accept for this host. */
+  hostName?: string;
+  /** This daemon's DNS names (daemon.hostnames), read per call; fleet tools accept them for this host. */
+  fleetHostNames?: () => readonly string[];
+  /** Central routing.hostAliases (serverId → extra names), read per call. */
+  fleetHostAliases?: () => Readonly<Record<string, readonly string[]>> | null | undefined;
   /**
    * ID of the agent that is using this tool catalog.
    * Used for cwd/mode inheritance when agents spawn child agents.
@@ -301,7 +312,7 @@ export interface PaseoToolHostDependencies {
   enableVoiceTools?: boolean;
   voiceOnly?: boolean;
   fleetIdIndex?: FleetIdIndex | null;
-  /** Placement routing (suggest_placement). Absent → the tool is not offered. */
+  /** Placement routing (fleet_create_agent fills host, cwd and model from it). Absent → no placement. */
   routingService?: RoutingService | null;
   /** fleet-memory (memory_search/get/write, fleet_playbook). Absent → not offered. */
   memoryService?: MemoryService | null;
@@ -1255,28 +1266,6 @@ function buildCatalogFleetIdIndex(
   });
 }
 
-// Fleet-tool host normalization: "local", this daemon's own serverId /
-// hostname / hostAlias (case-insensitive trim) all route to the LOCAL branch
-// of a fleet tool; a peer name routes to the peer client. One shared resolver
-// with the meta executor and the spawn executor — never a second fleet map
-// interpretation.
-function isFleetLocalTargetHelper(
-  host: string,
-  resolve: (host: string) => ResolvedMetaTarget,
-): boolean {
-  const resolved = resolve(host);
-  return resolved.ok && resolved.kind === "local";
-}
-
-function catalogHostsMatch(
-  hostA: string,
-  hostB: string,
-  isLocal: (host: string) => boolean,
-): boolean {
-  if (isLocal(hostA) && isLocal(hostB)) return true;
-  return hostA.trim().toLowerCase() === hostB.trim().toLowerCase();
-}
-
 /** The caller agent's voice context (null when the caller is not a voice
  * session or no resolver is wired). */
 function resolveCatalogCallerContext(
@@ -1325,6 +1314,24 @@ const ARCHIVE_TARGET_FIELD: Partial<
   archive_project: "projectId",
 };
 
+/**
+ * The host resolver every tool built from these dependencies uses: any name
+ * this daemon or a peer answers to (peers/fleet-hosts.ts).
+ */
+export function createCatalogFleetHostResolver(
+  options: PaseoToolHostDependencies,
+): FleetHostResolver {
+  return createFleetHostResolver({
+    selfLabel: options.hostAlias?.trim() || LOCAL_FLEET_HOST,
+    serverId: options.serverId ?? "",
+    hostname: options.hostName,
+    hostAlias: options.hostAlias,
+    hostNames: options.fleetHostNames,
+    hostAliases: options.fleetHostAliases,
+    peerManager: options.peerManager ?? null,
+  });
+}
+
 export function createPaseoToolCatalog(options: PaseoToolHostDependencies): PaseoToolCatalog {
   return createToolCatalog(options, options.callerAgentId ? "agent" : "top-level");
 }
@@ -1362,19 +1369,16 @@ function createToolCatalog(
   // identifier the UI still resolves). Never the raw hostname — results and
   // the model's echo of them must read as fleet aliases, not machine names.
   const hostLabel = options.hostAlias?.trim() || "local";
-  const isFleetLocalTarget = (host: string): boolean =>
-    isFleetLocalTargetHelper(host, (h) =>
-      resolveMetaTargetHost(
-        {
-          serverId: serverId ?? "",
-          hostAlias: options.hostAlias,
-          peerManager: peerManager ?? null,
-        },
-        h,
-      ),
-    );
+  // Every host argument resolves here (peers/fleet-hosts.ts), the same way the
+  // meta executor resolves it: any name this daemon or a peer answers to.
+  // Unknown and ambiguous names are refused with the fleet's host names.
+  const fleetHosts = createCatalogFleetHostResolver(options);
+  const isFleetLocalTarget = (host: string): boolean => {
+    const resolution = fleetHosts.resolve(host);
+    return resolution.ok && resolution.kind === "local";
+  };
   const hostsMatch = (hostA: string, hostB: string): boolean =>
-    catalogHostsMatch(hostA, hostB, isFleetLocalTarget);
+    isSameFleetHost(fleetHosts, hostA, hostB);
   const fleetIdIndex = options.fleetIdIndex ?? buildCatalogFleetIdIndex(options, hostLabel);
   const childLogger = logger.child({ module: "agent", component: "paseo-tool-catalog" });
   // Every createAgentCommand call in this catalog shares these. getWorkspace
@@ -1533,7 +1537,10 @@ function createToolCatalog(
     const metaPlan = await buildSplitMetaPlan(
       {
         serverId: serverId ?? "",
+        hostName: options.hostName,
         hostAlias: options.hostAlias,
+        hostNames: options.fleetHostNames,
+        hostAliases: options.fleetHostAliases,
         peerManager: peerManager ?? null,
         lookup: {
           agentManager,
@@ -1625,7 +1632,7 @@ function createToolCatalog(
         // error path; the snapshot is advisory for the correction hint.
         entries = await providerSnapshotManager.listProviders({ wait: false });
       } else {
-        const client = peerManager?.getPeerClient(host);
+        const client = resolveFleetHost(host);
         if (!client) {
           return [];
         }
@@ -1861,6 +1868,24 @@ function createToolCatalog(
       handler: handler as PaseoToolDefinition["handler"],
     });
   };
+  /**
+   * Fleet tools see one name per host: a `host` argument becomes "local" or
+   * the peer's config name, whichever of the host's names the caller passed.
+   * An unknown or ambiguous name passes through unchanged; each tool refuses
+   * it in its own result shape, with the resolver's error (resolveFleetHost).
+   */
+  const canonicalFleetHostInput = (name: string, parsed: unknown): unknown => {
+    if (!name.startsWith("fleet_") && name !== "itsaplan_ticketize") return parsed;
+    if (typeof parsed !== "object" || parsed === null || !("host" in parsed)) return parsed;
+    const host = parsed.host;
+    if (typeof host !== "string" || !host.trim()) return parsed;
+    const resolution = fleetHosts.resolve(host);
+    if (!resolution.ok) return parsed;
+    return {
+      ...parsed,
+      host: resolution.kind === "local" ? LOCAL_FLEET_HOST : resolution.peerName,
+    };
+  };
   const toCatalog = (): PaseoToolCatalog => ({
     tools,
     getTool(name: string): PaseoToolDefinition | undefined {
@@ -1876,7 +1901,7 @@ function createToolCatalog(
         throw new PaseoToolInputError(`Paseo tool not found: ${name}`);
       }
       try {
-        const parsed = await parseToolInput(tool, input);
+        const parsed = canonicalFleetHostInput(name, await parseToolInput(tool, input));
         return await tool.handler(parsed, context);
       } catch (error) {
         if (PROVIDER_SPAWN_TOOLS.has(name) && isProviderRejection(toolErrorMessage(error))) {
@@ -2173,7 +2198,7 @@ function createToolCatalog(
         .enum(AGENT_MODE_IDS)
         .optional()
         .describe(
-          "How the agent works: solo (do it yourself, default), orchestrator, plan, research, review, debug. suggest_placement recommends one.",
+          "How the agent works: solo (do it yourself, default), orchestrator, plan, research, review, debug. fleet_create_agent with dryRun shows the one placement recommends.",
         ),
       thinkingOptionId: z.string().optional().describe("Thinking option ID."),
       features: z
@@ -4610,8 +4635,9 @@ function createToolCatalog(
         .min(1)
         .optional()
         .describe(
-          "Target host: a peer name. Omit to let Paseo place the agent from the prompt (a host, " +
-            "project, or model the prompt names wins; then the fleet rules). Derived from workspaceId when given.",
+          `Target host. ${FLEET_HOST_DESCRIPTION} Call fleet_list_hosts first when you are not sure ` +
+            "of the name. Omit to let Paseo place the agent from the prompt (a host, project, or model " +
+            "the prompt names wins; then the fleet rules). Derived from workspaceId when given.",
         ),
       ...canonicalTopLevelInputSchema,
       provider: ProviderModelInputSchema.optional().describe(
@@ -4652,7 +4678,8 @@ function createToolCatalog(
         .string()
         .optional()
         .describe(
-          "Working directory on the target host. Required when targeting a peer without workspaceId.",
+          "Absolute working directory on the target host. Requires host (a path names a directory on " +
+            "one host). Required when the target is a peer and workspaceId is omitted.",
         ),
       isolation: z
         .enum(["local", "worktree"])
@@ -4745,24 +4772,39 @@ function createToolCatalog(
     lastUserMessage: z.string().nullable().optional(),
   });
 
+  /**
+   * The peer client for a host argument: null for this host or a daemon
+   * without peers. Throws the resolver's error for an unknown or ambiguous
+   * name, and the unreachable error for an offline peer.
+   */
   const resolveFleetHost = (host: string): DaemonClient | null => {
-    if (!peerManager) {
+    const resolution = fleetHosts.resolve(host);
+    if (!resolution.ok) {
+      throw new Error(resolution.error);
+    }
+    if (resolution.kind === "local" || !peerManager) {
       return null;
     }
-    const peerStatus = peerManager.getPeerStatus(host);
+    const peerStatus = peerManager.getPeerStatus(resolution.peerName);
     if (!peerStatus) {
       return null;
     }
     if (peerStatus.state !== "online") {
-      throw buildPeerUnreachableError(host, peerStatus.lastSeenAt);
+      throw buildPeerUnreachableError(resolution.peerName, peerStatus.lastSeenAt);
     }
-    return peerManager.getPeerClient(host);
+    return peerManager.getPeerClient(resolution.peerName);
   };
 
-  /** The hosts this daemon knows, for host-hint mismatch errors (spec 03). */
-  const knownFleetHostsText = (): string => {
-    const peers = peerManager?.getPeerStatuses().map((status) => status.name) ?? [];
-    return ["local", ...peers].join(", ");
+  /** Every host this daemon knows, with its names, for errors that teach the fix. */
+  const knownFleetHostsText = (): string => describeFleetHosts(fleetHosts.directory());
+  /** A host argument no host answers to: the resolver's reason (unknown or ambiguous) and the fleet. */
+  const unknownFleetHostError = (host: string): Error => {
+    const resolution = fleetHosts.resolve(host);
+    return new Error(
+      resolution.ok
+        ? `Host "${host}" is not a configured peer or this host. ${knownFleetHostsText()}`
+        : resolution.error,
+    );
   };
 
   /**
@@ -4844,9 +4886,7 @@ function createToolCatalog(
       // workspace must be live on the peer's own registry.
       const client = resolveFleetHost(host);
       if (!client) {
-        throw new Error(
-          `Host "${host}" is not a configured peer; this daemon knows: ${knownFleetHostsText()}`,
-        );
+        throw unknownFleetHostError(host);
       }
       if (!workspaceId) {
         return;
@@ -5139,7 +5179,7 @@ function createToolCatalog(
     {
       title: "List models on a host",
       description:
-        "List the invocable provider/model strings available on a host ('local' or a peer name), plus that host's " +
+        "List the invocable provider/model strings available on a host (fleet_list_hosts names them), plus that host's " +
         "default worker model — the composer's last provider/model pick (daemon.composerPreferences) when set, else " +
         "the omp task role resolved to an invocable provider/model, falling back to the first available model when " +
         "the role's model is missing from the snapshot. host is optional and defaults to this daemon. Read-only; never gated.",
@@ -5148,7 +5188,7 @@ function createToolCatalog(
           .string()
           .optional()
           .describe(
-            "Target host: a peer name from the daemon peers config, or 'local' for this daemon. Omitted → this daemon.",
+            `Host to list. ${FLEET_HOST_DESCRIPTION} Omitted → the host answering this call.`,
           ),
       },
       outputSchema: {
@@ -5187,7 +5227,7 @@ function createToolCatalog(
       } else {
         const client = resolveFleetHost(target);
         if (!client) {
-          throw new Error(`Host "${target}" is not a configured peer`);
+          throw unknownFleetHostError(target);
         }
         const payload = await client.missionControlContextFetch();
         models = payload.models;
@@ -5214,6 +5254,41 @@ function createToolCatalog(
   });
 
   registerTool(
+    "fleet_list_hosts",
+    {
+      title: "List fleet hosts",
+      description:
+        "Call this before you pass host to any fleet tool. Lists every host in the fleet: the name fleet results " +
+        "use for it, whether it is the host answering this call (self, also called 'local'), whether it is " +
+        "online, and every name a host argument may use for it (aliases, short DNS names, OS hostname, serverId). " +
+        "Names come from each host's own config; a name that fits two hosts is refused. Read-only; never gated.",
+      inputSchema: {},
+      outputSchema: {
+        hosts: z.array(
+          z.object({
+            host: z.string(),
+            self: z.boolean(),
+            state: z.enum(["online", "unreachable"]),
+            lastSeenAt: z.string().nullable(),
+            names: z.array(z.string()),
+            serverId: z.string().nullable(),
+          }),
+        ),
+        guidance: z.string(),
+      },
+    },
+    async () => ({
+      content: [],
+      structuredContent: ensureValidJson({
+        hosts: listFleetHosts(fleetHosts.directory()),
+        guidance:
+          "Pass host as listed, or any of its names. 'local' always means the host answering this call; " +
+          "when you call another daemon, use one of the names instead. Unreachable hosts fail fast.",
+      }),
+    }),
+  );
+
+  registerTool(
     "fleet_list_inventory",
     {
       title: "List fleet hosts, projects, and workspaces",
@@ -5222,7 +5297,7 @@ function createToolCatalog(
         "Lists every project and workspace across this daemon and its peers, grouped by host. " +
         "query is a case-insensitive fuzzy filter (project title/id, workspace title/id/cwd, host " +
         "name/alias) for resolving a spoken name — a name is never assumed to be a " +
-        "host. host restricts to one peer name or 'local'; omitted = every host. Unreachable hosts " +
+        "host. host restricts to one host (fleet_list_hosts names them); omitted = every host. Unreachable hosts " +
         "appear with reachable:false and an empty project list. Every workspace row carries its " +
         "wks_ id, its prj_ project id, and its cwd path (a path is never emitted as an id). " +
         "Read-only; never gated.",
@@ -5237,9 +5312,7 @@ function createToolCatalog(
         host: z
           .string()
           .optional()
-          .describe(
-            "Restrict to one host: a peer name from the daemon peers config, or 'local'. Omitted → all hosts.",
-          ),
+          .describe(`Restrict to one host. ${FLEET_HOST_DESCRIPTION} Omitted → all hosts.`),
       },
       outputSchema: {
         hosts: z.array(
@@ -5302,9 +5375,7 @@ function createToolCatalog(
         } else {
           const peer = hosts.filter((entry) => entry.hostName === target);
           if (peer.length === 0) {
-            throw new Error(
-              `Host "${target}" is not a configured peer; this daemon knows: ${knownFleetHostsText()}`,
-            );
+            throw unknownFleetHostError(target);
           }
           hosts = peer;
         }
@@ -5375,8 +5446,9 @@ function createToolCatalog(
       description:
         "Create an agent in the fleet. Anything left out is placed from the prompt (host, project, " +
         "isolation, model, agent mode); a git project root always gets a fresh worktree. workspaceId puts it " +
-        "in that existing workspace. dryRun returns the placement without creating anything. ticket links " +
-        "or creates its itsaplan ticket, with ask commented on it.",
+        "in that existing workspace. host takes any name fleet_list_hosts lists; cwd needs host. dryRun " +
+        "returns the placement without creating anything. ticket links or creates its itsaplan ticket, " +
+        "with ask commented on it.",
       inputSchema: fleetCreateAgentInputSchema,
       outputSchema: {
         agentId: z.string().optional(),
@@ -5402,6 +5474,21 @@ function createToolCatalog(
     async (inputArgs) => {
       // Before placement: routing would otherwise send the pasted file to its judge.
       assertFleetPromptText(inputArgs.initialPrompt, "initialPrompt");
+      // A path names a directory on one host. Without host, placement picks
+      // the host and the path lands wherever that is (a prod path once ran
+      // on dev), so the pair is required together.
+      if (inputArgs.cwd && !inputArgs.host && !inputArgs.workspaceId) {
+        throw new PaseoToolInputError(
+          `cwd "${inputArgs.cwd}" needs host: a path names a directory on one host. Pass host ` +
+            "(fleet_list_hosts lists every host and its names), pass workspaceId instead, or omit " +
+            "cwd to let Paseo place the agent from the prompt.",
+        );
+      }
+      // A named host must be one host before placement runs, dryRun included.
+      if (inputArgs.host) {
+        const target = fleetHosts.resolve(inputArgs.host);
+        if (!target.ok) throw new PaseoToolInputError(target.error);
+      }
       const { dryRun, ...requested } = inputArgs;
       const { args: rawArgs, plan: placementPlan } = await fillPlacement(
         options.routingService ?? null,
@@ -5590,9 +5677,7 @@ function createToolCatalog(
       const createAgentOnPeerHost = async (): Promise<PaseoToolResult> => {
         const client = resolveFleetHost(host);
         if (!client) {
-          throw new Error(
-            `Host "${host}" is not a configured peer; this daemon knows: ${knownFleetHostsText()}`,
-          );
+          throw unknownFleetHostError(host);
         }
         if (!cwd && !workspaceId) {
           throw new Error(`cwd or workspaceId is required to place the agent on host "${host}"`);
@@ -5646,22 +5731,14 @@ function createToolCatalog(
     {
       title: "Get agent activity",
       description:
-        "Return recent agent timeline entries as a curated summary, on this daemon ('local') or a peer host. " +
+        "Return recent agent timeline entries as a curated summary, from whichever host runs the agent. " +
         "agentId is fleet-wide; host is optional and resolved automatically via the fleet index. " +
-        "Same shape as the local get_agent_activity tool; proxied over peering so any caller can read any " +
-        "worker's timeline from its own host.",
+        "Proxied over peering, so any caller can read any worker's timeline.",
       inputSchema: {
         agentId: z
           .string()
           .describe("Agent UUID from fleet_list_agents data — fleet-wide, no host needed."),
-        host: z
-          .string()
-          .min(1)
-          .optional()
-          .describe(
-            "Optional host hint: a peer name from the daemon peers config, or 'local' for this daemon. " +
-              "When omitted, resolved automatically via the fleet index.",
-          ),
+        host: z.string().min(1).optional().describe(FLEET_HOST_HINT_DESCRIPTION),
         limit: z
           .number()
           .optional()
@@ -5706,7 +5783,7 @@ function createToolCatalog(
       }
       const client = resolveFleetHost(targetHost);
       if (!client) {
-        throw new Error(`Host "${targetHost}" is not a configured peer`);
+        throw unknownFleetHostError(targetHost);
       }
       const payload = await client.fetchAgentTimeline(agentId, {
         direction: "tail",
@@ -5744,14 +5821,7 @@ function createToolCatalog(
         agentId: z
           .string()
           .describe("Agent UUID from fleet_list_agents data — fleet-wide, no host needed."),
-        host: z
-          .string()
-          .min(1)
-          .optional()
-          .describe(
-            "Optional host hint: a peer name from the daemon peers config, or 'local' for this daemon. " +
-              "When omitted, resolved automatically via the fleet index.",
-          ),
+        host: z.string().min(1).optional().describe(FLEET_HOST_HINT_DESCRIPTION),
         prompt: z.string(),
         mode: z
           .enum(["steer", "interrupt"])
@@ -5845,9 +5915,7 @@ function createToolCatalog(
       const requirePeerClient = (peerHost: string): DaemonClient => {
         const client = resolveFleetHost(peerHost);
         if (!client) {
-          throw new Error(
-            `Host "${peerHost}" is not a configured peer; this daemon knows: ${knownFleetHostsText()}`,
-          );
+          throw unknownFleetHostError(peerHost);
         }
         return client;
       };
@@ -6024,14 +6092,7 @@ function createToolCatalog(
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
       "agentId must be an agent UUID from fleet_list_agents data — fleet-wide, no host needed",
     );
-  const HOST_HINT_SCHEMA = z
-    .string()
-    .min(1)
-    .optional()
-    .describe(
-      "Optional host hint: a peer name from the daemon peers config, or 'local' for this daemon. " +
-        "When omitted, resolved automatically via the fleet index.",
-    );
+  const HOST_HINT_SCHEMA = z.string().min(1).optional().describe(FLEET_HOST_HINT_DESCRIPTION);
   const PROJECT_PATH_SCHEMA = z
     .string()
     .refine(
@@ -6172,7 +6233,7 @@ function createToolCatalog(
     {
       title: "Archive an agent",
       description:
-        "Archive an agent across the fleet. agentId is an agent UUID from fleet_list_agents/fleet_search " +
+        "Archive an agent across the fleet. agentId is an agent UUID from fleet_list_agents/memory_search " +
         "data — fleet-wide, no host needed. DESTRUCTIVE: ask Vaibhav before archiving anything he did not name.",
       inputSchema: {
         agentId: AGENT_ID_SCHEMA,
@@ -6198,14 +6259,9 @@ function createToolCatalog(
       title: "Create a project",
       description:
         "Create a project at an absolute root path on a host. host is REQUIRED — the new project root " +
-        `must land somewhere (a peer name from the daemon peers config, or 'local'). ${META_GATE_NOTE}`,
+        `must land somewhere (fleet_list_hosts names the hosts). ${META_GATE_NOTE}`,
       inputSchema: {
-        host: z
-          .string()
-          .min(1)
-          .describe(
-            "Target host: a peer name from the daemon peers config, or 'local' for this daemon.",
-          ),
+        host: z.string().min(1).describe(`Target host. ${FLEET_HOST_DESCRIPTION}`),
         path: PROJECT_PATH_SCHEMA,
         title: z
           .string()
@@ -6313,7 +6369,7 @@ function createToolCatalog(
       if (agentHost && !isFleetLocalTarget(agentHost)) {
         const client = resolveFleetHost(agentHost);
         if (!client) {
-          throw new Error(`Host "${agentHost}" is not a configured peer`);
+          throw unknownFleetHostError(agentHost);
         }
         const peerResult = await executeFleetToolOnPeer(client, "fleet_ticketize_agent", {
           agentId,
@@ -6393,9 +6449,7 @@ function createToolCatalog(
   ): Promise<PaseoToolResult> => {
     const client = resolveFleetHost(targetHost);
     if (!client) {
-      throw new Error(
-        `Host "${targetHost}" is not a configured peer; this daemon knows: ${knownFleetHostsText()}`,
-      );
+      throw unknownFleetHostError(targetHost);
     }
     const peerResult = await executeFleetToolOnPeer(
       client,
@@ -6539,14 +6593,7 @@ function createToolCatalog(
           .max(2000)
           .optional()
           .describe("Free-form tag echoed back verbatim as context in the webhook payload."),
-        host: z
-          .string()
-          .min(1)
-          .optional()
-          .describe(
-            "Optional host hint: a peer name from the daemon peers config, or 'local' for this daemon. " +
-              "Omitted → resolved via the fleet index.",
-          ),
+        host: z.string().min(1).optional().describe(FLEET_HOST_HINT_DESCRIPTION),
         requestId: z
           .string()
           .optional()

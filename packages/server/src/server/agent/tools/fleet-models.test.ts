@@ -135,10 +135,13 @@ describe("fleet_list_models tool", () => {
         recentAgents: [],
       })),
     } as unknown as DaemonClient;
+    // A peer that shares none of this host's names; one that did would make
+    // "alpha" ambiguous, and ambiguous names are refused.
     const peerManager = {
-      getPeerStatus: () => ({ name: "alpha", state: "online" as const, lastSeenAt: null }),
-      getPeerStatuses: () => [{ name: "alpha", state: "online" as const, lastSeenAt: null }],
-      getPeerClient: (name: string) => (name === "alpha" ? client : null),
+      getPeerStatus: (name: string) =>
+        name === "macbook" ? { name: "macbook", state: "online" as const, lastSeenAt: null } : null,
+      getPeerStatuses: () => [{ name: "macbook", state: "online" as const, lastSeenAt: null }],
+      getPeerClient: (name: string) => (name === "macbook" ? client : null),
     } as unknown as PeerManager;
     const catalog = createCatalog(peerManager, { serverId: "srv__alpha", hostAlias: "alpha" });
 

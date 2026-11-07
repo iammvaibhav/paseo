@@ -4286,6 +4286,10 @@ export const ServerInfoStatusPayloadSchema = z
     // The daemon's missionControl.hostAlias (trimmed; null when unset), so the
     // app can resolve a central-config commanderHost that designates the alias.
     missionControlHostAlias: ServerInfoOptionalStringSchema.optional(),
+    // DNS names the daemon serves (daemon.hostnames without wildcards, IPs and
+    // loopback names), so peers accept the same host names in fleet tools that
+    // the daemon accepts for itself. Absent on older daemons.
+    hostNames: z.array(z.string()).optional(),
     version: ServerInfoOptionalStringSchema.optional(),
     // Absolute home directory of the daemon's user. The desktop app builds
     // host-side paths from it, e.g. the VS Code Web workspace file.

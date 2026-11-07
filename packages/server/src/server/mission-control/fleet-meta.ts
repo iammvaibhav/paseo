@@ -13,8 +13,9 @@ import {
   validateMetaPlan,
   validateMetaPlanShape,
   type MetaActionsLookupDependencies,
-  type MetaPeerManager,
+  type MetaTargetResolutionDependencies,
 } from "./meta-actions.js";
+import { isSameFleetHost } from "../peers/fleet-hosts.js";
 
 /**
  * Meta-action plans for fleet_meta and the split per-action tools.
@@ -28,14 +29,7 @@ import {
  * targets are shape-validated here and fully validated by the peer on apply.
  */
 
-export interface BuildFleetMetaProposalInput {
-  serverId: string;
-  /** This daemon's OS hostname (optional — the tool catalog lacks it). */
-  hostName?: string;
-  /** This daemon's mission-control host alias (missionControl.hostAlias). */
-  hostAlias?: string | null;
-  /** The fleet map (peer-manager) the target host resolves through. */
-  peerManager?: MetaPeerManager | null;
+export interface BuildFleetMetaProposalInput extends MetaTargetResolutionDependencies {
   metaPlan: MissionControlMetaPlan;
   /** Live-state lookups for validation (registries + agent records). */
   lookup: MetaActionsLookupDependencies;
@@ -49,20 +43,12 @@ export interface BuildFleetMetaProposalInput {
 export async function validateFleetMetaPlan(
   input: BuildFleetMetaProposalInput,
 ): Promise<MissionControlMetaPlan> {
-  const { serverId, metaPlan, lookup } = input;
+  const { metaPlan, lookup } = input;
   // Resolve the target host BEFORE any registry validation: a plan aimed at a
   // peer must not be judged against THIS host's registries (the bug that put
   // a create_project aimed at a peer into the commander's own registry), and
   // an unknown host is refused here, before the gate.
-  const target = resolveMetaTargetHost(
-    {
-      serverId,
-      hostName: input.hostName,
-      hostAlias: input.hostAlias,
-      peerManager: input.peerManager,
-    },
-    metaPlan.serverId,
-  );
+  const target = resolveMetaTargetHost(input, metaPlan.serverId);
   if (!target.ok) {
     throw new Error(target.error);
   }
@@ -119,10 +105,7 @@ export interface SplitMetaToolArgs {
   destination?: string;
 }
 
-export interface SplitMetaToolDeps {
-  serverId: string;
-  hostAlias?: string | null;
-  peerManager?: MetaPeerManager | null;
+export interface SplitMetaToolDeps extends MetaTargetResolutionDependencies {
   lookup: SplitMetaLookupDependencies;
   /** The fleet id index (02): bare id -> owning host ("local" or peer name). */
   resolveFleetId: (id: string) => Promise<FleetIdResolution>;
@@ -134,15 +117,9 @@ type ResolvedMetaToolTarget =
   | { ok: true; host: string; label?: string }
   | { ok: false; error: string };
 
-/** Same-fleet-host comparison as the fleet tools (this daemon's own aliases
- *  count as "local"; peer names compare case-insensitively). */
+/** Same-fleet-host comparison as the fleet tools: both names resolve to one host. */
 function metaHostsMatch(deps: SplitMetaToolDeps, hostA: string, hostB: string): boolean {
-  const localA = resolveMetaTargetHost(deps, hostA);
-  const localB = resolveMetaTargetHost(deps, hostB);
-  if (localA.ok && localA.kind === "local" && localB.ok && localB.kind === "local") {
-    return true;
-  }
-  return hostA.trim().toLowerCase() === hostB.trim().toLowerCase();
+  return isSameFleetHost({ resolve: (host) => resolveMetaTargetHost(deps, host) }, hostA, hostB);
 }
 
 async function lookupLocalMetaTarget(
@@ -321,11 +298,5 @@ export async function buildSplitMetaPlan(
       metaPlan.destination = destination;
     }
   }
-  return validateFleetMetaPlan({
-    serverId: deps.serverId,
-    hostAlias: deps.hostAlias,
-    peerManager: deps.peerManager,
-    metaPlan,
-    lookup: deps.lookup,
-  });
+  return validateFleetMetaPlan({ ...deps, metaPlan, lookup: deps.lookup });
 }

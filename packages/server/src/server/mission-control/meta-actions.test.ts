@@ -1124,7 +1124,8 @@ describe("resolveMetaTargetHost (serverId → host resolution)", () => {
   test("an unknown host is refused", () => {
     expect(resolveMetaTargetHost(deps, "ghost")).toMatchObject({
       ok: false,
-      error: 'Host "ghost" is not a configured peer or this host',
+      reason: "unknown",
+      error: expect.stringContaining('Host "ghost" is not a configured peer or this host.'),
     });
     // No fleet map at all: only local/this-host ids resolve.
     const noFleet = resolveMetaTargetHost({ ...deps, peerManager: null }, "macbook");
@@ -1252,7 +1253,7 @@ describe("applyMetaFromProposal routing (target host decides where the apply run
     );
     expect(result).toMatchObject({
       ok: false,
-      error: 'Host "ghost" is not a configured peer or this host',
+      error: expect.stringContaining('Host "ghost" is not a configured peer or this host.'),
     });
     expect(h.workspaces.get("ws-a")?.title).toBeNull();
   });

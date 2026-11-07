@@ -375,6 +375,7 @@ export const PASEO_TOOL_CATALOG = {
   },
 
   // Fleet (agents and workspaces across hosts)
+  fleet_list_hosts: { label: "List fleet hosts", completedLabel: "Listed fleet hosts" },
   fleet_list_agents: {
     label: "List fleet agents",
     completedLabel: "Listed fleet agents",

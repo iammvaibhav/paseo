@@ -22,6 +22,12 @@ import { formatBaseWorkspaceArchiveRefusal } from "../workspace-archive-service.
 import { areEquivalentPaths } from "../../utils/path.js";
 import { toStoredAgentRecord } from "../agent/agent-projections.js";
 import { readOmpSessionForTransfer } from "../agent/providers/omp/session-transfer.js";
+import {
+  createFleetHostResolver,
+  LOCAL_FLEET_HOST,
+  type FleetHostResolution,
+  type FleetPeerIdentity,
+} from "../peers/fleet-hosts.js";
 
 /**
  * M5 meta actions: the daemon-side executor for the Commander's `fleet_meta`
@@ -370,6 +376,8 @@ export interface MetaPeerManager {
   getPeerClient(name: string): DaemonClient | null;
   getPeerServerId?(name: string): string | null;
   getPeerStatuses?(): MissionControlPeerStatus[];
+  /** Each peer's declared identity (serverId, hostname, alias, DNS names), for fleet host names. */
+  getPeerIdentities?(): FleetPeerIdentity[];
   /**
    * Resolve ANY of a peer's identities — config name, serverId, hostname, or
    * Mission Control host alias — to its config name. This is the only
@@ -392,14 +400,18 @@ export interface MetaActionsLookupDependencies {
 
 /**
  * The host-identity + fleet-map lookups `resolveMetaTargetHost` needs.
- * `hostName`/`hostAlias` are optional: the tool catalog (fleet_meta) has the
- * daemon's serverId + hostAlias but no OS hostname; bootstrap has all three.
+ * Everything but serverId is optional: each name source a caller passes is
+ * one more name this host or a peer answers to (peers/fleet-hosts.ts).
  */
 export interface MetaTargetResolutionDependencies {
   serverId: string;
   hostName?: string;
   hostAlias?: string | null;
   peerManager?: MetaPeerManager | null;
+  /** This daemon's DNS names (daemon.hostnames), read per call. */
+  hostNames?: () => readonly string[];
+  /** Central routing.hostAliases (serverId → names), read per call. */
+  hostAliases?: () => Readonly<Record<string, readonly string[]>> | null | undefined;
 }
 
 /** What every action needs from the live daemon to validate and apply. */
@@ -458,52 +470,30 @@ export type MetaPlanActionResult = { ok: true; summary: string } | { ok: false; 
  * Where a meta plan's `serverId` resolves. "local" means apply on THIS daemon
  * against its own registries; "peer" means forward the plan to that peer over
  * peering (fleetMetaApply), which validates against ITS registries and
- * applies there. The proposal/card always lives on the commander host — only
- * the apply hops.
+ * applies there.
  */
-export type ResolvedMetaTarget =
-  | { ok: true; kind: "local"; label: string }
-  | { ok: true; kind: "peer"; peerName: string; label: string }
-  | { ok: false; error: string };
+export type ResolvedMetaTarget = FleetHostResolution;
 
 /**
- * Resolve a meta plan's target host (`metaPlan.serverId`) through the same
- * fleet map the fleet tools use (peer-manager), accepting the aliases the
- * Commander writes:
- *   - absent / "local"              → this daemon
- *   - this daemon's serverId / hostName / hostAlias → this daemon
- *   - a peer name from the fleet map → that peer
- * Anything else is an unknown host (refused before the gate by
- * buildFleetMetaProposalInput, and refused at apply by applyMetaFromProposal —
- * belt and suspenders, the fleet map may change while a proposal sits
- * pending).
+ * Resolve a meta plan's target host (`metaPlan.serverId`) with the fleet host
+ * resolver every fleet tool uses (peers/fleet-hosts.ts): absent or "local",
+ * or any name this daemon answers to, is this daemon; any name of a peer is
+ * that peer. Unknown and ambiguous names are refused, before the apply and
+ * again at apply time (the fleet map may change in between).
  */
 export function resolveMetaTargetHost(
   deps: MetaTargetResolutionDependencies,
-  serverId: string | undefined,
+  serverId: string | null | undefined,
 ): ResolvedMetaTarget {
-  const raw = serverId?.trim() || "local";
-  if (raw === "local") {
-    return { ok: true, kind: "local", label: "local" };
-  }
-  // Own identity compares case-insensitively: the Commander echoes fleet
-  // labels verbatim, and the machine/alias casing must never turn this
-  // daemon into an "unknown host". Peer names stay exact (config values).
-  const rawLower = raw.toLowerCase();
-  if (deps.serverId.trim().toLowerCase() === rawLower) {
-    return { ok: true, kind: "local", label: raw };
-  }
-  if (deps.hostName?.trim().toLowerCase() === rawLower) {
-    return { ok: true, kind: "local", label: raw };
-  }
-  if (deps.hostAlias?.trim().toLowerCase() === rawLower) {
-    return { ok: true, kind: "local", label: raw };
-  }
-  const peerStatus = deps.peerManager?.getPeerStatus(raw) ?? null;
-  if (peerStatus) {
-    return { ok: true, kind: "peer", peerName: peerStatus.name, label: peerStatus.name };
-  }
-  return { ok: false, error: `Host "${raw}" is not a configured peer or this host` };
+  return createFleetHostResolver({
+    selfLabel: deps.hostAlias?.trim() || LOCAL_FLEET_HOST,
+    serverId: deps.serverId,
+    hostname: deps.hostName,
+    hostAlias: deps.hostAlias,
+    hostNames: deps.hostNames,
+    hostAliases: deps.hostAliases,
+    peerManager: deps.peerManager,
+  }).resolve(serverId);
 }
 
 function requireTargetId(plan: MissionControlMetaPlan): string {

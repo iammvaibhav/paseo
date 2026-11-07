@@ -1848,6 +1848,13 @@ describe("fleet_create_agent placement and model form from a remote MCP client",
         .manager as unknown as ProviderSnapshotManager,
       callerAgentId: "worker-1",
       serverId: "host-a",
+      // The hosts routing places on are this daemon's peers.
+      peerManager: createFakePeerHarness({
+        statuses: [
+          { name: "dev", state: "online", lastSeenAt: null },
+          { name: "blrofc3", state: "online", lastSeenAt: null },
+        ],
+      }).peerManager,
       routingService,
       logger: createTestLogger(),
     });
@@ -1883,6 +1890,268 @@ describe("fleet_create_agent placement and model form from a remote MCP client",
         provider: "omp/openai/gpt-5.4",
         agentMode: "solo",
       },
+    });
+  });
+});
+
+describe("fleet_create_agent host names (PASEO-96)", () => {
+  const WORKSPACE_ID = "wks_b0fd1234567890abcd";
+
+  /**
+   * prod as configured live: no missionControl.hostAlias, so fleet results
+   * call it "local"; daemon.hostnames carries prod.netbird.cloud. The peer
+   * declared its own alias and DNS name in server_info.
+   */
+  function createProdCatalog(
+    input: {
+      agentManager?: AgentManager;
+      agentStorage?: AgentStorage;
+      workspaceCwd?: string;
+      hostAliases?: Record<string, string[]>;
+      routingService?: RoutingService;
+    } = {},
+  ) {
+    const createAgent = vi.fn(async () => ({
+      id: "peer-agent-1",
+      provider: "codex",
+      status: "running",
+      cwd: "/repo",
+      currentModeId: null,
+      availableModes: [],
+      pendingPermissions: [],
+    }));
+    const { client, peerManager } = createFakePeerHarness({
+      client: {
+        createAgent,
+        // The created agent's first turn is running, so the create returns at once.
+        missionControlToolsExecute: vi.fn(async (request: { name: string }) => ({
+          ok: true,
+          name: request.name,
+          structuredContent: { running: { activeTurnId: "peer-turn-1" } },
+        })),
+      } as Partial<DaemonClient>,
+    });
+    Object.assign(peerManager, {
+      getPeerIdentities: () => [
+        {
+          name: "macbook",
+          serverId: "srv_mac",
+          hostname: "Vaibhavs-MacBook-Pro",
+          missionControlHostAlias: "Laptop",
+          hostNames: ["macbook.netbird.cloud"],
+        },
+      ],
+    });
+    const workspace = {
+      workspaceId: WORKSPACE_ID,
+      projectId: "prj_1",
+      cwd: input.workspaceCwd ?? "/srv/ws",
+      displayName: "eager-cougar",
+      archivedAt: null,
+    };
+    const catalog = createPaseoToolCatalog({
+      agentManager: input.agentManager ?? ({ getPluginTools: () => [] } as unknown as AgentManager),
+      agentStorage:
+        input.agentStorage ??
+        (asAgentStorage({
+          get: async () => null,
+          listAll: async () => [],
+        }) as unknown as AgentStorage),
+      workspaceRegistry: {
+        get: async (id: string) => (id === WORKSPACE_ID ? workspace : null),
+        listAll: async () => [workspace],
+      } as never,
+      providerSnapshotManager: createProviderSnapshotManagerStub()
+        .manager as unknown as ProviderSnapshotManager,
+      peerManager,
+      callerLabels: { "paseo.mcp-client": "grok-bot" },
+      serverId: "srv_lkNe8rjHmlLG",
+      hostName: "vaibhav-dev-583222",
+      fleetHostNames: () => ["prod.netbird.cloud", "paseo.thevm.space"],
+      fleetHostAliases: () => input.hostAliases,
+      ...(input.routingService ? { routingService: input.routingService } : {}),
+      missionControlService: createMissionControlServiceStub(),
+      logger: createTestLogger(),
+    });
+    return { catalog, client, createAgent };
+  }
+
+  const spawn = { provider: "codex/gpt-5.4", initialPrompt: "fix the bug", title: "fix" };
+
+  test("prod, its DNS name, hostname and serverId run on this host like local", async () => {
+    const { catalog, createAgent } = createProdCatalog();
+    for (const host of [
+      "local",
+      "prod",
+      "PROD",
+      "prod.netbird.cloud",
+      "vaibhav-dev-583222",
+      "srv_lkNe8rjHmlLG",
+    ]) {
+      // The local branch validates the workspace against this host's
+      // registry; a peer would be asked over the wire instead.
+      await expect(
+        catalog.executeTool("fleet_create_agent", {
+          ...spawn,
+          host,
+          workspaceId: "wks_c0fd1234567890abcd",
+        }),
+        host,
+      ).rejects.toThrow(/is not a live workspace on host "local"; available workspaces: wks_b0fd/);
+    }
+    expect(createAgent).not.toHaveBeenCalled();
+  });
+
+  test("host prod creates the agent on this host", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "fleet-create-prod-"));
+    const workspaceCwd = path.join(root, "worktree");
+    mkdirSync(workspaceCwd);
+    const storage = new AgentStorage(path.join(root, "agents"), createTestLogger());
+    const agentManager = new AgentManager({
+      clients: createTestAgentClients(),
+      registry: storage,
+      logger: createTestLogger(),
+    });
+    const { catalog, createAgent } = createProdCatalog({
+      agentManager,
+      agentStorage: storage,
+      workspaceCwd,
+    });
+    try {
+      const result = await catalog.executeTool("fleet_create_agent", {
+        ...spawn,
+        host: "prod",
+        workspaceId: WORKSPACE_ID,
+      });
+      expect(result.structuredContent).toMatchObject({
+        type: "codex",
+        cwd: workspaceCwd,
+        workspaceId: WORKSPACE_ID,
+      });
+      expect(agentManager.listAgents()).toHaveLength(1);
+      expect(createAgent).not.toHaveBeenCalled();
+    } finally {
+      agentManager.prepareForShutdown();
+      await Promise.all(
+        agentManager.listAgents().map((agent) => agentManager.closeAgent(agent.id)),
+      );
+      await agentManager.flushForShutdown();
+      await storage.flush();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("a routing.hostAliases name resolves to its host", async () => {
+    const { catalog, createAgent } = createProdCatalog({
+      hostAliases: { srv_lkNe8rjHmlLG: ["gateway"], srv_mac: ["studio"] },
+    });
+    await expect(
+      catalog.executeTool("fleet_create_agent", {
+        ...spawn,
+        host: "gateway",
+        workspaceId: "wks_c0fd1234567890abcd",
+      }),
+    ).rejects.toThrow(/not a live workspace on host "local"/);
+    await catalog.executeTool("fleet_create_agent", { ...spawn, host: "studio", cwd: "/repo" });
+    expect(createAgent).toHaveBeenCalledTimes(1);
+  });
+
+  test("a peer answers to its config name and the names its server_info declared", async () => {
+    const { catalog, createAgent } = createProdCatalog();
+    for (const host of ["macbook", "Laptop", "macbook.netbird.cloud", "Vaibhavs-MacBook-Pro"]) {
+      const created = await catalog.executeTool("fleet_create_agent", {
+        ...spawn,
+        host,
+        cwd: "/repo",
+      });
+      expect(created.structuredContent, host).toMatchObject({ agentId: "peer-agent-1" });
+    }
+    expect(createAgent).toHaveBeenCalledTimes(4);
+  });
+
+  test("an unknown host is refused before anything is created, with every host's names", async () => {
+    const { catalog, createAgent } = createProdCatalog();
+    const error = await catalog
+      .executeTool("fleet_create_agent", { ...spawn, host: "ghost", cwd: "/repo" })
+      .then(() => null)
+      .catch((caught: unknown) => (caught instanceof Error ? caught.message : String(caught)));
+    expect(error).toContain('Host "ghost" is not a configured peer or this host.');
+    expect(error).toContain("local (this host; also prod");
+    expect(error).toContain("macbook (online; also Laptop");
+    expect(error).toContain("fleet_list_hosts");
+    expect(createAgent).not.toHaveBeenCalled();
+  });
+
+  test("a name two hosts answer to is refused, never guessed", async () => {
+    const { catalog, createAgent } = createProdCatalog({
+      hostAliases: { srv_lkNe8rjHmlLG: ["builder"], srv_mac: ["builder"] },
+    });
+    await expect(
+      catalog.executeTool("fleet_create_agent", { ...spawn, host: "builder", cwd: "/repo" }),
+    ).rejects.toThrow(/Host "builder" is ambiguous: it names this host \(local\) and macbook/);
+    expect(createAgent).not.toHaveBeenCalled();
+  });
+
+  test("workspaceId decides the host: a matching name passes, another host is refused", async () => {
+    const { catalog, createAgent } = createProdCatalog();
+    // A peer named for a workspace on this host.
+    await expect(
+      catalog.executeTool("fleet_create_agent", {
+        ...spawn,
+        host: "Laptop",
+        workspaceId: WORKSPACE_ID,
+      }),
+    ).rejects.toThrow(`Workspace "${WORKSPACE_ID}" is on host "local", not "macbook"`);
+    expect(createAgent).not.toHaveBeenCalled();
+  });
+
+  test("cwd needs host; a peer needs cwd or workspaceId", async () => {
+    const { catalog, createAgent } = createProdCatalog();
+    await expect(
+      catalog.executeTool("fleet_create_agent", { ...spawn, cwd: "/home/ubuntu/experiments" }),
+    ).rejects.toThrow(/cwd "\/home\/ubuntu\/experiments" needs host: .*fleet_list_hosts/);
+    await expect(
+      catalog.executeTool("fleet_create_agent", { ...spawn, host: "macbook" }),
+    ).rejects.toThrow('cwd or workspaceId is required to place the agent on host "macbook"');
+    expect(createAgent).not.toHaveBeenCalled();
+  });
+
+  test("omitted host without workspaceId is placed; a named prod pins placement to this host", async () => {
+    const placement = (hostName: string, rootPath: string) => ({
+      kind: "project",
+      serverId: `srv-${hostName}`,
+      hostLabel: hostName,
+      hostName,
+      projectId: `prj_${hostName}`,
+      projectTitle: hostName,
+      rootPath,
+      probability: 0.5,
+    });
+    const routingService = {
+      describeCwd: async () => ({ isolation: "local", scratch: false }),
+      suggest: async () => ({
+        placement: placement("macbook", "/Users/vaibhav/projects/app"),
+        alternatives: [placement("local", "/home/ubuntu/experiments")],
+        isolation: "worktree",
+        agentMode: "solo",
+        model: "omp:anthropic/claude-opus-5-5",
+        profile: "personal",
+        latencyMs: 1,
+      }),
+    } as unknown as RoutingService;
+    const { catalog } = createProdCatalog({ routingService });
+
+    const auto = await catalog.executeTool("fleet_create_agent", { ...spawn, dryRun: true });
+    expect(auto.structuredContent).toMatchObject({
+      plan: { host: "macbook", cwd: "/Users/vaibhav/projects/app" },
+    });
+    const pinned = await catalog.executeTool("fleet_create_agent", {
+      ...spawn,
+      host: "prod",
+      dryRun: true,
+    });
+    expect(pinned.structuredContent).toMatchObject({
+      plan: { host: "local", cwd: "/home/ubuntu/experiments" },
     });
   });
 });

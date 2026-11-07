@@ -60,6 +60,7 @@ import type { TerminalActivity } from "@getpaseo/protocol/terminal-activity";
 import { MAX_WEBSOCKET_MESSAGE_BYTES } from "@getpaseo/protocol/websocket-message-limit";
 import type { HostnamesConfig } from "./hostnames.js";
 import { isHostnameAllowed } from "./hostnames.js";
+import { fleetHostNamesFromConfig } from "./peers/fleet-hosts.js";
 import {
   Session,
   type SessionLifecycleIntent,
@@ -686,6 +687,8 @@ export class VoiceAssistantWebSocketServer {
   private connectionLifecycle: "starting" | "accepting" | "stopping" = "accepting";
   private readonly advertiseDaemonStatusRpc: boolean;
   private readonly advertiseRelayConfig: boolean;
+  /** daemon.hostnames as configured now (reloads apply live). */
+  private readonly readHostnames: () => HostnamesConfig | undefined;
   private readonly directorySync = new DirectorySyncService();
   private readonly pluginRuntime: SessionOptions["pluginRuntime"];
   private readonly orchestrationSkills: SessionOptions["orchestrationSkills"];
@@ -781,6 +784,7 @@ export class VoiceAssistantWebSocketServer {
     this.workspaceSetupRuntime = workspaceSetupRuntime;
     this.advertiseDaemonStatusRpc = wsConfig.daemonStatusRpc !== false;
     this.advertiseRelayConfig = wsConfig.relayConfig !== false;
+    this.readHostnames = () => wsConfig.getHostnames?.() ?? wsConfig.hostnames;
     this.connectionLifecycle = initialConnectionLifecycle(wsConfig.startPaused);
     this.serverId = serverId;
     this.daemonVersion = requireDaemonVersion(daemonVersion);
@@ -2153,6 +2157,9 @@ export class VoiceAssistantWebSocketServer {
       // central-config commanderHost designation naming the alias resolves.
       missionControlHostAlias:
         this.daemonConfigStore.get().missionControl?.hostAlias?.trim() || undefined,
+      // Additive: the DNS names this host answers to, so peers resolve them as
+      // this host in fleet tools (peers/fleet-hosts.ts).
+      hostNames: fleetHostNamesFromConfig(this.readHostnames()),
       version: this.daemonVersion,
       // COMPAT(homeDirectory): added 2026-10-08; required after 2027-04-08.
       homeDirectory: homedir(),

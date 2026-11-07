@@ -10,9 +10,11 @@ import { z } from "zod";
 
 import { addModelVisibleStructuredContent } from "../agent/tools/paseo-tool-serialization.js";
 import {
+  createCatalogFleetHostResolver,
   createPaseoToolCatalog,
   type PaseoToolHostDependencies,
 } from "../agent/tools/paseo-tools.js";
+import { FLEET_HOST_HINT_DESCRIPTION, listFleetHosts } from "../peers/fleet-hosts.js";
 import { FLEET_WAIT_RESULT_SCHEMA } from "../agent/tools/fleet-wait.js";
 import type {
   PaseoToolCatalog,
@@ -30,8 +32,33 @@ import {
 import { loadFleetSkillText } from "./skill.js";
 
 export const FLEET_MCP_INSTRUCTIONS =
-  "You control the whole Paseo fleet across all peered hosts. Every Paseo tool is listed directly. " +
-  "Call paseo_skill before using the paseo CLI for host-local work.";
+  "You control the whole Paseo fleet across all peered hosts. Tools named fleet_* and memory_* act on " +
+  "any host; call fleet_list_hosts before you pass host, and pass one of the names it lists. Every other " +
+  "tool acts only on the host serving this endpoint. Call paseo_skill for the full guide.";
+
+/**
+ * Catalog tools /mcp/fleet does not list, each with the fleet tool that does
+ * the same job on any host. Agent catalogs keep them: there they act for the
+ * calling agent (its subagents, its workspace).
+ */
+export const FLEET_MCP_REPLACED_TOOLS: Readonly<Record<string, string>> = {
+  list_hosts: "fleet_list_hosts",
+  create_agent: "fleet_create_agent",
+  send_agent_prompt: "fleet_send_prompt",
+  get_agent_status: "fleet_agent_status",
+  list_agents: "fleet_list_agents",
+  get_agent_activity: "fleet_get_agent_activity",
+  cancel_agent: "fleet_cancel_agent",
+  kill_agent: "fleet_kill_agent",
+  update_agent: "fleet_update_agent",
+  set_agent_mode: "fleet_update_agent",
+  archive_agent: "fleet_archive_agent",
+  archive_workspace: "fleet_archive_workspace",
+  rename_workspace: "fleet_rename_workspace",
+  list_workspaces: "fleet_list_inventory",
+  list_models: "fleet_list_models",
+  itsaplan_ticketize: "fleet_ticketize_agent",
+};
 
 export interface FleetMcpServerOptions {
   hostDependencies: PaseoToolHostDependencies;
@@ -50,15 +77,10 @@ export interface FleetMcpServerOptions {
 // Tools that start or prompt an agent. On /mcp/fleet their notifyOnFinish
 // means "POST to my webhook", never the catalog's agent-thread notification:
 // the MCP principal runs as the Commander, so that would wake the Commander.
-const NOTIFY_TOOLS = new Set([
-  "fleet_create_agent",
-  "fleet_send_prompt",
-  "create_agent",
-  "send_agent_prompt",
-]);
-const CREATE_TOOLS = new Set(["fleet_create_agent", "create_agent"]);
+const NOTIFY_TOOLS = new Set(["fleet_create_agent", "fleet_send_prompt"]);
+const CREATE_TOOLS = new Set(["fleet_create_agent"]);
 // Tools whose own schema has notifyOnFinish; it is forced off before they run.
-const CATALOG_NOTIFY_TOOLS = new Set(["fleet_create_agent", "create_agent", "send_agent_prompt"]);
+const CATALOG_NOTIFY_TOOLS = new Set(["fleet_create_agent"]);
 const WAIT_TOOL_MAX_SECONDS = 1800;
 
 const NOTIFY_INPUT_SHAPE = {
@@ -111,13 +133,20 @@ function withNotifyInput(schema: PaseoToolConfig["inputSchema"]): PaseoToolConfi
   return { ...schema, ...NOTIFY_INPUT_SHAPE };
 }
 
-/** A tool's input as one object schema; null when it is not an object (unions, effects). */
+/**
+ * A tool's input as one object schema; null when it is not an object (unions,
+ * effects). Upstream's connected-host selector (serverId "from list_hosts") is
+ * left out: list_hosts is not on this surface and fleet_* tools reach the
+ * other hosts, so a tool that kept the selector acts on this host only.
+ */
 function inputObjectSchema(tool: PaseoToolDefinition): z.ZodObject | null {
   const schema = tool.inputSchema;
-  if (schema === undefined) return z.object({});
-  if (schema instanceof z.ZodObject) return schema;
-  if (schema instanceof z.ZodType) return null;
-  return z.object(schema);
+  let object: z.ZodObject;
+  if (schema === undefined) object = z.object({});
+  else if (schema instanceof z.ZodObject) object = schema;
+  else if (schema instanceof z.ZodType) return null;
+  else object = z.object(schema);
+  return Object.hasOwn(object.shape, "serverId") ? object.omit({ serverId: true }) : object;
 }
 
 function mcpInputObject(tool: PaseoToolDefinition): PaseoToolConfig["inputSchema"] {
@@ -163,7 +192,7 @@ function closestArgName(key: string, known: readonly string[]): string | null {
 const RETIRED_ARGS: Record<string, string> = {
   // COMPAT(retired-background-arg): upstream #5039 dropped it (merged 2026-10-29); remove after 2027-01-31.
   "fleet_create_agent.background":
-    "removed: fleet_create_agent never waits for the run, so drop it; background now marks a hidden agent on create_agent or a hidden workspace on create_workspace",
+    "removed: fleet_create_agent never waits for the run, so drop it",
 };
 
 /**
@@ -208,14 +237,14 @@ const ACTIVE_TURN_STATUS_SCHEMA = z.object({
 const NOTIFY_AGENT_ID_SCHEMA = z
   .string()
   .min(1)
-  .describe("Agent UUID from fleet_list_agents/fleet_search data — fleet-wide, no host needed.");
+  .describe("Agent UUID from fleet_list_agents/memory_search data — fleet-wide, no host needed.");
 
 const NOTIFY_ON_FINISH_INPUT = z.object({
   agents: z
     .array(
       z.object({
         agentId: NOTIFY_AGENT_ID_SCHEMA,
-        host: z.string().min(1).optional().describe("Optional host hint."),
+        host: z.string().min(1).optional().describe(FLEET_HOST_HINT_DESCRIPTION),
         turnId: z
           .string()
           .min(1)
@@ -425,11 +454,13 @@ export async function createFleetMcpServer(options: FleetMcpServerOptions): Prom
     args: Record<string, unknown>,
   ) {
     const agentId = typeof args.agentId === "string" ? args.agentId : "";
-    let host = "local";
+    // The tool's own result names the agent's host canonically ("local", this
+    // host's alias or the peer name); the argument is only a hint.
+    let targetHost = "local";
     if (typeof structured.host === "string") {
-      host = structured.host;
+      targetHost = structured.host;
     } else if (typeof args.host === "string") {
-      host = args.host;
+      targetHost = args.host;
     }
     const title = typeof structured.title === "string" ? structured.title : null;
     const running = structured.running as { activeTurnId?: string | null } | null | undefined;
@@ -440,7 +471,6 @@ export async function createFleetMcpServer(options: FleetMcpServerOptions): Prom
     } else if (typeof args.context === "string") {
       context = args.context;
     }
-    const targetHost = typeof args.host === "string" ? args.host : host;
     return { agentId, targetHost, title, turnId, context };
   }
 
@@ -468,10 +498,10 @@ export async function createFleetMcpServer(options: FleetMcpServerOptions): Prom
       structured,
       args,
     );
-    const isLocal = targetHost === "local" || targetHost === "";
+    const target = createCatalogFleetHostResolver(options.hostDependencies).resolve(targetHost);
     const peerClient =
-      !isLocal && options.hostDependencies.peerManager
-        ? options.hostDependencies.peerManager.getPeerClient(targetHost)
+      target.ok && target.kind === "peer"
+        ? (options.hostDependencies.peerManager?.getPeerClient(target.peerName) ?? null)
         : null;
 
     finishNotifier.armStatusReport({
@@ -569,12 +599,22 @@ export async function createFleetMcpServer(options: FleetMcpServerOptions): Prom
     return handleNotifyOnFinish(name, args, signal);
   };
 
+  // Tools without the fleet_/memory_ prefix act on this daemon only; say so
+  // in their descriptions, because MCP gateways show clients descriptions,
+  // not the server instructions.
+  const selfEntry = listFleetHosts(
+    createCatalogFleetHostResolver(options.hostDependencies).directory(),
+  )[0];
+  const selfName = selfEntry?.names.find((name) => name !== "local") ?? "this host";
+  const hostLocalNote = ` Acts only on ${selfName}, the host serving this MCP endpoint; fleet_* tools act on any host.`;
   for (const tool of catalog.tools.values()) {
+    if (Object.hasOwn(FLEET_MCP_REPLACED_TOOLS, tool.name)) continue;
+    const fleetWide = tool.name.startsWith("fleet_") || tool.name.startsWith("memory_");
     server.registerTool(
       tool.name,
       {
         title: tool.title,
-        description: tool.description,
+        description: fleetWide ? tool.description : `${tool.description}${hostLocalNote}`,
         // Loose, so unknown arguments reach runCatalogTool and get a clear
         // error instead of being stripped silently.
         inputSchema: mcpInputObject(tool),

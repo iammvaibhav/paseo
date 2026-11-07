@@ -13,6 +13,7 @@ import {
   resolveTargetHost,
   type RegisterFleetControlToolsOptions,
 } from "./fleet-control-tools.js";
+import { FLEET_HOST_HINT_DESCRIPTION } from "../../peers/fleet-hosts.js";
 
 /**
  * Make an agent's stored timeline fetchable without ever spawning its
@@ -198,15 +199,9 @@ export function registerFleetTranscriptTool(options: RegisterFleetControlToolsOp
           .string()
           .min(1)
           .describe(
-            "Agent UUID from fleet_list_agents/fleet_search data — fleet-wide, no host needed.",
+            "Agent UUID from fleet_list_agents/memory_search data — fleet-wide, no host needed.",
           ),
-        host: z
-          .string()
-          .min(1)
-          .optional()
-          .describe(
-            "Optional host hint (peer name or 'local'). Omitted → resolved via the fleet index.",
-          ),
+        host: z.string().min(1).optional().describe(FLEET_HOST_HINT_DESCRIPTION),
         cursor: z
           .string()
           .min(1)

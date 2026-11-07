@@ -11,6 +11,7 @@ import {
 } from "./fleet-control-tools.js";
 import { seedStoredTimeline } from "./fleet-transcript.js";
 import type { PaseoToolExecutionContext } from "./types.js";
+import { FLEET_HOST_HINT_DESCRIPTION } from "../../peers/fleet-hosts.js";
 
 const FLEET_WAIT_DEFAULT_SECONDS = 600;
 const FLEET_WAIT_MAX_SECONDS = 1800;
@@ -517,12 +518,8 @@ export async function resolvePromptedTurn(input: {
 const WAIT_AGENT_ID_SCHEMA = z
   .string()
   .min(1)
-  .describe("Agent UUID from fleet_list_agents/fleet_search data — fleet-wide, no host needed.");
-const WAIT_HOST_SCHEMA = z
-  .string()
-  .min(1)
-  .optional()
-  .describe("Optional host hint (peer name or 'local'). Omitted → resolved via the fleet index.");
+  .describe("Agent UUID from fleet_list_agents/memory_search data — fleet-wide, no host needed.");
+const WAIT_HOST_SCHEMA = z.string().min(1).optional().describe(FLEET_HOST_HINT_DESCRIPTION);
 const WAIT_TURN_ID_SCHEMA = z
   .string()
   .min(1)

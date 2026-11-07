@@ -4,31 +4,41 @@ Paseo runs coding agents on several machines ("hosts"). Every host runs a Paseo 
 
 ## Use MCP for anything that spans hosts
 
-Every Paseo tool is listed directly on this server. Start with these:
+Tools named `fleet_*` and `memory_*` act on any host. Start with these:
 
-| Need                                       | Tool                                                        |
-| ------------------------------------------ | ----------------------------------------------------------- |
-| Which hosts, projects and workspaces exist | `fleet_list_inventory`                                      |
-| Which agents exist, by state               | `fleet_list_agents`                                         |
-| How one agent is doing                     | `fleet_agent_status`                                        |
-| What an agent did, in brief                | `fleet_get_agent_activity`                                  |
-| An agent's full transcript, page by page   | `fleet_get_transcript`                                      |
-| Who worked on something                    | `fleet_search`                                              |
-| Which models to use                        | `fleet_list_models` (only the models the owner uses)        |
-| Where a new task should run                | `suggest_placement`                                         |
-| Start an agent                             | `fleet_create_agent`                                        |
-| Talk to a running agent                    | `fleet_send_prompt`                                         |
-| Bring back an archived agent or workspace  | `fleet_unarchive_agent`, `fleet_unarchive_workspace`        |
-| Wait for one agent's turn to end           | `fleet_wait_agent`                                          |
-| Wait for several agents (any or all)       | `fleet_wait_agents`                                         |
-| Webhook when agents finish                 | `fleet_notify_on_finish`                                    |
-| Webhook delivery history (missed events)   | `fleet_webhook_deliveries`                                  |
-| Give an agent a document, log or image     | `attachments` on `fleet_create_agent` / `fleet_send_prompt` |
-| See an image an agent produced             | `fleet_read_image`                                          |
+| Need                                       | Tool                                                           |
+| ------------------------------------------ | -------------------------------------------------------------- |
+| Which hosts exist, and the names they take | `fleet_list_hosts`                                             |
+| Which projects and workspaces exist        | `fleet_list_inventory`                                         |
+| Which agents exist, by state               | `fleet_list_agents`                                            |
+| How one agent is doing                     | `fleet_agent_status`                                           |
+| What an agent did, in brief                | `fleet_get_agent_activity`                                     |
+| An agent's full transcript, page by page   | `fleet_get_transcript`                                         |
+| Who worked on something, what was decided  | `memory_search` (`byAgent: true`), then `memory_get`           |
+| Which models to use                        | `fleet_list_models` (only the models the owner uses)           |
+| Where a new task should run                | `fleet_create_agent` with `dryRun: true`                       |
+| Start an agent                             | `fleet_create_agent`                                           |
+| Talk to a running agent                    | `fleet_send_prompt`                                            |
+| Stop, kill, or change an agent's settings  | `fleet_cancel_agent`, `fleet_kill_agent`, `fleet_update_agent` |
+| Bring back an archived agent or workspace  | `fleet_unarchive_agent`, `fleet_unarchive_workspace`           |
+| Wait for one agent's turn to end           | `fleet_wait_agent`                                             |
+| Wait for several agents (any or all)       | `fleet_wait_agents`                                            |
+| Webhook when agents finish                 | `fleet_notify_on_finish`                                       |
+| Webhook delivery history (missed events)   | `fleet_webhook_deliveries`                                     |
+| Give an agent a document, log or image     | `attachments` on `fleet_create_agent` / `fleet_send_prompt`    |
+| See an image an agent produced             | `fleet_read_image`                                             |
 
-The rest cover meta changes (`fleet_rename_*`, `fleet_archive_*`, `fleet_move_agent`, `fleet_create_project`, `fleet_adopt_agent`), control (`fleet_cancel_agent`, `fleet_kill_agent`, `fleet_update_agent`, `respond_to_permission`), schedules and heartbeats, workspace scripts, terminals, browser tabs, memory (`fleet_recall`, `fleet_context`) and Mission Control cards. Tools without the `fleet_` prefix act on this daemon's host only.
+The rest cover meta changes (`fleet_rename_*`, `fleet_archive_*`, `fleet_move_agent`, `fleet_create_project`, `fleet_promote_workspace`), tickets (`fleet_ticketize_agent`), reminders (`fleet_remind_agent`, `fleet_list_reminders`, `fleet_cancel_reminder`), file uploads (`fleet_upload_file`), and the operating doc (`fleet_playbook`).
+
+Every other tool acts only on the host serving this endpoint, and its description says so: schedules and heartbeats, workspace scripts, terminals, `create_workspace`, provider inspection, pending permissions, browser tabs. Host-local tools that a fleet tool covers (`create_agent`, `list_agents`, `send_agent_prompt`, `list_hosts`, and the like) are not listed here; use the fleet tool.
 
 Tickets live in itsaplan, which the client connects to as its own MCP server.
+
+## Naming a host
+
+`fleet_list_hosts` lists every host: the name fleet results use for it, whether it is the host serving this endpoint (`self`), whether it is online, and every name a `host` argument accepts for it. Each host declares its own names (its alias, the DNS names it serves and their first label, its OS hostname, its serverId), so `prod`, `prod.netbird.cloud` and `local` all name the same host when prod serves the call. `local` always means the host answering the call; when you pass hosts to a different daemon, use one of the other names.
+
+A name that matches no host, or more than one host, is refused, and the error lists every host with its names. Pick one and call again.
 
 ## Knowing when an agent is done
 
@@ -46,7 +56,7 @@ Every wait and notification is bound to a **turn**. `fleet_create_agent` and `fl
 - **Short work you want answered now:** `fleet_wait_agent { agentId, turnId, timeoutSeconds }` (default 600, max 1800). It returns when the turn ends, early on a permission request, or with `timedOut: true`; call it again with the same `turnId` to keep waiting. A turn that already ended returns its outcome at once; a turn that has not started returns `status: "pending"`. A turn that failed (provider or system error) returns `status: "error"` with the message in `error` and `lastMessage` set to the `[System Error] …` row. Without `turnId` it binds to the run in progress, or returns an idle agent's last state at once.
 - **Several agents now:** `fleet_wait_agents { agents: [{agentId, turnId?}], mode: "any" | "all", timeoutSeconds }`. `any` returns on the first agent that finishes or needs a permission; `all` returns when every agent has. Each result carries its `turnId` and status.
 - Nothing you call is ever gated: spawns, sends, renames, moves, archives, unarchives, cancel and kill all run directly and return their real result. No call creates an approval card.
-- Send with `mode: "steer"` (the default when you omit `mode`): it wakes a closed or archived agent and runs the prompt, and on a busy agent it joins the live turn without cancelling it. Use `"queue"` only to wait until the current turn ends first, and `"interrupt"` only when you mean to cancel the running turn.
+- Send with `mode: "steer"` (the default when you omit `mode`): it wakes a closed or archived agent and runs the prompt, and on a busy agent it joins the live turn without cancelling it. Use `"interrupt"` only when you mean to cancel the running turn. No send waits for the agent to go idle.
 - Arguments a tool does not declare are an error, with the closest real name suggested (`fleet_send_prompt` takes `mode`, not `deliveryMode`).
 
 ## Reading a transcript
@@ -66,24 +76,24 @@ Everything moves through MCP; never copy files to a host yourself.
 
 - **Never put file content in the prompt.** A prompt containing a base64 `data:` URI, or longer than 64 KB, is rejected. Keep the prompt to the instructions and refer to the attached file by name. A markdown file with embedded `data:` images: attach each image as its own file, and attach the markdown with those images replaced by their file names.
 - **Large files:** upload in chunks of a few MB: the first call adds `size` (total bytes) and returns `uploadId`; send the rest as `{ uploadId, data }`. The last chunk returns the `fileId`. A request body over 25 MB is rejected with a JSON-RPC error, so inline attachments suit files up to a few MB.
-- **From an agent:** `fleet_read_image { agentId, path }` returns the image (up to 10 MB) as MCP image content. Use the absolute path the agent reported, or an image proof path from `fleet_context`.
+- **From an agent:** `fleet_read_image { agentId, path }` returns the image (up to 10 MB) as MCP image content. Use the absolute path the agent reported.
 
 ## Rules that keep you out of trouble
 
 - Ids come from tool results. Never construct an agent, workspace or project id; look it up first (`fleet_list_agents`, `fleet_list_inventory`).
-- Pass `host` explicitly when you create work. Use the host names `fleet_list_inventory` returns. Call `suggest_placement` when the user did not say where.
+- Call `fleet_list_hosts` before you pass `host`, and pass a name it lists. Omit `host` to let Paseo place the agent from the prompt; `cwd` needs `host`, because a path names a directory on one host.
 - Pick a model from `fleet_list_models` for that host and pass it verbatim as `provider`.
 - One call per intent. Wait for its result before you repeat it.
 
 ## Use the CLI for host-local work
 
-The `paseo` CLI talks to one daemon at a time. Use it for things that have no fleet tool: schedules, heartbeats, terminals, workspace scripts, worktrees, provider diagnostics, daemon status.
+The `paseo` CLI talks to one daemon at a time. Use it for host-local work on a host other than the one serving this endpoint: schedules, heartbeats, terminals, workspace scripts, worktrees, provider diagnostics, daemon status. On the serving host, the host-local MCP tools do the same.
 
 ```bash
 paseo --host <address>:6767 <command> --json
 ```
 
-`<address>` is the host's NetBird address from `fleet_list_inventory`. Common commands:
+`<address>` is one of the DNS names `fleet_list_hosts` lists for the host (for example a `*.netbird.cloud` name). Common commands:
 
 | Task              | Command                                                                                      |
 | ----------------- | -------------------------------------------------------------------------------------------- |

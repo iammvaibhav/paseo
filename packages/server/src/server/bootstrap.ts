@@ -293,6 +293,7 @@ import {
 import { terminateWithTreeKill } from "../utils/tree-kill.js";
 import { withTimeout } from "../utils/promise-timeout.js";
 import { isHostnameAllowed, type HostnamesConfig } from "./hostnames.js";
+import { fleetHostNamesFromConfig } from "./peers/fleet-hosts.js";
 import {
   createRequireBearerMiddleware,
   extractHttpBearerToken,
@@ -2016,6 +2017,8 @@ export async function createPaseoDaemon(
     serverId,
     hostName: getHostName(),
     hostAlias: missionControlHostAlias,
+    hostNames: () => fleetHostNamesFromConfig(configuredHostnames),
+    hostAliases: () => centralMissionControlConfig.get().routing.hostAliases,
     logger,
     agentManager,
     agentStorage,
@@ -2280,7 +2283,7 @@ export async function createPaseoDaemon(
   });
   itsaplanBridge.start();
   itsaplanWebhookIngress.setHandler(createItsaplanWebhookRouteHandler(itsaplanBridge, logger));
-  // Placement routing (routing.suggest.* + suggest_placement MCP tool) and
+  // Placement routing (routing.suggest.* + fleet_create_agent's placement) and
   // metadataModel text generation. Reads central config live (replicated to
   // every host), so every daemon can route.
   const routingService = new RoutingService({
@@ -2675,6 +2678,9 @@ export async function createPaseoDaemon(
     memoryService,
     resolveDocThreads: docThreadsHost?.service ? () => docThreadsHost.service! : null,
     hostAlias: missionControlHostAlias,
+    hostName: getHostName(),
+    fleetHostNames: () => fleetHostNamesFromConfig(configuredHostnames),
+    fleetHostAliases: () => centralMissionControlConfig.get().routing.hostAliases,
     paseoToolPolicy:
       runtime.paseoToolPolicy ??
       (runtime.callerAgentId ? agentManager.getPaseoToolPolicy(runtime.callerAgentId) : undefined),

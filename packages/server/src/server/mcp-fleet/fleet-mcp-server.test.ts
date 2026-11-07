@@ -10,7 +10,11 @@ import type {
   ArmMcpStatusReportNotification,
   McpFinishNotifier,
 } from "./finish-notifier.js";
-import { createFleetMcpServer, FLEET_MCP_INSTRUCTIONS } from "./fleet-mcp-server.js";
+import {
+  createFleetMcpServer,
+  FLEET_MCP_INSTRUCTIONS,
+  FLEET_MCP_REPLACED_TOOLS,
+} from "./fleet-mcp-server.js";
 import type { PaseoToolHostDependencies } from "../agent/tools/paseo-tools.js";
 import { createPaseoToolCatalog } from "../agent/tools/paseo-tools.js";
 import { asAgentStorage, createProviderSnapshotManagerStub } from "../test-utils/session-stubs.js";
@@ -18,8 +22,11 @@ import { createTestLogger } from "../../test-utils/test-logger.js";
 import type { AgentManager } from "../agent/agent-manager.js";
 import type { AgentStorage } from "../agent/agent-storage.js";
 import type { ProviderSnapshotManager } from "../provider-snapshot-manager.js";
+import type { PeerManager } from "../peers/peer-manager.js";
 
-function createTestHostDependencies(): PaseoToolHostDependencies {
+function createTestHostDependencies(
+  overrides: Partial<PaseoToolHostDependencies> = {},
+): PaseoToolHostDependencies {
   return {
     agentManager: {
       listAgents: () => [],
@@ -34,7 +41,42 @@ function createTestHostDependencies(): PaseoToolHostDependencies {
     providerSnapshotManager: createProviderSnapshotManagerStub()
       .manager as unknown as ProviderSnapshotManager,
     logger: createTestLogger(),
+    ...overrides,
   };
+}
+
+/** prod as it is configured live: no hostAlias, DNS names in daemon.hostnames, two peers. */
+function createProdHostDependencies(): PaseoToolHostDependencies {
+  const statuses = [
+    { name: "iammvaibhav", url: "tcp://dev:6767", state: "online" as const, lastSeenAt: null },
+    { name: "blrofc3", url: "tcp://work:6767", state: "online" as const, lastSeenAt: null },
+  ];
+  return createTestHostDependencies({
+    serverId: "srv_lkNe8rjHmlLG",
+    hostName: "vaibhav-dev-583222",
+    fleetHostNames: () => ["prod.netbird.cloud"],
+    peerManager: {
+      getPeerStatuses: () => statuses,
+      getPeerStatus: (name: string) => statuses.find((status) => status.name === name) ?? null,
+      getPeerClient: () => null,
+      getPeerIdentities: () => [
+        {
+          name: "iammvaibhav",
+          serverId: "srv_Xn3k4XR6hUgF",
+          hostname: "vaibhav-dev",
+          missionControlHostAlias: "Personal",
+          hostNames: ["dev.netbird.cloud"],
+        },
+        {
+          name: "blrofc3",
+          serverId: "srv_r6FREeF0OQDu",
+          hostname: "blrofc3",
+          missionControlHostAlias: "Work",
+          hostNames: ["work.netbird.cloud"],
+        },
+      ],
+    } as unknown as PeerManager,
+  });
 }
 
 function extractFirstTextContent(result: { content: unknown[] }): string {
@@ -60,10 +102,11 @@ describe("createFleetMcpServer", () => {
     const toolsResult = await client.listTools();
     const toolNames = toolsResult.tools.map((t) => t.name);
 
-    // Every catalog tool is listed directly, plus the server's own tools.
+    // Every catalog tool is listed directly except the host-local ones a
+    // fleet tool replaces, plus the server's own tools.
     const catalog = await createPaseoToolCatalog(hostDeps);
     const expectedTotal = [
-      ...catalog.tools.keys(),
+      ...[...catalog.tools.keys()].filter((name) => !Object.hasOwn(FLEET_MCP_REPLACED_TOOLS, name)),
       "fleet_notify_on_finish",
       "fleet_webhook_deliveries",
       "paseo_skill",
@@ -72,6 +115,65 @@ describe("createFleetMcpServer", () => {
     expect(toolNames.sort()).toEqual(expectedTotal.sort());
     expect(toolNames).not.toContain("paseo_tool_search");
     expect(toolNames).not.toContain("paseo_tool_call");
+
+    await client.close();
+    await server.close();
+  });
+
+  test("lists only the fleet counterpart of each replaced host-local tool", async () => {
+    const server = await createFleetMcpServer({ hostDependencies: createProdHostDependencies() });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "test-client", version: "1.0.0" });
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+
+    const { tools } = await client.listTools();
+    const byName = new Map(tools.map((tool) => [tool.name, tool]));
+    for (const [hidden, counterpart] of Object.entries(FLEET_MCP_REPLACED_TOOLS)) {
+      expect(byName.has(hidden), hidden).toBe(false);
+      expect(byName.has(counterpart), counterpart).toBe(true);
+    }
+    const stale = await client.callTool({ name: "create_agent", arguments: {} }).catch((e) => e);
+    expect(JSON.stringify(stale)).toContain("create_agent");
+    expect(JSON.stringify(stale)).toMatch(/not found/i);
+
+    // A kept host-local tool says where it acts and drops upstream's
+    // connected-host selector, whose list_hosts is not on this surface.
+    const createWorkspace = byName.get("create_workspace");
+    expect(createWorkspace?.description).toContain(
+      "Acts only on prod, the host serving this MCP endpoint",
+    );
+    expect(Object.keys(createWorkspace?.inputSchema.properties ?? {})).not.toContain("serverId");
+    expect(byName.get("fleet_list_agents")?.description).not.toContain("Acts only on");
+
+    await client.close();
+    await server.close();
+  });
+
+  test("fleet_list_hosts names every host and the names a host argument accepts", async () => {
+    const server = await createFleetMcpServer({ hostDependencies: createProdHostDependencies() });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "test-client", version: "1.0.0" });
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+
+    const result = await client.callTool({ name: "fleet_list_hosts", arguments: {} });
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent).toMatchObject({
+      hosts: [
+        {
+          host: "local",
+          self: true,
+          state: "online",
+          serverId: "srv_lkNe8rjHmlLG",
+          names: expect.arrayContaining(["local", "prod", "vaibhav-dev-583222"]),
+        },
+        {
+          host: "iammvaibhav",
+          self: false,
+          names: expect.arrayContaining(["iammvaibhav", "Personal", "dev", "vaibhav-dev"]),
+        },
+        { host: "blrofc3", self: false, names: expect.arrayContaining(["blrofc3", "Work"]) },
+      ],
+    });
 
     await client.close();
     await server.close();
@@ -86,10 +188,10 @@ describe("createFleetMcpServer", () => {
 
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
 
-    const result = await client.callTool({ name: "list_agents", arguments: {} });
+    const result = await client.callTool({ name: "list_providers", arguments: {} });
 
     expect(result.isError).toBeFalsy();
-    expect(result.structuredContent).toMatchObject({ agents: [] });
+    expect(result.structuredContent).toMatchObject({ providers: expect.any(Array) });
 
     await client.close();
     await server.close();
@@ -122,7 +224,7 @@ describe("createFleetMcpServer", () => {
   test("fleet_create_agent takes the PR-review dispatcher's arguments; background is refused as removed", async () => {
     const armed: unknown[] = [];
     const server = await createFleetMcpServer({
-      hostDependencies: createTestHostDependencies(),
+      hostDependencies: createProdHostDependencies(),
       clientName: "grok-bot",
       finishNotifier: {
         arm: async (input: unknown) => {

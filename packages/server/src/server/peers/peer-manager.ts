@@ -11,6 +11,7 @@ import { WebSocket } from "ws";
 import type { Logger } from "pino";
 
 import { writeJsonFileAtomic } from "../atomic-file.js";
+import { fleetHostNamesFromConfig, type FleetPeerIdentity } from "./fleet-hosts.js";
 import type { PeerConfig } from "./types.js";
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
@@ -135,6 +136,8 @@ interface PeerConnection {
   hostname: string | null;
   /** Peer daemon's missionControl.hostAlias (server_info), captured at setPeerOnline. */
   missionControlHostAlias: string | null;
+  /** DNS names the peer serves (server_info.hostNames), captured at setPeerOnline. */
+  hostNames: string[];
 }
 
 /**
@@ -278,6 +281,21 @@ export class PeerManager {
     return resolvePeerIdentityName(this.peers, name);
   }
 
+  /**
+   * Every configured peer with the identity it declared in its last
+   * server_info, for fleet host resolution (fleet-hosts.ts). A peer that
+   * never connected has only its config name.
+   */
+  getPeerIdentities(): FleetPeerIdentity[] {
+    return this.peers.map((peer) => ({
+      name: peer.config.name,
+      serverId: peer.serverId,
+      hostname: peer.hostname,
+      missionControlHostAlias: peer.missionControlHostAlias,
+      hostNames: peer.hostNames,
+    }));
+  }
+
   getPeerStatus(name: string): MissionControlPeerStatus | null {
     return this.findPeer(name)?.status ?? null;
   }
@@ -336,6 +354,7 @@ export class PeerManager {
       serverId: null,
       hostname: null,
       missionControlHostAlias: null,
+      hostNames: [],
     };
 
     client.subscribeConnectionStatus((state) => {
@@ -369,6 +388,7 @@ export class PeerManager {
     peer.serverId = serverId;
     peer.hostname = serverInfo?.hostname ?? null;
     peer.missionControlHostAlias = serverInfo?.missionControlHostAlias ?? null;
+    peer.hostNames = fleetHostNamesFromConfig(serverInfo?.hostNames);
     const lastSeenAt = new Date().toISOString();
     peer.status = {
       name: peer.config.name,

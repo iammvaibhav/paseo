@@ -235,7 +235,7 @@ describe("fleet_kill_agent", () => {
       host: "macbook",
       agentId: PEER_AGENT_ID,
       error: expect.stringContaining("unreachable"),
-      guidance: expect.stringContaining("fleet_list_inventory"),
+      guidance: expect.stringContaining("fleet_list_hosts"),
     });
   });
 });

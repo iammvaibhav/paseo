@@ -17,6 +17,7 @@ import {
 } from "./fleet-control-tools.js";
 import { executeFleetToolOnPeer } from "./fleet-wait.js";
 import type { PaseoToolExecutionContext, PaseoToolResult } from "./types.js";
+import { FLEET_HOST_DESCRIPTION, FLEET_HOST_HINT_DESCRIPTION } from "../../peers/fleet-hosts.js";
 
 /** Wall-clock presets and naive remindAt values resolve here unless the caller names a zone. */
 export const DEFAULT_REMINDER_TIME_ZONE = "Asia/Calcutta";
@@ -34,14 +35,7 @@ const AGENT_ID_SCHEMA = z
   .min(1)
   .describe("Agent UUID from fleet_list_agents data — fleet-wide, no host needed.");
 
-const HOST_HINT_SCHEMA = z
-  .string()
-  .min(1)
-  .optional()
-  .describe(
-    "Optional host hint: a peer name from the daemon peers config, or 'local' for this daemon. " +
-      "Omitted → resolved via the fleet index.",
-  );
+const HOST_HINT_SCHEMA = z.string().min(1).optional().describe(FLEET_HOST_HINT_DESCRIPTION);
 
 const NAIVE_LOCAL_TIME = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::00)?$/;
 const EXPLICIT_ZONE = /(Z|[+-]\d{2}:?\d{2})$/i;
@@ -340,7 +334,7 @@ export function registerFleetReminderTools(options: RegisterFleetReminderToolsOp
           .string()
           .min(1)
           .optional()
-          .describe("Only this host: a peer name, or 'local'. Omitted → every reachable host."),
+          .describe(`Only this host. ${FLEET_HOST_DESCRIPTION} Omitted → every reachable host.`),
         includeRecent: z
           .boolean()
           .optional()

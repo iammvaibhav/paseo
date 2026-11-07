@@ -12,6 +12,7 @@ import {
 } from "../lifecycle-command.js";
 import type { FleetIdIndex } from "../../mission-control/fleet-id-index.js";
 import type { PaseoToolConfig, PaseoToolExecutionContext, PaseoToolResult } from "./types.js";
+import { FLEET_HOST_HINT_DESCRIPTION } from "../../peers/fleet-hosts.js";
 
 export interface RegisterToolFn {
   <TInput>(
@@ -51,49 +52,26 @@ const FLEET_CANCEL_OUTPUT_SCHEMA = {
   cancelled: z.boolean().optional(),
 };
 
+const AGENT_ID_INPUT = z
+  .string()
+  .min(1)
+  .describe("Agent UUID from fleet_list_agents/memory_search data — fleet-wide, no host needed.");
+
+const HOST_HINT_INPUT = z.string().min(1).optional().describe(FLEET_HOST_HINT_DESCRIPTION);
+
 const FLEET_CANCEL_INPUT_SCHEMA = {
-  agentId: z
-    .string()
-    .min(1)
-    .describe("Agent UUID from fleet_list_agents/fleet_search data — fleet-wide, no host needed."),
-  host: z
-    .string()
-    .min(1)
-    .optional()
-    .describe(
-      "Optional host hint: a peer name from the daemon peers config, or 'local' for this daemon. " +
-        "Omitted → resolved via the fleet index.",
-    ),
+  agentId: AGENT_ID_INPUT,
+  host: HOST_HINT_INPUT,
 };
 
 const FLEET_KILL_INPUT_SCHEMA = {
-  agentId: z
-    .string()
-    .min(1)
-    .describe("Agent UUID from fleet_list_agents/fleet_search data — fleet-wide, no host needed."),
-  host: z
-    .string()
-    .min(1)
-    .optional()
-    .describe(
-      "Optional host hint: a peer name from the daemon peers config, or 'local' for this daemon. " +
-        "Omitted → resolved via the fleet index.",
-    ),
+  agentId: AGENT_ID_INPUT,
+  host: HOST_HINT_INPUT,
 };
 
 const FLEET_UPDATE_INPUT_SCHEMA = {
-  agentId: z
-    .string()
-    .min(1)
-    .describe("Agent UUID from fleet_list_agents/fleet_search data — fleet-wide, no host needed."),
-  host: z
-    .string()
-    .min(1)
-    .optional()
-    .describe(
-      "Optional host hint: a peer name from the daemon peers config, or 'local' for this daemon. " +
-        "Omitted → resolved via the fleet index.",
-    ),
+  agentId: AGENT_ID_INPUT,
+  host: HOST_HINT_INPUT,
   title: z.string().min(1).optional().describe("New user-visible title for the agent."),
   labels: z
     .record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
@@ -196,13 +174,13 @@ export function resolvePeerDaemonClient(
     const message = err instanceof Error ? err.message : String(err);
     return {
       error: message,
-      guidance: "Check peer status with fleet_list_inventory.",
+      guidance: "fleet_list_hosts shows every host, its names and whether it is online.",
     };
   }
   if (!client) {
     return {
-      error: `Host "${targetHost}" is not a configured peer; this daemon knows: ${deps.knownFleetHostsText()}`,
-      guidance: `Use one of the known hosts: ${deps.knownFleetHostsText()}.`,
+      error: `Host "${targetHost}" is not a configured peer or this host. ${deps.knownFleetHostsText()}`,
+      guidance: "fleet_list_hosts shows every host, its names and whether it is online.",
     };
   }
   return { client };

@@ -17,6 +17,7 @@ import {
   type RegisterFleetControlToolsOptions,
 } from "./fleet-control-tools.js";
 import type { PaseoToolResult } from "./types.js";
+import { FLEET_HOST_DESCRIPTION } from "../../peers/fleet-hosts.js";
 
 /** Largest file fleet_upload_file accepts (sum of all chunks). */
 export const FLEET_UPLOAD_MAX_BYTES = 100 * 1024 * 1024;
@@ -440,7 +441,7 @@ export function registerFleetFileTools(options: RegisterFleetFileToolsOptions): 
       title: "Read an image file",
       description:
         "Return an image file from any host in the fleet as image content, for example a screenshot an agent " +
-        "saved or an image proof path from fleet_context. Give the absolute path plus the agentId that " +
+        "saved or an image proof path it reported. Give the absolute path plus the agentId that " +
         "produced it (its host is resolved) or the host. Images only, up to 10 MB.",
       inputSchema: {
         path: z.string().min(1).describe("Absolute path of the image on its host."),
@@ -454,7 +455,7 @@ export function registerFleetFileTools(options: RegisterFleetFileToolsOptions): 
           .min(1)
           .optional()
           .describe(
-            "Host holding the file: a peer name, or 'local'. Default: the agent's host, else local.",
+            `Host holding the file. ${FLEET_HOST_DESCRIPTION} Default: the agent's host, else the host answering this call.`,
           ),
       },
     },
