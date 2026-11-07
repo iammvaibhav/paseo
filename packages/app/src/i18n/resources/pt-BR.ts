@@ -210,7 +210,6 @@ export const ptBR: TranslationResources = {
   agentMode: {
     label: "Abordagem",
     tooltip: "Como o agente funciona",
-    routingLoading: "Encontrando onde isso é executado…",
     messageChip: "Abordagem: {{mode}}",
     searchPlaceholder: "Buscar abordagens...",
     selectWithValue: "Selecionar abordagem ({{value}})",

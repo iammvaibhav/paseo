@@ -211,7 +211,6 @@ export const ja: TranslationResources = {
   agentMode: {
     label: "アプローチ",
     tooltip: "エージェントの動作方法",
-    routingLoading: "実行場所を探しています…",
     messageChip: "アプローチ: {{mode}}",
     searchPlaceholder: "アプローチを検索...",
     selectWithValue: "アプローチを選択 ({{value}})",

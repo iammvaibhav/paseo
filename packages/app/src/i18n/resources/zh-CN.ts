@@ -209,7 +209,6 @@ export const zhCN: TranslationResources = {
   agentMode: {
     label: "方式",
     tooltip: "代理的工作方式",
-    routingLoading: "正在寻找运行位置…",
     messageChip: "方式: {{mode}}",
     searchPlaceholder: "搜索方式...",
     selectWithValue: "选择方式 ({{value}})",
