@@ -72,3 +72,38 @@ export function matchesAgentSearchWords(
     .toLowerCase();
   return words.every((word) => haystack.includes(word));
 }
+
+/** How strongly an agent matched a search; lower ranks first. */
+export const AgentSearchTier = {
+  /** The whole query, as whole words, in the agent's name or title. */
+  Exact: 0,
+  /** Every query word somewhere in its name, title, or id. */
+  Identity: 1,
+  /** Every query word across its description, launch prompt, or last report too. */
+  Metadata: 2,
+  /** Only its transcript matched. */
+  Transcript: 3,
+} as const;
+export type AgentSearchTier = (typeof AgentSearchTier)[keyof typeof AgentSearchTier];
+
+/**
+ * Exact or Identity when the query matches the agent's name, title, or id; null
+ * when it needs other fields. Shared by daemon and sidebar so both rank alike.
+ */
+export function agentIdentitySearchTier(
+  words: readonly string[],
+  identity: { id: string; name?: string | null; title?: string | null },
+): typeof AgentSearchTier.Exact | typeof AgentSearchTier.Identity | null {
+  if (!matchesAgentSearchWords(words, [identity.name, identity.title, identity.id])) return null;
+  const phrase = new RegExp(
+    `(?:^|[^\\p{L}\\p{N}])${words.map(escapeRegExp).join("\\s+")}(?![\\p{L}\\p{N}])`,
+    "u",
+  );
+  return [identity.name, identity.title].some((field) => field && phrase.test(field.toLowerCase()))
+    ? AgentSearchTier.Exact
+    : AgentSearchTier.Identity;
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}

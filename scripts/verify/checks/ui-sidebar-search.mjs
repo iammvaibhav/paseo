@@ -218,15 +218,15 @@ export const steps = [
   {
     id: "search-by-name",
     label: "Search the closed agent by name, then by id prefix",
-    narrate: "Typing the agent's name, then its id prefix, lists it under Done.",
+    narrate: "Typing the agent's name, then its id prefix, lists it under Results.",
     async run(ctx) {
       const page = ctx.page;
       await page.locator('[data-testid="sidebar-search-toggle"]').click();
       await search(page, closed.name);
       await page.waitForSelector(rowSelector(closed.id), { timeout: 10_000 });
       ctx.expect(
-        await visible(page, '[data-testid="sidebar-agent-view-section-done"]'),
-        "closed match listed under the Done section",
+        await visible(page, '[data-testid="sidebar-agent-view-section-results"]'),
+        "closed match listed under the Results section",
       );
       const panelText = await page.locator('[data-testid="sidebar-search-panel"]').innerText();
       ctx.expect(!/jev/i.test(panelText), `search panel shows no engine label, got "${panelText}"`);

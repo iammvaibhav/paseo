@@ -4,7 +4,7 @@ import path from "node:path";
 import type { Logger } from "pino";
 import type { AgentStorage } from "../agent/agent-storage.js";
 import { extractChunks, type ExtractedChunk } from "./extract.js";
-import { toFtsQuery } from "./fts-query.js";
+import { toFtsQueries } from "./fts-query.js";
 import { TRANSCRIPT_INDEX_DDL, TRANSCRIPT_INDEX_SCHEMA_VERSION } from "./schema.js";
 import { tryLoadNodeSqlite, type SqliteDatabase } from "./sqlite.js";
 import { loadTranscriptSource } from "./sources.js";
@@ -130,23 +130,32 @@ export class TranscriptSearchService {
     void this.drain();
   }
 
+  /**
+   * One hit per agent, best first: agents whose transcript holds the exact
+   * phrase, then the words near each other, then the words anywhere in one
+   * chunk; bm25 orders each group. `rank` is the agent's best bm25 in its group.
+   */
   search(query: string): TranscriptHit[] {
-    const match = toFtsQuery(query);
-    if (!match) return [];
-    try {
-      const rows = this.db
-        .prepare(
-          `SELECT chunk.agent_id AS agent_id,
-                  bm25(chunk_fts) AS rank,
-                  snippet(chunk_fts, 0, '', '', '…', 16) AS snippet
-           FROM chunk_fts
-           JOIN chunk ON chunk.id = chunk_fts.rowid
-           WHERE chunk_fts MATCH ?
-           ORDER BY rank
-           LIMIT ?`,
-        )
-        .all(match, FTS_CANDIDATE_LIMIT);
-      const hits = new Map<string, TranscriptHit>();
+    const hits = new Map<string, TranscriptHit>();
+    for (const match of toFtsQueries(query)) {
+      let rows: Record<string, unknown>[];
+      try {
+        rows = this.db
+          .prepare(
+            `SELECT chunk.agent_id AS agent_id,
+                    bm25(chunk_fts) AS rank,
+                    snippet(chunk_fts, 0, '', '', '…', 16) AS snippet
+             FROM chunk_fts
+             JOIN chunk ON chunk.id = chunk_fts.rowid
+             WHERE chunk_fts MATCH ?
+             ORDER BY rank
+             LIMIT ?`,
+          )
+          .all(match, FTS_CANDIDATE_LIMIT);
+      } catch (error) {
+        this.logger.debug({ err: error, query, match }, "Transcript FTS query failed");
+        continue;
+      }
       for (const row of rows) {
         const agentId = typeof row.agent_id === "string" ? row.agent_id : "";
         if (!agentId || hits.has(agentId)) continue;
@@ -159,11 +168,8 @@ export class TranscriptSearchService {
           snippet,
         });
       }
-      return [...hits.values()];
-    } catch (error) {
-      this.logger.debug({ err: error, query }, "Transcript FTS query failed");
-      return [];
     }
+    return [...hits.values()];
   }
 
   private async drain(): Promise<void> {

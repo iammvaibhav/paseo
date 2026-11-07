@@ -15,14 +15,19 @@ function makeRow(input: {
   serverId?: string;
   workspaceId?: string | null;
   bucket?: LifecycleBucket;
+  title?: string;
+  sortTime?: number;
 }): LifecycleRow {
   return {
     agent: {
       id: input.id,
       serverId: input.serverId ?? "server-1",
       workspaceId: input.workspaceId !== undefined ? input.workspaceId : "workspace-1",
+      title: input.title ?? null,
+      name: null,
     } as LifecycleRow["agent"],
     bucket: input.bucket ?? "running",
+    sortTime: input.sortTime ?? 0,
   } as LifecycleRow;
 }
 
@@ -33,8 +38,20 @@ function makeGroup(bucket: LifecycleBucket, rows: LifecycleRow[]): LifecycleBuck
   };
 }
 
-function bucketsOf(sections: readonly { bucket: string }[]): string[] {
-  return sections.map((section) => section.bucket);
+function keysOf(sections: readonly { key: string }[]): string[] {
+  return sections.map((section) => section.key);
+}
+
+function searchFor(
+  query: string,
+  agentKeys: string[],
+  transcriptPositions: Record<string, number> = {},
+) {
+  return {
+    words: query.toLowerCase().split(/\s+/),
+    agentKeys: new Set(agentKeys),
+    transcriptPositions: new Map(Object.entries(transcriptPositions)),
+  };
 }
 
 describe("sidebar agent view model", () => {
@@ -69,10 +86,10 @@ describe("sidebar agent view model", () => {
         projectFilters: [],
         projectViewKeyByWorkspaceKey: emptyMapping,
         showDone: true,
-        searchAgentKeys: null,
+        search: null,
       });
 
-      expect(bucketsOf(sections)).toEqual(SIDEBAR_AGENT_VIEW_BUCKET_ORDER);
+      expect(keysOf(sections)).toEqual(SIDEBAR_AGENT_VIEW_BUCKET_ORDER);
       expect(sections[0].rows).toEqual([needsYouRow]);
       expect(sections[1].rows).toEqual([runningRow]);
       expect(sections[2].rows).toEqual([readyRow]);
@@ -91,9 +108,9 @@ describe("sidebar agent view model", () => {
         projectFilters: [],
         projectViewKeyByWorkspaceKey: emptyMapping,
         showDone: false,
-        searchAgentKeys: null,
+        search: null,
       });
-      expect(bucketsOf(withoutDone)).toEqual(["running"]);
+      expect(keysOf(withoutDone)).toEqual(["running"]);
       expect(withoutDone[0].rows).toEqual([runningRow]);
 
       // showDone = true -> done bucket included
@@ -103,15 +120,15 @@ describe("sidebar agent view model", () => {
         projectFilters: [],
         projectViewKeyByWorkspaceKey: emptyMapping,
         showDone: true,
-        searchAgentKeys: null,
+        search: null,
       });
-      expect(bucketsOf(withDone)).toEqual(["running", "done"]);
+      expect(keysOf(withDone)).toEqual(["running", "done"]);
       expect(withDone[1].rows).toEqual([doneRow]);
     });
 
-    it("a search lists matching closed (dormant) agents under Done, even with Done hidden", () => {
-      const doneRow = makeRow({ id: "d1", bucket: "done" });
-      const closedRow = makeRow({ id: "c1", serverId: "macbook", bucket: "dormant" });
+    it("a search lists matching closed (dormant) and Done agents, even with Done hidden", () => {
+      const doneRow = makeRow({ id: "d1", bucket: "done", sortTime: 2 });
+      const closedRow = makeRow({ id: "c1", serverId: "macbook", bucket: "dormant", sortTime: 1 });
       const otherClosedRow = makeRow({ id: "c2", bucket: "dormant" });
       const groups = [
         makeGroup("done", [doneRow]),
@@ -124,9 +141,9 @@ describe("sidebar agent view model", () => {
         projectFilters: [],
         projectViewKeyByWorkspaceKey: emptyMapping,
         showDone: false,
-        searchAgentKeys: new Set(["server-1:d1", "macbook:c1"]),
+        search: searchFor("fix", ["server-1:d1", "macbook:c1"]),
       });
-      expect(bucketsOf(sections)).toEqual(["done"]);
+      expect(keysOf(sections)).toEqual(["results"]);
       expect(sections[0].rows).toEqual([doneRow, closedRow]);
     });
 
@@ -142,7 +159,7 @@ describe("sidebar agent view model", () => {
         projectFilters: [],
         projectViewKeyByWorkspaceKey: emptyMapping,
         showDone: false,
-        searchAgentKeys: null,
+        search: null,
       });
       expect(filtered).toHaveLength(1);
       expect(filtered[0].rows).toEqual([host1Row]);
@@ -154,7 +171,7 @@ describe("sidebar agent view model", () => {
         projectFilters: [],
         projectViewKeyByWorkspaceKey: emptyMapping,
         showDone: false,
-        searchAgentKeys: null,
+        search: null,
       });
       expect(all[0].rows).toEqual([host1Row, host2Row]);
     });
@@ -186,7 +203,7 @@ describe("sidebar agent view model", () => {
         projectFilters: ["project-alpha"],
         projectViewKeyByWorkspaceKey: projectMapping,
         showDone: false,
-        searchAgentKeys: null,
+        search: null,
       });
 
       expect(filtered).toHaveLength(1);
@@ -199,7 +216,7 @@ describe("sidebar agent view model", () => {
         projectFilters: [],
         projectViewKeyByWorkspaceKey: projectMapping,
         showDone: false,
-        searchAgentKeys: null,
+        search: null,
       });
       expect(unfiltered[0].rows).toEqual([
         matchingRow,
@@ -221,7 +238,7 @@ describe("sidebar agent view model", () => {
         projectFilters: [],
         projectViewKeyByWorkspaceKey: emptyMapping,
         showDone: false,
-        searchAgentKeys: null,
+        search: null,
       });
 
       expect(sections[0].rows).toEqual([row1, row2, row3]);
@@ -244,19 +261,19 @@ describe("sidebar agent view model", () => {
         projectFilters: [],
         projectViewKeyByWorkspaceKey: emptyMapping,
         showDone: false,
-        searchAgentKeys: null,
+        search: null,
       });
 
       // needs_you is omitted because all rows filtered out; ready is omitted because 0 rows
-      expect(bucketsOf(sections)).toEqual(["running"]);
+      expect(keysOf(sections)).toEqual(["running"]);
       expect(sections[0].rows).toEqual([runningRow]);
     });
 
-    it("a search keeps only matched agents and reaches Done even when Done is hidden", () => {
-      const matchedRunning = makeRow({ id: "a", serverId: "srv-1" });
+    it("a search keeps only matched agents from every bucket in one Results section", () => {
+      const matchedRunning = makeRow({ id: "a", serverId: "srv-1", sortTime: 1 });
       const sameIdOtherHost = makeRow({ id: "a", serverId: "srv-2" });
       const unmatched = makeRow({ id: "b", serverId: "srv-1" });
-      const matchedDone = makeRow({ id: "c", serverId: "srv-1", bucket: "done" });
+      const matchedDone = makeRow({ id: "c", serverId: "srv-1", bucket: "done", sortTime: 2 });
 
       const sections = buildSidebarAgentViewSections({
         groups: [
@@ -267,12 +284,73 @@ describe("sidebar agent view model", () => {
         projectFilters: [],
         projectViewKeyByWorkspaceKey: emptyMapping,
         showDone: false,
-        searchAgentKeys: new Set(["srv-1:a", "srv-1:c"]),
+        search: searchFor("fix", ["srv-1:a", "srv-1:c"]),
       });
 
-      expect(bucketsOf(sections)).toEqual(["running", "done"]);
-      expect(sections[0].rows).toEqual([matchedRunning]);
-      expect(sections[1].rows).toEqual([matchedDone]);
+      expect(keysOf(sections)).toEqual(["results"]);
+      expect(sections[0].rows).toEqual([matchedDone, matchedRunning]);
+    });
+
+    it("ranks the exact title first, then title words, then metadata, then transcript order", () => {
+      const day = 86_400_000;
+      const exact = makeRow({
+        id: "exact",
+        serverId: "macbook",
+        bucket: "ready",
+        title: "MacBook traffic flow: Zscaler vs Tailscale vs NetBird",
+        sortTime: 3 * day,
+      });
+      const titleWords = makeRow({
+        id: "words",
+        bucket: "done",
+        title: "Traffic workflow cleanup",
+        sortTime: 1 * day,
+      });
+      const metadata = makeRow({
+        id: "meta",
+        bucket: "needs_you",
+        title: "Wake host scripts",
+        sortTime: 9 * day,
+      });
+      const bestTranscript = makeRow({
+        id: "best",
+        serverId: "blrofc3",
+        bucket: "ready",
+        title: "Room temperature voting design",
+        sortTime: 2 * day,
+      });
+      const newerTranscript = makeRow({
+        id: "newer",
+        serverId: "blrofc3",
+        bucket: "ready",
+        title: "Research access intelligence opportunities",
+        sortTime: 8 * day,
+      });
+
+      const sections = buildSidebarAgentViewSections({
+        groups: [
+          makeGroup("needs_you", [metadata]),
+          makeGroup("ready", [newerTranscript, exact, bestTranscript]),
+          makeGroup("done", [titleWords]),
+        ],
+        hostFilters: [],
+        projectFilters: [],
+        projectViewKeyByWorkspaceKey: emptyMapping,
+        showDone: false,
+        search: searchFor(
+          "traffic flow",
+          ["macbook:exact", "server-1:words", "server-1:meta", "blrofc3:best", "blrofc3:newer"],
+          { "blrofc3:best": 0, "blrofc3:newer": 1 },
+        ),
+      });
+
+      expect(sections[0].rows).toEqual([
+        exact,
+        titleWords,
+        metadata,
+        bestTranscript,
+        newerTranscript,
+      ]);
     });
   });
 });

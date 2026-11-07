@@ -1,9 +1,12 @@
 /**
- * Turn a History search box string into an FTS5 MATCH query.
+ * Turn a History search box string into FTS5 MATCH queries, best first.
  *
  * Bare words become AND-of-prefixes so "warm pool" finds "warming the pool".
+ * Two or more bare words also yield, ahead of that, the exact phrase and the
+ * words within NEAR_DISTANCE tokens of each other, so a chunk that says
+ * "traffic flow" outranks one with "traffic" and "flowchart" paragraphs apart.
  * Quoted text and pasted URLs become phrases so a PR link is one token, not
- * a pile of slashes. A query that is only stopwords returns null — FTS would
+ * a pile of slashes. A query that is only stopwords yields no query — FTS would
  * scan the whole index and the metadata ranker already has nothing to do.
  */
 
@@ -33,15 +36,16 @@ const STOPWORDS = new Set([
 ]);
 
 const TOKEN_RE = /[^\s]+/g;
+const NEAR_DISTANCE = 5;
 
-export function toFtsQuery(raw: string): string | null {
+export function toFtsQueries(raw: string): string[] {
   const trimmed = raw.trim();
-  if (!trimmed) return null;
+  if (!trimmed) return [];
 
   if (isPhraseQuery(trimmed)) {
     const inner = stripWrappingQuotes(trimmed);
-    if (!inner) return null;
-    return quotePhrase(inner);
+    if (!inner) return [];
+    return [quotePhrase(inner)];
   }
 
   const tokens = trimmed.match(TOKEN_RE) ?? [];
@@ -50,9 +54,15 @@ export function toFtsQuery(raw: string): string | null {
     .filter((token) => token.length > 0)
     .filter((token, _, all) => all.length > 1 || !isStopword(token));
 
-  if (kept.length === 0) return null;
+  if (kept.length === 0) return [];
 
-  return kept.map((token) => toPrefixTerm(token)).join(" AND ");
+  const anywhere = kept.map((token) => toPrefixTerm(token)).join(" AND ");
+  if (kept.length === 1) return [anywhere];
+  // Quoted strings with a trailing `*` take any token text, dots and dashes included.
+  const quoted = kept.map((token) => quotePhrase(token));
+  const phrase = `${quotePhrase(kept.join(" "))}*`;
+  const near = `NEAR(${quoted.map((term) => `${term}*`).join(" ")}, ${NEAR_DISTANCE})`;
+  return [phrase, near, anywhere];
 }
 
 export function isStopword(token: string): boolean {

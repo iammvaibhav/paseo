@@ -1321,6 +1321,7 @@ export const en = {
       includeArchived: "Include archived",
       searching: "Searching…",
       archivedTitle: "Archived",
+      resultsTitle: "Results",
       emptyTitle: "No agents match",
       emptyDescription:
         "Try other words, include archived agents, or run a deep search in History.",

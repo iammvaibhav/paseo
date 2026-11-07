@@ -16,15 +16,16 @@ import { SidebarSearchEmptyState } from "@/components/sidebar/sidebar-search-bar
 import { getFocusedAgentId, useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
 import { buildMissionControlRoute } from "@/utils/host-routes";
 import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
-import type { SidebarAgentViewBucket } from "./model";
+import type { SidebarAgentViewSectionKey } from "./model";
 import { SidebarAgentViewRow } from "./row";
 import { SidebarAgentViewSectionHeader } from "./section-header";
 import { useSidebarAgentView } from "./use-sidebar-agent-view";
-export const BUCKET_LABEL_KEYS: Record<SidebarAgentViewBucket, string> = {
+export const SECTION_LABEL_KEYS: Record<SidebarAgentViewSectionKey, string> = {
   needs_you: "sidebar.agentView.sections.needsYou",
   running: "sidebar.agentView.sections.running",
   ready: "sidebar.agentView.sections.ready",
   done: "sidebar.agentView.sections.done",
+  results: "sidebar.search.resultsTitle",
 };
 
 /**
@@ -149,11 +150,11 @@ export function SidebarAgentViewList({
       {sections.length === 0
         ? emptyBody
         : sections.map((section) => (
-            <View key={section.bucket} style={styles.section}>
+            <View key={section.key} style={styles.section}>
               <SidebarAgentViewSectionHeader
-                title={t(BUCKET_LABEL_KEYS[section.bucket])}
+                title={t(SECTION_LABEL_KEYS[section.key])}
                 count={section.rows.length}
-                testID={`sidebar-agent-view-section-${section.bucket}`}
+                testID={`sidebar-agent-view-section-${section.key}`}
               />
               {section.rows.map(renderRow)}
             </View>

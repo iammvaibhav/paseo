@@ -10,6 +10,7 @@ import { getHostRuntimeStore, useHosts } from "@/runtime/host-runtime";
 import { useHostFeatureMap } from "@/runtime/host-features";
 import { useSessionStore } from "@/stores/session-store";
 import { useSidebarSearchStore } from "@/stores/sidebar-search-store";
+import { sortBySidebarSearchRank, type SidebarSearchRanking } from "./sidebar-search-rank";
 
 /** Long enough that a typed word is one round trip per host, short enough to feel live. */
 const REMOTE_SEARCH_DEBOUNCE_MS = 250;
@@ -25,15 +26,14 @@ export interface SidebarSearchArchivedMatch {
   lastActivityAt: string | null;
 }
 
-export interface SidebarSearch {
+export interface SidebarSearch extends SidebarSearchRanking {
   /** A non-blank query is narrowing the sidebar. */
   active: boolean;
-  words: readonly string[];
   /** `serverId:agentId` of every matching active agent. */
   agentKeys: ReadonlySet<string>;
   /** `serverId:workspaceId` of every workspace holding a matching agent. */
   workspaceKeys: ReadonlySet<string>;
-  /** Archived matches, best first per host; empty unless archived agents are included. */
+  /** Archived matches from every host, best first; empty unless archived agents are included. */
   archivedMatches: SidebarSearchArchivedMatch[];
   /** A host has not answered the current query yet. */
   pending: boolean;
@@ -126,10 +126,15 @@ export function useSidebarSearch(): SidebarSearch {
 
     const current = remote.query === query && remote.includeArchived === includeArchived;
     const revived = new Set(revivedKeys);
-    const archivedMatches: SidebarSearchArchivedMatch[] = [];
+    const transcriptPositions = new Map<string, number>();
+    let archivedMatches: SidebarSearchArchivedMatch[] = [];
     if (current) {
       for (const [serverId, payload] of remote.byServer) {
+        let transcriptPosition = 0;
         for (const match of payload.matches) {
+          if (!match.lexical) {
+            transcriptPositions.set(`${serverId}:${match.agentId}`, transcriptPosition++);
+          }
           const archived = Boolean(match.archivedAt || match.workspaceArchivedAt);
           if (archived && !revived.has(`${serverId}:${match.agentId}`)) {
             archivedMatches.push({
@@ -144,11 +149,21 @@ export function useSidebarSearch(): SidebarSearch {
           }
         }
       }
+      archivedMatches = sortBySidebarSearchRank(
+        { words, transcriptPositions },
+        archivedMatches,
+        (match) => ({
+          key: `${match.serverId}:${match.agentId}`,
+          agent: { id: match.agentId, name: match.name, title: match.title },
+          activityMs: match.lastActivityAt ? Date.parse(match.lastActivityAt) : 0,
+        }),
+      );
     }
 
     return {
       active: words.length > 0,
       words,
+      transcriptPositions,
       agentKeys,
       workspaceKeys,
       archivedMatches,

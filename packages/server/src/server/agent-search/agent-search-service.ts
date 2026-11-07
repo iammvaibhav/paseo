@@ -1,4 +1,6 @@
 import {
+  AgentSearchTier,
+  agentIdentitySearchTier,
   agentSearchWords,
   matchesAgentSearchWords,
   type AgentSearchMatch,
@@ -35,13 +37,10 @@ export interface AgentSearchResult {
   latencyMs: number;
 }
 
-/** Lower sorts first: identity beats other metadata, which beats transcript-only hits. */
-const MatchTier = { Identity: 0, Metadata: 1, Transcript: 2 } as const;
-
 interface RankedMatch {
   record: StoredAgentRecord;
-  tier: (typeof MatchTier)[keyof typeof MatchTier];
-  /** bm25 for transcript-only hits (more negative is better); 0 otherwise. */
+  tier: AgentSearchTier;
+  /** Position among the transcript hits (best first) for transcript-only matches; 0 otherwise. */
   rank: number;
 }
 
@@ -81,26 +80,28 @@ export class AgentSearchService {
       if (headline && !lastReports.has(run.agentId)) lastReports.set(run.agentId, headline);
     }
 
+    // Hits come best first: exact phrase, then words near each other, then anywhere in a chunk.
     const transcriptRank = new Map<string, number>();
     for (const hit of this.deps.searchTranscripts(input.query.trim())) {
-      if (!transcriptRank.has(hit.agentId)) transcriptRank.set(hit.agentId, hit.rank);
+      if (!transcriptRank.has(hit.agentId)) transcriptRank.set(hit.agentId, transcriptRank.size);
     }
 
     const ranked: RankedMatch[] = [];
     await Promise.all(
       records.map(async (record) => {
-        if (matchesAgentSearchWords(words, [record.name, record.title, record.id])) {
-          ranked.push({ record, tier: MatchTier.Identity, rank: 0 });
+        const identityTier = agentIdentitySearchTier(words, record);
+        if (identityTier !== null) {
+          ranked.push({ record, tier: identityTier, rank: 0 });
           return;
         }
         const brief = briefs.get(record.id) ?? (await this.liveBrief(record));
         const metadata = [record.shortDescription, brief, lastReports.get(record.id)];
         if (matchesAgentSearchWords(words, [record.name, record.title, record.id, ...metadata])) {
-          ranked.push({ record, tier: MatchTier.Metadata, rank: 0 });
+          ranked.push({ record, tier: AgentSearchTier.Metadata, rank: 0 });
           return;
         }
         const rank = transcriptRank.get(record.id);
-        if (rank !== undefined) ranked.push({ record, tier: MatchTier.Transcript, rank });
+        if (rank !== undefined) ranked.push({ record, tier: AgentSearchTier.Transcript, rank });
       }),
     );
 
@@ -122,7 +123,7 @@ export class AgentSearchService {
           (record.workspaceId && archivedWorkspaces.get(record.workspaceId)) || null,
         lastActivityAt: activityOf(record),
         score: null,
-        lexical: tier !== MatchTier.Transcript,
+        lexical: tier !== AgentSearchTier.Transcript,
       })),
       semantic: false,
       candidateCount: records.length,

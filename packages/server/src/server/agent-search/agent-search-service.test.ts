@@ -93,19 +93,40 @@ describe("AgentSearchService", () => {
     expect(ids(await byBrief.search({ query: "anchors browser" }))).toEqual(["b"]);
   });
 
-  test("transcript hits widen the result and rank after metadata matches, best bm25 first", async () => {
+  test("transcript hits widen the result and rank after metadata matches, in hit order", async () => {
     const result = await service({
       agents: [agent("meta", { title: "Kinesis alarm" }), agent("deep"), agent("deeper")],
+      // The index lists phrase hits before scattered-word hits whatever their bm25.
       transcripts: () => [
-        { agentId: "deeper", rank: -9, snippet: "kinesis fan-out" },
+        { agentId: "deep", rank: -2, snippet: "kinesis fan-out" },
         { agentId: "meta", rank: -8, snippet: "kinesis" },
-        { agentId: "deep", rank: -2, snippet: "kinesis" },
+        { agentId: "deeper", rank: -9, snippet: "kinesis" },
         { agentId: "unknown", rank: -10, snippet: "kinesis" },
       ],
     }).search({ query: "kinesis" });
 
-    expect(ids(result)).toEqual(["meta", "deeper", "deep"]);
+    expect(ids(result)).toEqual(["meta", "deep", "deeper"]);
     expect(result.matches.map((match) => match.lexical)).toEqual([true, false, false]);
+  });
+
+  test("the whole query as words in a title ranks ahead of newer word matches", async () => {
+    const result = await service({
+      agents: [
+        agent("exact", {
+          title: "MacBook traffic flow: Zscaler vs Tailscale",
+          lastActivityAt: "2026-11-03T00:00:00.000Z",
+        }),
+        agent("scattered", {
+          title: "Flow logs for traffic shaping",
+          lastActivityAt: "2026-11-06T00:00:00.000Z",
+        }),
+        agent("substring", {
+          title: "Traffic workflow cleanup",
+          lastActivityAt: "2026-11-07T00:00:00.000Z",
+        }),
+      ],
+    }).search({ query: "Traffic  Flow" });
+    expect(ids(result)).toEqual(["exact", "substring", "scattered"]);
   });
 
   test("name and title matches rank ahead of description-only matches", async () => {

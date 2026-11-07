@@ -83,7 +83,7 @@ export function useSidebarAgentView(options: { enabled: boolean }): SidebarAgent
         projectFilters: resolvedProjectFilters,
         projectViewKeyByWorkspaceKey,
         showDone,
-        searchAgentKeys: search.active ? search.agentKeys : null,
+        search: search.active ? search : null,
       }),
     [groups, hostFilters, resolvedProjectFilters, projectViewKeyByWorkspaceKey, search, showDone],
   );
