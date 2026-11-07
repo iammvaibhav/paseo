@@ -212,7 +212,6 @@ export const fr: TranslationResources = {
   agentMode: {
     label: "Approche",
     tooltip: "Comment l'agent fonctionne",
-    routingLoading: "Recherche de l'endroit où cela s'exécute…",
     messageChip: "Approche : {{mode}}",
     searchPlaceholder: "Rechercher des approches...",
     selectWithValue: "Choisir l'approche ({{value}})",

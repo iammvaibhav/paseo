@@ -205,7 +205,6 @@ export const en = {
   agentMode: {
     label: "Approach",
     tooltip: "How the agent works",
-    routingLoading: "Finding where this runs…",
     messageChip: "Approach: {{mode}}",
     searchPlaceholder: "Search approaches...",
     selectWithValue: "Select approach ({{value}})",

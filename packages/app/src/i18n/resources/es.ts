@@ -211,7 +211,6 @@ export const es: TranslationResources = {
   agentMode: {
     label: "Enfoque",
     tooltip: "Cómo funciona el agente",
-    routingLoading: "Buscando dónde se ejecuta esto…",
     messageChip: "Enfoque: {{mode}}",
     searchPlaceholder: "Buscar enfoques...",
     selectWithValue: "Seleccionar enfoque ({{value}})",

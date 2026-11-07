@@ -209,7 +209,6 @@ export const ar: TranslationResources = {
   agentMode: {
     label: "النهج",
     tooltip: "كيفية عمل الوكيل",
-    routingLoading: "البحث عن مكان تشغيل هذا…",
     messageChip: "النهج: {{mode}}",
     searchPlaceholder: "البحث في الأساليب...",
     selectWithValue: "اختر النهج ({{value}})",

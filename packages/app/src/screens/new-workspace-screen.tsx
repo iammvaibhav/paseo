@@ -201,14 +201,11 @@ function useWorkspaceIsolation(input: {
   worktreeSupport: "supported" | "unsupported" | "unknown";
   projectKey?: string | null;
   serverId?: string | null;
-  /** Routing suggestion; used until the user picks for this project. */
-  suggestedIsolation?: "local" | "worktree" | null;
 }): WorkspaceIsolationState {
-  const { supportsMultiplicity, worktreeSupport, projectKey, serverId, suggestedIsolation } = input;
+  const { supportsMultiplicity, worktreeSupport, projectKey, serverId } = input;
   // Isolation is remembered per project (byProject[projectKey].isolation) with
   // a global fallback for older data / no project. A manual pick overrides the
-  // routing suggestion, which overrides the remembered default, until the
-  // screen remounts or the project changes.
+  // remembered default until the screen remounts or the project changes.
   const { preferences, updatePreferences } = useFormPreferences(serverId);
   const [manualIsolation, setManualIsolation] = useState<"local" | "worktree" | null>(null);
   const [manualIsolationProjectKey, setManualIsolationProjectKey] = useState<string | null>(null);
@@ -222,7 +219,7 @@ function useWorkspaceIsolation(input: {
   const isolation =
     manualIsolation !== null && manualIsolationProjectKey === scopeKey
       ? manualIsolation
-      : (suggestedIsolation ?? rememberedIsolation);
+      : rememberedIsolation;
   const canCreateWorktree = supportsMultiplicity && worktreeSupport !== "unsupported";
   const isWorktree = isolation === "worktree" && canCreateWorktree;
 
@@ -1159,9 +1156,7 @@ export function NewWorkspaceScreen({
     }),
   });
   const composerState = chatDraft.composerState;
-  // Without a designated Commander host (standalone), the selected host routes.
-  const routingServerId = selectedServerId;
-  const supportsRouting = useHostFeature(routingServerId, "routingSuggest");
+  const supportsRouting = useHostFeature(selectedServerId, "routingSuggest");
   const projectPicker = useMemo(
     () => ({
       options: projectPickerOptions,
@@ -1174,14 +1169,7 @@ export function NewWorkspaceScreen({
   const routing = useNewWorkspaceRouting({
     supported: supportsRouting,
     forked: Boolean(forkDraftSetup),
-    textSource: chatDraft.textSource,
-    routingServerId,
     selectedServerId,
-    selectHost: handleSelectHost,
-    projectByOptionId,
-    fleetProjects: projects,
-    selectProjectOption,
-    composerState,
     projectPicker,
   });
   const [pickerSelection, dispatchPickerSelection] = useReducer(
@@ -1237,7 +1225,6 @@ export function NewWorkspaceScreen({
       worktreeSupport,
       projectKey: selectedProjectKey,
       serverId: selectedServerId,
-      suggestedIsolation: routing.suggestedIsolation,
     });
   const branchSuggestionsQuery = useQuery({
     queryKey: [
@@ -1343,7 +1330,7 @@ export function NewWorkspaceScreen({
     [chatDraft],
   );
 
-  const { markTouched, selectSpecialProjectOption, selectAgentMode } = routing;
+  const { selectSpecialProjectOption, selectAgentMode } = routing;
   const handleSelectProjectOption = useCallback(
     (id: string) => {
       setProjectPickerOpen(false);
@@ -1365,11 +1352,10 @@ export function NewWorkspaceScreen({
 
   const handleSelectWorkspaceHost = useCallback(
     (id: string) => {
-      markTouched("host");
       handleSelectHost(id);
       clearPickerSelectionForTargetChange(selectedServerId, id);
     },
-    [clearPickerSelectionForTargetChange, handleSelectHost, markTouched, selectedServerId],
+    [clearPickerSelectionForTargetChange, handleSelectHost, selectedServerId],
   );
 
   const handleAddProject = useCallback(() => {
@@ -1411,13 +1397,6 @@ export function NewWorkspaceScreen({
     setIsolationPickerOpen(nextOpen);
   }, []);
 
-  const handleSelectIsolation = useCallback(
-    (value: "local" | "worktree") => {
-      markTouched("isolation");
-      setIsolation(value);
-    },
-    [markTouched, setIsolation],
-  );
   const handleClearDraft = useCallback(() => {
     // No-op: screen navigates away on success, text should stay for retry on error
   }, []);
@@ -1606,39 +1585,6 @@ export function NewWorkspaceScreen({
     ],
   );
 
-  // Enter waits for the placement of the prompt as typed: when the typing pause
-  // has not passed (or jev is still answering), resolve it now, let the
-  // suggestion land in the controls, then create from what is selected.
-  const [deferredSubmit, setDeferredSubmit] = useState<MessagePayload | null>(null);
-  const { settle: settleRouting, isApplied: routingApplied } = routing;
-  const handleSubmitWithRouting = useCallback(
-    async (payload: MessagePayload) => {
-      setPendingAction("chat");
-      const changed = await settleRouting();
-      if (changed) {
-        setDeferredSubmit(payload);
-        return;
-      }
-      await handleSubmitNewWorkspace(payload);
-    },
-    [handleSubmitNewWorkspace, settleRouting],
-  );
-  useEffect(() => {
-    if (!deferredSubmit) return;
-    const submit = () => {
-      setDeferredSubmit(null);
-      void handleSubmitNewWorkspace(deferredSubmit);
-    };
-    if (routingApplied) {
-      submit();
-      return;
-    }
-    // A suggested project that never shows up in the host's list must not
-    // hold Enter hostage: create from the current selection after 2 s.
-    const timer = setTimeout(submit, 2_000);
-    return () => clearTimeout(timer);
-  }, [deferredSubmit, handleSubmitNewWorkspace, routingApplied]);
-
   const handleSubmitTerminalLaunch = useCallback(async () => {
     try {
       setErrorMessage(null);
@@ -1771,7 +1717,6 @@ export function NewWorkspaceScreen({
       onSelect: handleSelectAgentMode,
       openState: agentModePickerOpen,
       onOpenChange: setAgentModePickerOpen,
-      routingStatus: routing.status,
     },
     host: {
       anchorRef: hostPickerAnchorRef,
@@ -1790,7 +1735,7 @@ export function NewWorkspaceScreen({
       onOpenChange: handleIsolationPickerOpenChange,
       effectiveIsolation,
       canCreateWorktree,
-      onSelect: handleSelectIsolation,
+      onSelect: setIsolation,
     },
     base: {
       anchorRef: pickerAnchorRef,
@@ -1855,7 +1800,7 @@ export function NewWorkspaceScreen({
       agentId={draftKey}
       serverId={selectedServerId}
       isPaneFocused={true}
-      onSubmitMessage={handleSubmitWithRouting}
+      onSubmitMessage={handleSubmitNewWorkspace}
       allowEmptySubmit={true}
       submitButtonAccessibilityLabel={t("newWorkspace.create")}
       submitButtonTestID="workspace-create-submit"

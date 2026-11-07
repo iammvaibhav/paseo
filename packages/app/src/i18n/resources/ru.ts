@@ -211,7 +211,6 @@ export const ru: TranslationResources = {
   agentMode: {
     label: "Подход",
     tooltip: "Как работает агент",
-    routingLoading: "Поиск места выполнения…",
     messageChip: "Подход: {{mode}}",
     searchPlaceholder: "Поиск подходов...",
     selectWithValue: "Выбрать подход ({{value}})",

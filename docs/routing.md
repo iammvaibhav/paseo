@@ -1,12 +1,14 @@
 # Placement routing and agent modes
 
-The New workspace screen fills its controls from the prompt: project (or a new project, or the host's scratch area), host, isolation, agent mode, and model. Commander and any other agent get the same answer from the `suggest_placement` MCP tool. One daemon function serves both: `RoutingService.suggest` (`packages/server/src/server/routing/routing-service.ts`). The app receives the model in the config form (`omp:anthropic/…`); `suggest_placement` returns it as `omp/anthropic/…`, the form `fleet_create_agent` takes. Every create path accepts both (`canonicalProviderModel` in `packages/protocol/src/provider-model.ts`).
+Commander and any other agent get a placement for a prompt from the `suggest_placement` MCP tool: project (or a new project, or the host's scratch area), host, isolation, agent mode, and model. One daemon function serves it: `RoutingService.suggest` (`packages/server/src/server/routing/routing-service.ts`), also reachable over `routing.suggest.*`. `suggest_placement` returns the model as `omp/anthropic/…`, the form `fleet_create_agent` takes. Every create path accepts both that and the config form (`omp:anthropic/…`) (`canonicalProviderModel` in `packages/protocol/src/provider-model.ts`).
+
+The New workspace screen never asks for a placement. Typing in its composer sends nothing for inference, and Enter creates from whatever the user selected. Project, New project / Scratch, host, isolation, agent mode, and model are manual picks. Do not wire the composer text to `routing.suggest.*` or any other model call: each keystroke-driven request cost a jev call and moved controls the user had already chosen.
 
 ## How a suggestion is made
 
 ```mermaid
 flowchart LR
-  P["Prompt (0.2 s pause)"] --> B["jev: isolation + agent mode"]
+  P["Prompt"] --> B["jev: isolation + agent mode"]
   P --> H["Hindsight recall (600 ms cap)"]
   H --> A["jev: project / new_project / scratch + named host"]
   C["Fleet catalog (fresh per suggestion)"] --> A
@@ -19,12 +21,6 @@ flowchart LR
 - Every question sees the prompt and the optional `routing.rules` text, and its instructions say to follow anything the prompt states explicitly ("on work", "research only", "orchestrate").
 - Isolation is `worktree` only for an existing git project. Scratch and new projects run local.
 - Host: an existing project fixes it. For a new project or scratch, a host the prompt names wins, else `routing.defaultHost`.
-
-The app fires after a 0.2 s typing pause and drops replies for older prompts; Enter resolves the current prompt immediately when the pause has not passed. A suggestion only fills controls the user has not touched on this screen.
-
-The app always asks the Commander host, never the selected host. A suggestion moves the host selection, and a non-Commander host may have no peers, so it would see only its own projects. Without a designated Commander host, the selected host answers. The catalog fetch asks peers for inventory only (`mission_control.context.fetch` with `inventoryOnly`): the full payload waits on provider discovery, which took 15 s on a freshly booted peer.
-
-The app caches suggestions by prompt plus the fleet's project list, so a project appearing on any host re-runs the suggestion for the current prompt without retyping.
 
 ## Naming
 

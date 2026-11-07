@@ -6,11 +6,7 @@ import type { TerminalProfile } from "@getpaseo/protocol/messages";
 import { Combobox, type ComboboxOption, type ComboboxProps } from "@/components/ui/combobox";
 import { HostStatusDot } from "@/components/host-status-dot";
 import { HostPicker } from "@/components/hosts/host-picker";
-import {
-  NEW_PROJECT_OPTION_ID,
-  SCRATCH_OPTION_ID,
-  type RoutingStatus,
-} from "@/new-workspace-launch/routing";
+import { NEW_PROJECT_OPTION_ID, SCRATCH_OPTION_ID } from "@/new-workspace-launch/routing";
 import type { LaunchTarget } from "@/new-workspace-launch/target";
 import type { HostProjectListItem } from "@/projects/host-projects";
 import type { HostProfile } from "@/types/host-connection";
@@ -72,8 +68,6 @@ export interface NewWorkspaceFormProps {
     options: ComboboxOption[];
     value: string;
     onSelect: (id: string) => void;
-    /** Placement routing progress; "loading" shows a hint on the trigger. */
-    routingStatus: RoutingStatus;
   };
   base: PickerControl & {
     selectedSourceDirectory: string | null;
@@ -200,11 +194,7 @@ function AgentModeField({
       ref={agentMode.anchorRef}
       variant={variant}
       label={t("agentMode.label")}
-      tooltip={
-        agentMode.routingStatus === "loading"
-          ? t("agentMode.routingLoading")
-          : t("agentMode.tooltip")
-      }
+      tooltip={t("agentMode.tooltip")}
       icon={icon}
       value={value}
       onPress={agentMode.open}
