@@ -55,10 +55,16 @@ describe("desktop window owner", () => {
   it("restores only primary launches and routes pending projects per window", async () => {
     const h = harness();
     await h.owner.openPrimary({ pendingProjectPath: " /project/a " });
-    await h.owner.openAdditional({ pendingProjectPath: "/project/b" });
+    await h.owner.openAdditional({
+      pendingProjectPath: "/project/b",
+      initialRoute: "/h/local/workspace/wks_1?open=agent%3Aagent-1",
+    });
     expect(h.launches).toEqual([
       { initialRoute: null, restoreWindowState: true },
-      { initialRoute: null, restoreWindowState: false },
+      {
+        initialRoute: "/h/local/workspace/wks_1?open=agent%3Aagent-1",
+        restoreWindowState: false,
+      },
     ]);
     expect(h.owner.takePendingProject(1)).toBe("/project/a");
     expect(h.owner.takePendingProject(2)).toBe("/project/b");

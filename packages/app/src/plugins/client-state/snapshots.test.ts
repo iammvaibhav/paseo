@@ -3,6 +3,8 @@ import type { Agent, WorkspaceDescriptor } from "@/stores/session-store";
 import { createPluginAgentSnapshot, createPluginWorkspaceSnapshot } from "./snapshots";
 
 const workspace: WorkspaceDescriptor = {
+  createdAt: null,
+  lastUserMessageAt: null,
   id: "workspace-1",
   projectId: "project-1",
   projectDisplayName: "Paseo",
@@ -15,6 +17,7 @@ const workspace: WorkspaceDescriptor = {
   pinnedAt: null,
   status: "running",
   statusEnteredAt: new Date("2026-08-16T10:00:00.000Z"),
+  activityAt: null,
   archivingAt: null,
   diffStat: { additions: 12, deletions: 3 },
   scripts: [],

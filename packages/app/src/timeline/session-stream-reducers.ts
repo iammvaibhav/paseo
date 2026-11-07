@@ -42,12 +42,12 @@ export interface TimelineCursor {
 
 export type TimelineReducerSideEffect =
   | { type: "catch_up"; cursor: { epoch: string; endSeq: number } }
-  | { type: "flush_pending_updates" };
+  | { type: "flush_pending_updates" }
+  | { type: "rebaseline" };
 
-export interface AgentStreamReducerSideEffect {
-  type: "catch_up";
-  cursor: { epoch: string; endSeq: number };
-}
+export type AgentStreamReducerSideEffect =
+  | { type: "catch_up"; cursor: { epoch: string; endSeq: number } }
+  | { type: "rebaseline" };
 
 // ---------------------------------------------------------------------------
 // processTimelineResponse
@@ -310,6 +310,7 @@ function deriveBootstrapTailTimelinePolicy({
   endCursor,
   isInitializing,
   hasActiveInitDeferred,
+  hasCursor,
 }: {
   direction: TimelineDirection;
   reset: boolean;
@@ -317,6 +318,7 @@ function deriveBootstrapTailTimelinePolicy({
   endCursor: { seq: number } | null;
   isInitializing: boolean;
   hasActiveInitDeferred: boolean;
+  hasCursor: boolean;
 }): {
   replace: boolean;
   catchUpCursor: { epoch: string; endSeq: number } | null;
@@ -325,8 +327,18 @@ function deriveBootstrapTailTimelinePolicy({
     return { replace: true, catchUpCursor: null };
   }
 
-  const isBootstrapTailInit = direction === "tail" && isInitializing && hasActiveInitDeferred;
-  if (!isBootstrapTailInit) {
+  // A tail page is the bounded end of the canonical timeline, never a delta, so
+  // it can only be appended when a cursor says what the tail already covers.
+  // Without one, whatever sits in the tail is unanchored — live events with no
+  // seq, or a replica-cache restore whose snapshot predated the first cursor —
+  // and the page already contains it. Appending instead of replacing leaves that
+  // prefix stranded above the rehydrated history: orphan thoughts and a second
+  // copy of the first prompt at the top of the chat. Background catch-up
+  // (viewed-timeline-sync) fetches a tail page without an init deferred, so the
+  // init flags alone don't cover this.
+  const isBootstrapTail =
+    direction === "tail" && (!hasCursor || (isInitializing && hasActiveInitDeferred));
+  if (!isBootstrapTail) {
     return { replace: false, catchUpCursor: null };
   }
 
@@ -811,7 +823,7 @@ function reconcileOverlappingProjectedAssistant(params: {
   };
 
   const headMatch = findMatch(params.head);
-  const tailMatch = headMatch ? null : findMatch(params.tail);
+  const tailMatch = findMatch(params.tail);
   const match = headMatch ?? tailMatch;
   if (!match) {
     return { tail: params.tail, head: params.head, reconciled: false };
@@ -833,8 +845,20 @@ function reconcileOverlappingProjectedAssistant(params: {
   };
 
   if (headMatch) {
+    const tailCursor = tailMatch?.current.timelineCursor;
+    const replacesCachedPrefix =
+      tailMatch !== null &&
+      tailCursor?.epoch === params.epoch &&
+      unit.sourceSeqRanges.some(
+        (range) => range.startSeq <= tailCursor.seq && tailCursor.seq <= range.endSeq,
+      );
     return {
-      tail: params.tail,
+      // Live chunks can arrive before catch-up while their cached prefix is still painted.
+      // The projected reply owns both copies; keeping the prefix would duplicate it and
+      // cause completion to discard the updated head as an already-committed item.
+      tail: replacesCachedPrefix
+        ? [...params.tail.slice(0, tailMatch.index), ...params.tail.slice(tailMatch.index + 1)]
+        : params.tail,
       head: replaceMatch(params.head, headMatch.index),
       reconciled: true,
     };
@@ -1253,6 +1277,9 @@ export function processTimelineResponse(
   // ------------------------------------------------------------------
   // Convert entries to timeline units
   // ------------------------------------------------------------------
+  // Turn-metrics: carry per-turn metrics from fetch entries into hydrated
+  // events; hydrateStreamState stamps them onto assistant items via
+  // reduceStreamUpdate's timeline path (see types/stream.ts).
   const timelineUnits = selectEntriesOwnedByTimelinePage(payload).map((entry) => ({
     seq: entry.seqStart,
     seqEnd: entry.seqEnd,
@@ -1265,6 +1292,7 @@ export function processTimelineResponse(
       provider: entry.provider,
       item: entry.item,
       ...(entry.turnId ? { turnId: entry.turnId } : {}),
+      ...("metrics" in entry && entry.metrics ? { metrics: entry.metrics } : {}),
     } as AgentStreamEventPayload,
     timestamp: new Date(entry.timestamp),
   }));
@@ -1292,6 +1320,7 @@ export function processTimelineResponse(
     endCursor: payload.endCursor,
     isInitializing,
     hasActiveInitDeferred,
+    hasCursor: currentCursor !== undefined,
   });
   const replace = bootstrapPolicy.replace;
   const sideEffects: TimelineReducerSideEffect[] = [];
@@ -1549,6 +1578,16 @@ function processTimelineSequencingGate(input: {
       resetLiveTimeline: true,
     };
   }
+  if (decision === "drop_epoch" || decision === "drop_stale") {
+    // The daemon renumbered the timeline (epoch rotation or backwards rewind).
+    // The local cursor no longer matches the authoritative numbering, so a
+    // catch_up after it can never return the new rows. Re-baseline instead.
+    return {
+      ...base,
+      shouldApplyStreamEvent: false,
+      sideEffects: [{ type: "rebaseline" }],
+    };
+  }
   return {
     ...base,
     shouldApplyStreamEvent: false,
@@ -1603,19 +1642,17 @@ export function processAgentStreamEvent(
         unmatchedUserMessageInsert: "head",
       });
     } else {
-      const overlay = applyStreamEvent({
-        tail: currentHead,
-        head: [],
-        event,
-        timestamp,
+      // Before history arrives, the overlay is one ordered stream. Reducing it
+      // directly keeps consecutive reasoning chunks in the same row.
+      const overlay = reduceStreamUpdate(currentHead, event, timestamp, {
         source: "live",
         timelineCursor,
       });
       streamResult = {
         tail: currentTail,
-        head: [...overlay.tail, ...overlay.head],
+        head: overlay,
         changedTail: false,
-        changedHead: overlay.changedTail || overlay.changedHead,
+        changedHead: overlay !== currentHead,
       };
     }
   } else {
@@ -1824,6 +1861,7 @@ export interface CreateSessionAgentStreamReducerQueueInput {
     state: (prev: Map<string, TimelineCursor>) => Map<string, TimelineCursor>,
   ) => void;
   recoverTimelineGap: (agentId: string, cursor: { epoch: string; endSeq: number }) => void;
+  recoverTimelineBaseline: (agentId: string) => void;
   onCommitted?: (agentId: string) => void;
 }
 
@@ -1878,8 +1916,14 @@ function cancelAgentStreamReducerFlush(id: number) {
 export function createSessionAgentStreamReducerQueue(
   input: CreateSessionAgentStreamReducerQueueInput,
 ): AgentStreamReducerQueue {
-  const { serverId, setAgentStreamState, setAgentTimelineCursor, recoverTimelineGap, onCommitted } =
-    input;
+  const {
+    serverId,
+    setAgentStreamState,
+    setAgentTimelineCursor,
+    recoverTimelineGap,
+    recoverTimelineBaseline,
+    onCommitted,
+  } = input;
 
   return createAgentStreamReducerQueue({
     getSnapshot: (agentId) => {
@@ -1944,6 +1988,8 @@ export function createSessionAgentStreamReducerQueue(
       for (const effect of sideEffects) {
         if (effect.type === "catch_up") {
           recoverTimelineGap(agentId, effect.cursor);
+        } else if (effect.type === "rebaseline") {
+          recoverTimelineBaseline(agentId);
         }
       }
     },

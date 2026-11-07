@@ -1,9 +1,34 @@
 import { PARENT_AGENT_ID_LABEL } from "@getpaseo/protocol/agent-labels";
+import { normalizeLabels } from "../agent-projections.js";
 
 export interface CreateAgentCaller {
   id: string;
   cwd: string;
   workspaceId?: string;
+}
+
+/** The agent on whose behalf something is created, as far as background inheritance goes. */
+export interface BackgroundCaller {
+  background?: boolean;
+}
+
+/** Omitted, an agent inherits its caller agent's own background; without a caller it is visible. */
+export function inheritAgentBackground(
+  requested: boolean | undefined,
+  caller: BackgroundCaller | null | undefined,
+): boolean {
+  return requested ?? caller?.background === true;
+}
+
+/**
+ * Omitted, a new workspace inherits its caller's effective background. A background caller
+ * agent decides it here; otherwise `undefined` lets provisioning apply the caller workspace's value.
+ */
+export function inheritWorkspaceBackground(
+  requested: boolean | undefined,
+  caller: BackgroundCaller | null | undefined,
+): boolean | undefined {
+  return requested ?? (caller?.background === true ? true : undefined);
 }
 
 export interface CreateAgentPlacement {
@@ -21,7 +46,13 @@ export interface CreateAgentIntent {
 export async function resolveCreateAgentIntent(input: {
   explicitWorkspaceId?: string;
   caller: CreateAgentCaller | null;
-  labels?: Record<string, string>;
+  /**
+   * Required, though it may be undefined: these labels are the new agent's
+   * identity (Mission Control locates the Commander on a host by its
+   * `paseo.mission-control` label). As an optional property this was silently
+   * droppable, and dropping it created every MCP agent with no labels.
+   */
+  labels: Record<string, string> | undefined;
   childAgentDefaultLabels?: Record<string, string>;
   resolveWorkspace: (workspaceId: string) => Promise<CreateAgentPlacement>;
   createWorkspace: () => Promise<CreateAgentPlacement>;
@@ -29,11 +60,12 @@ export async function resolveCreateAgentIntent(input: {
 }): Promise<CreateAgentIntent> {
   const parentAgentId = input.legacyDetached ? null : (input.caller?.id ?? null);
   const placement = await resolvePlacement(input);
-  const labels = {
+  const rawLabels = {
     ...input.childAgentDefaultLabels,
     ...input.labels,
     ...(parentAgentId ? { [PARENT_AGENT_ID_LABEL]: parentAgentId } : {}),
   };
+  const labels = normalizeLabels(rawLabels);
 
   // COMPAT(detachedCreate): legacy callers may still request detached creation.
   // Added in v0.2.0; remove after 2027-01-17 once detached creation is outside the floor.

@@ -1,3 +1,4 @@
+import { createWorkspaceRuntimeStore } from "./workspace-runtime-store/index.js";
 import { SessionDelivery } from "./session/owned-subscriptions/index.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Server as HTTPServer } from "http";
@@ -117,6 +118,7 @@ function createServer(agentManagerOverrides?: Record<string, unknown>) {
     null,
     { allowedOrigins: new Set() },
     createWorkspaceAutoNameStub(),
+    createWorkspaceRuntimeStore(),
     undefined,
     undefined,
     undefined,
@@ -201,10 +203,14 @@ function connectClient(
       delivery,
       wantsSourceNotification: () => true,
     },
+    principalId: "owner",
+    sessionKey: JSON.stringify(["owner", "client-test"]),
     clientId: "client-test",
     appVersion: null,
+    clientCapabilities: null,
     connectionLogger: createLogger(),
     sockets: new Set([ws]),
+    lifecycle: "reconnectable",
     externalDisconnectCleanupTimeout: null,
   });
   return ws;

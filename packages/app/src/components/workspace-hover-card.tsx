@@ -1,16 +1,13 @@
 import {
   useCallback,
-  useEffect,
   useMemo,
-  useRef,
   useState,
   type PropsWithChildren,
   type ReactElement,
   type ReactNode,
 } from "react";
-import { Dimensions, Text, View } from "react-native";
+import { Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
-import { FadeIn, FadeOut } from "react-native-reanimated";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import {
   Check,
@@ -27,17 +24,13 @@ import type { Theme } from "@/styles/theme";
 import { DiffStat } from "@/components/diff-stat";
 import { Pressable } from "react-native";
 import type { GestureResponderEvent } from "react-native";
-import { Portal } from "@gorhom/portal";
-import { useBottomSheetModalInternal } from "@gorhom/bottom-sheet";
 import type { SidebarWorkspaceEntry } from "@/hooks/use-sidebar-workspaces-list";
 import type { PrHint } from "@/git/use-pr-status-query";
 import { openExternalUrl } from "@/utils/open-external-url";
 import { copyToClipboard } from "@/utils/copy-to-clipboard";
 import { PrBadge } from "@/components/sidebar-workspace-list";
-import { useHoverSafeZone } from "@/hooks/use-hover-safe-zone";
 import { useIsCompactFormFactor } from "@/constants/layout";
-import { FloatingSurface } from "@/components/ui/floating";
-import { isWeb } from "@/constants/platform";
+import { HoverCard, HoverCardContent, HoverCardTrigger } from "@/components/ui/hover-card";
 import { useHosts } from "@/runtime/host-runtime";
 import {
   COUNTED_CHECK_PRESENTATIONS,
@@ -47,54 +40,30 @@ import {
 import { formatCheckPresentationCountsLabel } from "@/git/check-presentation-copy";
 import { CheckPresentationIcon, getCheckPresentationTone } from "@/git/check-presentation.view";
 import { buildForgeChecksUrl } from "@/git/forge-url";
+import { useSessionStore } from "@/stores/session-store";
 
-interface Rect {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
+const HOVER_CARD_WIDTH = 260;
 
-function measureElement(element: View): Promise<Rect> {
-  return new Promise((resolve) => {
-    element.measureInWindow((x, y, width, height) => {
-      resolve({ x, y, width, height });
-    });
+/**
+ * The workspace's project description (the description field that exists:
+ * project records carry `projectDescription`; workspaces have no
+ * description of their own on the wire). Resolved per (serverId, workspaceId)
+ * through the session store — the hover card's only description source.
+ */
+function useWorkspaceProjectDescription(workspace: SidebarWorkspaceEntry): string | null {
+  return useSessionStore((state) => {
+    const session = state.sessions[workspace.serverId];
+    if (!session) {
+      return null;
+    }
+    const descriptor = session.workspaces.get(workspace.workspaceId);
+    if (!descriptor) {
+      return null;
+    }
+    const project = descriptor.projectId ? session.projects.get(descriptor.projectId) : null;
+    return project?.projectDescription ?? null;
   });
 }
-
-function computeHoverCardPosition({
-  triggerRect,
-  contentSize,
-  displayArea,
-  offset,
-}: {
-  triggerRect: Rect;
-  contentSize: { width: number; height: number };
-  displayArea: Rect;
-  offset: number;
-}): { x: number; y: number } {
-  let x = triggerRect.x + triggerRect.width + offset;
-  let y = triggerRect.y;
-
-  // If it overflows right, try left
-  if (x + contentSize.width > displayArea.width - 8) {
-    x = triggerRect.x - contentSize.width - offset;
-  }
-
-  // Constrain to screen
-  const padding = 8;
-  x = Math.max(padding, Math.min(displayArea.width - contentSize.width - padding, x));
-  y = Math.max(
-    displayArea.y + padding,
-    Math.min(displayArea.y + displayArea.height - contentSize.height - padding, y),
-  );
-
-  return { x, y };
-}
-
-const HOVER_GRACE_MS = 100;
-const HOVER_CARD_WIDTH = 260;
 
 interface WorkspaceHoverCardProps {
   workspace: SidebarWorkspaceEntry;
@@ -110,237 +79,149 @@ export function WorkspaceHoverCard({
   disabled = false,
   children,
 }: PropsWithChildren<WorkspaceHoverCardProps>): ReactNode {
+  const { t } = useTranslation();
+  const content = useMemo(
+    () => <WorkspaceHoverCardContent workspace={workspace} prHint={prHint} />,
+    [workspace, prHint],
+  );
+  return (
+    <SidebarRowHoverCard
+      disabled={isDragging || disabled}
+      accessibilityLabel={t("workspace.hoverCard.scriptsAccessibility")}
+      testID="workspace-hover-card"
+      content={content}
+    >
+      {children}
+    </SidebarRowHoverCard>
+  );
+}
+
+/**
+ * The hover card shell every sidebar row shares: opens to the right of the row on desktop web
+ * and is absent on compact layouts, where there is no hover. `content` mounts only while open.
+ */
+export function SidebarRowHoverCard({
+  disabled,
+  accessibilityLabel,
+  testID,
+  content,
+  children,
+}: PropsWithChildren<{
+  disabled: boolean;
+  accessibilityLabel: string;
+  testID: string;
+  content: ReactElement;
+}>): ReactNode {
   const isCompact = useIsCompactFormFactor();
 
-  if (!isWeb || isCompact) {
+  if (isCompact) {
     return children;
   }
 
   return (
-    <WorkspaceHoverCardDesktop
-      workspace={workspace}
-      prHint={prHint}
-      isDragging={isDragging}
-      disabled={disabled}
-    >
-      {children}
-    </WorkspaceHoverCardDesktop>
+    <HoverCard disabled={disabled}>
+      <HoverCardTrigger>{children}</HoverCardTrigger>
+      <HoverCardContent
+        placement="right"
+        role="menu"
+        accessibilityLabel={accessibilityLabel}
+        testID={testID}
+        style={styles.card}
+      >
+        {content}
+      </HoverCardContent>
+    </HoverCard>
   );
 }
 
-function WorkspaceHoverCardDesktop({
-  workspace,
-  prHint,
-  isDragging,
-  disabled = false,
-  children,
-}: PropsWithChildren<WorkspaceHoverCardProps>): ReactElement {
-  const triggerRef = useRef<View>(null);
-  const contentRef = useRef<View>(null);
-  const [open, setOpen] = useState(false);
-  const graceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const triggerHoveredRef = useRef(false);
-
-  const clearGraceTimer = useCallback(() => {
-    if (graceTimerRef.current) {
-      clearTimeout(graceTimerRef.current);
-      graceTimerRef.current = null;
-    }
-  }, []);
-
-  const scheduleClose = useCallback(() => {
-    if (graceTimerRef.current) return;
-    graceTimerRef.current = setTimeout(() => {
-      graceTimerRef.current = null;
-      setOpen(false);
-    }, HOVER_GRACE_MS);
-  }, []);
-
-  const handleTriggerEnter = useCallback(() => {
-    triggerHoveredRef.current = true;
-    clearGraceTimer();
-    if (!isDragging && !disabled) {
-      setOpen(true);
-    }
-  }, [clearGraceTimer, disabled, isDragging]);
-
-  const handleTriggerLeave = useCallback(() => {
-    triggerHoveredRef.current = false;
-    scheduleClose();
-  }, [scheduleClose]);
-
-  // While open, the safe zone covers trigger + content + the bridge between
-  // them. Close only fires when the pointer leaves the safe zone; re-entering
-  // it (including the bridge) cancels the pending close.
-  useHoverSafeZone({
-    enabled: open,
-    triggerRef,
-    contentRef,
-    onEnterSafeZone: clearGraceTimer,
-    onLeaveSafeZone: scheduleClose,
-  });
-
-  // Close while another row interaction owns attention.
-  useEffect(() => {
-    if (isDragging || disabled) {
-      clearGraceTimer();
-      setOpen(false);
-    }
-  }, [clearGraceTimer, disabled, isDragging]);
-
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      clearGraceTimer();
-    };
-  }, [clearGraceTimer]);
-
+export function HoverCardHeading({
+  title,
+  description,
+  descriptionMaxLines,
+  titleTestID,
+  descriptionTestID,
+}: {
+  title: string;
+  description: string | null;
+  /** Omit to show the whole description. */
+  descriptionMaxLines?: number;
+  titleTestID: string;
+  descriptionTestID: string;
+}): ReactElement {
   return (
-    <View
-      ref={triggerRef}
-      collapsable={false}
-      onPointerEnter={handleTriggerEnter}
-      onPointerLeave={handleTriggerLeave}
-    >
-      {children}
-      {open ? (
-        <WorkspaceHoverCardContent
-          workspace={workspace}
-          prHint={prHint}
-          triggerRef={triggerRef}
-          contentRef={contentRef}
-        />
+    <>
+      <View style={styles.cardHeader}>
+        <Text style={styles.cardTitle} testID={titleTestID}>
+          {title}
+        </Text>
+      </View>
+      {description ? (
+        <Text
+          style={styles.cardDescription}
+          numberOfLines={descriptionMaxLines}
+          testID={descriptionTestID}
+        >
+          {description}
+        </Text>
       ) : null}
-    </View>
+    </>
   );
 }
 
 function WorkspaceHoverCardContent({
   workspace,
   prHint,
-  triggerRef,
-  contentRef,
 }: {
   workspace: SidebarWorkspaceEntry;
   prHint: PrHint | null;
-  triggerRef: React.RefObject<View | null>;
-  contentRef: React.RefObject<View | null>;
-}): ReactElement | null {
+}): ReactElement {
   const { t } = useTranslation();
-  const bottomSheetInternal = useBottomSheetModalInternal(true);
-  const [triggerRect, setTriggerRect] = useState<Rect | null>(null);
-  const [contentSize, setContentSize] = useState<{ width: number; height: number } | null>(null);
-  const [position, setPosition] = useState<{ x: number; y: number } | null>(null);
-
-  // Measure trigger — same pattern as tooltip.tsx
-  useEffect(() => {
-    if (!triggerRef.current) return;
-
-    let cancelled = false;
-    measureElement(triggerRef.current).then((rect) => {
-      if (cancelled) return;
-      setTriggerRect(rect);
-      return;
-    });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [triggerRef]);
-
-  // Compute position when both measurements are available
-  useEffect(() => {
-    if (!triggerRect || !contentSize) return;
-    const { width: screenWidth, height: screenHeight } = Dimensions.get("window");
-    const displayArea = { x: 0, y: 0, width: screenWidth, height: screenHeight };
-    const result = computeHoverCardPosition({
-      triggerRect,
-      contentSize,
-      displayArea,
-      offset: 4,
-    });
-    setPosition(result);
-  }, [triggerRect, contentSize]);
-
-  const handleLayout = useCallback(
-    (event: { nativeEvent: { layout: { width: number; height: number } } }) => {
-      const { width, height } = event.nativeEvent.layout;
-      setContentSize({ width, height });
-    },
-    [],
-  );
-
-  const frameStyle = useMemo(
-    () => ({
-      position: "absolute" as const,
-      top: position?.y ?? -9999,
-      left: position?.x ?? -9999,
-    }),
-    [position?.x, position?.y],
-  );
-
+  const projectDescription = useWorkspaceProjectDescription(workspace);
   return (
-    <Portal hostName={bottomSheetInternal?.hostName}>
-      <View pointerEvents="box-none" style={styles.portalOverlay}>
-        <FloatingSurface
-          ref={contentRef}
-          entering={FadeIn.duration(80)}
-          exiting={FadeOut.duration(80)}
-          collapsable={false}
-          onLayout={handleLayout}
-          accessibilityRole="menu"
-          accessibilityLabel={t("workspace.hoverCard.scriptsAccessibility")}
-          testID="workspace-hover-card"
-          style={styles.card}
-          frameStyle={frameStyle}
-        >
-          <View style={styles.cardHeader}>
-            <Text style={styles.cardTitle} testID="hover-card-workspace-name">
-              {workspace.name}
-            </Text>
-          </View>
-          {prHint ? <PrBadge hint={prHint} style={styles.cardInfoRow} /> : null}
-          {workspace.diffStat ? (
-            <View style={styles.cardInfoRow}>
-              <ThemedFileDiff size={12} uniProps={foregroundMutedColorMapping} />
-              <DiffStat
-                additions={workspace.diffStat.additions}
-                deletions={workspace.diffStat.deletions}
-              />
-            </View>
-          ) : null}
-          <HostRow serverId={workspace.serverId} />
-          {workspace.currentBranch ? (
-            <CopyableInfoRow
-              icon={ThemedGitBranch}
-              value={workspace.currentBranch}
-              copyValue={workspace.currentBranch}
-              copyLabel={t("workspace.hoverCard.copyBranchName")}
-              testID="hover-card-workspace-branch"
-            />
-          ) : null}
-          {workspace.workspaceDirectoryLabel ? (
-            <CopyableInfoRow
-              icon={ThemedFolder}
-              value={workspace.workspaceDirectoryLabel}
-              copyValue={workspace.workspaceDirectory}
-              copyLabel={t("workspace.hoverCard.copyPath")}
-              testID="hover-card-workspace-cwd"
-            />
-          ) : null}
-          {prHint?.checks && prHint.checks.length > 0 ? (
-            <>
-              <View style={styles.separator} />
-              <ChecksSummaryPressable
-                checks={prHint.checks}
-                url={prHint.url}
-                forge={prHint.forge}
-              />
-            </>
-          ) : null}
-        </FloatingSurface>
-      </View>
-    </Portal>
+    <>
+      <HoverCardHeading
+        title={workspace.name}
+        description={projectDescription}
+        titleTestID="hover-card-workspace-name"
+        descriptionTestID="hover-card-workspace-description"
+        descriptionMaxLines={3}
+      />
+      {prHint ? <PrBadge hint={prHint} style={styles.cardInfoRow} /> : null}
+      {workspace.diffStat ? (
+        <View style={styles.cardInfoRow}>
+          <ThemedFileDiff size={12} uniProps={foregroundMutedColorMapping} />
+          <DiffStat
+            additions={workspace.diffStat.additions}
+            deletions={workspace.diffStat.deletions}
+          />
+        </View>
+      ) : null}
+      <HoverCardHostRow serverId={workspace.serverId} testID="hover-card-workspace-host" />
+      {workspace.currentBranch ? (
+        <HoverCardCopyableInfoRow
+          icon={ThemedGitBranch}
+          value={workspace.currentBranch}
+          copyValue={workspace.currentBranch}
+          copyLabel={t("workspace.hoverCard.copyBranchName")}
+          testID="hover-card-workspace-branch"
+        />
+      ) : null}
+      {workspace.workspaceDirectoryLabel ? (
+        <HoverCardCopyableInfoRow
+          icon={ThemedFolder}
+          value={workspace.workspaceDirectoryLabel}
+          copyValue={workspace.workspaceDirectory}
+          copyLabel={t("workspace.hoverCard.copyPath")}
+          testID="hover-card-workspace-cwd"
+        />
+      ) : null}
+      {prHint?.checks && prHint.checks.length > 0 ? (
+        <>
+          <View style={styles.separator} />
+          <ChecksSummaryPressable checks={prHint.checks} url={prHint.url} forge={prHint.forge} />
+        </>
+      ) : null}
+    </>
   );
 }
 
@@ -349,14 +230,20 @@ const ThemedFolder = withUnistyles(Folder);
 const ThemedServer = withUnistyles(Server);
 const ThemedFileDiff = withUnistyles(FileDiff);
 
-type CardInfoIcon = React.ComponentType<React.ComponentProps<typeof ThemedGitBranch>>;
+export type HoverCardInfoIcon = React.ComponentType<React.ComponentProps<typeof ThemedGitBranch>>;
 
-function HostRow({ serverId }: { serverId: string }): ReactElement | null {
+export function HoverCardHostRow({
+  serverId,
+  testID,
+}: {
+  serverId: string;
+  testID: string;
+}): ReactElement | null {
   const hosts = useHosts();
   const host = hosts.find((h) => h.serverId === serverId);
   const label = host?.label?.trim() || serverId;
 
-  return <InfoRow icon={ThemedServer} value={label} testID="hover-card-workspace-host" />;
+  return <HoverCardInfoRow icon={ThemedServer} value={label} testID={testID} />;
 }
 
 const ThemedExternalLink = withUnistyles(ExternalLink);
@@ -366,12 +253,12 @@ const ThemedCheck = withUnistyles(Check);
 const foregroundColorMapping = (theme: Theme) => ({ color: theme.colors.foreground });
 const foregroundMutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 
-function InfoRow({
+export function HoverCardInfoRow({
   icon: Icon,
   value,
   testID,
 }: {
-  icon: CardInfoIcon;
+  icon: HoverCardInfoIcon;
   value: string;
   testID: string;
 }) {
@@ -389,14 +276,14 @@ function renderChecksSummaryForgeIcon(icon: string, iconUniProps: typeof foregro
   return <ForgeBrandIcon iconKind={icon} size={12} uniProps={iconUniProps} />;
 }
 
-function CopyableInfoRow({
+export function HoverCardCopyableInfoRow({
   icon: Icon,
   value,
   copyValue,
   copyLabel,
   testID,
 }: {
-  icon: CardInfoIcon;
+  icon: HoverCardInfoIcon;
   value: string;
   copyValue: string;
   copyLabel: string;
@@ -561,14 +448,6 @@ function checksSummaryPressableStyle({ hovered = false }: { pressed: boolean; ho
 }
 
 const styles = StyleSheet.create((theme) => ({
-  portalOverlay: {
-    position: "absolute",
-    top: 0,
-    right: 0,
-    bottom: 0,
-    left: 0,
-    zIndex: 1000,
-  },
   card: {
     backgroundColor: theme.colors.surface1,
     borderWidth: 1,
@@ -581,7 +460,6 @@ const styles = StyleSheet.create((theme) => ({
     shadowOpacity: 0.2,
     shadowRadius: 8,
     elevation: 8,
-    zIndex: 1000,
   },
   cardHeader: {
     flexDirection: "row",
@@ -596,6 +474,15 @@ const styles = StyleSheet.create((theme) => ({
     fontWeight: theme.fontWeight.normal,
     flex: 1,
     minWidth: 0,
+  },
+  cardDescription: {
+    color: theme.colors.foregroundMuted,
+    fontSize: theme.fontSize.xs,
+    // Scales with the UI font size; a fixed px line height falls under the glyph height once
+    // the ramp grows, and the clamped last line then bleeds into the row below.
+    lineHeight: Math.round(theme.fontSize.xs * 1.35),
+    paddingHorizontal: theme.spacing[3],
+    paddingBottom: theme.spacing[2],
   },
   cardInfoRow: {
     flexDirection: "row",

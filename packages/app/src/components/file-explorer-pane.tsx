@@ -27,7 +27,22 @@ import { StyleSheet, useUnistyles, withUnistyles } from "react-native-unistyles"
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { isWeb } from "@/constants/platform";
 import * as Clipboard from "expo-clipboard";
-import { ChevronDown, Eye, EyeOff, FilePlus, FolderPlus, RotateCw } from "lucide-react-native";
+import {
+  ChevronDown,
+  Eye,
+  EyeOff,
+  FilePlus,
+  FolderPlus,
+  FolderTree,
+  RotateCw,
+} from "lucide-react-native";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { MaterialFileIcon } from "@/components/material-file-icon";
 import {
   TreeChevron,
@@ -58,16 +73,31 @@ import type {
 import { useSessionStore } from "@/stores/session-store";
 import { FileActionsContextMenuContent } from "@/components/file-actions-menu";
 import { ContextMenu, ContextMenuTrigger, useContextMenu } from "@/components/ui/context-menu";
+import { FileDropZone } from "@/components/file-drop/file-drop-zone";
+import { useFileDrop } from "@/components/file-drop/use-file-drop";
+import type { DroppedItem } from "@/components/file-drop/types";
 import { useFileDownload } from "@/hooks/use-file-download";
 import { useFileExplorerActions } from "@/hooks/use-file-explorer-actions";
 import { useIsLocalDaemon } from "@/hooks/use-is-local-daemon";
 import { buildWorkspaceExplorerStateKey } from "@/hooks/use-file-explorer-actions";
+import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
 import { usePanelStore, type ExpandedPathsUpdate, type SortOption } from "@/stores/panel-store";
 import { buildAbsoluteExplorerPath } from "@/utils/explorer-paths";
+import {
+  DIRECTORY_LISTING_INVALIDATED,
+  type DirectoryListingResult,
+} from "@/file-explorer/directory-listings";
 import { isHiddenExplorerPath } from "@/file-explorer/visibility";
+import {
+  droppedItemsToExplorerFiles,
+  resolveExplorerDropDirectoryPath,
+} from "@/file-explorer/drop-upload";
+import { useToast } from "@/contexts/toast-context";
+import { toErrorMessage } from "@/utils/error-messages";
 import {
   flattenExplorerTree,
   reconcileRestoredExpandedPaths,
+  refreshExplorerDirectories,
   restoreExpandedDirectories,
   setExpandedDirectoryPath,
   showHiddenFilesAndRestoreExpandedDirectories,
@@ -75,8 +105,8 @@ import {
 } from "@/file-explorer/tree";
 import { useWorkspaceFileDragSource } from "@/attachments/use-workspace-file-drag-source";
 import { confirmDialog } from "@/utils/confirm-dialog";
-import { useToast } from "@/contexts/toast-context";
 import { openDesktopTarget, useDesktopOpenTargets } from "@/workspace/desktop-open-targets";
+import { useWorkspaceFields } from "@/stores/session-store-hooks";
 import { useOpenDirectoryInEditor } from "@/workspace/open-in-editor/directory";
 
 const SORT_OPTIONS: { value: SortOption }[] = [
@@ -396,6 +426,138 @@ function TreeRowItem({
   );
 }
 
+interface HierarchySegment {
+  path: string;
+  label: string;
+  isRoot: boolean;
+  isWorkspace: boolean;
+  isCurrent: boolean;
+}
+
+function computeDirectoryHierarchy(currentPath: string, workspaceRoot: string): HierarchySegment[] {
+  const normCurrent = currentPath.replace(/\\/g, "/").replace(/\/+$/, "") || "/";
+  const normWorkspace = workspaceRoot.replace(/\\/g, "/").replace(/\/+$/, "") || "/";
+  // A folder opened from a `~/…` chat link: only the host can expand `~`, so the
+  // chain starts at `~` instead of `/`.
+  const rootPath = normCurrent === "~" || normCurrent.startsWith("~/") ? "~" : "/";
+
+  const hierarchy: HierarchySegment[] = [
+    {
+      path: rootPath,
+      label: rootPath,
+      isRoot: true,
+      isWorkspace: normWorkspace === rootPath,
+      isCurrent: normCurrent === rootPath,
+    },
+  ];
+
+  if (normCurrent !== rootPath) {
+    const parts = normCurrent.slice(rootPath.length).split("/").filter(Boolean);
+    let cumulative = rootPath === "/" ? "" : rootPath;
+    for (const part of parts) {
+      cumulative = `${cumulative}/${part}`;
+      hierarchy.push({
+        path: cumulative,
+        label: part,
+        isRoot: false,
+        isWorkspace: cumulative === normWorkspace,
+        isCurrent: cumulative === normCurrent,
+      });
+    }
+  }
+
+  return hierarchy;
+}
+
+function HierarchyMenu({
+  effectiveRoot,
+  workspaceRoot,
+  hierarchy,
+  currentFolderLabel,
+  onSelectRoot,
+}: {
+  effectiveRoot: string;
+  workspaceRoot: string;
+  hierarchy: HierarchySegment[];
+  currentFolderLabel: string;
+  onSelectRoot: (path: string | null) => void;
+}) {
+  const { t } = useTranslation();
+  const { theme } = useUnistyles();
+  const isCustomRoot =
+    effectiveRoot !== (workspaceRoot.replace(/\\/g, "/").replace(/\/+$/, "") || "/");
+  const handleResetWorkspace = useCallback(() => onSelectRoot(null), [onSelectRoot]);
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        accessibilityLabel={t("workspace.fileExplorer.hierarchy", {
+          defaultValue: "Directory hierarchy",
+        })}
+        style={styles.hierarchyTrigger}
+        testID="files-hierarchy-trigger"
+      >
+        <FolderTree size={12} color={theme.colors.foregroundMuted} />
+        <Text
+          style={styles.sortTriggerText}
+          numberOfLines={1}
+          testID="files-hierarchy-current-label"
+        >
+          {currentFolderLabel}
+        </Text>
+        <ChevronDown size={10} color={theme.colors.foregroundMuted} />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" width={260} testID="files-hierarchy-menu">
+        {isCustomRoot ? (
+          <>
+            <DropdownMenuItem
+              onSelect={handleResetWorkspace}
+              testID="files-hierarchy-reset-workspace"
+            >
+              {t("workspace.fileExplorer.resetWorkspace", { defaultValue: "Reset to workspace" })}
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+          </>
+        ) : null}
+        {hierarchy.map((item) => (
+          <HierarchyMenuItem key={item.path} item={item} onSelect={onSelectRoot} />
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+function formatHierarchyItemLabel(item: HierarchySegment): string {
+  if (item.isWorkspace) {
+    return `${item.label} (workspace)`;
+  }
+  if (item.isRoot) {
+    return `${item.label} (root)`;
+  }
+  return item.label;
+}
+
+interface HierarchyMenuItemProps {
+  item: HierarchySegment;
+  onSelect: (path: string | null) => void;
+}
+
+function HierarchyMenuItem({ item, onSelect }: HierarchyMenuItemProps) {
+  const handleSelect = useCallback(() => {
+    onSelect(item.isWorkspace ? null : item.path);
+  }, [item.isWorkspace, item.path, onSelect]);
+
+  return (
+    <DropdownMenuItem
+      onSelect={handleSelect}
+      selected={item.isCurrent}
+      testID={`files-hierarchy-item-${item.path === "/" ? "root" : item.label}`}
+    >
+      {formatHierarchyItemLabel(item)}
+    </DropdownMenuItem>
+  );
+}
+
 interface FileExplorerPaneProps {
   serverId: string;
   workspaceId?: string | null;
@@ -414,16 +576,36 @@ export function FileExplorerPane({
   onAddToChat,
 }: FileExplorerPaneProps) {
   const { t } = useTranslation();
+  const client = useSessionStore((state) => state.sessions[serverId]?.client ?? null);
   const isCompact = useIsCompactFormFactor();
+  const browseRootKey =
+    (workspaceId ? buildWorkspaceTabPersistenceKey({ serverId, workspaceId }) : null) ??
+    `${serverId}:${workspaceRoot}`;
+  const browseRoot = usePanelStore(
+    (state) => state.explorerBrowseRootByWorkspace[browseRootKey] ?? null,
+  );
+  const setExplorerBrowseRoot = usePanelStore((state) => state.setExplorerBrowseRoot);
+  const setBrowseRoot = useCallback(
+    (root: string | null) => setExplorerBrowseRoot(browseRootKey, root),
+    [browseRootKey, setExplorerBrowseRoot],
+  );
+  const effectiveRoot = useMemo(() => {
+    return (browseRoot?.trim() || workspaceRoot.trim()).replace(/\\/g, "/");
+  }, [browseRoot, workspaceRoot]);
 
-  const normalizedWorkspaceRoot = useMemo(() => workspaceRoot.trim(), [workspaceRoot]);
+  const normalizedWorkspaceRoot = effectiveRoot;
+  const isBrowsingCustomRoot = effectiveRoot !== workspaceRoot.trim().replace(/\\/g, "/");
+  // Outside the workspace root the explorer state is keyed by the folder, not by
+  // the workspace. Every reader and writer must use the same scope, or listings
+  // land under one key while the tree reads the other and shows nothing.
+  const explorerScopeWorkspaceId = isBrowsingCustomRoot ? null : workspaceId;
   const workspaceStateKey = useMemo(
     () =>
       buildWorkspaceExplorerStateKey({
-        workspaceId,
+        workspaceId: explorerScopeWorkspaceId,
         workspaceRoot: normalizedWorkspaceRoot,
       }),
-    [normalizedWorkspaceRoot, workspaceId],
+    [explorerScopeWorkspaceId, normalizedWorkspaceRoot],
   );
   const hasWorkspaceScope = Boolean(workspaceStateKey && normalizedWorkspaceRoot);
   const explorerState = useSessionStore((state) =>
@@ -434,6 +616,7 @@ export function FileExplorerPane({
 
   const {
     requestDirectoryListing,
+    invalidateDirectoryListings,
     createEntry,
     renameEntry,
     duplicateEntry,
@@ -441,7 +624,7 @@ export function FileExplorerPane({
     selectExplorerEntry,
   } = useFileExplorerActions({
     serverId,
-    workspaceId,
+    workspaceId: explorerScopeWorkspaceId,
     workspaceRoot: normalizedWorkspaceRoot,
   });
   const toast = useToast();
@@ -450,9 +633,15 @@ export function FileExplorerPane({
     isLocalExecution: isLocalDaemon,
   });
   const fileManagerTarget = desktopOpenTargets.find((target) => target.kind === "file-manager");
+  const projectId = useWorkspaceFields(
+    serverId,
+    workspaceId ?? null,
+    (workspace) => workspace.projectId,
+  );
   const openDirectoryInEditor = useOpenDirectoryInEditor({
     serverId,
     workspaceDirectory: normalizedWorkspaceRoot,
+    projectId,
   });
   // COMPAT(fsEntryOps): added in v0.3.0, remove gate after 2027-02-08.
   const fsEntryOpsEnabled = useSessionStore(
@@ -465,7 +654,7 @@ export function FileExplorerPane({
   const [pendingEdit, setPendingEdit] = useState<ExplorerPendingEdit | null>(null);
   const downloadFile = useFileDownload({
     serverId,
-    workspaceId,
+    workspaceId: explorerScopeWorkspaceId,
     workspaceRoot: normalizedWorkspaceRoot,
   });
   const sortOption = usePanelStore((state) => state.explorerSortOption);
@@ -555,9 +744,13 @@ export function FileExplorerPane({
       if (!hasWorkspaceScope) {
         return;
       }
-      onOpenFile?.(entry.path);
+      let fullPath = entry.path;
+      if (!entry.path.startsWith("/")) {
+        fullPath = effectiveRoot === "/" ? `/${entry.path}` : `${effectiveRoot}/${entry.path}`;
+      }
+      onOpenFile?.(fullPath);
     },
-    [hasWorkspaceScope, onOpenFile],
+    [effectiveRoot, hasWorkspaceScope, onOpenFile],
   );
 
   const handleEntryPress = useCallback(
@@ -879,9 +1072,11 @@ export function FileExplorerPane({
       refreshExplorerDirectories({
         hasWorkspaceScope,
         expandedPaths,
+        showHiddenFiles: usePanelStore.getState().explorerShowHiddenFiles,
         requestDirectoryListing,
+        invalidateDirectoryListings,
       }),
-    [expandedPaths, hasWorkspaceScope, requestDirectoryListing],
+    [invalidateDirectoryListings, expandedPaths, hasWorkspaceScope, requestDirectoryListing],
   );
   const { refetch: refetchExplorer, isFetching: isRefreshFetching } = useQuery({
     queryKey: ["fileExplorerRefresh", serverId, workspaceStateKey],
@@ -890,6 +1085,10 @@ export function FileExplorerPane({
   });
 
   const handleRefresh = useCallback(() => {
+    void refetchExplorer();
+  }, [refetchExplorer]);
+
+  const handleDropUploaded = useCallback(() => {
     void refetchExplorer();
   }, [refetchExplorer]);
 
@@ -1057,27 +1256,147 @@ export function FileExplorerPane({
       }}
       style={styles.container}
     >
-      <FileExplorerPaneContent
-        error={error}
-        isCompact={isCompact}
-        showInitialLoading={showInitialLoading}
-        showBackFromError={showBackFromError}
-        listRows={listRows}
-        onNewEntryAtRoot={fsEntryOpsEnabled ? handleNewEntry : undefined}
-        currentSortLabel={currentSortLabel}
-        isRefreshFetching={isRefreshFetching}
-        treeListRef={treeListRef}
-        scrollbar={scrollbar}
-        renderTreeRow={renderTreeRow}
-        handleSortCycle={handleSortCycle}
-        handleToggleHiddenFiles={handleToggleHiddenFiles}
-        handleRefresh={handleRefresh}
-        handleBackFromError={handleBackFromError}
-        handleRetry={handleRetry}
-        sortTriggerStyle={sortTriggerStyle}
-      />
+      <FileDropZone style={styles.treePaneFill}>
+        <FileExplorerDropTarget
+          disabled={!client}
+          client={client}
+          cwd={normalizedWorkspaceRoot}
+          directories={directories}
+          selectedEntryPath={selectedEntryPath}
+          onUploaded={handleDropUploaded}
+        />
+        <FileExplorerPaneContent
+          error={error}
+          isCompact={isCompact}
+          showInitialLoading={showInitialLoading}
+          showBackFromError={showBackFromError}
+          listRows={listRows}
+          onNewEntryAtRoot={fsEntryOpsEnabled ? handleNewEntry : undefined}
+          currentSortLabel={currentSortLabel}
+          isRefreshFetching={isRefreshFetching}
+          treeListRef={treeListRef}
+          scrollbar={scrollbar}
+          renderTreeRow={renderTreeRow}
+          handleSortCycle={handleSortCycle}
+          handleToggleHiddenFiles={handleToggleHiddenFiles}
+          handleRefresh={handleRefresh}
+          handleBackFromError={handleBackFromError}
+          handleRetry={handleRetry}
+          sortTriggerStyle={sortTriggerStyle}
+          effectiveRoot={effectiveRoot}
+          workspaceRoot={workspaceRoot}
+          hierarchy={computeDirectoryHierarchy(effectiveRoot, workspaceRoot)}
+          currentFolderLabel={
+            computeDirectoryHierarchy(effectiveRoot, workspaceRoot).at(-1)?.label || "files"
+          }
+          onSelectRoot={setBrowseRoot}
+        />
+      </FileDropZone>
     </View>
   );
+}
+
+interface FileExplorerDropClient {
+  writeExplorerFile: (input: {
+    cwd: string;
+    directoryPath?: string;
+    fileName: string;
+    mimeType: string;
+    bytes: Uint8Array;
+  }) => Promise<{ error: string | null }>;
+}
+
+function FileExplorerDropTarget({
+  disabled,
+  client,
+  cwd,
+  directories,
+  selectedEntryPath,
+  onUploaded,
+}: {
+  disabled: boolean;
+  client: FileExplorerDropClient | null;
+  cwd: string;
+  directories: Map<string, { entries: ExplorerEntry[] }>;
+  selectedEntryPath: string | null;
+  onUploaded: () => void;
+}) {
+  const { t } = useTranslation();
+  const toast = useToast();
+  const isUploadingDropRef = useRef(false);
+
+  const handleExplorerDrop = useCallback(
+    async (items: DroppedItem[]) => {
+      if (disabled || isUploadingDropRef.current) {
+        return;
+      }
+      if (!client) {
+        toast.error(t("workspace.fileExplorer.drop.hostDisconnected"));
+        return;
+      }
+
+      let files;
+      try {
+        files = await droppedItemsToExplorerFiles(items);
+      } catch (error) {
+        toast.error(toErrorMessage(error));
+        return;
+      }
+      if (files.length === 0) {
+        return;
+      }
+
+      const directoryPath = resolveExplorerDropDirectoryPath({
+        selectedEntryPath,
+        directories,
+      });
+
+      isUploadingDropRef.current = true;
+      toast.show(
+        t("workspace.fileExplorer.drop.uploading", {
+          count: files.length,
+        }),
+      );
+      try {
+        for (const file of files) {
+          const response = await client.writeExplorerFile({
+            cwd,
+            directoryPath,
+            fileName: file.fileName,
+            mimeType: file.mimeType,
+            bytes: await file.readBytes(),
+          });
+          if (response.error) {
+            throw new Error(response.error);
+          }
+        }
+        toast.show(
+          t("workspace.fileExplorer.drop.uploaded", {
+            count: files.length,
+          }),
+          { variant: "success" },
+        );
+        onUploaded();
+      } catch (error) {
+        toast.error(toErrorMessage(error));
+      } finally {
+        isUploadingDropRef.current = false;
+      }
+    },
+    [client, cwd, directories, disabled, onUploaded, selectedEntryPath, t, toast],
+  );
+
+  useFileDrop(
+    {
+      onFiles: () => undefined,
+      onGenericFiles: (items) => {
+        void handleExplorerDrop(items);
+      },
+    },
+    { disabled },
+  );
+
+  return null;
 }
 
 interface WebContextMenuEvent {
@@ -1149,6 +1468,11 @@ interface FileExplorerPaneContentProps {
   handleBackFromError: () => void;
   handleRetry: () => void;
   sortTriggerStyle: (state: PressableStateCallbackType) => StyleProp<ViewStyle>;
+  effectiveRoot: string;
+  workspaceRoot: string;
+  hierarchy: HierarchySegment[];
+  currentFolderLabel: string;
+  onSelectRoot: (path: string | null) => void;
 }
 
 function FileExplorerPaneContent(props: FileExplorerPaneContentProps) {
@@ -1172,6 +1496,11 @@ function FileExplorerPaneContent(props: FileExplorerPaneContentProps) {
     handleBackFromError,
     handleRetry,
     sortTriggerStyle: sortTriggerStyleProp,
+    effectiveRoot,
+    workspaceRoot,
+    hierarchy,
+    currentFolderLabel,
+    onSelectRoot,
   } = props;
 
   const showHiddenFiles = usePanelStore((state) => state.explorerShowHiddenFiles);
@@ -1226,16 +1555,25 @@ function FileExplorerPaneContent(props: FileExplorerPaneContentProps) {
         ]}
         testID="files-pane-header"
       >
-        <Pressable
-          onPress={handleSortCycle}
-          style={sortTriggerStyleProp}
-          testID="files-sort-trigger"
-        >
-          <Text style={styles.sortTriggerText} testID="files-sort-label">
-            {currentSortLabel}
-          </Text>
-          <ChevronDown size={12} color={theme.colors.foregroundMuted} />
-        </Pressable>
+        <View style={styles.headerLeading}>
+          <HierarchyMenu
+            effectiveRoot={effectiveRoot}
+            workspaceRoot={workspaceRoot}
+            hierarchy={hierarchy}
+            currentFolderLabel={currentFolderLabel}
+            onSelectRoot={onSelectRoot}
+          />
+          <Pressable
+            onPress={handleSortCycle}
+            style={sortTriggerStyleProp}
+            testID="files-sort-trigger"
+          >
+            <Text style={styles.sortTriggerText} testID="files-sort-label">
+              {currentSortLabel}
+            </Text>
+            <ChevronDown size={12} color={theme.colors.foregroundMuted} />
+          </Pressable>
+        </View>
         <ToolbarControls style={styles.headerActions}>
           {onNewEntryAtRoot ? (
             <>
@@ -1417,7 +1755,7 @@ function toggleDirectory({
   requestDirectoryListing: (
     path: string,
     opts?: { recordHistory?: boolean; setCurrentPath?: boolean },
-  ) => Promise<ExplorerDirectory | null>;
+  ) => Promise<DirectoryListingResult>;
   setExpandedPathsForWorkspace: (workspaceStateKey: string, paths: ExpandedPathsUpdate) => void;
 }): void {
   if (!workspaceStateKey) {
@@ -1554,7 +1892,7 @@ async function initializeExplorer({
   requestDirectoryListing: (
     path: string,
     opts?: { recordHistory?: boolean; setCurrentPath?: boolean },
-  ) => Promise<ExplorerDirectory | null>;
+  ) => Promise<DirectoryListingResult>;
   setExpandedPathsForWorkspace: (workspaceStateKey: string, paths: ExpandedPathsUpdate) => void;
 }): Promise<void> {
   if (!hasWorkspaceScope || hasInitializedRef.current) {
@@ -1565,6 +1903,7 @@ async function initializeExplorer({
     recordHistory: false,
     setCurrentPath: false,
   });
+  if (rootDirectory === DIRECTORY_LISTING_INVALIDATED) return;
   if (!rootDirectory) {
     hasInitializedRef.current = false;
     return;
@@ -1586,7 +1925,10 @@ async function initializeExplorer({
   const hiddenPersistedPaths = showHiddenFiles
     ? []
     : Array.from(persistedExpandedPaths).filter(isHiddenExplorerPath);
-  const restoredPathsWithHidden = [...restoredPaths, ...hiddenPersistedPaths];
+  const restoredPathsWithHidden =
+    restoredPaths === DIRECTORY_LISTING_INVALIDATED
+      ? DIRECTORY_LISTING_INVALIDATED
+      : [...restoredPaths, ...hiddenPersistedPaths];
   setExpandedPathsForWorkspace(workspaceStateKey, (currentPaths) =>
     reconcileRestoredExpandedPaths({
       persistedExpandedPaths,
@@ -1594,39 +1936,6 @@ async function initializeExplorer({
       restoredExpandedPaths: restoredPathsWithHidden,
     }),
   );
-}
-
-async function refreshExplorerDirectories({
-  hasWorkspaceScope,
-  expandedPaths,
-  requestDirectoryListing,
-}: {
-  hasWorkspaceScope: boolean;
-  expandedPaths: Set<string>;
-  requestDirectoryListing: (
-    path: string,
-    opts?: { recordHistory?: boolean; setCurrentPath?: boolean },
-  ) => Promise<ExplorerDirectory | null>;
-}): Promise<null> {
-  if (!hasWorkspaceScope) {
-    return null;
-  }
-  const showHiddenFiles = usePanelStore.getState().explorerShowHiddenFiles;
-  const directoryPaths = Array.from(expandedPaths).filter(
-    (path) => showHiddenFiles || !isHiddenExplorerPath(path),
-  );
-  if (!directoryPaths.includes(".")) {
-    directoryPaths.unshift(".");
-  }
-  await Promise.all(
-    directoryPaths.map((path) =>
-      requestDirectoryListing(path, {
-        recordHistory: false,
-        setCurrentPath: false,
-      }),
-    ),
-  );
-  return null;
 }
 
 function getErrorRecoveryPath(state: AgentFileExplorerState | undefined): string {
@@ -1685,12 +1994,28 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: "space-between",
     backgroundColor: theme.colors.surfaceSidebar,
   },
+  headerLeading: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[1],
+    minWidth: 0,
+    flexShrink: 1,
+  },
+  hierarchyTrigger: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[1],
+    marginLeft: theme.spacing[3] - theme.spacing[1],
+    paddingHorizontal: theme.spacing[1],
+    height: 24,
+    borderRadius: theme.borderRadius.base,
+    maxWidth: 160,
+  },
   sortTrigger: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
     gap: theme.spacing[1],
-    marginLeft: theme.spacing[3] - theme.spacing[1],
     paddingHorizontal: theme.spacing[1],
     height: 24,
     borderRadius: theme.borderRadius.base,

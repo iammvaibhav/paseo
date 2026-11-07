@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<meta name="color-scheme" content="dark">
+	<title>omp-proxy · playground</title>
+	<!-- An empty data icon stops the browser from requesting /favicon.ico. -->
+	<link rel="icon" href="data:,">
+	<link rel="stylesheet" href="/app.css">
+	<script src="/app.js" defer></script>
+</head>
+<body>
+	<a class="skip-link" href="#composer-input">Skip to message</a>
+
+	<header class="topbar">
+		<div class="brand">
+			<span class="brand__mark">omp-proxy</span>
+			<span class="brand__sub">playground</span>
+		</div>
+		<p class="health" id="health" role="status">
+			<span class="dot" id="health-dot" data-state="loading" aria-hidden="true"></span>
+			<span id="health-text">Connecting…</span>
+		</p>
+		<div class="token">
+			<label class="label" for="token-input">Bearer token</label>
+			<input class="input input--sm mono" id="token-input" type="password" autocomplete="off" spellcheck="false" placeholder="optional">
+		</div>
+	</header>
+
+	<nav class="providers" aria-label="Providers">
+		<div class="pills" id="provider-pills" role="radiogroup" aria-label="Provider"></div>
+		<p class="notice notice--error" id="providers-error" hidden></p>
+	</nav>
+
+	<main class="layout">
+		<aside class="panel controls" aria-labelledby="controls-title">
+			<div class="panel__head">
+				<h2 class="panel__title" id="controls-title">Request</h2>
+				<span class="panel__meta mono" id="provider-meta"></span>
+			</div>
+			<div class="panel__body stack">
+				<div class="field">
+					<div class="field__row">
+						<label class="label" for="model-select">Model</label>
+						<button class="btn btn--link" id="models-retry" type="button" hidden>Retry</button>
+					</div>
+					<select class="select" id="model-select"></select>
+					<p class="hint mono" id="model-hint"></p>
+				</div>
+
+				<div class="field">
+					<label class="label" for="account-select">Account</label>
+					<select class="select" id="account-select"></select>
+					<p class="hint" id="account-hint"></p>
+				</div>
+
+				<div class="field">
+					<label class="label" for="effort-select">Reasoning effort</label>
+					<select class="select" id="effort-select"></select>
+					<p class="hint" id="effort-hint" hidden></p>
+				</div>
+
+				<fieldset class="field">
+					<legend class="label">Wire format</legend>
+					<div class="segmented" id="format-group">
+						<label class="segmented__item"><input type="radio" name="format" value="chat"><span>chat</span></label>
+						<label class="segmented__item"><input type="radio" name="format" value="responses"><span>responses</span></label>
+						<label class="segmented__item"><input type="radio" name="format" value="messages"><span>messages</span></label>
+					</div>
+					<p class="hint mono" id="format-hint"></p>
+				</fieldset>
+
+				<div class="field-grid">
+					<div class="field">
+						<label class="label" for="max-tokens">Max tokens</label>
+						<input class="input mono" id="max-tokens" type="number" min="1" step="1" inputmode="numeric" placeholder="model max">
+					</div>
+					<div class="field">
+						<label class="label" for="temperature">Temperature</label>
+						<input class="input mono" id="temperature" type="number" min="0" max="2" step="0.1" inputmode="decimal" placeholder="default">
+					</div>
+				</div>
+
+				<label class="switch">
+					<input type="checkbox" id="stream-toggle" role="switch">
+					<span class="switch__track" aria-hidden="true"></span>
+					<span class="switch__label">Stream response</span>
+				</label>
+
+				<fieldset class="field">
+					<legend class="label">Session</legend>
+					<div class="segmented segmented--2" id="session-mode-group">
+						<label class="segmented__item"><input type="radio" name="session-mode" value="auto"><span>auto (chain)</span></label>
+						<label class="segmented__item"><input type="radio" name="session-mode" value="fixed"><span>fixed id</span></label>
+					</div>
+					<div class="field" id="session-fixed" hidden>
+						<label class="visually-hidden" for="session-id">Session id</label>
+						<input class="input mono" id="session-id" type="text" autocomplete="off" spellcheck="false" placeholder="session id">
+					</div>
+					<p class="hint" id="session-hint"></p>
+					<button class="btn btn--secondary" id="new-conversation" type="button">New conversation</button>
+				</fieldset>
+
+				<section class="accounts" aria-labelledby="accounts-title">
+					<h3 class="label" id="accounts-title">Stored accounts</h3>
+					<ul class="account-list" id="account-list"></ul>
+					<p class="hint" id="routing-info"></p>
+				</section>
+			</div>
+		</aside>
+
+		<section class="panel conversation" aria-labelledby="conversation-title">
+			<div class="panel__head">
+				<h2 class="panel__title" id="conversation-title">Conversation</h2>
+				<span class="panel__meta mono" id="conversation-meta"></span>
+				<div class="panel__actions">
+					<button class="btn btn--ghost btn--sm" id="clear-conversation" type="button">Clear</button>
+				</div>
+			</div>
+			<div class="system">
+				<label class="label" for="system-prompt">System prompt</label>
+				<textarea class="textarea" id="system-prompt" rows="2" placeholder="Optional. Sent as system / instructions."></textarea>
+			</div>
+			<ol class="transcript" id="transcript" aria-label="Transcript"></ol>
+			<form class="composer" id="composer">
+				<label class="visually-hidden" for="composer-input">Message</label>
+				<textarea class="textarea composer__input" id="composer-input" rows="3" placeholder="Message"></textarea>
+				<div class="composer__bar">
+					<p class="hint" id="composer-hint"><kbd>Ctrl</kbd>/<kbd>⌘</kbd> + <kbd>Enter</kbd> sends · <kbd>Esc</kbd> aborts</p>
+					<button class="btn btn--danger" id="abort-button" type="button" hidden>Abort</button>
+					<button class="btn btn--primary" id="send-button" type="submit">Send</button>
+				</div>
+			</form>
+		</section>
+
+		<div class="inspector">
+			<section class="panel run" aria-labelledby="run-title">
+				<div class="panel__head">
+					<h2 class="panel__title" id="run-title">Run</h2>
+					<span class="panel__meta mono" id="run-meta"></span>
+					<div class="panel__actions">
+						<button class="btn btn--ghost btn--sm" id="copy-run-tab" type="button" hidden>Copy</button>
+					</div>
+				</div>
+				<div class="tabs" id="run-tabs" role="tablist" aria-label="Run details">
+					<button class="tab" type="button" role="tab" id="tab-metrics" data-tab="metrics" aria-controls="run-panel">Metrics</button>
+					<button class="tab" type="button" role="tab" id="tab-request" data-tab="request" aria-controls="run-panel">Request</button>
+					<button class="tab" type="button" role="tab" id="tab-response" data-tab="response" aria-controls="run-panel">Response</button>
+					<button class="tab" type="button" role="tab" id="tab-headers" data-tab="headers" aria-controls="run-panel">Headers</button>
+					<button class="tab" type="button" role="tab" id="tab-record" data-tab="record" aria-controls="run-panel">Record</button>
+				</div>
+				<div class="run__body" id="run-panel" role="tabpanel" tabindex="0"></div>
+			</section>
+
+			<section class="panel preview" aria-labelledby="preview-title">
+				<div class="panel__head">
+					<h2 class="panel__title" id="preview-title">Next request</h2>
+					<span class="panel__meta" id="preview-meta"></span>
+					<div class="panel__actions">
+						<button class="btn btn--ghost btn--sm" id="copy-curl" type="button">Copy as curl</button>
+					</div>
+				</div>
+				<pre class="code preview__code" id="preview-code" tabindex="0" aria-label="Next request preview"></pre>
+			</section>
+		</div>
+
+		<section class="panel history" aria-labelledby="history-title">
+			<div class="panel__head">
+				<h2 class="panel__title" id="history-title">Run history</h2>
+				<span class="panel__meta" id="history-meta"></span>
+				<div class="panel__actions">
+					<button class="btn btn--ghost btn--sm" id="clear-history" type="button">Clear history</button>
+				</div>
+			</div>
+			<div class="table-wrap">
+				<table class="table">
+					<thead>
+						<tr>
+							<th scope="col">Time</th>
+							<th scope="col">Provider</th>
+							<th scope="col">Model</th>
+							<th scope="col">Account</th>
+							<th scope="col">Session</th>
+							<th scope="col" class="num">TTFT</th>
+							<th scope="col" class="num">Total</th>
+							<th scope="col" class="num">In</th>
+							<th scope="col" class="num">Cached</th>
+							<th scope="col" class="num">Out</th>
+							<th scope="col" class="num">Cost</th>
+							<th scope="col">Status</th>
+						</tr>
+					</thead>
+					<tbody id="history-body"></tbody>
+				</table>
+			</div>
+		</section>
+	</main>
+
+	<p class="visually-hidden" id="announcer" role="status" aria-live="polite"></p>
+	<p class="toast" id="toast" role="status" aria-live="polite" hidden></p>
+</body>
+</html>

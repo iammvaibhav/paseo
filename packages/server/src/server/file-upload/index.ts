@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { appendFile, mkdir, rm, writeFile } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { appendFile, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { basename, extname, join } from "node:path";
 
 import { FileTransferOpcode, type FileTransferFrame } from "@getpaseo/protocol/binary-frames/index";
 import { getErrorMessage } from "@getpaseo/protocol/error-utils";
@@ -40,6 +40,16 @@ export class FileUploadStore {
     this.paseoHome = options.paseoHome;
     this.staleUploadTimeoutMs =
       options.staleUploadTimeoutMs ?? FileUploadStore.defaultStaleUploadTimeoutMs;
+  }
+
+  hasPending(requestId: string, source?: object): boolean {
+    if (source) {
+      return this.pending.get(source)?.has(requestId) ?? false;
+    }
+    for (const uploads of this.pending.values()) {
+      if (uploads.has(requestId)) return true;
+    }
+    return false;
   }
 
   beginUpload(
@@ -152,6 +162,12 @@ export class FileUploadStore {
       );
     }
     upload.completed = true;
+    // The mime type is recorded beside the upload directory so the file can be
+    // resolved by id later (readStoredUpload) without trusting its extension.
+    await writeFile(
+      uploadMetadataPath(this.paseoHome, upload.id),
+      JSON.stringify({ fileName: upload.fileName, mimeType: upload.mimeType }),
+    );
     return buildUploadResponse(upload, null);
   }
 
@@ -197,6 +213,125 @@ export class FileUploadStore {
 
   private async removeUploadDirectory(upload: PendingUpload): Promise<void> {
     await rm(join(this.paseoHome, "uploads", upload.id), { recursive: true, force: true });
+    await rm(uploadMetadataPath(this.paseoHome, upload.id), { force: true });
+  }
+}
+
+export type StoredUpload = NonNullable<FileUploadResponse["payload"]["file"]>;
+
+const UPLOAD_ID_PATTERN = /^upload_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+function uploadMetadataPath(paseoHome: string, id: string): string {
+  return join(paseoHome, "uploads", `${id}.json`);
+}
+
+/**
+ * Looks up a completed upload in this daemon's attachment store by id.
+ * Null when the id is malformed or names no stored file.
+ */
+export async function readStoredUpload(
+  paseoHome: string,
+  id: string,
+): Promise<StoredUpload | null> {
+  if (!UPLOAD_ID_PATTERN.test(id)) return null;
+  const uploadDir = join(paseoHome, "uploads", id);
+  const metadata = await readFile(uploadMetadataPath(paseoHome, id), "utf8")
+    .then((text) => JSON.parse(text) as { fileName?: unknown; mimeType?: unknown })
+    .catch(() => null);
+  let fileName = typeof metadata?.fileName === "string" ? metadata.fileName : null;
+  // Uploads stored before the metadata file existed hold exactly one file.
+  if (!fileName) {
+    const entries = await readdir(uploadDir).catch(() => []);
+    fileName = entries.length === 1 ? entries[0] : null;
+  }
+  if (!fileName) return null;
+  const path = join(uploadDir, fileName);
+  const fileStat = await stat(path).catch(() => null);
+  if (!fileStat?.isFile()) return null;
+  return {
+    type: "uploaded_file",
+    id,
+    fileName,
+    mimeType:
+      typeof metadata?.mimeType === "string" ? metadata.mimeType : "application/octet-stream",
+    size: fileStat.size,
+    path,
+  };
+}
+
+export interface ChunkedUploadProgress {
+  receivedBytes: number;
+  size: number;
+  /** The stored file once the last byte arrived; null while chunks are outstanding. */
+  file: StoredUpload | null;
+}
+
+/**
+ * Uploads that arrive as a series of byte chunks over a request/response
+ * transport (the MCP upload tool), written through a FileUploadStore so they
+ * land in the same attachment store as WebSocket uploads. The upload completes
+ * when the declared size has arrived; idle uploads expire with the store's
+ * stale-upload timeout.
+ */
+export class ChunkedUploadSessions {
+  private readonly source = {};
+  private readonly sessions = new Map<string, { size: number; receivedBytes: number }>();
+
+  constructor(private readonly store: FileUploadStore) {}
+
+  async start(input: { fileName: string; mimeType: string; size: number }): Promise<string> {
+    const uploadId = `chunked_${randomUUID()}`;
+    const modifiedAt = new Date().toISOString();
+    this.store.beginUpload(
+      { type: "file.upload.request", requestId: uploadId, modifiedAt, ...input },
+      this.source,
+      () => this.sessions.delete(uploadId),
+    );
+    this.sessions.set(uploadId, { size: input.size, receivedBytes: 0 });
+    await this.store.receiveFrame(
+      {
+        opcode: FileTransferOpcode.FileBegin,
+        requestId: uploadId,
+        metadata: { mime: input.mimeType, size: input.size, encoding: "binary", modifiedAt },
+        payload: new Uint8Array(),
+      },
+      this.source,
+    );
+    return uploadId;
+  }
+
+  async append(uploadId: string, bytes: Uint8Array): Promise<ChunkedUploadProgress> {
+    const session = this.sessions.get(uploadId);
+    if (!session || !this.store.hasPending(uploadId, this.source)) {
+      this.sessions.delete(uploadId);
+      throw new Error(`unknown or expired uploadId "${uploadId}"; start a new upload`);
+    }
+    const receivedBytes = session.receivedBytes + bytes.byteLength;
+    const response = await this.store.receiveFrame(
+      { opcode: FileTransferOpcode.FileChunk, requestId: uploadId, payload: bytes },
+      this.source,
+    );
+    if (response?.payload.error) {
+      this.sessions.delete(uploadId);
+      throw new Error(
+        receivedBytes > session.size
+          ? `upload exceeds the declared size: ${receivedBytes} of ${session.size} bytes`
+          : response.payload.error,
+      );
+    }
+    session.receivedBytes = receivedBytes;
+    if (receivedBytes < session.size) {
+      return { receivedBytes, size: session.size, file: null };
+    }
+    this.sessions.delete(uploadId);
+    const done = await this.store.receiveFrame(
+      { opcode: FileTransferOpcode.FileEnd, requestId: uploadId, payload: new Uint8Array() },
+      this.source,
+    );
+    if (!done?.payload.file) {
+      throw new Error(done?.payload.error ?? "upload could not be completed");
+    }
+    return { receivedBytes, size: session.size, file: done.payload.file };
   }
 }
 
@@ -220,9 +355,26 @@ function buildUploadResponse(upload: PendingUpload, error: string | null): FileU
   };
 }
 
+// Most file systems cap a single file name at 255 bytes.
+const MAX_FILE_NAME_BYTES = 255;
+
+// Keeps the client's file name, replacing only what cannot appear in a single
+// file name on Linux, macOS, or Windows.
 function sanitizeFileName(value: string): string {
   const name = basename(value)
-    .replace(/[^a-zA-Z0-9._ -]/g, "_")
+    .replace(/[\p{Cc}\\/:*?"<>|]/gu, "_")
     .trim();
-  return name.length > 0 && name !== "." && name !== ".." ? name : "upload";
+  return fitFileNameLength(name.length > 0 && name !== "." && name !== ".." ? name : "upload");
+}
+
+function fitFileNameLength(name: string): string {
+  if (Buffer.byteLength(name) <= MAX_FILE_NAME_BYTES) return name;
+  const extension = extname(name);
+  const keptExtension = Buffer.byteLength(extension) < MAX_FILE_NAME_BYTES ? extension : "";
+  let stem = "";
+  for (const char of name.slice(0, name.length - keptExtension.length)) {
+    if (Buffer.byteLength(stem + char + keptExtension) > MAX_FILE_NAME_BYTES) break;
+    stem += char;
+  }
+  return stem + keptExtension;
 }

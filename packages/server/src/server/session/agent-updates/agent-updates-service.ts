@@ -7,6 +7,7 @@ import type {
 } from "../../messages.js";
 import type { ManagedAgent } from "../../agent/agent-manager.js";
 import type { StoredAgentRecord } from "../../agent/agent-storage.js";
+import type { BackgroundVisibility } from "../../agent/directory.js";
 import { resolveEffectiveThinkingOptionId, toAgentPayload } from "../../agent/agent-projections.js";
 
 type AgentUpdatePayload = Extract<SessionOutboundMessage, { type: "agent_update" }>["payload"];
@@ -19,6 +20,7 @@ interface AgentUpdatesSubscriptionState {
   emit: (message: SessionOutboundMessage) => void;
   syncEnabled: boolean;
   filter?: AgentUpdatesFilter;
+  backgroundVisibility: BackgroundVisibility;
   isProviderVisible: (provider: string) => boolean;
   isBootstrapping: boolean;
   pendingUpdatesByAgentId: Map<string, AgentUpdatePayload>;
@@ -31,6 +33,7 @@ export interface AgentUpdatesService {
     isProviderVisible?: (provider: string) => boolean;
     emit?: (message: SessionOutboundMessage) => void;
     filter?: AgentUpdatesFilter;
+    backgroundVisibility?: BackgroundVisibility;
     syncEnabled?: boolean;
   }): void;
   flushBootstrapped(
@@ -47,9 +50,22 @@ export interface AgentUpdatesService {
 }
 
 export interface AgentUpdatesServiceDeps {
+  includesWorkspace?(
+    agent: AgentSnapshotPayload,
+    backgroundVisibility: BackgroundVisibility,
+  ): Promise<boolean>;
   emit(message: SessionOutboundMessage): void;
   enrichAgentPayload(payload: AgentSnapshotPayload): Promise<AgentSnapshotPayload>;
   buildStoredAgentPayload(record: StoredAgentRecord): AgentSnapshotPayload;
+  /**
+   * F2: optional wire-boundary enrichment for STORED-record upserts
+   * (emitStoredRecord), mirroring the live path's enrichAgentPayload —
+   * session wires it to the same enrich so a stored push carries the
+   * recomputed lifecycle bucket / stop origin / identity fields its
+   * fetch_agents snapshot would. Absent → the built payload is emitted
+   * as-is (existing behavior). Failures fall back to the built payload.
+   */
+  enrichStoredPayload?: (payload: AgentSnapshotPayload) => Promise<AgentSnapshotPayload>;
   isProviderVisibleToClient(provider: string): boolean;
   buildProjectPlacementForWorkspaceId(workspaceId: string): Promise<ProjectPlacementPayload | null>;
   emitWorkspaceUpdateForWorkspaceId(workspaceId: string): Promise<void>;
@@ -59,6 +75,7 @@ export interface AgentUpdatesServiceDeps {
     project: ProjectPlacementPayload | null,
     agentId: string,
     includeSequence: boolean,
+    backgroundVisibility: BackgroundVisibility,
   ): T;
   logger: pino.Logger;
 }
@@ -136,6 +153,10 @@ export function matchesAgentUpdatesFilter(input: {
     return false;
   }
 
+  if (agent.internal && filter?.includeInternal !== true) {
+    return false;
+  }
+
   if (filter && !agentThinkingOptionMatchesFilter(agent, filter)) {
     return false;
   }
@@ -160,7 +181,15 @@ export function createAgentUpdatesService(deps: AgentUpdatesServiceDeps): AgentU
     agent: AgentSnapshotPayload | null,
     project: ProjectPlacementPayload | null,
     agentId: string,
-  ) => deps.sequenceAgentUpdate(payload, agent, project, agentId, sub.syncEnabled === true);
+  ) =>
+    deps.sequenceAgentUpdate(
+      payload,
+      agent,
+      project,
+      agentId,
+      sub.syncEnabled === true,
+      sub.backgroundVisibility,
+    );
 
   function bufferOrEmit(sub: AgentUpdatesSubscriptionState, payload: AgentUpdatePayload): void {
     if (subscriptions.get(sub.subscriptionId) !== sub) return;
@@ -180,10 +209,12 @@ export function createAgentUpdatesService(deps: AgentUpdatesServiceDeps): AgentU
     isProviderVisible?: (provider: string) => boolean;
     emit?: (message: SessionOutboundMessage) => void;
     filter?: AgentUpdatesFilter;
+    backgroundVisibility?: BackgroundVisibility;
     syncEnabled?: boolean;
   }): void {
     subscriptions.set(input.subscriptionId, {
       ...input,
+      backgroundVisibility: input.backgroundVisibility ?? false,
       emit: input.emit ?? deps.emit,
       syncEnabled: input.syncEnabled ?? false,
       isProviderVisible: input.isProviderVisible ?? deps.isProviderVisibleToClient,
@@ -234,10 +265,14 @@ export function createAgentUpdatesService(deps: AgentUpdatesServiceDeps): AgentU
     const project = payload.workspaceId
       ? await deps.buildProjectPlacementForWorkspaceId(payload.workspaceId)
       : null;
+    const backgroundVisible = await Promise.all(
+      observers.map((sub) => deps.includesWorkspace?.(payload, sub.backgroundVisibility) ?? true),
+    );
     return (
       project !== null &&
       observers.some(
-        (sub) =>
+        (sub, index) =>
+          backgroundVisible[index] &&
           sub.isProviderVisible(payload.provider) &&
           matchesAgentUpdatesFilter({ agent: payload, project, filter: sub.filter }),
       )
@@ -252,7 +287,9 @@ export function createAgentUpdatesService(deps: AgentUpdatesServiceDeps): AgentU
       : null;
     for (const sub of observers) {
       const matches =
-        project && matchesAgentUpdatesFilter({ agent: payload, project, filter: sub.filter });
+        project &&
+        ((await deps.includesWorkspace?.(payload, sub.backgroundVisibility)) ?? true) &&
+        matchesAgentUpdatesFilter({ agent: payload, project, filter: sub.filter });
       bufferOrEmit(
         sub,
         sequence(
@@ -269,7 +306,14 @@ export function createAgentUpdatesService(deps: AgentUpdatesServiceDeps): AgentU
   }
 
   async function emitStoredRecord(record: StoredAgentRecord): Promise<AgentSnapshotPayload> {
-    const payload = deps.buildStoredAgentPayload(record);
+    let payload = deps.buildStoredAgentPayload(record);
+    if (deps.enrichStoredPayload) {
+      try {
+        payload = await deps.enrichStoredPayload(payload);
+      } catch (error) {
+        deps.logger.warn({ err: error, agentId: payload.id }, "agent_update.stored_enrich_failed");
+      }
+    }
     await publishPayload(payload);
     return payload;
   }

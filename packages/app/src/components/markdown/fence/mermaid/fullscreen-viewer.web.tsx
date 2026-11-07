@@ -1,5 +1,6 @@
+import { Modal } from "@/components/ui/modal";
 import { useCallback, useEffect, useMemo, useRef } from "react";
-import { Modal, View } from "react-native";
+import { View } from "react-native";
 import { X } from "lucide-react-native";
 import { useTranslation } from "react-i18next";
 import { StyleSheet } from "react-native-unistyles";
@@ -134,7 +135,11 @@ const focusLayerDomStyle: React.CSSProperties = {
 
 const styles = StyleSheet.create((theme) => ({
   root: { flex: 1, minHeight: 0, minWidth: 0 },
-  backdrop: { position: "absolute", inset: 0, backgroundColor: theme.colors.surface0 },
+  backdrop: {
+    position: "absolute",
+    inset: 0,
+    backgroundColor: theme.glass?.cover ?? theme.colors.surface0,
+  },
   contentLayer: { position: "absolute", inset: 0 },
   viewport: { flex: 1 },
 }));

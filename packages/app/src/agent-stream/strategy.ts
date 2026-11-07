@@ -1,22 +1,46 @@
 import type { ComponentType, ReactElement, ReactNode, RefObject } from "react";
 import type { StyleProp, ViewStyle } from "react-native";
 import type { StreamItem } from "@/types/stream";
+import type { ReadingRowReplacements } from "./reading-anchor";
 import { continuesResponse } from "./turn-membership";
-import type { StreamHistoryBoundary, StreamRenderSegments } from "./model";
 import type {
   BottomAnchorLocalRequest,
   BottomAnchorRouteRequest,
 } from "./bottom-anchor-controller";
 
+/** The ordered row segments a stream viewport renders, parameterized by item
+ * type so any anchored list (agent chat, Mission Control thread) can ride the
+ * same surface. `historyVirtualized` is the scroll-windowed history block
+ * (web only today); `historyMounted` is always-rendered history; `liveHead`
+ * is the in-flight tail. */
+/** Default row key when a caller does not provide `keyExtractor`: the item's
+ * `id` field when it has a string one, else the row index. */
+export function resolveDefaultItemKey(item: unknown, index: number): string {
+  if (typeof item === "object" && item !== null && "id" in item) {
+    const id = item.id;
+    if (typeof id === "string") {
+      return id;
+    }
+  }
+  return String(index);
+}
+
+export interface StreamRenderSegments<T = StreamItem> {
+  historyVirtualized: T[];
+  historyMounted: T[];
+  liveHead: T[];
+}
+
+export interface StreamHistoryBoundary {
+  hasVirtualizedHistory: boolean;
+  hasMountedHistory: boolean;
+  hasLiveHead: boolean;
+}
+
 type EdgeSlot = "header" | "footer";
 type NeighborRelation = "above" | "below";
 type AssistantTurnTraversalStep = -1 | 1;
 export type StreamFrameChildOrder = "content-then-footer" | "footer-then-content";
-
-export type MaintainVisibleContentPositionConfig = Readonly<{
-  minIndexForVisible: number;
-  autoscrollToTopThreshold: number;
-}>;
 
 export type BottomAnchorTransportBehavior = Readonly<{
   verificationDelayFrames: number;
@@ -51,15 +75,22 @@ export interface ScrollToMessageOccurrence {
 }
 
 export interface StreamViewportHandle {
+  /** Give keyboard navigation back to the scrolling surface on web. */
+  focus?: () => void;
   scrollToBottom: (reason?: BottomAnchorLocalRequest["reason"]) => void;
   prepareForViewportChange: () => void;
+  /**
+   * Run a disclosure's state change so the row that owns its trigger keeps its visual top.
+   * Following output stops; it resumes if the change leaves the list at its end.
+   */
+  holdRow: (rowId: string, apply: () => void) => void;
   scrollToMessage?: (messageId: string, occurrence?: ScrollToMessageOccurrence) => void;
 }
 
-export interface StreamSegmentRenderers {
-  renderHistoryVirtualizedRow: (item: StreamItem, index: number, items: StreamItem[]) => ReactNode;
-  renderHistoryMountedRow: (item: StreamItem, index: number, items: StreamItem[]) => ReactNode;
-  renderLiveHeadRow: (item: StreamItem, index: number, items: StreamItem[]) => ReactNode;
+export interface StreamSegmentRenderers<T = StreamItem> {
+  renderHistoryVirtualizedRow: (item: T, index: number, items: T[]) => ReactNode;
+  renderHistoryMountedRow: (item: T, index: number, items: T[]) => ReactNode;
+  renderLiveHeadRow: (item: T, index: number, items: T[]) => ReactNode;
   renderLiveAuxiliary: () => ReactNode;
 }
 
@@ -69,13 +100,15 @@ export interface StreamHistoryRowRevision {
   globalDisplayState: boolean;
 }
 
-export interface StreamRenderInput {
+export interface StreamRenderInput<T = StreamItem> {
   agentId: string;
-  segments: StreamRenderSegments;
+  segments: StreamRenderSegments<T>;
   historyRowRevision?: StreamHistoryRowRevision;
   liveHeadRowRevision?: unknown;
+  /** Presentation rows replaced by another row after history is folded. */
+  readingRowReplacements?: ReadingRowReplacements;
   boundary: StreamHistoryBoundary;
-  renderers: StreamSegmentRenderers;
+  renderers: StreamSegmentRenderers<T>;
   listEmptyComponent: ReactNode;
   viewportRef: RefObject<StreamViewportHandle | null>;
   routeBottomAnchorRequest: BottomAnchorRouteRequest | null;
@@ -92,6 +125,15 @@ export interface StreamRenderInput {
   listStyle: StyleProp<ViewStyle>;
   baseListContentContainerStyle: StyleProp<ViewStyle>;
   forwardListContentContainerStyle: StyleProp<ViewStyle>;
+  /** Row-key contract for generic item types (virtualizer keys, DOM row ids,
+   * FlatList keyExtractor). Falls back to `item.id` when the item has one. */
+  keyExtractor?: (item: T, index: number) => string;
+  /** Height estimate for virtualized rows; the viewport falls back to a
+   * constant when omitted. */
+  estimateItemSize?: (item: T) => number;
+  /** Optional fixed slot rendered above every row at the visual top of the
+   * list (e.g. a "Show earlier" affordance). */
+  topSlot?: ReactNode;
 }
 
 export interface ResolveStreamRenderStrategyInput {
@@ -100,7 +142,7 @@ export interface ResolveStreamRenderStrategyInput {
 }
 
 export interface StreamStrategy {
-  render: (input: StreamRenderInput) => ReactNode;
+  render: <T>(input: StreamRenderInput<T>) => ReactNode;
   orderTail: (streamItems: StreamItem[]) => StreamItem[];
   orderHead: (streamHead: StreamItem[]) => StreamItem[];
   getNeighborIndex: (index: number, relation: NeighborRelation) => number;
@@ -116,14 +158,11 @@ export interface StreamStrategy {
     component: ReactElement | ComponentType<unknown> | null,
     gapSize: number,
   ) => StreamEdgeSlotProps;
-  getMaintainVisibleContentPosition: () => MaintainVisibleContentPositionConfig | undefined;
   getBottomAnchorTransportBehavior: () => BottomAnchorTransportBehavior;
   getHistoryLiveBoundaryIndex: (history: StreamItem[]) => number | null;
   getLiveHeadHistoryBoundaryIndex: (liveHead: StreamItem[]) => number | null;
   getLatestItemIndex: (items: StreamItem[]) => number | null;
   getFrameChildOrder: () => StreamFrameChildOrder;
-  getFlatListInverted: () => boolean;
-  getOverlayScrollbarInverted: () => boolean;
   shouldDisableParentScrollOnInlineDetailsExpansion: () => boolean;
   shouldAnchorBottomOnContentSizeChange: () => boolean;
   shouldAnimateManualScrollToBottom: () => boolean;
@@ -139,9 +178,6 @@ interface StreamStrategyConfig {
   historyLiveBoundaryEdge: "first" | "last";
   liveHeadHistoryBoundaryEdge: "first" | "last";
   frameChildOrder: StreamFrameChildOrder;
-  flatListInverted: boolean;
-  overlayScrollbarInverted: boolean;
-  maintainVisibleContentPosition?: MaintainVisibleContentPositionConfig;
   bottomAnchorTransportBehavior: BottomAnchorTransportBehavior;
   disableParentScrollOnInlineDetailsExpansion: boolean;
   anchorBottomOnContentSizeChange: boolean;
@@ -150,8 +186,6 @@ interface StreamStrategyConfig {
   isNearBottom: (input: StreamNearBottomInput) => boolean;
   getBottomOffset: (metrics: StreamViewportMetrics) => number;
 }
-
-const NATIVE_SETTLING_VERIFICATION_DELAY_FRAMES = 4;
 
 export function createStreamStrategy(config: StreamStrategyConfig): StreamStrategy {
   return {
@@ -207,7 +241,6 @@ export function createStreamStrategy(config: StreamStrategyConfig): StreamStrate
         ListFooterComponentStyle: { marginTop: gapSize },
       };
     },
-    getMaintainVisibleContentPosition: () => config.maintainVisibleContentPosition,
     getBottomAnchorTransportBehavior: () => config.bottomAnchorTransportBehavior,
     getHistoryLiveBoundaryIndex: (history) => {
       if (history.length === 0) {
@@ -228,30 +261,11 @@ export function createStreamStrategy(config: StreamStrategyConfig): StreamStrate
       return config.historyLiveBoundaryEdge === "first" ? 0 : items.length - 1;
     },
     getFrameChildOrder: () => config.frameChildOrder,
-    getFlatListInverted: () => config.flatListInverted,
-    getOverlayScrollbarInverted: () => config.overlayScrollbarInverted,
     shouldDisableParentScrollOnInlineDetailsExpansion: () =>
       config.disableParentScrollOnInlineDetailsExpansion,
     shouldAnchorBottomOnContentSizeChange: () => config.anchorBottomOnContentSizeChange,
     shouldAnimateManualScrollToBottom: () => config.animateManualScrollToBottom,
     shouldUseVirtualizedList: () => config.useVirtualizedList,
-  };
-}
-
-export function resolveBottomAnchorTransportBehavior(input: {
-  strategy: StreamStrategy;
-  isViewportSettling: boolean;
-}): BottomAnchorTransportBehavior {
-  const baseBehavior = input.strategy.getBottomAnchorTransportBehavior();
-  if (!input.isViewportSettling || !input.strategy.getFlatListInverted()) {
-    return baseBehavior;
-  }
-  return {
-    verificationDelayFrames: Math.max(
-      baseBehavior.verificationDelayFrames,
-      NATIVE_SETTLING_VERIFICATION_DELAY_FRAMES,
-    ),
-    verificationRetryMode: "recheck",
   };
 }
 

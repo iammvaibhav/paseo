@@ -89,12 +89,19 @@ export const styles = StyleSheet.create((theme) => {
       alignItems: "center",
       justifyContent: "center",
     },
-    backdropSurface0: { backgroundColor: theme.colors.surface0 },
-    backdropSurface1: { backgroundColor: theme.colors.surface1 },
-    backdropSurfaceSidebar: { backgroundColor: theme.colors.surfaceSidebar },
-    backdropSurfaceSidebarHover: { backgroundColor: theme.colors.surfaceSidebarHover },
-    backdropSurfaceSidebarSelected: { backgroundColor: theme.colors.surfaceSidebarSelected },
-    backdropSurface2: { backgroundColor: theme.colors.surface2 },
+    backdropSurface0: { backgroundColor: theme.glass?.scrim.surface0 ?? theme.colors.surface0 },
+    backdropSurface1: { backgroundColor: theme.glass?.scrim.surface1 ?? theme.colors.surface1 },
+    backdropSurfaceSidebar: {
+      backgroundColor: theme.glass?.scrim.surfaceSidebar ?? theme.colors.surfaceSidebar,
+    },
+    backdropSurfaceSidebarHover: {
+      backgroundColor: theme.glass?.scrim.surfaceSidebarHover ?? theme.colors.surfaceSidebarHover,
+    },
+    backdropSurfaceSidebarSelected: {
+      backgroundColor:
+        theme.glass?.scrim.surfaceSidebarSelected ?? theme.colors.surfaceSidebarSelected,
+    },
+    backdropSurface2: { backgroundColor: theme.glass?.scrim.surface2 ?? theme.colors.surface2 },
 
     // The closed ring the quarter runs on. Same colour rather than a grey so the indicator is one
     // object at one hue; the opacity is what puts it behind the quarter instead of competing.

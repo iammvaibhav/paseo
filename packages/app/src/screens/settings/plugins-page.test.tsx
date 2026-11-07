@@ -67,6 +67,8 @@ vi.mock("react-native-reanimated", () => ({
     }
   },
   Easing: { ease: "ease", inOut: (value: unknown) => value },
+  FadeIn: { duration: () => ({}) },
+  FadeOut: { duration: () => ({}) },
   interpolateColor: (value: number, _input: number[], output: string[]) =>
     value >= 1 ? output[1] : output[0],
   useAnimatedStyle: (factory: () => unknown) => factory(),
@@ -80,6 +82,7 @@ vi.mock("@gorhom/bottom-sheet", async () => {
     await vi.importActual<typeof import("react-native")>("react-native");
   return {
     BottomSheetBackdrop: () => null,
+    BottomSheetHandle: () => null,
     BottomSheetModal: ReactModule.forwardRef(() => null),
     BottomSheetScrollView: ScrollView,
     BottomSheetTextInput: TextInput,

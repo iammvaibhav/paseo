@@ -1,0 +1,531 @@
+diff --git a/docs/custom-providers.md b/docs/custom-providers.md
+index bf4b70d0e..91f8ac4d3 100644
+--- a/docs/custom-providers.md
++++ b/docs/custom-providers.md
+@@ -587,6 +587,17 @@ Example: relabel a discovered model without replacing the full list:
+ 
+ When an `additionalModels` entry has the same `id` as a discovered model, it updates that model in place.
+ 
++### Allow All mode (auto-approved permissions)
++
++Generic ACP providers (including Cursor, Kiro, and Trae) get a daemon-provided **Allow All** mode appended to the modes the agent advertises. Most ACP agents have no native unattended mode, so every tool call raises a permission prompt. While Allow All is active, the daemon answers each incoming `session/request_permission` with the agent's preferred allow option instead of surfacing it — the ACP equivalent of Claude's Bypass mode.
++
++Details worth knowing:
++
++- The mode id is `paseo-allow-all`. It lives only in the daemon; the agent's native mode is left untouched, and switching to a native mode goes back to normal prompting.
++- It is only offered when the agent advertises at least one native mode (otherwise there would be nothing to switch back to).
++- It is flagged unattended, so unattended agent creation (e.g. subagents spawned by an unattended parent) resolves to it automatically.
++- Copilot is unaffected — it has a native `allow_all` config that Paseo already maps to its own Allow All mode.
++
+ ---
+ 
+ ## Provider override reference
+diff --git a/packages/server/src/server/agent/providers/acp-agent.test.ts b/packages/server/src/server/agent/providers/acp-agent.test.ts
+index 124101dea..39c88bd83 100644
+--- a/packages/server/src/server/agent/providers/acp-agent.test.ts
++++ b/packages/server/src/server/agent/providers/acp-agent.test.ts
+@@ -16,10 +16,13 @@ import {
+ } from "@agentclientprotocol/sdk";
+ 
+ import {
++  ACP_ALLOW_ALL_MODE,
++  ACP_ALLOW_ALL_MODE_ID,
+   ACPAgentClient,
+   ACPAgentSession,
+   type SpawnedACPProcess,
+   type SessionStateResponse,
++  appendSyntheticAllowAllMode,
+   createLoggedNdJsonStream,
+   deriveModelDefinitionsFromACP,
+   deriveModesFromACP,
+@@ -2724,3 +2727,221 @@ describe("ACP session/load invariant — cwd and mcpServers always passed", () =
+     });
+   });
+ });
++
++describe("ACP daemon Allow All mode", () => {
++  const nativeModes = [
++    { id: "default", label: "Default" },
++    { id: "plan", label: "Plan" },
++  ];
++
++  interface ACPSessionStateInternals {
++    applySessionState(response: SessionStateResponse): void;
++  }
++
++  function createAllowAllSession(config: { modeId?: string | null } = {}): ACPAgentSession {
++    return new ACPAgentSession(
++      {
++        provider: "cursor",
++        cwd: "/tmp/paseo-acp-test",
++        modeId: config.modeId ?? undefined,
++      },
++      {
++        provider: "cursor",
++        logger: createTestLogger(),
++        defaultCommand: ["cursor-agent", "acp"],
++        defaultModes: [],
++        capabilities: {
++          supportsStreaming: true,
++          supportsSessionPersistence: true,
++          supportsDynamicModes: true,
++          supportsMcpServers: true,
++          supportsReasoningStream: true,
++          supportsToolInvocations: true,
++        },
++        syntheticAllowAllMode: true,
++      },
++    );
++  }
++
++  test("appendSyntheticAllowAllMode appends only when the agent advertises modes", () => {
++    expect(appendSyntheticAllowAllMode([])).toEqual([]);
++    expect(appendSyntheticAllowAllMode(nativeModes)).toEqual([...nativeModes, ACP_ALLOW_ALL_MODE]);
++    expect(appendSyntheticAllowAllMode([ACP_ALLOW_ALL_MODE])).toEqual([ACP_ALLOW_ALL_MODE]);
++  });
++
++  test("appends Allow All to agent-reported modes on session start", async () => {
++    const session = createAllowAllSession();
++    asInternals<ACPSessionStateInternals>(session).applySessionState({
++      sessionId: "session-1",
++      modes: {
++        currentModeId: "default",
++        availableModes: [
++          { id: "default", name: "Default", description: null },
++          { id: "plan", name: "Plan", description: null },
++        ],
++      },
++    });
++
++    await expect(session.getAvailableModes()).resolves.toEqual([
++      { id: "default", label: "Default", description: undefined },
++      { id: "plan", label: "Plan", description: undefined },
++      ACP_ALLOW_ALL_MODE,
++    ]);
++    await expect(session.getCurrentMode()).resolves.toBe("default");
++  });
++
++  test("selecting Allow All activates daemon-side without provider RPC and auto-approves permissions", async () => {
++    const session = createAllowAllSession();
++    const { setSessionMode, setSessionConfigOption } = prepareConfiguredOverrideSession(session, {
++      currentMode: "default",
++      availableModes: [...nativeModes, ACP_ALLOW_ALL_MODE],
++    });
++    const events: AgentStreamEvent[] = [];
++    const unsubscribe = session.subscribe((event) => events.push(event));
++
++    await session.setMode(ACP_ALLOW_ALL_MODE_ID);
++
++    expect(setSessionMode).not.toHaveBeenCalled();
++    expect(setSessionConfigOption).not.toHaveBeenCalled();
++    await expect(session.getCurrentMode()).resolves.toBe(ACP_ALLOW_ALL_MODE_ID);
++    expect(events).toContainEqual(
++      expect.objectContaining({ type: "mode_changed", currentModeId: ACP_ALLOW_ALL_MODE_ID }),
++    );
++
++    const response = await session.requestPermission({
++      sessionId: "session-1",
++      toolCall: {
++        toolCallId: "tool-1",
++        title: "Run command",
++        kind: "execute",
++        status: "pending",
++      },
++      options: [
++        { optionId: "allow-once", name: "Allow", kind: "allow_once" },
++        { optionId: "allow-always", name: "Always Allow", kind: "allow_always" },
++        { optionId: "reject-once", name: "Reject", kind: "reject_once" },
++      ],
++    } satisfies RequestPermissionRequest);
++    unsubscribe();
++
++    expect(response).toEqual({ outcome: { outcome: "selected", optionId: "allow-once" } });
++    expect(events.some((event) => event.type === "permission_requested")).toBe(false);
++  });
++
++  test("switching away from Allow All writes the native mode and surfaces permissions again", async () => {
++    const session = createAllowAllSession();
++    const { setSessionMode } = prepareConfiguredOverrideSession(session, {
++      currentMode: "default",
++      availableModes: [...nativeModes, ACP_ALLOW_ALL_MODE],
++    });
++
++    await session.setMode(ACP_ALLOW_ALL_MODE_ID);
++    await session.setMode("plan");
++
++    expect(setSessionMode).toHaveBeenCalledWith({ sessionId: "session-1", modeId: "plan" });
++    await expect(session.getCurrentMode()).resolves.toBe("plan");
++
++    const events: Array<{ type: string; request?: { id: string } }> = [];
++    session.subscribe((event) => {
++      events.push(event as { type: string; request?: { id: string } });
++    });
++    const permission = session.requestPermission({
++      sessionId: "session-1",
++      toolCall: {
++        toolCallId: "tool-1",
++        title: "Run command",
++        kind: "execute",
++        status: "pending",
++      },
++      options: [
++        { optionId: "allow-once", name: "Allow", kind: "allow_once" },
++        { optionId: "reject-once", name: "Reject", kind: "reject_once" },
++      ],
++    } satisfies RequestPermissionRequest);
++    await Promise.resolve();
++
++    const requested = events.find((event) => event.type === "permission_requested");
++    expect(requested?.request?.id).toEqual(expect.any(String));
++
++    await session.respondToPermission(requested!.request!.id, { behavior: "allow" });
++    await expect(permission).resolves.toEqual({
++      outcome: { outcome: "selected", optionId: "allow-once" },
++    });
++  });
++
++  test("agent current_mode_update echoes do not deactivate Allow All", async () => {
++    const session = createAllowAllSession();
++    prepareConfiguredOverrideSession(session, {
++      currentMode: "default",
++      availableModes: [...nativeModes, ACP_ALLOW_ALL_MODE],
++    });
++    await session.setMode(ACP_ALLOW_ALL_MODE_ID);
++
++    const events = asInternals<ACPSessionInternals>(session).translateSessionUpdate({
++      sessionUpdate: "current_mode_update",
++      currentModeId: "default",
++    });
++
++    expect(events).toMatchObject([{ type: "mode_changed", currentModeId: ACP_ALLOW_ALL_MODE_ID }]);
++    await expect(session.getCurrentMode()).resolves.toBe(ACP_ALLOW_ALL_MODE_ID);
++  });
++
++  test("applies persisted Allow All mode on session start without provider RPC", async () => {
++    const session = createAllowAllSession({ modeId: ACP_ALLOW_ALL_MODE_ID });
++    const { internals, setSessionMode, setSessionConfigOption } = prepareConfiguredOverrideSession(
++      session,
++      {
++        currentMode: "default",
++        availableModes: [...nativeModes, ACP_ALLOW_ALL_MODE],
++      },
++    );
++
++    await internals.applyConfiguredOverrides();
++
++    expect(setSessionMode).not.toHaveBeenCalled();
++    expect(setSessionConfigOption).not.toHaveBeenCalled();
++    await expect(session.getCurrentMode()).resolves.toBe(ACP_ALLOW_ALL_MODE_ID);
++  });
++
++  test("surfaces the request when Allow All has no allow option to select", async () => {
++    const session = createAllowAllSession();
++    prepareConfiguredOverrideSession(session, {
++      currentMode: "default",
++      availableModes: [...nativeModes, ACP_ALLOW_ALL_MODE],
++    });
++    await session.setMode(ACP_ALLOW_ALL_MODE_ID);
++
++    const events: Array<{ type: string; request?: { id: string } }> = [];
++    session.subscribe((event) => {
++      events.push(event as { type: string; request?: { id: string } });
++    });
++    void session.requestPermission({
++      sessionId: "session-1",
++      toolCall: {
++        toolCallId: "tool-1",
++        title: "Run command",
++        kind: "execute",
++        status: "pending",
++      },
++      options: [{ optionId: "reject-once", name: "Reject", kind: "reject_once" }],
++    } satisfies RequestPermissionRequest);
++    await Promise.resolve();
++
++    expect(events.some((event) => event.type === "permission_requested")).toBe(true);
++  });
++
++  test("sessions without syntheticAllowAllMode do not expose or honor Allow All", async () => {
++    const session = createSessionWithConfig({ provider: "cursor" });
++    asInternals<ACPSessionStateInternals>(session).applySessionState({
++      sessionId: "session-1",
++      modes: {
++        currentModeId: "default",
++        availableModes: [{ id: "default", name: "Default", description: null }],
++      },
++    });
++
++    await expect(session.getAvailableModes()).resolves.toEqual([
++      { id: "default", label: "Default", description: undefined },
++    ]);
++  });
++});
+diff --git a/packages/server/src/server/agent/providers/acp-agent.ts b/packages/server/src/server/agent/providers/acp-agent.ts
+index a4f459c7c..07379f4d5 100644
+--- a/packages/server/src/server/agent/providers/acp-agent.ts
++++ b/packages/server/src/server/agent/providers/acp-agent.ts
+@@ -338,6 +338,21 @@ export function createLoggedNdJsonStream(
+   return { readable, writable };
+ }
+ 
++// Daemon-side "Allow All" mode for ACP providers that expose no native
++// unattended mode (e.g. Cursor). While active, the daemon resolves incoming
++// session/request_permission calls with the preferred allow option instead of
++// surfacing them to the user. The id is Paseo-namespaced so it can never
++// collide with a mode the underlying agent advertises.
++export const ACP_ALLOW_ALL_MODE_ID = "paseo-allow-all";
++export const ACP_ALLOW_ALL_MODE: AgentMode = {
++  id: ACP_ALLOW_ALL_MODE_ID,
++  label: "Allow All",
++  description: "Automatically approves all permission requests without prompting.",
++  icon: "ShieldOff",
++  colorTier: "dangerous",
++  isUnattended: true,
++};
++
+ // Lets a provider that publishes its slash commands through a vendor-specific
+ // ACP extension notification (rather than the standard
+ // `available_commands_update` session update) translate that payload into Paseo
+@@ -375,6 +390,10 @@ interface ACPAgentClientOptions {
+   waitForInitialCommands?: boolean;
+   initialCommandsWaitTimeoutMs?: number;
+   terminateProcess?: ProcessTerminator;
++  // Appends the daemon-side "Allow All" mode (ACP_ALLOW_ALL_MODE) to the modes
++  // the agent advertises. Leave off for providers with a native unattended
++  // mode (e.g. Copilot's allow_all config).
++  syntheticAllowAllMode?: boolean;
+ }
+ 
+ interface ACPAgentSessionOptions {
+@@ -406,6 +425,7 @@ interface ACPAgentSessionOptions {
+   waitForInitialCommands?: boolean;
+   initialCommandsWaitTimeoutMs?: number;
+   terminateProcess?: ProcessTerminator;
++  syntheticAllowAllMode?: boolean;
+ }
+ 
+ export interface SpawnedACPProcess {
+@@ -620,6 +640,15 @@ export function deriveModesFromACP(
+   };
+ }
+ 
++// Skips agents that advertise no modes at all: without a native mode there is
++// nothing to switch back to after leaving Allow All.
++export function appendSyntheticAllowAllMode(modes: AgentMode[]): AgentMode[] {
++  if (modes.length === 0 || modes.some((mode) => mode.id === ACP_ALLOW_ALL_MODE_ID)) {
++    return modes;
++  }
++  return [...modes, ACP_ALLOW_ALL_MODE];
++}
++
+ export function deriveModelDefinitionsFromACP(
+   provider: string,
+   models: SessionModelState | null | undefined,
+@@ -710,6 +739,7 @@ export class ACPAgentClient implements AgentClient {
+   private readonly waitForInitialCommands: boolean;
+   private readonly initialCommandsWaitTimeoutMs: number;
+   private readonly extensionCommandsParser?: ACPExtensionCommandsParser;
++  private readonly syntheticAllowAllMode: boolean;
+   protected readonly terminateProcess: ProcessTerminator;
+ 
+   constructor(options: ACPAgentClientOptions) {
+@@ -735,6 +765,7 @@ export class ACPAgentClient implements AgentClient {
+     this.waitForInitialCommands = options.waitForInitialCommands ?? false;
+     this.initialCommandsWaitTimeoutMs = options.initialCommandsWaitTimeoutMs ?? 1500;
+     this.extensionCommandsParser = options.extensionCommandsParser;
++    this.syntheticAllowAllMode = options.syntheticAllowAllMode ?? false;
+   }
+ 
+   async createSession(
+@@ -765,6 +796,7 @@ export class ACPAgentClient implements AgentClient {
+         extensionCommandsParser: this.extensionCommandsParser,
+         waitForInitialCommands: this.waitForInitialCommands,
+         initialCommandsWaitTimeoutMs: this.initialCommandsWaitTimeoutMs,
++        syntheticAllowAllMode: this.syntheticAllowAllMode,
+       },
+     );
+     await session.initializeNewSession();
+@@ -814,6 +846,7 @@ export class ACPAgentClient implements AgentClient {
+       extensionCommandsParser: this.extensionCommandsParser,
+       waitForInitialCommands: this.waitForInitialCommands,
+       initialCommandsWaitTimeoutMs: this.initialCommandsWaitTimeoutMs,
++      syntheticAllowAllMode: this.syntheticAllowAllMode,
+     });
+     await session.initializeResumedSession();
+     return session;
+@@ -851,7 +884,9 @@ export class ACPAgentClient implements AgentClient {
+         );
+         return {
+           models: this.modelTransformer ? this.modelTransformer(models) : models,
+-          modes: modeInfo.modes,
++          modes: this.syntheticAllowAllMode
++            ? appendSyntheticAllowAllMode(modeInfo.modes)
++            : modeInfo.modes,
+         };
+       })();
+ 
+@@ -1295,6 +1330,7 @@ export class ACPAgentSession implements AgentSession, ACPClient {
+   private waitForInitialCommands: boolean;
+   private initialCommandsWaitTimeoutMs: number;
+   private readonly extensionCommandsParser?: ACPExtensionCommandsParser;
++  private readonly syntheticAllowAllMode: boolean;
+   private currentTurnUsage: AgentUsage | undefined;
+   private activeForegroundTurnId: string | null = null;
+   private closed = false;
+@@ -1320,7 +1356,8 @@ export class ACPAgentSession implements AgentSession, ACPClient {
+     this.providerModeWriter = options.providerModeWriter;
+     this.beforeModeWriter = options.beforeModeWriter;
+     this.thinkingOptionWriter = options.thinkingOptionWriter;
+-    this.availableModes = options.defaultModes;
++    this.syntheticAllowAllMode = options.syntheticAllowAllMode ?? false;
++    this.availableModes = this.withSyntheticModes(options.defaultModes);
+     this.agentId = options.agentId;
+     this.launchEnv = options.launchEnv;
+     this.initialHandle = options.handle;
+@@ -1507,6 +1544,14 @@ export class ACPAgentSession implements AgentSession, ACPClient {
+     return this.currentMode;
+   }
+ 
++  private withSyntheticModes(modes: AgentMode[]): AgentMode[] {
++    return this.syntheticAllowAllMode ? appendSyntheticAllowAllMode(modes) : modes;
++  }
++
++  private isAllowAllModeActive(): boolean {
++    return this.syntheticAllowAllMode && this.currentMode === ACP_ALLOW_ALL_MODE_ID;
++  }
++
+   get features(): AgentFeature[] {
+     return deriveFeaturesFromACP(this.configOptions, this.configFeatureOptions);
+   }
+@@ -1592,6 +1637,29 @@ export class ACPAgentSession implements AgentSession, ACPClient {
+       throw new Error("ACP session not initialized");
+     }
+ 
++    // The Allow All mode exists only in the daemon: activate it without any
++    // provider RPC, leaving the agent's native mode untouched. Switching away
++    // takes the normal path below and writes the requested native mode.
++    if (this.syntheticAllowAllMode && modeId === ACP_ALLOW_ALL_MODE_ID) {
++      if (selection.availableMode?.id !== ACP_ALLOW_ALL_MODE_ID) {
++        this.warnInvalidSelection(
++          modeId,
++          `is not valid ${this.provider} mode. Available options: ${this.availableModes
++            .map((mode) => mode.id)
++            .join(", ")}`,
++        );
++        return;
++      }
++      this.currentMode = modeId;
++      this.pushEvent({
++        type: "mode_changed",
++        provider: this.provider,
++        currentModeId: this.currentMode,
++        availableModes: [...this.availableModes],
++      });
++      return;
++    }
++
+     const context = this.createProviderModeWriterContext(modeId, selection);
+     const providerResult = this.providerModeWriter
+       ? await this.providerModeWriter(context)
+@@ -1601,7 +1669,9 @@ export class ACPAgentSession implements AgentSession, ACPClient {
+       if (providerResult.configOptions) {
+         this.configOptions = this.transformConfigOptions(providerResult.configOptions);
+       }
+-      this.availableModes = deriveModesFromACP(this.defaultModes, null, this.configOptions).modes;
++      this.availableModes = this.withSyntheticModes(
++        deriveModesFromACP(this.defaultModes, null, this.configOptions).modes,
++      );
+       this.pushEvent({
+         type: "mode_changed",
+         provider: this.provider,
+@@ -1675,7 +1745,9 @@ export class ACPAgentSession implements AgentSession, ACPClient {
+       requestedValue: modeId,
+       label: "mode",
+     });
+-    this.availableModes = deriveModesFromACP(this.defaultModes, null, this.configOptions).modes;
++    this.availableModes = this.withSyntheticModes(
++      deriveModesFromACP(this.defaultModes, null, this.configOptions).modes,
++    );
+     this.pushEvent({
+       type: "mode_changed",
+       provider: this.provider,
+@@ -2025,6 +2097,18 @@ export class ACPAgentSession implements AgentSession, ACPClient {
+   }
+ 
+   async requestPermission(params: RequestPermissionRequest): Promise<RequestPermissionResponse> {
++    if (this.isAllowAllModeActive()) {
++      const selected = selectPermissionOption(params.options, { behavior: "allow" });
++      if (selected) {
++        this.logger.debug(
++          { toolCallId: params.toolCall.toolCallId, optionId: selected.optionId },
++          "Auto-approved ACP permission request (Allow All mode)",
++        );
++        return { outcome: { outcome: "selected", optionId: selected.optionId } };
++      }
++      // No allow option to pick — fall through and surface the request.
++    }
++
+     // Match Zed acp.rs:3189-3220: generic ACP permission requests stay pure pass-through.
+     const requestId = randomUUID();
+     let toolSnapshot =
+@@ -2325,7 +2409,7 @@ export class ACPAgentSession implements AgentSession, ACPClient {
+     this.configOptions = this.transformConfigOptions(transformed.configOptions ?? []);
+ 
+     const modeInfo = deriveModesFromACP(this.defaultModes, transformed.modes, this.configOptions);
+-    this.availableModes = modeInfo.modes;
++    this.availableModes = this.withSyntheticModes(modeInfo.modes);
+     this.currentMode = modeInfo.currentModeId ?? this.currentMode;
+ 
+     this.availableModels = transformed.models?.availableModels ?? null;
+@@ -2515,6 +2599,11 @@ export class ACPAgentSession implements AgentSession, ACPClient {
+   }
+ 
+   private handleCurrentModeUpdate(update: CurrentModeUpdate): void {
++    // Allow All is daemon-owned and never written to the agent, so the agent's
++    // native mode echoes must not deactivate it.
++    if (this.isAllowAllModeActive()) {
++      return;
++    }
+     this.currentMode = this.transformModeId(update.currentModeId);
+   }
+ 
+@@ -2525,8 +2614,10 @@ export class ACPAgentSession implements AgentSession, ACPClient {
+     const nextModel = deriveCurrentConfigValue(this.configOptions, "model");
+     const nextThinkingOptionId = deriveCurrentConfigValue(this.configOptions, "thought_level");
+ 
+-    this.availableModes = modeInfo.modes;
+-    this.currentMode = nextMode ?? this.currentMode;
++    this.availableModes = this.withSyntheticModes(modeInfo.modes);
++    if (!this.isAllowAllModeActive()) {
++      this.currentMode = nextMode ?? this.currentMode;
++    }
+     this.currentModel = nextModel ?? this.currentModel;
+     this.thinkingOptionId = nextThinkingOptionId ?? this.thinkingOptionId;
+ 
+diff --git a/packages/server/src/server/agent/providers/generic-acp-agent.test.ts b/packages/server/src/server/agent/providers/generic-acp-agent.test.ts
+index 19a1e9f8e..d44085f47 100644
+--- a/packages/server/src/server/agent/providers/generic-acp-agent.test.ts
++++ b/packages/server/src/server/agent/providers/generic-acp-agent.test.ts
+@@ -51,6 +51,7 @@ describe("GenericACPAgentClient", () => {
+           },
+         },
+         defaultCommand: ["hermes", "acp"],
++        syntheticAllowAllMode: true,
+         capabilities: {
+           supportsStreaming: true,
+           supportsSessionPersistence: true,
+diff --git a/packages/server/src/server/agent/providers/generic-acp-agent.ts b/packages/server/src/server/agent/providers/generic-acp-agent.ts
+index c1da53e96..8a60d4703 100644
+--- a/packages/server/src/server/agent/providers/generic-acp-agent.ts
++++ b/packages/server/src/server/agent/providers/generic-acp-agent.ts
+@@ -54,6 +54,10 @@ export class GenericACPAgentClient extends ACPAgentClient {
+       waitForInitialCommands: options.waitForInitialCommands,
+       initialCommandsWaitTimeoutMs: options.initialCommandsWaitTimeoutMs,
+       extensionCommandsParser: options.extensionCommandsParser,
++      // Generic ACP agents (Cursor included) have no native unattended mode,
++      // so the daemon offers its own Allow All mode that auto-approves
++      // permission requests (see getpaseo/paseo#1926).
++      syntheticAllowAllMode: true,
+     });
+ 
+     this.command = options.command;

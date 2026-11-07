@@ -7,8 +7,9 @@ import type {
   WorkspaceDescriptorPayload,
 } from "./messages.js";
 import {
-  deriveAgentStateBucket,
+  deriveLifecycleBucket,
   getWorkspaceStateBucketPriority,
+  lifecycleBucketToWorkspaceStatus,
   type WorkspaceStateBucket,
 } from "@getpaseo/protocol/agent-state-bucket";
 import { getParentAgentIdFromLabels } from "@getpaseo/protocol/agent-labels";
@@ -74,9 +75,13 @@ export interface WorkspaceDirectoryDeps {
     list(): Promise<PersistedProjectRecord[]>;
   };
   workspaceRegistry: {
-    list(): Promise<PersistedWorkspaceRecord[]>;
+    listActive(): Promise<PersistedWorkspaceRecord[]>;
+    get(id: string): Promise<PersistedWorkspaceRecord | null>;
   };
-  listAgentPayloads(): Promise<AgentSnapshotPayload[]>;
+  listAgentPayloads(workspaceIds?: Iterable<string>): Promise<AgentSnapshotPayload[]>;
+  workspaceLastUserMessageTimes(
+    workspaceIds?: Iterable<string>,
+  ): Promise<ReadonlyMap<string, string>>;
   listProviderSubagentActivity(): Promise<ProviderSubagentWorkspaceActivity[]>;
   listTerminalActivityContributions(): Promise<
     Array<{ cwd: string; workspaceId?: string; activity: TerminalActivity | null }>
@@ -170,7 +175,7 @@ export class WorkspaceDirectory {
   /**
    * Per-workspace last-seen winning bucket + entered-at. Persists across
    * `buildDescriptorMap` calls inside the daemon process; reset on cold start.
-   * Server-internal; never crosses the wire.
+   * Server-private; never crosses the wire.
    */
   private readonly bucketHistoryByWorkspaceId = new Map<string, WorkspaceBucketHistoryEntry>();
 
@@ -216,16 +221,24 @@ export class WorkspaceDirectory {
     includeGitData: boolean;
     workspaceIds?: Iterable<string>;
   }): Promise<Map<string, WorkspaceDescriptorPayload>> {
+    const requestedIds = options.workspaceIds ? new Set(options.workspaceIds) : undefined;
     const [
       agents,
+      lastUserMessageTimes,
       providerSubagentActivity,
       persistedWorkspaces,
       persistedProjects,
       terminalContributions,
     ] = await Promise.all([
-      this.deps.listAgentPayloads(),
+      this.deps.listAgentPayloads(requestedIds),
+      this.deps.workspaceLastUserMessageTimes(requestedIds),
       this.deps.listProviderSubagentActivity(),
-      this.deps.workspaceRegistry.list(),
+      requestedIds
+        ? Promise.all(Array.from(requestedIds, (id) => this.deps.workspaceRegistry.get(id))).then(
+            (records) =>
+              records.filter((record): record is PersistedWorkspaceRecord => record !== null),
+          )
+        : this.deps.workspaceRegistry.listActive(),
       this.deps.projectRegistry.list(),
       this.deps.listTerminalActivityContributions(),
     ]);
@@ -237,7 +250,7 @@ export class WorkspaceDirectory {
     );
     const activeRecords = activeWorkspaceRecords(persistedWorkspaces, persistedProjects);
     const descriptorsByWorkspaceId = new Map<string, WorkspaceDescriptorPayload>();
-    const workspaceIds = options.workspaceIds ? new Set(options.workspaceIds) : null;
+    const workspaceIds = requestedIds ? new Set(requestedIds) : null;
     const activeWorkspaceIds = new Set(activeRecords.map((workspace) => workspace.workspaceId));
     const includedWorkspaces = activeRecords.filter(
       (workspace) => !workspaceIds || workspaceIds.has(workspace.workspaceId),
@@ -258,12 +271,18 @@ export class WorkspaceDirectory {
       const workspaceId = includedWorkspaces[i].workspaceId;
       descriptorsByWorkspaceId.set(workspaceId, {
         ...workspaceDescriptors[i],
+        createdAt: includedWorkspaces[i].createdAt,
+        lastUserMessageAt: lastUserMessageTimes.get(workspaceId) ?? null,
         archivingAt: this.archivingByWorkspaceId.get(workspaceId) ?? null,
       });
     }
 
+    // Background agents report to their creator; they never move the workspace's status.
     const activeAgents = agents.filter(
-      (agent) => !agent.archivedAt && this.deps.isProviderVisibleToClient(agent.provider),
+      (agent) =>
+        !agent.archivedAt &&
+        !agent.background &&
+        this.deps.isProviderVisibleToClient(agent.provider),
     );
     this.applyAgentBucketContributions({
       activeAgents,
@@ -377,14 +396,7 @@ export class WorkspaceDirectory {
       if (!isWorkspaceRoot && agent.status !== "running") {
         continue;
       }
-      const bucket = isWorkspaceRoot
-        ? deriveAgentStateBucket({
-            status: agent.status,
-            pendingPermissionCount: agent.pendingPermissions?.length ?? 0,
-            requiresAttention: agent.requiresAttention,
-            attentionReason: agent.attentionReason ?? null,
-          })
-        : "running";
+      const bucket = isWorkspaceRoot ? deriveWorkspaceRootStatusBucket(agent) : "running";
 
       const workspaceId = workspaceAgent.workspaceId;
       if (!workspaceId) {
@@ -526,15 +538,7 @@ export class WorkspaceDirectory {
     winningBucket: WorkspaceStateBucket,
   ): string | null {
     const agentTimestamps = contributingAgents
-      .filter((agent) => {
-        const derived = deriveAgentStateBucket({
-          status: agent.status,
-          pendingPermissionCount: agent.pendingPermissions?.length ?? 0,
-          requiresAttention: agent.requiresAttention,
-          attentionReason: agent.attentionReason ?? null,
-        });
-        return derived === winningBucket;
-      })
+      .filter((agent) => deriveWorkspaceRootStatusBucket(agent) === winningBucket)
       .map((agent) => {
         // Prefer attentionTimestamp when the agent has attention set — this is
         // the most accurate "entered current status" signal.
@@ -557,14 +561,20 @@ export class WorkspaceDirectory {
   // Project parents that have no active workspaces. The wire field is the
   // sidebar projection bucket for projects whose workspace list is currently
   // empty; it is not a separate domain record.
-  async listEmptyProjects(): Promise<WorkspaceProjectDescriptor[]> {
+  async listEmptyProjects(options?: {
+    includeBackground?: boolean;
+  }): Promise<WorkspaceProjectDescriptor[]> {
     const [persistedWorkspaces, persistedProjects] = await Promise.all([
-      this.deps.workspaceRegistry.list(),
+      this.deps.workspaceRegistry.listActive(),
       this.deps.projectRegistry.list(),
     ]);
+    // A project whose only workspaces are hidden reads as empty to that caller.
     const projectIdsWithActiveWorkspaces = new Set(
       persistedWorkspaces
-        .filter((workspace) => !workspace.archivedAt)
+        .filter(
+          (workspace) =>
+            !workspace.archivedAt && (options?.includeBackground === true || !workspace.background),
+        )
         .map((workspace) => workspace.projectId),
     );
     return persistedProjects
@@ -579,6 +589,7 @@ export class WorkspaceDirectory {
         projectCustomIconRevision: project.customIconRevision ?? null,
         projectRootPath: project.rootPath,
         projectKind: project.kind,
+        baseWorkspaceId: project.baseWorkspaceId,
       }));
   }
 
@@ -586,7 +597,7 @@ export class WorkspaceDirectory {
     Pick<WorkspaceDescriptorPayload, "id" | "workspaceDirectory" | "workspaceKind">[]
   > {
     const [workspaces, projects] = await Promise.all([
-      this.deps.workspaceRegistry.list(),
+      this.deps.workspaceRegistry.listActive(),
       this.deps.projectRegistry.list(),
     ]);
     return activeWorkspaceRecords(workspaces, projects).map((workspace) => ({
@@ -596,6 +607,8 @@ export class WorkspaceDirectory {
     }));
   }
 
+  // Every active workspace, background ones included. Callers that answer a
+  // listing go through matchesFilter so background workspaces stay opt-in.
   async listDescriptors(): Promise<WorkspaceDescriptorPayload[]> {
     return Array.from(
       (
@@ -611,6 +624,13 @@ export class WorkspaceDirectory {
     filter: FetchWorkspacesRequestFilter | undefined;
   }): boolean {
     const { workspace, filter } = input;
+    if (
+      workspace.background &&
+      filter?.includeBackground !== true &&
+      filter?.query !== workspace.id
+    ) {
+      return false;
+    }
     if (!filter) {
       return true;
     }
@@ -666,7 +686,7 @@ export class WorkspaceDirectory {
     const projectIdFilter = filter?.projectId?.trim();
     const emptyProjects = cursorToken
       ? []
-      : (await this.listEmptyProjects()).filter(
+      : (await this.listEmptyProjects({ includeBackground: filter?.includeBackground })).filter(
           (project) => !projectIdFilter || project.projectId === projectIdFilter,
         );
 
@@ -739,4 +759,37 @@ export function resolveWorkspaceRootAgent(
     seen.add(parentAgentId);
     current = parent;
   }
+}
+
+/**
+ * Workspace visual bucket for a workspace-root agent. Prefers the canonical
+ * daemon-owned lifecycle bucket (`agent.bucket`, spec 01) when present; older
+ * daemons omit it, so fall back to deriving the lifecycle bucket from the
+ * payload fields (status, permissions, attentionReason, stoppedBy) exactly
+ * like the client's old-daemon fallback. `reviewState` lives server-side in
+ * review-state.json and is not on the snapshot payload: the only client-visible
+ * review state — a finished run with no recorded user stop — is read as ready.
+ * Never derives workspace `failed`: an errored agent is `needs_input` unless a
+ * user stop makes the user's stop the terminal story (`done`).
+ */
+function deriveWorkspaceRootStatusBucket(agent: AgentSnapshotPayload): WorkspaceStateBucket {
+  if (agent.bucket) {
+    return lifecycleBucketToWorkspaceStatus(agent.bucket);
+  }
+  // COMPAT(oldDaemonBucketFallback): added in v0.3, remove after 2026-12-01.
+  // Payloads from older daemons predating canonical `agent.bucket` fall back
+  // to deriving reviewState from the legacy attention latch.
+  const userStopped = agent.stoppedBy === "user";
+  const reviewState = agent.attentionReason === "finished" && !userStopped ? "ready" : "none";
+  return lifecycleBucketToWorkspaceStatus(
+    deriveLifecycleBucket({
+      pendingPermissionCount: agent.pendingPermissions?.length ?? 0,
+      pendingProposalCount: 0,
+      attentionReason: agent.attentionReason ?? null,
+      lastStatus: agent.status,
+      running: agent.status === "running" || agent.status === "initializing",
+      reviewState,
+      stopOrigin: agent.stoppedBy ?? null,
+    }),
+  );
 }

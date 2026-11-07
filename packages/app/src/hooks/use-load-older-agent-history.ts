@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { ToastApi } from "@/components/toast-host";
 import { i18n } from "@/i18n/i18next";
@@ -7,7 +7,13 @@ import {
   useSessionStore,
   type AgentTimelineCursorState,
 } from "@/stores/session-store";
-import { planTimelineOlderFetch } from "@/timeline/timeline-sync-plan";
+import {
+  earliestLoadedSeq,
+  listTimelineGaps,
+  planTimelineGapFill,
+  planTimelineOlderFetch,
+  type TimelineGap,
+} from "@/timeline/timeline-sync-plan";
 import { getHostRuntimeStore } from "@/runtime/host-runtime";
 
 export interface LoadOlderAgentHistoryClient {
@@ -18,6 +24,7 @@ export interface LoadOlderAgentHistoryClient {
       cursor: { epoch: string; seq: number };
       limit: number;
       projection: "projected";
+      mergeWindow?: true;
     },
   ) => Promise<unknown>;
 }
@@ -52,10 +59,7 @@ export async function loadOlderAgentHistory(
 
   setInFlight(true);
   try {
-    await client.fetchAgentTimeline(
-      agentId,
-      planTimelineOlderFetch({ epoch: cursor.epoch, seq: cursor.startSeq }),
-    );
+    await client.fetchAgentTimeline(agentId, planTimelineOlderFetch(cursor));
   } catch (error) {
     (logger ?? console).warn("[Timeline] failed to load older agent history", agentId, error);
     toast?.show(failedMessage ?? i18n.t("loadOlderHistory.failed"), {
@@ -86,11 +90,17 @@ export function useLoadOlderAgentHistory({
     useSessionStore((state) =>
       state.sessions[serverId]?.agentTimelineOlderFetchInFlight.get(agentId),
     ) === true;
+  // Keyed on the top of the list, which a prompt-jump window can own.
   const progressKey = useSessionStore((state) => {
     const timeline = selectAgentTimelineState(state.sessions[serverId], agentId);
     const cursor = timeline.status === "synced" ? timeline.range : null;
-    return cursor ? `${cursor.epoch}:${cursor.startSeq}` : null;
+    return cursor ? `${cursor.epoch}:${earliestLoadedSeq(cursor)}` : null;
   });
+  const range = useSessionStore((state) => {
+    const timeline = selectAgentTimelineState(state.sessions[serverId], agentId);
+    return timeline.status === "synced" ? timeline.range : null;
+  });
+  const gaps = useMemo(() => listTimelineGaps(range), [range]);
   const setOlderFetchInFlight = useSessionStore(
     (state) => state.setAgentTimelineOlderFetchInFlight,
   );
@@ -128,10 +138,37 @@ export function useLoadOlderAgentHistory({
     });
   }, [agentId, serverId, setInFlight, toast, t]);
 
+  // One gap page at a time; the next click reads the gap from the updated range.
+  const gapInFlightRef = useRef(false);
+  const [loadingGapStart, setLoadingGapStart] = useState<number | null>(null);
+  const loadGap = useCallback(
+    async (gap: TimelineGap): Promise<void> => {
+      if (gapInFlightRef.current) return;
+      gapInFlightRef.current = true;
+      setLoadingGapStart(gap.startSeq);
+      try {
+        await getHostRuntimeStore().fetchAgentTimeline(serverId, agentId, planTimelineGapFill(gap));
+      } catch (error) {
+        console.warn("[Timeline] failed to load a history gap", agentId, error);
+        toast?.show(t("loadOlderHistory.failed"), {
+          durationMs: 2200,
+          testID: "agent-load-history-gap-toast",
+        });
+      } finally {
+        gapInFlightRef.current = false;
+        setLoadingGapStart(null);
+      }
+    },
+    [agentId, serverId, t, toast],
+  );
+
   return {
     isLoadingOlder,
     hasOlder,
     progressKey,
     loadOlder,
+    gaps,
+    loadingGapStart,
+    loadGap,
   };
 }

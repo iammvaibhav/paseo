@@ -6,6 +6,7 @@ import type {
   ResolveAgentCreateConfigInput,
   ResolveAgentCreateConfigResult,
 } from "./agent-sdk-types.js";
+import { AI_REVIEW_MODE_ID } from "./ai-reviewer.js";
 
 export interface ResolveCreateAgentModeInput {
   requestedMode: string | undefined;
@@ -46,6 +47,9 @@ export function resolveAndValidateCreateAgentMode(
   const { requestedMode, targetProvider, parent, availableModes } = input;
 
   if (requestedMode !== undefined) {
+    if (requestedMode === AI_REVIEW_MODE_ID) {
+      return requestedMode;
+    }
     if (availableModes !== undefined && !availableModes.includes(requestedMode)) {
       throw new Error(
         `Invalid mode '${requestedMode}' for provider '${targetProvider}'. Available modes: ${listModes(availableModes)}`,
@@ -77,7 +81,7 @@ export function resolveAndValidateCreateAgentMode(
   }
 
   throw new Error(
-    `cannot inherit mode '${formatCreateConfigParentMode(parent)}' from ${formatCreateConfigParentSource(parent)} for new agent (provider '${targetProvider}'). Pass an explicit mode. Available modes for '${targetProvider}': ${listModes(availableModes)}`,
+    `cannot inherit mode '${formatCreateConfigParentMode(parent)}' from ${formatCreateConfigParentSource(parent)} for new agent (provider '${targetProvider}'). Pass an explicit mode in settings.modeId. Available modes for '${targetProvider}': ${listModes(availableModes)}`,
   );
 }
 

@@ -1,0 +1,18 @@
+# omp config overlay forced onto allowlist-restricted sessions (see
+# appendOmpLaunchArgs in runtime.ts). omp registers these harness-utility
+# tools OUTSIDE the builtin tool catalog, so neither `--no-tools` nor `--tools`
+# can remove them (omp 17.2.10: `createTools` filters BUILTIN_TOOLS via
+# isToolAllowed which gates learn/manage_skill on `autolearn.enabled` and
+# checkpoint/rewind on `checkpoint.enabled`; the SDK additionally pushes the
+# `tts` custom tool whenever `speechgen.enabled` is true — sdk.ts — with no
+# whitelist check at all). A session carrying a toolAllowlist must expose
+# exactly its allowlisted tools, so the launch pins all three feature gates
+# off. Loaded via `--config` (or PI_CONFIG_FILES), which outranks the user's
+# global ~/.omp/agent/config.yml (precedence: defaults <- global <- project <-
+# PI_CONFIG_FILES <- --config overlays <- runtime overrides).
+autolearn:
+  enabled: false
+checkpoint:
+  enabled: false
+speechgen:
+  enabled: false

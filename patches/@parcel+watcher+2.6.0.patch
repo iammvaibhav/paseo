@@ -1,0 +1,39 @@
+diff --git a/node_modules/@parcel/watcher/index.js b/node_modules/@parcel/watcher/index.js
+index 78ee744..32886ef 100644
+--- a/node_modules/@parcel/watcher/index.js
++++ b/node_modules/@parcel/watcher/index.js
+@@ -13,11 +13,15 @@ if (process.platform === 'linux') {
+ 
+ let binding;
+ try {
+-  binding = require(name);
++  // Prefer the locally compiled binding: the Paseo postinstall patches the
++  // inotify backend (EINTR retry) and rebuilds from source; the platform
++  // prebuilds (name) carry the unfixed code. Installs without a local build
++  // (no toolchain) fall through to the prebuild as before.
++  binding = require('./build/Release/watcher.node');
+ } catch (err) {
+   handleError(err);
+   try {
+-    binding = require('./build/Release/watcher.node');
++    binding = require(name);
+   } catch (err) {
+     handleError(err);
+     try {
+diff --git a/node_modules/@parcel/watcher/src/linux/InotifyBackend.cc b/node_modules/@parcel/watcher/src/linux/InotifyBackend.cc
+index 949f498..12501d5 100644
+--- a/node_modules/@parcel/watcher/src/linux/InotifyBackend.cc
++++ b/node_modules/@parcel/watcher/src/linux/InotifyBackend.cc
+@@ -39,6 +39,12 @@ void InotifyBackend::start() {
+   while (true) {
+     int result = poll(pollfds, 2, 500);
+     if (result < 0) {
++      // EINTR (a signal interrupted poll) is never fatal — retry the syscall.
++      // Without this, any signal delivered to this thread (e.g. SIGCHLD from a
++      // child process exit) kills the watcher permanently.
++      if (errno == EINTR) {
++        continue;
++      }
+       throw std::runtime_error(std::string("Unable to poll: ") + strerror(errno));
+     }
+ 

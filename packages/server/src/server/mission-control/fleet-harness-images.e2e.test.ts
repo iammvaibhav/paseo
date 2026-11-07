@@ -1,0 +1,195 @@
+import path from "node:path";
+import { randomBytes } from "node:crypto";
+import { readFile, writeFile } from "node:fs/promises";
+import { describe, expect, test } from "vitest";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { z } from "zod";
+
+import { hashDaemonPassword } from "../auth.js";
+import type { AgentPromptInput } from "../agent/agent-sdk-types.js";
+import { createTestAgentClients } from "../test-utils/fake-agent-client.js";
+import { createFleetHarness, spawnWorker, waitFor } from "../test-utils/fleet-harness.js";
+
+const HarnessConfigSchema = z.looseObject({
+  daemon: z.object({ mcp: z.object({ remoteClients: z.array(z.unknown()) }) }),
+});
+const ContentSchema = z.array(z.looseObject({ type: z.string(), text: z.string().optional() }));
+const UploadedFileBlockSchema = z.object({
+  type: z.literal("uploaded_file"),
+  fileName: z.string(),
+  path: z.string(),
+});
+
+function field(result: { structuredContent?: unknown }, key: string): string {
+  return z.object({ [key]: z.string() }).parse(result.structuredContent)[key];
+}
+
+function fakePng(bytes: number): Buffer {
+  return Buffer.concat([Buffer.from("89504e470d0a1a0a", "hex"), randomBytes(bytes - 8)]);
+}
+
+interface CapturedPrompt {
+  agentId: string | undefined;
+  prompt: AgentPromptInput;
+}
+
+function waitForPrompt(prompts: CapturedPrompt[], marker: string): Promise<CapturedPrompt> {
+  return waitFor(
+    async () => prompts.find((entry) => JSON.stringify(entry.prompt).includes(marker)) ?? null,
+    () => true,
+    { label: `a prompt containing "${marker}"` },
+  );
+}
+
+describe("images and files cross hosts over /mcp/fleet", () => {
+  test(
+    "MCP clients on two hosts deliver uploaded images and files to an agent on a peer",
+    { timeout: 240_000 },
+    async () => {
+      const prompts: CapturedPrompt[] = [];
+      const harness = await createFleetHarness({
+        agentClients: createTestAgentClients({
+          onStartTurn: (prompt, _config, agentId) => {
+            prompts.push({ agentId, prompt });
+          },
+        }),
+      });
+      const mcp = new Client({ name: "e2e-cross-host-images", version: "1.0.0" });
+      try {
+        // Register an MCP client on A (the config is re-read per request).
+        const token = "cross-host-images-token";
+        const configPath = path.join(harness.daemons.A.paseoHome, "config.json");
+        const config = HarnessConfigSchema.parse(JSON.parse(await readFile(configPath, "utf8")));
+        await writeFile(
+          configPath,
+          JSON.stringify({
+            ...config,
+            daemon: {
+              mcp: {
+                enabled: true,
+                // Keep the harness's own client: fleetExec still talks to A.
+                remoteClients: [
+                  ...config.daemon.mcp.remoteClients,
+                  { name: "grok-bot", tokenHash: hashDaemonPassword(token) },
+                ],
+              },
+            },
+          }),
+        );
+        await mcp.connect(
+          new StreamableHTTPClientTransport(
+            new URL(`http://127.0.0.1:${harness.daemons.A.port}/mcp/fleet`),
+            { requestInit: { headers: { Authorization: `Bearer ${token}` } } },
+          ),
+        );
+        const call = (name: string, args: Record<string, unknown>) =>
+          mcp.callTool({ name, arguments: args });
+
+        const workspace = await harness.clients.B.createWorkspace({
+          source: { kind: "directory", path: harness.daemons.B.paseoHomeRoot },
+          title: "B workspace",
+        });
+        const { agentId } = await spawnWorker({
+          from: harness.clients.A,
+          host: "B",
+          initialPrompt: "B worker",
+          title: "B worker",
+          workspaceId: workspace.workspace!.id,
+        });
+        await call("fleet_wait_agent", { agentId, timeoutSeconds: 30 });
+
+        // Bytes enter A's store over MCP only.
+        const shot = fakePng(150 * 1024);
+        const uploadedShot = await call("fleet_upload_file", {
+          fileName: "shot.png",
+          mimeType: "image/png",
+          data: shot.toString("base64"),
+        });
+        const shotId = field(uploadedShot, "fileId");
+        const uploadedNotes = await call("fleet_upload_file", {
+          fileName: "notes.txt",
+          mimeType: "text/plain",
+          data: Buffer.from("notes for B").toString("base64"),
+        });
+        const notesId = field(uploadedNotes, "fileId");
+
+        // 1. MCP client → agent on B: native image + a file copied into B's store.
+        const sent = await call("fleet_send_prompt", {
+          agentId,
+          prompt: "mcp send with files",
+          images: [{ fileId: shotId }],
+          attachments: [{ type: "uploaded_file", id: notesId }],
+        });
+        expect(sent.isError, JSON.stringify(sent.content)).toBeFalsy();
+        const mcpPrompt = (await waitForPrompt(prompts, "mcp send with files")).prompt;
+        const mcpBlocks = Array.isArray(mcpPrompt) ? mcpPrompt : [];
+        expect(mcpBlocks).toContainEqual({
+          type: "image",
+          data: shot.toString("base64"),
+          mimeType: "image/png",
+        });
+        const notesBlock = UploadedFileBlockSchema.parse(
+          mcpBlocks.find((block) => block.type === "uploaded_file"),
+        );
+        expect(notesBlock.path.startsWith(path.join(harness.daemons.B.paseoHome, "uploads"))).toBe(
+          true,
+        );
+        await expect(readFile(notesBlock.path, "utf8")).resolves.toBe("notes for B");
+
+        // 2. An image passed only as an uploaded_file also rides as a native image,
+        //    and B's user row carries it so the app renders a thumbnail.
+        await call("fleet_wait_agent", { agentId, timeoutSeconds: 30 });
+        const attachedShot = fakePng(40 * 1024);
+        const uploadedAttached = await call("fleet_upload_file", {
+          fileName: "attached.png",
+          mimeType: "image/png",
+          data: attachedShot.toString("base64"),
+        });
+        const attachedSent = await call("fleet_send_prompt", {
+          agentId,
+          prompt: "mcp send image as file",
+          attachments: [{ type: "uploaded_file", id: field(uploadedAttached, "fileId") }],
+        });
+        expect(attachedSent.isError, JSON.stringify(attachedSent.content)).toBeFalsy();
+        const attachedPrompt = (await waitForPrompt(prompts, "mcp send image as file")).prompt;
+        const attachedBlocks = Array.isArray(attachedPrompt) ? attachedPrompt : [];
+        const attachedImage = {
+          type: "image",
+          data: attachedShot.toString("base64"),
+          mimeType: "image/png",
+        };
+        expect(attachedBlocks).toContainEqual(attachedImage);
+        expect(attachedBlocks.some((block) => block.type === "uploaded_file")).toBe(true);
+        const timeline = await harness.clients.B.fetchAgentTimeline(agentId, {
+          direction: "tail",
+          limit: 50,
+          projection: "projected",
+        });
+        const attachedRow = timeline.entries
+          .map((entry) => entry.item)
+          .find(
+            (item) => item.type === "user_message" && item.text.includes("mcp send image as file"),
+          );
+        expect(attachedRow).toMatchObject({
+          images: [{ data: attachedImage.data, mimeType: attachedImage.mimeType }],
+        });
+
+        // 3. An image the agent on B saved comes back over MCP as image content.
+        const bShot = fakePng(20 * 1024);
+        const bShotPath = path.join(harness.daemons.B.paseoHomeRoot, "b-screenshot.png");
+        await writeFile(bShotPath, bShot);
+        const read = await call("fleet_read_image", { agentId, path: bShotPath });
+        expect(read.isError, JSON.stringify(read.content)).toBeFalsy();
+        expect(ContentSchema.parse(read.content)[0]).toEqual({
+          type: "image",
+          data: bShot.toString("base64"),
+          mimeType: "image/png",
+        });
+      } finally {
+        await mcp.close().catch(() => undefined);
+        await harness.close();
+      }
+    },
+  );
+});

@@ -2,9 +2,9 @@
  * @vitest-environment jsdom
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, renderHook, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, renderHook, screen, waitFor } from "@testing-library/react";
 import React, { useCallback, useMemo, useState, type ReactNode } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ToastApi } from "@/components/toast-host";
 import type { InlinePathTarget } from "./parse";
 import { AssistantFileLinkResolverProvider } from "./provider";
@@ -14,6 +14,16 @@ import type { OpenFileDisposition } from "@/workspace/file-open";
 
 vi.mock("@/utils/open-external-url", () => ({
   openExternalUrl: vi.fn(async () => {}),
+}));
+
+vi.mock("@/components/adaptive-modal-sheet", () => ({
+  AdaptiveModalSheet: ({ children, testID }: { children: ReactNode; testID?: string }) => (
+    <div data-testid={testID}>{children}</div>
+  ),
+}));
+
+vi.mock("@/components/material-file-icon", () => ({
+  MaterialFileIcon: () => null,
 }));
 
 const SOURCE = {
@@ -51,6 +61,7 @@ interface TestClient {
     includeFiles: true;
     includeDirectories: false;
     matchMode: "suffix";
+    lineHint?: number;
     limit: number;
   }) => Promise<DirectorySuggestionResult>;
 }
@@ -99,6 +110,12 @@ function createWrapper(input: { client: TestClient; openedFiles: OpenedFile[]; t
 }
 
 describe("useFileLink", () => {
+  // Lookups resolve after a test's last assertion; an unmounted hook cannot re-render
+  // once jsdom is torn down.
+  afterEach(() => {
+    cleanup();
+  });
+
   it("returns the same object across no-op parent rerenders", () => {
     const getDirectorySuggestions = vi.fn(async () => resolvedSuggestions([]));
     const queryClient = createQueryClient();
@@ -241,6 +258,51 @@ describe("useFileLink", () => {
       expect(result.current.first.target?.path).toBe("/Users/test/project/docs/dumm.md");
       expect(result.current.second.target?.path).toBe("/Users/test/project/docs/dumm.md");
     });
+  });
+
+  it("asks which file to open when several match, then opens the choice at the line", async () => {
+    const getDirectorySuggestions = vi.fn(async () =>
+      resolvedSuggestions([
+        { path: "portal/app/api/tasks.py", kind: "file" },
+        { path: "portal/app/portal/tasks.py", kind: "file" },
+      ]),
+    );
+    const openedFiles: OpenedFile[] = [];
+    const { result } = renderHook(
+      () => useFileLink({ href: "tasks.py:82", text: "tasks.py:82", sourceType: "inline-code" }),
+      { wrapper: createWrapper({ client: { getDirectorySuggestions }, openedFiles }) },
+    );
+
+    act(() => {
+      result.current.onPress();
+    });
+    const rows = await screen.findAllByTestId("file-link-picker-row");
+    expect(rows.map((row) => row.textContent)).toEqual([
+      "portal/app/api/tasks.py:82",
+      "portal/app/portal/tasks.py:82",
+    ]);
+    expect(getDirectorySuggestions).toHaveBeenCalledWith(
+      expect.objectContaining({ query: "tasks.py", lineHint: 82 }),
+    );
+    expect(openedFiles).toEqual([]);
+
+    act(() => {
+      fireEvent.click(rows[1]!);
+    });
+    await waitFor(() => {
+      expect(openedFiles).toEqual([
+        {
+          target: {
+            raw: "tasks.py:82",
+            path: "/Users/test/project/portal/app/portal/tasks.py",
+            lineStart: 82,
+            lineEnd: undefined,
+          },
+          disposition: "preferred",
+        },
+      ]);
+    });
+    expect(screen.queryByTestId("file-link-picker-row")).toBeNull();
   });
 
   it("hover then click uses the prefetched result", async () => {

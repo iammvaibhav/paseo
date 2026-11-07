@@ -1,11 +1,22 @@
-import { readFile } from "node:fs/promises";
+import { open } from "node:fs/promises";
+import { constants } from "node:fs";
+import { setImmediate } from "node:timers/promises";
 import { resolve } from "node:path";
-import { highlightCode, isLanguageSupported, type HighlightToken } from "@getpaseo/highlight";
+import {
+  highlightCode,
+  highlightCodeWithBudget,
+  HIGHLIGHT_MAX_SOURCE_BYTES,
+  isLanguageSupported,
+  type HighlightToken,
+} from "@getpaseo/highlight";
+import { unquoteGitPath } from "../../utils/git-quoted-path.js";
 
 const MAX_DIFF_HIGHLIGHT_LINE_CHARS = 10_000;
+const HUNK_HIGHLIGHT_MIN_FILE_LINES = 4;
+const HUNK_HIGHLIGHT_MAX_CHANGED_RATIO = 0.5;
 
 export interface DiffLine {
-  type: "add" | "remove" | "context" | "header";
+  type: "context" | "add" | "remove" | "header";
   content: string;
   tokens?: HighlightToken[];
 }
@@ -29,11 +40,13 @@ export interface ParsedDiffFile {
 }
 
 interface HighlightDiffWithFileContentOptions {
+  signal?: AbortSignal;
   oldFileContent?: string | null;
   newFileContent?: string | null;
 }
 
 interface ParseAndHighlightDiffOptions {
+  signal?: AbortSignal;
   getOldFileContent?: (file: ParsedDiffFile) => Promise<string | null>;
   getNewFileContent?: (file: ParsedDiffFile) => Promise<string | null>;
 }
@@ -47,21 +60,85 @@ function usesDiffPathPrefixes(oldPath: string, newPath: string): boolean {
   return oldPath.startsWith("a/") && newPath.startsWith("b/");
 }
 
+function hasDiffPathPrefixes(lines: string[]): boolean {
+  const firstLine = lines[0] ?? "";
+  const gitLine = firstLine.startsWith("diff --git ")
+    ? firstLine.slice("diff --git ".length)
+    : firstLine;
+  const match = gitLine.match(/^(\S+)\s+(\S+)$/);
+  if (match) {
+    const [, oldPath, newPath] = match;
+    if (newPath === "/dev/null") {
+      return oldPath.startsWith("a/");
+    }
+    if (oldPath === "/dev/null") {
+      return newPath.startsWith("b/");
+    }
+    return usesDiffPathPrefixes(oldPath, newPath);
+  }
+
+  const minusLine = lines.find((line) => line.startsWith("--- "));
+  const plusLine = lines.find((line) => line.startsWith("+++ "));
+  const minusPath = minusLine
+    ? minusLine.slice("--- ".length).replace(/	.*$/, "").trimEnd()
+    : null;
+  const plusPath = plusLine ? plusLine.slice("+++ ".length).replace(/	.*$/, "").trimEnd() : null;
+
+  if (minusPath && plusPath) {
+    if (minusPath === "/dev/null") {
+      return plusPath.startsWith("b/");
+    }
+    if (plusPath === "/dev/null") {
+      return minusPath.startsWith("a/");
+    }
+    return minusPath.startsWith("a/") && plusPath.startsWith("b/");
+  }
+
+  return false;
+}
+
 function extractPathFromMetadata(lines: string[], prefix: "--- " | "+++ "): string | null {
   const line = lines.find((candidate) => candidate.startsWith(prefix));
   if (!line) {
     return null;
   }
 
-  const path = line.slice(prefix.length).replace(/\t.*$/, "").trimEnd();
-  return path === "/dev/null" ? null : path;
+  const path = unquoteGitPath(line.slice(prefix.length).replace(/\t.*$/, ""));
+  if (path === "/dev/null") {
+    return null;
+  }
+
+  if (hasDiffPathPrefixes(lines)) {
+    if (prefix === "--- " && path.startsWith("a/")) {
+      return path.slice(2);
+    }
+    if (prefix === "+++ " && path.startsWith("b/")) {
+      return path.slice(2);
+    }
+  }
+
+  return path;
 }
 
-function extractPathFromDiffHeader(lines: string[]): string {
+export function extractPathFromDiffHeader(lines: string[]): string {
   const firstLine = lines[0] ?? "";
-  const prefixedPathMatch = firstLine.match(/^a\/(.+) b\/(.+)$/);
+  const gitLine = firstLine.startsWith("diff --git ")
+    ? firstLine.slice("diff --git ".length)
+    : firstLine;
+  const prefixedPathMatch = gitLine.match(/^a\/(.+) b\/(.+)$/);
   if (prefixedPathMatch) {
     return prefixedPathMatch[2];
+  }
+
+  const quotedPathMatch =
+    gitLine.match(/^("(?:\\.|[^"\\])*") (.+)$/) ?? gitLine.match(/^(.+) ("(?:\\.|[^"\\])*")$/);
+  if (quotedPathMatch) {
+    const oldPath = unquoteGitPath(quotedPathMatch[1]);
+    const newPath = unquoteGitPath(quotedPathMatch[2]);
+    if (usesDiffPathPrefixes(oldPath, newPath)) {
+      return newPath.slice(2);
+    }
+    return newPath;
   }
 
   const metadataPath =
@@ -70,23 +147,13 @@ function extractPathFromDiffHeader(lines: string[]): string {
     return metadataPath;
   }
 
-  const pathMatch = firstLine.match(/^(\S+)\s+(\S+)$/);
+  const pathMatch = gitLine.match(/^(\S+)\s+(\S+)$/);
   if (pathMatch) {
     const [, oldPath, newPath] = pathMatch;
     const path = newPath === "/dev/null" ? oldPath : newPath;
     return usesDiffPathPrefixes(oldPath, newPath) ? path.slice(2) : path;
   }
   return "unknown";
-}
-
-function isMetadataLine(line: string): boolean {
-  return (
-    line.startsWith("index ") ||
-    line.startsWith("--- ") ||
-    line.startsWith("+++ ") ||
-    line.startsWith("new file mode") ||
-    line.startsWith("deleted file mode")
-  );
 }
 
 function parseHunkHeader(line: string): DiffHunk | null {
@@ -115,8 +182,6 @@ function parseSectionBody(lines: string[]): ParsedSectionBody {
 
   for (let i = 1; i < lines.length; i++) {
     const line = lines[i];
-
-    if (isMetadataLine(line)) continue;
 
     const newHunk = parseHunkHeader(line);
     if (newHunk) {
@@ -269,37 +334,135 @@ function buildTokenLookup(
   return lookup;
 }
 
-function buildFullFileTokenLookup(
+async function buildFullFileTokenLookup(
   fileContent: string,
   path: string,
-): Map<number, HighlightToken[]> | null {
-  if (hasOversizedLine(fileContent)) return null;
-
-  const lookup = new Map<number, HighlightToken[]>();
-  const highlighted = highlightCode(fileContent, path);
-
-  for (let i = 0; i < highlighted.length; i++) {
-    lookup.set(i + 1, highlighted[i]);
-  }
-
-  return lookup;
+  signal?: AbortSignal,
+): Promise<Map<number, HighlightToken[]> | null> {
+  const highlighted = await highlightCodeWithBudget(fileContent, path, {
+    yieldToEventLoop: setImmediate,
+    signal,
+  });
+  if (!highlighted) return null;
+  return new Map(highlighted.map((tokens, index) => [index + 1, tokens]));
 }
 
-function buildReconstructedTokenLookups(file: ParsedDiffFile): {
-  newTokensByLine: Map<number, HighlightToken[]>;
-  oldTokensByLine: Map<number, HighlightToken[]>;
-} {
-  const newFileLines = reconstructNewFile(file.hunks);
-  const oldFileLines = reconstructOldFile(file.hunks);
-  const newFileContent = buildFileContent(newFileLines);
-  const oldFileContent = buildFileContent(oldFileLines);
-  const newHighlighted = highlightCode(newFileContent, file.path);
-  const oldHighlighted = highlightCode(oldFileContent, file.path);
+async function readHighlightSource(path: string): Promise<string | null> {
+  let handle;
+  try {
+    handle = await open(path, constants.O_RDONLY | constants.O_NONBLOCK);
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.size > HIGHLIGHT_MAX_SOURCE_BYTES) return null;
+    const buffer = Buffer.alloc(Math.min(stat.size, HIGHLIGHT_MAX_SOURCE_BYTES) + 1);
+    let offset = 0;
+    while (offset < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, offset, buffer.length - offset, null);
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    // A full buffer includes the extra byte: the source grew after stat.
+    return offset === buffer.length ? null : buffer.toString("utf8", 0, offset);
+  } catch {
+    return null;
+  } finally {
+    await handle?.close();
+  }
+}
 
-  return {
-    newTokensByLine: buildTokenLookup(newFileLines, newHighlighted),
-    oldTokensByLine: buildTokenLookup(oldFileLines, oldHighlighted),
+function exceedsSourceBudget(content: string): boolean {
+  return (
+    content.length > HIGHLIGHT_MAX_SOURCE_BYTES ||
+    Buffer.byteLength(content) > HIGHLIGHT_MAX_SOURCE_BYTES
+  );
+}
+
+async function buildBudgetedReconstructedTokens(file: ParsedDiffFile, signal?: AbortSignal) {
+  const newLines = reconstructNewFile(file.hunks);
+  const oldLines = reconstructOldFile(file.hunks);
+  const build = async (lines: Map<number, string>) => {
+    // Sparse hunks can be far apart. Admit the span before filling its gaps.
+    const numbers = Array.from(lines.keys());
+    if (numbers.length && numbers[numbers.length - 1] - numbers[0] > HIGHLIGHT_MAX_SOURCE_BYTES)
+      return null;
+    let bytes = 0;
+    for (const line of lines.values()) {
+      bytes += Buffer.byteLength(line) + 1;
+      if (bytes > HIGHLIGHT_MAX_SOURCE_BYTES) return null;
+    }
+    const highlighted = await highlightCodeWithBudget(buildFileContent(lines), file.path, {
+      yieldToEventLoop: setImmediate,
+      signal,
+    });
+    return highlighted ? buildTokenLookup(lines, highlighted) : null;
   };
+  const newTokensByLine = await build(newLines);
+  if (!newTokensByLine) return null;
+  const oldTokensByLine = await build(oldLines);
+  return oldTokensByLine ? { newTokensByLine, oldTokensByLine } : null;
+}
+
+function buildReconstructedNewTokenLookup(file: ParsedDiffFile): Map<number, HighlightToken[]> {
+  const newFileLines = reconstructNewFile(file.hunks);
+  const newFileContent = buildFileContent(newFileLines);
+  const newHighlighted = highlightCode(newFileContent, file.path);
+  return buildTokenLookup(newFileLines, newHighlighted);
+}
+
+function buildReconstructedOldTokenLookup(file: ParsedDiffFile): Map<number, HighlightToken[]> {
+  const oldFileLines = reconstructOldFile(file.hunks);
+  const oldFileContent = buildFileContent(oldFileLines);
+  const oldHighlighted = highlightCode(oldFileContent, file.path);
+  return buildTokenLookup(oldFileLines, oldHighlighted);
+}
+/**
+ * Returns true when a file likely needs full-file content for context-sensitive
+ * constructs (such as multi-line comments spanning across uncaptured context).
+ */
+function hasContextSensitiveConstruct(file: ParsedDiffFile): boolean {
+  for (const hunk of file.hunks) {
+    for (const line of hunk.lines) {
+      if (line.type === "header") continue;
+      // If any line opens or closes a multi-line comment or template, full file content is safer
+      if (
+        line.content.includes("/*") ||
+        line.content.includes("*/") ||
+        line.content.includes("`")
+      ) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * True when hunk-reconstructed highlighting is preferred over full-file
+ */
+export function shouldHighlightFromHunks(file: ParsedDiffFile): boolean {
+  let changed = 0;
+  let maxLine = 0;
+  for (const hunk of file.hunks) {
+    for (const line of hunk.lines) {
+      if (line.type === "header") continue;
+      if (line.type === "add" || line.type === "remove") changed += 1;
+    }
+    maxLine = Math.max(
+      maxLine,
+      hunk.oldStart + hunk.oldCount - 1,
+      hunk.newStart + hunk.newCount - 1,
+    );
+  }
+  if (maxLine === 0) return false;
+  if (hasContextSensitiveConstruct(file)) return false;
+  return (
+    maxLine >= HUNK_HIGHLIGHT_MIN_FILE_LINES &&
+    changed / maxLine <= HUNK_HIGHLIGHT_MAX_CHANGED_RATIO
+  );
+}
+
+export function needsFileContentForHighlight(file: ParsedDiffFile): boolean {
+  if (!isLanguageSupported(file.path) || hasOversizedDiffLine(file)) return false;
+  return !shouldHighlightFromHunks(file);
 }
 
 /**
@@ -311,11 +474,10 @@ export function highlightDiffFromHunks(file: ParsedDiffFile): ParsedDiffFile {
     return file;
   }
 
-  const reconstructedTokens = buildReconstructedTokenLookups(file);
   return applyTokensToHunks(
     file,
-    reconstructedTokens.newTokensByLine,
-    reconstructedTokens.oldTokensByLine,
+    buildReconstructedNewTokenLookup(file),
+    buildReconstructedOldTokenLookup(file),
   );
 }
 
@@ -328,34 +490,48 @@ export async function highlightDiffWithFileContent(
   cwd: string,
   options: HighlightDiffWithFileContentOptions = {},
 ): Promise<ParsedDiffFile> {
-  if (!isLanguageSupported(file.path) || hasOversizedDiffLine(file)) {
-    return file;
-  }
+  if (!isDiffHighlightEligible(file, options)) return file;
 
-  let newTokensByLine: Map<number, HighlightToken[]> | null = null;
-  const oldTokensByLine =
-    typeof options.oldFileContent === "string"
-      ? buildFullFileTokenLookup(options.oldFileContent, file.path)
-      : null;
-  if (typeof options.newFileContent === "string") {
-    newTokensByLine = buildFullFileTokenLookup(options.newFileContent, file.path);
-  } else {
-    try {
-      const fileContent = await readFile(resolve(cwd, file.path), "utf-8");
-      newTokensByLine = buildFullFileTokenLookup(fileContent, file.path);
-    } catch {
-      // Deleted or unavailable files use reconstructed tokens below.
-    }
-  }
+  const newContent =
+    typeof options.newFileContent === "string"
+      ? options.newFileContent
+      : await readHighlightSource(resolve(cwd, file.path));
+  if (options.signal?.aborted) return file;
 
-  if (newTokensByLine && oldTokensByLine)
-    return applyTokensToHunks(file, newTokensByLine, oldTokensByLine);
-  const reconstructedTokens = buildReconstructedTokenLookups(file);
+  const oldTokens = await highlightAvailableSource(
+    options.oldFileContent,
+    file.path,
+    options.signal,
+  );
+  if (options.signal?.aborted) return file;
+  const newTokens = await highlightAvailableSource(newContent, file.path, options.signal);
+  if (options.signal?.aborted) return file;
+  if (oldTokens && newTokens) return applyTokensToHunks(file, newTokens, oldTokens);
+  const reconstructed = await buildBudgetedReconstructedTokens(file, options.signal);
+  if (!reconstructed || options.signal?.aborted) return file;
   return applyTokensToHunks(
     file,
-    newTokensByLine ?? reconstructedTokens.newTokensByLine,
-    oldTokensByLine ?? reconstructedTokens.oldTokensByLine,
+    newTokens ?? reconstructed.newTokensByLine,
+    oldTokens ?? reconstructed.oldTokensByLine,
   );
+}
+
+function isDiffHighlightEligible(
+  file: ParsedDiffFile,
+  options: HighlightDiffWithFileContentOptions,
+): boolean {
+  return !options.signal?.aborted && isLanguageSupported(file.path) && !hasOversizedDiffLine(file);
+}
+
+async function highlightAvailableSource(
+  content: string | null | undefined,
+  path: string,
+  signal?: AbortSignal,
+): Promise<Map<number, HighlightToken[]> | null> {
+  // Preserve the existing hunk-context fallback for oversized individual lines.
+  if (typeof content !== "string" || exceedsSourceBudget(content) || hasOversizedLine(content))
+    return null;
+  return buildFullFileTokenLookup(content, path, signal);
 }
 
 function applyTokensToHunks(
@@ -406,20 +582,24 @@ export async function parseAndHighlightDiff(
 ): Promise<ParsedDiffFile[]> {
   const files = parseDiff(diffText);
 
-  const highlightedFiles = await Promise.all(
-    files.map(async (file) => {
-      const [oldFileContent, newFileContent] = await Promise.all([
-        options.getOldFileContent?.(file),
-        options.getNewFileContent?.(file),
-      ]);
-
-      return highlightDiffWithFileContent(file, cwd, {
+  const highlightedFiles: ParsedDiffFile[] = [];
+  for (const file of files) {
+    if (options.signal?.aborted) {
+      highlightedFiles.push(file);
+      continue;
+    }
+    const [oldFileContent, newFileContent] = await Promise.all([
+      options.getOldFileContent?.(file),
+      options.getNewFileContent?.(file),
+    ]);
+    highlightedFiles.push(
+      await highlightDiffWithFileContent(file, cwd, {
         oldFileContent: oldFileContent ?? undefined,
         newFileContent: newFileContent ?? undefined,
-      });
-    }),
-  );
-
+        signal: options.signal,
+      }),
+    );
+  }
   return highlightedFiles;
 }
 

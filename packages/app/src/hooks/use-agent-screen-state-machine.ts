@@ -17,6 +17,7 @@ export interface AgentScreenAgent {
   currentModeId?: string | null;
   model?: string | null;
   thinkingOptionId?: string | null;
+  effectiveThinkingOptionId?: string | null;
   runtimeInfo?: {
     model?: string | null;
     modeId?: string | null;
@@ -175,10 +176,14 @@ function resolveAgentScreenSync(args: {
   hadInitialSyncFailure: boolean;
 }): AgentScreenReadySyncState {
   const { input, hadInitialSyncFailure } = args;
-  if (input.isArchived) {
+  if (
+    input.isArchived &&
+    input.visibilityCatchUpStatus !== "error" &&
+    input.visibilityCatchUpStatus !== "retrying"
+  ) {
     return { status: "idle" };
   }
-  if (!input.isConnected) {
+  if (!input.isConnected && !input.isArchived) {
     return { status: "reconnecting" };
   }
   if (input.missingAgentState.kind === "error") {

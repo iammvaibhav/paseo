@@ -1,4 +1,5 @@
-import { access, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { access, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -28,19 +29,32 @@ describe("project directory creation", () => {
     },
   );
 
-  it("requires the selected parent directory to already exist", async () => {
+  it("creates missing parent directories and a committed git repository", async () => {
     const root = await createRoot();
+    const parentPath = join(root, "missing", "deeper");
+    const directoryPath = join(parentPath, "project");
+    const project = {
+      projectId: directoryPath,
+      rootPath: directoryPath,
+      kind: "git" as const,
+      displayName: "project",
+      customName: null,
+      createdAt: "2026-10-08T10:00:00Z",
+      updatedAt: "2026-10-08T10:00:00Z",
+      archivedAt: null,
+    };
 
     await expect(
       createProjectDirectory(
-        { parentPath: join(root, "missing"), name: "project" },
-        {
-          registerProject: async () => {
-            throw new Error("registration should not be attempted");
-          },
-        },
+        { parentPath, name: "project", title: "Project", description: "Does things." },
+        { registerProject: async () => project },
       ),
-    ).rejects.toMatchObject({ code: "parent_directory_not_found" });
+    ).resolves.toEqual({ directoryPath, project });
+    expect(await readFile(join(directoryPath, "README.md"), "utf8")).toBe(
+      "# Project\n\nDoes things.\n",
+    );
+    const log = execFileSync("git", ["log", "--format=%s", "main"], { cwd: directoryPath });
+    expect(log.toString().trim()).toBe("Initial commit");
   });
 
   it("does not substitute the daemon cwd for a missing parent selection", async () => {
@@ -103,7 +117,7 @@ describe("project directory creation", () => {
     const project = {
       projectId: `directory:${directoryPath}`,
       rootPath: directoryPath,
-      kind: "non_git" as const,
+      kind: "git" as const,
       displayName: "new-project",
       customName: null,
       createdAt: "2026-07-15T10:00:00Z",
@@ -117,6 +131,6 @@ describe("project directory creation", () => {
         { registerProject: async () => project },
       ),
     ).resolves.toEqual({ directoryPath, project });
-    await expect(access(directoryPath)).resolves.toBeUndefined();
+    await expect(access(join(directoryPath, ".git"))).resolves.toBeUndefined();
   });
 });
