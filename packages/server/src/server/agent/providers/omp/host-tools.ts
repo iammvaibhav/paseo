@@ -32,16 +32,22 @@ interface OmpHostToolRouterInput {
 
 /**
  * Paseo tools every agent reaches for, kept as full top-level definitions.
- * The rest (browser, terminals, workspace scripts, permissions, workspaces…)
- * are rare, so omp lists them by name under `xd://` and an agent reads a
- * definition only when it needs one, which keeps their schemas out of every
- * prompt.
+ * Fleet memory belongs here: agents are told to search it before non-trivial
+ * work and to record decisions, and a tool listed only by name rarely gets
+ * called. The rest (browser, terminals, workspace scripts, permissions,
+ * workspaces…) are rare, so omp lists them by name under `xd://` and an agent
+ * reads a definition only when it needs one, which keeps their schemas out of
+ * every prompt. This only sets how a tool loads: the provider's `paseoTools`
+ * policy still decides whether it is in the catalog at all.
  */
 const ESSENTIAL_PASEO_TOOLS: Record<string, true> = {
   report_status: true,
   show_page: true,
   preview_page: true,
   fleet_move_agent: true,
+  memory_search: true,
+  memory_get: true,
+  memory_write: true,
 };
 
 export function serializeOmpHostTools(catalog: PaseoToolCatalog): OmpRpcHostToolDefinition[] {
