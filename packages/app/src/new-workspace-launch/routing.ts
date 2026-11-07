@@ -1,10 +1,10 @@
 import { useCallback, useMemo, useState } from "react";
 import {
-  AGENT_MODES,
   DEFAULT_AGENT_MODE_ID,
   isAgentModeId,
   type AgentModeId,
 } from "@getpaseo/protocol/agent-modes";
+import { APPROACH_OPTIONS } from "@/agent-controls/approach-options";
 import type { ComboboxOption } from "@/components/ui/combobox";
 import type { HostProjectListItem } from "@/projects/host-projects";
 
@@ -38,12 +38,6 @@ const SPECIAL_PROJECT_OPTIONS: ComboboxOption[] = [
     description: "This host's scratch area for one-off work",
   },
 ];
-
-const AGENT_MODE_OPTIONS: ComboboxOption[] = AGENT_MODES.map((mode) => ({
-  id: mode.id,
-  label: mode.label,
-  description: mode.description,
-}));
 
 /** The listed-project picker as the screen computes it without routing. */
 export interface RoutingProjectPickerInput {
@@ -125,7 +119,7 @@ export function useNewWorkspaceRouting(input: NewWorkspaceRoutingInput): NewWork
   return {
     target: effectiveTarget,
     agentMode,
-    agentModeOptions: AGENT_MODE_OPTIONS,
+    agentModeOptions: APPROACH_OPTIONS,
     selectSpecialProjectOption,
     selectAgentMode,
     picker,

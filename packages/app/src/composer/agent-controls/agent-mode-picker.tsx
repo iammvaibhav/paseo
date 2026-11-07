@@ -2,14 +2,11 @@ import { useCallback, useMemo, useRef, useState, type ReactElement } from "react
 import { Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import {
-  AGENT_MODES,
-  DEFAULT_AGENT_MODE_ID,
-  getAgentModeDefinition,
-} from "@getpaseo/protocol/agent-modes";
+import { DEFAULT_AGENT_MODE_ID, getAgentModeDefinition } from "@getpaseo/protocol/agent-modes";
 import { type SheetHeader } from "@/components/adaptive-modal-sheet";
 import { Combobox, ComboboxItem, type ComboboxOption } from "@/components/ui/combobox";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { APPROACH_OPTIONS } from "@/agent-controls/approach-options";
 import { getApproachIcon } from "@/agent-controls/icons";
 import { AgentControlTrigger } from "@/composer/agent-controls/control";
 import { useComposerControlLayout } from "@/composer/agent-controls/layout-context";
@@ -19,16 +16,10 @@ import { useSessionStore } from "@/stores/session-store";
 import type { Theme } from "@/styles/theme";
 import { toErrorMessage } from "@/utils/error-messages";
 
-const APPROACH_OPTIONS: ComboboxOption[] = AGENT_MODES.map((mode) => ({
-  id: mode.id,
-  label: mode.label,
-  description: mode.description,
-}));
-
 // Row icons take the foreground color like the access mode rows; withUnistyles
 // keeps them theme-reactive without re-rendering the picker.
 const THEMED_APPROACH_ICONS = Object.fromEntries(
-  AGENT_MODES.map((mode) => [mode.id, withUnistyles(getApproachIcon(mode.id))]),
+  APPROACH_OPTIONS.map((option) => [option.id, withUnistyles(getApproachIcon(option.id))]),
 );
 const foregroundIconColorMapping = (theme: Theme) => ({ color: theme.colors.foreground });
 
