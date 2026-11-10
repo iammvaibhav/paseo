@@ -54,6 +54,25 @@ describe("question form card core", () => {
     });
   });
 
+  test("submits an optional multi-select with nothing checked", () => {
+    const questions = parseQuestionFormQuestions({
+      questions: [
+        {
+          question: "Which regions?",
+          header: "Response",
+          options: [{ label: "EU" }, { label: "US" }],
+          multiSelect: true,
+          allowEmpty: true,
+        },
+      ],
+    });
+
+    if (!questions) throw new Error("questions did not parse");
+    expect(areQuestionsAnswered(questions, {}, {})).toBe(true);
+    expect(buildQuestionFormAnswers(questions, {}, {})).toEqual({});
+    expect(shouldSubmitEmptyOnDismiss(questions)).toBe(false);
+  });
+
   test("keeps checked options and appends the other answer for multi-select", () => {
     const questions = parseQuestionFormQuestions({
       questions: [

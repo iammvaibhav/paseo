@@ -117,12 +117,29 @@ function mapOmpWaitDetail(result: OmpToolResult): ToolCallDetail {
   };
 }
 
+/**
+ * `details.answers` is what the form ask returns. `details.results`, or one
+ * answer at the top level, is what OMP before 18.18.3 returned for `questions`
+ * arguments; saved sessions still hold that shape.
+ */
 function mapOmpAskDetail(rawArgs: unknown, result: OmpToolResult): ToolCallDetail {
   const args = isRecord(rawArgs) ? rawArgs : {};
   const firstQuestion = Array.isArray(args.questions) ? args.questions[0] : undefined;
   const askedQuestion = isRecord(firstQuestion) ? firstString(firstQuestion.question) : undefined;
   const details =
     result && typeof result !== "string" && isRecord(result.details) ? result.details : {};
+  if (Array.isArray(details.answers)) {
+    const formAnswers = details.answers.filter(isRecord);
+    const formLines = formAnswers.flatMap((answer) => {
+      const question = firstString(answer.question);
+      return question ? [`${question}\n${firstString(answer.answer) ?? "No answer"}`] : [];
+    });
+    return {
+      type: "plain_text",
+      label: firstString(formAnswers[0]?.question) ?? "Question",
+      text: formLines.length ? formLines.join("\n\n") : extractTextFromToolResult(result),
+    };
+  }
   const answers = Array.isArray(details.results) ? details.results : [details];
   const lines = answers.flatMap((answer) => {
     if (!isRecord(answer)) return [];

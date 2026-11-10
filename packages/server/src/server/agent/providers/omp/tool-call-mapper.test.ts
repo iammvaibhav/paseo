@@ -366,6 +366,26 @@ describe("OMP tool call mapper", () => {
     });
   });
 
+  test("shows each form question with its answer after ask completes", () => {
+    const detail = mapOmpToolDetail(
+      parseToolArgs("ask", { html: "<form><input name='notes'></form>" }),
+      parseToolResult({
+        content: [{ type: "text", text: 'User answers:\n{\n  "color": "red"\n}' }],
+        details: {
+          answers: [
+            { name: "color", question: "Which color?", answer: "Red" },
+            { name: "notes", question: "Notes", answer: "" },
+          ],
+        },
+      }),
+    );
+    expect(detail).toEqual({
+      type: "plain_text",
+      label: "Which color?",
+      text: "Which color?\nRed\n\nNotes\nNo answer",
+    });
+  });
+
   test("shows meaningful labels for OMP's remaining built-in tools", () => {
     expect(mapOmpToolDetail(parseToolArgs("glob", { pattern: "src/**/*.ts" }), null)).toMatchObject(
       { type: "search", query: "src/**/*.ts", toolName: "glob" },

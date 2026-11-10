@@ -79,11 +79,7 @@ export function isQuestionAnswered(
     return true;
   }
 
-  if (!questionShowsTextInput(question)) {
-    return false;
-  }
-
-  const otherText = otherTexts[qIndex]?.trim();
+  const otherText = questionShowsTextInput(question) ? otherTexts[qIndex]?.trim() : undefined;
   if (otherText && otherText.length > 0) {
     return true;
   }
