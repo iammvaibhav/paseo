@@ -1,6 +1,6 @@
 {
   "name": "@getpaseo/server",
-  "version": "0.15.0",
+  "version": "0.16.0-beta.1",
   "description": "Paseo backend server",
   "license": "Apache-2.0",
   "files": [
@@ -102,7 +102,8 @@
     "test:e2e:real": "pnpm run test:integration:real",
     "test:e2e:local": "pnpm run test:integration:local",
     "test:e2e:relay:live": "cross-env RUN_LIVE_RELAY_E2E=1 vitest run src/server/daemon-e2e/live-relay.real.e2e.test.ts --maxWorkers=1",
-    "test:e2e:ui": "vitest --ui e2e.test.ts"
+    "test:e2e:ui": "vitest --ui e2e.test.ts",
+    "measure:diff-subscriptions": "tsx scripts/measure-diff-subscriptions.ts"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^0.17.1",

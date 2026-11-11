@@ -1,6 +1,6 @@
 {
   "name": "@getpaseo/client",
-  "version": "0.15.0",
+  "version": "0.16.0-beta.1",
   "description": "Paseo client SDK package",
   "license": "Apache-2.0",
   "files": [
@@ -45,7 +45,8 @@
     "prepack": "pnpm run build:clean",
     "typecheck": "sh ../../scripts/cpu-slot.sh typecheck tsgo --noEmit",
     "typecheck:examples": "sh ../../scripts/cpu-slot.sh typecheck tsgo -p tsconfig.examples.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "measure:diff-materialization": "tsx scripts/measure-diff-materialization.ts"
   },
   "dependencies": {
     "@getpaseo/protocol": "workspace:*",

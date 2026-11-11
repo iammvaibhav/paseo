@@ -251,7 +251,6 @@ function buildNativeForkConfig(params: {
     ...(source.config.model ? { model: source.config.model } : {}),
     ...(source.config.thinkingOptionId ? { thinkingOptionId: source.config.thinkingOptionId } : {}),
     ...(modeId ? { modeId } : {}),
-    ...(source.config.featureValues ? { featureValues: source.config.featureValues } : {}),
     ...(source.config.providerOptions ? { providerOptions: source.config.providerOptions } : {}),
     ...(source.config.toolPolicy ? { toolPolicy: source.config.toolPolicy } : {}),
     ...input.overrides,

@@ -26,7 +26,7 @@ function createFakePeerHarness(
     setAgentMode: vi.fn(async () => null),
     setAgentModel: vi.fn(async () => undefined),
     setAgentThinkingOption: vi.fn(async () => null),
-    setAgentFeature: vi.fn(async () => undefined),
+    setAgentOptions: vi.fn(async () => null),
     updateAgent: vi.fn(async () => undefined),
     fetchAgents: vi.fn(async () => ({ entries: [] })),
     fetchAgentTimeline: vi.fn(async () => ({ entries: [], error: null })),
@@ -246,7 +246,7 @@ describe("fleet_update_agent", () => {
     const setAgentMode = vi.fn(async () => null);
     const setAgentModel = vi.fn(async () => undefined);
     const setAgentThinkingOption = vi.fn(async () => null);
-    const setAgentFeature = vi.fn(async () => undefined);
+    const setAgentOptions = vi.fn(async () => undefined);
     const updateAgentMetadata = vi.fn(async () => undefined);
 
     const agentManager = {
@@ -255,7 +255,7 @@ describe("fleet_update_agent", () => {
       setAgentMode,
       setAgentModel,
       setAgentThinkingOption,
-      setAgentFeature,
+      setAgentOptions,
       updateAgentMetadata,
       listAgents: () => [{ id: LOCAL_AGENT_ID, name: "worker" }],
     } as unknown as AgentManager;
@@ -274,7 +274,7 @@ describe("fleet_update_agent", () => {
     expect(setAgentMode).toHaveBeenCalledWith(LOCAL_AGENT_ID, "bypassPermissions");
     expect(setAgentModel).toHaveBeenCalledWith(LOCAL_AGENT_ID, "claude-3-5-sonnet");
     expect(setAgentThinkingOption).toHaveBeenCalledWith(LOCAL_AGENT_ID, "deep");
-    expect(setAgentFeature).toHaveBeenCalledWith(LOCAL_AGENT_ID, "webSearch", true);
+    expect(setAgentOptions).toHaveBeenCalledWith(LOCAL_AGENT_ID, { webSearch: true });
     expect(updateAgentMetadata).toHaveBeenCalledWith(LOCAL_AGENT_ID, {
       title: "Worker 2.0",
       labels: { environment: "staging", priority: "1" },
@@ -304,7 +304,7 @@ describe("fleet_update_agent", () => {
     expect(client.setAgentMode).toHaveBeenCalledWith(PEER_AGENT_ID, "plan");
     expect(client.setAgentModel).toHaveBeenCalledWith(PEER_AGENT_ID, "gpt-4o");
     expect(client.setAgentThinkingOption).toHaveBeenCalledWith(PEER_AGENT_ID, "off");
-    expect(client.setAgentFeature).toHaveBeenCalledWith(PEER_AGENT_ID, "bash", true);
+    expect(client.setAgentOptions).toHaveBeenCalledWith(PEER_AGENT_ID, { bash: true });
     expect(client.updateAgent).toHaveBeenCalledWith(PEER_AGENT_ID, {
       title: "Peer Worker",
       labels: { team: "infra" },

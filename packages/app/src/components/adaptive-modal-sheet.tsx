@@ -29,6 +29,7 @@ import { useKeyboardVisibility } from "@/hooks/use-keyboard-visibility";
 import { SafeAreaInsetsContext, useSafeAreaInsets } from "react-native-safe-area-context";
 import { AdaptiveTextInput } from "@/components/adaptive-text-input";
 import { glassFloatingStyle } from "@/styles/theme";
+import { useDismissibleOverlay } from "@/components/ui/overlay-dismissal";
 export { AdaptiveTextInput, type AdaptiveTextInputProps } from "@/components/adaptive-text-input";
 
 // Horizontal indent token shared by the sheet header (title, back arrow,
@@ -234,6 +235,28 @@ const styles = StyleSheet.create((theme) => ({
 }));
 
 const WEB_EXIT_DURATION_MS = 160;
+const WEB_ENTER_DURATION_MS = 160;
+const WEB_ENTER_ANIMATION_NAME = "paseo-modal-enter";
+
+// The desktop card fades in; the dim lands at once, so the screen behind is never seen undimmed
+// while the dialog arrives. A CSS animation runs from the card's first paint, so a dialog that opens
+// on its own, like first-run setup, never pops in. Closing fades the whole overlay. With reduced
+// motion the keyframes are never defined, so the card appears at once.
+function ensureWebEnterKeyframes() {
+  if (!isWeb || typeof document === "undefined") return;
+  if (document.getElementById(WEB_ENTER_ANIMATION_NAME)) return;
+  const style = document.createElement("style");
+  style.id = WEB_ENTER_ANIMATION_NAME;
+  style.textContent = `@media (prefers-reduced-motion: no-preference) { @keyframes ${WEB_ENTER_ANIMATION_NAME} { from { opacity: 0; } to { opacity: 1; } } }`;
+  document.head.appendChild(style);
+}
+ensureWebEnterKeyframes();
+// The CSS animation props are not part of ViewStyle without the generated expo-env.d.ts.
+const WEB_ENTER_STYLE = {
+  animationName: WEB_ENTER_ANIMATION_NAME,
+  animationDuration: `${WEB_ENTER_DURATION_MS}ms`,
+  animationTimingFunction: "ease-out",
+} as unknown as ViewStyle;
 
 /** The compact sheet's surface: Gorhom's `backgroundComponent` for every bottom sheet. */
 export function SheetBackground({ style }: BottomSheetBackgroundProps) {
@@ -634,6 +657,9 @@ export function AdaptiveModalSheet({
   const isMobile = useIsCompactFormFactor();
   const isKeyboardVisible = useKeyboardVisibility(visible);
   const resolvedSnapPoints = useMemo(() => snapPoints ?? ["65%", "90%"], [snapPoints]);
+  const isSheet = isMobile || !isWeb;
+  // The sheet registers itself; the desktop dialog does not use it.
+  useDismissibleOverlay(visible && !isSheet, onClose);
   const footerView = useMemo(
     () => (footer ? <SheetFooter style={footerContainerStyle}>{footer}</SheetFooter> : null),
     [footer, footerContainerStyle],
@@ -648,7 +674,7 @@ export function AdaptiveModalSheet({
 
   const { sheetRef, handleSheetChange, handleSheetDismiss } = useIsolatedBottomSheetVisibility({
     visible,
-    isEnabled: isMobile || !isWeb,
+    isEnabled: isSheet,
     onClose,
   });
   const [shouldRenderWeb, setShouldRenderWeb] = useState(visible);
@@ -664,6 +690,7 @@ export function AdaptiveModalSheet({
       styles.desktopCard,
       desktopHeight != null && { height: desktopHeight },
       desktopMaxWidth != null && { maxWidth: desktopMaxWidth },
+      isWeb && WEB_ENTER_STYLE,
     ],
     [desktopMaxWidth, desktopHeight],
   );

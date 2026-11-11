@@ -393,7 +393,7 @@ export class WorkspaceDirectory {
         continue;
       }
       const isWorkspaceRoot = workspaceAgent.id === agent.id;
-      if (!isWorkspaceRoot && agent.status !== "running") {
+      if (!isWorkspaceRoot && agent.status !== "running" && !agent.backgroundWork?.count) {
         continue;
       }
       const bucket = isWorkspaceRoot ? deriveWorkspaceRootStatusBucket(agent) : "running";
@@ -773,6 +773,16 @@ export function resolveWorkspaceRootAgent(
  * user stop makes the user's stop the terminal story (`done`).
  */
 function deriveWorkspaceRootStatusBucket(agent: AgentSnapshotPayload): WorkspaceStateBucket {
+  const status = deriveWorkspaceRootLifecycleStatus(agent);
+  // Background work keeps the agent running after its turn ends, as in
+  // deriveAgentStateBucket; needs-input still outranks it.
+  if ((agent.backgroundWork?.count ?? 0) > 0 && (status === "attention" || status === "done")) {
+    return "running";
+  }
+  return status;
+}
+
+function deriveWorkspaceRootLifecycleStatus(agent: AgentSnapshotPayload): WorkspaceStateBucket {
   if (agent.bucket) {
     return lifecycleBucketToWorkspaceStatus(agent.bucket);
   }

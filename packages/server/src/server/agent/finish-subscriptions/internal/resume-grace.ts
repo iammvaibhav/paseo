@@ -14,7 +14,10 @@ export const RESTART_RESUME_GRACE_MS = 10 * 60_000;
  * starts; returns the interruption to report when no run starts within the grace period.
  */
 export async function awaitResumedChildRun(input: {
-  agentManager: Pick<AgentManager, "getAgent" | "subscribe" | "getLastAssistantMessage">;
+  agentManager: Pick<
+    AgentManager,
+    "getAgent" | "subscribe" | "getLastAssistantMessage" | "effectiveOptionsFor"
+  >;
   agentStorage: Pick<AgentStorage, "get">;
   childAgentId: string;
   signal: AbortSignal;
@@ -53,7 +56,9 @@ export async function awaitResumedChildRun(input: {
   const latest = (await input.agentStorage.get(childAgentId)) ?? stored;
   return {
     status: "error",
-    final: buildStoredAgentPayload(latest, [latest.provider]),
+    final: buildStoredAgentPayload(latest, [latest.provider], (provider, own) =>
+      agentManager.effectiveOptionsFor(provider, own),
+    ),
     lastMessage: await agentManager.getLastAssistantMessage(childAgentId),
     error: null,
     reason: "was interrupted by a daemon restart and did not resume",

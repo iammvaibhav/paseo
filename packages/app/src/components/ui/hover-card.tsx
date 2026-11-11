@@ -19,29 +19,16 @@ import { createPortal } from "react-dom";
 import { Portal } from "@gorhom/portal";
 import { getOverlayRoot, OverlayLayerProvider, useOverlayLayer } from "@/lib/overlay-root";
 import { FloatingSurface } from "@/components/ui/floating";
-import {
-  measureFloatingPanelPortalHost,
-  useFloatingPanelPortalHostName,
-} from "@/components/ui/floating-panel-portal";
+import { useFloatingPanelPortalHostName } from "@/components/ui/floating-panel-portal";
 import { isWeb } from "@/constants/platform";
 import { useHoverSafeZone } from "@/hooks/use-hover-safe-zone";
-import {
-  computePosition,
-  measureElement,
-  type Alignment,
-  type Placement,
-  type Rect,
-  type Size,
-} from "./anchor";
+import { computePosition, type Alignment, type Placement, type Rect } from "./anchor";
 
 const CLOSE_GRACE_MS = 100;
 
-/**
- * Closes the open card at once when another card opens. Only one hover card shows at a time:
- * sweeping the pointer down a list of triggers otherwise stacks the previous card's grace delay
- * and fade-out under the next card's fade-in.
- */
-let closeOpenCard: (() => void) | null = null;
+// One card per layer: moving onto a sibling trigger replaces the open card instead of stacking
+// a second one beside it for the grace period. Nested cards open on a higher layer.
+const openCardCloseByLayer = new Map<number, () => void>();
 
 interface HoverCardContextValue {
   open: boolean;
@@ -125,12 +112,31 @@ function WebHoverCard({
     }, CLOSE_GRACE_MS);
   }, [keyboardFocusInside]);
 
+  const closeNow = useCallback(() => {
+    clearGraceTimer();
+    // Hide before unmounting so the replaced card skips its exit fade.
+    (contentRef.current as unknown as HTMLElement | null)?.style.setProperty(
+      "visibility",
+      "hidden",
+    );
+    setOpen(false);
+  }, [clearGraceTimer]);
+
   const openNow = useCallback(() => {
     clearGraceTimer();
-    if (!disabled) {
-      setOpen(true);
-    }
-  }, [clearGraceTimer, disabled]);
+    if (disabled) return;
+    const openSibling = openCardCloseByLayer.get(layer);
+    if (openSibling && openSibling !== closeNow) openSibling();
+    openCardCloseByLayer.set(layer, closeNow);
+    setOpen(true);
+  }, [clearGraceTimer, closeNow, disabled, layer]);
+
+  useEffect(() => {
+    if (!open) return;
+    return () => {
+      if (openCardCloseByLayer.get(layer) === closeNow) openCardCloseByLayer.delete(layer);
+    };
+  }, [closeNow, layer, open]);
 
   const keyPressed = useCallback(
     (event: KeyboardInputEvent): boolean => {
@@ -255,24 +261,6 @@ function WebHoverCard({
 
   useEffect(() => clearGraceTimer, [clearGraceTimer]);
 
-  useLayoutEffect(() => {
-    if (!open) return;
-    const closeInstantly = () => {
-      clearGraceTimer();
-      // Hide before unmounting so the replaced card skips its exit fade.
-      (contentRef.current as unknown as HTMLElement | null)?.style.setProperty(
-        "visibility",
-        "hidden",
-      );
-      setOpen(false);
-    };
-    closeOpenCard?.();
-    closeOpenCard = closeInstantly;
-    return () => {
-      if (closeOpenCard === closeInstantly) closeOpenCard = null;
-    };
-  }, [clearGraceTimer, open]);
-
   const value = useMemo<HoverCardContextValue>(
     () => ({ open, layer, setTriggerRef, triggerRef, contentRef, openNow, scheduleClose }),
     [open, layer, setTriggerRef, openNow, scheduleClose],
@@ -326,8 +314,9 @@ interface HoverCardContentProps {
 
 export function HoverCardContent(props: HoverCardContentProps): ReactElement | null {
   const ctx = useContext(HoverCardContext);
+  const portalHostName = useFloatingPanelPortalHostName();
   if (!ctx?.open) return null;
-  return (
+  const surface = (
     <HoverCardSurface
       {...props}
       layer={ctx.layer}
@@ -335,8 +324,32 @@ export function HoverCardContent(props: HoverCardContentProps): ReactElement | n
       contentRef={ctx.contentRef}
     />
   );
+  // On web the card goes in the shared overlay root like menus and tooltips. The app tree sits
+  // on the same plane as embedded browser panes, so a card portaled there paints under VS Code.
+  if (isWeb) return createPortal(surface, getOverlayRoot());
+  return <Portal hostName={portalHostName}>{surface}</Portal>;
 }
 
+// A card above its trigger holds its bottom edge, so content that loads while it is open grows it
+// upward without a correction. Anchored by its top, it would paint over the trigger until placed.
+type CardPosition = { left: number; top: number } | { left: number; bottom: number };
+
+function isSamePosition(current: CardPosition | null, next: CardPosition): boolean {
+  if (!current || current.left !== next.left) return false;
+  return "top" in current
+    ? "top" in next && current.top === next.top
+    : "bottom" in next && current.bottom === next.bottom;
+}
+
+function readDomRect(view: View | null): Rect | null {
+  const element = view as unknown as HTMLElement | null;
+  if (!element) return null;
+  const { x, y, width, height } = element.getBoundingClientRect();
+  return { x, y, width, height };
+}
+
+// Rendered inside the portal so the card is placed in the commit that mounts it: the first
+// painted frame already sits beside the trigger. Web-only, like the rest of the open card.
 function HoverCardSurface({
   layer,
   triggerRef,
@@ -354,67 +367,52 @@ function HoverCardSurface({
   triggerRef: RefObject<View | null>;
   contentRef: RefObject<View | null>;
 }): ReactElement {
-  const portalHostName = useFloatingPanelPortalHostName();
-  const [anchor, setAnchor] = useState<{ triggerRect: Rect; hostRect: Rect } | null>(null);
-  const [contentSize, setContentSize] = useState<Size | null>(null);
-  const [position, setPosition] = useState<{ x: number; y: number } | null>(null);
+  const overlayRef = useRef<View>(null);
+  const [position, setPosition] = useState<CardPosition | null>(null);
 
-  useEffect(() => {
-    if (!triggerRef.current) return;
-    let cancelled = false;
-    void Promise.all([
-      measureElement(triggerRef.current),
-      measureFloatingPanelPortalHost(portalHostName),
-    ]).then(([triggerRect, hostRect]) => {
-      if (!cancelled && hostRect) setAnchor({ triggerRect, hostRect });
-      return undefined;
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [portalHostName, triggerRef]);
-
-  useEffect(() => {
-    if (!anchor || !contentSize) return;
+  const place = useCallback(() => {
+    const triggerRect = readDomRect(triggerRef.current);
+    const overlayRect = readDomRect(overlayRef.current);
+    const content = contentRef.current as unknown as HTMLElement | null;
+    if (!triggerRect || !overlayRect || !content) return;
     const { width, height } = Dimensions.get("window");
-    const { x, y } = computePosition({
-      triggerRect: anchor.triggerRect,
-      contentSize,
+    const { x, y, actualPlacement } = computePosition({
+      triggerRect,
+      contentSize: { width: content.offsetWidth, height: content.offsetHeight },
       displayArea: { x: 0, y: 0, width, height },
       placement,
       flipHorizontal: true,
       alignment,
       offset,
     });
-    setPosition({ x: x - anchor.hostRect.x, y: y - anchor.hostRect.y });
-  }, [alignment, anchor, contentSize, offset, placement]);
+    const left = x - overlayRect.x;
+    const next: CardPosition =
+      actualPlacement === "top"
+        ? { left, bottom: overlayRect.height - (y + content.offsetHeight - overlayRect.y) }
+        : { left, top: y - overlayRect.y };
+    setPosition((current) => (isSamePosition(current, next) ? current : next));
+  }, [alignment, contentRef, offset, placement, triggerRef]);
 
-  const handleLayout = useCallback(
-    (event: { nativeEvent: { layout: { width: number; height: number } } }) => {
-      const { width, height } = event.nativeEvent.layout;
-      setContentSize({ width, height });
-    },
-    [],
-  );
+  useLayoutEffect(place, [place]);
 
   const frameStyle = useMemo(
-    () => ({
-      position: "absolute" as const,
-      top: position?.y ?? -9999,
-      left: position?.x ?? -9999,
-    }),
-    [position?.x, position?.y],
+    () => ({ position: "absolute" as const, ...(position ?? { top: -9999, left: -9999 }) }),
+    [position],
   );
   const surfaceStyle = useMemo(() => [styles.surface, style], [style]);
 
-  const overlay = (
-    <View pointerEvents="box-none" style={[styles.portalOverlay, { zIndex: layer }]}>
+  return (
+    <View
+      ref={overlayRef}
+      pointerEvents="box-none"
+      style={[styles.portalOverlay, { zIndex: layer }]}
+    >
       <FloatingSurface
         ref={contentRef}
         entering={FadeIn.duration(80)}
         exiting={FadeOut.duration(80)}
         collapsable={false}
-        onLayout={handleLayout}
+        onLayout={place}
         role={role}
         accessibilityLabel={accessibilityLabel}
         testID={testID}
@@ -425,10 +423,6 @@ function HoverCardSurface({
       </FloatingSurface>
     </View>
   );
-  // On web the card goes in the shared overlay root like menus and tooltips. The app tree sits
-  // on the same plane as embedded browser panes, so a card portaled there paints under VS Code.
-  if (isWeb) return createPortal(overlay, getOverlayRoot());
-  return <Portal hostName={portalHostName}>{overlay}</Portal>;
 }
 
 const styles = StyleSheet.create((theme) => ({

@@ -1,4 +1,9 @@
 export const en = {
+  pluginCombobox: {
+    searching: "Searching…",
+    empty: "No results",
+    failed: "Search failed: {{message}}",
+  },
   paneFind: {
     connectionFailure: "Could not search this chat. Check the host connection and retry.",
     historyChangedFailure: "The chat changed while searching. Search again.",
@@ -496,6 +501,24 @@ export const en = {
       next: "Next",
       answerPlaceholder: "Type your answer...",
       otherPlaceholder: "Other...",
+    },
+    backgroundWork: {
+      pillOne: "1 background task",
+      pillMany: "{{count}} background tasks",
+      notRunning: "No longer running",
+      dismiss: "Dismiss",
+      stop: "Stop",
+      stopping: "Stopping…",
+      stopError: "Could not confirm stop.",
+      label: "Background",
+      title: "Background work",
+      waiting: "Waiting for background work details",
+      error: "Could not load background work",
+      retry: "Retry",
+      running: "Background work running",
+      shell: "Shell",
+      monitor: "Monitor",
+      other: "Other work",
     },
     todo: {
       title: "Tasks",
@@ -1077,6 +1100,9 @@ export const en = {
         },
       },
       diff: {
+        baseBranch: {
+          title: "Change base",
+        },
         openChangesTab: "Open Changes tab",
         openDiffTab: "Open Diff tab",
         closeChangesTab: "Close Changes tab",
@@ -1115,7 +1141,7 @@ export const en = {
         committed: "Committed",
         branchUnknown: "Unknown",
         base: "base",
-        baseBranch: "Base branch",
+        baseBranchLabel: "Base branch",
         baseBranchTrigger: "Base branch: {{name}}. Press to change.",
         baseBranchTooltip: "Change base branch",
         baseBranchDefault: "Use default ({{name}})",
@@ -1306,6 +1332,8 @@ export const en = {
     title: "What's new",
     installed: "Installed",
     showMore: "Show more",
+    showAllChanges: "Show all changes",
+    hideAllChanges: "Hide all changes",
     openWebsite: "Full changelog",
     error: {
       title: "Unable to load the changelog",
@@ -1326,6 +1354,16 @@ export const en = {
       emptyDescription:
         "Try other words, include archived agents, or run a deep search in History.",
       deepSearch: "Deep search",
+    },
+    view: {
+      workspaces: "Workspaces",
+      agents: "Agents",
+      failed: "Sidebar view failed to load.",
+      useDefault: "Use default view",
+      readFailed: "Could not load your sidebar view preference.",
+      agentUnavailable: "Agent is no longer available",
+      terminalUnavailable: "Terminal is no longer available",
+      projectUnavailable: "Project is no longer available",
     },
     statusGroupAccessibility: "{{label}} group",
     statusBucket: {
@@ -1382,7 +1420,6 @@ export const en = {
         all: "All projects",
       },
     },
-    view: { workspaces: "Workspaces", agents: "Agents" },
     agentView: {
       title: "Agents",
       display: { trigger: "Agent view preferences", heading: "Agents", showDone: "Show done" },
@@ -1424,6 +1461,7 @@ export const en = {
       hosts: "Hosts",
       settings: "Settings",
       closeSidebar: "Close sidebar",
+      moreActions: "More actions",
     },
     fleetStats: {
       label: "Fleet stats",
@@ -1546,6 +1584,9 @@ export const en = {
         hostDisconnected: "Host is not connected",
         hideFailed: "Failed to hide workspace",
         archiveFailed: "Failed to archive workspace",
+        archived: "Workspace archived",
+        undoArchive: "Undo",
+        undoArchiveFailed: "Couldn't undo the archive",
       },
     },
   },
@@ -1812,6 +1853,7 @@ export const en = {
     placeholder: "Switch branch...",
     searchPlaceholder: "Filter branches...",
     empty: "No branches found.",
+    failedToLoad: "Could not load branches. Reopen the picker to try again.",
     title: "Switch branch",
     uncommittedTitle: "Uncommitted changes",
     uncommittedMessage: "You have uncommitted changes. Stash them before switching branches?",
@@ -1830,7 +1872,11 @@ export const en = {
     loadingCommands: "Loading commands...",
     noFiles: "No files or directories found",
     noCommands: "No commands found",
-    failedToLoad: "Failed to load",
+    loadingProviderCommands: "Loading {{provider}} commands...",
+    commandsFailed: "Couldn't load commands",
+    providerCommandsFailed: "Couldn't load {{provider}} commands",
+    filesFailed: "Couldn't search files",
+    skillTag: "Skill",
     chooseProjectForCommands: "Choose a project to see commands",
     chooseModelForCommands: "Select a model to see commands",
   },
@@ -3474,6 +3520,12 @@ export const en = {
         description: "Show an outline for jumping between prompts",
       },
       sidebar: {
+        view: {
+          title: "Sidebar view",
+          label: "View",
+          default: "Default view",
+          unavailable: "The selected view is unavailable or disabled. Showing Default view.",
+        },
         header: {
           title: "Header",
           description: "Choose which items appear at the top of the sidebar and in what order",

@@ -26,13 +26,14 @@ export interface FormPreferenceScope {
   projectKey?: string | null;
 }
 
-const featureValuesSchema = z.record(z.string(), z.union([z.boolean(), z.string(), z.null()]));
+const optionsSchema = z.record(z.string(), z.json());
 
 export interface ProviderPreferences {
   model?: string;
   mode?: string;
   thinkingByModel?: Record<string, string>;
-  featureValues?: Record<string, unknown>;
+  /** Last-used values of the provider's option controls, by option key. */
+  options?: Record<string, unknown>;
 }
 
 export type LaunchTarget = { kind: "chat" } | { kind: "terminal"; profileId: string };
@@ -64,12 +65,41 @@ export interface FormPreferences {
   launchTarget?: LaunchTarget;
 }
 
-const providerPreferencesSchema: z.ZodType<ProviderPreferences> = z.strictObject({
-  model: z.string().optional(),
-  mode: z.string().optional(),
-  thinkingByModel: z.record(z.string(), z.string()).optional(),
-  featureValues: featureValuesSchema.optional(),
-});
+// COMPAT(providerOptionControls): added in v0.15.0, remove after 2027-05-01. Preferences written
+// before the rename stored the same record as `featureValues`.
+function renameLegacyFeatureValues(value: unknown): unknown {
+  if (typeof value !== "object" || value === null || !("featureValues" in value)) return value;
+  const { featureValues, ...rest } = value as { featureValues: unknown } & Record<string, unknown>;
+  return "options" in rest ? rest : { ...rest, options: featureValues };
+}
+
+const providerPreferencesSchema: z.ZodType<ProviderPreferences> = z.preprocess(
+  renameLegacyFeatureValues,
+  z.strictObject({
+    model: z.string().optional(),
+    mode: z.string().optional(),
+    thinkingByModel: z.record(z.string(), z.string()).optional(),
+    options: optionsSchema.optional(),
+  }),
+);
+
+// COMPAT(featureValues): added in v0.15.0, remove after 2027-05-01. Codex took `fast_mode`
+// before `service_tier`; the daemon converts the option on every agent and profile it touches,
+// and this is the one place the app reads a remembered value without the daemon in between. Keyed
+// on the built-in provider id: a custom provider extending Codex keeps the old key and the daemon
+// still converts it on create.
+function convertLegacyCodexOptions(
+  preferences: Record<string, ProviderPreferences>,
+): Record<string, ProviderPreferences> {
+  const codex = preferences.codex;
+  if (!codex?.options || !("fast_mode" in codex.options)) return preferences;
+  const { fast_mode: legacy, ...rest } = codex.options;
+  const options =
+    "service_tier" in rest || typeof legacy !== "boolean"
+      ? rest
+      : { ...rest, service_tier: legacy ? "fast" : "default" };
+  return { ...preferences, codex: { ...codex, options } };
+}
 
 const selectionAskSchema: z.ZodType<SelectionAskModelPreference> = z.strictObject({
   provider: z.string().optional(),
@@ -103,7 +133,10 @@ const launchTargetSchema: z.ZodType<LaunchTarget> = z.discriminatedUnion("kind",
 
 export const FormPreferencesSchema = z.strictObject({
   provider: z.string().optional(),
-  providerPreferences: z.record(z.string(), providerPreferencesSchema).optional(),
+  providerPreferences: z
+    .record(z.string(), providerPreferencesSchema)
+    .transform(convertLegacyCodexOptions)
+    .optional(),
   // COMPAT(agentProfileFavoriteMigration / globalFavoriteModels): favourites
   // were removed in v0.3.2 in favour of agent profiles. Keep the legacy payload
   // (and this fork's host-scoped list) alive until every capable host has had a
@@ -204,7 +237,7 @@ function applyProviderPreferenceUpdates(
 ): ProviderPreferences {
   const next: ProviderPreferences = { ...existing };
   const nextThinkingByModel = mergeDefinedRecord(existing.thinkingByModel, updates.thinkingByModel);
-  const nextFeatureValues = mergeDefinedRecord(existing.featureValues, updates.featureValues);
+  const nextOptions = mergeDefinedRecord(existing.options, updates.options);
 
   if (updates.model !== undefined) {
     next.model = updates.model;
@@ -217,8 +250,8 @@ function applyProviderPreferenceUpdates(
   if (nextThinkingByModel !== undefined) {
     next.thinkingByModel = nextThinkingByModel;
   }
-  if (nextFeatureValues !== undefined) {
-    next.featureValues = nextFeatureValues;
+  if (nextOptions !== undefined) {
+    next.options = nextOptions;
   }
 
   return next;
@@ -419,7 +452,7 @@ export function mergeCreateAgentSelectionPreferences(args: {
   modelId?: string | null;
   modeId?: string | null;
   thinkingOptionId?: string | null;
-  featureValues?: Record<string, unknown>;
+  options?: Record<string, unknown>;
   scope?: FormPreferenceScope | null;
 }): FormPreferences {
   if (!args.provider) {
@@ -429,7 +462,7 @@ export function mergeCreateAgentSelectionPreferences(args: {
   const modelId = args.modelId?.trim() ?? "";
   const modeId = args.modeId?.trim() ?? "";
   const thinkingOptionId = args.thinkingOptionId?.trim() ?? "";
-  const featureValues = featureValuesSchema.safeParse(args.featureValues);
+  const options = optionsSchema.safeParse(args.options);
 
   return mergeProviderPreferencesWithScope({
     preferences: args.preferences,
@@ -438,7 +471,7 @@ export function mergeCreateAgentSelectionPreferences(args: {
       model: modelId || undefined,
       mode: args.modeId === undefined ? undefined : modeId || null,
       ...(modelId && thinkingOptionId ? { thinkingByModel: { [modelId]: thinkingOptionId } } : {}),
-      ...(featureValues.success ? { featureValues: featureValues.data } : {}),
+      ...(options.success ? { options: options.data } : {}),
     },
     scope: args.scope,
   });
@@ -519,7 +552,7 @@ export function applyAgentProfilePreferences(args: {
   modelId: string;
   modeId: string;
   thinkingOptionId: string;
-  featureValues: Record<string, unknown>;
+  options: Record<string, unknown>;
 }): FormPreferences {
   let next = args.preferences;
   if (args.previousProvider) {
@@ -542,7 +575,7 @@ export function applyAgentProfilePreferences(args: {
       ...(args.modelId && args.thinkingOptionId
         ? { thinkingByModel: { [args.modelId]: args.thinkingOptionId } }
         : {}),
-      featureValues: args.featureValues,
+      options: args.options,
     },
   });
 }

@@ -21,7 +21,10 @@ export interface ScheduledGitProcess<T> {
   exited: Promise<void>;
 }
 
-export type GitProcessPriority = "normal" | "high";
+// Lanes drain in this order. "background" is for daemon-initiated fan-out
+// (reconciliation, observation-driven refreshes, fetches) so it never sits in
+// front of work a user is waiting for.
+export type GitProcessPriority = "high" | "normal" | "background";
 
 function parsePositiveInteger(value: string | undefined): number | undefined {
   if (value === undefined) {
@@ -55,15 +58,24 @@ export function resolveGitProcessPolicy(input: {
   };
 }
 
+// Admission reserves a process slot and a start-rate token; the job runs only
+// once its token fires. The job is chosen when the token fires, not when the
+// slot is reserved, so work submitted while background jobs hold every reserved
+// slot still takes the next start.
 export class GitProcessScheduler {
   private readonly startThrottled;
-  private readonly highPriorityQueue: Array<() => void> = [];
-  private readonly normalPriorityQueue: Array<() => void> = [];
-  // Normal-priority work never occupies more than maxProcessConcurrency minus
-  // this many slots, clamped so it always keeps at least one slot even when
-  // the configured reserve would otherwise consume the whole pool.
+  private readonly queues: Record<GitProcessPriority, Array<() => Promise<void>>> = {
+    high: [],
+    normal: [],
+    background: [],
+  };
+  // Normal- and background-priority work never occupies more than
+  // maxProcessConcurrency minus this many slots, clamped so it always keeps at
+  // least one slot even when the configured reserve would otherwise consume the
+  // whole pool.
   private readonly reservedHighPrioritySlots: number;
   private admitted = 0;
+  private reservedStarts = 0;
   private running = 0;
   private waiting = 0;
   private drainScheduled = false;
@@ -74,7 +86,7 @@ export class GitProcessScheduler {
       interval: 1_000,
       strict: true,
     });
-    this.startThrottled = throttle((start: () => Promise<void>) => start());
+    this.startThrottled = throttle(() => this.startNext());
     this.reservedHighPrioritySlots = Math.min(
       policy.reservedHighPrioritySlots ?? DEFAULT_GIT_PROCESS_POLICY.reservedHighPrioritySlots ?? 0,
       Math.max(0, policy.maxProcessConcurrency - 1),
@@ -95,18 +107,7 @@ export class GitProcessScheduler {
   ): Promise<T> {
     this.waiting += 1;
     return new Promise<T>((resolve, reject) => {
-      const admit = () => {
-        void this.startThrottled(() => this.execute(start, resolve, reject)).catch((error) => {
-          // The throttle never released this job into `execute`, so it never
-          // occupied a concurrency slot — only `waiting` needs unwinding.
-          this.waiting = Math.max(0, this.waiting - 1);
-          reject(error);
-          this.scheduleDrain();
-        });
-      };
-      const queue =
-        options?.priority === "high" ? this.highPriorityQueue : this.normalPriorityQueue;
-      queue.push(admit);
+      this.queues[options?.priority ?? "normal"].push(() => this.execute(start, resolve, reject));
       if (this.admitted === 0 && !this.drainScheduled) {
         this.drainOne();
       } else {
@@ -115,11 +116,23 @@ export class GitProcessScheduler {
     });
   }
 
-  private scheduleDrain(): void {
-    if (this.drainScheduled || this.admitted >= this.policy.maxProcessConcurrency) {
-      return;
+  private canReserveStart(): boolean {
+    if (this.admitted >= this.policy.maxProcessConcurrency || this.waiting <= this.reservedStarts) {
+      return false;
     }
-    if (this.highPriorityQueue.length === 0 && this.normalPriorityQueue.length === 0) {
+    if (this.admitted < this.policy.maxProcessConcurrency - this.reservedHighPrioritySlots) {
+      return true;
+    }
+    // Reserved slots are held back from normal and background work even when no
+    // high-priority job is queued, so one always finds a slot immediately instead
+    // of waiting behind bulk observation traffic. A start fired from a reserved
+    // slot always takes the high lane first, so reserve one only while queued
+    // high-priority jobs outnumber the starts already reserved.
+    return this.queues.high.length > this.reservedStarts;
+  }
+
+  private scheduleDrain(): void {
+    if (this.drainScheduled || !this.canReserveStart()) {
       return;
     }
     this.drainScheduled = true;
@@ -128,24 +141,26 @@ export class GitProcessScheduler {
 
   private drainOne(): void {
     this.drainScheduled = false;
-    if (this.admitted >= this.policy.maxProcessConcurrency) {
+    if (!this.canReserveStart()) {
       return;
     }
-    if (this.highPriorityQueue.length > 0) {
-      this.highPriorityQueue.shift()!();
-      return;
+    this.admitted += 1;
+    this.reservedStarts += 1;
+    void this.startThrottled();
+    // Spawning can be synchronous and expensive on a throttled host. Let timers,
+    // sockets, and child exits run before admitting another Git process.
+    this.scheduleDrain();
+  }
+
+  private startNext(): Promise<void> {
+    this.reservedStarts -= 1;
+    // Every reservation is backed by a queued job: jobs leave the queues only here.
+    const next =
+      this.queues.high.shift() ?? this.queues.normal.shift() ?? this.queues.background.shift();
+    if (!next) {
+      throw new Error("Git process start fired without a queued process");
     }
-    // Reserved slots are held back from normal-priority work even when no
-    // high-priority job is currently queued, so one always finds a slot
-    // immediately instead of waiting behind bulk observation traffic.
-    if (this.admitted >= this.policy.maxProcessConcurrency - this.reservedHighPrioritySlots) {
-      return;
-    }
-    const admit = this.normalPriorityQueue.shift();
-    if (!admit) {
-      return;
-    }
-    admit();
+    return next();
   }
 
   private async execute<T>(
@@ -155,13 +170,6 @@ export class GitProcessScheduler {
   ): Promise<void> {
     this.waiting = Math.max(0, this.waiting - 1);
     this.running += 1;
-    // Only now — once the rate throttle has actually released this job — does
-    // it occupy a real concurrency slot. Counting it earlier (while it merely
-    // waited its turn in the throttle) understated free capacity and starved
-    // the reserved high-priority lane. Re-arm the drain loop against this
-    // fresh count instead of the stale one at admission time.
-    this.admitted += 1;
-    this.scheduleDrain();
     try {
       const process = start();
       void process.result.then(resolve, reject);

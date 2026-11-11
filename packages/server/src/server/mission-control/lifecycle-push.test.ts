@@ -5,7 +5,10 @@ import { afterEach, beforeEach, describe, expect, test, vi, type Mock } from "vi
 import type pino from "pino";
 import type { AgentManager, AgentManagerEvent, ManagedAgent } from "../agent/agent-manager.js";
 import type { AgentStorage, StoredAgentRecord } from "../agent/agent-storage.js";
-import { buildStoredAgentPayload } from "../agent/agent-projections.js";
+import {
+  buildStoredAgentPayload,
+  type EffectiveOptionsResolver,
+} from "../agent/agent-projections.js";
 import type { AgentSnapshotPayload } from "../messages.js";
 import type { DaemonConfigStore } from "../daemon-config-store.js";
 import { MissionControlService } from "./service.js";
@@ -13,6 +16,8 @@ import { MissionControlStore } from "./store.js";
 import type { MissionControlEvent } from "./store.js";
 import type { PeerManager } from "../peers/peer-manager.js";
 import type { DaemonClient } from "@getpaseo/client";
+
+const ownOptionsOnly: EffectiveOptionsResolver = (_provider, own) => own ?? {};
 
 function createMockLogger(): pino.Logger {
   const levels = ["trace", "debug", "info", "warn", "error", "fatal"] as const;
@@ -280,7 +285,7 @@ describe("MissionControlService lifecycle push", () => {
     const pushed: AgentSnapshotPayload[] = [];
     onReviewStateChanged.mockImplementation(async (agentId: string) => {
       const stored = await getRecord(agentId);
-      const payload = buildStoredAgentPayload(stored, new Set(["omp"]));
+      const payload = buildStoredAgentPayload(stored, new Set(["omp"]), ownOptionsOnly);
       payload.bucket = await service.getLifecycleBucket(agentId);
       pushed.push(payload);
     });

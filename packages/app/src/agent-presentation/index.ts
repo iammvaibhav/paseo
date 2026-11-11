@@ -1,4 +1,6 @@
 import { useShallow } from "zustand/shallow";
+import { useTranslation } from "react-i18next";
+import { i18n } from "@/i18n/i18next";
 import { useProviderIcon } from "@/components/provider-icons";
 import { useMissionControlCentralConfig } from "@/mission-control/central-config";
 import type { PanelDescriptor } from "@/panels/panel-registry";
@@ -12,6 +14,7 @@ export function useAgentDescriptor(
   target: { kind: "agent"; agentId: string },
   context: { serverId: string },
 ): PanelDescriptor {
+  useTranslation();
   const descriptorState = useSessionStore(
     useShallow((state) => {
       const session = state.sessions[context.serverId];
@@ -21,6 +24,7 @@ export function useAgentDescriptor(
         title: agent?.title ?? null,
         name: agent?.name ?? null,
         status: agent?.status ?? null,
+        backgroundWork: agent?.backgroundWork,
         pendingPermissionCount: agent?.pendingPermissions.length ?? 0,
         attentionReason: agent?.attentionReason ?? null,
         stoppedBy: agent?.stoppedBy ?? null,
@@ -39,6 +43,7 @@ export function buildAgentDescriptor(input: {
   title: string | null;
   name: string | null;
   status: Agent["status"] | null;
+  backgroundWork?: Agent["backgroundWork"];
   pendingPermissionCount: number;
   attentionReason: Agent["attentionReason"];
   stoppedBy: Agent["stoppedBy"];
@@ -49,10 +54,23 @@ export function buildAgentDescriptor(input: {
 }): PanelDescriptor {
   const label = resolveAgentLabel(input.title, input.name);
   const providerTooltip = `${formatProviderLabel(input.provider)} agent`;
+  const statusBucket = input.status
+    ? deriveSidebarStateBucket({
+        bucket: input.bucket,
+        status: input.isTurnActive ? "running" : input.status,
+        backgroundWork: input.backgroundWork,
+        pendingPermissionCount: input.pendingPermissionCount,
+        attentionReason: input.attentionReason,
+        stoppedBy: input.stoppedBy,
+      })
+    : null;
 
   return {
     label: label ?? "",
-    subtitle: providerTooltip,
+    subtitle:
+      statusBucket === "running" && !input.isTurnActive && input.status !== "running"
+        ? i18n.t("message.backgroundWork.running")
+        : providerTooltip,
     tooltip: resolveAgentTabTooltip({
       label,
       name: input.name,
@@ -61,14 +79,6 @@ export function buildAgentDescriptor(input: {
     }),
     titleState: label ? "ready" : "loading",
     icon: input.icon,
-    statusBucket: input.status
-      ? deriveSidebarStateBucket({
-          bucket: input.bucket,
-          status: input.isTurnActive ? "running" : input.status,
-          pendingPermissionCount: input.pendingPermissionCount,
-          attentionReason: input.attentionReason,
-          stoppedBy: input.stoppedBy,
-        })
-      : null,
+    statusBucket,
   };
 }

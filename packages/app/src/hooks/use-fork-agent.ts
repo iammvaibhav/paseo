@@ -41,7 +41,7 @@ export type ForkAgentSource = Pick<
   | "thinkingOptionId"
   | "effectiveThinkingOptionId"
   | "runtimeInfo"
-  | "features"
+  | "options"
   | "projectPlacement"
 >;
 
@@ -106,11 +106,6 @@ function buildForkDraftSetup(agent: ForkAgentSource): WorkspaceDraftTabSetup | u
     return undefined;
   }
 
-  const featureValues: Record<string, unknown> = {};
-  for (const feature of agent.features ?? []) {
-    featureValues[feature.id] = feature.value;
-  }
-
   return {
     provider: agent.provider,
     cwd: agent.cwd,
@@ -121,7 +116,7 @@ function buildForkDraftSetup(agent: ForkAgentSource): WorkspaceDraftTabSetup | u
       agent.runtimeInfo?.thinkingOptionId ??
       agent.thinkingOptionId ??
       null,
-    featureValues,
+    providerOptions: { ...agent.options },
   };
 }
 

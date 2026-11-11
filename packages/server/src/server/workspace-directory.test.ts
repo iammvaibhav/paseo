@@ -275,6 +275,7 @@ interface AgentState {
   attentionReason?: AgentSnapshotPayload["attentionReason"];
   bucket?: AgentSnapshotPayload["bucket"];
   stoppedBy?: AgentSnapshotPayload["stoppedBy"];
+  backgroundWork?: AgentSnapshotPayload["backgroundWork"];
   background?: boolean;
 }
 
@@ -297,6 +298,7 @@ function createAgent(
     updatedAt: NOW,
     lastUserMessageAt: input.lastUserMessageAt ?? null,
     status: input.status,
+    backgroundWork: input.backgroundWork,
     capabilities: {
       supportsStreaming: true,
       supportsSessionPersistence: true,
@@ -328,6 +330,17 @@ function createAgent(
 }
 
 describe("WorkspaceDirectory", () => {
+  test("treats background work as running without changing foreground status", async () => {
+    const workspace = new WorkspaceStatus();
+    workspace.hasRootAgent({
+      id: "root-agent",
+      status: "idle",
+      backgroundWork: { count: 1 },
+      requiresAttention: true,
+      attentionReason: "finished",
+    });
+    await expect(workspace.workspaceStatus()).resolves.toBe("running");
+  });
   test("uses root agent activity, not delegated child activity, for workspace status", async () => {
     const workspace = new WorkspaceStatus();
 
@@ -997,7 +1010,8 @@ test("scoped descriptor builds allocate independently of archived history", asyn
       projectLive: async () => {
         throw new Error("Unexpected live projection");
       },
-      projectStored: (record) => buildStoredAgentPayload(record, ["codex"]),
+      projectStored: (record) =>
+        buildStoredAgentPayload(record, ["codex"], (_provider, own) => own ?? {}),
       isProviderVisible: () => true,
       isStoredProviderAvailable: () => true,
     });

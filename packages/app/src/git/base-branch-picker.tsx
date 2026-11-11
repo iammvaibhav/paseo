@@ -148,7 +148,7 @@ export function ChangesBaseBranchPicker({
         searchable
         searchPlaceholder={t("workspace.git.diff.baseBranchSearchPlaceholder")}
         emptyText={t("workspace.git.diff.baseBranchEmpty")}
-        title={t("workspace.git.diff.baseBranch")}
+        title={t("workspace.git.diff.baseBranchLabel")}
         open={isOpen}
         onOpenChange={setIsOpen}
         anchorRef={anchorRef}

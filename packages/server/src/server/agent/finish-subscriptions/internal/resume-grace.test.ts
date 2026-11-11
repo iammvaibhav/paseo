@@ -33,6 +33,8 @@ function scenario(stored: StoredAgentRecord) {
           return () => listeners.splice(listeners.indexOf(listener), 1);
         },
         getLastAssistantMessage: async () => "Halfway through the migration",
+        effectiveOptionsFor: (_provider: string, own: Record<string, unknown> | undefined) =>
+          own ?? {},
       },
       agentStorage: { get: async () => stored },
       childAgentId: "child",

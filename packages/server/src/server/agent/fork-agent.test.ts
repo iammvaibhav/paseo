@@ -126,6 +126,17 @@ function createForkScenario(options?: {
   );
   Reflect.set(agentManager, "tryRunOutOfBand", vi.fn().mockReturnValue(false));
   Reflect.set(agentManager, "hasInFlightRun", vi.fn().mockReturnValue(false));
+  // Loading waits out an in-flight close; the bare prototype has no lifecycle state to wait on.
+  Reflect.set(
+    agentManager,
+    "waitForAgentClose",
+    vi.fn(async () => {}),
+  );
+  Reflect.set(
+    agentManager,
+    "reloadStalePluginSession",
+    vi.fn(async () => {}),
+  );
   Reflect.set(agentManager, "streamAgent", streamAgent);
   Reflect.set(
     agentManager,

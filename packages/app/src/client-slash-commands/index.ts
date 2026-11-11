@@ -65,11 +65,6 @@ export function resolveClientSlashCommand(input: {
 }
 
 export function buildDraftAgentSetup(agent: Agent): WorkspaceDraftTabSetup {
-  const featureValues: Record<string, unknown> = {};
-  for (const feature of agent.features ?? []) {
-    featureValues[feature.id] = feature.value;
-  }
-
   return {
     provider: agent.provider,
     cwd: agent.cwd,
@@ -80,6 +75,6 @@ export function buildDraftAgentSetup(agent: Agent): WorkspaceDraftTabSetup {
       agent.runtimeInfo?.thinkingOptionId ??
       agent.thinkingOptionId ??
       null,
-    featureValues,
+    providerOptions: { ...agent.options },
   };
 }

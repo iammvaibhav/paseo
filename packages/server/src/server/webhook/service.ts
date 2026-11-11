@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { Logger } from "pino";
 import type { AgentManager } from "../agent/agent-manager.js";
 import { ensureAgentLoaded } from "../agent/agent-loading.js";
+import { foldFeatureValues } from "../agent/option-controls.js";
 import type { ProviderOptions } from "@getpaseo/protocol/agent-types";
 import type { AgentSessionConfig } from "../agent/agent-sdk-types.js";
 import type { AgentStorage } from "../agent/agent-storage.js";
@@ -46,6 +47,7 @@ interface WebhookWorkspaceCreateInput {
 type WebhookAgentManager = Pick<
   AgentManager,
   | "createAgent"
+  | "createAgentFromRecord"
   | "getAgent"
   | "getRegisteredProviderIds"
   | "hasInFlightRun"
@@ -386,7 +388,6 @@ export class WebhookService {
       labels: input.labels,
       mode: config.modeId,
       thinking: config.thinkingOptionId,
-      features: config.featureValues,
       unattended: true,
       promptFailure: "return-error",
       notifyOnFinish: false,
@@ -609,8 +610,11 @@ function buildAgentConfig(
     // Webhook wire schema still carries the pre-native-options knobs
     // (approvalPolicy / sandboxMode / …). Map them into providerOptions so the
     // shared AgentSessionConfig + provider option validators stay authoritative.
-    providerOptions: buildWebhookProviderOptions(config),
-    featureValues: config.featureValues,
+    // COMPAT(featureValues): added in v0.15.0, remove after 2027-05-01.
+    providerOptions: foldFeatureValues({
+      providerOptions: buildWebhookProviderOptions(config),
+      featureValues: config.featureValues,
+    }).providerOptions,
     systemPrompt: config.systemPrompt,
     mcpServers: config.mcpServers as AgentSessionConfig["mcpServers"],
   };

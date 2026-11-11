@@ -1,6 +1,6 @@
 import {
   AdaptiveWorkspaceChrome,
-  type WorkspaceCompactHeaderActions,
+  type WorkspaceCompactHeaderTabs,
 } from "./adaptive-workspace-chrome";
 import { planTimelineTailFetch } from "@/timeline/timeline-sync-plan";
 import { useHostFeature } from "@/runtime/host-features";
@@ -140,6 +140,7 @@ import { useWorkspace } from "@/stores/session-store-hooks";
 import type { CheckoutStatusPayload } from "@/git/use-status-query";
 import { confirmDialog } from "@/utils/confirm-dialog";
 import { useArchiveAgent } from "@/hooks/use-archive-agent";
+import { useWorkspaceArchiveUndoRunning } from "@/workspace/archive-undo";
 import { useStableEvent } from "@/hooks/use-stable-event";
 import { removeResidentBrowserWebview } from "@/desktop/browser/resident-webviews";
 import { createWorkspaceBrowser, useBrowserStore } from "@/desktop/browser/store";
@@ -167,7 +168,11 @@ import {
   WorkspaceExplorerSidebarToggle,
   WorkspaceHeaderExplorerToggle,
 } from "@/screens/workspace/workspace-explorer-toggle";
-import { useHasWindowChromeObstruction } from "@/utils/desktop-window";
+import {
+  useHasWindowChromeObstruction,
+  WindowChromeRegion,
+  WindowChromeSafeArea,
+} from "@/utils/desktop-window";
 import {
   resolveWorkspaceHeaderRenderState,
   type WorkspaceHeaderCheckoutState,
@@ -412,9 +417,9 @@ const MobileMountedTabSlot = memo(function MobileMountedTabSlot({
     [buildPaneContentModel, paneId, tabDescriptor],
   );
   const handleTouch = useCallback(() => {
-    if (!isPaneFocused && paneId) onFocusPane(paneId);
+    if (paneId) onFocusPane(paneId);
     return false;
-  }, [isPaneFocused, onFocusPane, paneId]);
+  }, [onFocusPane, paneId]);
 
   return (
     <RenderProfile id={`MobileMountedTabSlot:${tabDescriptor.kind}:${tabDescriptor.tabId}`}>
@@ -905,8 +910,12 @@ function WorkspaceDocumentTitleEffectSlot({
   );
 }
 
+/**
+ * The header floats over a conversation's timeline. A draft and the agent it creates share one
+ * timeline, so their surfaces match and the timeline does not move when the tab retargets.
+ */
 function floatsHeaderOverContent(activeTab: WorkspaceTabDescriptor | null): boolean {
-  return supportsStreamTopOverlay && activeTab?.kind === "agent";
+  return supportsStreamTopOverlay && (activeTab?.kind === "agent" || activeTab?.kind === "draft");
 }
 
 /** A fullscreen composer covers the compact header; the column lays out without it. */
@@ -1068,6 +1077,23 @@ function useLastMainPane(input: {
     lastMainPaneRef.current.paneId = focusedPaneId;
   }
   return lastMainPaneRef;
+}
+
+/** The docked explorer beside the center column takes the top-right window-chrome corner. */
+function DesktopCenterColumnChrome({
+  explorerOpen,
+  focusModeEnabled,
+  children,
+}: {
+  explorerOpen: boolean;
+  focusModeEnabled: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <WindowChromeRegion corners={explorerOpen && !focusModeEnabled ? "top-left" : "both"}>
+      <View style={styles.centerColumn}>{children}</View>
+    </WindowChromeRegion>
+  );
 }
 
 function WorkspaceScreenContent({
@@ -1307,6 +1333,11 @@ function WorkspaceScreenContent({
   const hasHydratedAgents = useSessionStore(
     (state) => state.sessions[normalizedServerId]?.hasHydratedAgents ?? false,
   );
+  // An undo puts the row back before the host restores its agents. Their tabs stay until it settles.
+  const isArchiveUndoRunning = useWorkspaceArchiveUndoRunning({
+    serverId: normalizedServerId,
+    workspaceId: normalizedWorkspaceId,
+  });
   const workspaceRouteState = useResolvedWorkspaceRouteState({
     serverId: normalizedServerId,
     workspace: workspaceDescriptor,
@@ -1620,7 +1651,7 @@ function WorkspaceScreenContent({
       persistenceKey,
       buildWorkspaceTabSnapshot({
         agentVisibility: workspaceAgentVisibility,
-        agentsHydrated: hasHydratedAgents,
+        agentsHydrated: hasHydratedAgents && !isArchiveUndoRunning,
         terminalsHydrated: terminalsQuery.isSuccess,
         knownTerminalIds,
         standaloneTerminalIds,
@@ -1631,6 +1662,7 @@ function WorkspaceScreenContent({
     );
   }, [
     hasHydratedAgents,
+    isArchiveUndoRunning,
     hasHydratedWorkspaceLayoutStore,
     pendingTerminalCreateInput,
     createTerminalMutation.isPending,
@@ -3636,11 +3668,11 @@ function WorkspaceScreenContent({
     ],
   );
   const renderWorkspaceTabSwitcher = useCallback(
-    (
-      headerTabs: WorkspaceTabDescriptor[],
-      headerActiveTabKey: string,
-      actions: WorkspaceCompactHeaderActions,
-    ) => {
+    ({
+      tabs: headerTabs,
+      activeTabKey: headerActiveTabKey,
+      actions,
+    }: WorkspaceCompactHeaderTabs) => {
       return (
         <MobileWorkspaceTabSwitcher
           paneId={actions.pane?.id}
@@ -3681,14 +3713,11 @@ function WorkspaceScreenContent({
       handleCloseTabById,
     ],
   );
+  // Without a pane's tabs (above a split) the header carries workspace controls only: split panes
+  // keep their tab rails.
   const renderCompactWorkspaceHeader = useCallback(
-    (
-      headerTabs: WorkspaceTabDescriptor[],
-      headerActiveTabKey: string,
-      actions: WorkspaceCompactHeaderActions,
-      actionsOnly = false,
-    ) => {
-      const tabSwitcher = renderWorkspaceTabSwitcher(headerTabs, headerActiveTabKey, actions);
+    (paneTabs: WorkspaceCompactHeaderTabs | null, actionsOnly = false) => {
+      const tabSwitcher = paneTabs ? renderWorkspaceTabSwitcher(paneTabs) : null;
       return (
         <CompactWorkspaceHeader
           headerVariant={actionsOnly ? "full" : "compact"}
@@ -3704,7 +3733,7 @@ function WorkspaceScreenContent({
           explorerToggleAccessibilityState={explorerSidebarToggleAccessibilityState}
         >
           <WorkspaceHeaderMenuMobile
-            pane={actions.pane}
+            pane={paneTabs?.actions.pane}
             onExitFocusMode={isFocusModeEnabled ? toggleFocusMode : undefined}
             normalizedServerId={normalizedServerId}
             normalizedWorkspaceId={normalizedWorkspaceId}
@@ -3756,21 +3785,22 @@ function WorkspaceScreenContent({
       workspacePanelActive,
     ],
   );
-  const compactWorkspaceHeader = renderCompactWorkspaceHeader(tabs, activeTabKey, {
-    closeAbove: handleCloseTabsToLeft,
-    closeBelow: handleCloseTabsToRight,
-    closeOthers: handleCloseOtherTabs,
-  });
-  const fullWorkspaceActions = renderCompactWorkspaceHeader(
+  const workspaceCompactHeaderTabs = {
     tabs,
     activeTabKey,
-    {
+    actions: {
       closeAbove: handleCloseTabsToLeft,
       closeBelow: handleCloseTabsToRight,
       closeOthers: handleCloseOtherTabs,
     },
-    true,
+  };
+  const compactWorkspaceHeader = renderCompactWorkspaceHeader(workspaceCompactHeaderTabs);
+  // SplitContainer reserves the corner around its own compact headers; this is the column's.
+  const centerColumnCompactHeader = useMemo(
+    () => <WindowChromeSafeArea placement="inline">{compactWorkspaceHeader}</WindowChromeSafeArea>,
+    [compactWorkspaceHeader],
   );
+  const fullWorkspaceActions = renderCompactWorkspaceHeader(workspaceCompactHeaderTabs, true);
   const desktopSplitContent = useMemo(() => {
     if (!canRenderDesktopPaneSplits || !workspaceLayout || !persistenceKey) {
       return null;
@@ -3893,9 +3923,12 @@ function WorkspaceScreenContent({
       <SheetTabs onCloseTab={handleCloseTabById} />
     </View>
   ) : (
-    <View style={styles.centerColumn}>
+    <DesktopCenterColumnChrome
+      explorerOpen={isExplorerSidebarShowing}
+      focusModeEnabled={desktopFocusModeEnabled}
+    >
       {rendersDesktopSplitContent ? null : (
-        <AdaptiveWorkspaceChrome compactHeader={compactWorkspaceHeader}>
+        <AdaptiveWorkspaceChrome compactHeader={centerColumnCompactHeader}>
           {fullWorkspaceActions}
           {renderWorkspaceScreenHeader()}
 
@@ -3932,7 +3965,7 @@ function WorkspaceScreenContent({
       <View style={styles.centerContent}>
         <View style={styles.content}>{desktopContent}</View>
       </View>
-    </View>
+    </DesktopCenterColumnChrome>
   );
 
   const [workspaceViewportWidth, setWorkspaceViewportWidth] = useState(0);
@@ -3951,6 +3984,7 @@ function WorkspaceScreenContent({
         normalizedServerId={normalizedServerId}
         normalizedWorkspaceId={normalizedWorkspaceId}
         isWorkspaceFocused={isRouteFocused}
+        paneFocusSuspended={paneFocusSuspended}
         closingTabIds={closingTabIds}
         hoveredCloseTabKey={hoveredCloseTabKey}
         setHoveredCloseTabKey={setHoveredCloseTabKey}
@@ -3992,6 +4026,7 @@ function WorkspaceScreenContent({
     normalizedServerId,
     normalizedWorkspaceId,
     isRouteFocused,
+    paneFocusSuspended,
     isExplorerSidebarShowing,
     closingTabIds,
     hoveredCloseTabKey,

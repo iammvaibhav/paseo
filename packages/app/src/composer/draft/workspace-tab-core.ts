@@ -3,18 +3,19 @@ import type { AgentSessionConfig } from "@getpaseo/protocol/agent-types";
 import type { AgentAttachment, AgentSnapshotPayload } from "@getpaseo/protocol/messages";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { resolveSubmissionReadiness } from "@/provider-selection/provider-selection";
+import type { JsonValue } from "@getpaseo/protocol/agent-types";
 import { buildWorkspaceDraftAgentConfig } from "@/screens/workspace/workspace-draft-agent-config";
 import type { UserMessageImageAttachment } from "@/types/stream";
 import { encodeImages } from "@/utils/encode-images";
 import { useWorkspaceDraftSubmissionStore } from "@/stores/workspace-draft-submission-store";
-import type { WorkspaceDraftForkSource } from "@/workspace-tabs/model";
+import type { WorkspaceDraftForkSource, WorkspaceDraftTabSetup } from "@/workspace-tabs/model";
 
 export interface WorkspaceDraftAutoSubmitConfig {
   provider: string;
   modeId: string | null;
   model: string | null;
   thinkingOptionId: string | null;
-  featureValues: Record<string, unknown>;
+  providerOptions: Record<string, unknown>;
 }
 
 export function shouldAllowEmptyDraftText(input: {
@@ -93,6 +94,15 @@ export function resolveDraftModeId(input: {
 
 export type WorkspaceDraftSubmitClient = Pick<DaemonClient, "createAgent" | "forkAgent">;
 
+interface WorkspaceDraftComposerState {
+  selectedProvider: string | null;
+  effectiveModeId: string;
+  effectiveModelId: string | null;
+  effectiveThinkingOptionId: string | null;
+  providerOptions: Record<string, unknown> | undefined;
+  metadata: Record<string, JsonValue>;
+}
+
 export async function submitDraftCreateRequest(input: {
   draftId: string;
   attempt: { clientMessageId: string };
@@ -107,18 +117,12 @@ export async function submitDraftCreateRequest(input: {
   // Set when this draft was opened by "fork chat into a new tab": the daemon
   // creates the agent by forking the source session instead of from scratch.
   forkSource?: WorkspaceDraftForkSource;
-  composerState: {
-    selectedProvider: string | null;
-    effectiveModeId: string;
-    effectiveModelId: string | null;
-    effectiveThinkingOptionId: string | null;
-    featureValues: Record<string, unknown> | undefined;
-  };
+  composerState: WorkspaceDraftComposerState;
   hostDisconnectedMessage: string;
   selectModelMessage: string;
   forkFailedMessage: string;
 }): Promise<{ agentId: string | null; result: AgentSnapshotPayload }> {
-  const { attempt, text, images, attachments } = input;
+  const { attempt, text, images, attachments, composerState } = input;
   const submit = resolveDraftSubmitTarget(input);
   const imagesData = await encodeImages(images);
   const attachmentsArray = Array.isArray(attachments) ? attachments : undefined;
@@ -142,6 +146,7 @@ export async function submitDraftCreateRequest(input: {
     workspaceId: submit.workspaceId,
     ...(text ? { initialPrompt: text } : {}),
     clientMessageId: attempt.clientMessageId,
+    ...(Object.keys(composerState.metadata).length > 0 ? { metadata: composerState.metadata } : {}),
     ...(imagesData && imagesData.length > 0 ? { images: imagesData } : {}),
     ...(attachmentsArray && attachmentsArray.length > 0 ? { attachments: attachmentsArray } : {}),
   };
@@ -159,13 +164,7 @@ function resolveDraftSubmitTarget(input: {
   workspaceId: string | null;
   autoSubmitConfig: WorkspaceDraftAutoSubmitConfig | null;
   forkSource?: WorkspaceDraftForkSource;
-  composerState: {
-    selectedProvider: string | null;
-    effectiveModeId: string;
-    effectiveModelId: string | null;
-    effectiveThinkingOptionId: string | null;
-    featureValues: Record<string, unknown> | undefined;
-  };
+  composerState: WorkspaceDraftComposerState;
   hostDisconnectedMessage: string;
   selectModelMessage: string;
 }):
@@ -210,7 +209,7 @@ function resolveDraftSubmitTarget(input: {
     model: autoSubmitConfig?.model ?? (composerState.effectiveModelId || undefined),
     thinkingOptionId:
       autoSubmitConfig?.thinkingOptionId ?? (composerState.effectiveThinkingOptionId || undefined),
-    featureValues: autoSubmitConfig?.featureValues ?? composerState.featureValues,
+    providerOptions: autoSubmitConfig?.providerOptions ?? composerState.providerOptions,
   });
   if (forkSource) {
     return { kind: "fork", client, forkSource, config };
@@ -240,7 +239,7 @@ async function submitDraftForkRequest(input: {
     ...(config.modeId ? { modeId: config.modeId } : {}),
     ...(config.model ? { model: config.model } : {}),
     ...(config.thinkingOptionId ? { thinkingOptionId: config.thinkingOptionId } : {}),
-    ...(config.featureValues ? { featureValues: config.featureValues } : {}),
+    ...(config.providerOptions ? { providerOptions: config.providerOptions } : {}),
   };
   const fork = await client.forkAgent(forkSource.sourceAgentId, text, {
     messageId: attempt.clientMessageId,
@@ -265,4 +264,14 @@ async function submitDraftForkRequest(input: {
     throw new Error(input.forkFailedMessage);
   }
   return { agentId: fork.agentId, result: fork.agent };
+}
+
+export function resolveDraftWorkingDirectory(input: {
+  workspaceDirectory: string | null;
+  initialSetup: WorkspaceDraftTabSetup | null;
+}): string | null {
+  if (input.initialSetup) {
+    return input.initialSetup.cwd;
+  }
+  return input.workspaceDirectory;
 }

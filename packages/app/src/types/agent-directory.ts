@@ -8,6 +8,7 @@ export type AgentDirectoryEntry = Pick<
   | "name"
   | "shortDescription"
   | "status"
+  | "backgroundWork"
   | "turn"
   | "lastActivityAt"
   | "lastUserMessageAt"

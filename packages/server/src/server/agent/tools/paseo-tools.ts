@@ -32,6 +32,7 @@ import type { AgentManager } from "../agent-manager.js";
 import { ActiveTurnBehaviorSchema, AgentProfileSchema } from "@getpaseo/protocol/messages";
 import { slugify } from "@getpaseo/protocol/branch-slug";
 import type { DaemonConfigStore } from "../../daemon-config-store.js";
+import { featuresFromControls } from "@getpaseo/protocol/option-controls";
 import {
   AgentFeatureSchema,
   AgentPermissionRequestPayloadSchema,
@@ -330,6 +331,7 @@ interface ProviderSummary {
 }
 
 const WorkspaceAutomationSummarySchema = z.object({
+  parentWorkspaceId: z.string().optional(),
   workspaceId: z.string(),
   projectId: z.string(),
   cwd: z.string(),
@@ -348,6 +350,7 @@ function toWorkspaceAutomationSummary(workspace: PersistedWorkspaceRecord) {
     kind: workspace.kind,
     title: workspace.title,
     background: workspace.background,
+    parentWorkspaceId: workspace.parentWorkspaceId,
   };
 }
 
@@ -1194,11 +1197,11 @@ function buildMcpCreateAgentInputExtras(input: {
   labels?: Record<string, string>;
 }): Pick<
   CreateAgentFromMcpInput,
-  "workspaceId" | "thinking" | "features" | "labels" | "agentMode"
+  "workspaceId" | "thinking" | "providerOptions" | "labels" | "agentMode"
 > {
   const extras: Pick<
     CreateAgentFromMcpInput,
-    "workspaceId" | "thinking" | "features" | "labels" | "agentMode"
+    "workspaceId" | "thinking" | "providerOptions" | "labels" | "agentMode"
   > = {};
   if (input.workspaceId) {
     extras.workspaceId = input.workspaceId;
@@ -1207,7 +1210,7 @@ function buildMcpCreateAgentInputExtras(input: {
     extras.thinking = input.settings.thinkingOptionId;
   }
   if (input.settings?.features) {
-    extras.features = input.settings.features;
+    extras.providerOptions = input.settings.features;
   }
   if (input.settings?.agentMode) {
     extras.agentMode = input.settings.agentMode;
@@ -2031,9 +2034,6 @@ function createToolCatalog(
         : {}),
       ...(callerAgent.provider === resolvedProvider && callerAgent.config.providerOptions
         ? { providerOptions: callerAgent.config.providerOptions }
-        : {}),
-      ...(callerAgent.config.featureValues
-        ? { featureValues: callerAgent.config.featureValues }
         : {}),
       ...(callerAgent.config.systemPrompt ? { systemPrompt: callerAgent.config.systemPrompt } : {}),
       ...(callerAgent.config.mcpServers ? { mcpServers: callerAgent.config.mcpServers } : {}),
@@ -3274,6 +3274,7 @@ function createToolCatalog(
       const structuredSnapshot = buildStoredAgentPayload(
         record,
         new Set(agentManager.getRegisteredProviderIds()),
+        (provider, own) => agentManager.effectiveOptionsFor(provider, own),
       );
       return {
         content: [],
@@ -3305,7 +3306,10 @@ function createToolCatalog(
       storage: agentStorage,
       workspaces: options.workspaceRegistry ?? { get: async () => null },
       projectLive: (snapshot) => serializeSnapshotWithMetadata(agentStorage, snapshot, childLogger),
-      projectStored: (record) => buildStoredAgentPayload(record, registeredProviderIds),
+      projectStored: (record) =>
+        buildStoredAgentPayload(record, registeredProviderIds, (provider, own) =>
+          agentManager.effectiveOptionsFor(provider, own),
+        ),
       isProviderVisible: () => true,
       isStoredProviderAvailable: (record) =>
         isStoredAgentProviderAvailable(record, registeredProviderIds),
@@ -3479,9 +3483,7 @@ function createToolCatalog(
         await agentManager.setAgentThinkingOption(agentId, settings.thinkingOptionId);
       }
       if (settings?.features) {
-        for (const [featureId, value] of Object.entries(settings.features)) {
-          await agentManager.setAgentFeature(agentId, featureId, value);
-        }
+        await agentManager.setAgentOptions(agentId, settings.features);
       }
 
       await updateAgentCommand({ agentManager }, { agentId, name, labels });
@@ -4281,8 +4283,8 @@ function createToolCatalog(
         "List agent profiles: named provider/model/mode bundles a human configured for specific " +
         "kinds of work. Read each profile's `notes` to pick the one that fits the task you're " +
         "delegating, then copy its `provider`, `model`, `modeId`, `thinkingOptionId`, and " +
-        "`featureValues` into create_agent (there is no `profile` parameter). Returns an empty " +
-        "list if none are configured.",
+        "`options` into create_agent as `settings.features` (there is no `profile` parameter). " +
+        "Returns an empty list if none are configured.",
       inputSchema: {},
       outputSchema: {
         profiles: z.array(AgentProfileSchema),
@@ -4335,13 +4337,13 @@ function createToolCatalog(
         throw new PaseoToolInputError(entry.error ?? `Provider '${providerId}' is unavailable`);
       }
       const selectedModel = settings?.model ?? resolvedProviderModel.model;
-      const features = await agentManager.listDraftFeatures({
+      const { controls, options: effectiveOptions } = await agentManager.listDraftControls({
         provider: providerId,
         cwd: resolvedCwd,
         ...(settings?.modeId ? { modeId: settings.modeId } : {}),
         ...(selectedModel ? { model: selectedModel } : {}),
         ...(settings?.thinkingOptionId ? { thinkingOptionId: settings.thinkingOptionId } : {}),
-        ...(settings?.features ? { featureValues: settings.features } : {}),
+        ...(settings?.features ? { providerOptions: settings.features } : {}),
       });
       return {
         content: [],
@@ -4353,7 +4355,7 @@ function createToolCatalog(
           status: summary.status,
           modes: summary.modes,
           selectedModel: selectedModel ?? null,
-          features,
+          features: featuresFromControls({ controls, options: effectiveOptions }),
         }),
       };
     },
