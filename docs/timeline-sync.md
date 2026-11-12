@@ -28,7 +28,11 @@ The invariants are:
 Every item is bounded before it enters either delivery path, because a timeline page is one
 WebSocket message and the daemon closes a socket whose outbound buffer passes 64 MiB. Tool calls get
 64 KiB and other items 256 KiB. Over budget, the largest strings are cut to a shared length with a
-`…[truncated 12.3 MB]` marker, and an oversized `data:` URL is replaced by the marker. Strings up
+`…[truncated 12.3 MB]` marker. An oversized `data:` URL, or the `data` of a `{ data, mimeType }`
+image or file, is replaced by the marker alone: a base64 prefix with a marker appended is not base64,
+and the app's decoder would reject it anyway. Clients still treat inline image data as untrusted
+(`packages/app/src/utils/base64.ts`), since providers can store references such as `blob:sha256:…`
+in the same field. Strings up
 to 1 KiB stay whole, so ids and paths survive. Arrays drop their trailing elements without a marker
 element, so typed arrays still match the wire schema. Limiting an item twice gives the same item. The
 budget does not bound wide objects or multi-byte text. The same

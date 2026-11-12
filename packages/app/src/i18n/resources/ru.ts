@@ -174,6 +174,7 @@ export const ru: TranslationResources = {
       sendQueuedMessageNow: "Отправить сообщение из очереди сейчас",
       openImage: "Открыть прикрепленное изображение",
       removeImage: "Удалить прикрепленное изображение",
+      imageUnavailable: "Изображение недоступно",
       removeFile: "Удалить прикрепленный файл",
       openGithub: "Открыть {{kind}} {{number}}",
       removeGithub: "Удалить {{kind}} {{number}}",

@@ -13,6 +13,7 @@ import {
   parseDataUrl,
   pathToFileUri,
 } from "@/attachments/utils";
+import { decodeBase64OrThrow } from "@/utils/base64";
 
 const IMAGE_EXTENSION_BY_MIME_TYPE: Record<string, string> = {
   "image/png": ".png",
@@ -47,7 +48,7 @@ async function ensureDirectory(fileSystem: AttachmentFileSystem, uri: string): P
 function dataUrlToBytes(dataUrl: string): Uint8Array {
   // React Native's fetch cannot read data URLs. Decode the embedded bytes locally.
   const { base64 } = parseDataUrl(dataUrl);
-  return Uint8Array.from(atob(base64), (character) => character.charCodeAt(0));
+  return decodeBase64OrThrow(base64, "Attachment data URL payload");
 }
 
 async function blobToBytes(blob: Blob): Promise<Uint8Array> {

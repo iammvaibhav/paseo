@@ -15,6 +15,7 @@ import {
   AttachmentFrame,
   AttachmentLabel,
   AttachmentThumbnail,
+  AttachmentUnavailableThumbnail,
 } from "@/components/attachment-pill";
 import { MarkdownRenderer } from "@/components/markdown/renderer";
 import { useRetainedPanelActive } from "@/components/retained-panel";
@@ -33,6 +34,7 @@ import { setAssistantMessageHeight } from "@/utils/assistant-message-height-esti
 import { isRenderProfileEnabled } from "@/utils/render-profiler";
 import { writeMarkdownToRichClipboard } from "@/utils/rich-clipboard";
 import { getDefaultMarkdownClipboardEnvironment } from "@/utils/rich-clipboard-default-environment";
+import { decodeBase64 } from "@/utils/base64";
 import { formatDuration, formatMessageTimestamp } from "@/utils/time";
 import { resolveToolCallIcon } from "@/utils/tool-call-icon";
 import { useToolCallExpanded } from "@/tool-calls/expansion-context";
@@ -408,24 +410,35 @@ function isPersistedUserMessageImage(image: UserMessageImage): image is Attachme
 }
 
 function UserMessageImagePill({ image, onOpen, accessibilityLabel }: UserMessageImagePillProps) {
+  const { t } = useTranslation();
   const [persisted, setPersisted] = useState<AttachmentMetadata | null>(
     isPersistedUserMessageImage(image) ? image : null,
   );
+  // Timeline image data can be cut by the daemon's size limit or be a provider reference
+  // (`blob:sha256:…`); neither decodes, and that must not take down the whole timeline.
+  const nativeBytes = useMemo(
+    () => (isPersistedUserMessageImage(image) ? null : decodeBase64(image.data)),
+    [image],
+  );
+  const isUnavailable = !isPersistedUserMessageImage(image) && nativeBytes === null;
   useEffect(() => {
     if (isPersistedUserMessageImage(image)) {
       setPersisted(image);
       return;
     }
+    if (!nativeBytes) {
+      setPersisted(null);
+      return;
+    }
     let cancelled = false;
-    const bytes = Uint8Array.from(atob(image.data), (char) => char.charCodeAt(0));
     const id = createPreviewAttachmentId({
       mimeType: image.mimeType,
       contentKey: image.data,
-      contentLength: bytes.byteLength,
+      contentLength: nativeBytes.byteLength,
     });
     void persistAttachmentFromBytes({
       id,
-      bytes,
+      bytes: nativeBytes,
       mimeType: image.mimeType,
       fileName: `image.${image.mimeType.split("/")[1] ?? "png"}`,
     }).then((attachment) => {
@@ -437,12 +450,21 @@ function UserMessageImagePill({ image, onOpen, accessibilityLabel }: UserMessage
     return () => {
       cancelled = true;
     };
-  }, [image]);
+  }, [image, nativeBytes]);
   const handlePress = useCallback(() => {
     if (persisted) {
       onOpen(persisted);
     }
   }, [onOpen, persisted]);
+  if (isUnavailable) {
+    return (
+      <AttachmentFrame testID="user-message-image-unavailable">
+        <AttachmentUnavailableThumbnail
+          accessibilityLabel={t("composer.attachments.imageUnavailable")}
+        />
+      </AttachmentFrame>
+    );
+  }
   return (
     <AttachmentFrame onPress={handlePress} accessibilityLabel={accessibilityLabel}>
       {persisted ? <AttachmentThumbnail metadata={persisted} /> : <View />}

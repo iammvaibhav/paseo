@@ -173,6 +173,7 @@ export const ko: TranslationResources = {
       sendQueuedMessageNow: "대기 중인 메시지 지금 보내기",
       openImage: "이미지 첨부 열기",
       removeImage: "이미지 첨부 제거",
+      imageUnavailable: "이미지를 표시할 수 없음",
       removeFile: "파일 첨부 제거",
       openGithub: "{{kind}} {{number}} 열기",
       removeGithub: "{{kind}} {{number}} 제거",

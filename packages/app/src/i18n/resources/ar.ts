@@ -173,6 +173,7 @@ export const ar: TranslationResources = {
       sendQueuedMessageNow: "إرسال رسالة في قائمة الانتظار الآن",
       openImage: "فتح مرفق الصورة",
       removeImage: "إزالة مرفق الصورة",
+      imageUnavailable: "الصورة غير متاحة",
       removeFile: "Remove file attachment",
       openGithub: "افتح {{kind}} {{number}}",
       removeGithub: "إزالة {{kind}} {{number}}",

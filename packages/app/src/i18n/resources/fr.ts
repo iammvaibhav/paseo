@@ -175,6 +175,7 @@ export const fr: TranslationResources = {
       sendQueuedMessageNow: "Envoyer maintenant le message en file d’attente",
       openImage: "Ouvrir l’image jointe",
       removeImage: "Retirer l’image jointe",
+      imageUnavailable: "Image indisponible",
       removeFile: "Retirer le fichier joint",
       openGithub: "Ouvrir {{kind}} {{number}}",
       removeGithub: "Retirer {{kind}} {{number}}",

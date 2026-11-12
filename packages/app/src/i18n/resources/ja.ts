@@ -174,6 +174,7 @@ export const ja: TranslationResources = {
       sendQueuedMessageNow: "キューに入れたメッセージを今すぐ送信",
       openImage: "画像添付ファイルを開く",
       removeImage: "画像添付ファイルを削除",
+      imageUnavailable: "画像を表示できません",
       removeFile: "ファイル添付ファイルを削除",
       openGithub: "{{kind}} {{number}}を開く",
       removeGithub: "{{kind}} {{number}}を削除",

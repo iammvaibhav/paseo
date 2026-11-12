@@ -169,6 +169,7 @@ export const en = {
       sendQueuedMessageNow: "Send queued message now",
       openImage: "Open image attachment",
       removeImage: "Remove image attachment",
+      imageUnavailable: "Image unavailable",
       removeFile: "Remove file attachment",
       openGithub: "Open {{kind}} {{number}}",
       removeGithub: "Remove {{kind}} {{number}}",

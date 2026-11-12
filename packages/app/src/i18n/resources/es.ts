@@ -174,6 +174,7 @@ export const es: TranslationResources = {
       sendQueuedMessageNow: "Enviar mensaje en cola ahora",
       openImage: "Abrir imagen adjunta",
       removeImage: "Quitar imagen adjunta",
+      imageUnavailable: "Imagen no disponible",
       removeFile: "Remove file attachment",
       openGithub: "Abrir {{kind}} {{number}}",
       removeGithub: "Quitar {{kind}} {{number}}",

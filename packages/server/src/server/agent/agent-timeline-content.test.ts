@@ -72,6 +72,22 @@ describe("agent timeline content", () => {
     });
   });
 
+  test("replaces an oversized user message image payload whole, never a base64 prefix", () => {
+    // A pasted screenshot over the item budget. Keeping a prefix plus marker made the app's
+    // atob throw InvalidCharacterError and crash the agent screen.
+    const data = "iVBORw0KGgo".padEnd(300 * 1024, "A");
+    const item = limitAgentTimelineItemContent({
+      type: "user_message",
+      text: "what is this?",
+      images: [{ data, mimeType: "image/png" }],
+    });
+    expect(item).toEqual({
+      type: "user_message",
+      text: "what is this?",
+      images: [{ data: "…[truncated 300.0 KB]", mimeType: "image/png" }],
+    });
+  });
+
   test("gives non-tool items a 256 KiB budget", () => {
     const text = "a".repeat(10 * 1024 * 1024);
     const item = limitAgentTimelineItemContent({ type: "assistant_message", text });

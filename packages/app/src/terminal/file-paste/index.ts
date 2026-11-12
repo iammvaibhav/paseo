@@ -1,4 +1,5 @@
 import { FILE_UPLOAD_MAX_BYTES } from "@/attachments/upload-limit";
+import { decodeBase64OrThrow } from "@/utils/base64";
 import { prepareTerminalPath } from "../drop/terminal-path";
 
 /** File bytes from a paste or drop gesture, before they become a file on the host. */
@@ -117,11 +118,7 @@ export function terminalFileFromBase64(input: {
   mimeType: string;
   data: string;
 }): TerminalFile {
-  const binary = atob(input.data);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
+  const bytes = decodeBase64OrThrow(input.data, input.fileName);
   return { fileName: input.fileName, mimeType: input.mimeType, bytes };
 }
 

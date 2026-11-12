@@ -79,18 +79,24 @@ interface CutState {
   remaining: number;
 }
 
-function cutString(text: string, cap: number): string {
+// A partial data URL or base64 payload is useless to every reader and breaks decoders that
+// trust it, so these are dropped whole: the marker alone tells the client the content is gone.
+function cutString(text: string, cap: number, atomic: boolean): string {
   if (text.length <= cap) return text;
-  // A partial data URL is useless to every reader, so drop it whole.
-  if (text.startsWith("data:")) return truncatedMarker(text.length);
+  if (atomic || text.startsWith("data:")) return truncatedMarker(text.length);
   return retainTextPrefix(text, cap) + truncatedMarker(text.length - cap);
 }
 
-function cut(value: unknown, depth: number, state: CutState): unknown {
+/** `{ data, mimeType }` is the inline binary shape of images and files in timeline items. */
+function isInlineBinaryData(owner: object, key: string): boolean {
+  return key === "data" && "mimeType" in owner && typeof owner.mimeType === "string";
+}
+
+function cut(value: unknown, depth: number, state: CutState, atomic = false): unknown {
   state.remaining -= NODE_COST;
   if (depth > MAX_DEPTH) return "…[truncated]";
   if (typeof value === "string") {
-    const text = cutString(value, state.stringCap);
+    const text = cutString(value, state.stringCap, atomic);
     state.remaining -= text.length;
     return text;
   }
@@ -116,7 +122,7 @@ function cut(value: unknown, depth: number, state: CutState): unknown {
     const output: Record<string, unknown> = {};
     for (const [key, child] of Object.entries(value)) {
       state.remaining -= key.length;
-      const next = cut(child, depth + 1, state);
+      const next = cut(child, depth + 1, state, isInlineBinaryData(value, key));
       changed ||= next !== child;
       output[key] = next;
     }

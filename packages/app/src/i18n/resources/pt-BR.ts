@@ -174,6 +174,7 @@ export const ptBR: TranslationResources = {
       sendQueuedMessageNow: "Enviar mensagem da fila agora",
       openImage: "Abrir anexo de imagem",
       removeImage: "Remover anexo de imagem",
+      imageUnavailable: "Imagem indisponível",
       removeFile: "Remover anexo de arquivo",
       openGithub: "Abrir {{kind}} {{number}}",
       removeGithub: "Remover {{kind}} {{number}}",

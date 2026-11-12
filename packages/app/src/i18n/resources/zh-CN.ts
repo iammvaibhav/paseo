@@ -173,6 +173,7 @@ export const zhCN: TranslationResources = {
       sendQueuedMessageNow: "立即发送排队消息",
       openImage: "打开图片附件",
       removeImage: "移除图片附件",
+      imageUnavailable: "图片不可用",
       removeFile: "Remove file attachment",
       openGithub: "打开 {{kind}} {{number}}",
       removeGithub: "移除 {{kind}} {{number}}",
