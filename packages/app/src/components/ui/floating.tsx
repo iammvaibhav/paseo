@@ -8,6 +8,7 @@ import {
   type ViewStyle,
 } from "react-native";
 import Animated from "react-native-reanimated";
+import { useGlassTreatment } from "@/appearance/glass";
 import { inlineUnistylesStyle } from "@/styles/unistyles-inline-style";
 
 export interface FloatingSurfaceProps extends Omit<ComponentProps<typeof Animated.View>, "style"> {
@@ -23,10 +24,20 @@ export const FloatingSurface = forwardRef<View, FloatingSurfaceProps>(function F
     const flattened = StyleSheet.flatten(frameStyle);
     return flattened ? inlineUnistylesStyle(stripUnistylesMetadata(flattened)) : undefined;
   }, [frameStyle]);
-  const surfaceStyle = useMemo(
-    () => appendStyle(style, inlineFrameStyle),
-    [inlineFrameStyle, style],
-  );
+  const glass = useGlassTreatment();
+  // The glass fill is inline so it wins over the caller's fill, often a light wash that would
+  // leave the surface nearly clear; on web, stylesheet classes resolve by insertion order, not
+  // array order. The frost blurs embedded webviews (VS Code Web) like any other content.
+  const surfaceStyle = useMemo(() => {
+    if (!glass) return appendStyle(style, inlineFrameStyle);
+    const glassFill = inlineUnistylesStyle({
+      backgroundColor: glass.floating,
+      borderColor: glass.floatingBorder,
+      backdropFilter: glass.floatingBackdropFilter,
+      ...inlineFrameStyle,
+    } as ViewStyle);
+    return appendStyle(style, glassFill);
+  }, [glass, inlineFrameStyle, style]);
   return <Animated.View {...props} ref={ref} style={surfaceStyle} />;
 });
 

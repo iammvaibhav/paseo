@@ -11,6 +11,7 @@ import type {
   CheckoutRefreshRequest,
   CheckoutRenameBranchRequest,
   CheckoutStatusRequest,
+  CheckoutSubmodulesRequest,
   SessionInboundMessage,
   SessionOutboundMessage,
   SubscribeCheckoutDiffRequest,
@@ -53,6 +54,7 @@ import {
   listCheckoutCommits,
   getCommitFileDiff,
 } from "../../../utils/checkout-git.js";
+import { discoverSubmodules } from "../../../utils/git-submodules.js";
 import { runGitCommand } from "../../../utils/run-git-command.js";
 import { expandTilde } from "../../../utils/path.js";
 import type { GitMetadataGenerator } from "./git-metadata-generator.js";
@@ -238,7 +240,9 @@ export class CheckoutSession {
     const resolvedCwd = expandTilde(cwd);
 
     try {
-      const snapshot = await this.workspaceGitService.getSnapshot(resolvedCwd);
+      const snapshot = await this.workspaceGitService.getSnapshot(resolvedCwd, {
+        includeForge: false,
+      });
       this.host.emit({
         type: "checkout_status_response",
         payload: buildCheckoutStatusPayloadFromSnapshot({
@@ -290,7 +294,10 @@ export class CheckoutSession {
     }
   }
 
-  async handleCommitFileDiffRequest(msg: CheckoutCommitFileDiffRequest): Promise<void> {
+  async handleCommitFileDiffRequest(
+    msg: CheckoutCommitFileDiffRequest,
+    signal: AbortSignal,
+  ): Promise<void> {
     const { cwd, sha, path, requestId } = msg;
 
     try {
@@ -298,7 +305,7 @@ export class CheckoutSession {
       if (path.length === 0 || isAbsolute(path) || path.split(/[\\/]/).includes("..")) {
         throw new Error(`Invalid path: ${path}`);
       }
-      const file = await getCommitFileDiff({ cwd: expandTilde(cwd), sha, path });
+      const file = await getCommitFileDiff({ cwd: expandTilde(cwd), sha, path, signal });
       this.host.emit({
         type: "checkout.commits.file_diff.response",
         payload: { cwd, sha, path, file, error: null, requestId },
@@ -1447,6 +1454,30 @@ export class CheckoutSession {
           authState,
           error: error instanceof Error ? error.message : String(error),
           requestId,
+        },
+      });
+    }
+  }
+
+  async handleSubmodulesRequest(msg: CheckoutSubmodulesRequest): Promise<void> {
+    const cwd = expandTilde(msg.cwd);
+    try {
+      const submodules = await discoverSubmodules(cwd);
+      this.host.emit({
+        type: "checkout_submodules_response",
+        payload: {
+          cwd: msg.cwd,
+          submodules,
+          requestId: msg.requestId,
+        },
+      });
+    } catch {
+      this.host.emit({
+        type: "checkout_submodules_response",
+        payload: {
+          cwd: msg.cwd,
+          submodules: [],
+          requestId: msg.requestId,
         },
       });
     }

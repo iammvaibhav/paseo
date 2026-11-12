@@ -1,3 +1,5 @@
+import { parseAgentDeepLink } from "@getpaseo/protocol/agent-deep-link";
+
 export const BROWSER_NEW_TAB_REQUEST_EVENT = "paseo:event:browser-new-tab-request";
 
 export type BrowserWindowOpenDisposition =
@@ -10,7 +12,8 @@ export type BrowserWindowOpenDisposition =
 export type BrowserWindowOpenDecision =
   | { kind: "deny" }
   | { kind: "popup" }
-  | { kind: "workspace-tab"; url: string };
+  | { kind: "workspace-tab"; url: string }
+  | { kind: "paseo-agent"; url: string };
 
 const MAX_PENDING_WINDOW_OPEN_REQUESTS_PER_GUEST = 20;
 const POPUP_WINDOW_GEOMETRY_FEATURE_NAMES = new Set([
@@ -82,6 +85,11 @@ export function isAllowedBrowserWebviewUrl(value: string | undefined): boolean {
   }
 }
 
+/** Agent deep link posted into itsaplan comments (`paseo://h/<server>/agent/<id>`). */
+export function isPaseoAgentDeepLinkUrl(value: string | undefined): boolean {
+  return typeof value === "string" && parseAgentDeepLink(value) !== null;
+}
+
 export function decideBrowserWindowOpenRequest(input: {
   url: string;
   disposition: BrowserWindowOpenDisposition;
@@ -89,6 +97,9 @@ export function decideBrowserWindowOpenRequest(input: {
   features: string;
   hasPostBody: boolean;
 }): BrowserWindowOpenDecision {
+  if (isPaseoAgentDeepLinkUrl(input.url)) {
+    return { kind: "paseo-agent", url: input.url };
+  }
   if (!isAllowedBrowserWebviewUrl(input.url)) {
     return { kind: "deny" };
   }

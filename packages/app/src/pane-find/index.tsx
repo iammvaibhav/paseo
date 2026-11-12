@@ -35,6 +35,7 @@ import { isWeb } from "@/constants/platform";
 import { isImeComposingKeyboardEvent } from "@/utils/keyboard-ime";
 import { getShortcutOs } from "@/utils/shortcut-platform";
 import { isFindShortcut, type FindShortcutPlatform } from "./find-shortcut";
+import { glassFloatingStyle } from "@/styles/theme";
 
 export { isFindShortcut, type FindShortcutPlatform } from "./find-shortcut";
 
@@ -145,8 +146,6 @@ export const PaneFind = forwardRef<PaneFindHandle, PaneFindProps>(function PaneF
   const controlSize = smallIconButtonChromeFrameSize(isCompact);
   const glyphSize = paneContentToolbarIconSize(isCompact);
   const rowHeight = Math.max(COLLAPSED_FIELD_HEIGHT, controlSize);
-  // Keep the replace actions on the same row height as the icon controls beside them.
-  const actionSize = isCompact ? "sm" : "xs";
   const input = useRef<EditingTextInputHandle>(null);
   const replacementInput = useRef<EditingTextInputHandle>(null);
   useLayoutEffect(() => {
@@ -293,7 +292,7 @@ export const PaneFind = forwardRef<PaneFindHandle, PaneFindProps>(function PaneF
             />
             <Button
               variant="ghost"
-              size={actionSize}
+              size="sm"
               style={styles.replaceAction}
               disabled={!canNavigate}
               onPress={replace.onReplace}
@@ -302,7 +301,7 @@ export const PaneFind = forwardRef<PaneFindHandle, PaneFindProps>(function PaneF
             </Button>
             <Button
               variant="ghost"
-              size={actionSize}
+              size="sm"
               style={styles.replaceAction}
               disabled={!canNavigate}
               onPress={replace.onReplaceAll}
@@ -335,6 +334,7 @@ const styles = StyleSheet.create((theme) => {
       borderColor: theme.colors.border,
       borderRadius: theme.borderRadius.lg,
       ...theme.shadow.md,
+      ...glassFloatingStyle(theme),
     },
     // The disclosure column spans both rows so the two fields share a leading rail.
     gutter: { alignItems: "center", justifyContent: "center", flexShrink: 0 },

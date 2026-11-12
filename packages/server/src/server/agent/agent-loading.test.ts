@@ -1,11 +1,12 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { expect, test } from "vitest";
 
 import { createTestLogger } from "../../test-utils/test-logger.js";
 import { AgentManager } from "./agent-manager.js";
-import { ensureAgentLoaded } from "./agent-loading.js";
+import { ensureAgentLoaded, waitForPendingAgentLoad } from "./agent-loading.js";
+import { startAgentRun } from "./agent-prompt.js";
 import { AgentStorage } from "./agent-storage.js";
 import type {
   AgentClient,
@@ -14,8 +15,10 @@ import type {
   AgentResumeSessionOptions,
   AgentSession,
   AgentSessionConfig,
+  AgentStreamEvent,
 } from "./agent-sdk-types.js";
 import { createTestAgentClients } from "../test-utils/fake-agent-client.js";
+import { createDaemonTestContext } from "../test-utils/daemon-test-context.js";
 
 test("loads archived records for history and active records with the interactive default", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "agent-loading-purpose-"));
@@ -81,6 +84,116 @@ test("loads archived records for history and active records with the interactive
   }
 });
 
+test("restores provider subagents from history after a daemon restart resume", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "agent-loading-subagents-"));
+  const logger = createTestLogger();
+  const storage = new AgentStorage(path.join(root, "agents"), logger);
+  const agentId = "00000000-0000-4000-8000-000000000303";
+
+  class ProviderChildHistorySession implements AgentSession {
+    readonly provider = "codex" as const;
+    readonly capabilities = {
+      supportsStreaming: false,
+      supportsSessionPersistence: true,
+      supportsSessionListing: true,
+      supportsDynamicModes: false,
+      supportsMcpServers: false,
+      supportsReasoningStream: false,
+      supportsToolInvocations: false,
+    } as const;
+    constructor(private readonly cwd: string) {}
+    async run() {
+      return { sessionId: agentId, finalText: "", timeline: [] };
+    }
+    async startTurn() {
+      return { turnId: "turn-1" };
+    }
+    subscribe() {
+      return () => undefined;
+    }
+    async *streamHistory(): AsyncGenerator<AgentStreamEvent> {
+      yield {
+        type: "provider_subagent",
+        provider: "codex",
+        event: {
+          type: "upsert",
+          id: "restored-child",
+          title: "Restored child",
+          status: "completed",
+        },
+      };
+    }
+    async getRuntimeInfo() {
+      return { provider: this.provider, sessionId: agentId, model: null, modeId: null };
+    }
+    async getAvailableModes() {
+      return [];
+    }
+    async getCurrentMode() {
+      return null;
+    }
+    async setMode() {}
+    getPendingPermissions() {
+      return [];
+    }
+    async respondToPermission() {}
+    describePersistence() {
+      return { provider: this.provider, sessionId: "codex-session-1" };
+    }
+    async interrupt() {}
+    async close() {}
+  }
+
+  const client: AgentClient = {
+    provider: "codex",
+    capabilities: {
+      supportsStreaming: false,
+      supportsSessionPersistence: true,
+      supportsSessionListing: true,
+      supportsDynamicModes: false,
+      supportsMcpServers: false,
+      supportsReasoningStream: false,
+      supportsToolInvocations: false,
+    },
+    createSession: async (config: AgentSessionConfig): Promise<AgentSession> =>
+      new ProviderChildHistorySession(config.cwd),
+    resumeSession: async (
+      _handle: AgentPersistenceHandle,
+      overrides?: Partial<AgentSessionConfig>,
+    ): Promise<AgentSession> => new ProviderChildHistorySession(overrides?.cwd ?? root),
+    fetchCatalog: async () => ({ models: [], modes: [] }),
+    isAvailable: async () => true,
+  };
+  const manager = new AgentManager({
+    clients: { codex: client },
+    registry: storage,
+    logger,
+  });
+
+  try {
+    await manager.createAgent({ provider: "codex", cwd: root }, agentId, {
+      workspaceId: "workspace-active",
+    });
+    await manager.closeAgent(agentId);
+
+    await ensureAgentLoaded(agentId, { agentManager: manager, agentStorage: storage, logger });
+
+    expect(manager.listProviderSubagents(agentId)).toEqual([
+      expect.objectContaining({
+        id: "restored-child",
+        parentAgentId: agentId,
+        title: "Restored child",
+        status: "completed",
+      }),
+    ]);
+  } finally {
+    await manager.closeAgent(agentId).catch(() => undefined);
+    await manager.flush().catch(() => undefined);
+    await storage.flush().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("resuming a stored agent keeps its unread flag and its last-activity time", async () => {
   const root = await mkdtemp(path.join(tmpdir(), "agent-loading-resume-"));
   const logger = createTestLogger();
@@ -140,3 +253,310 @@ test("resuming a stored agent keeps its unread flag and its last-activity time",
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test.each([false, true])(
+  "loads history after its working directory is removed (archived: %s)",
+  async (archived) => {
+    const root = await mkdtemp(path.join(tmpdir(), "agent-loading-missing-cwd-"));
+    const worktree = path.join(root, "managed-worktree");
+    await mkdir(worktree, { recursive: true });
+    const logger = createTestLogger();
+    const storage = new AgentStorage(path.join(root, "agents"), logger);
+    const manager = new AgentManager({
+      clients: createTestAgentClients(),
+      registry: storage,
+      logger,
+    });
+
+    const agentId = "00000000-0000-4000-8000-000000000501";
+
+    try {
+      const agent = await manager.createAgent({ provider: "codex", cwd: worktree }, agentId, {
+        workspaceId: "workspace-worktree",
+      });
+      await startAgentRun(manager, agent.id, "what did you change", logger, {});
+      // Dispatching a run does not finish it: the provider appends the reply to its
+      // history afterwards, and the turn is finalized only once that append lands.
+      // Archive after the turn is finalized so the transcript this test reads back is
+      // already on disk when the worktree goes away.
+      const finished = await manager.waitForAgentEvent(agent.id);
+      expect(finished.status).toBe("idle");
+      if (archived) await manager.archiveAgent(agent.id);
+      await manager.closeAgent(agent.id);
+      await manager.flush();
+      await storage.flush();
+
+      // Archiving the workspace removes the worktree it owned. The agent's history is
+      // persisted and reading it must not depend on that directory still being there.
+      await rm(worktree, { recursive: true, force: true });
+
+      const loaded = await ensureAgentLoaded(agentId, {
+        agentManager: manager,
+        agentStorage: storage,
+        logger,
+        purpose: "history",
+      });
+
+      expect(loaded.id).toBe(agentId);
+      // The transcript is replayed from the provider's persisted history, so the reply the
+      // agent gave before the worktree went away is still readable.
+      const replies = manager
+        .getTimeline(agentId)
+        .filter((item) => item.type === "assistant_message");
+      expect(replies.length).toBeGreaterThan(0);
+      expect(
+        replies.every((item) => item.type === "assistant_message" && item.text.length > 0),
+      ).toBe(true);
+    } finally {
+      await manager.closeAgent(agentId).catch(() => undefined);
+      await manager.flush().catch(() => undefined);
+      await storage.flush().catch(() => undefined);
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+);
+
+test("timeline requests read unarchived stored history with a deleted cwd", async () => {
+  const ctx = await createDaemonTestContext();
+  const cwd = await mkdtemp(path.join(tmpdir(), "timeline-deleted-cwd-"));
+  try {
+    const agent = await ctx.client.createAgent({ provider: "codex", cwd });
+    await ctx.client.sendMessage(agent.id, "remember this conversation");
+    await ctx.client.waitForFinish(agent.id, 15000);
+    const before = await ctx.client.fetchAgentTimeline(agent.id);
+    await ctx.daemon.daemon.agentManager.closeAgent(agent.id);
+    await ctx.daemon.daemon.agentManager.flush();
+    await rm(cwd, { recursive: true, force: true });
+    const after = await ctx.client.fetchAgentTimeline(agent.id);
+    expect(after.entries).toEqual(before.entries);
+    expect(after.entries.length).toBeGreaterThan(0);
+    await expect(ctx.client.sendMessage(agent.id, "continue")).rejects.toThrow(
+      "Working directory does not exist",
+    );
+    await expect(ctx.client.createAgent({ provider: "codex", cwd })).rejects.toThrow(
+      "Working directory does not exist",
+    );
+    await mkdir(cwd);
+    await ctx.client.sendMessage(agent.id, "continue after restoring directory");
+    expect((await ctx.client.waitForFinish(agent.id, 15000)).status).toBe("idle");
+  } finally {
+    await ctx.cleanup();
+    await rm(cwd, { recursive: true, force: true });
+  }
+}, 30000);
+
+test("a pending load is awaitable until the resumed agent's history is hydrated", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "agent-loading-pending-"));
+  const logger = createTestLogger();
+  const storage = new AgentStorage(path.join(root, "agents"), logger);
+  const agentId = "00000000-0000-4000-8000-000000000601";
+  const writer = new AgentManager({ clients: createTestAgentClients(), registry: storage, logger });
+  // A second manager over the same storage is a restarted daemon: no in-memory timeline.
+  const reader = new AgentManager({ clients: createTestAgentClients(), registry: storage, logger });
+
+  try {
+    const agent = await writer.createAgent({ provider: "codex", cwd: root }, agentId, {
+      workspaceId: "workspace-pending",
+    });
+    await startAgentRun(writer, agent.id, "say something", logger, {});
+    // waitForAgentEvent resolves on the next lifecycle change, which can be the turn starting.
+    while ((await writer.waitForAgentEvent(agent.id)).status !== "idle") {
+      // keep waiting until the turn settles
+    }
+    await writer.closeAgent(agent.id);
+    await writer.flush();
+    await storage.flush();
+
+    const hydrationGate = Promise.withResolvers<void>();
+    const hydrationEntered = Promise.withResolvers<void>();
+    const hydrate = reader.hydrateTimelineFromProvider.bind(reader);
+    reader.hydrateTimelineFromProvider = async (id, options) => {
+      hydrationEntered.resolve();
+      await hydrationGate.promise;
+      await hydrate(id, options);
+    };
+
+    const loading = ensureAgentLoaded(agentId, {
+      agentManager: reader,
+      agentStorage: storage,
+      logger,
+    });
+    await hydrationEntered.promise;
+    // The agent is live but its history is not: this is the window a timeline read must not serve.
+    expect(reader.getAgent(agentId)).toBeTruthy();
+    expect(reader.getTimeline(agentId)).toEqual([]);
+
+    const waiting = waitForPendingAgentLoad(agentId).then(() => "settled" as const);
+    expect(await Promise.race([waiting, Promise.resolve("pending" as const)])).toBe("pending");
+
+    hydrationGate.resolve();
+    expect(await waiting).toBe("settled");
+    expect(reader.getTimeline(agentId).some((item) => item.type === "assistant_message")).toBe(
+      true,
+    );
+    await loading;
+  } finally {
+    await reader.closeAgent(agentId).catch(() => undefined);
+    await writer.closeAgent(agentId).catch(() => undefined);
+    await reader.flush().catch(() => undefined);
+    await writer.flush().catch(() => undefined);
+    await storage.flush().catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("timeline reads keep runnable unarchived agents interactive for the next prompt", async () => {
+  const clients = createTestAgentClients();
+  const base = clients.codex!;
+  const purposes: Array<AgentResumeSessionOptions | undefined> = [];
+  const client: AgentClient = {
+    provider: base.provider,
+    capabilities: base.capabilities,
+    createSession: (config, context) => base.createSession(config, context),
+    resumeSession: (handle, overrides, context, options) => {
+      purposes.push(options);
+      return base.resumeSession(handle, overrides, context, options);
+    },
+    fetchCatalog: (options) => base.fetchCatalog(options),
+    isAvailable: () => base.isAvailable(),
+  };
+  const ctx = await createDaemonTestContext({ agentClients: { codex: client } });
+  const cwd = await mkdtemp(path.join(tmpdir(), "timeline-interactive-"));
+  try {
+    const agent = await ctx.client.createAgent({ provider: "codex", cwd });
+    await ctx.daemon.daemon.agentManager.closeAgent(agent.id);
+    await ctx.client.fetchAgentTimeline(agent.id);
+    // This fork serves timeline reads from the cached or on-disk timeline without resuming the
+    // provider, so a read never leaves a history-only session behind for the next prompt.
+    expect(purposes).toEqual([]);
+    await ctx.client.sendMessage(agent.id, "continue after opening history");
+    expect((await ctx.client.waitForFinish(agent.id, 15000)).status).toBe("idle");
+    expect(purposes).toEqual([{ purpose: "interactive" }]);
+    const timeline = await ctx.client.fetchAgentTimeline(agent.id);
+    expect(timeline.entries.length).toBeGreaterThan(0);
+    await ctx.daemon.daemon.agentManager.closeAgent(agent.id);
+    await rm(cwd, { recursive: true, force: true });
+    await ctx.client.fetchAgentTimeline(agent.id);
+    await mkdir(cwd);
+    const manager = ctx.daemon.daemon.agentManager;
+    await Promise.all([
+      manager.tryRunOutOfBand(agent.id, "first prompt"),
+      manager.tryRunOutOfBand(agent.id, "second prompt"),
+    ]);
+    expect(purposes).toEqual([
+      { purpose: "interactive" },
+      { purpose: "interactive" }, // One resume serves both concurrent prompts.
+    ]);
+  } finally {
+    await ctx.cleanup();
+    await rm(cwd, { recursive: true, force: true });
+  }
+}, 30000);
+
+test.each(["mode", "thinking", "rewind"])(
+  "restored OMP history accepts %s before starting an interactive turn",
+  async (setting) => {
+    const { OmpAgentClient } = await import("./providers/omp/agent.js");
+    const { FakeOmp } = await import("./providers/omp/test-utils/fake-omp.js");
+    const { sendPreparedPromptToAgent } = await import("./agent-prompt.js");
+    const root = await mkdtemp(path.join(tmpdir(), "history-mode-"));
+    const cwd = path.join(root, "removed-worktree");
+    const sessionFile = path.join(root, "session.jsonl");
+    await writeFile(
+      sessionFile,
+      [
+        { type: "session", id: "root", parentId: null },
+        {
+          type: "message",
+          id: "user-1",
+          parentId: "root",
+          message: { role: "user", content: "saved question" },
+        },
+      ]
+        .map((entry) => JSON.stringify(entry))
+        .join("\n") + "\n",
+    );
+    const logger = createTestLogger();
+    const storage = new AgentStorage(path.join(root, "agents"), logger);
+    const runtime = new FakeOmp();
+    const manager = new AgentManager({
+      clients: {
+        omp: new OmpAgentClient({
+          logger,
+          runtime,
+          runtimeSettings: { command: { mode: "replace", argv: [process.execPath] } },
+        }),
+      },
+      registry: storage,
+      logger,
+    });
+    const agentId = "00000000-0000-4000-8000-000000000601";
+    const now = new Date().toISOString();
+    try {
+      await storage.upsert({
+        id: agentId,
+        provider: "omp",
+        cwd,
+        createdAt: now,
+        updatedAt: now,
+        labels: {},
+        lastStatus: "closed",
+        archivedAt: null,
+        persistence: {
+          provider: "omp",
+          sessionId: "history-mode",
+          nativeHandle: sessionFile,
+          metadata: { cwd },
+        },
+      });
+      await ensureAgentLoaded(agentId, {
+        agentManager: manager,
+        agentStorage: storage,
+        logger,
+        purpose: "history",
+      });
+      expect(
+        runtime.recordedLaunches.filter((launch) => launch.session === sessionFile),
+      ).toHaveLength(0);
+      await mkdir(cwd);
+      if (setting === "rewind") {
+        await manager.rewind(agentId, "user-1", "conversation");
+        expect(runtime.latestSession().branchRequests).toEqual(["user-1"]);
+      }
+      if (setting === "thinking") {
+        await manager.setAgentThinkingOption(agentId, "high");
+        expect(manager.getAgent(agentId)?.config.thinkingOptionId).toBe("high");
+        expect(runtime.latestSession().setThinkingLevelRequests).toContain("high");
+      }
+      await sendPreparedPromptToAgent({
+        agentManager: manager,
+        agentStorage: storage,
+        agentId,
+        logger,
+        prompt: "continue",
+        sessionMode: "full",
+      });
+      expect(
+        runtime.recordedLaunches.filter((launch) => launch.session === sessionFile),
+      ).toHaveLength(1);
+      expect(manager.getAgent(agentId)?.currentModeId).toBe("full");
+      expect(runtime.latestSession().prompts).toEqual([
+        expect.objectContaining({ message: "continue" }),
+      ]);
+      runtime.latestSession().finishTurn();
+      await manager.waitForAgentEvent(agentId);
+      await manager.archiveAgent(agentId);
+      await manager.closeAgent(agentId);
+      await ensureAgentLoaded(agentId, { agentManager: manager, agentStorage: storage, logger });
+      const launchesBeforeModeChange = runtime.recordedLaunches.length;
+      await expect(manager.setAgentMode(agentId, "full")).rejects.toThrow("Agent is archived");
+      expect(runtime.recordedLaunches).toHaveLength(launchesBeforeModeChange);
+    } finally {
+      await manager.closeAgent(agentId).catch(() => undefined);
+      await manager.flush();
+      await storage.flush();
+      await rm(root, { recursive: true, force: true });
+    }
+  },
+  30000,
+);

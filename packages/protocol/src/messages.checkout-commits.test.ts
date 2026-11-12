@@ -36,6 +36,7 @@ describe("checkout.commits.list schemas", () => {
           authorDate: "2026-06-13T10:00:00.000Z",
           isOnRemote: true,
           isOnBase: false,
+          parents: ["3333333333333333333333333333333333333333"],
           files: [
             { path: "src/a.ts", additions: 10, deletions: 2, status: "modified" },
             { path: "src/b.ts", additions: 5, deletions: 0, status: "added" },
@@ -49,6 +50,10 @@ describe("checkout.commits.list schemas", () => {
           authorDate: "2026-06-13T11:00:00.000Z",
           isOnRemote: false,
           isOnBase: true,
+          parents: [
+            "4444444444444444444444444444444444444444",
+            "5555555555555555555555555555555555555555",
+          ],
           files: [{ path: "src/c.ts", additions: 1, deletions: 1 }],
         },
       ],
@@ -64,11 +69,17 @@ describe("checkout.commits.list schemas", () => {
     expect(parsed.payload).toEqual(payload);
     expect(parsed.payload.commits[0]?.isOnRemote).toBe(true);
     expect(parsed.payload.commits[0]?.isOnBase).toBe(false);
+    expect(parsed.payload.commits[0]?.parents).toEqual([
+      "3333333333333333333333333333333333333333",
+    ]);
     expect(parsed.payload.commits[1]?.isOnRemote).toBe(false);
     expect(parsed.payload.commits[1]?.isOnBase).toBe(true);
+    expect(parsed.payload.commits[1]?.parents).toEqual([
+      "4444444444444444444444444444444444444444",
+      "5555555555555555555555555555555555555555",
+    ]);
     expect(parsed.payload.commits[1]?.files[0]?.status).toBeUndefined();
   });
-
   test("still parses commits from hosts without base classification", () => {
     const parsed = CheckoutCommitsListResponseSchema.parse({
       type: "checkout.commits.list.response",
@@ -92,6 +103,33 @@ describe("checkout.commits.list schemas", () => {
     });
 
     expect(parsed.payload.commits[0]?.isOnBase).toBeUndefined();
+    expect(parsed.payload.commits[0]?.parents).toBeUndefined();
+  });
+  test("parses commits with root commit having an empty parents array", () => {
+    const parsed = CheckoutCommitsListResponseSchema.parse({
+      type: "checkout.commits.list.response",
+      payload: {
+        cwd: "/tmp/repo",
+        baseRef: null,
+        commits: [
+          {
+            sha: "1111111111111111111111111111111111111111",
+            shortSha: "1111111",
+            subject: "Root commit",
+            authorName: "Ada",
+            authorDate: "2026-06-13T10:00:00.000Z",
+            isOnRemote: true,
+            isOnBase: true,
+            parents: [],
+            files: [],
+          },
+        ],
+        error: null,
+        requestId: "request-commits",
+      },
+    });
+
+    expect(parsed.payload.commits[0]?.parents).toEqual([]);
   });
 
   test("accepts a null baseRef and an error payload", () => {
@@ -144,9 +182,10 @@ describe("checkout.commits.list schemas", () => {
         features: {
           commitsList: true,
           commitBaseClassification: true,
+          commitParents: true,
         },
       }).features,
-    ).toEqual({ commitsList: true, commitBaseClassification: true });
+    ).toEqual({ commitsList: true, commitBaseClassification: true, commitParents: true });
   });
 
   test("still parses server_info without the commitsList feature flag", () => {

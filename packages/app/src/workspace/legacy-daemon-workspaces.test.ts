@@ -79,6 +79,7 @@ describe("applyLegacyDaemonWorkspaceOwnership", () => {
     store.updateSessionServerInfo(SERVER_ID, {
       serverId: SERVER_ID,
       hostname: null,
+      missionControlHostAlias: null,
       version: "0.1.96",
     });
     const cachedAgent = getSnapshotAgent(snapshot, "agent-running");

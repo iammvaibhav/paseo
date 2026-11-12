@@ -13,7 +13,7 @@ export interface PaneContextValue {
   tabId: string;
   target: WorkspaceTabTarget;
   state?: JsonValue;
-  fileNavigationRevision?: number;
+  panelRevision?: number;
   openTab: (target: WorkspaceTabTarget) => void;
   openPreferredTarget: (target: WorkspaceTabTarget, source: OpenInSidePaneSource) => void;
   openTargetToSide?: (target: WorkspaceTabTarget) => void;
@@ -21,6 +21,7 @@ export interface PaneContextValue {
   retargetCurrentTab: (target: WorkspaceTabTarget) => void;
   setCurrentTabState: (state: JsonValue) => void;
   openFileInWorkspace: (request: WorkspaceFileOpenRequest) => void;
+  openDiffInBrowserEditor?: (path: string, baseRef: string | null) => void;
   openImportSheet: () => void;
 }
 

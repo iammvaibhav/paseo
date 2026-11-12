@@ -182,6 +182,7 @@ function workspaceSummary(overrides: Partial<WorkspaceSummary> = {}): WorkspaceS
     status: "done",
     currentBranch: "main",
     changeRequestNumber: null,
+    statusEnteredAt: null,
     ...overrides,
   };
 }
@@ -192,6 +193,7 @@ function hostEntry(overrides: Partial<ProjectHostEntry> = {}): ProjectHostEntry 
     projectId: "project-a",
     projectName: "Project",
     projectCustomName: null,
+    projectDescription: null,
     serverName: "alpha",
     isOnline: true,
     repoRoot: "/home/me/proj",

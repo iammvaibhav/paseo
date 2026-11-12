@@ -1,14 +1,25 @@
 {
   "worktree": {
     "setup": [
-      "npm ci",
+      "pnpm install",
       "node ./scripts/seed-ios-native-cache.mjs",
       "node ./scripts/seed-worktree-dev-state.mjs",
-      "npm run build:server",
-      "npm run build --workspace=@getpaseo/expo-two-way-audio"
-    ]
+      "pnpm run build:server",
+      "pnpm --filter @getpaseo/expo-two-way-audio run build"
+    ],
+    "teardown": [
+      "node -e \"if (require('fs').existsSync('./scripts/verify/stack.mjs')) { try { require('child_process').execFileSync(process.execPath, ['./scripts/verify/stack.mjs', 'down', '--all', '--quiet'], { stdio: 'inherit' }); } catch {} }\""
+    ],
+    "warmPool": {
+      "enabled": true,
+      "targetIdle": 1,
+      "baseRef": "vaibhav/customizations"
+    }
   },
   "scripts": {
+    "deploy-logs": {
+      "command": "tail -f -n +1 /home/ubuntu/.paseo/deploy-logs/latest.log"
+    },
     "daemon": {
       "type": "service",
       "command": "PASEO_DEV_MANAGED_HOME=1 PASEO_DEV_ROOT=\"${PASEO_WORKTREE_PATH:-$PWD}\" PASEO_HOME=\"${PASEO_WORKTREE_PATH:-$PWD}/.dev/paseo-home\" PASEO_SKIP_DEV_SERVER_BUILD=1 PASEO_LISTEN=0.0.0.0:${PASEO_PORT:-6768} ./scripts/dev-daemon.sh"
@@ -26,7 +37,10 @@
       "command": "PASEO_DEV_MANAGED_HOME=1 PASEO_DEV_ROOT=\"$PWD\" PASEO_HOME=\"$PWD/.dev/paseo-home\" PASEO_LISTEN=0.0.0.0:${PASEO_SERVICE_DAEMON_PORT} PASEO_DEV_DAEMON_ENDPOINT=localhost:${PASEO_SERVICE_DAEMON_PORT} ./scripts/paseo-ios-simulator-service.sh"
     },
     "typecheck": {
-      "command": "npm run typecheck"
+      "command": "pnpm run typecheck"
+    },
+    "build-desktop": {
+      "command": "CSC_IDENTITY_AUTO_DISCOVERY=false pnpm run build:desktop"
     }
   }
 }

@@ -32,7 +32,7 @@ export function formatAgo(iso: string | null | undefined): string | null {
   if (!iso) return null;
   const diffMs = Date.now() - new Date(iso).getTime();
   if (!Number.isFinite(diffMs)) return null;
-  if (diffMs < 60_000) return "just now";
+  if (diffMs < 60_000) return `${Math.max(0, Math.floor(diffMs / 1_000))}s ago`;
   const diffMinutes = Math.floor(diffMs / 60_000);
   const diffHours = Math.floor(diffMinutes / 60);
   const diffDays = Math.floor(diffHours / 24);

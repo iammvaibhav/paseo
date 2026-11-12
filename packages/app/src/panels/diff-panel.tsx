@@ -1,3 +1,4 @@
+import { resolveChangesPresentation } from "./changes/presentation";
 import { useCallback, useMemo, type ReactNode } from "react";
 import { Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
@@ -7,9 +8,12 @@ import invariant from "tiny-invariant";
 import { useRetainedPanelActive } from "@/components/retained-panel";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { PaneContentToolbar } from "@/components/ui/pane-content-toolbar";
-import { isWeb } from "@/constants/platform";
+import { isWeb, isNative } from "@/constants/platform";
 import { DiffDocument } from "@/git/diff-document";
 import { ChangesSurface, DiffLayoutToggle, resolveDiffLayout } from "@/git/diff-pane";
+import { useSubmoduleContext } from "@/git/submodule-context";
+import { SubmodulePicker } from "@/git/submodule-picker";
+
 import { useCommitDiffFiles } from "@/git/use-diff-files";
 import { useChangesPreferences } from "@/hooks/use-changes-preferences";
 import { useAppSettings } from "@/hooks/use-settings";
@@ -76,21 +80,21 @@ function PanelState({
   );
 }
 
-function resolveChangesPresentation(
-  isTree: boolean,
-  inlineDiff: boolean,
-): "tree" | "diff" | "combined" {
-  if (!isTree) return "diff";
-  return inlineDiff ? "combined" : "tree";
-}
-
 function ChangesPanel() {
   const { t } = useTranslation();
-  const { serverId, workspaceId, tabId, target, openPreferredTarget, openTargetToSide } =
-    usePaneContext();
+  const {
+    serverId,
+    workspaceId,
+    tabId,
+    target,
+    openPreferredTarget,
+    openFileInWorkspace,
+    openTargetToSide,
+    openDiffInBrowserEditor,
+  } = usePaneContext();
+  const workspaceRoot = useWorkspaceDirectory(serverId, workspaceId);
   const [changesState, setChangesState] = usePanelState(changesStateSchema, defaultChangesState);
   const { preferences } = useChangesPreferences();
-  const cwd = useWorkspaceDirectory(serverId, workspaceId);
   const isActive = useRetainedPanelActive();
   const { addFile, canAddToChat } = useAddFileToChat({ serverId, workspaceId });
   invariant(
@@ -98,12 +102,42 @@ function ChangesPanel() {
     "ChangesPanel requires working_diff or changes_tree target",
   );
   const isTree = target.kind === "changes_tree";
+  const isCompact = useIsCompactFormFactor();
 
+  // The workspace Changes pane is a git surface, so the submodule context is
+  // always available. The picker lives in the diff header; switching the
+  // submodule re-roots the diff and the paths it hands back.
+  const { effectiveCwd, submodules, hasSubmodules, selectedSubmodule, setSelectedSubmodule } =
+    useSubmoduleContext({
+      serverId,
+      workspaceRoot: workspaceRoot ?? "",
+      isGit: true,
+      enabled: isActive && Boolean(workspaceRoot),
+    });
+  const submodulePrefix = selectedSubmodule ? `${selectedSubmodule}/` : "";
+
+  // With VS Code Web (signalled by its diff opener) a plain open goes there too;
+  // otherwise it is a Paseo file tab placed by the diffs side-pane preference.
   const handleOpenFile = useCallback(
-    (path: string) => openPreferredTarget({ kind: "file", path }, isTree ? "diffs" : "diffFiles"),
-    [isTree, openPreferredTarget],
+    (path: string) => {
+      const filePath = path.startsWith("/") ? path : `${submodulePrefix}${path}`;
+      if (openDiffInBrowserEditor) {
+        openFileInWorkspace({ location: { path: filePath }, disposition: "preferred" });
+        return;
+      }
+      openPreferredTarget({ kind: "file", path: filePath }, isTree ? "diffs" : "diffFiles");
+    },
+    [isTree, openDiffInBrowserEditor, openFileInWorkspace, openPreferredTarget, submodulePrefix],
   );
-
+  const handleOpenDiff = useCallback(
+    (path: string, baseRef: string | null) =>
+      openDiffInBrowserEditor?.(path.startsWith("/") ? path : `${submodulePrefix}${path}`, baseRef),
+    [openDiffInBrowserEditor, submodulePrefix],
+  );
+  const handleAddToChat = useCallback(
+    (path: string) => addFile(path.startsWith("/") ? path : `${submodulePrefix}${path}`),
+    [addFile, submodulePrefix],
+  );
   const handleSelectDiffFile = useCallback(
     (path: string) =>
       openPreferredTarget(
@@ -118,11 +152,28 @@ function ChangesPanel() {
     [openTargetToSide],
   );
 
-  if (!cwd) {
+  const submodulePicker = useMemo(
+    () =>
+      hasSubmodules ? (
+        <SubmodulePicker
+          submodules={submodules}
+          selectedPath={selectedSubmodule}
+          onSelect={setSelectedSubmodule}
+        />
+      ) : undefined,
+    [hasSubmodules, selectedSubmodule, setSelectedSubmodule, submodules],
+  );
+
+  if (!workspaceRoot) {
     return <PanelState message={t("panels.diff.directoryMissing")} />;
   }
 
-  const presentation = resolveChangesPresentation(isTree, preferences.inlineDiff);
+  const presentation = resolveChangesPresentation({
+    isTree,
+    inlineDiff: preferences.inlineDiff,
+    isCompact,
+    isNative,
+  });
   const testID = isTree ? "changes-tree-panel" : "working-diff-panel";
   const profileId = isTree ? `ChangesTreePanel:${tabId}` : `WorkingDiffPanel:${tabId}`;
 
@@ -132,15 +183,17 @@ function ChangesPanel() {
         <ChangesSurface
           serverId={serverId}
           workspaceId={workspaceId}
-          cwd={cwd}
+          cwd={effectiveCwd}
           enabled={isActive}
           presentation={presentation}
+          submodulePicker={submodulePicker}
           focusPath={target.kind === "working_diff" ? target.focusPath : undefined}
           focusRequestId={target.kind === "working_diff" ? target.focusRequestId : undefined}
           onSelectDiffFile={isTree ? handleSelectDiffFile : undefined}
+          onOpenDiff={openDiffInBrowserEditor ? handleOpenDiff : undefined}
           onOpenFile={handleOpenFile}
           onOpenToSide={isTree && openTargetToSide ? handleOpenDiffToSide : undefined}
-          onAddToChat={canAddToChat ? addFile : undefined}
+          onAddToChat={canAddToChat ? handleAddToChat : undefined}
           state={changesState}
           onStateChange={setChangesState}
         />

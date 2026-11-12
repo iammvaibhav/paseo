@@ -16,6 +16,8 @@ export interface PendingCreateAttempt {
   errorMessage?: string;
   images?: UserMessageImageAttachment[];
   attachments?: AgentAttachment[];
+  /** When true, start voice mode once the created agent tab is ready. */
+  startVoiceMode?: boolean;
 }
 
 export function isActiveCreateFlowForDraft(input: {
@@ -122,6 +124,7 @@ export const useCreateFlowStore = create<CreateFlowState>((set, get) => ({
       const next = Object.fromEntries(
         Object.entries(state.pendingByDraftId).filter(
           ([, pending]) =>
+            pending.startVoiceMode === true ||
             pending.lifecycle !== "sent" ||
             pending.serverId !== serverId ||
             pending.agentId !== agentId,

@@ -5,6 +5,7 @@ import {
   type InlinePathTarget,
 } from "./parse";
 import { i18n } from "@/i18n/i18next";
+import { isAbsolutePath } from "@/utils/path";
 
 export interface AssistantFileLinkSource {
   href: string;
@@ -17,6 +18,7 @@ export interface AssistantFileLinkSource {
 
 export interface AssistantFileLinkContext {
   workspaceRoot?: string;
+  relativePathBase?: string;
 }
 
 export interface DirectorySuggestionEntry {
@@ -35,8 +37,12 @@ export type GetDirectorySuggestions = (input: {
   includeFiles: true;
   includeDirectories: false;
   matchMode: "suffix";
+  lineHint?: number;
   limit: number;
 }) => Promise<DirectorySuggestionResult>;
+
+// More matches than this is a bare basename the picker cannot usefully narrow anyway.
+const MAX_FILE_LINK_CANDIDATES = 50;
 
 export type ResolvedAssistantFileLink =
   | { kind: "external"; url: string }
@@ -67,13 +73,17 @@ export class UnresolvedFileLinkError extends Error {
   }
 }
 
+/**
+ * Every workspace file the token can name, best first. The daemon returns only the exact path when
+ * it exists, and drops matches too short to have the referenced line when another has it.
+ */
 export async function fetchDaemonResolution({
   ambiguousQuery,
   token,
   target,
   workspaceRoot,
   getDirectorySuggestions,
-}: FetchDaemonResolutionInput): Promise<InlinePathTarget> {
+}: FetchDaemonResolutionInput): Promise<InlinePathTarget[]> {
   const trimmedRoot = workspaceRoot?.trim();
   if (!trimmedRoot) {
     throw new UnresolvedFileLinkError(token);
@@ -87,34 +97,101 @@ export async function fetchDaemonResolution({
       includeFiles: true,
       includeDirectories: false,
       matchMode: "suffix",
-      limit: 1,
+      lineHint: target.lineEnd ?? target.lineStart,
+      limit: MAX_FILE_LINK_CANDIDATES,
     });
   } catch {
     throw new UnresolvedFileLinkError(token);
   }
 
-  const match = suggestions.entries.find((entry) => entry.kind === "file");
-  if (!match || suggestions.error) {
+  const candidates = suggestions.entries
+    .filter((entry) => entry.kind === "file")
+    .map(
+      (entry): InlinePathTarget => ({
+        raw: target.raw,
+        path: joinWorkspacePath(trimmedRoot, entry.path),
+        lineStart: target.lineStart,
+        lineEnd: target.lineEnd,
+      }),
+    );
+  if (candidates.length === 0 || suggestions.error) {
     throw new UnresolvedFileLinkError(token);
   }
+  return candidates;
+}
 
-  return {
-    ...target,
-    path: joinWorkspacePath(trimmedRoot, match.path),
-  };
+/** Only file-looking paths nested inside the workspace need suffix search. */
+function nestedRelativeLookupQuery(
+  targetPath: string,
+  workspaceRoot: string | undefined,
+): string | null {
+  const root = workspaceRoot?.trim();
+  if (!root) {
+    return null;
+  }
+  const normalizedRoot = root.replace(/\\/g, "/").replace(/\/+$/, "");
+  const normalizedPath = targetPath.replace(/\\/g, "/");
+  const prefix = `${normalizedRoot}/`;
+  if (!normalizedPath.startsWith(prefix)) {
+    return null;
+  }
+  const relative = normalizedPath.slice(prefix.length);
+  if (!relative.includes("/") || !isFileLookingAssistantToken(encodeURI(relative))) {
+    return null;
+  }
+  return relative;
+}
+
+/** When a markdown link points at workspaceRoot/schema/x.md and that file is
+ * missing, ask the same suffix lookup bare names already use. An exact hit
+ * stays on that path. A suffix hit such as repo-a/schema/x.md replaces it.
+ * Lookup failure keeps the original target.
+ */
+export async function resolveMissingNestedRelativeFile(input: {
+  target: InlinePathTarget;
+  workspaceRoot?: string;
+  getDirectorySuggestions: GetDirectorySuggestions;
+}): Promise<InlinePathTarget> {
+  if (
+    isAbsoluteInlineCodeToken(input.target.raw) ||
+    input.target.raw.startsWith("~/") ||
+    input.target.raw.endsWith("/")
+  ) {
+    return input.target;
+  }
+  const query = nestedRelativeLookupQuery(input.target.path, input.workspaceRoot);
+  if (!query) {
+    return input.target;
+  }
+  try {
+    const [match] = await fetchDaemonResolution({
+      ambiguousQuery: query,
+      token: input.target.raw,
+      target: input.target,
+      workspaceRoot: input.workspaceRoot,
+      getDirectorySuggestions: input.getDirectorySuggestions,
+    });
+    return match ?? input.target;
+  } catch {
+    return input.target;
+  }
 }
 
 export function classifyForResolution(
   source: AssistantFileLinkSource,
   context: AssistantFileLinkContext,
 ): AssistantFileLinkResolution {
-  const token = getAssistantFileLinkToken(source).trim();
+  const tokenInfo = getAssistantFileLinkTokenInfo(source);
+  const token = tokenInfo.token.trim();
   if (!token) {
     return { kind: "resolved", value: { kind: "ignored" } };
   }
 
   const classification = classifyAssistantFileLink(token, {
     workspaceRoot: context.workspaceRoot,
+    decodeHref: tokenInfo.fromHref,
+    explicitLink: source.sourceType !== "inline-code" && !isLinkifiedSource(source),
+    relativePathBase: context.relativePathBase,
   });
   if (!classification) {
     return { kind: "resolved", value: { kind: "ignored" } };
@@ -148,14 +225,26 @@ export function classifyForResolution(
 }
 
 export function getAssistantFileLinkToken(source: AssistantFileLinkSource): string {
-  if (isLinkifiedSource(source) || source.sourceType === "inline-code") {
+  return getAssistantFileLinkTokenInfo(source).token;
+}
+
+// Markdown link hrefs are percent-encoded by the renderer; inline-code and
+// linkified text are raw file paths that must not be decoded.
+function getAssistantFileLinkTokenInfo(source: AssistantFileLinkSource): {
+  token: string;
+  fromHref: boolean;
+} {
+  if (source.sourceType === "inline-code") {
+    return { token: source.text?.trim() || source.href, fromHref: false };
+  }
+  if (isLinkifiedSource(source)) {
     const text = source.text?.trim();
     if (text && isFileLookingAssistantToken(text)) {
-      return text;
+      return { token: text, fromHref: false };
     }
   }
 
-  return source.href;
+  return { token: source.href, fromHref: true };
 }
 
 export function getAmbiguousSuggestionQuery(
@@ -187,6 +276,13 @@ export function shouldResolveDirectFileThroughSuggestions(input: {
     return false;
   }
 
+  // The suggestion lookup finds files only; a folder-shaped token (no extension
+  // on its last segment) opens as written and the click checks what it is.
+  const lastSegment = input.token.replace(/\/+$/, "").split("/").pop() ?? "";
+  if (input.token.endsWith("/") || !lastSegment.includes(".")) {
+    return false;
+  }
+
   const workspaceRoot = input.context.workspaceRoot?.trim();
   if (!workspaceRoot) {
     return false;
@@ -198,11 +294,7 @@ export function shouldResolveDirectFileThroughSuggestions(input: {
 }
 
 function isAbsoluteInlineCodeToken(token: string): boolean {
-  return (
-    token.startsWith("/") ||
-    token.toLowerCase().startsWith("file://") ||
-    /^[A-Za-z]:[\\/]/.test(token)
-  );
+  return isAbsolutePath(token) || token.toLowerCase().startsWith("file://");
 }
 
 function isLinkifiedSource(source: AssistantFileLinkSource): boolean {

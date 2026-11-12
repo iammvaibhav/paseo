@@ -1,3 +1,5 @@
+import { createWorkspaceRuntimeStore } from "./workspace-runtime-store/index.js";
+import { createAgentMessageDeliveryStub } from "./test-utils/session-stubs.js";
 import {
   createMessageReceiptsStub,
   createTestCreationService,
@@ -103,7 +105,9 @@ describe("snapshot mutation ownership boundary", () => {
 
     const session = asInternals<SessionInternals>(
       new Session({
+        workspaceRuntimeStore: createWorkspaceRuntimeStore(),
         messageReceipts: createMessageReceiptsStub(),
+        agentMessages: createAgentMessageDeliveryStub(),
         creationService: createTestCreationService(),
         clientId: "test-client",
         permissions: OWNER_PERMISSIONS,
@@ -163,6 +167,9 @@ describe("snapshot mutation ownership boundary", () => {
       "agent-1",
       "Renamed agent",
       { lane: "phase-1a" },
+      undefined,
+      undefined,
+      undefined,
       "req-1",
     );
     expect(updateAgentMetadata).toHaveBeenCalledWith("agent-1", {

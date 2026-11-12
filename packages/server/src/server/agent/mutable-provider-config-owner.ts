@@ -29,6 +29,7 @@ export function attachMutableProviderConfigOwner(options: {
       options.updateProviderRegistry(prepared.agentManagerState);
     } catch (error) {
       options.updateProviderRegistry(previousAgentManagerState);
+      prepared.discard();
       throw error;
     }
     commitPendingProviderChange = prepared.commit;
@@ -36,6 +37,7 @@ export function attachMutableProviderConfigOwner(options: {
     return () => {
       commitPendingProviderChange = null;
       options.updateProviderRegistry(previousAgentManagerState);
+      prepared.discard();
     };
   });
   const unsubscribeChange = options.store.onChange(() => {

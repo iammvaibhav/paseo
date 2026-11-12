@@ -1,0 +1,12 @@
+[Unit]
+Description=grok-build token refresher (runs on the auth broker host)
+After=omp-auth-broker.service
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/omp-proxy grok-refresher
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target

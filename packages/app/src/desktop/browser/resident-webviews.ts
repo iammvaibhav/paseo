@@ -7,7 +7,10 @@ import type { BrowserViewport } from "@/desktop/browser/store";
 import { WEB_SURFACE_PLANE } from "@/lib/overlay-root";
 
 const RESIDENT_BROWSER_HOST_ID = "paseo-browser-resident-webviews";
+const PERSISTENT_BROWSER_WRAPPER_ATTRIBUTE = "data-paseo-persistent-browser-wrapper";
 const BROWSER_ID_ATTRIBUTE = "data-paseo-browser-id";
+const DOM_READY_ATTRIBUTE = "data-paseo-dom-ready";
+const DOM_READY_LISTENER_ATTRIBUTE = "data-paseo-dom-ready-listener";
 const BROWSER_SURFACE_ATTRIBUTE = "data-paseo-browser-surface";
 const RESIDENT_VIEWPORT_WIDTH = 1280;
 const RESIDENT_VIEWPORT_HEIGHT = 800;
@@ -15,6 +18,16 @@ const RESIDENT_VIEWPORT_HEIGHT = 800;
 const residentWebviewsByBrowserId = new Map<string, HTMLElement>();
 const residentSurfacesByBrowserId = new Map<string, HTMLElement>();
 const residentWebviewSizesByBrowserId = new Map<string, { width: number; height: number }>();
+const readyResidentWebviews = new WeakSet<HTMLElement>();
+
+interface PersistentBrowserWebview {
+  wrapper: HTMLElement;
+  webview: HTMLElement;
+  target: HTMLElement | null;
+  resizeObserver: ResizeObserver | null;
+  updatePosition: (() => void) | null;
+}
+const persistentWebviewsByBrowserId = new Map<string, PersistentBrowserWebview>();
 
 interface BrowserWebviewElement extends HTMLElement {
   src: string;
@@ -71,6 +84,89 @@ function registerBrowserWhenAttached(
       .catch((error) => {
         console.error("[browser-webview] attached registration failed", error);
       });
+  });
+}
+
+/**
+ * True for a `did-start-navigation` that replaces the guest's top document.
+ * `did-start-loading` is not a usable signal: it also fires for subframe loads
+ * (VS Code Web starts iframes for previews and extension webviews), and no
+ * `dom-ready` follows those, so readiness would stay cleared on a live page.
+ */
+export function isMainFrameDocumentNavigation(event: Event): boolean {
+  const navigation = event as Event & { isMainFrame?: unknown; isInPlace?: unknown };
+  return navigation.isMainFrame === true && navigation.isInPlace !== true;
+}
+
+/** Delays before reloading a persistent webview whose page failed to load. */
+export const PERSISTENT_RELOAD_DELAYS_MS = [2_000, 5_000, 10_000, 30_000] as const;
+const ERR_ABORTED = -3;
+
+/**
+ * The persistent VS Code webview loads once and is never reloaded by its pane,
+ * so a page load that fails (VPN drop, laptop wake, ERR_NETWORK_CHANGED) leaves
+ * it on Chromium's error page for good, which reads as VS Code stuck loading.
+ * This retries the failed URL with backoff, and at once when the OS reports the
+ * network back. A navigation the page replaced itself (ERR_ABORTED) is no
+ * failure.
+ */
+function registerPersistentLoadRecovery(webview: BrowserWebviewElement): void {
+  let failedUrl: string | null = null;
+  let attempt = 0;
+  let timer: number | undefined;
+  const retry = () => {
+    timer = undefined;
+    if (failedUrl && webview.isConnected) {
+      webview.src = failedUrl;
+    }
+  };
+  webview.addEventListener("did-fail-load", (event) => {
+    const failure = event as Event & {
+      errorCode?: unknown;
+      isMainFrame?: unknown;
+      validatedURL?: unknown;
+    };
+    if (
+      failure.isMainFrame !== true ||
+      failure.errorCode === ERR_ABORTED ||
+      typeof failure.validatedURL !== "string" ||
+      !/^https?:/.test(failure.validatedURL)
+    ) {
+      return;
+    }
+    failedUrl = failure.validatedURL;
+    const delay =
+      PERSISTENT_RELOAD_DELAYS_MS[Math.min(attempt, PERSISTENT_RELOAD_DELAYS_MS.length - 1)];
+    attempt += 1;
+    window.clearTimeout(timer);
+    timer = window.setTimeout(retry, delay);
+  });
+  webview.addEventListener("did-finish-load", () => {
+    const loadedUrl = (webview as BrowserWebviewElement & { getURL?: () => string }).getURL?.();
+    if (loadedUrl && /^https?:/.test(loadedUrl)) {
+      failedUrl = null;
+      attempt = 0;
+    }
+  });
+  window.addEventListener("online", () => {
+    if (failedUrl) {
+      window.clearTimeout(timer);
+      retry();
+    }
+  });
+}
+
+function registerBrowserReadiness(webview: HTMLElement): void {
+  webview.addEventListener("did-start-navigation", (event) => {
+    if (!isMainFrameDocumentNavigation(event)) {
+      return;
+    }
+    readyResidentWebviews.delete(webview);
+    webview.removeAttribute(DOM_READY_ATTRIBUTE);
+  });
+  webview.addEventListener("dom-ready", () => {
+    readyResidentWebviews.add(webview);
+    webview.setAttribute(DOM_READY_ATTRIBUTE, "true");
   });
 }
 
@@ -194,6 +290,32 @@ function clearResidentWebviewParkingStyle(webview: HTMLElement): void {
   webview.style.zIndex = "";
 }
 
+function applyPersistentWrapperParking(record: PersistentBrowserWebview): void {
+  record.target = null;
+  record.resizeObserver?.disconnect();
+  record.resizeObserver = null;
+  if (record.updatePosition && typeof window !== "undefined") {
+    window.removeEventListener("resize", record.updatePosition);
+    window.removeEventListener("scroll", record.updatePosition, true);
+  }
+  record.updatePosition = null;
+
+  const { wrapper, webview } = record;
+  wrapper.setAttribute("aria-hidden", "true");
+  wrapper.style.position = "fixed";
+  wrapper.style.left = "0";
+  wrapper.style.top = "0";
+  wrapper.style.width = "1px";
+  wrapper.style.height = "1px";
+  wrapper.style.overflow = "hidden";
+  wrapper.style.opacity = "1";
+  wrapper.style.pointerEvents = "none";
+  wrapper.style.zIndex = String(WEB_SURFACE_PLANE.browser);
+  wrapper.style.visibility = "visible";
+
+  applyResidentWebviewStyle(webview, webview.getAttribute(BROWSER_ID_ATTRIBUTE));
+}
+
 export function rememberBrowserWebviewSize(input: {
   browserId: string;
   width: number;
@@ -312,6 +434,18 @@ export function prepareBrowserWebview(
     (webview as BrowserWebviewElement).src = input.initialUrl;
   }
   registerBrowserWhenAttached(webview as BrowserWebviewElement, input, browser);
+  if (!webview.hasAttribute(DOM_READY_LISTENER_ATTRIBUTE)) {
+    webview.setAttribute(DOM_READY_LISTENER_ATTRIBUTE, "true");
+    registerBrowserReadiness(webview);
+  }
+}
+
+export function isBrowserWebviewDomReady(webview: HTMLElement): boolean {
+  return webview.getAttribute(DOM_READY_ATTRIBUTE) === "true" || readyResidentWebviews.has(webview);
+}
+
+export function isResidentBrowserWebviewReady(webview: HTMLElement): boolean {
+  return readyResidentWebviews.has(webview) || webview.getAttribute(DOM_READY_ATTRIBUTE) === "true";
 }
 
 export function ensureResidentBrowserWebview(input: {
@@ -337,7 +471,10 @@ export function ensureResidentBrowserWebview(input: {
 
   const existing = findBrowserWebview(browserId, ownerDocument);
   if (existing) {
-    if (existing.parentElement?.id === RESIDENT_BROWSER_HOST_ID) {
+    if (
+      existing.parentElement?.id === RESIDENT_BROWSER_HOST_ID ||
+      existing.parentElement?.hasAttribute(BROWSER_SURFACE_ATTRIBUTE)
+    ) {
       releaseResidentBrowserWebview(browserId, existing);
     }
     return existing;
@@ -352,6 +489,177 @@ export function ensureResidentBrowserWebview(input: {
   });
   releaseResidentBrowserWebview(browserId, webview);
   return webview;
+}
+
+/**
+ * Creates a webview whose wrapper is appended to document.body exactly once.
+ * Showing, hiding, and workspace switching only change wrapper geometry; the
+ * `<webview>` is never detached/reparented, because Electron destroys and
+ * recreates guest WebContents when a webview leaves the DOM.
+ */
+export function ensurePersistentBrowserWebview(input: {
+  browserId: string;
+  workspaceId?: string;
+  url: string;
+  profileHost?: BrowserWebviewProfileHost;
+}): HTMLElement | null {
+  const browserId = trimNonEmpty(input.browserId);
+  if (!browserId) {
+    return null;
+  }
+  const ownerDocument = readDocument();
+  if (!ownerDocument) {
+    return null;
+  }
+  const existing = persistentWebviewsByBrowserId.get(browserId);
+  if (existing?.wrapper.isConnected && existing.webview.isConnected) {
+    return existing.webview;
+  }
+
+  const wrapper = ownerDocument.createElement("div");
+  wrapper.setAttribute(PERSISTENT_BROWSER_WRAPPER_ATTRIBUTE, browserId);
+  const webview = ownerDocument.createElement("webview") as BrowserWebviewElement;
+  // Persistent browser-editor webviews are workspace-agnostic (one per host
+  // origin), so there is no meaningful workspaceId — fall back to the stable
+  // browserId as the registration key.
+  prepareBrowserWebview(webview, {
+    browserId,
+    workspaceId: input.workspaceId ?? browserId,
+    initialUrl: input.url,
+    profileHost: input.profileHost,
+  });
+  registerPersistentLoadRecovery(webview);
+  wrapper.appendChild(webview);
+  ownerDocument.body.appendChild(wrapper);
+
+  const record: PersistentBrowserWebview = {
+    wrapper,
+    webview,
+    target: null,
+    resizeObserver: null,
+    updatePosition: null,
+  };
+  persistentWebviewsByBrowserId.set(browserId, record);
+  applyPersistentWrapperParking(record);
+  return webview;
+}
+
+export function showPersistentBrowserWebview(browserId: string, target: HTMLElement): boolean {
+  const normalizedBrowserId = trimNonEmpty(browserId);
+  if (!normalizedBrowserId) {
+    return false;
+  }
+  const record = persistentWebviewsByBrowserId.get(normalizedBrowserId);
+  if (!record || !target.isConnected) {
+    return false;
+  }
+
+  record.resizeObserver?.disconnect();
+  if (record.updatePosition && typeof window !== "undefined") {
+    window.removeEventListener("resize", record.updatePosition);
+    window.removeEventListener("scroll", record.updatePosition, true);
+  }
+  record.target = target;
+  const updatePosition = () => {
+    if (record.target !== target || !target.isConnected) {
+      return;
+    }
+    const rect = target.getBoundingClientRect();
+    record.wrapper.style.left = `${Math.round(rect.left)}px`;
+    record.wrapper.style.top = `${Math.round(rect.top)}px`;
+    record.wrapper.style.width = `${Math.max(1, Math.round(rect.width))}px`;
+    record.wrapper.style.height = `${Math.max(1, Math.round(rect.height))}px`;
+  };
+  record.updatePosition = updatePosition;
+
+  const { wrapper, webview } = record;
+  wrapper.setAttribute("aria-hidden", "false");
+  wrapper.style.position = "fixed";
+  wrapper.style.overflow = "hidden";
+  wrapper.style.opacity = "1";
+  wrapper.style.pointerEvents = "auto";
+  wrapper.style.zIndex = String(WEB_SURFACE_PLANE.browser);
+  wrapper.style.visibility = "visible";
+  webview.style.display = "flex";
+  webview.style.position = "absolute";
+  webview.style.left = "0";
+  webview.style.top = "0";
+  webview.style.width = "100%";
+  webview.style.height = "100%";
+  webview.style.border = "0";
+  webview.style.pointerEvents = "auto";
+  updatePosition();
+
+  if (typeof ResizeObserver !== "undefined") {
+    record.resizeObserver = new ResizeObserver(updatePosition);
+    record.resizeObserver.observe(target);
+  }
+  if (typeof window !== "undefined") {
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+    window.requestAnimationFrame(updatePosition);
+  }
+  return true;
+}
+
+/**
+ * Parks the persistent webview. With `owner`, only when that pane is the one showing it: every
+ * workspace keeps its own tab for the single VS Code webview, and the outgoing workspace's pane
+ * can clean up after the incoming one has already shown it.
+ */
+export function hidePersistentBrowserWebview(
+  browserId: string,
+  owner?: HTMLElement | null,
+): boolean {
+  const normalizedBrowserId = trimNonEmpty(browserId);
+  const record = normalizedBrowserId
+    ? persistentWebviewsByBrowserId.get(normalizedBrowserId)
+    : null;
+  if (!record) {
+    return false;
+  }
+  if (
+    owner !== undefined &&
+    record.target &&
+    record.target !== owner &&
+    record.target.isConnected
+  ) {
+    return false;
+  }
+  applyPersistentWrapperParking(record);
+  return true;
+}
+
+export function navigatePersistentBrowserWebview(browserId: string, url: string): boolean {
+  const normalizedBrowserId = trimNonEmpty(browserId);
+  const normalizedUrl = trimNonEmpty(url);
+  const record = normalizedBrowserId
+    ? persistentWebviewsByBrowserId.get(normalizedBrowserId)
+    : null;
+  if (!record || !normalizedUrl) {
+    return false;
+  }
+  (record.webview as BrowserWebviewElement).src = normalizedUrl;
+  return true;
+}
+
+export function getPersistentBrowserWebview(browserId: string): HTMLElement | null {
+  const record = persistentWebviewsByBrowserId.get(browserId.trim());
+  return record?.webview.isConnected ? record.webview : null;
+}
+
+export function removePersistentBrowserWebview(browserId: string): void {
+  const normalizedBrowserId = trimNonEmpty(browserId);
+  if (!normalizedBrowserId) {
+    return;
+  }
+  const record = persistentWebviewsByBrowserId.get(normalizedBrowserId);
+  persistentWebviewsByBrowserId.delete(normalizedBrowserId);
+  if (!record) {
+    return;
+  }
+  applyPersistentWrapperParking(record);
+  record.wrapper.remove();
 }
 
 export function getResidentBrowserWebview(browserId: string): HTMLElement | null {
@@ -379,6 +687,30 @@ export function takeResidentBrowserWebview(browserId: string): HTMLElement | nul
   }
 
   return webview;
+}
+
+/**
+ * Moves an adopted webview back to the resident host without destroying it.
+ * Used when the persistent VS Code Web instance transfers between retained
+ * workspace screens.
+ */
+export function parkBrowserWebview(browserId: string): boolean {
+  const normalizedBrowserId = trimNonEmpty(browserId);
+  if (!normalizedBrowserId) {
+    return false;
+  }
+  const ownerDocument = readDocument();
+  if (!ownerDocument) {
+    return false;
+  }
+  const webview =
+    residentWebviewsByBrowserId.get(normalizedBrowserId) ??
+    findBrowserWebview(normalizedBrowserId, ownerDocument);
+  if (!webview) {
+    return false;
+  }
+  releaseResidentBrowserWebview(normalizedBrowserId, webview);
+  return true;
 }
 
 export function releaseResidentBrowserWebview(browserId: string, webview: HTMLElement): void {
@@ -424,6 +756,27 @@ export function resizeResidentBrowserWebview(input: {
   return dimensions;
 }
 
+/**
+ * Navigate a currently-parked webview to a new URL (used to re-root the single
+ * VS Code Web instance to the active workspace's folder). Sets `src` directly so
+ * the parked-but-painting webview reloads in the background. Returns false when
+ * the webview isn't parked here (it's adopted into a pane — navigate via the
+ * browser store's navigation request instead).
+ */
+export function navigateResidentBrowserWebview(browserId: string, url: string): boolean {
+  const normalizedBrowserId = trimNonEmpty(browserId);
+  const normalizedUrl = trimNonEmpty(url);
+  if (!normalizedBrowserId || !normalizedUrl) {
+    return false;
+  }
+  const webview = residentWebviewsByBrowserId.get(normalizedBrowserId);
+  if (!webview) {
+    return false;
+  }
+  (webview as BrowserWebviewElement).src = normalizedUrl;
+  return true;
+}
+
 export function removeResidentBrowserWebview(browserId: string): void {
   const normalizedBrowserId = trimNonEmpty(browserId);
   if (!normalizedBrowserId) {
@@ -446,5 +799,28 @@ export function clearResidentBrowserWebviewsForTests(): void {
   residentWebviewsByBrowserId.clear();
   residentSurfacesByBrowserId.clear();
   residentWebviewSizesByBrowserId.clear();
+  for (const record of persistentWebviewsByBrowserId.values()) {
+    applyPersistentWrapperParking(record);
+    record.wrapper.remove();
+  }
+  persistentWebviewsByBrowserId.clear();
   readDocument()?.getElementById(RESIDENT_BROWSER_HOST_ID)?.remove();
+}
+
+declare global {
+  interface Window {
+    __paseoResidentWebviews?: {
+      showPersistentBrowserWebview: typeof showPersistentBrowserWebview;
+      hidePersistentBrowserWebview: typeof hidePersistentBrowserWebview;
+      ensurePersistentBrowserWebview: typeof ensurePersistentBrowserWebview;
+    };
+  }
+}
+
+if (typeof window !== "undefined") {
+  window.__paseoResidentWebviews = {
+    showPersistentBrowserWebview,
+    hidePersistentBrowserWebview,
+    ensurePersistentBrowserWebview,
+  };
 }

@@ -11,6 +11,8 @@ const SERVER_ID = "diff-stat-pill";
 const WORKSPACE_ID = "workspace";
 
 const workspace: WorkspaceDescriptor = {
+  createdAt: null,
+  lastUserMessageAt: null,
   id: WORKSPACE_ID,
   projectId: "project",
   projectDisplayName: "Project",
@@ -21,6 +23,7 @@ const workspace: WorkspaceDescriptor = {
   name: "main",
   status: "done",
   statusEnteredAt: null,
+  activityAt: null,
   archivingAt: null,
   diffStat: null,
   scripts: [],

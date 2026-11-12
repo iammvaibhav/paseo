@@ -28,12 +28,15 @@ export const ScheduleTargetSchema = z.discriminatedUnion("type", [
       provider: AgentProviderSchema,
       cwd: z.string().trim().min(1),
       modeId: z.string().trim().min(1).optional(),
+      // Agent mode id (agent-modes.ts) for each scheduled agent; a string so
+      // older daemons parse later modes. Absent = Do it yourself.
+      agentMode: z.string().optional(),
       model: z.string().trim().min(1).optional(),
       thinkingOptionId: z.string().trim().min(1).optional(),
       archiveOnFinish: z.boolean().optional(),
       isolation: z.enum(["local", "worktree"]).optional(),
       title: z.string().trim().min(1).nullable().optional(),
-      providerOptions: z.record(z.string(), z.json()).optional(),
+      providerOptions: z.record(z.string(), z.unknown()).optional(),
       featureValues: z.record(z.string(), z.unknown()).optional(),
       systemPrompt: z.string().optional(),
       mcpServers: z.record(z.string(), z.unknown()).optional(),

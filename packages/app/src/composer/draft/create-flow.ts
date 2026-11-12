@@ -9,7 +9,13 @@ import { isActiveCreateFlowForDraft, useCreateFlowStore } from "@/stores/create-
 import { handoffCreatedAgentMessageSubmission } from "@/composer/submission/writer";
 import { useSessionStore } from "@/stores/session-store";
 import {
+  beginPendingAgentLoaderSpan,
+  clearPendingAgentLoaderSpan,
+  resolvePendingAgentLoaderSpan,
+} from "@/utils/agent-loader-span";
+import {
   createUserMessage,
+  generateMessageId,
   type StreamItem,
   type UserMessageImageAttachment,
 } from "@/types/stream";
@@ -84,6 +90,37 @@ interface SubmitContext {
   text: string;
   attachments: ComposerAttachment[];
   cwd: string;
+  startVoiceMode?: boolean;
+}
+
+function buildCreateAttemptFromInput(input: {
+  draftId?: string;
+  text: string;
+  attachments: ComposerAttachment[];
+  serverId: string;
+  allowEmptyText: boolean;
+  initialPromptRequiredMessage: string;
+}): CreateAttempt {
+  const trimmedPrompt = input.text.trim();
+  const supportsForgeSearch =
+    useSessionStore.getState().sessions[input.serverId]?.serverInfo?.features?.forgeSearch === true;
+  const wirePayload = splitComposerAttachmentsForSubmit(input.attachments, {
+    format: resolveComposerAttachmentSubmitFormat({
+      supportsForgeAttachments: supportsForgeSearch,
+    }),
+  });
+  const images = wirePayload.images;
+  const hasAttachmentContent = images.length > 0 || wirePayload.attachments.length > 0;
+  if (!trimmedPrompt && !hasAttachmentContent && !input.allowEmptyText) {
+    throw new Error(input.initialPromptRequiredMessage);
+  }
+  return {
+    clientMessageId: input.draftId ? `${input.draftId}:initial-message` : generateMessageId(),
+    text: trimmedPrompt,
+    timestamp: new Date(),
+    ...(images && images.length > 0 ? { images } : {}),
+    ...(wirePayload.attachments.length > 0 ? { attachments: wirePayload.attachments } : {}),
+  };
 }
 
 interface CreateRequestContext {
@@ -150,6 +187,7 @@ export function useDraftAgentCreateFlow<TDraftAgent, TCreateResult>({
   const setPendingCreateAttempt = useCreateFlowStore((state) => state.setPending);
   const updatePendingAgentId = useCreateFlowStore((state) => state.updateAgentId);
   const markPendingCreateLifecycle = useCreateFlowStore((state) => state.markLifecycle);
+  const clearPendingAttempt = useCreateFlowStore((state) => state.clear);
   const formErrorMessage = machine.tag === "draft" ? machine.errorMessage : "";
   const isSubmitting = machine.tag === "creating";
 
@@ -207,6 +245,8 @@ export function useDraftAgentCreateFlow<TDraftAgent, TCreateResult>({
         throw error;
       }
 
+      beginPendingAgentLoaderSpan(pendingServerId, attempt.clientMessageId, "create");
+
       try {
         await onBeforeSubmit?.({
           attempt,
@@ -224,6 +264,13 @@ export function useDraftAgentCreateFlow<TDraftAgent, TCreateResult>({
         });
 
         if (createResult.agentId) {
+          const createdSnapshot = createResult.result as { status?: string } | null | undefined;
+          resolvePendingAgentLoaderSpan(
+            pendingServerId,
+            attempt.clientMessageId,
+            createResult.agentId,
+            createdSnapshot?.status === "running",
+          );
           updatePendingAgentId({ draftId, agentId: createResult.agentId });
           handoffCreatedAgentMessageSubmission(
             pendingServerId,
@@ -237,6 +284,8 @@ export function useDraftAgentCreateFlow<TDraftAgent, TCreateResult>({
             }),
           );
           markPendingCreateLifecycle({ draftId, lifecycle: "sent" });
+        } else {
+          clearPendingAgentLoaderSpan(pendingServerId, attempt.clientMessageId);
         }
 
         await onCreateSuccess({ result: createResult.result, attempt });
@@ -249,6 +298,8 @@ export function useDraftAgentCreateFlow<TDraftAgent, TCreateResult>({
           lifecycle: "abandoned",
           errorMessage: resolved.message,
         });
+        clearPendingAgentLoaderSpan(pendingServerId, attempt.clientMessageId);
+        clearPendingAttempt({ draftId });
         onCreateError?.(resolved);
         throw error;
       }
@@ -257,6 +308,7 @@ export function useDraftAgentCreateFlow<TDraftAgent, TCreateResult>({
       createRequest,
       draftId,
       getPendingServerId,
+      clearPendingAttempt,
       markPendingCreateLifecycle,
       onBeforeSubmit,
       onCreateError,
@@ -267,7 +319,7 @@ export function useDraftAgentCreateFlow<TDraftAgent, TCreateResult>({
   );
 
   const handleCreateFromInput = useCallback(
-    async ({ text, attachments, cwd }: SubmitContext) => {
+    async ({ text, attachments, cwd, startVoiceMode }: SubmitContext) => {
       const existing = useCreateFlowStore.getState().pendingByDraftId[draftId];
       if (
         isSubmitting ||
@@ -277,48 +329,41 @@ export function useDraftAgentCreateFlow<TDraftAgent, TCreateResult>({
       }
 
       dispatch({ type: "DRAFT_SET_ERROR", message: "" });
-      const trimmedPrompt = text.trim();
       const pendingServerId = getPendingServerId();
       if (!pendingServerId) {
         const error = new Error(t("composer.errors.noHostSelected"));
         dispatch({ type: "DRAFT_SET_ERROR", message: error.message });
         throw error;
       }
-      const supportsForgeSearch =
-        useSessionStore.getState().sessions[pendingServerId]?.serverInfo?.features?.forgeSearch ===
-        true;
-      const wirePayload = splitComposerAttachmentsForSubmit(attachments, {
-        format: resolveComposerAttachmentSubmitFormat({
-          supportsForgeAttachments: supportsForgeSearch,
-        }),
-      });
-      const images = wirePayload.images;
 
-      const hasAttachmentContent = images.length > 0 || wirePayload.attachments.length > 0;
-      if (!trimmedPrompt && !hasAttachmentContent && !allowEmptyText) {
-        const error = new Error(t("composer.errors.initialPromptRequired"));
-        dispatch({ type: "DRAFT_SET_ERROR", message: error.message });
-        throw error;
+      let attempt: CreateAttempt;
+      try {
+        attempt = buildCreateAttemptFromInput({
+          draftId,
+          text,
+          attachments,
+          serverId: pendingServerId,
+          allowEmptyText,
+          initialPromptRequiredMessage: t("composer.errors.initialPromptRequired"),
+        });
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : t("composer.errors.initialPromptRequired");
+        dispatch({ type: "DRAFT_SET_ERROR", message });
+        throw error instanceof Error ? error : new Error(message);
       }
 
       const validationError = validateBeforeSubmit?.({
-        text: trimmedPrompt,
+        text: attempt.text,
         attachments,
         cwd,
+        ...(startVoiceMode ? { startVoiceMode: true } : {}),
       });
       if (validationError) {
         const error = new Error(validationError);
         dispatch({ type: "DRAFT_SET_ERROR", message: validationError });
         throw error;
       }
-
-      const attempt: CreateAttempt = {
-        clientMessageId: `${draftId}:initial-message`,
-        text: trimmedPrompt,
-        timestamp: new Date(),
-        ...(images.length > 0 ? { images } : {}),
-        ...(wirePayload.attachments.length > 0 ? { attachments: wirePayload.attachments } : {}),
-      };
 
       startCreateAttempt(attempt);
       setPendingCreateAttempt({
@@ -332,6 +377,7 @@ export function useDraftAgentCreateFlow<TDraftAgent, TCreateResult>({
         ...(attempt.attachments && attempt.attachments.length > 0
           ? { attachments: attempt.attachments }
           : {}),
+        ...(startVoiceMode ? { startVoiceMode: true } : {}),
       });
 
       onCreateStart?.();

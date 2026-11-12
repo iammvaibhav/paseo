@@ -9,6 +9,7 @@ import {
 import { Paths, File, Directory, FileInfo } from "expo-file-system";
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { AttemptCancelledError, AttemptGuard } from "@/utils/attempt-guard";
+import { decodeBase64OrThrow } from "@/utils/base64";
 
 export interface AudioCaptureConfig {
   sampleRate?: number;
@@ -75,11 +76,7 @@ async function getActualRecordingUri(createdAt: Date): Promise<string | null> {
 async function uriToBlob(uri: string): Promise<Blob> {
   const file = new File(uri);
   const base64 = await file.base64();
-  const binaryString = atob(base64);
-  const bytes = new Uint8Array(binaryString.length);
-  for (let i = 0; i < binaryString.length; i++) {
-    bytes[i] = binaryString.charCodeAt(i);
-  }
+  const bytes = decodeBase64OrThrow(base64, "Audio recording");
   return new Blob([bytes], { type: "audio/m4a" });
 }
 

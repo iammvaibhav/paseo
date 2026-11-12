@@ -1,5 +1,13 @@
 import { memo, useMemo, useCallback, useState, type ReactNode } from "react";
-import { Text, View, type ViewStyle } from "react-native";
+import {
+  Pressable,
+  Text,
+  View,
+  type GestureResponderEvent,
+  type PressableStateCallbackType,
+  type ViewStyle,
+} from "react-native";
+import { isWeb as platformIsWeb } from "@/constants/platform";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { CircleAlert, Folder, FolderGit2, Monitor } from "lucide-react-native";
 import { ProjectStatusIndicator } from "@/components/sidebar/project-leading-visual";
@@ -16,6 +24,7 @@ import {
   type SidebarWorkspaceTrailing,
 } from "@/components/sidebar/workspace-trailing";
 import { useAppSettings } from "@/hooks/use-settings";
+import { densityIconBox } from "@/styles/density";
 import type { Theme } from "@/styles/theme";
 import type { SidebarStateBucket } from "@/utils/sidebar-agent-state";
 import { getStatusDotColor } from "@/utils/status-dot-color";
@@ -27,19 +36,16 @@ import {
 import { shouldRenderSyncedStatusLoader } from "@/utils/status-loader";
 import { StatusRing } from "@/components/status-ring";
 import { resolveSidebarWorkspacePrimaryLabel } from "@/components/sidebar/sidebar-workspace-title";
+import { DensityIcon } from "@/components/ui/density-icon";
 import { TrailingActionScrim } from "@/components/ui/trailing-action-scrim";
 import { useWorkspaceLabelDefinitions } from "@/workspace-labels";
 
-const foregroundMutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 const needsInputColorMapping = (theme: Theme) => ({
-  color: theme.colors.surface0,
+  color: theme.colors.background,
   fill: getStatusDotColor({ theme, bucket: "needs_input" }) ?? undefined,
 });
 
 const ThemedCircleAlert = withUnistyles(CircleAlert);
-const ThemedMonitor = withUnistyles(Monitor);
-const ThemedFolder = withUnistyles(Folder);
-const ThemedFolderGit2 = withUnistyles(FolderGit2);
 
 export function SidebarWorkspaceRowFrame({
   workspace,
@@ -100,6 +106,7 @@ export const SidebarWorkspaceRowContent = memo(function SidebarWorkspaceRowConte
   shortcutNumber = null,
   showShortcutBadge = false,
   reserveIdleStatusIndicatorSpace = true,
+  agentsToggle = null,
   children,
 }: {
   workspace: SidebarWorkspaceEntry;
@@ -117,6 +124,16 @@ export const SidebarWorkspaceRowContent = memo(function SidebarWorkspaceRowConte
   showShortcutBadge?: boolean;
   /** Keep the empty leading slot when the workspace has no active status. */
   reserveIdleStatusIndicatorSpace?: boolean;
+  /**
+   * When set, the leading status slot becomes a button that toggles the workspace's
+   * expanded agent list. The status indicator itself is unchanged — the dot is simply
+   * clickable now.
+   */
+  agentsToggle?: {
+    expanded: boolean;
+    onPress: () => void;
+    accessibilityLabel: string;
+  } | null;
   children?: ReactNode;
 }) {
   const {
@@ -135,27 +152,67 @@ export const SidebarWorkspaceRowContent = memo(function SidebarWorkspaceRowConte
     [isHovered, isCreating],
   );
 
+  const leadingVisual = leadingProjectName ? (
+    <ProjectStatusIndicator
+      iconDataUri={leadingProjectIconDataUri}
+      displayName={leadingProjectName}
+      projectViewKey={workspace.projectViewKey}
+      statusBucket={workspace.statusBucket}
+      backdrop={backdrop}
+      loading={isLoading}
+      testID={`sidebar-row-project-icon-${workspace.workspaceKey}`}
+    />
+  ) : (
+    <WorkspaceStatusIndicator
+      bucket={workspace.statusBucket}
+      workspaceKind={workspace.workspaceKind}
+      loading={isLoading}
+      reserveIdleSpace={reserveIdleStatusIndicatorSpace}
+    />
+  );
+
+  const handleToggleAgents = useCallback(
+    (event: GestureResponderEvent) => {
+      event.stopPropagation();
+      agentsToggle?.onPress();
+    },
+    [agentsToggle],
+  );
+
+  const agentsToggleExpanded = agentsToggle?.expanded ?? false;
+  const agentsToggleAccessibilityState = useMemo(
+    () => ({ expanded: agentsToggleExpanded }),
+    [agentsToggleExpanded],
+  );
+  const agentsToggleStyle = useCallback(
+    ({ hovered, pressed }: PressableStateCallbackType) => [
+      styles.agentsToggle,
+      (hovered || pressed) && styles.agentsToggleActive,
+      agentsToggleExpanded && styles.agentsToggleExpanded,
+    ],
+    [agentsToggleExpanded],
+  );
+
+  const leadingSlot = agentsToggle ? (
+    <Pressable
+      onPress={handleToggleAgents}
+      hitSlop={4}
+      accessibilityRole={platformIsWeb ? undefined : "button"}
+      accessibilityLabel={agentsToggle.accessibilityLabel}
+      accessibilityState={agentsToggleAccessibilityState}
+      style={agentsToggleStyle}
+      testID={`sidebar-workspace-agents-toggle-${workspace.workspaceKey}`}
+    >
+      {leadingVisual}
+    </Pressable>
+  ) : (
+    leadingVisual
+  );
+
   return (
     <View style={styles.workspaceRowContent}>
       <View style={styles.workspaceRowMain}>
-        {leadingProjectName ? (
-          <ProjectStatusIndicator
-            iconDataUri={leadingProjectIconDataUri}
-            displayName={leadingProjectName}
-            projectViewKey={workspace.projectViewKey}
-            statusBucket={workspace.statusBucket}
-            backdrop={backdrop}
-            loading={isLoading}
-            testID={`sidebar-row-project-icon-${workspace.workspaceKey}`}
-          />
-        ) : (
-          <WorkspaceStatusIndicator
-            bucket={workspace.statusBucket}
-            workspaceKind={workspace.workspaceKind}
-            loading={isLoading}
-            reserveIdleSpace={reserveIdleStatusIndicatorSpace}
-          />
-        )}
+        {leadingSlot}
         <View style={styles.workspaceContentColumn}>
           <View style={styles.workspaceTitleRow}>
             <Text style={workspaceBranchTextStyle} numberOfLines={1}>
@@ -241,15 +298,15 @@ function WorkspaceStatusIndicator({
     ) : null;
   }
 
-  let KindIcon: typeof ThemedMonitor;
-  if (workspaceKind === "local_checkout") KindIcon = ThemedMonitor;
-  else if (workspaceKind === "worktree") KindIcon = ThemedFolderGit2;
-  else KindIcon = ThemedFolder;
+  let KindIcon: typeof Monitor;
+  if (workspaceKind === "local_checkout") KindIcon = Monitor;
+  else if (workspaceKind === "worktree") KindIcon = FolderGit2;
+  else KindIcon = Folder;
 
   const dotColorStyle = getStatusDotColorStyle(bucket);
   return (
     <View style={styles.workspaceStatusDot} testID={`workspace-status-indicator-${bucket}`}>
-      <KindIcon size={14} uniProps={foregroundMutedColorMapping} />
+      <DensityIcon icon={KindIcon} size="sm" color="foregroundMuted" />
       {dotColorStyle ? <StatusDotOverlay dotColorStyle={dotColorStyle} /> : null}
     </View>
   );
@@ -378,7 +435,7 @@ export function resolveTrailingActionVisibility({
 } {
   const hasTrailing = hasSidebarWorkspaceTrailing({ workspace, trailing });
   const showKebab = Boolean(hasArchiveAction && (isHovered || isTouchPlatform)) && !showShortcut;
-  // Touch permanently replaces the stats with the menu. Only temporary shortcut hints
+  // Touch permanently replaces the trailing content with the menu. Only temporary shortcut hints
   // conceal content while retaining its width, so desktop rows do not shift.
   const hasContent = hasTrailing && !(hasArchiveAction && isTouchPlatform);
   let trailingPresentation: SidebarWorkspaceTrailingPresentation = "absent";
@@ -440,7 +497,7 @@ export function SidebarWorkspaceTrailingActionOverlay({
   children,
 }: {
   visible: boolean;
-  /** Fade the row into the kebab when something (the diff stat) is still rendered behind it. */
+  /** Fade the row into the kebab when something (the timestamp) is still rendered behind it. */
   scrimBackdrop?: SidebarSurfaceBackdrop;
   children: ReactNode;
 }) {
@@ -454,6 +511,9 @@ export function SidebarWorkspaceTrailingActionOverlay({
     </>
   );
 }
+
+// The status dot centres on the title's first line, so both share its line height.
+const TITLE_LINE_HEIGHT = 20;
 
 const styles = StyleSheet.create((theme) => ({
   workspaceRowContent: {
@@ -482,12 +542,29 @@ const styles = StyleSheet.create((theme) => ({
   },
   workspaceStatusDot: {
     position: "relative",
+    width: densityIconBox("md"),
+    height: TITLE_LINE_HEIGHT,
+    borderRadius: theme.borderRadius.full,
+    flexShrink: 0,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  // The status slot doubles as the expand/contract button for the workspace's agent list.
+  // The slot keeps its size and the dot inside keeps its look — only the hover/pressed
+  // fill signals that the slot is now interactive.
+  agentsToggle: {
     width: theme.iconSize.md,
     height: 20,
     borderRadius: theme.borderRadius.full,
     flexShrink: 0,
     alignItems: "center",
     justifyContent: "center",
+  },
+  agentsToggleActive: {
+    backgroundColor: theme.colors.surface2,
+  },
+  agentsToggleExpanded: {
+    backgroundColor: theme.colors.surface2,
   },
   statusDotOverlay: {
     position: "absolute",
@@ -517,7 +594,7 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.foreground,
     fontSize: theme.fontSize.base,
     fontWeight: "400",
-    lineHeight: 20,
+    lineHeight: TITLE_LINE_HEIGHT,
     opacity: 0.76,
     flex: 1,
     minWidth: 0,

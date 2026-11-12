@@ -4,6 +4,7 @@ import {
   BROWSER_NEW_TAB_REQUEST_EVENT,
   decideBrowserWindowOpenRequest,
   isAllowedBrowserWebviewUrl,
+  isPaseoAgentDeepLinkUrl,
   PendingBrowserWindowOpenRequests,
 } from "./window-open.js";
 import { PaseoBrowserWebviewRegistry } from "./registry.js";
@@ -11,6 +12,7 @@ import { PaseoBrowserWebviewRegistry } from "./registry.js";
 export {
   BROWSER_NEW_TAB_REQUEST_EVENT,
   decideBrowserWindowOpenRequest,
+  isPaseoAgentDeepLinkUrl,
   PendingBrowserWindowOpenRequests,
 };
 
@@ -183,14 +185,19 @@ function preventUnsafeBrowserWebviewNavigation(
   }
 }
 
-export function registerBrowserWebviewNavigationGuards(contents: WebContents): void {
-  contents.on("will-navigate", (event) => {
+export function registerBrowserWebviewNavigationGuards(
+  contents: WebContents,
+  options?: { onPaseoAgentUrl?: (url: string) => void },
+): void {
+  const intercept = (event: { preventDefault: () => void; url: string }) => {
+    if (isPaseoAgentDeepLinkUrl(event.url)) {
+      event.preventDefault();
+      options?.onPaseoAgentUrl?.(event.url);
+      return;
+    }
     preventUnsafeBrowserWebviewNavigation(event, event.url);
-  });
-  contents.on("will-frame-navigate", (event) => {
-    preventUnsafeBrowserWebviewNavigation(event, event.url);
-  });
-  contents.on("will-redirect", (event) => {
-    preventUnsafeBrowserWebviewNavigation(event, event.url);
-  });
+  };
+  contents.on("will-navigate", intercept);
+  contents.on("will-frame-navigate", intercept);
+  contents.on("will-redirect", intercept);
 }

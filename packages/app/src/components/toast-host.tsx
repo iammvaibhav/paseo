@@ -1,3 +1,7 @@
+import {
+  FloatingHeaderOverlay,
+  useFloatingHeaderOverlayClearance,
+} from "@/components/floating-header";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -11,7 +15,7 @@ import {
 import Animated, { FadeIn, FadeOut } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import type { Theme } from "@/styles/theme";
+import { glassFloatingStyle, type Theme } from "@/styles/theme";
 import { useTranslation } from "react-i18next";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { isWeb } from "@/constants/platform";
@@ -43,8 +47,11 @@ export interface ToastState {
   testID?: string;
 }
 
+/** Dismisses the toast it was returned for; a no-op once another toast replaced it. */
+export type DismissToast = () => void;
+
 export interface ToastApi {
-  show: (content: ReactNode, options?: ToastShowOptions) => void;
+  show: (content: ReactNode, options?: ToastShowOptions) => DismissToast;
   copied: (label?: string) => void;
   error: (message: string) => void;
 }
@@ -52,6 +59,7 @@ export interface ToastApi {
 type ToastViewportPlacement = "app-shell" | "panel";
 
 const DEFAULT_DURATION_MS = 2200;
+const noopDismiss: DismissToast = () => {};
 const TOAST_MAX_WIDTH = 480;
 const toastEntering = FadeIn.duration(140);
 const toastExiting = FadeOut.duration(140);
@@ -73,10 +81,10 @@ export function useToastHost(): {
   const [toast, setToast] = useState<ToastState | null>(null);
   const idRef = useRef(0);
 
-  const show = useCallback((content: ReactNode, options?: ToastShowOptions) => {
+  const show = useCallback((content: ReactNode, options?: ToastShowOptions): DismissToast => {
     const nativeMessage = typeof content === "string" ? content.trim() : null;
     if (!content || nativeMessage === "") {
-      return;
+      return noopDismiss;
     }
 
     const variant = options?.variant ?? "default";
@@ -87,12 +95,13 @@ export function useToastHost(): {
       const duration =
         durationMs !== null && durationMs <= 2500 ? ToastAndroid.SHORT : ToastAndroid.LONG;
       ToastAndroid.showWithGravity(nativeMessage, duration, ToastAndroid.TOP);
-      return;
+      return noopDismiss;
     }
 
     idRef.current += 1;
+    const id = idRef.current;
     setToast({
-      id: idRef.current,
+      id,
       content,
       nativeMessage,
       icon: options?.icon,
@@ -100,6 +109,7 @@ export function useToastHost(): {
       durationMs,
       testID: options?.testID,
     });
+    return () => setToast((current) => (current?.id === id ? null : current));
   }, []);
 
   const api = useMemo<ToastApi>(
@@ -184,9 +194,11 @@ export function ToastViewport({
     return clearTimer;
   }, [clearTimer, durationMs, scheduleDismiss, toastId]);
 
+  const panelClearance = useFloatingHeaderOverlayClearance();
   const headerHeight = isMobile ? HEADER_INNER_HEIGHT_MOBILE : HEADER_INNER_HEIGHT;
   const headerTopPadding = isMobile ? HEADER_TOP_PADDING_MOBILE : 0;
-  const topOffset = placement === "app-shell" ? insets.top + headerTopPadding + headerHeight : 0;
+  const topOffset =
+    placement === "app-shell" ? insets.top + headerTopPadding + headerHeight : panelClearance;
 
   const content = (
     <View
@@ -214,7 +226,7 @@ export function ToastViewport({
     return createPortal(content, getOverlayRoot());
   }
 
-  return content;
+  return placement === "panel" ? <FloatingHeaderOverlay>{content}</FloatingHeaderOverlay> : content;
 }
 
 function ToastCard({
@@ -295,6 +307,7 @@ const styles = StyleSheet.create((theme) => ({
     paddingVertical: theme.spacing[2],
     paddingHorizontal: theme.spacing[3],
     ...theme.shadow.md,
+    ...glassFloatingStyle(theme),
   },
   toastInfo: {
     borderColor: theme.colors.palette.blue[300],

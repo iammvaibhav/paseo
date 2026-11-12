@@ -30,6 +30,7 @@ describe("OMP slash command mapper", () => {
       description: "Start a handoff",
       argumentHint: "[instructions]",
       kind: "command",
+      delivery: "out_of_band",
     });
   });
 
@@ -67,5 +68,15 @@ describe("OMP slash command mapper", () => {
       "steer",
       "follow-up",
     ]);
+  });
+
+  test("marks the commands the session runs against the live turn", () => {
+    const commands = mapOmpSlashCommands([
+      { name: "steer", description: "Steer the active OMP turn", source: "builtin" },
+      { name: "research", description: "Research a topic", source: "skill" },
+    ]);
+
+    expect(commands.find((command) => command.name === "steer")?.delivery).toBe("out_of_band");
+    expect(commands.find((command) => command.name === "research")?.delivery).toBeUndefined();
   });
 });

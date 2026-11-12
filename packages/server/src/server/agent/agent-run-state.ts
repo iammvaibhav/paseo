@@ -10,14 +10,18 @@ export interface ForegroundTurnWaiter {
   resolveSettled: () => void;
 }
 
+type ForegroundRunStart =
+  | { status: "pending" }
+  | { status: "started"; turnId: string }
+  | { status: "failed"; error: string };
+
 export interface PendingForegroundRun {
   token: string;
   kind: "foreground";
   stagedEvents: AgentStreamEvent[];
-  start:
-    | { status: "pending" }
-    | { status: "started"; turnId: string }
-    | { status: "failed"; error: string };
+  start: ForegroundRunStart;
+  turnStartedPromise: Promise<void>;
+  resolveTurnStarted: () => void;
   settled: boolean;
   settledPromise: Promise<void>;
   resolveSettled: () => void;
@@ -35,13 +39,20 @@ export interface AutonomousAgentRun {
 
 export type TrackedAgentRun = PendingForegroundRun | AutonomousAgentRun;
 
+/** The terminal event that ended a foreground turn; null when it was finalized without one. */
+export type ForegroundTurnEnd = "turn_completed" | "turn_failed" | "turn_canceled" | null;
+
 export interface ForegroundRunAgentState {
   foregroundTurnWaiters: Set<ForegroundTurnWaiter>;
-  finalizedForegroundTurnIds: Set<string>;
+  /** The last 50 finalized foreground turns, oldest first, with how each ended. */
+  finalizedForegroundTurnIds: Map<string, ForegroundTurnEnd>;
 }
 
 export class AgentRunState {
   private readonly runs = new Map<string, TrackedAgentRun>();
+
+  /** Called after a tracked run leaves the registry (settled, cleared, or closed). */
+  constructor(private readonly onRunCleared?: (agentId: string) => void) {}
 
   createPendingRun(agentId: string): PendingForegroundRun {
     const pendingRun = createPendingForegroundRun();
@@ -52,6 +63,28 @@ export class AgentRunState {
   getPendingRun(agentId: string): PendingForegroundRun | null {
     const run = this.runs.get(agentId);
     return run?.kind === "foreground" ? run : null;
+  }
+
+  settleForegroundStart(
+    run: PendingForegroundRun,
+    start: Exclude<ForegroundRunStart, { status: "pending" }>,
+  ): void {
+    run.start = start;
+    if (start.status === "started") {
+      run.resolveTurnStarted();
+    }
+  }
+
+  /**
+   * Resolves once the agent's foreground run has a turn id or has ended. A failed start
+   * resolves only once its run is cleared, so callers never see a failed run still tracked.
+   */
+  async waitForForegroundStart(agentId: string): Promise<void> {
+    const run = this.getPendingRun(agentId);
+    if (run?.start.status !== "pending") {
+      return;
+    }
+    await Promise.race([run.turnStartedPromise, run.settledPromise]);
   }
 
   hasPendingRun(agentId: string): boolean {
@@ -195,13 +228,17 @@ export class AgentRunState {
     agent.foregroundTurnWaiters.clear();
   }
 
-  rememberFinalizedTurn(agent: ForegroundRunAgentState, turnId: string): void {
-    agent.finalizedForegroundTurnIds.add(turnId);
+  rememberFinalizedTurn(
+    agent: ForegroundRunAgentState,
+    turnId: string,
+    end: ForegroundTurnEnd = null,
+  ): void {
+    agent.finalizedForegroundTurnIds.set(turnId, end);
     if (agent.finalizedForegroundTurnIds.size <= 50) {
       return;
     }
 
-    const oldest = agent.finalizedForegroundTurnIds.values().next().value;
+    const oldest = agent.finalizedForegroundTurnIds.keys().next().value;
     if (oldest) {
       agent.finalizedForegroundTurnIds.delete(oldest);
     }
@@ -214,6 +251,7 @@ export class AgentRunState {
   private clearRun(agentId: string, run: TrackedAgentRun): void {
     this.runs.delete(agentId);
     settleTrackedRun(run);
+    this.onRunCleared?.(agentId);
   }
 }
 
@@ -277,10 +315,16 @@ export class ForegroundTurnStream {
 }
 
 function createPendingForegroundRun(): PendingForegroundRun {
+  let resolveTurnStarted!: () => void;
+  const turnStartedPromise = new Promise<void>((resolvePromise) => {
+    resolveTurnStarted = resolvePromise;
+  });
   return {
     ...createTrackedRunState(),
     kind: "foreground",
     start: { status: "pending" },
+    turnStartedPromise,
+    resolveTurnStarted,
     stagedEvents: [],
   };
 }

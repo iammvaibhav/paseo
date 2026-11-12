@@ -1,0 +1,65 @@
+<svg width="774" height="567" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" version="1.1" baseProfile="full" viewBox="0 0 774 567">
+<rect width="774" height="567" x="0" y="0" fill="#ffffff"></rect>
+<path d="M86 416.5L736 416.5" fill="none" pointer-events="visible" stroke="#dbdee4" class="zr2-cls-8"></path>
+<path d="M86 340.5L736 340.5" fill="none" pointer-events="visible" stroke="#dbdee4" class="zr2-cls-8"></path>
+<path d="M86 264.5L736 264.5" fill="none" pointer-events="visible" stroke="#dbdee4" class="zr2-cls-8"></path>
+<path d="M86 188.5L736 188.5" fill="none" pointer-events="visible" stroke="#dbdee4" class="zr2-cls-8"></path>
+<path d="M86 112.5L736 112.5" fill="none" pointer-events="visible" stroke="#dbdee4" class="zr2-cls-8"></path>
+<path d="M86 36.5L736 36.5" fill="none" pointer-events="visible" stroke="#dbdee4" class="zr2-cls-8"></path>
+<text dominant-baseline="central" text-anchor="middle" style="font-size:12px;font-family:sans-serif;" y="-6" transform="matrix(0,-1,1,0,46,226)" fill="#54555a">price</text>
+<text dominant-baseline="central" text-anchor="middle" style="font-size:12px;font-family:sans-serif;" y="6" transform="translate(411 536)" fill="#54555a">date</text>
+<path d="M86 416.5L736 416.5" fill="none" pointer-events="visible" stroke="#54555a" stroke-linecap="round" class="zr2-cls-8"></path>
+<path d="M86 416.5L81 416.5" fill="none" pointer-events="visible" stroke="#54555a" class="zr2-cls-8"></path>
+<path d="M86 340.5L81 340.5" fill="none" pointer-events="visible" stroke="#54555a" class="zr2-cls-8"></path>
+<path d="M86 264.5L81 264.5" fill="none" pointer-events="visible" stroke="#54555a" class="zr2-cls-8"></path>
+<path d="M86 188.5L81 188.5" fill="none" pointer-events="visible" stroke="#54555a" class="zr2-cls-8"></path>
+<path d="M86 112.5L81 112.5" fill="none" pointer-events="visible" stroke="#54555a" class="zr2-cls-8"></path>
+<path d="M86 36.5L81 36.5" fill="none" pointer-events="visible" stroke="#54555a" class="zr2-cls-8"></path>
+<path d="M86.5 416L86.5 421" fill="none" pointer-events="visible" stroke="#54555a" class="zr2-cls-8"></path>
+<path d="M167.5 416L167.5 421" fill="none" pointer-events="visible" stroke="#54555a" class="zr2-cls-8"></path>
+<path d="M248.5 416L248.5 421" fill="none" pointer-events="visible" stroke="#54555a" class="zr2-cls-8"></path>
+<path d="M330.5 416L330.5 421" fill="none" pointer-events="visible" stroke="#54555a" class="zr2-cls-8"></path>
+<path d="M411.5 416L411.5 421" fill="none" pointer-events="visible" stroke="#54555a" class="zr2-cls-8"></path>
+<path d="M492.5 416L492.5 421" fill="none" pointer-events="visible" stroke="#54555a" class="zr2-cls-8"></path>
+<path d="M573.5 416L573.5 421" fill="none" pointer-events="visible" stroke="#54555a" class="zr2-cls-8"></path>
+<path d="M655.5 416L655.5 421" fill="none" pointer-events="visible" stroke="#54555a" class="zr2-cls-8"></path>
+<path d="M736.5 416L736.5 421" fill="none" pointer-events="visible" stroke="#54555a" class="zr2-cls-8"></path>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:sans-serif;" transform="translate(78 416)" fill="#54555a">0</text>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:sans-serif;" transform="translate(78 340)" fill="#54555a">50</text>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:sans-serif;" transform="translate(78 264)" fill="#54555a">100</text>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:sans-serif;" transform="translate(78 188)" fill="#54555a">150</text>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:sans-serif;" transform="translate(78 112)" fill="#54555a">200</text>
+<text dominant-baseline="central" text-anchor="end" style="font-size:12px;font-family:sans-serif;" transform="translate(78 36)" fill="#54555a">250</text>
+<text dominant-baseline="central" text-anchor="end" style="font: normal normal 12px sans-serif" xml:space="preserve" transform="matrix(0,-1,1,0,86,424)" fill="#54555a">Jul 01</text>
+<text dominant-baseline="central" text-anchor="end" style="font: normal normal 12px sans-serif" xml:space="preserve" transform="matrix(0,-1,1,0,167.25,424)" fill="#54555a">Jul 02</text>
+<text dominant-baseline="central" text-anchor="end" style="font: normal normal 12px sans-serif" xml:space="preserve" transform="matrix(0,-1,1,0,248.5,424)" fill="#54555a">Jul 03</text>
+<text dominant-baseline="central" text-anchor="end" style="font: normal normal 12px sans-serif" xml:space="preserve" transform="matrix(0,-1,1,0,329.75,424)" fill="#54555a">Jul 04</text>
+<text dominant-baseline="central" text-anchor="end" style="font: normal normal 12px sans-serif" xml:space="preserve" transform="matrix(0,-1,1,0,411,424)" fill="#54555a">Jul 05</text>
+<text dominant-baseline="central" text-anchor="end" style="font: normal normal 12px sans-serif" xml:space="preserve" transform="matrix(0,-1,1,0,492.25,424)" fill="#54555a">Jul 06</text>
+<text dominant-baseline="central" text-anchor="end" style="font: normal normal 12px sans-serif" xml:space="preserve" transform="matrix(0,-1,1,0,573.5,424)" fill="#54555a">Jul 07</text>
+<text dominant-baseline="central" text-anchor="end" style="font: normal normal 12px sans-serif" xml:space="preserve" transform="matrix(0,-1,1,0,654.75,424)" fill="#54555a">Jul 08</text>
+<text dominant-baseline="central" text-anchor="end" style="font: normal normal 12px sans-serif" xml:space="preserve" transform="matrix(0,-1,1,0,736,424)" fill="#54555a">Jul 09</text>
+<g clip-path="url(#zr2-c0)">
+<path d="M86 80.8L167.3 76.3L248.5 72.5L492.3 66.7L573.5 73.4L654.8 68.1L736 64.6" fill="none" pointer-events="visible" stroke="#5470c6" stroke-width="2" stroke-linejoin="bevel" class="zr2-cls-10"></path>
+</g>
+<defs >
+<clipPath id="zr2-c0">
+<path d="M85 35l652 0l0 382l-652 0Z" fill="#000" class="zr2-cls-9"></path>
+</clipPath>
+</defs>
+<style ><![CDATA[
+.zr2-cls-8:hover {
+pointer-events:none;
+}
+.zr2-cls-9:hover {
+cursor:pointer;
+fill:rgba(0,0,0,1);
+}
+.zr2-cls-10:hover {
+cursor:pointer;
+}
+
+]]>
+
+</style>
+</svg>

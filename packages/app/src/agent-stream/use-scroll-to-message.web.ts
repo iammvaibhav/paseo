@@ -1,16 +1,15 @@
 import type React from "react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import type { Virtualizer } from "@tanstack/react-virtual";
-import type { StreamItem } from "@/types/stream";
-import { getStreamItemMessageId } from "./presentation";
+import { readStreamMessageId } from "./presentation";
 import { createPromptJumpSettleController, PROMPT_JUMP_TOP_INSET_PX } from "./prompt-jump-settle";
 import type { ScrollToMessageOccurrence } from "./strategy";
 
-interface UseScrollToMessageInput {
+interface UseScrollToMessageInput<T> {
   active: boolean;
   scrollContainerRef: React.RefObject<HTMLElement | null>;
   rowVirtualizer: Virtualizer<HTMLElement, Element>;
-  historyVirtualized: readonly StreamItem[];
+  historyVirtualized: readonly T[];
   cancelPendingStickToBottom: () => void;
   setFollowOutput: (value: boolean) => boolean;
   onNearBottomChange: (value: boolean) => void;
@@ -26,7 +25,7 @@ const SCROLL_AFFECTING_KEYS = new Set([
   " ",
 ]);
 
-export function useScrollToMessage({
+export function useScrollToMessage<T>({
   active,
   scrollContainerRef,
   rowVirtualizer,
@@ -34,7 +33,7 @@ export function useScrollToMessage({
   cancelPendingStickToBottom,
   setFollowOutput,
   onNearBottomChange,
-}: UseScrollToMessageInput) {
+}: UseScrollToMessageInput<T>) {
   const occurrenceRef = useRef<ScrollToMessageOccurrence | undefined>(undefined);
   const removeAbortListener = useRef<(() => void) | null>(null);
   const settleController = useMemo(
@@ -129,9 +128,7 @@ export function useScrollToMessage({
         return;
       }
 
-      const index = historyVirtualized.findIndex(
-        (item) => getStreamItemMessageId(item) === messageId,
-      );
+      const index = historyVirtualized.findIndex((item) => readStreamMessageId(item) === messageId);
       if (index >= 0) {
         rowVirtualizer.scrollToIndex(index, { align: "start" });
         settleController.start(messageId);

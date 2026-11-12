@@ -31,6 +31,12 @@ vi.mock("react-native-reanimated", () => ({
   FadeOut: {},
 }));
 
+// floating → glass → settings → toast context reaches the toast host; tooltips need none of it.
+vi.mock("@/components/toast-host", () => ({
+  ToastViewport: () => null,
+  useToastHost: () => ({}),
+}));
+
 vi.mock("react-native-unistyles", () => ({
   StyleSheet: {
     create: (styles: unknown) => styles,

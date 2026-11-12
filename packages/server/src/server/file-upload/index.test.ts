@@ -1,6 +1,6 @@
 import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -9,7 +9,7 @@ import {
   FileTransferOpcode,
   type FileTransferFrame,
 } from "@getpaseo/protocol/binary-frames/index";
-import { FileUploadStore } from "./index.js";
+import { ChunkedUploadSessions, FileUploadStore, readStoredUpload } from "./index.js";
 
 const tempDirs: string[] = [];
 
@@ -54,6 +54,49 @@ describe("file uploads", () => {
       },
     });
     expect(readFileSync(path, "utf8")).toBe("hello world");
+  });
+
+  it("keeps the original file name for non-ASCII and punctuated names", async () => {
+    const uploads = new FileUploadStore({ paseoHome: makePaseoHome() });
+
+    for (const fileName of [
+      "2026年9月绩效计划表.xlsx",
+      "테스트 파일 (1).xlsx",
+      "résumé [final] & notes, v2.pdf",
+      "cafe\u0301 हिंदी.txt",
+    ]) {
+      const file = await uploadNamed(uploads, fileName);
+      expect(file?.fileName).toBe(fileName);
+      expect(basename(file!.path)).toBe(fileName);
+      expect(readFileSync(file!.path, "utf8")).toBe("hello world");
+    }
+  });
+
+  it("replaces path separators, control characters, and characters Windows rejects", async () => {
+    const uploads = new FileUploadStore({ paseoHome: makePaseoHome() });
+
+    await expect(uploadNamed(uploads, "../../etc/passwd")).resolves.toMatchObject({
+      fileName: "passwd",
+    });
+    const backslashed = await uploadNamed(uploads, "dir\\name.txt");
+    expect(backslashed?.fileName).not.toContain("\\");
+    expect(backslashed?.fileName).toMatch(/name\.txt$/);
+    await expect(uploadNamed(uploads, 'a<b>:"c|?*.txt')).resolves.toMatchObject({
+      fileName: "a_b___c___.txt",
+    });
+    await expect(uploadNamed(uploads, "line\nbreak.txt")).resolves.toMatchObject({
+      fileName: "line_break.txt",
+    });
+  });
+
+  it("shortens a long non-ASCII name to the file system limit and keeps its extension", async () => {
+    const uploads = new FileUploadStore({ paseoHome: makePaseoHome() });
+
+    const file = await uploadNamed(uploads, `${"绩".repeat(100)}.xlsx`);
+
+    expect(file?.fileName).toBe(`${"绩".repeat(83)}.xlsx`);
+    expect(Buffer.byteLength(file!.fileName)).toBeLessThanOrEqual(255);
+    expect(readFileSync(file!.path, "utf8")).toBe("hello world");
   });
 
   it("rejects chunks beyond the declared size and removes the partial file", async () => {
@@ -200,7 +243,93 @@ describe("file uploads", () => {
     });
     expect(readFileSync(path, "utf8")).toBe("hello world");
   });
+
+  it("finds a completed upload by id with the mime type it was uploaded with", async () => {
+    const paseoHome = makePaseoHome();
+    const uploads = new FileUploadStore({ paseoHome });
+    const file = await uploadNamed(uploads, "screenshot");
+
+    await expect(readStoredUpload(paseoHome, file!.id)).resolves.toEqual({
+      type: "uploaded_file",
+      id: file!.id,
+      fileName: "screenshot",
+      mimeType: "text/plain",
+      size: 11,
+      path: file!.path,
+    });
+  });
+
+  it("does not resolve unknown, malformed, or path-traversing upload ids", async () => {
+    const paseoHome = makePaseoHome();
+    await uploadNamed(new FileUploadStore({ paseoHome }), "notes.txt");
+
+    await expect(
+      readStoredUpload(paseoHome, "upload_00000000-0000-4000-8000-000000000000"),
+    ).resolves.toBeNull();
+    await expect(readStoredUpload(paseoHome, "../uploads")).resolves.toBeNull();
+    await expect(readStoredUpload(paseoHome, "notes.txt")).resolves.toBeNull();
+  });
+
+  it("assembles a chunked upload and resolves it by id", async () => {
+    const paseoHome = makePaseoHome();
+    const sessions = new ChunkedUploadSessions(new FileUploadStore({ paseoHome }));
+
+    const uploadId = await sessions.start({
+      fileName: "shot.png",
+      mimeType: "image/png",
+      size: 11,
+    });
+    await expect(sessions.append(uploadId, new TextEncoder().encode("hello"))).resolves.toEqual({
+      receivedBytes: 5,
+      size: 11,
+      file: null,
+    });
+    const done = await sessions.append(uploadId, new TextEncoder().encode(" world"));
+    expect(done).toMatchObject({ receivedBytes: 11, size: 11 });
+    expect(done.file).toMatchObject({ fileName: "shot.png", mimeType: "image/png", size: 11 });
+    expect(readFileSync(done.file!.path, "utf8")).toBe("hello world");
+    await expect(readStoredUpload(paseoHome, done.file!.id)).resolves.toEqual(done.file);
+
+    // A finished upload takes no more chunks.
+    await expect(sessions.append(uploadId, new Uint8Array([1]))).rejects.toThrow(
+      /unknown or expired uploadId/,
+    );
+  });
+
+  it("rejects a chunk that overflows the declared size and keeps nothing", async () => {
+    const paseoHome = makePaseoHome();
+    const sessions = new ChunkedUploadSessions(new FileUploadStore({ paseoHome }));
+    const uploadId = await sessions.start({
+      fileName: "a.bin",
+      mimeType: "application/x",
+      size: 3,
+    });
+
+    await expect(sessions.append(uploadId, new Uint8Array([1, 2, 3, 4]))).rejects.toThrow(
+      /exceeds the declared size: 4 of 3 bytes/,
+    );
+    expect(readdirSync(join(paseoHome, "uploads"))).toEqual([]);
+  });
 });
+
+let uploadCount = 0;
+
+async function uploadNamed(uploads: FileUploadStore, fileName: string) {
+  const requestId = `req-named-${uploadCount++}`;
+  uploads.beginUpload({
+    type: "file.upload.request",
+    fileName,
+    mimeType: "text/plain",
+    size: 11,
+    modifiedAt: "2026-05-02T00:00:00.000Z",
+    requestId,
+  });
+  await uploads.receiveFrame(uploadBegins(requestId));
+  await uploads.receiveFrame(uploadChunk(requestId, "hello world"));
+  const response = await uploads.receiveFrame(uploadEnds(requestId));
+  expect(response?.payload.error).toBeNull();
+  return response?.payload.file;
+}
 
 function makePaseoHome(): string {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "file-upload-test-")));
