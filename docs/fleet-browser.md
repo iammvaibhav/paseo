@@ -58,10 +58,16 @@ Other windows show CDP screenshots, which work on covered windows; the CDP scree
 does not.
 
 - Watching uses the view-only Selkies client (`<liveViewUrl>/#shared`): it sends no
-  input and never resizes the desktop. A shield above the frame keeps clicks and keys in
-  Paseo.
-- Take control opens the full client in a window-sized overlay. That client resizes the
-  desktop to its own viewport, the same as opening the live view in a browser tab.
+  input. A shield above the frame keeps clicks and keys in Paseo.
+- Take control opens the full client in a window-sized overlay.
+
+Every fleet desktop has one fixed size at 96 DPI, set by flotilla's browser component
+(`browser.width` x `browser.height`, 16:10 to fill the tab's frame), and every viewer
+scales it. Selkies otherwise lets each full client (Take control, the live view in a
+browser tab, a phone or tablet) resize the shared desktop and its DPI to its own
+screen. A portrait tablet then turns the desktop vertical for every viewer, and a
+viewer watching through a resize can get only its top-left corner while the capture
+catches up.
 
 The frame is only mounted while the tab is on screen; every connected viewer costs the
 browser host CPU.

@@ -46,7 +46,10 @@ const fleetBrowserPanelPresentation = {
   icon: ThemedGlobe,
 } satisfies PanelPresentation;
 
-/** The desktop's aspect ratio; the stream letterboxes inside it when the desktop differs. */
+/**
+ * Fleet desktops are a fixed 16:10 (flotilla's `browser.width` x `browser.height`), so the
+ * stream fills this frame; a desktop of another shape letterboxes inside it.
+ */
 const LIVE_VIEW_ASPECT_RATIO = 16 / 10;
 
 /** True while the panel is on screen: its tab is selected and, in the Explorer, the Explorer is open. */

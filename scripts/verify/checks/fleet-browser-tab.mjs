@@ -95,6 +95,10 @@ async function startLocalBrowser(ctx) {
       TZ: Asia/Kolkata
       RESTART_APP: "true"
       SELKIES_ENCODER: jpeg
+      # A fixed desktop, like the fleet's (flotilla's browser component).
+      SELKIES_MANUAL_WIDTH: "1440"
+      SELKIES_MANUAL_HEIGHT: "900"
+      SELKIES_SCALING_DPI: "96"
       CHROME_CLI: >-
         --user-data-dir=/config/profile
         --remote-debugging-port=9222
