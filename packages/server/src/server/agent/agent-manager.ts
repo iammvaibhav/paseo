@@ -143,6 +143,12 @@ import {
 } from "./ai-reviewer.js";
 import { getStructuredAgentResponse } from "./agent-response-loop.js";
 import { createPhaseTimer, type PhaseTimer } from "../../utils/phase-timer.js";
+import type {
+  DaemonPermissionHandle,
+  DaemonPermissionHost,
+  DaemonPermissionRequest,
+  DaemonPermissionResponder,
+} from "./daemon-permissions.js";
 
 const RELOAD_SESSION_CLOSE_TIMEOUT_MS = 3_000;
 const INTERRUPT_SESSION_TIMEOUT_MS = 2_000;
@@ -1203,8 +1209,13 @@ export interface RetiredInternalAgent {
   lastMessage: string | null;
 }
 
-export class AgentManager {
+export class AgentManager implements DaemonPermissionHost {
   private readonly pluginLifecycle: PluginLifecycle | undefined;
+  /** Permission requests the daemon answers itself (Paseo tools waiting on the user), by request id. */
+  private readonly daemonPermissions = new Map<
+    string,
+    { agentId: string; request: AgentPermissionRequest; onResponse: DaemonPermissionResponder }
+  >();
   private readonly retiredInternalAgents = new Map<
     string,
     RetiredInternalAgent & { expiresAt: number }
@@ -4706,6 +4717,18 @@ export class AgentManager {
     response: AgentPermissionResponse,
   ): Promise<AgentPermissionResult | void> {
     const agent = this.requireAgent(agentId);
+    const daemonOwned = this.daemonPermissions.get(requestId);
+    if (daemonOwned && daemonOwned.agentId === agentId) {
+      // The owner reads the response; only behavior and message are broadcast.
+      daemonOwned.onResponse(response);
+      this.settleDaemonPermission(
+        requestId,
+        response.behavior === "allow"
+          ? { behavior: "allow" }
+          : { behavior: "deny", ...(response.message ? { message: response.message } : {}) },
+      );
+      return;
+    }
     if (agent.inFlightPermissionResponses.has(requestId)) {
       throw new Error("A response to this permission request is already being submitted");
     }
@@ -4736,6 +4759,43 @@ export class AgentManager {
       agent.inFlightPermissionResponses.delete(requestId);
       agent.bufferedPermissionResolutions.delete(requestId);
     }
+  }
+
+  requestDaemonPermission(
+    agentId: string,
+    request: DaemonPermissionRequest,
+    onResponse: DaemonPermissionResponder,
+  ): DaemonPermissionHandle {
+    const agent = this.requireAgent(agentId);
+    const fullRequest: AgentPermissionRequest = { ...request, provider: agent.provider };
+    this.daemonPermissions.set(request.id, { agentId, request: fullRequest, onResponse });
+    void this.handleStreamEvent(agent, {
+      type: "permission_requested",
+      provider: agent.provider,
+      request: fullRequest,
+    }).catch((error: unknown) => {
+      this.logger.warn({ err: error, agentId }, "Failed to raise daemon permission request");
+    });
+    return { settle: (resolution) => this.settleDaemonPermission(request.id, resolution) };
+  }
+
+  private settleDaemonPermission(requestId: string, resolution: AgentPermissionResponse): void {
+    const owned = this.daemonPermissions.get(requestId);
+    if (!owned) return;
+    this.daemonPermissions.delete(requestId);
+    const agent = this.agents.get(owned.agentId);
+    if (!agent) return;
+    void this.handleStreamEvent(agent, {
+      type: "permission_resolved",
+      provider: agent.provider,
+      requestId,
+      resolution,
+    }).catch((error: unknown) => {
+      this.logger.warn(
+        { err: error, agentId: owned.agentId },
+        "Failed to resolve daemon permission request",
+      );
+    });
   }
 
   async cancelAgentRun(agentId: string): Promise<AgentRunCancellationResult> {
@@ -5928,6 +5988,10 @@ export class AgentManager {
     } catch {
       agent.pendingPermissions.clear();
     }
+    // The provider session does not know daemon-owned requests; keep them.
+    for (const [requestId, owned] of this.daemonPermissions) {
+      if (owned.agentId === agent.id) agent.pendingPermissions.set(requestId, owned.request);
+    }
 
     this.syncFeaturesFromSession(agent);
     // Callers that already refreshed runtimeInfo themselves (e.g. registerSession)
@@ -6997,6 +7061,15 @@ export class AgentManager {
   ): void {
     for (const [requestId] of agent.pendingPermissions) {
       agent.pendingPermissions.delete(requestId);
+      const daemonOwned = this.daemonPermissions.get(requestId);
+      if (daemonOwned) {
+        this.daemonPermissions.delete(requestId);
+        try {
+          daemonOwned.onResponse({ behavior: "deny", message });
+        } catch (error) {
+          this.logger.warn({ err: error, agentId: agent.id }, "Daemon permission owner threw");
+        }
+      }
       if (!options?.fromHistory) {
         this.dispatchStream(agent.id, {
           type: "permission_resolved",

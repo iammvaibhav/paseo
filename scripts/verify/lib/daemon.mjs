@@ -82,7 +82,8 @@ export function buildDaemonEnv({
   env.PASEO_SERVICE_PROXY_ENABLED = "0";
   env.PASEO_NODE_INSPECT = "0";
   // info (not warn): itsaplan bridge proof lines (itsaplan.project.mapped / existing_adopted) log at info.
-  env.PASEO_LOG_LEVEL = "info";
+  // PASEO_VERIFY_LOG_LEVEL=trace lets a check grep the most verbose log (secure-input leak check).
+  env.PASEO_LOG_LEVEL = process.env.PASEO_VERIFY_LOG_LEVEL?.trim() || "info";
   env.NODE_COMPILE_CACHE = getNodeCompileCacheDir(worktreeRoot);
   try {
     const tsxLoader = createRequire(

@@ -242,6 +242,7 @@ import { DaemonConfigBrowserToolsPolicy } from "./browser-tools/policy.js";
 import { PagePreviewBrowser } from "./page-tools/preview-browser.js";
 import { PagePortProxy } from "./page-tools/port-proxy.js";
 import { PageStore } from "./page-tools/page-store.js";
+import { resolveSecureInputRoot, SecureInputService } from "./secure-input/secure-input-service.js";
 import { WorkspaceGitServiceImpl, type WorkspaceGitService } from "./workspace-git-service.js";
 import { resolveWorkspaceIdForPath } from "./resolve-workspace-id-for-path.js";
 import {
@@ -1411,6 +1412,12 @@ export async function createPaseoDaemon(
     agentManager,
     agentStorage,
   );
+  const secureInput = new SecureInputService({
+    permissions: agentManager,
+    rootDir: await resolveSecureInputRoot(config.paseoHome),
+    logger: logger.child({ module: "secure-input" }),
+  });
+  await secureInput.start();
   await agentStorage.initialize();
   const restartRecovery = createRestartRecovery({
     storage: agentStorage,
@@ -2686,6 +2693,7 @@ export async function createPaseoDaemon(
     },
     routingService,
     memoryService,
+    secureInput,
     resolveDocThreads: docThreadsHost?.service ? () => docThreadsHost.service! : null,
     fleetBrowser,
     hostAlias: missionControlHostAlias,
@@ -3299,6 +3307,7 @@ export async function createPaseoDaemon(
                 unarchiveAgent,
                 agentReminders,
                 fleetBrowser,
+                secureInput,
               },
             );
             pluginRuntime.bindPaseoSessionHost(wsServer);
@@ -3444,6 +3453,7 @@ export async function createPaseoDaemon(
     baseCheckoutSyncService.stop();
     await peerManager?.close().catch(() => undefined);
     await pagePreviewBrowser.close();
+    await secureInput.close().catch(() => undefined);
     await pagePortProxy.close();
     await tunnelManager.stop().catch(() => undefined);
     await relayRuntime?.stop().catch(() => undefined);

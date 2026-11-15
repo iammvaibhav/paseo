@@ -491,6 +491,15 @@ export const en = {
       failed: "Dictation failed: {{error}}",
       failedRetry: "Dictation failed. Tap retry.",
     },
+    secureInput: {
+      submit: "Submit",
+      cancel: "Cancel",
+      optional: "optional",
+      show: "Show",
+      hide: "Hide",
+      hint: "Sent only to this host. The agent gets a reference, never the value.",
+      submitFailed: "Could not send the values. Try again.",
+    },
     question: {
       responseFailed: "Could not send your response. Try again.",
       submit: "Submit",

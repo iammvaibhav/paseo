@@ -4672,6 +4672,37 @@ export class DaemonClient {
     }
   }
 
+  /**
+   * Sends a secure input card's values. Only the daemon's secure input service reads them;
+   * the response carries accepted/error, never the values.
+   */
+  async submitSecureInput(
+    agentId: string,
+    secureInputId: string,
+    values: Record<string, string>,
+  ): Promise<void> {
+    const requestId = this.createRequestId();
+    const message = SessionInboundMessageSchema.parse({
+      type: "secure_input.submit.request",
+      requestId,
+      agentId,
+      secureInputId,
+      values,
+    });
+    const payload = await this.sendRequest({
+      requestId,
+      message,
+      timeout: 30_000,
+      select: (msg) =>
+        msg.type === "secure_input.submit.response" && msg.payload.requestId === requestId
+          ? msg.payload
+          : null,
+    });
+    if (!payload.accepted) {
+      throw new Error(payload.error ?? "The host did not accept the values");
+    }
+  }
+
   /** The markup of a page an agent published from a file (`show_page` with `path`). */
   async getPageContent(pageId: string): Promise<string> {
     const requestId = this.createRequestId();

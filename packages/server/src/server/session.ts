@@ -11,6 +11,7 @@ import type { RoutingService } from "./routing/routing-service.js";
 import type { AgentSearchService } from "./agent-search/agent-search-service.js";
 import type { UnarchiveAgent } from "./agent/tools/fleet-unarchive-tools.js";
 import type { AgentReminderService } from "./reminders/agent-reminder-service.js";
+import type { SecureInputService } from "./secure-input/secure-input-service.js";
 import { BrowserAutomationHostCapabilitySchema } from "@getpaseo/protocol/browser-automation/capabilities";
 import type {
   SessionEventSubscription,
@@ -554,6 +555,8 @@ export interface SessionOptions {
   agentReminders?: AgentReminderService | null;
   /** Fleet browser windows of this daemon's agents (fleet_browser.*). */
   fleetBrowser?: FleetBrowserService | null;
+  /** Secure input forms (secure_input.submit.request). */
+  secureInput?: Pick<SecureInputService, "submit"> | null;
   /** How the socket that sent a request reached the daemon. */
   resolveSourcePeer?: (source?: object) => SessionSourcePeer | null;
   clientId: string;
@@ -929,6 +932,7 @@ function resolveOptionalSessionServices(options: SessionOptions) {
     agentSearchService: options.agentSearchService ?? null,
     unarchiveAgent: options.unarchiveAgent ?? null,
     agentReminders: options.agentReminders ?? null,
+    secureInput: options.secureInput ?? null,
     resolveSourcePeer: options.resolveSourcePeer ?? (() => null),
   };
 }
@@ -987,6 +991,7 @@ export class Session {
   private readonly agentSearchService: AgentSearchService | null;
   private readonly unarchiveAgent: UnarchiveAgent | null;
   private readonly agentReminders: AgentReminderService | null;
+  private readonly secureInput: Pick<SecureInputService, "submit"> | null;
   private readonly resolveSourcePeer: (source?: object) => SessionSourcePeer | null;
   private readonly clientId: string;
   private readonly clientType: SessionOptions["clientType"];
@@ -1182,6 +1187,7 @@ export class Session {
     this.agentSearchService = optionalServices.agentSearchService;
     this.unarchiveAgent = optionalServices.unarchiveAgent;
     this.agentReminders = optionalServices.agentReminders;
+    this.secureInput = optionalServices.secureInput;
     this.resolveSourcePeer = optionalServices.resolveSourcePeer;
     this.clientId = clientId;
     this.clientType = options.clientType;
@@ -2983,11 +2989,30 @@ export class Session {
     }
   }
 
+  /** Form values go only to the secure input service; the response never echoes them. */
+  private async handleSecureInputSubmit(
+    msg: Extract<SessionInboundMessage, { type: "secure_input.submit.request" }>,
+  ): Promise<void> {
+    const result = this.secureInput
+      ? await this.secureInput.submit(msg.agentId, msg.secureInputId, msg.values)
+      : ({ accepted: false, error: "This host does not take secure input" } as const);
+    this.emit({
+      type: "secure_input.submit.response",
+      payload: {
+        requestId: msg.requestId,
+        secureInputId: msg.secureInputId,
+        accepted: result.accepted,
+        error: result.accepted ? null : result.error,
+      },
+    });
+  }
+
   private dispatchPageProxyMessage(
     msg: SessionInboundMessage,
     source?: object,
   ): Promise<void> | undefined {
     if (msg.type === "page.content.get.request") return this.handlePageContentGet(msg);
+    if (msg.type === "secure_input.submit.request") return this.handleSecureInputSubmit(msg);
     if (msg.type !== "page.proxy.open.request") return undefined;
     const respond = (payload: { proxyPort: number | null; error: string | null }) =>
       this.emit({

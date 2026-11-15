@@ -493,6 +493,15 @@ export const zhCN: TranslationResources = {
       failed: "听写失败：{{error}}",
       failedRetry: "听写失败。点按重试。",
     },
+    secureInput: {
+      submit: "提交",
+      cancel: "取消",
+      optional: "可选",
+      show: "显示",
+      hide: "隐藏",
+      hint: "仅发送到此主机。代理只会拿到引用，永远拿不到值本身。",
+      submitFailed: "无法发送这些值，请重试。",
+    },
     question: {
       responseFailed: "未能发送你的回复，请重试。",
       submit: "提交",

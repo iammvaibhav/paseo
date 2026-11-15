@@ -18,7 +18,7 @@ interface RegisterFleetBrowserToolsOptions {
     config: PaseoToolConfig,
     handler: (input: unknown, context: PaseoToolExecutionContext) => Promise<PaseoToolResult>,
   ) => void;
-  service: FleetBrowserService | null;
+  service: FleetBrowserService | null | undefined;
   scope: "agent" | "top-level";
   callerAgentId: string | undefined;
   /** Remote /mcp/fleet clients act for a bot, not an agent, so they get no windows. */

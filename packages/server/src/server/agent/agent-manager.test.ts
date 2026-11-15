@@ -15227,3 +15227,87 @@ test("an out-of-band command racing idle cleanup waits for the resumed runtime",
   expect(h.commands).toEqual(["/maintenance"]);
   expect(h.prompts).toEqual([]);
 });
+
+test("a daemon-owned permission survives a session refresh and its answer never reaches the provider", async () => {
+  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-daemon-permission-"));
+  const storage = new AgentStorage(join(workdir, "agents"), logger);
+  class RecordingSession extends TestAgentSession {
+    resolved: string[] = [];
+    override async respondToPermission(requestId: string): Promise<void> {
+      this.resolved.push(requestId);
+    }
+  }
+  class RecordingClient extends TestAgentClient {
+    session: RecordingSession | null = null;
+    override async createSession(config: AgentSessionConfig): Promise<AgentSession> {
+      this.session = new RecordingSession(config);
+      return this.session;
+    }
+  }
+  const client = new RecordingClient();
+  const manager = new AgentManager({
+    clients: { codex: client },
+    registry: storage,
+    logger,
+    idFactory: () => "00000000-0000-4000-8000-000000000171",
+  });
+  const { id: agentId } = await manager.createAgent(
+    { provider: "codex", cwd: workdir },
+    undefined,
+    {
+      workspaceId: undefined,
+    },
+  );
+  const resolutions: unknown[] = [];
+  manager.subscribe(
+    (event) => {
+      if (event.type === "agent_stream" && event.event.type === "permission_resolved") {
+        resolutions.push(event.event.resolution);
+      }
+    },
+    { replayState: false },
+  );
+  const responses: unknown[] = [];
+  manager.requestDaemonPermission(
+    agentId,
+    { id: "si_test", name: "request_secure_input", kind: "other", title: "Login" },
+    (response) => {
+      if (response.behavior === "allow") throw new Error("answer in the app");
+      responses.push(response);
+    },
+  );
+  await manager.flush();
+  expect(manager.getPendingPermissions(agentId).map((request) => request.id)).toEqual(["si_test"]);
+
+  // A provider permission answered in between refreshes pending state from the session,
+  // which knows nothing of daemon-owned requests.
+  const providerRequest = {
+    id: "perm-1",
+    provider: "codex" as const,
+    name: "bash",
+    kind: "tool" as const,
+  };
+  client.session!.pushEvent({
+    type: "permission_requested",
+    provider: "codex",
+    request: providerRequest,
+  });
+  await manager.flush();
+  await manager.respondToPermission(agentId, "perm-1", { behavior: "allow" });
+  expect(manager.getPendingPermissions(agentId).map((request) => request.id)).toEqual(["si_test"]);
+
+  await expect(
+    manager.respondToPermission(agentId, "si_test", {
+      behavior: "allow",
+      updatedInput: { password: "leak" },
+    }),
+  ).rejects.toThrow("answer in the app");
+  expect(manager.getPendingPermissions(agentId).map((request) => request.id)).toEqual(["si_test"]);
+
+  await manager.respondToPermission(agentId, "si_test", { behavior: "deny", message: "No" });
+  await manager.flush();
+  expect(responses).toEqual([{ behavior: "deny", message: "No" }]);
+  expect(client.session!.resolved).toEqual(["perm-1"]);
+  expect(manager.getPendingPermissions(agentId)).toEqual([]);
+  expect(JSON.stringify(resolutions)).not.toContain("leak");
+});

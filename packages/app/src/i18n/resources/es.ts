@@ -500,6 +500,15 @@ export const es: TranslationResources = {
       failed: "Fallo en el dictado:{{error}}",
       failedRetry: "El dictado falló. Toca reintentar.",
     },
+    secureInput: {
+      submit: "Enviar",
+      cancel: "Cancelar",
+      optional: "opcional",
+      show: "Mostrar",
+      hide: "Ocultar",
+      hint: "Solo se envía a este host. El agente recibe una referencia, nunca el valor.",
+      submitFailed: "No se pudieron enviar los valores. Inténtalo de nuevo.",
+    },
     question: {
       responseFailed: "No se pudo enviar tu respuesta. Inténtalo de nuevo.",
       submit: "Entregar",

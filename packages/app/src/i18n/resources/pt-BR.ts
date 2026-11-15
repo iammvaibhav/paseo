@@ -498,6 +498,15 @@ export const ptBR: TranslationResources = {
       failed: "Falha no ditado: {{error}}",
       failedRetry: "Falha no ditado. Toque para tentar novamente.",
     },
+    secureInput: {
+      submit: "Enviar",
+      cancel: "Cancelar",
+      optional: "opcional",
+      show: "Mostrar",
+      hide: "Ocultar",
+      hint: "Enviado apenas para este host. O agente recebe uma referência, nunca o valor.",
+      submitFailed: "Não foi possível enviar os valores. Tente novamente.",
+    },
     question: {
       responseFailed: "Não foi possível enviar sua resposta. Tente novamente.",
       submit: "Enviar",

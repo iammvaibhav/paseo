@@ -493,6 +493,15 @@ export const ar: TranslationResources = {
       failed: "فشل الإملاء:{{error}}",
       failedRetry: "فشل الإملاء. اضغط على إعادة المحاولة.",
     },
+    secureInput: {
+      submit: "إرسال",
+      cancel: "إلغاء",
+      optional: "اختياري",
+      show: "إظهار",
+      hide: "إخفاء",
+      hint: "تُرسل إلى هذا المضيف فقط. يحصل الوكيل على مرجع، وليس على القيمة أبدًا.",
+      submitFailed: "تعذّر إرسال القيم. حاول مرة أخرى.",
+    },
     question: {
       responseFailed: "تعذر إرسال ردك. حاول مرة أخرى.",
       submit: "يُقدِّم",

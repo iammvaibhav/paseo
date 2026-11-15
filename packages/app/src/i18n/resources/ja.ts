@@ -499,6 +499,15 @@ export const ja: TranslationResources = {
       failed: "音声入力に失敗しました: {{error}}",
       failedRetry: "音声入力に失敗しました。再試行をタップしてください。",
     },
+    secureInput: {
+      submit: "送信",
+      cancel: "キャンセル",
+      optional: "任意",
+      show: "表示",
+      hide: "非表示",
+      hint: "このホストにのみ送信されます。エージェントが受け取るのは参照だけで、値は渡りません。",
+      submitFailed: "値を送信できませんでした。もう一度お試しください。",
+    },
     question: {
       responseFailed: "回答を送信できませんでした。もう一度お試しください。",
       submit: "送信",

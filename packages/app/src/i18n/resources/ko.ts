@@ -495,6 +495,15 @@ export const ko: TranslationResources = {
       failed: "받아쓰기 실패: {{error}}",
       failedRetry: "받아쓰기에 실패했습니다. 다시 시도하려면 누르세요.",
     },
+    secureInput: {
+      submit: "제출",
+      cancel: "취소",
+      optional: "선택 사항",
+      show: "표시",
+      hide: "숨기기",
+      hint: "이 호스트로만 전송됩니다. 에이전트는 값이 아닌 참조만 받습니다.",
+      submitFailed: "값을 보내지 못했습니다. 다시 시도하세요.",
+    },
     question: {
       responseFailed: "응답을 보내지 못했습니다. 다시 시도해 주세요.",
       submit: "제출",

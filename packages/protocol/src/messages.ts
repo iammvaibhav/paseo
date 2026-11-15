@@ -282,6 +282,10 @@ import {
   PageProxyOpenResponseSchema,
 } from "./page/rpc-schemas.js";
 import {
+  SecureInputSubmitRequestSchema,
+  SecureInputSubmitResponseSchema,
+} from "./secure-input/rpc-schemas.js";
+import {
   BROWSER_AUTOMATION_COMMAND_NAMES,
   BrowserAutomationExecuteRequestSchema,
   BrowserAutomationExecuteResponseSchema,
@@ -4106,6 +4110,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   LoopStopRequestSchema,
   PageProxyOpenRequestSchema,
   PageContentGetRequestSchema,
+  SecureInputSubmitRequestSchema,
   MissionControlEventsFetchRequestSchema,
   MissionControlEventsAckRequestSchema,
   MissionControlPeersListRequestSchema,
@@ -8154,6 +8159,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   LoopStopResponseSchema,
   PageProxyOpenResponseSchema,
   PageContentGetResponseSchema,
+  SecureInputSubmitResponseSchema,
   MissionControlEventsFetchResponseSchema,
   MissionControlEventsAckResponseSchema,
   MissionControlPeersListResponseSchema,

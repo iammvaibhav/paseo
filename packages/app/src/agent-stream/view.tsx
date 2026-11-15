@@ -64,6 +64,7 @@ import { returnToTimelineTail } from "./timeline-tail-navigation";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { ToolCallDetailsContent } from "@/components/tool-call-details";
 import { QuestionFormCard } from "@/components/question-form-card";
+import { readSecureInputForm, SecureInputCard } from "@/components/secure-input-card";
 import {
   ToolCallExpansionContext,
   useAgentToolCallExpansion,
@@ -2004,6 +2005,33 @@ function PermissionRequestCard({
     ],
     [isMobile],
   );
+  const secureInputForm = useMemo(() => readSecureInputForm(request), [request]);
+  // Values go over secure_input.submit, not the permission response, so they are never broadcast.
+  const submitSecureInput = useCallback(
+    async (values: Record<string, string>) => {
+      if (!client) {
+        throw new Error(t("common.errors.daemonClientUnavailable"));
+      }
+      await client.submitSecureInput(permission.agentId, permission.request.id, values);
+    },
+    [client, permission.agentId, permission.request.id, t],
+  );
+  const cancelSecureInput = useCallback(
+    () => handleResponse({ behavior: "deny", message: "Cancelled by user" }),
+    [handleResponse],
+  );
+
+  if (secureInputForm) {
+    return (
+      <SecureInputCard
+        request={request}
+        form={secureInputForm}
+        onSubmit={submitSecureInput}
+        onCancel={cancelSecureInput}
+        isCancelling={isResponding}
+      />
+    );
+  }
 
   if (request.kind === "question") {
     const responseFailed =
