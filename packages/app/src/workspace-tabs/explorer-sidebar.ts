@@ -5,13 +5,14 @@ import {
 } from "@/stores/workspace-layout-store";
 import type { WorkspaceTabTarget } from "@/workspace-tabs/model";
 
-export type ExplorerSidebarView = "changes" | "files" | "pr";
+export type ExplorerSidebarView = "changes" | "files" | "pr" | "browser";
 export type ExplorerSidebarPresentation = "overlay" | "dock";
 
 const VIEW_TARGETS: Record<ExplorerSidebarView, WorkspaceTabTarget> = {
   changes: { kind: "changes_tree" },
   files: { kind: "files" },
   pr: { kind: "pull_request" },
+  browser: { kind: "fleet_browser" },
 };
 
 export interface ExplorerSidebarQuery {

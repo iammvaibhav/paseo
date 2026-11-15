@@ -248,6 +248,7 @@ import { RenderProfile } from "@/utils/render-profiler";
 import { useWorkspaceCheckoutStatus } from "@/screens/workspace/use-workspace-checkout-status";
 import { useIsLocalDaemon } from "@/hooks/use-is-local-daemon";
 import { useWorkspacePullRequestDiscovery } from "@/panels/pull-request";
+import { useFleetBrowserExplorerTab } from "@/fleet-browser/use-fleet-browser-explorer-tab";
 
 const NO_SHEETS: readonly SheetTab[] = [];
 const WORKSPACE_FLOATING_PANEL_PORTAL_HOST_PREFIX = "workspace-floating-panels";
@@ -1343,6 +1344,12 @@ function WorkspaceScreenContent({
     isGit: isGitCheckout,
     layoutMode,
     explorerOpen: isExplorerSidebarShowing,
+  });
+  useFleetBrowserExplorerTab({
+    serverId: normalizedServerId,
+    workspaceId: normalizedWorkspaceId,
+    workspaceKey: persistenceKey,
+    isCompact: isMobile,
   });
 
   const explorerSidebarToggleAccessibilityState = useMemo(

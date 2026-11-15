@@ -166,7 +166,7 @@ node scripts/verify/run.mjs --all [--tier daemon|ui|fleet] [--proof] [--json]
 - **Self-namespacing rule:** Because checks in a group share a single stack, every check must be self-namespacing. Checks must use unique workspace paths, distinct issue titles (`[<runId>] ...`), and unique agent names so that sequential runs do not collide or depend on state left by a previous check.
 - **When to run:** Run `--all` after merging changes from upstream branches and before deploying or landing changes.
 
-## Browser tools vs Playwright
+## Playwright vs the fleet browser
 
 Two distinct browser mechanisms exist in the environment:
 
@@ -174,11 +174,10 @@ Two distinct browser mechanisms exist in the environment:
   - Runs headless Chromium directly on the host machine running the daemon.
   - The default and only assertion mechanism for automated verification.
   - Deterministic, fast, runs headlessly in CI or cloud containers, captures before/after stills, and records video for `proof.mp4`.
-- **Paseo `browser_*` tools:**
-  - Execute on the user's MacBook Electron app and open browser tabs in their local workspace.
-  - Used only as a visible "see it live" surface when the user's Mac is connected, pointing to the reachable stack URL (`ctx.reachableUrl()`).
-  - When the MacBook is disconnected or closed, calls return `browser_no_host`. This is expected; do not retry and do not fail the task.
-  - The only way to observe Electron-guest-specific behavior (e.g. desktop wrapper integrations, webview-to-native IPC, protocol handlers).
+  - Has no H.264 decoder, so it cannot show a fleet browser's live view. `fleet-browser-tab` runs a throwaway Selkies browser that streams JPEG instead (see [fleet-browser.md](fleet-browser.md)).
+- **The fleet browser** (`fleet-browser` skill, `prod` for our own apps):
+  - A real headful Chrome the user can watch, used as a "see it live" surface for a `--reachable` stack (`ctx.reachableUrl()`).
+  - Paseo's old `browser_*` tools are switched off (`daemon.browserTools.enabled: false`), so Electron-guest behavior (desktop wrapper integrations, webview-to-native IPC, protocol handlers) is only observable in the desktop app on the MacBook.
 
 ## Positioning vs `packages/app/e2e`
 
@@ -470,7 +469,7 @@ Do not rely on daemon terminal exit for cleanup. The Paseo daemon terminal kills
 | Mission Control / Commander / verifier logic                   | `daemon` or `fleet`  | Red check (`--expect fail`), green check (`--up`), `result.json`, itsaplan webhook/agent/issue receipts   |
 | Web UI component / navigation / layout / DOM interactions      | `ui`                 | Red check (`--expect fail`), green check (`--up --proof`), video proof (`proof.mp4`), before/after stills |
 | Cross-host sync / peering / event routing / multi-daemon state | `fleet` (`hosts: 2`) | Red check (`--expect fail`), green check (`--up`), `result.json`, verified state logs from both hosts     |
-| Electron desktop wrapper / native guest integrations           | `ui`                 | Playwright check on server + `browser_*` screenshot on connected MacBook                                  |
+| Electron desktop wrapper / native guest integrations           | `ui`                 | Playwright check on server + a run in the desktop app on the MacBook                                      |
 
 ## Timing targets
 

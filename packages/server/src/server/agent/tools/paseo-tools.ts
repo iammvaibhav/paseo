@@ -162,6 +162,7 @@ import {
 } from "../../peers/fleet-hosts.js";
 import { registerDocThreadTools } from "../../doc-threads/tools.js";
 import type { DocThreadsService } from "../../doc-threads/service.js";
+import { registerFleetBrowserTools, type FleetBrowserService } from "../../fleet-browser/index.js";
 import { registerFleetControlTools } from "./fleet-control-tools.js";
 import { registerFleetUnarchiveTools } from "./fleet-unarchive-tools.js";
 import { registerFleetReminderTools } from "./fleet-reminder-tools.js";
@@ -270,6 +271,8 @@ export interface PaseoToolHostDependencies {
     ) => Promise<{ issueId: number; url: string } | { error: string }>;
   } | null;
   resolveDocThreads?: (() => DocThreadsService) | null;
+  /** Fleet browser window registry. Absent or unconfigured → the fleet_browser_* tools are not offered. */
+  fleetBrowser?: FleetBrowserService | null;
   paseoToolPolicy?: ProviderPaseoToolsPolicy;
   paseoHome?: string;
   /** Daemon-wide chunked uploads behind fleet_upload_file; absent → the tool is not offered. */
@@ -6433,6 +6436,14 @@ function createToolCatalog(
     registerTool,
     resolveDocThreads: options.resolveDocThreads,
     callerAgentId,
+  });
+
+  registerFleetBrowserTools({
+    registerTool,
+    service: options.fleetBrowser ?? null,
+    scope,
+    callerAgentId,
+    isMcpClient,
   });
 
   /**

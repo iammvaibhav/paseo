@@ -214,6 +214,7 @@ import { MAX_WEBHOOK_BODY_BYTES, WebhookService } from "./webhook/service.js";
 import { createWebhookRouteHandler } from "./webhook/route.js";
 import { AutomationService } from "./automation/service.js";
 import { openDocThreads, type DocThreadsHost } from "./doc-threads/index.js";
+import { openFleetBrowser } from "./fleet-browser/index.js";
 import {
   archiveOrphanedItsaplanBoards,
   attachItsaplanProjectSync,
@@ -2537,6 +2538,15 @@ export async function createPaseoDaemon(
   docThreadsRuntime?.host.service?.onChange((change) => {
     wsServer?.broadcast(wrapSessionMessage({ type: "doc_threads.changed", ...change }));
   });
+  const fleetBrowser = await openFleetBrowser({
+    paseoHome: config.paseoHome,
+    logger,
+    agentStorage,
+    agentManager,
+  });
+  fleetBrowser.onChange((change) => {
+    wsServer?.broadcast(wrapSessionMessage({ type: "fleet_browser.changed", ...change }));
+  });
   logger.info({ elapsed: elapsed() }, "Loading persisted agent registry");
   // Startup loads persisted agent history once before restoring the registry.
   const persistedRecords = await agentStorage.listAll();
@@ -2677,6 +2687,7 @@ export async function createPaseoDaemon(
     routingService,
     memoryService,
     resolveDocThreads: docThreadsHost?.service ? () => docThreadsHost.service! : null,
+    fleetBrowser,
     hostAlias: missionControlHostAlias,
     hostName: getHostName(),
     fleetHostNames: () => fleetHostNamesFromConfig(configuredHostnames),
@@ -3287,6 +3298,7 @@ export async function createPaseoDaemon(
                 agentSearchService,
                 unarchiveAgent,
                 agentReminders,
+                fleetBrowser,
               },
             );
             pluginRuntime.bindPaseoSessionHost(wsServer);

@@ -1293,6 +1293,21 @@ type DocThreadsResponseType<TType extends DocThreadsRequestType> =
     : never;
 export type DocThreadsResponsePayload<TType extends DocThreadsRequestType> =
   CorrelatedResponsePayload<DocThreadsResponseType<TType>>;
+type FleetBrowserRequestMessage = Extract<
+  SessionInboundMessage,
+  { type: `fleet_browser.${string}.request` }
+>;
+export type FleetBrowserRequestType = FleetBrowserRequestMessage["type"];
+export type FleetBrowserRequestParams<TType extends FleetBrowserRequestType> = Omit<
+  Extract<FleetBrowserRequestMessage, { type: TType }>,
+  "type" | "requestId"
+>;
+type FleetBrowserResponseType<TType extends FleetBrowserRequestType> =
+  TType extends `${infer Prefix}.request`
+    ? Extract<`${Prefix}.response`, CorrelatedResponseType>
+    : never;
+export type FleetBrowserResponsePayload<TType extends FleetBrowserRequestType> =
+  CorrelatedResponsePayload<FleetBrowserResponseType<TType>>;
 type PluginCatalogResponseEntry =
   CorrelatedResponsePayload<"plugin.catalog.get.response">["plugins"][number];
 export type PluginCatalogEntry = Omit<PluginCatalogResponseEntry, "clientBundle"> & {
@@ -7765,6 +7780,25 @@ export class DaemonClient {
       responseType,
       timeout: options.timeout,
     }) as Promise<DocThreadsResponsePayload<TType>>;
+  }
+
+  /**
+   * Fleet browser windows RPC (docs/rpc-namespacing.md pairs). `type` is any
+   * `fleet_browser.*.request`; the matching `.response` payload is returned with
+   * `error` null on success. Gate on server_info `features.fleetBrowser`.
+   */
+  async fleetBrowserRequest<TType extends FleetBrowserRequestType>(
+    type: TType,
+    params: FleetBrowserRequestParams<TType>,
+    options: { requestId?: string; timeout?: number } = {},
+  ): Promise<FleetBrowserResponsePayload<TType>> {
+    const responseType = type.replace(/\.request$/, ".response") as FleetBrowserResponseType<TType>;
+    return this.sendCorrelatedSessionRequest({
+      requestId: options.requestId,
+      message: { ...params, type },
+      responseType,
+      timeout: options.timeout,
+    }) as Promise<FleetBrowserResponsePayload<TType>>;
   }
 
   /**

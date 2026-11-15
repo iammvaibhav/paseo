@@ -225,6 +225,7 @@ import type { WebhookService } from "./webhook/service.js";
 import { AutomationSession } from "./automation/session.js";
 import type { AutomationService } from "./automation/service.js";
 import { DocThreadsSession, type DocThreadsHost } from "./doc-threads/session.js";
+import { FleetBrowserSession, type FleetBrowserService } from "./fleet-browser/index.js";
 import type { PeerManager } from "./peers/peer-manager.js";
 import {
   AGENT_VIEWED_PEER_TOOL,
@@ -551,6 +552,8 @@ export interface SessionOptions {
   unarchiveAgent?: UnarchiveAgent | null;
   /** Agent "Remind me" reminders (agent.reminder.*, AgentSnapshotPayload.reminder). */
   agentReminders?: AgentReminderService | null;
+  /** Fleet browser windows of this daemon's agents (fleet_browser.*). */
+  fleetBrowser?: FleetBrowserService | null;
   /** How the socket that sent a request reached the daemon. */
   resolveSourcePeer?: (source?: object) => SessionSourcePeer | null;
   clientId: string;
@@ -1084,6 +1087,7 @@ export class Session {
   private readonly webhookSession: WebhookSession;
   private readonly automationSession: AutomationSession;
   private readonly docThreadsSession: DocThreadsSession;
+  private readonly fleetBrowserSession: FleetBrowserSession;
   private readonly peerManager: PeerManager | null;
   private readonly missionControlService: MissionControlService | null;
   private readonly transcriptSearch: TranscriptSearchService | null;
@@ -1317,6 +1321,11 @@ export class Session {
     this.docThreadsSession = new DocThreadsSession({
       emit: (msg) => this.emit(msg),
       host: orNull(options.docThreads),
+      logger: this.sessionLogger,
+    });
+    this.fleetBrowserSession = new FleetBrowserSession({
+      emit: (msg) => this.emit(msg),
+      service: orNull(options.fleetBrowser),
       logger: this.sessionLogger,
     });
     this.peerManager = orNull(peerManager);
@@ -2928,6 +2937,7 @@ export class Session {
     (msg) => this.dispatchPluginRpcMessage(msg),
     (msg) => this.dispatchHostServiceMessage(msg),
     (msg) => this.docThreadsSession.dispatch(msg),
+    (msg) => this.fleetBrowserSession.dispatch(msg),
     (msg) => this.dispatchRemovedTicketsRequest(msg),
     (msg) => this.automationSession.dispatch(msg),
     (msg) => this.dispatchRemovedNotesRequest(msg),
@@ -10978,6 +10988,7 @@ const PASSTHROUGH_EVENT_CATEGORIES: Record<string, true> = {
   // COMPAT(tickets-removed): retained for old client subscription cleanup. Remove after 2027-01-12.
   "notes.changed": true,
   "doc_threads.changed": true,
+  "fleet_browser.changed": true,
   mission_control_event: true,
   "provider.usage.updated": true,
   "automations.changed": true,

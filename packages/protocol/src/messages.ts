@@ -128,6 +128,10 @@ import {
   DOC_THREADS_OUTBOUND_SCHEMAS,
 } from "./doc-threads/rpc-schemas.js";
 import {
+  FLEET_BROWSER_INBOUND_SCHEMAS,
+  FLEET_BROWSER_OUTBOUND_SCHEMAS,
+} from "./fleet-browser/rpc-schemas.js";
+import {
   MissionControlEventsFetchRequestSchema,
   MissionControlEventsFetchResponseSchema,
   MissionControlEventsAckRequestSchema,
@@ -3814,6 +3818,9 @@ export const SessionEventSubscriptionSchema = z.enum([
   // Doc threads push. Subscribe only on a host that advertises
   // features.docThreadsEventSubscription: an older daemon rejects an unknown event name.
   "doc_threads.changed",
+  // Fleet browser windows push. Subscribe only on a host that advertises
+  // features.fleetBrowser: an older daemon rejects an unknown event name.
+  "fleet_browser.changed",
 ]);
 export type SessionEventSubscription = z.infer<typeof SessionEventSubscriptionSchema>;
 export const SessionEventsSetSubscriptionRequestSchema = z.object({
@@ -4091,6 +4098,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   ...TICKETS_INBOUND_SCHEMAS,
   ...AUTOMATION_INBOUND_SCHEMAS,
   ...DOC_THREADS_INBOUND_SCHEMAS,
+  ...FLEET_BROWSER_INBOUND_SCHEMAS,
   LoopRunRequestSchema,
   LoopListRequestSchema,
   LoopInspectRequestSchema,
@@ -4316,6 +4324,9 @@ export const ServerInfoStatusPayloadSchema = z
         // COMPAT(docThreadsEventSubscription): added 2026-10-01, remove gate after 2027-04-01.
         // session.events accepts "doc_threads.changed".
         docThreadsEventSubscription: z.boolean().optional(),
+        // COMPAT(fleetBrowser): added 2026-11-15, remove gate after 2027-05-15.
+        // Daemon serves fleet_browser.* RPCs and session.events accepts "fleet_browser.changed".
+        fleetBrowser: z.boolean().optional(),
         // COMPAT(hubAgentRpc): added in v0.8.0; remove gate after 2027-03-05.
         hubAgentRpc: z.boolean().optional(),
         // COMPAT(internalAgents): added in v0.9.0; remove gate after 2027-03-17.
@@ -8135,6 +8146,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   ...TICKETS_OUTBOUND_SCHEMAS,
   ...AUTOMATION_OUTBOUND_SCHEMAS,
   ...DOC_THREADS_OUTBOUND_SCHEMAS,
+  ...FLEET_BROWSER_OUTBOUND_SCHEMAS,
   LoopRunResponseSchema,
   LoopListResponseSchema,
   LoopInspectResponseSchema,

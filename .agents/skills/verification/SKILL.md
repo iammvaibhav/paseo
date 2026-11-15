@@ -66,7 +66,7 @@ Include:
 ### 5. Browser choice
 
 - **Playwright** inside check scripts is the default and only assertion mechanism. It runs server-side, deterministically, captures before/after stills, and records video.
-- **Paseo `browser_*` tools** run on the user's connected MacBook Electron client and open tabs in their local workspace. Use them only when the user's Mac is connected as a visible "see it live" surface, pointing them at the reachable mock URL (`ctx.reachableUrl()`). If `browser_*` returns `browser_no_host`, or times out with "The browser did not respond", the MacBook is not connected (a stale registration times out instead of failing fast); do not retry and do not fail the task. Report the reachable URL and password instead. Save any captured `browser_screenshot` bytes to disk under the run's proof directory before attaching. `browser_*` is also the only way to observe Electron-guest-only behavior.
+- **The fleet browser** (`fleet-browser` skill; `prod` for our own apps) is the visible "see it live" surface: point it at the reachable mock URL (`ctx.reachableUrl()`), and the user can watch it in the Browser tab. Paseo's old `browser_*` tools are switched off, so Electron-guest-only behavior needs a run in the desktop app on the MacBook.
 
 ### 6. Live environment
 

@@ -106,6 +106,14 @@ const manifests = {
     compactSheet: null,
     resourceKey: () => "files",
   },
+  fleet_browser: {
+    kind: "fleet_browser",
+    supportedHosts: ["explorer", "main"],
+    showCloseButton: false,
+    singleton: true,
+    compactSheet: null,
+    resourceKey: () => "fleet_browser",
+  },
   pull_request: {
     kind: "pull_request",
     supportedHosts: ["main", "explorer"],

@@ -1,8 +1,8 @@
 # Web UI harness
 
-Two surfaces, one script. Prefer the user's own browser tabs — they watch the
-session the agent drives — and fall back to headless Chromium here when that
-machine is asleep.
+Two surfaces, one script. Headless Chromium here is the default. The user's own
+browser tabs (`--bootstrap`) need Paseo's `browser_*` tools, which are switched off
+(`daemon.browserTools.enabled: false`); use them only where a host turns them back on.
 
 ```bash
 node scripts/web-ui-harness.mjs --bootstrap   # print the browser_* recipe
