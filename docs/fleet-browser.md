@@ -68,8 +68,9 @@ browser host CPU.
 
 The fleet's Selkies streams H.264, decoded with WebCodecs. WebCodecs exists only in a
 secure context, and an iframe is secure only when every page above it is: the desktop
-app (`paseo://`), the https web app and `localhost` qualify; the daemon-served web UI
-over `http://<NetBird IP>` does not, so the live view may stay blank there. Playwright's
-bundled Chromium has no H.264 decoder at all, so `fleet-browser-tab` starts a throwaway
-browser from the same image that streams JPEG
+app (`paseo://`, a privileged secure scheme), the https web app and `localhost` qualify.
+The daemon-served web UI over `http://<NetBird IP>` does not: there the frame has no
+`VideoDecoder` and the live view stays black, while thumbnails still update.
+Playwright's bundled Chromium has no H.264 decoder at all, so `fleet-browser-tab` starts
+a throwaway browser from the same image that streams JPEG
 (`scripts/verify/checks/fleet-browser-tab.mjs`).
