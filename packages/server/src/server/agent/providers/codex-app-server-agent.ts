@@ -39,6 +39,7 @@ import {
   type ProviderRefreshContext,
   type ResolveAgentDefaultModeInput,
 } from "../agent-sdk-types.js";
+import { PASEO_MCP_SERVER_NAME } from "../runtime-mcp-config.js";
 import { importSessionFromPersistence } from "../provider-session-import.js";
 import { runProviderRefreshActivity } from "../provider-refresh-deadline.js";
 import type { Logger } from "pino";
@@ -910,6 +911,9 @@ interface CodexMcpServerConfig {
   env?: Record<string, string>;
   tool_timeout_sec?: number;
 }
+
+/** The longest a Paseo tool blocks: request_secure_input waits up to an hour for the user. */
+const PASEO_MCP_TOOL_TIMEOUT_SEC = 3600;
 
 function toCodexMcpConfig(config: McpServerConfig): CodexMcpServerConfig {
   switch (config.type) {
@@ -5622,7 +5626,12 @@ export class CodexAppServerAgentSession implements AgentSession {
     if (this.config.mcpServers) {
       const mcpServers: Record<string, CodexMcpServerConfig> = {};
       for (const [name, serverConfig] of Object.entries(this.config.mcpServers)) {
-        mcpServers[name] = toCodexMcpConfig(serverConfig);
+        const codexConfig = toCodexMcpConfig(serverConfig);
+        // Paseo tools such as request_secure_input and fleet_wait block on the user or
+        // another agent for minutes; Codex's default 60 s tool timeout would cut them off.
+        if (name === PASEO_MCP_SERVER_NAME)
+          codexConfig.tool_timeout_sec = PASEO_MCP_TOOL_TIMEOUT_SEC;
+        mcpServers[name] = codexConfig;
       }
       innerConfig.mcp_servers = mcpServers;
     }

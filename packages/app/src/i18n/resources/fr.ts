@@ -499,6 +499,15 @@ export const fr: TranslationResources = {
       failed: "Échec de la dictée : {{error}}",
       failedRetry: "La dictée a échoué. Appuyez sur Réessayer.",
     },
+    secureInput: {
+      submit: "Envoyer",
+      cancel: "Annuler",
+      optional: "facultatif",
+      show: "Afficher",
+      hide: "Masquer",
+      hint: "Envoyé uniquement à cet hôte. L’agent reçoit une référence, jamais la valeur.",
+      submitFailed: "Impossible d’envoyer les valeurs. Réessayez.",
+    },
     question: {
       responseFailed: "Impossible d’envoyer votre réponse. Réessayez.",
       submit: "Envoyer",

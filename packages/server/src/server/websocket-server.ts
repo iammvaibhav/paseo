@@ -139,6 +139,7 @@ import type { RoutingService } from "./routing/routing-service.js";
 import type { AgentSearchService } from "./agent-search/agent-search-service.js";
 import type { UnarchiveAgent } from "./agent/tools/fleet-unarchive-tools.js";
 import type { AgentReminderService } from "./reminders/agent-reminder-service.js";
+import type { SecureInputService } from "./secure-input/secure-input-service.js";
 import type { DaemonRuntimeConfig } from "./session/daemon/daemon-session.js";
 import { DirectorySyncService } from "./directory-sync/index.js";
 import { OWNER_PERMISSIONS, type DaemonPermission } from "./authorization/index.js";
@@ -680,6 +681,7 @@ export class VoiceAssistantWebSocketServer {
   private readonly agentSearchService: AgentSearchService | null;
   private readonly unarchiveAgent: UnarchiveAgent | null;
   private readonly agentReminders: AgentReminderService | null;
+  private readonly secureInput: Pick<SecureInputService, "submit"> | null;
   private readonly hubRelationships: HubRelationshipManagement | null;
   private readonly peerManager: PeerManager | null;
   private readonly missionControlService: MissionControlService | null;
@@ -777,6 +779,7 @@ export class VoiceAssistantWebSocketServer {
       agentSearchService?: AgentSearchService | null;
       unarchiveAgent?: UnarchiveAgent | null;
       agentReminders?: AgentReminderService | null;
+      secureInput?: Pick<SecureInputService, "submit"> | null;
     },
   ) {
     this.onWorkspaceArchived = onWorkspaceArchived;
@@ -797,6 +800,7 @@ export class VoiceAssistantWebSocketServer {
     this.agentSearchService = websocketServices?.agentSearchService ?? null;
     this.unarchiveAgent = websocketServices?.unarchiveAgent ?? null;
     this.agentReminders = websocketServices?.agentReminders ?? null;
+    this.secureInput = websocketServices?.secureInput ?? null;
     this.hubRelationships = hubRelationships ?? null;
     this.peerManager = peerManager ?? null;
     this.missionControlService = missionControlService ?? null;
@@ -1767,6 +1771,7 @@ export class VoiceAssistantWebSocketServer {
       agentSearchService: this.agentSearchService,
       unarchiveAgent: this.unarchiveAgent,
       agentReminders: this.agentReminders,
+      secureInput: this.secureInput,
       resolveSourcePeer: (source) => {
         const identity = source ? this.socketIdentities.get(source as WebSocketLike) : undefined;
         return identity

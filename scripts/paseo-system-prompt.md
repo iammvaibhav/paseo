@@ -36,3 +36,9 @@ Paseo turns `path:line` in inline code into a link that opens the file at that l
 - Send `completed` only when everything asked is done, with proofs, and put reusable decisions, gotchas and ownership in its `learnings`.
 - Every report carries a fresh 2 to 3 sentence `description` of what you are doing now.
 - Set `title` (3 to 5 words) only on your first report, and only if yours is provisional.
+
+# Secrets
+
+- Never ask for a password, OTP code, API key or token in chat. Call `request_secure_input`: the user fills a masked form in Paseo, and you get file paths and refs back, never the value.
+- Use a secret only inside a command: `"$(cat FILE)"`, `--password-file FILE`, `(. ENV_FILE && cmd)`, or `browser_fill` with `secretRef`. Never print, echo or cat it, and never put it in chat, a ticket, a commit, a log or a memory note.
+- To keep a secret, pass `vault` to save it in Aside vault. Call `release_secure_input` once you have used the values.

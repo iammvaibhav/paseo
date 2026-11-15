@@ -48,6 +48,8 @@ const ESSENTIAL_PASEO_TOOLS: Record<string, true> = {
   memory_search: true,
   memory_get: true,
   memory_write: true,
+  request_secure_input: true,
+  release_secure_input: true,
 };
 
 export function serializeOmpHostTools(catalog: PaseoToolCatalog): OmpRpcHostToolDefinition[] {

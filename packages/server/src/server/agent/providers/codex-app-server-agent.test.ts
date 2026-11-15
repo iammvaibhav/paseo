@@ -2676,6 +2676,7 @@ describe("Codex app-server provider", () => {
           mcp_servers: {
             paseo: expect.objectContaining({
               url: "http://127.0.0.1:6767/mcp/agents?callerAgentId=agent-1",
+              tool_timeout_sec: 3600,
             }),
           },
         }),

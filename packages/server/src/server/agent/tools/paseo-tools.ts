@@ -201,6 +201,8 @@ import type { ProviderPaseoToolsPolicy } from "@getpaseo/protocol/provider-confi
 import type { RoutingService } from "../../routing/routing-service.js";
 import type { MemoryService } from "../../memory/service.js";
 import { registerMemoryTools } from "./memory-tools.js";
+import { registerSecureInputTools } from "../../secure-input/secure-input-tools.js";
+import type { SecureInputService } from "../../secure-input/secure-input-service.js";
 import { getItsaplanIssueIdFromLabels } from "../../itsaplan/bridge.js";
 import { fillPlacement } from "./placement-fill.js";
 import { AGENT_MODE_IDS, type AgentModeId } from "@getpaseo/protocol/agent-modes";
@@ -316,6 +318,8 @@ export interface PaseoToolHostDependencies {
   routingService?: RoutingService | null;
   /** fleet-memory (memory_search/get/write, fleet_playbook). Absent → not offered. */
   memoryService?: MemoryService | null;
+  /** Masked form cards for secrets (request_secure_input). Absent → not offered. */
+  secureInput?: SecureInputService | null;
   logger: Logger;
 }
 
@@ -2493,6 +2497,12 @@ function createToolCatalog(
       broker: options.browserToolsBroker,
       callerAgentId,
       resolveCallerAgent,
+      ...(options.secureInput && callerAgentId
+        ? {
+            resolveSecret: (secretRef: string) =>
+              options.secureInput?.resolveSecret(callerAgentId, secretRef) ?? null,
+          }
+        : {}),
     });
   }
 
@@ -2502,6 +2512,12 @@ function createToolCatalog(
     pageStore: options.pageStore,
     resolveCallerCwd: () =>
       callerAgentId ? (agentManager.getAgent(callerAgentId)?.cwd ?? null) : null,
+  });
+
+  registerSecureInputTools({
+    registerTool,
+    secureInput: options.secureInput,
+    callerAgentId,
   });
 
   registerTool(

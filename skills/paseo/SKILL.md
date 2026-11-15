@@ -92,6 +92,29 @@ Agent-scoped `create_agent` defaults `notifyOnFinish` to true. Set it to `false`
 
 **`archive_agent`** — `{ agentId }`. Interrupts if running, removes from active list.
 
+## Secrets from the user
+
+Never ask for a password, OTP code, API key or token in chat: the reply lands in the transcript, the model context, tickets and memory. Ask with **`request_secure_input`** instead. It shows a masked form in your chat in the Paseo app and blocks until the user submits or cancels.
+
+```json
+{
+  "title": "Grafana login",
+  "description": "To create the alert rule you asked for.",
+  "fields": [
+    { "name": "username", "label": "Username", "type": "text", "secret": false },
+    { "name": "password", "label": "Password", "type": "password" },
+    { "name": "otp", "label": "2FA code", "type": "otp" }
+  ]
+}
+```
+
+- Field `type`: `password`, `otp`, `text`, `email`, `url`, `number`, `textarea`. Fields are secret unless `secret: false`; use `false` only for values you may see, such as a username or host.
+- Result: `status` is `submitted`, `cancelled` or `timeout`. On submit you get `values` (non-secret fields only), `secrets.<name>.file` (a 0600 file holding exactly the value), `envFile` (exports `NAME=value` for every secret field, the name upper-cased), `secrets.<name>.secretRef`, `ref` and `expiresAt`.
+- Use a value without seeing it: `curl -u "me:$(cat FILE)" …`, `tool --password-file FILE`, `(. ENV_FILE && cmd)`, `aside-vault add … --secret-stdin < FILE`, or `browser_fill` with `secretRef` instead of `value`. Never `cat`, `echo` or log a secret.
+- `vault: { field, account, title, category?, subtitle?, url?, usernameField? }` saves one secret field to Aside vault from the daemon and returns `vault.itemId`.
+- `timeoutSeconds` (default 600) is how long to wait for the user; `ttlSeconds` (default 900, max 14400) is how long files and refs live. Call **`release_secure_input`** `{ ref }` as soon as you are done.
+- Cancelled or timed out: do not retry in a loop. Say what you needed and stop.
+
 ## Agent profiles and provider discovery
 
 **`list_profiles`** — named launch bundles configured by the human. Before choosing how to launch a delegated agent, call this tool and read every profile's `notes`. Pick a named profile the user requested, or the profile whose notes best match the work.
