@@ -1013,8 +1013,6 @@ test("status-shaped operation replies use actual source request provenance", asy
       ]),
     );
     expect(idle.frames).toEqual([]);
-    await actor.request({ type: "schedule/list", requestId: "schedule-list" });
-    expect(idle.frames).toEqual([]);
   } finally {
     for (const peer of peers) peer.close();
     await daemon.close();

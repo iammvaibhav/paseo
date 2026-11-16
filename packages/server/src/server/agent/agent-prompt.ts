@@ -294,7 +294,7 @@ export interface SendPromptToAgentParams {
   /**
    * Default true. When false, archived agents are skipped instead of being
    * unarchived. Use false for system-injected prompts (chat mentions,
-   * schedule fires, notify-on-finish).
+   * notify-on-finish).
    */
   unarchive?: boolean;
   /** See {@link StartAgentRunOptions.clearPendingPermissions}. */

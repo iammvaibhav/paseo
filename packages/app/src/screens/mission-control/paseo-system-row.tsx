@@ -140,7 +140,7 @@ export function parseAgentFinishNotification(text: string): AgentFinishNotificat
  *   - [kind] headline — agentTitle (hostName) — paseo://h/{serverId}/agent/{agentId}
  *     detail continuation lines…
  *
- * Non-digest envelopes (chat mentions, schedule fires, notify-on-finish) carry
+ * Non-digest envelopes (chat mentions, notify-on-finish) carry
  * a plain reason body; those surface as `bodyLines`.
  */
 export function parsePaseoSystemMessage(text: string): PaseoSystemDigest {
@@ -193,7 +193,7 @@ interface PaseoSystemRowProps {
 }
 
 /**
- * Inbound `<paseo-system>` machinery (fleet digests, schedule fires,
+ * Inbound `<paseo-system>` machinery (fleet digests,
  * notify-on-finish). Normal (non-verbose) mode never renders these — they are
  * pure machinery duplicating the feed cards; verbose mode shows them as a
  * plain expanded block. Never a collapsed divider: nothing status-like is

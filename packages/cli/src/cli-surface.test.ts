@@ -22,12 +22,11 @@ describe("canonical CLI surface", () => {
     expect(createCli().helpInformation()).toContain("--host <host>");
   });
 
-  it("shows project, workspace, and heartbeat commands while hiding worktree compatibility", () => {
+  it("shows project and workspace commands while hiding worktree compatibility", () => {
     const cli = createCli();
     const help = cli.helpInformation();
     expect(help).toContain("project");
     expect(help).toContain("workspace");
-    expect(help).toContain("heartbeat");
     expect(help).not.toContain("worktree");
   });
 
@@ -83,17 +82,14 @@ describe("canonical CLI surface", () => {
     expect(workspaceCreate?.helpInformation()).toContain("--background");
   });
 
-  it("offers thinking configuration when running, updating, and scheduling agents", () => {
+  it("offers thinking configuration when running and updating agents", () => {
     const cli = createCli();
     const run = cli.commands.find((command) => command.name() === "run");
     const agent = cli.commands.find((command) => command.name() === "agent");
     const update = agent?.commands.find((command) => command.name() === "update");
-    const schedule = cli.commands.find((command) => command.name() === "schedule");
-    const scheduleCreate = schedule?.commands.find((command) => command.name() === "create");
 
     expect(run?.helpInformation()).toContain("--thinking <id>");
     expect(update?.helpInformation()).toContain("--thinking <id>");
-    expect(scheduleCreate?.helpInformation()).toContain("--thinking <id>");
   });
 
   it("offers opening an existing agent in the desktop app", () => {

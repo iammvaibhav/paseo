@@ -16,7 +16,6 @@ import {
   asDownloadTokenStore,
   asGitHubService,
   asPushNotifications,
-  asScheduleService,
   asWorkspaceGitService,
   createProviderSnapshotManagerStub,
 } from "./test-utils/session-stubs.js";
@@ -189,7 +188,6 @@ function createHarness(options: TestHarnessOptions) {
       get: vi.fn().mockResolvedValue(workspace),
       listAll: vi.fn().mockResolvedValue([workspace]),
     },
-    scheduleService: asScheduleService(),
     checkoutDiffManager: asCheckoutDiffManager({
       scheduleRefreshForCwd: vi.fn(),
     }),

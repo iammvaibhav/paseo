@@ -53,8 +53,6 @@ $PASEO_HOME/
 ├── agents/
 │   └── {sanitized-cwd}/
 │       └── {agentId}.json               # One file per agent
-├── schedules/
-│   └── {scheduleId}.json                # One file per schedule
 ├── projects/
 │   ├── projects.json                    # Project registry
 │   ├── workspaces.json                  # Workspace registry
@@ -376,55 +374,7 @@ Fish in `config.json`. STT stays local or OpenAI.
 
 ---
 
-## 3. Schedule
-
-**Path:** `$PASEO_HOME/schedules/{id}.json`
-
-One file per schedule. ID is 8 hex characters.
-
-| Field       | Type                                  | Description                      |
-| ----------- | ------------------------------------- | -------------------------------- |
-| `id`        | `string`                              | 8-char hex ID                    |
-| `name`      | `string?`                             | Human-readable name              |
-| `prompt`    | `string`                              | The prompt to send               |
-| `cadence`   | `ScheduleCadence`                     | Timing (see below)               |
-| `target`    | `ScheduleTarget`                      | What to run (see below)          |
-| `status`    | `"active" \| "paused" \| "completed"` | Current state                    |
-| `createdAt` | `string` (ISO 8601)                   |                                  |
-| `updatedAt` | `string` (ISO 8601)                   |                                  |
-| `nextRunAt` | `string?` (ISO 8601)                  | Next scheduled execution         |
-| `lastRunAt` | `string?` (ISO 8601)                  | Last execution time              |
-| `pausedAt`  | `string?` (ISO 8601)                  | When paused                      |
-| `expiresAt` | `string?` (ISO 8601)                  | Auto-expire time                 |
-| `maxRuns`   | `number?`                             | Max executions before completing |
-| `runs`      | `ScheduleRun[]`                       | Execution history                |
-
-### Nested: ScheduleCadence (discriminated union on `type`)
-
-- `{ type: "cron", expression: string, timezone?: string }` — canonical cadence for new writes; absent `timezone` means UTC
-- `{ type: "every", everyMs: number }` — legacy rolling interval, still readable and executable during the compatibility window
-
-### Nested: ScheduleTarget (discriminated union on `type`)
-
-- `{ type: "agent", agentId: string }` — send to existing agent
-- `{ type: "new-agent", config: { provider, cwd, modeId?, model?, thinkingOptionId?, title?, providerOptions?, featureValues?, systemPrompt?, mcpServers? } }` — create a new agent
-
-### Nested: ScheduleRun
-
-| Field          | Type                                   | Description             |
-| -------------- | -------------------------------------- | ----------------------- |
-| `id`           | `string`                               | Run ID                  |
-| `scheduledFor` | `string` (ISO 8601)                    | Intended execution time |
-| `startedAt`    | `string` (ISO 8601)                    |                         |
-| `endedAt`      | `string?` (ISO 8601)                   |                         |
-| `status`       | `"running" \| "succeeded" \| "failed"` |                         |
-| `agentId`      | `string?` (UUID)                       | Agent used for this run |
-| `output`       | `string?`                              | Agent output text       |
-| `error`        | `string?`                              | Error message if failed |
-
----
-
-## 4. Project Registry
+## 3. Project Registry
 
 **Path:** `$PASEO_HOME/projects/projects.json`
 
@@ -459,7 +409,7 @@ workspace together with its owning project.
 
 ---
 
-## 5. Workspace Registry
+## 4. Workspace Registry
 
 **Path:** `$PASEO_HOME/projects/workspaces.json`
 
@@ -519,7 +469,7 @@ than treating it as valid.
 
 ---
 
-## 6. Push Token Store
+## 5. Push Token Store
 
 **Path:** `$PASEO_HOME/push-tokens.json`
 
@@ -533,7 +483,7 @@ Simple set of Expo push notification tokens. Loaded with permissive parsing (fil
 
 ---
 
-## 7. Daemon meta files
+## 6. Daemon meta files
 
 These small files are not validated as full Zod schemas but are persisted under `$PASEO_HOME` for daemon identity and runtime coordination.
 

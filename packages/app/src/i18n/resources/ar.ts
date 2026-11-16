@@ -1435,10 +1435,8 @@ export const ar: TranslationResources = {
     sections: {
       sessions: "السجل",
       search: "بحث",
-      schedules: "الجداول",
       agentGrid: "Agent grid",
       itsaplan: "itsaplan",
-      webhooks: "Webhooks",
     },
     project: {
       actions: {
@@ -3186,7 +3184,7 @@ export const ar: TranslationResources = {
         unavailable: "اتصل بهذا المضيف لإدارة التنسيق",
         enableTools: {
           title: "تمكين أدوات Paseo",
-          hint: "سيتمكن الوكلاء من إدارة أشجار العمل والوكلاء والجداول الزمنية",
+          hint: "سيتمكن الوكلاء من إدارة أشجار العمل والوكلاء",
           accessibilityLabel: "حقن أدوات Paseo",
           updateFailed: "تعذر تحديث أدوات Paseo.",
         },

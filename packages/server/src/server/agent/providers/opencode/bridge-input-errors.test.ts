@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { expect, test } from "vitest";
@@ -8,7 +8,6 @@ import { AgentManager } from "../../agent-manager.js";
 import { AgentStorage } from "../../agent-storage.js";
 import { ProviderSnapshotManager } from "../../provider-snapshot-manager.js";
 import { OpenCodeBridge } from "./bridge.js";
-import { ScheduleService } from "../../../schedule/service.js";
 import { createWorkspaceScriptsService } from "../../../session/workspace-scripts/workspace-scripts-service.js";
 import {
   FileBackedProjectRegistry,
@@ -27,17 +26,6 @@ test("bridge preserves tool failure messages and classifies invalid requests as 
   const unused = async (): Promise<never> => {
     throw new Error("Unexpected workspace or agent creation");
   };
-  const scheduleService = new ScheduleService({
-    paseoHome,
-    logger,
-    agentManager,
-    agentStorage,
-    createAgent: unused,
-    createDirectoryWorkspace: unused,
-    createPaseoWorktreeWorkspace: unused,
-    archiveWorkspace: unused,
-    runner: async () => ({ agentId: null, output: "done" }),
-  });
   const workspaceScripts = createWorkspaceScriptsService({
     serviceProxy: createServiceProxySubsystem({ logger }),
     scriptRuntimeStore: new WorkspaceScriptRuntimeStore(),
@@ -67,7 +55,6 @@ test("bridge preserves tool failure messages and classifies invalid requests as 
     workspaceScripts,
     agentManager,
     agentStorage,
-    scheduleService,
     providerSnapshotManager,
     logger,
   });
@@ -78,16 +65,6 @@ test("bridge preserves tool failure messages and classifies invalid requests as 
     bridge.bindSession({ sessionId: "diagnosis", env: {}, tools: catalog });
     const config = JSON.parse(bridge.decorateServerEnv({}).OPENCODE_CONFIG_CONTENT);
     const { baseUrl, token } = config.plugin[0][1];
-    const completed = await scheduleService.create({
-      prompt: "Run once",
-      name: "Daily check",
-      cadence: { type: "cron", expression: "0 0 * * *" },
-      target: { type: "new-agent", config: { provider: "codex", cwd: paseoHome } },
-      maxRuns: 1,
-      runOnCreate: true,
-    });
-    await scheduleService.tick();
-    expect((await scheduleService.inspect(completed.id)).status).toBe("completed");
     const manifest = await fetch(`${baseUrl}/_internal/opencode/tools`, {
       headers: { Authorization: `Bearer ${token}` },
     });
@@ -95,14 +72,6 @@ test("bridge preserves tool failure messages and classifies invalid requests as 
     expect(
       tools.find((tool: { name: string }) => tool.name === "create_agent").inputSchema.properties,
     ).toHaveProperty("background");
-    expect(
-      tools.find((tool: { name: string }) => tool.name === "update_schedule").inputSchema
-        .properties,
-    ).not.toHaveProperty("every");
-    await writeFile(
-      path.join(paseoHome, "schedules", "broken.json"),
-      JSON.stringify({ id: "broken", prompt: 17 }),
-    );
     const observed = [];
     for (const [tool, body, expected] of [
       [
@@ -112,30 +81,7 @@ test("bridge preserves tool failure messages and classifies invalid requests as 
       ],
       ["create_agent", "{", 400],
       ["nonexistent_tool", "{}", 404],
-      ["inspect_schedule", JSON.stringify({ id: "missing" }), 400],
-      ...["pause_schedule", "resume_schedule", "run_schedule_once"].map(
-        (action) => [action, JSON.stringify({ id: completed.id }), 400] as const,
-      ),
-      [
-        "create_schedule",
-        JSON.stringify({ prompt: "Probe", provider: "codex", cron: "not-a-cron" }),
-        400,
-      ],
-      [
-        "create_schedule",
-        JSON.stringify({
-          prompt: "Probe",
-          provider: "codex",
-          cron: "0 0 * * *",
-          timezone: "Mars/Phobos",
-        }),
-        400,
-      ],
-      ["update_schedule", JSON.stringify({ id: completed.id, name: "" }), 200],
-      ["update_schedule", JSON.stringify({ id: completed.id, cron: "0 0 30 2 *" }), 400],
-      ["update_schedule", JSON.stringify({ id: completed.id, expiresIn: "not-a-duration" }), 400],
       ["send_agent_prompt", JSON.stringify({ agentId: "missing", prompt: "Hello" }), 400],
-      ["inspect_schedule", JSON.stringify({ id: "broken" }), 500],
       ["list_workspace_scripts", JSON.stringify({ workspaceId: "wks_typo" }), 500],
       [
         "start_workspace_script",
@@ -161,31 +107,10 @@ test("bridge preserves tool failure messages and classifies invalid requests as 
     }
 
     for (const result of observed) expect.soft(result.status, result.body).toBe(result.expected);
-    expect((await scheduleService.inspect(completed.id)).name).toBeNull();
-    expect(
-      tools.find((tool: { name: string }) => tool.name === "update_schedule").inputSchema.properties
-        .name,
-    ).not.toHaveProperty("minLength");
-    for (const result of observed.slice(14)) {
+    for (const result of observed.slice(4)) {
       expect.soft(result.payload).toEqual({ error: "Workspace not found: wks_typo" });
     }
-    expect.soft(observed[12].payload).toEqual({ error: "Agent not found: missing" });
-    expect.soft(observed[13].payload).toEqual({ error: expect.stringContaining('"prompt"') });
-    expect.soft(observed[13].payload).not.toHaveProperty("issues");
-    expect(observed[3].payload).toEqual({ error: "Schedule not found: missing" });
-    for (const result of observed.slice(4, 7))
-      expect(result.payload).toEqual({ error: `Schedule ${completed.id} is already completed` });
-    for (const [index, field] of [
-      [7, "cron"],
-      [8, "timezone"],
-      [10, "cron"],
-      [11, "expiresIn"],
-    ] as const) {
-      expect(observed[index].payload).toMatchObject({
-        error: "Invalid tool input",
-        issues: expect.arrayContaining([expect.objectContaining({ path: [field] })]),
-      });
-    }
+    expect.soft(observed[3].payload).toEqual({ error: "Agent not found: missing" });
     expect(observed[0].payload).toMatchObject({
       error: "Invalid tool input",
       issues: expect.arrayContaining([

@@ -30,7 +30,7 @@ Tools named `fleet_*` and `memory_*` act on any host. Start with these:
 
 The rest cover meta changes (`fleet_rename_*`, `fleet_archive_*`, `fleet_move_agent`, `fleet_create_project`, `fleet_promote_workspace`), tickets (`fleet_ticketize_agent`), reminders (`fleet_remind_agent`, `fleet_list_reminders`, `fleet_cancel_reminder`), file uploads (`fleet_upload_file`), and the operating doc (`fleet_playbook`).
 
-Every other tool acts only on the host serving this endpoint, and its description says so: schedules and heartbeats, workspace scripts, terminals, `create_workspace`, provider inspection, pending permissions, browser tabs. Host-local tools that a fleet tool covers (`create_agent`, `list_agents`, `send_agent_prompt`, `list_hosts`, and the like) are not listed here; use the fleet tool.
+Every other tool acts only on the host serving this endpoint, and its description says so: workspace scripts, terminals, `create_workspace`, provider inspection, pending permissions, browser tabs. Host-local tools that a fleet tool covers (`create_agent`, `list_agents`, `send_agent_prompt`, `list_hosts`, and the like) are not listed here; use the fleet tool.
 
 Tickets live in itsaplan, which the client connects to as its own MCP server.
 
@@ -87,7 +87,7 @@ Everything moves through MCP; never copy files to a host yourself.
 
 ## Use the CLI for host-local work
 
-The `paseo` CLI talks to one daemon at a time. Use it for host-local work on a host other than the one serving this endpoint: schedules, heartbeats, terminals, workspace scripts, worktrees, provider diagnostics, daemon status. On the serving host, the host-local MCP tools do the same.
+The `paseo` CLI talks to one daemon at a time. Use it for host-local work on a host other than the one serving this endpoint: terminals, workspace scripts, worktrees, provider diagnostics, daemon status. On the serving host, the host-local MCP tools do the same.
 
 ```bash
 paseo --host <address>:6767 <command> --json
@@ -95,13 +95,12 @@ paseo --host <address>:6767 <command> --json
 
 `<address>` is one of the DNS names `fleet_list_hosts` lists for the host (for example a `*.netbird.cloud` name). Common commands:
 
-| Task              | Command                                                                                      |
-| ----------------- | -------------------------------------------------------------------------------------------- |
-| Schedules         | `paseo --host H schedule ls`, `schedule create --cron "…" "<prompt>"`, `schedule pause <id>` |
-| Terminals         | `paseo --host H terminal ls`, `terminal capture <id>`, `terminal send-keys <id> "…"`         |
-| Workspace scripts | `paseo --host H script ls --workspace <id>`, `script start <name> --workspace <id>`          |
-| Worktrees         | `paseo --host H worktree ls`                                                                 |
-| Providers         | `paseo --host H provider ls`, `provider diagnostic <provider>`                               |
-| Daemon            | `paseo --host H daemon status`                                                               |
+| Task              | Command                                                                              |
+| ----------------- | ------------------------------------------------------------------------------------ |
+| Terminals         | `paseo --host H terminal ls`, `terminal capture <id>`, `terminal send-keys <id> "…"` |
+| Workspace scripts | `paseo --host H script ls --workspace <id>`, `script start <name> --workspace <id>`  |
+| Worktrees         | `paseo --host H worktree ls`                                                         |
+| Providers         | `paseo --host H provider ls`, `provider diagnostic <provider>`                       |
+| Daemon            | `paseo --host H daemon status`                                                       |
 
 Run `paseo <command> --help` before you guess a flag. Prefer MCP whenever a tool exists: it is faster (one call instead of a CLI start per command) and it resolves which host owns an id for you.

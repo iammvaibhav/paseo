@@ -6,7 +6,6 @@ import {
   ArrowDown,
   ArrowUp,
   Blocks,
-  CalendarClock,
   Gauge,
   History,
   Plus,
@@ -43,7 +42,6 @@ const BUILTIN_ICONS: Record<BuiltinSidebarItemId, LucideIcon> = {
   "new-workspace": Plus,
   history: History,
   search: Search,
-  schedules: CalendarClock,
   usage: Gauge,
 };
 

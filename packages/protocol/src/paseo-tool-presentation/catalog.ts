@@ -52,18 +52,6 @@ const AGENT_FIELDS = [
   "settings",
   "labels",
 ] as const;
-const AUTOMATION_FIELDS = [
-  "name",
-  "id",
-  "cron",
-  "timezone",
-  "provider",
-  "cwd",
-  "isolation",
-  "maxRuns",
-  "expiresIn",
-  "clearExpires",
-] as const;
 const BROWSER_FIELDS = [
   "browserId",
   "url",
@@ -86,8 +74,6 @@ const BROWSER_FIELDS = [
   "height",
   "function",
 ] as const;
-
-const AUTOMATION_OUTPUT = ["id", "status", "nextRunAt", "expiresAt"] as const;
 
 function field(...keys: string[]): PaseoToolContext {
   return (input) => keys.map((key) => input[key]).find(isPresent);
@@ -285,77 +271,6 @@ export const PASEO_TOOL_CATALOG = {
     completedLabel: "Killed terminal",
     context: field("terminalId"),
     detail: { inputOrder: ["terminalId"] },
-  },
-
-  // Schedules and heartbeats
-  create_schedule: {
-    label: "Create schedule",
-    completedLabel: "Created schedule",
-    context: field("name", "cron"),
-    detail: {
-      promptField: "prompt",
-      inputOrder: AUTOMATION_FIELDS,
-      outputFields: AUTOMATION_OUTPUT,
-    },
-  },
-  create_heartbeat: {
-    label: "Create heartbeat",
-    completedLabel: "Created heartbeat",
-    context: field("name", "cron"),
-    detail: {
-      promptField: "prompt",
-      inputOrder: AUTOMATION_FIELDS,
-      outputFields: AUTOMATION_OUTPUT,
-    },
-  },
-  update_schedule: {
-    label: "Update schedule",
-    completedLabel: "Updated schedule",
-    context: field("name", "id"),
-    detail: { promptField: "prompt", inputOrder: AUTOMATION_FIELDS },
-  },
-  list_schedules: { label: "List schedules", completedLabel: "Listed schedules" },
-  inspect_schedule: {
-    label: "Inspect schedule",
-    completedLabel: "Inspected schedule",
-    context: field("id"),
-    detail: { inputOrder: ["id"] },
-  },
-  schedule_logs: {
-    label: "Read schedule logs",
-    completedLabel: "Read schedule logs",
-    context: field("id"),
-    detail: { inputOrder: ["id"] },
-  },
-  run_schedule_once: {
-    label: "Run schedule",
-    completedLabel: "Ran schedule",
-    context: field("id"),
-    detail: { inputOrder: ["id"] },
-  },
-  pause_schedule: {
-    label: "Pause schedule",
-    completedLabel: "Paused schedule",
-    context: field("id"),
-    detail: { inputOrder: ["id"] },
-  },
-  resume_schedule: {
-    label: "Resume schedule",
-    completedLabel: "Resumed schedule",
-    context: field("id"),
-    detail: { inputOrder: ["id"] },
-  },
-  delete_schedule: {
-    label: "Delete schedule",
-    completedLabel: "Deleted schedule",
-    context: field("id"),
-    detail: { inputOrder: ["id"] },
-  },
-  delete_heartbeat: {
-    label: "Delete heartbeat",
-    completedLabel: "Deleted heartbeat",
-    context: field("id"),
-    detail: { inputOrder: ["id"] },
   },
 
   // Providers

@@ -193,7 +193,6 @@ import {
   type WorkspaceArchiveContext,
 } from "./workspace-registry.js";
 import { CheckoutDiffManager } from "./checkout-diff-manager.js";
-import { ScheduleService } from "./schedule/service.js";
 import { BaseCheckoutSyncService } from "./base-checkout-sync.js";
 import { IdleCloseOmpService } from "./idle-close/index.js";
 import { KeepAwakeService } from "./keep-awake/index.js";
@@ -210,9 +209,6 @@ import type { ComposerPreferences } from "@getpaseo/protocol/composer-preference
 import { CentralMissionControlConfigStore } from "./mission-control/config.js";
 import { AgentNamingService } from "./mission-control/naming.js";
 import { runIdentityBackfill } from "./mission-control/backfill.js";
-import { MAX_WEBHOOK_BODY_BYTES, WebhookService } from "./webhook/service.js";
-import { createWebhookRouteHandler } from "./webhook/route.js";
-import { AutomationService } from "./automation/service.js";
 import { openDocThreads, type DocThreadsHost } from "./doc-threads/index.js";
 import { openFleetBrowser } from "./fleet-browser/index.js";
 import {
@@ -228,7 +224,6 @@ import {
   type ItsaplanCentralConfig,
 } from "./itsaplan/index.js";
 import { PeerManager } from "./peers/peer-manager.js";
-import { TunnelManager } from "./tunnel/manager.js";
 import { DaemonConfigStore, type MutableDaemonConfig } from "./daemon-config-store.js";
 import { createOrchestrationSkills } from "./orchestration-skills/index.js";
 import {
@@ -599,21 +594,6 @@ export interface PaseoDaemonConfig {
     publicBaseUrl: string | null;
     standaloneListen: string | null;
   };
-  tunnel?: {
-    provider: "tailscale-funnel" | "cloudflared" | "none";
-    localPort: number;
-    localTarget: string;
-    autoStart: boolean;
-    publicBaseUrl: string | null;
-    tailscaleBin: string | null;
-    cloudflared: {
-      hostname: string | null;
-      bin: string | null;
-      configFile: string | null;
-      token: string | null;
-      tunnel: string | null;
-    };
-  };
   webUi?: {
     enabled: boolean;
     distDir: string | null;
@@ -882,40 +862,15 @@ async function handleFileDownload(input: {
   }
 }
 
-/**
- * Public webhook ingress route on /hooks/:id/:secret. The handler is
- * assigned lazily once the webhook service is constructed; requests before
- * that get a 503 so callers retry rather than hang.
- */
-function createWebhookIngress(app: express.Express): {
-  setHandler: (handler: ReturnType<typeof createWebhookRouteHandler>) => void;
-} {
-  let handler: ReturnType<typeof createWebhookRouteHandler> | null = null;
-  app.post(
-    "/hooks/:id/:secret",
-    express.raw({ type: () => true, limit: MAX_WEBHOOK_BODY_BYTES }),
-    (req, res, next) => {
-      if (!handler) {
-        res.status(503).json({ ok: false, error: "webhook service not ready" });
-        return;
-      }
-      void handler(req, res, next);
-    },
-  );
-  return {
-    setHandler: (next) => {
-      handler = next;
-    },
-  };
-}
+/** Itsaplan POSTs are small JSON events; cap the raw body read for HMAC. */
+const MAX_ITSAPLAN_WEBHOOK_BODY_BYTES = 1_000_000;
 
 /**
  * Public itsaplan webhook ingress on /api/itsaplan/webhook (ADR 0002). Auth
  * is the HMAC signature itself (verified inside ItsaplanBridge), so this is
- * pre-auth like /hooks/:id/:secret — mounted before the Host allowlist,
- * bearer auth, and express.json() so itsaplan reaches it and HMAC can read
- * the exact raw body. The handler is assigned once the bridge exists;
- * requests before that get a 503.
+ * pre-auth: mounted before the Host allowlist, bearer auth, and express.json()
+ * so itsaplan reaches it and HMAC can read the exact raw body. The handler is
+ * assigned once the bridge exists; requests before that get a 503.
  */
 function createItsaplanWebhookIngress(app: express.Express): {
   setHandler: (handler: RequestHandler) => void;
@@ -923,7 +878,7 @@ function createItsaplanWebhookIngress(app: express.Express): {
   let handler: RequestHandler | null = null;
   app.post(
     "/api/itsaplan/webhook",
-    express.raw({ type: () => true, limit: MAX_WEBHOOK_BODY_BYTES }),
+    express.raw({ type: () => true, limit: MAX_ITSAPLAN_WEBHOOK_BODY_BYTES }),
     (req, res, next) => {
       if (!handler) {
         res.status(503).json({ ok: false, error: "itsaplan bridge not ready" });
@@ -1120,7 +1075,6 @@ export async function createPaseoDaemon(
     appBaseUrl = typeof value === "string" ? value : "https://app.paseo.sh";
   });
   let wsServer: VoiceAssistantWebSocketServer | null = null;
-  let automationService: AutomationService | null = null;
   let serviceProxyListenTarget: ListenTarget | null = null;
   const scriptHealthMonitor = new ScriptHealthMonitor({
     serviceProxy,
@@ -1151,14 +1105,9 @@ export async function createPaseoDaemon(
   // route return 404 and never reach daemon APIs.
   app.use(serviceProxy.middleware());
 
-  // Public webhook ingress. Mounted before the Host allowlist, CORS, bearer
-  // auth, and express.json() so external senders (GitHub, Linear) reach it and
-  // HMAC can read the raw body. Only this path is exempt from the Host
-  // allowlist; every other daemon path still rejects the public tunnel host.
-  // The handler is assigned once the webhook service is constructed below.
-  const webhookIngress = createWebhookIngress(app);
-
-  // Same pre-auth placement, for the itsaplan bridge's ingress (ADR 0002).
+  // Itsaplan bridge ingress (ADR 0002). Mounted before the Host allowlist,
+  // CORS, bearer auth, and express.json() so itsaplan reaches it and HMAC can
+  // read the raw body.
   const itsaplanWebhookIngress = createItsaplanWebhookIngress(app);
 
   // Host allowlist / DNS rebinding protection (vite-like semantics).
@@ -1876,108 +1825,6 @@ export async function createPaseoDaemon(
       }),
   });
 
-  const createScheduleLocalWorkspaceExternal = async (input: {
-    cwd: string;
-    firstAgentContext: FirstAgentContext;
-  }) => {
-    const workspace = await workspaceProvisioning.createWorkspaceForDirectory(
-      input.cwd,
-      resolveFirstAgentPromptTitle(input.firstAgentContext),
-    );
-    workspaceAutoName.scheduleForDirectory({
-      workspaceId: workspace.workspaceId,
-      cwd: workspace.cwd,
-      firstAgentContext: input.firstAgentContext,
-    });
-    await emitWorkspaceUpdatesExternal([workspace.workspaceId]);
-    return workspace;
-  };
-  const createSchedulePaseoWorktreeExternal = async (input: {
-    cwd: string;
-    firstAgentContext: FirstAgentContext;
-  }) => {
-    const result = await createPaseoWorktreeForTools({
-      cwd: input.cwd,
-      firstAgentContext: input.firstAgentContext,
-    });
-    await emitWorkspaceUpdatesExternal([result.workspace.workspaceId]);
-    return result;
-  };
-  // Webhook variants deliberately DO NOT broadcast the workspace on creation. The
-  // client seeds an empty "New Agent" composer tab whenever it observes a focused
-  // workspace with zero agents; broadcasting before the agent exists trips that.
-  // The webhook service broadcasts once, after the agent is attached.
-  const createWebhookLocalWorkspaceExternal = async (input: {
-    cwd: string;
-    firstAgentContext: FirstAgentContext;
-  }) => {
-    const workspace = await workspaceProvisioning.createWorkspaceForDirectory(
-      input.cwd,
-      resolveFirstAgentPromptTitle(input.firstAgentContext),
-    );
-    workspaceAutoName.scheduleForDirectory({
-      workspaceId: workspace.workspaceId,
-      cwd: workspace.cwd,
-      firstAgentContext: input.firstAgentContext,
-    });
-    return workspace;
-  };
-  const createWebhookPaseoWorktreeExternal = async (input: {
-    cwd: string;
-    firstAgentContext: FirstAgentContext;
-  }) => {
-    return createPaseoWorktreeForTools({
-      cwd: input.cwd,
-      firstAgentContext: input.firstAgentContext,
-    });
-  };
-  const archiveScheduleWorkspaceExternal = async (workspaceId: string) => {
-    await archiveByScope(
-      {
-        paseoHome: config.paseoHome,
-        paseoWorktreesBaseRoot: config.worktreesRoot,
-        github,
-        workspaceGitService,
-        agentManager,
-        agentStorage,
-        findWorkspaceIdForCwd: findWorkspaceIdForCwdExternal,
-        listActiveWorkspaces: listActiveWorkspacesExternal,
-        getWorkspace: (workspaceIdToGet) => workspaceRegistry.get(workspaceIdToGet),
-        projectRegistry,
-        archiveWorkspaceRecord: archiveWorkspaceRecordExternal,
-        emitWorkspaceUpdatesForWorkspaceIds: emitWorkspaceUpdatesExternal,
-        markWorkspaceArchiving: markWorkspaceArchivingExternal,
-        clearWorkspaceArchiving: clearWorkspaceArchivingExternal,
-        killTerminalsForWorkspace: (workspaceIdToKill) =>
-          killTerminalsForWorkspace(
-            {
-              terminalManager,
-              sessionLogger: logger,
-            },
-            workspaceIdToKill,
-          ),
-        stopWorkspaceSetup: (workspaceIdToStop) => workspaceSetupRuntime.stop(workspaceIdToStop),
-        assertWorkspaceAutomationAllowed: (guardedWorkspaceId) =>
-          assertWorkspaceAutomationAllowedForWorkspace(workspaceRegistry, guardedWorkspaceId),
-        sessionLogger: logger,
-      },
-      {
-        scope: { kind: "workspace", workspaceId },
-        requestId: "schedule-run-finish",
-      },
-    );
-  };
-  const scheduleService = new ScheduleService({
-    paseoHome: config.paseoHome,
-    logger,
-    agentManager,
-    agentStorage,
-    createAgent,
-    createDirectoryWorkspace: createScheduleLocalWorkspaceExternal,
-    createPaseoWorktreeWorkspace: createSchedulePaseoWorktreeExternal,
-    archiveWorkspace: archiveScheduleWorkspaceExternal,
-  });
-  await scheduleService.start();
   const baseCheckoutSyncService = new BaseCheckoutSyncService({
     logger,
     projectRegistry,
@@ -2000,14 +1847,6 @@ export async function createPaseoDaemon(
     paseoHome: config.paseoHome,
   });
   keepAwakeService.start();
-  agentManager.setAgentArchivedCallback(async (agentId) => {
-    try {
-      await scheduleService.completeForAgent(agentId);
-    } catch (error) {
-      logger.warn({ err: error, agentId }, "Failed to complete schedules for archived agent");
-    }
-  });
-  logger.info({ elapsed: elapsed() }, "Schedule service initialized");
 
   // Hoisted: closures below capture the service and run only after boot.
   let missionControlService: MissionControlService;
@@ -2491,49 +2330,12 @@ export async function createPaseoDaemon(
     logger.warn({ err: error }, "Identity backfill failed");
   });
 
-  const tunnelManager = new TunnelManager({
-    config: config.tunnel ?? {
-      provider: "none",
-      localPort: 6767,
-      localTarget: "127.0.0.1:6767",
-      autoStart: false,
-      publicBaseUrl: null,
-      tailscaleBin: null,
-      cloudflared: { hostname: null, bin: null, configFile: null, token: null, tunnel: null },
-    },
-    logger,
-  });
-  await tunnelManager.start();
-  logger.info(
-    {
-      elapsed: elapsed(),
-      provider: tunnelManager.getProvider(),
-      status: tunnelManager.getStatus(),
-    },
-    "Tunnel manager initialized",
-  );
-
   peerManager = new PeerManager({
     peers: loadPersistedConfig(config.paseoHome).peers ?? [],
     logger,
     appVersion: daemonVersion,
     lastSeenPath: path.join(config.paseoHome, "peer-last-seen.json"),
   });
-
-  const webhookService = new WebhookService({
-    paseoHome: config.paseoHome,
-    logger,
-    agentManager,
-    agentStorage,
-    createAgent,
-    createLocalCheckoutWorkspace: createWebhookLocalWorkspaceExternal,
-    createPaseoWorktreeWorkspace: createWebhookPaseoWorktreeExternal,
-    emitWorkspaceUpdatesForWorkspaceIds: emitWorkspaceUpdatesExternal,
-    getPublicBaseUrl: () => tunnelManager.getPublicBaseUrl(),
-    getTunnelProvider: () => tunnelManager.getProvider(),
-    getTunnelStatus: () => tunnelManager.getStatus(),
-  });
-  webhookIngress.setHandler(createWebhookRouteHandler(webhookService, logger));
 
   const docThreadsRuntime = await openDocThreads({
     paseoHome: config.paseoHome,
@@ -2633,7 +2435,6 @@ export async function createPaseoDaemon(
     agentStorage,
     terminalManager,
     getDaemonTcpPort: () => (boundListenTarget?.type === "tcp" ? boundListenTarget.port : null),
-    scheduleService,
     providerSnapshotManager,
     daemonConfigStore,
     github,
@@ -3195,30 +2996,6 @@ export async function createPaseoDaemon(
               logger.info("Daemon password authentication enabled");
             }
 
-            // ---- Automations facade (unified schedules/webhooks/poll triggers).
-            // Owns poll records + the poll loop; schedule/webhook kinds delegate.
-            // Built here so the service instance is in hand for the wsServer call below.
-            let automationRevision = 0;
-            automationService = new AutomationService({
-              paseoHome: config.paseoHome,
-              logger,
-              scheduleService,
-              webhookService,
-              onChanged: (change) => {
-                automationRevision += 1;
-                wsServer?.broadcast(
-                  wrapSessionMessage({
-                    type: "automations.changed",
-                    automationId: change.automationId,
-                    kind: change.kind,
-                    revision: automationRevision,
-                  }),
-                );
-              },
-            });
-            automationService.start();
-            // ---- end automations
-
             wsServer = new VoiceAssistantWebSocketServer(
               httpServer,
               logger,
@@ -3254,7 +3031,6 @@ export async function createPaseoDaemon(
               },
               projectRegistry,
               workspaceRegistry,
-              scheduleService,
               checkoutDiffManager,
               serviceProxy,
               scriptRuntimeStore,
@@ -3287,7 +3063,6 @@ export async function createPaseoDaemon(
               },
               serviceProxyPublicBaseUrl,
               browserToolsBroker,
-              webhookService,
               hubRelationships,
               peerManager,
               missionControlService,
@@ -3299,7 +3074,6 @@ export async function createPaseoDaemon(
               warmWorktreePool,
               docThreadsHost,
               {
-                automationService,
                 pagePortProxy,
                 pageStore,
                 routingService,
@@ -3448,14 +3222,11 @@ export async function createPaseoDaemon(
     await missionControlService.stop().catch(() => undefined);
 
     await warmWorktreePool.stop().catch(() => undefined);
-    await automationService?.stop().catch(() => undefined);
-    await scheduleService.stop().catch(() => undefined);
     baseCheckoutSyncService.stop();
     await peerManager?.close().catch(() => undefined);
     await pagePreviewBrowser.close();
     await secureInput.close().catch(() => undefined);
     await pagePortProxy.close();
-    await tunnelManager.stop().catch(() => undefined);
     await relayRuntime?.stop().catch(() => undefined);
     if (wsServer) {
       await wsServer.close();

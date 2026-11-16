@@ -12,8 +12,8 @@ function normalizeHeaders(headers: Request["headers"]): Record<string, string | 
 }
 
 /**
- * POST /api/itsaplan/webhook — pre-auth raw-body ingress (mirrors
- * webhook/route.ts): mounted before the Host allowlist, CORS, bearer auth,
+ * POST /api/itsaplan/webhook — pre-auth raw-body ingress: mounted before the
+ * Host allowlist, CORS, bearer auth,
  * and express.json() so itsaplan reaches it and HMAC can read the exact raw
  * body. Auth is the HMAC signature itself, verified inside the bridge.
  */

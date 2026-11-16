@@ -17,7 +17,6 @@
       "dns": "dev.netbird.cloud",
       "platform": "linux-arm64",
       "role": "builder",
-      "tunnel": "cloudflared",
       "artifactDir": "/data/paseo-artifacts",
       "services": ["omp", "code-server", "stall-cron", "macbook-watch"]
     },
@@ -28,7 +27,6 @@
       "dns": "work.netbird.cloud",
       "platform": "linux-x64",
       "role": "builder",
-      "tunnel": "tailscale-funnel",
       "services": ["omp", "code-server", "stall-cron"]
     },
     {

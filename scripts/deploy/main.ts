@@ -457,9 +457,6 @@ async function hostServices(run: Run, host: Host, plan: HostPlan, log: Log): Pro
   for (const service of ["stall-cron", "macbook-watch"] as const) {
     if (host.services.includes(service)) await serviceStep(run, host, service, log);
   }
-  if (host.tunnel) {
-    await runScript(host, run.self.name, hostScript("tunnel.sh"), { log, args: [host.tunnel] });
-  }
 }
 
 /**
@@ -535,8 +532,6 @@ async function activate(
     args: [mode, tarball],
     env: {
       PASEO_KEEP_ARTIFACT: host.role === "builder" ? "1" : "0",
-      ...(host.tunnel ? { PASEO_TUNNEL_PROVIDER: host.tunnel } : {}),
-      ...(host.tunnel === "cloudflared" ? { PASEO_TUNNEL_AUTOSTART: "1" } : {}),
     },
   });
 }

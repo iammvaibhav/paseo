@@ -221,10 +221,6 @@ import {
   createAgentStructuredTextGeneration,
   createGitMetadataGenerator,
 } from "./session/checkout/git-metadata-generator.js";
-import { WebhookSession } from "./session/webhook/webhook-session.js";
-import type { WebhookService } from "./webhook/service.js";
-import { AutomationSession } from "./automation/session.js";
-import type { AutomationService } from "./automation/service.js";
 import { DocThreadsSession, type DocThreadsHost } from "./doc-threads/session.js";
 import { FleetBrowserSession, type FleetBrowserService } from "./fleet-browser/index.js";
 import type { PeerManager } from "./peers/peer-manager.js";
@@ -255,7 +251,6 @@ const PEER_EXECUTABLE_TOOL_NAMES = new Set([
 ]);
 import { resolveMissionControlMediaFetch } from "./mission-control/media.js";
 import { moveAgentToWorkspace } from "./mission-control/meta-actions.js";
-import { ScheduleSession } from "./session/schedule/schedule-session.js";
 import { ProviderCatalogSession } from "./session/provider/provider-catalog-session.js";
 import { UsageSession } from "./session/usage/usage-session.js";
 import {
@@ -304,7 +299,6 @@ import type { CheckoutDiffManager } from "./checkout-diff-manager.js";
 import type { Resolvable } from "./speech/provider-resolver.js";
 import type { SpeechReadinessSnapshot } from "./speech/speech-runtime.js";
 import type pino from "pino";
-import { ScheduleService } from "./schedule/service.js";
 import {
   createGitHubService,
   GitHubAuthenticationError,
@@ -520,18 +514,6 @@ const nodeSessionFileSystem: SessionFileSystem = {
   },
 };
 
-function createWebhookSession(input: {
-  emit: (message: SessionOutboundMessage) => void;
-  webhookService: WebhookService | null | undefined;
-  logger: pino.Logger;
-}): WebhookSession {
-  return new WebhookSession({
-    host: { emit: input.emit },
-    webhookService: input.webhookService ?? null,
-    logger: input.logger,
-  });
-}
-
 // Stub types for features under development (modules not yet available)
 type AgentMcpTransportFactory = () => Promise<unknown>;
 
@@ -592,9 +574,6 @@ export interface SessionOptions {
   directorySync?: DirectorySyncService;
   workspaceLabelService?: WorkspaceLabelService;
   filesystem?: SessionFileSystem;
-  scheduleService: ScheduleService;
-  webhookService?: WebhookService | null;
-  automationService?: AutomationService | null;
   // Threaded file comments; null/absent = this daemon has no doc-thread wiring.
   docThreads?: DocThreadsHost | null;
   peerManager?: PeerManager | null;
@@ -1088,9 +1067,6 @@ export class Session {
   private readonly workspaceDirectory: WorkspaceDirectory;
   private readonly voiceSessions: VoiceSessions;
   private readonly checkoutSession: CheckoutSession;
-  private readonly scheduleSession: ScheduleSession;
-  private readonly webhookSession: WebhookSession;
-  private readonly automationSession: AutomationSession;
   private readonly docThreadsSession: DocThreadsSession;
   private readonly fleetBrowserSession: FleetBrowserSession;
   private readonly peerManager: PeerManager | null;
@@ -1139,8 +1115,6 @@ export class Session {
       directorySync,
       workspaceLabelService,
       filesystem,
-      scheduleService,
-      webhookService,
       peerManager,
       missionControlService,
       transcriptSearch,
@@ -1307,21 +1281,6 @@ export class Session {
       emitWorkspaceUpdateForCwd: (cwd) => this.emitWorkspaceUpdateForCwd(cwd),
       emitStatusUpdate: (cwd, snapshot) => this.checkoutSession.emitStatusUpdate(cwd, snapshot),
       onBranchChanged,
-      logger: this.sessionLogger,
-    });
-    this.scheduleSession = new ScheduleSession({
-      host: { emit: (msg) => this.emit(msg) },
-      scheduleService,
-      logger: this.sessionLogger,
-    });
-    this.webhookSession = createWebhookSession({
-      emit: (msg) => this.emit(msg),
-      webhookService,
-      logger: this.sessionLogger,
-    });
-    this.automationSession = new AutomationSession({
-      host: { emit: (msg) => this.emit(msg) },
-      service: () => orNull(options.automationService),
       logger: this.sessionLogger,
     });
     this.docThreadsSession = new DocThreadsSession({
@@ -2945,7 +2904,6 @@ export class Session {
     (msg) => this.docThreadsSession.dispatch(msg),
     (msg) => this.fleetBrowserSession.dispatch(msg),
     (msg) => this.dispatchRemovedTicketsRequest(msg),
-    (msg) => this.automationSession.dispatch(msg),
     (msg) => this.dispatchRemovedNotesRequest(msg),
     (msg) => this.dispatchMissionControlPeersMessage(msg),
     (msg) => this.dispatchMissionControlEventsMessage(msg),
@@ -3454,11 +3412,7 @@ export class Session {
   }
 
   private dispatchHostServiceMessage(msg: SessionInboundMessage): Promise<void> | undefined {
-    return (
-      this.dispatchTerminalMessage(msg) ??
-      this.dispatchScheduleMessage(msg) ??
-      this.speechModelsSession.dispatch(msg)
-    );
+    return this.dispatchTerminalMessage(msg) ?? this.speechModelsSession.dispatch(msg);
   }
 
   private dispatchWorkspaceLifecycleMessage(msg: SessionInboundMessage): Promise<void> | undefined {
@@ -4317,45 +4271,6 @@ export class Session {
         return this.handleWorkspaceScriptStopRequest(msg);
       default:
         return this.terminalController.dispatch(msg, this.delivery);
-    }
-  }
-
-  private dispatchScheduleMessage(msg: SessionInboundMessage): Promise<void> | undefined {
-    switch (msg.type) {
-      case "schedule/create":
-        return this.scheduleSession.handleScheduleCreateRequest(msg);
-      case "schedule/list":
-        return this.scheduleSession.handleScheduleListRequest(msg);
-      case "schedule/inspect":
-        return this.scheduleSession.handleScheduleInspectRequest(msg);
-      case "schedule/logs":
-        return this.scheduleSession.handleScheduleLogsRequest(msg);
-      case "schedule/pause":
-        return this.scheduleSession.handleSchedulePauseRequest(msg);
-      case "schedule/resume":
-        return this.scheduleSession.handleScheduleResumeRequest(msg);
-      case "schedule/delete":
-        return this.scheduleSession.handleScheduleDeleteRequest(msg);
-      case "schedule/run-once":
-        return this.scheduleSession.handleScheduleRunOnceRequest(msg);
-      case "schedule/update":
-        return this.scheduleSession.handleScheduleUpdateRequest(msg);
-      case "webhook/create":
-        return this.webhookSession.handleCreateRequest(msg);
-      case "webhook/list":
-        return this.webhookSession.handleListRequest(msg);
-      case "webhook/inspect":
-        return this.webhookSession.handleInspectRequest(msg);
-      case "webhook/delete":
-        return this.webhookSession.handleDeleteRequest(msg);
-      case "webhook/update":
-        return this.webhookSession.handleUpdateRequest(msg);
-      case "webhook/test":
-        return this.webhookSession.handleTestRequest(msg);
-      case "webhook/config":
-        return this.webhookSession.handleConfigRequest(msg);
-      default:
-        return undefined;
     }
   }
   // COMPAT(tickets-removed): native tickets removed 2026-10-12, remove after 2027-01-12 once app floor >= 2026-10-12.
@@ -11016,7 +10931,6 @@ const PASSTHROUGH_EVENT_CATEGORIES: Record<string, true> = {
   "fleet_browser.changed": true,
   mission_control_event: true,
   "provider.usage.updated": true,
-  "automations.changed": true,
 };
 function passthroughEventCategory(
   type: SessionOutboundMessage["type"],

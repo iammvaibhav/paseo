@@ -80,46 +80,6 @@ import {
   ChatReadResponseSchema,
   ChatWaitResponseSchema,
 } from "./chat/rpc-schemas.js";
-import {
-  ScheduleCreateRequestSchema,
-  ScheduleListRequestSchema,
-  ScheduleInspectRequestSchema,
-  ScheduleLogsRequestSchema,
-  SchedulePauseRequestSchema,
-  ScheduleResumeRequestSchema,
-  ScheduleDeleteRequestSchema,
-  ScheduleRunOnceRequestSchema,
-  ScheduleUpdateRequestSchema,
-  ScheduleCreateResponseSchema,
-  ScheduleListResponseSchema,
-  ScheduleInspectResponseSchema,
-  ScheduleLogsResponseSchema,
-  SchedulePauseResponseSchema,
-  ScheduleResumeResponseSchema,
-  ScheduleDeleteResponseSchema,
-  ScheduleRunOnceResponseSchema,
-  ScheduleUpdateResponseSchema,
-} from "./schedule/rpc-schemas.js";
-import {
-  WebhookCreateRequestSchema,
-  WebhookListRequestSchema,
-  WebhookInspectRequestSchema,
-  WebhookDeleteRequestSchema,
-  WebhookUpdateRequestSchema,
-  WebhookTestRequestSchema,
-  WebhookConfigRequestSchema,
-  WebhookCreateResponseSchema,
-  WebhookListResponseSchema,
-  WebhookInspectResponseSchema,
-  WebhookDeleteResponseSchema,
-  WebhookUpdateResponseSchema,
-  WebhookTestResponseSchema,
-  WebhookConfigResponseSchema,
-} from "./webhook/rpc-schemas.js";
-import {
-  AUTOMATION_INBOUND_SCHEMAS,
-  AUTOMATION_OUTBOUND_SCHEMAS,
-} from "./automation/rpc-schemas.js";
 // COMPAT(tickets-removed): native notes & tickets removed 2026-10-12, remove after 2027-01-12 once app floor >= 2026-10-12.
 import { NOTES_INBOUND_SCHEMAS, NOTES_OUTBOUND_SCHEMAS } from "./notes/rpc-schemas.js";
 import { TICKETS_INBOUND_SCHEMAS, TICKETS_OUTBOUND_SCHEMAS } from "./tickets/rpc-schemas.js";
@@ -3815,10 +3775,6 @@ export const SessionEventSubscriptionSchema = z.enum([
   "provider.usage.updated",
   // COMPAT(plannotator-removed): wire event subscription accepted for backward-compatibility with older daemons/clients. Remove after 2027-04-12.
   "plannotator.session.event",
-  // Owned-subscription push for Automations CRUD/run changes. Subscribe only
-  // on a host that advertises features.automations: an older daemon rejects
-  // an unknown event name.
-  "automations.changed",
   // Doc threads push. Subscribe only on a host that advertises
   // features.docThreadsEventSubscription: an older daemon rejects an unknown event name.
   "doc_threads.changed",
@@ -4078,29 +4034,12 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   ChatPostRequestSchema,
   ChatReadRequestSchema,
   ChatWaitRequestSchema,
-  ScheduleCreateRequestSchema,
-  ScheduleListRequestSchema,
   SpeechLocalModelsListRequestSchema,
   SpeechLocalModelsDownloadRequestSchema,
   SpeechLocalModelsDeleteRequestSchema,
-  ScheduleInspectRequestSchema,
-  ScheduleLogsRequestSchema,
-  SchedulePauseRequestSchema,
-  ScheduleResumeRequestSchema,
-  ScheduleDeleteRequestSchema,
-  ScheduleRunOnceRequestSchema,
-  ScheduleUpdateRequestSchema,
-  WebhookCreateRequestSchema,
-  WebhookListRequestSchema,
-  WebhookInspectRequestSchema,
-  WebhookDeleteRequestSchema,
-  WebhookUpdateRequestSchema,
-  WebhookTestRequestSchema,
-  WebhookConfigRequestSchema,
   // COMPAT(tickets-removed): retained for old app inbound parsing compatibility. Remove after 2027-01-12.
   ...NOTES_INBOUND_SCHEMAS,
   ...TICKETS_INBOUND_SCHEMAS,
-  ...AUTOMATION_INBOUND_SCHEMAS,
   ...DOC_THREADS_INBOUND_SCHEMAS,
   ...FLEET_BROWSER_INBOUND_SCHEMAS,
   LoopRunRequestSchema,
@@ -4514,12 +4453,6 @@ export const ServerInfoStatusPayloadSchema = z
         // mission_control.inbox.fetch (pending proposals, open clarifications,
         // review facts) is served; Quarterdeck gates its per-host inbox on it.
         missionControlInbox: z.boolean().optional(),
-        // Automations (unified schedules/webhooks/GitHub/Linear poll triggers).
-        // Added 2026-09-30; the app gates the Automations screen once on it.
-        automations: z.boolean().optional(),
-        // COMPAT(automationEventSubscription): added 2026-09-30, remove gate after 2027-03-30.
-        // session.events accepts "automations.changed".
-        automationEventSubscription: z.boolean().optional(),
         // COMPAT(projectSuggestions): added in v0.14.1, remove gate after 2027-05-01.
         projectSuggestions: z.boolean().optional(),
         // COMPAT(commitsList): added in v0.1.110, remove gate after 2027-01-16.
@@ -8127,29 +8060,12 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   ChatPostResponseSchema,
   ChatReadResponseSchema,
   ChatWaitResponseSchema,
-  ScheduleCreateResponseSchema,
-  ScheduleListResponseSchema,
   SpeechLocalModelsListResponseSchema,
   SpeechLocalModelsDownloadResponseSchema,
   SpeechLocalModelsDeleteResponseSchema,
-  ScheduleInspectResponseSchema,
-  ScheduleLogsResponseSchema,
-  SchedulePauseResponseSchema,
-  ScheduleResumeResponseSchema,
-  ScheduleDeleteResponseSchema,
-  ScheduleRunOnceResponseSchema,
-  ScheduleUpdateResponseSchema,
-  WebhookCreateResponseSchema,
-  WebhookListResponseSchema,
-  WebhookInspectResponseSchema,
-  WebhookDeleteResponseSchema,
-  WebhookUpdateResponseSchema,
-  WebhookTestResponseSchema,
-  WebhookConfigResponseSchema,
   // COMPAT(tickets-removed): retained for old app outbound response parsing compatibility. Remove after 2027-01-12.
   ...NOTES_OUTBOUND_SCHEMAS,
   ...TICKETS_OUTBOUND_SCHEMAS,
-  ...AUTOMATION_OUTBOUND_SCHEMAS,
   ...DOC_THREADS_OUTBOUND_SCHEMAS,
   ...FLEET_BROWSER_OUTBOUND_SCHEMAS,
   LoopRunResponseSchema,
@@ -8357,22 +8273,6 @@ export type ChatDeleteResponse = z.infer<typeof ChatDeleteResponseSchema>;
 export type ChatPostResponse = z.infer<typeof ChatPostResponseSchema>;
 export type ChatReadResponse = z.infer<typeof ChatReadResponseSchema>;
 export type ChatWaitResponse = z.infer<typeof ChatWaitResponseSchema>;
-export type ScheduleCreateResponse = z.infer<typeof ScheduleCreateResponseSchema>;
-export type ScheduleListResponse = z.infer<typeof ScheduleListResponseSchema>;
-export type ScheduleInspectResponse = z.infer<typeof ScheduleInspectResponseSchema>;
-export type ScheduleLogsResponse = z.infer<typeof ScheduleLogsResponseSchema>;
-export type SchedulePauseResponse = z.infer<typeof SchedulePauseResponseSchema>;
-export type ScheduleResumeResponse = z.infer<typeof ScheduleResumeResponseSchema>;
-export type ScheduleDeleteResponse = z.infer<typeof ScheduleDeleteResponseSchema>;
-export type ScheduleRunOnceResponse = z.infer<typeof ScheduleRunOnceResponseSchema>;
-export type ScheduleUpdateResponse = z.infer<typeof ScheduleUpdateResponseSchema>;
-export type WebhookCreateResponse = z.infer<typeof WebhookCreateResponseSchema>;
-export type WebhookListResponse = z.infer<typeof WebhookListResponseSchema>;
-export type WebhookInspectResponse = z.infer<typeof WebhookInspectResponseSchema>;
-export type WebhookDeleteResponse = z.infer<typeof WebhookDeleteResponseSchema>;
-export type WebhookUpdateResponse = z.infer<typeof WebhookUpdateResponseSchema>;
-export type WebhookTestResponse = z.infer<typeof WebhookTestResponseSchema>;
-export type WebhookConfigResponse = z.infer<typeof WebhookConfigResponseSchema>;
 export type MissionControlEventsFetchResponse = z.infer<
   typeof MissionControlEventsFetchResponseSchema
 >;
@@ -8457,22 +8357,6 @@ export type ChatDeleteRequest = z.infer<typeof ChatDeleteRequestSchema>;
 export type ChatPostRequest = z.infer<typeof ChatPostRequestSchema>;
 export type ChatReadRequest = z.infer<typeof ChatReadRequestSchema>;
 export type ChatWaitRequest = z.infer<typeof ChatWaitRequestSchema>;
-export type ScheduleCreateRequest = z.infer<typeof ScheduleCreateRequestSchema>;
-export type ScheduleListRequest = z.infer<typeof ScheduleListRequestSchema>;
-export type ScheduleInspectRequest = z.infer<typeof ScheduleInspectRequestSchema>;
-export type ScheduleLogsRequest = z.infer<typeof ScheduleLogsRequestSchema>;
-export type SchedulePauseRequest = z.infer<typeof SchedulePauseRequestSchema>;
-export type ScheduleResumeRequest = z.infer<typeof ScheduleResumeRequestSchema>;
-export type ScheduleDeleteRequest = z.infer<typeof ScheduleDeleteRequestSchema>;
-export type ScheduleRunOnceRequest = z.infer<typeof ScheduleRunOnceRequestSchema>;
-export type ScheduleUpdateRequest = z.infer<typeof ScheduleUpdateRequestSchema>;
-export type WebhookCreateRequest = z.infer<typeof WebhookCreateRequestSchema>;
-export type WebhookListRequest = z.infer<typeof WebhookListRequestSchema>;
-export type WebhookInspectRequest = z.infer<typeof WebhookInspectRequestSchema>;
-export type WebhookDeleteRequest = z.infer<typeof WebhookDeleteRequestSchema>;
-export type WebhookUpdateRequest = z.infer<typeof WebhookUpdateRequestSchema>;
-export type WebhookTestRequest = z.infer<typeof WebhookTestRequestSchema>;
-export type WebhookConfigRequest = z.infer<typeof WebhookConfigRequestSchema>;
 export type MissionControlEventsFetchRequest = z.infer<
   typeof MissionControlEventsFetchRequestSchema
 >;

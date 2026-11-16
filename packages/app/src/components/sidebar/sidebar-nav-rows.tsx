@@ -1,5 +1,5 @@
 import { router, usePathname } from "expo-router";
-import { CalendarClock, History, Plus, Search } from "lucide-react-native";
+import { History, Plus, Search } from "lucide-react-native";
 import { memo, useCallback, useMemo, useRef, type ComponentType, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { View, type StyleProp, type ViewStyle } from "react-native";
@@ -161,31 +161,10 @@ function SidebarSearchRow() {
   );
 }
 
-function SidebarSchedulesRow({ onBeforeNavigate }: SidebarNavRowProps) {
-  const { t } = useTranslation();
-  const pathname = usePathname();
-  const handlePress = useCallback(() => {
-    onBeforeNavigate?.();
-    router.push("/automations");
-  }, [onBeforeNavigate]);
-
-  return (
-    <SidebarHeaderRow
-      icon={CalendarClock}
-      label={t(builtinSidebarNavLabelKey("schedules"))}
-      onPress={handlePress}
-      isActive={pathname.includes("/automations")}
-      testID="sidebar-automations"
-      variant="compact"
-    />
-  );
-}
-
 const BUILTIN_ROWS: Record<BuiltinSidebarNavId, ComponentType<SidebarNavRowProps>> = {
   "new-workspace": SidebarNewWorkspaceRow,
   history: SidebarHistoryRow,
   search: SidebarSearchRow,
-  schedules: SidebarSchedulesRow,
 };
 
 const styles = StyleSheet.create({

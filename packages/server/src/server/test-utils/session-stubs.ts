@@ -76,10 +76,6 @@ export function asPushNotifications(
   return createStub<SessionOptions["pushNotifications"]>(stub);
 }
 
-export function asScheduleService(): SessionOptions["scheduleService"] {
-  return createStub<SessionOptions["scheduleService"]>({});
-}
-
 export function asCheckoutDiffManager(stub: {
   [K in keyof SessionOptions["checkoutDiffManager"]]?: unknown;
 }): SessionOptions["checkoutDiffManager"] {

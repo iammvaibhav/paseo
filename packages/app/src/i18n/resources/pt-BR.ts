@@ -1466,10 +1466,8 @@ export const ptBR: TranslationResources = {
     sections: {
       sessions: "Histórico",
       search: "Buscar",
-      schedules: "Agendamentos",
       agentGrid: "Agent grid",
       itsaplan: "itsaplan",
-      webhooks: "Webhooks",
     },
     project: {
       actions: {
@@ -3200,7 +3198,7 @@ export const ptBR: TranslationResources = {
         unavailable: "Conecte-se a este host para gerenciar a orquestração",
         enableTools: {
           title: "Ativar ferramentas do Paseo",
-          hint: "Agentes poderão gerenciar worktrees, agentes e agendamentos",
+          hint: "Agentes poderão gerenciar worktrees e agentes",
           accessibilityLabel: "Injetar ferramentas do Paseo",
           updateFailed: "Não foi possível atualizar as ferramentas do Paseo.",
         },

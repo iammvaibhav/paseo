@@ -1,7 +1,7 @@
 /**
  * Paseo spells a provider+model pair two ways. Config and the app key models
  * as "provider:model" (daemon.visibleModels, routing.modelByMode); every spawn
- * surface (MCP tools, CLI, schedules) takes "provider/model", split on the
+ * surface (MCP tools, CLI) takes "provider/model", split on the
  * first "/". This returns the spawn form.
  *
  * Provider ids never contain ":" or "/" (see PROVIDER_ID_PATTERN in

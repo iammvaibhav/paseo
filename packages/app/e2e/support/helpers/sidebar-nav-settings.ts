@@ -10,7 +10,6 @@ const SHELL_ROW_TEST_IDS = {
   "new-workspace": "sidebar-global-new-workspace",
   history: "sidebar-sessions",
   search: "sidebar-search",
-  schedules: "sidebar-schedules",
 } as const;
 
 export type SidebarNavKey = keyof typeof SHELL_ROW_TEST_IDS;
@@ -35,7 +34,6 @@ function itemLabel(key: SidebarNavKey): string {
     "new-workspace": "New workspace",
     history: "History",
     search: "Search",
-    schedules: "Schedules",
   }[key];
 }
 

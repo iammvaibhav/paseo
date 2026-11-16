@@ -16,7 +16,7 @@
 #   ~/.local/share/paseo/current  -> releases/<release>   (swapped atomically)
 #   ~/.local/bin/paseo            -> ~/.local/share/paseo/current/bin/paseo
 #   ~/.config/systemd/user/paseo-daemon.service  ExecStart=current/bin/paseo daemon run
-#   ~/.config/paseo/daemon.env    PATH (login PATH + runtime bin) + tunnel overrides
+#   ~/.config/paseo/daemon.env    PATH (login PATH + runtime bin)
 #
 # Restart: snapshot running agents, restart, require a NEW main pid that answers
 # /api/health, then nudge the snapshot so agents resume. A daemon running
@@ -30,8 +30,7 @@
 # runs ~/.local/share/paseo/start-detached.sh from its own boot hook.
 #
 # Env (set by deploy): PASEO_KEEP_ARTIFACT=1 keeps the tarball (builders ship it
-# on to their targets); PASEO_TUNNEL_PROVIDER / PASEO_TUNNEL_AUTOSTART go into
-# daemon.env.
+# on to their targets).
 set -euo pipefail
 
 MODE="${1:-}"
@@ -131,16 +130,7 @@ login_path() {
 write_env() {
   mkdir -p "$(dirname "$ENV_FILE")"
   local env_tmp="$ENV_FILE.tmp.$$"
-  {
-    printf 'PATH=%s\n' "$(login_path)"
-    # Webhook tunnel overrides handed in by deploy (inventory `tunnel`).
-    local key
-    for key in PASEO_TUNNEL_PROVIDER PASEO_TUNNEL_AUTOSTART; do
-      if [[ -n "${!key:-}" ]]; then
-        printf '%s=%s\n' "$key" "${!key}"
-      fi
-    done
-  } >"$env_tmp"
+  printf 'PATH=%s\n' "$(login_path)" >"$env_tmp"
   chmod 600 "$env_tmp"
   mv "$env_tmp" "$ENV_FILE"
 }

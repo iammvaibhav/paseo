@@ -38,7 +38,7 @@ Consumers: `composer/agent-controls/mode-control.tsx`,
 `composer/agent-controls/index.tsx`, `composer/index.tsx`,
 `components/combined-model-selector.tsx`, `components/hosts/host-picker.tsx`
 (including `components/hosts/host-filter.tsx`), `components/branch-switcher.tsx`,
-`components/left-sidebar.tsx`, `components/ui/select-field.tsx` (schedule form),
+`components/left-sidebar.tsx`, `components/ui/select-field.tsx`,
 `screens/new-workspace-screen.tsx` plus `screens/new-workspace/project-picker.ts`,
 `components/import-session-sheet.tsx`, `screens/workspace/workspace-screen.tsx`,
 `screens/settings-screen.tsx`, and `screens/project-settings-screen.tsx`.

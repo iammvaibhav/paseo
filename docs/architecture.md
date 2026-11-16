@@ -100,7 +100,6 @@ workspace for a directory clears it. The store lives in memory and resets on dae
 | `server/agent/providers/`       | Provider adapters (see "Agent providers" below)                                |
 | `server/orchestration-skills/`  | Bundled catalog, host selection, convergence, and skill-directory transactions |
 | `server/relay-transport.ts`     | Outbound relay connection with E2E encryption                                  |
-| `server/schedule/`              | Cron-based scheduled agents                                                    |
 
 ### `packages/protocol` — Wire schemas and shared protocol types
 
@@ -170,8 +169,6 @@ Commander.js CLI with Docker-style commands. Common agent operations are also ex
 - `paseo daemon start/run/stop/restart/status/reload/config/pair/set-password`
 - `paseo terminal ls/create/capture/send-keys/kill`
 - `paseo script ls/start/stop`
-- `paseo schedule create/ls/inspect/update/pause/resume/run-once/logs/delete`
-- `paseo heartbeat create/update/delete`
 - `paseo project create/ls/rename/delete`
 - `paseo workspace create/ls/rename/archive`
 - `paseo permit allow/deny/ls`
@@ -489,7 +486,6 @@ $PASEO_HOME/
 ├── projects/projects.json                      # Project registry
 ├── projects/workspaces.json                    # Workspace registry
 ├── projects/icons/                             # Custom project icon images
-├── schedules/                                  # Scheduled-agent definitions and runs
 ├── config.json                                 # Daemon config (mutable)
 ├── daemon-keypair.json                         # Daemon identity for relay/E2EE
 ├── push-tokens.json                            # Mobile push tokens

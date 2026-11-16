@@ -79,7 +79,7 @@ function choice(input: {
   };
 }
 
-/** The real Actions › Schedules contribution, shape-for-shape (root-registration.tsx). */
+/** A root action reachable through hidden keywords, shaped like the real ones (root-registration.tsx). */
 function schedulesAction(): CommandCenterContribution {
   return action({
     id: "schedules",

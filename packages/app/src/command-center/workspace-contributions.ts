@@ -657,8 +657,8 @@ export function buildWorkspaceCommandCenterContributions(
 
   // Toggle Explorer sidebar and Toggle focus mode belong here, NOT in root-registration.tsx:
   // their handlers live in workspace-screen.tsx behind `enabled: isRouteFocused && ...`, so a
-  // global registration would list two entries that silently no-op on /settings, /sessions,
-  // /schedules and Home. Toggle sidebar (left) is global and stays in the root set — that is why
+  // global registration would list two entries that silently no-op on /settings, /sessions
+  // and Home. Toggle sidebar (left) is global and stays in the root set — that is why
   // the three toggles render in two non-adjacent sections. Don't "tidy" them back together.
   contributions.push(
     buildWorkspaceAction({

@@ -544,8 +544,6 @@ export type AgentAttentionCallback = (params: {
 }) => void;
 export type AgentFinishedCallback = (params: { agentId: string; provider: AgentProvider }) => void;
 
-export type AgentArchivedCallback = (agentId: string) => Promise<void> | void;
-
 export interface ProviderAvailability {
   provider: AgentProvider;
   available: boolean;
@@ -1271,7 +1269,6 @@ export class AgentManager implements DaemonPermissionHost {
   private resolveDefaultModel: AgentManagerOptions["resolveDefaultModel"];
   private onAgentAttention?: AgentAttentionCallback;
   private onAgentFinished?: AgentFinishedCallback;
-  private onAgentArchived?: AgentArchivedCallback;
   private onAgentCreated?: AgentManagerOptions["onAgentCreated"];
   private onWorkspaceStateMayHaveChanged?: (params: { cwd: string }) => void;
   private logger: Logger;
@@ -1455,10 +1452,6 @@ export class AgentManager implements DaemonPermissionHost {
   }
   setAgentFinishedCallback(callback: AgentFinishedCallback): void {
     this.onAgentFinished = callback;
-  }
-
-  setAgentArchivedCallback(callback: AgentArchivedCallback): void {
-    this.onAgentArchived = callback;
   }
 
   setMcpBaseUrl(url: string | null): void {
@@ -3078,8 +3071,6 @@ export class AgentManager implements DaemonPermissionHost {
       this.dispatchStoredAgentState(archivedRecord);
     }
 
-    await this.fireAgentArchived(record.id);
-
     return archivedRecord;
   }
 
@@ -3096,18 +3087,6 @@ export class AgentManager implements DaemonPermissionHost {
       });
     }
     return archivedRecord;
-  }
-
-  private async fireAgentArchived(agentId: string): Promise<void> {
-    const callback = this.onAgentArchived;
-    if (!callback) {
-      return;
-    }
-    try {
-      await callback(agentId);
-    } catch (error) {
-      this.logger.warn({ err: error, agentId }, "onAgentArchived callback failed");
-    }
   }
 
   private dispatchStoredAgentState(record: StoredAgentRecord): void {
@@ -3614,7 +3593,6 @@ export class AgentManager implements DaemonPermissionHost {
     this.discardRetainedAgentState(agentId);
     if (!nextRecord.internal) this.dispatchStoredAgentState(nextRecord);
 
-    await this.fireAgentArchived(agentId);
     await this.cascadeArchiveChildren(record);
 
     return nextRecord;
@@ -4146,7 +4124,7 @@ export class AgentManager implements DaemonPermissionHost {
 
     const agent = existingAgent;
     // Every run starts here, so the mode block cannot be skipped by any dispatch
-    // path (send, queue, interrupt, steer fallback, scheduled or webhook runs).
+    // path (send, queue, interrupt, steer fallback, MCP runs).
     const moded = this.withAgentModePrefix(agentId, prompt);
     const runPrompt = moded.prompt;
     // A prompt with images or attachments is recorded as its own canonical row.

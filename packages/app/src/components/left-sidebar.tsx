@@ -9,7 +9,6 @@ import {
   Server,
   Settings,
   SquareKanban,
-  Webhook,
   type LucideIcon,
 } from "lucide-react-native";
 import { useTranslation } from "react-i18next";
@@ -93,7 +92,6 @@ import {
   buildItsaplanRoute,
   buildMissionControlRoute,
   buildSettingsRoute,
-  buildWebhooksRoute,
 } from "@/utils/host-routes";
 import { openHostOverview } from "@/navigation/settings-navigation";
 import { UsageSidebarItem, UsageSidebarRoot, useUsageSummary, useOpenSidebarUsage } from "@/usage";
@@ -135,7 +133,6 @@ interface SidebarSharedProps {
   labels: SidebarLabels;
   handleAddHost: () => void;
   handleOpenHostSettings: (serverId: string) => void;
-  handleViewWebhooks: () => void;
   handleViewItsaplan: () => void;
   handleViewMissionControl: () => void;
   /** Any connected host advertises features.missionControl — gates the row. */
@@ -150,7 +147,6 @@ interface SidebarLabels {
   usage: string;
   itsaplan: string;
   agentGrid: string;
-  webhooks: string;
   closeSidebar: string;
 }
 
@@ -235,11 +231,6 @@ export const LeftSidebar = memo(function LeftSidebar({
     [showMobileAgent],
   );
 
-  const handleViewWebhooks = useCallback(() => {
-    showMobileAgent();
-    router.push(buildWebhooksRoute());
-  }, [showMobileAgent]);
-
   const handleViewItsaplan = useCallback(() => {
     showMobileAgent();
     router.push(buildItsaplanRoute());
@@ -275,7 +266,6 @@ export const LeftSidebar = memo(function LeftSidebar({
       usage: t(builtinSidebarNavLabelKey("usage")),
       itsaplan: t("sidebar.sections.itsaplan"),
       agentGrid: t("sidebar.sections.agentGrid"),
-      webhooks: t("sidebar.sections.webhooks"),
       closeSidebar: t("sidebar.actions.closeSidebar"),
     }),
     [t],
@@ -311,7 +301,6 @@ export const LeftSidebar = memo(function LeftSidebar({
     handleSettings,
     handleAddHost,
     handleOpenHostSettings,
-    handleViewWebhooks,
     handleViewItsaplan,
     handleViewMissionControl,
   };
@@ -632,7 +621,6 @@ function MobileSidebar({
   insetsBottom,
   closeSidebar,
   hasMissionControl,
-  handleViewWebhooks,
   handleViewItsaplan,
   handleViewMissionControl,
 }: MobileSidebarProps) {
@@ -640,7 +628,6 @@ function MobileSidebar({
   const hasActiveHostFilter = useSidebarViewStore((state) => state.hostFilters.length > 0);
   const showWorkspaceSkeleton = isInitialLoad && !hasActiveHostFilter;
   const pathname = usePathname();
-  const isWebhooksActive = pathname.includes("/webhooks");
   const isItsaplanActive = pathname.includes("/itsaplan");
   const isMissionControlActive = pathname.includes("/mission-control");
   const { gesture: closeGesture, gestureRef: closeGestureRef } = useCloseAgentListGesture();
@@ -698,14 +685,6 @@ function MobileSidebar({
             variant="compact"
           />
         ) : null}
-        <SidebarHeaderRow
-          icon={Webhook}
-          label={labels.webhooks}
-          onPress={handleViewWebhooks}
-          isActive={isWebhooksActive}
-          testID="sidebar-webhooks"
-          variant="compact"
-        />
       </View>
     </>
   );
@@ -827,7 +806,6 @@ function DesktopSidebar({
   active,
   overlay,
   hasMissionControl,
-  handleViewWebhooks,
   handleViewItsaplan,
   handleViewMissionControl,
 }: DesktopSidebarProps) {
@@ -835,7 +813,6 @@ function DesktopSidebar({
   const hasActiveHostFilter = useSidebarViewStore((state) => state.hostFilters.length > 0);
   const showWorkspaceSkeleton = isInitialLoad && !hasActiveHostFilter;
   const pathname = usePathname();
-  const isWebhooksActive = pathname.includes("/webhooks");
   const isItsaplanActive = pathname.includes("/itsaplan");
   const isMissionControlActive = pathname.includes("/mission-control");
   const setSidebarWidth = usePanelStore((state) => state.setSidebarWidth);
@@ -983,14 +960,6 @@ function DesktopSidebar({
                   variant="compact"
                 />
               ) : null}
-              <SidebarHeaderRow
-                icon={Webhook}
-                label={labels.webhooks}
-                onPress={handleViewWebhooks}
-                isActive={isWebhooksActive}
-                testID="sidebar-webhooks"
-                variant="compact"
-              />
             </View>
           </View>
 

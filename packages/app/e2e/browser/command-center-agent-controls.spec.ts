@@ -16,7 +16,7 @@ import { clickNewChat, gotoWorkspace } from "../support/helpers/launcher";
 import { openAgentRoute, seedMockAgentWorkspace } from "../support/helpers/mock-agent";
 import { expectAppRoute } from "../support/helpers/route-assertions";
 import { seedWorkspace } from "../support/helpers/seed-client";
-import { buildSchedulesRoute } from "@/utils/host-routes";
+import { buildSessionsRoute } from "@/utils/host-routes";
 
 const CREATE_AGENT_PREFERENCES_KEY = "@paseo:create-agent-preferences";
 
@@ -167,10 +167,10 @@ test.describe("Command Center agent controls", () => {
     });
     try {
       const input = await openCommandCenterForAgent(page, workspace);
-      await input.fill("sched");
+      await input.fill("hist");
       await page.keyboard.press("Enter");
 
-      await expectAppRoute(page, buildSchedulesRoute(), { timeout: 30_000 });
+      await expectAppRoute(page, buildSessionsRoute(), { timeout: 30_000 });
     } finally {
       await workspace.cleanup();
     }

@@ -111,7 +111,7 @@ export interface CreateAgentFromMcpInput {
   mode?: string;
   /**
    * Agent mode id (Do it yourself, Orchestrator, …). Absent = Do it yourself.
-   * A string because spawn plans and schedules carry it off the wire; an id
+   * A string because spawn plans carry it off the wire; an id
    * this daemon does not know (a newer host's mode) falls back to the default.
    */
   agentMode?: string;

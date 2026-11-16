@@ -1,6 +1,6 @@
 ---
 name: paseo
-description: Paseo reference for managing hosts, projects, workspaces, workspace scripts, agents, schedules, and heartbeats.
+description: Paseo reference for managing hosts, projects, workspaces, workspace scripts, and agents.
 ---
 
 Paseo is a remote daemon that manages coding agents, terminals. Control it through MCP tools or the CLI.
@@ -138,16 +138,6 @@ If no profile fits, or no profiles are configured, use the provider discovery to
 
 Only set feature IDs returned by `inspect_provider`. For Codex fast mode, look for `fast_mode` and pass `settings: { features: { "fast_mode": true } }` to `create_agent` or `update_agent`.
 
-## Schedules and heartbeats
-
-**`create_schedule`** — starts a new agent on a cron cadence. Required: `prompt`, `cron`, `provider`. Optional: `timezone`, `name`, `cwd`, `maxRuns`, `expiresIn`. Use when the recurring work should live in fresh agents.
-
-**`create_heartbeat`** — sends you a prompt on a cron cadence. Required: `prompt`, `cron`. Optional: `timezone`, `name`, `maxRuns`, `expiresIn`. Use for reminders, PR/build babysitting, and status checks that should return to this conversation.
-
-**`delete_heartbeat`** stops it. MCP intentionally exposes no heartbeat update tool; delete and recreate when its task or cadence changes.
-
-Schedules have the full list/inspect/update/pause/resume/run-once/log/delete surface. Heartbeats deliberately do not.
-
 ## Waiting
 
 When you create or prompt a subagent, `notifyOnFinish` defaults to `true` and reports completion, errors, or permission requests, including across hosts.
@@ -166,8 +156,6 @@ paseo run --provider codex/gpt-5.4 --mode full-access --workspace <workspace-id>
 paseo run --provider codex/gpt-5.4 --mode full-access --new-workspace worktree --worktree-mode branch-off --new-branch fix-x --base origin/main "<prompt>"
 paseo send <agent-id> "<follow-up>"
 paseo ls
-paseo schedule create --cron "*/15 * * * *" "ping main build"
-paseo heartbeat create --cron "*/15 * * * *" "check the build"
 ```
 
 Discover with `paseo --help` and `paseo <cmd> --help`.

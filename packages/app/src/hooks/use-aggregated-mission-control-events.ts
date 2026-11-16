@@ -97,7 +97,7 @@ function mergeOlderEvents(
 
 /**
  * Merge mission control events across all connected hosts into one feed.
- * Connectivity is checked at query time per host (mirrors use-schedules):
+ * Connectivity is checked at query time per host:
  * offline hosts keep their last-known events but stop refetching; the push
  * router invalidates the per-host query when `mission_control_event` arrives.
  *

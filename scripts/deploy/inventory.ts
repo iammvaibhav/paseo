@@ -25,7 +25,6 @@ export interface Host {
   buildFrom: string;
   daemon: "systemd" | "desktop";
   port: number;
-  tunnel: "" | "cloudflared" | "tailscale-funnel";
   /** Builders: where packaging stages and keeps the newest tarball. */
   artifactDir: string;
   services: Service[];
@@ -103,10 +102,6 @@ function parseHost(entry: Record<string, unknown>, where: string): Host {
   if (daemon !== "systemd" && daemon !== "desktop") fail(`${where}.daemon is invalid`);
   const port = entry.port ?? 6767;
   if (typeof port !== "number" || !Number.isInteger(port)) fail(`${where}.port is invalid`);
-  const tunnel = optional(entry, "tunnel", "");
-  if (tunnel !== "" && tunnel !== "cloudflared" && tunnel !== "tailscale-funnel") {
-    fail(`${where}.tunnel must be "cloudflared" or "tailscale-funnel"`);
-  }
   return {
     name,
     ssh: text(entry, "ssh", where),
@@ -118,7 +113,6 @@ function parseHost(entry: Record<string, unknown>, where: string): Host {
     buildFrom: optional(entry, "buildFrom", ""),
     daemon,
     port,
-    tunnel,
     artifactDir: optional(entry, "artifactDir", "~/.paseo/artifacts"),
     services: parseServices(entry, role, where),
   };

@@ -19,7 +19,7 @@ export interface FavoriteModelRow {
  * Where non-model composer state (isolation, base branch) is remembered:
  * project seeds new workspaces; global is the last-resort fallback.
  * Model selection itself is global-only (per host): the last pick wins
- * everywhere, and still seeds schedules/webhooks.
+ * everywhere.
  */
 export interface FormPreferenceScope {
   workspaceId?: string | null;

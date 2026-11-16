@@ -51,7 +51,7 @@ async function showDeveloperToast(page: Page): Promise<void> {
 test("developer toasts leave concurrent sidebar layout checks uninterrupted", async ({ page }) => {
   await gotoAppShell(page);
   await showDeveloperToast(page);
-  await expectSidebarOrder(page, ["new-workspace", "history", "search", "schedules"]);
+  await expectSidebarOrder(page, ["new-workspace", "history", "search"]);
   await expect(page.locator("#error-toast")).toBeHidden();
 });
 
@@ -109,7 +109,7 @@ test.describe("Sidebar items in Appearance settings", () => {
     await gotoAppShell(page);
 
     await test.step("the sidebar starts in the default order", async () => {
-      await expectSidebarOrder(page, ["new-workspace", "history", "search", "schedules"]);
+      await expectSidebarOrder(page, ["new-workspace", "history", "search"]);
     });
 
     await test.step("the Sidebar section lists every item in the same order", async () => {
@@ -118,12 +118,7 @@ test.describe("Sidebar items in Appearance settings", () => {
       await expect(page.getByTestId("sidebar-nav-section-header-info")).toHaveAccessibleName(
         "About Header",
       );
-      await expectSidebarNavSettingsOrder(page, [
-        "new-workspace",
-        "history",
-        "search",
-        "schedules",
-      ]);
+      await expectSidebarNavSettingsOrder(page, ["new-workspace", "history", "search"]);
       await expectSidebarNavSettingsRow(page, {
         key: "history",
         label: "History",
@@ -136,24 +131,12 @@ test.describe("Sidebar items in Appearance settings", () => {
       ).toBeVisible();
     });
 
-    await test.step("moving Schedules up twice lifts it above History", async () => {
-      await moveSidebarNavItemUp(page, "schedules");
-      await expectSidebarNavSettingsOrder(page, [
-        "new-workspace",
-        "history",
-        "schedules",
-        "search",
-      ]);
-      await moveSidebarNavItemUp(page, "schedules");
-      await expectSidebarNavSettingsOrder(page, [
-        "new-workspace",
-        "schedules",
-        "history",
-        "search",
-      ]);
+    await test.step("moving Search up lifts it above History", async () => {
+      await moveSidebarNavItemUp(page, "search");
+      await expectSidebarNavSettingsOrder(page, ["new-workspace", "search", "history"]);
 
       await leaveSettings(page);
-      await expectSidebarOrder(page, ["new-workspace", "schedules", "history", "search"]);
+      await expectSidebarOrder(page, ["new-workspace", "search", "history"]);
     });
 
     await test.step("turning History off removes it from the sidebar", async () => {
@@ -161,20 +144,19 @@ test.describe("Sidebar items in Appearance settings", () => {
       await setSidebarNavItemVisible(page, "history", false);
       await expectStoredSidebarNav(page, [
         { key: "new-workspace", visible: true },
-        { key: "schedules", visible: true },
-        { key: "history", visible: false },
         { key: "search", visible: true },
+        { key: "history", visible: false },
       ]);
 
       await leaveSettings(page);
       await expectSidebarItemHidden(page, "history");
-      await expectSidebarOrder(page, ["new-workspace", "schedules", "search"]);
+      await expectSidebarOrder(page, ["new-workspace", "search"]);
     });
 
     await test.step("the sidebar keeps that shape across a reload", async () => {
       await page.reload();
       await expectSidebarItemHidden(page, "history");
-      await expectSidebarOrder(page, ["new-workspace", "schedules", "search"]);
+      await expectSidebarOrder(page, ["new-workspace", "search"]);
     });
   });
 
@@ -183,7 +165,6 @@ test.describe("Sidebar items in Appearance settings", () => {
       { key: "new-workspace", visible: false },
       { key: "history", visible: false },
       { key: "search", visible: false },
-      { key: "schedules", visible: false },
     ]);
     await gotoAppShell(page);
 
@@ -194,7 +175,6 @@ test.describe("Sidebar items in Appearance settings", () => {
     await expectSidebarItemHidden(page, "new-workspace");
     await expectSidebarItemHidden(page, "history");
     await expectSidebarItemHidden(page, "search");
-    await expectSidebarItemHidden(page, "schedules");
   });
 });
 

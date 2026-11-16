@@ -10446,68 +10446,6 @@ test("archiveAgent persists archivedAt and updatedAt before emitting closed stat
   expect(lifecycles.slice(-2)).toEqual(["idle", "closed"]);
 });
 
-test("fires onAgentArchived for archived parent and cascaded children", async () => {
-  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-archived-hook-cascade-"));
-  const storagePath = join(workdir, "agents");
-  const storage = new AgentStorage(storagePath, logger);
-  const archivedIds: string[] = [];
-  const manager = new AgentManager({
-    clients: { codex: new TestAgentClient() },
-    registry: storage,
-    logger,
-  });
-  manager.setAgentArchivedCallback((agentId) => {
-    archivedIds.push(agentId);
-  });
-
-  const liveParent = await manager.createAgent(
-    {
-      provider: "codex",
-      cwd: workdir,
-      title: "Parent",
-    },
-    undefined,
-    { workspaceId: undefined },
-  );
-  const liveChild = await manager.createAgent(
-    { provider: "codex", cwd: workdir, title: "Child" },
-    undefined,
-    { labels: { [PARENT_AGENT_ID_LABEL]: liveParent.id }, workspaceId: undefined },
-  );
-
-  await manager.archiveAgent(liveParent.id);
-  expect([...archivedIds].sort()).toEqual([liveChild.id, liveParent.id].sort());
-});
-
-test("fires onAgentArchived for stored-only snapshot archives", async () => {
-  const workdir = mkdtempSync(join(tmpdir(), "agent-manager-archived-hook-snapshot-"));
-  const storagePath = join(workdir, "agents");
-  const storage = new AgentStorage(storagePath, logger);
-  const archivedIds: string[] = [];
-  const manager = new AgentManager({
-    clients: { codex: new TestAgentClient() },
-    registry: storage,
-    logger,
-  });
-  manager.setAgentArchivedCallback((agentId) => {
-    archivedIds.push(agentId);
-  });
-
-  const storedOnly = await manager.createAgent(
-    {
-      provider: "codex",
-      cwd: workdir,
-      title: "Stored only",
-    },
-    undefined,
-    { workspaceId: undefined },
-  );
-  await manager.closeAgent(storedOnly.id);
-
-  await manager.archiveSnapshot(storedOnly.id, new Date().toISOString());
-  expect(archivedIds).toEqual([storedOnly.id]);
-});
-
 test("native archive and restore release the loaded session writer", async () => {
   const workdir = mkdtempSync(join(tmpdir(), "agent-native-archive-writer-"));
   class WriterClient extends NativeArchiveRecordingClient {

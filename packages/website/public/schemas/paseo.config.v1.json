@@ -606,54 +606,6 @@
           },
           "additionalProperties": false
         },
-        "tunnel": {
-          "type": "object",
-          "properties": {
-            "provider": {
-              "type": "string",
-              "enum": ["tailscale-funnel", "cloudflared", "none"]
-            },
-            "localPort": {
-              "type": "integer",
-              "exclusiveMinimum": 0,
-              "maximum": 9007199254740991
-            },
-            "localTarget": {
-              "type": "string"
-            },
-            "autoStart": {
-              "type": "boolean"
-            },
-            "publicBaseUrl": {
-              "type": "string"
-            },
-            "tailscaleBin": {
-              "type": "string"
-            },
-            "cloudflared": {
-              "type": "object",
-              "properties": {
-                "hostname": {
-                  "type": "string"
-                },
-                "bin": {
-                  "type": "string"
-                },
-                "configFile": {
-                  "type": "string"
-                },
-                "token": {
-                  "type": "string"
-                },
-                "tunnel": {
-                  "type": "string"
-                }
-              },
-              "additionalProperties": false
-            }
-          },
-          "additionalProperties": false
-        },
         "auth": {
           "type": "object",
           "properties": {

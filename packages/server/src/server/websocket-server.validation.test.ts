@@ -4,12 +4,11 @@ import { SessionInboundMessageSchema } from "@getpaseo/protocol/messages";
 import { formatInboundValidationError, isKnownInboundRequestType } from "./websocket-server.js";
 
 describe("inbound validation errors", () => {
-  test("a malformed automation.create names the failing field", () => {
+  test("a malformed create_agent_request names the failing field", () => {
     const parsed = SessionInboundMessageSchema.safeParse({
-      type: "automation.create.request",
+      type: "create_agent_request",
       requestId: "r1",
-      kind: "github",
-      // Missing target + promptTemplate.
+      // Missing config.
     });
     expect(parsed.success).toBe(false);
     if (parsed.success) throw new Error("expected validation failure");
@@ -19,7 +18,7 @@ describe("inbound validation errors", () => {
   });
 
   test("known and unknown request types discriminate", () => {
-    expect(isKnownInboundRequestType("automation.create.request")).toBe(true);
+    expect(isKnownInboundRequestType("create_agent_request")).toBe(true);
     expect(isKnownInboundRequestType("nope.unknown.request")).toBe(false);
   });
 });

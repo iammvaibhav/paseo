@@ -1459,10 +1459,8 @@ export const ru: TranslationResources = {
     sections: {
       sessions: "История",
       search: "Поиск",
-      schedules: "Расписания",
       agentGrid: "Agent grid",
       itsaplan: "itsaplan",
-      webhooks: "Webhooks",
     },
     project: {
       actions: {
@@ -3212,7 +3210,7 @@ export const ru: TranslationResources = {
         unavailable: "Подключитесь к этому хосту, чтобы управлять оркестрацией.",
         enableTools: {
           title: "Включить инструменты Paseo",
-          hint: "Агенты смогут управлять worktree, агентами и расписаниями.",
+          hint: "Агенты смогут управлять worktree и агентами.",
           accessibilityLabel: "Добавить инструменты Paseo",
           updateFailed: "Не удалось обновить инструменты Paseo.",
         },

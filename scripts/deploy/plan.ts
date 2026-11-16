@@ -96,7 +96,7 @@ export interface HostPlan {
   build: boolean;
   /** Tracked services whose files changed. */
   services: Service[];
-  /** Idempotent per-run steps (omp update/plugins, stall cron, tunnel, watch). */
+  /** Idempotent per-run steps (omp update/plugins, stall cron, watch). */
   routine: boolean;
 }
 

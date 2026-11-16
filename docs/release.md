@@ -19,7 +19,7 @@ A release has exactly two steps. The agent does the first, the user authorizes t
 
 - commit the approved release inputs locally on the release branch
 - run the release, which publishes npm and pushes the release branch and tag
-- create the release heartbeat immediately and babysit it to completion
+- babysit the release to completion in the same conversation
 - [reconcile `main`](#reconcile-main) with what shipped
 
 Rules that apply to both steps:
@@ -434,18 +434,18 @@ Do not treat `build_ios: SUCCESS` or `distribute_ios: SUCCESS` as a completed iO
 
 To confirm the submission landed, inspect the EAS workflow with `npx eas workflow:view <workflow-run-id> --json`. App Store Connect (review state for the matching version/build) and the Play Console track are the final ground truth.
 
-## Release completion and heartbeat
+## Release completion
 
 A release is **in progress** after npm publication and tag push. Report it as
 **shipped** only after every applicable build, publication, asset, manifest, and
 store submission passes the completion checklist.
 
-Immediately after every beta, stable, or promotion tag push, create a heartbeat
-that resumes the release in the current conversation. Create it automatically
-with `create_heartbeat`. The heartbeat owns the release until it either reaches
-the completion checklist or finds a failure that needs new user authority.
+Immediately after every beta, stable, or promotion tag push, babysit the release
+in the current conversation until it either reaches the completion checklist or
+finds a failure that needs new user authority. Run a status check right away,
+then re-check while builds are pending (`gh run watch`, `npx eas workflow:view`).
 
-Each heartbeat checks the release tag commit, all GitHub Actions runs for the
+Each check covers the release tag commit, all GitHub Actions runs for the
 release branch and tag, npm dist-tags, the GitHub Release body and assets,
 desktop updater manifests, the published Docker image, and the applicable EAS
 workflow. Inspect the GitHub Release itself and confirm that the macOS, Linux,
@@ -455,27 +455,12 @@ Windows, and Android APK assets are present along with the channel manifests
 
 For stable releases, also confirm every required mobile build, external
 TestFlight distribution, Beta App Review submission, and store submission job
-for the release commit. For betas, confirm
-the beta EAS workflow completed its TestFlight distribution and Beta App Review
-path. Delete the heartbeat only after every applicable checklist item passes,
-then report the release as shipped.
-
-Pattern:
-
-```jsonc
-// mcp__paseo__create_heartbeat arguments
-{
-  "name": "vX.Y.Z release babysit heartbeat",
-  "cron": "*/10 * * * *",
-  "timezone": "UTC",
-  "maxRuns": 120,
-  "expiresIn": "24h",
-  "prompt": "Resume the vX.Y.Z release babysit for commit <sha>. Check npm tags; every GitHub Actions run for the release branch and tag; the published GitHub Release body, expected desktop/APK assets, and channel manifests; the Docker image; and the matching EAS workflow. Completion requires every applicable checklist item. For stable, require build_ios, distribute_ios (Paseo Beta external distribution and Beta App Review submission), submit_ios_for_review, build_android, and submit_android to succeed. For beta, require the beta TestFlight distribution and Beta App Review path. If work is pending, wait for the next heartbeat. If a failure can be retried safely for the same version, follow the failed-release procedure; otherwise report the blocker. When every applicable completion-checklist item passes, delete THIS heartbeat, report shipped, and stop.",
-}
-```
-
-Run an immediate status check after creating the heartbeat. The heartbeat handles
-later transitions and stops itself when the release is complete.
+for the release commit (`build_ios`, `distribute_ios`, `submit_ios_for_review`,
+`build_android`, `submit_android`). For betas, confirm the beta EAS workflow
+completed its TestFlight distribution and Beta App Review path. If a failure can
+be retried safely for the same version, follow the failed-release procedure;
+otherwise report the blocker. Report the release as shipped only after every
+applicable checklist item passes.
 
 ## Release notes on GitHub
 
@@ -738,7 +723,6 @@ Every entry covers `previous stable release → release source`: first beta, lat
 - [ ] GitHub `Release Notes Sync` mirrored the beta entry into the prerelease body
 - [ ] EAS `Release iOS Beta` completed its build, TestFlight distribution, external beta group, and Beta App Review path
 - [ ] The [reconcile PR](#reconcile-main) brought the shipped changelog entries and version into `main`
-- [ ] The release heartbeat was created after the tag push and deleted only after every item above passed
 
 ### Stable release (or promotion)
 
@@ -769,4 +753,3 @@ Every entry covers `previous stable release → release source`: first beta, lat
 - [ ] EAS Android `build_android` completes for the same tag
 - [ ] EAS Android `submit_android` succeeds, putting the build on its Play Store track
 - [ ] The [reconcile PR](#reconcile-main) brought the shipped changelog entries and version into `main`
-- [ ] The release heartbeat was created after the tag push and deleted only after every item above passed

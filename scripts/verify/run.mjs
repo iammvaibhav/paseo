@@ -224,7 +224,6 @@ async function runFallbackStackUp(options = {}) {
     PASEO_WEB_UI_ENABLED: "1",
     PASEO_WEB_UI_DIST_DIR: webUiDistDir,
     PASEO_RELAY_ENABLED: "0",
-    PASEO_TUNNEL_AUTOSTART: "0",
     PASEO_VOICE_MODE_ENABLED: "0",
     PASEO_DICTATION_ENABLED: "0",
     PASEO_SERVICE_PROXY_ENABLED: "0",

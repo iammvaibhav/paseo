@@ -8,13 +8,11 @@ import { createUsageCommand } from "./commands/usage/index.js";
 import { createProviderCommand } from "./commands/provider/index.js";
 import { createPluginCommand } from "./commands/plugin/index.js";
 import { createProjectCommand } from "./commands/project/index.js";
-import { createScheduleCommand } from "./commands/schedule/index.js";
 import { createSpeechCommand } from "./commands/speech/index.js";
 import { createScriptCommand } from "./commands/script/index.js";
 import { createTerminalCommand } from "./commands/terminal/index.js";
 import { createWorktreeCommand } from "./commands/worktree/index.js";
 import { createWorkspaceCommand } from "./commands/workspace/index.js";
-import { createHeartbeatCommand } from "./commands/heartbeat/index.js";
 import { createHubCommand } from "./commands/hub/index.js";
 import { createHooksCommand } from "./commands/hooks.js";
 import { startCommand as daemonStartCommand } from "./commands/daemon/start.js";
@@ -142,10 +140,6 @@ export function createCli(): Command {
 
   // Workspace script commands
   program.addCommand(createScriptCommand());
-
-  // Schedule commands
-  program.addCommand(createScheduleCommand());
-  program.addCommand(createHeartbeatCommand());
 
   // Permission commands
   program.addCommand(createPermitCommand());

@@ -531,10 +531,6 @@ export function buildSessionsRoute() {
   return "/sessions" as const;
 }
 
-export function buildSchedulesRoute() {
-  return "/schedules" as const;
-}
-
 export function buildMissionControlRoute() {
   return "/mission-control" as const;
 }
@@ -554,9 +550,6 @@ export function buildItsaplanRoute(options?: ItsaplanRouteOptions) {
   return "/itsaplan" as const;
 }
 
-export function buildWebhooksRoute() {
-  return "/webhooks" as const;
-}
 export function buildOpenProjectRoute() {
   return "/open-project" as const;
 }

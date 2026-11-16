@@ -29,7 +29,7 @@ export interface HostFilterProps {
 }
 
 /**
- * The "All hosts / <host>" host pill shared by History, Schedules, Usage, the label manager and
+ * The "All hosts / <host>" host pill shared by History, Usage, the label manager and
  * plugin screens: an anchored HostPicker, hidden by the caller when only one host exists. Without
  * `includeAllHost` it picks the one host a surface shows.
  */

@@ -248,9 +248,9 @@ function buildThinkingOptions(options: readonly AgentSelectOption[]): AgentProfi
  * Each list used to carry a synthetic "Provider default" row. It read as a value
  * you could choose but stored an absent one, so a profile that looked fully
  * specified would apply whatever the host preferred at the time — and two hosts
- * would materialize the same profile differently. The schedule form never
- * offered that row; this form now matches it and seeds the catalog's own default
- * instead, so what the form shows is what the profile stores.
+ * would materialize the same profile differently. This form seeds the
+ * catalog's own default instead, so what the form shows is what the profile
+ * stores.
  */
 function defaultModelId(models: readonly AgentModelDefinition[]): string {
   return models.find((model) => model.isDefault)?.id ?? models[0]?.id ?? "";

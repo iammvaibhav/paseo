@@ -20,12 +20,10 @@ function verificationPrompt(workspacePath: string): string {
     "Do not edit files or run shell commands. Every prompt below is intentionally non-actionable.",
     `1. Create a local workspace at ${workspacePath} titled "Presentation QA workspace".`,
     `2. In that workspace, create a codex/gpt-5.4-mini agent titled "Greeting child" with the initial prompt "${GREETING}".`,
-    `3. Create a schedule named "Greeting schedule" with prompt "${GREETING}", cron "0 0 1 1 *", timezone "Europe/Berlin", provider "codex/gpt-5.4-mini", cwd ${workspacePath}, maxRuns 1, and expiresIn "1h". Delete that schedule using its returned id.`,
-    `4. Create a heartbeat named "Greeting heartbeat" with prompt "${GREETING}", cron "0 0 1 1 *", timezone "Europe/Berlin", maxRuns 1, and expiresIn "1h". Delete that heartbeat using its returned id.`,
-    `5. After the child agent finishes, send it the follow-up prompt "${GREETING}" synchronously.`,
-    "6. Archive the workspace from step 1.",
-    "7. Reply with exactly TOOL_CALL_QA_DONE.",
-    "Use each named Paseo tool exactly once except for the matching schedule and heartbeat deletion tools.",
+    `3. After the child agent finishes, send it the follow-up prompt "${GREETING}" synchronously.`,
+    "4. Archive the workspace from step 1.",
+    "5. Reply with exactly TOOL_CALL_QA_DONE.",
+    "Use each named Paseo tool exactly once.",
   ].join(" ");
 }
 
@@ -87,30 +85,6 @@ test.describe("real Codex Paseo tool-call presentation", () => {
         label: "Send message",
         artifact: "send-prompt-presentation",
         expectedText: ["Prompt", GREETING, "Agent", "Result"],
-      });
-      await captureToolCall(page, testInfo, {
-        label: "Create schedule",
-        artifact: "schedule-presentation",
-        expectedText: [
-          "Prompt",
-          GREETING,
-          "0 0 1 1 *",
-          "Europe/Berlin",
-          "Greeting schedule",
-          "Result",
-        ],
-      });
-      await captureToolCall(page, testInfo, {
-        label: "Create heartbeat",
-        artifact: "heartbeat-presentation",
-        expectedText: [
-          "Prompt",
-          GREETING,
-          "0 0 1 1 *",
-          "Europe/Berlin",
-          "Greeting heartbeat",
-          "Result",
-        ],
       });
       await captureToolCall(page, testInfo, {
         label: "Archive workspace",

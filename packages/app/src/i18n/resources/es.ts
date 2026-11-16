@@ -1477,10 +1477,8 @@ export const es: TranslationResources = {
     sections: {
       sessions: "Historial",
       search: "Buscar",
-      schedules: "Horarios",
       agentGrid: "Agent grid",
       itsaplan: "itsaplan",
-      webhooks: "Webhooks",
     },
     project: {
       actions: {
@@ -3221,7 +3219,7 @@ export const es: TranslationResources = {
         unavailable: "Conéctese a este host para administrar la orquestación",
         enableTools: {
           title: "Habilitar herramientasPaseo",
-          hint: "Los agentes podrán gestionar árboles de trabajo, agentes y horarios.",
+          hint: "Los agentes podrán gestionar árboles de trabajo y agentes.",
           accessibilityLabel: "Inyectar herramientasPaseo",
           updateFailed: "No se pudieron actualizar las herramientas de Paseo.",
         },

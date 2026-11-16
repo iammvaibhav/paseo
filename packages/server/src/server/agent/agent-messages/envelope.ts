@@ -175,7 +175,7 @@ function projectAgentMessage(item: AgentTimelineItem): AgentTimelineItem | null 
   if (item.type !== "user_message") return item;
   const message = parseAgentMessage(item.text);
   if (!message) {
-    // Schedule bodies include their run ID, keeping identity stable across acceptance
+    // The call ID hashes the full body, keeping identity stable across acceptance
     // and provider replay even when the provider assigns its own message ID.
     if (!isSystemInjectedEnvelope(item.text)) return item;
     const text = item.text.slice("<paseo-system>\n".length, -"\n</paseo-system>".length);
@@ -217,7 +217,8 @@ function projectAgentMessage(item: AgentTimelineItem): AgentTimelineItem | null 
 /**
  * Wrap a body in <paseo-system>…</paseo-system> so the receiving agent
  * recognizes the prompt as system-injected context — not a user turn.
- * Used by schedule fires; agent messages use the versioned envelope.
+ * Used by daemon notices (fleet browser, mission control); agent messages use
+ * the versioned envelope.
  */
 export function formatSystemNotificationPrompt(reason: string): string {
   return `<paseo-system>\n${reason}\n</paseo-system>`;

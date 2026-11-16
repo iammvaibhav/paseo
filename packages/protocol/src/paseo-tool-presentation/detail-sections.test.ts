@@ -51,49 +51,6 @@ describe("Paseo tool-call detail presentation", () => {
     },
   );
 
-  it("formats schedule cadence and nested settings without JSON syntax", () => {
-    const sections = buildPaseoToolDetailSections(
-      "mcp__paseo__create_schedule",
-      {
-        prompt: "Say hello back.",
-        cron: "0 9 * * 1",
-        timezone: "Europe/Berlin",
-        provider: "codex/gpt-5.4",
-        maxRuns: 1,
-      },
-      {
-        id: "sch_123",
-        status: "active",
-        nextRunAt: "2026-09-07T09:00:00.000Z",
-        target: { type: "new-agent", mode: "read-only" },
-      },
-    );
-
-    expect(sections?.slice(0, 2)).toMatchObject([
-      { kind: "prose", title: "Prompt", text: "Say hello back." },
-      {
-        kind: "fields",
-        title: "Details",
-        fields: [
-          { label: "Cron", value: "0 9 * * 1" },
-          { label: "Timezone", value: "Europe/Berlin" },
-          { label: "Provider", value: "codex/gpt-5.4" },
-          { label: "Maximum runs", value: "1" },
-        ],
-      },
-    ]);
-    expect(JSON.stringify(sections)).not.toContain('\\"new-agent\\"');
-    expect(sections?.at(-1)).toEqual({
-      kind: "fields",
-      title: "Result",
-      fields: [
-        { label: "ID", value: "sch_123" },
-        { label: "Status", value: "active" },
-        { label: "Next run", value: "2026-09-07T09:00:00.000Z" },
-      ],
-    });
-  });
-
   it("unwraps MCP result envelopes instead of exposing JSON-encoded text", () => {
     expect(
       buildPaseoToolDetailSections(

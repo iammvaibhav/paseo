@@ -131,7 +131,6 @@ describe("Fleet MCP Endpoint E2E (/mcp/fleet)", () => {
         "fleet_move_agent",
         "fleet_archive_agent",
         "list_agents",
-        "create_schedule",
         "fleet_notify_on_finish",
         "fleet_webhook_deliveries",
         "paseo_skill",

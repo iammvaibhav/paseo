@@ -1445,10 +1445,8 @@ export const ja: TranslationResources = {
     sections: {
       sessions: "履歴",
       search: "検索",
-      schedules: "スケジュール",
       agentGrid: "Agent grid",
       itsaplan: "itsaplan",
-      webhooks: "Webhooks",
     },
     project: {
       actions: {
@@ -3177,7 +3175,7 @@ export const ja: TranslationResources = {
         unavailable: "オーケストレーションを管理するにはこのホストに接続してください",
         enableTools: {
           title: "Paseoツールを有効にする",
-          hint: "エージェントがワークツリー、エージェント、スケジュールを管理できるようになります",
+          hint: "エージェントがワークツリーとエージェントを管理できるようになります",
           accessibilityLabel: "Paseoツールを有効にする",
           updateFailed: "Paseoツールを更新できませんでした。",
         },

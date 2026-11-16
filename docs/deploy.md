@@ -49,7 +49,6 @@ The inventory defines all fleet machines. See [`scripts/deploy/fleet-hosts.examp
   - `target` — has no checkout; receives pre-built tarballs from its `buildFrom` builder.
 - `buildFrom`: for targets, the name of the builder that packages their runtime (e.g. `iammvaibhav` for `prod`, `blrofc3` for `dell-server`).
 - `daemon`: `systemd` (Linux) or `desktop` (MacBook).
-- `tunnel`: `""`, `"cloudflared"`, or `"tailscale-funnel"`.
 - `artifactDir`: directory on builders where tarballs stage.
 - `services`: what the host runs besides its daemon (below).
 
@@ -102,7 +101,7 @@ Component paths live in [`scripts/deploy/plan.ts`](../scripts/deploy/plan.ts):
 Every deploy runs idempotent routine steps on selected reachable hosts:
 
 1. **omp:** updates `omp` to match the deploy host's version, installs plugins from `plugins/`, and syncs the verifier agent role ([`scripts/set-omp-verifier-role.mjs`](../scripts/set-omp-verifier-role.mjs)).
-2. **Services:** refreshes stall-cron and macbook-watch if listed in host services, and verifies tunnel configuration. code-server and voice reinstall only when their files change.
+2. **Services:** refreshes stall-cron and macbook-watch if listed in host services. code-server and voice reinstall only when their files change.
 3. **code-server settings:** pushes the deploy host's live `~/.local/share/code-server/User/settings.json` merged with remote settings; restarts code-server only when settings changed.
 4. **Config sync:** writes peer definitions, DNS hostnames, system prompt ([`scripts/paseo-system-prompt.md`](../scripts/paseo-system-prompt.md)), and enables the web UI on every reachable daemon, then runs `paseo daemon reload`.
 
