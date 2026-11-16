@@ -1,4 +1,13 @@
-import { copyFileSync, existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import {
+  copyFileSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+} from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join, relative, resolve } from "node:path";
 
@@ -183,6 +192,7 @@ function applyPatches(cwd, files, index) {
   mkdirSync(tempPatchDir, { recursive: true });
   for (const patchFile of files) {
     copyFileSync(join("patches", patchFile), join(tempPatchDir, patchFile));
+    detachFromStore(cwd, join("patches", patchFile));
   }
 
   let result;
@@ -202,4 +212,28 @@ function applyPatches(cwd, files, index) {
     return "unavailable";
   }
   return result.status === 0 ? "applied" : "rejected";
+}
+
+/**
+ * pnpm hardlinks node_modules files to its content-addressable store, which every worktree on
+ * the machine shares, and patch-package edits files in place. Without this, patching one
+ * worktree rewrites the store's copy for all of them, and a worktree carrying another version
+ * of the patch can no longer apply its own. Give each file the patch modifies a private copy
+ * first; files the patch creates or deletes never touch the store's inode.
+ */
+function detachFromStore(cwd, patchPath) {
+  for (const line of readFileSync(patchPath, "utf8").split("\n")) {
+    if (!line.startsWith("+++ b/")) continue;
+    const target = join(cwd, line.slice("+++ b/".length));
+    let stat;
+    try {
+      stat = lstatSync(target);
+    } catch {
+      continue;
+    }
+    if (!stat.isFile() || stat.nlink < 2) continue;
+    const copy = `${target}.postinstall-patches-${process.pid}`;
+    copyFileSync(target, copy);
+    renameSync(copy, target);
+  }
 }

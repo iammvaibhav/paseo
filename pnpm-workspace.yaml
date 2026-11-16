@@ -26,6 +26,13 @@ allowBuilds:
   unrs-resolver: true
   workerd: true
 
+# Every worktree on a machine shares one pnpm store. Its side-effects cache keeps a built
+# package's files (react-native-enriched-markdown, node-pty), and patch-package used to edit
+# those hardlinked files in place, so one worktree's patch leaked into every later install and
+# a worktree with another version of the patch could not apply it. postinstall-patches.mjs now
+# patches private copies; without the cache, packages with allowed builds rebuild per install.
+sideEffectsCache: false
+
 # Supply-chain hardening: refuse to resolve a package version published less
 # than a week ago. Malicious releases are almost always pulled within days.
 minimumReleaseAge: 10080
