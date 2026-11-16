@@ -30,26 +30,33 @@ const DAEMON_PATHS = [
 
 const APP_UI_PATHS = ["packages/app", "packages/expo-two-way-audio"];
 
+/** What the app's JavaScript bundle is built from (web export and iOS app). */
+const APP_BUNDLE_PATHS = [
+  ...APP_UI_PATHS,
+  "packages/client",
+  "packages/protocol",
+  "packages/highlight",
+  "packages/plugin",
+  "packages/relay",
+  "pnpm-lock.yaml",
+];
+
 /** Git pathspecs per component. */
 export const COMPONENT_PATHS = {
   daemon: [...DAEMON_PATHS, ...NOT_TESTS],
   // The desktop app bundles the daemon, so daemon changes rebuild it too.
   app: [...DAEMON_PATHS, ...APP_UI_PATHS, "packages/desktop", ...NOT_TESTS],
-  vercel: [
-    ...APP_UI_PATHS,
-    "packages/client",
-    "packages/protocol",
-    "packages/highlight",
-    "packages/plugin",
-    "packages/relay",
-    "pnpm-lock.yaml",
-    ...NOT_TESTS,
-  ],
+  vercel: [...APP_BUNDLE_PATHS, ...NOT_TESTS],
+  // iOS app built on the MacBook and published to ios.thevm.space.
+  ios: [...APP_BUNDLE_PATHS, "patches", ...NOT_TESTS],
   "code-server": ["scripts/code-server"],
   "omp-proxy": ["scripts/omp-proxy", "plugins"],
 } satisfies Record<string, string[]>;
 
 export type Component = keyof typeof COMPONENT_PATHS;
+
+/** all: whatever changed; desktop: only Paseo.app; ios: only the iOS app. */
+export type DeployMode = "all" | "desktop" | "ios";
 
 /** Services that are redeployed only when their files changed. */
 const TRACKED_SERVICES: Partial<Record<Service, Component>> = {
@@ -63,7 +70,7 @@ export type HostState = Partial<Record<Component | "omp-proxy-omp" | "address", 
 export interface PlanInput {
   hosts: Host[];
   self: string;
-  mode: "all" | "desktop";
+  mode: DeployMode;
   /** --hosts; empty = every host. */
   selected: string[];
   force: boolean;
@@ -83,6 +90,8 @@ export interface HostPlan {
   daemon: boolean;
   /** Desktop builder: build + install Paseo.app. */
   app: boolean;
+  /** Desktop builder: build the iOS app and publish it to ios.thevm.space. */
+  ios: boolean;
   /** Builder: sync checkout + build + package (also for its targets or Vercel). */
   build: boolean;
   /** Tracked services whose files changed. */
@@ -106,12 +115,14 @@ function planHost(input: PlanInput, host: Host): HostPlan {
     host,
     daemon: false,
     app: false,
+    ios: false,
     build: false,
     services: [],
     routine: false,
   };
-  if (input.mode === "desktop") {
-    plan.app = host.daemon === "desktop";
+  if (input.mode !== "all") {
+    plan.app = input.mode === "desktop" && host.daemon === "desktop";
+    plan.ios = input.mode === "ios" && host.daemon === "desktop";
     return plan;
   }
   const state = input.states[host.name] ?? {};
@@ -124,6 +135,7 @@ function planHost(input: PlanInput, host: Host): HostPlan {
     host.role === "target" && state.address !== undefined && state.address !== host.address;
   plan.daemon = builderReachable && (due("daemon") || moved);
   plan.app = host.daemon === "desktop" && due("app");
+  plan.ios = host.daemon === "desktop" && due("ios");
   for (const service of host.services) {
     const component = TRACKED_SERVICES[service];
     const ompStale = service === "omp-proxy" && state["omp-proxy-omp"] !== input.ompTarget;
@@ -142,9 +154,9 @@ function publishesVercel(input: PlanInput, self: Host | undefined): boolean {
 export function makePlan(input: PlanInput): Plan {
   const reachable = new Set(input.reachable);
   const selected = input.hosts.filter((host) =>
-    input.mode === "desktop"
-      ? host.daemon === "desktop"
-      : input.selected.length === 0 || input.selected.includes(host.name),
+    input.mode === "all"
+      ? input.selected.length === 0 || input.selected.includes(host.name)
+      : host.daemon === "desktop",
   );
   const plans = new Map<string, HostPlan>();
   for (const host of selected) {
@@ -168,6 +180,7 @@ export function makePlan(input: PlanInput): Plan {
       host,
       daemon: false,
       app: false,
+      ios: false,
       build: false,
       services: [],
       routine: false,
@@ -186,10 +199,11 @@ export function makePlan(input: PlanInput): Plan {
 
 export function describePlan(plan: Plan): string[] {
   const lines: string[] = [];
-  for (const { host, daemon, app, build, services, routine } of plan.hosts) {
+  for (const { host, daemon, app, ios, build, services, routine } of plan.hosts) {
     const work: string[] = [];
     if (build) work.push("build + package");
     if (app) work.push("build + install Paseo.app");
+    if (ios) work.push("build iOS app + publish to ios.thevm.space");
     if (daemon)
       work.push(host.daemon === "desktop" ? "restart daemon" : "activate new runtime (restart)");
     if (services.length > 0) work.push(`update ${services.join(", ")}`);

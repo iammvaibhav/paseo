@@ -47,6 +47,7 @@ const hosts = parseInventory(
 const deployed: HostState = {
   daemon: "old",
   app: "old",
+  ios: "old",
   "code-server": "old",
   "omp-proxy": "old",
   "omp-proxy-omp": "1.0.0",
@@ -68,9 +69,11 @@ function plan(changes: Component[], overrides: Partial<PlanInput> = {}) {
     ...overrides,
   });
   const work = Object.fromEntries(
-    result.hosts.map(({ host, daemon, app, build, services }) => [
+    result.hosts.map(({ host, daemon, app, ios, build, services }) => [
       host.name,
-      [build && "build", app && "app", daemon && "daemon", ...services].filter(Boolean).join(","),
+      [build && "build", app && "app", daemon && "daemon", ios && "ios", ...services]
+        .filter(Boolean)
+        .join(","),
     ]),
   );
   return { ...result, work };
@@ -95,9 +98,9 @@ describe("deploy plan", () => {
     });
   });
 
-  test("a UI-only change ships the app and Vercel without restarting a daemon", () => {
-    const { work, vercel } = plan(["app", "vercel"]);
-    expect(work).toEqual({ mac: "app", dev: "build", work: "", prod: "", dell: "" });
+  test("a UI-only change ships the app, the iOS app and Vercel without restarting a daemon", () => {
+    const { work, vercel } = plan(["app", "ios", "vercel"]);
+    expect(work).toEqual({ mac: "app,ios", dev: "build", work: "", prod: "", dell: "" });
     expect(vercel).toBe(true);
   });
 
@@ -122,8 +125,15 @@ describe("deploy plan", () => {
   });
 
   test("desktop mode only installs the app", () => {
-    const { work, config, vercel } = plan(["daemon", "app", "vercel"], { mode: "desktop" });
+    const { work, config, vercel } = plan(["daemon", "app", "ios", "vercel"], { mode: "desktop" });
     expect(work).toEqual({ mac: "app" });
+    expect(config).toBe(false);
+    expect(vercel).toBe(false);
+  });
+
+  test("ios mode only builds and publishes the iOS app, changed or not", () => {
+    const { work, config, vercel } = plan([], { mode: "ios" });
+    expect(work).toEqual({ mac: "ios" });
     expect(config).toBe(false);
     expect(vercel).toBe(false);
   });
@@ -144,7 +154,7 @@ describe("deploy plan", () => {
   test("--force redeploys everything", () => {
     const { work } = plan([], { force: true });
     expect(work).toEqual({
-      mac: "app,daemon",
+      mac: "app,daemon,ios",
       dev: "build,daemon,code-server",
       work: "build,daemon",
       prod: "daemon,omp-proxy",

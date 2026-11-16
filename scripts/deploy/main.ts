@@ -20,15 +20,16 @@ import { homedir } from "node:os";
 import path from "node:path";
 import type { Host, Service } from "./inventory.ts";
 import { daemonHostnames, loadInventory, passwordVar, peersFor, selfHost } from "./inventory.ts";
-import type { Component, HostPlan, HostState } from "./plan.ts";
+import type { Component, DeployMode, HostPlan, HostState } from "./plan.ts";
 import { COMPONENT_PATHS, describePlan, makePlan } from "./plan.ts";
 import type { Job } from "./shell.ts";
 import { Log, hostCommand, runJobs, runLocal, runScript } from "./shell.ts";
 
-const USAGE = `Usage: ./scripts/deploy.sh [desktop] [options]
+const USAGE = `Usage: ./scripts/deploy.sh [desktop|ios] [options]
 
   (no argument)     deploy what changed since each host's last deploy, to every host
   desktop           only build + install the MacBook app
+  ios               only build the iOS app on the MacBook and publish it to ios.thevm.space
 
 Options:
   --hosts a,b       only these inventory hosts
@@ -52,7 +53,7 @@ const VERCEL_STATE = path.join(PASEO_HOME, "deploy-vercel");
 const REMOTE_REPO = "$HOME/paseo";
 
 interface Options {
-  mode: "all" | "desktop";
+  mode: DeployMode;
   hosts: string[];
   force: boolean;
   dryRun: boolean;
@@ -76,7 +77,7 @@ function parseArgs(argv: string[]): Options {
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     const value = () => argv[++i] ?? die(`${arg} needs a value`);
-    if (arg === "desktop") options.mode = "desktop";
+    if (arg === "desktop" || arg === "ios") options.mode = arg;
     else if (arg === "--hosts") options.hosts = value().split(",").filter(Boolean);
     else if (arg === "--force") options.force = true;
     else if (arg === "--dry-run") options.dryRun = true;
@@ -625,6 +626,14 @@ function jobsFor(run: Run, plans: HostPlan[]): Job[] {
             });
             await stamp(run, host, jobLog, { daemon: run.head });
           }
+          if (plan.ios) {
+            await runScript(host, run.self.name, hostScript("ios-app.sh"), {
+              log: jobLog,
+              cwd: repoDir(run, host),
+              env: { SOURCE: `${BRANCH} ${run.head.slice(0, 9)}` },
+            });
+            await stamp(run, host, jobLog, { ios: run.head });
+          }
         },
       });
       continue;
@@ -799,8 +808,8 @@ async function main(): Promise<void> {
   });
   log.line(`plan for ${head.slice(0, 9)}:\n${describePlan(plan).join("\n")}`);
   if (options.dryRun) return;
-  if (options.mode === "desktop" && !plan.hosts.some((hostPlan) => hostPlan.app)) {
-    die("desktop: the MacBook is unreachable");
+  if (options.mode !== "all" && !plan.hosts.some((hostPlan) => hostPlan.app || hostPlan.ios)) {
+    die(`${options.mode}: the MacBook is unreachable`);
   }
 
   const run: Run = { self, hosts, head, ompTarget, states, tarballs: new Map(), runDir };

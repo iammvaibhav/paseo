@@ -7,6 +7,7 @@ Paseo fleet deploy ships code changes from the shared `vaibhav/customizations` b
 ```bash
 ./scripts/deploy.sh          # deploy what changed since each host's last deploy, to every host
 ./scripts/deploy.sh desktop  # only build and install the MacBook app (/Applications/Paseo.app)
+./scripts/deploy.sh ios      # only build the iOS app on the MacBook and publish it to ios.thevm.space
 ```
 
 Options:
@@ -92,6 +93,7 @@ Component paths live in [`scripts/deploy/plan.ts`](../scripts/deploy/plan.ts):
 - `daemon`: server, CLI, client, protocol, relay, highlight, plugin packages, the lockfile, and patches. Changes to the deploy tooling itself (`scripts/deploy/**`) never restart a daemon.
 - `app`: desktop package, daemon paths, and app UI paths.
 - `vercel`: app UI paths and client dependencies.
+- `ios`: the same paths as `vercel`, plus `patches/`.
 - `code-server`: `scripts/code-server`.
 - `omp-proxy`: `scripts/omp-proxy` and `plugins/` (also redeploys when the fleet omp version changes).
 
@@ -120,6 +122,16 @@ The MacBook is a builder with `daemon: "desktop"`.
 - Before replacement, it copies `/Applications/Paseo.app` to `/Applications/Paseo (Orig).app` as a fallback.
 - It stops running Paseo processes, deletes `/Applications/Paseo.app`, copies the new build into place, and opens the app.
 - [`scripts/deploy/host/desktop-daemon.sh`](../scripts/deploy/host/desktop-daemon.sh) restarts the MacBook daemon only when daemon code changed. It snapshots running agents with [`scripts/deploy-nudge.mjs`](../scripts/deploy-nudge.mjs), restarts the supervisor worker via [`scripts/restart-local-daemon.sh`](../scripts/restart-local-daemon.sh), and nudges the snapshot so agents resume on the new worker.
+
+## iOS app (ios.thevm.space)
+
+Vaibhav runs the native iOS app sideloaded with a free Apple ID. When the `ios` component changed, the MacBook job runs [`scripts/deploy/host/ios-app.sh`](../scripts/deploy/host/ios-app.sh) after the desktop app: `expo prebuild --platform ios --clean`, `pod install`, an unsigned Release `xcodebuild archive`, then `Payload/Paseo.app` zipped into `~/paseo-ios-build/Paseo.ipa` (the previous build stays as `Paseo-previous.ipa`; build logs are next to it). It then publishes the `.ipa` with the Flotilla `ios-apps` skill to https://ios.thevm.space, which keeps only the latest build per app.
+
+- The build must stay unsigned: AltStore re-signs it on install with the free Apple ID. Opening an `.ipa` from AirDrop or Files makes iOS install it unsigned, and it won't launch.
+- **Install with AltStore** on the page is an `altstore://install?url=` link. AltStore only downloads over https, which is why the page sits behind prod's Caddy (DNS-01 certificate, NetBird source IPs only) instead of a plain NetBird port. The files live on dell-server in `~/ios-apps/www`, served by `systemctl --user status ios-apps`.
+- AltServer-Linux on dell-server (`altserver.service` + `netmuxd.service`) installs and refreshes apps over home Wi-Fi, so the MacBook can sleep. It sends Apple a current macOS client identity (`/etc/systemd/system/altserver.service.d/client-info.conf`); with the anisette server's own `Mac OS X 10.12.6` identity Apple refuses sign-in with `-23782`.
+- The MacBook needs Xcode's iOS platform component (`xcodebuild -downloadPlatform iOS`), CocoaPods (`brew install cocoapods`), and the `ios-apps` skill in `~/.agents/skills` (Flotilla's skills bundle). The script stops with the fix when one is missing.
+- An archive takes about 10 minutes, so a UI-only deploy now runs that long on the MacBook.
 
 ## Recovery
 
