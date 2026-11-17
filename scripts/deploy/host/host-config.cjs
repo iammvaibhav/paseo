@@ -5,8 +5,6 @@
 // Payload (every field optional):
 //   peers                full peers array; replaces the existing one
 //   hostnames            merged into daemon.hostnames (never removes entries)
-//   appendSystemPrompt   daemon.appendSystemPrompt (from the repo's
-//                        scripts/paseo-system-prompt.md; never copied from a host)
 //   webUi                features.webUi.enabled
 //   localSpeechDefault   false: dictation and voice mode stay off unless this
 //                        host's config already turned them on, so the daemon
@@ -58,14 +56,6 @@ if (Array.isArray(payload.hostnames)) {
   if (missing.length > 0) {
     config.daemon.hostnames = [...current, ...missing];
     changed.push(`daemon.hostnames (+${missing.join(", ")})`);
-  }
-}
-
-if (typeof payload.appendSystemPrompt === "string") {
-  const prompt = payload.appendSystemPrompt.trim();
-  if ((config.daemon.appendSystemPrompt ?? "") !== prompt) {
-    config.daemon.appendSystemPrompt = prompt;
-    changed.push(`daemon.appendSystemPrompt (${prompt.length} chars)`);
   }
 }
 

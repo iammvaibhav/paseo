@@ -105,7 +105,7 @@ export interface Plan {
   unreachable: string[];
   /** Publish the web app export to Vercel. */
   vercel: boolean;
-  /** Write peers + system prompt to every reachable daemon and reload. */
+  /** Write peers + web UI to every reachable daemon and reload. */
   config: boolean;
 }
 
@@ -214,6 +214,6 @@ export function describePlan(plan: Plan): string[] {
   }
   for (const name of plan.unreachable) lines.push(`  ${name.padEnd(12)} UNREACHABLE (skipped)`);
   if (plan.vercel) lines.push("  vercel       publish web app");
-  if (plan.config) lines.push("  all daemons  peers + system prompt, then `paseo daemon reload`");
+  if (plan.config) lines.push("  all daemons  peers + web UI, then `paseo daemon reload`");
   return lines;
 }

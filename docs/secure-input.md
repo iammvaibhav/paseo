@@ -1,6 +1,6 @@
 # Secure input
 
-`request_secure_input` lets an agent ask the user for passwords, OTP codes, API keys or any other field through a masked form card in its chat. The agent gets references to secret values, never the values. Agents learn when to use it from `scripts/paseo-system-prompt.md` ("Secrets") and `skills/paseo/SKILL.md`; this doc is for people changing the feature.
+`request_secure_input` lets an agent ask the user for passwords, OTP codes, API keys or any other field through a masked form card in its chat. The agent gets references to secret values, never the values. Agents learn when to use it from the daemon append prompt ("Secrets"; Flotilla's `bundles/paseo/append-system-prompt.md`, see [deploy](deploy.md#routine-steps)) and `skills/paseo/SKILL.md`; this doc is for people changing the feature.
 
 ## Flow
 

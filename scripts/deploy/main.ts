@@ -540,7 +540,6 @@ function configPayload(run: Run, host: Host): Record<string, unknown> {
   return {
     peers: peersFor(run.hosts, host.name, process.env),
     hostnames: daemonHostnames(host),
-    appendSystemPrompt: readFileSync(path.join(ROOT, "scripts", "paseo-system-prompt.md"), "utf8"),
     webUi: true,
     // Targets stay minimal: no local speech models unless voice is turned on
     // there explicitly. Builders keep whatever the daemon defaults to.
@@ -702,7 +701,7 @@ async function syncCentralConfig(run: Run, host: Host, log: Log): Promise<void> 
   );
 }
 
-/** Peers + system prompt + web UI on every reachable daemon, then reload. */
+/** Peers + web UI on every reachable daemon, then reload. */
 async function syncConfig(run: Run, reachable: string[], log: Log): Promise<string[]> {
   const failed: string[] = [];
   for (const host of run.hosts.filter((candidate) => reachable.includes(candidate.name))) {
@@ -812,7 +811,7 @@ async function main(): Promise<void> {
   if (plan.vercel) jobs.push(vercelJob(run, runDir));
   const failed = await runJobs(jobs, log, runDir);
   if (plan.config) {
-    log.line("syncing peers + system prompt, reloading daemons");
+    log.line("syncing peers + web UI, reloading daemons");
     failed.push(...(await syncConfig(run, reachable, log)));
   }
 

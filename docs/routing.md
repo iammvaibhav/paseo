@@ -60,4 +60,4 @@ Modes never enter the system prompt. The daemon prepends `<paseo-mode name="…"
 
 Agents set the mode over MCP: `settings.agentMode` on `create_agent` and `fleet_create_agent` (local, Commander proposal, remote MCP client, and peer paths), and `agentMode` on `send_agent_prompt` and `fleet_send_prompt`, which applies to that prompt. Spawn plans and send proposals carry the id as a string; an id the receiving daemon does not know falls back to `solo`. Sending a mode to a peer without `server_info.features.agentModes` fails instead of dropping it.
 
-The global system prompt (`scripts/paseo-system-prompt.md`) carries no delegation policy; the Orchestrator mode file holds it.
+The global system prompt (Flotilla's `bundles/paseo/append-system-prompt.md`, see [deploy](deploy.md#routine-steps)) carries no delegation policy; the Orchestrator mode file holds it.

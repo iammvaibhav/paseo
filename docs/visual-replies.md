@@ -1,6 +1,6 @@
 # Visual replies
 
-Agents answer with structure, not prose: bullets, `<details>` evidence, mermaid diagrams, Flint chart fences, and inline HTML pages. The reply-format rules live in [`scripts/paseo-system-prompt.md`](../scripts/paseo-system-prompt.md) (deploy pushes them into every host's `daemon.appendSystemPrompt`). This doc covers what renders those formats and the rules that keep them working.
+Agents answer with structure, not prose: bullets, `<details>` evidence, mermaid diagrams, Flint chart fences, and inline HTML pages. The reply-format rules live in the daemon append prompt (Flotilla's `bundles/paseo/append-system-prompt.md`, see [deploy](deploy.md#routine-steps)). This doc covers what renders those formats and the rules that keep them working.
 
 ## Collapsible evidence
 
