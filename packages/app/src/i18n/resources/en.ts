@@ -891,6 +891,8 @@ export const en = {
         copyPath: "Copy workspace path",
         copyBranchName: "Copy branch name",
         showSetup: "Show setup",
+        archiveWorkspace: "Archive workspace",
+        archiving: "Archiving...",
       },
       toasts: {
         workspacePathUnavailable: "Workspace path is not available yet",

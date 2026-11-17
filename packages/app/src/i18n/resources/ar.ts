@@ -895,6 +895,8 @@ export const ar: TranslationResources = {
         copyPath: "نسخ مسار مساحة العمل",
         copyBranchName: "انسخ اسم الفرع",
         showSetup: "إظهار الإعداد",
+        archiveWorkspace: "أرشفة مساحة العمل",
+        archiving: "أرشفة...",
       },
       toasts: {
         workspacePathUnavailable: "مسار Workspace غير متاح بعد",

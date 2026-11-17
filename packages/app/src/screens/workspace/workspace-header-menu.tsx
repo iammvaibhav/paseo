@@ -3,7 +3,14 @@ import React, { useCallback, useMemo } from "react";
 import { View } from "react-native";
 import { useRouter, type Href } from "expo-router";
 import { useTranslation } from "react-i18next";
-import { Copy, Ellipsis, Globe, Import as ImportIcon, Settings } from "lucide-react-native";
+import {
+  Archive,
+  Copy,
+  Ellipsis,
+  Globe,
+  Import as ImportIcon,
+  Settings,
+} from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import type { TerminalProfile } from "@getpaseo/protocol/messages";
 import {
@@ -22,6 +29,8 @@ import {
 } from "@/components/ui/icon-button-chrome";
 import { TerminalProfileIcon } from "@/components/terminal-profile-icon";
 import { useDaemonConfig } from "@/hooks/use-daemon-config";
+import { useShortcutKeys } from "@/hooks/use-shortcut-keys";
+import { Shortcut } from "@/components/ui/shortcut";
 import {
   getTerminalProfileIcon,
   resolveTerminalProfiles,
@@ -39,6 +48,7 @@ const ThemedCopy = withUnistyles(Copy);
 const ThemedGlobe = withUnistyles(Globe);
 const ThemedImport = withUnistyles(ImportIcon);
 const ThemedSettings = withUnistyles(Settings);
+const ThemedArchive = withUnistyles(Archive);
 
 const mutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 
@@ -46,6 +56,8 @@ const MENU_NEW_BROWSER_ICON = <ThemedGlobe size={16} uniProps={mutedColorMapping
 const MENU_IMPORT_ICON = <ThemedImport size={16} uniProps={mutedColorMapping} />;
 const MENU_COPY_ICON = <ThemedCopy size={16} uniProps={mutedColorMapping} />;
 const MENU_SETTINGS_ICON = <ThemedSettings size={16} uniProps={mutedColorMapping} />;
+const MENU_ARCHIVE_ICON = <ThemedArchive size={16} uniProps={mutedColorMapping} />;
+
 function WorkspaceHeaderMenuTriggerIcon() {
   return (
     <ThemedEllipsis
@@ -85,6 +97,10 @@ export interface WorkspaceHeaderWorkspaceActions {
   onCopyWorkspacePath: () => void;
   onCopyBranchName: () => void;
   onOpenSetupTab: () => void;
+  /** Off until the workspace is known and, for worktrees, its dirty/unpushed state is loaded. */
+  archiveDisabled: boolean;
+  isArchiving: boolean;
+  onArchiveWorkspace: () => void;
 }
 
 function WorkspaceHeaderWorkspaceActionItems({
@@ -141,6 +157,42 @@ function WorkspaceHeaderWorkspaceActionItems({
   );
 }
 
+/**
+ * Destructive, so it sits last behind its own separator in both menus, away from the copy rows.
+ */
+function WorkspaceHeaderArchiveItem({
+  archiveDisabled,
+  isArchiving,
+  onArchiveWorkspace,
+}: Pick<
+  WorkspaceHeaderWorkspaceActions,
+  "archiveDisabled" | "isArchiving" | "onArchiveWorkspace"
+>) {
+  const { t } = useTranslation();
+  const archiveShortcutKeys = useShortcutKeys("archive-workspace");
+  const trailing = useMemo(
+    () => (archiveShortcutKeys ? <Shortcut chord={archiveShortcutKeys} /> : null),
+    [archiveShortcutKeys],
+  );
+  return (
+    <>
+      <DropdownMenuSeparator />
+      <DropdownMenuItem
+        testID="workspace-header-archive"
+        leading={MENU_ARCHIVE_ICON}
+        trailing={trailing}
+        destructive
+        disabled={archiveDisabled || isArchiving}
+        status={isArchiving ? "pending" : undefined}
+        pendingLabel={t("workspace.header.actions.archiving")}
+        onSelect={onArchiveWorkspace}
+      >
+        {t("workspace.header.actions.archiveWorkspace")}
+      </DropdownMenuItem>
+    </>
+  );
+}
+
 function workspaceHeaderMenuButtonStyle({
   hovered,
   pressed,
@@ -170,6 +222,7 @@ export function WorkspaceHeaderMenuDesktop(props: WorkspaceHeaderWorkspaceAction
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start" width={220} testID="workspace-header-menu">
         <WorkspaceHeaderWorkspaceActionItems {...props} />
+        <WorkspaceHeaderArchiveItem {...props} />
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -346,6 +399,7 @@ export function WorkspaceHeaderMenuMobile({
         >
           {t("workspace.tabs.actions.editTerminalProfiles")}
         </DropdownMenuItem>
+        <WorkspaceHeaderArchiveItem {...workspaceActions} />
       </DropdownMenuContent>
     </DropdownMenu>
   );

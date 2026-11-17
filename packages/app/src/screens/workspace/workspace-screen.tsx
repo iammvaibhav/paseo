@@ -246,6 +246,7 @@ import {
 } from "@/workspace/preload-browser-editor";
 import { RenderProfile } from "@/utils/render-profiler";
 import { useWorkspaceCheckoutStatus } from "@/screens/workspace/use-workspace-checkout-status";
+import { useWorkspaceScreenArchive } from "@/workspace/use-workspace-screen-archive";
 import { useIsLocalDaemon } from "@/hooks/use-is-local-daemon";
 import { useWorkspacePullRequestDiscovery } from "@/panels/pull-request";
 import { useFleetBrowserExplorerTab } from "@/fleet-browser/use-fleet-browser-explorer-tab";
@@ -525,6 +526,9 @@ interface WorkspaceHeaderTitleBarProps {
   onCopyWorkspacePath: () => void;
   onCopyBranchName: () => void;
   onOpenSetupTab: () => void;
+  archiveDisabled: boolean;
+  isArchiving: boolean;
+  onArchiveWorkspace: () => void;
 }
 
 function WorkspaceHeaderTitleBar({
@@ -541,6 +545,9 @@ function WorkspaceHeaderTitleBar({
   onCopyWorkspacePath,
   onCopyBranchName,
   onOpenSetupTab,
+  archiveDisabled,
+  isArchiving,
+  onArchiveWorkspace,
 }: WorkspaceHeaderTitleBarProps) {
   const actionsInBar = resolveWorkspaceActionPlacement(useWindowLayout()) === "vertical-bar";
   return (
@@ -570,6 +577,9 @@ function WorkspaceHeaderTitleBar({
             onCopyWorkspacePath={onCopyWorkspacePath}
             onCopyBranchName={onCopyBranchName}
             onOpenSetupTab={onOpenSetupTab}
+            archiveDisabled={archiveDisabled}
+            isArchiving={isArchiving}
+            onArchiveWorkspace={onArchiveWorkspace}
           />
         </View>
       )}
@@ -1071,6 +1081,27 @@ function useLastMainPane(input: {
   return lastMainPaneRef;
 }
 
+/** The header menu only ever archives the workspace this screen shows, so it is the active one. */
+function useWorkspaceHeaderArchive(input: {
+  serverId: string;
+  workspace: WorkspaceDescriptor | null | undefined;
+  fallbackName: string;
+  checkoutStatus: CheckoutStatusPayload | undefined;
+}) {
+  const workspaceId = input.workspace?.id ?? null;
+  const activeWorkspaceSelection = useMemo(
+    () => (workspaceId ? { serverId: input.serverId, workspaceId } : null),
+    [input.serverId, workspaceId],
+  );
+  return useWorkspaceScreenArchive({
+    serverId: input.serverId,
+    workspace: input.workspace ?? null,
+    fallbackName: input.fallbackName,
+    gitStatus: input.checkoutStatus?.isGit ? input.checkoutStatus : null,
+    activeWorkspaceSelection,
+  });
+}
+
 function WorkspaceScreenContent({
   serverId,
   workspaceId,
@@ -1330,6 +1361,15 @@ function WorkspaceScreenContent({
     workspace: workspaceDescriptor,
     checkoutState: workspaceHeaderCheckoutState,
   });
+  const workspaceArchive = useWorkspaceHeaderArchive({
+    serverId: normalizedServerId,
+    workspace: workspaceDescriptor,
+    fallbackName: workspaceHeaderTitle,
+    checkoutStatus: checkoutQuery.data,
+  });
+  const isWorkspaceArchiveDisabled = !workspaceArchive.canArchive;
+  const isWorkspaceArchiving = workspaceArchive.isArchiving;
+  const handleArchiveWorkspace = workspaceArchive.archive;
   const showMobileAgent = usePanelStore((state) => state.showMobileAgent);
 
   const isExplorerSidebarShowing = useIsExplorerSidebarOpen({
@@ -3602,6 +3642,9 @@ function WorkspaceScreenContent({
                 onCopyWorkspacePath={handleCopyWorkspacePath}
                 onCopyBranchName={handleCopyBranchName}
                 onOpenSetupTab={handleOpenSetupTab}
+                archiveDisabled={isWorkspaceArchiveDisabled}
+                isArchiving={isWorkspaceArchiving}
+                onArchiveWorkspace={handleArchiveWorkspace}
               />
             </>
           }
@@ -3610,6 +3653,9 @@ function WorkspaceScreenContent({
       ) : null,
     [
       canOpenImportSheet,
+      handleArchiveWorkspace,
+      isWorkspaceArchiveDisabled,
+      isWorkspaceArchiving,
       currentBranchName,
       handleCopyBranchName,
       handleCopyWorkspacePath,
@@ -3728,6 +3774,9 @@ function WorkspaceScreenContent({
             onCopyWorkspacePath={handleCopyWorkspacePath}
             onCopyBranchName={handleCopyBranchName}
             onOpenSetupTab={handleOpenSetupTab}
+            archiveDisabled={isWorkspaceArchiveDisabled}
+            isArchiving={isWorkspaceArchiving}
+            onArchiveWorkspace={handleArchiveWorkspace}
           />
         </CompactWorkspaceHeader>
       );
@@ -3742,7 +3791,10 @@ function WorkspaceScreenContent({
       currentBranchName,
       explorerSidebarToggleAccessibilityState,
       explorerSidebarToggleLabel,
+      handleArchiveWorkspace,
       handleCopyBranchName,
+      isWorkspaceArchiveDisabled,
+      isWorkspaceArchiving,
       handleCopyWorkspacePath,
       handleCreateBrowserTab,
       handleCreateTerminalWithProfile,

@@ -905,6 +905,8 @@ export const fr: TranslationResources = {
         copyPath: "Copier le chemin de l’espace de travail",
         copyBranchName: "Copier le nom de la branche",
         showSetup: "Afficher la configuration",
+        archiveWorkspace: "Archiver l’espace de travail",
+        archiving: "Archivage…",
       },
       toasts: {
         workspacePathUnavailable: "Le chemin de l’espace de travail n’est pas encore disponible",
