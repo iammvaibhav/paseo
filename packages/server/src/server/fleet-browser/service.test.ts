@@ -7,6 +7,12 @@ import pino from "pino";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { WebSocketServer } from "ws";
 import type { FleetBrowserDelivery } from "@getpaseo/protocol/fleet-browser/types";
+import type { AgentManager } from "../agent/agent-manager.js";
+import type { AgentStorage } from "../agent/agent-storage.js";
+import type { ProviderSnapshotManager } from "../agent/provider-snapshot-manager.js";
+import { createPaseoToolCatalog } from "../agent/tools/paseo-tools.js";
+import type { PeerManager } from "../peers/peer-manager.js";
+import { asAgentStorage, createProviderSnapshotManagerStub } from "../test-utils/session-stubs.js";
 import { FleetBrowserConfig } from "./config.js";
 import { FleetBrowserService, FleetBrowserError } from "./service.js";
 import { FleetBrowserStore, type StoredWindow } from "./store.js";
@@ -15,6 +21,8 @@ import { FleetBrowserStore, type StoredWindow } from "./store.js";
 class FakeBrowser {
   public readonly targets = new Map<string, { url: string; title: string }>();
   public readonly activated: string[] = [];
+  /** Every CDP command the browser received, in order. */
+  public readonly calls: Array<{ method: string; params: Record<string, unknown> }> = [];
   private server: Server | null = null;
   private wss: WebSocketServer | null = null;
 
@@ -25,8 +33,9 @@ class FakeBrowser {
         const message = JSON.parse(data.toString()) as {
           id: number;
           method: string;
-          params: { targetId?: string };
+          params: { targetId?: string; [key: string]: unknown };
         };
+        this.calls.push({ method: message.method, params: message.params });
         socket.send(
           JSON.stringify({ id: message.id, ...this.answer(message.method, message.params) }),
         );
@@ -219,5 +228,119 @@ describe("FleetBrowserService", () => {
     expect(await service.close("bw_1", "agent-a")).toBe(true);
     expect(browser.targets.has("T1")).toBe(false);
     expect(await service.listForWorkspace("ws-1")).toEqual([]);
+  });
+});
+
+// The fleet's "work" browser runs on blrofc3, and "work" is also one of blrofc3's fleet
+// host names (missionControl.hostAlias "Work", DNS name work.netbird.cloud). The host an
+// agent passes to fleet_browser_open names a browser, so it has to reach
+// fleet-browser.json as typed, on whichever host the agent runs.
+describe("fleet_browser_open through the agent tool catalog", () => {
+  const blrofc3 = {
+    serverId: "srv_blrofc3",
+    hostAlias: "Work",
+    hostNames: ["work.netbird.cloud"],
+  };
+  let home: string;
+  let work: FakeBrowser;
+  let service: FleetBrowserService;
+
+  beforeEach(async () => {
+    home = await mkdtemp(path.join(tmpdir(), "fleet-browser-test-"));
+    work = new FakeBrowser();
+    // Nothing listens on port 9, so a call sent to the home browser cannot connect.
+    await writeFile(
+      path.join(home, "fleet-browser.json"),
+      JSON.stringify({
+        hosts: { home: { cdpUrl: "http://127.0.0.1:9" }, work: { cdpUrl: await work.start() } },
+      }),
+    );
+    const logger = pino({ level: "silent" });
+    const config = new FleetBrowserConfig(home, logger);
+    await config.load();
+    service = new FleetBrowserService({
+      config,
+      store: await FleetBrowserStore.open(home, logger),
+      logger,
+      agents: {
+        workspaceIdOf: async () => "ws-1",
+        isRunning: () => false,
+        deliver: async (): Promise<FleetBrowserDelivery> => "turn_started",
+      },
+    });
+  });
+
+  afterEach(async () => {
+    service.stop();
+    await work.stop();
+    await rm(home, { recursive: true, force: true });
+  });
+
+  function catalogOn(
+    self: { serverId: string; hostAlias: string; hostNames: string[] },
+    peers: Array<{ name: string; serverId: string; hostAlias: string; hostNames: string[] }>,
+  ) {
+    return createPaseoToolCatalog({
+      agentManager: { getPluginTools: () => [], getAgent: () => null } as unknown as AgentManager,
+      agentStorage: asAgentStorage({
+        get: async () => null,
+        listAll: async () => [],
+      }) as unknown as AgentStorage,
+      providerSnapshotManager: createProviderSnapshotManagerStub()
+        .manager as unknown as ProviderSnapshotManager,
+      peerManager: {
+        getPeerStatus: () => null,
+        getPeerClient: () => null,
+        getPeerStatuses: () =>
+          peers.map((peer) => ({ name: peer.name, state: "online", lastSeenAt: null })),
+        getPeerIdentities: () =>
+          peers.map((peer) => ({
+            name: peer.name,
+            serverId: peer.serverId,
+            hostname: peer.name,
+            missionControlHostAlias: peer.hostAlias,
+            hostNames: peer.hostNames,
+          })),
+      } as unknown as PeerManager,
+      serverId: self.serverId,
+      hostAlias: self.hostAlias,
+      fleetHostNames: () => self.hostNames,
+      callerAgentId: "agent-a",
+      fleetBrowser: service,
+      logger: pino({ level: "silent" }),
+    });
+  }
+
+  async function expectOpenReachesWork(catalog: ReturnType<typeof catalogOn>): Promise<void> {
+    // The fake browser cannot create pages, so the open fails once it has reached the browser.
+    await expect(
+      catalog.executeTool("fleet_browser_open", {
+        host: "work",
+        kind: "shared",
+        label: "Payroll ticket",
+        url: "https://example.com/",
+      }),
+    ).rejects.toThrow("Target.createTarget: unsupported Target.createTarget");
+    expect(work.calls).toContainEqual({
+      method: "Target.createTarget",
+      params: expect.objectContaining({ url: "https://example.com/" }),
+    });
+  }
+
+  it("opens in the work browser from another host, where work names the peer blrofc3", async () => {
+    await expectOpenReachesWork(
+      catalogOn(
+        {
+          serverId: "srv_dell",
+          hostAlias: "dell-server",
+          hostNames: ["dell-server.netbird.cloud"],
+        },
+        [{ name: "blrofc3", ...blrofc3 }],
+      ),
+    );
+  });
+
+  it("opens in the work browser from blrofc3, where work names this host", async () => {
+    await expectOpenReachesWork(catalogOn(blrofc3, []));
   });
 });

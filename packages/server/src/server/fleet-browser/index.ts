@@ -54,4 +54,4 @@ export async function openFleetBrowser(options: {
 
 export { FleetBrowserService, FleetBrowserError } from "./service.js";
 export { FleetBrowserSession } from "./session.js";
-export { registerFleetBrowserTools } from "./tools.js";
+export { isFleetBrowserTool, registerFleetBrowserTools } from "./tools.js";
