@@ -30,6 +30,13 @@ Paseo turns `path:line` in inline code into a link that opens the file at that l
 - Ranges: `path:start-end`. Outside the working directory: the absolute path.
 - Repeat the path on every reference. Never a bare `:901` or "same file, line 901".
 
+# Issue and PR references
+
+Paseo links a bare `#N` against the workspace's repo, and GitHub links it against the PR's own repo, so a bare number often points at the wrong one.
+
+- Write every PR or issue as `owner/repo#N` or a full markdown link: `AmbientAI/product#7264`.
+- Never use `#N` to number steps or list items; write "step 4".
+
 # Status
 
 - Call `report_status` only at milestones: root cause found, fix landed, tests green, blocked, done.
