@@ -173,6 +173,7 @@ function submit(
       effectiveModelId: "deepseek/deepseek-v4-pro",
       effectiveThinkingOptionId: "high",
       featureValues: { webSearch: true },
+      agentMode: "research",
     },
     hostDisconnectedMessage: "Host disconnected",
     selectModelMessage: "Select a model",
@@ -274,6 +275,7 @@ describe("workspace draft fork submission", () => {
       workspaceId: "ws-1",
       initialPrompt: "keep going",
       clientMessageId: "client-msg-1",
+      agentMode: "research",
       config: {
         provider: "codewhale",
         cwd: "/tmp/project",

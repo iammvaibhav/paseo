@@ -294,6 +294,7 @@ export const AgentGridDraftTile = memo(function AgentGridDraftTile({
           ...(wirePayload.attachments && wirePayload.attachments.length > 0
             ? { attachments: wirePayload.attachments }
             : {}),
+          ...(composerState?.agentMode ? { agentMode: composerState.agentMode } : {}),
         });
 
         chatDraft.clear("sent");

@@ -134,6 +134,7 @@ function buildCreateAgentOptions({
     effectiveModeId: string;
     effectiveModelId: string | null;
     effectiveThinkingOptionId: string | null;
+    agentMode: string;
   };
   text: string;
   attachments: NonNullable<CreateAgentRequestOptions["attachments"]>;
@@ -154,6 +155,7 @@ function buildCreateAgentOptions({
     ...(text.trim() ? { initialPrompt: text.trim() } : {}),
     ...(encodedImages && encodedImages.length > 0 ? { images: encodedImages } : {}),
     ...(attachments.length > 0 ? { attachments } : {}),
+    agentMode: composerState.agentMode,
   };
 }
 

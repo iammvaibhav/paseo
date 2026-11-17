@@ -54,7 +54,7 @@ import {
   useLiveAgentModeControl,
   type AgentModeControlValue,
 } from "@/composer/agent-controls/mode-control";
-import { LiveAgentModePicker } from "@/composer/agent-controls/agent-mode-picker";
+import { AgentModePicker, LiveAgentModePicker } from "@/composer/agent-controls/agent-mode-picker";
 import { AdaptiveModalSheet, type SheetHeader } from "@/components/adaptive-modal-sheet";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type {
@@ -180,6 +180,12 @@ interface ControlledAgentControlsProps {
   isCompactLayout?: boolean;
 }
 
+/** Approach (agent mode) the draft will create its agent with. */
+export interface DraftAgentModeControl {
+  value: string;
+  onSelect: (id: string) => void;
+}
+
 export interface DraftAgentControlsProps {
   providerDefinitions: AgentProviderDefinition[];
   selectedProvider: AgentProvider | null;
@@ -206,6 +212,8 @@ export interface DraftAgentControlsProps {
   disabled?: boolean;
   modelSelectorServerId?: string | null;
   isCompactLayout?: boolean;
+  /** Absent hides the Approach picker (fork drafts, screens that show it elsewhere). */
+  agentMode?: DraftAgentModeControl;
 }
 
 interface AgentControlsProps {
@@ -2175,6 +2183,7 @@ export function DraftAgentControls({
   disabled = false,
   modelSelectorServerId = null,
   isCompactLayout,
+  agentMode,
 }: DraftAgentControlsProps) {
   const mappedThinkingOptions = useMemo<AgentControlOption[]>(() => {
     return toThinkingControlOptions(thinkingOptions);
@@ -2234,6 +2243,22 @@ export function DraftAgentControls({
     [selectedProvider, providerDefinitions, modeOptions, selectedMode, onSelectMode, disabled],
   );
 
+  const agentModePicker = useMemo<AgentModePickerSlot | undefined>(
+    () =>
+      agentMode && modelSelectorServerId
+        ? (surface) => (
+            <AgentModePicker
+              serverId={modelSelectorServerId}
+              value={agentMode.value}
+              onSelect={agentMode.onSelect}
+              disabled={disabled}
+              surface={surface}
+            />
+          )
+        : undefined,
+    [agentMode, disabled, modelSelectorServerId],
+  );
+
   return (
     <>
       {profileEditor.element}
@@ -2261,6 +2286,7 @@ export function DraftAgentControls({
         isRetryingModelProvider={isRetryingModelProvider}
         disabled={disabled}
         modeControl={modeControl}
+        agentModePicker={agentModePicker}
         modelSelectorServerId={modelSelectorServerId}
         isCompactLayout={isCompactLayout}
       />

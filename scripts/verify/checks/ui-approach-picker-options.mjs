@@ -5,7 +5,8 @@ export const meta = {
   video: false,
   description:
     "The composer's Approach picker lists only Build, Orchestrate, Research, in that order; " +
-    "search narrows within those three; picking Orchestrate updates the chip.",
+    "search narrows within those three; picking Orchestrate updates the chip. A new-agent " +
+    "draft shows the picker too, and the agent it creates starts on the picked approach.",
 };
 
 const OPTION_PREFIX = "agent-mode-option-";
@@ -115,6 +116,76 @@ export const steps = [
       const agentMode = fetched?.agent.agentMode;
       ctx.expect(agentMode === "orchestrator", `agent mode is orchestrator (got ${agentMode})`);
       return `chip: ${(await chip.innerText()).trim()}`;
+    },
+  },
+  {
+    id: "draft-picker",
+    label: "New-agent draft composer shows the Approach picker on Build",
+    narrate: "A new agent draft shows the Approach chip, starting on Build.",
+    async run(ctx) {
+      const page = ctx.page;
+      const host = ctx.host();
+      // The draft needs a model to send; remember the mock one like a returning user.
+      await page.evaluate(() =>
+        localStorage.setItem(
+          "@paseo:create-agent-preferences",
+          JSON.stringify({
+            provider: "mock",
+            providerPreferences: { mock: { model: "e2e-fast-stream" } },
+          }),
+        ),
+      );
+      const url = `${host.httpUrl}/h/${encodeURIComponent(host.serverId)}/workspace/${encodeURIComponent(ctx.workspaceId)}?open=${encodeURIComponent("draft:verify-approach-draft")}`;
+      await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30_000 });
+      const chip = page.locator('[data-testid="agent-controls-agent-mode"]:visible').first();
+      await chip.waitFor({ state: "visible", timeout: 30_000 });
+      ctx.expect((await chip.innerText()).includes("Build"), "draft chip starts on Build");
+      await chip.click();
+      await page.waitForSelector(`[data-testid="${OPTION_PREFIX}research"]`, { timeout: 10_000 });
+      const ids = await renderedOptionIds(page);
+      ctx.expect(
+        JSON.stringify(ids) === JSON.stringify(EXPECTED_IDS),
+        `draft options are ${EXPECTED_IDS.join(", ")} (got ${ids.join(", ")})`,
+      );
+      await page.locator(`[data-testid="${OPTION_PREFIX}research"]`).click();
+      await page.waitForFunction(
+        () =>
+          [...document.querySelectorAll('[data-testid="agent-controls-agent-mode"]')].some((node) =>
+            node.textContent?.includes("Research"),
+          ),
+        null,
+        { timeout: 10_000 },
+      );
+      await ctx.shot("draft");
+      return "draft chip: Build → Research";
+    },
+  },
+  {
+    id: "draft-create",
+    label: "Sending the draft creates an agent on the picked approach",
+    narrate: "The agent created from the draft starts on Research.",
+    async run(ctx) {
+      const page = ctx.page;
+      const client = ctx.host().client;
+      const input = page.locator("textarea:visible").first();
+      await input.fill("approach draft check");
+      await input.press("Enter");
+      const deadline = Date.now() + 20_000;
+      let created = null;
+      while (!created && Date.now() < deadline) {
+        const payload = await client.fetchAgents({ scope: "active" });
+        const agents = payload.entries.map((entry) => entry.agent);
+        created = agents.find(
+          (agent) => agent.id !== ctx.agentId && agent.workspaceId === ctx.workspaceId,
+        );
+        if (!created) await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+      ctx.expect(Boolean(created), "draft created an agent in the workspace");
+      ctx.expect(
+        created.agentMode === "research",
+        `created agent's approach is research (got ${created.agentMode})`,
+      );
+      return `agent ${created.id} agentMode=${created.agentMode}`;
     },
   },
 ];

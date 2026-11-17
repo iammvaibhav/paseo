@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  DEFAULT_AGENT_MODE_ID,
+  isAgentModeId,
+  type AgentModeId,
+} from "@getpaseo/protocol/agent-modes";
 import type { UserComposerAttachment } from "@/attachments/types";
 import type { TextReplacement } from "@/composer/types";
-import type { DraftAgentControlsProps } from "@/composer/agent-controls";
+import type { DraftAgentControlsProps, DraftAgentModeControl } from "@/composer/agent-controls";
 import type { DraftCommandTarget } from "@/agent-commands";
 import {
   useAgentFormState,
@@ -54,6 +59,8 @@ type DraftComposerState = UseAgentFormStateResult & {
   effectiveModelId: string;
   effectiveThinkingOptionId: string;
   featureValues: Record<string, unknown> | undefined;
+  /** Approach the created agent starts with; the composer's Approach picker sets it. */
+  agentMode: AgentModeId;
   agentControls: DraftAgentControlsProps;
   commandDraft: DraftCommandTarget;
 };
@@ -365,6 +372,17 @@ export function useAgentInputDraft(input: UseAgentInputDraftInput): AgentInputDr
     ],
   );
 
+  const [agentMode, setAgentMode] = useState<AgentModeId>(DEFAULT_AGENT_MODE_ID);
+  const agentModeControl = useMemo<DraftAgentModeControl>(
+    () => ({
+      value: agentMode,
+      onSelect: (id) => {
+        if (isAgentModeId(id)) setAgentMode(id);
+      },
+    }),
+    [agentMode],
+  );
+
   const composerState = useMemo<DraftComposerState | null>(() => {
     if (!composerOptions) {
       return null;
@@ -377,15 +395,19 @@ export function useAgentInputDraft(input: UseAgentInputDraftInput): AgentInputDr
       effectiveModelId,
       effectiveThinkingOptionId,
       featureValues: draftFeatureValues,
+      agentMode,
       agentControls: buildDraftAgentControls({
         formState,
         features: draftFeatures,
         onSetFeature: setDraftFeatureValue,
         onApplyAgentProfile: applyDraftAgentProfile,
+        agentMode: agentModeControl,
       }),
       commandDraft,
     };
   }, [
+    agentMode,
+    agentModeControl,
     commandDraft,
     composerOptions,
     effectiveModeId,

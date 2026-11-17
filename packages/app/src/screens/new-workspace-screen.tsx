@@ -1666,6 +1666,8 @@ export function NewWorkspaceScreen({
       composerState
         ? {
             ...composerState.agentControls,
+            // The form row above the composer shows this screen's Approach picker.
+            agentMode: undefined,
             disabled: isPending,
           }
         : undefined,

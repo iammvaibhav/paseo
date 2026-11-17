@@ -561,10 +561,12 @@ export function WorkspaceDraftAgentTab({
   const composerAgentControls = useMemo(
     () => ({
       ...composerState.agentControls,
+      // A fork keeps its source agent's approach; the chat's picker changes it after.
+      ...(forkSource ? { agentMode: undefined } : {}),
       onDropdownClose: handleDropdownCloseFocus,
       disabled: isSubmitting,
     }),
-    [composerState.agentControls, handleDropdownCloseFocus, isSubmitting],
+    [composerState.agentControls, forkSource, handleDropdownCloseFocus, isSubmitting],
   );
   return (
     <FileDropZone style={styles.container}>

@@ -2,7 +2,7 @@ import { useCallback, useMemo, useRef, useState, type ReactElement } from "react
 import { Text, View } from "react-native";
 import { useTranslation } from "react-i18next";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { DEFAULT_AGENT_MODE_ID, getAgentModeDefinition } from "@getpaseo/protocol/agent-modes";
+import { getAgentModeDefinition } from "@getpaseo/protocol/agent-modes";
 import { type SheetHeader } from "@/components/adaptive-modal-sheet";
 import { Combobox, ComboboxItem, type ComboboxOption } from "@/components/ui/combobox";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -79,35 +79,30 @@ function renderApproachOption(args: {
 }
 
 /**
- * Approach for a running agent (Build, Orchestrate, …). Changing it sends
- * nothing: the approach's instructions ride the user's next message, so work
- * only starts when the user writes and the provider's cached system prompt
- * stays intact. Built like the access mode control so the toolbar reads as one
- * row of the same chips.
+ * Approach picker chip (Build, Orchestrate, Research). Built like the access
+ * mode control so the toolbar reads as one row of the same chips. Renders
+ * nothing when the host does not serve agent modes.
  */
-export function LiveAgentModePicker({
+export function AgentModePicker({
   serverId,
-  agentId,
+  value,
+  onSelect,
   disabled,
   surface = "toolbar",
 }: {
   serverId: string;
-  agentId: string;
+  value: string;
+  onSelect: (id: string) => void;
   disabled?: boolean;
   surface?: "toolbar" | "sheet";
 }) {
   const { t } = useTranslation();
   const { presentation } = useComposerControlLayout();
-  const toast = useToast();
   const supported = useHostFeature(serverId, "agentModes");
-  const client = useSessionStore((state) => state.sessions[serverId]?.client ?? null);
-  const agentMode = useSessionStore(
-    (state) => state.sessions[serverId]?.agents.get(agentId)?.agentMode ?? null,
-  );
   const [open, setOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const anchorRef = useRef<View>(null);
-  const current = agentMode ?? DEFAULT_AGENT_MODE_ID;
+  const current = value;
   const label = getAgentModeDefinition(current)?.label ?? current;
 
   const options = useMemo(() => {
@@ -124,12 +119,9 @@ export function LiveAgentModePicker({
   const handleSelect = useCallback(
     (id: string) => {
       handleOpenChange(false);
-      if (!client || id === current) return;
-      client.setAgentAgentMode(agentId, id).catch((error: unknown) => {
-        toast.error(toErrorMessage(error));
-      });
+      if (id !== current) onSelect(id);
     },
-    [agentId, client, current, handleOpenChange, toast],
+    [current, handleOpenChange, onSelect],
   );
 
   const sheetHeader = useMemo<SheetHeader>(
@@ -144,7 +136,7 @@ export function LiveAgentModePicker({
     [t],
   );
 
-  if (!supported || agentMode === null) return null;
+  if (!supported) return null;
   return (
     <>
       <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
@@ -158,7 +150,7 @@ export function LiveAgentModePicker({
             showToolbarLabel={presentation.showModeLabel}
             showCaret={surface === "toolbar" && presentation.showCarets}
             open={open}
-            disabled={disabled || !client}
+            disabled={disabled}
             onPress={handlePress}
             accessibilityLabel={t("agentMode.selectWithValue", { value: label })}
             testID="agent-controls-agent-mode"
@@ -181,6 +173,47 @@ export function LiveAgentModePicker({
         renderOption={renderApproachOption}
       />
     </>
+  );
+}
+
+/**
+ * Approach for a running agent. Changing it sends nothing: the approach's
+ * instructions ride the user's next message, so work only starts when the
+ * user writes and the provider's cached system prompt stays intact.
+ */
+export function LiveAgentModePicker({
+  serverId,
+  agentId,
+  disabled,
+  surface = "toolbar",
+}: {
+  serverId: string;
+  agentId: string;
+  disabled?: boolean;
+  surface?: "toolbar" | "sheet";
+}) {
+  const toast = useToast();
+  const client = useSessionStore((state) => state.sessions[serverId]?.client ?? null);
+  const agentMode = useSessionStore(
+    (state) => state.sessions[serverId]?.agents.get(agentId)?.agentMode ?? null,
+  );
+  const handleSelect = useCallback(
+    (id: string) => {
+      client?.setAgentAgentMode(agentId, id).catch((error: unknown) => {
+        toast.error(toErrorMessage(error));
+      });
+    },
+    [agentId, client, toast],
+  );
+  if (agentMode === null) return null;
+  return (
+    <AgentModePicker
+      serverId={serverId}
+      value={agentMode}
+      onSelect={handleSelect}
+      disabled={disabled || !client}
+      surface={surface}
+    />
   );
 }
 
