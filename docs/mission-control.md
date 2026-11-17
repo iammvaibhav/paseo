@@ -60,7 +60,7 @@ ReportStatusInput = {
 }
 ```
 
-Agents learn these rules from the `report_status` tool description and the Status section of the daemon append prompt (`scripts/paseo-system-prompt.md`, synced to every daemon by the fleet deploy). The daemon injects no separate self-report paragraph.
+Agents learn these rules from the `report_status` tool description and the Status section of the daemon append prompt (Flotilla's `bundles/paseo/append-system-prompt.md`, see [deploy](deploy.md#routine-steps)). The daemon injects no separate self-report paragraph.
 
 - Report at major steps only: root cause found, fix landed, tests green, blocked, direction changed, done. Silence between milestones.
 - **Title is write-once.** Set at registration (`explicit ?? first prompt line ?? derived stub`), then frozen. The only rename path is `fleet_rename_agent_title`.
