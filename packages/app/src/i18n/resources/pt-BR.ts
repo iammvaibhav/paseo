@@ -900,6 +900,8 @@ export const ptBR: TranslationResources = {
         copyPath: "Copiar caminho do workspace",
         copyBranchName: "Copiar nome da branch",
         showSetup: "Mostrar configuração",
+        archiveWorkspace: "Arquivar workspace",
+        archiving: "Arquivando...",
       },
       toasts: {
         workspacePathUnavailable: "O caminho do workspace ainda não está disponível",

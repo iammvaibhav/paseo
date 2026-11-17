@@ -26,9 +26,7 @@ import {
   useActiveWorkspaceSelection,
   type ActiveWorkspaceSelection,
 } from "@/stores/navigation-active-workspace-store";
-import { redirectIfArchivingActiveWorkspace } from "@/utils/sidebar-workspace-archive-redirect";
-import { type WorktreeArchiveWarningLabels } from "@/git/worktree-archive-warning";
-import { useWorkspaceArchive } from "@/workspace/use-workspace-archive";
+import { useWorkspaceScreenArchive } from "@/workspace/use-workspace-screen-archive";
 import { resolveWorkspaceMapKeyByIdentity } from "@/utils/workspace-identity";
 import { readValidatedString } from "@/storage/validated-storage";
 
@@ -207,15 +205,6 @@ interface UseGitActionsResult {
   isGit: boolean;
 }
 
-interface UseWorkspaceScreenArchiveControllerInput {
-  serverId: string;
-  activeWorkspaceSelection: ActiveWorkspaceSelection | null;
-  workspaceDirectory: string | null | undefined;
-  branchLabel: string;
-  gitStatus: CheckoutStatusPayload | null;
-  t: (key: string, options?: Record<string, unknown>) => string;
-}
-
 function resolveArchiveWorkspaceDescriptor(input: {
   workspaces: Map<string, WorkspaceDescriptor> | undefined;
   activeWorkspaceSelection: ActiveWorkspaceSelection | null;
@@ -239,77 +228,6 @@ function resolveArchiveWorkspaceDescriptor(input: {
     }
   }
   return null;
-}
-
-function resolveWorkspaceArchiveRisk(
-  workspace: WorkspaceDescriptor | null,
-  gitStatus: CheckoutStatusPayload | null,
-): { isDirty: boolean | null | undefined; aheadOfOrigin: number | null | undefined } {
-  return {
-    isDirty: gitStatus?.isDirty ?? workspace?.gitRuntime?.isDirty,
-    aheadOfOrigin: gitStatus?.aheadOfOrigin ?? workspace?.gitRuntime?.aheadOfOrigin,
-  };
-}
-
-function canArchiveWorkspace(
-  workspace: WorkspaceDescriptor | null,
-  risk: ReturnType<typeof resolveWorkspaceArchiveRisk>,
-): boolean {
-  return (
-    workspace !== null &&
-    (workspace.workspaceKind !== "worktree" ||
-      (risk.isDirty !== undefined && risk.aheadOfOrigin !== undefined))
-  );
-}
-
-function useWorkspaceScreenArchiveController({
-  serverId,
-  activeWorkspaceSelection,
-  workspaceDirectory,
-  branchLabel,
-  gitStatus,
-  t,
-}: UseWorkspaceScreenArchiveControllerInput) {
-  const sessionWorkspaces = useSessionStore((state) => state.sessions[serverId]?.workspaces);
-  const [isHidingWorkspace, setIsHidingWorkspace] = useState(false);
-  const workspaceDescriptor = useMemo(
-    () =>
-      resolveArchiveWorkspaceDescriptor({
-        workspaces: sessionWorkspaces,
-        activeWorkspaceSelection,
-        workspaceDirectory,
-      }),
-    [activeWorkspaceSelection, sessionWorkspaces, workspaceDirectory],
-  );
-  const archiveRisk = resolveWorkspaceArchiveRisk(workspaceDescriptor, gitStatus);
-
-  const controller = useWorkspaceArchive({
-    serverId,
-    workspaceId: workspaceDescriptor?.id ?? "",
-    workspaceKind: workspaceDescriptor?.workspaceKind ?? "directory",
-    name: workspaceDescriptor?.name ?? branchLabel,
-    isDirty: archiveRisk.isDirty,
-    aheadOfOrigin: archiveRisk.aheadOfOrigin,
-    diffStat: workspaceDescriptor?.diffStat ?? null,
-    warningLabels: getWorktreeArchiveWarningLabels(t),
-    onSetHiding: setIsHidingWorkspace,
-    onArchiveStarted: () => {
-      if (!activeWorkspaceSelection) {
-        return;
-      }
-      redirectIfArchivingActiveWorkspace({
-        serverId,
-        workspaceId: activeWorkspaceSelection.workspaceId,
-        activeWorkspaceSelection,
-      });
-    },
-  });
-
-  return {
-    ...controller,
-    isArchiving: workspaceDescriptor?.archivingAt != null || isHidingWorkspace,
-    canArchive: canArchiveWorkspace(workspaceDescriptor, archiveRisk),
-  };
 }
 
 export function useGitActions({ serverId, cwd, icons }: UseGitActionsInput): UseGitActionsResult {
@@ -632,13 +550,23 @@ export function useGitActions({ serverId, cwd, icons }: UseGitActionsInput): Use
       });
   }, [baseRef, cwd, runMergeFromBase, serverId, t, toast, toastActionError, toastActionSuccess]);
 
-  const archiveController = useWorkspaceScreenArchiveController({
+  const sessionWorkspaces = useSessionStore((state) => state.sessions[serverId]?.workspaces);
+  const workspaceDirectory = status?.cwd;
+  const archiveWorkspaceDescriptor = useMemo(
+    () =>
+      resolveArchiveWorkspaceDescriptor({
+        workspaces: sessionWorkspaces,
+        activeWorkspaceSelection,
+        workspaceDirectory,
+      }),
+    [activeWorkspaceSelection, sessionWorkspaces, workspaceDirectory],
+  );
+  const archiveController = useWorkspaceScreenArchive({
     serverId,
-    activeWorkspaceSelection,
-    workspaceDirectory: status?.cwd,
-    branchLabel,
+    workspace: archiveWorkspaceDescriptor,
+    fallbackName: branchLabel,
     gitStatus,
-    t,
+    activeWorkspaceSelection,
   });
 
   const handleArchiveWorkspace = useCallback(() => {
@@ -1091,38 +1019,4 @@ function translateGitActionUnavailableMessage(
   }
   const key = keyByMessage[message];
   return key ? t(key) : message;
-}
-
-function getWorktreeArchiveWarningLabels(
-  t: (key: string, options?: Record<string, unknown>) => string,
-): WorktreeArchiveWarningLabels {
-  return {
-    title: (workspaceName) => t("workspace.git.actions.archiveWarning.title", { workspaceName }),
-    confirm: t("workspace.git.actions.archiveWarning.confirm"),
-    cancel: t("workspace.git.actions.archiveWarning.cancel"),
-    uncommittedChanges: t("workspace.git.actions.archiveWarning.uncommittedChanges"),
-    uncommittedChangesWithDiff: (diffStat) =>
-      t("workspace.git.actions.archiveWarning.uncommittedChangesWithDiff", { diffStat }),
-    addedLine: (count) =>
-      t(
-        count === 1
-          ? "workspace.git.actions.archiveWarning.addedLine"
-          : "workspace.git.actions.archiveWarning.addedLines",
-        { count },
-      ),
-    deletedLine: (count) =>
-      t(
-        count === 1
-          ? "workspace.git.actions.archiveWarning.deletedLine"
-          : "workspace.git.actions.archiveWarning.deletedLines",
-        { count },
-      ),
-    unpushedCommit: (count) =>
-      t(
-        count === 1
-          ? "workspace.git.actions.archiveWarning.unpushedCommit"
-          : "workspace.git.actions.archiveWarning.unpushedCommits",
-        { count },
-      ),
-  };
 }

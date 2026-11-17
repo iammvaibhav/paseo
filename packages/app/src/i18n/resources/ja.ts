@@ -900,6 +900,8 @@ export const ja: TranslationResources = {
         copyPath: "ワークスペースパスをコピー",
         copyBranchName: "ブランチ名をコピー",
         showSetup: "セットアップを表示",
+        archiveWorkspace: "ワークスペースをアーカイブ",
+        archiving: "アーカイブ中...",
       },
       toasts: {
         workspacePathUnavailable: "ワークスペースパスはまだ利用できません",

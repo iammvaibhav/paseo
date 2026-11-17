@@ -896,6 +896,8 @@ export const ko: TranslationResources = {
         copyPath: "워크스페이스 경로 복사",
         copyBranchName: "브랜치 이름 복사",
         showSetup: "설정 표시",
+        archiveWorkspace: "워크스페이스 보관",
+        archiving: "보관하는 중...",
       },
       toasts: {
         workspacePathUnavailable: "워크스페이스 경로를 아직 사용할 수 없습니다",
