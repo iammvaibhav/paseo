@@ -32,6 +32,16 @@ function result(data: unknown): PaseoToolResult {
   };
 }
 
+/**
+ * The fleet_browser_* tools take a `host` that names a browser in
+ * fleet-browser.json, not a Paseo host. The two kinds of name overlap (the
+ * fleet's work browser runs on the host whose alias is "Work"), so the catalog
+ * must pass these tools' `host` through as typed, never resolve it as a host.
+ */
+export function isFleetBrowserTool(name: string): boolean {
+  return name.startsWith("fleet_browser_");
+}
+
 const openInput = {
   host: z.string().min(1),
   kind: FleetBrowserWindowKindSchema,

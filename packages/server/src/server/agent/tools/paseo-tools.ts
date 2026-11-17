@@ -146,7 +146,11 @@ import {
 } from "../../peers/fleet-hosts.js";
 import { registerDocThreadTools } from "../../doc-threads/tools.js";
 import type { DocThreadsService } from "../../doc-threads/service.js";
-import { registerFleetBrowserTools, type FleetBrowserService } from "../../fleet-browser/index.js";
+import {
+  isFleetBrowserTool,
+  registerFleetBrowserTools,
+  type FleetBrowserService,
+} from "../../fleet-browser/index.js";
 import { registerFleetControlTools } from "./fleet-control-tools.js";
 import { registerFleetUnarchiveTools } from "./fleet-unarchive-tools.js";
 import { registerFleetReminderTools } from "./fleet-reminder-tools.js";
@@ -1671,9 +1675,11 @@ function createToolCatalog(
    * the peer's config name, whichever of the host's names the caller passed.
    * An unknown or ambiguous name passes through unchanged; each tool refuses
    * it in its own result shape, with the resolver's error (resolveFleetHost).
+   * The fleet_browser_* tools are skipped: their `host` names a browser, not a host.
    */
   const canonicalFleetHostInput = (name: string, parsed: unknown): unknown => {
     if (!name.startsWith("fleet_") && name !== "itsaplan_ticketize") return parsed;
+    if (isFleetBrowserTool(name)) return parsed;
     if (typeof parsed !== "object" || parsed === null || !("host" in parsed)) return parsed;
     const host = parsed.host;
     if (typeof host !== "string" || !host.trim()) return parsed;
