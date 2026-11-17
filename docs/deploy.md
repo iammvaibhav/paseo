@@ -105,6 +105,8 @@ Every deploy runs idempotent routine steps on selected reachable hosts:
 3. **code-server settings:** pushes the deploy host's live `~/.local/share/code-server/User/settings.json` merged with remote settings; restarts code-server only when settings changed.
 4. **Config sync:** writes peer definitions, DNS hostnames, system prompt ([`scripts/paseo-system-prompt.md`](../scripts/paseo-system-prompt.md)), and enables the web UI on every reachable daemon, then runs `paseo daemon reload`.
 
+`scripts/paseo-system-prompt.md` is the only copy of the system prompt. Flotilla's `paseo` bundle also owns `daemon.appendSystemPrompt` and reads the same file from GitHub at `vaibhav/customizations` (`$file` in `bundles/paseo/base/config.json.yml` of the Flotilla state). Both strip surrounding whitespace, so a deploy and an apply write the same value. To change the prompt, edit that file and push; a deploy or `flotilla apply paseo` rolls it out. Never set the text on a host or in the Flotilla state.
+
 ## Build-once runtime layout
 
 Deploy builds once per platform:

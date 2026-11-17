@@ -62,6 +62,8 @@ if (Array.isArray(payload.hostnames)) {
 }
 
 if (typeof payload.appendSystemPrompt === "string") {
+  // Flotilla's paseo bundle writes the same file stripped the same way; keep
+  // the two equal or every deploy and apply flips the value.
   const prompt = payload.appendSystemPrompt.trim();
   if ((config.daemon.appendSystemPrompt ?? "") !== prompt) {
     config.daemon.appendSystemPrompt = prompt;
