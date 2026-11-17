@@ -465,6 +465,11 @@ export class ItsaplanBridge {
   private readonly processedWebhookEventIds = new Set<string>();
   /** Tickets whose closed-ticket archive is in flight (webhook or reconcile). */
   private readonly closingIssueIds = new Set<string>();
+  /** Tickets being moved out of Done/Canceled because their agent came back
+   * (unarchived or a new run); the closed-ticket archive skips them meanwhile. */
+  private readonly reopeningIssueIds = new Set<string>();
+  /** Last lifecycle seen per labeled agent, so a new run is told apart from the rest of one. */
+  private readonly lastLifecycleByAgentId = new Map<string, ManagedAgent["lifecycle"]>();
   /** Tickets whose worker dispatch is in flight (webhook or reconcile). */
   private readonly dispatchingIssueIds = new Set<number>();
   /** Agents whose needs_you exit was caused by a ticket comment (vs a direct
@@ -1205,10 +1210,15 @@ export class ItsaplanBridge {
 
   /**
    * A ticket moved into a completed or canceled column: the ticket's work is
-   * over, so its linked agents are marked done and archived (a running agent is
-   * cancelled first), and each of their workspaces is archived unless another
-   * live agent still works in it. Terminals, editors and other non-agent things
-   * open in the workspace do not keep it alive.
+   * over, so its linked agents are marked done and archived, and each of their
+   * workspaces is archived unless another live agent still works in it.
+   * Terminals, editors and other non-agent things open in the workspace do not
+   * keep it alive.
+   *
+   * A running agent is never cut off: its close is deferred, and the reconcile
+   * sweep after the run ends finishes it. An agent that came back to the ticket
+   * (unarchived, or given a new run) reopens it instead (reopenClosedTicket), so
+   * the ticket is re-read before anything is closed.
    *
    * Agents are looked up locally first, then across the fleet, because webhook
    * ingress terminates on one host while the agent commonly runs on another. A
@@ -1242,10 +1252,41 @@ export class ItsaplanBridge {
       (record) => !record.archivedAt,
     );
     if (localAgents.length > 0) {
-      await this.closeLocalTicketAgents(issueId, localAgents, column);
+      if (await this.isTicketStillClosed(issueId)) {
+        await this.closeLocalTicketAgents(issueId, localAgents, column);
+      }
       return;
     }
     await this.markRemoteTicketAgentDone(issueId, column);
+  }
+
+  /** The webhook payload or the sweep's read can predate a revived agent's
+   * reopen, so the close re-reads the ticket right before acting on it. */
+  private async isTicketStillClosed(issueId: string): Promise<boolean> {
+    const config = this.getConfig();
+    const numericIssueId = Number(issueId);
+    if (this.reopeningIssueIds.has(issueId) || !config || !Number.isFinite(numericIssueId)) {
+      return false;
+    }
+    const client = new ItsaplanClient(config);
+    const issue = await client.getIssue(numericIssueId);
+    const projectKey = this.resolveProjectKey(issue);
+    if (!projectKey) {
+      return false;
+    }
+    const columns = await client.listProjectColumns(projectKey);
+    const column = columns.find((candidate) => candidate.id === issue.columnId);
+    if (
+      (column?.stateType !== "completed" && column?.stateType !== "canceled") ||
+      this.reopeningIssueIds.has(issueId)
+    ) {
+      this.logger.info(
+        { issueId, columnId: issue.columnId },
+        "itsaplan.bridge.close_skipped_ticket_reopened",
+      );
+      return false;
+    }
+    return true;
   }
 
   private async closeLocalTicketAgents(
@@ -1254,7 +1295,21 @@ export class ItsaplanBridge {
     column?: { id: number; name: string },
   ): Promise<void> {
     const workspaceIds = new Set<string>();
+    // A workspace still holding a deferred run must not be archived under it.
+    const busyWorkspaceIds = new Set<string>();
     for (const record of agents) {
+      const live = this.agentManager.getAgent(record.id);
+      if (live?.lifecycle === "running") {
+        const workspaceId = live.workspaceId ?? record.workspaceId;
+        if (workspaceId) {
+          busyWorkspaceIds.add(workspaceId);
+        }
+        this.logger.info(
+          { issueId, agentId: record.id, host: "local" },
+          "itsaplan.bridge.close_deferred_agent_running",
+        );
+        continue;
+      }
       const bucket = await this.missionControl.getLifecycleBucket(record.id).catch(() => null);
       if (bucket !== "done") {
         await this.missionControl.setLifecycle({ agentId: record.id, action: "done" });
@@ -1280,12 +1335,15 @@ export class ItsaplanBridge {
       );
     }
     for (const workspaceId of workspaceIds) {
-      await this.maybeArchiveWorkspaceForCompletedTicket(workspaceId, issueId);
+      if (!busyWorkspaceIds.has(workspaceId)) {
+        await this.maybeArchiveWorkspaceForCompletedTicket(workspaceId, issueId);
+      }
     }
   }
 
-  /** The agent runs on a peer: mark it done there. The peer's own reconcile
-   * sweep archives it and its workspace. */
+  /** The agent runs on a peer: mark it done there, unless it is mid-run (or its
+   * state is unknown). The peer's own reconcile sweep archives it and its
+   * workspace, and finishes a deferred close once the run ends. */
   private async markRemoteTicketAgentDone(
     issueId: string,
     column?: { id: number; name: string },
@@ -1302,6 +1360,19 @@ export class ItsaplanBridge {
         { issueId, columnId: column?.id, columnName: column?.name },
         "itsaplan.bridge.completed_issue_no_linked_agent",
       );
+      return;
+    }
+    const bucket = await this.fleet
+      .getLifecycleBucket({ host: remote.host, agentId: remote.agentId })
+      .catch(() => null);
+    if (bucket === null || bucket === "running" || bucket === "needs_you") {
+      this.logger.info(
+        { issueId, agentId: remote.agentId, host: remote.host, bucket },
+        "itsaplan.bridge.close_deferred_agent_running",
+      );
+      return;
+    }
+    if (!(await this.isTicketStillClosed(issueId))) {
       return;
     }
     const result = await this.fleet.setLifecycle({
@@ -1467,7 +1538,10 @@ export class ItsaplanBridge {
     }
     const isFirstSighting = !this.seenAgentIds.has(agent.id);
     this.seenAgentIds.add(agent.id);
-    void this.projectAgentState(agent.id, issueId, isFirstSighting).catch((error) => {
+    const previousLifecycle = this.lastLifecycleByAgentId.get(agent.id);
+    this.lastLifecycleByAgentId.set(agent.id, agent.lifecycle);
+    const runStarted = agent.lifecycle === "running" && previousLifecycle !== "running";
+    void this.projectAgentState(agent.id, issueId, isFirstSighting, runStarted).catch((error) => {
       this.logger.error(
         { err: error, agentId: agent.id, issueId },
         "itsaplan.bridge.agent_state_projection_failed",
@@ -1479,11 +1553,103 @@ export class ItsaplanBridge {
     agentId: string,
     issueId: string,
     isFirstSighting: boolean,
+    runStarted: boolean,
   ): Promise<void> {
+    if (runStarted) {
+      // First, and before any await: the reopen guard must be up before a
+      // concurrent closed-ticket archive reads the ticket.
+      await this.reopenClosedTicket(agentId, issueId, "run_started");
+    }
     if (isFirstSighting) {
       await this.handleAgentCreated(agentId, issueId);
     }
     await this.checkLifecycleProjection(agentId, issueId);
+  }
+
+  /**
+   * AgentManager's onAgentUnarchived hook: every unarchive path (the app,
+   * fleet_unarchive_agent and _workspace, a prompt to an archived agent) ends
+   * in AgentManager.unarchiveSnapshot, which calls this.
+   */
+  handleAgentUnarchived(agentId: string, labels: Record<string, string>): void {
+    const issueId = getItsaplanIssueIdFromLabels(labels);
+    if (!issueId) {
+      return;
+    }
+    void this.reopenClosedTicket(agentId, issueId, "unarchived").catch((error: unknown) => {
+      this.logger.error({ err: error, agentId, issueId }, "itsaplan.bridge.ticket_reopen_failed");
+    });
+  }
+
+  /**
+   * An agent came back to its ticket after the ticket was closed: it was
+   * unarchived, or a new run started on it. The work is open again, so the
+   * ticket goes back to In Progress and the agent's Done mark is cleared;
+   * when the run ends the usual projection moves it to Ready to review.
+   * Without this the closed-ticket archive (webhook or reconcile sweep) archives
+   * the agent again within a minute and kills the run it was just given.
+   */
+  private async reopenClosedTicket(
+    agentId: string,
+    issueId: string,
+    reason: "unarchived" | "run_started",
+  ): Promise<void> {
+    if (this.reopeningIssueIds.has(issueId)) {
+      return;
+    }
+    this.reopeningIssueIds.add(issueId);
+    try {
+      await this.reopenClosedTicketOnce(agentId, issueId, reason);
+    } finally {
+      this.reopeningIssueIds.delete(issueId);
+    }
+  }
+
+  private async reopenClosedTicketOnce(
+    agentId: string,
+    issueId: string,
+    reason: "unarchived" | "run_started",
+  ): Promise<void> {
+    const config = this.getConfig();
+    const numericIssueId = Number(issueId);
+    if (!config || !Number.isFinite(numericIssueId)) {
+      return;
+    }
+    const record = await this.agentStorage.get(agentId);
+    if (!record || record.archivedAt) {
+      return;
+    }
+    const client = new ItsaplanClient(config);
+    const issue = await client.getIssue(numericIssueId);
+    const projectKey = this.resolveProjectKey(issue);
+    if (!projectKey) {
+      return;
+    }
+    const columns = await client.listProjectColumns(projectKey);
+    const currentColumn = columns.find((c) => c.id === issue.columnId);
+    const inProgress = findInProgressColumn(columns);
+    if (
+      !inProgress ||
+      (currentColumn?.stateType !== "completed" && currentColumn?.stateType !== "canceled")
+    ) {
+      return;
+    }
+    if ((await this.missionControl.getLifecycleBucket(agentId)) === "done") {
+      await this.missionControl.setLifecycle({ agentId, action: "reopen" });
+    }
+    this.lastBucketByAgentId.delete(agentId);
+    await client.moveIssueColumn(numericIssueId, inProgress.id);
+    this.logger.info(
+      { agentId, issueId, reason, fromColumnId: issue.columnId, columnId: inProgress.id },
+      "itsaplan.bridge.ticket_reopened",
+    );
+    const title = record.title || this.agentManager.getAgent(agentId)?.name || `Agent ${agentId}`;
+    const uri = `paseo://h/${encodeURIComponent(this.serverId)}/agent/${encodeURIComponent(agentId)}`;
+    await this.postDeduplicatedComment(
+      this.getCommentClient(config, issue.projectId),
+      numericIssueId,
+      `Reopened: [${title}](${uri}) ${reason === "unarchived" ? "was unarchived" : "started a new run"}.`,
+    );
   }
 
   private handleSelfReport(event: MissionControlEvent): void {

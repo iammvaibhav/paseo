@@ -609,6 +609,12 @@ export interface AgentManagerOptions {
     initialPrompt?: string;
   }) => Promise<string | null | undefined> | string | null | undefined;
   onWorkspaceStateMayHaveChanged?: (params: { cwd: string }) => void;
+  /**
+   * Called after an archived agent's record is restored. Every unarchive path
+   * (app, fleet tools, workspace restore, a prompt to an archived agent) goes
+   * through unarchiveSnapshot, so this is the one place to observe it.
+   */
+  onAgentUnarchived?: (params: { agentId: string; labels: Record<string, string> }) => void;
   timelineStore?: InMemoryAgentTimelineStore;
   durableTimelineStore?: AgentTimelineStore;
   terminalManager?: TerminalManager | null;
@@ -1271,6 +1277,7 @@ export class AgentManager implements DaemonPermissionHost {
   private onAgentFinished?: AgentFinishedCallback;
   private onAgentCreated?: AgentManagerOptions["onAgentCreated"];
   private onWorkspaceStateMayHaveChanged?: (params: { cwd: string }) => void;
+  private onAgentUnarchived?: AgentManagerOptions["onAgentUnarchived"];
   private logger: Logger;
   private readonly rescueTimeouts: Required<AgentManagerRescueTimeouts>;
   private readonly beforeSteerUnavailableFallback?: AgentManagerOptions["beforeSteerUnavailableFallback"];
@@ -1330,6 +1337,7 @@ export class AgentManager implements DaemonPermissionHost {
     this.onAgentFinished = options?.onAgentFinished;
     this.onAgentCreated = options?.onAgentCreated;
     this.onWorkspaceStateMayHaveChanged = options?.onWorkspaceStateMayHaveChanged;
+    this.onAgentUnarchived = options?.onAgentUnarchived;
     this.beforeSteerUnavailableFallback = options?.beforeSteerUnavailableFallback;
     this.mcpBaseUrl = options?.mcpBaseUrl ?? null;
     this.mcpAuthToken = options?.mcpAuthToken ?? null;
@@ -3622,13 +3630,19 @@ export class AgentManager implements DaemonPermissionHost {
     if (this.agents.has(agentId)) await this.closeAgentRuntime(agentId);
     await this.syncNativeArchiveState(record.provider, record.persistence, "restore");
 
+    const nextLabels = updates?.labels
+      ? applyLabelPatch(record.labels, updates.labels)
+      : record.labels;
     await registry.upsert({
       ...record,
       ...(updates?.workspaceId ? { workspaceId: updates.workspaceId } : {}),
-      ...(updates?.labels ? { labels: applyLabelPatch(record.labels, updates.labels) } : {}),
+      labels: nextLabels,
       archivedAt: null,
       updatedAt: new Date().toISOString(),
     });
+    if (!record.internal) {
+      this.onAgentUnarchived?.({ agentId, labels: nextLabels });
+    }
 
     if (this.getAgent(agentId)) {
       this.notifyAgentState(agentId);

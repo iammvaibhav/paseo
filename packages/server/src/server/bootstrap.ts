@@ -1323,6 +1323,8 @@ export async function createPaseoDaemon(
   });
   const aiReviewerCwd = path.join(config.paseoHome, "ai-reviewer");
   mkdirSync(aiReviewerCwd, { recursive: true });
+  // Assigned once itsaplan config is read (below); the AgentManager hooks reach it lazily.
+  let itsaplanBridge: ItsaplanBridge | null = null;
   const agentManager: AgentManager = new AgentManager({
     pluginLifecycle: pluginRuntime,
     pluginAgentTools: pluginRuntime,
@@ -1335,6 +1337,9 @@ export async function createPaseoDaemon(
     onWorkspaceStateMayHaveChanged: ({ cwd }) => {
       workspaceGitService.onWorkspaceStateMayHaveChanged(cwd);
     },
+    // A revived agent takes its closed itsaplan ticket back to In Progress.
+    onAgentUnarchived: ({ agentId, labels }) =>
+      itsaplanBridge?.handleAgentUnarchived(agentId, labels),
     mcpAuthToken: agentMcpAuthToken,
     resolvePaseoToolPolicy: (provider) =>
       resolvePaseoToolPolicy(provider, daemonConfigStore.get().providers),
@@ -1480,7 +1485,6 @@ export async function createPaseoDaemon(
     workspaceGitService,
     workspaceRuntimeStore,
   });
-  let itsaplanBridge: ItsaplanBridge | null = null;
   const archiveWorkspaceRecordExternal = async (
     workspaceId: string,
     context?: WorkspaceArchiveContext,

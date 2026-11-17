@@ -777,9 +777,11 @@ describe("ItsaplanBridge", () => {
       });
       local.start();
 
+      issues.get(ISSUE_ID)!.columnId = DONE_COLUMN_ID;
       await local.handleWebhookRequest(
         webhookRequest("issue.state_changed", issueRecord(DONE_COLUMN_ID)),
       );
+      await waitForLength(missionControlFake.lifecycleActions, 1);
       expect(missionControlFake.lifecycleActions).toEqual([
         { agentId: "local-agent", action: "done" },
       ]);
@@ -791,7 +793,10 @@ describe("ItsaplanBridge", () => {
     test("an agent on a PEER host is marked done over peering, not silently skipped", async () => {
       // Nothing local carries the label: this is the cross-host case that used
       // to log completed_issue_no_linked_agent and write nothing.
-      const fleetFake = createFakeFleet({ agentId: "peer-agent", host: "blrofc3" });
+      const fleetFake = createFakeFleet(
+        { agentId: "peer-agent", host: "blrofc3" },
+        { bucket: "ready" },
+      );
       const remote = new ItsaplanBridge({
         logger: createTestLogger(),
         serverId: "server-1",
@@ -807,9 +812,11 @@ describe("ItsaplanBridge", () => {
       });
       remote.start();
 
+      issues.get(ISSUE_ID)!.columnId = DONE_COLUMN_ID;
       await remote.handleWebhookRequest(
         webhookRequest("issue.state_changed", issueRecord(DONE_COLUMN_ID)),
       );
+      await waitForLength(fleetFake.writes, 1);
 
       expect(fleetFake.lookups).toEqual([String(ISSUE_ID)]);
       expect(fleetFake.writes).toEqual([
@@ -2101,6 +2108,7 @@ describe("ItsaplanBridge", () => {
         archiveAgent: archiveAgentSpy,
       });
 
+      issues.get(ISSUE_ID)!.columnId = 4; // Done
       await customBridge.handleTicketCompletedOrCanceled(ISSUE_ID);
 
       expect(missionControlFake.lifecycleActions).toContainEqual({
@@ -2190,6 +2198,7 @@ describe("ItsaplanBridge", () => {
       });
       customBridge.start();
 
+      issues.get(ISSUE_ID)!.columnId = 4; // Done
       await customBridge.handleTicketCompletedOrCanceled(ISSUE_ID);
       expect(archiveAgentSpy).toHaveBeenCalledWith("agent-ticket-1");
       expect(archiveWorkspaceSpy).not.toHaveBeenCalled();
@@ -2288,6 +2297,124 @@ describe("ItsaplanBridge", () => {
       );
       expect(result.status).toBe(200);
       await waitForCall(archiveWorkspaceSpy);
+    });
+  });
+
+  describe("an agent that comes back to a closed ticket", () => {
+    const DONE_COLUMN_ID = 4;
+    const IN_PROGRESS_COLUMN_ID = 3;
+    const AGENT_ID = "agent-revived";
+    const agentLabels = { [ITSAPLAN_ISSUE_LABEL_KEY]: String(ISSUE_ID) };
+
+    function liveAgent(lifecycle: ManagedAgent["lifecycle"]): ManagedAgent {
+      return { ...fakeAgent(AGENT_ID, agentLabels), workspaceId: "ws-revived", lifecycle };
+    }
+
+    function closingBridge(options: {
+      agentStorage?: ItsaplanBridgeAgentStorage;
+      fleet?: ItsaplanBridgeFleet;
+    }) {
+      const archiveAgent = vi.fn().mockResolvedValue(undefined);
+      const archiveWorkspace = vi.fn().mockResolvedValue(undefined);
+      const closing = new ItsaplanBridge({
+        logger: createTestLogger(),
+        serverId: "server-1",
+        agentManager: agentManagerFake.manager,
+        agentStorage: options.agentStorage ?? createFakeAgentStorage(agentStorageRecords),
+        missionControl: missionControlFake.control,
+        ...(options.fleet ? { fleet: options.fleet } : {}),
+        projectStore,
+        getConfig: () => config,
+        resolvePaseoProjectKey: async () => "proj",
+        dispatchWorker,
+        steerWorkerPrompt,
+        archiveAgent,
+        archiveWorkspace,
+      });
+      closing.start();
+      return { closing, archiveAgent, archiveWorkspace };
+    }
+
+    beforeEach(() => {
+      issues.get(ISSUE_ID)!.columnId = DONE_COLUMN_ID;
+      agentStorageRecords.push({
+        id: AGENT_ID,
+        title: "Fearless Haven",
+        workspaceId: "ws-revived",
+        labels: agentLabels,
+        updatedAt: new Date().toISOString(),
+      });
+    });
+
+    test("unarchive moves the Done ticket to In Progress and the sweep does not archive the agent again", async () => {
+      // The close that archived it marked it done.
+      missionControlFake.setBucket("done");
+      const { closing, archiveAgent, archiveWorkspace } = closingBridge({});
+
+      closing.handleAgentUnarchived(AGENT_ID, agentLabels);
+      // The reconcile sweep read the ticket in Done just before the reopen landed.
+      await closing.handleTicketCompletedOrCanceled(ISSUE_ID);
+      await waitForIssueColumn(issues, ISSUE_ID, IN_PROGRESS_COLUMN_ID);
+      // The next sweep.
+      await closing.handleTicketCompletedOrCanceled(ISSUE_ID);
+
+      expect(missionControlFake.lifecycleActions).toEqual([
+        { agentId: AGENT_ID, action: "reopen" },
+      ]);
+      expect(archiveAgent).not.toHaveBeenCalled();
+      expect(archiveWorkspace).not.toHaveBeenCalled();
+      await waitForLastCommentContaining(fakeServer.comments, "Fearless Haven");
+      expect(fakeServer.comments.at(-1)?.body).toContain("was unarchived");
+    });
+
+    test("a prompt to an agent whose ticket is Done reopens the ticket and is not archived mid-run", async () => {
+      const { closing, archiveAgent, archiveWorkspace } = closingBridge({});
+      agentManagerFake.emit({ type: "agent_state", agent: liveAgent("idle") });
+      await flushAsync();
+
+      agentManagerFake.emit({ type: "agent_state", agent: liveAgent("running") });
+      // The reconcile sweep racing the run start.
+      await closing.handleTicketCompletedOrCanceled(ISSUE_ID);
+      await waitForIssueColumn(issues, ISSUE_ID, IN_PROGRESS_COLUMN_ID);
+      await closing.handleTicketCompletedOrCanceled(ISSUE_ID);
+
+      expect(missionControlFake.lifecycleActions).toEqual([]);
+      expect(archiveAgent).not.toHaveBeenCalled();
+      expect(archiveWorkspace).not.toHaveBeenCalled();
+      await waitForLastCommentContaining(fakeServer.comments, "started a new run");
+    });
+
+    test("a ticket closed mid-run archives the agent only after the run ends", async () => {
+      const { closing, archiveAgent, archiveWorkspace } = closingBridge({});
+      // Already running when the ticket moved to Done: not a new run, no reopen.
+      agentManagerFake.setAgent(liveAgent("running"));
+
+      await closing.handleTicketCompletedOrCanceled(ISSUE_ID);
+      expect(missionControlFake.lifecycleActions).toEqual([]);
+      expect(archiveAgent).not.toHaveBeenCalled();
+      expect(archiveWorkspace).not.toHaveBeenCalled();
+      expect(issues.get(ISSUE_ID)?.columnId).toBe(DONE_COLUMN_ID);
+
+      agentManagerFake.setAgent(liveAgent("idle"));
+      await closing.handleTicketCompletedOrCanceled(ISSUE_ID);
+      expect(missionControlFake.lifecycleActions).toEqual([{ agentId: AGENT_ID, action: "done" }]);
+      expect(archiveAgent).toHaveBeenCalledWith(AGENT_ID);
+      expect(archiveWorkspace).toHaveBeenCalledWith("ws-revived", expect.any(String));
+    });
+
+    test("a peer agent mid-run is not marked done", async () => {
+      const fleetFake = createFakeFleet(
+        { agentId: "peer-agent", host: "blrofc3" },
+        { bucket: "running" },
+      );
+      const { closing } = closingBridge({
+        agentStorage: createFakeAgentStorage([]),
+        fleet: fleetFake.fleet,
+      });
+
+      await closing.handleTicketCompletedOrCanceled(ISSUE_ID);
+
+      expect(fleetFake.writes).toEqual([]);
     });
   });
 
