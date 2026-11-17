@@ -84,6 +84,9 @@ function WorkspaceHeaderMenuAttentionTriggerIcon() {
  */
 const COMPACT_HEADER_BUTTON_HIT_SLOP = { top: 8, bottom: 8 } as const;
 
+/** Wide enough for "Archive workspace" next to its shortcut chord without truncating. */
+const WORKSPACE_HEADER_MENU_WIDTH = 280;
+
 /**
  * Actions that belong to the workspace itself rather than to a tab. Both header menus render them,
  * from the same callbacks, so the two surfaces can't drift.
@@ -220,7 +223,11 @@ export function WorkspaceHeaderMenuDesktop(props: WorkspaceHeaderWorkspaceAction
       >
         <WorkspaceHeaderMenuTriggerIcon />
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" width={220} testID="workspace-header-menu">
+      <DropdownMenuContent
+        align="start"
+        width={WORKSPACE_HEADER_MENU_WIDTH}
+        testID="workspace-header-menu"
+      >
         <WorkspaceHeaderWorkspaceActionItems {...props} />
         <WorkspaceHeaderArchiveItem {...props} />
       </DropdownMenuContent>
@@ -340,7 +347,7 @@ export function WorkspaceHeaderMenuMobile({
       </DropdownMenuTrigger>
       <DropdownMenuContent
         align="start"
-        width={220}
+        width={WORKSPACE_HEADER_MENU_WIDTH}
         testID="workspace-header-menu"
         pages={pages}
         sheetTitle={t("workspace.header.actions.workspaceActions")}
