@@ -172,7 +172,8 @@ function submit(
       effectiveModeId: "build",
       effectiveModelId: "deepseek/deepseek-v4-pro",
       effectiveThinkingOptionId: "high",
-      featureValues: { webSearch: true },
+      providerOptions: { webSearch: true },
+      metadata: {},
       agentMode: "research",
     },
     hostDisconnectedMessage: "Host disconnected",
@@ -209,7 +210,7 @@ describe("workspace draft fork submission", () => {
         modeId: "build",
         model: "deepseek/deepseek-v4-pro",
         thinkingOptionId: "high",
-        featureValues: { webSearch: true },
+        providerOptions: { webSearch: true },
       },
     });
   });
@@ -282,7 +283,7 @@ describe("workspace draft fork submission", () => {
         modeId: "build",
         model: "deepseek/deepseek-v4-pro",
         thinkingOptionId: "high",
-        featureValues: { webSearch: true },
+        providerOptions: { webSearch: true },
       },
     });
   });

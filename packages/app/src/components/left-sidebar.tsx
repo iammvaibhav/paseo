@@ -1,3 +1,4 @@
+import { SidebarViewSlot } from "@/plugins/sidebar-view";
 import { useAddHost } from "@/hosts/add-host";
 import { router, usePathname } from "expo-router";
 import {
@@ -20,6 +21,7 @@ import {
   Text,
   useWindowDimensions,
   View,
+  type LayoutChangeEvent,
 } from "react-native";
 import { Gesture, ScrollView as GHScrollView } from "react-native-gesture-handler";
 import Animated, { runOnJS, useAnimatedStyle, useSharedValue } from "react-native-reanimated";
@@ -32,7 +34,7 @@ import {
   resolveDesktopSidebarInsetLeft,
   resolveDesktopSidebarWidth,
 } from "@/components/desktop-sidebar-layout";
-import { useWindowLayout, resolveDesktopDivisionLayout } from "@/window-layout";
+import { useTopBand, useWindowLayout, resolveDesktopDivisionLayout } from "@/window-layout";
 import {
   SIDEBAR_RESIZE_ACTIVATION_OFFSET,
   SIDEBAR_RESIZE_FAIL_OFFSET,
@@ -44,9 +46,21 @@ import { SidebarViewToggle } from "@/components/sidebar/sidebar-view-toggle";
 import { SidebarSearchPanel, SidebarSearchToggle } from "@/components/sidebar/sidebar-search-bar";
 import { SidebarAgentViewList } from "@/components/sidebar/agent-view/list";
 import { SidebarSeparator } from "@/components/sidebar/sidebar-separator";
+import { SidebarToastRegion } from "@/components/sidebar/sidebar-toast-region";
 import { SidebarNavRows } from "@/components/sidebar/sidebar-nav-rows";
 import { SidebarFooterIconHighlight } from "@/components/sidebar/sidebar-footer-icon-highlight";
 import { SidebarHelpMenu } from "@/components/sidebar/sidebar-help-menu";
+import { SidebarFooterOverflowMenu } from "@/components/sidebar/sidebar-footer-overflow-menu";
+import {
+  resolveSidebarFooterLayout,
+  SIDEBAR_FOOTER_ACTIONS,
+  type SidebarFooterAction,
+} from "@/components/sidebar-footer-layout";
+import {
+  controlSizingForLayout,
+  mapLayout,
+  TOOLBAR_CONTROL_SIZES,
+} from "@/components/ui/control-geometry";
 import { SidebarResizeHandle } from "@/components/sidebar-resize-handle";
 import { SidebarProviderUsageMenu } from "@/provider-usage/sidebar-menu";
 import { DensityIcon } from "@/components/ui/density-icon";
@@ -65,7 +79,7 @@ import {
   type SidebarWorkspaceEntry,
 } from "@/hooks/use-sidebar-workspaces-list";
 import { density, densityIconSize } from "@/styles/density";
-import type { Theme } from "@/styles/theme";
+import { SPACING, type Theme } from "@/styles/theme";
 import { useSidebarModel } from "@/components/sidebar/sidebar-model";
 import type { PinnedSidebarGroups } from "@/hooks/use-sidebar-pins";
 import { RetainedPanelActivity } from "@/components/retained-panel";
@@ -100,6 +114,9 @@ import { SidebarCalloutSlot } from "./sidebar-callout-slot";
 import { SidebarWorkspaceList } from "./sidebar-workspace-list";
 
 type SidebarTheme = ReturnType<typeof useUnistyles>["theme"];
+
+/** The footer icon line's inset; the overflow layout counts it as space the buttons can't use. */
+const FOOTER_ROW_PADDING = SPACING[2];
 
 const DEV_BUILD_LABEL = process.env.EXPO_PUBLIC_PASEO_DEV_BUILD_LABEL?.trim() || null;
 
@@ -509,37 +526,78 @@ function SidebarFooter({
 }) {
   const newAgentKeys = useShortcutKeys("new-agent");
   const settingsKeys = useShortcutKeys("toggle-settings");
+  const isCompactLayout = useIsCompactFormFactor();
+  const [rowWidth, setRowWidth] = useState(0);
+  const handleRowLayout = useCallback((event: LayoutChangeEvent) => {
+    setRowWidth(event.nativeEvent.layout.width);
+  }, []);
+  const controlSize = TOOLBAR_CONTROL_SIZES[controlSizingForLayout(isCompactLayout)];
+  // The fork's fleet stats (desktop only) and provider usage buttons always stay in the row, so
+  // the shared actions split the width that is left.
+  const forkInlineWidth = ((getIsElectron() ? 1 : 0) + 1) * controlSize;
+  const { inline, overflow } = useMemo(
+    () =>
+      resolveSidebarFooterLayout({
+        rowWidth: rowWidth > 0 ? Math.max(rowWidth - forkInlineWidth, 1) : 0,
+        controlSize,
+        rowPadding: FOOTER_ROW_PADDING,
+        actions: SIDEBAR_FOOTER_ACTIONS,
+      }),
+    [rowWidth, controlSize, forkInlineWidth],
+  );
+  const isInline = (action: SidebarFooterAction) => inline.includes(action);
 
-  // One line of icons: Add project, Usage, Hosts, then Help and Settings at the end.
+  // One line of icons: Add project, Usage, Hosts, then Help and Settings at the end. Actions that
+  // don't fit move behind a caret before Settings.
   return (
     <UsageSidebarRoot>
       <View style={styles.footerContainer} testID="sidebar-footer">
         <SidebarFooterRows onBeforeNavigate={onBeforeNavigate} />
-        <View style={styles.sidebarFooter} testID="sidebar-footer-bottom-line">
-          <FooterIconButton
-            onPress={handleOpenProject}
-            testID="sidebar-add-project"
-            label={labels.addProject}
-            icon={FolderPlus}
-            shortcutKeys={newAgentKeys}
-          />
-          <SidebarUsageIcon label={labels.usage} />
-          <SidebarHostPicker
-            label={labels.hosts}
-            onAddHost={handleAddHost}
-            onOpenHostSettings={handleOpenHostSettings}
-          />
+        <View
+          style={styles.sidebarFooter}
+          onLayout={handleRowLayout}
+          testID="sidebar-footer-bottom-line"
+        >
+          {isInline("add-project") ? (
+            <FooterIconButton
+              onPress={handleOpenProject}
+              testID="sidebar-add-project"
+              label={labels.addProject}
+              icon={FolderPlus}
+              shortcutKeys={newAgentKeys}
+            />
+          ) : null}
+          {isInline("usage") ? <SidebarUsageIcon label={labels.usage} /> : null}
+          {isInline("hosts") ? (
+            <SidebarHostPicker
+              label={labels.hosts}
+              onAddHost={handleAddHost}
+              onOpenHostSettings={handleOpenHostSettings}
+            />
+          ) : null}
           <SidebarFleetStatsButton />
           <SidebarProviderUsageMenu />
           <View style={styles.footerSpacer} />
-          <SidebarHelpMenu />
-          <FooterIconButton
-            onPress={handleSettings}
-            testID="sidebar-settings"
-            label={labels.settings}
-            icon={Settings}
-            shortcutKeys={settingsKeys}
-          />
+          {isInline("help") ? <SidebarHelpMenu /> : null}
+          {overflow.length > 0 ? (
+            <SidebarFooterOverflowMenu
+              actions={overflow}
+              labels={labels}
+              onAddProject={handleOpenProject}
+              onSettings={handleSettings}
+              onAddHost={handleAddHost}
+              onOpenHostSettings={handleOpenHostSettings}
+            />
+          ) : null}
+          {isInline("settings") ? (
+            <FooterIconButton
+              onPress={handleSettings}
+              testID="sidebar-settings"
+              label={labels.settings}
+              icon={Settings}
+              shortcutKeys={settingsKeys}
+            />
+          ) : null}
         </View>
       </View>
     </UsageSidebarRoot>
@@ -721,49 +779,44 @@ function MobileSidebar({
         )}
         <SidebarSeparator />
 
-        {viewMode === "agents" ? (
-          <SidebarAgentViewList
-            active={active}
-            listHeaderComponent={sidebarSectionHeaderElement}
-            onAgentPress={handleWorkspacePress}
-            parentGestureRef={closeGestureRef}
-          />
-        ) : null}
-        {viewMode === "workspaces" && showWorkspaceSkeleton ? (
-          <View style={styles.sidebarContent}>
-            <ScrollView
-              style={styles.sidebarContent}
-              contentContainerStyle={styles.workspaceSkeletonContent}
-              showsVerticalScrollIndicator={false}
-            >
-              {sidebarSectionHeaderElement}
-              <SidebarAgentListSkeleton />
-            </ScrollView>
-          </View>
-        ) : null}
-        {viewMode === "workspaces" && !showWorkspaceSkeleton ? (
-          <SidebarWorkspaceList
-            collapsedProjectKeys={collapsedProjectKeys}
-            onToggleProjectCollapsed={toggleProjectCollapsed}
-            shortcutIndexByWorkspaceKey={shortcutIndexByWorkspaceKey}
-            groupMode={groupMode}
-            workspaceGroups={workspaceGroups}
-            projectIconTargets={projectIconTargets}
-            pinnedGroups={pinnedGroups}
-            projects={projects}
-            hasProjectsBeforeFilter={hasProjectsBeforeFilter}
-            hasActiveProjectFilter={hasActiveProjectFilter}
-            workspaceEntriesByKey={workspaceEntriesByKey}
-            isRefreshing={isManualRefresh && isRevalidating}
-            onRefresh={handleRefresh}
-            onWorkspacePress={handleWorkspacePress}
-            onAddProject={handleOpenProject}
-            onImportSession={handleImportSession}
-            parentGestureRef={closeGestureRef}
-            dragGestureHostActive={active}
-            listHeaderComponent={sidebarSectionHeaderElement}
-          />
-        ) : null}
+        <SidebarViewSlot dismiss={handleWorkspacePress}>
+          <SidebarToastRegion active={active}>
+            {viewMode === "agents" ? (
+              <SidebarAgentViewList
+                active={active}
+                listHeaderComponent={sidebarSectionHeaderElement}
+                onAgentPress={handleWorkspacePress}
+                parentGestureRef={closeGestureRef}
+              />
+            ) : null}
+            {viewMode === "workspaces" && showWorkspaceSkeleton ? (
+              <SidebarWorkspaceSkeleton />
+            ) : null}
+            {viewMode === "workspaces" && !showWorkspaceSkeleton ? (
+              <SidebarWorkspaceList
+                collapsedProjectKeys={collapsedProjectKeys}
+                onToggleProjectCollapsed={toggleProjectCollapsed}
+                shortcutIndexByWorkspaceKey={shortcutIndexByWorkspaceKey}
+                groupMode={groupMode}
+                workspaceGroups={workspaceGroups}
+                projectIconTargets={projectIconTargets}
+                pinnedGroups={pinnedGroups}
+                projects={projects}
+                hasProjectsBeforeFilter={hasProjectsBeforeFilter}
+                hasActiveProjectFilter={hasActiveProjectFilter}
+                workspaceEntriesByKey={workspaceEntriesByKey}
+                isRefreshing={isManualRefresh && isRevalidating}
+                onRefresh={handleRefresh}
+                onWorkspacePress={handleWorkspacePress}
+                onAddProject={handleOpenProject}
+                onImportSession={handleImportSession}
+                parentGestureRef={closeGestureRef}
+                dragGestureHostActive={active}
+                listHeaderComponent={sidebarSectionHeaderElement}
+              />
+            ) : null}
+          </SidebarToastRegion>
+        </SidebarViewSlot>
 
         <SidebarFooter
           handleOpenProject={handleOpenProject}
@@ -906,9 +959,11 @@ function DesktopSidebar({
     ],
     [insetsTop, insets.bottom, insets.left, overlay, divisionLayout],
   );
+  // Below the window controls' row, or in the top band's place, the first row starts flush.
+  const inTopBand = useTopBand() !== null;
   const sidebarHeaderGroupStyle = useMemo(
-    () => [styles.sidebarHeaderGroup, ownsTopLeft && styles.sidebarHeaderGroupBelowChrome],
-    [ownsTopLeft],
+    () => [styles.sidebarHeaderGroup, (ownsTopLeft || inTopBand) && styles.sidebarHeaderGroupFlush],
+    [ownsTopLeft, inTopBand],
   );
   return (
     <MobilePanelOverlay
@@ -963,49 +1018,44 @@ function DesktopSidebar({
             </View>
           </View>
 
-          {viewMode === "agents" ? (
-            <SidebarAgentViewList
-              active={active}
-              listHeaderComponent={sidebarSectionHeaderElement}
-              onAgentPress={closeSidebar}
-              parentGestureRef={closeGestureRef}
-            />
-          ) : null}
-          {viewMode === "workspaces" && showWorkspaceSkeleton ? (
-            <View style={styles.sidebarContent}>
-              <ScrollView
-                style={styles.sidebarContent}
-                contentContainerStyle={styles.workspaceSkeletonContent}
-                showsVerticalScrollIndicator={false}
-              >
-                {sidebarSectionHeaderElement}
-                <SidebarAgentListSkeleton />
-              </ScrollView>
-            </View>
-          ) : null}
-          {viewMode === "workspaces" && !showWorkspaceSkeleton ? (
-            <SidebarWorkspaceList
-              collapsedProjectKeys={collapsedProjectKeys}
-              onToggleProjectCollapsed={toggleProjectCollapsed}
-              shortcutIndexByWorkspaceKey={shortcutIndexByWorkspaceKey}
-              groupMode={groupMode}
-              workspaceGroups={workspaceGroups}
-              projectIconTargets={projectIconTargets}
-              pinnedGroups={pinnedGroups}
-              projects={projects}
-              hasProjectsBeforeFilter={hasProjectsBeforeFilter}
-              hasActiveProjectFilter={hasActiveProjectFilter}
-              workspaceEntriesByKey={workspaceEntriesByKey}
-              isRefreshing={isManualRefresh && isRevalidating}
-              onRefresh={handleRefresh}
-              onAddProject={handleOpenProject}
-              onImportSession={handleImportSession}
-              onWorkspacePress={closeSidebar}
-              parentGestureRef={closeGestureRef}
-              dragGestureHostActive={active}
-              listHeaderComponent={sidebarSectionHeaderElement}
-            />
-          ) : null}
+          <SidebarViewSlot dismiss={closeSidebar}>
+            <SidebarToastRegion active={active}>
+              {viewMode === "agents" ? (
+                <SidebarAgentViewList
+                  active={active}
+                  listHeaderComponent={sidebarSectionHeaderElement}
+                  onAgentPress={closeSidebar}
+                  parentGestureRef={closeGestureRef}
+                />
+              ) : null}
+              {viewMode === "workspaces" && showWorkspaceSkeleton ? (
+                <SidebarWorkspaceSkeleton />
+              ) : null}
+              {viewMode === "workspaces" && !showWorkspaceSkeleton ? (
+                <SidebarWorkspaceList
+                  collapsedProjectKeys={collapsedProjectKeys}
+                  onToggleProjectCollapsed={toggleProjectCollapsed}
+                  shortcutIndexByWorkspaceKey={shortcutIndexByWorkspaceKey}
+                  groupMode={groupMode}
+                  workspaceGroups={workspaceGroups}
+                  projectIconTargets={projectIconTargets}
+                  pinnedGroups={pinnedGroups}
+                  projects={projects}
+                  hasProjectsBeforeFilter={hasProjectsBeforeFilter}
+                  hasActiveProjectFilter={hasActiveProjectFilter}
+                  workspaceEntriesByKey={workspaceEntriesByKey}
+                  isRefreshing={isManualRefresh && isRevalidating}
+                  onRefresh={handleRefresh}
+                  onAddProject={handleOpenProject}
+                  onImportSession={handleImportSession}
+                  onWorkspacePress={closeSidebar}
+                  parentGestureRef={closeGestureRef}
+                  dragGestureHostActive={active}
+                  listHeaderComponent={sidebarSectionHeaderElement}
+                />
+              ) : null}
+            </SidebarToastRegion>
+          </SidebarViewSlot>
 
           <SidebarCalloutSlot />
 
@@ -1068,6 +1118,21 @@ function SidebarListHeader() {
 // renders (SidebarListHeader takes no props).
 const sidebarSectionHeaderElement = <SidebarListHeader />;
 
+function SidebarWorkspaceSkeleton() {
+  return (
+    <View style={styles.sidebarContent}>
+      <ScrollView
+        style={styles.sidebarContent}
+        contentContainerStyle={styles.workspaceSkeletonContent}
+        showsVerticalScrollIndicator={false}
+      >
+        {sidebarSectionHeaderElement}
+        <SidebarAgentListSkeleton />
+      </ScrollView>
+    </View>
+  );
+}
+
 // Static styles for Animated.Views — must NOT use Unistyles dynamic theme to
 // avoid the "Unable to find node on an unmounted component" crash when Unistyles
 // tries to patch the native node that Reanimated also manages.
@@ -1086,7 +1151,7 @@ const styles = StyleSheet.create((theme) => ({
     borderBottomWidth: 1,
     borderBottomColor: theme.colors.sidebarDivider,
   },
-  sidebarHeaderGroupBelowChrome: {
+  sidebarHeaderGroupFlush: {
     paddingTop: 0,
   },
   // The nav block caps at half the sidebar; a long item list scrolls inside the
@@ -1153,10 +1218,12 @@ const styles = StyleSheet.create((theme) => ({
     borderTopColor: theme.colors.sidebarDivider,
   },
   // Buttons sit edge to edge; their own inset spaces the glyphs.
+  // As tall as its buttons from the first frame, which places none until the row has measured.
   sidebarFooter: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: theme.spacing[2],
+    minHeight: mapLayout(density.iconButton, (height) => height + theme.spacing[1.5] * 2),
+    paddingHorizontal: FOOTER_ROW_PADDING,
     paddingVertical: theme.spacing[1.5],
   },
   // Pushes Help and Settings to the end of the icon line.

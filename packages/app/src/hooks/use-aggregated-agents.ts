@@ -34,6 +34,7 @@ function toAggregatedAgent(agent: Agent, serverId: string, serverLabel: string):
     name: agent.name ?? null,
     shortDescription: agent.shortDescription ?? null,
     status: agent.status,
+    backgroundWork: agent.backgroundWork,
     turn: agent.turn,
     lastActivityAt: agent.lastActivityAt,
     lastUserMessageAt: agent.lastUserMessageAt,

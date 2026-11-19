@@ -125,11 +125,6 @@ export function extractPathFromDiffHeader(lines: string[]): string {
   const gitLine = firstLine.startsWith("diff --git ")
     ? firstLine.slice("diff --git ".length)
     : firstLine;
-  const prefixedPathMatch = gitLine.match(/^a\/(.+) b\/(.+)$/);
-  if (prefixedPathMatch) {
-    return prefixedPathMatch[2];
-  }
-
   const quotedPathMatch =
     gitLine.match(/^("(?:\\.|[^"\\])*") (.+)$/) ?? gitLine.match(/^(.+) ("(?:\\.|[^"\\])*")$/);
   if (quotedPathMatch) {
@@ -141,10 +136,21 @@ export function extractPathFromDiffHeader(lines: string[]): string {
     return newPath;
   }
 
-  const metadataPath =
-    extractPathFromMetadata(lines, "+++ ") ?? extractPathFromMetadata(lines, "--- ");
-  if (metadataPath) {
-    return metadataPath;
+  // The ---/+++ records are unambiguous even when a path contains " b/".
+  const oldMetadata = extractPathFromMetadata(lines, "--- ");
+  const newMetadata = extractPathFromMetadata(lines, "+++ ");
+  const metadata = newMetadata ?? oldMetadata;
+  if (metadata) {
+    const prefixed =
+      (oldMetadata !== null &&
+        newMetadata !== null &&
+        usesDiffPathPrefixes(oldMetadata, newMetadata)) ||
+      gitLine === `a/${metadata.slice(2)} b/${metadata.slice(2)}`;
+    return prefixed ? metadata.slice(2) : metadata;
+  }
+  const prefixedPathMatch = gitLine.match(/^a\/(.+) b\/(.+)$/);
+  if (prefixedPathMatch) {
+    return prefixedPathMatch[2];
   }
 
   const pathMatch = gitLine.match(/^(\S+)\s+(\S+)$/);
@@ -563,13 +569,33 @@ function applyTokensToHunks(
         newLineNum++;
       }
 
-      return tokens ? { ...line, tokens } : line;
+      const matchingTokens = tokensForPatchLine(tokens, line.content);
+      return matchingTokens ? { ...line, tokens: matchingTokens } : line;
     });
 
     return { ...hunk, lines: highlightedLines };
   });
 
   return { ...file, hunks: highlightedHunks };
+}
+
+function tokensForPatchLine(
+  tokens: HighlightToken[] | undefined,
+  content: string,
+): HighlightToken[] | undefined {
+  if (!tokens) return undefined;
+  const source = tokens.map((token) => token.text).join("");
+  if (source === content) return tokens;
+  // Git can normalize a CRLF worktree while source highlighting retains its CR.
+  if (source !== `${content}\r`) return undefined;
+  const aligned: HighlightToken[] = [];
+  let remaining = content.length;
+  for (const token of tokens) {
+    const text = token.text.slice(0, remaining);
+    if (text) aligned.push({ text, style: token.style });
+    remaining -= text.length;
+  }
+  return aligned;
 }
 
 /**

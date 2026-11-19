@@ -25,7 +25,7 @@ export async function fetchCheckoutStatus({
   serverId: string;
   cwd: string;
 }): Promise<CheckoutStatusPayload> {
-  const payload = await client.getCheckoutStatus(cwd);
+  const payload = normalizeCheckoutBaseRef(await client.getCheckoutStatus(cwd));
   if (payload.error) {
     // The daemon reports a transient snapshot failure (busy git, cold target,
     // index lock) as a successful payload with `error` set. Throw instead of
@@ -64,7 +64,7 @@ export function applyCheckoutStatusUpdateFromEvent({
   serverId: string;
   message: CheckoutStatusUpdate;
 }): void {
-  const { payload } = message;
+  const payload = normalizeCheckoutBaseRef(message.payload);
   const prStatus = payload.prStatus
     ? normalizeCheckoutPrStatusPayload(payload.prStatus)
     : undefined;
@@ -94,6 +94,13 @@ export function applyCheckoutStatusUpdateFromEvent({
   if (hasPrStatusChanged(previous, prStatus)) {
     void invalidatePrPaneTimelineForCheckout(queryClient, { serverId, cwd: prStatus.cwd });
   }
+}
+
+function normalizeCheckoutBaseRef<T extends CheckoutStatusPayload>(payload: T): T {
+  // COMPAT(workspaceBaseBranch): hosts <= v0.11.2 only send the display ref; remove after 2027-10-14.
+  return !payload.isGit || payload.baseRefExact === undefined
+    ? payload
+    : { ...payload, baseRef: payload.baseRefExact };
 }
 
 // requestId changes on every emission and carries no PR state.

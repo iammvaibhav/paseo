@@ -57,6 +57,16 @@ export function derivePendingPermissionKey(
   return `${agentId}:${fallbackId}`;
 }
 
+function projectAttentionFields(
+  agent: Agent,
+): Pick<AgentSnapshotPayload, "requiresAttention" | "attentionReason" | "attentionTimestamp"> {
+  return {
+    requiresAttention: agent.requiresAttention ?? false,
+    attentionReason: agent.attentionReason ?? null,
+    attentionTimestamp: agent.attentionTimestamp?.toISOString() ?? null,
+  };
+}
+
 export function projectAgentSnapshot(agent: Agent): AgentSnapshotPayload {
   return {
     id: agent.id,
@@ -64,12 +74,14 @@ export function projectAgentSnapshot(agent: Agent): AgentSnapshotPayload {
     cwd: agent.cwd,
     ...(agent.workspaceId ? { workspaceId: agent.workspaceId } : {}),
     model: agent.model,
-    ...(agent.features ? { features: agent.features } : {}),
+    ...(agent.options ? { options: agent.options } : {}),
+    ...(agent.controls ? { controls: agent.controls } : {}),
     thinkingOptionId: agent.thinkingOptionId ?? null,
     createdAt: agent.createdAt.toISOString(),
     updatedAt: agent.updatedAt.toISOString(),
     lastUserMessageAt: agent.lastUserMessageAt?.toISOString() ?? null,
     status: agent.status,
+    backgroundWork: agent.backgroundWork,
     ...projectActiveTurn(agent),
     capabilities: agent.capabilities,
     currentModeId: agent.currentModeId,
@@ -77,13 +89,13 @@ export function projectAgentSnapshot(agent: Agent): AgentSnapshotPayload {
     pendingPermissions: agent.pendingPermissions,
     persistence: agent.persistence,
     ...(agent.runtimeInfo ? { runtimeInfo: agent.runtimeInfo } : {}),
+    ...(agent.usageScopeKey ? { usageScopeKey: agent.usageScopeKey } : {}),
     ...(agent.lastUsage ? { lastUsage: agent.lastUsage } : {}),
     ...(agent.lastError ? { lastError: agent.lastError } : {}),
     title: agent.title,
     labels: agent.labels,
-    requiresAttention: agent.requiresAttention ?? false,
-    attentionReason: agent.attentionReason ?? null,
-    attentionTimestamp: agent.attentionTimestamp?.toISOString() ?? null,
+    ...(agent.metadata ? { metadata: agent.metadata } : {}),
+    ...projectAttentionFields(agent),
     ...(agent.bucket ? { bucket: agent.bucket } : {}),
     archivedAt: agent.archivedAt?.toISOString() ?? null,
     ...(agent.reminder !== undefined ? { reminder: agent.reminder } : {}),
@@ -113,6 +125,7 @@ export function normalizeAgentSnapshot(snapshot: AgentSnapshotPayload, serverId:
     id: snapshot.id,
     provider: snapshot.provider,
     status: snapshot.status,
+    backgroundWork: snapshot.backgroundWork,
     turn,
     createdAt,
     updatedAt,
@@ -124,6 +137,7 @@ export function normalizeAgentSnapshot(snapshot: AgentSnapshotPayload, serverId:
     pendingPermissions: snapshot.pendingPermissions ?? [],
     persistence: snapshot.persistence ?? null,
     runtimeInfo: snapshot.runtimeInfo,
+    usageScopeKey: snapshot.usageScopeKey,
     lastUsage: snapshot.lastUsage,
     lastError: snapshot.lastError ?? null,
     title: snapshot.title ?? null,
@@ -133,7 +147,8 @@ export function normalizeAgentSnapshot(snapshot: AgentSnapshotPayload, serverId:
     cwd: snapshot.cwd,
     workspaceId: snapshot.workspaceId,
     model: snapshot.model ?? null,
-    features: snapshot.features,
+    options: snapshot.options,
+    controls: snapshot.controls,
     thinkingOptionId: snapshot.thinkingOptionId ?? null,
     effectiveThinkingOptionId:
       snapshot.effectiveThinkingOptionId ??
@@ -151,6 +166,7 @@ export function normalizeAgentSnapshot(snapshot: AgentSnapshotPayload, serverId:
     labels: snapshot.labels,
     providerUnavailable: snapshot.providerUnavailable === true,
     reminder: snapshot.reminder,
+    metadata: snapshot.metadata,
   };
 }
 

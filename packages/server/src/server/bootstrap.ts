@@ -1,4 +1,6 @@
+import { unarchiveWorkspaceAgents } from "./workspace-archive-service.js";
 import { createRestartRecovery } from "./agent/restart-recovery/index.js";
+
 import { createIdleRuntimeCleanup } from "./agent/idle-runtime-cleanup/index.js";
 import {
   awaitResumedChildRun,
@@ -179,7 +181,7 @@ import {
   createPaseoAgentToolManifest,
   type PaseoToolHostDependencies,
 } from "./agent/tools/paseo-tools.js";
-import { sendPromptToAgent } from "./agent/agent-prompt.js";
+import { sendPromptToAgent, unarchiveAgentState } from "./agent/agent-prompt.js";
 import type { PaseoToolCatalog, PaseoToolRuntimeContext } from "./agent/tools/types.js";
 import { createAgentProviderRuntime } from "./agent/provider-runtime.js";
 import { bootstrapWorkspaceRegistries } from "./workspace-registry-bootstrap.js";
@@ -1247,6 +1249,13 @@ export async function createPaseoDaemon(
     }
   });
   const workspaceProvisioning = createWorkspaceProvisioningService({
+    unarchiveWorkspaceAgents: (request) =>
+      unarchiveWorkspaceAgents({
+        ...request,
+        agentStorage,
+        unarchiveAgent: (id) => unarchiveAgentState(agentStorage, agentManager, id),
+        sessionLogger: logger,
+      }),
     lifecycle: pluginRuntime,
     serverId,
     projectRegistry,
@@ -1488,11 +1497,13 @@ export async function createPaseoDaemon(
   const archiveWorkspaceRecordExternal = async (
     workspaceId: string,
     context?: WorkspaceArchiveContext,
+    archivedAt?: string,
   ) => {
     const { newlyArchived, workspace: existingWorkspace } = await archivePersistedWorkspaceRecord({
       workspaceId,
       workspaceRegistry,
       context,
+      archivedAt,
     });
     if (!newlyArchived || !existingWorkspace) return;
     teardownArchivedWorkspaceRuntime(workspaceId);
@@ -1744,7 +1755,8 @@ export async function createPaseoDaemon(
         listActiveWorkspaces: listActiveWorkspacesExternal,
         getWorkspace: (workspaceIdToGet) => workspaceRegistry.get(workspaceIdToGet),
         projectRegistry,
-        archiveWorkspaceRecord: archiveWorkspaceRecordExternal,
+        archiveWorkspaceRecord: (workspaceIdToArchive, archivedAt) =>
+          archiveWorkspaceRecordExternal(workspaceIdToArchive, undefined, archivedAt),
         emitWorkspaceUpdatesForWorkspaceIds: emitWorkspaceUpdatesExternal,
         markWorkspaceArchiving: markWorkspaceArchivingExternal,
         clearWorkspaceArchiving: clearWorkspaceArchivingExternal,
@@ -1769,7 +1781,7 @@ export async function createPaseoDaemon(
       archiveAgentCommand({ agentManager, agentStorage, logger }, agentId),
     findWorkspaceIdForCwd: findWorkspaceIdForCwdExternal,
     listActiveWorkspaces: listActiveWorkspacesExternal,
-    archiveWorkspaceRecord: archiveWorkspaceRecordExternal,
+    archiveWorkspaceRecord: (workspaceId) => archiveWorkspaceRecordExternal(workspaceId),
     emit: emitExternalSessionMessage,
     emitAgentRemove: async () => undefined,
     emitWorkspaceUpdatesForWorkspaceIds: emitWorkspaceUpdatesExternal,
@@ -2445,7 +2457,8 @@ export async function createPaseoDaemon(
     workspaceGitService,
     findWorkspaceIdForCwd: findWorkspaceIdForCwdExternal,
     listActiveWorkspaces: listActiveWorkspacesExternal,
-    archiveWorkspaceRecord: archiveWorkspaceRecordExternal,
+    archiveWorkspaceRecord: (workspaceId, archivedAt) =>
+      archiveWorkspaceRecordExternal(workspaceId, undefined, archivedAt),
     emitWorkspaceUpdatesForWorkspaceIds: emitWorkspaceUpdatesExternal,
     emitAgentRemoved: emitAgentRemovedExternal,
     restoreWorkspace: restoreWorkspaceExternal,

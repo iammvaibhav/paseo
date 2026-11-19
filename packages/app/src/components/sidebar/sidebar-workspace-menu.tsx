@@ -6,7 +6,7 @@ import {
   type ReactNode,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { type PressableStateCallbackType } from "react-native";
+import type { PressableStateCallbackType } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import {
   Archive,
@@ -21,6 +21,7 @@ import {
   Tag,
   ExternalLink,
 } from "lucide-react-native";
+import { PressHighlight } from "@/components/ui/press-highlight";
 import { getIsElectron, isWeb } from "@/constants/platform";
 import { getDesktopHost } from "@/desktop/host";
 import { buildHostWorkspaceRoute } from "@/utils/host-routes";
@@ -90,11 +91,45 @@ const openInNewWindowLeadingIcon = (
   <ThemedExternalLink size={14} uniProps={foregroundMutedColorMapping} />
 );
 
+/** Pointer-only, so it is always the kebab's pointer size. */
+const ARCHIVE_BUTTON_SIZE = 18;
+/** Keeps a press aimed at the kebab from landing on the one-click archive. */
+const ARCHIVE_BUTTON_KEBAB_GAP = 8;
+/** The width the archive button and its gap take up left of the kebab. */
+export const ARCHIVE_BUTTON_FOOTPRINT = ARCHIVE_BUTTON_SIZE + ARCHIVE_BUTTON_KEBAB_GAP;
+
 const triggerIconProps = densityIconProps("sm", foregroundMutedColorMapping);
 const triggerIconHoveredProps = densityIconProps("sm", foregroundColorMapping);
 
 function renderTriggerIcon({ hovered }: { hovered?: boolean }) {
   return <ThemedMoreVertical uniProps={hovered ? triggerIconHoveredProps : triggerIconProps} />;
+}
+
+function renderArchiveIcon({ hovered }: PressableStateCallbackType & { hovered?: boolean }) {
+  return <ThemedArchive uniProps={hovered ? triggerIconHoveredProps : triggerIconProps} />;
+}
+
+/** One-click archive beside the kebab, for pointer rows that reveal it on hover. */
+export function SidebarWorkspaceArchiveButton({
+  workspaceKey,
+  onArchive,
+}: {
+  workspaceKey: string;
+  onArchive: () => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <PressHighlight
+      hitSlop={4}
+      style={archiveButtonStyle}
+      onPress={onArchive}
+      accessibilityRole={isWeb ? undefined : "button"}
+      accessibilityLabel={t("sidebar.workspace.actions.archiveWorkspace")}
+      testID={`sidebar-workspace-archive-button-${workspaceKey}`}
+    >
+      {renderArchiveIcon}
+    </PressHighlight>
+  );
 }
 
 export interface SidebarWorkspaceMenuProps {
@@ -514,6 +549,12 @@ function triggerStyle({ hovered = false }: PressableStateCallbackType & { hovere
   return [styles.trigger, hovered && styles.triggerHovered];
 }
 
+function archiveButtonStyle({
+  hovered = false,
+}: PressableStateCallbackType & { hovered?: boolean }) {
+  return [styles.archiveButton, hovered && styles.triggerHovered];
+}
+
 const styles = StyleSheet.create((theme) => ({
   trigger: {
     // Larger on touch so the kebab is an easy tap target.
@@ -522,7 +563,6 @@ const styles = StyleSheet.create((theme) => ({
     alignItems: "center",
     justifyContent: "center",
     borderRadius: 4,
-    marginLeft: 2,
     // Center the touch box on the 20px title line it is anchored to.
     marginTop: bySizing({ touch: -6, pointer: 0 }),
     // MoreVertical paints only around the center of its SVG. Keep the padded hit box, but
@@ -531,5 +571,15 @@ const styles = StyleSheet.create((theme) => ({
   },
   triggerHovered: {
     backgroundColor: theme.colors.surface2,
+  },
+  // The kebab's box without its offsets: the archive glyph fills its view box, so it needs
+  // none of the nudging the three dots do.
+  archiveButton: {
+    width: ARCHIVE_BUTTON_SIZE,
+    height: ARCHIVE_BUTTON_SIZE,
+    marginRight: ARCHIVE_BUTTON_KEBAB_GAP,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 4,
   },
 }));

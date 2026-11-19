@@ -420,10 +420,9 @@ export function registerFleetControlTools(options: RegisterFleetControlToolsOpti
       ) {
         await agentManager.setAgentThinkingOption(agentId, updates.thinkingOptionId);
       }
-      if (updates.features !== undefined && typeof agentManager.setAgentFeature === "function") {
-        for (const [featureId, value] of Object.entries(updates.features)) {
-          await agentManager.setAgentFeature(agentId, featureId, value);
-        }
+      // `features` keeps its tool-facing name; the daemon applies it as provider options.
+      if (updates.features !== undefined && typeof agentManager.setAgentOptions === "function") {
+        await agentManager.setAgentOptions(agentId, updates.features);
       }
       if (updates.title !== undefined || updates.labels !== undefined) {
         const updateResult = await updateAgentCommand(
@@ -466,9 +465,7 @@ export function registerFleetControlTools(options: RegisterFleetControlToolsOpti
         await client.setAgentThinkingOption(agentId, updates.thinkingOptionId);
       }
       if (updates.features !== undefined) {
-        for (const [featureId, value] of Object.entries(updates.features)) {
-          await client.setAgentFeature(agentId, featureId, value);
-        }
+        await client.setAgentOptions(agentId, updates.features);
       }
       if (updates.title !== undefined || updates.labels !== undefined) {
         await client.updateAgent(agentId, {

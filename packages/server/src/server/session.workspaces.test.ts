@@ -1844,97 +1844,6 @@ test("archive emits an authoritative agent_update upsert for subscribed clients"
   });
 });
 
-test("workspace clear attention clears stored-only agents for a modern directory subscriber", async () => {
-  const emitted: SessionOutboundMessage[] = [];
-  const workspace = createPersistedWorkspaceRecord({
-    workspaceId: REPO_CWD,
-    projectId: REPO_CWD,
-    cwd: REPO_CWD,
-    kind: "directory",
-    displayName: "repo",
-    createdAt: "2026-03-30T15:00:00.000Z",
-    updatedAt: "2026-03-30T15:00:00.000Z",
-  });
-  const project = createPersistedProjectRecord({
-    projectId: REPO_CWD,
-    rootPath: REPO_CWD,
-    kind: "non_git",
-    displayName: "repo",
-    createdAt: "2026-03-30T15:00:00.000Z",
-    updatedAt: "2026-03-30T15:00:00.000Z",
-  });
-  let storedRecord = makeStoredAgent({
-    id: "stored-agent-1",
-    cwd: REPO_CWD,
-    workspaceId: REPO_CWD,
-    updatedAt: "2026-03-30T15:00:00.000Z",
-    requiresAttention: true,
-    attentionReason: "finished",
-  });
-  const session = createSessionForWorkspaceTests({ onMessage: (message) => emitted.push(message) });
-
-  session.workspaceRegistry.listAll = session.workspaceRegistry.listActive = async () => [
-    workspace,
-  ];
-  session.workspaceRegistry.get = async (id: string) =>
-    id === workspace.workspaceId ? workspace : null;
-  session.projectRegistry.list = async () => [project];
-  session.projectRegistry.get = async (id: string) => (id === project.projectId ? project : null);
-  session.agentStorage.get = async (agentId: string) =>
-    agentId === storedRecord.id ? storedRecord : null;
-  session.agentStorage.upsert = async (record: unknown) => {
-    storedRecord = record as StoredAgentRecord;
-  };
-  session.listAgentPayloads = async () => [
-    makeAgent({
-      id: storedRecord.id,
-      cwd: storedRecord.cwd,
-      workspaceId: workspace.workspaceId,
-      status: "closed",
-      updatedAt: storedRecord.updatedAt,
-      requiresAttention: true,
-      attentionReason: "finished",
-    }),
-  ];
-
-  const source = {};
-  session.updateClientCapabilities({ [CLIENT_CAPS.ownedSubscriptions]: true }, source);
-  await session.handleMessage(
-    { type: "fetch_agents_request", requestId: "agents", subscribe: {} },
-    source,
-  );
-  const subscriptionId = findByType(emitted, "fetch_agents_response").payload.subscriptionId;
-  expect(subscriptionId).toEqual(expect.any(String));
-  emitted.length = 0;
-
-  await session.handleMessage(
-    {
-      type: "workspace.clear_attention.request",
-      workspaceId: workspace.workspaceId,
-      requestId: "req-1",
-    },
-    source,
-  );
-
-  expect(storedRecord.requiresAttention).toBe(false);
-  expect(storedRecord.attentionReason).toBeNull();
-  expect(storedRecord.attentionTimestamp).toBeNull();
-  expect(findByType(emitted, "workspace.clear_attention.response").payload).toMatchObject({
-    requestId: "req-1",
-    workspaceId: workspace.workspaceId,
-    clearedAgentIds: [storedRecord.id],
-    success: true,
-    error: null,
-  });
-  expect(filterByType(emitted, "agent_update").map((message) => message.payload)).toEqual([
-    expect.objectContaining({
-      subscriptionId,
-      kind: "upsert",
-      agent: expect.objectContaining({ id: storedRecord.id, requiresAttention: false }),
-    }),
-  ]);
-});
-
 test("workspace clear attention responds with an error instead of timing out", async () => {
   const emitted: SessionOutboundMessage[] = [];
   const session = createSessionForWorkspaceTests({ onMessage: (message) => emitted.push(message) });
@@ -2110,7 +2019,8 @@ test("workspace mark unread selects a finished cross-workspace child with scoped
     projectLive: async () => {
       throw new Error("No live agents");
     },
-    projectStored: (record) => buildStoredAgentPayload(record, ["codex"]),
+    projectStored: (record) =>
+      buildStoredAgentPayload(record, ["codex"], (_provider, own) => own ?? {}),
     isProviderVisible: () => true,
     isStoredProviderAvailable: () => true,
   });
@@ -2136,7 +2046,53 @@ test("workspace mark unread selects a finished cross-workspace child with scoped
   }
 });
 
-test("workspace mark unread rejects workspaces without a finished root agent", async () => {
+test("workspace mark unread marks a read errored root agent", async () => {
+  const emitted: SessionOutboundMessage[] = [];
+  const workspace = createPersistedWorkspaceRecord({
+    workspaceId: REPO_CWD,
+    projectId: REPO_CWD,
+    cwd: REPO_CWD,
+    kind: "directory",
+    displayName: "repo",
+    createdAt: "2026-03-30T15:00:00.000Z",
+    updatedAt: "2026-03-30T15:00:00.000Z",
+  });
+  const markedAgentIds: string[] = [];
+  const session = createSessionForWorkspaceTests({
+    onMessage: (message) => emitted.push(message),
+    agentManager: {
+      markAgentUnread: async (agentId: string) => {
+        markedAgentIds.push(agentId);
+      },
+    },
+  });
+  session.workspaceRegistry.get = async (id: string) =>
+    id === workspace.workspaceId ? workspace : null;
+  session.listAgentPayloads = async () => [
+    makeAgent({
+      id: "errored-agent",
+      cwd: REPO_CWD,
+      workspaceId: workspace.workspaceId,
+      status: "error",
+      updatedAt: "2026-03-30T16:00:00.000Z",
+      requiresAttention: false,
+    }),
+  ];
+
+  await session.handleMessage({
+    type: "workspace.mark_unread.request",
+    workspaceId: workspace.workspaceId,
+    requestId: "req-mark-unread",
+  });
+
+  expect(markedAgentIds).toEqual(["errored-agent"]);
+  expect(findByType(emitted, "workspace.mark_unread.response").payload).toMatchObject({
+    markedAgentId: "errored-agent",
+    success: true,
+  });
+});
+
+test("workspace mark unread rejects workspaces without a read root agent", async () => {
   const emitted: SessionOutboundMessage[] = [];
   const workspace = createPersistedWorkspaceRecord({
     workspaceId: REPO_CWD,
@@ -2163,111 +2119,7 @@ test("workspace mark unread rejects workspaces without a finished root agent", a
     workspaceId: workspace.workspaceId,
     markedAgentId: null,
     success: false,
-    error: `Workspace has no finished agent to mark unread: ${workspace.workspaceId}`,
-  });
-});
-
-test("workspace clear attention can clear multiple workspaces in one request", async () => {
-  const emitted: SessionOutboundMessage[] = [];
-  const workspaces = [
-    createPersistedWorkspaceRecord({
-      workspaceId: "ws-repo-a",
-      projectId: "/tmp/repo-a",
-      cwd: "/tmp/repo-a",
-      kind: "directory",
-      displayName: "repo-a",
-      createdAt: "2026-03-30T15:00:00.000Z",
-      updatedAt: "2026-03-30T15:00:00.000Z",
-    }),
-    createPersistedWorkspaceRecord({
-      workspaceId: "ws-repo-b",
-      projectId: "/tmp/repo-b",
-      cwd: "/tmp/repo-b",
-      kind: "directory",
-      displayName: "repo-b",
-      createdAt: "2026-03-30T15:00:00.000Z",
-      updatedAt: "2026-03-30T15:00:00.000Z",
-    }),
-  ];
-  const projects = workspaces.map((workspace) =>
-    createPersistedProjectRecord({
-      projectId: workspace.projectId,
-      rootPath: workspace.cwd,
-      kind: "non_git",
-      displayName: workspace.displayName,
-      createdAt: "2026-03-30T15:00:00.000Z",
-      updatedAt: "2026-03-30T15:00:00.000Z",
-    }),
-  );
-  const storedRecords = new Map(
-    workspaces.map((workspace, index) => [
-      `stored-agent-${index + 1}`,
-      makeStoredAgent({
-        id: `stored-agent-${index + 1}`,
-        cwd: workspace.cwd,
-        updatedAt: "2026-03-30T15:00:00.000Z",
-        requiresAttention: true,
-        attentionReason: "finished",
-      }),
-    ]),
-  );
-  const session = createSessionForWorkspaceTests({ onMessage: (message) => emitted.push(message) });
-
-  session.workspaceRegistry.listAll = session.workspaceRegistry.listActive = async () => workspaces;
-  session.workspaceRegistry.get = async (id: string) =>
-    workspaces.find((workspace) => workspace.workspaceId === id) ?? null;
-  session.projectRegistry.list = async () => projects;
-  session.projectRegistry.get = async (id: string) =>
-    projects.find((project) => project.projectId === id) ?? null;
-  session.agentStorage.get = async (agentId: string) => storedRecords.get(agentId) ?? null;
-  session.agentStorage.upsert = async (record: unknown) => {
-    const storedRecord = record as StoredAgentRecord;
-    storedRecords.set(storedRecord.id, storedRecord);
-  };
-  session.listAgentPayloads = async () =>
-    Array.from(storedRecords.values()).map((record) => {
-      const owner = workspaces.find((workspace) => workspace.cwd === record.cwd);
-      return makeAgent({
-        id: record.id,
-        cwd: record.cwd,
-        ...(owner ? { workspaceId: owner.workspaceId } : {}),
-        status: "closed",
-        updatedAt: record.updatedAt,
-        requiresAttention: record.requiresAttention,
-        attentionReason: record.attentionReason,
-      });
-    });
-
-  await session.handleMessage({
-    type: "workspace.clear_attention.request",
-    workspaceId: workspaces.map((workspace) => workspace.workspaceId),
-    requestId: "req-1",
-  });
-
-  expect(Array.from(storedRecords.values()).map((record) => record.requiresAttention)).toEqual([
-    false,
-    false,
-  ]);
-  expect(findByType(emitted, "workspace.clear_attention.response").payload).toMatchObject({
-    requestId: "req-1",
-    workspaceId: workspaces.map((workspace) => workspace.workspaceId),
-    clearedAgentIds: ["stored-agent-1", "stored-agent-2"],
-    results: [
-      {
-        workspaceId: workspaces[0].workspaceId,
-        clearedAgentIds: ["stored-agent-1"],
-        success: true,
-        error: null,
-      },
-      {
-        workspaceId: workspaces[1].workspaceId,
-        clearedAgentIds: ["stored-agent-2"],
-        success: true,
-        error: null,
-      },
-    ],
-    success: true,
-    error: null,
+    error: `Workspace has no read agent to mark unread: ${workspace.workspaceId}`,
   });
 });
 

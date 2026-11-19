@@ -20,6 +20,7 @@ import {
   type AgentToolCallData,
   type StreamItem,
 } from "@/types/stream";
+import type { UnsettledTurn } from "@/timeline/turn-liveness";
 import { normalizeAgentSnapshot } from "@/utils/agent-snapshots";
 import { clearLegacyReplicaCache } from "./legacy-cleanup";
 import {
@@ -67,6 +68,8 @@ export interface CachedTimeline {
   items: StreamItem[];
   range: AgentTimelineCursorState | null;
   hasOlder: boolean;
+  /** Set when these messages were captured while a turn was open and not yet caught up. */
+  unsettledTurn?: UnsettledTurn;
 }
 
 const PERSIST_DELAY_MS = 1_000;
@@ -240,6 +243,7 @@ const StoredAgentSnapshotSchema = z.strictObject({
   updatedAt: IsoDateSchema,
   lastUserMessageAt: IsoDateSchema.nullable(),
   status: AgentStatusSchema,
+  backgroundWork: z.object({ count: z.number().int().nonnegative() }).optional(),
   activeTurn: z
     .strictObject({
       turnId: z.string(),
@@ -308,6 +312,7 @@ const WorkspaceGitRuntimeSchema = z
   .optional();
 
 const StoredWorkspaceSchema = z.strictObject({
+  parentWorkspaceId: z.string().optional(),
   // Require both keys: a cursor without these values would preserve the wrong sort on reconnect.
   createdAt: IsoDateSchema.nullable(),
   lastUserMessageAt: IsoDateSchema.nullable(),
@@ -363,6 +368,9 @@ const StoredTimelineSchema = z.strictObject({
     })
     .nullable(),
   hasOlder: z.boolean(),
+  unsettledTurn: z
+    .strictObject({ turnId: z.string().nullable(), startedAt: IsoDateSchema.nullable() })
+    .optional(),
 });
 
 type StoredAgent = z.infer<typeof StoredAgentSchema>;
@@ -419,6 +427,16 @@ function deserializeTimeline(stored: StoredTimeline | null): CachedTimeline | nu
     items: stored.items.map(deserializeTimelineItem),
     range: stored.range,
     hasOlder: stored.hasOlder,
+    ...(stored.unsettledTurn
+      ? {
+          unsettledTurn: {
+            turnId: stored.unsettledTurn.turnId,
+            startedAt: stored.unsettledTurn.startedAt
+              ? new Date(stored.unsettledTurn.startedAt)
+              : null,
+          },
+        }
+      : {}),
   };
 }
 
@@ -521,6 +539,9 @@ function serializeTimelineItem(item: StreamItem): StoredTimelineItem | null {
         version: item.version,
         data: item.data,
       };
+    // A folded turn's summary row is presentation, not timeline.
+    case "turn_summary":
+      return null;
   }
 }
 
@@ -707,6 +728,7 @@ function serializeAgent(agent: Agent): StoredAgent {
     labels: agent.labels,
     ...(agent.background ? { background: true } : {}),
     requiresAttention: agent.requiresAttention ?? false,
+    backgroundWork: agent.backgroundWork,
     attentionReason: agent.attentionReason ?? null,
     attentionTimestamp: agent.attentionTimestamp?.toISOString() ?? null,
     archivedAt: agent.archivedAt?.toISOString() ?? null,
@@ -750,6 +772,7 @@ function restoreWorkspace(stored: StoredWorkspace): WorkspaceDescriptor {
 
 function serializeWorkspace(workspace: WorkspaceDescriptor): StoredWorkspace {
   return {
+    parentWorkspaceId: workspace.parentWorkspaceId,
     createdAt: workspace.createdAt?.toISOString() ?? null,
     lastUserMessageAt: workspace.lastUserMessageAt?.toISOString() ?? null,
     id: workspace.id,
@@ -850,6 +873,14 @@ function serializeTimeline(timeline: CachedTimeline): StoredTimeline | null {
       ? { epoch: range.epoch, startSeq: range.startSeq, endSeq: range.endSeq }
       : null,
     hasOlder: canPersistCoverage ? timeline.hasOlder : false,
+    ...(timeline.unsettledTurn
+      ? {
+          unsettledTurn: {
+            turnId: timeline.unsettledTurn.turnId,
+            startedAt: timeline.unsettledTurn.startedAt?.toISOString() ?? null,
+          },
+        }
+      : {}),
   };
 }
 

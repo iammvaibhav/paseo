@@ -70,6 +70,10 @@ import {
   useAgentToolCallExpansion,
   useExpandedToolCallGroups,
 } from "@/tool-calls/expansion-context";
+import {
+  UserMessageExpansionContext,
+  useAgentUserMessageExpansion,
+} from "@/components/user-message/expansion-context";
 import { ToolCallSheetProvider } from "@/components/tool-call-sheet";
 import { anchorHistoryGaps, createStreamPresentation } from "./presentation";
 import { OverviewToolCallGroupView } from "@/tool-calls/detail-level/overview/view";
@@ -298,6 +302,8 @@ export interface AgentStreamViewProps {
   turnPresentation: TurnPresentation;
   routeBottomAnchorRequest?: BottomAnchorRouteRequest | null;
   isAuthoritativeHistoryReady?: boolean;
+  isInitialHistoryLoading?: boolean;
+  revealInitialHistory?: boolean;
   /** Tail space required by a transparent overlay rendered at the bottom edge. */
   bottomOverlayTailClearance?: number;
   /** Bottom offset required for controls floating above that overlay. */
@@ -425,6 +431,8 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       turnPresentation,
       routeBottomAnchorRequest = null,
       isAuthoritativeHistoryReady = true,
+      isInitialHistoryLoading,
+      revealInitialHistory,
       bottomOverlayTailClearance = 0,
       bottomOverlayControlClearance,
       toast,
@@ -466,6 +474,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     // verbose mode — never the raw prompt.
     const [verbose] = useMissionControlVerbose();
     const toolCallExpansion = useAgentToolCallExpansion(agentId);
+    const userMessageExpansion = useAgentUserMessageExpansion(agentId);
     const expandedToolCallGroups = useExpandedToolCallGroups(toolCallExpansion);
     const [expandedTurnHostIds, setExpandedTurnHostIds] = useState<ReadonlySet<string>>(new Set());
 
@@ -557,10 +566,6 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       loadOlder: loadRemoteOlder,
       gaps: historyGaps,
     } = paginationState;
-    useEffect(() => {
-      setExpandedInlineToolCallIds(new Set());
-      setExpandedTurnHostIds(new Set());
-    }, [agentId]);
 
     const isActive = useRetainedPanelActive();
     const opensInBrowserEditor = useDesktopBrowserEditorUrl(resolvedServerId) !== null;
@@ -629,7 +634,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     useEffect(() => {
       if (!isActive) inlinePathOpener.cancel();
       return () => inlinePathOpener.cancel();
-    }, [inlinePathOpener, isActive, agentId]);
+    }, [inlinePathOpener, isActive]);
     const handleInlinePathPress = useStableEvent(
       (target: InlinePathTarget, disposition: OpenFileDisposition) => {
         if (isActive) void inlinePathOpener.open(target, disposition);
@@ -751,7 +756,6 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       revealLoadedHistory,
       loadOlder,
     } = useStreamHistoryWindow({
-      agentId,
       items: presentation.tail,
       loadRemoteOlder,
     });
@@ -912,18 +916,16 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       }
       return revealLoadedHistory(messageId);
     });
-    // Read through stable events so a collapse rerun does not change the renderer identity;
-    // rows whose turn state changed are revised through `historyRowRevision`.
-    const getCollapsedTurn = useStableEvent((hostId: string) =>
-      presentation.turns.turnsByHostId.get(hostId),
-    );
+    // Read through a stable event so a collapse rerun does not change the renderer identity;
+    // nested rows are revised through `historyRowRevision`.
     const getTurnIndent = useStableEvent((layoutItem: StreamLayoutItem): TurnIndent => {
       const { nestedItemIds } = presentation.turns;
-      if (nestedItemIds.has(layoutItem.item.id)) {
+      const { item } = layoutItem;
+      if (nestedItemIds.has(item.id)) {
         const below = layoutItem.belowItem;
         return below && nestedItemIds.has(below.id) ? "nested" : "lastNested";
       }
-      return getCollapsedTurn(layoutItem.item.id)?.expanded ? "openedHost" : "none";
+      return item.kind === "turn_summary" && item.expanded ? "openedHost" : "none";
     });
 
     const setToolCallGroupExpanded = toolCallExpansion.setGroupExpanded;
@@ -938,45 +940,31 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
 
     const renderUserMessageItem = useCallback(
       (layoutItem: StreamLayoutItem, item: Extract<StreamItem, { kind: "user_message" }>) => {
-        const collapsedTurn = getCollapsedTurn(item.id);
-        // A folded turn keeps its summary line under whatever its input renders as.
-        const withTurnSummary = (row: ReactNode) =>
-          collapsedTurn ? (
-            <>
-              {row}
-              <TurnSummaryLine turn={collapsedTurn} onExpandedChange={setTurnExpanded} />
-            </>
-          ) : (
-            row
-          );
         // Machinery rows (stall status-ask nudges) are the tracker's prompts,
         // not user prose: verbose mode shows a muted one-line placeholder so
         // the row stays auditable without leaking the raw nudge text; normal
         // mode renders nothing (matching the pre-row behavior — steers were
         // never visible in the chat).
         if (item.classification === "machinery") {
-          return withTurnSummary(
-            verbose ? <MachineryMessageRow timestamp={item.timestamp.getTime()} /> : null,
-          );
+          return verbose ? <MachineryMessageRow timestamp={item.timestamp.getTime()} /> : null;
         }
         // Voice-mirrored pure Q&A rows (heard utterances mirrored into the
         // Commander thread by the voice mirror RPC) are quiet: verbose mode
         // shows the spoken words, normal mode renders nothing. "dispatch"
         // mirror rows stay visible — they asked the fleet to do something.
         if (item.voiceMirrorKind === "qa" && !verbose) {
-          return withTurnSummary(null);
+          return null;
         }
         // `<paseo-system>` envelopes (fleet digests, schedule fires, notify-on-
         // finish) are system-injected context, not user prose: render them as
         // the same collapsed divider the Mission Control thread uses so the
         // raw envelope text never leaks into any transcript.
         if (isPaseoSystemMessage(item.text)) {
-          return withTurnSummary(
-            <PaseoSystemRow text={item.text} timestamp={item.timestamp.getTime()} />,
-          );
+          return <PaseoSystemRow text={item.text} timestamp={item.timestamp.getTime()} />;
         }
-        const message = (
+        return (
           <UserMessage
+            itemId={item.id}
             serverId={resolvedServerId}
             agentId={agentId}
             messageId={item.messageId}
@@ -996,18 +984,8 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
             agentModeLabel={getAgentModeDefinition(item.agentMode)?.label}
           />
         );
-        return withTurnSummary(message);
       },
-      [
-        context.capabilities,
-        agentId,
-        client,
-        getCollapsedTurn,
-        pendingClientMessageIds,
-        resolvedServerId,
-        setTurnExpanded,
-        verbose,
-      ],
+      [context.capabilities, agentId, client, pendingClientMessageIds, resolvedServerId, verbose],
     );
 
     const renderAssistantMessageItem = useCallback(
@@ -1218,17 +1196,10 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
             return renderToolCallItem(layoutItem, item);
 
           case "tool_call":
-            return (
-              <>
-                {renderToolCallItem(layoutItem, item)}
-                {getCollapsedTurn(item.id) ? (
-                  <TurnSummaryLine
-                    turn={getCollapsedTurn(item.id)!}
-                    onExpandedChange={setTurnExpanded}
-                  />
-                ) : null}
-              </>
-            );
+            return renderToolCallItem(layoutItem, item);
+
+          case "turn_summary":
+            return <TurnSummaryLine item={item} onExpandedChange={setTurnExpanded} />;
 
           case "notification":
             return <Notification level={item.level} message={item.message} />;
@@ -1267,7 +1238,6 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         renderUserMessageItem,
         renderAssistantMessageItem,
         renderToolCallItem,
-        getCollapsedTurn,
         setTurnExpanded,
         resolvedServerId,
       ],
@@ -1522,19 +1492,17 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     const streamScrollEnabled =
       !streamRenderStrategy.shouldDisableParentScrollOnInlineDetailsExpansion() ||
       expandedInlineToolCallIds.size === 0;
-    const { nestedItemIds, updatedHostIds: updatedTurnHostIds } = presentation.turns;
+    const { nestedItemIds } = presentation.turns;
     const historyRowRevision = useMemo(
       () => ({
         contentById: {
-          has: (id: string) =>
-            presentation.historyGroupUpdatesByHostId.has(id) || updatedTurnHostIds.has(id),
+          has: (id: string) => presentation.historyGroupUpdatesByHostId.has(id),
         },
         displayStateById: {
           // An opened lone call also marks its future group open; that row stays unrevised
           // until a group actually forms there.
           has: (id: string) =>
             (expandedToolCallGroups.hasChoice(id) && getToolCallGroup(id) !== undefined) ||
-            expandedTurnHostIds.has(id) ||
             nestedItemIds.has(id),
         },
         globalDisplayState: isMobile,
@@ -1542,11 +1510,9 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       [
         expandedToolCallGroups,
         getToolCallGroup,
-        expandedTurnHostIds,
         isMobile,
         nestedItemIds,
         presentation.historyGroupUpdatesByHostId,
-        updatedTurnHostIds,
       ],
     );
 
@@ -1569,31 +1535,35 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
             <AssistantSelectionCopySurface style={stylesheet.container} selectionAsk={selectionAsk}>
               <MessageOuterSpacingProvider disableOuterSpacing>
                 <ToolCallExpansionContext.Provider value={toolCallExpansion}>
-                  {streamRenderStrategy.render({
-                    readingRowReplacements: presentation.readingRowReplacements,
-                    agentId,
-                    segments: renderModel.segments,
-                    historyRowRevision,
-                    liveHeadRowRevision: expandedToolCallGroups,
-                    boundary,
-                    renderers,
-                    listEmptyComponent,
-                    viewportRef,
-                    routeBottomAnchorRequest,
-                    isAuthoritativeHistoryReady,
-                    onNearBottomChange: nearBottom.set,
-                    onReadingPositionChange: handleReadingPositionChange,
-                    onNearHistoryStart: loadOlder,
-                    isLoadingOlderHistory: isLoadingOlder,
-                    hasOlderHistory: hasOlder,
-                    olderHistoryProgressKey: progressKey,
-                    scrollEnabled: streamScrollEnabled,
-                    listStyle: stylesheet.list,
-                    baseListContentContainerStyle: stylesheet.listContentContainer,
-                    forwardListContentContainerStyle: stylesheet.forwardListContentContainer,
-                    keyExtractor: streamItemKeyExtractor,
-                    estimateItemSize: estimateStreamRowHeight,
-                  })}
+                  <UserMessageExpansionContext.Provider value={userMessageExpansion}>
+                    {streamRenderStrategy.render({
+                      readingRowReplacements: presentation.readingRowReplacements,
+                      agentId,
+                      segments: renderModel.segments,
+                      historyRowRevision,
+                      liveHeadRowRevision: expandedToolCallGroups,
+                      boundary,
+                      renderers,
+                      listEmptyComponent,
+                      viewportRef,
+                      routeBottomAnchorRequest,
+                      isAuthoritativeHistoryReady,
+                      isInitialHistoryLoading,
+                      revealInitialHistory,
+                      onNearBottomChange: nearBottom.set,
+                      onReadingPositionChange: handleReadingPositionChange,
+                      onNearHistoryStart: loadOlder,
+                      isLoadingOlderHistory: isLoadingOlder,
+                      hasOlderHistory: hasOlder,
+                      olderHistoryProgressKey: progressKey,
+                      scrollEnabled: streamScrollEnabled,
+                      listStyle: stylesheet.list,
+                      baseListContentContainerStyle: stylesheet.listContentContainer,
+                      forwardListContentContainerStyle: stylesheet.forwardListContentContainer,
+                      keyExtractor: streamItemKeyExtractor,
+                      estimateItemSize: estimateStreamRowHeight,
+                    })}
+                  </UserMessageExpansionContext.Provider>
                 </ToolCallExpansionContext.Provider>
               </MessageOuterSpacingProvider>
               <ChatOutlineRail
@@ -1659,7 +1629,8 @@ function collectAgentSetupDiffs(left: AgentScreenAgent, right: AgentScreenAgent)
   if (left.runtimeInfo?.thinkingOptionId !== right.runtimeInfo?.thinkingOptionId) {
     reasons.push("agent.runtimeInfo.thinkingOptionId");
   }
-  if (left.features !== right.features) reasons.push("agent.features");
+  if (left.options !== right.options) reasons.push("agent.options");
+  if (left.controls !== right.controls) reasons.push("agent.controls");
   return reasons;
 }
 
@@ -1724,6 +1695,12 @@ function agentStreamViewPropsEqual(
   }
   if (left.isAuthoritativeHistoryReady !== right.isAuthoritativeHistoryReady) {
     reasons.push("isAuthoritativeHistoryReady");
+  }
+  if (left.isInitialHistoryLoading !== right.isInitialHistoryLoading) {
+    reasons.push("isInitialHistoryLoading");
+  }
+  if (left.revealInitialHistory !== right.revealInitialHistory) {
+    reasons.push("revealInitialHistory");
   }
   if (left.bottomOverlayTailClearance !== right.bottomOverlayTailClearance) {
     reasons.push("bottomOverlayTailClearance");

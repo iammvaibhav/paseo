@@ -23,6 +23,8 @@ export interface SidebarAgentBucketInput {
   stoppedBy?: "user" | "machinery" | "system" | null;
   /** Stored review state when the caller can see it; otherwise derived. */
   reviewState?: "none" | "ready" | "done" | "cleared";
+  /** Background work the agent still owns after its turn ended. */
+  backgroundWork?: { count: number } | null;
 }
 
 /** Canonical bucket to the shared sidebar/workspace visual vocabulary. */
@@ -63,7 +65,13 @@ export function deriveSidebarLifecycleBucket(input: SidebarAgentBucketInput): Li
 }
 
 export function deriveSidebarStateBucket(input: SidebarAgentBucketInput): SidebarStateBucket {
-  return LIFECYCLE_TO_SIDEBAR[deriveSidebarLifecycleBucket(input)];
+  const bucket = LIFECYCLE_TO_SIDEBAR[deriveSidebarLifecycleBucket(input)];
+  // Background work keeps the agent running after its turn ends, as in
+  // deriveAgentStateBucket; needs-input still outranks it.
+  if ((input.backgroundWork?.count ?? 0) > 0 && (bucket === "attention" || bucket === "done")) {
+    return "running";
+  }
+  return bucket;
 }
 
 // Most urgent first, for collapsing a project's workspaces into one badge. This is

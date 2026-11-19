@@ -274,7 +274,7 @@ export const AgentGridDraftTile = memo(function AgentGridDraftTile({
           modeId: composerState?.selectedMode || undefined,
           model: composerState?.effectiveModelId || undefined,
           thinkingOptionId: composerState?.effectiveThinkingOptionId || undefined,
-          featureValues: composerState?.featureValues,
+          providerOptions: composerState?.providerOptions,
         });
 
         const wirePayload = splitComposerAttachmentsForSubmit(attachments, {

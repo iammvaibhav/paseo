@@ -25,6 +25,7 @@ export interface LoadOlderAgentHistoryClient {
       limit: number;
       projection: "projected";
       mergeWindow?: true;
+      timeout: number;
     },
   ) => Promise<unknown>;
 }
@@ -51,7 +52,7 @@ export async function loadOlderAgentHistory(
   const { client, cursor, hasOlder, isLoadingOlder, setInFlight, toast, logger, failedMessage } =
     deps;
   if (isLoadingOlder) {
-    return true;
+    return false;
   }
   if (!client || !cursor || !hasOlder) {
     return false;
@@ -59,13 +60,17 @@ export async function loadOlderAgentHistory(
 
   setInFlight(true);
   try {
-    await client.fetchAgentTimeline(agentId, planTimelineOlderFetch(cursor));
+    await client.fetchAgentTimeline(agentId, {
+      ...planTimelineOlderFetch(cursor),
+      timeout: 10_000,
+    });
   } catch (error) {
     (logger ?? console).warn("[Timeline] failed to load older agent history", agentId, error);
     toast?.show(failedMessage ?? i18n.t("loadOlderHistory.failed"), {
       durationMs: 2200,
       testID: "agent-load-older-history-toast",
     });
+    return false;
   } finally {
     setInFlight(false);
   }

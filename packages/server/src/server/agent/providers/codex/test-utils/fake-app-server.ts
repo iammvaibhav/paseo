@@ -14,7 +14,7 @@ interface FakeSubAgentActivity {
   callId: string;
   threadId: string;
   agentPath: string;
-  kind: "started" | "interacted" | "interrupted";
+  kind: "started" | "interacted" | "interrupted" | "completed";
   parentThreadId?: string;
 }
 interface FakeLegacyCommand {
@@ -79,6 +79,14 @@ export interface FakeCodexAppServer {
     status?: "completed" | "failed" | "interrupted";
     error?: { message: string } | null;
   }): void;
+  reportsTurnError(params: {
+    threadId: string;
+    turnId: string;
+    message: string;
+    additionalDetails?: string;
+    willRetry: boolean;
+  }): void;
+  warns(params: { threadId: string | null; message: string }): void;
   startsSubAgent(params: {
     callId: string;
     threadId: string;
@@ -146,6 +154,10 @@ export function createCodexAppServerChildProcess(): CodexAppServerChildProcess {
     exitCode: null,
     signalCode: null,
   }) as CodexAppServerChildProcess;
+  // A real ChildProcess closes its stdio after exit, then emits close.
+  child.once("exit", (code, signal) => {
+    queueMicrotask(() => child.emit("close", code, signal));
+  });
   child.kill = ((signal?: NodeJS.Signals | number) => {
     queueMicrotask(() => child.emit("exit", null, signal ?? null));
     return true;
@@ -175,6 +187,7 @@ export function createFakeCodexAppServer(
     "skills/list": () => ({ data: [] }),
     "thread/start": () => ({ thread: { id: "thread-1" } }),
     "thread/loaded/list": () => ({ data: [] }),
+    "thread/backgroundTerminals/list": () => ({ data: [], nextCursor: null }),
     "thread/resume": () => ({}),
     "turn/start": () => ({}),
     "thread/fork": (params) => ({
@@ -431,6 +444,21 @@ export function createFakeCodexAppServer(
           },
         })}\n`,
       );
+    },
+    reportsTurnError(params) {
+      writeNotification("error", {
+        threadId: params.threadId,
+        turnId: params.turnId,
+        willRetry: params.willRetry,
+        error: {
+          message: params.message,
+          codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: null } },
+          additionalDetails: params.additionalDetails ?? null,
+        },
+      });
+    },
+    warns(params) {
+      writeNotification("warning", { threadId: params.threadId, message: params.message });
     },
     startsSubAgent(params) {
       writeSubAgentActivity("item/completed", { ...params, kind: "started" });

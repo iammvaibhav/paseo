@@ -45,7 +45,6 @@ function agent(input: {
     cwd: "/repo",
     workspaceId: input.workspaceId,
     model: null,
-    features: [],
     thinkingOptionId: null,
     effectiveThinkingOptionId: null,
     requiresAttention: false,

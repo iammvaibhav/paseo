@@ -264,8 +264,14 @@ const MAX_INACTIVE_PER_PROJECT = 5;
  */
 function isAgentTrulyActive(agent: AggregatedAgent): boolean {
   // `bucket` is the daemon's lifecycle classification; `turn.phase` is the
-  // client's live signal, which opens before a new bucket arrives.
-  return agent.turn.phase === "open" || agent.bucket === "needs_you" || agent.bucket === "running";
+  // client's live signal, which opens before a new bucket arrives. Background
+  // work keeps an agent active after its turn ends.
+  return (
+    agent.turn.phase === "open" ||
+    agent.bucket === "needs_you" ||
+    agent.bucket === "running" ||
+    (agent.backgroundWork?.count ?? 0) > 0
+  );
 }
 
 function partitionAgentsByActivity(

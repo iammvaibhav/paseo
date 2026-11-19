@@ -347,7 +347,7 @@ export function buildDraftCommandTarget(input: {
   cwd: string;
   effectiveModelId: string;
   effectiveThinkingOptionId: string;
-  featureValues?: Record<string, unknown>;
+  providerOptions?: Record<string, unknown>;
 }): DraftCommandTarget {
   const cwd = input.cwd.trim();
   if (!cwd) {
@@ -367,7 +367,7 @@ export function buildDraftCommandTarget(input: {
     ...(input.effectiveThinkingOptionId
       ? { thinkingOptionId: input.effectiveThinkingOptionId }
       : {}),
-    ...(input.featureValues ? { featureValues: input.featureValues } : {}),
+    ...(input.providerOptions ? { providerOptions: input.providerOptions } : {}),
   };
   return { status: "ready", config };
 }
