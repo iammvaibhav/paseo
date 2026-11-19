@@ -6,6 +6,7 @@ import type { ActiveWorkspaceSelection } from "@/stores/navigation-active-worksp
 import type { WorkspaceDescriptor } from "@/stores/session-store";
 import { redirectIfArchivingActiveWorkspace } from "@/utils/sidebar-workspace-archive-redirect";
 import { useWorkspaceArchive } from "@/workspace/use-workspace-archive";
+import type { WorkspaceArchiveTarget } from "@/workspace/workspace-archive";
 
 export interface UseWorkspaceScreenArchiveInput {
   serverId: string;
@@ -103,20 +104,19 @@ export function useWorkspaceScreenArchive({
   const workspaceId = workspace?.id ?? "";
   const warningLabels = useMemo(() => getWorktreeArchiveWarningLabels(t), [t]);
 
-  const redirectAfterArchive = useCallback(() => {
-    if (!workspaceId) {
-      return;
-    }
-    redirectIfArchivingActiveWorkspace({ serverId, workspaceId, activeWorkspaceSelection });
-  }, [activeWorkspaceSelection, serverId, workspaceId]);
+  const redirectAfterArchive = useCallback(
+    (archived: WorkspaceArchiveTarget) => {
+      redirectIfArchivingActiveWorkspace({ ...archived, activeWorkspaceSelection });
+    },
+    [activeWorkspaceSelection],
+  );
 
   const controller = useWorkspaceArchive({
     serverId,
     workspaceId,
     workspaceKind: workspace?.workspaceKind ?? "directory",
+    workspaceDirectory: workspace?.workspaceDirectory ?? "",
     name: workspace?.name ?? fallbackName,
-    isDirty: archiveRisk.isDirty,
-    aheadOfOrigin: archiveRisk.aheadOfOrigin,
     diffStat: workspace?.diffStat ?? null,
     warningLabels,
     onSetHiding: setIsHidingWorkspace,

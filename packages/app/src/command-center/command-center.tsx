@@ -24,11 +24,12 @@ import {
   useSyncExternalStore,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { Check, ChevronRight, Folder, FolderTree, X } from "lucide-react-native";
+import { Check, ChevronRight, FolderTree } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { BottomSheetFlatList, type BottomSheetFlatListMethods } from "@gorhom/bottom-sheet";
-import { useAgentDescriptor } from "@/agent-presentation";
 import { resolveAgentLabel } from "@/agent-presentation/title";
+import { useArchivedWorkspaceSearch, type ArchivedWorkspace } from "@/archived-workspaces";
+import { ArchivedBadge } from "@/components/archived-badge";
 import { StatusIcon } from "@/components/status-icon";
 import { useWorkspaceStatus } from "@/workspace-status";
 import type { SurfaceBackdrop } from "@/styles/surface-backdrop";
@@ -36,12 +37,14 @@ import type { Theme } from "@/styles/theme";
 import { HighlightedText, type HighlightedTextProps } from "@/components/ui/highlighted-text";
 import { findHighlightRanges } from "@/components/ui/highlighted-text-segments";
 import { MaterialFileIcon } from "@/components/material-file-icon";
+import { useProviderIcon } from "@/components/provider-icons";
 import { ProjectIconView } from "@/components/project-icon-view";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import {
   EditingTextInput as TextInput,
   type EditingTextInputHandle,
 } from "@/components/ui/text-input";
+import { SegmentedControl, type SegmentedControlOption } from "@/components/ui/segmented-control";
 import { Shortcut } from "@/components/ui/shortcut";
 import {
   IsolatedBottomSheetModal,
@@ -49,18 +52,20 @@ import {
 } from "@/components/ui/isolated-bottom-sheet-modal";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { isNative, isWeb } from "@/constants/platform";
-import { useAggregatedAgents } from "@/hooks/use-aggregated-agents";
+import { useAggregatedAgents, type AggregatedAgent } from "@/hooks/use-aggregated-agents";
 import { useProjects } from "@/hooks/use-projects";
 import { useTimeAgo } from "@/hooks/use-time-ago";
 import { createProjectIconTarget } from "@/projects/icon-target";
 import { useProjectIcons } from "@/projects/icons";
 import { OverlayLayerProvider, useGlobalOverlayLayer } from "@/lib/overlay-root";
-import { useHosts } from "@/runtime/host-runtime";
+import { useHostRuntimeConnectionStatuses, useHosts } from "@/runtime/host-runtime";
+import { useHydratedWorkspaceServerIds } from "@/stores/session-store-hooks";
+import { useKeyboardShortcutsStore } from "@/stores/keyboard-shortcuts-store";
+import { useSidebarViewStore } from "@/stores/sidebar-view-store";
 import {
-  useKeyboardShortcutsStore,
-  type CommandCenterScope,
-} from "@/stores/keyboard-shortcuts-store";
-import { navigateToWorkspace } from "@/stores/navigation-active-workspace-store";
+  navigateToWorkspace,
+  useActiveWorkspaceSelection,
+} from "@/stores/navigation-active-workspace-store";
 import { revealProjectInSidebar } from "@/stores/sidebar-reveal-store";
 import { useKeyboardActionDispatcher } from "@/keyboard/keyboard-action-dispatcher-context";
 import {
@@ -69,8 +74,8 @@ import {
 } from "@/utils/command-center-focus-restore";
 import { focusWithRetries } from "@/utils/web-focus";
 import { navigateToAgent } from "@/utils/navigate-to-agent";
-import { shortenPath } from "@/utils/shorten-path";
 import { projectIconPlaceholderLabelFromDisplayName } from "@/utils/project-display-name";
+import { getProjectSummaryForHostProject } from "@/utils/projects";
 import {
   COMMAND_CENTER_LINE_HEIGHT,
   COMMAND_CENTER_LIST_METRICS,
@@ -78,22 +83,24 @@ import {
   type CommandCenterListMetrics,
 } from "./list-metrics";
 import { useCommandCenterContributions } from "./provider";
-import { filterAndRankWorkspaces } from "./workspace-search";
+import { createWorkspaceRanker } from "./workspace-search";
 import {
-  buildContributionSections,
-  filterAndRankBuiltInResults,
   joinSubtitleParts,
-  PINNED_SECTION_BAND,
   projectCommandCenterRows,
-  type CommandCenterAgentResult,
   type CommandCenterFileResult,
   type CommandCenterListRow,
   type CommandCenterProjectResult,
   type CommandCenterResult,
-  type CommandCenterResultSection,
-  type CommandCenterSearchFields,
+  type CommandCenterWorkspaceAgent,
   type CommandCenterWorkspaceResult,
 } from "./results";
+import { buildCommandCenterSections } from "./sections";
+import {
+  availableCommandCenterTabs,
+  resolveCommandCenterTab,
+  rotateCommandCenterTab,
+  type CommandCenterTab,
+} from "./tabs";
 import { createCommandCenterInteraction, type CommandCenterInteraction } from "./interaction";
 import { useWorkspaceFileSearch } from "./workspace-file-search";
 import { glassFloatingStyle } from "@/styles/theme";
@@ -104,7 +111,6 @@ const ThemedBottomSheetTextInput = withUnistyles(TextInput, (theme) => ({
 const ThemedTextInput = withUnistyles(TextInput, (theme) => ({
   placeholderTextColor: theme.colors.foregroundMuted,
 }));
-const ThemedFolder = withUnistyles(Folder, (theme) => ({ color: theme.colors.foregroundMuted }));
 const ThemedFolderTree = withUnistyles(FolderTree, (theme) => ({
   color: theme.colors.foregroundMuted,
 }));
@@ -112,7 +118,6 @@ const ThemedCheck = withUnistyles(Check, (theme) => ({ color: theme.colors.foreg
 const ThemedChevronRight = withUnistyles(ChevronRight, (theme) => ({
   color: theme.colors.foregroundMuted,
 }));
-const ThemedX = withUnistyles(X, (theme) => ({ color: theme.colors.foregroundMuted }));
 const ThemedLoadingSpinner = withUnistyles(LoadingSpinner, (theme) => ({
   color: theme.colors.foregroundMuted,
 }));
@@ -126,14 +131,6 @@ function compareProjectsByTitle(
   return left.title.localeCompare(right.title, undefined, { numeric: true, sensitivity: "base" });
 }
 
-function projectSearchFields(result: CommandCenterProjectResult): CommandCenterSearchFields {
-  return { visible: [result.title, result.subtitle], hidden: [] };
-}
-/** `cwd` is not rendered, so a path match must never outrank a match on text the user can see. */
-function agentSearchFields(result: CommandCenterAgentResult): CommandCenterSearchFields {
-  return { visible: [result.title, result.subtitle], hidden: [result.agent.cwd] };
-}
-
 function createWorkspaceResultAction(serverId: string, workspaceId: string) {
   return () => {
     clearCommandCenterFocusRestoreElement();
@@ -141,30 +138,73 @@ function createWorkspaceResultAction(serverId: string, workspaceId: string) {
   };
 }
 
-function createAgentResultAction(serverId: string, agentId: string) {
-  return () => {
+function createAgentResultAction(serverId: string) {
+  return (agentId: string) => {
     clearCommandCenterFocusRestoreElement();
     navigateToAgent({ serverId, agentId });
   };
 }
 
-/**
- * Build every pinned row. Deliberately not keyed on `query`: none of this work depends on what
- * was typed. Ordering belongs to `filterAndRankBuiltInResults`, which ranks on every keystroke.
- */
-function useBuiltInRows(open: boolean): {
-  projects: CommandCenterProjectResult[];
-  workspaces: CommandCenterWorkspaceResult[];
-  agents: CommandCenterAgentResult[];
-} {
-  const { t } = useTranslation();
-  const previousRows = useRef(
-    new Map<string, CommandCenterAgentResult | CommandCenterWorkspaceResult>(),
+const NO_WORKSPACE_AGENTS: readonly CommandCenterWorkspaceAgent[] = [];
+
+/** Each workspace's titled agents, most recent first, keyed `serverId:workspaceId`. */
+function groupWorkspaceAgents(
+  agents: readonly AggregatedAgent[],
+): Map<string, CommandCenterWorkspaceAgent[]> {
+  const byWorkspace = new Map<string, CommandCenterWorkspaceAgent[]>();
+  const newestFirst = [...agents].sort(
+    (left, right) => right.lastActivityAt.getTime() - left.lastActivityAt.getTime(),
   );
-  const { agents } = useAggregatedAgents({ demand: open });
-  const { projects } = useProjects({ enabled: open });
-  const showHost = useHosts().length > 1;
-  const isCompact = useIsCompactFormFactor();
+  for (const agent of newestFirst) {
+    const title = resolveAgentLabel(agent.title, agent.name);
+    if (!agent.workspaceId || !title) continue;
+    const key = `${agent.serverId}:${agent.workspaceId}`;
+    const list = byWorkspace.get(key) ?? [];
+    list.push({ id: agent.id, title, provider: agent.provider });
+    byWorkspace.set(key, list);
+  }
+  return byWorkspace;
+}
+
+function createArchivedAgentAction(serverId: string, workspaceId: string) {
+  // Opening on an agent with the tab pinned is what offers Unarchive, as History does.
+  return (agentId: string) => {
+    clearCommandCenterFocusRestoreElement();
+    navigateToAgent({ serverId, agentId, workspaceId, pin: true });
+  };
+}
+
+function titledAgents(
+  agents: readonly { id: string; title: string | null; provider: string }[],
+): CommandCenterWorkspaceAgent[] {
+  return agents.flatMap((agent) => {
+    const title = resolveAgentLabel(agent.title);
+    return title ? [{ id: agent.id, title, provider: agent.provider }] : [];
+  });
+}
+
+interface WorkspaceRows {
+  active: CommandCenterWorkspaceResult[];
+  archived: CommandCenterWorkspaceResult[];
+  /** The workspace list has not loaded yet, so rows are still arriving. */
+  loading: boolean;
+}
+
+/**
+ * Build every workspace row. Deliberately not keyed on `query`: none of this work depends on
+ * what was typed. Ordering belongs to the workspace ranker, which ranks on every keystroke.
+ * Archived rows come from the host's history search, so they change with its results.
+ */
+function useWorkspaceRows(
+  open: boolean,
+  archivedWorkspaces: readonly ArchivedWorkspace[],
+): WorkspaceRows {
+  const previousRows = useRef(new Map<string, CommandCenterWorkspaceResult>());
+  const { agents, isInitialLoad: agentsLoading } = useAggregatedAgents({ demand: open });
+  const { projects, isLoading: projectsLoading } = useProjects({ enabled: open });
+  const hosts = useHosts();
+  const workspacesArriving = useWorkspacesArriving(open, hosts);
+  const showHost = hosts.length > 1;
   const iconTargets = useMemo(
     () =>
       open
@@ -182,42 +222,26 @@ function useBuiltInRows(open: boolean): {
   );
   const iconDataByProjectViewKey = useProjectIcons({ projects: iconTargets });
 
-  return useMemo(() => {
+  const active = useMemo(() => {
     if (!open) {
       previousRows.current.clear();
-      return { projects: [], workspaces: [], agents: [] };
+      return [];
     }
-    const projectRows = projects
-      .map<CommandCenterProjectResult>((project) => ({
-        kind: "project",
-        id: `project:${project.viewKey}`,
-        title: project.projectCustomName || project.projectName,
-        subtitle: joinSubtitleParts([
-          showHost ? project.hosts.map((host) => host.serverName).join(", ") : null,
-          t(
-            `shell.commandCenter.projectWorkspaces.${project.totalWorkspaceCount === 1 ? "one" : "other"}`,
-            { count: project.totalWorkspaceCount },
-          ),
-        ]),
-        // No activity of its own, so recency ranking keeps this alphabetical order.
-        activityAt: null,
-        // Focus goes back to where it was: revealing a project does not navigate anywhere.
-        run: () => revealProjectInSidebar({ projectViewKey: project.viewKey, isCompact }),
-      }))
-      .sort(compareProjectsByTitle);
-    // Built-in IDs identify immutable navigation targets. Reuse their callbacks and unchanged
+    // Workspace IDs identify immutable navigation targets. Reuse their callbacks and unchanged
     // row data so a directory update does not invalidate every mounted ResultRow.
-    const nextRows = new Map<string, CommandCenterAgentResult | CommandCenterWorkspaceResult>();
-    const preserve = <T extends CommandCenterAgentResult | CommandCenterWorkspaceResult>(
-      row: T,
-    ): T => {
+    const nextRows = new Map<string, CommandCenterWorkspaceResult>();
+    const preserve = (row: CommandCenterWorkspaceResult): CommandCenterWorkspaceResult => {
       const previous = previousRows.current.get(row.id);
-      if (previous) row.run = previous.run;
-      const stable = previous && equal(previous, row) ? (previous as T) : row;
+      if (previous) {
+        row.run = previous.run;
+        row.openAgent = previous.openAgent;
+      }
+      const stable = previous && equal(previous, row) ? previous : row;
       nextRows.set(row.id, stable);
       return stable;
     };
-    const allWorkspaces: CommandCenterWorkspaceResult[] = [];
+    const agentsByWorkspace = groupWorkspaceAgents(agents);
+    const rows: CommandCenterWorkspaceResult[] = [];
     for (const project of projects) {
       const workspaceProject = {
         viewKey: project.viewKey,
@@ -227,10 +251,11 @@ function useBuiltInRows(open: boolean): {
       for (const host of project.hosts) {
         for (const workspace of host.workspaces) {
           if (workspace.archivingAt) continue;
-          allWorkspaces.push(
+          const key = `${host.serverId}:${workspace.id}`;
+          rows.push(
             preserve({
               kind: "workspace",
-              id: `workspace:${host.serverId}:${workspace.id}`,
+              id: `workspace:${key}`,
               title: workspace.title ?? workspace.name,
               subtitle: joinSubtitleParts([
                 showHost ? host.serverName : null,
@@ -242,73 +267,123 @@ function useBuiltInRows(open: boolean): {
               project: workspaceProject,
               changeRequestNumber: workspace.changeRequestNumber,
               activityAt: workspace.statusEnteredAt,
+              agents: agentsByWorkspace.get(key) ?? NO_WORKSPACE_AGENTS,
+              matchedAgent: null,
+              archived: false,
+              background: workspace.background,
               run: createWorkspaceResultAction(host.serverId, workspace.id),
+              openAgent: createAgentResultAction(host.serverId),
             }),
           );
         }
       }
     }
-    const workspaceTitleByKey = new Map(
-      allWorkspaces.map((workspace) => [workspace.id.slice("workspace:".length), workspace.title]),
-    );
-    const agentRows = agents.map<CommandCenterAgentResult>((agent) => {
-      const workspaceTitle = agent.workspaceId
-        ? workspaceTitleByKey.get(`${agent.serverId}:${agent.workspaceId}`)
-        : undefined;
-      return preserve({
-        kind: "agent",
-        id: `agent:${agent.serverId}:${agent.id}`,
-        agent,
-        title: resolveAgentLabel(agent.title, agent.name) ?? t("workspace.tabs.loading"),
-        subtitle: joinSubtitleParts([
-          showHost ? agent.serverLabel : null,
-          workspaceTitle ?? shortenPath(agent.cwd),
-        ]),
-        activityAt: agent.lastActivityAt,
-        run: createAgentResultAction(agent.serverId, agent.id),
-      });
-    });
     previousRows.current = nextRows;
-    return { projects: projectRows, workspaces: allWorkspaces, agents: agentRows };
-  }, [agents, iconDataByProjectViewKey, isCompact, open, projects, showHost, t]);
+    return rows;
+  }, [agents, iconDataByProjectViewKey, open, projects, showHost]);
+
+  const archived = useMemo(() => {
+    const activeIds = new Set(active.map((row) => row.id));
+    const hostLabels = new Map(hosts.map((host) => [host.serverId, host.label]));
+    return archivedWorkspaces.flatMap<CommandCenterWorkspaceResult>((workspace) => {
+      const id = `workspace:${workspace.key}`;
+      // The host's history can trail its workspace list; the active row wins.
+      if (activeIds.has(id)) return [];
+      const project = workspace.projectKey
+        ? getProjectSummaryForHostProject(projects, workspace.serverId, workspace.projectKey)
+        : undefined;
+      const projectName = project?.projectName ?? workspace.projectName ?? workspace.name;
+      const openAgent = createArchivedAgentAction(workspace.serverId, workspace.workspaceId);
+      const latestAgentId = workspace.agents[0].id;
+      return [
+        {
+          kind: "workspace",
+          id,
+          title: workspace.name,
+          subtitle: joinSubtitleParts([
+            showHost ? (hostLabels.get(workspace.serverId) ?? workspace.serverId) : null,
+            projectName,
+            workspace.branch,
+          ]),
+          serverId: workspace.serverId,
+          workspaceId: workspace.workspaceId,
+          project: {
+            viewKey: project?.viewKey ?? `archived:${workspace.key}`,
+            name: projectName,
+            iconDataUri: project ? (iconDataByProjectViewKey.get(project.viewKey) ?? null) : null,
+          },
+          changeRequestNumber: null,
+          activityAt: workspace.archivedAt,
+          agents: titledAgents(workspace.agents),
+          matchedAgent: null,
+          archived: true,
+          background: false,
+          run: () => openAgent(latestAgentId),
+          openAgent,
+        },
+      ];
+    });
+  }, [active, archivedWorkspaces, hosts, iconDataByProjectViewKey, projects, showHost]);
+
+  return {
+    active,
+    archived,
+    // Opening a workspace route loads that workspace before the rest of the directory, so rows
+    // are no sign that the list is complete.
+    loading: agentsLoading || projectsLoading || workspacesArriving,
+  };
 }
 
-function useBuiltInSections(open: boolean, query: string): CommandCenterResultSection[] {
-  const { t } = useTranslation();
-  const rows = useBuiltInRows(open);
+/**
+ * An online host's workspaces have not arrived yet. Its agent directory reports ready before
+ * the workspace snapshot lands, so until then the workspace rows are incomplete.
+ */
+function useWorkspacesArriving(open: boolean, hosts: readonly { serverId: string }[]): boolean {
+  const serverIds = useMemo(() => (open ? hosts.map((host) => host.serverId) : []), [hosts, open]);
+  const connectionStatuses = useHostRuntimeConnectionStatuses(serverIds);
+  const hydratedServerIds = useHydratedWorkspaceServerIds(serverIds);
+  return serverIds.some(
+    (serverId) =>
+      connectionStatuses.get(serverId) === "online" && !hydratedServerIds.includes(serverId),
+  );
+}
 
+/**
+ * Every project, alphabetical, as a row that reveals it in the sidebar. Not keyed on `query`:
+ * the projects section filters and ranks these on every keystroke.
+ */
+function useProjectRows(open: boolean): CommandCenterProjectResult[] {
+  const { t } = useTranslation();
+  const { projects } = useProjects({ enabled: open });
+  const showHost = useHosts().length > 1;
+  const isCompact = useIsCompactFormFactor();
   return useMemo(() => {
     if (!open) return [];
-    return [
-      {
-        id: "projects",
-        band: PINNED_SECTION_BAND,
-        rank: 1,
-        title: t("shell.commandCenter.projects"),
-        results: filterAndRankBuiltInResults(rows.projects, query, projectSearchFields),
-      },
-      {
-        id: "workspaces",
-        band: PINNED_SECTION_BAND,
-        rank: 2,
-        title: t("shell.commandCenter.workspaces"),
-        results: filterAndRankWorkspaces(rows.workspaces, query),
-      },
-      {
-        id: "agents",
-        band: PINNED_SECTION_BAND,
-        rank: 3,
-        title: t("shell.commandCenter.agents"),
-        results: filterAndRankBuiltInResults(rows.agents, query, agentSearchFields),
-      },
-    ];
-  }, [open, query, rows, t]);
+    return projects
+      .map<CommandCenterProjectResult>((project) => ({
+        kind: "project",
+        id: `project:${project.viewKey}`,
+        title: project.projectCustomName || project.projectName,
+        subtitle: joinSubtitleParts([
+          showHost ? project.hosts.map((host) => host.serverName).join(", ") : null,
+          t(
+            `shell.commandCenter.projectWorkspaces.${project.totalWorkspaceCount === 1 ? "one" : "other"}`,
+            { count: project.totalWorkspaceCount },
+          ),
+        ]),
+        // Focus goes back to where it was: revealing a project does not navigate anywhere.
+        run: () => revealProjectInSidebar({ projectViewKey: project.viewKey, isCompact }),
+      }))
+      .sort(compareProjectsByTitle);
+  }, [isCompact, open, projects, showHost, t]);
 }
 
 interface CommandCenterState {
   open: boolean;
-  scope: CommandCenterScope;
-  clearScope(): void;
+  /** The tabs on offer, in the order Tab walks them. */
+  tabs: readonly CommandCenterTab[];
+  tab: CommandCenterTab;
+  selectTab(tab: CommandCenterTab): void;
   query: string;
   setQuery(query: string): void;
   activeId: string | null;
@@ -319,7 +394,7 @@ interface CommandCenterState {
   fileSearchError: string | null;
   close(): void;
   select(result: CommandCenterResult): void;
-  key(key: string): boolean;
+  key(event: { key: string; shiftKey?: boolean }): boolean;
 }
 
 function useCommandCenterState(
@@ -329,62 +404,99 @@ function useCommandCenterState(
   const keyboardActionDispatcher = useKeyboardActionDispatcher();
   const { t } = useTranslation();
   const open = useKeyboardShortcutsStore((state) => state.commandCenterOpen);
-  const scope = useKeyboardShortcutsStore((state) => state.commandCenterScope);
+  const requestedTab = useKeyboardShortcutsStore((state) => state.commandCenterTab);
   const setOpen = useKeyboardShortcutsStore((state) => state.setCommandCenterOpen);
-  const setScope = useKeyboardShortcutsStore((state) => state.setCommandCenterScope);
+  const setTab = useKeyboardShortcutsStore((state) => state.setCommandCenterTab);
   const snapshot = useCommandCenterContributions();
   const inputRef = useRef<EditingTextInputHandle>(null);
   const previousOpenRef = useRef(open);
   const { query, activeId } = useSyncExternalStore(interaction.subscribe, interaction.getSnapshot);
-  const builtInSections = useBuiltInSections(open, query);
+  const activeWorkspace = useActiveWorkspaceSelection();
+  const hasWorkspace = activeWorkspace !== null;
+  const tabs = useMemo(() => availableCommandCenterTabs({ hasWorkspace }), [hasWorkspace]);
+  const tab = resolveCommandCenterTab(requestedTab, tabs);
+  const showBackground = useSidebarViewStore((state) => state.showBackground);
+  const listsWorkspaces = tab === "all" || tab === "workspaces";
+  const archivedSearch = useArchivedWorkspaceSearch(query, {
+    enabled: open && listsWorkspaces,
+  });
+  const workspaceRows = useWorkspaceRows(open, archivedSearch.workspaces);
+  const projectRows = useProjectRows(open && tab === "all");
+  const [rankWorkspaces] = useState(createWorkspaceRanker);
+  const currentWorkspaceId = activeWorkspace
+    ? `workspace:${activeWorkspace.serverId}:${activeWorkspace.workspaceId}`
+    : null;
   const {
     entries: fileSearchEntries,
     loading: fileSearchLoading,
     error: fileSearchError,
     openFile,
   } = useWorkspaceFileSearch({
-    enabled: open && (scope === "files" || Boolean(query.trim())),
+    enabled:
+      open &&
+      tabs.includes("files") &&
+      (tab === "files" || (tab === "all" && Boolean(query.trim()))),
     query,
   });
-  const fileSections = useMemo<CommandCenterResultSection[]>(() => {
-    const results = fileSearchEntries.map<CommandCenterFileResult>((entry) => ({
-      kind: "file",
-      id: `file:${entry.path}`,
-      filePath: entry.path,
-      title: entry.name,
-      subtitle: entry.directory,
-      run: () => openFile(entry.path),
-    }));
-    // File rows are matched by the daemon, so they carry no client-side score and cannot be
-    // relevance-compared against the rows that do. Pinning them keeps the section comparator
-    // total: band is decided before any score is read.
-    return [
-      {
-        id: "files",
-        band: PINNED_SECTION_BAND,
-        rank: 4,
-        title: t("shell.commandCenter.files"),
-        results,
-      },
-    ];
-  }, [fileSearchEntries, openFile, t]);
-  const contributionSections = useMemo(
-    () => buildContributionSections(snapshot.contributions, query),
-    [query, snapshot.contributions],
+  const files = useMemo(
+    () =>
+      fileSearchEntries.map<CommandCenterFileResult>((entry) => ({
+        kind: "file",
+        id: `file:${entry.path}`,
+        filePath: entry.path,
+        title: entry.name,
+        subtitle: entry.directory,
+        run: () => openFile(entry.path),
+      })),
+    [fileSearchEntries, openFile],
+  );
+  const sections = useMemo(
+    () =>
+      open
+        ? buildCommandCenterSections({
+            tab,
+            query,
+            rankWorkspaces,
+            projects: projectRows,
+            workspaces: workspaceRows.active,
+            archivedWorkspaces: workspaceRows.archived,
+            archivedMatchedByHost: archivedSearch.matchedByHost,
+            showBackground,
+            currentWorkspaceId,
+            contributions: snapshot.contributions,
+            files,
+            titles: {
+              recentWorkspaces: t("shell.commandCenter.recentWorkspaces"),
+              projects: t("shell.commandCenter.projects"),
+              workspaces: t("shell.commandCenter.workspaces"),
+              files: t("shell.commandCenter.files"),
+            },
+          })
+        : [],
+    [
+      archivedSearch.matchedByHost,
+      currentWorkspaceId,
+      files,
+      open,
+      projectRows,
+      query,
+      rankWorkspaces,
+      showBackground,
+      snapshot.contributions,
+      t,
+      tab,
+      workspaceRows,
+    ],
   );
   const projection = useMemo(
-    () =>
-      projectCommandCenterRows(
-        scope === "files"
-          ? fileSections
-          : [...contributionSections, ...fileSections, ...builtInSections],
-        listMetrics,
-      ),
-    [builtInSections, contributionSections, fileSections, listMetrics, scope],
+    () => projectCommandCenterRows(sections, listMetrics),
+    [listMetrics, sections],
   );
+  const loading =
+    fileSearchLoading || (listsWorkspaces && (archivedSearch.pending || workspaceRows.loading));
   useLayoutEffect(() => {
-    interaction.update({ open, scope, query, projection, loading: fileSearchLoading });
-  }, [interaction, open, scope, query, projection, fileSearchLoading]);
+    interaction.update({ open, tab, query, projection, loading });
+  }, [interaction, open, tab, query, projection, loading]);
 
   const close = useCallback(() => setOpen(false), [setOpen]);
   const select = useCallback(
@@ -394,16 +506,29 @@ function useCommandCenterState(
     },
     [setOpen],
   );
+  const selectTab = useCallback(
+    (next: CommandCenterTab) => {
+      setTab(next);
+      // A tab click must not take typing away from the search field.
+      inputRef.current?.focus();
+    },
+    [setTab],
+  );
   const key = useCallback(
-    (pressed: string): boolean => {
+    (event: { key: string; shiftKey?: boolean }): boolean => {
       if (!open) return false;
+      const pressed = event.key;
       const results = projection.selectableResults;
       if (pressed === "Escape") {
         close();
         return true;
       }
-      if (pressed === "Backspace" && !query.trim() && scope) {
-        setScope(null);
+      if (pressed === "Tab") {
+        setTab(rotateCommandCenterTab(tab, event.shiftKey ? "previous" : "next", tabs));
+        return true;
+      }
+      if (pressed === "Backspace" && !query.trim() && tab !== "all") {
+        setTab("all");
         return true;
       }
       if (pressed === "Enter") {
@@ -421,9 +546,10 @@ function useCommandCenterState(
       projection.selectableResults,
       query,
       activeId,
-      scope,
+      tab,
+      tabs,
       select,
-      setScope,
+      setTab,
       interaction,
     ],
   );
@@ -449,8 +575,9 @@ function useCommandCenterState(
 
   return {
     open,
-    scope,
-    clearScope: () => setScope(null),
+    tabs,
+    tab,
+    selectTab,
     query,
     setQuery: interaction.setQuery,
     activeId,
@@ -580,54 +707,37 @@ function SubtitleWithTimestamp({
   );
 }
 
-const providerIconMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
-
-function AgentResultContent({
-  result,
+/**
+ * The third line of a workspace that matched only through one of its agents: which agent, so the
+ * user can tell why the row is here. It starts on the title's rail.
+ */
+function MatchedAgentLine({
+  agent,
+  serverId,
   query,
-  backdrop,
 }: {
-  result: CommandCenterAgentResult;
+  agent: CommandCenterWorkspaceAgent;
+  serverId: string;
   query: string;
-  backdrop: SurfaceBackdrop;
 }) {
-  const agent = result.agent;
-  const descriptor = useAgentDescriptor(
-    { kind: "agent", agentId: agent.id },
-    { serverId: agent.serverId },
-  );
-  const Icon = useMemo(
-    () => withUnistyles(descriptor.icon, providerIconMapping),
-    [descriptor.icon],
-  );
+  const ProviderIcon = useProviderIcon(agent.provider, serverId);
+  const Icon = useMemo(() => withUnistyles(ProviderIcon, providerIconMapping), [ProviderIcon]);
   return (
-    <View style={styles.rowContent} testID={`command-center-agent-${agent.serverId}:${agent.id}`}>
-      <View style={styles.rowMain}>
-        <View style={styles.iconSlot}>
-          <StatusIcon statusBucket={descriptor.statusBucket} size={16} backdrop={backdrop}>
-            <View accessibilityRole="image" accessibilityLabel={descriptor.subtitle}>
-              <Icon size={16} />
-            </View>
-          </StatusIcon>
-        </View>
-        <View style={styles.textContent}>
-          <QueryHighlightedText
-            query={query}
-            text={result.title}
-            style={styles.title}
-            numberOfLines={1}
-          />
-          <SubtitleWithTimestamp
-            query={query}
-            subtitle={result.subtitle}
-            activityAt={result.activityAt}
-            testID="command-center-agent-subtitle"
-          />
-        </View>
+    <View style={styles.agentLine} testID="command-center-workspace-agent">
+      <View style={styles.agentLineIcon}>
+        <Icon size={12} />
       </View>
+      <QueryHighlightedText
+        query={query}
+        text={agent.title}
+        style={[styles.subtitle, styles.subtitleText]}
+        numberOfLines={1}
+      />
     </View>
   );
 }
+
+const providerIconMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 
 function WorkspaceResultIcon({
   result,
@@ -639,24 +749,27 @@ function WorkspaceResultIcon({
   const statusBucket = useWorkspaceStatus(result.serverId, result.workspaceId);
   return (
     <StatusIcon statusBucket={statusBucket} size={16} backdrop={backdrop}>
-      <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants" aria-hidden>
-        <WorkspaceProjectIcon project={result.project} />
-      </View>
+      <DecorativeProjectIcon project={result.project} />
     </StatusIcon>
   );
 }
 
-/** The same project icon the sidebar's workspace rows lead with: its image, or a lettered square. */
-function WorkspaceProjectIcon({ project }: { project: CommandCenterWorkspaceResult["project"] }) {
+/**
+ * The same project icon the sidebar's workspace rows lead with: its image, or a lettered square.
+ * Hidden from assistive tech so the fallback's initial does not prefix the row's name.
+ */
+function DecorativeProjectIcon({ project }: { project: CommandCenterWorkspaceResult["project"] }) {
   const initial = projectIconPlaceholderLabelFromDisplayName(project.name).charAt(0).toUpperCase();
   return (
-    <ProjectIconView
-      iconDataUri={project.iconDataUri}
-      initial={initial}
-      projectViewKey={project.viewKey}
-      size={16}
-      textStyle={styles.projectIconFallbackText}
-    />
+    <View accessibilityElementsHidden importantForAccessibility="no-hide-descendants" aria-hidden>
+      <ProjectIconView
+        iconDataUri={project.iconDataUri}
+        initial={initial}
+        projectViewKey={project.viewKey}
+        size={16}
+        textStyle={styles.projectIconFallbackText}
+      />
+    </View>
   );
 }
 
@@ -694,9 +807,6 @@ function ResultContent({
       </View>
     );
   }
-  if (result.kind === "agent") {
-    return <AgentResultContent result={result} query={query} backdrop={backdrop} />;
-  }
   if (result.kind === "project") {
     return (
       <View style={styles.rowContent} testID={`command-center-${result.id}`}>
@@ -727,9 +837,13 @@ function ResultContent({
     return (
       <View style={styles.rowContent} testID={`command-center-workspace-${key}`}>
         <View style={styles.rowMain}>
-          {/* Decorative: the fallback icon's initial must not prefix the row's accessible name. */}
           <View style={styles.iconSlot}>
-            <WorkspaceResultIcon result={result} backdrop={backdrop} />
+            {/* An archived workspace runs nothing, so it has no status to show. */}
+            {result.archived ? (
+              <DecorativeProjectIcon project={result.project} />
+            ) : (
+              <WorkspaceResultIcon result={result} backdrop={backdrop} />
+            )}
           </View>
           <View style={styles.textContent}>
             <QueryHighlightedText
@@ -744,8 +858,16 @@ function ResultContent({
               activityAt={result.activityAt}
               testID="command-center-workspace-subtitle"
             />
+            {result.matchedAgent ? (
+              <MatchedAgentLine
+                agent={result.matchedAgent}
+                serverId={result.serverId}
+                query={query}
+              />
+            ) : null}
           </View>
         </View>
+        {result.archived ? <ArchivedBadge /> : null}
       </View>
     );
   }
@@ -830,8 +952,23 @@ function SectionRow({ row }: { row: Extract<CommandCenterListRow, { kind: "secti
 }
 
 // Escape arrives without asking; it is registered for `agent.interrupt` anyway.
-// Backspace stays off deliberately — the palette pops its scope with it on web,
+// Backspace stays off deliberately — on web it returns a tab to All when the field is empty,
 // but a registered command would stop the search field deleting text.
+
+const TAB_PLACEHOLDER_KEYS = {
+  all: "shell.commandCenter.placeholder",
+  workspaces: "shell.commandCenter.workspacePlaceholder",
+  files: "shell.commandCenter.filePlaceholder",
+  actions: "shell.commandCenter.actionPlaceholder",
+} as const satisfies Record<CommandCenterTab, string>;
+
+/** The search field names what the tab searches; All names only the kinds on offer. */
+function placeholderKey(tab: CommandCenterTab, tabs: readonly CommandCenterTab[]) {
+  if (tab === "all" && !tabs.includes("files")) {
+    return "shell.commandCenter.placeholderWithoutFiles";
+  }
+  return TAB_PLACEHOLDER_KEYS[tab];
+}
 
 export function CommandCenter() {
   const { t } = useTranslation();
@@ -944,21 +1081,41 @@ export function CommandCenter() {
       : {}),
     scrollEventThrottle: 16,
   };
-  const submit = useCallback(() => state.key("Enter"), [state]);
+  const submit = useCallback(() => state.key({ key: "Enter" }), [state]);
   const handleOverlayKeyDown = useCallback(
     (event: KeyboardInputEvent) => {
-      if (!state.key(event.key)) return false;
+      if (!state.key(event)) return false;
       event.preventDefault();
       return true;
     },
     [state],
   );
   const setOverlayScope = useOverlayRegistration({
-    keys: ["Escape", "Enter", "ArrowUp", "ArrowDown"],
+    keys: ["Escape", "Enter", "ArrowUp", "ArrowDown", "Tab"],
     active: state.open,
     layer: modalLayer,
     onKeyDown: handleOverlayKeyDown,
   });
+
+  const tabOptions = useMemo<SegmentedControlOption<CommandCenterTab>[]>(
+    () =>
+      state.tabs.map((tab) => ({
+        value: tab,
+        label: t(`shell.commandCenter.tabs.${tab}`),
+        testID: `command-center-tab-${tab}`,
+      })),
+    [state.tabs, t],
+  );
+  const tabs = (
+    <SegmentedControl
+      options={tabOptions}
+      value={state.tab}
+      onValueChange={state.selectTab}
+      size="sm"
+      testID="command-center-tabs"
+    />
+  );
+  const placeholder = t(placeholderKey(state.tab, state.tabs));
 
   if (showBottomSheet) {
     return (
@@ -979,32 +1136,28 @@ export function CommandCenter() {
         accessible={false}
       >
         <OverlayLayerProvider layer={modalLayer}>
-          <View style={[styles.bottomSheetHeader, styles.searchRow]} testID="command-center-header">
-            {state.scope === "files" ? (
-              <ScopeChip label={t("shell.commandCenter.files")} onRemove={state.clearScope} />
-            ) : null}
-            <ThemedBottomSheetTextInput
-              testID="command-center-input"
-              ref={bottomSheetInputRef}
-              initialValue={state.query}
-              variant="bottom-sheet"
-              onChangeText={state.setQuery}
-              onSubmitEditing={submit}
-              placeholder={
-                state.scope === "files"
-                  ? t("shell.commandCenter.filePlaceholder")
-                  : t("shell.commandCenter.placeholder")
-              }
-              style={[styles.input, styles.growingInput]}
-              autoCapitalize="none"
-              autoCorrect={false}
-              autoFocus
-            />
-            <FileSearchLoadingIndicator
-              loading={state.fileSearchLoading}
-              label={t("shell.commandCenter.searchingFiles")}
-            />
+          <View style={styles.header} testID="command-center-header">
+            <View style={styles.searchRow}>
+              <ThemedBottomSheetTextInput
+                testID="command-center-input"
+                ref={bottomSheetInputRef}
+                initialValue={state.query}
+                variant="bottom-sheet"
+                onChangeText={state.setQuery}
+                onSubmitEditing={submit}
+                placeholder={placeholder}
+                style={[styles.input, styles.growingInput]}
+                autoCapitalize="none"
+                autoCorrect={false}
+                autoFocus
+              />
+              <FileSearchLoadingIndicator
+                loading={state.fileSearchLoading}
+                label={t("shell.commandCenter.searchingFiles")}
+              />
+            </View>
           </View>
+          <View style={styles.tabBar}>{tabs}</View>
           {fileSearchError}
           <BottomSheetFlatList ref={bottomSheetListRef} {...commonListProps} />
         </OverlayLayerProvider>
@@ -1018,30 +1171,26 @@ export function CommandCenter() {
         <View style={styles.overlay}>
           <Pressable style={styles.backdrop} onPress={state.close} />
           <View ref={setOverlayScope} testID="command-center-panel" style={styles.panel}>
-            <View style={[styles.header, styles.searchRow]} testID="command-center-header">
-              {state.scope === "files" ? (
-                <ScopeChip label={t("shell.commandCenter.files")} onRemove={state.clearScope} />
-              ) : null}
-              <ThemedTextInput
-                testID="command-center-input"
-                ref={state.inputRef}
-                initialValue={state.query}
-                onChangeText={state.setQuery}
-                placeholder={
-                  state.scope === "files"
-                    ? t("shell.commandCenter.filePlaceholder")
-                    : t("shell.commandCenter.placeholder")
-                }
-                style={[styles.input, styles.growingInput]}
-                autoCapitalize="none"
-                autoCorrect={false}
-                autoFocus
-              />
-              <FileSearchLoadingIndicator
-                loading={state.fileSearchLoading}
-                label={t("shell.commandCenter.searchingFiles")}
-              />
+            <View style={styles.header} testID="command-center-header">
+              <View style={styles.searchRow}>
+                <ThemedTextInput
+                  testID="command-center-input"
+                  ref={state.inputRef}
+                  initialValue={state.query}
+                  onChangeText={state.setQuery}
+                  placeholder={placeholder}
+                  style={[styles.input, styles.growingInput]}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  autoFocus
+                />
+                <FileSearchLoadingIndicator
+                  loading={state.fileSearchLoading}
+                  label={t("shell.commandCenter.searchingFiles")}
+                />
+              </View>
             </View>
+            <View style={styles.tabBar}>{tabs}</View>
             {fileSearchError}
             <FlatList ref={listRef} {...commonListProps} />
           </View>
@@ -1064,25 +1213,6 @@ function FileSearchLoadingIndicator({ loading, label }: { loading: boolean; labe
         </View>
       ) : null}
     </View>
-  );
-}
-
-// The chip sits at the input's own height and type size so it reads as the scope of the field
-// rather than a badge dropped into the query. Its 28px matches the input's line box, so showing or
-// dropping the scope cannot resize the header.
-function ScopeChip({ label, onRemove }: { label: string; onRemove(): void }) {
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      onPress={onRemove}
-      style={styles.scopeChip}
-      testID="command-center-files-scope"
-    >
-      <ThemedFolder size={14} strokeWidth={2.2} />
-      <Text style={styles.scopeChipLabel}>{label}</Text>
-      <ThemedX size={12} strokeWidth={2.2} />
-    </Pressable>
   );
 }
 
@@ -1113,11 +1243,12 @@ const styles = StyleSheet.create((theme) => ({
     borderBottomWidth: 1,
     borderBottomColor: theme.colors.border,
   },
-  bottomSheetHeader: {
+  // Below the divider, above the list. The first section label brings its own top gap, so the
+  // pills sit with equal space above and below. A fixed bar, so switching tabs never moves the
+  // field or the list.
+  tabBar: {
     paddingHorizontal: theme.spacing[4],
-    paddingVertical: theme.spacing[3],
-    borderBottomWidth: 1,
-    borderBottomColor: theme.colors.border,
+    paddingTop: COMMAND_CENTER_SECTION_GAP,
   },
   input: {
     fontSize: theme.fontSize.base,
@@ -1128,25 +1259,6 @@ const styles = StyleSheet.create((theme) => ({
   growingInput: { flex: 1, minWidth: 0 },
   searchRow: { flexDirection: "row", alignItems: "center", gap: theme.spacing[2] },
   fileSearchStatus: { width: 14, height: 14, alignItems: "center", justifyContent: "center" },
-  scopeChip: {
-    // Stretching to the row rather than setting a height keeps the chip exactly as tall as the
-    // input's line box, so showing or dropping the scope can never resize the header.
-    alignSelf: "stretch",
-    flexDirection: "row",
-    alignItems: "center",
-    gap: theme.spacing[1.5],
-    marginRight: theme.spacing[1],
-    paddingHorizontal: theme.spacing[2],
-    borderRadius: theme.borderRadius.md,
-    borderWidth: 1,
-    borderColor: theme.colors.borderAccent,
-    backgroundColor: theme.colors.surface2,
-  },
-  scopeChipLabel: {
-    color: theme.colors.foreground,
-    fontSize: theme.fontSize.base,
-    fontWeight: "500",
-  },
   results: { flex: 1 },
   // Sections and rows take their height from list-metrics; these styles only place content in it.
   section: { justifyContent: "flex-end" },
@@ -1199,6 +1311,14 @@ const styles = StyleSheet.create((theme) => ({
   },
   subtitleLine: { flexDirection: "row", minWidth: 0 },
   subtitleText: { flexShrink: 1, minWidth: 0 },
+  agentLine: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[1.5],
+    minWidth: 0,
+    height: COMMAND_CENTER_LINE_HEIGHT.agent,
+  },
+  agentLineIcon: { width: 12, alignItems: "center", justifyContent: "center" },
   iconSlot: {
     width: 16,
     height: COMMAND_CENTER_LINE_HEIGHT.singleLine,

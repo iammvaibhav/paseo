@@ -58,7 +58,7 @@ describe("tool-call presentation", () => {
     });
   });
 
-  it("shows a shell call awaiting its command as Shell, loading its details", () => {
+  it("shows a shell call awaiting its command as Run, loading its details", () => {
     const presentation = buildToolCallPresentation({
       toolName: "Bash",
       status: "running",
@@ -68,7 +68,7 @@ describe("tool-call presentation", () => {
     });
 
     expect(presentation).toMatchObject({
-      displayName: "Shell",
+      displayName: "Run",
       summary: undefined,
       isLoadingDetails: true,
       hasDetails: false,

@@ -1536,6 +1536,7 @@ function ComposerContentImpl({
       isLive: isInputLive,
       revealed: inputRevealed,
       isRevealed: isInputRevealed,
+      isFocused: () => messageInputRef.current?.isFocused() ?? false,
       focus: takeInputFocus,
       textSource,
       setText: replaceUserInput,

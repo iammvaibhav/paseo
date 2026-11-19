@@ -17,7 +17,6 @@ import {
   type AgentLaunchContext,
   type AgentMetadata,
   type AgentMode,
-  type AgentModelDefinition,
   type AgentPermissionRequest,
   type AgentPermissionResponse,
   type AgentProviderNotice,
@@ -55,7 +54,11 @@ import {
   type ResolvedProviderLaunch,
 } from "../../provider-launch-config.js";
 import { renderPromptAttachmentAsText } from "../../prompt-attachments.js";
-import { composeSystemPromptParts, hasSignificantLaunchEnv } from "../../system-prompt.js";
+import {
+  composeAgentSystemPrompt,
+  composeSystemPromptParts,
+  hasSignificantLaunchEnv,
+} from "../../system-prompt.js";
 import {
   buildBinaryDiagnosticRows,
   buildCommandResolutionDiagnosticRows,
@@ -322,36 +325,6 @@ interface OmpSlashCommandInvocation {
 
 type AutoCompactMode = boolean | "toggle" | "unknown";
 
-function normalizeOmpModelLabel(label: string): string {
-  const normalizedLabel = label.trim().replace(/[_\s]+/g, " ");
-  const vendorSeparatorIndex = normalizedLabel.indexOf(": ");
-  if (vendorSeparatorIndex === -1) {
-    return normalizedLabel;
-  }
-
-  return normalizedLabel.slice(vendorSeparatorIndex + 2).trim();
-}
-
-export function transformOmpModels(models: AgentModelDefinition[]): AgentModelDefinition[] {
-  return models.map((model) => {
-    if (!model.label.includes("/")) {
-      return model;
-    }
-
-    const segments = model.label.split("/").filter((segment) => segment.length > 0);
-    const rawLabel = segments.at(-1);
-    if (!rawLabel) {
-      return model;
-    }
-
-    return {
-      ...model,
-      label: normalizeOmpModelLabel(rawLabel),
-      description: model.description ?? model.label,
-    };
-  });
-}
-
 function isOmpThinkingLevel(value: string | null | undefined): value is OmpThinkingLevel {
   return (
     value === "off" ||
@@ -545,6 +518,7 @@ function buildResumeStartInput(input: {
         : composeSystemPromptParts(
             input.resumeConfig.config.systemPrompt,
             input.resumeConfig.config.daemonAppendSystemPrompt,
+            ...(input.resumeConfig.config.pluginAppendSystemPrompt ?? []),
           ),
     systemPromptMode: input.resumeConfig.config.systemPromptMode,
     toolAllowlist: input.resumeConfig.config.toolAllowlist,
@@ -594,8 +568,7 @@ function resolveThinkingOptionId(
   cachedThinkingOptionId: string | null,
   sessionThinkingLevel: OmpThinkingLevel | undefined,
 ): OmpThinkingLevel | null {
-  const currentThinking =
-    normalizeOmpThinkingOption(sessionThinkingLevel) ?? cachedThinkingOptionId;
+  const currentThinking = cachedThinkingOptionId ?? sessionThinkingLevel;
   return normalizeOmpThinkingOption(currentThinking);
 }
 
@@ -2002,7 +1975,30 @@ export class OmpAgentSession implements AgentSession {
     });
   }
 
+  // OMP changes the level on its own, e.g. `/switch @role` or a model switch that carries a level.
+  private handleThinkingLevelChanged(event: OmpRuntimeEvent): boolean {
+    if (event.type !== "thinking_level_changed") {
+      return false;
+    }
+    const thinkingLevel = normalizeOmpThinkingOption(event.configured ?? event.thinkingLevel);
+    if (!thinkingLevel || thinkingLevel === this.lastKnownThinkingOptionId) {
+      return true;
+    }
+    this.lastKnownThinkingOptionId = thinkingLevel;
+    this.config.thinkingOptionId = thinkingLevel;
+    this.state = { ...this.state, thinkingLevel };
+    this.emit({
+      type: "thinking_option_changed",
+      provider: this.provider,
+      thinkingOptionId: thinkingLevel,
+    });
+    return true;
+  }
+
   private handleExtraRuntimeEvent(event: OmpRuntimeEvent): boolean {
+    if (this.handleThinkingLevelChanged(event)) {
+      return true;
+    }
     if (event.type === "model_changed") {
       void this.refreshState()
         .then(() =>
@@ -2730,12 +2726,6 @@ export class OmpAgentSession implements AgentSession {
 
   private async refreshState(): Promise<void> {
     this.installState(await this.runtimeSession.getState());
-    if (this.state.thinkingLevel) {
-      const normalized = normalizeOmpThinkingOption(this.state.thinkingLevel);
-      if (normalized) {
-        this.lastKnownThinkingOptionId = normalized;
-      }
-    }
   }
 
   // The runtime owns Fast: whatever it reports is what the session now runs with, so every state
@@ -2971,14 +2961,14 @@ export class OmpAgentClient implements AgentClient {
 
   /**
    * The system prompt handed to the omp process. Replace mode uses the
-   * per-agent prompt verbatim — the daemon append prompt is append-only and
-   * must not leak into a replaced harness.
+   * per-agent prompt verbatim — the daemon and plugin append prompts are
+   * append-only and must not leak into a replaced harness.
    */
   private composeLaunchSystemPrompt(config: AgentSessionConfig): string | undefined {
     if (config.systemPromptMode === "replace") {
       return config.systemPrompt?.trim() || undefined;
     }
-    return composeSystemPromptParts(config.systemPrompt, config.daemonAppendSystemPrompt);
+    return composeAgentSystemPrompt(config);
   }
 
   /**
@@ -3534,13 +3524,11 @@ export class OmpAgentClient implements AgentClient {
         ...process.env,
         ...this.runtimeSettings?.env,
       });
-      const models = transformOmpModels(
-        (
-          await runProviderRefreshActivity(context, "get_available_models", () =>
-            catalogSession.getAvailableModels(null),
-          )
-        ).map((model) => mapOmpModel(model, this.provider, settingsDefault)),
-      );
+      const models = (
+        await runProviderRefreshActivity(context, "get_available_models", () =>
+          catalogSession.getAvailableModels(null),
+        )
+      ).map((model) => mapOmpModel(model, this.provider, settingsDefault));
       const modelsMs = Date.now() - modelsStartedAt;
       const totalMs = Date.now() - fetchStartedAt;
       const timingFields = {

@@ -24,3 +24,15 @@ export function hasSignificantLaunchEnv(env: Record<string, string> | undefined)
   }
   return Object.keys(env).some((key) => key !== "PASEO_AGENT_ID" && key !== "PASEO_AGENT_CWD");
 }
+
+export function composeAgentSystemPrompt(config: {
+  systemPrompt?: string;
+  daemonAppendSystemPrompt?: string;
+  pluginAppendSystemPrompt?: string[];
+}): string | undefined {
+  return composeSystemPromptParts(
+    config.systemPrompt,
+    config.daemonAppendSystemPrompt,
+    ...(config.pluginAppendSystemPrompt ?? []),
+  );
+}

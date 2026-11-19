@@ -10,6 +10,7 @@ import {
 import { useStableEvent } from "@/hooks/use-stable-event";
 import { matchCommandLink, useAgentCommandHints, type CommandHints } from "@/agent-commands";
 import { useForgeShorthand } from "@/git/forge-shorthand";
+import { pluginOverviewUrl } from "@getpaseo/protocol/plugin-overview";
 import { openExternalUrl } from "@/utils/open-external-url";
 import { AttachmentLightbox, type ImageLightboxSource } from "@/components/attachment-lightbox";
 import { PressHighlight } from "@/components/ui/press-highlight";
@@ -31,7 +32,8 @@ const ThemedMarkdown = withUnistyles(EnrichedMarkdownText);
 const ThemedChevronDown = withUnistyles(ChevronDown);
 const ThemedChevronRight = withUnistyles(ChevronRight);
 const MD4C_FLAGS = { latexMath: false, hardSoftBreaks: true, admonitions: true };
-const MD4C_FLAGS_WITH_MATH = { ...MD4C_FLAGS, latexMath: true };
+// A README is written for its forge, where the lines of a paragraph join into one.
+const EXTERNAL_MD4C_FLAGS = { ...MD4C_FLAGS, hardSoftBreaks: false };
 
 const foregroundMutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 
@@ -64,6 +66,12 @@ export interface MarkdownRendererProps extends MarkdownImageContext {
   math?: boolean;
   onLinkPress?: (url: string) => unknown;
   agentCommands?: boolean;
+  /**
+   * Author-controlled Markdown from outside this host, such as a plugin README: only its https
+   * links and images work, nothing is read as a file, forge reference or command, and the lines of
+   * a paragraph join as they do on its forge.
+   */
+  external?: boolean;
 }
 
 /** All Markdown surfaces share the same engine and source adaptation. */
@@ -159,18 +167,24 @@ const MarkdownPart = memo(function MarkdownPart({
   math = false,
   onLinkPress,
   agentCommands: _agentCommands,
+  external = false,
   commandHints = null,
   ...imageContext
 }: MarkdownRendererProps & { commandHints?: CommandHints | null }) {
   const environment = useAssistantFileLinkEnvironment();
   const actions = useAssistantFileLinkActions();
-  const forgeShorthand = useForgeShorthand();
+  const workspaceForgeShorthand = useForgeShorthand();
+  const forgeShorthand = external ? null : workspaceForgeShorthand;
   const client =
     imageContext.client ??
     (environment.client?.readFile
       ? { readFile: environment.client.readFile.bind(environment.client) }
       : undefined);
   const renderMath = math;
+  const md4cFlags = useMemo(
+    () => ({ ...(external ? EXTERNAL_MD4C_FLAGS : MD4C_FLAGS), latexMath: renderMath }),
+    [external, renderMath],
+  );
   const mathSource = useMemo(
     () => (renderMath ? normalizeMathDelimiters(text) : text),
     [renderMath, text],
@@ -183,10 +197,20 @@ const MarkdownPart = memo(function MarkdownPart({
       ...imageContext,
       client,
     },
-    { commandNames: commandHints?.names, forgeReferencePattern: forgeShorthand?.pattern },
+    {
+      commandNames: commandHints?.names,
+      forgeReferencePattern: forgeShorthand?.pattern,
+      external,
+    },
   );
   const [image, setImage] = useState<ImageLightboxSource | null>(null);
   const pressLink = useStableEvent(({ url, sourceType }: LinkPressEvent) => {
+    if (external) {
+      // The parser still autolinks bare http, www and email text; only https links open.
+      const safe = pluginOverviewUrl(url);
+      if (safe) void openExternalUrl(safe);
+      return;
+    }
     const command = commandHints && matchCommandLink(url, sourceType, commandHints.names);
     if (command) {
       commandHints.insert(command);
@@ -223,7 +247,7 @@ const MarkdownPart = memo(function MarkdownPart({
               uniProps={pickMarkdownStyle(compact, muted)}
               flavor="github"
               selectable={selectable}
-              md4cFlags={renderMath ? MD4C_FLAGS_WITH_MATH : MD4C_FLAGS}
+              md4cFlags={md4cFlags}
               linkRecognition={linkRecognition}
               enableTaskListItemToggle={false}
               enableLinkPreview={false}

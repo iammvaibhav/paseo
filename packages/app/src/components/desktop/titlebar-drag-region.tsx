@@ -20,6 +20,13 @@ const TitlebarDragRegionEnabledContext = createContext(true);
  * On macOS, Electron handles edge resize natively.
  */
 
+/**
+ * Marks a scroll viewport as window content: it and its descendants emit no window
+ * regions, because Electron does not clip app-region rects to scroll viewports.
+ * See the `[data-window-content]` rule in public/index.html.
+ */
+export const WINDOW_CONTENT_DATASET = { "window-content": "" };
+
 export const titlebarDragSurfaceStyle: React.CSSProperties = {
   cursor: "default",
   // @ts-expect-error — WebkitAppRegion is not in CSSProperties

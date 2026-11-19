@@ -14,7 +14,7 @@ function expectMapped<T>(item: T | null): T {
 describe("opencode tool-call mapper", () => {
   // OpenCode reports a tool part as `pending` with `input: {}` before the running part carries input.
   it.each([
-    { toolName: "bash", input: { command: "echo hi" }, title: "Shell" },
+    { toolName: "bash", input: { command: "echo hi" }, title: "Run" },
     { toolName: "read", input: { filePath: "/tmp/a.ts" }, title: "Read" },
     { toolName: "grep", input: { pattern: "foo" }, title: "Search" },
   ])("keeps the $toolName title and detail kind from the pending part", (tool) => {

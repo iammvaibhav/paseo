@@ -96,6 +96,7 @@ How a send reaches a **busy** agent. Idle agents always just run the prompt. Eve
 | `queue`     | Wait for idle (bounded, 10 min), never cancelling.                                                                                 | Machinery only (`fleet_agent_status` notify on non-OMP agents). No send tool takes it. |
 
 - **Send tools never take `queue`**: a queued send holds the tool call open until the agent goes idle, and MCP gateways cut that off — Bifrost on `prod` cancels any MCP tool call after 30 s — while the daemon still delivers minutes later and the caller's retry queues a second copy.
+- **`send_agent_prompt` from an agent is the exception**: it goes through the agent-message delivery queue, so its `steer` (the default) waits for the recipient's turn to end and only `interrupt` replaces the turn (see [agent-lifecycle.md](agent-lifecycle.md)). `fleet_send_prompt` and other callers keep the live steer above.
 - `dispatchLocalPromptMode` reports what actually happened: a steer delivered via the fallback returns `"steer-interrupt"`.
 - The composer's Default send has a third mode, **Steer** (Interrupt stays the default).
 

@@ -1,5 +1,7 @@
 import type { Agent, WorkspaceDescriptor } from "@/stores/session-store";
-import { isHistoryAskAgent } from "@/history-ask";
+// The leaf module, not the barrel: the session store imports this file, and the barrel pulls in
+// navigation and the plugin registry.
+import { isHistoryAskAgent } from "@/history-ask/labels";
 import { isWorkspaceRootAgent } from "@/subagents/policies";
 import { deriveSidebarStateBucket } from "./sidebar-agent-state";
 

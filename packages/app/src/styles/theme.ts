@@ -2,6 +2,7 @@ import { Platform } from "react-native";
 import { GLASS_FROST_FILTER_ID } from "@/styles/glass-frost-filter";
 import type { SurfaceBackdrop } from "@/styles/surface-backdrop";
 import { darkHighlightColors, lightHighlightColors } from "@getpaseo/highlight";
+import { deriveSurfaceStates } from "./derive-colors";
 
 export const baseColors = {
   // Base colors
@@ -239,8 +240,11 @@ export interface LightThemeConfig extends ComponentToneConfig {
   surface2: string;
   surface3: string;
   surface4: string;
-  surfaceDiffEmpty: string;
   surfaceSidebar: string;
+  surfaceSidebarHover?: string;
+  surfaceSidebarSelected?: string;
+  foregroundSidebarHover?: string;
+  foregroundSidebarSelected?: string;
   foreground: string;
   foregroundMuted: string;
   foregroundExtraMuted: string;
@@ -254,7 +258,7 @@ export interface LightThemeConfig extends ComponentToneConfig {
   destructive: string;
   terminalBlack: string;
   terminalBrightBlack: string;
-  ring: string;
+  ring?: string;
 }
 
 const lightTerminalAnsi = {
@@ -275,16 +279,18 @@ const lightTerminalAnsi = {
 } as const;
 
 export function buildLightSemanticColors(tint: LightThemeConfig) {
+  const sidebarStates = deriveSurfaceStates(tint.surfaceSidebar, tint.foreground, "light");
   return {
     surface0: tint.surface0,
     surface1: tint.surface1,
     surface2: tint.surface2,
     surface3: tint.surface3,
     surface4: tint.surface4,
-    surfaceDiffEmpty: tint.surfaceDiffEmpty,
     surfaceSidebar: tint.surfaceSidebar,
-    surfaceSidebarHover: tint.surface3,
-    surfaceSidebarSelected: tint.surface4,
+    surfaceSidebarHover: tint.surfaceSidebarHover ?? sidebarStates.hover,
+    surfaceSidebarSelected: tint.surfaceSidebarSelected ?? sidebarStates.selected,
+    foregroundSidebarHover: tint.foregroundSidebarHover ?? tint.foregroundExtraMuted,
+    foregroundSidebarSelected: tint.foregroundSidebarSelected ?? tint.foregroundExtraMuted,
     surfaceWorkspace: tint.surface0,
     // The window root and the main content pane. A glass theme clears the root so the
     // window's vibrancy shows behind the sidebar, and paints the content pane instead.
@@ -314,20 +320,14 @@ export function buildLightSemanticColors(tint: LightThemeConfig) {
     destructive: tint.destructive,
     destructiveForeground: tint.surface0,
     success: tint.accent,
-    successForeground: tint.surface0,
 
     background: tint.surface0,
     popover: tint.surface0,
     popoverForeground: tint.foreground,
     primary: tint.primary,
     primaryForeground: tint.primaryForeground,
-    secondary: tint.surface2,
-    secondaryForeground: tint.foreground,
-    muted: tint.surface2,
     mutedForeground: tint.foregroundMuted,
-    accentBorder: tint.borderAccent,
-    input: tint.surface2,
-    ring: tint.ring,
+    ring: tint.ring ?? tint.accent,
 
     ...lightDiffColors,
     ...lightStatusColors,
@@ -354,7 +354,6 @@ const lightSemanticColors = buildLightSemanticColors({
   surface2: "#f4f4f5",
   surface3: "#e4e4e7",
   surface4: "#d4d4d8",
-  surfaceDiffEmpty: "#f6f6f6",
   surfaceSidebar: "#f4f4f5",
   foreground: "#1a1a1e",
   foregroundMuted: "#71717a",
@@ -369,7 +368,6 @@ const lightSemanticColors = buildLightSemanticColors({
   destructive: "#b04138",
   terminalBlack: "#1a1a1e",
   terminalBrightBlack: "#3f3f46",
-  ring: "#18181b",
 });
 
 // ---------------------------------------------------------------------------
@@ -382,8 +380,11 @@ export interface DarkThemeConfig extends ComponentToneConfig {
   surface2: string;
   surface3: string;
   surface4: string;
-  surfaceDiffEmpty: string;
   surfaceSidebar: string;
+  surfaceSidebarHover?: string;
+  surfaceSidebarSelected?: string;
+  foregroundSidebarHover?: string;
+  foregroundSidebarSelected?: string;
   foregroundMuted: string;
   foregroundExtraMuted: string;
   border: string;
@@ -417,17 +418,19 @@ const darkTerminalAnsi = {
 
 export function buildDarkSemanticColors(tint: DarkThemeConfig) {
   const foreground = tint.foreground ?? "#fafafa";
-  const ring = tint.ring ?? "#d4d4d8";
+  const ring = tint.ring ?? tint.accent;
+  const sidebarStates = deriveSurfaceStates(tint.surfaceSidebar, foreground, "dark");
   return {
     surface0: tint.surface0,
     surface1: tint.surface1,
     surface2: tint.surface2,
     surface3: tint.surface3,
     surface4: tint.surface4,
-    surfaceDiffEmpty: tint.surfaceDiffEmpty,
     surfaceSidebar: tint.surfaceSidebar,
-    surfaceSidebarHover: tint.surface1,
-    surfaceSidebarSelected: tint.surface2,
+    surfaceSidebarHover: tint.surfaceSidebarHover ?? sidebarStates.hover,
+    surfaceSidebarSelected: tint.surfaceSidebarSelected ?? sidebarStates.selected,
+    foregroundSidebarHover: tint.foregroundSidebarHover ?? tint.foregroundExtraMuted,
+    foregroundSidebarSelected: tint.foregroundSidebarSelected ?? tint.foregroundExtraMuted,
     surfaceWorkspace: tint.surface1,
     surfaceApp: tint.surface0,
     surfaceContent: "transparent",
@@ -453,7 +456,6 @@ export function buildDarkSemanticColors(tint: DarkThemeConfig) {
     destructive: tint.destructive,
     destructiveForeground: "#ffffff",
     success: tint.accent,
-    successForeground: "#ffffff",
 
     // Legacy aliases (for gradual migration)
     background: tint.surface0,
@@ -461,12 +463,7 @@ export function buildDarkSemanticColors(tint: DarkThemeConfig) {
     popoverForeground: foreground,
     primary: foreground,
     primaryForeground: tint.surface0,
-    secondary: tint.surface2,
-    secondaryForeground: foreground,
-    muted: tint.surface2,
     mutedForeground: tint.foregroundMuted,
-    accentBorder: tint.borderAccent,
-    input: tint.surface2,
     ring,
 
     ...darkDiffColors,
@@ -499,7 +496,6 @@ const paseoDarkColors = buildDarkSemanticColors({
   surface2: "#272A29",
   surface3: "#434645",
   surface4: "#595B5B",
-  surfaceDiffEmpty: "#252827",
   surfaceSidebar: "#141716",
   foregroundMuted: "#A1A5A4",
   foregroundExtraMuted: "#717574",
@@ -519,7 +515,6 @@ const zincDarkColors = buildDarkSemanticColors({
   surface2: "#27272a",
   surface3: "#3f3f46",
   surface4: "#52525b",
-  surfaceDiffEmpty: "#242427",
   surfaceSidebar: "#131316",
   foregroundMuted: "#a1a1aa",
   foregroundExtraMuted: "#71717a",
@@ -540,7 +535,6 @@ const midnightDarkColors = buildDarkSemanticColors({
   surface2: "#252731",
   surface3: "#3c3e4c",
   surface4: "#535564",
-  surfaceDiffEmpty: "#222430",
   surfaceSidebar: "#121420",
   foregroundMuted: "#9a9db0",
   foregroundExtraMuted: "#6b6e82",
@@ -560,7 +554,6 @@ const claudeDarkColors = buildDarkSemanticColors({
   surface2: "#2f2d2b",
   surface3: "#4a4745",
   surface4: "#605d5b",
-  surfaceDiffEmpty: "#2a2826",
   surfaceSidebar: "#1a1918",
   foregroundMuted: "#ada9a5",
   foregroundExtraMuted: "#78746f",
@@ -580,7 +573,6 @@ const ghosttyDarkColors = buildDarkSemanticColors({
   surface2: "#383c48",
   surface3: "#4a4f5e",
   surface4: "#5b6175",
-  surfaceDiffEmpty: "#323643",
   surfaceSidebar: "#21252d",
   foregroundMuted: "#c8ccd8",
   foregroundExtraMuted: "#a0a4b2",
@@ -603,7 +595,6 @@ const monoDarkColors = buildDarkSemanticColors({
   surface2: "#2a2a2a",
   surface3: "#3a3a3a",
   surface4: "#4d4d4d",
-  surfaceDiffEmpty: "#1f1f1f",
   surfaceSidebar: "#141414",
   surfaceUserMessage: "#2c2c2c",
   foreground: "#ebebeb",
@@ -805,6 +796,8 @@ export interface GlassTreatment {
    * shows as a lighter band, so the scrim paints this opaque estimate instead.
    */
   scrim: Record<SurfaceBackdrop, string>;
+  /** Board lanes in the itsaplan embed: the faintest wash, a step below the page. */
+  boardLane: string;
 }
 
 export function buildDarkTheme(semanticColors: ReturnType<typeof buildDarkSemanticColors>) {
@@ -885,7 +878,6 @@ export function resolveGlassColors(tuning: GlassTuning) {
       surface2: wash(0.08),
       surface3: wash(0.12),
       surface4: wash(0.16),
-      surfaceDiffEmpty: wash(0.025),
       surfaceUserMessage: wash(0.09),
       popover: floating,
     },
@@ -904,6 +896,7 @@ export function resolveGlassColors(tuning: GlassTuning) {
         surfaceSidebarHover: "#262626",
         surfaceSidebarSelected: "#2e2e2e",
       },
+      boardLane: wash(0.025),
     } satisfies GlassTreatment,
   };
 }
@@ -953,14 +946,15 @@ export function glassOverlayStyle(theme: Theme): GlassFloatingStyle {
   };
 }
 
-// Pure black — zero-luminance background with high-contrast surfaces.
+// Pure black — zero-luminance background with high-contrast surfaces. A control over the
+// workspace surface (`surface2` on `surface1`) steps by a contrast ratio of 1.12, the step Paseo
+// dark has there; the old `#111111` gave half of it.
 const pureBlackDarkColors = buildDarkSemanticColors({
   surface0: "#000000",
   surface1: "#0a0a0a",
-  surface2: "#111111",
+  surface2: "#181818",
   surface3: "#202020",
   surface4: "#2d2d2d",
-  surfaceDiffEmpty: "#0c0c0c",
   surfaceSidebar: "#000000",
   foregroundMuted: "#a1a1aa",
   foregroundExtraMuted: "#71717a",

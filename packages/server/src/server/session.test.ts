@@ -46,11 +46,15 @@ import {
 import { OWNER_PERMISSIONS, type DaemonPermission } from "./authorization/index.js";
 import { DownloadTokenStore } from "./file-download/token-store.js";
 import { StructuredAgentFallbackError } from "./agent/agent-response-loop.js";
+import { AgentRunState, ForegroundPromptStart } from "./agent/agent-run-state.js";
 import type { StoredAgentRecord } from "./agent/agent-storage.js";
 import type { AgentManagerEvent } from "./agent/agent-manager.js";
 import type { ProviderSnapshotManager } from "./agent/provider-snapshot-manager.js";
 import { WorkspaceLabelError, type WorkspaceLabelService } from "./workspace-labels/index.js";
-import { createPersistedProjectRecord } from "./workspace-registry.js";
+import {
+  createPersistedProjectRecord,
+  createPersistedWorkspaceRecord,
+} from "./workspace-registry.js";
 import { deriveProjectKey } from "./project-key.js";
 import type { SessionOptions } from "./session.js";
 import type { SessionOutboundMessage } from "./messages.js";
@@ -81,6 +85,20 @@ import type { GitHubPullRequestStatusFacts } from "../services/github-facts.js";
 // An async generator that yields nothing, for stubbing startAgentRun's stream.
 function noopAgentStream() {
   return (async function* () {})();
+}
+
+// Like noopAgentStream, but the run its sender waits on reports that its turn started.
+function startedAgentStream(
+  agentId: string,
+  _prompt: unknown,
+  _options: unknown,
+  start?: ForegroundPromptStart,
+) {
+  const runs = new AgentRunState();
+  const run = runs.createPendingRun(agentId);
+  runs.settleForegroundStart(run, { status: "started", turnId: `${agentId}-turn` });
+  start?.bind(run);
+  return noopAgentStream();
 }
 
 interface SessionHandlerInternals {
@@ -1673,6 +1691,37 @@ describe("plugin timeline append RPC", () => {
       }),
     );
   });
+
+  test.each(["repro.card", "Review", "review_card", "1review", ""])(
+    "rejects the kind %j that no client renderer can register",
+    async (kind) => {
+      const messages: SessionOutboundMessage[] = [];
+      const appendTimelineItem = vi.fn();
+      const session = createSessionForTest({
+        clientId: "plugin:review",
+        messages,
+        agentManager: { appendTimelineItem },
+      });
+
+      await session.handleMessage({
+        type: "agent.timeline.append.request",
+        requestId: "append-kind",
+        agentId: "agent-1",
+        item: { type: "plugin", id: "review-1", kind, version: 1, data: {} },
+      });
+
+      expect(appendTimelineItem).not.toHaveBeenCalled();
+      expect(messages).toContainEqual({
+        type: "rpc_error",
+        payload: {
+          requestId: "append-kind",
+          requestType: "agent.timeline.append.request",
+          error: `Request failed: Plugin timeline item kind must start with a lowercase letter and contain only lowercase letters, digits, and dashes: ${JSON.stringify(kind)}`,
+          code: "handler_error",
+        },
+      });
+    },
+  );
 });
 
 describe("agent detach RPC", () => {
@@ -6807,6 +6856,7 @@ describe("send_agent_message dispatch modes", () => {
       agentId,
       "fix the test",
       expect.objectContaining({ clearPendingPermissions: true }),
+      expect.any(ForegroundPromptStart),
     );
     expect(replaceAgentRun).not.toHaveBeenCalled();
     expect(streamAgent).not.toHaveBeenCalled();
@@ -6846,6 +6896,7 @@ describe("send_agent_message dispatch modes", () => {
       agentId,
       "fix the test",
       expect.objectContaining({ clearPendingPermissions: true }),
+      expect.any(ForegroundPromptStart),
     );
     expect(streamAgent).not.toHaveBeenCalled();
     expect(acceptedResponse(messages)).toMatchObject({
@@ -6938,7 +6989,7 @@ describe("send_agent_message dispatch modes", () => {
   test("a default interrupt send to a busy agent replaces the run — never degrades to a queue", async () => {
     // sendBehavior "interrupt" (or the default) sends WITHOUT dispatchMode;
     // the daemon must take the replaceRunning path, never wait for idle.
-    const replaceAgentRun = vi.fn(noopAgentStream);
+    const replaceAgentRun = vi.fn(startedAgentStream);
     const streamAgent = vi.fn(noopAgentStream);
     const { session, messages } = createDispatchSession({
       replaceAgentRun,
@@ -6964,6 +7015,7 @@ describe("send_agent_message dispatch modes", () => {
       agentId,
       expect.any(String),
       expect.objectContaining({ replaceOrigin: "user" }),
+      expect.any(ForegroundPromptStart),
     );
     expect(streamAgent).not.toHaveBeenCalled();
     expect(acceptedResponse(messages)).toMatchObject({
@@ -7295,6 +7347,7 @@ test("answers an agent background work list request", async () => {
   const messages: SessionOutboundMessage[] = [];
   const session = createSessionForTest({
     messages,
+    permissions: ["workspace.read", "workspace.write"],
     agentManager: {
       waitForAgentClose: vi.fn().mockResolvedValue(undefined),
       getAgent: vi.fn(() => ({ id: "agent-a" })),
@@ -7304,6 +7357,8 @@ test("answers an agent background work list request", async () => {
           id: "bash-1",
           kind: "shell",
           description: "sleep 20",
+          canStop: true,
+          stopToken: "provider-token",
           startedAt: "2026-10-06T10:00:00.000Z",
         },
       ]),
@@ -7326,12 +7381,238 @@ test("answers an agent background work list request", async () => {
           id: "bash-1",
           kind: "shell",
           description: "sleep 20",
+          canStop: true,
+          stopToken: "provider-token",
           startedAt: "2026-10-06T10:00:00.000Z",
         },
       ],
       error: null,
     },
   });
+});
+
+const heartbeatBackgroundWork = {
+  id: "heartbeat:heartbeat-a",
+  kind: "heartbeat",
+  description: "Check progress",
+  startedAt: "2026-10-06T10:00:00.000Z",
+  canStop: true,
+  stopToken: "heartbeat-token",
+};
+
+test.each([
+  { permissions: ["workspace.read"], canStop: false },
+  { permissions: ["workspace.read", "automation.manage"], canStop: false },
+  { permissions: ["workspace.read", "workspace.write"], canStop: false },
+  { permissions: ["workspace.read", "hub.execute", "automation.manage"], canStop: true },
+] satisfies Array<{ permissions: DaemonPermission[]; canStop: boolean }>)(
+  "filters dormant heartbeat controls for $permissions on list and update",
+  async ({ permissions, canStop }) => {
+    const messages: SessionOutboundMessage[] = [];
+    let listener: ((event: AgentManagerEvent) => void) | undefined;
+    const record = createStoredAgentRecord({ id: "agent-a", cwd: "/tmp/repo" });
+    const session = createSessionForTest({
+      messages,
+      permissions,
+      agentManager: {
+        getAgent: () => undefined,
+        getAgentBackgroundWorkSummary: () => ({ count: 1 }),
+        listAgentBackgroundWork: () => [heartbeatBackgroundWork],
+        subscribe: (callback: (event: AgentManagerEvent) => void) => {
+          listener = callback;
+          return () => {};
+        },
+      },
+      agentStorage: { get: async () => record },
+    });
+    await session.handleMessage({
+      type: "session.events.set_subscription.request",
+      requestId: "subscribe-heartbeat",
+      events: ["agent.background_work.update"],
+    });
+    await session.handleMessage({
+      type: "agent.background_work.list.request",
+      requestId: "list-heartbeat",
+      agentId: record.id,
+    });
+    if (!listener) throw new Error("Agent event listener was not installed");
+    listener({
+      type: "background_work",
+      agentId: record.id,
+      items: [heartbeatBackgroundWork],
+    });
+
+    const { canStop: _canStop, stopToken: _token, ...readOnly } = heartbeatBackgroundWork;
+    const items = [canStop ? heartbeatBackgroundWork : readOnly];
+    expect(findByType(messages, "agent.background_work.list.response")?.payload).toEqual({
+      requestId: "list-heartbeat",
+      agentId: record.id,
+      items,
+      error: null,
+    });
+    await expect
+      .poll(() => findByType(messages, "agent.background_work.update")?.payload)
+      .toEqual({ agentId: record.id, items });
+
+    await session.cleanup();
+  },
+);
+
+test("publishes the current dormant inventory when an older update waits on storage", async () => {
+  const messages: SessionOutboundMessage[] = [];
+  const record = createStoredAgentRecord({ id: "agent-a", cwd: "/tmp/repo" });
+  const pendingRecord = deferred<StoredAgentRecord>();
+  let firstRead = true;
+  let listener: ((event: AgentManagerEvent) => void) | undefined;
+  let items = [heartbeatBackgroundWork];
+  const session = createSessionForTest({
+    messages,
+    agentManager: {
+      getAgent: () => null,
+      getAgentBackgroundWorkSummary: () => (items.length ? { count: items.length } : undefined),
+      listAgentBackgroundWork: () => items,
+      subscribe: (callback: (event: AgentManagerEvent) => void) => {
+        listener = callback;
+        return () => {};
+      },
+    },
+    agentStorage: {
+      get: async () => {
+        if (!firstRead) return record;
+        firstRead = false;
+        return pendingRecord.promise;
+      },
+    },
+  });
+  await session.handleMessage({
+    type: "session.events.set_subscription.request",
+    requestId: "subscribe-delayed-inventory",
+    events: ["agent.background_work.update"],
+  });
+
+  if (!listener) throw new Error("Agent event listener was not installed");
+  listener({ type: "background_work", agentId: record.id, items });
+  items = [];
+  listener({ type: "background_work", agentId: record.id, items });
+  await expect
+    .poll(() => findByType(messages, "agent.background_work.update")?.payload.items)
+    .toEqual([]);
+
+  pendingRecord.resolve(record);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  const updates = messages.filter((message) => message.type === "agent.background_work.update");
+  expect(updates.every((message) => message.payload.items.length === 0)).toBe(true);
+  await session.cleanup();
+});
+
+test("passes the automation grant to the dormant background work stop operation", async () => {
+  const messages: SessionOutboundMessage[] = [];
+  const stops: Parameters<SessionOptions["agentManager"]["stopAgentBackgroundWork"]>[0][] = [];
+  const record = createStoredAgentRecord({ id: "agent-a", cwd: "/tmp/repo" });
+  const session = createSessionForTest({
+    messages,
+    permissions: ["workspace.read", "automation.manage"],
+    agentManager: {
+      getAgent: () => undefined,
+      stopAgentBackgroundWork: async (
+        request: Parameters<SessionOptions["agentManager"]["stopAgentBackgroundWork"]>[0],
+      ) => {
+        stops.push(request);
+      },
+    },
+    agentStorage: { get: async () => record },
+  });
+  const request = {
+    type: "agent.background_work.stop.request",
+    requestId: "stop-heartbeat",
+    agentId: record.id,
+    itemId: heartbeatBackgroundWork.id,
+    stopToken: heartbeatBackgroundWork.stopToken,
+  } as const;
+  await session.handleMessage({ ...request, requestId: "stop-heartbeat-read-only" });
+  expect(findByType(messages, "rpc_error")?.payload.code).toBe("access_denied");
+  session.setPermissions(["workspace.read", "workspace.write"]);
+  await session.handleMessage(request);
+  session.setPermissions(["workspace.read", "workspace.write", "automation.manage"]);
+  await session.handleMessage({ ...request, requestId: "stop-heartbeat-owner" });
+
+  const { agentId, itemId, stopToken } = request;
+  expect(stops).toEqual([
+    { agentId, itemId, stopToken, canManageAutomation: false },
+    { agentId, itemId, stopToken, canManageAutomation: true },
+  ]);
+  expect(findByType(messages, "agent.background_work.stop.response")?.payload.error).toBeNull();
+  await session.cleanup();
+});
+
+test("projects dormant heartbeat counts in directory snapshots and live updates", async () => {
+  const messages: SessionOutboundMessage[] = [];
+  let listener: ((event: AgentManagerEvent) => void) | undefined;
+  let count = 1;
+  const record = createStoredAgentRecord({
+    id: "agent-a",
+    workspaceId: "workspace-a",
+    cwd: "/tmp/repo",
+  });
+  const workspace = createPersistedWorkspaceRecord({
+    workspaceId: "workspace-a",
+    projectId: "project-a",
+    cwd: record.cwd,
+    kind: "directory",
+    displayName: "Workspace",
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+  });
+  const project = createPersistedProjectRecord({
+    projectId: workspace.projectId,
+    rootPath: workspace.cwd,
+    kind: "non_git",
+    displayName: "Project",
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+  });
+  const providers = createProviderSnapshotManagerStub();
+  providers.listRegisteredProviderIds.mockReturnValue([record.provider]);
+  const session = createSessionForTest({
+    messages,
+    providerSnapshotManager: providers.manager,
+    permissions: ["workspace.read"],
+    agentManager: {
+      getAgent: () => undefined,
+      // The fork reads provider availability from the agent manager's registered clients.
+      getRegisteredProviderIds: () => [record.provider],
+      getAgentBackgroundWorkSummary: () => (count ? { count } : undefined),
+      subscribe: (callback: (event: AgentManagerEvent) => void) => {
+        listener = callback;
+        return () => {};
+      },
+    },
+    agentStorage: { get: async () => record, listAll: async () => [record] },
+    workspaceRegistry: { get: vi.fn(async () => workspace) },
+    projectRegistry: { get: async () => project },
+  });
+
+  await session.handleMessage({
+    type: "fetch_agents_request",
+    requestId: "list-heartbeat-agents",
+    subscribe: { subscriptionId: "heartbeat-agents" },
+  });
+  expect(findByType(messages, "fetch_agents_response")?.payload.entries).toMatchObject([
+    { agent: { id: record.id, backgroundWork: { count: 1 } } },
+  ]);
+
+  if (!listener) throw new Error("Agent event listener was not installed");
+  count = 0;
+  listener({ type: "background_work", agentId: record.id, items: [] });
+  await expect
+    .poll(() => findByType(messages, "agent_update")?.payload)
+    .toMatchObject({
+      kind: "upsert",
+      agent: { id: record.id },
+    });
+  const update = findByType(messages, "agent_update")?.payload;
+  expect(update?.kind === "upsert" && update.agent.backgroundWork).toBeUndefined();
+  await session.cleanup();
 });
 
 test("reports an unavailable inventory for a stored agent without loading it", async () => {
@@ -7397,8 +7678,9 @@ test.each([
     record: createStoredAgentRecord({ id: "agent-a", cwd: "/tmp/repo", internal: true }),
     error: "Unknown agent 'agent-a'",
   },
-])("rejects a background work list request for $name that is not loaded", async (scenario) => {
+])("rejects background work control and updates for $name that is not loaded", async (scenario) => {
   const messages: SessionOutboundMessage[] = [];
+  let listener: ((event: AgentManagerEvent) => void) | undefined;
   const session = createSessionForTest({
     messages,
     agentManager: {
@@ -7407,20 +7689,45 @@ test.each([
       getRegisteredProviderIds: vi.fn(() => ["codex"]),
       resumeAgentFromPersistence: vi.fn(),
       createAgent: vi.fn(),
+      subscribe: (callback: (event: AgentManagerEvent) => void) => {
+        listener = callback;
+        return () => {};
+      },
     },
     agentStorage: { get: vi.fn().mockResolvedValue(scenario.record) },
   });
 
+  await session.handleMessage({
+    type: "session.events.set_subscription.request",
+    requestId: "subscribe-background-work",
+    events: ["agent.background_work.update"],
+  });
   await session.handleMessage({
     type: "agent.background_work.list.request",
     agentId: "agent-a",
     requestId: "list-rejected",
   });
 
+  await session.handleMessage({
+    type: "agent.background_work.stop.request",
+    requestId: "stop-rejected",
+    agentId: "agent-a",
+    itemId: heartbeatBackgroundWork.id,
+    stopToken: heartbeatBackgroundWork.stopToken,
+  });
+  if (!listener) throw new Error("Agent event listener was not installed");
+  listener({ type: "background_work", agentId: "agent-a", items: [heartbeatBackgroundWork] });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
   expect(messages).toContainEqual({
     type: "agent.background_work.list.response",
     payload: { requestId: "list-rejected", agentId: "agent-a", items: [], error: scenario.error },
   });
+  expect(findByType(messages, "agent.background_work.stop.response")?.payload.error).toBe(
+    scenario.error,
+  );
+  expect(findByType(messages, "agent.background_work.update")).toBeUndefined();
+  await session.cleanup();
 });
 
 test("never pushes background work to an old app", async () => {
@@ -7437,6 +7744,7 @@ test("never pushes background work to an old app", async () => {
         return () => {};
       }),
     },
+    agentStorage: { get: async () => createStoredAgentRecord({ id: "agent-a", cwd: "/tmp/repo" }) },
   });
   // provider_subagents makes subagent updates flow to this legacy socket, so the
   // manager listener is installed for it.
@@ -7453,6 +7761,7 @@ test("never pushes background work to an old app", async () => {
     ],
   });
 
+  await new Promise<void>((resolve) => setImmediate(resolve));
   const pushed = [...messages, ...targetedMessages.map((entry) => entry.message)];
   expect(pushed.some((message) => message.type === "agent.background_work.update")).toBe(false);
 });
@@ -7460,25 +7769,28 @@ test("never pushes background work to an old app", async () => {
 test("pushes background work only to clients that subscribed to it", async () => {
   const messages: SessionOutboundMessage[] = [];
   const agentEventListeners: Array<(event: AgentManagerEvent) => void> = [];
-  const session = createSessionForTest({
-    messages,
-    agentManager: {
-      getAgent: vi.fn(() => undefined),
-      subscribe: vi.fn((listener: (event: AgentManagerEvent) => void) => {
-        agentEventListeners.push(listener);
-        return () => {};
-      }),
-    },
-  });
-  const forward = (event: AgentManagerEvent) => {
-    for (const listener of agentEventListeners) listener(event);
-  };
   const event: AgentManagerEvent = {
     type: "background_work",
     agentId: "agent-a",
     items: [
       { id: "bash-1", kind: "shell", description: null, startedAt: "2026-10-06T10:00:00.000Z" },
     ],
+  };
+  const session = createSessionForTest({
+    messages,
+    agentManager: {
+      getAgent: vi.fn(() => undefined),
+      getAgentBackgroundWorkSummary: () => ({ count: event.items.length }),
+      listAgentBackgroundWork: () => event.items,
+      subscribe: vi.fn((listener: (event: AgentManagerEvent) => void) => {
+        agentEventListeners.push(listener);
+        return () => {};
+      }),
+    },
+    agentStorage: { get: async () => createStoredAgentRecord({ id: "agent-a", cwd: "/tmp/repo" }) },
+  });
+  const forward = () => {
+    for (const listener of agentEventListeners) listener(event);
   };
 
   // Subscribe to an unrelated event so the manager listener is installed, then prove
@@ -7489,7 +7801,8 @@ test("pushes background work only to clients that subscribed to it", async () =>
     events: ["agent.provider_subagents.update"],
   });
   if (agentEventListeners.length === 0) throw new Error("Agent event listener was not installed");
-  forward(event);
+  forward();
+  await new Promise<void>((resolve) => setImmediate(resolve));
   expect(messages.some((message) => message.type === "agent.background_work.update")).toBe(false);
 
   await session.handleMessage({
@@ -7499,14 +7812,16 @@ test("pushes background work only to clients that subscribed to it", async () =>
   });
   messages.length = 0;
 
-  forward(event);
+  forward();
 
-  expect(messages).toContainEqual(
-    expect.objectContaining({
-      type: "agent.background_work.update",
-      payload: expect.objectContaining({ agentId: "agent-a", items: event.items }),
-    }),
-  );
+  await expect
+    .poll(() => messages)
+    .toContainEqual(
+      expect.objectContaining({
+        type: "agent.background_work.update",
+        payload: expect.objectContaining({ agentId: "agent-a", items: event.items }),
+      }),
+    );
 });
 
 test("does not publish internal agents' background work to subscribed clients", async () => {
@@ -7516,7 +7831,7 @@ test("does not publish internal agents' background work to subscribed clients", 
     messages,
     agentManager: {
       getAgent: () => ({ id: "internal-agent", internal: true }) as never,
-      subscribe: (callback) => {
+      subscribe: (callback: (event: AgentManagerEvent) => void) => {
         listener = callback;
         return () => {};
       },
@@ -7536,5 +7851,6 @@ test("does not publish internal agents' background work to subscribed clients", 
       { id: "work", kind: "shell", description: "private", startedAt: "2026-10-06T10:00:00.000Z" },
     ],
   });
+  await new Promise<void>((resolve) => setImmediate(resolve));
   expect(messages.some((message) => message.type === "agent.background_work.update")).toBe(false);
 });

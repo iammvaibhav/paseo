@@ -207,6 +207,8 @@ interface UseGitActionsResult {
   gitActions: GitActions;
   branchLabel: string;
   isGit: boolean;
+  /** Archives this workspace, Git or not. Null while it cannot be archived. */
+  archiveWorkspace: (() => void) | null;
 }
 
 function resolveArchiveWorkspaceDescriptor(input: {
@@ -232,6 +234,13 @@ function resolveArchiveWorkspaceDescriptor(input: {
     }
   }
   return null;
+}
+
+function availableArchive(
+  controller: { canArchive: boolean; isArchiving: boolean },
+  archive: () => void,
+): (() => void) | null {
+  return controller.canArchive && !controller.isArchiving ? archive : null;
 }
 
 export function useGitActions({ serverId, cwd, icons }: UseGitActionsInput): UseGitActionsResult {
@@ -800,7 +809,12 @@ export function useGitActions({ serverId, cwd, icons }: UseGitActionsInput): Use
     [gitActionsInput, baseRefLabel, hasPullRequest, forge, t],
   );
 
-  return { gitActions, branchLabel, isGit };
+  return {
+    gitActions,
+    branchLabel,
+    isGit,
+    archiveWorkspace: availableArchive(archiveController, handleArchiveWorkspace),
+  };
 }
 
 function translateGitActions(

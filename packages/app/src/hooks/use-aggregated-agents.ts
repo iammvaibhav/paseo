@@ -1,4 +1,4 @@
-import { useMemo, useCallback, useEffect, useRef, useSyncExternalStore } from "react";
+import { useMemo, useCallback, useRef, useSyncExternalStore } from "react";
 import equal from "fast-deep-equal";
 import { useShallow } from "zustand/shallow";
 import { isCommanderOrMachineryLabels } from "@getpaseo/protocol/mission-control/system-owned";
@@ -9,6 +9,7 @@ import type { LifecycleBucket } from "@getpaseo/protocol/agent-state-bucket";
 import { useMissionControlVerbose } from "@/mission-control/use-mission-control-verbose";
 import { deriveSidebarLifecycleBucket } from "@/utils/sidebar-agent-state";
 import { getHostRuntimeStore, useHosts } from "@/runtime/host-runtime";
+import { useAllDirectoryDemand } from "./use-directory-demand";
 
 export interface AggregatedAgent extends AgentDirectoryEntry {
   serverId: string;
@@ -24,6 +25,9 @@ export interface AggregatedAgentsResult {
   isRevalidating: boolean;
   refreshAll: () => void;
 }
+
+const NO_AGENT_MAPS: Record<string, Map<string, Agent> | undefined> = Object.freeze({});
+const NO_AGENTS: AggregatedAgent[] = [];
 
 function toAggregatedAgent(agent: Agent, serverId: string, serverLabel: string): AggregatedAgent {
   return {
@@ -77,19 +81,21 @@ export function useAggregatedAgents(options?: {
   const [verbose] = useMissionControlVerbose();
   const demand = options?.demand ?? true;
   const serverIds = useMemo(() => daemons.map((daemon) => daemon.serverId), [daemons]);
-  useEffect(() => {
-    if (!demand) return;
-    const releases = serverIds.map((serverId) => runtime.acquireDirectoryDemand(serverId));
-    return () => releases.forEach((release) => release());
-  }, [demand, runtime, serverIds]);
+  useAllDirectoryDemand({ serverIds, enabled: demand });
   const runtimeVersion = useSyncExternalStore(
     (onStoreChange) => runtime.subscribeAll(onStoreChange),
     () => runtime.getVersion(),
     () => runtime.getVersion(),
   );
 
+  // The caller has said it does not need the directory, so stay off the agent maps entirely:
+  // every map change otherwise re-renders this hook and rebuilds the whole list for a surface
+  // that is not on screen (the command center while it is closed).
   const sessionAgents = useSessionStore(
     useShallow((state) => {
+      if (!demand) {
+        return NO_AGENT_MAPS;
+      }
       const result: Record<string, Map<string, Agent> | undefined> = {};
       for (const [serverId, session] of Object.entries(state.sessions)) {
         result[serverId] = session.agents;
@@ -113,6 +119,16 @@ export function useAggregatedAgents(options?: {
   const result = useMemo(() => {
     // runtimeVersion is referenced so the memo recomputes when runtime state changes.
     void runtimeVersion;
+    if (!demand) {
+      prevAgentsRef.current = new Map();
+      prevSortedRef.current = NO_AGENTS;
+      return {
+        agents: NO_AGENTS,
+        isLoading: false,
+        isInitialLoad: false,
+        isRevalidating: false,
+      };
+    }
     const allAgents: AggregatedAgent[] = [];
     const serverLabelById = new Map(
       daemons.map((daemon) => [daemon.serverId, daemon.label] as const),
@@ -210,7 +226,7 @@ export function useAggregatedAgents(options?: {
       isInitialLoad,
       isRevalidating,
     };
-  }, [daemons, includeArchived, runtime, runtimeVersion, sessionAgents, verbose]);
+  }, [daemons, demand, includeArchived, runtime, runtimeVersion, sessionAgents, verbose]);
 
   return {
     ...result,

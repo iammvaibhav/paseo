@@ -10,6 +10,7 @@ import { AgentManager } from "../agent-manager.js";
 import { AgentStorage } from "../agent-storage.js";
 import type { CreatePaseoWorktreeWorkflowResult } from "../../worktree-session.js";
 import { createAgentCommand } from "./create.js";
+import { ForegroundPromptStart } from "../agent-run-state.js";
 import type { ManagedAgent } from "../agent-manager.js";
 import { ITSAPLAN_ISSUE_LABEL_KEY } from "@getpaseo/protocol/agent-labels";
 
@@ -94,9 +95,12 @@ test("session create forwards clientMessageId to the initial prompt run options"
     firstAgentContext: { attachments: [] },
   });
 
-  expect(streamAgent).toHaveBeenCalledWith("agent-1", "hello from create", {
-    clientMessageId: "msg-create-1",
-  });
+  expect(streamAgent).toHaveBeenCalledWith(
+    "agent-1",
+    "hello from create",
+    { clientMessageId: "msg-create-1" },
+    expect.any(ForegroundPromptStart),
+  );
 });
 
 test("mcp create attaches native images to the initial prompt", async () => {
@@ -146,6 +150,7 @@ test("mcp create attaches native images to the initial prompt", async () => {
       { type: "image", data: "aaa", mimeType: "image/png" },
     ],
     expect.anything(),
+    expect.any(ForegroundPromptStart),
   );
 });
 

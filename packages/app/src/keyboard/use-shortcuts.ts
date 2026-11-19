@@ -74,6 +74,7 @@ export function useKeyboardShortcuts({
         bindings,
         chordState,
         isMac,
+        usesDesktopBindings,
         enabled,
         editorOrigins: editorOriginsKey ? editorOriginsKey.split("\n") : [],
       });
@@ -185,9 +186,7 @@ export function useKeyboardShortcuts({
         if (action.nextOpen) {
           captureFocusRestore();
         }
-        useKeyboardShortcutsStore
-          .getState()
-          .setCommandCenterOpen(action.nextOpen, action.scope ?? null);
+        useKeyboardShortcutsStore.getState().setCommandCenterOpen(action.nextOpen, action.tab);
         return true;
       }
       case "shortcuts-dialog-toggle":
@@ -298,6 +297,10 @@ export function useKeyboardShortcuts({
       keyUp: handleKeyUp,
       blur: resetModifiers,
       commandCenterOpen: () => useKeyboardShortcutsStore.getState().commandCenterOpen,
+      subscribeCommandCenter: (listener) =>
+        useKeyboardShortcutsStore.subscribe((state, previous) => {
+          if (state.commandCenterOpen !== previous.commandCenterOpen) listener();
+        }),
     });
     return () => {
       detach();

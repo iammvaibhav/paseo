@@ -4,6 +4,7 @@ import type {
   AgentMode,
   AgentModelDefinition,
   AgentProvider,
+  ProviderOptions,
   ProviderSnapshotEntry,
 } from "@getpaseo/protocol/agent-types";
 import { buildProviderDefinitions } from "@/utils/provider-definitions";
@@ -65,7 +66,7 @@ export interface UseAgentFormStateResult {
   selectedModel: string;
   setModelFromUser: (modelId: string) => void;
   selectedThinkingOptionId: string;
-  setThinkingOptionFromUser: (thinkingOptionId: string) => void;
+  setThinkingOptionFromUser: (thinkingOptionId: string, retainedOptions?: ProviderOptions) => void;
   workingDir: string;
   providerDefinitions: AgentProviderDefinition[];
   providerDefinitionMap: Map<AgentProvider, AgentProviderDefinition>;
@@ -482,7 +483,7 @@ export function useAgentFormState(options: UseAgentFormStateOptions): UseAgentFo
   );
 
   const setThinkingOptionFromUser = useCallback(
-    (thinkingOptionId: string) => {
+    (thinkingOptionId: string, retainedOptions?: ProviderOptions) => {
       dispatch({ type: "SET_THINKING_OPTION_FROM_USER", thinkingOptionId });
       const { provider, model: modelId } = formStore.getState().form;
       if (provider && modelId) {
@@ -494,6 +495,7 @@ export function useAgentFormState(options: UseAgentFormStateOptions): UseAgentFo
               thinkingByModel: {
                 [modelId]: thinkingOptionId,
               },
+              options: retainedOptions,
             },
             scope: preferenceScopeRef.current,
           }),

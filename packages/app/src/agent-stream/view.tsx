@@ -1157,6 +1157,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
                         isLastInSequence={index === group.run.calls.length - 1}
                         defaultExpanded={false}
                         autoExpanded={autoExpandedFor(call.id)}
+                        maxDetailHeight={GROUPED_TOOL_CALL_DETAIL_MAX_HEIGHT}
                         standalone={false}
                         onInlineDetailsExpandedChangeByItemId={setInlineDetailsExpanded}
                       />
@@ -1740,6 +1741,7 @@ interface ThoughtSlotProps {
   defaultExpanded: boolean;
   autoExpanded?: boolean;
   standalone?: boolean;
+  maxDetailHeight?: number;
 }
 
 // Reasoning text is paced the same way assistant text is; see @/hooks/use-revealed-text.
@@ -1752,6 +1754,7 @@ function ThoughtSlot({
   defaultExpanded,
   autoExpanded,
   standalone,
+  maxDetailHeight,
 }: ThoughtSlotProps) {
   const revealedText = useRevealedText(text, status === "ready" ? "complete" : "streaming");
   return (
@@ -1765,6 +1768,7 @@ function ThoughtSlot({
       defaultExpanded={defaultExpanded}
       autoExpanded={autoExpanded}
       standalone={standalone}
+      maxDetailHeight={maxDetailHeight}
       forceInline={defaultExpanded}
     />
   );

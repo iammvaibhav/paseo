@@ -1,12 +1,15 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { getIsElectronRuntimeMac } from "@/constants/layout";
-import { useAggregatedAgents } from "./use-aggregated-agents";
+import { useAllDirectoryDemand } from "./use-directory-demand";
 import { getDesktopHost } from "@/desktop/host";
-import { useWorkspaceStatusesForBadges } from "@/stores/session-store-hooks";
-import { deriveMacDockBadgeCountFromWorkspaceStatuses } from "@/utils/desktop-badge-state";
+import { createMacDockBadgeCountSelector } from "@/utils/desktop-badge-state";
+import { createFaviconStatusSelector, type FaviconStatus } from "@/utils/favicon-status";
 import { isNative } from "@/constants/platform";
+import { useSessionStore } from "@/stores/session-store";
+import { useSidebarViewStore } from "@/stores/sidebar-view-store";
+import { useHosts } from "@/runtime/host-runtime";
+import { useMissionControlVerbose } from "@/mission-control/use-mission-control-verbose";
 
-type FaviconStatus = "none" | "running" | "attention";
 type ColorScheme = "dark" | "light";
 
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -23,20 +26,6 @@ const FAVICON_IMAGES: Record<ColorScheme, Record<FaviconStatus, { uri: string } 
   },
 };
 /* eslint-enable @typescript-eslint/no-require-imports */
-
-function deriveFaviconStatus(
-  agents: ReturnType<typeof useAggregatedAgents>["agents"],
-): FaviconStatus {
-  const hasRunning = agents.some((agent) => agent.bucket === "running");
-  if (hasRunning) {
-    return "running";
-  }
-  const hasAttention = agents.some((agent) => agent.bucket === "needs_you");
-  if (hasAttention) {
-    return "attention";
-  }
-  return "none";
-}
 
 function getFaviconUri(status: FaviconStatus, colorScheme: ColorScheme): string {
   const image = FAVICON_IMAGES[colorScheme][status];
@@ -93,8 +82,25 @@ async function updateMacDockBadge(count?: number) {
 }
 
 export function useFaviconStatus() {
-  const { agents } = useAggregatedAgents({ demand: !isNative });
-  const workspaceStatuses = useWorkspaceStatusesForBadges();
+  const daemons = useHosts();
+  const serverIds = useMemo(() => daemons.map((daemon) => daemon.serverId), [daemons]);
+  // The favicon reads the whole fleet, so it has to keep every host's directory loading even
+  // though it no longer subscribes to the agent maps.
+  useAllDirectoryDemand({ serverIds, enabled: !isNative });
+  // Background workspaces count exactly when the sidebar shows them; so do Mission Control's
+  // Commander and machinery, which only verbose mode shows.
+  const showBackground = useSidebarViewStore((state) => state.showBackground);
+  const [verbose] = useMissionControlVerbose();
+  const selectFaviconStatus = useMemo(
+    () => createFaviconStatusSelector({ showBackground, hideMachinery: !verbose }),
+    [showBackground, verbose],
+  );
+  const selectMacDockBadgeCount = useMemo(
+    () => createMacDockBadgeCountSelector({ showBackground, hideSystemOwnedWorkspaces: !verbose }),
+    [showBackground, verbose],
+  );
+  const status = useSessionStore(selectFaviconStatus);
+  const dockBadgeCount = useSessionStore(selectMacDockBadgeCount);
   const [colorScheme, setColorScheme] = useState<ColorScheme>(getSystemColorScheme);
   const lastDockBadgeCountRef = useRef<number | undefined>(undefined);
 
@@ -111,17 +117,15 @@ export function useFaviconStatus() {
     return () => mediaQuery.removeEventListener("change", handler);
   }, []);
 
-  // Update favicon when agents or color scheme changes
   useEffect(() => {
     if (isNative) return;
-
-    const status = deriveFaviconStatus(agents);
     updateFavicon(status, colorScheme);
+  }, [status, colorScheme]);
 
-    const dockBadgeCount = deriveMacDockBadgeCountFromWorkspaceStatuses(workspaceStatuses);
-    if (dockBadgeCount !== lastDockBadgeCountRef.current) {
-      lastDockBadgeCountRef.current = dockBadgeCount;
-      void updateMacDockBadge(dockBadgeCount);
-    }
-  }, [agents, colorScheme, workspaceStatuses]);
+  useEffect(() => {
+    if (isNative) return;
+    if (dockBadgeCount === lastDockBadgeCountRef.current) return;
+    lastDockBadgeCountRef.current = dockBadgeCount;
+    void updateMacDockBadge(dockBadgeCount);
+  }, [dockBadgeCount]);
 }

@@ -238,7 +238,8 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
   }
 
   public async claim(options: WarmWorktreeClaimOptions): Promise<WarmWorktreeClaimResult | null> {
-    if (this.isStopped) {
+    // A warm tree is cut for a branch; restoring a saved commit checks it out detached.
+    if (this.isStopped || options.source.kind === "restore-commit") {
       return null;
     }
     const timer = createPhaseTimer();
@@ -320,6 +321,11 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
         refreshRemoteBase: false,
       });
       timer.mark("planMs");
+      const { branchName } = sourcePlan;
+      if (branchName === null) {
+        // Only a restore of a saved commit plans no branch, and claim() turns those away.
+        throw new Error("A warm worktree claim needs a branch to check out");
+      }
 
       const headAlreadyAtTarget = await this.applyBranchToClaimedWorktree({
         worktreePath,
@@ -329,7 +335,7 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
       if (sourcePlan.pushRemote) {
         await configureWorktreePushRemote({
           cwd: repoRoot,
-          branchName: sourcePlan.branchName,
+          branchName,
           remote: sourcePlan.pushRemote,
         });
       }
@@ -337,7 +343,7 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
       if (sourcePlan.trackingRemote) {
         await configureWorktreeTrackingRemote({
           cwd: repoRoot,
-          branchName: sourcePlan.branchName,
+          branchName,
           remote: sourcePlan.trackingRemote,
         });
       }
@@ -365,7 +371,7 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
         {
           repoRoot,
           worktreePath,
-          branchName: sourcePlan.branchName,
+          branchName,
           setupPrepared,
           durationMs: this.now().getTime() - claimedAt,
           phases: timer.phases,
@@ -383,7 +389,7 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
 
       return {
         worktree: {
-          branchName: sourcePlan.branchName,
+          branchName,
           worktreePath,
           comparisonBaseRef: sourcePlan.metadataBaseRef ?? sourcePlan.metadataBaseRefName,
         },

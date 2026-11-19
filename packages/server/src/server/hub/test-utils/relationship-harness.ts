@@ -9,6 +9,7 @@ import { promisify } from "node:util";
 import { Writable } from "node:stream";
 import pino from "pino";
 import { WebSocket } from "ws";
+import { splitAgentModeBlock } from "@getpaseo/protocol/agent-modes";
 import type {
   AgentSnapshotPayload,
   HubExecutionAgentCreateResponse,
@@ -458,6 +459,7 @@ export class HubRelationshipHarness {
   private readonly claimedCliSockets = new Set<WebSocket>();
   private readonly promptsToFail = new Set<string>();
   private failNextSessionClose = false;
+  private failNextModeChange = false;
   private observedEnrollments = 0;
   private observedSockets = 0;
   private readonly codex: ControlledAgentClient;
@@ -474,7 +476,14 @@ export class HubRelationshipHarness {
           this.failNextSessionClose = false;
           throw new Error("Requested provider session close failure");
         },
-        onStartTurn: (prompt) => {
+        beforeSetMode: async () => {
+          if (!this.failNextModeChange) return;
+          this.failNextModeChange = false;
+          throw new Error("Requested provider mode change failure");
+        },
+        onStartTurn: (input) => {
+          // An agent's first prompt carries its Approach block; Hub tests match the user's text.
+          const prompt = typeof input === "string" ? splitAgentModeBlock(input).body : input;
           const promptText = typeof prompt === "string" ? prompt : JSON.stringify(prompt);
           if (this.promptsToFail.delete(promptText)) {
             throw new Error("Requested provider prompt startup failure");
@@ -674,6 +683,10 @@ export class HubRelationshipHarness {
     this.promptsToFail.add(prompt);
   }
 
+  failNextProviderModeChange(): void {
+    this.failNextModeChange = true;
+  }
+
   failNextProviderSessionClose(): void {
     this.failNextSessionClose = true;
   }
@@ -710,9 +723,9 @@ export class HubRelationshipHarness {
     this.rejectLatestSocket(code);
   }
 
-  closeLatestSocket(code: number): void {
+  closeLatestSocket(code: number, reason?: string): void {
     const socket = this.latestSocket();
-    socket.events.closed(code);
+    socket.events.closed(code, reason);
     socket.socket.close(code);
   }
 

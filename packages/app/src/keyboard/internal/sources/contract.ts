@@ -10,6 +10,7 @@ export interface KeyboardSourceHandlers {
   keyUp(event: KeyboardInputEvent): void;
   blur(): void;
   commandCenterOpen(): boolean;
+  subscribeCommandCenter(listener: () => void): () => void;
 }
 export function nativeKeyboardInput(
   event: KeyboardInputEvent,
@@ -23,6 +24,7 @@ export interface KeyboardPolicyInput {
   bindings: readonly ParsedShortcutBinding[];
   chordState?: ChordState;
   isMac: boolean;
+  usesDesktopBindings: boolean;
   enabled: boolean;
   /** Origins of the hosts' VS Code Web pages. */
   editorOrigins?: readonly string[];

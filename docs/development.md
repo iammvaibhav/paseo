@@ -49,7 +49,7 @@ than downloading a published desktop release.
 - The **server itself** (e.g. when launched by the desktop app or `pnpm run start`) defaults to `~/.paseo` (see `packages/server/src/server/paseo-home.ts`).
 - **Repo dev scripts** default to `$ROOT/.dev/paseo-home`, where `$ROOT` is the current checkout or worktree root. This keeps all dev state scoped to the checkout instead of the packaged desktop app.
 - **`pnpm run cli -- ...`** runs through the same dev-home wrapper as the dev scripts, so the in-repo CLI automatically targets the current checkout's `.dev/paseo-home` and configured dev daemon endpoint.
-- **Paseo-created worktrees** seed `$PASEO_WORKTREE_PATH/.dev/paseo-home` from `$PASEO_SOURCE_CHECKOUT_PATH/.dev/paseo-home` by copying durable JSON metadata. Runtime files like pid files, sockets, and logs are not copied.
+- **Paseo-created worktrees** seed `$PASEO_WORKTREE_PATH/.dev/paseo-home` from `$PASEO_SOURCE_CHECKOUT_PATH/.dev/paseo-home` by copying agent and project JSON metadata and configuration. Both this setup and `PASEO_DEV_SEED_HOME` use the same seeder, which disables `agents.resumeOnStartup` in the copied config. Startup repairs copied running records without resuming agents or sending recovery prompts. Runtime files, identities, sockets, and logs are not copied. Existing nonempty homes are left unchanged unless explicitly reset. Copied agents still reference the original provider sessions and working directories: manually prompting one reaches that real session.
 - **This repo's worktree setup** also best-effort seeds `packages/app/ios` and the newest `.dev/ios-build` entry from the source checkout so iOS simulator services can reuse native project and Xcode cache state when it is safe enough to do so.
 
 Override knobs:
@@ -773,8 +773,10 @@ cp -R packages/desktop/release/mac-arm64/Paseo.app "/Applications/Paseo Test.app
 runs when its package is actually present, so add the package to that script's `patchedPackages`
 list when you introduce a new patch — otherwise the file sits in `patches/` and never applies.
 patch-package cannot apply a patch that changed after an earlier version was applied, so the
-script removes that package and fails the install; the next `npm install` reinstalls it clean
-with the current patch. Regenerate a patch with `npx patch-package <package>` after editing `node_modules/<package>`, and
+script removes that package (its virtual-store directory too) and fails the install; the next
+`pnpm install` links it clean and applies the current patch. Deploy's checkout sync retries a
+failed install once for this reason. Regenerate a patch with `pnpm exec patch-package <package>`
+after editing `node_modules/<package>`, and
 patch every build the consumers use: Metro resolves the `react-native` field of a package
 (`src/*.ts` for `react-native-svg`), while Node and Vitest resolve `main`/`module`
 (`lib/commonjs`, `lib/module`). Patching only `lib/` leaves the app bundle unfixed.

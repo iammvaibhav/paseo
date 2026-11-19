@@ -27,7 +27,7 @@ describe("claude tool-call mapper", () => {
         { description: "Run a command", command: "ec" },
         { description: "Run a command", command: "echo hi" },
       ],
-      title: "Shell",
+      title: "Run",
     },
     {
       name: "Read",

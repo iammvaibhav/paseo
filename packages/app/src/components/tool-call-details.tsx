@@ -1,6 +1,6 @@
 import { MarkdownRenderer } from "@/components/markdown/renderer";
 import { useToolCallImageSource } from "@/tool-calls/image-source-context";
-import { createContext, useCallback, useContext, useMemo, useRef, type ReactNode } from "react";
+import { useCallback, useMemo, useRef, type ReactNode } from "react";
 import {
   View,
   Text,
@@ -9,6 +9,7 @@ import {
   type NativeSyntheticEvent,
   type StyleProp,
   type ViewStyle,
+  type ScrollViewProps,
 } from "react-native";
 import { ScrollView as GHScrollView } from "react-native-gesture-handler";
 import { StyleSheet } from "react-native-unistyles";
@@ -26,7 +27,7 @@ import { highlightDiffLines } from "@/utils/diff-highlight";
 import { hasMeaningfulToolCallDetail } from "@/utils/tool-call-detail-state";
 import { inlineUnistylesStyle } from "@/styles/unistyles-inline-style";
 import { CODE_SURFACE_DATASET } from "@/styles/code-surface";
-import { extensionFromPath, highlightToKeyedLines } from "@/utils/highlight-cache";
+import { highlightToKeyedLines } from "@/utils/highlight-cache";
 import { parseEvalToolCallDetail, type EvalCell, type EvalDetailModel } from "@/utils/eval-detail";
 import { parseWebSearchToolCallDetail, type WebSearchDetailModel } from "@/utils/web-search-detail";
 import { parseHubToolCallDetail, type HubDetailModel } from "@/utils/hub-detail";
@@ -45,6 +46,24 @@ const ScrollView = isWeb ? RNScrollView : GHScrollView;
 // expo-image is not a unistyles-aware component, so its box comes from the
 // parent View and it only fills that box.
 const EVAL_IMAGE_FILL = { position: "absolute", top: 0, left: 0, right: 0, bottom: 0 } as const;
+// A capped detail scrolls as a whole. Only full-height sheets need section scrollers.
+function DetailSectionBody({
+  fillAvailableHeight,
+  style,
+  contentContainerStyle,
+  children,
+  ...scrollProps
+}: ScrollViewProps & { fillAvailableHeight: boolean }) {
+  const bodyStyle = useMemo(() => [style, contentContainerStyle], [style, contentContainerStyle]);
+  if (fillAvailableHeight) {
+    return (
+      <ScrollView {...scrollProps} style={style} contentContainerStyle={contentContainerStyle}>
+        {children}
+      </ScrollView>
+    );
+  }
+  return <View style={bodyStyle}>{children}</View>;
+}
 
 // ---- Content Component ----
 
@@ -60,13 +79,54 @@ interface ToolCallDetailsContentProps {
   followTail?: boolean;
 }
 
-/** Read by text sections deep in the section builders, so the flag is not threaded through each. */
-const FollowTailContext = createContext(false);
-
 /** How close to the bottom (px) still counts as "at the bottom" for tail following. */
 const FOLLOW_TAIL_SLOP = 24;
 
+/**
+ * The whole disclosure. A capped one scrolls as a whole and, while `followTail` is set, keeps its
+ * newest line in view; scrolling up to reread stops the following, scrolling back down resumes it.
+ */
+function DetailBody({
+  maxHeight,
+  followTail,
+  style,
+  children,
+}: {
+  maxHeight: number | undefined;
+  followTail: boolean;
+  style: StyleProp<ViewStyle>;
+  children: ReactNode;
+}) {
+  const scrollRef = useRef<RNScrollView>(null);
+  const atBottomRef = useRef(true);
+  const handleScroll = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const { contentOffset, layoutMeasurement, contentSize } = event.nativeEvent;
+    atBottomRef.current =
+      contentOffset.y + layoutMeasurement.height >= contentSize.height - FOLLOW_TAIL_SLOP;
+  }, []);
+  const handleContentSizeChange = useCallback(() => {
+    if (followTail && atBottomRef.current) scrollRef.current?.scrollToEnd({ animated: false });
+  }, [followTail]);
+  if (maxHeight === undefined) {
+    return <View style={style}>{children}</View>;
+  }
+  return (
+    <ScrollView
+      ref={scrollRef as never}
+      onScroll={followTail ? handleScroll : undefined}
+      scrollEventThrottle={16}
+      onContentSizeChange={handleContentSizeChange}
+      style={inlineUnistylesStyle({ maxHeight })}
+      contentContainerStyle={style}
+      nestedScrollEnabled
+    >
+      {children}
+    </ScrollView>
+  );
+}
+
 interface DetailStyles {
+  fillAvailableHeight: boolean;
   sectionFillStyle: StyleProp<ViewStyle>;
   codeBlockFillStyle: StyleProp<ViewStyle>;
   codeVerticalScrollStyle: StyleProp<ViewStyle>;
@@ -75,7 +135,6 @@ interface DetailStyles {
   jsonScrollCombined: StyleProp<ViewStyle>;
   fullBleedContainerStyle: StyleProp<ViewStyle>;
   loadingContainerStyle: StyleProp<ViewStyle>;
-  resolvedMaxHeight: number | undefined;
   shouldFill: boolean;
   isFullBleed: boolean;
 }
@@ -97,7 +156,6 @@ function resolveShouldFill(
 
 function useDetailStyles(
   detail: ToolCallDetail | undefined,
-  resolvedMaxHeight: number | undefined,
   fillAvailableHeight: boolean,
   isEval: boolean,
 ): DetailStyles {
@@ -114,28 +172,14 @@ function useDetailStyles(
     [codeBlockStyle, shouldFill],
   );
   const codeVerticalScrollStyle = useMemo(
-    () => [
-      styles.codeVerticalScroll,
-      resolvedMaxHeight !== undefined && inlineUnistylesStyle({ maxHeight: resolvedMaxHeight }),
-      shouldFill && styles.fillHeight,
-    ],
-    [resolvedMaxHeight, shouldFill],
+    () => [styles.codeVerticalScroll, shouldFill && styles.fillHeight],
+    [shouldFill],
   );
   const scrollAreaFillStyle = useMemo(
-    () => [
-      styles.scrollArea,
-      resolvedMaxHeight !== undefined && inlineUnistylesStyle({ maxHeight: resolvedMaxHeight }),
-      shouldFill && styles.fillHeight,
-    ],
-    [resolvedMaxHeight, shouldFill],
+    () => [styles.scrollArea, shouldFill && styles.fillHeight],
+    [shouldFill],
   );
-  const scrollAreaStyle = useMemo(
-    () => [
-      styles.scrollArea,
-      resolvedMaxHeight !== undefined && inlineUnistylesStyle({ maxHeight: resolvedMaxHeight }),
-    ],
-    [resolvedMaxHeight],
-  );
+  const scrollAreaStyle = useMemo(() => [styles.scrollArea], []);
   const jsonScrollCombined = styles.jsonScroll;
   const fullBleedContainerStyle = useMemo(
     () => [
@@ -150,6 +194,7 @@ function useDetailStyles(
   );
 
   return {
+    fillAvailableHeight,
     sectionFillStyle,
     codeBlockFillStyle,
     codeVerticalScrollStyle,
@@ -158,7 +203,6 @@ function useDetailStyles(
     jsonScrollCombined,
     fullBleedContainerStyle,
     loadingContainerStyle,
-    resolvedMaxHeight,
     shouldFill,
     isFullBleed,
   };
@@ -187,7 +231,8 @@ function ShellDetailSection({ command, output, ds }: ShellDetailProps) {
   // Laid out like a file read: plain lines on the row's own surface, no boxed block.
   return (
     <View style={ds.sectionFillStyle}>
-      <ScrollView
+      <DetailSectionBody
+        fillAvailableHeight={ds.fillAvailableHeight}
         style={ds.scrollAreaFillStyle}
         contentContainerStyle={styles.scrollContent}
         nestedScrollEnabled
@@ -202,7 +247,7 @@ function ShellDetailSection({ command, output, ds }: ShellDetailProps) {
             </Text>
           </View>
         </ScrollView>
-      </ScrollView>
+      </DetailSectionBody>
     </View>
   );
 }
@@ -286,7 +331,8 @@ function EvalCellBlock({ cell }: { cell: EvalCell }) {
 function EvalDetailSection({ model, ds }: { model: EvalDetailModel; ds: DetailStyles }) {
   return (
     <View style={ds.sectionFillStyle}>
-      <ScrollView
+      <DetailSectionBody
+        fillAvailableHeight={ds.fillAvailableHeight}
         style={ds.codeVerticalScrollStyle}
         contentContainerStyle={styles.evalStack}
         nestedScrollEnabled
@@ -330,14 +376,15 @@ function EvalDetailSection({ model, ds }: { model: EvalDetailModel; ds: DetailSt
             </View>
           </View>
         ))}
-      </ScrollView>
+      </DetailSectionBody>
     </View>
   );
 }
 function WebSearchDetailSection({ model, ds }: { model: WebSearchDetailModel; ds: DetailStyles }) {
   return (
     <View style={ds.sectionFillStyle}>
-      <ScrollView
+      <DetailSectionBody
+        fillAvailableHeight={ds.fillAvailableHeight}
         style={ds.codeVerticalScrollStyle}
         contentContainerStyle={styles.evalStack}
         nestedScrollEnabled
@@ -419,7 +466,7 @@ function WebSearchDetailSection({ model, ds }: { model: WebSearchDetailModel; ds
             </View>
           </View>
         ) : null}
-      </ScrollView>
+      </DetailSectionBody>
     </View>
   );
 }
@@ -434,11 +481,7 @@ function EditDetailSection({ diffLines, ds }: EditDetailProps) {
     <View style={ds.sectionFillStyle}>
       {diffLines ? (
         <View style={ds.codeBlockFillStyle}>
-          <DiffViewer
-            diffLines={diffLines}
-            maxHeight={ds.resolvedMaxHeight}
-            fillAvailableHeight={ds.shouldFill}
-          />
+          <DiffViewer diffLines={diffLines} fillAvailableHeight={ds.shouldFill} />
         </View>
       ) : null}
     </View>
@@ -462,11 +505,12 @@ function ScrollableTextSection({
   startLine,
 }: ScrollableContentProps) {
   const keyedLines = useMemo(
-    () => (filePath ? highlightToKeyedLines(content, extensionFromPath(filePath)) : null),
+    () => highlightToKeyedLines(content, filePath ?? null),
     [content, filePath],
   );
   const body = (
-    <ScrollView
+    <DetailSectionBody
+      fillAvailableHeight={ds.fillAvailableHeight}
       style={ds.scrollAreaFillStyle}
       contentContainerStyle={styles.scrollContent}
       nestedScrollEnabled
@@ -481,7 +525,7 @@ function ScrollableTextSection({
           </Text>
         )}
       </ScrollView>
-    </ScrollView>
+    </DetailSectionBody>
   );
   if (!wrapInSectionFill) return body;
   return <View style={ds.sectionFillStyle}>{body}</View>;
@@ -496,7 +540,8 @@ interface FetchDetailProps {
 function FetchDetailSection({ url, result, ds }: FetchDetailProps) {
   return (
     <View style={ds.sectionFillStyle}>
-      <ScrollView
+      <DetailSectionBody
+        fillAvailableHeight={ds.fillAvailableHeight}
         style={ds.scrollAreaFillStyle}
         contentContainerStyle={styles.scrollContent}
         nestedScrollEnabled
@@ -507,31 +552,16 @@ function FetchDetailSection({ url, result, ds }: FetchDetailProps) {
             {result ? `${url}\n\n${result}` : url}
           </Text>
         </ScrollView>
-      </ScrollView>
+      </DetailSectionBody>
     </View>
   );
 }
 
 function ScrollablePlainTextSection({ text, ds }: { text: string; ds: DetailStyles }) {
-  const followTail = useContext(FollowTailContext);
-  const scrollRef = useRef<RNScrollView>(null);
-  // Scrolling up to reread stops the following; scrolling back to the bottom resumes it.
-  const atBottomRef = useRef(true);
-  const handleScroll = useCallback((event: NativeSyntheticEvent<NativeScrollEvent>) => {
-    const { contentOffset, layoutMeasurement, contentSize } = event.nativeEvent;
-    atBottomRef.current =
-      contentOffset.y + layoutMeasurement.height >= contentSize.height - FOLLOW_TAIL_SLOP;
-  }, []);
-  const handleContentSizeChange = useCallback(() => {
-    if (followTail && atBottomRef.current) scrollRef.current?.scrollToEnd({ animated: false });
-  }, [followTail]);
   return (
     <View style={styles.section}>
-      <ScrollView
-        ref={scrollRef as never}
-        onScroll={followTail ? handleScroll : undefined}
-        scrollEventThrottle={16}
-        onContentSizeChange={handleContentSizeChange}
+      <DetailSectionBody
+        fillAvailableHeight={ds.fillAvailableHeight}
         style={ds.scrollAreaStyle}
         contentContainerStyle={styles.scrollContent}
         nestedScrollEnabled
@@ -541,7 +571,7 @@ function ScrollablePlainTextSection({ text, ds }: { text: string; ds: DetailStyl
           {/* Models end thoughts with runs of blank lines; they would render as dead space. */}
           {text.replace(/^\s*\n/, "").trimEnd()}
         </Text>
-      </ScrollView>
+      </DetailSectionBody>
     </View>
   );
 }
@@ -559,7 +589,8 @@ function buildSearchSections(detail: SearchDetail, ds: DetailStyles): ReactNode[
   if (detail.content) {
     out.push(
       <View key="search-content" style={styles.section}>
-        <ScrollView
+        <DetailSectionBody
+          fillAvailableHeight={ds.fillAvailableHeight}
           style={ds.scrollAreaStyle}
           contentContainerStyle={styles.scrollContent}
           nestedScrollEnabled
@@ -570,7 +601,7 @@ function buildSearchSections(detail: SearchDetail, ds: DetailStyles): ReactNode[
               {detail.content}
             </Text>
           </ScrollView>
-        </ScrollView>
+        </DetailSectionBody>
       </View>,
     );
   }
@@ -950,9 +981,9 @@ export function ToolCallDetailsContent({
     () => parseToolHiveToolCallDetail(detail, toolName),
     [detail, toolName],
   );
+  // The allowance belongs to the whole disclosure, rather than each section.
   const ds = useDetailStyles(
     detail,
-    resolvedMaxHeight,
     fillAvailableHeight,
     evalModel !== null || webSearchModel !== null || hubModel !== null || toolHiveModel !== null,
   );
@@ -960,7 +991,11 @@ export function ToolCallDetailsContent({
 
   if (previewPageModel) {
     return (
-      <View style={ds.fullBleedContainerStyle}>
+      <DetailBody
+        maxHeight={resolvedMaxHeight}
+        followTail={followTail}
+        style={ds.fullBleedContainerStyle}
+      >
         <PreviewPageDetail model={previewPageModel} />
         {previewPageModel.html ? (
           <View style={styles.section}>
@@ -969,20 +1004,24 @@ export function ToolCallDetailsContent({
           </View>
         ) : null}
         {errorText ? <ErrorSection errorText={errorText} ds={ds} /> : null}
-      </View>
+      </DetailBody>
     );
   }
 
   if (toolHiveModel) {
     return (
-      <View style={ds.fullBleedContainerStyle}>
+      <DetailBody
+        maxHeight={resolvedMaxHeight}
+        followTail={followTail}
+        style={ds.fullBleedContainerStyle}
+      >
         <ToolHiveDetail
           model={toolHiveModel}
           fillStyle={ds.sectionFillStyle}
           scrollStyle={ds.codeVerticalScrollStyle}
         />
         {errorText ? <ErrorSection errorText={errorText} ds={ds} /> : null}
-      </View>
+      </DetailBody>
     );
   }
 
@@ -1020,9 +1059,13 @@ export function ToolCallDetailsContent({
   }
 
   return (
-    <FollowTailContext.Provider value={followTail}>
-      <View style={ds.fullBleedContainerStyle}>{sections}</View>
-    </FollowTailContext.Provider>
+    <DetailBody
+      maxHeight={resolvedMaxHeight}
+      followTail={followTail}
+      style={ds.fullBleedContainerStyle}
+    >
+      {sections}
+    </DetailBody>
   );
 }
 

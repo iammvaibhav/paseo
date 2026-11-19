@@ -38,7 +38,10 @@ if [[ -z "$prev" ]] || ! git cat-file -e "$prev^{commit}" 2>/dev/null \
   || git diff --name-only "$prev" "$head" \
   | grep -Eq '(^|/)package\.json$|^pnpm-lock\.yaml$|^pnpm-workspace\.yaml$|^patches/|^scripts/postinstall-patches\.mjs$'; then
   echo "installing dependencies"
-  corepack enable && corepack prepare pnpm@11.22.0 --activate && pnpm install --frozen-lockfile
+  corepack enable && corepack prepare pnpm@11.22.0 --activate
+  # A patch that changed since this checkout applied it fails the first install, which removes
+  # the package (scripts/postinstall-patches.mjs); the second install links it clean and patches it.
+  pnpm install --frozen-lockfile || pnpm install --frozen-lockfile
 fi
 if [[ -x node_modules/.bin/patch-package ]]; then
   PATH="$PWD/node_modules/.bin:$PATH" node scripts/postinstall-patches.mjs

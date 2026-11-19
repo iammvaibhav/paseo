@@ -1,6 +1,14 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -47,22 +55,34 @@ for (const platform of ["ios", "android"]) {
   });
 }
 
-// pnpm links a dependency into the node_modules of the workspace member that declares it, so
-// the app's patched packages live under packages/app and patch-package runs from there.
+// pnpm links a dependency into the node_modules of the workspace member that declares it, as a
+// link to the package's directory in its virtual store, so the app's patched packages are
+// reached under packages/app and patch-package runs from there.
 function createCheckout() {
   const root = mkdtempSync(path.join(tmpdir(), "postinstall-patches-"));
   writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: "checkout" }));
   const appDir = path.join(root, "packages", "app");
+  const storeDir = path.join(
+    root,
+    "node_modules",
+    ".pnpm",
+    `${packageName}@4.0.3`,
+    "node_modules",
+    packageName,
+  );
   const packageDir = path.join(appDir, "node_modules", packageName);
-  mkdirSync(packageDir, { recursive: true });
+  mkdirSync(storeDir, { recursive: true });
+  mkdirSync(path.dirname(packageDir), { recursive: true });
+  symlinkSync(storeDir, packageDir, "dir");
+  writeFileSync(path.join(root, "node_modules", ".pnpm-workspace-state-v1.json"), "{}");
   writeFileSync(path.join(appDir, "package.json"), JSON.stringify({ name: "app" }));
   writeFileSync(
-    path.join(packageDir, "package.json"),
+    path.join(storeDir, "package.json"),
     JSON.stringify({ name: packageName, version: "4.0.3" }),
   );
-  writeFileSync(path.join(packageDir, "index.js"), "export const value = 1;\n");
+  writeFileSync(path.join(storeDir, "index.js"), "export const value = 1;\n");
   mkdirSync(path.join(root, "patches"));
-  return { root, packageDir };
+  return { root, packageDir, storeDir };
 }
 
 function writePatch(root, from, to) {
@@ -90,7 +110,7 @@ function install(root, PATH = `${bin}${path.delimiter}${process.env.PATH}`) {
 }
 
 test("a patch that changed since it was applied removes the package for a clean reinstall", () => {
-  const { root, packageDir } = createCheckout();
+  const { root, packageDir, storeDir } = createCheckout();
   try {
     writePatch(root, 1, 2);
     assert.equal(install(root).status, 0);
@@ -105,6 +125,13 @@ test("a patch that changed since it was applied removes the package for a clean 
     assert.equal(result.status, 1);
     assert.match(result.stderr, /Run pnpm install again/);
     assert.equal(existsSync(packageDir), false);
+    // Removing only the link would relink the files the earlier patch edited, and pnpm's
+    // install state would report "Already up to date" without relinking at all.
+    assert.equal(existsSync(storeDir), false);
+    assert.equal(
+      existsSync(path.join(root, "node_modules", ".pnpm-workspace-state-v1.json")),
+      false,
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

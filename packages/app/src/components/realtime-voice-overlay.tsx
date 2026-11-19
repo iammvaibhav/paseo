@@ -151,7 +151,7 @@ const styles = StyleSheet.create((theme) => ({
     justifyContent: "center",
   },
   muteButton: {
-    backgroundColor: theme.colors.muted,
+    backgroundColor: theme.colors.surface2,
   },
   muteButtonMuted: {
     backgroundColor: theme.colors.destructive,

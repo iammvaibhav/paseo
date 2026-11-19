@@ -7,7 +7,7 @@ import type { JsonValue } from "@getpaseo/protocol/agent-types";
 import { buildWorkspaceDraftAgentConfig } from "@/screens/workspace/workspace-draft-agent-config";
 import type { UserMessageImageAttachment } from "@/types/stream";
 import { encodeImages } from "@/utils/encode-images";
-import { useWorkspaceDraftSubmissionStore } from "@/stores/workspace-draft-submission-store";
+import { draftCreationKey } from "@/composer/draft/creation-key";
 import type { WorkspaceDraftForkSource, WorkspaceDraftTabSetup } from "@/workspace-tabs/model";
 
 export interface WorkspaceDraftAutoSubmitConfig {
@@ -139,10 +139,7 @@ export async function submitDraftCreateRequest(input: {
       forkFailedMessage: input.forkFailedMessage,
     });
   }
-  const options = {
-    // The draft id names this creation across retries, so a retry after a lost
-    // response reattaches to the agent the daemon already created.
-    idempotencyKey: input.draftId,
+  const request = {
     config: submit.config,
     workspaceId: submit.workspaceId,
     ...(text ? { initialPrompt: text } : {}),
@@ -152,10 +149,12 @@ export async function submitDraftCreateRequest(input: {
     ...(attachmentsArray && attachmentsArray.length > 0 ? { attachments: attachmentsArray } : {}),
     agentMode: input.composerState.agentMode,
   };
-  const creation = useWorkspaceDraftSubmissionStore.getState().creationByDraftId[input.draftId];
-  const result = creation
-    ? await creation.retry(options)
-    : await submit.client.createAgent(options);
+  // The key names this draft's exact request: a retry after a lost response resumes the
+  // creation the daemon already started, while an edited draft is a new request.
+  const result = await submit.client.createAgent({
+    ...request,
+    idempotencyKey: draftCreationKey(input.draftId, request),
+  });
   return { agentId: result.id, result };
 }
 

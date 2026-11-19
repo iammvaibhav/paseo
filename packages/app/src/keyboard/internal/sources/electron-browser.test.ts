@@ -222,10 +222,9 @@ describe("buildBrowserKeyboardPolicy", () => {
       editorOrigins: ["http://dev.netbird.cloud:8765"],
     });
     expect(defaults.editorOrigins).toEqual(["http://dev.netbird.cloud:8765"]);
-    // VS Code keeps Quick Open, Open File, and its own previous/next editor.
+    // VS Code keeps Quick Open, Open File, and its own previous/next editor. Alt+Shift+[ ] does not
+    // switch tabs in the Mac desktop app, so it never reaches the list.
     expect(defaults.editorPrefixes.map(keyOf).sort()).toEqual([
-      "Alt+Shift+BracketLeft",
-      "Alt+Shift+BracketRight",
       "Meta+KeyO",
       "Meta+KeyP",
       "Meta+Shift+BracketLeft",
@@ -416,7 +415,13 @@ describe("Electron guest source through shared resolution", () => {
         },
         captureFocusRestore: (id) => restored.push(id),
       },
-      { keyDown: pipeline.keyDown, keyUp() {}, blur() {}, commandCenterOpen: () => false },
+      {
+        keyDown: pipeline.keyDown,
+        keyUp() {},
+        blur() {},
+        commandCenterOpen: () => false,
+        subscribeCommandCenter: () => () => {},
+      },
     );
     receive({
       browserId: "tab-1",

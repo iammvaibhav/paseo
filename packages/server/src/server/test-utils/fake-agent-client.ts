@@ -98,6 +98,7 @@ interface FakeAgentSessionOptions {
   beforeTurnComplete?: (prompt: AgentPromptInput) => Promise<void>;
   steerActiveTurn?: AgentSession["steerActiveTurn"];
   onInterrupt?: () => void;
+  beforeSetMode?: (modeId: string) => Promise<void>;
   historyEvents?: readonly AgentStreamEvent[];
 }
 
@@ -113,6 +114,7 @@ export interface TestAgentClientOptions {
   beforeTurnComplete?: (prompt: AgentPromptInput) => Promise<void>;
   steerActiveTurn?: AgentSession["steerActiveTurn"];
   onInterrupt?: () => void;
+  beforeSetMode?: (modeId: string) => Promise<void>;
   supportsMcpServers?: boolean;
   onStatusAskSteer?: (input: { agentId: string; prompt: string }) => Promise<void> | void;
   historyEvents?: readonly AgentStreamEvent[];
@@ -388,6 +390,7 @@ class FakeAgentSession implements AgentSession {
 
   readonly steerActiveTurn: AgentSession["steerActiveTurn"];
   private readonly onInterrupt: (() => void) | undefined;
+  private readonly beforeSetMode: ((modeId: string) => Promise<void>) | undefined;
   private readonly closeSession: (() => Promise<void>) | undefined;
   private readonly onStartTurn: TestAgentClientOptions["onStartTurn"];
   private readonly agentId: string | undefined;
@@ -408,6 +411,7 @@ class FakeAgentSession implements AgentSession {
     this.memoryMarker = options.memoryMarker ?? null;
     this.steerActiveTurn = options.steerActiveTurn;
     this.onInterrupt = options.onInterrupt;
+    this.beforeSetMode = options.beforeSetMode;
     this.closeSession = options.closeSession;
     this.onStartTurn = options.onStartTurn;
     this.agentId = options.agentId;
@@ -571,6 +575,48 @@ class FakeAgentSession implements AgentSession {
     };
     await this.appendHistoryEvent(completed);
     this.notifySubscribers(completed);
+  }
+
+  private async emitEvent(event: AgentStreamEvent): Promise<void> {
+    await this.appendHistoryEvent(event);
+    this.notifySubscribers(event);
+  }
+
+  /**
+   * A background Task that outlives the turn's reply: the Task starts, the assistant replies,
+   * then the Task completes.
+   */
+  private async emitBackgroundWorkTurn(): Promise<void> {
+    const callId = randomUUID();
+    const task = (status: "running" | "completed", log: string): AgentStreamEvent => ({
+      type: "timeline",
+      provider: this.providerName,
+      item: {
+        type: "tool_call",
+        name: "Task",
+        callId,
+        status,
+        error: null,
+        detail: {
+          type: "sub_agent",
+          subAgentType: "Explore",
+          description: "Audit the migrations",
+          log,
+        },
+      },
+    });
+    await this.emitEvent(task("running", ""));
+    await this.emitEvent({
+      type: "timeline",
+      provider: this.providerName,
+      item: { type: "assistant_message", text: "Audit started.", messageId: randomUUID() },
+    });
+    await this.emitEvent(task("completed", "Found 2 unsafe migrations."));
+    await this.emitEvent({
+      type: "turn_completed",
+      provider: this.providerName,
+      usage: { inputTokens: 1, outputTokens: 1 },
+    });
   }
 
   private async emitStressTurn(stress: { count: number; coalesced: boolean }): Promise<void> {
@@ -831,6 +877,11 @@ class FakeAgentSession implements AgentSession {
         this.notifySubscribers(child);
       }
 
+      if (textPrompt === "Start background work") {
+        await this.emitBackgroundWorkTurn();
+        return;
+      }
+
       if (textPrompt.toLowerCase().includes("emit a turn failure")) {
         const failed: AgentStreamEvent = {
           type: "turn_failed",
@@ -936,6 +987,7 @@ class FakeAgentSession implements AgentSession {
   }
 
   async setMode(modeId: string): Promise<void> {
+    await this.beforeSetMode?.(modeId);
     this.config.modeId = modeId;
   }
 
@@ -1311,6 +1363,7 @@ class FakeAgentClient implements AgentClient {
       beforeTurnComplete: this.options.beforeTurnComplete,
       steerActiveTurn: this.options.steerActiveTurn,
       onInterrupt: this.options.onInterrupt,
+      beforeSetMode: this.options.beforeSetMode,
       historyEvents: this.options.historyEvents,
     });
   }
@@ -1343,6 +1396,7 @@ class FakeAgentClient implements AgentClient {
       beforeTurnComplete: this.options.beforeTurnComplete,
       steerActiveTurn: this.options.steerActiveTurn,
       onInterrupt: this.options.onInterrupt,
+      beforeSetMode: this.options.beforeSetMode,
       historyEvents: this.options.historyEvents,
     });
   }

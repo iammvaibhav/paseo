@@ -53,7 +53,7 @@ export function buildItsaplanAppearance(theme: Theme): ItsaplanAppearance {
       "--sidebar-ring": colors.accent,
       // Board lanes sit a step below the page and cards a step above it, as in itsaplan's own
       // themes; in glass both are washes over the content tint.
-      "--kanban-column": glass ? colors.surfaceDiffEmpty : colors.surfaceSidebar,
+      "--kanban-column": glass ? glass.boardLane : colors.surfaceSidebar,
       "--kanban-column-raised": colors.surface1,
       "--kanban-card": glass ? colors.surface2 : colors.surface1,
       "--kanban-card-hover": glass ? colors.surface3 : colors.surface2,

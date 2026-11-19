@@ -110,6 +110,7 @@ test.describe("Sidebar items in Appearance settings", () => {
 
     await test.step("the sidebar starts in the default order", async () => {
       await expectSidebarOrder(page, ["new-workspace", "history", "search"]);
+      await expect(page.locator('[data-testid="sidebar-nav-separator"]:visible')).toHaveCount(1);
     });
 
     await test.step("the Sidebar section lists every item in the same order", async () => {
@@ -175,6 +176,9 @@ test.describe("Sidebar items in Appearance settings", () => {
     await expectSidebarItemHidden(page, "new-workspace");
     await expectSidebarItemHidden(page, "history");
     await expectSidebarItemHidden(page, "search");
+    // The fork's itsaplan row stays in the nav scroller, so it is all that is left above the
+    // Workspaces section.
+    await expect(page.locator('[data-testid="sidebar-itsaplan"]:visible')).toBeVisible();
   });
 });
 

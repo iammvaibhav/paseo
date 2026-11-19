@@ -5,6 +5,7 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   renameSync,
   rmSync,
 } from "node:fs";
@@ -67,6 +68,10 @@ const patchedPackages = [
     patchPrefix: "@legendapp+list+",
     cwd: "packages/app",
   },
+  // Native sidebar lists. Besides gesture sessions and panel-gesture arbitration, the drop gives
+  // each moved cell a fresh transform host. Reanimated re-applies a view's last animated
+  // transform to every React commit, so a reused host painted one frame of new order plus old
+  // drag translate (upstream computerjazz/react-native-draggable-flatlist#621, open).
   {
     nodeModulesPath: "packages/app/node_modules/react-native-draggable-flatlist",
     patchPrefix: "react-native-draggable-flatlist+",
@@ -113,6 +118,12 @@ const patchedPackages = [
     patchPrefix: "@mattermost+react-native-paste-input+",
     cwd: "packages/app",
   },
+  // Backport of https://github.com/mermaid-js/mermaid/pull/8459 (lexer half): a flowchart label
+  // with an "@" parses. The patch header has the details. Remove when the app uses mermaid 12.
+  {
+    nodeModulesPath: "node_modules/mermaid",
+    patchPrefix: "mermaid+",
+  },
   {
     nodeModulesPath: "packages/server/node_modules/@opencode-ai/sdk",
     patchPrefix: "@opencode-ai+sdk+",
@@ -153,8 +164,14 @@ for (const [index, { nodeModulesPath, patchPrefix, cwd = "." }] of installedPack
     continue;
   }
   // patch-package cannot apply a patch that changed after an earlier version of it was
-  // applied. Without the package, the next install fetches it clean and applies the patch.
+  // applied. Under pnpm the path is a link into the virtual store, whose directory holds the
+  // private copies the earlier patch edited, so removing only the link would relink those same
+  // files. Remove the directory too, and pnpm's install state, which would otherwise report
+  // "Already up to date": the next install then links the package clean from the store.
+  const packageDir = realpathSync(nodeModulesPath);
   rmSync(nodeModulesPath, { recursive: true, force: true });
+  rmSync(packageDir, { recursive: true, force: true });
+  rmSync(join("node_modules", ".pnpm-workspace-state-v1.json"), { force: true });
   console.error(
     `postinstall-patches: removed ${nodeModulesPath} because its patch did not apply. ` +
       "Run pnpm install again to reinstall it with the current patch. " +
