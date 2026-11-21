@@ -1,0 +1,230 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fleet memory</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/cytoscape@3/dist/cytoscape.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
+<style>
+  :root { --bg:#0f1115; --panel:#171a21; --line:#2a2f3a; --fg:#e6e8ee; --muted:#8b93a7; --accent:#7aa2f7; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.45 system-ui, -apple-system, sans-serif; }
+  header { display:flex; align-items:center; gap:24px; padding:12px 20px; border-bottom:1px solid var(--line); }
+  header h1 { font-size:16px; margin:0; }
+  nav button { background:none; border:0; color:var(--muted); padding:6px 10px; cursor:pointer; font-size:14px; border-radius:6px; }
+  nav button.on { color:var(--fg); background:var(--panel); }
+  .where { margin-left:auto; color:var(--muted); font-size:12px; font-family:ui-monospace, monospace; }
+  main { padding:16px 20px; }
+  .tab { display:none; } .tab.on { display:block; }
+  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px; margin-bottom:16px; }
+  .stat { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px 12px; }
+  .stat b { display:block; font-size:22px; } .stat span { color:var(--muted); font-size:12px; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px; }
+  .card h3 { margin:0 0 8px; font-size:13px; color:var(--muted); font-weight:500; }
+  .chart { height:300px; }
+  #map, #graph { height:calc(100vh - 150px); background:var(--panel); border:1px solid var(--line); border-radius:8px; }
+  .toolbar { display:flex; gap:10px; align-items:center; margin-bottom:10px; color:var(--muted); font-size:12px; flex-wrap:wrap; }
+  input[type=text], select { background:var(--panel); color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:7px 10px; font-size:14px; }
+  #q { width:420px; }
+  .hit { padding:10px 12px; border-bottom:1px solid var(--line); cursor:pointer; }
+  .hit:hover { background:var(--panel); }
+  .hit .t { font-weight:500; } .hit .s { color:var(--muted); font-size:13px; }
+  .pill { display:inline-block; font-size:11px; padding:1px 7px; border-radius:10px; margin-right:6px; color:#0f1115; }
+  aside { position:fixed; top:0; right:0; width:min(560px,92vw); height:100vh; background:var(--panel); border-left:1px solid var(--line);
+          transform:translateX(100%); transition:transform .18s; overflow:auto; padding:16px 20px; z-index:10; }
+  aside.on { transform:none; }
+  aside .close { float:right; cursor:pointer; color:var(--muted); }
+  aside .meta { color:var(--muted); font-size:12px; font-family:ui-monospace, monospace; word-break:break-all; }
+  aside .body { white-space:normal; font-size:13px; }
+  aside .body pre { white-space:pre-wrap; }
+  aside a.l { color:var(--accent); cursor:pointer; display:block; font-size:12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Fleet memory</h1>
+  <nav>
+    <button data-t="overview" class="on">Overview</button>
+    <button data-t="map">Meaning map</button>
+    <button data-t="graph">Notes graph</button>
+    <button data-t="search">Search</button>
+  </nav>
+  <div class="where" id="where"></div>
+</header>
+<main>
+  <section class="tab on" id="t-overview">
+    <div class="stats" id="stats"></div>
+    <div class="card" style="margin-bottom:12px"><h3>Items added per day, by kind</h3><div class="chart" id="c-daily"></div></div>
+    <div class="grid2">
+      <div class="card"><h3>Top projects</h3><div class="chart" id="c-proj"></div></div>
+      <div class="card"><h3>Vault notes by kind (decision, owner, runbook…)</h3><div class="chart" id="c-notes"></div></div>
+    </div>
+    <div class="card" style="margin-top:12px"><h3>Most active agents (title of latest turn)</h3><div class="chart" id="c-agents" style="height:380px"></div></div>
+  </section>
+
+  <section class="tab" id="t-map">
+    <div class="toolbar"><span id="map-status"></span>
+      <span>Each dot is one memory item, placed by embedding similarity (t-SNE). Nearby = similar meaning. Click a dot to open it.</span>
+      <select id="map-color"><option value="kind">colour by kind</option><option value="project">colour by project</option></select>
+    </div>
+    <div id="map"></div>
+  </section>
+
+  <section class="tab" id="t-graph">
+    <div class="toolbar">
+      <span>Vault notes. Solid edges = explicit [[links]]; faint edges = top-3 most similar notes (cosine ≥ <span id="simv">0.55</span>).</span>
+      <input type="range" id="sim" min="0.4" max="0.85" step="0.05" value="0.55">
+      <input type="text" id="gfilter" placeholder="filter titles…">
+    </div>
+    <div id="graph"></div>
+  </section>
+
+  <section class="tab" id="t-search">
+    <div class="toolbar"><input type="text" id="q" placeholder="Search everything (same engine as memory_search)…" autofocus><span id="lat"></span></div>
+    <div id="hits"></div>
+  </section>
+</main>
+<aside id="drawer"><span class="close" onclick="drawer.classList.remove('on')">✕ close</span><div id="dbody"></div></aside>
+
+<script>
+const PAL = ['#7aa2f7','#9ece6a','#e0af68','#f7768e','#bb9af7','#7dcfff','#ff9e64','#c0caf5','#73daca','#b4f9f8','#db4b4b','#a9b1d6'];
+const KIND_C = { turn:'#7aa2f7', run:'#9ece6a', ticket:'#e0af68', ticket_comment:'#ff9e64', note:'#f7768e', doc:'#bb9af7' };
+const color = (k, i) => KIND_C[k] || PAL[i % PAL.length];
+const $ = s => document.querySelector(s);
+const j = u => fetch(u).then(r => { if (!r.ok) throw new Error(r.status); return r.json(); });
+const fmtDate = ts => ts ? new Date(ts).toISOString().slice(0,16).replace('T',' ') : '';
+const charts = [];
+const mk = (el, opt) => { const c = echarts.init(el, 'dark', {renderer:'canvas'}); c.setOption({backgroundColor:'transparent', ...opt}); charts.push(c); return c; };
+addEventListener('resize', () => charts.forEach(c => c.resize()));
+
+// tabs
+const loaded = {};
+document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('nav button').forEach(x => x.classList.toggle('on', x === b));
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('on', t.id === 't-' + b.dataset.t));
+  if (!loaded[b.dataset.t]) { loaded[b.dataset.t] = 1; ({map:loadMap, graph:loadGraph})[b.dataset.t]?.(); }
+  charts.forEach(c => c.resize());
+});
+
+// drawer
+async function openDoc(id) {
+  const d = await j('/api/doc/' + encodeURIComponent(id));
+  const meta = JSON.parse(d.meta || '{}');
+  const isMd = d.kind === 'note' || d.kind === 'doc' || d.kind === 'turn' || d.kind === 'run';
+  $('#dbody').innerHTML = `
+    <h2 style="margin:8px 0">${esc(d.title)}</h2>
+    <div class="meta"><span class="pill" style="background:${color(d.kind)}">${d.kind}</span>${esc(d.id)}<br>
+      ${fmtDate(d.ts)} · project ${esc(d.project||'—')} · host ${esc(d.host||'—')}${d.agent_id ? ' · agent ' + esc(d.agent_id) : ''}
+      ${meta.path ? '<br>file: ~/fleet-ops/' + esc(meta.path) : ''}${d.url ? '<br><a href="'+esc(d.url)+'" target=_blank style="color:var(--accent)">'+esc(d.url)+'</a>' : ''}</div>
+    ${d.links_out.length ? '<h4>Links to</h4>' + d.links_out.map(l => `<a class=l onclick="openDoc('${l}')">${esc(l)}</a>`).join('') : ''}
+    ${d.links_in.length ? '<h4>Linked from</h4>' + d.links_in.map(l => `<a class=l onclick="openDoc('${l}')">${esc(l)}</a>`).join('') : ''}
+    <div class="body">${isMd ? marked.parse(d.text) : '<pre>' + esc(d.text) + '</pre>'}</div>`;
+  $('#drawer').classList.add('on');
+}
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+// overview
+(async () => {
+  const o = await j('/api/overview');
+  $('#where').textContent = `${o.db_path} · ${(o.db_bytes/1e6).toFixed(0)} MB`;
+  const total = Object.values(o.kinds).reduce((a,b)=>a+b,0);
+  const label = {turn:'conversation turns', run:'run records', ticket:'tickets', ticket_comment:'ticket comments', note:'vault notes', doc:'docs'};
+  $('#stats').innerHTML = [['Total items', total], ...Object.entries(o.kinds).sort((a,b)=>b[1]-a[1]).map(([k,v]) => [label[k]||k, v]), ['embedded (vectors)', o.vectors]]
+    .map(([k,v]) => `<div class="stat"><b>${v.toLocaleString()}</b><span>${k}</span></div>`).join('');
+  const days = [...new Set(o.daily.map(r => r.day))];
+  const kinds = Object.keys(o.kinds);
+  mk($('#c-daily'), {
+    tooltip:{trigger:'axis'}, legend:{top:0}, grid:{left:50,right:20,top:30,bottom:30},
+    xAxis:{type:'category', data:days}, yAxis:{type:'value'},
+    series: kinds.map((k,i) => ({ name:k, type:'bar', stack:'a', color:color(k,i),
+      data: days.map(d => (o.daily.find(r => r.day===d && r.kind===k)||{n:0}).n) }))
+  });
+  mk($('#c-proj'), { tooltip:{}, grid:{left:130,right:20,top:10,bottom:20},
+    xAxis:{type:'value'}, yAxis:{type:'category', inverse:true, data:o.projects.map(p=>p.project)},
+    series:[{type:'bar', data:o.projects.map(p=>p.n), color:'#7aa2f7'}] });
+  mk($('#c-notes'), { tooltip:{}, series:[{type:'pie', radius:['40%','70%'],
+    data:Object.entries(o.note_kinds).map(([name,value],i)=>({name,value,itemStyle:{color:PAL[i%PAL.length]}}))}] });
+  const ag = mk($('#c-agents'), { tooltip:{ formatter: p => `${esc(o.agents[p.dataIndex].agent_id)}<br>last ${fmtDate(o.agents[p.dataIndex].last)}<br>${p.value} items` },
+    grid:{left:360,right:20,top:10,bottom:20}, xAxis:{type:'value'},
+    yAxis:{type:'category', inverse:true, data:o.agents.map(a => (a.title||a.agent_id).slice(0,55))},
+    series:[{type:'bar', data:o.agents.map(a=>a.n), color:'#9ece6a'}] });
+})();
+
+// meaning map
+let mapChart, mapPts;
+async function loadMap() {
+  const m = await j('/api/map');
+  $('#map-status').textContent = m.status === 'ready' ? `${m.points.length.toLocaleString()} points` : m.status + '…';
+  if (m.status !== 'ready') { if (!m.status.startsWith('error')) setTimeout(loadMap, 3000); return; }
+  mapPts = m.points; drawMap();
+}
+function drawMap() {
+  const by = $('#map-color').value;
+  const groups = {};
+  mapPts.forEach(p => (groups[p[by]] ||= []).push(p));
+  const names = Object.keys(groups).sort((a,b) => groups[b].length - groups[a].length).slice(0, 12);
+  const series = Object.entries(groups).map(([g, pts]) => {
+    const i = names.indexOf(g);
+    return { name: i < 0 ? 'other' : g, type:'scatter', large:pts.length>2000,
+      data: pts.map(p => ({value:[p.x,p.y], id:p.id, title:p.title, kind:p.kind, project:p.project})),
+      symbolSize: (by==='kind' && (g==='note'||g==='ticket'||g==='doc')) ? 7 : 4,
+      itemStyle:{ color: by==='kind' ? color(g) : (i<0 ? '#444a58' : PAL[i % PAL.length]), opacity:.8 } };
+  });
+  mapChart ||= mk($('#map'), {});
+  mapChart.setOption({ backgroundColor:'transparent', legend:{top:6, type:'scroll'}, grid:{left:10,right:10,top:40,bottom:10},
+    tooltip:{ formatter: p => `<b>${esc(p.data.title)}</b><br>${p.data.kind} · ${esc(p.data.project)}` },
+    xAxis:{show:false, scale:true}, yAxis:{show:false, scale:true},
+    dataZoom:[{type:'inside', xAxisIndex:0, filterMode:'none'},{type:'inside', yAxisIndex:0, filterMode:'none'}], series }, true);
+  mapChart.off('click'); mapChart.on('click', p => openDoc(p.data.id));
+}
+$('#map-color').onchange = () => mapPts && drawMap();
+
+// notes graph
+let cy;
+async function loadGraph() {
+  const sim = $('#sim').value; $('#simv').textContent = sim;
+  const g = await j('/api/notes-graph?min_sim=' + sim);
+  const kinds = [...new Set(g.nodes.map(n => n.kind))];
+  const deg = {}; g.edges.forEach(e => { deg[e.source]=(deg[e.source]||0)+1; deg[e.target]=(deg[e.target]||0)+1; });
+  cy?.destroy();
+  cy = cytoscape({ container:$('#graph'),
+    elements:[...g.nodes.map(n => ({data:{...n, c:PAL[kinds.indexOf(n.kind)%PAL.length], size:8+Math.min(24,(deg[n.id]||0)*2)}})),
+              ...g.edges.map((e,i) => ({data:{id:'e'+i, ...e}}))],
+    style:[
+      {selector:'node', style:{'background-color':'data(c)', width:'data(size)', height:'data(size)', label:'data(title)',
+        color:'#c0caf5', 'font-size':7, 'text-opacity':.75, 'min-zoomed-font-size':6, 'text-wrap':'ellipsis', 'text-max-width':140}},
+      {selector:'edge[type="similar"]', style:{width:.6, 'line-color':'#3b4252', opacity:.6}},
+      {selector:'edge[type="link"]', style:{width:2, 'line-color':'#f7768e', 'target-arrow-shape':'triangle', 'target-arrow-color':'#f7768e', 'curve-style':'bezier'}},
+      {selector:'.dim', style:{opacity:.08}},
+    ],
+    layout:{name:'cose', animate:false, nodeRepulsion:6000, idealEdgeLength:60, numIter:1500}});
+  cy.on('tap','node', e => openDoc(e.target.id()));
+  const legend = kinds.map((k,i) => `<span class="pill" style="background:${PAL[i%PAL.length]}">${k}</span>`).join('');
+  $('#t-graph .toolbar').querySelector('.lg')?.remove();
+  $('#t-graph .toolbar').insertAdjacentHTML('beforeend', `<span class="lg">${legend}</span>`);
+}
+$('#sim').onchange = loadGraph;
+$('#gfilter').oninput = e => {
+  const q = e.target.value.toLowerCase();
+  cy?.nodes().forEach(n => n.toggleClass('dim', q && !n.data('title').toLowerCase().includes(q)));
+};
+
+// search
+let st;
+$('#q').oninput = e => { clearTimeout(st); st = setTimeout(() => runSearch(e.target.value), 300); };
+async function runSearch(q) {
+  if (!q.trim()) { $('#hits').innerHTML=''; return; }
+  const r = await j('/api/search?q=' + encodeURIComponent(q));
+  $('#lat').textContent = `${r.hits.length} hits · ${r.latency_ms} ms`;
+  $('#hits').innerHTML = r.hits.map(h => `<div class="hit" data-id="${esc(h.id)}">
+    <div class="t"><span class="pill" style="background:${color(h.kind)}">${h.kind}</span>${esc(h.title)}</div>
+    <div class="s">${esc(h.snippet)}</div>
+    <div class="s">${fmtDate(h.ts)} · ${esc(h.project||'')} · score ${h.score} · ${h.matched.join(', ')}</div></div>`).join('');
+  document.querySelectorAll('.hit').forEach(el => el.onclick = () => openDoc(el.dataset.id));
+}
+</script>
+</body>
+</html>
