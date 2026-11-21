@@ -13,7 +13,7 @@ import { ExternalLink } from "@/components/ui/external-link";
 import { Field, FormTextInput } from "@/components/ui/form-field";
 import { useToast } from "@/contexts/toast-api-context";
 import { useDaemonConfig } from "@/hooks/use-daemon-config";
-import { useHostRuntimeClient, useHosts } from "@/runtime/host-runtime";
+import { useHostLabel, useHostRuntimeClient } from "@/runtime/host-runtime";
 import { pluginDisplayName } from "@/plugins/plugin-list";
 import { listingAuthor, listingSource, listingText, listingVersion } from "./listing";
 import { dismissFailedOperation, installPlugin, usePluginOperation } from "./operations";
@@ -23,11 +23,6 @@ const SOURCE_SUBJECT = "source";
 
 /** What the sheet installs: a directory listing, or a source the user types. */
 export type InstallTarget = { kind: "listing"; listing: PluginListing } | { kind: "source" };
-
-export function useHostLabel(serverId: string): string {
-  const hosts = useHosts();
-  return hosts.find((host) => host.serverId === serverId)?.label ?? serverId;
-}
 
 /**
  * Every install is confirmed here: who made the plugin, where its code comes from, and that it runs

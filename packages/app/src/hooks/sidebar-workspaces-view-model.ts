@@ -128,7 +128,7 @@ export function areSidebarWorkspaceSessionsEqual(
   return true;
 }
 
-function projectNameForWorkspace(workspace: WorkspaceDescriptor): string {
+export function projectNameForWorkspace(workspace: WorkspaceDescriptor): string {
   return (
     workspace.projectCustomName ??
     workspace.projectDisplayName ??

@@ -3231,6 +3231,12 @@ export function useHosts(): HostProfile[] {
   );
 }
 
+/** The host's display label, or its serverId when no profile names it. */
+export function useHostLabel(serverId: string): string {
+  const hosts = useHosts();
+  return hosts.find((host) => host.serverId === serverId)?.label ?? serverId;
+}
+
 export function useHostRegistryStatus(): HostRegistryStatus {
   const store = getHostRuntimeStore();
   return useSyncExternalStore(

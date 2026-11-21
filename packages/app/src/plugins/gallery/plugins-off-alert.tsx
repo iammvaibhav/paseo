@@ -6,7 +6,7 @@ import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/contexts/toast-api-context";
 import { useDaemonConfig } from "@/hooks/use-daemon-config";
-import { useHostLabel } from "./install-sheet";
+import { useHostLabel } from "@/runtime/host-runtime";
 import { pluginErrorText } from "./error-text";
 
 /** Says that installed plugins are not running on this host, with the switch that runs them. */

@@ -156,6 +156,40 @@ export const steps = [
     },
   },
   {
+    id: "second-line",
+    label: "Each row shows project · host under the title, with the status dot on the title's line",
+    narrate: "The second line names the project and the host; the dot lines up with the title.",
+    async run(ctx) {
+      const page = ctx.page;
+      const placement = await page
+        .locator(`[data-testid^="sidebar-agent-view-placement-"][data-testid$="-${older.id}"]`)
+        .innerText();
+      ctx.expect(placement.includes(" · "), `second line is "project · host", got "${placement}"`);
+      const geometry = await page.locator(rowSelector(older.id)).evaluate((row, expectedTitle) => {
+        const center = (rect) => rect.top + rect.height / 2;
+        const slot = row.firstElementChild.getBoundingClientRect();
+        const titleNode = [...row.querySelectorAll("div, span")].find(
+          (node) => node.children.length === 0 && node.textContent === expectedTitle,
+        );
+        const title = titleNode.getBoundingClientRect();
+        return {
+          slotCenter: center(slot),
+          titleCenter: center(title),
+          rowCenter: center(row.getBoundingClientRect()),
+        };
+      }, "Older ready agent");
+      ctx.expect(
+        Math.abs(geometry.slotCenter - geometry.titleCenter) <= 1,
+        `status slot centred on the title line: ${JSON.stringify(geometry)}`,
+      );
+      ctx.expect(
+        Math.abs(geometry.slotCenter - geometry.rowCenter) >= 4,
+        `status slot not centred on the two-line row: ${JSON.stringify(geometry)}`,
+      );
+      return `second line "${placement}"; ${JSON.stringify(geometry)}`;
+    },
+  },
+  {
     id: "mark-done-stays",
     label: "Mark done on the older agent keeps it in Recent, below the newer one",
     narrate: "Marking the older agent done changes its dot; it does not move.",

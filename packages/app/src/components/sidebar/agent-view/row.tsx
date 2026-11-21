@@ -10,7 +10,10 @@ import { ContextMenu, ContextMenuTrigger } from "@/components/ui/context-menu";
 import { isNative, isWeb } from "@/constants/platform";
 import { useCompactTimeAgo } from "@/hooks/use-time-ago";
 import { useLiveDuration } from "@/hooks/use-live-duration";
+import { projectNameForWorkspace } from "@/hooks/sidebar-workspaces-view-model";
 import { rowActivityMs, rowRunningStartedMs, type LifecycleRow } from "@/mission-control/lifecycle";
+import { useHostLabel } from "@/runtime/host-runtime";
+import { useSessionStore } from "@/stores/session-store";
 import type { Theme } from "@/styles/theme";
 import { buildMissionControlRoute } from "@/utils/host-routes";
 import { navigateToAgent } from "@/utils/navigate-to-agent";
@@ -87,6 +90,27 @@ function AgentStatusIndicator({ bucket }: { bucket: SidebarStateBucket }) {
   );
 }
 
+/**
+ * The row's second line: the agent's project and the host it runs on ("paseo · dev"), or the
+ * host alone when its workspace is not loaded and no project placement names one.
+ */
+function useAgentPlacementLabel(input: {
+  serverId: string;
+  workspaceId: string | null | undefined;
+  fallbackProjectName?: string | null;
+}): string {
+  const { serverId, workspaceId, fallbackProjectName } = input;
+  // Selects a string so a row re-renders only when its own label changes.
+  const projectName = useSessionStore((state) => {
+    if (!workspaceId) return null;
+    const workspace = state.sessions[serverId]?.workspaces.get(workspaceId);
+    return workspace ? projectNameForWorkspace(workspace) : null;
+  });
+  const hostLabel = useHostLabel(serverId);
+  const project = projectName ?? fallbackProjectName ?? null;
+  return project ? `${project} · ${hostLabel}` : hostLabel;
+}
+
 export interface SidebarAgentViewRowProps {
   row: LifecycleRow;
   /** The agent the visible surface is showing; drawn like the open workspace's row. */
@@ -132,6 +156,11 @@ export const SidebarAgentViewRow = memo(function SidebarAgentViewRow({
 
   const stateBucket = rowToSidebarStateBucket(row);
   const title = agent.title ?? agent.name ?? t("agentList.fallbackTitle");
+  const placementLabel = useAgentPlacementLabel({
+    serverId: agent.serverId,
+    workspaceId: agent.workspaceId,
+    fallbackProjectName: agent.projectPlacement?.projectName,
+  });
 
   const pathname = usePathname();
   const [isHovered, setIsHovered] = useState(false);
@@ -220,22 +249,33 @@ export const SidebarAgentViewRow = memo(function SidebarAgentViewRow({
             testID={`sidebar-agent-view-row-${agent.serverId}-${agent.id}`}
           >
             {leading}
-            <Text style={titleStyle} numberOfLines={1}>
-              {title}
-            </Text>
-            <AgentReminderIndicator
-              reminder={agent.reminder}
-              testID={`sidebar-agent-view-row-reminder-${agent.serverId}-${agent.id}`}
-            />
-            {timeLabel ? (
-              <Text
-                style={styles.time}
-                numberOfLines={1}
-                testID={`sidebar-agent-view-row-time-${agent.serverId}-${agent.id}`}
-              >
-                {timeLabel}
+            <View style={styles.text}>
+              <Text style={titleStyle} numberOfLines={1}>
+                {title}
               </Text>
-            ) : null}
+              <Text
+                style={styles.placement}
+                numberOfLines={1}
+                testID={`sidebar-agent-view-placement-${agent.serverId}-${agent.id}`}
+              >
+                {placementLabel}
+              </Text>
+            </View>
+            <View style={styles.trailing}>
+              <AgentReminderIndicator
+                reminder={agent.reminder}
+                testID={`sidebar-agent-view-row-reminder-${agent.serverId}-${agent.id}`}
+              />
+              {timeLabel ? (
+                <Text
+                  style={styles.time}
+                  numberOfLines={1}
+                  testID={`sidebar-agent-view-row-time-${agent.serverId}-${agent.id}`}
+                >
+                  {timeLabel}
+                </Text>
+              ) : null}
+            </View>
           </ContextMenuTrigger>
           <SidebarAgentViewRowMenu row={row} onOpen={handleOpenInWorkspace} />
         </ContextMenu>
@@ -245,7 +285,9 @@ export const SidebarAgentViewRow = memo(function SidebarAgentViewRow({
 });
 
 export interface SidebarArchivedAgentRowProps {
+  serverId: string;
   agentId: string;
+  workspaceId: string | null;
   title: string;
   lastActivityAt: string | null;
   onPress: () => void;
@@ -253,15 +295,18 @@ export interface SidebarArchivedAgentRowProps {
 
 /**
  * An archived agent found by the search bar: the agent row's layout, title,
- * and time, with the archive glyph in the status slot. Archived agents have
- * no live state, so there is no hover card or row menu.
+ * second line, and time, with the archive glyph in the status slot. Archived
+ * agents have no live state, so there is no hover card or row menu.
  */
 export const SidebarArchivedAgentRow = memo(function SidebarArchivedAgentRow({
+  serverId,
   agentId,
+  workspaceId,
   title,
   lastActivityAt,
   onPress,
 }: SidebarArchivedAgentRowProps) {
+  const placementLabel = useAgentPlacementLabel({ serverId, workspaceId });
   const activityDate = useMemo(
     () => (lastActivityAt ? new Date(lastActivityAt) : null),
     [lastActivityAt],
@@ -296,21 +341,30 @@ export const SidebarArchivedAgentRow = memo(function SidebarArchivedAgentRow({
         <View style={styles.statusSlot}>
           <ThemedArchive size={STATUS_INDICATOR_ALERT_SIZE} uniProps={archiveColorMapping} />
         </View>
-        <Text style={titleStyle} numberOfLines={1}>
-          {title}
-        </Text>
-        {timeLabel ? (
-          <Text style={styles.time} numberOfLines={1}>
-            {timeLabel}
+        <View style={styles.text}>
+          <Text style={titleStyle} numberOfLines={1}>
+            {title}
           </Text>
-        ) : null}
+          <Text style={styles.placement} numberOfLines={1}>
+            {placementLabel}
+          </Text>
+        </View>
+        <View style={styles.trailing}>
+          {timeLabel ? (
+            <Text style={styles.time} numberOfLines={1}>
+              {timeLabel}
+            </Text>
+          ) : null}
+        </View>
       </Pressable>
     </View>
   );
 });
 
-// Mirrors the workspace row (`workspaceRow` in sidebar-workspace-list.tsx and the title and
-// status slot in sidebar-workspace-row-content.tsx) so both sidebar views read as one list.
+// The status slot, padding and type mirror the workspace row (`workspaceRow` in
+// sidebar-workspace-list.tsx and sidebar-workspace-row-content.tsx). Agent rows add a second line
+// (project · host), so the row aligns its children to the top: the status glyph and the time stay
+// on the title's line instead of centring between the two lines.
 const styles = StyleSheet.create((theme) => ({
   hoverTarget: {
     position: "relative",
@@ -318,7 +372,7 @@ const styles = StyleSheet.create((theme) => ({
   row: {
     minHeight: 32,
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-start",
     gap: theme.spacing[2],
     paddingVertical: theme.spacing[1.5],
     paddingLeft: theme.spacing[2],
@@ -359,17 +413,32 @@ const styles = StyleSheet.create((theme) => ({
     backgroundColor: theme.colors.foregroundExtraMuted,
     opacity: 0.3,
   },
+  text: {
+    flex: 1,
+    minWidth: 0,
+  },
   title: {
     color: theme.colors.foreground,
     fontSize: theme.fontSize.base,
     fontWeight: "400",
     lineHeight: 20,
     opacity: 0.76,
-    flex: 1,
-    minWidth: 0,
+  },
+  placement: {
+    color: theme.colors.foregroundExtraMuted,
+    fontSize: theme.fontSize.xs,
+    lineHeight: 16,
   },
   titleHovered: {
     opacity: 1,
+  },
+  // Holds the reminder glyph and the time on the title's line.
+  trailing: {
+    height: 20,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: theme.spacing[2],
+    flexShrink: 0,
   },
   time: {
     height: 20,

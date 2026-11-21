@@ -21,6 +21,7 @@ const KEY_SEPARATOR = "\u0000";
 export interface SidebarSearchArchivedMatch {
   serverId: string;
   agentId: string;
+  workspaceId: string | null;
   title: string | null;
   name: string | null;
   lastActivityAt: string | null;
@@ -137,6 +138,7 @@ export function useSidebarSearch(): SidebarSearch {
             archivedMatches.push({
               serverId,
               agentId: match.agentId,
+              workspaceId: match.workspaceId,
               title: match.title,
               name: match.name ?? null,
               lastActivityAt: match.lastActivityAt,

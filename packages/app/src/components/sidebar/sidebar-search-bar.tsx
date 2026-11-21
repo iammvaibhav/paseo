@@ -121,7 +121,9 @@ function ArchivedMatchRow({
   const handlePress = useCallback(() => onPress(match), [match, onPress]);
   return (
     <SidebarArchivedAgentRow
+      serverId={match.serverId}
       agentId={match.agentId}
+      workspaceId={match.workspaceId}
       title={match.title ?? match.name ?? t("agentList.fallbackTitle")}
       lastActivityAt={match.lastActivityAt}
       onPress={handlePress}
