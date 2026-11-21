@@ -4,11 +4,83 @@ import type { WorkspaceStateBucket } from "./messages.js";
 export type { WorkspaceStateBucket };
 export type AgentAttentionReason = "finished" | "error" | "permission" | null | undefined;
 
+// ============================================================================
+// Canonical Mission Control lifecycle bucket (spec 01). One derivation for
+// every consumer: roster, fleet_list_agents rows, agent snapshot payloads,
+// and the world snapshot. Computed server-side from STORED state (agent
+// record + review-state.json + proposal index), never from a truncated client
+// event fold.
+// ============================================================================
+
+export type LifecycleBucket = "needs_you" | "running" | "ready" | "done" | "idle";
+
+export interface LifecycleBucketInput {
+  /** Outstanding permission requests on the live agent. */
+  pendingPermissionCount: number;
+  /** Pending proposals only; expired/failed are excluded. */
+  pendingProposalCount: number;
+  /**
+   * Live attention reason. "finished" is READ-ONLY compat for records latched
+   * before the finish latch was removed (finish now notifies directly and
+   * never latches attention): it is accepted on read and never drives
+   * needs_you.
+   * COMPAT(finished-attention): latch removed in v0.3, remove after 2026-12-01.
+   */
+  attentionReason: "error" | "permission" | "finished" | null;
+  /** Agent lifecycle status ("error" drives needs_you). */
+  lastStatus: string | null;
+  /** Lifecycle running/initializing. */
+  running: boolean;
+  reviewState: "none" | "ready" | "done" | "cleared";
+  stopOrigin: "user" | "machinery" | "system" | null;
+}
+
+/**
+ * Precedence (first match wins; a user stop excludes rule 1 so a stopped
+ * agent never reads "needs you" — the user's stop is the terminal story
+ * until they Clear it or a new run starts):
+ * 1. needs_you — pendingPermissionCount>0 | attentionReason=="permission"
+ *    | lastStatus=="error" | attentionReason=="error" | pendingProposalCount>0
+ * 2. running — running
+ * 3. done — stopOrigin=="user" && reviewState=="none"
+ * 4. done — reviewState=="done"
+ * 5. ready — reviewState=="ready"
+ * 6. idle — includes reviewState=="cleared" (Clear removes the row)
+ */
+export function deriveLifecycleBucket(input: LifecycleBucketInput): LifecycleBucket {
+  const userStopped = input.stopOrigin === "user";
+  if (!userStopped) {
+    if (input.pendingPermissionCount > 0 || input.attentionReason === "permission") {
+      return "needs_you";
+    }
+    if (input.lastStatus === "error" || input.attentionReason === "error") {
+      return "needs_you";
+    }
+    if (input.pendingProposalCount > 0) {
+      return "needs_you";
+    }
+  }
+  if (input.running) {
+    return "running";
+  }
+  if (userStopped && input.reviewState === "none") {
+    return "done";
+  }
+  if (input.reviewState === "done") {
+    return "done";
+  }
+  if (input.reviewState === "ready") {
+    return "ready";
+  }
+  return "idle";
+}
+
 export interface AgentStateBucketInput {
   status: AgentLifecycleStatus;
   pendingPermissionCount?: number;
   requiresAttention?: boolean;
   attentionReason?: AgentAttentionReason;
+  backgroundWork?: { count: number } | null;
 }
 
 const WORKSPACE_STATE_BUCKET_PRIORITY = {
@@ -19,14 +91,20 @@ const WORKSPACE_STATE_BUCKET_PRIORITY = {
   done: 4,
 } as const satisfies Record<WorkspaceStateBucket, number>;
 
+// An error is a notification like a finish: once the user has seen it, the agent stops showing as
+// failed even though its lifecycle stays "error" until the next turn starts.
+function hasUnreadError(input: AgentStateBucketInput): boolean {
+  return input.requiresAttention === true && input.attentionReason === "error";
+}
+
 export function deriveAgentStateBucket(input: AgentStateBucketInput): WorkspaceStateBucket {
   if ((input.pendingPermissionCount ?? 0) > 0 || input.attentionReason === "permission") {
     return "needs_input";
   }
-  if (input.status === "error" || input.attentionReason === "error") {
+  if (hasUnreadError(input)) {
     return "failed";
   }
-  if (input.status === "running") {
+  if (input.status === "running" || (input.backgroundWork?.count ?? 0) > 0) {
     return "running";
   }
   if (input.requiresAttention) {
@@ -43,14 +121,32 @@ export function getAgentStatusPriority(input: AgentStateBucketInput): number {
   if ((input.pendingPermissionCount ?? 0) > 0 || input.attentionReason === "permission") {
     return 0;
   }
-  if (input.status === "error" || input.attentionReason === "error") {
+  if (hasUnreadError(input)) {
     return 1;
   }
-  if (input.status === "running") {
+  if (input.status === "running" || (input.backgroundWork?.count ?? 0) > 0) {
     return 2;
   }
   if (input.status === "initializing") {
     return 3;
   }
   return 4;
+}
+
+/**
+ * Map the canonical Mission Control lifecycle bucket to the workspace visual
+ * vocabulary (workspace rows / project badges). No lifecycle bucket maps to
+ * workspace `failed` — `failed` stays on the wire enum for compat only, and no
+ * agent contribution may produce it.
+ */
+const LIFECYCLE_TO_WORKSPACE_STATUS: Record<LifecycleBucket, WorkspaceStateBucket> = {
+  needs_you: "needs_input",
+  running: "running",
+  ready: "attention",
+  done: "done",
+  idle: "done",
+};
+
+export function lifecycleBucketToWorkspaceStatus(bucket: LifecycleBucket): WorkspaceStateBucket {
+  return LIFECYCLE_TO_WORKSPACE_STATUS[bucket];
 }

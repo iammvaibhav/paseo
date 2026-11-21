@@ -6,30 +6,10 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProviderSnapshotEntry } from "@getpaseo/protocol/agent-types";
 import type { MutableDaemonConfig } from "@getpaseo/protocol/messages";
+import { ToastApiProvider } from "@/contexts/toast-api-context";
 
-const { theme, snapshotState, configState, patchConfigMock, openProviderSettingsMock } = vi.hoisted(
+const { snapshotState, configState, patchConfigMock, openProviderSettingsMock } = vi.hoisted(
   () => ({
-    theme: {
-      spacing: { 1: 4, "1.5": 6, 2: 8, 3: 12, 4: 16, 6: 24 },
-      iconSize: { sm: 14, md: 20 },
-      fontSize: { xs: 11, sm: 13, base: 15 },
-      fontWeight: { normal: "400" },
-      borderRadius: { lg: 8 },
-      opacity: { 50: 0.5 },
-      colors: {
-        surface1: "#111",
-        surface2: "#222",
-        surface3: "#333",
-        foreground: "#fff",
-        foregroundMuted: "#aaa",
-        border: "#555",
-        accent: "#0a84ff",
-        statusSuccess: "#00ff00",
-        statusWarning: "#ff9500",
-        statusDanger: "#ff0000",
-        palette: { red: { 300: "#ff6b6b" }, white: "#fff" },
-      },
-    },
     snapshotState: {
       entries: undefined as ProviderSnapshotEntry[] | undefined,
       isLoading: false,
@@ -43,8 +23,8 @@ const { theme, snapshotState, configState, patchConfigMock, openProviderSettings
   }),
 );
 
-vi.mock("react-native", () => ({
-  Platform: { OS: "web" },
+vi.mock("react-native", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("react-native")>()),
   View: ({ children, testID }: { children?: React.ReactNode; testID?: string }) =>
     React.createElement("div", { "data-testid": testID }, children),
   Text: ({ children }: { children?: React.ReactNode }) =>
@@ -84,14 +64,6 @@ vi.mock("react-native", () => ({
       typeof children === "function" ? children({ pressed: false, hovered: false }) : children,
     ),
   ActivityIndicator: () => React.createElement("span", { "data-testid": "activity-indicator" }),
-}));
-
-vi.mock("react-native-unistyles", () => ({
-  StyleSheet: {
-    create: (factory: unknown) =>
-      typeof factory === "function" ? (factory as (t: typeof theme) => unknown)(theme) : factory,
-  },
-  useUnistyles: () => ({ theme, rt: { breakpoint: "md" } }),
 }));
 
 vi.mock("lucide-react-native", () => {
@@ -170,6 +142,11 @@ vi.mock("@/components/settings/headings/settings-info-tip", () => ({
   SettingsInfoTip: () => null,
 }));
 
+vi.mock("@/components/ui/external-link", () => ({
+  ExternalLink: () => null,
+  ExternalLinkLabel: () => null,
+}));
+
 vi.mock("@/components/ui/dropdown-menu", () => ({
   DropdownMenu: ({ children }: { children?: React.ReactNode }) =>
     React.createElement("div", null, children),
@@ -233,7 +210,7 @@ vi.mock("@/components/ui/dropdown-menu", () => ({
 }));
 
 vi.mock("@/components/provider-icons", () => ({
-  getProviderIcon: (provider: string) => () =>
+  useProviderIcon: (provider: string) => () =>
     React.createElement("span", { "data-icon": `provider-${provider}` }),
 }));
 
@@ -280,6 +257,12 @@ vi.mock("@/utils/confirm-dialog", () => ({
 }));
 
 import { ProvidersSection } from "./providers-section";
+
+function unexpectedToast(): never {
+  throw new Error("Provider row interactions should not display a toast");
+}
+
+const toastApi = { show: unexpectedToast, copied: unexpectedToast, error: unexpectedToast };
 
 const claudeEntry: ProviderSnapshotEntry = {
   provider: "claude",
@@ -366,7 +349,11 @@ describe("ProvidersSection", () => {
 
   function render(): void {
     act(() => {
-      root?.render(<ProvidersSection serverId="server-1" />);
+      root?.render(
+        <ToastApiProvider api={toastApi}>
+          <ProvidersSection serverId="server-1" />
+        </ToastApiProvider>,
+      );
     });
   }
 

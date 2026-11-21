@@ -4,6 +4,7 @@ import {
   useContext,
   useMemo,
   useRef,
+  useState,
   type MutableRefObject,
   type ReactNode,
 } from "react";
@@ -11,9 +12,11 @@ import React from "react";
 import type { ToastApi } from "@/components/toast-host";
 import type { OpenFileDisposition } from "@/workspace/file-open";
 import type { InlinePathTarget } from "./parse";
+import { FileLinkPickerSheet, type FileLinkPickerRequest } from "./picker-sheet";
 import type { AssistantFileLinkContext, GetDirectorySuggestions } from "./resolver";
 
 export interface AssistantFileLinkDaemonClient {
+  readFile?: import("@getpaseo/client/internal/daemon-client").DaemonClient["readFile"];
   getDirectorySuggestions: GetDirectorySuggestions;
 }
 
@@ -21,6 +24,7 @@ export interface AssistantFileLinkResolverConfig {
   client?: AssistantFileLinkDaemonClient | null;
   serverId?: string;
   workspaceRoot?: string;
+  relativePathBase?: string;
   onOpenWorkspaceFile?: (target: InlinePathTarget, disposition: OpenFileDisposition) => void;
   toast?: ToastApi | null;
 }
@@ -32,15 +36,29 @@ export interface AssistantFileLinkResolverProviderProps extends AssistantFileLin
 export interface AssistantFileLinkResolverContextValue {
   configRef: MutableRefObject<AssistantFileLinkResolverConfig>;
   getDirectorySuggestions: GetDirectorySuggestions;
+  showPicker: (request: FileLinkPickerRequest) => void;
 }
 
 const AssistantFileLinkResolverContext =
   createContext<AssistantFileLinkResolverContextValue | null>(null);
 
+export function useAssistantFileLinkEnvironmentBridge() {
+  const value = useContext(AssistantFileLinkResolverContext);
+  return useCallback(
+    (children: ReactNode) => (
+      <AssistantFileLinkResolverContext.Provider value={value}>
+        {children}
+      </AssistantFileLinkResolverContext.Provider>
+    ),
+    [value],
+  );
+}
+
 export function AssistantFileLinkResolverProvider({
   client,
   serverId,
   workspaceRoot,
+  relativePathBase,
   onOpenWorkspaceFile,
   toast,
   children,
@@ -49,10 +67,18 @@ export function AssistantFileLinkResolverProvider({
     client,
     serverId,
     workspaceRoot,
+    relativePathBase,
     onOpenWorkspaceFile,
     toast,
   });
-  configRef.current = { client, serverId, workspaceRoot, onOpenWorkspaceFile, toast };
+  configRef.current = {
+    client,
+    serverId,
+    workspaceRoot,
+    relativePathBase,
+    onOpenWorkspaceFile,
+    toast,
+  };
 
   const getDirectorySuggestions = useCallback<GetDirectorySuggestions>(async (input) => {
     const activeClient = configRef.current.client;
@@ -64,24 +90,41 @@ export function AssistantFileLinkResolverProvider({
     return { entries: result.entries, error: result.error };
   }, []);
 
+  const [pickerRequest, setPickerRequest] = useState<FileLinkPickerRequest | null>(null);
+  const closePicker = useCallback(() => setPickerRequest(null), []);
+
   const value = useMemo<AssistantFileLinkResolverContextValue>(
-    () => ({ configRef, getDirectorySuggestions }),
+    () => ({ configRef, getDirectorySuggestions, showPicker: setPickerRequest }),
     [getDirectorySuggestions],
   );
 
   return (
     <AssistantFileLinkResolverContext.Provider value={value}>
       {children}
+      {pickerRequest ? (
+        <FileLinkPickerSheet
+          request={pickerRequest}
+          workspaceRoot={workspaceRoot}
+          onClose={closePicker}
+        />
+      ) : null}
     </AssistantFileLinkResolverContext.Provider>
   );
 }
 
 export function useAssistantFileLinkResolverContext(): AssistantFileLinkResolverContextValue {
   const context = useContext(AssistantFileLinkResolverContext);
-  if (!context) {
-    throw new Error("AssistantFileLinkResolverProvider is required for assistant file links.");
-  }
-  return context;
+  return context ?? EMPTY_CONTEXT;
 }
 
 export type { AssistantFileLinkContext };
+
+const EMPTY_CONTEXT: AssistantFileLinkResolverContextValue = {
+  configRef: { current: {} },
+  getDirectorySuggestions: async () => ({ entries: [], error: null }),
+  showPicker: () => {},
+};
+
+export function useAssistantFileLinkEnvironment() {
+  return useAssistantFileLinkResolverContext().configRef.current;
+}

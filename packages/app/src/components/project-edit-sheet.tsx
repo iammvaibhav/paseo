@@ -8,10 +8,10 @@ import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import type { ProjectIconSource } from "@getpaseo/protocol/messages";
 import { AdaptiveModalSheet, type SheetHeader } from "@/components/adaptive-modal-sheet";
 import { ProjectIconView } from "@/components/project-icon-view";
+import { SettingsTextArea } from "@/components/settings-textarea";
 import { Button } from "@/components/ui/button";
-import type { FieldControlSize } from "@/components/ui/control-geometry";
+import type { ControlSize } from "@/components/ui/control-geometry";
 import { Field, FormTextInput } from "@/components/ui/form-field";
-import { useIsCompactFormFactor } from "@/constants/layout";
 import { useToast } from "@/contexts/toast-context";
 import { useFilePicker } from "@/hooks/use-file-picker";
 import {
@@ -50,7 +50,7 @@ export function ProjectEditSheet({
   const queryClient = useQueryClient();
   const toast = useToast();
   const { pickFiles } = useFilePicker();
-  const size: FieldControlSize = useIsCompactFormFactor() ? "md" : "sm";
+  const size: ControlSize = "md";
   const [form] = useState(() => openProjectEditForm(snapshot));
   const state = useSyncExternalStore(form.subscribe, form.getState, form.getState);
 
@@ -96,7 +96,6 @@ export function ProjectEditSheet({
       <View style={styles.footer}>
         <Button
           variant="secondary"
-          size="md"
           style={styles.footerButton}
           onPress={handleClose}
           disabled={isSaving}
@@ -105,7 +104,6 @@ export function ProjectEditSheet({
         </Button>
         <Button
           variant="default"
-          size="md"
           style={styles.footerButton}
           onPress={handleSubmit}
           disabled={!state.canSubmit}
@@ -126,9 +124,6 @@ export function ProjectEditSheet({
       onClose={handleClose}
       footer={footer}
       desktopMaxWidth={440}
-      // Bound the compact scroller to the live snap height so the footer stays
-      // on screen instead of being pushed past the bottom of the sheet.
-      sizeContentToCurrentSnapPoint
       testID="project-edit-sheet"
     >
       <Field
@@ -145,6 +140,20 @@ export function ProjectEditSheet({
           editable={!isSaving}
           autoCapitalize="none"
           autoCorrect={false}
+        />
+      </Field>
+
+      <Field
+        label={t("settings.project.edit.description")}
+        error={state.error?.scope === "description" ? state.error.message : null}
+      >
+        <SettingsTextArea
+          accessibilityLabel={t("settings.project.edit.descriptionLabel")}
+          value={state.description}
+          onChangeText={form.setDescription}
+          editable={!isSaving}
+          placeholder={t("settings.project.edit.descriptionPlaceholder")}
+          testID="project-edit-description"
         />
       </Field>
 
@@ -237,11 +246,16 @@ async function submitProjectEdit(input: {
   submission: ProjectEditSubmission;
 }): Promise<void> {
   const { client, projectId, submission } = input;
-  const { rename, icon } = submission;
+  const { rename, description, icon } = submission;
 
   const source = icon ? await step("icon", () => acquireIconSource(icon)) : null;
   if (rename) {
     await step("name", () => client.renameProject(projectId, rename.customName));
+  }
+  if (description) {
+    await step("description", () =>
+      client.setProjectDescription(projectId, description.description),
+    );
   }
   if (source) {
     await step("icon", () => client.setProjectIcon(projectId, source));

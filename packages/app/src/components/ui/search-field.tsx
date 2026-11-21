@@ -1,5 +1,10 @@
-import { useCallback, useRef, useState, type ReactElement } from "react";
-import { Pressable, View } from "react-native";
+import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
+import {
+  Pressable,
+  View,
+  type NativeSyntheticEvent,
+  type TextInputKeyPressEventData,
+} from "react-native";
 import { Search, X } from "lucide-react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import type { Theme } from "@/styles/theme";
@@ -27,6 +32,11 @@ export interface SearchFieldProps {
   clearAccessibilityLabel: string;
   testID?: string;
   clearTestID?: string;
+  autoFocus?: boolean;
+  /** Escape on web; native keyboards have no Escape key. */
+  onEscape?: () => void;
+  onFocus?: () => void;
+  onBlur?: () => void;
 }
 
 /**
@@ -44,15 +54,46 @@ export function SearchField({
   clearAccessibilityLabel,
   testID,
   clearTestID,
+  autoFocus,
+  onEscape,
+  onFocus,
+  onBlur,
 }: SearchFieldProps): ReactElement {
   const [isFocused, setIsFocused] = useState(false);
   const inputRef = useRef<EditingTextInputHandle>(null);
-  const handleFocus = useCallback(() => setIsFocused(true), []);
-  const handleBlur = useCallback(() => setIsFocused(false), []);
+  // The input is uncontrolled; this is the text it holds, so a `value` the
+  // caller changes on its own (cleared from elsewhere) can be written into it.
+  const inputTextRef = useRef(value);
+  useEffect(() => {
+    if (value === inputTextRef.current) return;
+    inputTextRef.current = value;
+    inputRef.current?.replaceText(value);
+  }, [value]);
+  const handleChangeText = useCallback(
+    (text: string) => {
+      inputTextRef.current = text;
+      onChangeText(text);
+    },
+    [onChangeText],
+  );
+  const handleFocus = useCallback(() => {
+    setIsFocused(true);
+    onFocus?.();
+  }, [onFocus]);
+  const handleBlur = useCallback(() => {
+    setIsFocused(false);
+    onBlur?.();
+  }, [onBlur]);
   const handleClear = useCallback(() => {
     inputRef.current?.replaceText("");
-    onChangeText("");
-  }, [onChangeText]);
+    handleChangeText("");
+  }, [handleChangeText]);
+  const handleKeyPress = useCallback(
+    (event: NativeSyntheticEvent<TextInputKeyPressEventData>) => {
+      if (event.nativeEvent.key === "Escape") onEscape?.();
+    },
+    [onEscape],
+  );
 
   return (
     <View style={[styles.field, isFocused && styles.fieldFocused]}>
@@ -61,9 +102,11 @@ export function SearchField({
         testID={testID}
         ref={inputRef}
         initialValue={value}
-        onChangeText={onChangeText}
+        onChangeText={handleChangeText}
         onFocus={handleFocus}
         onBlur={handleBlur}
+        autoFocus={autoFocus}
+        onKeyPress={onEscape ? handleKeyPress : undefined}
         placeholder={placeholder}
         accessibilityLabel={accessibilityLabel ?? placeholder}
         autoCapitalize="none"

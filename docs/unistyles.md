@@ -132,7 +132,7 @@ This mistake once produced tens of thousands of warnings from retained sidebar r
 `ScrollView.contentContainerStyle` is the canonical trap. It looks like a style prop, but it is not the `style` prop Unistyles registers. How badly that bites depends on who owns the component:
 
 - **A remapped React Native `ScrollView`** still picks the style up — the Babel plugin rewrites the import and the factory tracks `contentContainerStyle` alongside `style`. The failure mode here is staleness: on first mount it can paint with the theme that was active at mount time and never repaint. The upstream tutorial calls this out in its [ScrollView Background Issue](https://www.unistyl.es/v3/tutorial/settings-screen#scrollview-background-issue) section.
-- **A third-party scroller** — `BottomSheetScrollView`, `FlashList`, anything Unistyles never rewrote — drops the style entirely on web. Nothing throws and the value looks right in JS, but the class Unistyles emitted is never applied, so the padding, gap, or background is simply absent. `AdaptiveModalSheet` shipped its compact sheet content flush to the screen edges for exactly this reason while the desktop card, which uses a real `ScrollView`, looked correct.
+- **A third-party scroller** — `BottomSheetScrollView`, `FlashList`, the `ScrollView` from `@/components/ui/scroll-view` (on web a plain re-export of React Native's that the plugin never sees), anything Unistyles never rewrote — drops the style entirely on web. Nothing throws and the value looks right in JS, but the class Unistyles emitted is never applied, so the padding, gap, or background is simply absent. `AdaptiveModalSheet` shipped its compact sheet content flush to the screen edges for exactly this reason while the desktop card, which uses a real `ScrollView`, looked correct.
 
 The second case is why the wrapper-`View` fix below is not optional styling advice. A themed inset belongs on a `View` you own; a third-party scroller only gets theme-free layout.
 
@@ -346,7 +346,7 @@ Gotchas:
 - **Narrow the discriminated union before spreading.** `updateTheme`'s updater returns the theme union; spreading the union widens `colorScheme` to `"light" | "dark"`, which is assignable to neither concrete member. Branch on `t.colorScheme` so each branch spreads a single narrowed theme type (no `as`).
 - **`lineHeight.diff` is the code/diff line-height axis** — it is coupled to the code-font-size control (≈ `codeFontSize * 1.5`). Do NOT use it for prose. Markdown body line-height scales with content size (`Math.round(theme.fontSize.content * 1.4)`); routing prose through `lineHeight.diff` clips text at small code sizes.
 - **High-churn draft values** (live-while-typing in the appearance preview) bypass the theme: apply them as inline styles marked with `inlineUnistylesStyle` so per-keystroke values don't grow the `#unistyles-web` CSS registry.
-- **Web numeric appearance tokens need a render; native tracked styles update in place.** On web, string tokens such as colors become CSS variables, but numeric tokens (font sizes, line heights) are baked into generated classes. `AppearanceStyleBoundary` remounts web shell chrome and explorer content to refresh those classes. Native sidebars and explorer hosts stay outside appearance keys: their gesture refs outlive detached dependents until Gesture Handler's passive cleanup, so remounting a related gesture can query an unmounted view. Their tracked native styles and existing themed leaf props update without replacing the gesture hosts or draggable lists. Parsed PR markdown uses its own `withUnistyles` style mapping.
+- **Web numeric appearance tokens need a render; native tracked styles update in place.** On web, string tokens such as colors become CSS variables, but numeric tokens (font sizes, line heights) are baked into generated classes. `AppearanceStyleBoundary` remounts web shell chrome and explorer content to refresh those classes. Settings retains its screen and form; `AppearanceText` refreshes numeric text styles at the leaf, and its font fields use `withUnistyles` to refresh input styles without replacing the inputs. Native sidebars and explorer hosts stay outside appearance keys: their gesture refs outlive detached dependents until Gesture Handler's passive cleanup, so remounting a related gesture can query an unmounted view. Their tracked native styles and existing themed leaf props update without replacing the gesture hosts or draggable lists. Parsed PR markdown uses its own `withUnistyles` style mapping.
 - **Appearance keys belong below native lifetime owners.** `ThemedStack` wraps screen content through `screenLayout`, preserving navigator identity; nested navigators are listed in `nestedNavigatorScreens` and own their own screen boundaries. The remaining shell surfaces retain their appearance refresh separately from native panel hosts. A key above a native stack can detach its screen container inside a FragmentManager transaction during settings hydration. Keep both navigators and retained panel gesture hosts outside those keys. `applyAppearance` patches the active theme before inactive registry entries so subscribers receive the committed values in the same update. Do not add local appearance keys or a boundary above a navigator.
 - **Dynamic font tokens stay widened.** `fontFamily`, `fontSize`, and `lineHeight` on `commonTheme` are annotated `string`/`number` (not narrowed by `as const`) so the updater's return assigns; the platform default stacks live in `DEFAULT_UI_FONT_STACK` / `DEFAULT_MONO_FONT_STACK`.
 
@@ -358,9 +358,15 @@ export to `src`, but browser and Electron Metro resolve its `browser` export to
 `lib/module`; CommonJS consumers use `lib/commonjs`. A source-only patch leaves
 Electron running the old code.
 
-Register every dependency patch in `scripts/postinstall-patches.mjs`. A file in
-`patches/` is inert unless that script knows which installed package activates
-it.
+The adaptive-theme patch keeps `colorScheme` reads off the media-query lists
+owned by Unistyles' change listeners. Chromium defers their events while a window
+is hidden; reading `matches` on those same lists can consume the pending change.
+CSS variables then follow the OS theme while `withUnistyles` props retain the old
+colors. Keep this patch until upstream reads the scheme through separate lists.
+The desktop browser E2E checks both transition directions in an isolated Electron
+process, because Playwright's focus emulation prevents real hidden-page behavior.
+
+To change or add a patch, follow [Dependency patches](development.md#dependency-patches).
 
 ## Debugging
 

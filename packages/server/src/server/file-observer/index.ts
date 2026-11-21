@@ -14,6 +14,8 @@ export interface FileChange {
 
 export interface FileObserverOptions {
   ignore?: string[];
+  // Aborting before `subscribe()` resolves stops the startup scan and rejects with the reason.
+  signal?: AbortSignal;
 }
 
 export type FileObserverCallback = (error: Error | null, events: FileChange[]) => void;
@@ -29,6 +31,7 @@ export interface FileObserverDiagnostics {
   nativeTrackedFileCount: number;
   pendingEventCount: number;
   pendingReconciliationWorkCount: number;
+  pendingClassificationCount: number;
   reconciliationInFlightCount: number;
   reconciliationCount: number;
   scopedReconciliationCount: number;
@@ -104,7 +107,19 @@ class FileObserverService implements FileObserver {
       createBackend: this.createBackend,
       onClosed: () => state.observations.delete(observation),
     });
-    await observation.start();
+    const { signal } = options;
+    signal?.throwIfAborted();
+    const abort = () => void observation.close();
+    signal?.addEventListener("abort", abort, { once: true });
+    try {
+      await observation.start();
+    } finally {
+      signal?.removeEventListener("abort", abort);
+    }
+    if (signal?.aborted) {
+      await observation.close();
+      throw signal.reason;
+    }
     if (this.closePromise) {
       await observation.close();
       throw new Error("File observer is closed");
@@ -120,6 +135,7 @@ class FileObserverService implements FileObserver {
     let nativeTrackedFileCount = 0;
     let pendingEventCount = 0;
     let pendingReconciliationWorkCount = 0;
+    let pendingClassificationCount = 0;
     let reconciliationInFlightCount = 0;
     for (const observation of observations) {
       const diagnostics = observation.getDiagnostics();
@@ -127,6 +143,7 @@ class FileObserverService implements FileObserver {
       nativeTrackedFileCount += diagnostics.nativeTrackedFileCount;
       pendingEventCount += diagnostics.pendingEventCount;
       pendingReconciliationWorkCount += diagnostics.pendingReconciliationWorkCount;
+      pendingClassificationCount += diagnostics.pendingClassificationCount;
       reconciliationInFlightCount += Number(diagnostics.reconciliationInFlight);
     }
     return {
@@ -135,6 +152,7 @@ class FileObserverService implements FileObserver {
       nativeTrackedFileCount,
       pendingEventCount,
       pendingReconciliationWorkCount,
+      pendingClassificationCount,
       reconciliationInFlightCount,
       ...metrics,
     };
@@ -178,6 +196,7 @@ function emptyDiagnostics(): FileObserverDiagnostics {
     nativeTrackedFileCount: 0,
     pendingEventCount: 0,
     pendingReconciliationWorkCount: 0,
+    pendingClassificationCount: 0,
     reconciliationInFlightCount: 0,
     ...createObserverMetrics(),
   };

@@ -1,3 +1,4 @@
+import { createWorkspaceRuntimeStore } from "./workspace-runtime-store/index.js";
 import { SessionDelivery } from "./session/owned-subscriptions/index.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Server as HTTPServer } from "http";
@@ -6,7 +7,6 @@ import type { AgentManager } from "./agent/agent-manager.js";
 import type { AgentStorage } from "./agent/agent-storage.js";
 import type { DownloadTokenStore } from "./file-download/token-store.js";
 import type { DaemonConfigStore } from "./daemon-config-store.js";
-import type { ScheduleService } from "./schedule/service.js";
 import type { CheckoutDiffManager } from "./checkout-diff-manager.js";
 import { asInternals, createStub } from "./test-utils/class-mocks.js";
 import { createProviderSnapshotManagerStub } from "./test-utils/session-stubs.js";
@@ -117,6 +117,7 @@ function createServer(agentManagerOverrides?: Record<string, unknown>) {
     null,
     { allowedOrigins: new Set() },
     createWorkspaceAutoNameStub(),
+    createWorkspaceRuntimeStore(),
     undefined,
     undefined,
     undefined,
@@ -125,7 +126,6 @@ function createServer(agentManagerOverrides?: Record<string, unknown>) {
     undefined,
     undefined,
     undefined,
-    createStub<ScheduleService>({}),
     createStub<CheckoutDiffManager>({
       subscribe: vi.fn(),
       scheduleRefreshForCwd: vi.fn(),
@@ -201,10 +201,14 @@ function connectClient(
       delivery,
       wantsSourceNotification: () => true,
     },
+    principalId: "owner",
+    sessionKey: JSON.stringify(["owner", "client-test"]),
     clientId: "client-test",
     appVersion: null,
+    clientCapabilities: null,
     connectionLogger: createLogger(),
     sockets: new Set([ws]),
+    lifecycle: "reconnectable",
     externalDisconnectCleanupTimeout: null,
   });
   return ws;

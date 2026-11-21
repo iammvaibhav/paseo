@@ -1,7 +1,10 @@
+import { posix } from "node:path";
+
 import type {
   EditorTarget,
   EditorTargetDescriptor,
   EditorTargetLaunchInput,
+  EditorTargetRemoteLaunchInput,
   EditorTargetRuntime,
 } from "./target.js";
 import { androidStudioTarget } from "./targets/android-studio.js";
@@ -25,6 +28,7 @@ import { vscodiumTarget } from "./targets/vscodium.js";
 import { vscodeInsidersTarget } from "./targets/vscode-insiders.js";
 import { vscodeTarget } from "./targets/vscode.js";
 import { webstormTarget } from "./targets/webstorm.js";
+import { xcodeTarget } from "./targets/xcode.js";
 import { zedTarget } from "./targets/zed.js";
 
 export const EDITOR_TARGETS: readonly EditorTarget[] = [
@@ -37,6 +41,7 @@ export const EDITOR_TARGETS: readonly EditorTarget[] = [
   zedTarget,
   antigravityTarget,
   androidStudioTarget,
+  xcodeTarget,
   intellijIdeaTarget,
   aquaTarget,
   clionTarget,
@@ -54,15 +59,33 @@ export const EDITOR_TARGETS: readonly EditorTarget[] = [
   fileManagerTarget,
 ];
 
+export interface ListEditorTargetsOptions {
+  /**
+   * Absolute workspace root. Without it, targets that declare
+   * `supportsWorkspace` are left out — there is nothing to match them against.
+   */
+  workspacePath?: string;
+}
+
 export async function listAvailableEditorTargets(
   runtime: EditorTargetRuntime,
   targets: readonly EditorTarget[] = EDITOR_TARGETS,
+  options: ListEditorTargetsOptions = {},
 ): Promise<EditorTargetDescriptor[]> {
+  const workspacePath =
+    options.workspacePath && runtime.isAbsolutePath(options.workspacePath)
+      ? options.workspacePath
+      : null;
   const descriptors: EditorTargetDescriptor[] = [];
   for (const target of targets) {
-    if (await target.isInstalled(runtime)) {
+    if (!(await target.isInstalled(runtime))) continue;
+    if (!target.supportsWorkspace) {
       descriptors.push(await target.describe(runtime));
+      continue;
     }
+    if (!workspacePath) continue;
+    if (!(await target.supportsWorkspace(workspacePath, runtime))) continue;
+    descriptors.push(await target.describe(runtime));
   }
   return descriptors;
 }
@@ -77,10 +100,16 @@ export function getEditorTarget(
 }
 
 export async function openEditorTarget(
-  input: EditorTargetLaunchInput & { editorId: string },
+  request: EditorTargetLaunchInput & { editorId: string },
   runtime: EditorTargetRuntime,
   targets: readonly EditorTarget[] = EDITOR_TARGETS,
 ): Promise<void> {
+  // Assistant replies name folders like `~/Downloads/x`; expand them before the absolute-path guard.
+  const input = {
+    ...request,
+    workspacePath: runtime.expandHomePath(request.workspacePath),
+    filePath: request.filePath === undefined ? undefined : runtime.expandHomePath(request.filePath),
+  };
   if (!runtime.isAbsolutePath(input.workspacePath)) {
     throw new Error("Editor target workspace path must be an absolute local path");
   }
@@ -102,4 +131,26 @@ export async function openEditorTarget(
     throw new Error(`Editor target unavailable: ${descriptor.label}`);
   }
   await target.launch(input, runtime);
+}
+
+export async function openRemoteEditorTarget(
+  input: EditorTargetRemoteLaunchInput & { editorId: string },
+  runtime: EditorTargetRuntime,
+  targets: readonly EditorTarget[] = EDITOR_TARGETS,
+): Promise<void> {
+  const target = getEditorTarget(input.editorId, targets);
+  if (!target.launchRemote) {
+    const descriptor = await target.describe(runtime);
+    throw new Error(`Editor target does not support remote hosts: ${descriptor.label}`);
+  }
+  if (!posix.isAbsolute(input.path)) {
+    throw new Error("Remote editor target path must be an absolute POSIX path");
+  }
+  const cwd =
+    input.cwd && posix.isAbsolute(input.cwd) && input.cwd !== input.path ? input.cwd : undefined;
+  if (!(await target.isInstalled(runtime))) {
+    const descriptor = await target.describe(runtime);
+    throw new Error(`Editor target unavailable: ${descriptor.label}`);
+  }
+  await target.launchRemote({ path: input.path, cwd, sshHost: input.sshHost }, runtime);
 }

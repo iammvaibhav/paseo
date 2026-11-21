@@ -1,4 +1,4 @@
-import type { GitAction, GitActions } from "@/git/policy";
+import { actionsWithoutPrimary, type GitAction, type GitActions } from "@/git/policy";
 import type { KeyboardActionDefinition } from "@/keyboard/keyboard-action-dispatcher";
 import type {
   WorkspacePanelPlacement,
@@ -50,6 +50,7 @@ export interface WorkspaceCommandCenterLabels {
   toggleFocusMode: string;
   toggleExplorerSidebar: string;
   // Workspace management actions
+  archiveWorkspace: string;
   rename: string;
   copyPath: string;
   copyBranchName: string;
@@ -79,6 +80,7 @@ export interface WorkspaceCommandCenterIcons {
   focusMode?: CommandCenterIcon;
   explorerSidebar?: CommandCenterIcon;
   // Workspace management action icons
+  archiveWorkspace?: CommandCenterIcon;
   copyPath?: CommandCenterIcon;
   copyBranchName?: CommandCenterIcon;
   pin?: CommandCenterIcon;
@@ -131,6 +133,8 @@ export interface WorkspaceCommandCenterSource {
   labelCatalog: readonly WorkspaceCommandCenterLabelChoice[] | null;
   dispatch(action: KeyboardActionDefinition): void;
   runGitAction(action: GitAction): void;
+  /** Null while the workspace cannot be archived. A Git workspace archives through `gitActions`. */
+  archiveWorkspace: (() => void) | null;
   copyPath(): void;
   copyBranchName(): void;
   toggleLabel(name: string, assigned: boolean): void | Promise<void>;
@@ -581,10 +585,25 @@ export function buildWorkspaceCommandCenterContributions(
     ...(source.capabilities.canSplitPanes ? buildPaneContributions(source) : []),
   ];
 
-  const primary = source.gitActions.primary;
-  for (const [index, action] of source.gitActions.secondary.entries()) {
-    if (action.id === primary?.id) continue;
+  for (const [index, action] of actionsWithoutPrimary(source.gitActions).entries()) {
     contributions.push(buildGitContribution(source, action, 100 + index, "query"));
+  }
+
+  // A Git workspace lists archive among its Git actions; any other workspace archives here.
+  if (!source.capabilities.isGit && source.archiveWorkspace) {
+    contributions.push(
+      buildWorkspaceCallback({
+        source,
+        id: "workspace:archive",
+        rank: 100,
+        title: source.labels.archiveWorkspace,
+        keywords: ["archive", "workspace"],
+        icon: source.icons.archiveWorkspace,
+        shortcutKeys: source.shortcuts.archiveWorkspace,
+        run: source.archiveWorkspace,
+        visibility: "query",
+      }),
+    );
   }
 
   if (source.capabilities.canPin) {
@@ -659,8 +678,8 @@ export function buildWorkspaceCommandCenterContributions(
 
   // Toggle Explorer sidebar and Toggle focus mode belong here, NOT in root-registration.tsx:
   // their handlers live in workspace-screen.tsx behind `enabled: isRouteFocused && ...`, so a
-  // global registration would list two entries that silently no-op on /settings, /sessions,
-  // /schedules and Home. Toggle sidebar (left) is global and stays in the root set — that is why
+  // global registration would list two entries that silently no-op on /settings, /sessions
+  // and Home. Toggle sidebar (left) is global and stays in the root set — that is why
   // the three toggles render in two non-adjacent sections. Don't "tidy" them back together.
   contributions.push(
     buildWorkspaceAction({

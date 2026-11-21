@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   AgentForkContextRequestMessageSchema,
   AgentForkContextResponseMessageSchema,
+  AgentForkRequestMessageSchema,
   CreateAgentRequestMessageSchema,
   CreatePaseoWorktreeRequestSchema,
   SendAgentMessageRequestSchema,
@@ -48,6 +49,39 @@ describe("shared messages attachments", () => {
         },
       }).payload.boundaryCursor,
     ).toBeUndefined();
+  });
+
+  it("carries a fork boundary and config overrides on a fork request", () => {
+    const request = AgentForkRequestMessageSchema.parse({
+      type: "agent.fork.request",
+      sourceAgentId: "agent-1",
+      text: "take it from here",
+      attachments: [],
+      boundaryUserMessageId: "user-7",
+      boundaryCursor: { epoch: "timeline-1", seq: 42 },
+      boundaryMessageId: "assistant-7",
+      overrides: { model: "gpt-5.5", thinkingOptionId: "high" },
+      requestId: "fork-1",
+    });
+
+    expect(request.boundaryUserMessageId).toBe("user-7");
+    expect(request.boundaryCursor).toEqual({ epoch: "timeline-1", seq: 42 });
+    expect(request.boundaryMessageId).toBe("assistant-7");
+    expect(request.overrides).toEqual({ model: "gpt-5.5", thinkingOptionId: "high" });
+  });
+
+  it("accepts a boundaryless fork request from an older client", () => {
+    const request = AgentForkRequestMessageSchema.parse({
+      type: "agent.fork.request",
+      sourceAgentId: "agent-1",
+      text: "fork now",
+      attachments: [],
+      requestId: "fork-1",
+    });
+
+    expect(request.boundaryUserMessageId).toBeUndefined();
+    expect(request.boundaryCursor).toBeUndefined();
+    expect(request.overrides).toBeUndefined();
   });
 
   it("keeps valid review attachments", () => {

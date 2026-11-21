@@ -1,5 +1,6 @@
-import { homedir } from "node:os";
-import { basename } from "node:path";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { basename, join } from "node:path";
 import { describe, expect, test } from "vitest";
 
 import { createPersistedWorkspaceRecord } from "./workspace-registry.js";
@@ -46,6 +47,30 @@ describe("resolveWorkspaceIdForPath", () => {
     ).toEqual("ws-archived");
   });
 
+  test("prefers the reopened active workspace to archived history at the same path", () => {
+    const archived = createWorkspaceRecord("/workspace/project", "old", {
+      archivedAt: "2026-03-05T00:00:00.000Z",
+    });
+    const active = createWorkspaceRecord("/workspace/project", "current");
+    for (const records of [
+      [archived, active],
+      [active, archived],
+    ]) {
+      expect(resolveWorkspaceIdForPath("/workspace/project", records)).toBe("current");
+    }
+  });
+
+  test("prefers an archived exact match to an active enclosing directory", () => {
+    expect(
+      resolveWorkspaceIdForPath("/workspace/project/sub", [
+        createWorkspaceRecord("/workspace/project", "parent"),
+        createWorkspaceRecord("/workspace/project/sub", "archived-child", {
+          archivedAt: "2026-03-05T00:00:00.000Z",
+        }),
+      ]),
+    ).toBe("archived-child");
+  });
+
   test("resolves the deepest enclosing workspace for a subdirectory path", () => {
     expect(
       resolveWorkspaceIdForPath("/workspace/project/packages/app", [
@@ -65,4 +90,27 @@ describe("resolveWorkspaceIdForPath", () => {
       "ws-home",
     );
   });
+
+  test.skipIf(process.platform === "win32")(
+    "resolves a path through a symlink to the workspace registered at either spelling",
+    () => {
+      const tempDir = realpathSync(mkdtempSync(join(tmpdir(), "resolve-workspace-")));
+      try {
+        const realRoot = join(tempDir, "data", "paseo");
+        const linkRoot = join(tempDir, "home-paseo");
+        mkdirSync(join(realRoot, "packages"), { recursive: true });
+        symlinkSync(realRoot, linkRoot, "dir");
+
+        const legacy = [createWorkspaceRecord(linkRoot, "ws-link")];
+        expect(resolveWorkspaceIdForPath(realRoot, legacy)).toBe("ws-link");
+        expect(resolveWorkspaceIdForPath(join(realRoot, "packages"), legacy)).toBe("ws-link");
+
+        const canonical = [createWorkspaceRecord(realRoot, "ws-real")];
+        expect(resolveWorkspaceIdForPath(linkRoot, canonical)).toBe("ws-real");
+        expect(resolveWorkspaceIdForPath(join(linkRoot, "packages"), canonical)).toBe("ws-real");
+      } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    },
+  );
 });

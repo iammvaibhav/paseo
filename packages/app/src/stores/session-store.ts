@@ -2,6 +2,7 @@ import equal from "fast-deep-equal";
 import { create } from "zustand";
 import { subscribeWithSelector } from "zustand/middleware";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
+import type { AgentReminder } from "@getpaseo/protocol/agent-reminders";
 import type { ViewedTimelineOwner } from "@/timeline/viewed-timeline-sync";
 import type { AgentDirectoryEntry } from "@/types/agent-directory";
 import {
@@ -15,7 +16,7 @@ import {
 import {
   acceptMessageSubmission,
   beginMessageSubmission,
-  getActiveMessageSubmissions,
+  hasActiveMessageSubmission,
   observeMessageSubmissionCanonical,
   rejectMessageSubmission,
   type MessageSubmissionRecord,
@@ -24,9 +25,12 @@ import {
 import type { PendingPermission } from "@/types/shared";
 import type { ComposerAttachment } from "@/attachments/types";
 import type { AgentLifecycleStatus } from "@getpaseo/protocol/agent-lifecycle";
+import type { LifecycleBucket as CanonicalLifecycleBucket } from "@getpaseo/protocol/agent-state-bucket";
 import type {
   AgentPermissionRequest,
-  AgentFeature,
+  AgentOptionControl,
+  JsonValue,
+  ProviderOptions,
   AgentProvider,
   AgentMode,
   AgentCapabilityFlags,
@@ -54,10 +58,12 @@ import {
   type WorkspaceAgentActivity,
 } from "@/utils/workspace-agent-activity";
 import {
+  resolveTimelineTurnPresentation,
   resolveTurnPresentation,
   TURN_LIVENESS_IDLE,
   type TurnLiveness,
   type TurnPresentation,
+  type UnsettledTurn,
 } from "@/timeline/turn-liveness";
 
 export interface AgentRuntimeInfo {
@@ -74,6 +80,7 @@ export interface Agent {
   id: string;
   provider: AgentProvider;
   status: AgentLifecycleStatus;
+  backgroundWork?: { count: number };
   turn: TurnLiveness;
   createdAt: Date;
   updatedAt: Date;
@@ -85,24 +92,46 @@ export interface Agent {
   pendingPermissions: AgentPermissionRequest[];
   persistence: AgentPersistenceHandle | null;
   runtimeInfo?: AgentRuntimeInfo;
+  usageScopeKey?: string;
   lastUsage?: AgentUsage;
   lastError?: string | null;
   title: string | null;
+  // Optional like the wire payload: older daemons omit identity fields.
+  name?: string | null;
+  /** Living short description (report_status description refresh). */
+  shortDescription?: string | null;
+  /** Agent mode id (Do it yourself, Orchestrator, …); absent on older daemons. */
+  agentMode?: string | null;
   cwd: string;
   workspaceId?: string;
   model: string | null;
-  features?: AgentFeature[];
+  options?: ProviderOptions;
+  controls?: AgentOptionControl[];
   thinkingOptionId?: string | null;
+  effectiveThinkingOptionId?: string | null;
   requiresAttention?: boolean;
   attentionReason?: "finished" | "error" | "permission" | null;
   attentionTimestamp?: Date | null;
+  /** Mission Control stop origin for the agent's last run (v3.1). */
+  stoppedBy?: "user" | "machinery" | "system" | null;
+  /** Daemon-owned Mission Control lifecycle bucket. */
+  bucket?: CanonicalLifecycleBucket;
   archivedAt?: Date | null;
+  /** Background agents stay out of tabs, the subagent track and agent lists. Open them by id. */
+  background?: boolean;
   parentAgentId: string | null;
   labels: Record<string, string>;
+  metadata?: Record<string, JsonValue>;
   projectPlacement?: ProjectPlacementPayload | null;
+  providerUnavailable?: boolean;
+  /** Pending "Remind me" reminder; null when none, absent on older daemons. */
+  reminder?: AgentReminder | null;
 }
 
 export interface WorkspaceDescriptor {
+  parentWorkspaceId?: string;
+  createdAt: Date | null;
+  lastUserMessageAt: Date | null;
   id: string;
   projectId: string;
   projectDisplayName: string;
@@ -111,32 +140,43 @@ export interface WorkspaceDescriptor {
   projectRootPath: string;
   workspaceDirectory: string;
   worktreeSlug?: WorkspaceDescriptorPayload["worktreeSlug"];
+  setupStatus?: WorkspaceDescriptorPayload["setupStatus"];
   projectKind: WorkspaceDescriptorPayload["projectKind"];
   workspaceKind: WorkspaceDescriptorPayload["workspaceKind"];
+  background?: boolean;
   name: string;
   title?: string | null;
   pinnedAt?: string | null;
   labels?: string[];
   status: WorkspaceDescriptorPayload["status"];
   statusEnteredAt: Date | null;
+  /** Best-effort last activity (wire `activityAt`); null when unknown. */
+  activityAt: Date | null;
   archivingAt: string | null;
   diffStat: { additions: number; deletions: number } | null;
   scripts: WorkspaceDescriptorPayload["scripts"];
   gitRuntime?: WorkspaceDescriptorPayload["gitRuntime"];
   githubRuntime?: WorkspaceDescriptorPayload["githubRuntime"];
   forge?: WorkspaceDescriptorPayload["forge"];
+  forgeWeb?: WorkspaceDescriptorPayload["forgeWeb"];
   project?: ProjectPlacementPayload;
+}
+
+function parseOptionalDate(raw: string | null | undefined): Date | null {
+  if (typeof raw !== "string" || raw.length === 0) return null;
+  const value = new Date(raw);
+  return Number.isNaN(value.getTime()) ? null : value;
 }
 
 export function normalizeWorkspaceDescriptor(
   payload: WorkspaceDescriptorPayload,
 ): WorkspaceDescriptor {
-  const statusEnteredAtRaw = payload.statusEnteredAt;
-  const statusEnteredAt: Date | null =
-    typeof statusEnteredAtRaw === "string" && statusEnteredAtRaw.length > 0
-      ? new Date(statusEnteredAtRaw)
-      : null;
+  const statusEnteredAt = parseOptionalDate(payload.statusEnteredAt);
+  const activityAt = parseOptionalDate(payload.activityAt);
   return {
+    // COMPAT(workspaceSortTimes): added in v0.13.0, remove after 2027-04-22.
+    createdAt: payload.createdAt ? new Date(payload.createdAt) : null,
+    lastUserMessageAt: payload.lastUserMessageAt ? new Date(payload.lastUserMessageAt) : null,
     id: normalizeWorkspaceOpaqueId(payload.id) ?? payload.id,
     projectId: payload.projectId,
     projectDisplayName: payload.projectDisplayName,
@@ -148,8 +188,12 @@ export function normalizeWorkspaceDescriptor(
     // usable directory" (older daemons may omit it; the wire field is optional).
     workspaceDirectory: normalizeWorkspacePath(payload.workspaceDirectory) ?? "",
     worktreeSlug: payload.worktreeSlug,
+    // COMPAT(workspaceSetupObservation): added in v0.12.0, old hosts omit metadata; remove after 2027-04-19.
+    setupStatus: payload.setupStatus ?? null,
     projectKind: payload.projectKind,
     workspaceKind: payload.workspaceKind,
+    background: payload.background ?? false,
+    parentWorkspaceId: payload.parentWorkspaceId,
     name: payload.name,
     title: payload.title ?? null,
     pinnedAt: payload.pinnedAt ?? null,
@@ -157,12 +201,14 @@ export function normalizeWorkspaceDescriptor(
     labels: payload.labels ?? [],
     status: payload.status,
     statusEnteredAt,
+    activityAt,
     archivingAt: payload.archivingAt ?? null,
     diffStat: payload.diffStat ?? null,
     scripts: (payload.scripts ?? []).map((s) => Object.assign({}, s)),
     gitRuntime: payload.gitRuntime,
     githubRuntime: payload.githubRuntime,
     forge: payload.forge,
+    forgeWeb: payload.forgeWeb,
     project: payload.project,
   };
 }
@@ -173,9 +219,13 @@ export interface ProjectDescriptor {
   projectDisplayName: string;
   projectCustomName: string | null;
   projectCustomIconRevision?: string | null;
+  projectDescription?: string | null;
   projectIconRevision?: string;
   projectRootPath: string;
   projectKind: WorkspaceDescriptorPayload["projectKind"];
+  // The project's own root checkout workspace (ADR 0001: worktree-per-dispatch). Null/absent
+  // when the host hasn't created one (old daemon, or project predates the feature).
+  baseWorkspaceId?: string | null;
 }
 
 export function normalizeProjectDescriptor(
@@ -187,9 +237,11 @@ export function normalizeProjectDescriptor(
     projectDisplayName: payload.projectDisplayName,
     projectCustomName: payload.projectCustomName ?? null,
     projectCustomIconRevision: payload.projectCustomIconRevision ?? null,
+    projectDescription: payload.projectDescription ?? null,
     projectIconRevision: payload.projectIconRevision,
     projectRootPath: payload.projectRootPath,
     projectKind: payload.projectKind,
+    baseWorkspaceId: payload.baseWorkspaceId ?? null,
   };
 }
 
@@ -230,8 +282,6 @@ function preserveMapIdentity<Key, Value>(
 }
 
 export type ExplorerEntryKind = "file" | "directory";
-export type ExplorerFileKind = "text" | "image" | "binary";
-export type ExplorerEncoding = "utf-8" | "base64" | "none";
 
 export interface ExplorerEntry {
   name: string;
@@ -241,19 +291,6 @@ export interface ExplorerEntry {
   modifiedAt: string;
 }
 
-export interface ExplorerFile {
-  path: string;
-  kind: ExplorerFileKind;
-  encoding: ExplorerEncoding;
-  content?: string;
-  // TextDecoder removes a leading UTF-8 BOM; retain this bit so file writes can restore it.
-  hasBom: boolean;
-  mimeType?: string;
-  size: number;
-  modifiedAt: string;
-  revision?: string;
-}
-
 export interface ExplorerDirectory {
   path: string;
   entries: ExplorerEntry[];
@@ -261,12 +298,12 @@ export interface ExplorerDirectory {
 
 interface ExplorerRequestState {
   path: string;
-  mode: "list" | "file";
+  mode: "list";
 }
 
 export interface AgentFileExplorerState {
+  listingGeneration: number;
   directories: Map<string, ExplorerDirectory>;
-  files: Map<string, ExplorerFile>;
   isLoading: boolean;
   lastError: string | null;
   pendingRequest: ExplorerRequestState | null;
@@ -279,10 +316,31 @@ export interface AgentFileExplorerState {
 export interface DaemonServerInfo {
   serverId: string;
   hostname: string | null;
+  // The daemon's missionControl.hostAlias (trimmed; null when unset/unknown),
+  // advertised via server_info so a central-config commanderHost designation
+  // naming the alias resolves to this host.
+  missionControlHostAlias?: string | null;
+  // Absolute home of the daemon's user (null on daemons that don't send it).
+  homeDirectory?: string | null;
   version: string | null;
   desktopManaged?: boolean;
   capabilities?: ServerCapabilities;
   features?: ServerInfoStatusPayload["features"];
+}
+
+export function toDaemonServerInfo(serverInfo: ServerInfoStatusPayload): DaemonServerInfo {
+  return {
+    serverId: serverInfo.serverId,
+    hostname: serverInfo.hostname ?? null,
+    missionControlHostAlias: serverInfo.missionControlHostAlias ?? null,
+    homeDirectory: serverInfo.homeDirectory ?? null,
+    version: serverInfo.version ?? null,
+    ...(serverInfo.desktopManaged !== undefined
+      ? { desktopManaged: serverInfo.desktopManaged }
+      : {}),
+    ...(serverInfo.capabilities ? { capabilities: serverInfo.capabilities } : {}),
+    ...(serverInfo.features ? { features: serverInfo.features } : {}),
+  };
 }
 
 export interface AgentTimelineCursorState {
@@ -325,6 +383,26 @@ export function selectAgentTimelineState(
   return items.length > 0 ? { status: "painted", items } : { status: "cold" };
 }
 
+/** Text of the loaded user messages, newest first, with back-to-back repeats collapsed. */
+export function selectAgentSentMessages(
+  session: SessionState | undefined,
+  agentId: string,
+): string[] {
+  if (!session) return [];
+  const items = [
+    ...(session.agentStreamTail.get(agentId) ?? []),
+    ...(session.agentStreamHead.get(agentId) ?? []),
+  ];
+  const messages: string[] = [];
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    if (item.kind !== "user_message" || item.text.trim().length === 0) continue;
+    if (messages[messages.length - 1] === item.text) continue;
+    messages.push(item.text);
+  }
+  return messages;
+}
+
 export function selectAgentTurnPresentation(
   session: SessionState | undefined,
   agentId: string,
@@ -333,8 +411,66 @@ export function selectAgentTurnPresentation(
     session?.agents.get(agentId)?.turn ??
       session?.agentDetails.get(agentId)?.turn ??
       TURN_LIVENESS_IDLE,
-    getActiveMessageSubmissions(session?.messageSubmissions.get(agentId)).length > 0,
+    hasActiveMessageSubmission(session?.messageSubmissions.get(agentId)),
   );
+}
+
+/** Turn state for the chat's own timeline. Every other surface reads the true status above. */
+export function selectAgentTimelineTurnPresentation(
+  session: SessionState | undefined,
+  agentId: string,
+): TurnPresentation {
+  return resolveTimelineTurnPresentation(
+    selectAgentTurnPresentation(session, agentId),
+    session?.agentTimelineUnsettledTurn.get(agentId),
+  );
+}
+
+/** The unsettled turn a chat's messages carry: the one open right now, or the one it holds. */
+export function selectAgentUnsettledTurn(
+  session: SessionState | undefined,
+  agentId: string,
+): UnsettledTurn | undefined {
+  const turn = session?.agents.get(agentId)?.turn ?? session?.agentDetails.get(agentId)?.turn;
+  if (turn?.phase === "open") return { turnId: turn.turnId, startedAt: turn.startedAt };
+  return session?.agentTimelineUnsettledTurn.get(agentId);
+}
+
+function withUnsettledTurn(
+  current: Map<string, UnsettledTurn>,
+  agentId: string,
+  turn: UnsettledTurn,
+): Map<string, UnsettledTurn> {
+  const held = current.get(agentId);
+  // COMPAT(agentTurnIdentity): added in v0.2.6, remove after 2027-01-31 once daemon floor >= v0.2.6.
+  // Hosts without turn ids report null for every turn, so only the start time tells two turns apart.
+  if (held?.turnId === turn.turnId && held?.startedAt?.getTime() === turn.startedAt?.getTime()) {
+    return current;
+  }
+  const next = new Map(current);
+  next.set(agentId, turn);
+  return next;
+}
+
+function withoutUnsettledTurn(
+  current: Map<string, UnsettledTurn>,
+  agentId: string,
+): Map<string, UnsettledTurn> {
+  if (!current.has(agentId)) return current;
+  const next = new Map(current);
+  next.delete(agentId);
+  return next;
+}
+
+// The messages that bring a chat current settle its turn in this same commit.
+function commitUnsettledTurn(
+  current: Map<string, UnsettledTurn>,
+  agentId: string,
+  commit: { synchronized: boolean; unsettledTurn?: UnsettledTurn },
+): Map<string, UnsettledTurn> {
+  if (commit.synchronized) return withoutUnsettledTurn(current, agentId);
+  if (commit.unsettledTurn) return withUnsettledTurn(current, agentId, commit.unsettledTurn);
+  return current;
 }
 
 function latestTasksFromStream(items: readonly StreamItem[]): TodoEntry[] {
@@ -389,6 +525,7 @@ export interface SessionState {
   agentTasks: Map<string, TodoEntry[]>;
   messageSubmissions: Map<string, MessageSubmissionRecord[]>;
   agentTimelineCursor: Map<string, AgentTimelineCursorState>;
+  agentTimelineUnsettledTurn: Map<string, UnsettledTurn>;
   agentTimelineHasOlder: Map<string, boolean>;
   agentTimelineHasNewer: Map<string, boolean>;
   agentTimelineOlderFetchInFlight: Map<string, boolean>;
@@ -532,7 +669,13 @@ interface SessionStoreActions {
       newer: boolean;
       synchronized: boolean;
       acknowledgedClientMessageIds: string[];
+      unsettledTurn?: UnsettledTurn;
     },
+  ) => void;
+  setAgentTimelineUnsettledTurn: (
+    serverId: string,
+    agentId: string,
+    turn: UnsettledTurn | null,
   ) => void;
 
   // Initializing agents
@@ -637,6 +780,7 @@ function createInitialSessionState(
     agentTasks: new Map(),
     messageSubmissions: new Map(),
     agentTimelineCursor: new Map(),
+    agentTimelineUnsettledTurn: new Map(),
     agentTimelineHasOlder: new Map(),
     agentTimelineHasNewer: new Map(),
     agentTimelineOlderFetchInFlight: new Map(),
@@ -670,10 +814,16 @@ function areServerInfoFeaturesEqual(
   return JSON.stringify(current ?? null) === JSON.stringify(next ?? null);
 }
 
+function trimmedOrNull(value: string | null | undefined): string | null {
+  return value?.trim() || null;
+}
+
 function isSessionServerInfoUnchanged(input: {
   currentServerInfo: SessionState["serverInfo"] | undefined;
   nextHostname: string | null;
   nextVersion: string | null;
+  nextMissionControlHostAlias: string | null;
+  nextHomeDirectory: string | null;
   nextDesktopManaged: boolean | undefined;
   nextCapabilities: ServerCapabilities | undefined;
   nextFeatures: ServerInfoStatusPayload["features"] | undefined;
@@ -683,16 +833,20 @@ function isSessionServerInfoUnchanged(input: {
     currentServerInfo,
     nextHostname,
     nextVersion,
+    nextMissionControlHostAlias,
     nextDesktopManaged,
     nextCapabilities,
     nextFeatures,
   } = input;
-  const prevHostname = currentServerInfo?.hostname?.trim() || null;
-  const prevVersion = currentServerInfo?.version?.trim() || null;
+  const prevHostname = trimmedOrNull(currentServerInfo?.hostname);
+  const prevVersion = trimmedOrNull(currentServerInfo?.version);
+  const prevMissionControlHostAlias = trimmedOrNull(currentServerInfo?.missionControlHostAlias);
   return (
     currentServerInfo?.serverId === input.nextServerId &&
     prevHostname === nextHostname &&
     prevVersion === nextVersion &&
+    prevMissionControlHostAlias === nextMissionControlHostAlias &&
+    trimmedOrNull(currentServerInfo?.homeDirectory) === input.nextHomeDirectory &&
     currentServerInfo?.desktopManaged === nextDesktopManaged &&
     areServerCapabilitiesEqual(currentServerInfo?.capabilities, nextCapabilities) &&
     areServerInfoFeaturesEqual(currentServerInfo?.features, nextFeatures)
@@ -830,6 +984,8 @@ export const useSessionStore = create<SessionStore>()(
 
           const nextHostname = info.hostname?.trim() || null;
           const nextVersion = info.version?.trim() || null;
+          const nextMissionControlHostAlias = info.missionControlHostAlias?.trim() || null;
+          const nextHomeDirectory = info.homeDirectory?.trim() || null;
           const nextDesktopManaged = info.desktopManaged;
           const nextCapabilities = info.capabilities;
           const nextFeatures = info.features;
@@ -839,6 +995,8 @@ export const useSessionStore = create<SessionStore>()(
               currentServerInfo: session.serverInfo,
               nextHostname,
               nextVersion,
+              nextMissionControlHostAlias,
+              nextHomeDirectory,
               nextDesktopManaged,
               nextCapabilities,
               nextFeatures,
@@ -857,6 +1015,8 @@ export const useSessionStore = create<SessionStore>()(
                 serverInfo: {
                   serverId: info.serverId,
                   hostname: nextHostname,
+                  missionControlHostAlias: nextMissionControlHostAlias,
+                  homeDirectory: nextHomeDirectory,
                   version: nextVersion,
                   ...(nextDesktopManaged !== undefined
                     ? { desktopManaged: nextDesktopManaged }
@@ -1418,6 +1578,11 @@ export const useSessionStore = create<SessionStore>()(
             nextAuthoritative.set(agentId, true);
             nextSyncGeneration.set(agentId, session.historySyncGeneration);
           }
+          const agentTimelineUnsettledTurn = commitUnsettledTurn(
+            session.agentTimelineUnsettledTurn,
+            agentId,
+            state,
+          );
           const tasks = latestTasksFromStream([...state.items, ...state.head]);
           const agentTasks = new Map(session.agentTasks);
           if (tasks.length > 0) agentTasks.set(agentId, tasks);
@@ -1435,10 +1600,30 @@ export const useSessionStore = create<SessionStore>()(
                 agentTimelineCursor: nextCursor,
                 agentTimelineHasOlder: nextHasOlder,
                 agentTimelineHasNewer: nextHasNewer,
+                agentTimelineUnsettledTurn,
                 agentAuthoritativeHistoryApplied: nextAuthoritative,
                 agentHistorySyncGeneration: nextSyncGeneration,
                 messageSubmissions,
               },
+            },
+          };
+        });
+      },
+
+      setAgentTimelineUnsettledTurn: (serverId, agentId, turn) => {
+        set((prev) => {
+          const session = prev.sessions[serverId];
+          if (!session) return prev;
+          const current = session.agentTimelineUnsettledTurn;
+          const next = turn
+            ? withUnsettledTurn(current, agentId, turn)
+            : withoutUnsettledTurn(current, agentId);
+          if (next === current) return prev;
+          return {
+            ...prev,
+            sessions: {
+              ...prev.sessions,
+              [serverId]: { ...session, agentTimelineUnsettledTurn: next },
             },
           };
         });
@@ -1861,17 +2046,22 @@ export const useSessionStore = create<SessionStore>()(
             id: agent.id,
             serverId,
             title: agent.title ?? null,
+            name: agent.name ?? null,
             status: agent.status,
             turn: agent.turn,
             lastActivityAt,
+            lastUserMessageAt: agent.lastUserMessageAt ?? null,
             cwd: agent.cwd,
             provider: agent.provider,
             pendingPermissionCount: agent.pendingPermissions.length,
             requiresAttention: agent.requiresAttention ?? false,
             attentionReason: agent.attentionReason ?? null,
             attentionTimestamp: agent.attentionTimestamp ?? null,
+            stoppedBy: agent.stoppedBy ?? null,
+            bucket: agent.bucket,
             createdAt: agent.createdAt,
             labels: agent.labels,
+            reminder: agent.reminder ?? null,
           });
         }
         return entries;

@@ -1,14 +1,14 @@
-export type WorkingDiffComparison = "uncommitted" | "base";
+export type WorkingDiffComparison = "uncommitted" | "base" | "all";
 
 export interface WorkingDiffComparisonOverride {
-  serverId: string;
-  cwd: string;
   comparison: WorkingDiffComparison;
-  isDirtyAtSelection: boolean;
 }
 
 export interface WorkingDiffComparisonState {
   overrides: Record<string, WorkingDiffComparisonOverride>;
+  // A picked comparison base is a separate decision from the mode: it outlives mode flips.
+  // Keyed per checkout, so another workspace never inherits it.
+  baseRefs: Record<string, string>;
 }
 
 export interface WorkingDiffCheckoutIdentity {
@@ -34,17 +34,14 @@ export function selectWorkingDiffComparisonInState(
   state: WorkingDiffComparisonState,
   input: WorkingDiffCheckoutIdentity & {
     comparison: WorkingDiffComparison;
-    isDirty: boolean;
   },
 ): WorkingDiffComparisonState {
   return {
+    ...state,
     overrides: {
       ...state.overrides,
       [workingDiffComparisonKey(input)]: {
-        serverId: input.serverId.trim(),
-        cwd: normalizeCwd(input.cwd),
         comparison: input.comparison,
-        isDirtyAtSelection: input.isDirty,
       },
     },
   };
@@ -52,34 +49,30 @@ export function selectWorkingDiffComparisonInState(
 
 export function resolveWorkingDiffComparisonFromState(
   state: WorkingDiffComparisonState,
-  input: WorkingDiffCheckoutIdentity & { isDirty: boolean },
+  input: WorkingDiffCheckoutIdentity,
 ): WorkingDiffComparison {
-  const override = state.overrides[workingDiffComparisonKey(input)];
-  // Status can render before boundary expiry runs, so resolution must also mask a stale
-  // selection under any ordering of the two updates.
-  if (override?.isDirtyAtSelection === input.isDirty) {
-    return override.comparison;
-  }
-  return input.isDirty ? "uncommitted" : "base";
+  return state.overrides[workingDiffComparisonKey(input)]?.comparison ?? "all";
 }
 
-export function expireWorkingDiffComparisonsInState(
+export function selectWorkingDiffBaseRefInState(
   state: WorkingDiffComparisonState,
-  input: { serverId: string; cwd: string; isDirty: boolean },
+  input: WorkingDiffCheckoutIdentity & { baseRef: string | null },
 ): WorkingDiffComparisonState {
-  // Expire at the status boundary so selections cannot return after an unmounted surface
-  // misses a dirty-state transition.
-  const staleKeys = Object.entries(state.overrides)
-    .filter(
-      ([, override]) =>
-        override.serverId === input.serverId.trim() &&
-        override.cwd === normalizeCwd(input.cwd) &&
-        override.isDirtyAtSelection !== input.isDirty,
-    )
-    .map(([key]) => key);
-  if (staleKeys.length === 0) return state;
+  const key = workingDiffComparisonKey(input);
+  const baseRef = input.baseRef?.trim();
+  if (!baseRef) {
+    if (!(key in state.baseRefs)) return state;
+    const baseRefs = { ...state.baseRefs };
+    delete baseRefs[key];
+    return { ...state, baseRefs };
+  }
+  if (state.baseRefs[key] === baseRef) return state;
+  return { ...state, baseRefs: { ...state.baseRefs, [key]: baseRef } };
+}
 
-  const overrides = { ...state.overrides };
-  for (const key of staleKeys) delete overrides[key];
-  return { overrides };
+export function resolveWorkingDiffBaseRefFromState(
+  state: WorkingDiffComparisonState,
+  input: WorkingDiffCheckoutIdentity,
+): string | null {
+  return state.baseRefs[workingDiffComparisonKey(input)] ?? null;
 }

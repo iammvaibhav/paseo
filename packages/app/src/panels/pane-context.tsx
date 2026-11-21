@@ -13,7 +13,7 @@ export interface PaneContextValue {
   tabId: string;
   target: WorkspaceTabTarget;
   state?: JsonValue;
-  fileNavigationRevision?: number;
+  panelRevision?: number;
   openTab: (target: WorkspaceTabTarget) => void;
   openPreferredTarget: (target: WorkspaceTabTarget, source: OpenInSidePaneSource) => void;
   openTargetToSide?: (target: WorkspaceTabTarget) => void;
@@ -21,6 +21,7 @@ export interface PaneContextValue {
   retargetCurrentTab: (target: WorkspaceTabTarget) => void;
   setCurrentTabState: (state: JsonValue) => void;
   openFileInWorkspace: (request: WorkspaceFileOpenRequest) => void;
+  openDiffInBrowserEditor?: (path: string, baseRef: string | null) => void;
   openImportSheet: () => void;
 }
 
@@ -72,6 +73,11 @@ export function usePaneContext(): PaneContextValue {
   const value = useContext(PaneContext);
   invariant(value, "PaneContext is required");
   return value;
+}
+
+/** The host of the pane around this component, or null on a screen with no panes. */
+export function usePaneHost(): PaneHost | null {
+  return useContext(PaneContext)?.host ?? null;
 }
 
 export function usePaneFocus(): PaneFocusContextValue {

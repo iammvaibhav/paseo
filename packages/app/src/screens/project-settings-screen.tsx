@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import { Pressable, Text, View } from "react-native";
-import { useFocusEffect } from "@react-navigation/native";
+import { useFocusEffect } from "expo-router/react-navigation";
 import { StyleSheet } from "react-native-unistyles";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, MoreVertical, Pencil, Plus } from "lucide-react-native";
@@ -11,6 +11,7 @@ import type {
   PaseoConfigRaw,
   PaseoConfigRevision,
   ProjectConfigRpcError,
+  SessionOutboundMessage,
 } from "@getpaseo/protocol/messages";
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import { Button } from "@/components/ui/button";
@@ -21,7 +22,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Alert } from "@/components/ui/alert";
-import { ExternalLink } from "@/components/ui/external-link";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import { Switch } from "@/components/ui/switch";
 import { AdaptiveModalSheet, type SheetHeader } from "@/components/adaptive-modal-sheet";
@@ -89,7 +89,14 @@ const METADATA_PROMPT_FIELDS: Record<MetadataPromptKey, MetadataPromptField> = {
 
 const WORKTREE_DOCS_URL = "https://paseo.sh/docs/worktrees";
 
-type ReadProjectConfigData = Awaited<ReturnType<DaemonClient["readProjectConfig"]>>;
+type ReadProjectConfigData = Extract<
+  SessionOutboundMessage,
+  { type: "read_project_config_response" }
+>["payload"];
+type WriteProjectConfigData = Extract<
+  SessionOutboundMessage,
+  { type: "write_project_config_response" }
+>["payload"];
 
 export interface ProjectSettingsScreenProps {
   serverId: string;
@@ -160,7 +167,6 @@ function NoEditableTarget({
           testID="project-settings-back-button"
           onPress={onBackToProjects}
           variant="secondary"
-          size="md"
         >
           {t("settings.project.backToProjects")}
         </Button>
@@ -177,7 +183,6 @@ function BackToProjectsButton({ onPress }: { onPress: () => void }) {
       accessibilityLabel={t("settings.project.backToProjects")}
       onPress={onPress}
       variant="ghost"
-      size="sm"
       leftIcon={ArrowLeft}
       style={styles.backButton}
     >
@@ -244,6 +249,7 @@ function ProjectSettingsBody({
     () => ({
       projectName: selectedHost.projectName,
       projectCustomName: selectedHost.projectCustomName,
+      projectDescription: selectedHost.projectDescription ?? null,
       hasCustomIcon: customIconRevision !== null,
       currentIconDataUri: projectIconDataUri,
     }),
@@ -251,6 +257,7 @@ function ProjectSettingsBody({
       customIconRevision,
       projectIconDataUri,
       selectedHost.projectCustomName,
+      selectedHost.projectDescription,
       selectedHost.projectName,
     ],
   );
@@ -419,8 +426,8 @@ function ReadFailureCallout({ kind, error, onReload }: ReadFailureCalloutProps) 
   });
   return (
     <View style={styles.errorBlock}>
-      <Alert testID={testID} variant="error" title={title} description={description}>
-        <Button testID={`${testID}-action-0`} onPress={onReload} variant="outline" size="sm">
+      <Alert size="md" testID={testID} variant="error" title={title} description={description}>
+        <Button testID={`${testID}-action-0`} onPress={onReload} variant="outline">
           {t("settings.project.actions.reload")}
         </Button>
       </Alert>
@@ -490,16 +497,15 @@ function ProjectConfigForm({
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const toast = useToast();
-
   const [draft, setDraft] = useState<ProjectConfigDraft>(() => configToDraft(baseConfig));
   const [writeError, setWriteError] = useState<ProjectConfigRpcError | null>(null);
   const [editingScriptId, setEditingScriptId] = useState<string | null>(null);
-
-  const saveMutation = useMutation({
-    mutationFn: async (input: {
-      config: PaseoConfigRaw;
-      expectedRevision: PaseoConfigRevision | null;
-    }) => {
+  const saveMutation = useMutation<
+    WriteProjectConfigData,
+    Error,
+    { config: PaseoConfigRaw; expectedRevision: PaseoConfigRevision | null }
+  >({
+    mutationFn: async (input) => {
       return client.writeProjectConfig({
         repoRoot,
         config: input.config,
@@ -508,17 +514,20 @@ function ProjectConfigForm({
     },
     onSuccess: (result) => {
       if (result.ok) {
-        queryClient.setQueryData<ReadProjectConfigData>(queryKey, {
-          ok: true,
-          config: result.config,
-          revision: result.revision,
-          requestId: "local-cache",
-          repoRoot,
-          ...(result.hasUncommittedWorktreeSetupChanges === undefined
-            ? {}
-            : {
-                hasUncommittedWorktreeSetupChanges: result.hasUncommittedWorktreeSetupChanges,
-              }),
+        queryClient.setQueryData<ReadProjectConfigData>(queryKey, (current) => {
+          if (!current || !current.ok) return current;
+          return {
+            ...current,
+            config: result.config,
+            revision: result.revision,
+            requestId: "local-cache",
+            repoRoot,
+            ...(result.hasUncommittedWorktreeSetupChanges === undefined
+              ? {}
+              : {
+                  hasUncommittedWorktreeSetupChanges: result.hasUncommittedWorktreeSetupChanges,
+                }),
+          };
         });
         setWriteError(null);
         queryClient.invalidateQueries({ queryKey: ["projects"] });
@@ -662,25 +671,21 @@ function ProjectConfigForm({
   );
 
   const setupDocsLink = useMemo(
-    () => (
-      <ExternalLink
-        href={WORKTREE_DOCS_URL}
-        label={t("settings.project.worktree.docs")}
-        tooltip={t("settings.project.worktree.docsTooltip")}
-        testID="worktree-setup-docs-link"
-      />
-    ),
+    () => ({
+      href: WORKTREE_DOCS_URL,
+      label: t("settings.project.worktree.docs"),
+      tooltip: t("settings.project.worktree.docsTooltip"),
+      testID: "worktree-setup-docs-link",
+    }),
     [t],
   );
   const teardownDocsLink = useMemo(
-    () => (
-      <ExternalLink
-        href={WORKTREE_DOCS_URL}
-        label={t("settings.project.worktree.docs")}
-        tooltip={t("settings.project.worktree.docsTooltip")}
-        testID="worktree-teardown-docs-link"
-      />
-    ),
+    () => ({
+      href: WORKTREE_DOCS_URL,
+      label: t("settings.project.worktree.docs"),
+      tooltip: t("settings.project.worktree.docsTooltip"),
+      testID: "worktree-teardown-docs-link",
+    }),
     [t],
   );
 
@@ -698,10 +703,11 @@ function ProjectConfigForm({
         <SettingsSection
           title={t("settings.project.worktree.setup")}
           testID="worktree-setup-section"
-          trailing={setupDocsLink}
+          link={setupDocsLink}
         >
           {hasUncommittedWorktreeSetupChanges ? (
             <Alert
+              size="sm"
               variant="warning"
               title={t("settings.project.worktree.uncommittedTitle")}
               description={t("settings.project.worktree.uncommittedDescription")}
@@ -719,7 +725,7 @@ function ProjectConfigForm({
         <SettingsSection
           title={t("settings.project.worktree.teardown")}
           testID="worktree-teardown-section"
-          trailing={teardownDocsLink}
+          link={teardownDocsLink}
           flush
         >
           <SettingsTextAreaCard
@@ -776,17 +782,13 @@ function ProjectConfigForm({
       {isStale ? (
         <View style={styles.calloutWrap}>
           <Alert
+            size="sm"
             testID="stale-callout"
             variant="error"
             title={t("settings.project.writeFailures.staleTitle")}
             description={t("settings.project.writeFailures.staleDescription")}
           >
-            <Button
-              testID="stale-callout-action-0"
-              onPress={handleReload}
-              variant="outline"
-              size="sm"
-            >
+            <Button testID="stale-callout-action-0" onPress={handleReload} variant="outline">
               {t("settings.project.actions.reload")}
             </Button>
           </Alert>
@@ -796,25 +798,16 @@ function ProjectConfigForm({
       {isWriteFailed ? (
         <View style={styles.calloutWrap}>
           <Alert
+            size="sm"
             testID="write-failed-callout"
             variant="error"
             title={t("settings.project.writeFailures.failedTitle")}
             description={t("settings.project.writeFailures.failedDescription")}
           >
-            <Button
-              testID="write-failed-callout-action-0"
-              onPress={handleSave}
-              variant="outline"
-              size="sm"
-            >
+            <Button testID="write-failed-callout-action-0" onPress={handleSave} variant="outline">
               {t("settings.project.actions.tryAgain")}
             </Button>
-            <Button
-              testID="write-failed-callout-action-1"
-              onPress={handleReload}
-              variant="outline"
-              size="sm"
-            >
+            <Button testID="write-failed-callout-action-1" onPress={handleReload} variant="outline">
               {t("settings.project.actions.reload")}
             </Button>
           </Alert>
@@ -826,7 +819,6 @@ function ProjectConfigForm({
           testID="save-button"
           accessibilityLabel={t("settings.project.actions.save")}
           variant="default"
-          size="md"
           disabled={saveDisabled}
           loading={saveMutation.isPending}
           onPress={handleSave}
@@ -1103,10 +1095,10 @@ function ScriptEditModal({ script, onChange, onCancel, onSave }: ScriptEditModal
         </View>
       </View>
       <View style={styles.modalFooter}>
-        <Button onPress={onCancel} variant="ghost" size="md" testID="script-edit-cancel">
+        <Button onPress={onCancel} variant="ghost" testID="script-edit-cancel">
           {t("settings.project.actions.cancel")}
         </Button>
-        <Button onPress={handleSavePress} variant="default" size="md" testID="script-edit-save">
+        <Button onPress={handleSavePress} variant="default" testID="script-edit-save">
           {t("settings.project.actions.save")}
         </Button>
       </View>

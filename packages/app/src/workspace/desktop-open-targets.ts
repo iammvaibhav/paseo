@@ -10,15 +10,21 @@ export interface DesktopOpenTarget {
   id: string;
   label: string;
   kind: DesktopOpenTargetKind;
-  icon: DesktopOpenTargetIcon;
+  icon?: DesktopOpenTargetIcon;
+  supportsRemote?: boolean;
 }
 
 export interface OpenDesktopTargetInput {
   editorId: string;
-  workspacePath: string;
+  workspacePath?: string;
   filePath?: string;
   line?: number;
   column?: number;
+  /** Remote-host open: the path lives on the SSH host. */
+  path?: string;
+  cwd?: string;
+  /** SSH destination for opening the path on a remote host via the editor's Remote SSH support. */
+  sshHost?: string;
 }
 
 interface AvailableDesktopEditorBridge {
@@ -56,12 +62,14 @@ export function hasDesktopOpenTargetsBridge(): boolean {
   return getDesktopEditorBridge() !== null;
 }
 
-export async function listDesktopOpenTargets(): Promise<DesktopOpenTarget[]> {
+export async function listDesktopOpenTargets(
+  input: { workspacePath?: string } = {},
+): Promise<DesktopOpenTarget[]> {
   const bridge = getDesktopEditorBridge();
   if (!bridge) {
     return [];
   }
-  return await bridge.listTargets();
+  return await bridge.listTargets(input);
 }
 
 export async function openDesktopTarget(input: OpenDesktopTargetInput): Promise<void> {
@@ -72,15 +80,25 @@ export async function openDesktopTarget(input: OpenDesktopTargetInput): Promise<
   await bridge.openTarget(input);
 }
 
-export function useDesktopOpenTargets(input: { isLocalExecution: boolean }) {
+/**
+ * Pass `workspacePath` whenever it is known. Project-specific targets such as
+ * Xcode are only listed for workspaces they can actually open, so callers that
+ * omit it get the workspace-agnostic targets only.
+ */
+export function useDesktopOpenTargets(input: {
+  isLocalExecution: boolean;
+  remoteSshHost?: string | null;
+  workspacePath?: string;
+}) {
   const hasBridge = hasDesktopOpenTargetsBridge();
-  const canListTargets = hasBridge && input.isLocalExecution;
+  const canListTargets = hasBridge && (input.isLocalExecution || Boolean(input.remoteSshHost));
+  const workspacePath = input.workspacePath?.trim() ?? "";
   const query = useQuery({
-    queryKey: ["desktop-open-targets"],
+    queryKey: ["desktop-open-targets", workspacePath],
     enabled: canListTargets,
     staleTime: 60_000,
     retry: false,
-    queryFn: listDesktopOpenTargets,
+    queryFn: () => listDesktopOpenTargets(workspacePath ? { workspacePath } : {}),
   });
   const targets = selectDesktopOpenTargets({
     canListTargets,

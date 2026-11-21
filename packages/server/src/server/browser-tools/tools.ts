@@ -2,10 +2,11 @@ import { z } from "zod";
 import { BrowserAutomationBrowserIdSchema } from "@getpaseo/protocol/browser-automation/rpc-schemas";
 import type { BrowserToolsBroker } from "./broker.js";
 import type { BrowserToolsResponsePayload } from "./errors.js";
-import type {
-  PaseoToolConfig,
-  PaseoToolExecutionContext,
-  PaseoToolResult,
+import {
+  PaseoToolInputError,
+  type PaseoToolConfig,
+  type PaseoToolExecutionContext,
+  type PaseoToolResult,
 } from "../agent/tools/types.js";
 
 interface CallerAgentContext {
@@ -27,6 +28,8 @@ export interface RegisterBrowserToolsOptions {
   broker: Pick<BrowserToolsBroker, "execute">;
   callerAgentId?: string;
   resolveCallerAgent: () => CallerAgentContext | null;
+  /** The value behind a request_secure_input `secretRef` for the caller, or null. */
+  resolveSecret?: (secretRef: string) => string | null;
 }
 
 const HTTP_URL_ONLY_MESSAGE = "URL must use http/https only";
@@ -189,14 +192,29 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
     {
       title: "Fill browser element",
       description:
-        "Fill an input-like element in a Paseo browser tab. Use browserId from browser_new_tab or browser_list_tabs; refs come from the latest browser_snapshot of the same tab and expire when the page changes.",
+        "Fill an input-like element in a Paseo browser tab. Use browserId from browser_new_tab or browser_list_tabs; refs come from the latest browser_snapshot of the same tab and expire when the page changes. " +
+        "For a password or other secret, pass secretRef from request_secure_input instead of value: the daemon fills it and you never see it.",
       inputSchema: {
         ref: BrowserRefInputSchema,
-        value: z.string(),
+        value: z.string().optional(),
+        secretRef: z
+          .string()
+          .optional()
+          .describe("secrets.<field>.secretRef from request_secure_input; use instead of value."),
         browserId: BrowserAutomationBrowserIdSchema,
       },
     },
-    async ({ ref, value, browserId }) => {
+    async ({ ref, value, secretRef, browserId }) => {
+      if ((value === undefined) === (secretRef === undefined)) {
+        throw new PaseoToolInputError("Pass exactly one of value or secretRef");
+      }
+      const fillValue =
+        secretRef === undefined ? value : (options.resolveSecret?.(secretRef) ?? null);
+      if (fillValue === null || fillValue === undefined) {
+        throw new PaseoToolInputError(
+          "secretRef is unknown, expired, released, or belongs to another agent",
+        );
+      }
       const context = resolveBrowserToolContext(options);
       const payload = await options.broker.execute({
         agentId: context.agentId,
@@ -208,7 +226,7 @@ export function registerBrowserTools(options: RegisterBrowserToolsOptions): void
           args: {
             browserId,
             ref,
-            value,
+            value: fillValue,
           },
         },
       });
@@ -1039,14 +1057,6 @@ function summarizeBrowserError(
   switch (error.code) {
     case "browser_disabled":
       return "Browser tools are disabled. Enable browser tools on the host, then try again.";
-    case "browser_no_host":
-      return error.message;
-    case "browser_timeout":
-      return "The browser did not respond before the timeout. Try again or check the browser host.";
-    case "screenshot_no_frame":
-      return error.message;
-    case "browser_unsupported":
-      return error.message;
     case "browser_stale_ref":
       return "That browser element reference is stale. Take a new browser snapshot and try again.";
     default:

@@ -7,7 +7,10 @@ import {
   buildReviewDraftKey,
   useInlineReviewController,
   useReviewAttachmentSnapshot,
+  useReviewFeedback,
 } from "@/review";
+import { useSessionStore } from "@/stores/session-store";
+import { diffEntryHeaders } from "./diff-snapshot";
 import { useCheckoutDiffQuery } from "@/git/use-diff-query";
 import { useCheckoutStatusQuery } from "@/git/use-status-query";
 import { useWorkingDiffComparison } from "@/git/working-diff-comparison";
@@ -19,6 +22,7 @@ interface UseWorkingDiffOptions {
   ignoreWhitespace: boolean;
   enabled: boolean;
   queryScope?: string;
+  presentation?: string;
 }
 
 export function useWorkingDiff({
@@ -28,6 +32,7 @@ export function useWorkingDiff({
   ignoreWhitespace,
   enabled,
   queryScope,
+  presentation,
 }: UseWorkingDiffOptions) {
   const {
     status,
@@ -41,22 +46,40 @@ export function useWorkingDiff({
   const statusErrorMessage =
     status?.error?.message ??
     (isStatusError && statusError instanceof Error ? statusError.message : null);
-  const baseRef = gitStatus?.baseRef ?? undefined;
-  const hasUncommittedChanges = Boolean(gitStatus?.isDirty);
+  const modernDiff = useSessionStore(
+    (state) => state.sessions[serverId]?.serverInfo?.features?.diffSubscription === true,
+  );
+  // COMPAT(diffSubscription): added in v0.15.0, remove after 2027-05-06.
+  const defaultBaseRef =
+    (modernDiff ? gitStatus?.comparisonBaseRef : gitStatus?.baseRef) ?? undefined;
   const currentBranchName =
     gitStatus?.currentBranch && gitStatus.currentBranch !== "HEAD" ? gitStatus.currentBranch : null;
 
-  const { comparison: diffMode, selectComparison } = useWorkingDiffComparison({
+  const {
+    comparison: diffMode,
+    selectComparison,
+    baseRef: selectedBaseRef,
+    selectBaseRef: selectComparisonBaseRef,
+  } = useWorkingDiffComparison({
     serverId,
     workspaceId,
     cwd,
-    isDirty: hasUncommittedChanges,
   });
   const selectUncommitted = useCallback(() => selectComparison("uncommitted"), [selectComparison]);
+  const selectAll = useCallback(() => selectComparison("all"), [selectComparison]);
   const selectBase = useCallback(() => selectComparison("base"), [selectComparison]);
+  // Picking the default by name is the same as clearing the pick, so the comparison keeps
+  // following the checkout's stored base if that base later changes.
+  const selectBaseRef = useCallback(
+    (next: string | null) => selectComparisonBaseRef(next === defaultBaseRef ? null : next),
+    [defaultBaseRef, selectComparisonBaseRef],
+  );
+  const baseRef = selectedBaseRef ?? defaultBaseRef;
+  const isCustomBaseRef = selectedBaseRef !== null && selectedBaseRef !== defaultBaseRef;
 
   const {
     files,
+    entries,
     payloadError: diffPayloadError,
     diffTooLarge,
     isLoading: isDiffLoading,
@@ -69,6 +92,7 @@ export function useWorkingDiff({
     enabled: enabled && isGit,
     queryScope,
   });
+  const treeFiles = useMemo(() => (entries ? diffEntryHeaders(entries) : files), [entries, files]);
   const reviewDraftKey = useMemo(
     () =>
       buildReviewDraftKey({
@@ -81,13 +105,20 @@ export function useWorkingDiff({
       }),
     [baseRef, cwd, diffMode, ignoreWhitespace, serverId, workspaceId],
   );
-  const reviewActions = useInlineReviewController({ reviewDraftKey });
+  const reviewActions = useInlineReviewController({ reviewDraftKey, presentation });
   const reviewAttachment = useReviewAttachmentSnapshot({
     key: reviewDraftKey,
     diffFiles: files,
     cwd,
     mode: diffMode,
     baseRef,
+  });
+
+  const reviewFeedback = useReviewFeedback({
+    serverId,
+    workspaceId,
+    reviewDraftKey,
+    attachment: reviewAttachment,
   });
 
   return {
@@ -97,16 +128,22 @@ export function useWorkingDiff({
     notGit,
     statusErrorMessage,
     baseRef,
+    defaultBaseRef,
+    isCustomBaseRef,
+    selectBaseRef,
     currentBranchName,
     diffMode,
     selectUncommitted,
     selectBase,
+    selectAll,
     files,
+    treeFiles,
     diffPayloadError,
     diffTooLarge,
     isDiffLoading,
     reviewActions,
     reviewAttachment,
+    reviewFeedback,
   };
 }
 

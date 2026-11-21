@@ -86,7 +86,7 @@ runDescribe("daemon E2E git diff bottleneck profiling", () => {
           ),
         );
 
-        expect(checkoutMs).toBeLessThan(cliMs * 10);
+        expect(checkoutMs).toBeLessThan(Math.max(cliMs * 5, 1500));
       } finally {
         await ctx.cleanup();
       }

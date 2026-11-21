@@ -351,12 +351,6 @@ export async function openDesktopAboutSettings(page: Page): Promise<void> {
   await expect(page.getByText("App updates", { exact: true })).toBeVisible();
 }
 
-export async function expectUpdateBanner(page: Page, version: string): Promise<void> {
-  const callout = page.getByTestId("update-callout");
-  await expect(callout).toBeVisible({ timeout: 15_000 });
-  await expect(callout).toContainText(`v${version.replace(/^v/i, "")}`);
-}
-
 export async function clickCheckForUpdates(page: Page): Promise<void> {
   await page.getByRole("button", { name: "Check" }).click();
 }
@@ -378,14 +372,6 @@ export async function expectReadyUpdateCheckResult(page: Page, version: string):
     timeout: 15_000,
   });
   await expect(page.getByRole("button", { name: `Update to ${normalizedVersion}` })).toBeEnabled();
-}
-
-export async function clickInstallUpdate(page: Page): Promise<void> {
-  await page.getByRole("button", { name: "Install & restart" }).click();
-}
-
-export async function expectInstallInProgress(page: Page): Promise<void> {
-  await expect(page.getByRole("button", { name: "Installing..." })).toBeVisible();
 }
 
 /**

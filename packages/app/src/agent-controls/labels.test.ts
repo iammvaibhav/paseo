@@ -13,6 +13,11 @@ describe("formatAgentModeLabel", () => {
   it("splits compact mode ids when no provider label is available", () => {
     expect(formatAgentModeLabel({ id: "auto-review" })).toBe("Auto review");
   });
+
+  it("formats ai-review with correct casing", () => {
+    expect(formatAgentModeLabel({ id: "ai-review" })).toBe("AI review");
+    expect(formatAgentModeLabel({ id: "ai-review", label: "AI review" })).toBe("AI review");
+  });
 });
 
 describe("formatThinkingOptionLabel", () => {
@@ -28,5 +33,16 @@ describe("formatThinkingOptionLabel", () => {
     expect(formatThinkingOptionLabel({ id: "extra_high", label: "extra_high" })).toBe("Extra high");
     expect(formatThinkingOptionLabel({ id: "think-hard", label: "think-hard" })).toBe("Think hard");
     expect(formatThinkingOptionLabel({ id: "xhigh", label: "XHigh" })).toBe("Extra high");
+  });
+
+  it("preserves provider-supplied xhigh labels with extra detail", () => {
+    expect(formatThinkingOptionLabel({ id: "xhigh", label: "XHigh (56 | 8m)" })).toBe(
+      "X high (56 | 8m)",
+    );
+    expect(formatThinkingOptionLabel({ id: "xhigh", label: "XHigh (45 | 6m)" })).toBe(
+      "X high (45 | 6m)",
+    );
+    expect(formatThinkingOptionLabel({ id: "xhigh" })).toBe("Extra high");
+    expect(formatThinkingOptionLabel({ id: "xhigh", label: "Extra high" })).toBe("Extra high");
   });
 });

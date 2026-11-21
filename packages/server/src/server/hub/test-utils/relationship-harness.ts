@@ -9,6 +9,7 @@ import { promisify } from "node:util";
 import { Writable } from "node:stream";
 import pino from "pino";
 import { WebSocket } from "ws";
+import { splitAgentModeBlock } from "@getpaseo/protocol/agent-modes";
 import type {
   AgentSnapshotPayload,
   HubExecutionAgentCreateResponse,
@@ -440,7 +441,7 @@ type AcceptedCreate = Omit<
 
 const providerCatalog = {
   async resolveCreateConfig(input) {
-    return { modeId: input.requestedMode, featureValues: input.featureValues };
+    return { modeId: input.requestedMode, providerOptions: input.providerOptions };
   },
 } satisfies CreateAgentCommandDependencies["providerSnapshotManager"];
 
@@ -458,6 +459,7 @@ export class HubRelationshipHarness {
   private readonly claimedCliSockets = new Set<WebSocket>();
   private readonly promptsToFail = new Set<string>();
   private failNextSessionClose = false;
+  private failNextModeChange = false;
   private observedEnrollments = 0;
   private observedSockets = 0;
   private readonly codex: ControlledAgentClient;
@@ -474,7 +476,14 @@ export class HubRelationshipHarness {
           this.failNextSessionClose = false;
           throw new Error("Requested provider session close failure");
         },
-        onStartTurn: (prompt) => {
+        beforeSetMode: async () => {
+          if (!this.failNextModeChange) return;
+          this.failNextModeChange = false;
+          throw new Error("Requested provider mode change failure");
+        },
+        onStartTurn: (input) => {
+          // An agent's first prompt carries its Approach block; Hub tests match the user's text.
+          const prompt = typeof input === "string" ? splitAgentModeBlock(input).body : input;
           const promptText = typeof prompt === "string" ? prompt : JSON.stringify(prompt);
           if (this.promptsToFail.delete(promptText)) {
             throw new Error("Requested provider prompt startup failure");
@@ -674,6 +683,10 @@ export class HubRelationshipHarness {
     this.promptsToFail.add(prompt);
   }
 
+  failNextProviderModeChange(): void {
+    this.failNextModeChange = true;
+  }
+
   failNextProviderSessionClose(): void {
     this.failNextSessionClose = true;
   }
@@ -710,9 +723,9 @@ export class HubRelationshipHarness {
     this.rejectLatestSocket(code);
   }
 
-  closeLatestSocket(code: number): void {
+  closeLatestSocket(code: number, reason?: string): void {
     const socket = this.latestSocket();
-    socket.events.closed(code);
+    socket.events.closed(code, reason);
     socket.socket.close(code);
   }
 
@@ -840,7 +853,7 @@ export class HubRelationshipHarness {
   }
 
   async durableOwnedAgentIds(): Promise<string[]> {
-    return (await this.daemon!.agentStorage.list())
+    return (await this.daemon!.agentStorage.listAll())
       .filter((record) => record.owner?.kind === "daemon")
       .map((record) => record.id);
   }
@@ -850,7 +863,7 @@ export class HubRelationshipHarness {
       path.join(this.paseoHome, "agents"),
       pino({ level: "silent" }),
     );
-    return (await storage.list())
+    return (await storage.listAll())
       .filter((record) => record.owner?.kind === "daemon")
       .map((record) => record.id);
   }
@@ -1272,7 +1285,7 @@ export class HubRelationshipHarness {
     });
     const executions = this.executionsForReconstruction(manager, storage);
     const replay = await executions.create(this.ownedCreateInput(executionId));
-    const durableAgentCount = (await storage.list()).filter(
+    const durableAgentCount = (await storage.listAll()).filter(
       (record) => record.owner?.kind === "daemon",
     ).length;
     return { replay, durableAgentCount };
@@ -1285,8 +1298,9 @@ export class HubRelationshipHarness {
       pino({ level: "silent" }),
     );
     return {
-      durableAgentCount: (await storage.list()).filter((record) => record.owner?.kind === "daemon")
-        .length,
+      durableAgentCount: (await storage.listAll()).filter(
+        (record) => record.owner?.kind === "daemon",
+      ).length,
     };
   }
 
@@ -1588,6 +1602,8 @@ export class HubRelationshipHarness {
             agentStorage: storage,
             logger: pino({ level: "silent" }),
             providerSnapshotManager: providerCatalog,
+            // Hub executions never name an existing workspace here.
+            getWorkspace: async () => null,
           },
           input,
         ),

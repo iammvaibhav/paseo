@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>sh.paseo.code-server</string>
+    <key>ProgramArguments</key>
+    <array>
+      <string>/Users/vaibhav/.local/bin/code-server</string>
+      <string>--config</string>
+      <string>/Users/vaibhav/.config/code-server/config.yaml</string>
+      <string>--disable-workspace-trust</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/Users/vaibhav/Library/Logs/paseo-code-server.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/vaibhav/Library/Logs/paseo-code-server.err.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>PATH</key>
+      <string>/Users/vaibhav/.local/bin:/usr/local/bin:/usr/bin:/bin</string>
+      <key>HOME</key>
+      <string>/Users/vaibhav</string>
+    </dict>
+  </dict>
+</plist>

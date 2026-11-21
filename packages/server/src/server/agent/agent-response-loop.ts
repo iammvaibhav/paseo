@@ -412,6 +412,32 @@ export async function generateStructuredAgentResponseWithFallback<T>(
     runner,
   } = options;
 
+  // A configured metadataModel (fleet routing config: Haiku through Bifrost)
+  // answers first over plain HTTP, ~1 s instead of a provider session start.
+  // Any failure falls through to the agent-based providers.
+  const metadataCompletion =
+    typeof manager.getMetadataCompletion === "function" ? manager.getMetadataCompletion() : null;
+  if (metadataCompletion) {
+    try {
+      return await getStructuredAgentResponse({
+        caller: async (nextPrompt) => {
+          const text = await metadataCompletion(nextPrompt);
+          if (text === null) throw new Error("metadataModel is not configured");
+          return text;
+        },
+        prompt,
+        schema,
+        maxRetries,
+        schemaName,
+      });
+    } catch (error) {
+      logger?.warn(
+        { schemaName, err: errorMessage(error) },
+        "Structured generation: metadataModel failed; falling back to agent providers",
+      );
+    }
+  }
+
   if (providers.length === 0) {
     throw new StructuredAgentFallbackError([]);
   }
@@ -475,7 +501,7 @@ export async function generateStructuredAgentResponseWithFallback<T>(
       });
       logger?.warn(
         { err: error, provider: candidate.provider, model: candidate.model, schemaName },
-        "Structured generation: provider failed, trying next",
+        "Structured generation: provider failed",
       );
     }
   }

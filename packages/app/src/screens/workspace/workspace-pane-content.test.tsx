@@ -11,18 +11,7 @@ import {
 } from "@/screens/workspace/workspace-pane-content";
 import type { WorkspaceTabDescriptor } from "@/screens/workspace/workspace-tabs-types";
 import { usePaneContext, usePaneFocus, type PaneContextValue } from "@/panels/pane-context";
-
-vi.mock("@/panels/register-panels", () => ({
-  ensurePanelsRegistered: vi.fn(),
-}));
-
-vi.mock("@/panels/panel-registry", () => ({
-  getPanelRegistration: () => ({
-    kind: "agent",
-    component: ProbePanel,
-    useDescriptor: vi.fn(),
-  }),
-}));
+import { definePanel, registerPanel } from "@/panels/panel-registry";
 
 interface ProbeSnapshot {
   paneContextValue: PaneContextValue;
@@ -46,6 +35,18 @@ function ProbePanel() {
   }, []);
 
   return null;
+}
+
+// The workspace screen registers the real panels; this probe stands in for each kind the tests open.
+for (const kind of ["agent", "draft"] as const) {
+  registerPanel(
+    definePanel(kind, {
+      component: ProbePanel,
+      useDescriptor: () => {
+        throw new Error("The probe panel has no descriptor");
+      },
+    }),
+  );
 }
 
 const agentTab: WorkspaceTabDescriptor = {
@@ -180,5 +181,48 @@ describe("WorkspacePaneContent", () => {
       kind: "agent",
       agentId: "agent-a",
     });
+  });
+
+  it("omits openDiffInBrowserEditor when the builder does not supply one", () => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+
+    act(() => {
+      root?.render(
+        <WorkspacePaneContent content={buildContent()} isPaneFocused isWorkspaceFocused />,
+      );
+    });
+
+    expect(snapshots[0]?.paneContextValue.openDiffInBrowserEditor).toBeUndefined();
+  });
+
+  it("forwards openDiffInBrowserEditor calls to the supplied handler", () => {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    const onOpenDiff = vi.fn();
+    const content = buildWorkspacePaneContentModel({
+      tab: agentTab,
+      normalizedServerId: "server-a",
+      normalizedWorkspaceId: "workspace-a",
+      host: "main",
+      onOpenTab: vi.fn(),
+      onOpenPreferredTarget: vi.fn(),
+      onOpenTargetToSide: vi.fn(),
+      onCloseCurrentTab: vi.fn(),
+      onRetargetCurrentTab: vi.fn(),
+      onSetCurrentTabState: vi.fn(),
+      onOpenWorkspaceFile: vi.fn(),
+      onOpenImportSheet: vi.fn(),
+      onOpenDiff,
+    });
+
+    act(() => {
+      root?.render(<WorkspacePaneContent content={content} isPaneFocused isWorkspaceFocused />);
+    });
+
+    snapshots[0]?.paneContextValue.openDiffInBrowserEditor?.("src/a.ts", "main");
+    expect(onOpenDiff).toHaveBeenCalledWith("src/a.ts", "main");
   });
 });

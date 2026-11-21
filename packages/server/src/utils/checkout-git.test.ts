@@ -14,7 +14,7 @@ import { join } from "path";
 import { win32 } from "node:path";
 import { tmpdir } from "os";
 import pino from "pino";
-import { base64EncryptedWireByteLength } from "@getpaseo/relay";
+import { base64EncryptedWireByteLength, maxSecuredPlaintextByteLength } from "@getpaseo/relay";
 import {
   __resetCheckoutShortstatCacheForTests,
   __resetPullRequestStatusCacheForTests,
@@ -30,8 +30,10 @@ import {
   getCheckoutShortstat,
   getPullRequestStatus,
   getCheckoutStatus,
+  getCheckoutWorktreeState,
   checkoutResolvedBranch,
   listBranchSuggestions,
+  setCheckoutBaseBranch,
   mergeToBase,
   mergeFromBase,
   MergeConflictError,
@@ -46,6 +48,7 @@ import {
   isPaseoWorktreePath,
   isDescendantPath,
   warmCheckoutShortstatInBackground,
+  splitDiffPatchByFile,
 } from "./checkout-git.js";
 import { startGitCommandMetrics, stopGitCommandMetrics } from "./run-git-command.js";
 import { createForgeResolver } from "../services/forge-resolver.js";
@@ -67,7 +70,7 @@ interface LegacyCreateWorktreeTestOptions {
   cwd: string;
   baseBranch: string;
   worktreeSlug: string;
-  runSetup?: boolean;
+
   paseoHome?: string;
 }
 
@@ -86,7 +89,7 @@ function createLegacyWorktreeForTest(
       baseBranch: options.baseBranch,
       branchName: options.branchName,
     },
-    runSetup: options.runSetup ?? true,
+
     paseoHome: options.paseoHome,
   });
 }
@@ -176,6 +179,7 @@ function createPullRequestStatus(overrides?: Partial<CurrentPullRequestStatus>) 
 
 interface RequestedPullRequestTarget {
   headRef: string;
+  currentBranch?: string;
   headSha?: string;
   headRepositoryOwner?: string;
 }
@@ -192,6 +196,7 @@ function createGitHubServiceRecordingPullRequestTargets(
   github.getCurrentPullRequestStatus = async (request) => {
     options.requestedTargets.push({
       headRef: request.headRef,
+      ...(request.currentBranch ? { currentBranch: request.currentBranch } : {}),
       ...(request.headSha ? { headSha: request.headSha } : {}),
       ...(request.headRepositoryOwner ? { headRepositoryOwner: request.headRepositoryOwner } : {}),
     });
@@ -261,6 +266,56 @@ describe("checkout git utilities", () => {
     __resetCheckoutShortstatCacheForTests();
     __resetPullRequestStatusCacheForTests();
     rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it("rejects changing the base of a local checkout without creating metadata", async () => {
+    await expect(setCheckoutBaseBranch({ cwd: repoDir, baseRef: "main" })).rejects.toThrow();
+    expect(existsSync(await getPaseoWorktreeMetadataPath(repoDir))).toBe(false);
+  });
+
+  it("changing a managed worktree base preserves its runtime and PR identity", async () => {
+    const worktree = await createLegacyWorktreeForTest({
+      cwd: repoDir,
+      branchName: "feature/base",
+      baseBranch: "main",
+      worktreeSlug: "base",
+      paseoHome,
+      runSetup: false,
+    });
+    const original = await readPaseoWorktreeMetadata(worktree.worktreePath);
+    execFileSync("git", ["branch", "release"], { cwd: repoDir });
+    await setCheckoutBaseBranch({
+      cwd: worktree.worktreePath,
+      baseRef: "release",
+      context: { paseoHome },
+    });
+    expect(await readPaseoWorktreeMetadata(worktree.worktreePath)).toEqual({
+      ...original,
+      baseRefName: "release",
+      baseRef: "refs/heads/release",
+    });
+    expect(await getCheckoutSnapshotFacts(worktree.worktreePath, { paseoHome })).toMatchObject({
+      storedBaseRef: "refs/heads/release",
+    });
+  });
+
+  it("lists exact local and all remote refs separately for the base picker", async () => {
+    execFileSync("git", ["branch", "release"], { cwd: repoDir });
+    execFileSync("git", ["update-ref", "refs/remotes/origin/release", "HEAD"], { cwd: repoDir });
+    execFileSync("git", ["update-ref", "refs/remotes/upstream/release", "HEAD"], { cwd: repoDir });
+    const suggestions = await listBranchSuggestions(repoDir, {
+      refMode: "exact",
+      query: "release",
+    });
+    expect(suggestions.map((entry) => entry.name).sort()).toEqual([
+      "refs/heads/release",
+      "refs/remotes/origin/release",
+      "refs/remotes/upstream/release",
+    ]);
+    expect(suggestions.find((entry) => entry.name === "refs/heads/release")).toMatchObject({
+      hasLocal: true,
+      hasRemote: false,
+    });
   });
 
   it("throws NotGitRepoError for non-git directories", async () => {
@@ -521,8 +576,18 @@ describe("checkout git utilities", () => {
     expect(message).toBe("update file");
   });
 
+  it("counts untracked files as dirty when the repository hides them from status", async () => {
+    execFileSync("git", ["config", "status.showUntrackedFiles", "no"], { cwd: repoDir });
+    writeFileSync(join(repoDir, "new-file.txt"), "not yet added\n");
+    expect(execFileSync("git", ["status", "--porcelain"], { cwd: repoDir }).toString()).toBe("");
+
+    expect((await getCheckoutStatus(repoDir)).isDirty).toBe(true);
+    expect((await getCheckoutWorktreeState(repoDir, {})).isDirty).toBe(true);
+  });
+
   it("honors commit signing configuration", async () => {
     execFileSync("git", ["config", "commit.gpgsign", "true"], { cwd: repoDir });
+    execFileSync("git", ["config", "gpg.format", "openpgp"], { cwd: repoDir });
     execFileSync("git", ["config", "gpg.program", process.execPath], { cwd: repoDir });
     writeFileSync(join(repoDir, "file.txt"), "signed\n");
 
@@ -538,8 +603,127 @@ describe("checkout git utilities", () => {
     });
 
     expect(diff.structured).toContainEqual(
-      expect.objectContaining({ path: "renamed.txt", oldPath: "file.txt" }),
+      expect.objectContaining({
+        path: "renamed.txt",
+        oldPath: "file.txt",
+        additions: 0,
+        deletions: 0,
+        hunks: [],
+      }),
     );
+  });
+
+  it.each([
+    { mode: "uncommitted", oldPath: "to-rename.txt", path: "renamed.txt" },
+    { mode: "base", oldPath: "to-rename.txt", path: "renamed.txt" },
+    { mode: "uncommitted", oldPath: "old [file].txt", path: "new [file].txt" },
+  ] as const)(
+    "shows only the edited line of a rename ($mode, $path)",
+    async ({ mode, oldPath, path }) => {
+      const original = Array.from({ length: 12 }, (_, index) => `line ${index + 1}`);
+      commitFile(repoDir, oldPath, original.join("\n") + "\n", "file to rename");
+      if (mode === "base") {
+        execFileSync("git", ["checkout", "-b", "feature/rename"], { cwd: repoDir });
+      }
+      execFileSync("git", ["mv", oldPath, path], { cwd: repoDir });
+      const edited = [...original];
+      edited[5] = "edited line 6";
+      writeFileSync(join(repoDir, path), edited.join("\n") + "\n");
+      execFileSync("git", ["add", path], { cwd: repoDir });
+
+      expect(
+        execFileSync("git", ["diff", "--name-status", "HEAD"], { cwd: repoDir }).toString(),
+      ).toMatch(/R\d+\t/);
+      if (mode === "base") {
+        execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-m", "rename and edit"], {
+          cwd: repoDir,
+        });
+      }
+
+      const diff = await getCheckoutDiff(repoDir, {
+        mode,
+        ...(mode === "base" ? { baseRef: "main" } : {}),
+        includeStructured: true,
+      });
+
+      expect(diff.structured).toEqual([
+        expect.objectContaining({
+          path,
+          oldPath,
+          isNew: false,
+          isDeleted: false,
+          additions: 1,
+          deletions: 1,
+          status: "ok",
+        }),
+      ]);
+      expect(diff.diff).toContain(`rename from ${oldPath}`);
+      expect(diff.diff).toContain(`rename to ${path}`);
+      expect(diff.diff).toContain("-line 6\n+edited line 6");
+      expect(diff.diff).not.toContain("new file mode");
+    },
+  );
+
+  it("includes a changed copy source only once in the diff", async () => {
+    const original =
+      Array.from({ length: 12 }, (_, index) => `line ${index + 1}`).join("\n") + "\n";
+    commitFile(repoDir, "source.txt", original, "copy source");
+    execFileSync("git", ["config", "diff.renames", "copies"], { cwd: repoDir });
+    writeFileSync(join(repoDir, "copy.txt"), original);
+    writeFileSync(join(repoDir, "source.txt"), original.replace("line 6", "edited line 6"));
+    execFileSync("git", ["add", "copy.txt", "source.txt"], { cwd: repoDir });
+    expect(
+      execFileSync("git", ["diff", "--name-status", "HEAD"], { cwd: repoDir }).toString(),
+    ).toContain("C100\tsource.txt\tcopy.txt");
+
+    const diff = await getCheckoutDiff(repoDir, {
+      mode: "uncommitted",
+      includeStructured: true,
+    });
+    expect(diff.structured).toEqual([
+      expect.objectContaining({
+        path: "copy.txt",
+        oldPath: "source.txt",
+        additions: 0,
+        deletions: 0,
+      }),
+      expect.objectContaining({ path: "source.txt", additions: 1, deletions: 1 }),
+    ]);
+    expect(diff.diff.match(/^diff --git a\/source.txt b\/source.txt$/gm)).toHaveLength(1);
+    expect(diff.diff).toContain("copy from source.txt");
+    expect(diff.diff).toContain("copy to copy.txt");
+  });
+
+  it("keeps a small copy patch when its edited source exceeds the patch limit", async () => {
+    const original =
+      Array.from({ length: 12 }, (_, index) => `line ${index + 1}`).join("\n") + "\n";
+    commitFile(repoDir, "source.txt", original, "copy source");
+    execFileSync("git", ["config", "diff.renames", "copies"], { cwd: repoDir });
+    writeFileSync(join(repoDir, "copy.txt"), original);
+    writeFileSync(join(repoDir, "source.txt"), original + "added source line\n".repeat(80_000));
+    execFileSync("git", ["add", "copy.txt", "source.txt"], { cwd: repoDir });
+    expect(
+      execFileSync("git", ["diff", "--name-status", "HEAD"], { cwd: repoDir }).toString(),
+    ).toContain("C100\tsource.txt\tcopy.txt");
+
+    const diff = await getCheckoutDiff(repoDir, {
+      mode: "uncommitted",
+      includeStructured: true,
+    });
+    expect(diff.structured).toEqual([
+      expect.objectContaining({
+        path: "copy.txt",
+        oldPath: "source.txt",
+        additions: 0,
+        deletions: 0,
+        hunks: [],
+        status: "ok",
+      }),
+      expect.objectContaining({ path: "source.txt", status: "too_large", hunks: [] }),
+    ]);
+    expect(diff.diff).toContain("copy from source.txt");
+    expect(diff.diff).toContain("copy to copy.txt");
+    expect(diff.diff).not.toContain("+added source line");
   });
 
   it("reads the origin URL once when collecting facts for an origin-tracking branch", async () => {
@@ -706,13 +890,41 @@ const x = 1;
     ]);
   });
 
+  it("omits syntax highlight tokens when aggregate changed files exceed threshold", async () => {
+    const highlightRepoDir = initRepo().repoDir;
+    const manyFilesCount = 205;
+    for (let i = 0; i < manyFilesCount; i++) {
+      writeFileSync(join(highlightRepoDir, `f-${i}.ts`), `export const v${i} = 1;\n`);
+    }
+    execFileSync("git", ["add", "-A"], { cwd: highlightRepoDir });
+    execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-m", "init"], {
+      cwd: highlightRepoDir,
+    });
+    for (let i = 0; i < manyFilesCount; i++) {
+      writeFileSync(join(highlightRepoDir, `f-${i}.ts`), `export const v${i} = 2;\n`);
+    }
+
+    const diff = await getCheckoutDiff(highlightRepoDir, {
+      mode: "uncommitted",
+      includeStructured: true,
+    });
+
+    expect(diff.structured?.length).toBe(manyFilesCount);
+    const sample = diff.structured?.[0];
+    expect(sample?.hunks.length).toBeGreaterThan(0);
+    const contentLine = sample?.hunks[0]?.lines.find(
+      (l) => l.type === "add" || l.type === "remove",
+    );
+    expect(contentLine).toBeDefined();
+    expect(contentLine?.tokens).toBeUndefined();
+  });
+
   it("returns checkout root metadata for normal repos", async () => {
     const status = await getCheckoutStatus(repoDir);
     expect(status.isGit).toBe(true);
     if (!status.isGit) {
       return;
     }
-    expect(status.currentBranch).toBe("main");
     expect(realpathSync.native(status.repoRoot)).toBe(realpathSync.native(repoDir));
     expect(status.isPaseoOwnedWorktree).toBe(false);
     expect(status.mainRepoRoot ?? null).toBeNull();
@@ -991,9 +1203,9 @@ const x = 1;
   });
 
   it("does not report local-only no-track worktree commits as ahead of origin", async () => {
-    setupRemoteTrackingMain(repoDir, tempDir);
-    commitFile(repoDir, "second.txt", "second\n", "second commit");
-    execFileSync("git", ["push"], { cwd: repoDir });
+    // This case needs a remote base ref, not a second clone or extra base history.
+    execFileSync("git", ["remote", "add", "origin", repoDir], { cwd: repoDir });
+    execFileSync("git", ["fetch", "origin", "main:refs/remotes/origin/main"], { cwd: repoDir });
 
     const worktree = await createLegacyWorktreeForTest({
       branchName: "fresh-feature",
@@ -1007,6 +1219,7 @@ const x = 1;
     const status = await getCheckoutStatus(worktree.worktreePath, { paseoHome });
     expect(status).toMatchObject({
       isGit: true,
+      hasRemote: true,
       isPaseoOwnedWorktree: true,
       baseRef: "main",
       aheadBehind: { ahead: 1, behind: 0 },
@@ -1277,6 +1490,96 @@ const x = 1;
     expect(diff.structured).toEqual([]);
   });
 
+  it.each([
+    { contents: "hello\n", expectedFiles: [], patch: "" },
+    {
+      contents: "restored\n",
+      expectedFiles: [
+        { path: "file.txt", isNew: false, isDeleted: false, additions: 1, deletions: 1 },
+      ],
+      patch: "-hello\n+restored\n",
+    },
+  ])(
+    "compares restored untracked base files against disk: $contents",
+    async ({ contents, expectedFiles, patch }) => {
+      execFileSync("git", ["checkout", "-b", "feature"], { cwd: repoDir });
+      execFileSync("git", ["rm", "file.txt"], { cwd: repoDir });
+      execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-m", "delete"], {
+        cwd: repoDir,
+      });
+      writeFileSync(join(repoDir, "file.txt"), contents);
+      const indexPath = execFileSync("git", ["rev-parse", "--git-path", "index"], {
+        cwd: repoDir,
+        encoding: "utf8",
+      }).trim();
+      const beforeIndex = readFileSync(join(repoDir, indexPath));
+      const beforeStatus = execFileSync("git", ["status", "--porcelain=v1", "-z"], {
+        cwd: repoDir,
+      });
+      const result = await getCheckoutDiff(repoDir, {
+        mode: "all",
+        baseRef: "main",
+        includeStructured: true,
+      });
+      expect(
+        result.structured?.map(({ path, isNew, isDeleted, additions, deletions }) => ({
+          path,
+          isNew,
+          isDeleted,
+          additions,
+          deletions,
+        })),
+      ).toEqual(expectedFiles);
+      expect(result.diff).toContain(patch);
+      expect(result.diff.length === 0).toBe(expectedFiles.length === 0);
+      expect(readFileSync(join(repoDir, indexPath))).toEqual(beforeIndex);
+      expect(execFileSync("git", ["status", "--porcelain=v1", "-z"], { cwd: repoDir })).toEqual(
+        beforeStatus,
+      );
+      expect(readFileSync(join(repoDir, "file.txt"), "utf8")).toBe(contents);
+      expect((await getCheckoutDiff(repoDir, { mode: "base", baseRef: "main" })).diff).toContain(
+        "deleted file mode",
+      );
+      expect((await getCheckoutDiff(repoDir, { mode: "uncommitted" })).diff).toContain(
+        "new file mode",
+      );
+    },
+  );
+
+  it("compares all changes as one net patch including untracked files", async () => {
+    execFileSync("git", ["checkout", "-b", "feature"], { cwd: repoDir });
+    writeFileSync(join(repoDir, "file.txt"), "committed\n");
+    execFileSync("git", ["add", "."], { cwd: repoDir });
+    execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-m", "feature"], {
+      cwd: repoDir,
+    });
+    writeFileSync(join(repoDir, "file.txt"), "working\n");
+    writeFileSync(join(repoDir, "new.txt"), "untracked\n");
+    const compare = { mode: "all", baseRef: "main", includeStructured: true } as const;
+    const before = await getCheckoutDiff(repoDir, compare);
+    expect(before.structured?.map((file) => file.path)).toEqual(["file.txt", "new.txt"]);
+    expect(before.diff).toContain("-hello\n+working\n");
+    expect(before.diff).not.toContain("committed");
+    expect(before.diff).toContain("+untracked");
+    const committed = await getCheckoutDiff(repoDir, { ...compare, mode: "base" });
+    expect(committed.diff).toContain("-hello\n+committed\n");
+    const uncommitted = await getCheckoutDiff(repoDir, { ...compare, mode: "uncommitted" });
+    expect(uncommitted.diff).toContain("-committed\n+working\n");
+    execFileSync("git", ["add", "."], { cwd: repoDir });
+    execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-m", "working"], {
+      cwd: repoDir,
+    });
+    // Untracked files are diffed in-process with a zero blob id; only that header line differs.
+    const blobIdLine = /^index \w+\.\.\w+/gm;
+    expect((await getCheckoutDiff(repoDir, compare)).diff.replace(blobIdLine, "index")).toBe(
+      before.diff.replace(blobIdLine, "index"),
+    );
+    writeFileSync(join(repoDir, "file.txt"), "hello\n");
+    expect((await getCheckoutDiff(repoDir, compare)).structured?.map((file) => file.path)).toEqual([
+      "new.txt",
+    ]);
+  });
+
   it("falls back to the local base branch when origin is absent", async () => {
     execFileSync("git", ["checkout", "-b", "feature"], { cwd: repoDir });
     writeFileSync(join(repoDir, "local-feature.txt"), "feature\n");
@@ -1382,19 +1685,15 @@ const x = 1;
   it("warms shortstat cache in the background without blocking listing callers", async () => {
     expect(getCachedCheckoutShortstat(repoDir)).toBeUndefined();
 
-    warmCheckoutShortstatInBackground(repoDir);
+    const warmed = new Promise<void>((resolve) => {
+      warmCheckoutShortstatInBackground(repoDir, undefined, resolve);
+    });
+    // The warm hands off to git and returns; listing callers see no value yet.
+    expect(getCachedCheckoutShortstat(repoDir)).toBeUndefined();
 
+    await warmed;
     // A repo with no origin/main computes to null, but null should still be cached.
-    for (let attempts = 0; attempts < 20; attempts += 1) {
-      const cached = getCachedCheckoutShortstat(repoDir);
-      if (cached !== undefined) {
-        expect(cached).toBeNull();
-        return;
-      }
-      await sleep(25);
-    }
-
-    throw new Error("shortstat background warm did not populate cache in time");
+    expect(getCachedCheckoutShortstat(repoDir)).toBeNull();
   });
 
   it("commits messages with quotes safely", async () => {
@@ -1451,9 +1750,14 @@ const x = 1;
       CHECKOUT_DIFF_MAX_STRUCTURED_BYTES + frameEnvelopeHeadroomBytes,
     );
 
-    expect(CHECKOUT_DIFF_MAX_STRUCTURED_BYTES).toBe(24_117_208);
+    // The cap is sized for the tighter of the legacy and protected relay framings.
+    expect(CHECKOUT_DIFF_MAX_STRUCTURED_BYTES).toBe(
+      maxSecuredPlaintextByteLength(relayFrameBytes) - frameEnvelopeHeadroomBytes,
+    );
+    expect(CHECKOUT_DIFF_MAX_STRUCTURED_BYTES).toBeLessThanOrEqual(24_117_208);
+    expect(CHECKOUT_DIFF_MAX_STRUCTURED_BYTES).toBeGreaterThan(24_000_000);
     expect(diffWireBytes).toBeLessThan(relayFrameBytes);
-    expect(maximumFrameWireBytes).toBe(relayFrameBytes);
+    expect(maximumFrameWireBytes).toBeLessThanOrEqual(relayFrameBytes);
   });
 
   it("marks tracked generated one-line diffs as too_large by content size", async () => {
@@ -1506,8 +1810,12 @@ const x = 1;
     expect(diff.diff).toContain("# generated.js: diff too large omitted");
     expect(diff.diff).toContain(`-export const value = "old";`);
     expect(diff.diff).toContain(`+export const value = "new";`);
-    expect(commands).toContain("diff --numstat HEAD");
-    expect(commands).toContain("diff HEAD -- :(literal)generated.js :(literal)small.ts");
+    expect(commands).toContain(
+      "diff --no-ext-diff --no-color --src-prefix=a/ --dst-prefix=b/ -z --numstat HEAD",
+    );
+    expect(commands).toContain(
+      "diff --no-ext-diff --no-color --src-prefix=a/ --dst-prefix=b/ HEAD -- :(literal)generated.js :(literal)small.ts",
+    );
     expect(metrics.maxConcurrent).toBeLessThanOrEqual(8);
   });
 
@@ -1706,6 +2014,13 @@ const x = 1;
     expect(status.isPaseoOwnedWorktree).toBe(false);
     expect(realpathSync.native(status.mainRepoRoot ?? "")).toBe(realpathSync.native(repoDir));
     expect(status.currentBranch).toBe("feature/plain");
+  });
+
+  it("rejects merging a branch into its own same-named remote base", async () => {
+    execFileSync("git", ["update-ref", "refs/remotes/origin/main", "HEAD"], { cwd: repoDir });
+    await expect(mergeToBase(repoDir, { baseRef: "refs/remotes/origin/main" })).rejects.toThrow(
+      "Cannot merge a branch into itself",
+    );
   });
 
   it("merges the current branch into base from a worktree checkout", async () => {
@@ -2647,7 +2962,7 @@ const x = 1;
       execFileSync("git", ["worktree", "add", workspaceDir, "contributor/old-change"], {
         cwd: repoDir,
       });
-      writePaseoWorktreeMetadata(workspaceDir, {
+      await writePaseoWorktreeMetadata(workspaceDir, {
         baseRefName: "main",
         changeRequestLookupTarget: {
           headRef: "old-change",
@@ -2687,7 +3002,7 @@ const x = 1;
     const workspaceDir = join(paseoHome, "worktrees", "repo", "renamed-by-agent");
     mkdirSync(join(paseoHome, "worktrees", "repo"), { recursive: true });
     execFileSync("git", ["worktree", "add", workspaceDir, "placeholder"], { cwd: repoDir });
-    writePaseoWorktreeMetadata(workspaceDir, {
+    await writePaseoWorktreeMetadata(workspaceDir, {
       baseRefName: "main",
       changeRequestLookupTarget: {
         headRef: "placeholder",
@@ -2724,7 +3039,7 @@ const x = 1;
     const workspaceDir = join(paseoHome, "worktrees", "repo", "pinned-worktree");
     mkdirSync(join(paseoHome, "worktrees", "repo"), { recursive: true });
     execFileSync("git", ["worktree", "add", workspaceDir, "feature/pinned"], { cwd: repoDir });
-    writePaseoWorktreeMetadata(workspaceDir, {
+    await writePaseoWorktreeMetadata(workspaceDir, {
       baseRefName: "main",
       changeRequestLookupTarget: {
         headRef: "feature/pinned",
@@ -2763,7 +3078,7 @@ const x = 1;
     execFileSync("git", ["worktree", "add", workspaceDir, "contributor/old-change-1"], {
       cwd: repoDir,
     });
-    writePaseoWorktreeMetadata(workspaceDir, {
+    await writePaseoWorktreeMetadata(workspaceDir, {
       baseRefName: "main",
       changeRequestLookupTarget: {
         headRef: "old-change",
@@ -2785,7 +3100,7 @@ const x = 1;
     execFileSync("git", ["worktree", "add", workspaceDir, "contributor/old-change"], {
       cwd: repoDir,
     });
-    writePaseoWorktreeMetadata(workspaceDir, {
+    await writePaseoWorktreeMetadata(workspaceDir, {
       baseRefName: "main",
       changeRequestLookupTarget: {
         headRef: "old-change",
@@ -2850,7 +3165,7 @@ const x = 1;
     execFileSync("git", ["worktree", "add", workspaceDir, "mixedowner/old-change"], {
       cwd: repoDir,
     });
-    writePaseoWorktreeMetadata(workspaceDir, {
+    await writePaseoWorktreeMetadata(workspaceDir, {
       baseRefName: "main",
       changeRequestLookupTarget: {
         headRef: "old-change",
@@ -2902,7 +3217,7 @@ const x = 1;
     execFileSync("git", ["worktree", "add", workspaceDir, "feature/gitlab-mr"], {
       cwd: repoDir,
     });
-    writePaseoWorktreeMetadata(workspaceDir, {
+    await writePaseoWorktreeMetadata(workspaceDir, {
       baseRefName: "main",
       changeRequestLookupTarget: {
         headRef: "feature/gitlab-mr",
@@ -2916,7 +3231,9 @@ const x = 1;
     const forge = createGitHubServiceRecordingPullRequestTargets({ requestedTargets });
 
     await renameCurrentBranch(workspaceCwd, "feature/renamed");
-    expect(readPaseoWorktreeMetadata(workspaceDir)?.changeRequestLookupTarget).toMatchObject({
+    expect(
+      (await readPaseoWorktreeMetadata(workspaceDir))?.changeRequestLookupTarget,
+    ).toMatchObject({
       localBranchName: "feature/renamed",
     });
     const renamedFacts = await getCheckoutSnapshotFacts(workspaceDir, { paseoHome });
@@ -2952,7 +3269,7 @@ const x = 1;
     execFileSync("git", ["worktree", "add", workspaceDir, "feature/placeholder"], {
       cwd: repoDir,
     });
-    writePaseoWorktreeMetadata(workspaceDir, {
+    await writePaseoWorktreeMetadata(workspaceDir, {
       baseRefName: "main",
       changeRequestLookupTarget: {
         headRef: "feature/placeholder",
@@ -2962,7 +3279,7 @@ const x = 1;
 
     await renameCurrentBranch(workspaceDir, "feature/generated");
 
-    expect(readPaseoWorktreeMetadata(workspaceDir)?.changeRequestLookupTarget).toEqual({
+    expect((await readPaseoWorktreeMetadata(workspaceDir))?.changeRequestLookupTarget).toEqual({
       headRef: "feature/generated",
       localBranchName: "feature/generated",
     });
@@ -3178,7 +3495,7 @@ const x = 1;
       { paseoHome },
     );
 
-    expect(requestedTargets).toEqual([factsTarget]);
+    expect(requestedTargets).toEqual([{ ...factsTarget, currentBranch: "tender-parrot" }]);
   });
 
   it("uses the tracked fork branch for PR worktree status lookup", async () => {
@@ -3208,7 +3525,11 @@ const x = 1;
     const status = await getPullRequestStatus(repoDir, github);
 
     expect(requestedTargets).toEqual([
-      expect.objectContaining({ headRef: "main", headRepositoryOwner: "chethanuk" }),
+      expect.objectContaining({
+        headRef: "main",
+        currentBranch: "chethanuk/main",
+        headRepositoryOwner: "chethanuk",
+      }),
     ]);
     expect(status.status?.number).toBe(345);
     expect(status.status?.headRefName).toBe("main");
@@ -3237,6 +3558,20 @@ const x = 1;
     expect(status.status?.headRefName).toBe("feature");
     expect(status.status?.isMerged).toBe(false);
     expect(status.status?.state).toBe("closed");
+  });
+
+  it("looks up PR status again when switching branches at the same commit", async () => {
+    execFileSync("git", ["checkout", "-b", "feature"], { cwd: repoDir });
+    const requestedTargets: RequestedPullRequestTarget[] = [];
+    const forge = createGitHubServiceRecordingPullRequestTargets({ requestedTargets });
+
+    const feature = await getPullRequestStatus(repoDir, forge);
+    execFileSync("git", ["checkout", "main"], { cwd: repoDir });
+    const main = await getPullRequestStatus(repoDir, forge);
+
+    expect(feature.status?.headRefName).toBe("feature");
+    expect(main.status?.headRefName).toBe("main");
+    expect(requestedTargets.map(({ headRef }) => headRef)).toEqual(["feature", "main"]);
   });
 
   it("caches PR status results for duplicate lookups", async () => {
@@ -3575,6 +3910,7 @@ const x = 1;
       cwd: repoDir,
     });
     execFileSync("git", ["config", "commit.gpgsign", "true"], { cwd: repoDir });
+    execFileSync("git", ["config", "gpg.format", "openpgp"], { cwd: repoDir });
     execFileSync("git", ["config", "gpg.program", process.execPath], { cwd: repoDir });
 
     await expect(mergeToBase(repoDir, { baseRef: "main", mode: "squash" })).rejects.toThrow(
@@ -3617,7 +3953,7 @@ const x = 1;
     expect(baseDiff.diff).not.toContain("file.txt");
   });
 
-  it("names both refs when a requested base ref does not match the stored one", async () => {
+  it("rejects a requested base ref that resolves to no branch or commit", async () => {
     const worktree = await createLegacyWorktreeForTest({
       branchName: "mismatch-feature",
       cwd: repoDir,
@@ -3626,9 +3962,10 @@ const x = 1;
       paseoHome,
     });
 
+    // Upstream accepts any commit as a base, so an unknown name fails when git resolves it.
     await expect(
       getCheckoutDiff(worktree.worktreePath, { mode: "base", baseRef: "other" }, { paseoHome }),
-    ).rejects.toThrow("Base ref mismatch: stored refs/heads/main, requested other");
+    ).rejects.toThrow("other^{commit}");
   });
 
   it("excludes dirty working tree changes from Paseo worktree base diffs", async () => {
@@ -3738,7 +4075,7 @@ const x = 1;
       cwd: worktree.worktreePath,
     });
 
-    const metadataPath = getPaseoWorktreeMetadataPath(worktree.worktreePath);
+    const metadataPath = await getPaseoWorktreeMetadataPath(worktree.worktreePath);
     rmSync(metadataPath, { force: true });
 
     const baseDiff = await getCheckoutDiff(worktree.worktreePath, { mode: "base" }, { paseoHome });
@@ -3757,7 +4094,7 @@ const x = 1;
       paseoHome,
     });
 
-    const metadataPath = getPaseoWorktreeMetadataPath(worktree.worktreePath);
+    const metadataPath = await getPaseoWorktreeMetadataPath(worktree.worktreePath);
     rmSync(metadataPath, { force: true });
 
     const status = await getCheckoutStatus(worktree.worktreePath, { paseoHome });
@@ -3979,5 +4316,66 @@ describe("discardChanges", () => {
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
+  });
+
+  describe("splitDiffPatchByFile", () => {
+    it("keeps content containing diff --git inside a modified file as one section", () => {
+      const patchWithDiffContent = [
+        "diff --git a/file1.txt b/file1.txt",
+        "index 1111111..2222222 100644",
+        "--- a/file1.txt",
+        "+++ b/file1.txt",
+        "@@ -1,3 +1,4 @@",
+        " line 1",
+        "+diff --git a/fake.txt b/fake.txt",
+        "+fake content",
+        " line 2",
+        "diff --git a/file2.txt b/file2.txt",
+        "index 3333333..4444444 100644",
+        "--- a/file2.txt",
+        "+++ b/file2.txt",
+        "@@ -1,2 +1,2 @@",
+        "-old",
+        "+new",
+      ].join("\n");
+
+      const sections = splitDiffPatchByFile(patchWithDiffContent);
+      expect(sections).toHaveLength(2);
+      expect(sections[0].path).toBe("file1.txt");
+      expect(sections[0].text).toContain("+diff --git a/fake.txt b/fake.txt");
+      expect(sections[1].path).toBe("file2.txt");
+    });
+
+    it("splits a normal 3-file patch into 3 sections with correct paths", () => {
+      const normal3FilePatch = [
+        "diff --git a/file1.txt b/file1.txt",
+        "index 1111111..2222222 100644",
+        "--- a/file1.txt",
+        "+++ b/file1.txt",
+        "@@ -1 +1 @@",
+        "-a",
+        "+b",
+        "diff --git a/file2.txt b/file2.txt",
+        "new file mode 100644",
+        "index 0000000..3333333",
+        "--- /dev/null",
+        "+++ b/file2.txt",
+        "@@ -0,0 +1 @@",
+        "+hello",
+        "diff --git a/file3.txt b/file3.txt",
+        "deleted file mode 100644",
+        "index 4444444..0000000",
+        "--- a/file3.txt",
+        "+++ /dev/null",
+        "@@ -1 +0,0 @@",
+        "-bye",
+      ].join("\n");
+
+      const sections = splitDiffPatchByFile(normal3FilePatch);
+      expect(sections).toHaveLength(3);
+      expect(sections[0].path).toBe("file1.txt");
+      expect(sections[1].path).toBe("file2.txt");
+      expect(sections[2].path).toBe("file3.txt");
+    });
   });
 });

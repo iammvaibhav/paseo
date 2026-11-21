@@ -1,14 +1,24 @@
 import type {
+  AgentOptionControl,
+  AgentOptionSelectControl,
+  AgentOptionToggleControl,
   AgentProviderNotice,
   AgentTaskItem,
   JsonValue,
   ProviderOptions,
   ToolPolicy,
 } from "@getpaseo/protocol/agent-types";
+import type { AgentMessage } from "@getpaseo/protocol/agent-message";
 import type { AgentAttachment } from "@getpaseo/protocol/messages";
 import type { PaseoToolCatalog } from "./tools/types.js";
 
-export type { AgentProviderNotice, AgentTaskItem };
+export type {
+  AgentOptionControl,
+  AgentOptionSelectControl,
+  AgentOptionToggleControl,
+  AgentProviderNotice,
+  AgentTaskItem,
+};
 
 export type AgentProvider = string;
 
@@ -138,7 +148,7 @@ export interface AgentCreateConfigParent {
 export interface ResolveAgentCreateConfigInput {
   provider: AgentProvider;
   requestedMode: string | undefined;
-  featureValues: Record<string, unknown> | undefined;
+  providerOptions: ProviderOptions | undefined;
   parent: AgentCreateConfigParent | null;
   unattended: boolean;
   availableModes: AgentMode[] | undefined;
@@ -146,38 +156,15 @@ export interface ResolveAgentCreateConfigInput {
 
 export interface ResolveAgentCreateConfigResult {
   modeId: string | undefined;
-  featureValues: Record<string, unknown> | undefined;
+  providerOptions: ProviderOptions | undefined;
 }
 
 export interface AgentCreateConfigUnattendedInput {
   modeId: string | null;
   config: AgentSessionConfig;
-  features?: AgentFeature[];
+  controls?: AgentOptionControl[];
   availableModes: AgentMode[];
 }
-
-export interface AgentFeatureToggle {
-  type: "toggle";
-  id: string;
-  label: string;
-  description?: string;
-  tooltip?: string;
-  icon?: string;
-  value: boolean;
-}
-
-export interface AgentFeatureSelect {
-  type: "select";
-  id: string;
-  label: string;
-  description?: string;
-  tooltip?: string;
-  icon?: string;
-  value: string | null;
-  options: AgentSelectOption[];
-}
-
-export type AgentFeature = AgentFeatureToggle | AgentFeatureSelect;
 
 export interface AgentCapabilityFlags {
   [capability: string]: boolean | undefined;
@@ -214,6 +201,17 @@ export interface AgentRunOptions {
   resumeFrom?: AgentPersistenceHandle;
   maxThinkingTokens?: number;
   clientMessageId?: string;
+  /**
+   * Who superseded the in-flight run when this prompt replaces one
+   * (replaceRunning). The superseded run's terminal failure is then treated
+   * as that party's interruption instead of a genuine error: "user" (a user
+   * interrupt-and-send) suppresses the [System Error] timeline row for the
+   * aborted turn and renders as "Interrupted by you" in Mission Control;
+   * "machinery" (escalation/recovery/Commander sends) keeps the failure
+   * treatment. Absent = no origin recorded — genuine aborts/crashes are
+   * untouched. Only consulted when a replace actually happens.
+   */
+  replaceOrigin?: "user" | "machinery";
 }
 
 export interface AgentSteerOptions extends AgentRunOptions {
@@ -221,7 +219,11 @@ export interface AgentSteerOptions extends AgentRunOptions {
   clearPendingPermissions?: boolean;
 }
 
-export type SteerResult = { status: "accepted" } | { status: "unavailable" };
+// providerMessageId names the steered message in the provider's own history, when the provider
+// mints one. Rewinding to the message needs it.
+export type SteerResult =
+  | { status: "accepted"; providerMessageId?: string }
+  | { status: "unavailable" };
 
 export interface SteerActiveTurnOptions extends AgentSteerOptions {
   expectedTurnId: string;
@@ -230,10 +232,17 @@ export interface SteerActiveTurnOptions extends AgentSteerOptions {
 export interface AgentUsage {
   inputTokens?: number;
   cachedInputTokens?: number;
+  // Cache creation/write tokens. Mirrors the protocol AgentUsage field; absent
+  // when the provider does not report it — never zero-fill.
+  cacheWriteTokens?: number;
   outputTokens?: number;
   totalCostUsd?: number;
   contextWindowMaxTokens?: number;
   contextWindowUsedTokens?: number;
+  // Daemon-measured wall clock for the turn, stamped by AgentManager.
+  durationMs?: number;
+  // Model of record at turn completion (runtimeInfo.model ?? config.model).
+  model?: string | null;
 }
 
 export const TOOL_CALL_ICON_NAMES = [
@@ -326,7 +335,10 @@ export type ToolCallDetail =
       subAgentType?: string;
       description?: string;
       childSessionId?: string;
-      log: string;
+      // COMPAT(subagent-log): added in v0.14.1, remove after 2027-04-30. Apps before v0.14.1
+      // require `log`; every producer sends it empty and carries the same tag. Optional here because
+      // protocol timeline items, where `log` is optional, flow into this type.
+      log?: string;
       actions?: Array<{
         index: number;
         toolName: string;
@@ -356,6 +368,8 @@ interface ToolCallBase {
   name: string;
   detail: ToolCallDetail;
   metadata?: Record<string, unknown>;
+  /** Set when the row is a delivered agent message rather than a provider tool call. */
+  agentMessage?: AgentMessage;
 }
 
 type ToolCallRunningTimelineItem = ToolCallBase & {
@@ -392,6 +406,22 @@ export interface CompactionTimelineItem {
   preTokens?: number;
 }
 
+/**
+ * Who originated a user-role timeline row. Machinery delivers prompts into an
+ * agent's own chat (stall status-ask nudges, Commander/Verifier directions)
+ * and stamps the row at the source so the agent chat renders it distinctly.
+ * Absent = "instruction" (a visible prompt) — real user messages and legacy
+ * rows are never hidden.
+ */
+export type AgentTimelineUserMessageClassification = "machinery" | "instruction";
+
+/**
+ * M9 voice dialogue mirror marker on timeline rows appended by the voice
+ * mirror RPC. "qa" = pure Q&A (the app hides the row unless verbose);
+ * "dispatch" = the turn asked the fleet to do something (visible).
+ */
+export type AgentTimelineVoiceMirrorKind = "qa" | "dispatch";
+
 export interface PluginTimelineItem {
   type: "plugin";
   id: string;
@@ -402,8 +432,22 @@ export interface PluginTimelineItem {
 }
 
 export type AgentTimelineItem =
-  | { type: "user_message"; text: string; messageId?: string; clientMessageId?: string }
-  | { type: "assistant_message"; text: string; messageId?: string }
+  | {
+      type: "user_message";
+      text: string;
+      messageId?: string;
+      clientMessageId?: string;
+      classification?: AgentTimelineUserMessageClassification;
+      voiceMirrorKind?: AgentTimelineVoiceMirrorKind;
+      images?: Array<{ data: string; mimeType: string }>;
+      attachments?: AgentAttachment[];
+    }
+  | {
+      type: "assistant_message";
+      text: string;
+      messageId?: string;
+      voiceMirrorKind?: AgentTimelineVoiceMirrorKind;
+    }
   | { type: "reasoning"; text: string }
   | ToolCallTimelineItem
   | { type: "todo"; items: AgentTaskItem[] }
@@ -414,7 +458,14 @@ export type AgentTimelineItem =
       message: string;
     }
   | CompactionTimelineItem
-  | PluginTimelineItem;
+  | PluginTimelineItem
+  | {
+      type: "ai_review_decision";
+      requestId: string;
+      decision: "allow" | "deny" | "escalate";
+      reason: string;
+      toolName?: string;
+    };
 
 export type AgentStreamEvent =
   | { type: "thread_started"; sessionId: string; provider: AgentProvider }
@@ -433,6 +484,14 @@ export type AgentStreamEvent =
       provider: AgentProvider;
       thinkingOptionId: string | null;
     }
+  /**
+   * The provider changed options on its own: after `createSession`/`resumeSession` or
+   * `applyOptions` it ended up different from what it was given, or later it changed a setting
+   * itself. The daemon stores the patch and forwards it; it does not undo it. `null` removes the
+   * agent's own value. Only for changes that happen on the provider's own initiative: the result
+   * of opening goes in `openOptionsPatch` and the result of `applyOptions` is its return value.
+   */
+  | { type: "options_changed"; provider: AgentProvider; patch: Record<string, unknown> }
   | {
       type: "turn_failed";
       provider: AgentProvider;
@@ -472,11 +531,20 @@ export type AgentStreamEvent =
       type: "provider_subagent";
       provider: AgentProvider;
       event: import("./provider-subagents/store.js").ProviderSubagentInputEvent;
+    }
+  | {
+      /** Full replacement of the agent's live background work (shells, monitors…). */
+      type: "background_work";
+      provider: AgentProvider;
+      items: import("./background-work/index.js").AgentBackgroundWorkInput[] | null;
     };
 
 export function getAgentStreamEventTurnId(event: AgentStreamEvent): string | undefined {
   return "turnId" in event ? event.turnId : undefined;
 }
+
+/** Prefix of the assistant timeline row the manager records when a turn fails. */
+export const SYSTEM_ERROR_PREFIX = "[System Error]";
 
 export type AgentPermissionRequestKind = "tool" | "plan" | "question" | "mode" | "other";
 
@@ -518,6 +586,14 @@ export type AgentPermissionResponse =
       interrupt?: boolean;
     };
 
+/** A requested turn was canceled before the provider accepted it. */
+export class AgentTurnStartCanceledError extends Error {
+  constructor() {
+    super("Turn was canceled before starting");
+    this.name = "AgentTurnStartCanceledError";
+  }
+}
+
 export interface AgentRunResult {
   sessionId: string;
   finalText: string;
@@ -538,6 +614,15 @@ export interface AgentRuntimeInfo {
 export type AgentSlashCommandKind = "command" | "skill";
 
 /**
+ * How a command reaches the provider. "turn" commands are ordinary prompts and
+ * start a turn. "out_of_band" commands are the ones `tryHandleOutOfBand`
+ * intercepts: they run against the live session without allocating or
+ * canceling a turn, so clients must send them straight through instead of
+ * queueing them behind a running turn.
+ */
+export type AgentSlashCommandDelivery = "turn" | "out_of_band";
+
+/**
  * Represents a slash command available in an agent session.
  * Commands are executed by sending them as prompts with / prefix.
  */
@@ -546,9 +631,11 @@ export interface AgentSlashCommand {
   description: string;
   argumentHint: string;
   kind?: AgentSlashCommandKind;
+  delivery?: AgentSlashCommandDelivery;
 }
 
 export interface ListImportableSessionsOptions {
+  providerOptions?: ProviderOptions;
   limit?: number;
   /** Optional case-insensitive descriptor search text. */
   query?: string;
@@ -606,14 +693,28 @@ export interface AgentSessionConfig {
    */
   systemPrompt?: string;
   /**
+   * How `systemPrompt` is applied. "append" (default) layers it under the
+   * provider's coding harness; "replace" swaps the harness out entirely for
+   * the given prompt. Replace mode also skips the daemon-level append prompt.
+   */
+  systemPromptMode?: "append" | "replace";
+  /**
    * Daemon-level instructions appended at runtime. This is deliberately not
    * persisted into agent config so daemon setting changes apply cleanly.
    */
   daemonAppendSystemPrompt?: string;
+  /**
+   * Tool names the agent may call. When set, the provider restricts its tool
+   * surface to this list: provider-native (builtin) tools are filtered via the
+   * provider's own tool-selection flag, and Paseo host tools are filtered
+   * server-side before injection. Absent = unrestricted.
+   */
+  toolAllowlist?: string[];
+  /** Plugin instructions for this launch; never persisted. */
+  pluginAppendSystemPrompt?: string[];
   modeId?: string;
   model?: string;
   thinkingOptionId?: string;
-  featureValues?: Record<string, unknown>;
   title?: string | null;
   providerOptions?: ProviderOptions;
   toolPolicy?: ToolPolicy;
@@ -626,6 +727,11 @@ export interface AgentSessionConfig {
 }
 
 export interface AgentLaunchContext {
+  /** Launch-only instructions contributed by plugins. */
+  appendSystemPrompt?: string[];
+  /** Launch-only plugin MCP servers and their owners; never persisted. */
+  mcpServers?: Record<string, McpServerConfig>;
+  mcpServerOwners?: Record<string, string>;
   agentId?: string;
   env?: Record<string, string>;
   /**
@@ -641,12 +747,22 @@ export interface AgentCreateSessionOptions {
    * Defaults to true. Providers that cannot honor false should no-op.
    */
   persistSession?: boolean;
+  /**
+   * Model ids added by provider configuration (`models` / `additionalModels`).
+   * Providers that validate against runtime-advertised models must accept these.
+   */
+  configuredModelIds?: readonly string[];
 }
+
+/** What a resumed session is for: driving the agent, or reading what it already did. */
+export type AgentResumePurpose = "interactive" | "history";
 
 /** Runtime-only intent for a persisted-session resume. Never persist this option. */
 export interface AgentResumeSessionOptions {
   /** Defaults to interactive. History loading may be read-only for archived native sessions. */
-  purpose?: "interactive" | "history";
+  purpose?: AgentResumePurpose;
+  /** See AgentCreateSessionOptions.configuredModelIds. */
+  configuredModelIds?: readonly string[];
 }
 
 /**
@@ -657,12 +773,33 @@ export interface AgentPermissionResult {
   followUpPrompt?: AgentPromptInput;
 }
 
+export interface AgentUsageSession {
+  provider: string;
+  model?: string;
+  env: Record<string, string>;
+  sessionKey: string;
+}
+
 export interface AgentSession {
+  /** Persist the session's current handle immediately after an interactive resume. */
+  readonly persistenceUpdatedOnResume?: boolean;
+  usageSession?(): AgentUsageSession | null;
   readonly provider: AgentProvider;
   readonly id: string | null;
   readonly capabilities: AgentCapabilityFlags;
-  readonly features?: AgentFeature[];
+  /** Composer controls over top-level option keys. Values come from the agent's effective options. */
+  readonly controls?: AgentOptionControl[];
+  /**
+   * How the session ended up different from the options it was opened with, as a patch (`null`
+   * removes a key). Set by the time `createSession`/`resumeSession` resolves; the daemon stores it
+   * before the agent is published.
+   */
+  readonly openOptionsPatch?: Record<string, unknown>;
+  /** New provider-owned rows to commit on registration. streamHistory must also
+   * replay them at their original timestamps; restored sessions omit old rows. */
+  readonly initialTimeline?: ImportedTimelineEntry[];
   run(prompt: AgentPromptInput, options?: AgentRunOptions): Promise<AgentRunResult>;
+  /** Returns an ID unique across the agent lifetime, including resumed sessions and daemon restarts. */
   startTurn(prompt: AgentPromptInput, options?: AgentRunOptions): Promise<{ turnId: string }>;
   steerActiveTurn?(prompt: AgentPromptInput, options: SteerActiveTurnOptions): Promise<SteerResult>;
   subscribe(callback: (event: AgentStreamEvent) => void): () => void;
@@ -676,6 +813,7 @@ export interface AgentSession {
     requestId: string,
     response: AgentPermissionResponse,
   ): Promise<AgentPermissionResult | void>;
+  /** Null until a new provider process could resume this session; see docs/providers.md. */
   describePersistence(): AgentPersistenceHandle | null;
   /**
    * Resolve once every foreground turn that predates this call can no longer run or become active.
@@ -683,12 +821,41 @@ export interface AgentSession {
    * still uncertain.
    */
   interrupt(): Promise<void>;
+  /**
+   * Whether the provider runtime backing this session can still take work. A
+   * `false` answer is what lets a prompt recover by reloading the session from
+   * persistence instead of failing forever against a dead child process.
+   * Providers that cannot tell leave this off — absent means "no signal", never
+   * "dead".
+   */
+  isRuntimeAlive?(): boolean;
+  /** Stop one currently owned background item and wait for provider confirmation. */
+  stopBackgroundWork?(id: string): Promise<void>;
+  /** True only when releasing this runtime loses no background work or pending replies.
+   * An optional additional veto: missing methods use daemon baseline eligibility;
+   * implemented checks that reject or return false keep the runtime resident. */
+  canStopRuntime?(): Promise<boolean>;
   /** Release live runtime resources without archiving or deleting the durable native session. */
   close(): Promise<void>;
   listCommands?(): Promise<AgentSlashCommand[]>;
-  setModel?(modelId: string | null): Promise<void>;
+  /** A returned model is the effective selection committed by this mutation.
+   * Returning void means the requested selection was accepted. No status read is required. */
+  setModel?(modelId: string | null): Promise<void | { model: string | null }>;
   setThinkingOption?(thinkingOptionId: string | null): Promise<void | AgentProviderNotice>;
-  setFeature?(featureId: string, value: unknown): Promise<void>;
+  /**
+   * Apply an options patch. `options` holds only the keys the patch touches, resolved against
+   * the `config.json` defaults; `null` means nothing is set for the key, so return it to the
+   * session's own default if that can be done. Leave every other setting alone. Throw to reject a
+   * value, or a key the running session cannot apply (one the provider reads only when it
+   * opens): the daemon stores the patch only when this resolves, so a stored option always
+   * describes what runs, and the call is all-or-nothing.
+   * Emit nothing from here. Return the options the session ended up with when they differ from
+   * the request (a patch, `null` removes a key), for example a value it kept because it could not
+   * be reverted; the daemon stores it together with the patch. When a throw leaves the session's
+   * state moved anyway, report the moved values once as `options_changed` after the call has
+   * ended, so the stored options still match what runs.
+   */
+  applyOptions?(options: ProviderOptions): Promise<Record<string, unknown> | void>;
   revertConversation?(input: { messageId: string }): Promise<void>;
   revertFiles?(input: { messageId: string }): Promise<void>;
   revertBoth?(input: { messageId: string }): Promise<void>;
@@ -705,7 +872,7 @@ export interface AgentSession {
   } | null;
 }
 
-export type FetchCatalogOptions =
+export type FetchCatalogOptions = { providerOptions?: ProviderOptions } & (
   | {
       scope: "global";
       force: boolean;
@@ -714,7 +881,8 @@ export type FetchCatalogOptions =
       scope: "workspace";
       cwd: string;
       force: boolean;
-    };
+    }
+);
 
 export interface ProviderRefreshContext {
   readonly signal: AbortSignal;
@@ -734,14 +902,25 @@ export interface ResolveAgentDefaultModeInput {
   signal?: AbortSignal;
 }
 
+export interface AgentDraftControls {
+  controls: AgentOptionControl[];
+  options: ProviderOptions;
+}
+
 export interface AgentClient {
   readonly provider: AgentProvider;
   readonly capabilities: AgentCapabilityFlags;
+  /**
+   * Create the agent with `config.providerOptions` (defaults already merged in). Emit nothing
+   * about options while creating. If the agent ended up different from the options, say so in the
+   * session's `openOptionsPatch`.
+   */
   createSession(
     config: AgentSessionConfig,
     launchContext?: AgentLaunchContext,
     options?: AgentCreateSessionOptions,
   ): Promise<AgentSession>;
+  /** Same contract as `createSession`: open with the options, report any difference in `openOptionsPatch`. */
   resumeSession(
     handle: AgentPersistenceHandle,
     overrides?: Partial<AgentSessionConfig>,
@@ -770,7 +949,14 @@ export interface AgentClient {
   resolveCreateConfig?(input: ResolveAgentCreateConfigInput): ResolveAgentCreateConfigResult;
   isCreateConfigUnattended?(input: AgentCreateConfigUnattendedInput): boolean;
   listCommands?(config: AgentSessionConfig): Promise<AgentSlashCommand[]>;
-  listFeatures?(config: AgentSessionConfig): Promise<AgentFeature[]>;
+  /**
+   * The controls of a draft, with the options a session opened from `config` would run with:
+   * `config.providerOptions` (defaults already merged in) plus what the provider resolves
+   * natively for the ones nobody set.
+   */
+  listControls?(config: AgentSessionConfig): Promise<AgentDraftControls>;
+  /** Effective options: provider defaults from `config.json` deep-merged with the agent's own. */
+  effectiveOptions?(own: ProviderOptions | undefined): ProviderOptions;
   listImportableSessions?(
     options?: ListImportableSessionsOptions,
   ): Promise<ImportableProviderSession[]>;
@@ -800,4 +986,23 @@ export interface AgentClient {
    * shuts down. Must be idempotent.
    */
   shutdown?(): Promise<void>;
+  /**
+   * Hint that a create is about to happen at `cwd` (a worktree claim just
+   * picked its path). Providers with a warm process pool start moving an idle
+   * process there so the create finds it in place. Fire-and-forget; never throws.
+   */
+  prewarmCwd?(cwd: string): void;
+  /**
+   * The client was replaced by a provider config rebuild. Release resources no
+   * live session depends on (idle process pools, their timers and watchers).
+   * Sessions this client already started keep running; `shutdown` still
+   * follows at daemon exit. Must be idempotent.
+   */
+  retire?(): Promise<void>;
+  /**
+   * The client became the live client for its provider. Start background
+   * resources (warm process pools). Catalog-only clients are never activated.
+   * Must be idempotent.
+   */
+  activate?(): void;
 }

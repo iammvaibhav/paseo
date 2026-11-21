@@ -18,7 +18,7 @@ function getLogger(logger: LoggerLike): LoggerLike {
   return logger.child({ module: "persistence" });
 }
 
-type AgentStoragePersistence = Pick<AgentStorage, "applySnapshot" | "list">;
+type AgentStoragePersistence = Pick<AgentStorage, "applySnapshot">;
 type AgentManagerStateSource = Pick<AgentManager, "subscribe">;
 
 interface BuildSessionConfigOptions {
@@ -63,18 +63,30 @@ export function attachAgentStoragePersistence(
   return unsubscribe;
 }
 
+function nullableToUndefined<T>(value: T | null | undefined): T | undefined {
+  return value ?? undefined;
+}
+
 export function buildConfigOverrides(record: StoredAgentRecord): Partial<AgentSessionConfig> {
+  const config = record.config;
+  // Launch contract fields (systemPromptMode/toolAllowlist) must survive
+  // resume/reload — a resumed verifier/Commander must not come back with the
+  // default toolset because those stored fields were dropped here.
   return stripInternalPaseoMcpServer({
     provider: record.provider,
     cwd: record.cwd,
-    modeId: record.config?.modeId ?? undefined,
-    model: record.config?.model ?? undefined,
-    thinkingOptionId: record.config?.thinkingOptionId ?? undefined,
-    featureValues: record.config?.featureValues ?? undefined,
-    providerOptions: record.config?.providerOptions ?? undefined,
-    toolPolicy: record.config?.toolPolicy ?? undefined,
-    systemPrompt: record.config?.systemPrompt ?? undefined,
-    mcpServers: record.config?.mcpServers ?? undefined,
+    // lastModeId is the last live mode — it also covers provider-side switches
+    // (ACP current_mode_update, in-session commands) that never reach
+    // record.config.modeId.
+    modeId: record.lastModeId ?? nullableToUndefined(config?.modeId),
+    model: nullableToUndefined(config?.model),
+    thinkingOptionId: nullableToUndefined(config?.thinkingOptionId),
+    providerOptions: nullableToUndefined(config?.providerOptions),
+    toolPolicy: nullableToUndefined(config?.toolPolicy),
+    systemPrompt: nullableToUndefined(config?.systemPrompt),
+    systemPromptMode: nullableToUndefined(config?.systemPromptMode),
+    toolAllowlist: nullableToUndefined(config?.toolAllowlist),
+    mcpServers: nullableToUndefined(config?.mcpServers),
   });
 }
 
@@ -85,19 +97,9 @@ export function buildSessionConfig(
   if (!isProviderRegistered(options?.validProviders, record.provider)) {
     return null;
   }
-  const overrides = buildConfigOverrides(record);
-  return stripInternalPaseoMcpServer({
-    provider: record.provider,
-    cwd: record.cwd,
-    modeId: overrides.modeId,
-    model: overrides.model,
-    thinkingOptionId: overrides.thinkingOptionId,
-    featureValues: overrides.featureValues,
-    providerOptions: overrides.providerOptions,
-    toolPolicy: overrides.toolPolicy,
-    systemPrompt: overrides.systemPrompt,
-    mcpServers: overrides.mcpServers,
-  });
+  // Same shape as resume overrides — keep one source of truth for stored
+  // config reconstruction so launch-contract fields cannot drift.
+  return buildConfigOverrides(record) as AgentSessionConfig;
 }
 
 export function isStoredAgentProviderAvailable(
@@ -136,16 +138,20 @@ export function extractTimestamps(record: StoredAgentRecord): {
   updatedAt: Date;
   lastUserMessageAt: Date | null;
   labels?: Record<string, string>;
+  metadata?: StoredAgentRecord["metadata"];
   workspaceId?: string;
   owner?: StoredAgentRecord["owner"];
+  background?: boolean;
 } {
   return {
     createdAt: new Date(record.createdAt),
     updatedAt: new Date(resolveStoredAgentUpdatedAt(record)),
     lastUserMessageAt: record.lastUserMessageAt ? new Date(record.lastUserMessageAt) : null,
     labels: record.labels,
+    metadata: record.metadata,
     workspaceId: record.workspaceId,
     owner: record.owner,
+    background: record.background,
   };
 }
 

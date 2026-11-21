@@ -9,7 +9,9 @@ interface SettingsTextAreaProps {
   accessibilityLabel: string;
   value: string;
   onChangeText: (text: string) => void;
+  onBlur?: () => void;
   placeholder?: string;
+  editable?: boolean;
   testID?: string;
   style?: StyleProp<TextStyle>;
 }
@@ -18,7 +20,9 @@ export function SettingsTextArea({
   accessibilityLabel,
   value,
   onChangeText,
+  onBlur,
   placeholder,
+  editable = true,
   testID,
   style,
 }: SettingsTextAreaProps) {
@@ -32,8 +36,10 @@ export function SettingsTextArea({
       multiline
       initialValue={value}
       onChangeText={onChangeText}
+      onBlur={onBlur}
       placeholder={placeholder}
       placeholderTextColor={theme.colors.foregroundMuted}
+      editable={editable}
       style={inputStyle}
     />
   );

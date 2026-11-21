@@ -85,7 +85,7 @@ describe("OMP tool call mapper", () => {
     expect(mapOmpToolDetail(parseToolArgs("todo", { op: "view" }), null)).toBeNull();
   });
 
-  test("uses task result text and transcript path as the best static replay detail", () => {
+  test("takes the child session from the task transcript path", () => {
     expect(
       mapOmpToolDetail(
         parseToolArgs("task", {
@@ -106,7 +106,25 @@ describe("OMP tool call mapper", () => {
       subAgentType: "explore",
       description: "Inspect the target files",
       childSessionId: "/tmp/omp-task-static/Explore.jsonl",
-      log: "done\ntranscript: /tmp/omp-task-static/Explore.jsonl",
+      log: "",
+    });
+  });
+  test("maps web_search call to search tool detail", () => {
+    expect(
+      mapOmpToolDetail(
+        parseToolArgs("web_search", {
+          i: "Search benchmarks",
+          query: "Gemini 3.6 Flash vs DeepSeek",
+        }),
+        parseToolResult({
+          content: [{ type: "text", text: "Found benchmark results" }],
+        }),
+      ),
+    ).toEqual({
+      type: "search",
+      query: "Gemini 3.6 Flash vs DeepSeek",
+      toolName: "web_search",
+      content: "Found benchmark results",
     });
   });
 
@@ -115,6 +133,287 @@ describe("OMP tool call mapper", () => {
       type: "unknown",
       input: { op: "hover" },
       output: null,
+    });
+  });
+
+  test("uses current OMP task arguments and wait results for readable rows", () => {
+    expect(
+      mapOmpToolDetail(
+        parseToolArgs("task", {
+          name: "Docs",
+          agent: "explore",
+          task: "Read src/a.ts",
+          solutionSpace: "Report findings",
+        }),
+        null,
+      ),
+    ).toMatchObject({ type: "sub_agent", subAgentType: "Docs", description: "Read src/a.ts" });
+    expect(
+      mapOmpToolDetail(
+        parseToolArgs("wait", {}),
+        parseToolResult({ content: [{ type: "text", text: "Waiting for Docs to finish" }] }),
+      ),
+    ).toMatchObject({ type: "plain_text", label: "Waiting for Docs to finish" });
+  });
+
+  test("names a task from OMP's tasks array while it runs and after it completes", () => {
+    const call = parseToolArgs("task", {
+      context: "Read a scratch file",
+      tasks: [{ name: "ReadNotes", task: "Read src/notes.ts and report its content" }],
+      i: "Delegating the read",
+    });
+    expect(mapOmpToolDetail(call, null)).toMatchObject({
+      type: "sub_agent",
+      subAgentType: "ReadNotes",
+      description: "Delegating the read",
+    });
+    expect(
+      mapOmpToolDetail(
+        call,
+        parseToolResult({ content: [{ type: "text", text: "Spawned agent `ReadNotes`" }] }),
+      ),
+    ).toMatchObject({ type: "sub_agent", subAgentType: "ReadNotes" });
+  });
+
+  test("uses the first task instruction when OMP omits its short intent", () => {
+    expect(
+      mapOmpToolDetail(
+        parseToolArgs("task", {
+          tasks: [
+            {
+              name: "WaitThenRead",
+              task: "# Target src/notes.ts in the scratch repository.\n# Change\nRun bash sleep 8.",
+            },
+          ],
+        }),
+        null,
+      ),
+    ).toMatchObject({
+      type: "sub_agent",
+      subAgentType: "WaitThenRead",
+      description: "src/notes.ts in the scratch repository.",
+    });
+  });
+
+  test("skips a standalone target heading in a running task", () => {
+    expect(
+      mapOmpToolDetail(
+        parseToolArgs("task", {
+          tasks: [
+            {
+              name: "SlowRead",
+              task: "# Target\nsrc/notes.ts in the scratch repository.\n# Change\nRead the file.",
+            },
+          ],
+        }),
+        null,
+      ),
+    ).toMatchObject({ description: "src/notes.ts in the scratch repository." });
+  });
+
+  test("names a structured subagent yield by its action", () => {
+    expect(
+      mapOmpToolDetail(
+        parseToolArgs("yield", { data: { content: "done" } }),
+        parseToolResult({ content: [{ type: "text", text: "Result submitted." }] }),
+      ),
+    ).toEqual({
+      type: "plain_text",
+      label: "Submitted subagent result",
+      text: "Result submitted.",
+    });
+  });
+
+  test("connects a steered background bash call with its wait result", () => {
+    const command = "sleep 2; echo finished";
+    expect(
+      mapOmpToolDetail(
+        parseToolArgs("bash", { command }),
+        parseToolResult({
+          content: [
+            {
+              type: "text",
+              text: "Backgrounded early to handle an incoming message; the command keeps running.\nJob: bg_1",
+            },
+          ],
+        }),
+      ),
+    ).toMatchObject({ type: "shell", command });
+    const resultText =
+      "## Completed (1)\n\n### bg_1 [bash] — completed\nLabel: sleep 2; echo finished\nDelivery: not auto-delivered; recovered by this snapshot.\n```\nfinished\n```";
+    expect(
+      mapOmpToolDetail(
+        parseToolArgs("wait", {}),
+        parseToolResult({
+          content: [{ type: "text", text: resultText }],
+          details: {
+            op: "wait",
+            jobs: [
+              {
+                id: "bg_1",
+                type: "bash",
+                status: "completed",
+                label: command,
+                resultText: "finished",
+              },
+            ],
+          },
+        }),
+      ),
+    ).toEqual({ type: "plain_text", label: `bash completed: ${command}`, text: "finished" });
+  });
+
+  test("maps web search and URL reads to search and fetch", () => {
+    expect(mapOmpToolDetail(parseToolArgs("web_search", { query: "Paseo" }), null)).toMatchObject({
+      type: "search",
+      query: "Paseo",
+      toolName: "web_search",
+    });
+    expect(
+      mapOmpToolDetail(parseToolArgs("read", { path: "https://example.com/" }), null),
+    ).toMatchObject({ type: "fetch", url: "https://example.com/" });
+  });
+
+  test("names virtual device reads from their path while running", () => {
+    expect(mapOmpToolDetail(parseToolArgs("read", { path: "xd://ast_grep" }), null)).toMatchObject({
+      type: "plain_text",
+      label: "ast_grep",
+    });
+  });
+
+  test("keeps a device call's arguments while it runs and its result when it ends", () => {
+    // The running and finished rows share the `unknown` shape, so the timeline merge
+    // replaces the running arguments with the finished input and output.
+    const call = parseToolArgs("write", {
+      path: "xd://mcp__toolhive_find_tool",
+      content: '{"tool_description":"list paseo agents"}',
+    });
+    expect(mapOmpToolDetail(call, null)).toEqual({
+      type: "unknown",
+      input: { tool_description: "list paseo agents" },
+      output: null,
+    });
+    expect(
+      mapOmpToolDetail(
+        call,
+        parseToolResult({
+          content: [{ type: "text", text: '{"tools":[]}' }],
+          details: {
+            xdev: {
+              tool: "mcp__toolhive_find_tool",
+              mode: "execute",
+              args: { tool_description: "list paseo agents" },
+              inner: { serverName: "toolhive", mcpToolName: "find_tool" },
+            },
+          },
+        }),
+      ),
+    ).toMatchObject({
+      type: "unknown",
+      input: { tool_description: "list paseo agents" },
+      output: { content: [{ type: "text", text: '{"tools":[]}' }] },
+    });
+  });
+
+  test("keeps eval calls as unknown so their cells can render", () => {
+    expect(
+      mapOmpToolDetail(
+        parseToolArgs("eval", { language: "py", code: "print(1+1)", title: "Add" }),
+        parseToolResult({
+          content: [{ type: "text", text: "2" }],
+          details: { cells: [{ index: 0, code: "print(1+1)", output: "2", status: "complete" }] },
+        }),
+      ),
+    ).toMatchObject({
+      type: "unknown",
+      input: { code: "print(1+1)", title: "Add" },
+      output: { details: { cells: [{ output: "2" }] } },
+    });
+  });
+
+  test("renders executed OMP device tools with readable action and output", () => {
+    expect(
+      mapOmpToolDetail(
+        parseToolArgs("write", { path: "xd://github", content: '{"op":"status"}' }),
+        parseToolResult({
+          content: [{ type: "text", text: "Working tree clean" }],
+          details: {
+            xdev: { tool: "github", mode: "execute", args: { op: "status" }, inner: {} },
+          },
+        }),
+      ),
+    ).toEqual({ type: "plain_text", label: "status", text: "Working tree clean" });
+  });
+
+  test("shows the first question in an ask row", () => {
+    expect(
+      mapOmpToolDetail(parseToolArgs("ask", { questions: [{ question: "Which file?" }] }), null),
+    ).toMatchObject({ type: "plain_text", label: "Which file?" });
+  });
+
+  test("shows the question and selected answers after ask completes", () => {
+    const detail = mapOmpToolDetail(
+      parseToolArgs("ask", { questions: [{ question: "Which colors?" }] }),
+      parseToolResult({
+        content: [{ type: "text", text: "User selected: Red, Blue" }],
+        details: { question: "Which colors?", selectedOptions: ["Red", "Blue"] },
+      }),
+    );
+    expect(detail).toEqual({
+      type: "plain_text",
+      label: "Which colors?",
+      text: "Which colors?\nRed, Blue",
+    });
+  });
+
+  test("shows each form question with its answer after ask completes", () => {
+    const detail = mapOmpToolDetail(
+      parseToolArgs("ask", { html: "<form><input name='notes'></form>" }),
+      parseToolResult({
+        content: [{ type: "text", text: 'User answers:\n{\n  "color": "red"\n}' }],
+        details: {
+          answers: [
+            { name: "color", question: "Which color?", answer: "Red" },
+            { name: "notes", question: "Notes", answer: "" },
+          ],
+        },
+      }),
+    );
+    expect(detail).toEqual({
+      type: "plain_text",
+      label: "Which color?",
+      text: "Which color?\nRed\n\nNotes\nNo answer",
+    });
+  });
+
+  test("shows meaningful labels for OMP's remaining built-in tools", () => {
+    expect(mapOmpToolDetail(parseToolArgs("glob", { pattern: "src/**/*.ts" }), null)).toMatchObject(
+      { type: "search", query: "src/**/*.ts", toolName: "glob" },
+    );
+    expect(
+      mapOmpToolDetail(parseToolArgs("ast_grep", { pattern: "console.log($X)" }), null),
+    ).toMatchObject({ type: "search", query: "console.log($X)" });
+    expect(
+      mapOmpToolDetail(parseToolArgs("checkpoint", { goal: "Inspect parser" }), null),
+    ).toMatchObject({ type: "plain_text", label: "Inspect parser" });
+    expect(
+      mapOmpToolDetail(parseToolArgs("manage_skill", { action: "create", name: "demo" }), null),
+    ).toMatchObject({ type: "plain_text", label: "create demo" });
+    expect(
+      mapOmpToolDetail(parseToolArgs("think", { thoughts: "Check the next step" }), null),
+    ).toEqual({
+      type: "plain_text",
+      label: "Thinking",
+      text: "Check the next step",
+    });
+  });
+
+  test("uses OMP ast_grep pat as the search query", () => {
+    expect(
+      mapOmpToolDetail(parseToolArgs("ast_grep", { pat: "console.log($A)" }), null),
+    ).toMatchObject({
+      type: "search",
+      query: "console.log($A)",
     });
   });
 });

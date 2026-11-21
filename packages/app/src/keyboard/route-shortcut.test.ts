@@ -304,6 +304,8 @@ describe("routeKeyboardShortcut — message-input.action", () => {
     ["dictation-confirm", "message-input.dictation-confirm"],
     ["voice-toggle", "message-input.voice-toggle"],
     ["voice-mute-toggle", "message-input.voice-mute-toggle"],
+    ["model-toggle", "message-input.model-toggle"],
+    ["effort-cycle", "message-input.effort-cycle"],
     ["mode-cycle", "message-input.mode-cycle"],
   ] as const)("kind=%s → dispatch %s", (kind, id) => {
     expect(
@@ -368,18 +370,35 @@ describe("routeKeyboardShortcut — callbacks and pickers", () => {
     });
   });
 
-  it("agent.new → open-project-picker", () => {
+  it("offers Open project to VS Code first and falls back to the project picker", () => {
     expect(
       routeKeyboardShortcut({ action: "agent.new", payload: null }, makeCtx()),
+    ).toEqual<ShortcutAction>({
+      kind: "dispatch",
+      action: { id: "workspace.editor.open-file", scope: "workspace" },
+      fallback: { kind: "open-project-picker" },
+    });
+  });
+
+  it("opens the project picker outside a workspace", () => {
+    expect(
+      routeKeyboardShortcut(
+        { action: "agent.new", payload: null },
+        makeCtx({ pathname: "/settings" }),
+      ),
     ).toEqual<ShortcutAction>({ kind: "open-project-picker" });
   });
 });
 
 describe("routeKeyboardShortcut — toggle dialogs", () => {
-  it("opens the command center scoped to files from a workspace", () => {
+  it("offers Search files to VS Code first and falls back to the files command center", () => {
     expect(
       routeKeyboardShortcut({ action: "command-center.files", payload: null }, makeCtx()),
-    ).toEqual<ShortcutAction>({ kind: "command-center-toggle", nextOpen: true, scope: "files" });
+    ).toEqual<ShortcutAction>({
+      kind: "dispatch",
+      action: { id: "workspace.editor.quick-open", scope: "workspace" },
+      fallback: { kind: "command-center-toggle", nextOpen: true, tab: "files" },
+    });
   });
 
   it("leaves the file-search shortcut to the project-picker host outside a workspace", () => {

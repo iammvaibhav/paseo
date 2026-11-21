@@ -3,13 +3,20 @@ import type {
   FetchAgentHistoryOptions,
   FetchAgentHistoryPageInfo,
 } from "@getpaseo/client/internal/daemon-client";
-import { useInfiniteQuery } from "@tanstack/react-query";
-import { useCallback, useMemo, useSyncExternalStore } from "react";
+import type { AgentSearchMatch } from "@getpaseo/protocol/messages";
+import { keepPreviousData, useInfiniteQuery } from "@tanstack/react-query";
+import { useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
+import { useShallow } from "zustand/shallow";
 import type { AggregatedAgent } from "@/hooks/use-aggregated-agents";
-import { getHostRuntimeStore, isHostRuntimeConnected, useHosts } from "@/runtime/host-runtime";
+import {
+  getHostRuntimeStore,
+  useHostRuntimeConnectionStatuses,
+  useHosts,
+} from "@/runtime/host-runtime";
 import { useSessionStore } from "@/stores/session-store";
 import { buildAgentDirectoryState } from "@/utils/agent-directory-sync";
+import { deriveSidebarLifecycleBucket } from "@/utils/sidebar-agent-state";
 import { agentHistoryQueryKey, allAgentHistoryQueryKey } from "./agent-history-query-key";
 
 const AGENT_HISTORY_PAGE_LIMIT = 200;
@@ -30,6 +37,12 @@ export interface AgentHistoryResult {
   isSearchSupported: boolean;
   /** More sessions matched than the ranked page holds. Narrow the query. */
   isSearchTruncated: boolean;
+  /** Where the query matched each row, keyed by `serverId:agentId`. */
+  searchMatchesByAgentKey: Record<string, AgentSearchMatch[]>;
+  /** Transcript excerpt for a body hit, keyed like `searchMatchesByAgentKey`. */
+  searchSnippetsByAgentKey: Record<string, string>;
+  /** The agents answer the previous query; the current one is loading (`keepPreviousResults`). */
+  isPreviousResults: boolean;
   /** Hosts that failed while others succeeded. The list still renders. */
   hostErrors: AgentHistoryHostError[];
   refreshAll: () => Promise<void>;
@@ -38,9 +51,25 @@ export interface AgentHistoryResult {
 
 export interface AgentHistoryPage {
   agents: AggregatedAgent[];
+  /**
+   * Relevance of each agent to the request's search, keyed by `serverId:agentId`
+   * because that pair — not the bare agent id — is what identifies a row across
+   * hosts. Empty without a query. Each host ranks only its own sessions, so
+   * merging several of them into one list needs the scores rather than each
+   * host's row order.
+   */
+  searchScoreByAgentKey: Record<string, number>;
+  /** Where the query matched in each row, keyed like `searchScoreByAgentKey`. */
+  searchMatchesByAgentKey: Record<string, AgentSearchMatch[]>;
+  searchSnippetsByAgentKey: Record<string, string>;
   pageInfo: FetchAgentHistoryPageInfo;
   /** More matched this host's query than its page could hold. */
   isSearchTruncated: boolean;
+}
+
+/** Identity of a history row. A bare agent id belongs to exactly one host. */
+export function agentHistoryRowKey(agent: { serverId: string; id: string }): string {
+  return `${agent.serverId}:${agent.id}`;
 }
 
 export type AgentHistoryClient = Pick<DaemonClient, "fetchAgentHistory">;
@@ -63,11 +92,17 @@ export interface AgentHistoryHost {
 
 interface AgentHistoryBatchPage {
   agents: AggregatedAgent[];
+  searchScoreByAgentKey: Record<string, number>;
+  searchMatchesByAgentKey: Record<string, AgentSearchMatch[]>;
+  searchSnippetsByAgentKey: Record<string, string>;
   pageInfoByServerId: Record<string, FetchAgentHistoryPageInfo>;
   hostErrors: AgentHistoryHostError[];
   /** Set only under a query: more sessions matched than this page can hold. */
   isSearchTruncated?: boolean;
 }
+
+/** Sorts unmatched rows last so a page missing scores keeps its own order. */
+const UNRANKED = Number.POSITIVE_INFINITY;
 
 type AgentHistoryCursorByServerId = Record<string, string | null>;
 
@@ -89,16 +124,39 @@ export async function fetchAgentHistoryPage(input: {
     serverId: input.serverId,
     entries: payload.entries,
   });
+  const searchScoreByAgentKey: Record<string, number> = {};
+  const searchMatchesByAgentKey: Record<string, AgentSearchMatch[]> = {};
+  const searchSnippetsByAgentKey: Record<string, string> = {};
+  for (const entry of payload.entries) {
+    const key = agentHistoryRowKey({ serverId: input.serverId, id: entry.agent.id });
+    if (entry.searchScore !== undefined) {
+      searchScoreByAgentKey[key] = entry.searchScore;
+    }
+    if (entry.searchMatches && entry.searchMatches.length > 0) {
+      searchMatchesByAgentKey[key] = entry.searchMatches;
+    }
+    // Optional on the wire; old protocol dist types omit it, so read structurally.
+    const snippet = (entry as { searchSnippet?: string }).searchSnippet;
+    if (snippet) {
+      searchSnippetsByAgentKey[key] = snippet;
+    }
+  }
+
   return {
+    searchScoreByAgentKey,
+    searchMatchesByAgentKey,
+    searchSnippetsByAgentKey,
     isSearchTruncated: payload.searchTruncated === true,
     agents: Array.from(agents.values(), (agent) => ({
       id: agent.id,
       serverId: input.serverId,
       serverLabel: input.serverId,
       title: agent.title ?? null,
+      name: agent.name ?? null,
       status: agent.status,
       turn: agent.turn,
       lastActivityAt: agent.lastActivityAt,
+      lastUserMessageAt: agent.lastUserMessageAt ?? null,
       cwd: agent.cwd,
       workspaceId: agent.workspaceId,
       provider: agent.provider,
@@ -106,6 +164,13 @@ export async function fetchAgentHistoryPage(input: {
       requiresAttention: agent.requiresAttention,
       attentionReason: agent.attentionReason,
       attentionTimestamp: agent.attentionTimestamp ?? null,
+      bucket: deriveSidebarLifecycleBucket({
+        bucket: agent.bucket,
+        status: agent.status,
+        pendingPermissionCount: agent.pendingPermissions.length,
+        attentionReason: agent.attentionReason,
+        stoppedBy: agent.stoppedBy,
+      }),
       archivedAt: agent.archivedAt ?? null,
       createdAt: agent.createdAt,
       labels: agent.labels,
@@ -117,6 +182,30 @@ export async function fetchAgentHistoryPage(input: {
 
 function sortByLatestActivity(agents: AggregatedAgent[]): AggregatedAgent[] {
   return [...agents].sort((a, b) => b.lastActivityAt.getTime() - a.lastActivityAt.getTime());
+}
+
+/**
+ * Relevance first, recency to break ties. A search result list ordered by time
+ * would bury the row the user described in favour of the row they last touched.
+ *
+ * Truncating the merge back to one page's worth is what makes the merged list
+ * globally correct: the best N matches overall are always contained in the
+ * union of each host's own best N, so keeping more than N here would be showing
+ * rows that a further host could still outrank.
+ */
+function mergeByRelevance(
+  agents: AggregatedAgent[],
+  searchScoreByAgentKey: Record<string, number>,
+  limit: number,
+): AggregatedAgent[] {
+  return [...agents]
+    .sort((a, b) => {
+      const scoreA = searchScoreByAgentKey[agentHistoryRowKey(a)] ?? UNRANKED;
+      const scoreB = searchScoreByAgentKey[agentHistoryRowKey(b)] ?? UNRANKED;
+      if (scoreA !== scoreB) return scoreA - scoreB;
+      return b.lastActivityAt.getTime() - a.lastActivityAt.getTime();
+    })
+    .slice(0, limit);
 }
 
 /**
@@ -204,13 +293,35 @@ export async function fetchAgentHistoryBatch(input: {
   const pageInfoByServerId = Object.fromEntries(
     pages.map(({ host, page }) => [host.serverId, page.pageInfo]),
   );
+  const searchScoreByAgentKey = Object.assign(
+    {},
+    ...pages.map(({ page }) => page.searchScoreByAgentKey),
+  ) as Record<string, number>;
+  const searchMatchesByAgentKey = Object.assign(
+    {},
+    ...pages.map(({ page }) => page.searchMatchesByAgentKey),
+  ) as Record<string, AgentSearchMatch[]>;
+  const searchSnippetsByAgentKey = Object.assign(
+    {},
+    ...pages.map(({ page }) => page.searchSnippetsByAgentKey),
+  ) as Record<string, string>;
+  // Truncation has two independent sources: one host overflowed its own page,
+  // or several hosts each fit but their union does not. Two hosts returning 150
+  // matches apiece are both complete and still add up to more than the merge
+  // can show.
+  const truncated =
+    pages.some(({ page }) => page.isSearchTruncated) || agents.length > AGENT_HISTORY_PAGE_LIMIT;
+
   return {
-    agents: sortByLatestActivity(agents),
+    agents: input.search
+      ? mergeByRelevance(agents, searchScoreByAgentKey, AGENT_HISTORY_PAGE_LIMIT)
+      : sortByLatestActivity(agents),
+    searchScoreByAgentKey,
+    searchMatchesByAgentKey,
+    searchSnippetsByAgentKey,
     pageInfoByServerId,
     hostErrors,
-    ...(input.search
-      ? { isSearchTruncated: pages.some(({ page }) => page.isSearchTruncated) }
-      : {}),
+    ...(input.search ? { isSearchTruncated: truncated } : {}),
   };
 }
 
@@ -218,36 +329,48 @@ export function useAgentHistory(options: {
   serverId?: string | null;
   enabled?: boolean;
   search?: string;
+  /**
+   * Leave out hosts that predate search, instead of searching no host. For a surface that adds
+   * history matches to other results, where a missing host is not a claim of "no matches".
+   */
+  searchableHostsOnly?: boolean;
+  /** Keep the previous query's results until the next query's arrive. */
+  keepPreviousResults?: boolean;
 }): AgentHistoryResult {
   const { t } = useTranslation();
   const daemons = useHosts();
   const runtime = getHostRuntimeStore();
-  const runtimeVersion = useSyncExternalStore(
-    (onStoreChange) => runtime.subscribeAll(onStoreChange),
-    () => runtime.getVersion(),
-    () => runtime.getVersion(),
-  );
   const serverId = useMemo(() => {
     const value = options.serverId;
     return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
   }, [options.serverId]);
   const enabled = options.enabled ?? true;
+  const requestedServerIds = useMemo(
+    () => (serverId ? [serverId] : daemons.map((daemon) => daemon.serverId)),
+    [daemons, serverId],
+  );
+  const searchableServerIds = useSessionStore(
+    useShallow((state) =>
+      requestedServerIds.filter(
+        (id) => state.sessions[id]?.serverInfo?.features?.agentHistorySearch === true,
+      ),
+    ),
+  );
+  const serverIds = options.searchableHostsOnly ? searchableServerIds : requestedServerIds;
+  const connectionStatuses = useHostRuntimeConnectionStatuses(serverIds);
   // A host the user asked about splits two ways: one this fetch can reach, and
   // one whose sessions will be missing from the answer. Both come out of here,
   // because dropping the unreachable ones silently is what lets the list — and
   // worse, "No sessions match" — overstate what was actually searched.
   const { targetHosts, unreachableHosts } = useMemo(() => {
-    void runtimeVersion;
     const serverLabelById = new Map(daemons.map((daemon) => [daemon.serverId, daemon.label]));
-    const serverIds = serverId ? [serverId] : daemons.map((daemon) => daemon.serverId);
     const hosts: AgentHistoryHost[] = [];
     const unreachable: AgentHistoryHostError[] = [];
 
     for (const targetServerId of serverIds) {
-      const snapshot = runtime.getSnapshot(targetServerId);
       const client = runtime.getClient(targetServerId);
       const serverName = serverLabelById.get(targetServerId) ?? targetServerId;
-      if (!client || !isHostRuntimeConnected(snapshot)) {
+      if (!client || connectionStatuses.get(targetServerId) !== "online") {
         unreachable.push({ serverId: targetServerId, serverName });
         continue;
       }
@@ -255,7 +378,7 @@ export function useAgentHistory(options: {
     }
 
     return { targetHosts: hosts, unreachableHosts: unreachable };
-  }, [daemons, runtime, runtimeVersion, serverId]);
+  }, [daemons, runtime, connectionStatuses, serverIds]);
   const targetServerIds = useMemo(() => targetHosts.map((host) => host.serverId), [targetHosts]);
   // One gate, checked before the field is offered: a fleet where any host
   // predates search has no search, rather than a list that silently omits that
@@ -286,6 +409,7 @@ export function useAgentHistory(options: {
     [daemons],
   );
 
+  const queryEnabled = Boolean(enabled && targetHosts.length > 0);
   const historyQuery = useInfiniteQuery<
     AgentHistoryBatchPage,
     Error,
@@ -294,8 +418,11 @@ export function useAgentHistory(options: {
     AgentHistoryCursorByServerId | null
   >({
     queryKey,
-    enabled: Boolean(enabled && targetHosts.length > 0),
+    enabled: queryEnabled,
     staleTime: 30_000,
+    // Previous results stand in only until the next query's arrive. With no host to search,
+    // nothing will arrive, so they would stand in, and read as still loading, indefinitely.
+    ...(options.keepPreviousResults && queryEnabled ? { placeholderData: keepPreviousData } : {}),
     initialPageParam: null,
     getNextPageParam: getNextAgentHistoryPageParam,
     queryFn: async ({ pageParam }) => {
@@ -317,6 +444,7 @@ export function useAgentHistory(options: {
     isFetching,
     isFetchingNextPage,
     isLoading,
+    isPlaceholderData,
     refetch,
   } = historyQuery;
 
@@ -342,11 +470,36 @@ export function useAgentHistory(options: {
         serverLabel: serverLabelById.get(agent.serverId) ?? agent.serverLabel,
       }),
     );
-    return sortByLatestActivity(labelledAgents);
-  }, [data?.pages, serverLabelById]);
+    if (!search) {
+      return sortByLatestActivity(labelledAgents);
+    }
+    // A searched query never has a second page, so this is re-merging one page
+    // after relabelling rather than stitching a stream back together.
+    const searchScoreByAgentKey = Object.assign(
+      {},
+      ...pages.map((page) => page.searchScoreByAgentKey),
+    ) as Record<string, number>;
+    return mergeByRelevance(labelledAgents, searchScoreByAgentKey, AGENT_HISTORY_PAGE_LIMIT);
+  }, [data?.pages, search, serverLabelById]);
   const isInitialLoad = isLoading && agents.length === 0;
   const isRevalidating = isFetching && !isFetchingNextPage && agents.length > 0;
   const isSearchTruncated = Boolean(search && data?.pages.some((page) => page.isSearchTruncated));
+  const searchMatchesByAgentKey = useMemo(
+    () =>
+      Object.assign(
+        {},
+        ...(data?.pages ?? []).map((page) => page.searchMatchesByAgentKey),
+      ) as Record<string, AgentSearchMatch[]>,
+    [data?.pages],
+  );
+  const searchSnippetsByAgentKey = useMemo(
+    () =>
+      Object.assign(
+        {},
+        ...(data?.pages ?? []).map((page) => page.searchSnippetsByAgentKey),
+      ) as Record<string, string>,
+    [data?.pages],
+  );
   const hostErrors = useMemo(
     () => collectAgentHistoryHostErrors({ pages: data?.pages ?? [], unreachableHosts }),
     [data?.pages, unreachableHosts],
@@ -358,10 +511,15 @@ export function useAgentHistory(options: {
     isInitialLoad,
     isRevalidating,
     isError,
-    hasMore: hasNextPage,
+    // Under a query the daemon returns the best matches and no cursor, so the
+    // list is complete as far as it goes and "Load more" would be a lie.
+    hasMore: search ? false : hasNextPage,
     isLoadingMore: isFetchingNextPage,
     isSearchSupported,
     isSearchTruncated,
+    searchMatchesByAgentKey,
+    searchSnippetsByAgentKey,
+    isPreviousResults: isPlaceholderData,
     hostErrors,
     refreshAll,
     loadMore,

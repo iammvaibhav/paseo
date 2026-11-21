@@ -1,9 +1,19 @@
-import { ActivityIndicator, View, type ViewStyle } from "react-native";
+import {
+  ActivityIndicator,
+  Pressable,
+  View,
+  type GestureResponderEvent,
+  type ViewStyle,
+} from "react-native";
+import { useCallback } from "react";
+import { useTranslation } from "react-i18next";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { ChevronDown, ChevronRight, CircleAlert } from "lucide-react-native";
 import { ProjectIconView } from "@/components/project-icon-view";
-import { STATUS_BUCKET_LABELS } from "@/hooks/sidebar-status-view-model";
-import { ICON_SIZE, type Theme } from "@/styles/theme";
+import { isWeb as platformIsWeb } from "@/constants/platform";
+import { getStatusBucketLabel } from "@/hooks/sidebar-status-view-model";
+import { densityIconBox, densityIconProps } from "@/styles/density";
+import type { Theme } from "@/styles/theme";
 import type { SidebarStateBucket } from "@/utils/sidebar-agent-state";
 import {
   getProjectStatusBadgeContent,
@@ -22,6 +32,9 @@ import type { SidebarSurfaceBackdrop } from "@/styles/surface-backdrop";
 
 // Every surfaced status shares one badge shell, so the badge never changes size or position
 // between states. Only the thing inside it changes.
+// Matches the workspace title's lineHeight (sidebar-workspace-row-content's
+// workspaceBranchText) so the icon centers on the title rather than floating above it.
+const LEADING_SLOT_HEIGHT = 20;
 const STATUS_BADGE_SIZE = 12;
 // How far the badge overhangs the icon's bottom-right corner. Well short of half the badge:
 // centered on the corner it reads as hanging off the icon rather than sitting on it, and the
@@ -34,9 +47,8 @@ const STATUS_BADGE_OFFSET = -4;
 //
 // The filled alert occupies the full badge shell so needs-input remains more prominent than
 // the passive status dots.
-// Matches the workspace title's lineHeight (sidebar-workspace-row-content's
-// workspaceBranchText) so the icon centers on the title rather than floating above it.
-const LEADING_SLOT_HEIGHT = 20;
+const DensityProjectIconView = withUnistyles(ProjectIconView);
+const projectIconProps = densityIconProps("md", () => ({}));
 
 const ThemedActivityIndicator = withUnistyles(ActivityIndicator);
 const ThemedCircleAlert = withUnistyles(CircleAlert);
@@ -45,7 +57,7 @@ const foregroundMutedColorMapping = (theme: Theme) => ({
   color: theme.colors.foregroundMuted,
 });
 const needsInputColorMapping = (theme: Theme) => ({
-  color: theme.colors.surface0,
+  color: theme.colors.background,
   fill: getStatusDotColor({ theme, bucket: "needs_input" }) ?? undefined,
 });
 
@@ -62,6 +74,7 @@ export function ProjectLeadingVisual({
   chevron = null,
   showChevron = false,
   isArchiving = false,
+  onChevronPress,
 }: {
   displayName: string;
   iconDataUri: string | null;
@@ -73,11 +86,15 @@ export function ProjectLeadingVisual({
   chevron?: "expand" | "collapse" | null;
   showChevron?: boolean;
   isArchiving?: boolean;
+  // Present only when the row's own press is spoken for (opening the project's base
+  // workspace), so the chevron becomes its own press target for expand/collapse. Absent when
+  // the row press still toggles collapse itself — the chevron then stays decorative.
+  onChevronPress?: () => void;
 }) {
   if (showChevron && chevron !== null) {
     return (
       <View style={styles.projectLeadingVisualSlot}>
-        <ProjectInlineChevron chevron={chevron} />
+        <ProjectInlineChevron chevron={chevron} onPress={onChevronPress} />
       </View>
     );
   }
@@ -170,6 +187,7 @@ function ProjectStatusBadge({
   statusBucket: SidebarStateBucket;
   backdrop: SidebarSurfaceBackdrop;
 }) {
+  const { t } = useTranslation();
   // Running skips the shell. The ring is wider than the 12pt shell and carries its own knockout,
   // so nesting it inside would clip it against the very thing that was meant to separate it from
   // the icon. It anchors to the same corner instead, growing around the centre the dot had.
@@ -177,7 +195,7 @@ function ProjectStatusBadge({
     return (
       <View
         role="status"
-        accessibilityLabel={STATUS_BUCKET_LABELS[statusBucket]}
+        accessibilityLabel={getStatusBucketLabel(statusBucket, t)}
         style={styles.statusRingAnchor}
         testID="project-status-badge"
       >
@@ -188,7 +206,7 @@ function ProjectStatusBadge({
   return (
     <View
       role="status"
-      accessibilityLabel={STATUS_BUCKET_LABELS[statusBucket]}
+      accessibilityLabel={getStatusBucketLabel(statusBucket, t)}
       style={[styles.statusBadge, getStatusBadgeBackdropStyle(backdrop)]}
       testID="project-status-badge"
     >
@@ -228,24 +246,63 @@ function ProjectIcon({
   projectViewKey: string;
 }) {
   return (
-    <ProjectIconView
+    <DensityProjectIconView
       iconDataUri={iconDataUri}
       initial={placeholderInitial}
       projectViewKey={projectViewKey}
-      size={ICON_SIZE.md}
       textStyle={styles.projectIconFallbackText}
+      uniProps={projectIconProps}
     />
   );
 }
 
-function ProjectInlineChevron({ chevron }: { chevron: "expand" | "collapse" | null }) {
+function ProjectInlineChevron({
+  chevron,
+  onPress,
+}: {
+  chevron: "expand" | "collapse" | null;
+  onPress?: () => void;
+}) {
+  const { t } = useTranslation();
+  const handlePress = useCallback(
+    (event: GestureResponderEvent) => {
+      event.stopPropagation();
+      onPress?.();
+    },
+    [onPress],
+  );
+
   if (chevron === null) {
     return null;
   }
-  if (chevron === "collapse") {
-    return <ChevronDown size={14} color="#9ca3af" />;
+
+  const icon =
+    chevron === "collapse" ? (
+      <ChevronDown size={14} color="#9ca3af" />
+    ) : (
+      <ChevronRight size={14} color="#9ca3af" />
+    );
+
+  if (!onPress) {
+    return icon;
   }
-  return <ChevronRight size={14} color="#9ca3af" />;
+
+  return (
+    <Pressable
+      style={styles.projectInlineChevronPressable}
+      onPress={handlePress}
+      hitSlop={8}
+      accessibilityRole={platformIsWeb ? undefined : "button"}
+      accessibilityLabel={
+        chevron === "collapse"
+          ? t("sidebar.project.actions.collapseProject")
+          : t("sidebar.project.actions.expandProject")
+      }
+      testID="sidebar-project-chevron"
+    >
+      {icon}
+    </Pressable>
+  );
 }
 
 function getStatusDotColorStyle(bucket: ProjectStatusBadgeDotBucket): ViewStyle {
@@ -269,21 +326,29 @@ const styles = StyleSheet.create((theme) => {
 
   return {
     // The slot is as tall as the title's line box, not as tall as the icon, and centers the
-    // icon inside it. Rows lay their leading visual out with alignItems:flex-start, so a
-    // 16pt slot next to a 20pt line box puts the icon 2pt above the title and the kebab —
-    // which is why the workspace status indicator is also 20 tall. Keep the two in step.
+    // icon inside it. Rows lay their leading visual out with alignItems:flex-start, so a slot
+    // only as tall as the icon puts it above the title and the kebab — which is why the
+    // workspace status indicator is as tall as `LEADING_SLOT_HEIGHT`.
     projectLeadingVisualSlot: {
-      width: theme.iconSize.md,
+      width: densityIconBox("md"),
       height: LEADING_SLOT_HEIGHT,
       flexShrink: 0,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    // Fills the leading slot exactly — no padding, no size change from the bare icon it
+    // wraps — so giving the chevron its own Pressable never shifts the slot's geometry.
+    projectInlineChevronPressable: {
+      width: "100%",
+      height: "100%",
       alignItems: "center",
       justifyContent: "center",
     },
     // Anchors the corner badge to the icon rather than to the taller slot.
     projectIconBox: {
       position: "relative",
-      width: theme.iconSize.md,
-      height: theme.iconSize.md,
+      width: densityIconBox("md"),
+      height: densityIconBox("md"),
     },
     projectIconFallbackText: {
       fontSize: 9,

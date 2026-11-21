@@ -4,11 +4,13 @@ import {
   buildHostRootRoute,
   buildHostWorkspaceOpenRoute,
   buildHostWorkspaceRoute,
+  buildHostWorkspaceTabRoute,
+  buildItsaplanRoute,
   buildNewWorkspaceRoute,
   buildOpenProjectRoute,
+  buildWorkspaceTabOpenIntent,
   resolveKnownHostRoute,
   buildSessionsRoute,
-  buildSettingsAddHostRoute,
   buildProjectSettingsRoute,
   buildProjectsSettingsRoute,
   decodeFilePathFromPathSegment,
@@ -129,6 +131,26 @@ describe("workspace route parsing", () => {
     );
   });
 
+  it("builds tab open intent and host workspace tab route correctly", () => {
+    expect(buildWorkspaceTabOpenIntent({ kind: "agent", agentId: "agent-123" })).toBe(
+      "agent:agent-123",
+    );
+    expect(buildWorkspaceTabOpenIntent({ kind: "terminal", terminalId: "term-456" })).toBe(
+      "terminal:term-456",
+    );
+    expect(buildWorkspaceTabOpenIntent({ kind: "changes_tree" })).toBe("changes_tree");
+    expect(buildWorkspaceTabOpenIntent({ kind: "files" })).toBe("files");
+    expect(buildWorkspaceTabOpenIntent({ kind: "pull_request" })).toBe("pull_request");
+
+    expect(
+      buildHostWorkspaceTabRoute("local", "wks_1", { kind: "agent", agentId: "agent-123" }),
+    ).toBe("/h/local/workspace/wks_1?open=agent%3Aagent-123");
+
+    expect(
+      buildHostWorkspaceTabRoute("local", "wks_1", { kind: "terminal", terminalId: "term-456" }),
+    ).toBe("/h/local/workspace/wks_1?open=terminal%3Aterm-456");
+  });
+
   it("strips route params repeated as workspace route search params", () => {
     expect(
       stripHostWorkspaceRouteEchoSearch(
@@ -185,14 +207,6 @@ describe("workspace route parsing", () => {
 });
 
 describe("projects settings routes", () => {
-  it("buildSettingsAddHostRoute opens settings with the add-host flag", () => {
-    expect(buildSettingsAddHostRoute()).toBe("/settings/general?addHost=1");
-  });
-
-  it("buildSettingsAddHostRoute accepts a repeatable intent id", () => {
-    expect(buildSettingsAddHostRoute("retry 1")).toBe("/settings/general?addHost=retry%201");
-  });
-
   it("buildProjectsSettingsRoute scopes the list to a host", () => {
     expect(buildProjectsSettingsRoute("host a")).toBe("/settings/hosts/host%20a/projects");
   });
@@ -240,6 +254,16 @@ describe("global routes", () => {
         draftId: "draft-1",
       }),
     ).toBe("/new?serverId=local&dir=%2Frepo%2Fproject&draftId=draft-1");
+  });
+
+  it("buildItsaplanRoute returns the generic route when no project is provided", () => {
+    expect(buildItsaplanRoute()).toBe("/itsaplan");
+    expect(buildItsaplanRoute({})).toBe("/itsaplan");
+  });
+
+  it("buildItsaplanRoute accepts project or projectKey options", () => {
+    expect(buildItsaplanRoute({ project: "PASEO" })).toBe("/itsaplan?project=PASEO");
+    expect(buildItsaplanRoute({ projectKey: "ENG" })).toBe("/itsaplan?project=ENG");
   });
 });
 

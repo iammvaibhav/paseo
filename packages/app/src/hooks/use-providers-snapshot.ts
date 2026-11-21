@@ -10,10 +10,12 @@ import { useReplicaQuery } from "@/data/query";
 import { queryClient as singletonQueryClient } from "@/data/query-client";
 import {
   normalizeProvidersSnapshotCwd,
+  providersSnapshotQuery,
   providersSnapshotQueryKey,
   providersSnapshotQueryRoot,
   fetchProvidersSnapshot,
   refreshAndApplyProvidersSnapshot,
+  type Snapshot,
 } from "@/data/providers-snapshot";
 
 export {
@@ -77,19 +79,38 @@ export function useProvidersSnapshot(
 
   const queryKey = useMemo(() => providersSnapshotQueryKey(serverId, cwd), [cwd, serverId]);
 
+  const placeholderData = useMemo<Snapshot | undefined>(() => {
+    if (!serverId) return undefined;
+    const rootKey = providersSnapshotQueryRoot(serverId);
+    const siblingData = queryClient.getQueriesData<Snapshot>({ queryKey: rootKey });
+    const homeData = siblingData.find(([key]) => key.length === 3 && key[2] === "home")?.[1];
+    if (homeData) return homeData;
+
+    const mostRecentlyUpdated = siblingData
+      .filter(([, data]) => data !== undefined)
+      .sort(([leftKey], [rightKey]) => {
+        const leftUpdatedAt = queryClient.getQueryState<Snapshot>(leftKey)?.dataUpdatedAt ?? 0;
+        const rightUpdatedAt = queryClient.getQueryState<Snapshot>(rightKey)?.dataUpdatedAt ?? 0;
+        return rightUpdatedAt - leftUpdatedAt;
+      });
+    return mostRecentlyUpdated[0]?.[1];
+  }, [queryClient, serverId]);
+
   const snapshotQuery = useReplicaQuery({
-    queryKey,
-    // The content-hash cache already owns catalog and model identity.
-    structuralSharing: false,
+    ...providersSnapshotQuery({
+      serverId: serverId ?? "",
+      cwd,
+      client: () => {
+        if (!client || !serverId) throw new Error(t("workspace.terminal.hostDisconnected"));
+        return client;
+      },
+      queryClient,
+    }),
     enabled: Boolean(enabled && supportsSnapshot && serverId && client && isConnected),
-    pushEvent: "providers_snapshot_update",
-    queryFn: async ({ signal }) => {
-      if (!client || !serverId) {
-        throw new Error(t("workspace.terminal.hostDisconnected"));
-      }
-      return fetchProvidersSnapshot({ client, serverId, cwd, queryClient, signal });
-    },
+    placeholderData,
   });
+
+  const isPlaceholderData = snapshotQuery.isPlaceholderData === true;
 
   const refreshMutation = useMutation({
     mutationFn: async (providers?: AgentProvider[]) => {
@@ -130,9 +151,9 @@ export function useProvidersSnapshot(
   );
 
   return {
-    entries: snapshotQuery.data?.entries ?? undefined,
-    isLoading: snapshotQuery.isLoading,
-    isFetching: snapshotQuery.isFetching,
+    entries: snapshotQuery.data?.entries,
+    isLoading: snapshotQuery.isLoading && !isPlaceholderData,
+    isFetching: snapshotQuery.isFetching && !isPlaceholderData,
     isRefreshing,
     error: snapshotQuery.error instanceof Error ? snapshotQuery.error.message : null,
     supportsSnapshot,

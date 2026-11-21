@@ -4,7 +4,10 @@ import {
   applyAgentProfilePreferences,
   mergeCreateAgentSelectionPreferences,
   mergeProviderPreferences,
+  mergeProviderPreferencesWithScope,
   parseFormPreferences,
+  mergeIsolationPreference,
+  resolveEffectiveFormPreferences,
 } from "./preferences";
 import { FakeCreateAgentPreferenceStorage } from "./test-utils/fake-preference-storage";
 
@@ -80,7 +83,7 @@ describe("create agent preferences", () => {
         modelId: "gpt-5.5",
         modeId: "full-access",
         thinkingOptionId: "high",
-        featureValues: { fast_mode: true },
+        options: { service_tier: "fast" },
       }),
     );
 
@@ -95,7 +98,7 @@ describe("create agent preferences", () => {
           model: "gpt-5.5",
           mode: "full-access",
           thinkingByModel: { "gpt-5.5": "high" },
-          featureValues: { fast_mode: true },
+          options: { service_tier: "fast" },
         },
       },
     });
@@ -119,7 +122,7 @@ describe("create agent preferences", () => {
           model: "gpt-5.6",
           mode: undefined,
           thinkingByModel: undefined,
-          featureValues: undefined,
+          options: undefined,
         },
       }),
     ).toEqual({
@@ -167,13 +170,13 @@ describe("create agent preferences", () => {
         modelId: "one-minute-stream",
         modeId: "approval-test",
         thinkingOptionId: "",
-        featureValues: {},
+        options: {},
       }),
     ).toEqual({
       provider: "mock",
       providerPreferences: {
         pi: { model: "anthropic/sonnet" },
-        mock: { model: "one-minute-stream", mode: "approval-test", featureValues: {} },
+        mock: { model: "one-minute-stream", mode: "approval-test", options: {} },
       },
     });
   });
@@ -206,6 +209,60 @@ describe("create agent preferences", () => {
         },
       },
     });
+  });
+
+  it("reads preferences saved as featureValues as options", () => {
+    expect(
+      parseFormPreferences({
+        provider: "codex",
+        providerPreferences: { codex: { featureValues: { service_tier: "priority" } } },
+      }),
+    ).toEqual({
+      provider: "codex",
+      providerPreferences: { codex: { options: { service_tier: "priority" } } },
+    });
+  });
+
+  it("reads a remembered Codex fast_mode as the service tier it meant, so the draft shows Fast", () => {
+    expect(
+      parseFormPreferences({
+        provider: "codex",
+        providerPreferences: {
+          codex: { options: { fast_mode: true, sandbox_mode: "read-only" } },
+          claude: { options: { fast_mode: true } },
+        },
+      }),
+    ).toEqual({
+      provider: "codex",
+      providerPreferences: {
+        codex: { options: { service_tier: "fast", sandbox_mode: "read-only" } },
+        claude: { options: { fast_mode: true } },
+      },
+    });
+
+    expect(
+      parseFormPreferences({
+        providerPreferences: { codex: { featureValues: { fast_mode: false } } },
+      }),
+    ).toEqual({ providerPreferences: { codex: { options: { service_tier: "default" } } } });
+
+    // A tier already remembered wins over the key it replaced.
+    expect(
+      parseFormPreferences({
+        providerPreferences: { codex: { options: { fast_mode: true, service_tier: "default" } } },
+      }),
+    ).toEqual({ providerPreferences: { codex: { options: { service_tier: "default" } } } });
+  });
+
+  it("keeps options that are not booleans or strings, such as a profile's sandbox settings", () => {
+    const options = {
+      sandbox_workspace_write: { network_access: true, writable_roots: ["/tmp"] },
+      max_turns: 3,
+    };
+
+    expect(
+      parseFormPreferences({ provider: "codex", providerPreferences: { codex: { options } } }),
+    ).toEqual({ provider: "codex", providerPreferences: { codex: { options } } });
   });
 
   it("rejects unknown persisted fields outside the explicit legacy shape", () => {
@@ -248,6 +305,129 @@ describe("create agent preferences", () => {
     expect(parseFormPreferences({ provider: "codex", isolation: "sandbox" })).toEqual({});
   });
 
+  it("resolves the global model pick regardless of scope", () => {
+    const preferences = {
+      provider: "claude",
+      providerPreferences: {
+        claude: { model: "global-model" },
+      },
+      byProject: {
+        "proj-a": {
+          provider: "claude",
+          providerPreferences: {
+            claude: { model: "project-model" },
+          },
+        },
+      },
+      byWorkspace: {
+        "ws-1": {
+          provider: "codex",
+          providerPreferences: {
+            codex: { model: "workspace-model" },
+          },
+        },
+      },
+    };
+
+    const effective = resolveEffectiveFormPreferences(preferences, {
+      workspaceId: "ws-1",
+      projectKey: "proj-a",
+    });
+    expect(effective.provider).toBe("claude");
+    expect(effective.providerPreferences?.claude?.model).toBe("global-model");
+  });
+
+  it("ignores legacy project selection in favor of the global pick", () => {
+    const preferences = {
+      provider: "claude",
+      providerPreferences: {
+        claude: { model: "global-model" },
+      },
+      byProject: {
+        "proj-a": {
+          provider: "codex",
+          providerPreferences: {
+            codex: { model: "project-model" },
+          },
+        },
+      },
+    };
+
+    const effective = resolveEffectiveFormPreferences(preferences, {
+      workspaceId: "ws-new",
+      projectKey: "proj-a",
+    });
+    expect(effective.provider).toBe("claude");
+    expect(effective.providerPreferences?.claude?.model).toBe("global-model");
+  });
+
+  it("writes model selection globally and prunes scoped copies", () => {
+    expect(
+      mergeProviderPreferencesWithScope({
+        preferences: {},
+        provider: "claude",
+        updates: { model: "claude-opus-4-6" },
+        scope: { workspaceId: "ws-1", projectKey: "proj-a" },
+      }),
+    ).toEqual({
+      provider: "claude",
+      providerPreferences: {
+        claude: { model: "claude-opus-4-6" },
+      },
+    });
+  });
+
+  it("prunes legacy scoped model selections on write", () => {
+    const next = mergeProviderPreferencesWithScope({
+      preferences: {
+        byWorkspace: {
+          "ws-1": {
+            provider: "codex",
+            providerPreferences: { codex: { model: "workspace-model" } },
+          },
+        },
+        byProject: {
+          "proj-a": {
+            provider: "codex",
+            providerPreferences: { codex: { model: "project-model" } },
+            isolation: "worktree",
+          },
+        },
+      },
+      provider: "claude",
+      updates: { model: "claude-opus-4-6" },
+      scope: { workspaceId: "ws-1", projectKey: "proj-a" },
+    });
+    expect(next.byWorkspace).toBeUndefined();
+    expect(next.byProject).toEqual({ "proj-a": { isolation: "worktree" } });
+    expect(next.providerPreferences?.claude?.model).toBe("claude-opus-4-6");
+  });
+
+  it("shares the last pick across workspaces", () => {
+    const afterWorkspaceA = mergeProviderPreferencesWithScope({
+      preferences: {},
+      provider: "claude",
+      updates: { model: "opus" },
+      scope: { workspaceId: "ws-a", projectKey: "proj" },
+    });
+    const afterWorkspaceB = mergeProviderPreferencesWithScope({
+      preferences: afterWorkspaceA,
+      provider: "claude",
+      updates: { model: "sonnet" },
+      scope: { workspaceId: "ws-b", projectKey: "proj" },
+    });
+
+    // Last write wins everywhere: no per-workspace isolation for models.
+    for (const workspaceId of ["ws-a", "ws-b", "ws-new"]) {
+      expect(
+        resolveEffectiveFormPreferences(afterWorkspaceB, {
+          workspaceId,
+          projectKey: "proj",
+        }).providerPreferences?.claude?.model,
+      ).toBe("sonnet");
+    }
+  });
+
   it("persists and reloads a terminal launch target", async () => {
     const storage = new FakeCreateAgentPreferenceStorage();
     const preferences = new CreateAgentPreferencesService(storage);
@@ -275,5 +455,42 @@ describe("create agent preferences", () => {
 
   it("rejects an unknown launch target kind as invalid stored preferences", () => {
     expect(parseFormPreferences({ launchTarget: { kind: "shell" } })).toEqual({});
+  });
+});
+
+describe("project-scoped isolation", () => {
+  it("stores isolation under byProject and resolves it over global", () => {
+    const withProject = mergeIsolationPreference({
+      preferences: { isolation: "local" },
+      isolation: "worktree",
+      scope: { projectKey: "proj-a" },
+    });
+    expect(withProject.isolation).toBe("worktree");
+    expect(withProject.byProject?.["proj-a"]?.isolation).toBe("worktree");
+    expect(resolveEffectiveFormPreferences(withProject, { projectKey: "proj-a" }).isolation).toBe(
+      "worktree",
+    );
+    expect(resolveEffectiveFormPreferences(withProject, { projectKey: "proj-b" }).isolation).toBe(
+      "worktree",
+    ); // global fallback
+  });
+
+  it("keeps project isolation when another project is set", () => {
+    let prefs = mergeIsolationPreference({
+      preferences: {},
+      isolation: "worktree",
+      scope: { projectKey: "proj-a" },
+    });
+    prefs = mergeIsolationPreference({
+      preferences: prefs,
+      isolation: "local",
+      scope: { projectKey: "proj-b" },
+    });
+    expect(resolveEffectiveFormPreferences(prefs, { projectKey: "proj-a" }).isolation).toBe(
+      "worktree",
+    );
+    expect(resolveEffectiveFormPreferences(prefs, { projectKey: "proj-b" }).isolation).toBe(
+      "local",
+    );
   });
 });

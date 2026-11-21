@@ -7,6 +7,7 @@ import { inlineUnistylesStyle } from "@/styles/unistyles-inline-style";
 import { createChatOutlineHoverIntent } from "./hover-intent";
 import { promptTickMagnification } from "./model";
 import type { ChatOutlineRailProps } from "./rail";
+import { glassFloatingStyle } from "@/styles/theme";
 
 // Hover tracking lives on the rail and the slots, never on the Pressable inside them:
 // magnifying a slot must not move the box the pointer is resting on. See docs/hover.md.
@@ -247,6 +248,7 @@ const styles = StyleSheet.create((theme) => ({
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.surface2,
     ...theme.shadow.md,
+    ...glassFloatingStyle(theme),
   },
   previewText: {
     fontSize: theme.fontSize.sm,

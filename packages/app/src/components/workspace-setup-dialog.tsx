@@ -22,6 +22,12 @@ import {
 } from "@/stores/session-store";
 import { useWorkspaceSetupStore } from "@/stores/workspace-setup-store";
 import { normalizeAgentSnapshot } from "@/utils/agent-snapshots";
+import {
+  beginPendingAgentLoaderSpan,
+  clearPendingAgentLoaderSpan,
+  resolvePendingAgentLoaderSpan,
+} from "@/utils/agent-loader-span";
+import { generateMessageId } from "@/types/stream";
 import { applyLegacyDaemonWorkspaceOwnership } from "@/workspace/legacy-daemon-workspaces";
 import { encodeImages } from "@/utils/encode-images";
 import { toErrorMessage } from "@/utils/error-messages";
@@ -125,10 +131,10 @@ function buildCreateAgentOptions({
   provider,
 }: {
   composerState: {
-    modeOptions: { id: string }[];
-    selectedMode: string;
+    effectiveModeId: string;
     effectiveModelId: string | null;
     effectiveThinkingOptionId: string | null;
+    agentMode: string;
   };
   text: string;
   attachments: NonNullable<CreateAgentRequestOptions["attachments"]>;
@@ -137,20 +143,11 @@ function buildCreateAgentOptions({
   workspaceId: string;
   provider: CreateAgentRequestOptions["provider"];
 }): CreateAgentRequestOptions {
-  // Reconcile the selected mode against the discovered modes. The mode picker
-  // shows modeOptions[0] when the stored mode isn't in the list (e.g. a stale
-  // globally-remembered mode this workspace's provider config no longer
-  // defines), so the submitted mode must match that display rather than send a
-  // stale mode the provider would reject.
-  const modeOptionIds = composerState.modeOptions.map((mode) => mode.id);
-  const reconciledMode = modeOptionIds.includes(composerState.selectedMode)
-    ? composerState.selectedMode
-    : (modeOptionIds[0] ?? "");
   return {
     provider,
     cwd: workspaceDirectory,
     workspaceId,
-    ...(reconciledMode !== "" ? { modeId: reconciledMode } : {}),
+    ...(composerState.effectiveModeId ? { modeId: composerState.effectiveModeId } : {}),
     ...(composerState.effectiveModelId ? { model: composerState.effectiveModelId } : {}),
     ...(composerState.effectiveThinkingOptionId
       ? { thinkingOptionId: composerState.effectiveThinkingOptionId }
@@ -158,6 +155,7 @@ function buildCreateAgentOptions({
     ...(text.trim() ? { initialPrompt: text.trim() } : {}),
     ...(encodedImages && encodedImages.length > 0 ? { images: encodedImages } : {}),
     ...(attachments.length > 0 ? { attachments } : {}),
+    agentMode: composerState.agentMode,
   };
 }
 
@@ -344,19 +342,37 @@ export function WorkspaceSetupDialog() {
           workspaceId: "",
           provider: composerState.selectedProvider,
         });
-        const ensuredWorkspace = await ensureWorkspace({
-          cwd,
-          attachments,
-          agent: {
-            ...agentInput,
-            clientMessageId: `${pendingWorkspaceSetup.creationId}:initial-message`,
-          },
-          onAgentCreated: (value) => {
-            createdAgent = value;
-          },
-        });
+        // The loader span starts at the create request (not the dialog open) so
+        // the measured window is click-to-running for this surface, matching
+        // the composer draft flow. Resolved onto the real agent id on success,
+        // cleared on failure so a dead span never lingers.
+        const pendingSpanId = generateMessageId();
+        beginPendingAgentLoaderSpan(serverId, pendingSpanId, "create");
+        let ensuredWorkspace: Awaited<ReturnType<typeof ensureWorkspace>>;
+        try {
+          ensuredWorkspace = await ensureWorkspace({
+            cwd,
+            attachments,
+            agent: {
+              ...agentInput,
+              clientMessageId: `${pendingWorkspaceSetup.creationId}:initial-message`,
+            },
+            onAgentCreated: (value) => {
+              createdAgent = value;
+            },
+          });
+        } catch (error) {
+          clearPendingAgentLoaderSpan(serverId, pendingSpanId);
+          throw error;
+        }
         if (!createdAgent) throw new Error("The daemon did not create the requested agent");
         const agent = createdAgent;
+        resolvePendingAgentLoaderSpan(
+          serverId,
+          pendingSpanId,
+          agent.id,
+          agent.status === "running",
+        );
 
         if (!getIsStillActive()) {
           return;
@@ -446,7 +462,7 @@ export function WorkspaceSetupDialog() {
       desktopMaxWidth={640}
     >
       <FileDropZone style={styles.section}>
-        <KeyboardTranslateView>
+        <KeyboardTranslateView style={styles.composerSlot}>
           <Composer
             agentId={`workspace-setup:${serverId}:${sourceDirectory}`}
             serverId={serverId}
@@ -462,7 +478,7 @@ export function WorkspaceSetupDialog() {
             cwd={sourceDirectory}
             clearDraft={chatDraft.clear}
             autoFocus
-            commandDraftConfig={composerState?.commandDraftConfig}
+            commandDraft={composerState?.commandDraft}
             agentControls={agentControlsWithDisabled}
             inputWrapperStyle={styles.composerInputWrapper}
           />
@@ -496,6 +512,9 @@ const styles = StyleSheet.create((theme) => ({
     fontSize: theme.fontSize.base,
     color: theme.colors.destructive,
     lineHeight: 20,
+  },
+  composerSlot: {
+    paddingBottom: theme.spacing[4],
   },
   composerInputWrapper: {
     backgroundColor: theme.colors.surface2,

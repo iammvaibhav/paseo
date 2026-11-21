@@ -1,3 +1,4 @@
+import { createWorkspaceRuntimeStore } from "./workspace-runtime-store/index.js";
 import { createServer, type Server as HTTPServer } from "node:http";
 import type { AddressInfo } from "node:net";
 
@@ -17,7 +18,6 @@ import { BrowserToolsBroker } from "./browser-tools/broker.js";
 import type { CheckoutDiffManager } from "./checkout-diff-manager.js";
 import type { DaemonConfigStore } from "./daemon-config-store.js";
 import type { DownloadTokenStore } from "./file-download/token-store.js";
-import type { ScheduleService } from "./schedule/service.js";
 import { createStub } from "./test-utils/class-mocks.js";
 import { DaemonClient } from "./test-utils/daemon-client.js";
 import { createProviderSnapshotManagerStub } from "./test-utils/session-stubs.js";
@@ -306,6 +306,7 @@ function createVoiceAssistantWebSocketServer(params: {
     null,
     { allowedOrigins: new Set(["*"]) },
     createWorkspaceAutoNameStub(),
+    createWorkspaceRuntimeStore(),
     undefined,
     undefined,
     undefined,
@@ -314,7 +315,6 @@ function createVoiceAssistantWebSocketServer(params: {
     undefined,
     undefined,
     undefined,
-    createStub<ScheduleService>({}),
     createStub<CheckoutDiffManager>({
       subscribe: () => {},
       scheduleRefreshForCwd: () => {},
