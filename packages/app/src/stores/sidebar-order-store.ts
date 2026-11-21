@@ -63,7 +63,7 @@ function normalizeKeys(keys: string[]): string[] {
  * match the one the sidebar looks up, so the caller sees its key as missing,
  * writes it again, and the effect that reconciles the order never settles.
  */
-function dedupeKeys(keys: string[]): string[] {
+export function dedupeKeys(keys: string[]): string[] {
   const seen = new Set<string>();
   const deduped: string[] = [];
 

@@ -1413,7 +1413,7 @@ export const zhCN: TranslationResources = {
     },
     agentView: {
       title: "Agents",
-      display: { trigger: "Agent 视图偏好", heading: "Agents", showDone: "显示已完成" },
+      display: { trigger: "Agent 视图偏好", heading: "Agents" },
       sections: { running: "运行中", recent: "最近" },
       empty: {
         title: "没有可显示的 Agent",
@@ -1423,6 +1423,9 @@ export const zhCN: TranslationResources = {
       menu: {
         open: "在工作区中打开",
         copyReference: "复制引用",
+        pin: "置顶",
+        unpin: "取消置顶",
+        reorder: "重新排序 {{title}}",
         stop: "停止",
         clear: "清除",
         archive: "归档",

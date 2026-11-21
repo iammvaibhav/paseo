@@ -1443,6 +1443,13 @@ export const WorkspaceMetadataUpdateRequestSchema = z.object({
   requestId: z.string(),
 });
 
+export const AgentPinSetRequestSchema = z.object({
+  type: z.literal("agent.pin.set.request"),
+  agentId: z.string(),
+  pinned: z.boolean(),
+  requestId: z.string(),
+});
+
 export const WorkspacePinSetRequestSchema = z.object({
   type: z.literal("workspace.pin.set.request"),
   workspaceId: z.string(),
@@ -2819,6 +2826,17 @@ export const WorkspacePinSetResponseSchema = z.object({
   payload: WorkspacePinSetResponsePayloadSchema,
 });
 
+export const AgentPinSetResponseSchema = z.object({
+  type: z.literal("agent.pin.set.response"),
+  payload: z.object({
+    requestId: z.string(),
+    agentId: z.string(),
+    accepted: z.boolean(),
+    pinnedAt: z.string().nullable(),
+    error: z.string().nullable(),
+  }),
+});
+
 export const WorkspaceBaseBranchSetResponseSchema = z.object({
   type: z.literal("workspace.base_branch.set.response"),
   payload: z.object({
@@ -4080,6 +4098,7 @@ export const SessionInboundMessageSchema = z.discriminatedUnion("type", [
   AgentMetadataUpdateRequestSchema,
   WorkspaceMetadataUpdateRequestSchema,
   WorkspacePinSetRequestSchema,
+  AgentPinSetRequestSchema,
   WorkspaceBaseBranchSetRequestSchema,
   WorkspaceLabelListRequestSchema,
   WorkspaceLabelAssignmentSetRequestSchema,
@@ -4664,6 +4683,8 @@ export const ServerInfoStatusPayloadSchema = z
         providerSubagentNesting: z.boolean().optional(),
         // COMPAT(workspacePinning): added in v0.1.107, remove gate after 2027-01-12.
         workspacePinning: z.boolean().optional(),
+        // COMPAT(agentPinning): added after v0.16.2, remove gate after 2027-05-21.
+        agentPinning: z.boolean().optional(),
         // COMPAT(workspaceMarkUnread): added in v0.5.0, remove after 2027-08-20.
         workspaceMarkUnread: z.boolean().optional(),
         // COMPAT(hubRelationship): added in v0.1.X, drop the gate when floor >= v0.1.X.
@@ -8330,6 +8351,7 @@ export const SessionOutboundMessageSchema = z.discriminatedUnion("type", [
   AgentMetadataUpdateResponseSchema,
   WorkspaceMetadataUpdateResponseSchema,
   WorkspacePinSetResponseSchema,
+  AgentPinSetResponseSchema,
   WorkspaceBaseBranchSetResponseSchema,
   WorkspaceRecoveryInspectResponseSchema,
   WorkspaceRecoveryRestoreResponseSchema,
@@ -8574,6 +8596,7 @@ export type WorkspaceTitleSetResponsePayload = z.infer<
 >;
 export type WorkspacePinSetResponse = z.infer<typeof WorkspacePinSetResponseSchema>;
 export type WorkspacePinSetResponsePayload = z.infer<typeof WorkspacePinSetResponsePayloadSchema>;
+export type AgentPinSetResponse = z.infer<typeof AgentPinSetResponseSchema>;
 export type WorkspaceRecoveryState = z.infer<typeof WorkspaceRecoveryStateSchema>;
 export type WorkspaceRecoveryInspectResponse = z.infer<
   typeof WorkspaceRecoveryInspectResponseSchema
@@ -8768,6 +8791,7 @@ export type ProjectIconSetRequest = z.infer<typeof ProjectIconSetRequestSchema>;
 export type ProjectRemoveRequest = z.infer<typeof ProjectRemoveRequestSchema>;
 export type WorkspaceTitleSetRequest = z.infer<typeof WorkspaceTitleSetRequestSchema>;
 export type WorkspacePinSetRequest = z.infer<typeof WorkspacePinSetRequestSchema>;
+export type AgentPinSetRequest = z.infer<typeof AgentPinSetRequestSchema>;
 export type AgentMetadataUpdateRequest = z.infer<typeof AgentMetadataUpdateRequestSchema>;
 export type WorkspaceMetadataUpdateRequest = z.infer<typeof WorkspaceMetadataUpdateRequestSchema>;
 export type AgentMetadataUpdateResponse = z.infer<typeof AgentMetadataUpdateResponseSchema>;

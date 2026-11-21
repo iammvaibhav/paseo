@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { AGENT_PINNED_AT_LABEL } from "@getpaseo/protocol/agent-labels";
 import type {
   LifecycleBucket,
   LifecycleBucketGroup,
@@ -13,6 +14,7 @@ function makeRow(input: {
   bucket?: LifecycleBucket;
   title?: string;
   sortTime?: number;
+  pinnedAt?: string;
 }): LifecycleRow {
   return {
     agent: {
@@ -21,6 +23,7 @@ function makeRow(input: {
       workspaceId: input.workspaceId !== undefined ? input.workspaceId : "workspace-1",
       title: input.title ?? null,
       name: null,
+      labels: input.pinnedAt ? { [AGENT_PINNED_AT_LABEL]: input.pinnedAt } : {},
     } as LifecycleRow["agent"],
     bucket: input.bucket ?? "running",
     sortTime: input.sortTime ?? 0,
@@ -60,7 +63,7 @@ describe("sidebar agent view model", () => {
   describe("buildSidebarAgentViewSections", () => {
     const emptyMapping = new Map<string, string>();
 
-    it("lists Running, then one Recent list of every other bucket newest first, without dormant", () => {
+    it("lists Running (needs you first), then one Recent list newest first, without dormant", () => {
       const needsYouRow = makeRow({ id: "1", bucket: "needs_you", sortTime: 20 });
       const runningRow = makeRow({ id: "2", bucket: "running" });
       const readyRow = makeRow({ id: "3", bucket: "ready", sortTime: 10 });
@@ -82,43 +85,51 @@ describe("sidebar agent view model", () => {
         hostFilters: [],
         projectFilters: [],
         projectViewKeyByWorkspaceKey: emptyMapping,
-        showDone: true,
+        pinnedAgentOrder: [],
         search: null,
       });
 
       expect(keysOf(sections)).toEqual(["running", "recent"]);
-      expect(sections[0].rows).toEqual([runningRow]);
-      expect(sections[1].rows).toEqual([doneRow, needsYouRow, readyRow, olderReadyRow]);
+      expect(sections[0].rows).toEqual([needsYouRow, runningRow]);
+      expect(sections[1].rows).toEqual([doneRow, readyRow, olderReadyRow]);
     });
 
-    it("drops done agents from Recent unless showDone is true", () => {
-      const runningRow = makeRow({ id: "r1", bucket: "running" });
-      const doneRow = makeRow({ id: "d1", bucket: "done" });
-      const groups = [makeGroup("running", [runningRow]), makeGroup("done", [doneRow])];
-
-      // showDone = false -> done bucket omitted
-      const withoutDone = buildSidebarAgentViewSections({
-        groups,
-        hostFilters: [],
-        projectFilters: [],
-        projectViewKeyByWorkspaceKey: emptyMapping,
-        showDone: false,
-        search: null,
+    it("hoists pinned agents of any bucket into Pinned, newest pin first unless reordered", () => {
+      const pinnedRunning = makeRow({
+        id: "p1",
+        bucket: "running",
+        pinnedAt: "2026-11-01T00:00:00Z",
       });
-      expect(keysOf(withoutDone)).toEqual(["running"]);
-      expect(withoutDone[0].rows).toEqual([runningRow]);
-
-      // showDone = true -> done bucket included
-      const withDone = buildSidebarAgentViewSections({
-        groups,
-        hostFilters: [],
-        projectFilters: [],
-        projectViewKeyByWorkspaceKey: emptyMapping,
-        showDone: true,
-        search: null,
+      const pinnedDormant = makeRow({
+        id: "p2",
+        bucket: "dormant",
+        pinnedAt: "2026-11-03T00:00:00Z",
       });
-      expect(keysOf(withDone)).toEqual(["running", "recent"]);
-      expect(withDone[1].rows).toEqual([doneRow]);
+      const pinnedReady = makeRow({ id: "p3", bucket: "ready", pinnedAt: "2026-11-02T00:00:00Z" });
+      const readyRow = makeRow({ id: "r1", bucket: "ready" });
+      const groups = [
+        makeGroup("running", [pinnedRunning]),
+        makeGroup("ready", [pinnedReady, readyRow]),
+        makeGroup("dormant", [pinnedDormant]),
+      ];
+      const build = (pinnedAgentOrder: string[]) =>
+        buildSidebarAgentViewSections({
+          groups,
+          hostFilters: [],
+          projectFilters: [],
+          projectViewKeyByWorkspaceKey: emptyMapping,
+          pinnedAgentOrder,
+          search: null,
+        });
+
+      const byPinTime = build([]);
+      expect(keysOf(byPinTime)).toEqual(["pinned", "recent"]);
+      expect(byPinTime[0].rows).toEqual([pinnedDormant, pinnedReady, pinnedRunning]);
+      expect(byPinTime[1].rows).toEqual([readyRow]);
+
+      // A dragged order wins; a pin missing from it keeps its newest-first slot.
+      const dragged = build(["server-1:p1", "server-1:p3"]);
+      expect(dragged[0].rows).toEqual([pinnedDormant, pinnedRunning, pinnedReady]);
     });
 
     it("a search lists matching closed (dormant) and Done agents, even with Done hidden", () => {
@@ -135,7 +146,7 @@ describe("sidebar agent view model", () => {
         hostFilters: [],
         projectFilters: [],
         projectViewKeyByWorkspaceKey: emptyMapping,
-        showDone: false,
+        pinnedAgentOrder: [],
         search: searchFor("fix", ["server-1:d1", "macbook:c1"]),
       });
       expect(keysOf(sections)).toEqual(["results"]);
@@ -153,7 +164,7 @@ describe("sidebar agent view model", () => {
         hostFilters: ["srv-1"],
         projectFilters: [],
         projectViewKeyByWorkspaceKey: emptyMapping,
-        showDone: false,
+        pinnedAgentOrder: [],
         search: null,
       });
       expect(filtered).toHaveLength(1);
@@ -165,7 +176,7 @@ describe("sidebar agent view model", () => {
         hostFilters: [],
         projectFilters: [],
         projectViewKeyByWorkspaceKey: emptyMapping,
-        showDone: false,
+        pinnedAgentOrder: [],
         search: null,
       });
       expect(all[0].rows).toEqual([host1Row, host2Row]);
@@ -197,7 +208,7 @@ describe("sidebar agent view model", () => {
         hostFilters: [],
         projectFilters: ["project-alpha"],
         projectViewKeyByWorkspaceKey: projectMapping,
-        showDone: false,
+        pinnedAgentOrder: [],
         search: null,
       });
 
@@ -210,7 +221,7 @@ describe("sidebar agent view model", () => {
         hostFilters: [],
         projectFilters: [],
         projectViewKeyByWorkspaceKey: projectMapping,
-        showDone: false,
+        pinnedAgentOrder: [],
         search: null,
       });
       expect(unfiltered[0].rows).toEqual([
@@ -232,7 +243,7 @@ describe("sidebar agent view model", () => {
         hostFilters: [],
         projectFilters: [],
         projectViewKeyByWorkspaceKey: emptyMapping,
-        showDone: false,
+        pinnedAgentOrder: [],
         search: null,
       });
 
@@ -255,7 +266,7 @@ describe("sidebar agent view model", () => {
         hostFilters: ["srv-1"],
         projectFilters: [],
         projectViewKeyByWorkspaceKey: emptyMapping,
-        showDone: false,
+        pinnedAgentOrder: [],
         search: null,
       });
 
@@ -278,7 +289,7 @@ describe("sidebar agent view model", () => {
         hostFilters: [],
         projectFilters: [],
         projectViewKeyByWorkspaceKey: emptyMapping,
-        showDone: false,
+        pinnedAgentOrder: [],
         search: searchFor("fix", ["srv-1:a", "srv-1:c"]),
       });
 
@@ -331,7 +342,7 @@ describe("sidebar agent view model", () => {
         hostFilters: [],
         projectFilters: [],
         projectViewKeyByWorkspaceKey: emptyMapping,
-        showDone: false,
+        pinnedAgentOrder: [],
         search: searchFor(
           "traffic flow",
           ["macbook:exact", "server-1:words", "server-1:meta", "blrofc3:best", "blrofc3:newer"],

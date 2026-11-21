@@ -1451,7 +1451,6 @@ export const ptBR: TranslationResources = {
       display: {
         trigger: "Preferências de visualização de agentes",
         heading: "Agentes",
-        showDone: "Mostrar concluídos",
       },
       sections: {
         running: "Em execução",
@@ -1465,6 +1464,9 @@ export const ptBR: TranslationResources = {
       menu: {
         open: "Abrir no espaço de trabalho",
         copyReference: "Copiar referência",
+        pin: "Fixar no topo",
+        unpin: "Desafixar",
+        reorder: "Reordenar {{title}}",
         stop: "Parar",
         clear: "Limpar",
         archive: "Arquivar",

@@ -1455,7 +1455,6 @@ export const fr: TranslationResources = {
       display: {
         trigger: "Préférences d'affichage des agents",
         heading: "Agents",
-        showDone: "Afficher les terminés",
       },
       sections: {
         running: "En cours d'exécution",
@@ -1469,6 +1468,9 @@ export const fr: TranslationResources = {
       menu: {
         open: "Ouvrir dans l’espace de travail",
         copyReference: "Copier la référence",
+        pin: "Épingler en haut",
+        unpin: "Désépingler",
+        reorder: "Réorganiser {{title}}",
         stop: "Arrêter",
         clear: "Effacer",
         archive: "Archiver",

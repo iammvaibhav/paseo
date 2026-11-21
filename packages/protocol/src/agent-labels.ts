@@ -5,6 +5,19 @@ export const SELECTION_ASK_LABEL = "paseo.selection-ask";
 export const SELECTION_ASK_SOURCE_LABEL = "paseo.selection-ask.source-agent-id";
 const OPEN_AGENT_TAB_LABEL_PREFIX = "paseo.open-agent-tab.";
 export const ITSAPLAN_ISSUE_LABEL_KEY = "itsaplan.issue";
+/**
+ * When the user pinned the agent to the top of the sidebar's agent view (ISO
+ * timestamp). Written only by the daemon's `agent.pin.set.request` handler;
+ * absent when the agent is not pinned.
+ */
+export const AGENT_PINNED_AT_LABEL = "paseo.pinned-at";
+
+export function getAgentPinnedAt(
+  labels: Record<string, unknown> | null | undefined,
+): string | null {
+  const pinnedAt = labels?.[AGENT_PINNED_AT_LABEL];
+  return typeof pinnedAt === "string" && pinnedAt.length > 0 ? pinnedAt : null;
+}
 
 /**
  * DUPLICATED in `packages/server/src/server/itsaplan/bridge.ts` (verbatim,

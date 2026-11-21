@@ -1462,7 +1462,6 @@ export const es: TranslationResources = {
       display: {
         trigger: "Preferencias de vista de agentes",
         heading: "Agentes",
-        showDone: "Mostrar completados",
       },
       sections: {
         running: "En ejecución",
@@ -1476,6 +1475,9 @@ export const es: TranslationResources = {
       menu: {
         open: "Abrir en espacio de trabajo",
         copyReference: "Copiar referencia",
+        pin: "Anclar arriba",
+        unpin: "Desanclar",
+        reorder: "Reordenar {{title}}",
         stop: "Detener",
         clear: "Borrar",
         archive: "Archivar",

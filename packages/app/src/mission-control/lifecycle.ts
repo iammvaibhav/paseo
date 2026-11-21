@@ -36,7 +36,12 @@ export interface AgentLifecycleState {
   doneReason: LifecycleDoneReason | null;
   /** Latest meaningful status headline (non-proposal), newest event wins. */
   lastReportHeadline: string | null;
-  /** Millisecond timestamp of the agent's newest mission-control event. */
+  /**
+   * Millisecond timestamp of the agent's newest mission-control event that
+   * records its own activity. Verdict cards (Mark done, Clear, the aging
+   * sweep) are a judgment about the agent, not activity: they leave this alone
+   * so marking an agent done does not move its row or reset its age.
+   */
   lastEventAt: number | null;
   /** Live pending proposals (status "pending") — these put the row in Needs you. */
   pendingProposalCount: number;
@@ -177,8 +182,9 @@ function foldLifecycleEvents(events: readonly MissionControlEvent[]): LifecycleF
   let snapshotStoppedBy: "user" | "machinery" | "system" | null = null;
 
   for (const event of events) {
+    const verdictParse = parseVerdictEvent(event);
     const tsMs = eventTimeMs(event);
-    if (lastEventAt === null || tsMs > lastEventAt) {
+    if (!verdictParse && (lastEventAt === null || tsMs > lastEventAt)) {
       lastEventAt = tsMs;
     }
     // Identity snapshots: new events stamp name/title/description separately.
@@ -226,7 +232,6 @@ function foldLifecycleEvents(events: readonly MissionControlEvent[]): LifecycleF
       reviewState = "ready";
       continue;
     }
-    const verdictParse = parseVerdictEvent(event);
     if (verdictParse) {
       reviewState = verdictParse.reviewState;
       verdict = verdictParse.verdict;
@@ -345,9 +350,9 @@ export function toLifecycleRow(agent: AggregatedAgent, state: AgentLifecycleStat
  * The instant a row's timestamp should read as "when it last did anything".
  *
  * Recorded buckets (Done / Ready / Dormant) read the newest real evidence: the
- * newest mission-control event in the client's window (`lastEventAt`; a
- * verdict card IS an event, so verdict time is included) or the agent's last
- * user message. The directory `lastActivityAt` is NOT trustworthy for history:
+ * newest activity event in the client's window (`lastEventAt`, which skips
+ * verdict cards, so Mark done neither moves a row nor resets its age) or the
+ * agent's last user message. The directory `lastActivityAt` is NOT trustworthy for history:
  * the daemon stamps stored records with the registration/restore time whenever
  * an idle agent is loaded across a daemon restart, so every recorded agent
  * that did nothing since the last boot reads the same shared value (live bug).

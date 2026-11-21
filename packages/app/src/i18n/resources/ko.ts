@@ -1429,7 +1429,7 @@ export const ko: TranslationResources = {
     },
     agentView: {
       title: "에이전트",
-      display: { trigger: "에이전트 보기 설정", heading: "에이전트", showDone: "완료 표시" },
+      display: { trigger: "에이전트 보기 설정", heading: "에이전트" },
       sections: { running: "실행 중", recent: "최근" },
       empty: {
         title: "표시할 에이전트 없음",
@@ -1439,6 +1439,9 @@ export const ko: TranslationResources = {
       menu: {
         open: "워크스페이스에서 열기",
         copyReference: "참조 복사",
+        pin: "상단에 고정",
+        unpin: "고정 해제",
+        reorder: "{{title}} 순서 변경",
         stop: "중지",
         clear: "지우기",
         archive: "보관",

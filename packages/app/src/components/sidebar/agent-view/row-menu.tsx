@@ -1,7 +1,8 @@
 import { Fragment, memo, useCallback, type ReactElement } from "react";
 import { useTranslation } from "react-i18next";
 import { withUnistyles } from "react-native-unistyles";
-import { Archive, CircleCheck, Copy, ExternalLink, Square } from "lucide-react-native";
+import { Archive, CircleCheck, Copy, ExternalLink, Pin, PinOff, Square } from "lucide-react-native";
+import { getAgentPinnedAt } from "@getpaseo/protocol/agent-labels";
 import { ContextMenuContent, ContextMenuItem } from "@/components/ui/context-menu";
 import { useToast } from "@/contexts/toast-context";
 import { useArchiveAgent } from "@/hooks/use-archive-agent";
@@ -9,6 +10,7 @@ import type { LifecycleRow } from "@/mission-control/lifecycle";
 import { setAgentLifecycle } from "@/mission-control/lifecycle-set";
 import { buildAgentReference, resolveBoardRowMenuActions } from "@/mission-control/row-menu";
 import { getHostRuntimeStore } from "@/runtime/host-runtime";
+import { useHostFeature } from "@/runtime/host-features";
 import type { Theme } from "@/styles/theme";
 import { copyToClipboard } from "@/utils/copy-to-clipboard";
 import { useAgentReminderMenu } from "@/agent-reminders/reminder-menu";
@@ -18,6 +20,8 @@ const ThemedArchive = withUnistyles(Archive);
 const ThemedCopy = withUnistyles(Copy);
 const ThemedExternalLink = withUnistyles(ExternalLink);
 const ThemedSquare = withUnistyles(Square);
+const ThemedPin = withUnistyles(Pin);
+const ThemedPinOff = withUnistyles(PinOff);
 
 const menuIconMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 
@@ -26,6 +30,8 @@ const MENU_COPY_ICON = <ThemedCopy size={14} uniProps={menuIconMapping} />;
 const MENU_STOP_ICON = <ThemedSquare size={14} uniProps={menuIconMapping} />;
 const MENU_CIRCLE_CHECK_ICON = <ThemedCircleCheck size={14} uniProps={menuIconMapping} />;
 const MENU_ARCHIVE_ICON = <ThemedArchive size={14} uniProps={menuIconMapping} />;
+const MENU_PIN_ICON = <ThemedPin size={14} uniProps={menuIconMapping} />;
+const MENU_UNPIN_ICON = <ThemedPinOff size={14} uniProps={menuIconMapping} />;
 
 export interface SidebarAgentViewRowMenuProps {
   row: LifecycleRow;
@@ -43,6 +49,16 @@ export const SidebarAgentViewRowMenu = memo(function SidebarAgentViewRowMenu({
 
   const menuActions = resolveBoardRowMenuActions(row);
   const isArchiving = isArchivingAgent({ serverId: agent.serverId, agentId: agent.id });
+  const canPin = useHostFeature(agent.serverId, "agentPinning");
+  const isPinned = getAgentPinnedAt(agent.labels) !== null;
+
+  const handleTogglePin = useCallback(() => {
+    const client = getHostRuntimeStore().getClient(agent.serverId);
+    if (!client) return;
+    void client
+      .setAgentPinned(agent.id, !isPinned)
+      .catch(() => toast.error(isPinned ? "Unable to unpin agent" : "Unable to pin agent"));
+  }, [agent.id, agent.serverId, isPinned, toast]);
 
   const handleMarkDone = useCallback(() => {
     void setAgentLifecycle(agent.serverId, agent.id, "done").catch(() => {});
@@ -107,6 +123,15 @@ export const SidebarAgentViewRowMenu = memo(function SidebarAgentViewRowMenu({
                   {t("sidebar.agentView.menu.copyReference")}
                 </ContextMenuItem>
                 {reminderMenu.trigger}
+                {canPin ? (
+                  <ContextMenuItem
+                    leading={isPinned ? MENU_UNPIN_ICON : MENU_PIN_ICON}
+                    onSelect={handleTogglePin}
+                    testID={`sidebar-agent-view-row-pin-${agent.serverId}-${agent.id}`}
+                  >
+                    {isPinned ? t("sidebar.agentView.menu.unpin") : t("sidebar.agentView.menu.pin")}
+                  </ContextMenuItem>
+                ) : null}
               </Fragment>
             );
           case "stop":

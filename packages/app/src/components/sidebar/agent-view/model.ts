@@ -1,3 +1,5 @@
+import { getAgentPinnedAt } from "@getpaseo/protocol/agent-labels";
+import { applyStoredOrdering } from "@/hooks/sidebar-workspaces-view-model";
 import {
   compareTimeDescRows,
   type LifecycleBucketGroup,
@@ -9,12 +11,14 @@ import {
 } from "@/components/sidebar/sidebar-search-rank";
 
 /**
- * Running agents, then one Recent list of every other visible agent (needs
- * you, ready, done) newest first. Status shows in each row's dot, so marking an
- * agent done changes its dot without moving it. While a search narrows the
- * view, one ranked Results section replaces both.
+ * Pinned agents, then Running (agents waiting on you first, then running
+ * ones), then one Recent list of every other unarchived agent (ready, done)
+ * newest first. Status shows in each row's dot, so marking an agent done
+ * changes its dot without moving it. Closed (dormant) agents show only when
+ * pinned. While a search narrows the view, one ranked Results section replaces
+ * all of them.
  */
-export type SidebarAgentViewSectionKey = "running" | "recent" | "results";
+export type SidebarAgentViewSectionKey = "pinned" | "running" | "recent" | "results";
 
 export interface SidebarAgentViewSection {
   key: SidebarAgentViewSectionKey;
@@ -30,7 +34,11 @@ export interface BuildSidebarAgentViewSectionsInput {
   hostFilters: readonly string[];
   projectFilters: readonly string[];
   projectViewKeyByWorkspaceKey: ReadonlyMap<string, string>;
-  showDone: boolean;
+  /**
+   * The Pinned section's drag order (`serverId:agentId`). Pins come from each agent's
+   * AGENT_PINNED_AT_LABEL; pinned agents missing from this order sit newest pin first.
+   */
+  pinnedAgentOrder: readonly string[];
   /** The search bar's matches and how to rank them; null while no search narrows the view. */
   search: (SidebarSearchRanking & { agentKeys: ReadonlySet<string> }) | null;
 }
@@ -84,20 +92,49 @@ export function buildSidebarAgentViewSections(
     return rows.length > 0 ? [{ key: "results", rows }] : [];
   }
 
+  const pinned: LifecycleRow[] = [];
+  const needsYou: LifecycleRow[] = [];
   const running: LifecycleRow[] = [];
   const recent: LifecycleRow[] = [];
   for (const group of groups) {
-    if (group.bucket === "dormant") continue;
-    if (group.bucket === "done" && !input.showDone) continue;
-    const target = group.bucket === "running" ? running : recent;
     for (const row of group.rows) {
-      if (keep(row)) target.push(row);
+      if (!keep(row)) continue;
+      if (getAgentPinnedAt(row.agent.labels)) {
+        pinned.push(row);
+      } else if (group.bucket === "needs_you") {
+        needsYou.push(row);
+      } else if (group.bucket === "running") {
+        running.push(row);
+      } else if (group.bucket !== "dormant") {
+        recent.push(row);
+      }
     }
   }
+  pinned.sort((left, right) =>
+    (getAgentPinnedAt(right.agent.labels) ?? "").localeCompare(
+      getAgentPinnedAt(left.agent.labels) ?? "",
+    ),
+  );
   recent.sort(compareTimeDescRows);
 
   const sections: SidebarAgentViewSection[] = [];
-  if (running.length > 0) sections.push({ key: "running", rows: running });
+  if (pinned.length > 0) {
+    sections.push({
+      key: "pinned",
+      rows: applyStoredOrdering({
+        items: pinned,
+        storedOrder: [...input.pinnedAgentOrder],
+        getKey: agentKey,
+      }),
+    });
+  }
+  if (needsYou.length + running.length > 0) {
+    sections.push({ key: "running", rows: [...needsYou, ...running] });
+  }
   if (recent.length > 0) sections.push({ key: "recent", rows: recent });
   return sections;
+}
+
+export function agentKey(row: LifecycleRow): string {
+  return `${row.agent.serverId}:${row.agent.id}`;
 }

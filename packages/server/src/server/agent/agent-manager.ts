@@ -25,6 +25,7 @@ import {
   isDelegatedAgent,
   isOpenAgentTabLabel,
   PARENT_AGENT_ID_LABEL,
+  AGENT_PINNED_AT_LABEL,
 } from "@getpaseo/protocol/agent-labels";
 import type { Logger } from "pino";
 import type { ToolPolicy } from "@getpaseo/protocol/agent-types";
@@ -3778,6 +3779,23 @@ export class AgentManager implements DaemonPermissionHost {
       const record = await this.writeStoredMetadata(agentId, { metadata: patch });
       if (!record.internal) this.dispatchStoredAgentState(record);
       return record.metadata;
+    });
+  }
+
+  /**
+   * Pins the agent to the top of the sidebar's agent view, or unpins it. The
+   * pin is a label (AGENT_PINNED_AT_LABEL) so it rides the agent payload to
+   * every client and survives every record rewrite labels already survive.
+   * Returns the new pinnedAt, null when unpinned.
+   */
+  async setAgentPinned(agentId: string, pinned: boolean): Promise<string | null> {
+    return this.runLifecycleMutation(agentId, async () => {
+      const pinnedAt = pinned ? new Date().toISOString() : null;
+      const { record, live } = await this.writeLabels(agentId, {
+        [AGENT_PINNED_AT_LABEL]: pinnedAt,
+      });
+      if (!live && record && !record.internal) this.dispatchStoredAgentState(record);
+      return pinnedAt;
     });
   }
 

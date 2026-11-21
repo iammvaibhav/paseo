@@ -22,11 +22,11 @@ export function useSidebarAgentView(options: { enabled: boolean }): SidebarAgent
 
   const { allHostProjects, search } = useSidebarModel();
 
-  // A search reaches every unarchived agent: closed (dormant) agents and Done
-  // agents past the retention window are hidden only while browsing.
+  // Every unarchived agent is a candidate: Done agents list at any age, like Ready, and closed
+  // (dormant) agents reach the view when pinned or matched by a search. The model drops the rest.
   const { groups, isInitialLoad } = useMissionControlLifecycle({
     enabled,
-    showAll: search.active,
+    showAll: true,
   });
 
   const allHosts = useHosts();
@@ -44,7 +44,7 @@ export function useSidebarAgentView(options: { enabled: boolean }): SidebarAgent
 
   const hostFilters = useSidebarAgentViewStore((state) => state.hostFilters);
   const projectFilters = useSidebarAgentViewStore((state) => state.projectFilters);
-  const showDone = useSidebarAgentViewStore((state) => state.showDone);
+  const pinnedAgentOrder = useSidebarAgentViewStore((state) => state.pinnedAgentOrder);
   const clearHostFilters = useSidebarAgentViewStore((state) => state.clearHostFilters);
   const clearProjectFilters = useSidebarAgentViewStore((state) => state.clearProjectFilters);
 
@@ -82,10 +82,17 @@ export function useSidebarAgentView(options: { enabled: boolean }): SidebarAgent
         hostFilters,
         projectFilters: resolvedProjectFilters,
         projectViewKeyByWorkspaceKey,
-        showDone,
+        pinnedAgentOrder,
         search: search.active ? search : null,
       }),
-    [groups, hostFilters, resolvedProjectFilters, projectViewKeyByWorkspaceKey, search, showDone],
+    [
+      groups,
+      hostFilters,
+      resolvedProjectFilters,
+      projectViewKeyByWorkspaceKey,
+      pinnedAgentOrder,
+      search,
+    ],
   );
 
   return {

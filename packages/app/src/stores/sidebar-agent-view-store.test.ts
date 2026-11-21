@@ -18,7 +18,7 @@ describe("sidebar agent view store", () => {
     useSidebarAgentViewStore.setState({
       hostFilters: [],
       projectFilters: [],
-      showDone: false,
+      pinnedAgentOrder: [],
     });
   });
 
@@ -38,13 +38,13 @@ describe("sidebar agent view store", () => {
       const store = useSidebarAgentViewStore.getState();
       store.toggleHostFilter("host-a");
       store.toggleProjectFilter("proj-1");
-      store.setShowDone(true);
+      store.setPinnedAgentOrder(["host-a:agent-1"]);
 
       store.clearHostFilters();
 
       expect(useSidebarAgentViewStore.getState().hostFilters).toEqual([]);
       expect(useSidebarAgentViewStore.getState().projectFilters).toEqual(["proj-1"]);
-      expect(useSidebarAgentViewStore.getState().showDone).toBe(true);
+      expect(useSidebarAgentViewStore.getState().pinnedAgentOrder).toEqual(["host-a:agent-1"]);
     });
 
     it("reconciles host filters against available server IDs", () => {
@@ -89,68 +89,35 @@ describe("sidebar agent view store", () => {
       const store = useSidebarAgentViewStore.getState();
       store.toggleHostFilter("host-a");
       store.toggleProjectFilter("project-1");
-      store.setShowDone(true);
+      store.setPinnedAgentOrder(["host-a:agent-1"]);
 
       store.clearProjectFilters();
 
       expect(useSidebarAgentViewStore.getState().projectFilters).toEqual([]);
       expect(useSidebarAgentViewStore.getState().hostFilters).toEqual(["host-a"]);
-      expect(useSidebarAgentViewStore.getState().showDone).toBe(true);
+      expect(useSidebarAgentViewStore.getState().pinnedAgentOrder).toEqual(["host-a:agent-1"]);
     });
   });
 
-  describe("showDone", () => {
-    it("defaults to false and updates via setter", () => {
-      expect(useSidebarAgentViewStore.getState().showDone).toBe(false);
-
-      useSidebarAgentViewStore.getState().setShowDone(true);
-      expect(useSidebarAgentViewStore.getState().showDone).toBe(true);
-
-      useSidebarAgentViewStore.getState().setShowDone(false);
-      expect(useSidebarAgentViewStore.getState().showDone).toBe(false);
+  describe("pinnedAgentOrder", () => {
+    it("drops blank and duplicate keys", () => {
+      useSidebarAgentViewStore.getState().setPinnedAgentOrder(["h:b", "", "h:a", "h:b"]);
+      expect(useSidebarAgentViewStore.getState().pinnedAgentOrder).toEqual(["h:b", "h:a"]);
     });
   });
 
   describe("migration", () => {
     it("migrates from garbage to default state", () => {
-      expect(migrateSidebarAgentViewState(null)).toEqual({
-        hostFilters: [],
-        projectFilters: [],
-        showDone: false,
-      });
-
-      expect(migrateSidebarAgentViewState("invalid json")).toEqual({
-        hostFilters: [],
-        projectFilters: [],
-        showDone: false,
-      });
-
-      expect(migrateSidebarAgentViewState(42)).toEqual({
-        hostFilters: [],
-        projectFilters: [],
-        showDone: false,
-      });
-
-      expect(migrateSidebarAgentViewState({ unexpectedKey: "boom" })).toEqual({
-        hostFilters: [],
-        projectFilters: [],
-        showDone: false,
-      });
-
-      expect(migrateSidebarAgentViewState({ hostFilters: "not-an-array" })).toEqual({
-        hostFilters: [],
-        projectFilters: [],
-        showDone: false,
-      });
-
-      expect(migrateSidebarAgentViewState({ showDone: "not-a-boolean" })).toEqual({
-        hostFilters: [],
-        projectFilters: [],
-        showDone: false,
-      });
+      const empty = { hostFilters: [], projectFilters: [], pinnedAgentOrder: [] };
+      expect(migrateSidebarAgentViewState(null)).toEqual(empty);
+      expect(migrateSidebarAgentViewState("invalid json")).toEqual(empty);
+      expect(migrateSidebarAgentViewState(42)).toEqual(empty);
+      expect(migrateSidebarAgentViewState({ unexpectedKey: "boom" })).toEqual(empty);
+      expect(migrateSidebarAgentViewState({ hostFilters: "not-an-array" })).toEqual(empty);
+      expect(migrateSidebarAgentViewState({ pinnedAgentOrder: "not-an-array" })).toEqual(empty);
     });
 
-    it("preserves valid fields and supplies defaults for omitted ones", () => {
+    it("preserves valid fields, drops the removed showDone, and defaults omitted ones", () => {
       expect(
         migrateSidebarAgentViewState({
           hostFilters: ["host-1", "host-2"],
@@ -159,17 +126,18 @@ describe("sidebar agent view store", () => {
       ).toEqual({
         hostFilters: ["host-1", "host-2"],
         projectFilters: [],
-        showDone: true,
+        pinnedAgentOrder: [],
       });
 
       expect(
         migrateSidebarAgentViewState({
           projectFilters: ["proj-a"],
+          pinnedAgentOrder: ["h:a"],
         }),
       ).toEqual({
         hostFilters: [],
         projectFilters: ["proj-a"],
-        showDone: false,
+        pinnedAgentOrder: ["h:a"],
       });
     });
   });

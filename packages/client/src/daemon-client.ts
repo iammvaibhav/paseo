@@ -4048,6 +4048,27 @@ export class DaemonClient {
     return { pinnedAt: payload.pinnedAt };
   }
 
+  /** Pins the agent to the top of the sidebar's agent view (or unpins it). Needs `features.agentPinning`. */
+  async setAgentPinned(
+    agentId: string,
+    pinned: boolean,
+    requestId?: string,
+  ): Promise<{ pinnedAt: string | null }> {
+    const payload = await this.sendCorrelatedSessionRequest({
+      requestId,
+      message: {
+        type: "agent.pin.set.request",
+        agentId,
+        pinned,
+      },
+      responseType: "agent.pin.set.response",
+    });
+    if (!payload.accepted) {
+      throw new Error(payload.error ?? "setAgentPinned rejected");
+    }
+    return { pinnedAt: payload.pinnedAt };
+  }
+
   async setWorkspaceBaseBranch(options: {
     workspaceId: string;
     baseRef: string;

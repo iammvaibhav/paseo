@@ -1421,7 +1421,7 @@ export const ar: TranslationResources = {
     },
     agentView: {
       title: "الوكلاء",
-      display: { trigger: "تفضيلات عرض الوكلاء", heading: "الوكلاء", showDone: "إظهار المكتملة" },
+      display: { trigger: "تفضيلات عرض الوكلاء", heading: "الوكلاء" },
       sections: {
         running: "جارٍ التشغيل",
         recent: "الأخيرة",
@@ -1434,6 +1434,9 @@ export const ar: TranslationResources = {
       menu: {
         open: "فتح في مساحة العمل",
         copyReference: "نسخ المرجع",
+        pin: "تثبيت في الأعلى",
+        unpin: "إلغاء التثبيت",
+        reorder: "إعادة ترتيب {{title}}",
         stop: "إيقاف",
         clear: "مسح",
         archive: "أرشيف",

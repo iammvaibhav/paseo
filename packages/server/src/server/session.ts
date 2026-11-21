@@ -4358,6 +4358,8 @@ export class Session {
         return this.handleWorkspaceTitleSetRequest(msg.workspaceId, msg.title, msg.requestId);
       case "workspace.pin.set.request":
         return this.handleWorkspacePinSetRequest(msg.workspaceId, msg.pinned, msg.requestId);
+      case "agent.pin.set.request":
+        return this.handleAgentPinSetRequest(msg.agentId, msg.pinned, msg.requestId);
       case "workspace.base_branch.set.request":
         return this.handleWorkspaceBaseBranchSetRequest(msg);
       default:
@@ -5753,6 +5755,37 @@ export class Session {
         },
       });
       emitResponse(false, null, getErrorMessageOr(error, "Failed to pin workspace"));
+    }
+  }
+
+  private async handleAgentPinSetRequest(
+    agentId: string,
+    pinned: boolean,
+    requestId: string,
+  ): Promise<void> {
+    const logContext = { agentId, pinned, requestId };
+    this.sessionLogger.info(logContext, "session: agent.pin.set.request");
+    try {
+      const pinnedAt = await this.agentManager.setAgentPinned(agentId, pinned);
+      this.emit({
+        type: "agent.pin.set.response",
+        payload: { requestId, agentId, accepted: true, pinnedAt, error: null },
+      });
+    } catch (error) {
+      this.sessionLogger.error(
+        { ...logContext, err: error },
+        "session: agent.pin.set.request error",
+      );
+      this.emit({
+        type: "agent.pin.set.response",
+        payload: {
+          requestId,
+          agentId,
+          accepted: false,
+          pinnedAt: null,
+          error: getErrorMessageOr(error, "Failed to pin agent"),
+        },
+      });
     }
   }
 

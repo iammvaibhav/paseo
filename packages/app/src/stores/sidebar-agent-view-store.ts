@@ -3,6 +3,7 @@ import { z } from "zod";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { createValidatedPersistStorage } from "@/storage/validated-persist-storage";
+import { dedupeKeys } from "./sidebar-order-store";
 import { toggleFilterEntry } from "./sidebar-view-store";
 
 export const SIDEBAR_AGENT_VIEW_STORAGE_KEY = "sidebar-agent-view";
@@ -11,45 +12,48 @@ export const SIDEBAR_AGENT_VIEW_STORE_VERSION = 1;
 export interface SidebarAgentViewStoreState {
   hostFilters: string[];
   projectFilters: string[];
-  showDone: boolean;
+  /**
+   * `serverId:agentId` order of the Pinned section after a drag. Pins themselves live on the
+   * daemon (so every device sees them); the order is per device, like pinned workspaces.
+   */
+  pinnedAgentOrder: string[];
   toggleHostFilter: (serverId: string) => void;
   clearHostFilters: () => void;
   reconcileHostFilters: (serverIds: readonly string[]) => void;
   toggleProjectFilter: (viewKey: string) => void;
   clearProjectFilters: () => void;
-  setShowDone: (showDone: boolean) => void;
+  setPinnedAgentOrder: (keys: string[]) => void;
 }
 
 export interface SidebarAgentViewPersistedState {
   hostFilters: string[];
   projectFilters: string[];
-  showDone: boolean;
+  pinnedAgentOrder: string[];
 }
 
 const SidebarAgentViewPersistedStateSchema = z.strictObject({
   hostFilters: z.array(z.string()).optional(),
   projectFilters: z.array(z.string()).optional(),
+  pinnedAgentOrder: z.array(z.string()).optional(),
+  // The removed Show done toggle: done agents always list now. Accepted so state stored by older
+  // builds still parses, then dropped.
   showDone: z.boolean().optional(),
 });
 
-export function migrateSidebarAgentViewState(persisted: unknown): {
-  hostFilters: string[];
-  projectFilters: string[];
-  showDone: boolean;
-} {
+export function migrateSidebarAgentViewState(persisted: unknown): SidebarAgentViewPersistedState {
   const result = SidebarAgentViewPersistedStateSchema.safeParse(persisted);
   if (!result.success) {
     return {
       hostFilters: [],
       projectFilters: [],
-      showDone: false,
+      pinnedAgentOrder: [],
     };
   }
 
   return {
     hostFilters: result.data.hostFilters ?? [],
     projectFilters: result.data.projectFilters ?? [],
-    showDone: result.data.showDone ?? false,
+    pinnedAgentOrder: dedupeKeys(result.data.pinnedAgentOrder ?? []),
   };
 }
 
@@ -58,7 +62,7 @@ export const useSidebarAgentViewStore = create<SidebarAgentViewStoreState>()(
     (set) => ({
       hostFilters: [],
       projectFilters: [],
-      showDone: false,
+      pinnedAgentOrder: [],
       toggleHostFilter: (serverId) =>
         set((state) => ({ hostFilters: toggleFilterEntry(state.hostFilters, serverId) })),
       clearHostFilters: () => set({ hostFilters: [] }),
@@ -77,7 +81,7 @@ export const useSidebarAgentViewStore = create<SidebarAgentViewStoreState>()(
       toggleProjectFilter: (viewKey) =>
         set((state) => ({ projectFilters: toggleFilterEntry(state.projectFilters, viewKey) })),
       clearProjectFilters: () => set({ projectFilters: [] }),
-      setShowDone: (showDone) => set({ showDone }),
+      setPinnedAgentOrder: (keys) => set({ pinnedAgentOrder: dedupeKeys(keys) }),
     }),
     {
       name: SIDEBAR_AGENT_VIEW_STORAGE_KEY,
@@ -86,7 +90,7 @@ export const useSidebarAgentViewStore = create<SidebarAgentViewStoreState>()(
       partialize: (state) => ({
         hostFilters: state.hostFilters,
         projectFilters: state.projectFilters,
-        showDone: state.showDone,
+        pinnedAgentOrder: state.pinnedAgentOrder,
       }),
       migrate: migrateSidebarAgentViewState,
     },

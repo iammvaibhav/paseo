@@ -6,11 +6,13 @@ import { StyleSheet } from "react-native-unistyles";
 import { useTranslation } from "react-i18next";
 import { usePathname } from "expo-router";
 import { Button } from "@/components/ui/button";
+import { DraggableList, type DraggableRenderItemInfo } from "@/components/draggable-list";
 import { SidebarAgentListSkeleton } from "@/components/sidebar-agent-list-skeleton";
 import { isNative as platformIsNative } from "@/constants/platform";
 import type { LifecycleRow } from "@/mission-control/lifecycle";
 import { useAgentGridStore } from "@/screens/mission-control/agent-grid/store";
 import { useActiveWorkspaceSelection } from "@/stores/navigation-active-workspace-store";
+import { useSidebarAgentViewStore } from "@/stores/sidebar-agent-view-store";
 import { useSidebarSearchStore } from "@/stores/sidebar-search-store";
 import {
   SidebarSearchArchivedSection,
@@ -19,12 +21,14 @@ import {
 import { useSidebarModel } from "@/components/sidebar/sidebar-model";
 import { getFocusedAgentId, useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
 import { buildMissionControlRoute } from "@/utils/host-routes";
+import { hasVisibleOrderChanged, mergeWithRemainder } from "@/utils/sidebar-reorder";
 import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
-import type { SidebarAgentViewSectionKey } from "./model";
+import { agentKey, type SidebarAgentViewSectionKey } from "./model";
 import { SidebarAgentViewRow } from "./row";
 import { SidebarAgentViewSectionHeader } from "./section-header";
 import { useSidebarAgentView } from "./use-sidebar-agent-view";
 export const SECTION_LABEL_KEYS: Record<SidebarAgentViewSectionKey, string> = {
+  pinned: "sidebar.pinned.title",
   running: "sidebar.agentView.sections.running",
   recent: "sidebar.agentView.sections.recent",
   results: "sidebar.search.resultsTitle",
@@ -95,6 +99,31 @@ export function SidebarAgentViewList({
     [onAgentPress, selectedKey],
   );
 
+  const pinnedAgentOrder = useSidebarAgentViewStore((state) => state.pinnedAgentOrder);
+  const setPinnedAgentOrder = useSidebarAgentViewStore((state) => state.setPinnedAgentOrder);
+  const handlePinnedDragEnd = useCallback(
+    (rows: LifecycleRow[]) => {
+      const reorderedVisibleKeys = rows.map(agentKey);
+      if (!hasVisibleOrderChanged({ currentOrder: pinnedAgentOrder, reorderedVisibleKeys })) return;
+      setPinnedAgentOrder(
+        mergeWithRemainder({ currentOrder: pinnedAgentOrder, reorderedVisibleKeys }),
+      );
+    },
+    [pinnedAgentOrder, setPinnedAgentOrder],
+  );
+  const renderPinnedRow = useCallback(
+    ({ item, isActive }: DraggableRenderItemInfo<LifecycleRow>) => (
+      <SidebarAgentViewRow
+        row={item}
+        selected={agentKey(item) === selectedKey}
+        onAgentPress={onAgentPress}
+        draggable
+        isDragging={isActive}
+      />
+    ),
+    [onAgentPress, selectedKey],
+  );
+
   const emptyComponent = useMemo(
     () => (
       <View style={styles.emptyContainer} testID="sidebar-agent-view-empty-state">
@@ -146,13 +175,38 @@ export function SidebarAgentViewList({
     );
   }
 
+  // Pinned agents sit above the header, like pinned workspaces in the workspace view.
+  const pinnedSection = sections.find((section) => section.key === "pinned") ?? null;
+  const listSections = sections.filter((section) => section.key !== "pinned");
   const emptyBody = searchActive ? <SidebarSearchEmptyState /> : emptyComponent;
   const content = (
     <>
+      {pinnedSection ? (
+        <View style={styles.section} testID="sidebar-agent-view-pinned">
+          <SidebarAgentViewSectionHeader
+            title={t(SECTION_LABEL_KEYS.pinned)}
+            count={pinnedSection.rows.length}
+            testID="sidebar-agent-view-section-pinned"
+          />
+          <DraggableList
+            testID="sidebar-agent-view-pinned-list"
+            data={pinnedSection.rows}
+            keyExtractor={agentKey}
+            renderItem={renderPinnedRow}
+            onDragEnd={handlePinnedDragEnd}
+            extraData={selectedKey}
+            scrollEnabled={false}
+            useDragHandle
+            nestable={platformIsNative}
+            simultaneousGestureRef={parentGestureRef}
+            gestureHostPresented={active}
+          />
+        </View>
+      ) : null}
       {listHeaderComponent}
-      {sections.length === 0 && !hasArchivedMatches
+      {listSections.length === 0 && !pinnedSection && !hasArchivedMatches
         ? emptyBody
-        : sections.map((section) => (
+        : listSections.map((section) => (
             <View key={section.key} style={styles.section}>
               <SidebarAgentViewSectionHeader
                 title={t(SECTION_LABEL_KEYS[section.key])}

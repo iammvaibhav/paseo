@@ -1441,7 +1441,7 @@ export const en = {
     },
     agentView: {
       title: "Agents",
-      display: { trigger: "Agent view preferences", heading: "Agents", showDone: "Show done" },
+      display: { trigger: "Agent view preferences", heading: "Agents" },
       sections: {
         running: "Running",
         recent: "Recent",
@@ -1454,6 +1454,9 @@ export const en = {
       menu: {
         open: "Open in workspace",
         copyReference: "Copy reference",
+        pin: "Pin to top",
+        unpin: "Unpin",
+        reorder: "Reorder {{title}}",
         stop: "Stop",
         clear: "Clear",
         archive: "Archive",

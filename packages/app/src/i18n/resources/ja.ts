@@ -1435,7 +1435,7 @@ export const ja: TranslationResources = {
     },
     agentView: {
       title: "エージェント",
-      display: { trigger: "エージェント表示設定", heading: "エージェント", showDone: "完了を表示" },
+      display: { trigger: "エージェント表示設定", heading: "エージェント" },
       sections: { running: "実行中", recent: "最近" },
       empty: {
         title: "表示するエージェントがありません",
@@ -1445,6 +1445,9 @@ export const ja: TranslationResources = {
       menu: {
         open: "ワークスペースで開く",
         copyReference: "参照をコピー",
+        pin: "上部に固定",
+        unpin: "固定解除",
+        reorder: "{{title}} を並べ替え",
         stop: "停止",
         clear: "クリア",
         archive: "アーカイブ",

@@ -6,9 +6,7 @@ import { withUnistyles } from "react-native-unistyles";
 import type { Theme } from "@/styles/theme";
 import { isWeb } from "@/constants/platform";
 import {
-  MenuItem,
   MenuRoot,
-  MenuSeparator,
   MenuSubTrigger,
   MenuSurface,
   MenuTrigger,
@@ -29,16 +27,14 @@ const mutedIconMapping = (theme: Theme) => ({ color: theme.colors.foregroundMute
 
 const ThemedSettings2 = withUnistyles(Settings2);
 
-export function SidebarAgentViewPreferencesMenu(): ReactElement {
+export function SidebarAgentViewPreferencesMenu(): ReactElement | null {
   const { t } = useTranslation();
   const hostFilters = useSidebarAgentViewStore((state) => state.hostFilters);
   const projectFilters = useSidebarAgentViewStore((state) => state.projectFilters);
-  const showDone = useSidebarAgentViewStore((state) => state.showDone);
   const toggleHostFilter = useSidebarAgentViewStore((state) => state.toggleHostFilter);
   const clearHostFilters = useSidebarAgentViewStore((state) => state.clearHostFilters);
   const toggleProjectFilter = useSidebarAgentViewStore((state) => state.toggleProjectFilter);
   const clearProjectFilters = useSidebarAgentViewStore((state) => state.clearProjectFilters);
-  const setShowDone = useSidebarAgentViewStore((state) => state.setShowDone);
 
   const hosts = useHosts();
   const { allHostProjects } = useSidebarModel();
@@ -106,10 +102,6 @@ export function SidebarAgentViewPreferencesMenu(): ReactElement {
     clearProjectFilters,
   ]);
 
-  const handleToggleShowDone = useCallback(() => {
-    setShowDone(!showDone);
-  }, [setShowDone, showDone]);
-
   const triggerStyle = useCallback(
     ({ hovered = false }: PressableStateCallbackType & { hovered?: boolean }) => [
       menuTriggerStyles.trigger,
@@ -117,6 +109,9 @@ export function SidebarAgentViewPreferencesMenu(): ReactElement {
     ],
     [],
   );
+
+  // The menu holds only the filters; with one host and one project there is nothing to filter.
+  if (!showHostFilter && !showProjectFilter) return null;
 
   return (
     <MenuRoot compactMode="sheet">
@@ -135,15 +130,6 @@ export function SidebarAgentViewPreferencesMenu(): ReactElement {
         sheetTitle={t("sidebar.agentView.display.heading")}
         testID="sidebar-agent-view-preferences-content"
       >
-        <MenuItem
-          selected={showDone}
-          closeOnSelect={false}
-          onSelect={handleToggleShowDone}
-          testID="sidebar-agent-view-show-done"
-        >
-          {t("sidebar.agentView.display.showDone")}
-        </MenuItem>
-        {showHostFilter || showProjectFilter ? <MenuSeparator /> : null}
         {showHostFilter ? (
           <MenuSubTrigger
             id="hostFilter"

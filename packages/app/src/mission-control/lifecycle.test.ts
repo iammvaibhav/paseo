@@ -894,24 +894,31 @@ describe("rowActivityMs", () => {
     expect(rowActivityMs(row)).toBe(NOW - 5_000);
   });
 
-  it("uses the newest mission-control event for done rows, never the boot-rewritten directory stamp", () => {
+  it("dates a done row by its last activity, not by the Mark done verdict or the boot stamp", () => {
     // Done row whose directory lastActivityAt is a shared restore value (18m
-    // ago) but whose verdict card — the real "when it ended" — is older.
+    // ago). Marking it done a minute ago must not move it or reset its age:
+    // the finish card a day ago is its last activity.
     const done = makeAgent({ lastActivityAt: new Date(NOW - 18 * 60_000) });
     const state = derive(done, [
-      makeEvent({ kind: "finished", headline: "Finished" }),
+      makeEvent({
+        kind: "finished",
+        headline: "Finished",
+        ts: new Date(NOW - DAY_MS).toISOString(),
+      }),
       makeEvent({
         kind: "verdict",
         source: "system",
         headline: "Marked done",
         detail: "Marked done",
+        ts: new Date(NOW - 60_000).toISOString(),
       }),
     ]);
-    const row = { ...state, agent: done, sortTime: 0, lastEventAt: NOW - DAY_MS };
-    expect(rowActivityMs(row)).toBe(NOW - DAY_MS);
+    expect(state.reviewState).toBe("done");
+    expect(state.lastEventAt).toBe(NOW - DAY_MS);
+    expect(rowActivityMs({ ...state, agent: done, sortTime: 0 })).toBe(NOW - DAY_MS);
   });
 
-  it("uses the newest mission-control event for ready rows (verdict time included)", () => {
+  it("uses the newest mission-control event for ready rows", () => {
     // Ready rows are history too: the finish card is the last real activity,
     // not the directory stamp rewritten at boot/restore.
     const ready = makeAgent({ lastActivityAt: new Date(NOW - 5_000) });

@@ -2,11 +2,12 @@ import { memo, useCallback, useMemo, useState } from "react";
 import { Pressable, Text, View, type PressableStateCallbackType } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import { useTranslation } from "react-i18next";
-import { Archive, CircleAlert } from "lucide-react-native";
+import { Archive, CircleAlert, GripVertical } from "lucide-react-native";
 import { usePathname } from "expo-router";
 import { StatusRing } from "@/components/status-ring";
+import { DraggableListHandle } from "@/components/draggable-list";
 import { ContextMenu, ContextMenuTrigger } from "@/components/ui/context-menu";
-import { isWeb } from "@/constants/platform";
+import { isNative, isWeb } from "@/constants/platform";
 import { useCompactTimeAgo } from "@/hooks/use-time-ago";
 import { useLiveDuration } from "@/hooks/use-live-duration";
 import { rowActivityMs, rowRunningStartedMs, type LifecycleRow } from "@/mission-control/lifecycle";
@@ -31,6 +32,8 @@ const needsInputColorMapping = (theme: Theme) => ({
 });
 const archiveColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 const ThemedArchive = withUnistyles(Archive);
+const ThemedGripVertical = withUnistyles(GripVertical);
+const gripColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 
 const ThemedCircleAlert = withUnistyles(CircleAlert);
 
@@ -89,12 +92,20 @@ export interface SidebarAgentViewRowProps {
   /** The agent the visible surface is showing; drawn like the open workspace's row. */
   selected: boolean;
   onAgentPress?: () => void;
+  /**
+   * The row sits in the Pinned section's drag list. Its status slot becomes the drag handle: it
+   * shows a grip while hovered on web, and a short hold on it starts the drag on touch.
+   */
+  draggable?: boolean;
+  isDragging?: boolean;
 }
 
 export const SidebarAgentViewRow = memo(function SidebarAgentViewRow({
   row,
   selected,
   onAgentPress,
+  draggable = false,
+  isDragging = false,
 }: SidebarAgentViewRowProps) {
   const { t } = useTranslation();
   const { agent } = row;
@@ -164,17 +175,35 @@ export const SidebarAgentViewRow = memo(function SidebarAgentViewRow({
   const rowStyle = useCallback(
     ({ pressed }: PressableStateCallbackType) => [
       styles.row,
-      isHovered && styles.rowHovered,
+      (isHovered || isDragging) && styles.rowHovered,
       selected && styles.rowSelected,
       pressed && styles.rowPressed,
     ],
-    [isHovered, selected],
+    [isDragging, isHovered, selected],
   );
   const accessibilityState = useMemo(() => ({ selected }), [selected]);
   const titleStyle = isHovered ? [styles.title, styles.titleHovered] : styles.title;
 
+  const statusIndicator = <AgentStatusIndicator bucket={stateBucket} />;
+  const leading = draggable ? (
+    <DraggableListHandle
+      accessibilityLabel={t("sidebar.agentView.menu.reorder", { title })}
+      testID={`sidebar-agent-view-drag-handle-${agent.serverId}-${agent.id}`}
+    >
+      {(isHovered || isDragging) && !isNative ? (
+        <View style={styles.statusSlot}>
+          <ThemedGripVertical size={14} uniProps={gripColorMapping} />
+        </View>
+      ) : (
+        statusIndicator
+      )}
+    </DraggableListHandle>
+  ) : (
+    statusIndicator
+  );
+
   return (
-    <SidebarAgentHoverCard agent={agent} title={title} disabled={contextMenuOpen}>
+    <SidebarAgentHoverCard agent={agent} title={title} disabled={contextMenuOpen || isDragging}>
       <View
         style={styles.hoverTarget}
         onPointerEnter={handlePointerEnter}
@@ -190,7 +219,7 @@ export const SidebarAgentViewRow = memo(function SidebarAgentViewRow({
             accessibilityLabel={title}
             testID={`sidebar-agent-view-row-${agent.serverId}-${agent.id}`}
           >
-            <AgentStatusIndicator bucket={stateBucket} />
+            {leading}
             <Text style={titleStyle} numberOfLines={1}>
               {title}
             </Text>

@@ -1444,7 +1444,6 @@ export const ru: TranslationResources = {
       display: {
         trigger: "Настройки отображения агентов",
         heading: "Агенты",
-        showDone: "Показывать завершённые",
       },
       sections: {
         running: "Работает",
@@ -1458,6 +1457,9 @@ export const ru: TranslationResources = {
       menu: {
         open: "Открыть в рабочей области",
         copyReference: "Скопировать ссылку",
+        pin: "Закрепить вверху",
+        unpin: "Открепить",
+        reorder: "Изменить порядок: {{title}}",
         stop: "Остановить",
         clear: "Очистить",
         archive: "Архивировать",
