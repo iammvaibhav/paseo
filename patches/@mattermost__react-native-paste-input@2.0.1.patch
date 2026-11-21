@@ -1,7 +1,7 @@
-diff --git a/node_modules/@mattermost/react-native-paste-input/android/src/codegen-patch/react/renderer/components/PasteTextInputSpecs/ShadowNodes.cpp b/node_modules/@mattermost/react-native-paste-input/android/src/codegen-patch/react/renderer/components/PasteTextInputSpecs/ShadowNodes.cpp
+diff --git a/android/src/codegen-patch/react/renderer/components/PasteTextInputSpecs/ShadowNodes.cpp b/android/src/codegen-patch/react/renderer/components/PasteTextInputSpecs/ShadowNodes.cpp
 index 73466dd..8440ac9 100644
---- a/node_modules/@mattermost/react-native-paste-input/android/src/codegen-patch/react/renderer/components/PasteTextInputSpecs/ShadowNodes.cpp
-+++ b/node_modules/@mattermost/react-native-paste-input/android/src/codegen-patch/react/renderer/components/PasteTextInputSpecs/ShadowNodes.cpp
+--- a/android/src/codegen-patch/react/renderer/components/PasteTextInputSpecs/ShadowNodes.cpp
++++ b/android/src/codegen-patch/react/renderer/components/PasteTextInputSpecs/ShadowNodes.cpp
 @@ -33,7 +33,11 @@ Size PasteTextInputShadowNode::measureContent(
        .surfaceId = getSurfaceId(),
    };
@@ -27,10 +27,10 @@ index 73466dd..8440ac9 100644
    }
  
    auto textSize = textLayoutManager_
-diff --git a/node_modules/@mattermost/react-native-paste-input/android/src/main/java/com/mattermost/pasteinputtext/PasteInputEditText.kt b/node_modules/@mattermost/react-native-paste-input/android/src/main/java/com/mattermost/pasteinputtext/PasteInputEditText.kt
+diff --git a/android/src/main/java/com/mattermost/pasteinputtext/PasteInputEditText.kt b/android/src/main/java/com/mattermost/pasteinputtext/PasteInputEditText.kt
 index 9e429b8..1d10014 100644
---- a/node_modules/@mattermost/react-native-paste-input/android/src/main/java/com/mattermost/pasteinputtext/PasteInputEditText.kt
-+++ b/node_modules/@mattermost/react-native-paste-input/android/src/main/java/com/mattermost/pasteinputtext/PasteInputEditText.kt
+--- a/android/src/main/java/com/mattermost/pasteinputtext/PasteInputEditText.kt
++++ b/android/src/main/java/com/mattermost/pasteinputtext/PasteInputEditText.kt
 @@ -36,2 +36,2 @@ class PasteInputEditText(context: ThemedReactContext) : ReactEditText(context) {
 -  override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection {
 -    val ic = super.onCreateInputConnection(outAttrs)
@@ -39,10 +39,10 @@ index 9e429b8..1d10014 100644
 @@ -58 +58 @@ class PasteInputEditText(context: ThemedReactContext) : ReactEditText(context) {
 -    return InputConnectionCompat.createWrapper(ic!!, outAttrs, callback)
 +    return InputConnectionCompat.createWrapper(ic, outAttrs, callback)
-diff --git a/node_modules/@mattermost/react-native-paste-input/lib/commonjs/PasteInput.js b/node_modules/@mattermost/react-native-paste-input/lib/commonjs/PasteInput.js
+diff --git a/lib/commonjs/PasteInput.js b/lib/commonjs/PasteInput.js
 index 51b9dfa..501badf 100644
---- a/node_modules/@mattermost/react-native-paste-input/lib/commonjs/PasteInput.js
-+++ b/node_modules/@mattermost/react-native-paste-input/lib/commonjs/PasteInput.js
+--- a/lib/commonjs/PasteInput.js
++++ b/lib/commonjs/PasteInput.js
 @@ -54,17 +54,25 @@ function PasteInputIOSComponent(props, forwardedRef) {
  
    // Expose the TextInput ref to parent components (same as Android)
@@ -107,10 +107,10 @@ index 51b9dfa..501badf 100644
  
    // For Android, PasteTextInput already handles everything internally
    // Just need to adapt the onPaste callback format
-diff --git a/node_modules/@mattermost/react-native-paste-input/lib/commonjs/PasteTextInput.js b/node_modules/@mattermost/react-native-paste-input/lib/commonjs/PasteTextInput.js
+diff --git a/lib/commonjs/PasteTextInput.js b/lib/commonjs/PasteTextInput.js
 index 5119e65..287216a 100644
---- a/node_modules/@mattermost/react-native-paste-input/lib/commonjs/PasteTextInput.js
-+++ b/node_modules/@mattermost/react-native-paste-input/lib/commonjs/PasteTextInput.js
+--- a/lib/commonjs/PasteTextInput.js
++++ b/lib/commonjs/PasteTextInput.js
 @@ -52,6 +52,7 @@ function InternalTextInput(props) {
      end: propsSelection.end ?? propsSelection.start
    }, [propsSelection]);
@@ -156,10 +156,10 @@ index 5119e65..287216a 100644
      setLastNativeText(currentText);
      setMostRecentEventCount(event.nativeEvent.eventCount);
    };
-diff --git a/node_modules/@mattermost/react-native-paste-input/lib/module/PasteInput.js b/node_modules/@mattermost/react-native-paste-input/lib/module/PasteInput.js
+diff --git a/lib/module/PasteInput.js b/lib/module/PasteInput.js
 index 75fe015..1d3cd64 100644
---- a/node_modules/@mattermost/react-native-paste-input/lib/module/PasteInput.js
-+++ b/node_modules/@mattermost/react-native-paste-input/lib/module/PasteInput.js
+--- a/lib/module/PasteInput.js
++++ b/lib/module/PasteInput.js
 @@ -49,17 +49,25 @@ function PasteInputIOSComponent(props, forwardedRef) {
  
    // Expose the TextInput ref to parent components (same as Android)
@@ -224,10 +224,10 @@ index 75fe015..1d3cd64 100644
  
    // For Android, PasteTextInput already handles everything internally
    // Just need to adapt the onPaste callback format
-diff --git a/node_modules/@mattermost/react-native-paste-input/lib/module/PasteTextInput.js b/node_modules/@mattermost/react-native-paste-input/lib/module/PasteTextInput.js
+diff --git a/lib/module/PasteTextInput.js b/lib/module/PasteTextInput.js
 index 39bd607..f2b1d2f 100644
---- a/node_modules/@mattermost/react-native-paste-input/lib/module/PasteTextInput.js
-+++ b/node_modules/@mattermost/react-native-paste-input/lib/module/PasteTextInput.js
+--- a/lib/module/PasteTextInput.js
++++ b/lib/module/PasteTextInput.js
 @@ -46,6 +46,7 @@ function InternalTextInput(props) {
      end: propsSelection.end ?? propsSelection.start
    }, [propsSelection]);
@@ -273,10 +273,10 @@ index 39bd607..f2b1d2f 100644
      setLastNativeText(currentText);
      setMostRecentEventCount(event.nativeEvent.eventCount);
    };
-diff --git a/node_modules/@mattermost/react-native-paste-input/src/PasteInput.tsx b/node_modules/@mattermost/react-native-paste-input/src/PasteInput.tsx
+diff --git a/src/PasteInput.tsx b/src/PasteInput.tsx
 index 12befab..0d23ca5 100644
---- a/node_modules/@mattermost/react-native-paste-input/src/PasteInput.tsx
-+++ b/node_modules/@mattermost/react-native-paste-input/src/PasteInput.tsx
+--- a/src/PasteInput.tsx
++++ b/src/PasteInput.tsx
 @@ -64,17 +64,25 @@ function PasteInputIOSComponent(
  
      // Expose the TextInput ref to parent components (same as Android)
@@ -341,10 +341,10 @@ index 12befab..0d23ca5 100644
  
      // For Android, PasteTextInput already handles everything internally
      // Just need to adapt the onPaste callback format
-diff --git a/node_modules/@mattermost/react-native-paste-input/src/PasteTextInput.tsx b/node_modules/@mattermost/react-native-paste-input/src/PasteTextInput.tsx
+diff --git a/src/PasteTextInput.tsx b/src/PasteTextInput.tsx
 index dcc4a2b..1156458 100644
---- a/node_modules/@mattermost/react-native-paste-input/src/PasteTextInput.tsx
-+++ b/node_modules/@mattermost/react-native-paste-input/src/PasteTextInput.tsx
+--- a/src/PasteTextInput.tsx
++++ b/src/PasteTextInput.tsx
 @@ -84,6 +84,7 @@ function InternalTextInput(props: PasteInputProps): React.ReactNode {
  
      const [mostRecentEventCount, setMostRecentEventCount] =

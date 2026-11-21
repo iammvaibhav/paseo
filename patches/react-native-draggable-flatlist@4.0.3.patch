@@ -1,7 +1,7 @@
-diff --git a/node_modules/react-native-draggable-flatlist/lib/typescript/components/DraggableFlatList.d.ts b/node_modules/react-native-draggable-flatlist/lib/typescript/components/DraggableFlatList.d.ts
+diff --git a/lib/typescript/components/DraggableFlatList.d.ts b/lib/typescript/components/DraggableFlatList.d.ts
 index d3a4f1f..66e5124 100644
---- a/node_modules/react-native-draggable-flatlist/lib/typescript/components/DraggableFlatList.d.ts
-+++ b/node_modules/react-native-draggable-flatlist/lib/typescript/components/DraggableFlatList.d.ts
+--- a/lib/typescript/components/DraggableFlatList.d.ts
++++ b/lib/typescript/components/DraggableFlatList.d.ts
 @@ -16,12 +16,15 @@ declare const _default: <T>(props: Omit<FlatListProps<T>, "keyExtractor" | "data
      keyExtractor: (item: T, index: number) => string;
      onDragBegin?: ((index: number) => void) | undefined;
@@ -18,10 +18,10 @@ index d3a4f1f..66e5124 100644
      outerScrollOffset?: Animated.SharedValue<number> | undefined;
      onAnimValInit?: ((animVals: {
          activeCellOffset: import("react-native-reanimated").SharedValue<number>;
-diff --git a/node_modules/react-native-draggable-flatlist/lib/typescript/components/NestableDraggableFlatList.d.ts b/node_modules/react-native-draggable-flatlist/lib/typescript/components/NestableDraggableFlatList.d.ts
+diff --git a/lib/typescript/components/NestableDraggableFlatList.d.ts b/lib/typescript/components/NestableDraggableFlatList.d.ts
 index d3c6cbb..a586a09 100644
---- a/node_modules/react-native-draggable-flatlist/lib/typescript/components/NestableDraggableFlatList.d.ts
-+++ b/node_modules/react-native-draggable-flatlist/lib/typescript/components/NestableDraggableFlatList.d.ts
+--- a/lib/typescript/components/NestableDraggableFlatList.d.ts
++++ b/lib/typescript/components/NestableDraggableFlatList.d.ts
 @@ -15,12 +15,15 @@ export declare const NestableDraggableFlatList: <T>(props: Omit<import("react-na
      keyExtractor: (item: T, index: number) => string;
      onDragBegin?: ((index: number) => void) | undefined;
@@ -38,10 +38,10 @@ index d3c6cbb..a586a09 100644
      outerScrollOffset?: Animated.SharedValue<number> | undefined;
      onAnimValInit?: ((animVals: {
          activeCellOffset: import("react-native-reanimated").SharedValue<number>;
-diff --git a/node_modules/react-native-draggable-flatlist/lib/typescript/types.d.ts b/node_modules/react-native-draggable-flatlist/lib/typescript/types.d.ts
+diff --git a/lib/typescript/types.d.ts b/lib/typescript/types.d.ts
 index 2abb4a2..c60dedf 100644
---- a/node_modules/react-native-draggable-flatlist/lib/typescript/types.d.ts
-+++ b/node_modules/react-native-draggable-flatlist/lib/typescript/types.d.ts
+--- a/lib/typescript/types.d.ts
++++ b/lib/typescript/types.d.ts
 @@ -23,12 +23,21 @@ export declare type DraggableFlatListProps<T> = Modify<FlatListProps<T>, {
      keyExtractor: (item: T, index: number) => string;
      onDragBegin?: (index: number) => void;
@@ -64,10 +64,10 @@ index 2abb4a2..c60dedf 100644
      outerScrollOffset?: Animated.SharedValue<number>;
      onAnimValInit?: (animVals: ReturnType<typeof useAnimatedValues>) => void;
      itemEnteringAnimation?: AnimateProps<Animated.View>["entering"];
-diff --git a/node_modules/react-native-draggable-flatlist/src/components/CellRendererComponent.tsx b/node_modules/react-native-draggable-flatlist/src/components/CellRendererComponent.tsx
+diff --git a/src/components/CellRendererComponent.tsx b/src/components/CellRendererComponent.tsx
 index e4e861a..f485139 100644
---- a/node_modules/react-native-draggable-flatlist/src/components/CellRendererComponent.tsx
-+++ b/node_modules/react-native-draggable-flatlist/src/components/CellRendererComponent.tsx
+--- a/src/components/CellRendererComponent.tsx
++++ b/src/components/CellRendererComponent.tsx
 @@ -8,6 +8,7 @@ import {
  } from "react-native";
  import Animated, {
@@ -180,10 +180,10 @@ index e4e861a..f485139 100644
  export default typedMemo(CellRendererComponent);
  
  declare global {
-diff --git a/node_modules/react-native-draggable-flatlist/src/components/DraggableFlatList.tsx b/node_modules/react-native-draggable-flatlist/src/components/DraggableFlatList.tsx
+diff --git a/src/components/DraggableFlatList.tsx b/src/components/DraggableFlatList.tsx
 index 7c88afc..05618ec 100644
---- a/node_modules/react-native-draggable-flatlist/src/components/DraggableFlatList.tsx
-+++ b/node_modules/react-native-draggable-flatlist/src/components/DraggableFlatList.tsx
+--- a/src/components/DraggableFlatList.tsx
++++ b/src/components/DraggableFlatList.tsx
 @@ -16,9 +16,11 @@ import {
    FlatList,
    Gesture,
@@ -595,10 +595,10 @@ index 7c88afc..05618ec 100644
            style={props.containerStyle}
            ref={containerRef}
            onLayout={onContainerLayout}
-diff --git a/node_modules/react-native-draggable-flatlist/src/components/NestableDraggableFlatList.tsx b/node_modules/react-native-draggable-flatlist/src/components/NestableDraggableFlatList.tsx
+diff --git a/src/components/NestableDraggableFlatList.tsx b/src/components/NestableDraggableFlatList.tsx
 index 1559352..33eb5de 100644
---- a/node_modules/react-native-draggable-flatlist/src/components/NestableDraggableFlatList.tsx
-+++ b/node_modules/react-native-draggable-flatlist/src/components/NestableDraggableFlatList.tsx
+--- a/src/components/NestableDraggableFlatList.tsx
++++ b/src/components/NestableDraggableFlatList.tsx
 @@ -1,5 +1,5 @@
  import React, { useRef, useState } from "react";
 -import { findNodeHandle, LogBox } from "react-native";
@@ -634,10 +634,10 @@ index 1559352..33eb5de 100644
        onAnimValInit={onAnimValInit}
      />
    );
-diff --git a/node_modules/react-native-draggable-flatlist/src/context/draggableFlatListContext.tsx b/node_modules/react-native-draggable-flatlist/src/context/draggableFlatListContext.tsx
+diff --git a/src/context/draggableFlatListContext.tsx b/src/context/draggableFlatListContext.tsx
 index 75f7db7..e99faf3 100644
---- a/node_modules/react-native-draggable-flatlist/src/context/draggableFlatListContext.tsx
-+++ b/node_modules/react-native-draggable-flatlist/src/context/draggableFlatListContext.tsx
+--- a/src/context/draggableFlatListContext.tsx
++++ b/src/context/draggableFlatListContext.tsx
 @@ -5,6 +5,7 @@ type Props<T> = {
    keyExtractor: (item: T, index: number) => string;
    horizontal: boolean;
@@ -665,10 +665,10 @@ index 75f7db7..e99faf3 100644
    );
  
    return (
-diff --git a/node_modules/react-native-draggable-flatlist/src/types.ts b/node_modules/react-native-draggable-flatlist/src/types.ts
+diff --git a/src/types.ts b/src/types.ts
 index d6755c8..af70a01 100644
---- a/node_modules/react-native-draggable-flatlist/src/types.ts
-+++ b/node_modules/react-native-draggable-flatlist/src/types.ts
+--- a/src/types.ts
++++ b/src/types.ts
 @@ -36,12 +36,21 @@ export type DraggableFlatListProps<T> = Modify<
      keyExtractor: (item: T, index: number) => string;
      onDragBegin?: (index: number) => void;

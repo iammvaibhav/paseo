@@ -30,23 +30,17 @@ if [[ "$head" != "$EXPECT"* ]]; then
 fi
 
 # Dependencies: reinstall when the lockfile, a package.json, or the patches
-# changed since the last install here. Patches are re-applied every time: a
-# plain `pnpm install` skips lifecycle scripts when nothing changed. grep reads the whole
-# diff (no -q): stopping at the first match SIGPIPEs a long `git diff`, and under pipefail
-# that failed pipeline skipped the install.
+# changed since the last install here. grep reads the whole diff (no -q): stopping at the
+# first match SIGPIPEs a long `git diff`, and under pipefail that failed pipeline skipped
+# the install.
 ref_file="$HOME/.paseo-sync-ref"
 prev="$(cat "$ref_file" 2>/dev/null || true)"
 if [[ -z "$prev" ]] || ! git cat-file -e "$prev^{commit}" 2>/dev/null \
   || git diff --name-only "$prev" "$head" \
-  | grep -E '(^|/)package\.json$|^pnpm-lock\.yaml$|^pnpm-workspace\.yaml$|^patches/|^scripts/postinstall-patches\.mjs$' >/dev/null; then
+  | grep -E '(^|/)package\.json$|^pnpm-lock\.yaml$|^pnpm-workspace\.yaml$|^patches/' >/dev/null; then
   echo "installing dependencies"
   corepack enable && corepack prepare pnpm@11.22.0 --activate
-  # A patch that changed since this checkout applied it fails the first install, which removes
-  # the package (scripts/postinstall-patches.mjs); the second install links it clean and patches it.
-  pnpm install --frozen-lockfile || pnpm install --frozen-lockfile
-fi
-if [[ -x node_modules/.bin/patch-package ]]; then
-  PATH="$PWD/node_modules/.bin:$PATH" node scripts/postinstall-patches.mjs
+  pnpm install --frozen-lockfile
 fi
 echo "$head" >"$ref_file"
 echo "checkout at ${head:0:9}"

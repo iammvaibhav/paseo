@@ -390,7 +390,7 @@ root-owned sibling dialog over an existing iOS presenter. `SheetHostScope` moves
 and container measurement while forwarding the same modal queue. Compact
 [workspace sheets](explorer-sidebar.md#sheets) use the app overlay host above both sidebars;
 wide layouts keep local geometry. That export is
-what `patches/@gorhom+bottom-sheet+*.patch` adds.
+what `patches/@gorhom__bottom-sheet@*.patch` adds.
 
 A sheet whose owner may veto the close (unsaved work) passes `enableDismissOnClose={false}`. Every
 close path then parks the sheet at index -1 with its content mounted; the owner hears

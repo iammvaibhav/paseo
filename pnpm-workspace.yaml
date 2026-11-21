@@ -14,24 +14,51 @@ packages:
   # Installed by the workspace so `@getpaseo/plugin` can typecheck the examples.
   - "plugin-examples/markdown-panel"
 
+# The patched packages below have no install scripts of their own. They are listed because pnpm
+# reads a package's side-effects cache, which holds the patched copy, only when its build is
+# allowed; without it every worktree gets a private, re-patched copy (mermaid alone is 88 MB).
 allowBuilds:
+  "@gorhom/bottom-sheet": true
+  "@legendapp/list": true
+  "@mattermost/react-native-paste-input": true
+  "@opencode-ai/sdk": true
   "@shopify/react-native-skia": true
+  "@xterm/addon-ligatures": true
   dtrace-provider: true
   electron-winstaller: true
   esbuild: true
+  expo-modules-core: true
   lefthook: true
+  mermaid: true
   msgpackr-extract: false
   node-pty: true
+  react-native-draggable-flatlist: true
   react-native-enriched-markdown: true
+  react-native-gesture-handler: true
+  react-native-reanimated: true
+  react-native-svg: true
+  react-native-unistyles: true
   unrs-resolver: true
   workerd: true
 
-# Every worktree on a machine shares one pnpm store. Its side-effects cache keeps a built
-# package's files (react-native-enriched-markdown, node-pty), and patch-package used to edit
-# those hardlinked files in place, so one worktree's patch leaked into every later install and
-# a worktree with another version of the patch could not apply it. postinstall-patches.mjs now
-# patches private copies; without the cache, packages with allowed builds rebuild per install.
-sideEffectsCache: false
+# pnpm applies these at import and stores each patched package as its own store entry, so the
+# store every worktree on a machine shares is never edited in place. Keys pin exact versions:
+# an upgrade fails the install until the patch is regenerated (docs/development.md). Add a
+# newly patched package to allowBuilds too.
+patchedDependencies:
+  "@gorhom/bottom-sheet@5.2.14": patches/@gorhom__bottom-sheet@5.2.14.patch
+  "@legendapp/list@3.7.1": patches/@legendapp__list@3.7.1.patch
+  "@mattermost/react-native-paste-input@2.0.1": patches/@mattermost__react-native-paste-input@2.0.1.patch
+  "@opencode-ai/sdk@1.14.46": patches/@opencode-ai__sdk@1.14.46.patch
+  "@xterm/addon-ligatures@0.11.0-beta.301": patches/@xterm__addon-ligatures@0.11.0-beta.301.patch
+  expo-modules-core@57.0.23: patches/expo-modules-core@57.0.23.patch
+  mermaid@11.17.2: patches/mermaid@11.17.2.patch
+  react-native-draggable-flatlist@4.0.3: patches/react-native-draggable-flatlist@4.0.3.patch
+  react-native-enriched-markdown@1.2.0-nightly-20261014-766fc0e67: patches/react-native-enriched-markdown@1.2.0-nightly-20261014-766fc0e67.patch
+  react-native-gesture-handler@2.32.0: patches/react-native-gesture-handler@2.32.0.patch
+  react-native-reanimated@4.5.5: patches/react-native-reanimated@4.5.5.patch
+  react-native-svg@15.15.4: patches/react-native-svg@15.15.4.patch
+  react-native-unistyles@3.2.4: patches/react-native-unistyles@3.2.4.patch
 
 # Supply-chain hardening: refuse to resolve a package version published less
 # than a week ago. Malicious releases are almost always pulled within days.

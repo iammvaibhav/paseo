@@ -5,7 +5,7 @@ import { View } from "react-native";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { disclosureAnchor } from "./native-disclosure-hold";
 
-// The native chat timeline runs on the patched LegendList (patches/@legendapp+list+3.7.1.patch).
+// The native chat timeline runs on the patched LegendList (patches/@legendapp__list@3.7.1.patch).
 // A disclosure hold keeps only the held row in place: `shouldRestorePosition` accepts no other row.
 // The native build applies its scroll adjustments through native scroll props that
 // react-native-web ignores, so these tests read the offset LegendList holds, not the DOM's.

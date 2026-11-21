@@ -36,11 +36,11 @@
 #    bottom-edge disclosure collapsing near the end landed at the end instead of in place.
 #
 # Upgrading: drop each hunk whose fix the new version ships, regenerate with
-# `npx patch-package @legendapp/list`, and copy this header back on top.
-diff --git a/node_modules/@legendapp/list/react-native.d.ts b/node_modules/@legendapp/list/react-native.d.ts
+# `pnpm patch @legendapp/list@<version>` + `pnpm patch-commit`, and copy this header back on top.
+diff --git a/react-native.d.ts b/react-native.d.ts
 index 983e937..970ba51 100644
---- a/node_modules/@legendapp/list/react-native.d.ts
-+++ b/node_modules/@legendapp/list/react-native.d.ts
+--- a/react-native.d.ts
++++ b/react-native.d.ts
 @@ -204,6 +204,11 @@ interface LegendListSpecificProps<ItemT, TItemType extends string | undefined> {
       * Change extraData when the fixed sizes returned by this callback change.
       */
@@ -53,10 +53,10 @@ index 983e937..970ba51 100644
      /**
       * Returns a stable item type used for pooling and size estimation.
       */
-diff --git a/node_modules/@legendapp/list/react-native.js b/node_modules/@legendapp/list/react-native.js
+diff --git a/react-native.js b/react-native.js
 index eeb3fb0..5ebd8e9 100644
---- a/node_modules/@legendapp/list/react-native.js
-+++ b/node_modules/@legendapp/list/react-native.js
+--- a/react-native.js
++++ b/react-native.js
 @@ -1497,7 +1497,15 @@ function getItemSize(ctx, key, index, data, useAverageSize, preferCachedSize, no
      return renderedSize;
    }
@@ -344,10 +344,10 @@ index eeb3fb0..5ebd8e9 100644
      getFixedItemSize: useWrapIfItem(getFixedItemSize),
      getItemType: useWrapIfItem(getItemType),
      hasExternalScroll,
-diff --git a/node_modules/@legendapp/list/react-native.mjs b/node_modules/@legendapp/list/react-native.mjs
+diff --git a/react-native.mjs b/react-native.mjs
 index fe5f415..9788ce6 100644
---- a/node_modules/@legendapp/list/react-native.mjs
-+++ b/node_modules/@legendapp/list/react-native.mjs
+--- a/react-native.mjs
++++ b/react-native.mjs
 @@ -1476,7 +1476,15 @@ function getItemSize(ctx, key, index, data, useAverageSize, preferCachedSize, no
      return renderedSize;
    }

@@ -4,11 +4,11 @@
 # at the node shape characters [ ] ( ) { } |. Only the core build is patched: the Mermaid runtime
 # bundle (packages/app/src/components/markdown/fence/mermaid) imports the "mermaid" specifier,
 # which resolves to dist/mermaid.core.mjs. Remove this patch when the app moves to mermaid 12.
-diff --git a/node_modules/mermaid/dist/chunks/mermaid.core/chunk-PUDLZKDR.mjs b/node_modules/mermaid/dist/chunks/mermaid.core/chunk-PUDLZKDR.mjs
-index 09813bf..60e9ae5 100644
---- a/node_modules/mermaid/dist/chunks/mermaid.core/chunk-PUDLZKDR.mjs
-+++ b/node_modules/mermaid/dist/chunks/mermaid.core/chunk-PUDLZKDR.mjs
-@@ -2308,7 +2308,7 @@ var parser = (function() {
+diff --git a/dist/chunks/mermaid.core/chunk-SHT3W25Y.mjs b/dist/chunks/mermaid.core/chunk-SHT3W25Y.mjs
+index 18e9aa3..3e75acb 100644
+--- a/dist/chunks/mermaid.core/chunk-SHT3W25Y.mjs
++++ b/dist/chunks/mermaid.core/chunk-SHT3W25Y.mjs
+@@ -2380,7 +2380,7 @@ var parser = (function() {
              break;
          }
        }, "anonymous"),

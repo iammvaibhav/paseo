@@ -332,6 +332,7 @@ import {
   type WorkspaceUpdatesFilter,
 } from "./workspace-directory.js";
 import { shouldEmitPendingBootstrapUpdate } from "./workspace-bootstrap-dedupe.js";
+import { resolveWorktreeDefaultBranch } from "./worktree-default-branch.js";
 import {
   createPaseoWorktree,
   type CreatePaseoWorktreeInput,
@@ -8207,9 +8208,14 @@ export class Session {
     const result = await createPaseoWorktree(input, {
       lifecycle: this.pluginRuntime,
       github: this.github,
-      ...(options?.resolveDefaultBranch
-        ? { resolveDefaultBranch: options.resolveDefaultBranch }
-        : {}),
+      resolveDefaultBranch:
+        options?.resolveDefaultBranch ??
+        ((repoRoot: string) =>
+          resolveWorktreeDefaultBranch(repoRoot, {
+            daemonConfigStore: this.daemonConfigStore,
+            projectRegistry: this.projectRegistry,
+            workspaceGitService: this.workspaceGitService,
+          })),
       workspaceGitService: this.workspaceGitService,
       workspaceProvisioning: this.workspaceProvisioning,
       warmWorktreePool: this.warmWorktreePool,

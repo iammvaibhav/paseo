@@ -7,13 +7,14 @@ import type { ComposerPreferences } from "@getpaseo/protocol/composer-preference
 import {
   resolveWorktreeDefaultBranch,
   type WorktreeDefaultBranchResolutionDeps,
-} from "./bootstrap.js";
+} from "./worktree-default-branch.js";
 import { getWorktreeConfiguredBaseRef } from "../utils/worktree.js";
 
 function createFakeResolutionDeps(overrides?: {
   composerPreferences?: ComposerPreferences | null;
   projects?: Array<{ rootPath: string; projectId: string; projectKey: string }>;
   repoDefaultBranch?: string;
+  originTrackingBranches?: string[];
   readConfiguredBaseRef?: (repoRoot: string) => string | undefined;
 }): WorktreeDefaultBranchResolutionDeps {
   return {
@@ -28,6 +29,8 @@ function createFakeResolutionDeps(overrides?: {
     workspaceGitService: {
       resolveDefaultBranch: async (_repoRoot: string) =>
         overrides?.repoDefaultBranch ?? "origin/HEAD",
+      hasOriginTrackingBranch: async (_repoRoot: string, branch: string) =>
+        overrides?.originTrackingBranches?.includes(branch) ?? false,
     },
     readConfiguredBaseRef: overrides?.readConfiguredBaseRef,
   };
@@ -85,6 +88,28 @@ describe("resolveWorktreeDefaultBranch resolution order", () => {
     expect(result).toBe("repo-default-main");
   });
 
+  test("the repo default resolves to its origin tracking ref, a configured base stays bare", async () => {
+    const fromDefault = await resolveWorktreeDefaultBranch(
+      repoRoot,
+      createFakeResolutionDeps({
+        readConfiguredBaseRef: () => undefined,
+        repoDefaultBranch: "main",
+        originTrackingBranches: ["main", "custom"],
+      }),
+    );
+    expect(fromDefault).toBe("origin/main");
+
+    const fromConfig = await resolveWorktreeDefaultBranch(
+      repoRoot,
+      createFakeResolutionDeps({
+        readConfiguredBaseRef: () => "custom",
+        repoDefaultBranch: "main",
+        originTrackingBranches: ["main", "custom"],
+      }),
+    );
+    expect(fromConfig).toBe("custom");
+  });
+
   test("an empty or whitespace configured base ref is ignored and falls through", async () => {
     const depsEmpty = createFakeResolutionDeps({
       readConfiguredBaseRef: () => "   ",
@@ -123,7 +148,7 @@ describe("real disk integration with paseo.json", () => {
       }),
     );
 
-    expect(getWorktreeConfiguredBaseRef(tempDir)).toBe("staging");
+    expect(await getWorktreeConfiguredBaseRef(tempDir)).toBe("staging");
 
     const deps = createFakeResolutionDeps({
       composerPreferences: {
@@ -146,7 +171,7 @@ describe("real disk integration with paseo.json", () => {
       }),
     );
 
-    expect(getWorktreeConfiguredBaseRef(tempDir)).toBe("production-release");
+    expect(await getWorktreeConfiguredBaseRef(tempDir)).toBe("production-release");
 
     const deps = createFakeResolutionDeps({
       composerPreferences: {
@@ -169,7 +194,7 @@ describe("real disk integration with paseo.json", () => {
       }),
     );
 
-    expect(getWorktreeConfiguredBaseRef(tempDir)).toBeUndefined();
+    expect(await getWorktreeConfiguredBaseRef(tempDir)).toBeUndefined();
 
     const deps = createFakeResolutionDeps({
       composerPreferences: {
@@ -179,13 +204,13 @@ describe("real disk integration with paseo.json", () => {
     });
 
     const resolved = await resolveWorktreeDefaultBranch(tempDir, deps);
-    expect(resolved).toBe("global-remembered-branch");
+    expect(resolved).toBe("main");
   });
 
   test("swallows malformed paseo.json syntax on disk and falls through", async () => {
     writeFileSync(join(tempDir, "paseo.json"), '{"worktree": { NOT_VALID_JSON');
 
-    expect(getWorktreeConfiguredBaseRef(tempDir)).toBeUndefined();
+    expect(await getWorktreeConfiguredBaseRef(tempDir)).toBeUndefined();
 
     const deps = createFakeResolutionDeps({
       composerPreferences: {
@@ -195,11 +220,11 @@ describe("real disk integration with paseo.json", () => {
     });
 
     const resolved = await resolveWorktreeDefaultBranch(tempDir, deps);
-    expect(resolved).toBe("global-remembered-branch");
+    expect(resolved).toBe("main");
   });
 
   test("returns undefined when paseo.json is absent on disk", async () => {
-    expect(getWorktreeConfiguredBaseRef(tempDir)).toBeUndefined();
+    expect(await getWorktreeConfiguredBaseRef(tempDir)).toBeUndefined();
 
     const deps = createFakeResolutionDeps({
       composerPreferences: null,

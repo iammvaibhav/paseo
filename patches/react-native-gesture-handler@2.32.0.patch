@@ -1,7 +1,7 @@
-diff --git a/node_modules/react-native-gesture-handler/android/src/main/java/com/swmansion/gesturehandler/core/GestureHandlerOrchestrator.kt b/node_modules/react-native-gesture-handler/android/src/main/java/com/swmansion/gesturehandler/core/GestureHandlerOrchestrator.kt
+diff --git a/android/src/main/java/com/swmansion/gesturehandler/core/GestureHandlerOrchestrator.kt b/android/src/main/java/com/swmansion/gesturehandler/core/GestureHandlerOrchestrator.kt
 index 8d78aea..b84d19e 100644
---- a/node_modules/react-native-gesture-handler/android/src/main/java/com/swmansion/gesturehandler/core/GestureHandlerOrchestrator.kt
-+++ b/node_modules/react-native-gesture-handler/android/src/main/java/com/swmansion/gesturehandler/core/GestureHandlerOrchestrator.kt
+--- a/android/src/main/java/com/swmansion/gesturehandler/core/GestureHandlerOrchestrator.kt
++++ b/android/src/main/java/com/swmansion/gesturehandler/core/GestureHandlerOrchestrator.kt
 @@ -2,11 +2,13 @@ package com.swmansion.gesturehandler.core
  
  import android.graphics.Matrix
@@ -151,10 +151,10 @@ index 8d78aea..b84d19e 100644
    private fun extractGestureHandlers(
      viewGroup: ViewGroup,
      coords: FloatArray,
-diff --git a/node_modules/react-native-gesture-handler/android/src/main/java/com/swmansion/gesturehandler/react/RNGestureHandlerRootHelper.kt b/node_modules/react-native-gesture-handler/android/src/main/java/com/swmansion/gesturehandler/react/RNGestureHandlerRootHelper.kt
+diff --git a/android/src/main/java/com/swmansion/gesturehandler/react/RNGestureHandlerRootHelper.kt b/android/src/main/java/com/swmansion/gesturehandler/react/RNGestureHandlerRootHelper.kt
 index 629c155..2efd508 100644
---- a/node_modules/react-native-gesture-handler/android/src/main/java/com/swmansion/gesturehandler/react/RNGestureHandlerRootHelper.kt
-+++ b/node_modules/react-native-gesture-handler/android/src/main/java/com/swmansion/gesturehandler/react/RNGestureHandlerRootHelper.kt
+--- a/android/src/main/java/com/swmansion/gesturehandler/react/RNGestureHandlerRootHelper.kt
++++ b/android/src/main/java/com/swmansion/gesturehandler/react/RNGestureHandlerRootHelper.kt
 @@ -19,7 +19,9 @@ class RNGestureHandlerRootHelper(private val context: ReactContext, wrappedView:
    private val jsGestureHandler: GestureHandler?
    val rootView: ViewGroup
@@ -252,10 +252,10 @@ index 629c155..2efd508 100644
      return shouldIntercept
    }
  
-diff --git a/node_modules/react-native-gesture-handler/lib/commonjs/web/handlers/GestureHandler.js b/node_modules/react-native-gesture-handler/lib/commonjs/web/handlers/GestureHandler.js
+diff --git a/lib/commonjs/web/handlers/GestureHandler.js b/lib/commonjs/web/handlers/GestureHandler.js
 index 96c5227..cbf1a88 100644
---- a/node_modules/react-native-gesture-handler/lib/commonjs/web/handlers/GestureHandler.js
-+++ b/node_modules/react-native-gesture-handler/lib/commonjs/web/handlers/GestureHandler.js
+--- a/lib/commonjs/web/handlers/GestureHandler.js
++++ b/lib/commonjs/web/handlers/GestureHandler.js
 @@ -58,7 +58,9 @@ class GestureHandler {
      manager.setOnPointerMoveOver(this.onPointerMoveOver.bind(this));
      manager.setOnPointerMoveOut(this.onPointerMoveOut.bind(this));
@@ -267,10 +267,10 @@ index 96c5227..cbf1a88 100644
    }
  
    //
-diff --git a/node_modules/react-native-gesture-handler/lib/commonjs/web/tools/PointerEventManager.js b/node_modules/react-native-gesture-handler/lib/commonjs/web/tools/PointerEventManager.js
+diff --git a/lib/commonjs/web/tools/PointerEventManager.js b/lib/commonjs/web/tools/PointerEventManager.js
 index 76eb808..75a9d75 100644
---- a/node_modules/react-native-gesture-handler/lib/commonjs/web/tools/PointerEventManager.js
-+++ b/node_modules/react-native-gesture-handler/lib/commonjs/web/tools/PointerEventManager.js
+--- a/lib/commonjs/web/tools/PointerEventManager.js
++++ b/lib/commonjs/web/tools/PointerEventManager.js
 @@ -35,9 +35,6 @@ class PointerEventManager extends _EventManager.default {
      }
      const adaptedEvent = this.mapEvent(event, _interfaces.EventTypes.DOWN);
@@ -323,10 +323,10 @@ index 76eb808..75a9d75 100644
        target.setPointerCapture(event.pointerId);
      }
      const inBounds = (0, _utils.isPointerInBounds)(this.view, {
-diff --git a/node_modules/react-native-gesture-handler/lib/module/web/handlers/GestureHandler.js b/node_modules/react-native-gesture-handler/lib/module/web/handlers/GestureHandler.js
+diff --git a/lib/module/web/handlers/GestureHandler.js b/lib/module/web/handlers/GestureHandler.js
 index 0791c66..2f41c77 100644
---- a/node_modules/react-native-gesture-handler/lib/module/web/handlers/GestureHandler.js
-+++ b/node_modules/react-native-gesture-handler/lib/module/web/handlers/GestureHandler.js
+--- a/lib/module/web/handlers/GestureHandler.js
++++ b/lib/module/web/handlers/GestureHandler.js
 @@ -52,7 +52,9 @@ export default class GestureHandler {
      manager.setOnPointerMoveOver(this.onPointerMoveOver.bind(this));
      manager.setOnPointerMoveOut(this.onPointerMoveOut.bind(this));
@@ -338,10 +338,10 @@ index 0791c66..2f41c77 100644
    }
  
    //
-diff --git a/node_modules/react-native-gesture-handler/lib/module/web/tools/PointerEventManager.js b/node_modules/react-native-gesture-handler/lib/module/web/tools/PointerEventManager.js
+diff --git a/lib/module/web/tools/PointerEventManager.js b/lib/module/web/tools/PointerEventManager.js
 index 6ce3b8f..65cc6c8 100644
---- a/node_modules/react-native-gesture-handler/lib/module/web/tools/PointerEventManager.js
-+++ b/node_modules/react-native-gesture-handler/lib/module/web/tools/PointerEventManager.js
+--- a/lib/module/web/tools/PointerEventManager.js
++++ b/lib/module/web/tools/PointerEventManager.js
 @@ -30,9 +30,6 @@ export default class PointerEventManager extends EventManager {
      }
      const adaptedEvent = this.mapEvent(event, EventTypes.DOWN);
@@ -394,10 +394,10 @@ index 6ce3b8f..65cc6c8 100644
        target.setPointerCapture(event.pointerId);
      }
      const inBounds = isPointerInBounds(this.view, {
-diff --git a/node_modules/react-native-gesture-handler/src/web/handlers/GestureHandler.ts b/node_modules/react-native-gesture-handler/src/web/handlers/GestureHandler.ts
+diff --git a/src/web/handlers/GestureHandler.ts b/src/web/handlers/GestureHandler.ts
 index ddb79a3..4e1274c 100644
---- a/node_modules/react-native-gesture-handler/src/web/handlers/GestureHandler.ts
-+++ b/node_modules/react-native-gesture-handler/src/web/handlers/GestureHandler.ts
+--- a/src/web/handlers/GestureHandler.ts
++++ b/src/web/handlers/GestureHandler.ts
 @@ -79,7 +79,9 @@ export default abstract class GestureHandler implements IGestureHandler {
      manager.setOnPointerMoveOut(this.onPointerMoveOut.bind(this));
      manager.setOnWheel(this.onWheel.bind(this));
@@ -409,10 +409,10 @@ index ddb79a3..4e1274c 100644
    }
  
    //
-diff --git a/node_modules/react-native-gesture-handler/src/web/tools/PointerEventManager.ts b/node_modules/react-native-gesture-handler/src/web/tools/PointerEventManager.ts
+diff --git a/src/web/tools/PointerEventManager.ts b/src/web/tools/PointerEventManager.ts
 index 18d3627..106b97c 100644
---- a/node_modules/react-native-gesture-handler/src/web/tools/PointerEventManager.ts
-+++ b/node_modules/react-native-gesture-handler/src/web/tools/PointerEventManager.ts
+--- a/src/web/tools/PointerEventManager.ts
++++ b/src/web/tools/PointerEventManager.ts
 @@ -39,10 +39,6 @@ export default class PointerEventManager extends EventManager<HTMLElement> {
      const adaptedEvent: AdaptedEvent = this.mapEvent(event, EventTypes.DOWN);
      const target = event.target as HTMLElement;

@@ -1,4 +1,4 @@
-diff --git a/node_modules/@xterm/addon-ligatures/lib/addon-ligatures.mjs b/node_modules/@xterm/addon-ligatures/lib/addon-ligatures.mjs
+diff --git a/lib/addon-ligatures.mjs b/lib/addon-ligatures.mjs
 @@ -15,6 +15,6 @@
   *  Licensed under the MIT License. See License.txt in the project root for license information.
   *--------------------------------------------------------------------------------------------*/

@@ -1,7 +1,7 @@
-diff --git a/node_modules/react-native-svg/lib/commonjs/lib/extract/extractTransform.js b/node_modules/react-native-svg/lib/commonjs/lib/extract/extractTransform.js
+diff --git a/lib/commonjs/lib/extract/extractTransform.js b/lib/commonjs/lib/extract/extractTransform.js
 index f22cca3..0a73681 100644
---- a/node_modules/react-native-svg/lib/commonjs/lib/extract/extractTransform.js
-+++ b/node_modules/react-native-svg/lib/commonjs/lib/extract/extractTransform.js
+--- a/lib/commonjs/lib/extract/extractTransform.js
++++ b/lib/commonjs/lib/extract/extractTransform.js
 @@ -152,7 +152,12 @@ function extractTransform(props) {
  }
  function extractTransformSvgView(props) {
@@ -16,10 +16,10 @@ index f22cca3..0a73681 100644
    }
    return props.transform;
  }
-diff --git a/node_modules/react-native-svg/lib/module/lib/extract/extractTransform.js b/node_modules/react-native-svg/lib/module/lib/extract/extractTransform.js
+diff --git a/lib/module/lib/extract/extractTransform.js b/lib/module/lib/extract/extractTransform.js
 index c9d3d6a..085586c 100644
---- a/node_modules/react-native-svg/lib/module/lib/extract/extractTransform.js
-+++ b/node_modules/react-native-svg/lib/module/lib/extract/extractTransform.js
+--- a/lib/module/lib/extract/extractTransform.js
++++ b/lib/module/lib/extract/extractTransform.js
 @@ -142,7 +142,12 @@ export default function extractTransform(props) {
  }
  export function extractTransformSvgView(props) {
@@ -34,10 +34,10 @@ index c9d3d6a..085586c 100644
    }
    return props.transform;
  }
-diff --git a/node_modules/react-native-svg/src/lib/extract/extractTransform.ts b/node_modules/react-native-svg/src/lib/extract/extractTransform.ts
+diff --git a/src/lib/extract/extractTransform.ts b/src/lib/extract/extractTransform.ts
 index 0c854d6..7dc2828 100644
---- a/node_modules/react-native-svg/src/lib/extract/extractTransform.ts
-+++ b/node_modules/react-native-svg/src/lib/extract/extractTransform.ts
+--- a/src/lib/extract/extractTransform.ts
++++ b/src/lib/extract/extractTransform.ts
 @@ -216,7 +216,19 @@ export function extractTransformSvgView(
    props: TransformsStyle
  ): TransformsStyle['transform'] {
@@ -59,9 +59,9 @@ index 0c854d6..7dc2828 100644
    }
    return props.transform as TransformsStyle['transform'];
  }
-diff --git a/node_modules/react-native-svg/android/build.gradle b/node_modules/react-native-svg/android/build.gradle
---- a/node_modules/react-native-svg/android/build.gradle
-+++ b/node_modules/react-native-svg/android/build.gradle
+diff --git a/android/build.gradle b/android/build.gradle
+--- a/android/build.gradle
++++ b/android/build.gradle
 @@ -103,6 +103,7 @@
      }
  
@@ -79,9 +79,9 @@ diff --git a/node_modules/react-native-svg/android/build.gradle b/node_modules/r
      implementation 'com.facebook.react:react-native:+'
      implementation("com.facebook.fresco:fresco:${FRESCO_VERSION}") {
          exclude group: 'com.facebook.soloader'
-diff --git a/node_modules/react-native-svg/android/src/main/java/com/horcrux/svg/SvgView.java b/node_modules/react-native-svg/android/src/main/java/com/horcrux/svg/SvgView.java
---- a/node_modules/react-native-svg/android/src/main/java/com/horcrux/svg/SvgView.java
-+++ b/node_modules/react-native-svg/android/src/main/java/com/horcrux/svg/SvgView.java
+diff --git a/android/src/main/java/com/horcrux/svg/SvgView.java b/android/src/main/java/com/horcrux/svg/SvgView.java
+--- a/android/src/main/java/com/horcrux/svg/SvgView.java
++++ b/android/src/main/java/com/horcrux/svg/SvgView.java
 @@ -159,6 +159,8 @@
    @Override
    protected void onSizeChanged(int w, int h, int oldw, int oldh) {
@@ -91,10 +91,10 @@ diff --git a/node_modules/react-native-svg/android/src/main/java/com/horcrux/svg
      this.invalidate();
    }
  
-diff --git a/node_modules/react-native-svg/android/src/androidTest/java/com/horcrux/svg/SvgResizeTest.java b/node_modules/react-native-svg/android/src/androidTest/java/com/horcrux/svg/SvgResizeTest.java
+diff --git a/android/src/androidTest/java/com/horcrux/svg/SvgResizeTest.java b/android/src/androidTest/java/com/horcrux/svg/SvgResizeTest.java
 new file mode 100644
 --- /dev/null
-+++ b/node_modules/react-native-svg/android/src/androidTest/java/com/horcrux/svg/SvgResizeTest.java
++++ b/android/src/androidTest/java/com/horcrux/svg/SvgResizeTest.java
 @@ -0,0 +1,90 @@
 +package com.horcrux.svg;
 +

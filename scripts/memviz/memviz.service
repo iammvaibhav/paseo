@@ -1,0 +1,23 @@
+# systemd --user unit on blrofc3, installed by scripts/memviz/deploy.sh.
+[Unit]
+Description=memviz (read-only fleet-memory viewer, memory.thevm.space)
+After=network-online.target fleet-memory.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/memviz
+Environment=MV_BIND=100.123.36.124
+Environment=MV_PORT=8896
+Environment=MV_FM_URL=http://100.123.36.124:8895
+Environment=MV_DB=%h/fleet-memory-data/memory.db
+Environment=MV_VAULT=%h/fleet-ops
+# t-SNE for the meaning map runs every 6 h; keep it off fleet-memory's cores.
+Environment=OMP_NUM_THREADS=2
+Environment=OPENBLAS_NUM_THREADS=2
+Nice=10
+ExecStart=%h/memviz/.venv/bin/python server.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

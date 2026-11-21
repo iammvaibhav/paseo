@@ -316,6 +316,51 @@ describe("WarmWorktreePoolManager", () => {
     await manager.stop();
   });
 
+  test("cuts a configured baseRef from its local branch when it is ahead of origin", async () => {
+    const remoteDir = join(tempBase, "origin.git");
+    execSync(`git init --bare -b main "${remoteDir}"`, { stdio: "ignore" });
+    execSync(`git remote add origin "${remoteDir}"`, { cwd: repoDir, stdio: "ignore" });
+    execSync("git branch custom && git push -q origin main custom", {
+      cwd: repoDir,
+      stdio: "ignore",
+    });
+    execSync("git fetch -q origin", { cwd: repoDir, stdio: "ignore" });
+    // Landed locally, not pushed yet: a create naming `custom` resolves the local branch.
+    execSync(
+      "git checkout -q custom && git commit -q --allow-empty -m landed && git checkout -q main",
+      {
+        cwd: repoDir,
+        stdio: "ignore",
+      },
+    );
+    const localTip = execSync("git rev-parse refs/heads/custom", { cwd: repoDir })
+      .toString()
+      .trim();
+
+    const manager = new WarmWorktreePoolManager({
+      paseoHome,
+      worktreesRoot,
+      targetIdle: 1,
+      enabled: true,
+      logger,
+      maintenanceIntervalMs: 0,
+      readConfig: () => ({ baseRef: "custom" }),
+    });
+    await manager.replenish(repoDir);
+    const warmPath = manager.getStatus().pools[0].worktrees[0].path;
+    expect(execSync("git rev-parse HEAD", { cwd: warmPath }).toString().trim()).toBe(localTip);
+
+    const result = await manager.claim({
+      repoRoot: repoDir,
+      worktreeSlug: "from-custom",
+      source: { kind: "branch-off", branchName: "from-custom", baseBranch: "custom" },
+      paseoHome,
+      worktreesRoot,
+    });
+    expect(result?.setupPrepared).toBe(true);
+    await manager.stop();
+  });
+
   test("a stale warm tree is still claimable but reports its setup as not prepared", async () => {
     const manager = new WarmWorktreePoolManager({
       paseoHome,

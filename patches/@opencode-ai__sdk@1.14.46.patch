@@ -1,7 +1,7 @@
-diff --git a/node_modules/@opencode-ai/sdk/dist/gen/core/serverSentEvents.gen.js b/node_modules/@opencode-ai/sdk/dist/gen/core/serverSentEvents.gen.js
+diff --git a/dist/gen/core/serverSentEvents.gen.js b/dist/gen/core/serverSentEvents.gen.js
 index 0000000..0000000 100644
---- a/node_modules/@opencode-ai/sdk/dist/gen/core/serverSentEvents.gen.js
-+++ b/node_modules/@opencode-ai/sdk/dist/gen/core/serverSentEvents.gen.js
+--- a/dist/gen/core/serverSentEvents.gen.js
++++ b/dist/gen/core/serverSentEvents.gen.js
 @@ -26,7 +26,13 @@
                  let buffer = "";
                  const abortHandler = () => {
@@ -17,10 +17,10 @@ index 0000000..0000000 100644
                      }
                      catch {
                          // noop
-diff --git a/node_modules/@opencode-ai/sdk/dist/v2/gen/core/serverSentEvents.gen.js b/node_modules/@opencode-ai/sdk/dist/v2/gen/core/serverSentEvents.gen.js
+diff --git a/dist/v2/gen/core/serverSentEvents.gen.js b/dist/v2/gen/core/serverSentEvents.gen.js
 index 0000000..0000000 100644
---- a/node_modules/@opencode-ai/sdk/dist/v2/gen/core/serverSentEvents.gen.js
-+++ b/node_modules/@opencode-ai/sdk/dist/v2/gen/core/serverSentEvents.gen.js
+--- a/dist/v2/gen/core/serverSentEvents.gen.js
++++ b/dist/v2/gen/core/serverSentEvents.gen.js
 @@ -40,7 +40,13 @@
                  let buffer = "";
                  const abortHandler = () => {

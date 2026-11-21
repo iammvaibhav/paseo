@@ -1,7 +1,7 @@
-diff --git a/node_modules/expo-modules-core/android/src/main/java/expo/modules/kotlin/activityresult/AppContextActivityResultRegistry.kt b/node_modules/expo-modules-core/android/src/main/java/expo/modules/kotlin/activityresult/AppContextActivityResultRegistry.kt
+diff --git a/android/src/main/java/expo/modules/kotlin/activityresult/AppContextActivityResultRegistry.kt b/android/src/main/java/expo/modules/kotlin/activityresult/AppContextActivityResultRegistry.kt
 index a5b971e..7ef1b59 100644
---- a/node_modules/expo-modules-core/android/src/main/java/expo/modules/kotlin/activityresult/AppContextActivityResultRegistry.kt
-+++ b/node_modules/expo-modules-core/android/src/main/java/expo/modules/kotlin/activityresult/AppContextActivityResultRegistry.kt
+--- a/android/src/main/java/expo/modules/kotlin/activityresult/AppContextActivityResultRegistry.kt
++++ b/android/src/main/java/expo/modules/kotlin/activityresult/AppContextActivityResultRegistry.kt
 @@ -29,6 +29,7 @@ import expo.modules.kotlin.safeGetParcelable
  import expo.modules.kotlin.safeGetParcelableExtra
  import java.io.Serializable
@@ -58,11 +58,11 @@ index a5b971e..7ef1b59 100644
    /**
     * Persist the state of the registry.
     */
-diff --git a/node_modules/expo-modules-core/android/src/test/java/expo/modules/kotlin/activityresult/AppContextActivityResultRegistryRecreationTest.kt b/node_modules/expo-modules-core/android/src/test/java/expo/modules/kotlin/activityresult/AppContextActivityResultRegistryRecreationTest.kt
+diff --git a/android/src/test/java/expo/modules/kotlin/activityresult/AppContextActivityResultRegistryRecreationTest.kt b/android/src/test/java/expo/modules/kotlin/activityresult/AppContextActivityResultRegistryRecreationTest.kt
 new file mode 100644
 index 0000000..89a8eb1
 --- /dev/null
-+++ b/node_modules/expo-modules-core/android/src/test/java/expo/modules/kotlin/activityresult/AppContextActivityResultRegistryRecreationTest.kt
++++ b/android/src/test/java/expo/modules/kotlin/activityresult/AppContextActivityResultRegistryRecreationTest.kt
 @@ -0,0 +1,78 @@
 +package expo.modules.kotlin.activityresult
 +
