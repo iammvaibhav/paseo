@@ -1,230 +1,1312 @@
 <!doctype html>
 <html lang="en">
-<head>
-<meta charset="utf-8">
-<title>Fleet memory</title>
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/cytoscape@3/dist/cytoscape.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
-<style>
-  :root { --bg:#0f1115; --panel:#171a21; --line:#2a2f3a; --fg:#e6e8ee; --muted:#8b93a7; --accent:#7aa2f7; }
-  * { box-sizing: border-box; }
-  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.45 system-ui, -apple-system, sans-serif; }
-  header { display:flex; align-items:center; gap:24px; padding:12px 20px; border-bottom:1px solid var(--line); }
-  header h1 { font-size:16px; margin:0; }
-  nav button { background:none; border:0; color:var(--muted); padding:6px 10px; cursor:pointer; font-size:14px; border-radius:6px; }
-  nav button.on { color:var(--fg); background:var(--panel); }
-  .where { margin-left:auto; color:var(--muted); font-size:12px; font-family:ui-monospace, monospace; }
-  main { padding:16px 20px; }
-  .tab { display:none; } .tab.on { display:block; }
-  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px; margin-bottom:16px; }
-  .stat { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px 12px; }
-  .stat b { display:block; font-size:22px; } .stat span { color:var(--muted); font-size:12px; }
-  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
-  .card { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px; }
-  .card h3 { margin:0 0 8px; font-size:13px; color:var(--muted); font-weight:500; }
-  .chart { height:300px; }
-  #map, #graph { height:calc(100vh - 150px); background:var(--panel); border:1px solid var(--line); border-radius:8px; }
-  .toolbar { display:flex; gap:10px; align-items:center; margin-bottom:10px; color:var(--muted); font-size:12px; flex-wrap:wrap; }
-  input[type=text], select { background:var(--panel); color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:7px 10px; font-size:14px; }
-  #q { width:420px; }
-  .hit { padding:10px 12px; border-bottom:1px solid var(--line); cursor:pointer; }
-  .hit:hover { background:var(--panel); }
-  .hit .t { font-weight:500; } .hit .s { color:var(--muted); font-size:13px; }
-  .pill { display:inline-block; font-size:11px; padding:1px 7px; border-radius:10px; margin-right:6px; color:#0f1115; }
-  aside { position:fixed; top:0; right:0; width:min(560px,92vw); height:100vh; background:var(--panel); border-left:1px solid var(--line);
-          transform:translateX(100%); transition:transform .18s; overflow:auto; padding:16px 20px; z-index:10; }
-  aside.on { transform:none; }
-  aside .close { float:right; cursor:pointer; color:var(--muted); }
-  aside .meta { color:var(--muted); font-size:12px; font-family:ui-monospace, monospace; word-break:break-all; }
-  aside .body { white-space:normal; font-size:13px; }
-  aside .body pre { white-space:pre-wrap; }
-  aside a.l { color:var(--accent); cursor:pointer; display:block; font-size:12px; }
-</style>
-</head>
-<body>
-<header>
-  <h1>Fleet memory</h1>
-  <nav>
-    <button data-t="overview" class="on">Overview</button>
-    <button data-t="map">Meaning map</button>
-    <button data-t="graph">Notes graph</button>
-    <button data-t="search">Search</button>
-  </nav>
-  <div class="where" id="where"></div>
-</header>
-<main>
-  <section class="tab on" id="t-overview">
-    <div class="stats" id="stats"></div>
-    <div class="card" style="margin-bottom:12px"><h3>Items added per day, by kind</h3><div class="chart" id="c-daily"></div></div>
-    <div class="grid2">
-      <div class="card"><h3>Top projects</h3><div class="chart" id="c-proj"></div></div>
-      <div class="card"><h3>Vault notes by kind (decision, owner, runbook…)</h3><div class="chart" id="c-notes"></div></div>
-    </div>
-    <div class="card" style="margin-top:12px"><h3>Most active agents (title of latest turn)</h3><div class="chart" id="c-agents" style="height:380px"></div></div>
-  </section>
+  <head>
+    <meta charset="utf-8" />
+    <title>Fleet memory</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex" />
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/cytoscape@3/dist/cytoscape.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/layout-base@2/layout-base.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/cose-base@2/cose-base.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/cytoscape-fcose@2/cytoscape-fcose.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
+    <script type="module">
+      import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+      mermaid.initialize({ startOnLoad: false, theme: "dark", securityLevel: "strict" });
+      window.mermaid = mermaid;
+      window.dispatchEvent(new Event("mermaid-ready"));
+    </script>
+    <style>
+      :root {
+        --bg: #0f1115;
+        --panel: #171a21;
+        --panel2: #1d212a;
+        --line: #2a2f3a;
+        --fg: #e6e8ee;
+        --muted: #8b93a7;
+        --accent: #7aa2f7;
+        --bad: #f7768e;
+        --ok: #9ece6a;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font:
+          14px/1.45 system-ui,
+          -apple-system,
+          sans-serif;
+      }
+      a {
+        color: var(--accent);
+        text-decoration: none;
+      }
+      a:hover {
+        text-decoration: underline;
+      }
+      header {
+        display: flex;
+        align-items: center;
+        gap: 20px;
+        padding: 10px 20px;
+        border-bottom: 1px solid var(--line);
+        position: sticky;
+        top: 0;
+        background: var(--bg);
+        z-index: 5;
+        flex-wrap: wrap;
+      }
+      header h1 {
+        font-size: 16px;
+        margin: 0;
+      }
+      nav a {
+        color: var(--muted);
+        padding: 6px 10px;
+        border-radius: 6px;
+        display: inline-block;
+      }
+      nav a:hover {
+        text-decoration: none;
+        color: var(--fg);
+      }
+      nav a.on {
+        color: var(--fg);
+        background: var(--panel);
+      }
+      .where {
+        margin-left: auto;
+        color: var(--muted);
+        font-size: 12px;
+        font-family: ui-monospace, monospace;
+      }
+      .ro {
+        color: var(--ok);
+        border: 1px solid #3b4d2a;
+        border-radius: 10px;
+        padding: 1px 8px;
+        font-size: 11px;
+      }
+      main {
+        padding: 16px 20px;
+        max-width: 1500px;
+        margin: 0 auto;
+      }
+      .tab {
+        display: none;
+      }
+      .tab.on {
+        display: block;
+      }
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+        gap: 10px;
+        margin-bottom: 14px;
+      }
+      .stat {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 10px 12px;
+      }
+      .stat b {
+        display: block;
+        font-size: 21px;
+        font-weight: 600;
+      }
+      .stat span {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .grid2 {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+      .card {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 12px;
+        min-width: 0;
+      }
+      .card h3 {
+        margin: 0 0 8px;
+        font-size: 13px;
+        color: var(--muted);
+        font-weight: 500;
+      }
+      .chart {
+        height: 300px;
+      }
+      #map,
+      #graph {
+        height: calc(100vh - 170px);
+        min-height: 420px;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+      }
+      .toolbar {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        margin-bottom: 10px;
+        color: var(--muted);
+        font-size: 12px;
+        flex-wrap: wrap;
+      }
+      input,
+      select,
+      button {
+        background: var(--panel);
+        color: var(--fg);
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        padding: 6px 9px;
+        font: inherit;
+        font-size: 13px;
+      }
+      button {
+        cursor: pointer;
+      }
+      button:hover {
+        border-color: var(--accent);
+      }
+      input[type="checkbox"] {
+        padding: 0;
+      }
+      #q {
+        flex: 1;
+        min-width: 280px;
+        font-size: 14px;
+        padding: 8px 11px;
+      }
+      .chips label {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        cursor: pointer;
+        padding: 3px 8px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+      }
+      .chips input {
+        display: none;
+      }
+      .chips label.on {
+        border-color: var(--accent);
+        color: var(--fg);
+        background: var(--panel2);
+      }
+      .row {
+        padding: 9px 12px;
+        border-bottom: 1px solid var(--line);
+        cursor: pointer;
+      }
+      .row:hover {
+        background: var(--panel);
+      }
+      .row .t {
+        font-weight: 500;
+      }
+      .row .s {
+        color: var(--muted);
+        font-size: 13px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .row .m {
+        color: var(--muted);
+        font-size: 12px;
+        margin-top: 2px;
+      }
+      .pill {
+        display: inline-block;
+        font-size: 11px;
+        padding: 1px 7px;
+        border-radius: 10px;
+        margin-right: 6px;
+        color: #0f1115;
+        font-weight: 500;
+      }
+      .muted {
+        color: var(--muted);
+      }
+      .mono {
+        font-family: ui-monospace, monospace;
+        font-size: 12px;
+      }
+      .err {
+        color: var(--bad);
+      }
+      aside {
+        position: fixed;
+        top: 0;
+        right: 0;
+        width: min(720px, 96vw);
+        height: 100vh;
+        background: var(--panel);
+        border-left: 1px solid var(--line);
+        transform: translateX(100%);
+        transition: transform 0.18s;
+        overflow: auto;
+        padding: 14px 20px 40px;
+        z-index: 10;
+        box-shadow: -10px 0 30px #0008;
+      }
+      aside.on {
+        transform: none;
+      }
+      aside .close {
+        float: right;
+        cursor: pointer;
+        color: var(--muted);
+      }
+      dl.kv {
+        display: grid;
+        grid-template-columns: 110px 1fr;
+        gap: 3px 12px;
+        font-size: 13px;
+        margin: 10px 0;
+      }
+      dl.kv dt {
+        color: var(--muted);
+      }
+      dl.kv dd {
+        margin: 0;
+        word-break: break-word;
+      }
+      aside h4 {
+        margin: 16px 0 6px;
+        font-size: 12px;
+        color: var(--muted);
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+        font-weight: 600;
+      }
+      aside .rel {
+        font-size: 13px;
+        padding: 3px 0;
+        border-bottom: 1px solid #222733;
+        cursor: pointer;
+      }
+      aside .rel:hover {
+        color: var(--accent);
+      }
+      .md {
+        font-size: 13.5px;
+        line-height: 1.55;
+        overflow-wrap: anywhere;
+      }
+      .md pre {
+        background: var(--bg);
+        padding: 10px;
+        border-radius: 6px;
+        overflow: auto;
+        white-space: pre-wrap;
+      }
+      .md code {
+        font-family: ui-monospace, monospace;
+        font-size: 12px;
+      }
+      .md table {
+        border-collapse: collapse;
+      }
+      .md td,
+      .md th {
+        border: 1px solid var(--line);
+        padding: 4px 8px;
+      }
+      .md a.wl {
+        border-bottom: 1px dashed var(--accent);
+        cursor: pointer;
+      }
+      #arch {
+        max-width: 980px;
+      }
+      #arch .md {
+        font-size: 14.5px;
+      }
+      #arch h1 {
+        font-size: 22px;
+      }
+      #arch h2 {
+        margin-top: 28px;
+        border-bottom: 1px solid var(--line);
+        padding-bottom: 4px;
+      }
+      .mermaid-box {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 12px;
+        overflow: auto;
+        text-align: center;
+      }
+      .list .row {
+        cursor: pointer;
+      }
+      .legend span {
+        margin-right: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Fleet memory</h1>
+      <nav>
+        <a href="#overview" data-t="overview">Overview</a>
+        <a href="#explore" data-t="explore">Explore</a>
+        <a href="#graph" data-t="graph">Notes graph</a>
+        <a href="#map" data-t="map">Meaning map</a>
+        <a href="#architecture" data-t="architecture">Architecture</a>
+      </nav>
+      <span
+        class="ro"
+        title="This viewer opens memory.db read-only and only calls fleet-memory's search and status endpoints."
+        >read-only</span
+      >
+      <div class="where" id="where"></div>
+    </header>
+    <main>
+      <section class="tab" id="t-overview">
+        <div class="stats" id="stats"></div>
+        <div class="card" style="margin-bottom: 12px">
+          <h3>Items per day, by kind (drag the slider to zoom)</h3>
+          <div class="chart" id="c-daily" style="height: 320px"></div>
+        </div>
+        <div class="grid2">
+          <div class="card">
+            <h3>Items by host</h3>
+            <div class="chart" id="c-hosts"></div>
+          </div>
+          <div class="card">
+            <h3>Top projects</h3>
+            <div class="chart" id="c-proj"></div>
+          </div>
+        </div>
+        <div class="grid2">
+          <div class="card">
+            <h3>
+              Who writes notes (note frontmatter <span class="mono">source</span>; click to filter)
+            </h3>
+            <div class="chart" id="c-writers" style="height: 380px"></div>
+          </div>
+          <div class="card">
+            <h3>Vault notes by kind</h3>
+            <div class="chart" id="c-notes" style="height: 380px"></div>
+          </div>
+        </div>
+        <div class="grid2">
+          <div class="card">
+            <h3>Most active agents (title of latest turn; click to filter)</h3>
+            <div class="chart" id="c-agents" style="height: 400px"></div>
+          </div>
+          <div class="card">
+            <h3>Recently written notes</h3>
+            <div id="recent" class="list"></div>
+          </div>
+        </div>
+        <div class="card">
+          <h3>fleet-memory service</h3>
+          <div id="svc" class="mono"></div>
+        </div>
+      </section>
 
-  <section class="tab" id="t-map">
-    <div class="toolbar"><span id="map-status"></span>
-      <span>Each dot is one memory item, placed by embedding similarity (t-SNE). Nearby = similar meaning. Click a dot to open it.</span>
-      <select id="map-color"><option value="kind">colour by kind</option><option value="project">colour by project</option></select>
-    </div>
-    <div id="map"></div>
-  </section>
+      <section class="tab" id="t-explore">
+        <div class="toolbar">
+          <input
+            type="search"
+            id="q"
+            placeholder="Search everything (same engine as memory_search). Empty = browse newest first."
+          />
+          <select id="f-limit" title="Search result count (memory_search default is 8)">
+            <option>8</option>
+            <option>20</option>
+            <option selected>50</option>
+          </select>
+          <label title="memory_search byAgent: one hit per agent"
+            ><input type="checkbox" id="f-byagent" /> one per agent</label
+          >
+        </div>
+        <div class="toolbar chips" id="f-kinds"></div>
+        <div class="toolbar">
+          <select id="f-host">
+            <option value="">any host</option>
+          </select>
+          <input id="f-project" list="dl-project" placeholder="project" size="18" />
+          <input id="f-agent" list="dl-agent" placeholder="agent (id or title)" size="28" />
+          <input id="f-writer" list="dl-writer" placeholder="written by" size="16" />
+          <input id="f-ticket" placeholder="ticket e.g. PASEO-71" size="14" />
+          <label>from <input type="date" id="f-since" /></label>
+          <label>to <input type="date" id="f-until" /></label>
+          <button id="f-clear">Clear</button>
+        </div>
+        <datalist id="dl-project"></datalist><datalist id="dl-agent"></datalist
+        ><datalist id="dl-writer"></datalist>
+        <div class="toolbar" id="res-info"></div>
+        <div id="results" class="list"></div>
+        <div style="padding: 12px"><button id="more" hidden>Load more</button></div>
+      </section>
 
-  <section class="tab" id="t-graph">
-    <div class="toolbar">
-      <span>Vault notes. Solid edges = explicit [[links]]; faint edges = top-3 most similar notes (cosine ≥ <span id="simv">0.55</span>).</span>
-      <input type="range" id="sim" min="0.4" max="0.85" step="0.05" value="0.55">
-      <input type="text" id="gfilter" placeholder="filter titles…">
-    </div>
-    <div id="graph"></div>
-  </section>
+      <section class="tab" id="t-graph">
+        <div class="toolbar">
+          <span
+            >Red arrows: written <span class="mono">[[links]]</span>. Grey: notes that are each
+            other's nearest neighbours by meaning.</span
+          >
+        </div>
+        <div class="toolbar">
+          <label
+            >similarity ≥ <b id="simv">0.72</b>
+            <input type="range" id="g-sim" min="0.6" max="0.9" step="0.01" value="0.72"
+          /></label>
+          <label
+            >neighbours
+            <select id="g-k">
+              <option>1</option>
+              <option selected>2</option>
+              <option>3</option>
+            </select></label
+          >
+          <label><input type="checkbox" id="g-mutual" checked /> mutual only</label>
+          <label><input type="checkbox" id="g-iso" /> show unconnected notes</label>
+          <label
+            >colour
+            <select id="g-color">
+              <option value="kind">note kind</option>
+              <option value="writer">writer</option>
+              <option value="project">project</option>
+              <option value="cluster">cluster</option>
+            </select></label
+          >
+          <input id="g-filter" placeholder="highlight titles…" size="18" />
+          <span id="g-info"></span>
+        </div>
+        <div class="toolbar legend" id="g-legend"></div>
+        <div id="graph"></div>
+      </section>
 
-  <section class="tab" id="t-search">
-    <div class="toolbar"><input type="text" id="q" placeholder="Search everything (same engine as memory_search)…" autofocus><span id="lat"></span></div>
-    <div id="hits"></div>
-  </section>
-</main>
-<aside id="drawer"><span class="close" onclick="drawer.classList.remove('on')">✕ close</span><div id="dbody"></div></aside>
+      <section class="tab" id="t-map">
+        <div class="toolbar">
+          <span id="map-status"></span>
+          <span
+            >Each dot is one item placed by embedding similarity (t-SNE): every note, doc and ticket
+            plus a random sample of turns, runs and comments. Nearby = similar meaning. Scroll to
+            zoom; click to open.</span
+          >
+          <select id="map-color">
+            <option value="kind">colour by kind</option>
+            <option value="host">colour by host</option>
+            <option value="project">colour by project</option>
+          </select>
+        </div>
+        <div id="map"></div>
+      </section>
 
-<script>
-const PAL = ['#7aa2f7','#9ece6a','#e0af68','#f7768e','#bb9af7','#7dcfff','#ff9e64','#c0caf5','#73daca','#b4f9f8','#db4b4b','#a9b1d6'];
-const KIND_C = { turn:'#7aa2f7', run:'#9ece6a', ticket:'#e0af68', ticket_comment:'#ff9e64', note:'#f7768e', doc:'#bb9af7' };
-const color = (k, i) => KIND_C[k] || PAL[i % PAL.length];
-const $ = s => document.querySelector(s);
-const j = u => fetch(u).then(r => { if (!r.ok) throw new Error(r.status); return r.json(); });
-const fmtDate = ts => ts ? new Date(ts).toISOString().slice(0,16).replace('T',' ') : '';
-const charts = [];
-const mk = (el, opt) => { const c = echarts.init(el, 'dark', {renderer:'canvas'}); c.setOption({backgroundColor:'transparent', ...opt}); charts.push(c); return c; };
-addEventListener('resize', () => charts.forEach(c => c.resize()));
+      <section class="tab" id="t-architecture">
+        <div id="arch"><div class="md muted">Loading…</div></div>
+      </section>
+    </main>
+    <aside id="drawer">
+      <span class="close" id="dclose">✕ close</span>
+      <div id="dbody"></div>
+    </aside>
 
-// tabs
-const loaded = {};
-document.querySelectorAll('nav button').forEach(b => b.onclick = () => {
-  document.querySelectorAll('nav button').forEach(x => x.classList.toggle('on', x === b));
-  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('on', t.id === 't-' + b.dataset.t));
-  if (!loaded[b.dataset.t]) { loaded[b.dataset.t] = 1; ({map:loadMap, graph:loadGraph})[b.dataset.t]?.(); }
-  charts.forEach(c => c.resize());
-});
+    <script>
+      const PAL = [
+        "#7aa2f7",
+        "#9ece6a",
+        "#e0af68",
+        "#f7768e",
+        "#bb9af7",
+        "#7dcfff",
+        "#ff9e64",
+        "#c0caf5",
+        "#73daca",
+        "#b4f9f8",
+        "#db4b4b",
+        "#a9b1d6",
+        "#2ac3de",
+        "#d18616",
+        "#c678dd",
+        "#56b6c2",
+      ];
+      const KIND_C = {
+        turn: "#7aa2f7",
+        run: "#9ece6a",
+        ticket: "#e0af68",
+        ticket_comment: "#ff9e64",
+        note: "#f7768e",
+        doc: "#bb9af7",
+      };
+      const KIND_LABEL = {
+        turn: "conversation turns",
+        run: "run records",
+        ticket: "tickets",
+        ticket_comment: "ticket comments",
+        note: "vault notes",
+        doc: "docs",
+      };
+      const kc = (k, i = 0) => KIND_C[k] || PAL[i % PAL.length];
+      const $ = (s) => document.querySelector(s);
+      const esc = (s) =>
+        String(s ?? "").replace(
+          /[&<>"']/g,
+          (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c],
+        );
+      const j = async (u) => {
+        const r = await fetch(u);
+        if (!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+        return r.json();
+      };
+      const fmt = (ts) =>
+        ts
+          ? new Date(ts).toLocaleString(undefined, {
+              year: "numeric",
+              month: "short",
+              day: "numeric",
+              hour: "2-digit",
+              minute: "2-digit",
+            })
+          : "";
+      const pill = (k) => `<span class="pill" style="background:${kc(k)}">${esc(k)}</span>`;
+      // Raw HTML in agent-written text is shown as text: `<port>` placeholders must survive, and nothing may run.
+      marked.use({ renderer: { html: (html) => esc(html) } });
+      const md = (text) => DOMPurify.sanitize(marked.parse(text || ""));
+      const charts = [];
+      const mk = (el, opt) => {
+        const c = echarts.init(el, "dark", { renderer: "canvas" });
+        c.setOption({ backgroundColor: "transparent", ...opt });
+        charts.push(c);
+        return c;
+      };
+      addEventListener("resize", () => charts.forEach((c) => c.resize()));
 
-// drawer
-async function openDoc(id) {
-  const d = await j('/api/doc/' + encodeURIComponent(id));
-  const meta = JSON.parse(d.meta || '{}');
-  const isMd = d.kind === 'note' || d.kind === 'doc' || d.kind === 'turn' || d.kind === 'run';
-  $('#dbody').innerHTML = `
-    <h2 style="margin:8px 0">${esc(d.title)}</h2>
-    <div class="meta"><span class="pill" style="background:${color(d.kind)}">${d.kind}</span>${esc(d.id)}<br>
-      ${fmtDate(d.ts)} · project ${esc(d.project||'—')} · host ${esc(d.host||'—')}${d.agent_id ? ' · agent ' + esc(d.agent_id) : ''}
-      ${meta.path ? '<br>file: ~/fleet-ops/' + esc(meta.path) : ''}${d.url ? '<br><a href="'+esc(d.url)+'" target=_blank style="color:var(--accent)">'+esc(d.url)+'</a>' : ''}</div>
-    ${d.links_out.length ? '<h4>Links to</h4>' + d.links_out.map(l => `<a class=l onclick="openDoc('${l}')">${esc(l)}</a>`).join('') : ''}
-    ${d.links_in.length ? '<h4>Linked from</h4>' + d.links_in.map(l => `<a class=l onclick="openDoc('${l}')">${esc(l)}</a>`).join('') : ''}
-    <div class="body">${isMd ? marked.parse(d.text) : '<pre>' + esc(d.text) + '</pre>'}</div>`;
-  $('#drawer').classList.add('on');
-}
-const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+      // --- routing: #tab?filters&item=<id> -------------------------------------------------
+      function route() {
+        const [tab, qs] = (location.hash.slice(1) || "overview").split("?");
+        return { tab: tab || "overview", p: new URLSearchParams(qs || "") };
+      }
+      function go(tab, params, replace) {
+        const qs = params && params.toString();
+        const h = "#" + tab + (qs ? "?" + qs : "");
+        if (replace) history.replaceState(null, "", h);
+        else location.hash = h;
+        if (replace) render();
+      }
+      function setItem(id) {
+        const r = route();
+        id ? r.p.set("item", id) : r.p.delete("item");
+        go(r.tab, r.p);
+      }
+      function explore(filters) {
+        const p = new URLSearchParams();
+        for (const [k, v] of Object.entries(filters)) if (v) p.set(k, v);
+        go("explore", p);
+      }
+      const loaded = {};
+      let lastTab = null,
+        lastExplore = null;
+      function render() {
+        const { tab, p } = route();
+        document
+          .querySelectorAll("nav a")
+          .forEach((a) => a.classList.toggle("on", a.dataset.t === tab));
+        document
+          .querySelectorAll(".tab")
+          .forEach((t) => t.classList.toggle("on", t.id === "t-" + tab));
+        if (!loaded[tab]) {
+          loaded[tab] = 1;
+          ({ overview: loadOverview, graph: loadGraph, map: loadMap, architecture: loadArch })[
+            tab
+          ]?.();
+        }
+        if (tab === "explore") {
+          const key = filterKey(p);
+          // Filters typed here already match the URL: re-syncing would eat a trailing space mid-typing.
+          if (key !== lastExplore) {
+            lastExplore = key;
+            if (key !== filterKey(readFilters())) syncFilters(p);
+            runExplore();
+          }
+        }
+        if (tab !== lastTab) {
+          lastTab = tab;
+          setTimeout(() => {
+            charts.forEach((c) => c.resize());
+            cy?.resize();
+          }, 0);
+        }
+        const item = p.get("item");
+        if (item) openDoc(item);
+        else $("#drawer").classList.remove("on");
+      }
+      addEventListener("hashchange", render);
+      $("#dclose").onclick = () => setItem(null);
+      addEventListener("keydown", (e) => {
+        if (e.key === "Escape" && $("#drawer").classList.contains("on")) setItem(null);
+      });
 
-// overview
-(async () => {
-  const o = await j('/api/overview');
-  $('#where').textContent = `${o.db_path} · ${(o.db_bytes/1e6).toFixed(0)} MB`;
-  const total = Object.values(o.kinds).reduce((a,b)=>a+b,0);
-  const label = {turn:'conversation turns', run:'run records', ticket:'tickets', ticket_comment:'ticket comments', note:'vault notes', doc:'docs'};
-  $('#stats').innerHTML = [['Total items', total], ...Object.entries(o.kinds).sort((a,b)=>b[1]-a[1]).map(([k,v]) => [label[k]||k, v]), ['embedded (vectors)', o.vectors]]
-    .map(([k,v]) => `<div class="stat"><b>${v.toLocaleString()}</b><span>${k}</span></div>`).join('');
-  const days = [...new Set(o.daily.map(r => r.day))];
-  const kinds = Object.keys(o.kinds);
-  mk($('#c-daily'), {
-    tooltip:{trigger:'axis'}, legend:{top:0}, grid:{left:50,right:20,top:30,bottom:30},
-    xAxis:{type:'category', data:days}, yAxis:{type:'value'},
-    series: kinds.map((k,i) => ({ name:k, type:'bar', stack:'a', color:color(k,i),
-      data: days.map(d => (o.daily.find(r => r.day===d && r.kind===k)||{n:0}).n) }))
-  });
-  mk($('#c-proj'), { tooltip:{}, grid:{left:130,right:20,top:10,bottom:20},
-    xAxis:{type:'value'}, yAxis:{type:'category', inverse:true, data:o.projects.map(p=>p.project)},
-    series:[{type:'bar', data:o.projects.map(p=>p.n), color:'#7aa2f7'}] });
-  mk($('#c-notes'), { tooltip:{}, series:[{type:'pie', radius:['40%','70%'],
-    data:Object.entries(o.note_kinds).map(([name,value],i)=>({name,value,itemStyle:{color:PAL[i%PAL.length]}}))}] });
-  const ag = mk($('#c-agents'), { tooltip:{ formatter: p => `${esc(o.agents[p.dataIndex].agent_id)}<br>last ${fmtDate(o.agents[p.dataIndex].last)}<br>${p.value} items` },
-    grid:{left:360,right:20,top:10,bottom:20}, xAxis:{type:'value'},
-    yAxis:{type:'category', inverse:true, data:o.agents.map(a => (a.title||a.agent_id).slice(0,55))},
-    series:[{type:'bar', data:o.agents.map(a=>a.n), color:'#9ece6a'}] });
-})();
+      // --- item drawer --------------------------------------------------------------------
+      const relRow = (x) =>
+        `<div class="rel" data-id="${esc(x.id)}">${pill(x.kind)}${esc(x.title || x.id)} <span class="muted">${fmt(x.ts)}${x.writer ? " · " + esc(x.writer) : ""}</span></div>`;
+      const flt = (key, value, label) =>
+        value
+          ? `<a href="#" data-f="${esc(key)}" data-v="${esc(value)}">${esc(label ?? value)}</a>`
+          : '<span class="muted">—</span>';
+      async function openDoc(id) {
+        $("#drawer").classList.add("on");
+        $("#dbody").innerHTML = '<p class="muted">Loading…</p>';
+        let d;
+        try {
+          d = await j("/api/doc/" + encodeURIComponent(id));
+        } catch (e) {
+          $("#dbody").innerHTML = `<p class="err">${esc(e.message)}</p>`;
+          return;
+        }
+        const a = d.agent || {};
+        const n = d.note;
+        const writerAgents = d.writer_agents
+          .map((w) => flt("agent", w.agent_id, `${w.title || w.agent_id} (${w.host || "?"})`))
+          .join("<br>");
+        const kv = [
+          ["Kind", pill(d.kind) + (n?.kind ? ` <span class="muted">${esc(n.kind)}</span>` : "")],
+          ["ID", `<span class="mono">${esc(d.id)}</span>`],
+          [
+            "When",
+            fmt(d.ts) +
+              (n?.created ? ` <span class="muted">(created ${esc(n.created)})</span>` : ""),
+          ],
+          [
+            "Written by",
+            d.writer
+              ? flt("writer", d.writer) +
+                (writerAgents
+                  ? `<div class="muted" style="font-size:12px">agents named ${esc(d.writer)}:<br>${writerAgents}</div>`
+                  : "")
+              : '<span class="muted">—</span>',
+          ],
+          [
+            "Agent",
+            d.agent_id
+              ? flt(
+                  "agent",
+                  d.agent_id,
+                  `${a.title || d.agent_id}${a.name ? " · " + a.name : ""}`,
+                ) + ` <span class="mono muted">${esc(d.agent_id)}</span>`
+              : '<span class="muted">—</span>',
+          ],
+          ["Host", flt("host", d.host)],
+          ["Project", flt("project", d.project)],
+          ["Ticket", flt("ticket", d.ticket)],
+          ...(d.url
+            ? [["URL", `<a href="${esc(d.url)}" target="_blank" rel="noopener">${esc(d.url)}</a>`]]
+            : []),
+          ...(n?.path
+            ? [["File", `<span class="mono">blrofc3:~/fleet-ops/${esc(n.path)}</span>`]]
+            : []),
+          ...(n?.tags?.length ? [["Tags", n.tags.map(esc).join(", ")]] : []),
+          ...(n?.refs?.length ? [["Refs", n.refs.map(esc).join("<br>")]] : []),
+          ["Embedded", d.embedded ? "yes" : '<span class="err">not yet</span>'],
+        ];
+        const rel = d.related;
+        const section = (title, items, more) =>
+          items?.length ? `<h4>${title}</h4>${items.map(relRow).join("")}${more || ""}` : "";
+        const links = (title, xs) =>
+          xs.length
+            ? `<h4>${title}</h4>` +
+              xs
+                .map((x) =>
+                  x.missing
+                    ? `<div class="rel muted">${esc(x.id)} (no such page yet)</div>`
+                    : relRow(x),
+                )
+                .join("")
+            : "";
+        const hist = n?.history?.length
+          ? `<h4>Vault history (git log)</h4>` +
+            n.history
+              .map(
+                (h) =>
+                  `<div class="mono" style="font-size:12px">${esc(h.sha)} ${esc(h.ts.slice(0, 16).replace("T", " "))} ${esc(h.subject)}</div>`,
+              )
+              .join("")
+          : "";
+        const body = ["note", "doc", "turn", "run", "ticket", "ticket_comment"].includes(d.kind)
+          ? md(d.text)
+          : `<pre>${esc(d.text)}</pre>`;
+        $("#dbody").innerHTML = `
+    <h2 style="margin:6px 0 4px">${esc(d.title || d.id)}</h2>
+    <dl class="kv">${kv.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>
+    ${links("Links to ([[ ]])", d.links_out)}${links("Linked from", d.links_in)}
+    ${hist}
+    <h4>Text</h4><div class="md">${body}</div>
+    ${section(`Same ticket (${rel.ticket?.total ?? 0})`, rel.ticket?.items, rel.ticket?.total > 41 ? flt("ticket", d.ticket, "all items on this ticket →") : "")}
+    ${section(`Same agent (${rel.agent?.total ?? 0} items)`, rel.agent?.items, flt("agent", d.agent_id, "all of this agent's items →"))}
+    ${section(`Other notes by ${esc(d.writer)} (${(rel.writer?.total ?? 1) - 1})`, rel.writer?.items, flt("writer", d.writer, "all →"))}`;
+        // [[Title]] in note bodies: make them clickable (resolved through links_out by title).
+        const byTitle = Object.fromEntries(
+          d.links_out.filter((x) => !x.missing).map((x) => [x.title.toLowerCase(), x.id]),
+        );
+        $("#dbody .md").innerHTML = $("#dbody .md").innerHTML.replace(
+          /\[\[([^\]|#]+)(?:#[^\]|]*)?(?:\|([^\]]*))?\]\]/g,
+          (m, t, label) => {
+            const target = byTitle[t.trim().toLowerCase()];
+            return target ? `<a class="wl" data-id="${esc(target)}">${esc(label || t)}</a>` : m;
+          },
+        );
+        $("#drawer").scrollTop = 0;
+      }
+      $("#dbody").addEventListener("click", (e) => {
+        const f = e.target.closest("[data-f]");
+        if (f) {
+          e.preventDefault();
+          explore({ [f.dataset.f]: f.dataset.v });
+          return;
+        }
+        const r = e.target.closest("[data-id]");
+        if (r) setItem(r.dataset.id);
+      });
 
-// meaning map
-let mapChart, mapPts;
-async function loadMap() {
-  const m = await j('/api/map');
-  $('#map-status').textContent = m.status === 'ready' ? `${m.points.length.toLocaleString()} points` : m.status + '…';
-  if (m.status !== 'ready') { if (!m.status.startsWith('error')) setTimeout(loadMap, 3000); return; }
-  mapPts = m.points; drawMap();
-}
-function drawMap() {
-  const by = $('#map-color').value;
-  const groups = {};
-  mapPts.forEach(p => (groups[p[by]] ||= []).push(p));
-  const names = Object.keys(groups).sort((a,b) => groups[b].length - groups[a].length).slice(0, 12);
-  const series = Object.entries(groups).map(([g, pts]) => {
-    const i = names.indexOf(g);
-    return { name: i < 0 ? 'other' : g, type:'scatter', large:pts.length>2000,
-      data: pts.map(p => ({value:[p.x,p.y], id:p.id, title:p.title, kind:p.kind, project:p.project})),
-      symbolSize: (by==='kind' && (g==='note'||g==='ticket'||g==='doc')) ? 7 : 4,
-      itemStyle:{ color: by==='kind' ? color(g) : (i<0 ? '#444a58' : PAL[i % PAL.length]), opacity:.8 } };
-  });
-  mapChart ||= mk($('#map'), {});
-  mapChart.setOption({ backgroundColor:'transparent', legend:{top:6, type:'scroll'}, grid:{left:10,right:10,top:40,bottom:10},
-    tooltip:{ formatter: p => `<b>${esc(p.data.title)}</b><br>${p.data.kind} · ${esc(p.data.project)}` },
-    xAxis:{show:false, scale:true}, yAxis:{show:false, scale:true},
-    dataZoom:[{type:'inside', xAxisIndex:0, filterMode:'none'},{type:'inside', yAxisIndex:0, filterMode:'none'}], series }, true);
-  mapChart.off('click'); mapChart.on('click', p => openDoc(p.data.id));
-}
-$('#map-color').onchange = () => mapPts && drawMap();
+      // --- overview -----------------------------------------------------------------------
+      async function loadOverview() {
+        const o = await j("/api/overview");
+        const total = Object.values(o.kinds).reduce((a, b) => a + b, 0);
+        const span = `${new Date(o.first_ts).toISOString().slice(0, 10)} → ${new Date(o.last_ts).toISOString().slice(0, 10)}`;
+        $("#stats").innerHTML =
+          [
+            ["all items", total],
+            ...Object.entries(o.kinds)
+              .sort((a, b) => b[1] - a[1])
+              .map(([k, v]) => [KIND_LABEL[k] || k, v, k]),
+            ["vectors", o.vectors],
+            ["agents", o.n_agents],
+            ["projects", o.n_projects],
+            ["[[links]]", o.links],
+          ]
+            .map(
+              ([k, v, kind]) =>
+                `<div class="stat" ${kind ? `data-kind="${kind}" style="cursor:pointer"` : ""}><b>${v.toLocaleString()}</b><span>${k}</span></div>`,
+            )
+            .join("") +
+          `<div class="stat"><b style="font-size:14px">${span}</b><span>time span</span></div>`;
+        document
+          .querySelectorAll(".stat[data-kind]")
+          .forEach((s) => (s.onclick = () => explore({ kind: s.dataset.kind })));
+        const days = [...new Set(o.daily.map((r) => r.day))];
+        const kinds = Object.keys(o.kinds);
+        const daily = mk($("#c-daily"), {
+          tooltip: { trigger: "axis" },
+          legend: { top: 0 },
+          grid: { left: 50, right: 20, top: 30, bottom: 60 },
+          xAxis: { type: "category", data: days },
+          yAxis: { type: "value" },
+          dataZoom: [
+            {
+              type: "slider",
+              bottom: 8,
+              start: Math.max(0, 100 - (60 * 100) / Math.max(days.length, 1)),
+              end: 100,
+            },
+            { type: "inside" },
+          ],
+          series: kinds.map((k, i) => ({
+            name: k,
+            type: "bar",
+            stack: "a",
+            color: kc(k, i),
+            large: true,
+            data: days.map((d) => (o.daily.find((r) => r.day === d && r.kind === k) || { n: 0 }).n),
+          })),
+        });
+        daily.on("click", (p) => {
+          const s = Date.parse(p.name);
+          explore({
+            kind: p.seriesName,
+            since: p.name,
+            until: new Date(s + 864e5).toISOString().slice(0, 10),
+          });
+        });
+        const hostNames = [...new Set(o.hosts.map((h) => h.host))].sort(
+          (a, b) => sum(o.hosts, b) - sum(o.hosts, a),
+        );
+        function sum(rows, h) {
+          return rows.filter((r) => r.host === h).reduce((a, r) => a + r.n, 0);
+        }
+        const hc = mk($("#c-hosts"), {
+          tooltip: { trigger: "axis" },
+          legend: { top: 0 },
+          grid: { left: 130, right: 20, top: 30, bottom: 20 },
+          xAxis: { type: "value" },
+          yAxis: { type: "category", inverse: true, data: hostNames },
+          series: kinds.map((k, i) => ({
+            name: k,
+            type: "bar",
+            stack: "h",
+            color: kc(k, i),
+            data: hostNames.map(
+              (h) => (o.hosts.find((r) => r.host === h && r.kind === k) || { n: 0 }).n,
+            ),
+          })),
+        });
+        hc.on("click", (p) => explore({ host: p.name }));
+        const pc = mk($("#c-proj"), {
+          tooltip: {},
+          grid: { left: 170, right: 20, top: 10, bottom: 20 },
+          xAxis: { type: "value" },
+          yAxis: { type: "category", inverse: true, data: o.projects.map((p) => p.project) },
+          series: [{ type: "bar", data: o.projects.map((p) => p.n), color: "#7aa2f7" }],
+        });
+        pc.on("click", (p) => explore({ project: p.name }));
+        const wc = mk($("#c-writers"), {
+          tooltip: {},
+          grid: { left: 140, right: 20, top: 10, bottom: 20 },
+          xAxis: { type: "value" },
+          yAxis: { type: "category", inverse: true, data: o.writers.map((w) => w.writer) },
+          series: [{ type: "bar", data: o.writers.map((w) => w.n), color: "#f7768e" }],
+        });
+        wc.on("click", (p) => explore({ writer: p.name, kind: "note" }));
+        mk($("#c-notes"), {
+          tooltip: {},
+          legend: { bottom: 0 },
+          series: [
+            {
+              type: "pie",
+              radius: ["40%", "68%"],
+              data: o.note_kinds.map((r, i) => ({
+                name: r.kind,
+                value: r.n,
+                itemStyle: { color: PAL[i % PAL.length] },
+              })),
+            },
+          ],
+        });
+        const ac = mk($("#c-agents"), {
+          tooltip: {
+            formatter: (p) => {
+              const a = o.agents[p.dataIndex];
+              return `${esc(a.title)}<br>${esc(a.name || "")} · ${esc(a.host || "")}<br>last ${fmt(a.last)}<br>${p.value} items`;
+            },
+          },
+          grid: { left: 300, right: 20, top: 10, bottom: 20 },
+          xAxis: { type: "value" },
+          yAxis: {
+            type: "category",
+            inverse: true,
+            data: o.agents.map((a) => (a.title || a.agent_id).slice(0, 45)),
+          },
+          series: [{ type: "bar", data: o.agents.map((a) => a.n), color: "#9ece6a" }],
+        });
+        ac.on("click", (p) => explore({ agent: o.agents[p.dataIndex].agent_id }));
+        $("#recent").innerHTML = o.recent_notes
+          .map(
+            (
+              r,
+            ) => `<div class="row" data-id="${esc(r.id)}"><div class="t">${pill(r.note_kind || r.kind)}${esc(r.title)}</div>
+    <div class="m">${esc(r.writer || "unknown")} · ${fmt(r.ts)}</div></div>`,
+          )
+          .join("");
+        $("#recent").onclick = (e) => {
+          const r = e.target.closest("[data-id]");
+          if (r) setItem(r.dataset.id);
+        };
+        const s = await j("/api/status");
+        $("#where").textContent = `${s.db_path} · ${(s.db_bytes / 1e6).toFixed(0)} MB`;
+        const sv = s.service,
+          em = sv.embeddings || {};
+        $("#svc").innerHTML = sv.error
+          ? `<span class="err">fleet-memory unreachable at ${esc(s.fm_url)}: ${esc(sv.error)}</span>`
+          : `${esc(s.fm_url)} · embeddings: ${esc(em.model)} ${em.dim}d on ${esc(em.device)}, ${em.loaded ? "loaded" : '<span class="err">not loaded</span>'}, ${em.vectors?.toLocaleString()} vectors, ${em.pending} pending
+     · vault ${esc(sv.vault?.root)} @ ${esc(sv.vault?.head)} · tickets synced this run: ${sv.tickets?.synced_total ?? "—"}${sv.tickets?.last_error ? ` <span class="err">last error: ${esc(sv.tickets.last_error)}</span>` : ""}`;
+      }
 
-// notes graph
-let cy;
-async function loadGraph() {
-  const sim = $('#sim').value; $('#simv').textContent = sim;
-  const g = await j('/api/notes-graph?min_sim=' + sim);
-  const kinds = [...new Set(g.nodes.map(n => n.kind))];
-  const deg = {}; g.edges.forEach(e => { deg[e.source]=(deg[e.source]||0)+1; deg[e.target]=(deg[e.target]||0)+1; });
-  cy?.destroy();
-  cy = cytoscape({ container:$('#graph'),
-    elements:[...g.nodes.map(n => ({data:{...n, c:PAL[kinds.indexOf(n.kind)%PAL.length], size:8+Math.min(24,(deg[n.id]||0)*2)}})),
-              ...g.edges.map((e,i) => ({data:{id:'e'+i, ...e}}))],
-    style:[
-      {selector:'node', style:{'background-color':'data(c)', width:'data(size)', height:'data(size)', label:'data(title)',
-        color:'#c0caf5', 'font-size':7, 'text-opacity':.75, 'min-zoomed-font-size':6, 'text-wrap':'ellipsis', 'text-max-width':140}},
-      {selector:'edge[type="similar"]', style:{width:.6, 'line-color':'#3b4252', opacity:.6}},
-      {selector:'edge[type="link"]', style:{width:2, 'line-color':'#f7768e', 'target-arrow-shape':'triangle', 'target-arrow-color':'#f7768e', 'curve-style':'bezier'}},
-      {selector:'.dim', style:{opacity:.08}},
-    ],
-    layout:{name:'cose', animate:false, nodeRepulsion:6000, idealEdgeLength:60, numIter:1500}});
-  cy.on('tap','node', e => openDoc(e.target.id()));
-  const legend = kinds.map((k,i) => `<span class="pill" style="background:${PAL[i%PAL.length]}">${k}</span>`).join('');
-  $('#t-graph .toolbar').querySelector('.lg')?.remove();
-  $('#t-graph .toolbar').insertAdjacentHTML('beforeend', `<span class="lg">${legend}</span>`);
-}
-$('#sim').onchange = loadGraph;
-$('#gfilter').oninput = e => {
-  const q = e.target.value.toLowerCase();
-  cy?.nodes().forEach(n => n.toggleClass('dim', q && !n.data('title').toLowerCase().includes(q)));
-};
+      // --- explore: browse + search -------------------------------------------------------
+      const KINDS = ["note", "doc", "run", "turn", "ticket", "ticket_comment"];
+      $("#f-kinds").innerHTML =
+        "<span>kinds:</span>" +
+        KINDS.map(
+          (k) => `<label data-k="${k}"><input type="checkbox" value="${k}">${pill(k)}</label>`,
+        ).join("");
+      let facets;
+      async function loadFacets() {
+        facets = await j("/api/facets");
+        $("#f-host").innerHTML =
+          '<option value="">any host</option>' +
+          facets.hosts
+            .map((h) => `<option value="${esc(h.value)}">${esc(h.value)} (${h.n})</option>`)
+            .join("");
+        $("#dl-project").innerHTML = facets.projects
+          .map((p) => `<option value="${esc(p.value)}">${p.n} items</option>`)
+          .join("");
+        $("#dl-writer").innerHTML = facets.writers
+          .map((w) => `<option value="${esc(w.value)}">${w.n} items</option>`)
+          .join("");
+        $("#dl-agent").innerHTML = facets.agents
+          .map(
+            (a) =>
+              `<option value="${esc(a.value)}">${esc((a.title || "").slice(0, 70))} · ${esc(a.name || "")} · ${esc(a.host || "")}</option>`,
+          )
+          .join("");
+        syncFilters(route().p);
+      }
+      function syncFilters(p) {
+        const kinds = p.getAll("kind");
+        document.querySelectorAll("#f-kinds label").forEach((l) => {
+          const on = kinds.includes(l.dataset.k);
+          l.classList.toggle("on", on);
+          l.querySelector("input").checked = on;
+        });
+        $("#q").value = p.get("q") || "";
+        for (const k of ["host", "project", "agent", "writer", "ticket", "since", "until"])
+          $("#f-" + k).value = p.get(k) || "";
+        $("#f-limit").value = p.get("limit") || "50";
+        $("#f-byagent").checked = p.get("by_agent") === "1";
+      }
+      function readFilters() {
+        const p = new URLSearchParams();
+        const q = $("#q").value.trim();
+        if (q) p.set("q", q);
+        document
+          .querySelectorAll("#f-kinds input:checked")
+          .forEach((i) => p.append("kind", i.value));
+        for (const k of ["host", "project", "agent", "writer", "ticket", "since", "until"]) {
+          const v = $("#f-" + k).value.trim();
+          if (v) p.set(k, v);
+        }
+        if (q) {
+          p.set("limit", $("#f-limit").value);
+          if ($("#f-byagent").checked) p.set("by_agent", "1");
+        }
+        return p;
+      }
+      let ft;
+      const pushFilters = () => {
+        clearTimeout(ft);
+        ft = setTimeout(() => go("explore", readFilters(), true), 250);
+      };
+      const filterKey = (p) =>
+        [...p.entries()]
+          .filter(([k]) => k !== "item")
+          .map((e) => e.join("="))
+          .join("&");
+      document.querySelectorAll("#f-kinds input").forEach((i) => (i.onchange = pushFilters));
+      for (const id of ["#q", "#f-project", "#f-agent", "#f-writer", "#f-ticket"])
+        $(id).oninput = pushFilters;
+      for (const id of ["#f-host", "#f-since", "#f-until", "#f-limit", "#f-byagent"])
+        $(id).onchange = pushFilters;
+      $("#f-clear").onclick = () => go("explore", new URLSearchParams(), true);
+      const dayMs = (v) => (v ? Date.parse(v + "T00:00:00") : null);
+      let browseOffset = 0,
+        browseParams = null;
+      function apiParams(p) {
+        const a = new URLSearchParams();
+        for (const k of p.getAll("kind")) a.append("kind", k);
+        for (const k of ["host", "project", "agent", "writer", "ticket"])
+          if (p.get(k)) a.set(k, p.get(k));
+        if (p.get("since")) a.set("since", dayMs(p.get("since")));
+        if (p.get("until")) a.set("until", dayMs(p.get("until")) + 864e5);
+        return a;
+      }
+      const resultRow = (h, search) => `<div class="row" data-id="${esc(h.id)}">
+  <div class="t">${pill(h.kind)}${esc(h.title || h.id)}</div>
+  <div class="s">${esc(h.snippet)}</div>
+  <div class="m">${fmt(h.ts)} · by ${esc(h.writer || "—")} · ${esc(h.host || "—")} · ${esc(h.project || "—")}${h.ticket ? " · " + esc(h.ticket) : ""}${search ? ` · score ${h.score} · ${esc(h.matched.join(", "))}` : ""}</div></div>`;
+      async function runExplore(more) {
+        const p = route().p;
+        const q = p.get("q");
+        const a = apiParams(p);
+        const info = $("#res-info"),
+          list = $("#results");
+        if (!more) {
+          browseOffset = 0;
+          list.innerHTML = '<p class="muted" style="padding:12px">Loading…</p>';
+        }
+        try {
+          if (q) {
+            if (p.get("writer"))
+              info.innerHTML =
+                '<span class="err">"written by" is a browse filter; memory_search has no writer filter, so it is ignored while searching.</span>';
+            a.set("q", q);
+            a.set("limit", p.get("limit") || "50");
+            if (p.get("by_agent")) a.set("by_agent", "true");
+            const r = await j("/api/search?" + a);
+            info.innerHTML =
+              (p.get("writer") ? info.innerHTML + " " : "") +
+              `Search: ${r.hits.length} hits · ${r.latency_ms} ms · vectors ${r.vectors ? "on" : '<span class="err">off</span>'}${r.notes?.length ? " · " + esc(r.notes.join("; ")) : ""}
+        <span class="mono muted" title="The exact body sent to fleet-memory /v1/search">POST /v1/search ${esc(JSON.stringify(r.request))}</span>`;
+            list.innerHTML =
+              r.hits.map((h) => resultRow(h, true)).join("") ||
+              '<p class="muted" style="padding:12px">No hits.</p>';
+            $("#more").hidden = true;
+          } else {
+            a.set("offset", browseOffset);
+            a.set("limit", 50);
+            const r = await j("/api/items?" + a);
+            const html = r.items.map((h) => resultRow(h, false)).join("");
+            if (more) list.insertAdjacentHTML("beforeend", html);
+            else
+              list.innerHTML = html || '<p class="muted" style="padding:12px">Nothing matches.</p>';
+            browseOffset += r.items.length;
+            info.textContent = `Browse: ${r.total.toLocaleString()} items match, newest first · showing ${browseOffset.toLocaleString()}`;
+            $("#more").hidden = browseOffset >= r.total;
+          }
+        } catch (e) {
+          list.innerHTML = `<p class="err" style="padding:12px">${esc(e.message)}</p>`;
+        }
+      }
+      $("#more").onclick = () => runExplore(true);
+      $("#results").onclick = (e) => {
+        const r = e.target.closest("[data-id]");
+        if (r) setItem(r.dataset.id);
+      };
 
-// search
-let st;
-$('#q').oninput = e => { clearTimeout(st); st = setTimeout(() => runSearch(e.target.value), 300); };
-async function runSearch(q) {
-  if (!q.trim()) { $('#hits').innerHTML=''; return; }
-  const r = await j('/api/search?q=' + encodeURIComponent(q));
-  $('#lat').textContent = `${r.hits.length} hits · ${r.latency_ms} ms`;
-  $('#hits').innerHTML = r.hits.map(h => `<div class="hit" data-id="${esc(h.id)}">
-    <div class="t"><span class="pill" style="background:${color(h.kind)}">${h.kind}</span>${esc(h.title)}</div>
-    <div class="s">${esc(h.snippet)}</div>
-    <div class="s">${fmtDate(h.ts)} · ${esc(h.project||'')} · score ${h.score} · ${h.matched.join(', ')}</div></div>`).join('');
-  document.querySelectorAll('.hit').forEach(el => el.onclick = () => openDoc(el.dataset.id));
-}
-</script>
-</body>
+      // --- notes graph --------------------------------------------------------------------
+      let cy, graphData;
+      async function loadGraph() {
+        $("#simv").textContent = $("#g-sim").value;
+        $("#g-info").textContent = "loading…";
+        graphData = await j(
+          `/api/notes-graph?min_sim=${$("#g-sim").value}&k=${$("#g-k").value}&mutual=${$("#g-mutual").checked}`,
+        );
+        drawGraph();
+      }
+      function components(nodes, edges) {
+        const parent = Object.fromEntries(nodes.map((n) => [n.id, n.id]));
+        const find = (x) => (parent[x] === x ? x : (parent[x] = find(parent[x])));
+        edges.forEach((e) => {
+          parent[find(e.source)] = find(e.target);
+        });
+        return Object.fromEntries(nodes.map((n) => [n.id, find(n.id)]));
+      }
+      function drawGraph() {
+        const g = graphData;
+        const deg = {};
+        g.edges.forEach((e) => {
+          deg[e.source] = (deg[e.source] || 0) + 1;
+          deg[e.target] = (deg[e.target] || 0) + 1;
+        });
+        const nodes = $("#g-iso").checked ? g.nodes : g.nodes.filter((n) => deg[n.id]);
+        const comp = components(nodes, g.edges);
+        const by = $("#g-color").value;
+        const key = (n) => (by === "cluster" ? comp[n.id] : n[by]);
+        const counts = {};
+        nodes.forEach((n) => (counts[key(n)] = (counts[key(n)] || 0) + 1));
+        const top = Object.keys(counts)
+          .sort((a, b) => counts[b] - counts[a])
+          .slice(0, PAL.length - 1);
+        const colour = (v) => {
+          const i = top.indexOf(v);
+          return i < 0 ? "#4b5263" : PAL[i];
+        };
+        $("#g-legend").innerHTML =
+          by === "cluster"
+            ? `${new Set(Object.values(comp)).size} clusters (connected groups)`
+            : top
+                .map(
+                  (v) =>
+                    `<span class="pill" style="background:${colour(v)}">${esc(v)} ${counts[v]}</span>`,
+                )
+                .join("") +
+              (Object.keys(counts).length > top.length
+                ? '<span class="pill" style="background:#4b5263">other</span>'
+                : "");
+        const links = g.edges.filter((e) => e.type === "link").length;
+        $("#g-info").textContent =
+          `${nodes.length} of ${g.nodes.length} notes · ${links} [[links]] · ${g.edges.length - links} similarity edges`;
+        cy?.destroy();
+        cy = cytoscape({
+          container: $("#graph"),
+          minZoom: 0.1,
+          maxZoom: 4,
+          wheelSensitivity: 0.3,
+          elements: [
+            ...nodes.map((n) => ({
+              data: { ...n, c: colour(key(n)), size: 6 + Math.min(26, (deg[n.id] || 0) * 3) },
+            })),
+            ...g.edges.map((e, i) => ({
+              data: { id: "e" + i, ...e, w: e.sim ? (e.sim - 0.55) * 4 : 2 },
+            })),
+          ],
+          style: [
+            {
+              selector: "node",
+              style: {
+                "background-color": "data(c)",
+                width: "data(size)",
+                height: "data(size)",
+                label: "data(title)",
+                color: "#c0caf5",
+                "font-size": 9,
+                "min-zoomed-font-size": 11,
+                "text-wrap": "ellipsis",
+                "text-max-width": 160,
+                "text-valign": "bottom",
+                "text-margin-y": 2,
+              },
+            },
+            {
+              selector: 'edge[type="similar"]',
+              style: {
+                width: "data(w)",
+                "line-color": "#4c566a",
+                opacity: 0.55,
+                "curve-style": "haystack",
+              },
+            },
+            {
+              selector: 'edge[type="link"]',
+              style: {
+                width: 2.2,
+                "line-color": "#f7768e",
+                "target-arrow-shape": "triangle",
+                "target-arrow-color": "#f7768e",
+                "curve-style": "bezier",
+              },
+            },
+            { selector: ".faded", style: { opacity: 0.07 } },
+            {
+              selector: ".hl",
+              style: { "font-size": 11, "min-zoomed-font-size": 0, "z-index": 10 },
+            },
+            {
+              selector: "node.match",
+              style: { "border-width": 3, "border-color": "#fff", "min-zoomed-font-size": 0 },
+            },
+          ],
+          layout: {
+            name: "fcose",
+            quality: "default",
+            animate: false,
+            randomize: true,
+            nodeRepulsion: 6500,
+            idealEdgeLength: 55,
+            edgeElasticity: 0.45,
+            gravity: 0.3,
+            packComponents: true,
+            nodeSeparation: 60,
+          },
+        });
+        cy.on("tap", "node", (e) => setItem(e.target.id()));
+        cy.on("mouseover", "node", (e) => {
+          const hood = e.target.closedNeighborhood();
+          cy.elements().addClass("faded");
+          hood.removeClass("faded");
+          hood.nodes().addClass("hl");
+        });
+        cy.on("mouseout", "node", () => cy.elements().removeClass("faded hl"));
+        applyGraphFilter();
+      }
+      function applyGraphFilter() {
+        const q = $("#g-filter").value.toLowerCase().trim();
+        cy?.nodes().forEach((n) =>
+          n.toggleClass("match", !!q && n.data("title").toLowerCase().includes(q)),
+        );
+      }
+      $("#g-sim").oninput = () => ($("#simv").textContent = $("#g-sim").value);
+      for (const id of ["#g-sim", "#g-k", "#g-mutual"]) $(id).onchange = loadGraph;
+      for (const id of ["#g-iso", "#g-color"]) $(id).onchange = () => graphData && drawGraph();
+      $("#g-filter").oninput = applyGraphFilter;
+
+      // --- meaning map --------------------------------------------------------------------
+      let mapChart, mapPts;
+      async function loadMap() {
+        const m = await j("/api/map");
+        $("#map-status").textContent =
+          m.status === "ready"
+            ? `${m.points.length.toLocaleString()} points · built ${fmt(m.built)}`
+            : m.status + "…";
+        if (m.status !== "ready") {
+          if (!m.status.startsWith("error")) setTimeout(loadMap, 4000);
+          return;
+        }
+        mapPts = m.points;
+        drawMap();
+      }
+      function drawMap() {
+        const by = $("#map-color").value;
+        const groups = {};
+        mapPts.forEach((p) => (groups[p[by]] ||= []).push(p));
+        const names = Object.keys(groups)
+          .sort((a, b) => groups[b].length - groups[a].length)
+          .slice(0, 12);
+        const series = Object.entries(groups).map(([g, pts]) => {
+          const i = names.indexOf(g);
+          return {
+            name: i < 0 ? "other" : g,
+            type: "scatter",
+            large: pts.length > 2000,
+            data: pts.map((p) => ({
+              value: [p.x, p.y],
+              id: p.id,
+              title: p.title,
+              kind: p.kind,
+              project: p.project,
+              host: p.host,
+            })),
+            symbolSize: by === "kind" && ["note", "doc", "ticket"].includes(g) ? 7 : 4,
+            itemStyle: {
+              color: by === "kind" ? kc(g) : i < 0 ? "#444a58" : PAL[i % PAL.length],
+              opacity: 0.8,
+            },
+          };
+        });
+        mapChart ||= mk($("#map"), {});
+        mapChart.setOption(
+          {
+            backgroundColor: "transparent",
+            legend: { top: 6, type: "scroll" },
+            grid: { left: 10, right: 10, top: 40, bottom: 10 },
+            tooltip: {
+              formatter: (p) =>
+                `<b>${esc(p.data.title)}</b><br>${p.data.kind} · ${esc(p.data.host)} · ${esc(p.data.project)}`,
+            },
+            xAxis: { show: false, scale: true },
+            yAxis: { show: false, scale: true },
+            dataZoom: [
+              { type: "inside", xAxisIndex: 0, filterMode: "none" },
+              { type: "inside", yAxisIndex: 0, filterMode: "none" },
+            ],
+            series,
+          },
+          true,
+        );
+        mapChart.off("click");
+        mapChart.on("click", (p) => setItem(p.data.id));
+      }
+      $("#map-color").onchange = () => mapPts && drawMap();
+
+      // --- architecture -------------------------------------------------------------------
+      async function loadArch() {
+        const text = await (await fetch("/api/architecture")).text();
+        $("#arch").innerHTML = `<div class="md">${md(text)}</div>`;
+        const blocks = [...document.querySelectorAll("#arch code.language-mermaid")];
+        const draw = async () => {
+          for (const [i, code] of blocks.entries()) {
+            const box = document.createElement("div");
+            box.className = "mermaid-box";
+            try {
+              box.innerHTML = (await mermaid.render("mmd" + i, code.textContent)).svg;
+            } catch (e) {
+              box.innerHTML = `<pre class="err">${esc(e.message)}</pre>`;
+            }
+            code.parentElement.replaceWith(box);
+          }
+        };
+        if (window.mermaid) draw();
+        else addEventListener("mermaid-ready", draw, { once: true });
+      }
+
+      loadFacets();
+      render();
+    </script>
+  </body>
 </html>

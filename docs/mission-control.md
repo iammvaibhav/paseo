@@ -144,9 +144,7 @@ Host names. Every `host` argument and every meta plan's host resolves through on
 
 ## Memory
 
-fleet-memory is a separate service (`/data/projects/fleet-memory`, running on blrofc3 as the `fleet-memory` user unit) behind `memory.url` in each host's `config.json`. It embeds on the CPU only: EmbeddingGemma 2's text tower, int8, 8 threads, `CUDA_VISIBLE_DEVICES` empty. A doc is re-embedded only when its embedded input (title + text) changes, never for metadata, so re-sent history costs nothing. The daemon pushes indexed transcripts and finalized run records through a durable per-host outbox (`~/.paseo/memory/outbox.db`, deduplicated by item hash) with backoff. It offers its whole history once per host, the first time `memory.url` is set, and retries every 5 minutes until that pass lands. Hindsight is no longer written or read.
-
-Agents call `memory_search`, `memory_get` and `memory_write` on their own daemon, so a note records the agent and host that wrote it; omp loads these three top-level ([providers](providers.md)). The same tools through `/mcp/fleet` (ToolHive) have no calling agent and record only the MCP client and the serving host.
+fleet-memory is the separate service behind `memory_search`, `memory_get`, `memory_write`, `fleet_playbook` and `report_status` learnings, reached through `memory.url` in each host's `config.json`. [fleet-memory.md](fleet-memory.md) owns where it stores things, every write path, search ranking, embeddings and the read-only viewer at memory.thevm.space.
 
 ## itsaplan bridge
 
