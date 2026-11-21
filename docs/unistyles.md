@@ -366,9 +366,7 @@ colors. Keep this patch until upstream reads the scheme through separate lists.
 The desktop browser E2E checks both transition directions in an isolated Electron
 process, because Playwright's focus emulation prevents real hidden-page behavior.
 
-Register every dependency patch in `scripts/postinstall-patches.mjs`. A file in
-`patches/` is inert unless that script knows which installed package activates
-it.
+To change or add a patch, follow [Dependency patches](development.md#dependency-patches).
 
 ## Debugging
 

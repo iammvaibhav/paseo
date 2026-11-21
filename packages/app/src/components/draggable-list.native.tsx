@@ -211,7 +211,7 @@ export function DraggableList<T>({
       initialNumToRender={scrollEnabled ? undefined : data.length}
       extraData={extraData}
       simultaneousHandlers={simultaneousHandlers}
-      // @ts-ignore - patched prop (patches/react-native-draggable-flatlist+4.0.3.patch);
+      // @ts-ignore - patched prop (patches/react-native-draggable-flatlist@4.0.3.patch);
       // missing from published types when the patch is not applied in this install.
       dragGestureHostPresented={gestureHostPresented}
       dragGestureRef={attachContentDrag ? dragGestureRef : undefined}

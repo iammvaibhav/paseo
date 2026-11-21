@@ -25,7 +25,6 @@ const DAEMON_PATHS = [
   "packages/plugin",
   "pnpm-lock.yaml",
   "patches",
-  "scripts/postinstall-patches.mjs",
 ];
 
 const APP_UI_PATHS = ["packages/app", "packages/expo-two-way-audio"];

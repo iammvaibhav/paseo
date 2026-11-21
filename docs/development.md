@@ -66,6 +66,12 @@ Worktree setup (`paseo.json` → `worktree.setup`) runs a plain `pnpm install` i
 
 Ownership rule: each worktree owns its own `node_modules` — `pnpm install` in one worktree never touches another's. Change dependencies on the branch, then re-run `pnpm install` in that worktree.
 
+Three things keep a worktree at about 0.3G of unshared files:
+
+- **Patches never edit the store.** pnpm applies [dependency patches](#dependency-patches) at import and stores each patched package as its own entry, so the side-effects cache stays on: a package with a build script (`@shopify/react-native-skia`, `react-native-enriched-markdown`, `node-pty`, `electron-winstaller`) builds once per machine and every later worktree hardlinks the result. Editing files under `node_modules` by hand writes through the hardlink into the store and every other worktree; use `pnpm patch` instead.
+- **npm is refused.** The root `preinstall` fails any install whose user agent is not pnpm. `npm ci` writes a private copy of every package (about 4G per worktree).
+- **Worktrees start from the configured base.** A create that names no base starts from `worktree.warmPool.baseRef` when set, then the project's remembered base, then the repository default branch (as `origin/<default>` when that tracking ref exists). On this fork the base is `vaibhav/customizations`; a worktree cut from upstream `main` would run `main`'s setup, which is `npm ci`. A bare configured base resolves local branch first, then `origin/<base>`, in both the create path and the [warm pool](#warm-worktree-pool), so the claimed warm tree is already at its target and skips setup.
+
 ### Worktree git state
 
 A worktree shares its whole repository with every other worktree: one object store, one ref database, one config, one hook set. Only `HEAD`, the index, `ORIG_HEAD`, `MERGE_HEAD`, `COMMIT_EDITMSG`, `logs/HEAD`, and the working files belong to the worktree that owns them. Everything under `refs/` does not.
@@ -529,7 +535,9 @@ at the new tip and then retires the stale one; until then a claim of the stale t
 checks out the new base and reruns setup.
 
 `worktree.warmPool.baseRef` is the git ref the warm pool cuts from (branch, tag,
-or `origin/<branch>`). Omitted, the pool uses the repository default branch.
+or `origin/<branch>`). A bare branch name resolves to the local branch before
+`origin/<branch>`, the same order a create uses, and a create with no named base
+starts from it. Omitted, the pool uses the repository default branch.
 Set this to the branch whose `paseo.json` setup the pool should run — a pool
 built from `main` will run `main`'s setup, not the current checkout's.
 
@@ -769,15 +777,24 @@ cp -R packages/desktop/release/mac-arm64/Paseo.app "/Applications/Paseo Test.app
 
 ## Dependency patches
 
-`patches/*.patch` are applied by `scripts/postinstall-patches.mjs` on every install. A patch only
-runs when its package is actually present, so add the package to that script's `patchedPackages`
-list when you introduce a new patch — otherwise the file sits in `patches/` and never applies.
-patch-package cannot apply a patch that changed after an earlier version was applied, so the
-script removes that package (its virtual-store directory too) and fails the install; the next
-`pnpm install` links it clean and applies the current patch. Deploy's checkout sync retries a
-failed install once for this reason. Regenerate a patch with `pnpm exec patch-package <package>`
-after editing `node_modules/<package>`, and
-patch every build the consumers use: Metro resolves the `react-native` field of a package
+pnpm applies `patches/*.patch` itself: each one is listed under `patchedDependencies` in
+`pnpm-workspace.yaml`, keyed by the exact `name@version`, and `pnpm-lock.yaml` records its hash.
+pnpm patches the package while importing it and stores the result as a separate store entry, so
+the shared store's unpatched files are never edited. An unused key or a patch that no longer
+applies fails the install; when you upgrade a patched package, regenerate its patch and rename
+the key.
+
+To add or change a patch:
+
+```bash
+pnpm patch <name>@<version>            # prints a scratch directory holding the package
+# edit the files in that directory
+pnpm patch-commit <scratch directory>  # writes patches/, the yaml key and the lockfile
+```
+
+To start from an existing patch, `pnpm patch` applies it to the scratch copy first. A header
+comment above the first `diff --git` line survives `pnpm install`, but `pnpm patch-commit`
+rewrites the file, so copy the header back. Patch every build the consumers use: Metro resolves the `react-native` field of a package
 (`src/*.ts` for `react-native-svg`), while Node and Vitest resolve `main`/`module`
 (`lib/commonjs`, `lib/module`). Patching only `lib/` leaves the app bundle unfixed.
 

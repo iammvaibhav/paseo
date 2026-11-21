@@ -19,10 +19,9 @@
 //   release.json    version, commit, platform, node, builder, build time
 //
 // Why not `pnpm deploy`: it re-resolves dependencies (shared-lockfile deploy
-// falls back to resolution in this workspace), drops the patch-package patches
-// applied by scripts/postinstall-patches.mjs, and skips the patched
-// @parcel/watcher native rebuild. Copying the builder's installed tree keeps
-// every byte the builder's own daemon runs, patches and native builds included.
+// falls back to resolution in this workspace). Copying the builder's installed
+// tree keeps every byte the builder's own daemon runs, patches and native
+// builds included.
 import { execFileSync } from "node:child_process";
 import {
   cpSync,

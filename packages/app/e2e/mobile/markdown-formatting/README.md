@@ -24,7 +24,7 @@ then repeats in compact mode and after restoring regular text. More than one
 pixel of surplus fails. Keep the whole fixture visible: clipped accessibility
 bounds cannot establish measurement parity.
 
-`scripts/postinstall-patches.test.mjs` regenerates both platforms’ props and
+`scripts/patched-dependencies.test.mjs` regenerates both platforms’ props and
 compares them with the shipped headers. This catches missing C++ fields in the
 measurement path, which the Kotlin tests cannot exercise.
 

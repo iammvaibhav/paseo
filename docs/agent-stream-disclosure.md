@@ -179,7 +179,7 @@ With every turn collapsed, flinging from a cold open into history did not blank 
 
 ### LegendList patch
 
-`patches/@legendapp+list+3.7.1.patch` carries twelve changes for the timeline. Its header lists
+`patches/@legendapp__list@3.7.1.patch` carries twelve changes for the timeline. Its header lists
 them by purpose, and
 [legend-list #593](https://github.com/LegendApp/legend-list/issues/593) reports each upstream.
 Drop a hunk when the installed LegendList ships its fix.

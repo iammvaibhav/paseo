@@ -150,8 +150,8 @@ jobs:
       - name: Install dependencies
         run: node scripts/pnpm-retry.mjs install --frozen-lockfile
 
-      - name: Verify dependency patch recovery
-        run: node --test scripts/postinstall-patches.test.mjs
+      - name: Verify patched dependencies
+        run: node --test scripts/patched-dependencies.test.mjs
 
       - name: Build server stack
         run: pnpm run build:server
