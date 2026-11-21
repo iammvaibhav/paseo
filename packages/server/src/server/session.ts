@@ -4724,6 +4724,8 @@ export class Session {
         requestId,
       },
     });
+    // Archiving the last active agent of a workspace archives the workspace too.
+    await this.missionControlService?.archiveWorkspaceIfLastAgentArchived(agentId);
   }
 
   private async archiveAgentForClose(

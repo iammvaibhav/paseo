@@ -1314,8 +1314,8 @@ export class ItsaplanBridge {
       if (bucket !== "done") {
         await this.missionControl.setLifecycle({ agentId: record.id, action: "done" });
       }
-      // Marking done can already have archived the workspace (and the agent
-      // with it), so archive only what is still live.
+      // The agent can already be archived (by hand, or with its workspace), so archive only
+      // what is still live.
       const current = await this.agentStorage.get(record.id);
       if (current && !current.archivedAt && this.archiveAgent) {
         await this.archiveAgent(record.id).catch((err: unknown) => {

@@ -1841,8 +1841,12 @@ export async function createPaseoDaemon(
     workspaceRegistry,
     projectRegistry,
     archiveWorkspace: archiveWorkspaceByIdExternal,
-    archiveAgent: (agentId: string) =>
-      archiveAgentCommand({ agentManager, agentStorage, logger }, agentId),
+    // fleet_archive_agent: archiving a workspace's last active agent archives the workspace too.
+    archiveAgent: async (agentId: string) => {
+      const result = await archiveAgentCommand({ agentManager, agentStorage, logger }, agentId);
+      await missionControlService.archiveWorkspaceIfLastAgentArchived(agentId);
+      return result;
+    },
     mkdirp: async (dirPath: string) => {
       await mkdir(dirPath, { recursive: true });
     },

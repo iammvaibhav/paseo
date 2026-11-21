@@ -541,9 +541,6 @@ export class MissionControlService {
       await this.emitVerdictEvent({ agentId, verdict: options.verdict });
     }
     this.notifyReviewState(agentId);
-    if (state === "done" && options?.verdict?.summary !== "aged-out") {
-      await this.maybeAutoArchiveWorkspaceOnAgentDone(agentId);
-    }
   }
 
   /**
@@ -654,6 +651,7 @@ export class MissionControlService {
           verdict: { by: "user", summary: "Cleared", at: now },
         });
         this.notifyReviewState(agentId);
+        await this.archiveWorkspaceIfLastAgentArchived(agentId);
         return { ok: true };
       }
       case "reopen": {
@@ -2853,23 +2851,23 @@ export class MissionControlService {
     }
   }
   /**
-   * PASEO-21: Auto-archive a workspace when its only agent is marked Done.
-   * If other active (non-archived) agents remain in the workspace, or if
-   * the workspace is a project base workspace or already archived, no-op.
+   * Archives the agent's workspace once the agent the user just archived was its last active
+   * one. Call it after an explicit single-agent archive (the app's Archive, fleet_archive_agent,
+   * the archive_agent tool, Clear). No-op when another unarchived agent remains, when the
+   * workspace is a project's base workspace, or when it is already archived. Marking an agent
+   * done never archives anything.
    */
-  async maybeAutoArchiveWorkspaceOnAgentDone(agentId: string): Promise<void> {
+  async archiveWorkspaceIfLastAgentArchived(agentId: string): Promise<void> {
     if (!this.archiveWorkspace) {
       return;
     }
     try {
       const agentRecord = await this.agentStorage.get(agentId);
-      const workspaceId =
-        agentRecord?.workspaceId ?? this.agentManager.getAgent(agentId)?.workspaceId;
-      if (!workspaceId) {
+      if (!agentRecord?.archivedAt) {
         return;
       }
-
-      if (this.autoArchivingWorkspaces.has(workspaceId)) {
+      const workspaceId = agentRecord.workspaceId;
+      if (!workspaceId || this.autoArchivingWorkspaces.has(workspaceId)) {
         return;
       }
 
@@ -2890,36 +2888,34 @@ export class MissionControlService {
         }
       }
 
-      const activeAgentIds = new Set<string>();
-      for (const liveAgent of this.agentManager.listAgents()) {
-        if (liveAgent.workspaceId === workspaceId) {
-          activeAgentIds.add(liveAgent.id);
-        }
-      }
       const storedRecords = await this.agentStorage.listByWorkspace(workspaceId);
-      for (const record of storedRecords) {
-        if (!record.archivedAt) {
-          activeAgentIds.add(record.id);
-        }
+      const archivedIds = new Set(
+        storedRecords.filter((record) => record.archivedAt).map((record) => record.id),
+      );
+      const hasActiveAgent =
+        storedRecords.some((record) => !record.archivedAt) ||
+        this.agentManager
+          .listAgents()
+          .some((live) => live.workspaceId === workspaceId && !archivedIds.has(live.id));
+      if (hasActiveAgent) {
+        return;
       }
 
-      if (activeAgentIds.size === 1 && activeAgentIds.has(agentId)) {
-        this.autoArchivingWorkspaces.add(workspaceId);
-        try {
-          const requestId = `auto-archive-workspace-agent-done-${agentId}-${Date.now()}`;
-          this.logger.info(
-            { agentId, workspaceId, requestId },
-            "mission_control.auto_archive_workspace_on_agent_done",
-          );
-          await this.archiveWorkspace(workspaceId, requestId);
-        } finally {
-          this.autoArchivingWorkspaces.delete(workspaceId);
-        }
+      this.autoArchivingWorkspaces.add(workspaceId);
+      try {
+        const requestId = `archive-workspace-last-agent-${agentId}-${Date.now()}`;
+        this.logger.info(
+          { agentId, workspaceId, requestId },
+          "mission_control.archive_workspace_after_last_agent",
+        );
+        await this.archiveWorkspace(workspaceId, requestId);
+      } finally {
+        this.autoArchivingWorkspaces.delete(workspaceId);
       }
     } catch (error) {
       this.logger.warn(
         { err: error, agentId },
-        "mission_control.auto_archive_workspace_on_agent_done_failed",
+        "mission_control.archive_workspace_after_last_agent_failed",
       );
     }
   }

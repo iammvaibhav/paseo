@@ -3105,6 +3105,7 @@ function createToolCatalog(
         },
         agentId,
       );
+      await missionControlService?.archiveWorkspaceIfLastAgentArchived(agentId);
       return {
         content: [],
         structuredContent: ensureValidJson({ success: true }),

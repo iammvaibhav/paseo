@@ -13,7 +13,7 @@ No LLM gateway in this feature. Everything is omp.
 | Board            | Every agent, every host, grouped by bucket. Plain data, no AI, cannot die.                                        |
 | Inspector        | Embedded agent view inside Mission Control. Clicking a board row opens the agent here, never navigates away.      |
 | Ready for review | The agent finished a run (or reported `completed`) and awaits a user verdict.                                     |
-| Done             | Reviewed and confirmed complete. Bookkeeping only; a single-agent workspace auto-archives on Done (PASEO-21).     |
+| Done             | Reviewed and confirmed complete. Bookkeeping only: marking an agent done never archives it or its workspace.      |
 | Dormant          | Pre-rollout or long-idle agents. Hidden by default; visible via the "All unarchived" toggle.                      |
 | report_status    | The tool every agent gets: self-reported status, title, description, milestones, proofs, learnings.               |
 | Machinery prompt | A prompt the daemon itself sends an agent (status ask, stall recovery, abort resume). Never a user's instruction. |
@@ -79,7 +79,8 @@ Buckets: **Needs you** (pending permission, error) → **Running** → **Ready f
 - **Clean finish → ready, never needs-you.**
 - **Ready aging**: when `readyAgeOutDays > 0`, a daily sweep moves old `ready` rows to done with `verdict: "aged-out"`. Default 0 (disabled).
 - **User-stopped ≠ Needs you**: an agent whose last run the user stopped lands in **Done** with a "Stopped by you" chip. **Clear** writes `reviewState: "cleared"`. A new run clears the stop origin.
-- Done is set by the user (Mark done, the itsaplan ticket moving to Done). Clear removes a row from Done; any new run puts the agent back in Running.
+- Done is set by the user (Mark done, the itsaplan ticket moving to Done). Clear archives the agent and removes its row from Done; any new run puts the agent back in Running.
+- **Archiving a workspace's last active agent archives the workspace** (`archiveWorkspaceIfLastAgentArchived` in `mission-control/service.ts`), from the app's Archive, Clear, `fleet_archive_agent`, and the `archive_agent` tool. A project's base workspace is never archived this way. Agents archived as part of a workspace archive skip the check.
 - Needs you, Running and Ready show at any age, on the board, the sidebar, and `fleet_list_agents` (unless the caller passes `sinceHours`); a Ready agent stays until it is reviewed, marked done, or archived. On the board and in `fleet_list_agents`, Done shows for 30 days by default; the board's toggle shows all unarchived agents. The sidebar shows Done at any age.
 - The sidebar's agent view does not split by bucket. It lists **Pinned**, **Running** (Needs you first, then running agents), then one **Recent** list of Ready and Done agents, newest first by `rowActivityMs`. The row's status dot carries the bucket, so Mark done changes the dot and leaves the agent where it was (`buildSidebarAgentViewSections`, `packages/app/src/components/sidebar/agent-view/model.ts`). Each row has a second line, `project · host`; the status dot and the age stay on the title's line.
 - A row's date is its last activity. The app holds only the newest page of Mission Control events per host (a few days on a busy host), so it cannot come from events alone; and verdict cards (Mark done, Clear, aging out) are not activity, so they never move a row or reset its age. See `rowActivityMs` in `packages/app/src/mission-control/lifecycle.ts`.
