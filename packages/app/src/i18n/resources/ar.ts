@@ -1423,10 +1423,8 @@ export const ar: TranslationResources = {
       title: "الوكلاء",
       display: { trigger: "تفضيلات عرض الوكلاء", heading: "الوكلاء", showDone: "إظهار المكتملة" },
       sections: {
-        needsYou: "بحاجة إليك",
         running: "جارٍ التشغيل",
-        ready: "جاهز للمراجعة",
-        done: "مكتمل",
+        recent: "الأخيرة",
       },
       empty: {
         title: "لا يوجد وكلاء لعرضهم",

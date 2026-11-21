@@ -1,22 +1,22 @@
 import { create } from "zustand";
 
-/** The sidebar search bar. Not persisted: a search is over once the bar closes. */
+/**
+ * The sidebar search bar. It is always on screen; a blank query means no search.
+ * Not persisted: a search does not survive a reload.
+ */
 interface SidebarSearchStoreState {
-  isOpen: boolean;
   query: string;
-  includeArchived: boolean;
-  open: () => void;
-  close: () => void;
+  /** The bar has focus; focusing it warms each host's search before the first query. */
+  inputFocused: boolean;
   setQuery: (query: string) => void;
-  setIncludeArchived: (includeArchived: boolean) => void;
+  setInputFocused: (inputFocused: boolean) => void;
+  clear: () => void;
 }
 
 export const useSidebarSearchStore = create<SidebarSearchStoreState>((set) => ({
-  isOpen: false,
   query: "",
-  includeArchived: false,
-  open: () => set({ isOpen: true }),
-  close: () => set({ isOpen: false, query: "", includeArchived: false }),
+  inputFocused: false,
   setQuery: (query) => set({ query }),
-  setIncludeArchived: (includeArchived) => set({ includeArchived }),
+  setInputFocused: (inputFocused) => set({ inputFocused }),
+  clear: () => set({ query: "" }),
 }));

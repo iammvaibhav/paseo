@@ -1,20 +1,20 @@
-import type { LifecycleBucketGroup, LifecycleRow } from "@/mission-control/lifecycle";
+import {
+  compareTimeDescRows,
+  type LifecycleBucketGroup,
+  type LifecycleRow,
+} from "@/mission-control/lifecycle";
 import {
   sortBySidebarSearchRank,
   type SidebarSearchRanking,
 } from "@/components/sidebar/sidebar-search-rank";
 
-export type SidebarAgentViewBucket = "needs_you" | "running" | "ready" | "done";
-
-export const SIDEBAR_AGENT_VIEW_BUCKET_ORDER: readonly SidebarAgentViewBucket[] = [
-  "needs_you",
-  "running",
-  "ready",
-  "done",
-];
-
-/** While a search narrows the view, one ranked Results section replaces the status sections. */
-export type SidebarAgentViewSectionKey = SidebarAgentViewBucket | "results";
+/**
+ * Running agents, then one Recent list of every other visible agent (needs
+ * you, ready, done) newest first. Status shows in each row's dot, so marking an
+ * agent done changes its dot without moving it. While a search narrows the
+ * view, one ranked Results section replaces both.
+ */
+export type SidebarAgentViewSectionKey = "running" | "recent" | "results";
 
 export interface SidebarAgentViewSection {
   key: SidebarAgentViewSectionKey;
@@ -84,31 +84,20 @@ export function buildSidebarAgentViewSections(
     return rows.length > 0 ? [{ key: "results", rows }] : [];
   }
 
-  const rowsByBucket = new Map<LifecycleBucketGroup["bucket"], LifecycleRow[]>();
+  const running: LifecycleRow[] = [];
+  const recent: LifecycleRow[] = [];
   for (const group of groups) {
-    const existing = rowsByBucket.get(group.bucket);
-    if (existing) {
-      existing.push(...group.rows);
-    } else {
-      rowsByBucket.set(group.bucket, [...group.rows]);
+    if (group.bucket === "dormant") continue;
+    if (group.bucket === "done" && !input.showDone) continue;
+    const target = group.bucket === "running" ? running : recent;
+    for (const row of group.rows) {
+      if (keep(row)) target.push(row);
     }
   }
+  recent.sort(compareTimeDescRows);
 
   const sections: SidebarAgentViewSection[] = [];
-
-  for (const bucket of SIDEBAR_AGENT_VIEW_BUCKET_ORDER) {
-    if (bucket === "done" && !input.showDone) {
-      continue;
-    }
-
-    const filteredRows = (rowsByBucket.get(bucket) ?? []).filter(keep);
-    if (filteredRows.length > 0) {
-      sections.push({
-        key: bucket,
-        rows: filteredRows,
-      });
-    }
-  }
-
+  if (running.length > 0) sections.push({ key: "running", rows: running });
+  if (recent.length > 0) sections.push({ key: "recent", rows: recent });
   return sections;
 }

@@ -98,9 +98,8 @@ export const steps = [
       const page = ctx.page;
       ctx.expect(Boolean(page), "Playwright page available");
       await page.goto(ctx.host().httpUrl, { waitUntil: "domcontentloaded", timeout: 15_000 });
-      await page.waitForSelector('[data-testid="sidebar-search-toggle"]', { timeout: 15_000 });
-      await page.locator('[data-testid="sidebar-view-toggle-agents"]').click();
-      await page.locator('[data-testid="sidebar-search-toggle"]').click();
+      // The search bar is always visible; typing switches the sidebar to the Agents view.
+      await page.waitForSelector('[data-testid="sidebar-search-input"]', { timeout: 15_000 });
       await page.locator('[data-testid="sidebar-search-input"]').fill(QUERY);
       await page.waitForFunction(
         () => document.querySelector('[data-testid="sidebar-search-status"]') === null,

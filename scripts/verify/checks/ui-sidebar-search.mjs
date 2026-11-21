@@ -8,10 +8,11 @@ export const meta = {
   hosts: 1,
   video: true,
   description:
-    "Asserts the sidebar search finds a closed (dormant) agent by name and id prefix in the " +
-    "Agents view, finds archived agents only with Include archived, shows no engine label, and " +
-    "opens an archived agent whose project was removed with its workspace and project restored, " +
-    "including an agent left active in an archived workspace by the old open path.",
+    "Asserts the always-visible sidebar search bar (no toggle) switches the sidebar to the " +
+    "Agents view on the first typed query without losing focus, finds a closed (dormant) agent " +
+    "by name and id prefix, always lists archived matches (no Include archived chip), shows no " +
+    "engine label, and opens an archived agent whose project was removed with its workspace and " +
+    "project restored, including an agent left active in an archived workspace by the old open path.",
 };
 
 const WORKSPACE_TITLE = "sidebar-search-workspace";
@@ -73,7 +74,7 @@ function rowSelector(agentId) {
 async function search(page, query) {
   const input = page.locator('[data-testid="sidebar-search-input"]');
   await input.fill(query);
-  // The bar reads Searching… until every host answered.
+  // The list reads Searching… until every host answered.
   await page.waitForFunction(
     () => document.querySelector('[data-testid="sidebar-search-status"]') === null,
     null,
@@ -118,21 +119,25 @@ async function rowMetrics(page, selector, title, options = {}) {
 export const steps = [
   {
     id: "load-app",
-    label: "Load web UI and switch the sidebar to the Agents view",
-    narrate: "Web UI loaded and the sidebar switched to the agent list.",
+    label: "Load web UI: the search bar is visible with no toggle, sidebar on Workspaces",
+    narrate: "Web UI loaded; the search bar is always on screen and the sidebar shows Workspaces.",
     async run(ctx) {
       const page = ctx.page;
       ctx.expect(Boolean(page), "Playwright page must be available for UI tier");
       await page.goto(ctx.host().httpUrl, { waitUntil: "domcontentloaded", timeout: 15_000 });
-      await page.waitForSelector('[data-testid="sidebar-search-toggle"]', { timeout: 15_000 });
-      const toggle = page.locator('[data-testid="sidebar-view-toggle-agents"]');
+      await page.waitForSelector('[data-testid="sidebar-search-input"]', { timeout: 15_000 });
+      ctx.expect(
+        (await page.locator('[data-testid="sidebar-search-toggle"]').count()) === 0,
+        "no search toggle button in the sidebar header",
+      );
+      const toggle = page.locator('[data-testid="sidebar-view-toggle-workspaces"]');
       await toggle.waitFor({ state: "visible", timeout: 10_000 });
       await toggle.click();
-      await page.waitForSelector(
-        '[data-testid="sidebar-agent-view-list"], [data-testid="sidebar-agent-view-empty-state"]',
-        { timeout: 10_000 },
+      ctx.expect(
+        (await page.locator('[data-testid="sidebar-agent-view-list"]').count()) === 0,
+        "sidebar starts on the Workspaces view",
       );
-      return "agents view open";
+      return "search bar visible, workspaces view open";
     },
   },
   {
@@ -203,50 +208,77 @@ export const steps = [
   },
   {
     id: "dormant-hidden-while-browsing",
-    label: "The idle agent is not listed while browsing",
+    label: "The idle agent is not listed while browsing the Agents view",
     narrate: "Without a search the dormant agent stays out of the Agents view.",
     async run(ctx) {
-      await ctx.page.waitForTimeout(1_500);
+      const page = ctx.page;
+      await page.locator('[data-testid="sidebar-view-toggle-agents"]').click();
+      await page.waitForSelector(
+        '[data-testid="sidebar-agent-view-list"], [data-testid="sidebar-agent-view-empty-state"]',
+        { timeout: 10_000 },
+      );
+      await page.waitForTimeout(1_500);
       ctx.expect(
-        !(await visible(ctx.page, rowSelector(closed.id))),
+        !(await visible(page, rowSelector(closed.id))),
         "dormant row hidden while browsing",
       );
       await ctx.shot("before");
-      return "dormant row hidden";
+      await page.locator('[data-testid="sidebar-view-toggle-workspaces"]').click();
+      await page.waitForFunction(
+        () => document.querySelector('[data-testid="sidebar-agent-view-list"]') === null,
+        null,
+        { timeout: 10_000 },
+      );
+      return "dormant row hidden; back on Workspaces";
     },
   },
   {
     id: "search-by-name",
-    label: "Search the closed agent by name, then by id prefix",
-    narrate: "Typing the agent's name, then its id prefix, lists it under Results.",
+    label: "Typing on Workspaces switches to Agents and keeps focus; find by name, then id prefix",
+    narrate:
+      "Typing the agent's name switches the sidebar to Agents with the cursor still in the bar, and lists it under Results.",
     async run(ctx) {
       const page = ctx.page;
-      await page.locator('[data-testid="sidebar-search-toggle"]').click();
+      const input = page.locator('[data-testid="sidebar-search-input"]');
+      await input.click();
+      await input.pressSequentially(closed.name.slice(0, 1));
+      await page.waitForSelector('[data-testid="sidebar-agent-view-list"]', { timeout: 10_000 });
+      await input.pressSequentially(closed.name.slice(1));
+      ctx.expect(
+        (await input.inputValue()) === closed.name,
+        `typed query intact across the view switch, got "${await input.inputValue()}"`,
+      );
+      ctx.expect(
+        await input.evaluate((element) => element === document.activeElement),
+        "search bar keeps focus after the switch to Agents",
+      );
       await search(page, closed.name);
       await page.waitForSelector(rowSelector(closed.id), { timeout: 10_000 });
       ctx.expect(
         await visible(page, '[data-testid="sidebar-agent-view-section-results"]'),
         "closed match listed under the Results section",
       );
-      const panelText = await page.locator('[data-testid="sidebar-search-panel"]').innerText();
-      ctx.expect(!/jev/i.test(panelText), `search panel shows no engine label, got "${panelText}"`);
+      const barText = await page.locator('[data-testid="sidebar-search-bar"]').innerText();
+      ctx.expect(!/jev/i.test(barText), `search bar shows no engine label, got "${barText}"`);
 
       await search(page, closed.id.slice(0, 8));
       await page.waitForSelector(rowSelector(closed.id), { timeout: 10_000 });
       await ctx.shot("after");
-      return `found by name "${closed.name}" and id prefix ${closed.id.slice(0, 8)}`;
+      return `switched to Agents on typing; found by name "${closed.name}" and id prefix ${closed.id.slice(0, 8)}`;
     },
   },
   {
-    id: "archived-opt-in",
-    label: "Archived agent matches only with Include archived",
-    narrate: "The archived agent stays hidden until Include archived, then lists under the bar.",
+    id: "archived-always-included",
+    label: "Archived agent matches with no Include archived chip",
+    narrate:
+      "The archived agent lists under Archived as soon as it matches; there is no opt-in chip.",
     async run(ctx) {
       const page = ctx.page;
+      ctx.expect(
+        (await page.locator('[data-testid="sidebar-search-include-archived"]').count()) === 0,
+        "no Include archived chip",
+      );
       await search(page, archived.name);
-      await page.waitForSelector('[data-testid="sidebar-search-empty-state"]', { timeout: 10_000 });
-
-      await page.locator('[data-testid="sidebar-search-include-archived"]').click();
       await page.waitForSelector(`[data-testid="sidebar-search-archived-${archived.id}"]`, {
         timeout: 10_000,
       });
@@ -287,7 +319,7 @@ export const steps = [
       ctx.expect(archivedRow.hasTime, "archived row shows its time label");
       ctx.expect(archivedRow.hasIcon, "archived row keeps the archive icon");
       await ctx.shot("archived");
-      return `archived ${archived.name} listed only with Include archived; row ${JSON.stringify(archivedRow)}`;
+      return `archived ${archived.name} listed with no opt-in; row ${JSON.stringify(archivedRow)}`;
     },
   },
   {

@@ -1458,10 +1458,8 @@ export const fr: TranslationResources = {
         showDone: "Afficher les terminés",
       },
       sections: {
-        needsYou: "Nécessite votre attention",
         running: "En cours d'exécution",
-        ready: "Prêts pour révision",
-        done: "Terminé",
+        recent: "Récents",
       },
       empty: {
         title: "Aucun agent à afficher",

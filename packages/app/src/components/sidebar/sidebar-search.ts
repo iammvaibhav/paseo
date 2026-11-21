@@ -33,7 +33,7 @@ export interface SidebarSearch extends SidebarSearchRanking {
   agentKeys: ReadonlySet<string>;
   /** `serverId:workspaceId` of every workspace holding a matching agent. */
   workspaceKeys: ReadonlySet<string>;
-  /** Archived matches from every host, best first; empty unless archived agents are included. */
+  /** Archived matches from every host, best first. */
   archivedMatches: SidebarSearchArchivedMatch[];
   /** A host has not answered the current query yet. */
   pending: boolean;
@@ -41,14 +41,12 @@ export interface SidebarSearch extends SidebarSearchRanking {
 
 interface RemoteState {
   query: string;
-  includeArchived: boolean;
   byServer: ReadonlyMap<string, AgentSearchResponse["payload"]>;
   pendingServerIds: ReadonlySet<string>;
 }
 
 const EMPTY_REMOTE: RemoteState = {
   query: "",
-  includeArchived: false,
   byServer: new Map(),
   pendingServerIds: new Set(),
 };
@@ -56,12 +54,11 @@ const EMPTY_REMOTE: RemoteState = {
 /**
  * What the sidebar search bar matches. Word matches over the agents already in
  * the session store show instantly; each host's full-text search
- * (agent.search.*) widens them a moment later with closed, archived (opt-in),
- * and transcript matches the client cannot see.
+ * (agent.search.*) widens them a moment later with closed, archived, and
+ * transcript matches the client cannot see.
  */
 export function useSidebarSearch(): SidebarSearch {
   const query = useSidebarSearchStore((state) => state.query.trim());
-  const includeArchived = useSidebarSearchStore((state) => state.includeArchived);
   const words = useMemo(() => agentSearchWords(query), [query]);
 
   // Flat `serverId␀agentId␀workspaceId` strings so useShallow can keep the
@@ -90,7 +87,7 @@ export function useSidebarSearch(): SidebarSearch {
     }),
   );
 
-  const remote = useRemoteAgentSearch(query, includeArchived);
+  const remote = useRemoteAgentSearch(query);
 
   // `serverId:agentId` of archived matches (the agent or its workspace) the
   // session store now holds as active, e.g. just opened from the bar: they
@@ -124,7 +121,7 @@ export function useSidebarSearch(): SidebarSearch {
       addMatch(serverId!, agentId!, workspaceId || null);
     }
 
-    const current = remote.query === query && remote.includeArchived === includeArchived;
+    const current = remote.query === query;
     const revived = new Set(revivedKeys);
     const transcriptPositions = new Map<string, number>();
     let archivedMatches: SidebarSearchArchivedMatch[] = [];
@@ -169,10 +166,10 @@ export function useSidebarSearch(): SidebarSearch {
       archivedMatches,
       pending: words.length > 0 && (!current || remote.pendingServerIds.size > 0),
     };
-  }, [includeArchived, localEntries, query, remote, revivedKeys, words]);
+  }, [localEntries, query, remote, revivedKeys, words]);
 }
 
-function useRemoteAgentSearch(query: string, includeArchived: boolean): RemoteState {
+function useRemoteAgentSearch(query: string): RemoteState {
   const debouncedQuery = useDebouncedValue(query, REMOTE_SEARCH_DEBOUNCE_MS);
   const hosts = useHosts();
   const serverIds = useMemo(() => hosts.map((host) => host.serverId), [hosts]);
@@ -182,17 +179,17 @@ function useRemoteAgentSearch(query: string, includeArchived: boolean): RemoteSt
     [serverIds, supportByServerId],
   );
   const [state, setState] = useState<RemoteState>(EMPTY_REMOTE);
-  const isOpen = useSidebarSearchStore((store) => store.isOpen);
+  const inputFocused = useSidebarSearchStore((store) => store.inputFocused);
 
-  // Opening the bar warms each host (live launch prompts) before the first query lands.
+  // Focusing the bar warms each host (live launch prompts) before the first query lands.
   useEffect(() => {
-    if (!isOpen) return;
+    if (!inputFocused) return;
     const runtime = getHostRuntimeStore();
     for (const serverId of searchServerIds) {
       const client = runtime.getClient(serverId);
       if (client?.isConnected) void client.searchAgents({ query: "" }).catch(() => null);
     }
-  }, [isOpen, searchServerIds]);
+  }, [inputFocused, searchServerIds]);
 
   useEffect(() => {
     if (agentSearchWords(debouncedQuery).length === 0) {
@@ -207,13 +204,12 @@ function useRemoteAgentSearch(query: string, includeArchived: boolean): RemoteSt
     });
     setState({
       query: debouncedQuery,
-      includeArchived,
       byServer: new Map(),
       pendingServerIds: new Set(clients.map(({ serverId }) => serverId)),
     });
     const searchHost = async (serverId: string, client: (typeof clients)[number]["client"]) => {
       const payload = await client
-        .searchAgents({ query: debouncedQuery, includeArchived })
+        .searchAgents({ query: debouncedQuery, includeArchived: true })
         .catch(() => null);
       if (cancelled) return;
       setState((previous) => {
@@ -228,7 +224,7 @@ function useRemoteAgentSearch(query: string, includeArchived: boolean): RemoteSt
     return () => {
       cancelled = true;
     };
-  }, [debouncedQuery, includeArchived, searchServerIds]);
+  }, [debouncedQuery, searchServerIds]);
 
   return state;
 }

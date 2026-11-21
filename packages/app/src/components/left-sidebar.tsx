@@ -59,7 +59,7 @@ import { HostPicker } from "@/components/hosts/host-picker";
 import { SidebarDisplayPreferencesMenu } from "@/components/sidebar/display-preferences/menu";
 import { SidebarAgentViewPreferencesMenu } from "@/components/sidebar/agent-view/menu";
 import { SidebarViewToggle } from "@/components/sidebar/sidebar-view-toggle";
-import { SidebarSearchPanel, SidebarSearchToggle } from "@/components/sidebar/sidebar-search-bar";
+import { SidebarSearchBar } from "@/components/sidebar/sidebar-search-bar";
 import { SidebarAgentViewList } from "@/components/sidebar/agent-view/list";
 import { SidebarSeparator } from "@/components/sidebar/sidebar-separator";
 import { SidebarToastRegion } from "@/components/sidebar/sidebar-toast-region";
@@ -778,6 +778,7 @@ function MobileSidebar({
 
         <SidebarViewSlot dismiss={handleWorkspacePress}>
           <SidebarToastRegion active={active}>
+            <SidebarSearchBar />
             {viewMode === "agents" ? (
               <SidebarAgentViewList
                 active={active}
@@ -1073,6 +1074,7 @@ function DesktopSidebar({
 
           <SidebarViewSlot dismiss={closeSidebar}>
             <SidebarToastRegion active={active}>
+              <SidebarSearchBar />
               {viewMode === "agents" ? (
                 <SidebarAgentViewList
                   active={active}
@@ -1141,29 +1143,21 @@ function SidebarListHeader() {
   const isAgentView = viewMode === "agents";
 
   return (
-    <View>
-      <SidebarSectionHeader title={isAgentView ? t("sidebar.agentView.title") : "Workspaces"}>
-        <SidebarSearchToggle />
-        <SidebarViewToggle />
-        <Tooltip delayDuration={300}>
-          <TooltipTrigger asChild>
-            <View>
-              {isAgentView ? (
-                <SidebarAgentViewPreferencesMenu />
-              ) : (
-                <SidebarDisplayPreferencesMenu />
-              )}
-            </View>
-          </TooltipTrigger>
-          <TooltipContent side="bottom" align="center" offset={8}>
-            <IconTooltipContent
-              label={isAgentView ? t("sidebar.agentView.display.trigger") : "Display preferences"}
-            />
-          </TooltipContent>
-        </Tooltip>
-      </SidebarSectionHeader>
-      <SidebarSearchPanel />
-    </View>
+    <SidebarSectionHeader title={isAgentView ? t("sidebar.agentView.title") : "Workspaces"}>
+      <SidebarViewToggle />
+      <Tooltip delayDuration={300}>
+        <TooltipTrigger asChild>
+          <View>
+            {isAgentView ? <SidebarAgentViewPreferencesMenu /> : <SidebarDisplayPreferencesMenu />}
+          </View>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" align="center" offset={8}>
+          <IconTooltipContent
+            label={isAgentView ? t("sidebar.agentView.display.trigger") : "Display preferences"}
+          />
+        </TooltipContent>
+      </Tooltip>
+    </SidebarSectionHeader>
   );
 }
 

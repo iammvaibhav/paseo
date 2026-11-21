@@ -1465,10 +1465,8 @@ export const es: TranslationResources = {
         showDone: "Mostrar completados",
       },
       sections: {
-        needsYou: "Necesita tu atención",
         running: "En ejecución",
-        ready: "Listos para revisión",
-        done: "Completado",
+        recent: "Recientes",
       },
       empty: {
         title: "No hay agentes para mostrar",

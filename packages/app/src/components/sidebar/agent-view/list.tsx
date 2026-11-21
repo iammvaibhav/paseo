@@ -12,7 +12,11 @@ import type { LifecycleRow } from "@/mission-control/lifecycle";
 import { useAgentGridStore } from "@/screens/mission-control/agent-grid/store";
 import { useActiveWorkspaceSelection } from "@/stores/navigation-active-workspace-store";
 import { useSidebarSearchStore } from "@/stores/sidebar-search-store";
-import { SidebarSearchEmptyState } from "@/components/sidebar/sidebar-search-bar";
+import {
+  SidebarSearchArchivedSection,
+  SidebarSearchEmptyState,
+} from "@/components/sidebar/sidebar-search-bar";
+import { useSidebarModel } from "@/components/sidebar/sidebar-model";
 import { getFocusedAgentId, useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
 import { buildMissionControlRoute } from "@/utils/host-routes";
 import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
@@ -21,10 +25,8 @@ import { SidebarAgentViewRow } from "./row";
 import { SidebarAgentViewSectionHeader } from "./section-header";
 import { useSidebarAgentView } from "./use-sidebar-agent-view";
 export const SECTION_LABEL_KEYS: Record<SidebarAgentViewSectionKey, string> = {
-  needs_you: "sidebar.agentView.sections.needsYou",
   running: "sidebar.agentView.sections.running",
-  ready: "sidebar.agentView.sections.ready",
-  done: "sidebar.agentView.sections.done",
+  recent: "sidebar.agentView.sections.recent",
   results: "sidebar.search.resultsTitle",
 };
 
@@ -66,6 +68,7 @@ export function SidebarAgentViewList({
   });
   const selectedKey = useSelectedSidebarAgentKey();
   const searchActive = useSidebarSearchStore((state) => state.query.trim().length > 0);
+  const hasArchivedMatches = useSidebarModel().search.archivedMatches.length > 0;
 
   const nativeScrollGestureProps = useMemo(
     () =>
@@ -147,7 +150,7 @@ export function SidebarAgentViewList({
   const content = (
     <>
       {listHeaderComponent}
-      {sections.length === 0
+      {sections.length === 0 && !hasArchivedMatches
         ? emptyBody
         : sections.map((section) => (
             <View key={section.key} style={styles.section}>
@@ -159,6 +162,7 @@ export function SidebarAgentViewList({
               {section.rows.map(renderRow)}
             </View>
           ))}
+      <SidebarSearchArchivedSection />
     </>
   );
 

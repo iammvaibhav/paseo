@@ -1436,7 +1436,7 @@ export const ja: TranslationResources = {
     agentView: {
       title: "エージェント",
       display: { trigger: "エージェント表示設定", heading: "エージェント", showDone: "完了を表示" },
-      sections: { needsYou: "対応が必要", running: "実行中", ready: "レビュー待ち", done: "完了" },
+      sections: { running: "実行中", recent: "最近" },
       empty: {
         title: "表示するエージェントがありません",
         description: "実行中およびレビュー待ちのエージェントがここに表示されます。",

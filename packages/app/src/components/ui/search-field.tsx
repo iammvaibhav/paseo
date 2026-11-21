@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
 import {
   Pressable,
   View,
@@ -35,6 +35,8 @@ export interface SearchFieldProps {
   autoFocus?: boolean;
   /** Escape on web; native keyboards have no Escape key. */
   onEscape?: () => void;
+  onFocus?: () => void;
+  onBlur?: () => void;
 }
 
 /**
@@ -54,15 +56,38 @@ export function SearchField({
   clearTestID,
   autoFocus,
   onEscape,
+  onFocus,
+  onBlur,
 }: SearchFieldProps): ReactElement {
   const [isFocused, setIsFocused] = useState(false);
   const inputRef = useRef<EditingTextInputHandle>(null);
-  const handleFocus = useCallback(() => setIsFocused(true), []);
-  const handleBlur = useCallback(() => setIsFocused(false), []);
+  // The input is uncontrolled; this is the text it holds, so a `value` the
+  // caller changes on its own (cleared from elsewhere) can be written into it.
+  const inputTextRef = useRef(value);
+  useEffect(() => {
+    if (value === inputTextRef.current) return;
+    inputTextRef.current = value;
+    inputRef.current?.replaceText(value);
+  }, [value]);
+  const handleChangeText = useCallback(
+    (text: string) => {
+      inputTextRef.current = text;
+      onChangeText(text);
+    },
+    [onChangeText],
+  );
+  const handleFocus = useCallback(() => {
+    setIsFocused(true);
+    onFocus?.();
+  }, [onFocus]);
+  const handleBlur = useCallback(() => {
+    setIsFocused(false);
+    onBlur?.();
+  }, [onBlur]);
   const handleClear = useCallback(() => {
     inputRef.current?.replaceText("");
-    onChangeText("");
-  }, [onChangeText]);
+    handleChangeText("");
+  }, [handleChangeText]);
   const handleKeyPress = useCallback(
     (event: NativeSyntheticEvent<TextInputKeyPressEventData>) => {
       if (event.nativeEvent.key === "Escape") onEscape?.();
@@ -77,7 +102,7 @@ export function SearchField({
         testID={testID}
         ref={inputRef}
         initialValue={value}
-        onChangeText={onChangeText}
+        onChangeText={handleChangeText}
         onFocus={handleFocus}
         onBlur={handleBlur}
         autoFocus={autoFocus}

@@ -2,24 +2,26 @@
 
 Agent search has three depths:
 
-| Depth              | Where                               | What it reads                                                           | Latency |
-| ------------------ | ----------------------------------- | ----------------------------------------------------------------------- | ------- |
-| **Sidebar search** | Search icon in the sidebar header   | Name, title, id, status, launch prompt, last report, transcripts (FTS5) | instant |
-| **History search** | History → Agents tab                | Session names and indexed transcripts (FTS5), archived included         | instant |
-| **History Ask**    | History → Ask tab, ⋮ → Ask history… | Everything on disk, read by an agent                                    | minutes |
+| Depth              | Where                                     | What it reads                                                           | Latency |
+| ------------------ | ----------------------------------------- | ----------------------------------------------------------------------- | ------- |
+| **Sidebar search** | Search bar at the top of the sidebar list | Name, title, id, status, launch prompt, last report, transcripts (FTS5) | instant |
+| **History search** | History → Agents tab                      | Session names and indexed transcripts (FTS5), archived included         | instant |
+| **History Ask**    | History → Ask tab, ⋮ → Ask history…       | Everything on disk, read by an agent                                    | minutes |
 
 This is a custom-fork feature (`vaibhav/customizations`).
 
 ## Sidebar search
 
-The search icon next to the Workspaces / Agents toggle opens a search bar that narrows the list in place, in both views and under any project or host filter already applied. Archived agents are opt-in (**Include archived**) and listed under the bar, since the list never shows them. A search that matches nothing offers **Deep search**, which prefills History Ask with the query.
+The search bar sits at the top of the sidebar list, outside its scroll view, and is always visible. Typing a query switches the sidebar to the Agents view, because search is for agents; the query narrows the list in place under any project or host filter already applied (switching back to Workspaces narrows that view too). Archived agents are always included. A search that matches nothing offers **Deep search**, which prefills History Ask with the query.
+
+The bar lives outside the list because the list remounts its header on every view switch and loading-state change; inside the list, the first typed character would switch views and drop focus.
 
 - **Word matches show instantly**: every query word in the title, name, id, or reported description of an agent already in the session store. Workspace names match too.
 - **Each host widens them** after a 250 ms pause: it answers `agent.search.request` (`AgentSearchService`, `packages/server/src/server/agent-search/`) with plain text matching, no model call. An agent matches when every query word is a substring of its name, title, id, reported description, launch prompt (first run record's brief, or the first user message of a live agent), or last report headline, or when the transcript FTS5 index (the one History search uses) hits. The pause keeps a typed word to one round trip per host instead of one per keystroke.
-- **Matches are ranked, not grouped by status.** While a search is active the agent view lists one **Results** section, best first: the whole query as words in the name or title, then every word in the name, title, or id, then the other fields, then transcript-only hits; newest first within each. The client ranks the first two itself from the row's own name and title (`agentIdentitySearchTier`, shared with the daemon), so a row does not move when its host answers, and takes the order of transcript-only hits from each host's answer. bm25 is not comparable across hosts, so the first transcript hit of every host ranks alike. Archived matches under the bar use the same order.
+- **Matches are ranked, not grouped by status.** While a search is active the agent view lists one **Results** section, best first: the whole query as words in the name or title, then every word in the name, title, or id, then the other fields, then transcript-only hits; newest first within each. The client ranks the first two itself from the row's own name and title (`agentIdentitySearchTier`, shared with the daemon), so a row does not move when its host answers, and takes the order of transcript-only hits from each host's answer. bm25 is not comparable across hosts, so the first transcript hit of every host ranks alike. Archived matches use the same order.
 - **Transcript hits prefer close words.** The index runs the exact phrase, then the words within 5 tokens of each other (`NEAR`), then the words anywhere in one chunk, and lists an agent at the best of those it hits (`search/fts-query.ts`). "traffic flow" in one sentence beats "traffic" in one paragraph and "flowchart" in the next.
 - Closed agents are candidates. While a search is active, closed agents and Done agents past the retention window are candidates too and rank with the rest.
-- Archived agents are candidates only with **Include archived**. An agent whose workspace is archived counts as archived too (`workspaceArchivedAt` on the match): it is missing from the active agent list and has no directory to open in. They list under the bar in an **Archived** section drawn with the agent view's section header and row (archive glyph in the status slot), instead of the empty state.
+- Archived agents are always candidates. An agent whose workspace is archived counts as archived too (`workspaceArchivedAt` on the match): it is missing from the active agent list and has no directory to open in. They list below Results in an **Archived** section drawn with the agent view's section header and row (archive glyph in the status slot), instead of the empty state.
 - Opening an archived agent (from the bar, History, or the board) sends `agent.unarchive.request` before resuming it. The host runs `unarchiveAgentOnThisHost`, the same code as `fleet_unarchive_agent`: it restores an archived workspace (and its project) first, then clears the agent's `archivedAt`. When the restore fails the agent stays archived and the workspace route shows the reason.
 - A workspace whose project record is gone (a removed project, or a pruned legacy path-keyed project) is still restorable while its folder exists: unarchiving recreates a project at the folder (`mainRepoRoot` for a worktree). It never creates a project at the home directory or any folder enclosing the paseo home, because that project would enclose the Commander's workspace. Such a workspace goes into the host's scratch project instead.
 - Commander and machinery agents are never candidates.

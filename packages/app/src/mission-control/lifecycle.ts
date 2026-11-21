@@ -450,7 +450,8 @@ function compareRunningDurationRows(left: LifecycleRow, right: LifecycleRow): nu
   return compareRunningRows(left, right);
 }
 
-function compareTimeDescRows(left: LifecycleRow, right: LifecycleRow): number {
+/** Newest activity first (`sortTime`), then by name. */
+export function compareTimeDescRows(left: LifecycleRow, right: LifecycleRow): number {
   if (left.sortTime !== right.sortTime) {
     return right.sortTime - left.sortTime;
   }

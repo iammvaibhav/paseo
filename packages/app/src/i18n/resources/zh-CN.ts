@@ -1414,7 +1414,7 @@ export const zhCN: TranslationResources = {
     agentView: {
       title: "Agents",
       display: { trigger: "Agent 视图偏好", heading: "Agents", showDone: "显示已完成" },
-      sections: { needsYou: "需要你处理", running: "运行中", ready: "待审查", done: "已完成" },
+      sections: { running: "运行中", recent: "最近" },
       empty: {
         title: "没有可显示的 Agent",
         description: "运行中和待审查的 Agent 会显示在这里。",

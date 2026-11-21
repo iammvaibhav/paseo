@@ -1447,10 +1447,8 @@ export const ru: TranslationResources = {
         showDone: "Показывать завершённые",
       },
       sections: {
-        needsYou: "Требует внимания",
         running: "Работает",
-        ready: "Готовы к проверке",
-        done: "Готово",
+        recent: "Недавние",
       },
       empty: {
         title: "Нет агентов для отображения",

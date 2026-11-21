@@ -4,11 +4,7 @@ import type {
   LifecycleBucketGroup,
   LifecycleRow,
 } from "@/mission-control/lifecycle";
-import {
-  agentWorkspaceKey,
-  buildSidebarAgentViewSections,
-  SIDEBAR_AGENT_VIEW_BUCKET_ORDER,
-} from "./model";
+import { agentWorkspaceKey, buildSidebarAgentViewSections } from "./model";
 
 function makeRow(input: {
   id: string;
@@ -64,12 +60,13 @@ describe("sidebar agent view model", () => {
   describe("buildSidebarAgentViewSections", () => {
     const emptyMapping = new Map<string, string>();
 
-    it("enforces canonical bucket order and drops dormant bucket", () => {
-      const needsYouRow = makeRow({ id: "1", bucket: "needs_you" });
+    it("lists Running, then one Recent list of every other bucket newest first, without dormant", () => {
+      const needsYouRow = makeRow({ id: "1", bucket: "needs_you", sortTime: 20 });
       const runningRow = makeRow({ id: "2", bucket: "running" });
-      const readyRow = makeRow({ id: "3", bucket: "ready" });
-      const doneRow = makeRow({ id: "4", bucket: "done" });
-      const dormantRow = makeRow({ id: "5", bucket: "dormant" });
+      const readyRow = makeRow({ id: "3", bucket: "ready", sortTime: 10 });
+      const doneRow = makeRow({ id: "4", bucket: "done", sortTime: 30 });
+      const olderReadyRow = makeRow({ id: "6", bucket: "ready", sortTime: 5 });
+      const dormantRow = makeRow({ id: "5", bucket: "dormant", sortTime: 40 });
 
       // Pass in mixed/reverse order including dormant
       const groups: LifecycleBucketGroup[] = [
@@ -77,7 +74,7 @@ describe("sidebar agent view model", () => {
         makeGroup("dormant", [dormantRow]),
         makeGroup("running", [runningRow]),
         makeGroup("needs_you", [needsYouRow]),
-        makeGroup("ready", [readyRow]),
+        makeGroup("ready", [readyRow, olderReadyRow]),
       ];
 
       const sections = buildSidebarAgentViewSections({
@@ -89,14 +86,12 @@ describe("sidebar agent view model", () => {
         search: null,
       });
 
-      expect(keysOf(sections)).toEqual(SIDEBAR_AGENT_VIEW_BUCKET_ORDER);
-      expect(sections[0].rows).toEqual([needsYouRow]);
-      expect(sections[1].rows).toEqual([runningRow]);
-      expect(sections[2].rows).toEqual([readyRow]);
-      expect(sections[3].rows).toEqual([doneRow]);
+      expect(keysOf(sections)).toEqual(["running", "recent"]);
+      expect(sections[0].rows).toEqual([runningRow]);
+      expect(sections[1].rows).toEqual([doneRow, needsYouRow, readyRow, olderReadyRow]);
     });
 
-    it("drops done section unless showDone is true", () => {
+    it("drops done agents from Recent unless showDone is true", () => {
       const runningRow = makeRow({ id: "r1", bucket: "running" });
       const doneRow = makeRow({ id: "d1", bucket: "done" });
       const groups = [makeGroup("running", [runningRow]), makeGroup("done", [doneRow])];
@@ -122,7 +117,7 @@ describe("sidebar agent view model", () => {
         showDone: true,
         search: null,
       });
-      expect(keysOf(withDone)).toEqual(["running", "done"]);
+      expect(keysOf(withDone)).toEqual(["running", "recent"]);
       expect(withDone[1].rows).toEqual([doneRow]);
     });
 
@@ -264,7 +259,7 @@ describe("sidebar agent view model", () => {
         search: null,
       });
 
-      // needs_you is omitted because all rows filtered out; ready is omitted because 0 rows
+      // Recent is omitted: its only row is on a filtered-out host, and the ready group is empty
       expect(keysOf(sections)).toEqual(["running"]);
       expect(sections[0].rows).toEqual([runningRow]);
     });

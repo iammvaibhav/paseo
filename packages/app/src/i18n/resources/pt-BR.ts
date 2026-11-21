@@ -1454,10 +1454,8 @@ export const ptBR: TranslationResources = {
         showDone: "Mostrar concluídos",
       },
       sections: {
-        needsYou: "Precisa de você",
         running: "Em execução",
-        ready: "Prontos para revisão",
-        done: "Concluído",
+        recent: "Recentes",
       },
       empty: {
         title: "Nenhum agente para exibir",

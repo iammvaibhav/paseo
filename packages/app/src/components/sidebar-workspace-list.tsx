@@ -2513,8 +2513,7 @@ function ProjectModeList({
 }) {
   const { t } = useTranslation();
   const hasActiveHostFilter = useSidebarViewStore((state) => state.hostFilters.length > 0);
-  // The header holds the search bar; it must not unmount while you type in it.
-  const isSearchOpen = useSidebarSearchStore((state) => state.isOpen);
+  const isSearchActive = useSidebarSearchStore((state) => state.query.trim().length > 0);
   const [creatingWorkspaceIds, setCreatingWorkspaceIds] = useState<Set<string>>(() => new Set());
   const creatingWorkspaceTimeoutsRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(
     new Map(),
@@ -2900,7 +2899,7 @@ function ProjectModeList({
       {unpinnedProjects.length > 0 ||
       hasActiveHostFilter ||
       hasActiveProjectFilter ||
-      isSearchOpen ||
+      isSearchActive ||
       sidebarFilterEmpty
         ? listHeaderComponent
         : null}

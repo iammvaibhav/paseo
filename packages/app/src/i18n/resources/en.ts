@@ -1365,17 +1365,13 @@ export const en = {
   },
   sidebar: {
     search: {
-      open: "Search agents",
-      close: "Close search",
       placeholder: "Search agents",
       clear: "Clear search",
-      includeArchived: "Include archived",
       searching: "Searching…",
       archivedTitle: "Archived",
       resultsTitle: "Results",
       emptyTitle: "No agents match",
-      emptyDescription:
-        "Try other words, include archived agents, or run a deep search in History.",
+      emptyDescription: "Try other words, or run a deep search in History.",
       deepSearch: "Deep search",
     },
     view: {
@@ -1447,10 +1443,8 @@ export const en = {
       title: "Agents",
       display: { trigger: "Agent view preferences", heading: "Agents", showDone: "Show done" },
       sections: {
-        needsYou: "Needs you",
         running: "Running",
-        ready: "Ready for review",
-        done: "Done",
+        recent: "Recent",
       },
       empty: {
         title: "No agents to show",

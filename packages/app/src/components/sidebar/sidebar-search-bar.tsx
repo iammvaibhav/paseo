@@ -1,56 +1,21 @@
-import { useCallback, useMemo, type ReactElement } from "react";
-import { Pressable, Text, View, type PressableStateCallbackType } from "react-native";
+import { useCallback, type ReactElement } from "react";
+import { Text, View } from "react-native";
 import { router } from "expo-router";
 import { useTranslation } from "react-i18next";
-import { Archive, Search } from "lucide-react-native";
-import { StyleSheet, withUnistyles } from "react-native-unistyles";
+import { StyleSheet } from "react-native-unistyles";
 import { Button } from "@/components/ui/button";
 import { SearchField } from "@/components/ui/search-field";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { useHistoryAskStore } from "@/history-ask/history-ask-store";
 import { usePanelStore } from "@/stores/panel-store";
 import { useSidebarSearchStore } from "@/stores/sidebar-search-store";
-import type { Theme } from "@/styles/theme";
+import { useSidebarViewStore } from "@/stores/sidebar-view-store";
 import { buildSessionsRoute } from "@/utils/host-routes";
 import { openAgentFromHistory } from "@/workspace/open-agent-from-history";
 import { SidebarArchivedAgentRow } from "./agent-view/row";
 import { SidebarAgentViewSectionHeader } from "./agent-view/section-header";
-import { menuTriggerStyles } from "./display-preferences/filter-pages";
 import { useSidebarModel } from "./sidebar-model";
 import type { SidebarSearchArchivedMatch } from "./sidebar-search";
-
-const ThemedSearch = withUnistyles(Search);
-const ThemedArchive = withUnistyles(Archive);
-const mutedIconMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
-const foregroundIconMapping = (theme: Theme) => ({ color: theme.colors.foreground });
-
-/** Header icon that opens the search bar (and closes it again). */
-export function SidebarSearchToggle(): ReactElement {
-  const { t } = useTranslation();
-  const isOpen = useSidebarSearchStore((state) => state.isOpen);
-  const open = useSidebarSearchStore((state) => state.open);
-  const close = useSidebarSearchStore((state) => state.close);
-  const style = useCallback(
-    ({ hovered = false }: PressableStateCallbackType & { hovered?: boolean }) => [
-      menuTriggerStyles.trigger,
-      (hovered || isOpen) && menuTriggerStyles.triggerHovered,
-    ],
-    [isOpen],
-  );
-  const accessibilityState = useMemo(() => ({ expanded: isOpen }), [isOpen]);
-  return (
-    <Pressable
-      style={style}
-      onPress={isOpen ? close : open}
-      accessibilityRole="button"
-      accessibilityLabel={isOpen ? t("sidebar.search.close") : t("sidebar.search.open")}
-      accessibilityState={accessibilityState}
-      testID="sidebar-search-toggle"
-    >
-      <ThemedSearch size={14} uniProps={isOpen ? foregroundIconMapping : mutedIconMapping} />
-    </Pressable>
-  );
-}
 
 /** Closes the mobile sidebar overlay before navigating; a no-op on desktop. */
 function useCloseCompactSidebar(): () => void {
@@ -62,25 +27,57 @@ function useCloseCompactSidebar(): () => void {
 }
 
 /**
- * The open search bar: the query narrows the list below it in place, and
- * archived matches (opt-in) are listed here because the list never shows them.
- * Opening one unarchives it with its workspace and project.
+ * The always-visible search bar above the sidebar list. It sits outside the
+ * list's scroll view so it stays on screen while scrolling, and so it keeps
+ * focus when typing switches the list to the agent view: inside the list it
+ * would remount with every view or loading-state change.
  */
-export function SidebarSearchPanel(): ReactElement | null {
+export function SidebarSearchBar(): ReactElement {
   const { t } = useTranslation();
-  const isOpen = useSidebarSearchStore((state) => state.isOpen);
   const query = useSidebarSearchStore((state) => state.query);
-  const includeArchived = useSidebarSearchStore((state) => state.includeArchived);
   const setQuery = useSidebarSearchStore((state) => state.setQuery);
-  const setIncludeArchived = useSidebarSearchStore((state) => state.setIncludeArchived);
-  const close = useSidebarSearchStore((state) => state.close);
+  const setInputFocused = useSidebarSearchStore((state) => state.setInputFocused);
+  const clear = useSidebarSearchStore((state) => state.clear);
+  const viewMode = useSidebarViewStore((state) => state.viewMode);
+  const setViewMode = useSidebarViewStore((state) => state.setViewMode);
+
+  // Search is for agents: a query switches the list to the agent view.
+  const handleChangeText = useCallback(
+    (text: string) => {
+      setQuery(text);
+      if (text.trim().length > 0 && viewMode !== "agents") setViewMode("agents");
+    },
+    [setQuery, setViewMode, viewMode],
+  );
+  const handleFocus = useCallback(() => setInputFocused(true), [setInputFocused]);
+  const handleBlur = useCallback(() => setInputFocused(false), [setInputFocused]);
+
+  return (
+    <View style={styles.bar} testID="sidebar-search-bar">
+      <SearchField
+        value={query}
+        onChangeText={handleChangeText}
+        placeholder={t("sidebar.search.placeholder")}
+        clearAccessibilityLabel={t("sidebar.search.clear")}
+        testID="sidebar-search-input"
+        clearTestID="sidebar-search-clear"
+        onEscape={clear}
+        onFocus={handleFocus}
+        onBlur={handleBlur}
+      />
+    </View>
+  );
+}
+
+/**
+ * Archived matches of the current search, below the active results. The list
+ * never shows archived agents otherwise; opening one unarchives it with its
+ * workspace and project.
+ */
+export function SidebarSearchArchivedSection(): ReactElement | null {
+  const { t } = useTranslation();
   const { search } = useSidebarModel();
   const closeCompactSidebar = useCloseCompactSidebar();
-
-  const toggleArchived = useCallback(
-    () => setIncludeArchived(!includeArchived),
-    [includeArchived, setIncludeArchived],
-  );
   const openArchived = useCallback(
     (match: SidebarSearchArchivedMatch) => {
       closeCompactSidebar();
@@ -92,62 +89,23 @@ export function SidebarSearchPanel(): ReactElement | null {
     },
     [closeCompactSidebar],
   );
-  const archivedChipState = useMemo(() => ({ checked: includeArchived }), [includeArchived]);
 
-  if (!isOpen) return null;
-
-  const status = search.pending ? t("sidebar.search.searching") : null;
+  if (!search.active || search.archivedMatches.length === 0) return null;
 
   return (
-    <View style={styles.panel} testID="sidebar-search-panel">
-      <SearchField
-        value={query}
-        onChangeText={setQuery}
-        placeholder={t("sidebar.search.placeholder")}
-        clearAccessibilityLabel={t("sidebar.search.clear")}
-        testID="sidebar-search-input"
-        clearTestID="sidebar-search-clear"
-        autoFocus
-        onEscape={close}
+    <View style={styles.archived} testID="sidebar-search-archived">
+      <SidebarAgentViewSectionHeader
+        title={t("sidebar.search.archivedTitle")}
+        count={search.archivedMatches.length}
+        testID="sidebar-search-archived-section"
       />
-      <View style={styles.optionsRow}>
-        <Pressable
-          onPress={toggleArchived}
-          accessibilityRole="switch"
-          accessibilityState={archivedChipState}
-          style={[styles.chip, includeArchived && styles.chipActive]}
-          testID="sidebar-search-include-archived"
-        >
-          <ThemedArchive
-            size={12}
-            uniProps={includeArchived ? foregroundIconMapping : mutedIconMapping}
-          />
-          <Text style={[styles.chipText, includeArchived && styles.chipTextActive]}>
-            {t("sidebar.search.includeArchived")}
-          </Text>
-        </Pressable>
-        {status ? (
-          <Text style={styles.status} numberOfLines={1} testID="sidebar-search-status">
-            {status}
-          </Text>
-        ) : null}
-      </View>
-      {includeArchived && search.archivedMatches.length > 0 ? (
-        <View style={styles.archived} testID="sidebar-search-archived">
-          <SidebarAgentViewSectionHeader
-            title={t("sidebar.search.archivedTitle")}
-            count={search.archivedMatches.length}
-            testID="sidebar-search-archived-section"
-          />
-          {search.archivedMatches.map((match) => (
-            <ArchivedMatchRow
-              key={`${match.serverId}:${match.agentId}`}
-              match={match}
-              onPress={openArchived}
-            />
-          ))}
-        </View>
-      ) : null}
+      {search.archivedMatches.map((match) => (
+        <ArchivedMatchRow
+          key={`${match.serverId}:${match.agentId}`}
+          match={match}
+          onPress={openArchived}
+        />
+      ))}
     </View>
   );
 }
@@ -171,11 +129,14 @@ function ArchivedMatchRow({
   );
 }
 
-/** List body when a search matched nothing: the way out is the deep, agentic search. */
-export function SidebarSearchEmptyState(): ReactElement | null {
+/**
+ * List body when a search has nothing to list: Searching… while a host may
+ * still answer, then the way out, the deep agentic search.
+ */
+export function SidebarSearchEmptyState(): ReactElement {
   const { t } = useTranslation();
   const query = useSidebarSearchStore((state) => state.query.trim());
-  const close = useSidebarSearchStore((state) => state.close);
+  const clear = useSidebarSearchStore((state) => state.clear);
   const askAboutSearch = useHistoryAskStore((state) => state.askAboutSearch);
   const closeCompactSidebar = useCloseCompactSidebar();
   const { search } = useSidebarModel();
@@ -185,9 +146,15 @@ export function SidebarSearchEmptyState(): ReactElement | null {
     router.navigate(buildSessionsRoute());
   }, [askAboutSearch, closeCompactSidebar, query]);
 
-  // Word matches came up empty but a host may still answer; the bar says Searching….
-  // Archived matches are listed under the bar, so the list is not empty-handed.
-  if (search.pending || search.archivedMatches.length > 0) return null;
+  if (search.pending) {
+    return (
+      <View style={styles.empty}>
+        <Text style={styles.emptyDescription} testID="sidebar-search-status">
+          {t("sidebar.search.searching")}
+        </Text>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.empty} testID="sidebar-search-empty-state">
@@ -197,7 +164,7 @@ export function SidebarSearchEmptyState(): ReactElement | null {
         <Button variant="secondary" size="sm" onPress={deepSearch} testID="sidebar-search-deep">
           {t("sidebar.search.deepSearch")}
         </Button>
-        <Button variant="ghost" size="sm" onPress={close}>
+        <Button variant="ghost" size="sm" onPress={clear}>
           {t("sidebar.search.clear")}
         </Button>
       </View>
@@ -206,48 +173,14 @@ export function SidebarSearchEmptyState(): ReactElement | null {
 }
 
 const styles = StyleSheet.create((theme) => ({
-  panel: {
-    gap: theme.spacing[1.5],
-    paddingHorizontal: theme.spacing[1],
+  // Lines the field up with the list's section headers below it.
+  bar: {
+    flexDirection: "row",
+    paddingHorizontal: theme.spacing[3],
     paddingBottom: theme.spacing[1.5],
   },
-  optionsRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: theme.spacing[2],
-  },
-  chip: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: theme.spacing[1],
-    paddingHorizontal: theme.spacing[2],
-    paddingVertical: 2,
-    borderRadius: theme.borderRadius.full,
-    borderWidth: theme.borderWidth[1],
-    borderColor: theme.colors.border,
-  },
-  chipActive: {
-    backgroundColor: theme.colors.surfaceSidebarHover,
-    borderColor: theme.colors.borderAccent,
-  },
-  chipText: {
-    color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.xs,
-  },
-  chipTextActive: {
-    color: theme.colors.foreground,
-  },
-  status: {
-    flex: 1,
-    minWidth: 0,
-    textAlign: "right",
-    color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.xs,
-  },
-  // The panel renders inside the agent list's inset and adds its own spacing[1];
-  // cancelling that lines archived rows up with the rows below.
   archived: {
-    marginHorizontal: -theme.spacing[1],
+    paddingBottom: theme.spacing[3],
   },
   empty: {
     gap: theme.spacing[1.5],
