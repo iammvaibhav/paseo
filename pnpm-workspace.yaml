@@ -14,21 +14,37 @@ packages:
   # Installed by the workspace so `@getpaseo/plugin` can typecheck the examples.
   - "plugin-examples/markdown-panel"
 
+# The patched packages below have no install scripts of their own. They are listed because pnpm
+# reads a package's side-effects cache, which holds the patched copy, only when its build is
+# allowed; without it every worktree gets a private, re-patched copy (mermaid alone is 88 MB).
 allowBuilds:
+  "@gorhom/bottom-sheet": true
+  "@legendapp/list": true
+  "@mattermost/react-native-paste-input": true
+  "@opencode-ai/sdk": true
   "@shopify/react-native-skia": true
+  "@xterm/addon-ligatures": true
   dtrace-provider: true
   electron-winstaller: true
   esbuild: true
+  expo-modules-core: true
   lefthook: true
+  mermaid: true
   msgpackr-extract: false
   node-pty: true
+  react-native-draggable-flatlist: true
   react-native-enriched-markdown: true
+  react-native-gesture-handler: true
+  react-native-reanimated: true
+  react-native-svg: true
+  react-native-unistyles: true
   unrs-resolver: true
   workerd: true
 
 # pnpm applies these at import and stores each patched package as its own store entry, so the
 # store every worktree on a machine shares is never edited in place. Keys pin exact versions:
-# an upgrade fails the install until the patch is regenerated (docs/development.md).
+# an upgrade fails the install until the patch is regenerated (docs/development.md). Add a
+# newly patched package to allowBuilds too.
 patchedDependencies:
   "@gorhom/bottom-sheet@5.2.14": patches/@gorhom__bottom-sheet@5.2.14.patch
   "@legendapp/list@3.7.1": patches/@legendapp__list@3.7.1.patch

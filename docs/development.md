@@ -780,7 +780,9 @@ cp -R packages/desktop/release/mac-arm64/Paseo.app "/Applications/Paseo Test.app
 pnpm applies `patches/*.patch` itself: each one is listed under `patchedDependencies` in
 `pnpm-workspace.yaml`, keyed by the exact `name@version`, and `pnpm-lock.yaml` records its hash.
 pnpm patches the package while importing it and stores the result as a separate store entry, so
-the shared store's unpatched files are never edited. An unused key or a patch that no longer
+the shared store's unpatched files are never edited. Also list every patched package under
+`allowBuilds`: pnpm reuses the stored patched copy only for packages whose build is allowed, and
+otherwise copies and re-patches the whole package in every worktree. An unused key or a patch that no longer
 applies fails the install; when you upgrade a patched package, regenerate its patch and rename
 the key.
 
