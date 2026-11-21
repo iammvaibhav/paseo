@@ -646,34 +646,42 @@ export class WarmWorktreePoolManager implements WarmWorktreePool {
     return this.defaultTargetIdle;
   }
 
-  private async resolveWarmSourceRef(repoRoot: string): Promise<string> {
+  private async resolveWarmSourceRef(
+    repoRoot: string,
+  ): Promise<{ sourceRef: string; configured: boolean }> {
     const config = this.readConfig?.();
     if (config?.baseRef) {
-      return config.baseRef;
+      return { sourceRef: config.baseRef, configured: true };
     }
     const projectBaseRef = (await this.readProjectWarmPoolConfig(repoRoot)).baseRef;
     if (projectBaseRef) {
-      return projectBaseRef;
+      return { sourceRef: projectBaseRef, configured: true };
     }
-    return this.resolveDefaultBranch(repoRoot);
+    return { sourceRef: await this.resolveDefaultBranch(repoRoot), configured: false };
   }
 
   /**
-   * The ref warm trees are cut from and the commit it points at right now.
-   * A bare branch name resolves to its `origin/` tracking ref when one exists:
-   * creates branch from what origin advertises (preferOriginDefaultBranch and
-   * the app's upstream ref), so a tree cut from a stale local branch would
-   * miss the claim's fast path and rerun setup every time.
+   * The ref warm trees are cut from and the commit it points at right now,
+   * resolved the way a create without a named base resolves it, so a claim
+   * lands on the same commit and reuses the tree's setup:
+   * - a configured `baseRef` is handed to the create as a bare name, which
+   *   resolves local branch first (resolveBaseBranchForWorktree);
+   * - the repository default branch goes through preferOriginDefaultBranch,
+   *   which picks its `origin/` tracking ref when one exists.
    */
   private async resolveWarmBase(
     repoRoot: string,
   ): Promise<{ sourceRef: string; baseSha: string } | null> {
     try {
-      const sourceRef = await this.resolveWarmSourceRef(repoRoot);
-      const candidates =
-        sourceRef.startsWith("refs/") || sourceRef.startsWith("origin/")
-          ? [sourceRef]
-          : [`refs/remotes/origin/${sourceRef}`, sourceRef];
+      const { sourceRef, configured } = await this.resolveWarmSourceRef(repoRoot);
+      let candidates: string[];
+      if (sourceRef.startsWith("refs/") || sourceRef.startsWith("origin/")) {
+        candidates = [sourceRef];
+      } else if (configured) {
+        candidates = [`refs/heads/${sourceRef}`, `refs/remotes/origin/${sourceRef}`, sourceRef];
+      } else {
+        candidates = [`refs/remotes/origin/${sourceRef}`, sourceRef];
+      }
       for (const ref of candidates) {
         const { stdout } = await runGitCommand(
           ["rev-parse", "--verify", "--quiet", `${ref}^{commit}`],

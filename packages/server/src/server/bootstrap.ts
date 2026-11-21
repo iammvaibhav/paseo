@@ -191,7 +191,6 @@ import {
   FileBackedWorkspaceRegistry,
   resolveProjectDisplayName,
   resolveWorkspaceDisplayName,
-  type ProjectRegistry,
   type WorkspaceArchiveContext,
 } from "./workspace-registry.js";
 import { CheckoutDiffManager } from "./checkout-diff-manager.js";
@@ -204,10 +203,8 @@ import {
   USER_TURN_PEER_TOOL,
 } from "./mission-control/service.js";
 import { getItsaplanIssueIdFromLabels } from "./itsaplan/index.js";
-import { areEquivalentPaths } from "../utils/path.js";
-import { getWorktreeConfiguredBaseRef } from "../utils/worktree.js";
-import { buildFleetContextData, resolveRememberedBaseBranch } from "./mission-control/context.js";
-import type { ComposerPreferences } from "@getpaseo/protocol/composer-preferences";
+import { buildFleetContextData } from "./mission-control/context.js";
+import { resolveWorktreeDefaultBranch } from "./worktree-default-branch.js";
 import { CentralMissionControlConfigStore } from "./mission-control/config.js";
 import { AgentNamingService } from "./mission-control/naming.js";
 import { runIdentityBackfill } from "./mission-control/backfill.js";
@@ -240,7 +237,7 @@ import { PagePreviewBrowser } from "./page-tools/preview-browser.js";
 import { PagePortProxy } from "./page-tools/port-proxy.js";
 import { PageStore } from "./page-tools/page-store.js";
 import { resolveSecureInputRoot, SecureInputService } from "./secure-input/secure-input-service.js";
-import { WorkspaceGitServiceImpl, type WorkspaceGitService } from "./workspace-git-service.js";
+import { WorkspaceGitServiceImpl } from "./workspace-git-service.js";
 import { resolveWorkspaceIdForPath } from "./resolve-workspace-id-for-path.js";
 import {
   archiveByScope,
@@ -898,50 +895,6 @@ function createItsaplanWebhookIngress(app: express.Express): {
 
 function resolveServiceProxyPublicBaseUrl(config: PaseoDaemonConfig): string | null {
   return config.serviceProxy?.publicBaseUrl ? config.serviceProxy.publicBaseUrl : null;
-}
-export interface WorktreeDefaultBranchResolutionDeps {
-  daemonConfigStore?: { get(): { composerPreferences?: ComposerPreferences | null } };
-  projectRegistry?: Pick<ProjectRegistry, "list">;
-  workspaceGitService: Pick<WorkspaceGitService, "resolveDefaultBranch">;
-  readConfiguredBaseRef?: (repoRoot: string) => Promise<string | undefined> | string | undefined;
-}
-
-/**
- * The ref a new worktree is cut from, highest precedence first:
- * paseo.json `worktree.warmPool.baseRef` -> the user's remembered base branch
- * -> the repository default branch. An explicit `baseBranch` on the create
- * request never reaches here; the session short-circuits it.
- */
-export async function resolveWorktreeDefaultBranch(
-  repoRoot: string,
-  deps: WorktreeDefaultBranchResolutionDeps,
-): Promise<string> {
-  const configuredBaseRef = (
-    await (deps.readConfiguredBaseRef
-      ? deps.readConfiguredBaseRef(repoRoot)
-      : getWorktreeConfiguredBaseRef(repoRoot))
-  )?.trim();
-  if (configuredBaseRef) {
-    return configuredBaseRef;
-  }
-
-  const composerPrefs = deps.daemonConfigStore?.get().composerPreferences;
-  let project = null;
-  try {
-    const list = await deps.projectRegistry?.list();
-    project = list?.find((p) => areEquivalentPaths(p.rootPath, repoRoot)) ?? null;
-  } catch {
-    // ignore
-  }
-  const remembered = resolveRememberedBaseBranch(composerPrefs, {
-    projectId: project?.projectId,
-    projectKey: project?.projectKey,
-  });
-  if (remembered) {
-    return remembered;
-  }
-
-  return deps.workspaceGitService.resolveDefaultBranch(repoRoot);
 }
 
 // eslint-disable-next-line complexity -- daemon bootstrap orchestration

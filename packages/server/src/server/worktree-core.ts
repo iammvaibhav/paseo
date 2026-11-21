@@ -322,7 +322,7 @@ async function fetchDispatchBaseBranch(repoRoot: string, baseBranch: string): Pr
 // origin's current tip — correct for manual flows, stale for dispatch. When nothing else named
 // the base branch (this function only runs for that fallback), prefer the `origin/<name>`
 // remote-tracking ref whenever it exists so dispatch always cuts from what origin advertises.
-async function preferOriginDefaultBranch(
+export async function preferOriginDefaultBranch(
   repoRoot: string,
   baseBranch: string,
   workspaceGitService: Pick<WorkspaceGitService, "hasOriginTrackingBranch">,
