@@ -1,5 +1,5 @@
 import { useId } from "react";
-import { View } from "react-native";
+import { View, type TextStyle, type ViewStyle } from "react-native";
 import Svg, { Defs, LinearGradient as SvgLinearGradient, Rect, Stop } from "react-native-svg";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import type { SurfaceBackdrop } from "@/styles/surface-backdrop";
@@ -8,6 +8,20 @@ import type { Theme } from "@/styles/theme";
 export const SCRIM_WIDTH = 48;
 // The fade is a fixed length so a wider scrim only adds solid surface under its actions.
 const SCRIM_FADE_WIDTH = SCRIM_WIDTH * 0.55;
+
+/**
+ * The scrim's fade as a mask on the content itself, for a translucent fill the scrim cannot
+ * repaint without showing as a solid strip. `inset` is how far the content's right edge sits left
+ * of the scrim's. Web only: React Native Web passes CSS masks through, native has none.
+ */
+export function trailingActionFadeMask(width: number, inset = 0): (ViewStyle & TextStyle) | null {
+  const end = width - inset;
+  if (end <= 0) return null;
+  const solid = Math.max(0, end - SCRIM_FADE_WIDTH);
+  const mask = `linear-gradient(to left, transparent ${solid}px, black ${end}px)`;
+  // Fits both a View and a Text.
+  return { maskImage: mask, WebkitMaskImage: mask } as unknown as ViewStyle & TextStyle;
+}
 
 function TrailingActionScrimSvg({
   gradientId,
