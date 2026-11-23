@@ -198,7 +198,7 @@ export default function ompToolHiveExtension(pi: ExtensionAPI): void {
 		"toolhive_find_tool",
 		"find_tool",
 		"ToolHive find tool",
-		"Find tools on the fleet's shared MCP servers (Paseo fleet and memory, itsaplan, GitHub, Linear, Jira/Confluence, Slack, Google Workspace, WhatsApp, X and web search, n8n, Figma, Statsig, PagerDuty). Semantic plus keyword search; returns tool names and input schemas. Call it before toolhive_call_tool or toolhive_execute_tool_script for a tool whose name and schema you have not seen in this session.",
+		"Find tools on the fleet's shared MCP servers (Paseo fleet and memory, itsaplan, GitHub, Linear, Jira/Confluence, Slack, Google Workspace, WhatsApp, X and web search, n8n, Figma, Statsig, PagerDuty, Sentry, Zerodha Kite portfolio). Semantic plus keyword search; returns tool names and input schemas. Call it before toolhive_call_tool or toolhive_execute_tool_script for a tool whose name and schema you have not seen in this session.",
 		z.object({
 			tool_description: z
 				.string()
