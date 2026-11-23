@@ -1,5 +1,9 @@
 import { useDisclosureHold } from "@/agent-stream/disclosure";
 import { MessagePreview, MessageSender } from "@/components/user-message";
+import {
+  isUploadedImageAttachment,
+  UploadedImagePill,
+} from "@/components/user-message/uploaded-image";
 import { formatTurnMetricsLine } from "@/agent-stream/turn-metrics";
 import { persistAttachmentFromBytes } from "@/attachments/service";
 import type { AttachmentMetadata } from "@/attachments/types";
@@ -509,8 +513,16 @@ export const UserMessage = memo(function UserMessage({
   );
   const resolvedDisableOuterSpacing = useDisableOuterSpacing(disableOuterSpacing);
   const hasText = message.trim().length > 0;
-  const hasImages = images.length > 0;
-  const hasAttachments = attachments.length > 0;
+  const uploadedImages = useMemo(
+    () => attachments.filter(isUploadedImageAttachment),
+    [attachments],
+  );
+  const fileAttachments = useMemo(
+    () => attachments.filter((attachment) => !isUploadedImageAttachment(attachment)),
+    [attachments],
+  );
+  const hasImages = images.length > 0 || uploadedImages.length > 0;
+  const hasAttachments = fileAttachments.length > 0;
   const showTrailingRow = !isPending && hasText && (isCompact || isNative || isHovered);
   const formattedTimestamp = useMemo(
     () => formatMessageTimestamp(new Date(timestamp)),
@@ -588,11 +600,21 @@ export const UserMessage = memo(function UserMessage({
                     accessibilityLabel={t("composer.attachments.openImage")}
                   />
                 ))}
+                {uploadedImages.map((attachment) => (
+                  <UploadedImagePill
+                    key={`uploaded:${attachment.id}`}
+                    attachment={attachment}
+                    client={client}
+                    serverId={serverId}
+                    onOpen={setLightboxMetadata}
+                    accessibilityLabel={t("composer.attachments.openImage")}
+                  />
+                ))}
               </View>
             ) : null}
             {hasAttachments ? (
               <View style={attachmentPreviewContainerStyle}>
-                {attachments.map((attachment, index) => {
+                {fileAttachments.map((attachment, index) => {
                   const content = getAgentAttachmentPillContent(attachment, t);
                   return (
                     <AttachmentFrame

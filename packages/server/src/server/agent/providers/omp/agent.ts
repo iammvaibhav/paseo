@@ -191,6 +191,14 @@ const OMP_FAST_INACTIVE_MESSAGE = "Fast is enabled but does not apply to this mo
 // the alternative is killing an OMP process that is still working.
 const OMP_BACKGROUND_ABORT_TIMEOUT_MS = 30_000;
 
+// How long a TTSR rule-match abort may wait for OMP's own continuation before
+// it is settled as an interrupt. OMP continues once the aborted stream is idle
+// (tens of milliseconds); the slack covers an event-loop stall.
+const OMP_TTSR_CONTINUATION_GRACE_MS = 30_000;
+
+/** The abort reason OMP gives when a TTSR rule matched the stream: "TTSR matched rule(s): …". */
+const OMP_TTSR_ABORT = /^TTSR matched rules?:/;
+
 function isCursorOmpModel(model: OmpModel | null | undefined): boolean {
   return model?.provider === "cursor";
 }
@@ -630,6 +638,18 @@ function isOmpAbortedTerminalResponse(messages: OmpAgentMessage[]): boolean {
   return latestAssistant?.stopReason?.toLowerCase() === "aborted";
 }
 
+/**
+ * A TTSR rule matched the model stream: OMP aborted it, injects the rule, and
+ * continues the same work on its own with a new agent_start.
+ */
+function isOmpTtsrInterrupt(messages: OmpAgentMessage[]): boolean {
+  const latestAssistant = messages.findLast((message) => message.role === "assistant");
+  return (
+    latestAssistant?.stopReason?.toLowerCase() === "aborted" &&
+    OMP_TTSR_ABORT.test(latestAssistant.errorMessage?.trim() ?? "")
+  );
+}
+
 function hasOmpProviderOptions(providerOptions: Record<string, unknown> | undefined): boolean {
   return providerOptions !== undefined && Object.keys(providerOptions).length > 0;
 }
@@ -860,6 +880,11 @@ export class OmpAgentSession implements AgentSession {
    * queued continuation becomes an untracked OMP run.
    */
   private cuttingCursorStreamForSteer = false;
+  /**
+   * Set by a TTSR rule-match abort's agent_end and cleared by the agent_start
+   * of OMP's continuation. While set, that agent_end is not the turn's end.
+   */
+  private pendingTtsrContinuation: object | null = null;
   private readonly emittedUserMessageIds = new Set<string>();
 
   private readonly usageSessionKey = randomUUID();
@@ -2212,6 +2237,7 @@ export class OmpAgentSession implements AgentSession {
     switch (event.type) {
       case "agent_start":
         this.activeTurnStarted = true;
+        this.pendingTtsrContinuation = null;
         this.clearNoTurnBuffers();
         this.releaseCursorSteerCut();
         this.emit({
@@ -2222,6 +2248,7 @@ export class OmpAgentSession implements AgentSession {
         return;
       case "turn_start":
         this.activeTurnStarted = true;
+        this.pendingTtsrContinuation = null;
         this.clearNoTurnBuffers();
         this.releaseCursorSteerCut();
         if (this.outOfBandTurnStartAnnounced) {
@@ -2577,6 +2604,14 @@ export class OmpAgentSession implements AgentSession {
       );
       return;
     }
+    // A TTSR rule match aborts the stream and OMP continues the work itself.
+    // Settling that abort as a Stop would end this turn while the agent keeps
+    // going as an untracked autonomous run, so finish watches never see the
+    // real end.
+    if (isOmpTtsrInterrupt(terminalMessages)) {
+      void this.awaitTtsrContinuation(turnId, terminalMessages);
+      return;
+    }
     // Provider-idle waiting is for successful turns that still look busy
     // (stream/compact flags lag). Terminal failures — especially Anthropic
     // overloaded_error — can leave isStreaming stuck true forever. Fail
@@ -2588,6 +2623,35 @@ export class OmpAgentSession implements AgentSession {
     // A state request is processed after OMP's RPC loop becomes promptable,
     // so do not advertise Paseo idle until it reports that transition.
     void this.completeTurnAfterProviderIdle(turnId, terminalMessages);
+  }
+
+  /**
+   * Keeps the turn open across a TTSR abort until OMP's continuation starts.
+   * OMP skips the continuation when a Stop or a new prompt supersedes it; if
+   * nothing else settles the turn within the grace period, it ends as the
+   * interrupt it was reported as.
+   */
+  private async awaitTtsrContinuation(
+    turnId: string | undefined,
+    messages: OmpAgentMessage[],
+  ): Promise<void> {
+    const token = {};
+    this.pendingTtsrContinuation = token;
+    const generation = this.turnGeneration;
+    const grace = Promise.withResolvers<void>();
+    setTimeout(grace.resolve, OMP_TTSR_CONTINUATION_GRACE_MS).unref?.();
+    await grace.promise;
+    if (
+      this.closed ||
+      this.pendingTtsrContinuation !== token ||
+      this.turnGeneration !== generation ||
+      this.currentTurnIdForEvent() !== turnId
+    ) {
+      return;
+    }
+    this.pendingTtsrContinuation = null;
+    this.logger.warn({ turnId }, "omp.turn.ttsr_continuation_missing");
+    this.completeTurn(turnId, messages);
   }
 
   private completeTurn(turnId: string | undefined, messages: OmpAgentMessage[]): void {

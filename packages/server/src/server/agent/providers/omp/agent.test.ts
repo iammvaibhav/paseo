@@ -721,6 +721,59 @@ describe("OMP agent client and session", () => {
     expect(scheduler.waitedCount()).toBe(0);
   });
 
+  // OMP aborts the stream when a TTSR rule matches, injects the rule, and
+  // continues on its own. Settling that abort as a Stop ended the turn while
+  // the agent kept working, so a fleet finish watch posted "interrupted" and
+  // never heard about the real end.
+  const TTSR_ABORT: OmpAgentMessage = {
+    role: "assistant",
+    content: [{ type: "thinking", thinking: "running npx expo" }],
+    stopReason: "aborted",
+    errorMessage: "TTSR matched rule: use-uv-pnpm",
+  };
+
+  test("keeps the turn open across a TTSR abort and completes it when OMP's continuation ends", async () => {
+    const omp = new OmpHarness();
+    await omp.start();
+    const { completion } = await omp.startPromptWithTerminalAssistantFailure(
+      "build it",
+      TTSR_ABORT,
+    );
+    await waitForImmediate();
+    expect(omp.canceledTurnCount()).toBe(0);
+
+    const runtime = omp.runtime();
+    runtime.state = { ...runtime.state, isStreaming: false };
+    runtime.emit({ type: "agent_start" });
+    runtime.beginTurn();
+    runtime.streamAssistantText("built with pnpm", "omp-assistant-2");
+    runtime.finishTurn();
+
+    await expect(completion).resolves.toMatchObject({ finalText: "built with pnpm" });
+    expect(omp.canceledTurnCount()).toBe(0);
+    expect(omp.failedTurnCount()).toBe(0);
+    expect(omp.completedTurnCount()).toBe(1);
+  });
+
+  test("settles a TTSR abort as interrupted when OMP never continues", async () => {
+    const omp = new OmpHarness();
+    await omp.start();
+    vi.useFakeTimers({ toFake: ["setTimeout"] });
+    onTestFinished(() => {
+      vi.useRealTimers();
+    });
+    const { completion } = await omp.startPromptWithTerminalAssistantFailure(
+      "build it",
+      TTSR_ABORT,
+    );
+    await vi.advanceTimersByTimeAsync(29_000);
+    expect(omp.canceledTurnCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await completion;
+    expect(omp.canceledTurnCount()).toBe(1);
+    expect(omp.completedTurnCount()).toBe(0);
+  });
+
   test("fails a turn when the provider idle gate passes its deadline", async () => {
     const scheduler = new ManualIdleScheduler();
     // Long enough that the gate's first check, made right after the turn ends, cannot already

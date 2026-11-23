@@ -14890,6 +14890,23 @@ test("a prompt with images or attachments is one user row carrying them, and the
     ]);
     // No image: the row used to be the echo itself, with the attachment as text.
     await manager.runAgent(snapshot.id, [{ type: "text", text: "And this one" }, doc]);
+    // Fleet tools send an uploaded screenshot as a file plus a native copy for the model. The row
+    // keeps the file alone (clients load it from the host); an unrelated image stays.
+    const screenshot: AgentAttachment = {
+      type: "uploaded_file",
+      id: "upload_shot",
+      fileName: "shot.png",
+      mimeType: "image/png",
+      size: 5,
+      path: join(workdir, "shot.png"),
+    };
+    const otherImage = { data: "b3RoZXIgaW1n", mimeType: "image/png" };
+    await manager.runAgent(snapshot.id, [
+      { type: "text", text: "See the screenshot" },
+      { type: "image", ...otherImage },
+      { type: "image", ...image },
+      screenshot,
+    ]);
 
     const rows = manager.getTimeline(snapshot.id).filter((item) => item.type === "user_message");
     expect(rows).toEqual([
@@ -14900,6 +14917,11 @@ test("a prompt with images or attachments is one user row carrying them, and the
         attachments: [doc],
       }),
       expect.objectContaining({ text: "And this one", attachments: [doc] }),
+      expect.objectContaining({
+        text: "See the screenshot",
+        images: [otherImage],
+        attachments: [screenshot],
+      }),
     ]);
   } finally {
     await manager.closeAgent(snapshot.id).catch(() => undefined);

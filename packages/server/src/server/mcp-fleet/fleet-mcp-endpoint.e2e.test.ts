@@ -1,14 +1,17 @@
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import http from "node:http";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import pino from "pino";
 
 import { hashDaemonPassword } from "../auth.js";
 import { createPaseoDaemon, type PaseoDaemonConfig } from "../bootstrap.js";
+import { OmpAgentClient } from "../agent/providers/omp/agent.js";
+import { FakeOmp } from "../agent/providers/omp/test-utils/fake-omp.js";
 import { createTestAgentClients } from "../test-utils/fake-agent-client.js";
 
 async function getAvailablePort(): Promise<number> {
@@ -32,6 +35,35 @@ function extractFirstTextContent(result: { content: unknown[] }): string {
     return first.text;
   }
   return "";
+}
+
+/** A local webhook that records every JSON body POSTed to it. */
+async function startWebhookReceiver(): Promise<{
+  url: string;
+  bodies: Array<Record<string, unknown>>;
+  close: () => Promise<void>;
+}> {
+  const bodies: Array<Record<string, unknown>> = [];
+  const server = http.createServer(async (req, res) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(chunk as Buffer);
+    bodies.push(JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>);
+    res.writeHead(200).end("ok");
+  });
+  const listening = Promise.withResolvers<void>();
+  server.listen(0, "127.0.0.1", () => listening.resolve());
+  await listening.promise;
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("webhook has no port");
+  return {
+    url: `http://127.0.0.1:${address.port}/hook`,
+    bodies,
+    close: async () => {
+      const closed = Promise.withResolvers<void>();
+      server.close(() => closed.resolve());
+      await closed.promise;
+    },
+  };
 }
 
 describe("Fleet MCP Endpoint E2E (/mcp/fleet)", () => {
@@ -496,4 +528,146 @@ describe("Fleet MCP Endpoint E2E (/mcp/fleet)", () => {
       await rm(staticDir, { recursive: true, force: true });
     }
   });
+
+  // Agent a9898fa3 (2026-11-23): Grok Bot armed notifyOnFinish at create, then
+  // steered. OMP aborted the stream for a TTSR rule ("TTSR matched rule:
+  // use-uv-pnpm") and continued on its own; Paseo settled that abort as a Stop,
+  // the watch posted a final "interrupted", and the continuation's real finish
+  // reached nobody.
+  test("a steer and an OMP TTSR abort leave the watch armed until the run really finishes", async () => {
+    const paseoHome = await mkdtemp(path.join(os.tmpdir(), "paseo-home-fleet-ttsr-"));
+    const staticDir = await mkdtemp(path.join(os.tmpdir(), "paseo-static-fleet-ttsr-"));
+    const workDir = await mkdtemp(path.join(os.tmpdir(), "paseo-work-fleet-ttsr-"));
+    const port = await getAvailablePort();
+    const token = "grok-secret-token-ttsr";
+    const webhook = await startWebhookReceiver();
+    await writeFile(
+      path.join(paseoHome, "config.json"),
+      JSON.stringify({
+        version: 1,
+        daemon: {
+          mcp: {
+            enabled: true,
+            remoteClients: [
+              {
+                name: "grok-bot",
+                tokenHash: hashDaemonPassword(token),
+                notify: { url: webhook.url },
+              },
+            ],
+          },
+        },
+      }),
+      "utf8",
+    );
+    const omp = new FakeOmp();
+    const daemon = await createPaseoDaemon(
+      {
+        listen: `127.0.0.1:${port}`,
+        paseoHome,
+        corsAllowedOrigins: [],
+        hostnames: true,
+        mcpEnabled: true,
+        staticDir,
+        mcpDebug: false,
+        agentClients: {
+          ...createTestAgentClients(),
+          omp: new OmpAgentClient({ logger: pino({ level: "silent" }), runtime: omp }),
+        },
+        providerOverrides: { omp: { enabled: true } },
+        agentStoragePath: path.join(paseoHome, "agents"),
+      },
+      pino({ level: "silent" }),
+    );
+    await daemon.start();
+    const client = new Client({ name: "e2e-ttsr", version: "1.0.0" });
+    try {
+      await client.connect(
+        new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp/fleet`), {
+          requestInit: { headers: { Authorization: `Bearer ${token}` } },
+        }),
+      );
+      const context = "translucent-row-highlight";
+      const created = await client.callTool({
+        name: "fleet_create_agent",
+        arguments: {
+          host: "local",
+          cwd: workDir,
+          isolation: "local",
+          provider: "omp/anthropic/claude-opus-5-5",
+          title: "ttsr worker",
+          initialPrompt: "build it",
+          notifyOnFinish: true,
+          notifyContext: context,
+        },
+      });
+      expect(
+        created.isError,
+        extractFirstTextContent(created as { content: unknown[] }),
+      ).toBeFalsy();
+      const agentId = created.structuredContent?.agentId;
+      await vi.waitFor(() => expect(omp.latestSession().prompts).toHaveLength(1));
+      const runtime = omp.latestSession();
+      runtime.state = { ...runtime.state, isStreaming: true };
+      runtime.emit({ type: "agent_start" });
+      runtime.beginTurn();
+      runtime.acceptPrompt("build it", "user-1");
+
+      const steered = await client.callTool({
+        name: "fleet_send_prompt",
+        arguments: {
+          agentId,
+          prompt: "quick check: can you see the image?",
+          mode: "steer",
+          notifyOnFinish: true,
+          notifyContext: context,
+        },
+      });
+      expect(steered.structuredContent).toMatchObject({ success: true, deliveryMode: "steer" });
+      expect(runtime.prompts.at(-1)).toMatchObject({
+        message: "quick check: can you see the image?",
+        streamingBehavior: "steer",
+      });
+      runtime.acceptPrompt("quick check: can you see the image?", "user-2");
+
+      const ttsrAbort = {
+        role: "assistant" as const,
+        content: [],
+        stopReason: "aborted",
+        errorMessage: "TTSR matched rule: use-uv-pnpm",
+      };
+      runtime.emit({ type: "message_end", message: ttsrAbort });
+      runtime.finishTurn(ttsrAbort);
+      // OMP injects the rule and continues the same work with a new agent loop.
+      runtime.emit({ type: "agent_start" });
+      runtime.beginTurn();
+      runtime.streamAssistantText("done with pnpm", "omp-assistant-2");
+      runtime.state = { ...runtime.state, isStreaming: false };
+      runtime.finishTurn();
+
+      await vi.waitFor(
+        () =>
+          expect(webhook.bodies).toContainEqual(
+            expect.objectContaining({ type: "paseo.agent.finished" }),
+          ),
+        { timeout: 20_000 },
+      );
+      expect(webhook.bodies).toEqual([
+        expect.objectContaining({
+          type: "paseo.agent.finished",
+          reason: "finished",
+          final: true,
+          context,
+          agent: expect.objectContaining({ id: agentId, lastMessage: "done with pnpm" }),
+        }),
+      ]);
+    } finally {
+      await client.close();
+      await daemon.stop();
+      await webhook.close();
+      await rm(paseoHome, { recursive: true, force: true });
+      await rm(staticDir, { recursive: true, force: true });
+      await rm(workDir, { recursive: true, force: true });
+    }
+  }, 60_000);
 });

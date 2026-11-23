@@ -330,16 +330,40 @@ function submittedPromptText(prompt: AgentPromptInput): string {
     .trim();
 }
 
+/**
+ * The native images a submitted prompt's row shows. Fleet tools send an
+ * uploaded image twice: as a native image for the model and as an
+ * uploaded_file attachment for its path (resolveFleetPromptImages). The row
+ * keeps only the attachment, which clients load from the agent's host; a
+ * screenshot-sized inline copy exceeds the timeline item budget and reaches
+ * clients cut to a marker that renders as a broken image.
+ */
 function submittedPromptImages(
   prompt: AgentPromptInput,
 ): Array<{ data: string; mimeType: string }> | undefined {
   if (!Array.isArray(prompt)) {
     return undefined;
   }
+  const uploads = prompt.filter(
+    (block): block is Extract<AgentAttachment, { type: "uploaded_file" }> =>
+      block.type === "uploaded_file",
+  );
   const images = prompt.flatMap((block) =>
-    block.type === "image" ? [{ data: block.data, mimeType: block.mimeType }] : [],
+    block.type === "image" && !isUploadedFileCopy(block, uploads)
+      ? [{ data: block.data, mimeType: block.mimeType }]
+      : [],
   );
   return images.length > 0 ? images : undefined;
+}
+
+function isUploadedFileCopy(
+  image: { data: string; mimeType: string },
+  uploads: ReadonlyArray<Extract<AgentAttachment, { type: "uploaded_file" }>>,
+): boolean {
+  return uploads.some(
+    (upload) =>
+      upload.mimeType === image.mimeType && Buffer.byteLength(image.data, "base64") === upload.size,
+  );
 }
 
 // Every block that is neither prompt text nor a native image is an attachment
