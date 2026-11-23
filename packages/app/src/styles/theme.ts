@@ -796,6 +796,13 @@ export interface GlassTreatment {
    * shows as a lighter band, so the scrim paints this opaque estimate instead.
    */
   scrim: Record<SurfaceBackdrop, string>;
+  /**
+   * Sidebar agent rows, hovered and selected: white washes so the wallpaper keeps showing through
+   * the highlight. Workspace rows keep the opaque `surfaceSidebarHover`/`surfaceSidebarSelected`
+   * because their trailing-action scrims must match the fill; agent rows have no scrim.
+   */
+  sidebarRowHover: string;
+  sidebarRowSelected: string;
   /** Board lanes in the itsaplan embed: the faintest wash, a step below the page. */
   boardLane: string;
 }
@@ -896,6 +903,10 @@ export function resolveGlassColors(tuning: GlassTuning) {
         surfaceSidebarHover: "#262626",
         surfaceSidebarSelected: "#2e2e2e",
       },
+      // Fixed, not scaled by the panels tuning: at low panel strength the rows must still highlight.
+      // On a neutral backdrop they land on the opaque hover (#262626) and selected (#2e2e2e) greys.
+      sidebarRowHover: "rgba(255, 255, 255, 0.06)",
+      sidebarRowSelected: "rgba(255, 255, 255, 0.09)",
       boardLane: wash(0.025),
     } satisfies GlassTreatment,
   };

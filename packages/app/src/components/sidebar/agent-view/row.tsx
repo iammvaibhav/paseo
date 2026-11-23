@@ -382,10 +382,10 @@ const styles = StyleSheet.create((theme) => ({
     userSelect: "none",
   },
   rowHovered: {
-    backgroundColor: theme.colors.surfaceSidebarHover,
+    backgroundColor: theme.glass?.sidebarRowHover ?? theme.colors.surfaceSidebarHover,
   },
   rowSelected: {
-    backgroundColor: theme.colors.surfaceSidebarSelected,
+    backgroundColor: theme.glass?.sidebarRowSelected ?? theme.colors.surfaceSidebarSelected,
   },
   rowPressed: {
     backgroundColor: theme.colors.surface2,
