@@ -791,18 +791,13 @@ export interface GlassTreatment {
   /** Surfaces that must hide what scrolls under them, such as sticky headers. */
   cover: string;
   /**
-   * What a translucent fill looks like once composited over the window, for trailing-action
-   * scrims. A scrim repaints the row's fill over the label, and a translucent fill painted twice
-   * shows as a lighter band, so the scrim paints this opaque estimate instead.
+   * What a translucent fill looks like once composited over the window, for knockouts and
+   * trailing-action scrims. Both repaint the fill over something, and a translucent fill painted
+   * twice shows as a lighter band, so they paint this opaque estimate instead. Sidebar rows do not
+   * scrim in a glass theme: their hover fill is a wash, so the label fades out under its trailing
+   * actions through a mask (`SidebarWorkspaceRowContent`).
    */
   scrim: Record<SurfaceBackdrop, string>;
-  /**
-   * Sidebar agent rows, hovered and selected: white washes so the wallpaper keeps showing through
-   * the highlight. Workspace rows keep the opaque `surfaceSidebarHover`/`surfaceSidebarSelected`
-   * because their trailing-action scrims must match the fill; agent rows have no scrim.
-   */
-  sidebarRowHover: string;
-  sidebarRowSelected: string;
   /** Board lanes in the itsaplan embed: the faintest wash, a step below the page. */
   boardLane: string;
 }
@@ -903,10 +898,6 @@ export function resolveGlassColors(tuning: GlassTuning) {
         surfaceSidebarHover: "#262626",
         surfaceSidebarSelected: "#2e2e2e",
       },
-      // Fixed, not scaled by the panels tuning: at low panel strength the rows must still highlight.
-      // On a neutral backdrop they land on the opaque hover (#262626) and selected (#2e2e2e) greys.
-      sidebarRowHover: "rgba(255, 255, 255, 0.06)",
-      sidebarRowSelected: "rgba(255, 255, 255, 0.09)",
       boardLane: wash(0.025),
     } satisfies GlassTreatment,
   };
@@ -920,9 +911,10 @@ export const darkMonoGlassTheme = {
     ...defaultGlassColors.colors,
     surface0: "transparent",
     surfaceSidebar: "transparent",
-    // Opaque: sidebar rows carry trailing actions whose scrim must match the row exactly.
-    surfaceSidebarHover: "#262626",
-    surfaceSidebarSelected: "#2e2e2e",
+    // Washes like the raised fills, so the wallpaper shows through a hovered or selected row. On
+    // a neutral backdrop they land on the scrim estimates above.
+    surfaceSidebarHover: "rgba(255, 255, 255, 0.06)",
+    surfaceSidebarSelected: "rgba(255, 255, 255, 0.09)",
     surfaceWorkspace: "transparent",
     surfacePane: "transparent",
   }),

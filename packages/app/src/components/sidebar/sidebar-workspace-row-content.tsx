@@ -1,9 +1,19 @@
-import { memo, useMemo, useCallback, useState, type ReactNode } from "react";
+import {
+  createContext,
+  memo,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   Pressable,
   Text,
   View,
   type GestureResponderEvent,
+  type LayoutChangeEvent,
   type PressableStateCallbackType,
   type ViewStyle,
 } from "react-native";
@@ -24,8 +34,9 @@ import {
   type SidebarWorkspaceTrailing,
 } from "@/components/sidebar/workspace-trailing";
 import { useAppSettings } from "@/hooks/use-settings";
+import { isGlassThemePreference } from "@/appearance/glass";
 import { densityIconBox } from "@/styles/density";
-import type { Theme } from "@/styles/theme";
+import { SPACING, type Theme } from "@/styles/theme";
 import type { SidebarStateBucket } from "@/utils/sidebar-agent-state";
 import { getStatusDotColor } from "@/utils/status-dot-color";
 import {
@@ -37,12 +48,32 @@ import { shouldRenderSyncedStatusLoader } from "@/utils/status-loader";
 import { StatusRing } from "@/components/status-ring";
 import { resolveSidebarWorkspacePrimaryLabel } from "@/components/sidebar/sidebar-workspace-title";
 import { DensityIcon } from "@/components/ui/density-icon";
-import { SCRIM_WIDTH, TrailingActionScrim } from "@/components/ui/trailing-action-scrim";
+import {
+  SCRIM_WIDTH,
+  TrailingActionScrim,
+  trailingActionFadeMask,
+} from "@/components/ui/trailing-action-scrim";
 import {
   ARCHIVE_BUTTON_FOOTPRINT,
   SidebarWorkspaceArchiveButton,
 } from "@/components/sidebar/sidebar-workspace-menu";
 import { useWorkspaceLabelDefinitions } from "@/workspace-labels";
+
+/**
+ * In a glass theme the row's hover fill is a wash, and an opaque scrim over the label would show
+ * as a solid strip on it. There the trailing overlay publishes its width instead, and the title
+ * and trailing content fade themselves out under it with a mask.
+ */
+interface TrailingFade {
+  masks: boolean;
+  width: number | null;
+  setWidth: (width: number | null) => void;
+}
+
+const TrailingFadeContext = createContext<TrailingFade | null>(null);
+
+// Between the title and the trailing group; the title's mask is offset by it.
+const TITLE_ROW_GAP = SPACING[2];
 
 const needsInputColorMapping = (theme: Theme) => ({
   color: theme.colors.background,
@@ -147,19 +178,31 @@ export const SidebarWorkspaceRowContent = memo(function SidebarWorkspaceRowConte
   children?: ReactNode;
 }) {
   const {
-    settings: { workspaceTitleSource },
+    settings: { workspaceTitleSource, theme: themePreference },
   } = useAppSettings();
   const workspaceLabel = resolveSidebarWorkspacePrimaryLabel({ workspace, workspaceTitleSource });
   // The workspace carries label names; their colors live in its host's catalog, so the row is
   // where the two meet — the meta line is handed finished definitions.
   const labels = useWorkspaceLabelDefinitions(workspace.serverId, workspace.labels);
+  const [trailingFadeWidth, setTrailingFadeWidth] = useState<number | null>(null);
+  const [rowRightWidth, setRowRightWidth] = useState(0);
+  const handleRowRightLayout = useCallback((event: LayoutChangeEvent) => {
+    setRowRightWidth(event.nativeEvent.layout.width);
+  }, []);
+  const masksTrailing = isGlassThemePreference(themePreference);
+  const trailingFade = useMemo(
+    () => ({ masks: masksTrailing, width: trailingFadeWidth, setWidth: setTrailingFadeWidth }),
+    [masksTrailing, trailingFadeWidth],
+  );
   const workspaceBranchTextStyle = useMemo(
     () => [
       styles.workspaceBranchText,
       isHovered && styles.workspaceBranchTextHovered,
       isCreating && styles.workspaceBranchTextCreating,
+      trailingFadeWidth !== null &&
+        trailingActionFadeMask(trailingFadeWidth, rowRightWidth + TITLE_ROW_GAP),
     ],
-    [isHovered, isCreating],
+    [isHovered, isCreating, trailingFadeWidth, rowRightWidth],
   );
 
   const leadingVisual = leadingProjectName ? (
@@ -220,42 +263,46 @@ export const SidebarWorkspaceRowContent = memo(function SidebarWorkspaceRowConte
   );
 
   return (
-    <View style={styles.workspaceRowContent}>
-      <View style={styles.workspaceRowMain}>
-        {leadingSlot}
-        <View style={styles.workspaceContentColumn}>
-          <View style={styles.workspaceTitleRow}>
-            {titleEditor ? (
-              <View style={styles.workspaceTitleEditorSlot}>{titleEditor}</View>
-            ) : (
-              <Text
-                style={workspaceBranchTextStyle}
-                numberOfLines={1}
-                testID={`sidebar-workspace-title-${workspace.workspaceKey}`}
-              >
-                {workspaceLabel}
-              </Text>
-            )}
-            <View style={sidebarWorkspaceRowStyles.rowRight}>{children}</View>
+    <TrailingFadeContext.Provider value={trailingFade}>
+      <View style={styles.workspaceRowContent}>
+        <View style={styles.workspaceRowMain}>
+          {leadingSlot}
+          <View style={styles.workspaceContentColumn}>
+            <View style={styles.workspaceTitleRow}>
+              {titleEditor ? (
+                <View style={styles.workspaceTitleEditorSlot}>{titleEditor}</View>
+              ) : (
+                <Text
+                  style={workspaceBranchTextStyle}
+                  numberOfLines={1}
+                  testID={`sidebar-workspace-title-${workspace.workspaceKey}`}
+                >
+                  {workspaceLabel}
+                </Text>
+              )}
+              <View style={sidebarWorkspaceRowStyles.rowRight} onLayout={handleRowRightLayout}>
+                {children}
+              </View>
+            </View>
+            <WorkspaceMetaRow
+              backdrop={backdrop}
+              currentBranch={workspace.currentBranch}
+              projectName={leadingProjectName}
+              hostBadge={hostBadge ?? null}
+              prHint={workspace.prHint}
+              serviceSummary={serviceSummary}
+              labels={labels}
+              workspace={workspace}
+            />
           </View>
-          <WorkspaceMetaRow
-            backdrop={backdrop}
-            currentBranch={workspace.currentBranch}
-            projectName={leadingProjectName}
-            hostBadge={hostBadge ?? null}
-            prHint={workspace.prHint}
-            serviceSummary={serviceSummary}
-            labels={labels}
-            workspace={workspace}
-          />
         </View>
+        {showShortcutBadge && shortcutNumber !== null ? (
+          <View style={styles.shortcutBadgeOverlay} pointerEvents="none">
+            <SidebarWorkspaceShortcutBadge number={shortcutNumber} />
+          </View>
+        ) : null}
       </View>
-      {showShortcutBadge && shortcutNumber !== null ? (
-        <View style={styles.shortcutBadgeOverlay} pointerEvents="none">
-          <SidebarWorkspaceShortcutBadge number={shortcutNumber} />
-        </View>
-      ) : null}
-    </View>
+    </TrailingFadeContext.Provider>
   );
 });
 
@@ -509,9 +556,15 @@ export function SidebarWorkspaceTrailingActionBase({
   presentation: SidebarWorkspaceTrailingPresentation;
   children: ReactNode;
 }) {
+  const fadeWidth = useContext(TrailingFadeContext)?.width ?? null;
   if (presentation === "absent") return null;
   return (
-    <View style={presentation === "hidden" ? sidebarWorkspaceRowStyles.hidden : undefined}>
+    <View
+      style={[
+        presentation === "hidden" && sidebarWorkspaceRowStyles.hidden,
+        fadeWidth !== null && trailingActionFadeMask(fadeWidth),
+      ]}
+    >
       {children}
     </View>
   );
@@ -535,13 +588,24 @@ export function SidebarWorkspaceTrailingActionOverlay({
   onArchiveButtonPress?: () => void;
   children: ReactNode;
 }) {
+  const fade = useContext(TrailingFadeContext);
+  const masks = fade?.masks ?? false;
+  const setFadeWidth = fade?.setWidth;
+  const scrimWidth = onArchiveButtonPress ? SCRIM_WIDTH + ARCHIVE_BUTTON_FOOTPRINT : SCRIM_WIDTH;
+  const maskedFadeWidth =
+    masks && visible && Boolean(children) && scrimBackdrop ? scrimWidth : null;
+  useEffect(() => {
+    if (!setFadeWidth) return;
+    setFadeWidth(maskedFadeWidth);
+    return () => setFadeWidth(null);
+  }, [maskedFadeWidth, setFadeWidth]);
   if (!visible || !children) return null;
   return (
     <>
-      {scrimBackdrop ? (
+      {scrimBackdrop && !masks ? (
         <TrailingActionScrim
           backdrop={scrimBackdrop}
-          width={onArchiveButtonPress ? SCRIM_WIDTH + ARCHIVE_BUTTON_FOOTPRINT : SCRIM_WIDTH}
+          width={scrimWidth}
           testID="sidebar-workspace-trailing-scrim"
         />
       ) : null}
@@ -579,7 +643,7 @@ const styles = StyleSheet.create((theme) => ({
     flexDirection: "row",
     alignItems: "flex-start",
     justifyContent: "space-between",
-    gap: theme.spacing[2],
+    gap: TITLE_ROW_GAP,
   },
   shortcutBadgeOverlay: {
     position: "absolute",
