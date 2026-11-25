@@ -89,6 +89,7 @@ function mountTimeline(
     listStyle: null,
     baseListContentContainerStyle: null,
     forwardListContentContainerStyle: null,
+    contentMaxWidth: DEFAULT_CONTENT_MAX_WIDTH,
     estimateItemSize: (item) =>
       estimateStreamItemHeight({ item, contentMaxWidth: DEFAULT_CONTENT_MAX_WIDTH }),
     ...olderHistory,

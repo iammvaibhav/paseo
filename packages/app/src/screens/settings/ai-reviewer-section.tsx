@@ -40,7 +40,13 @@ export function AiReviewerSection({ serverId }: { serverId: string }) {
 
   const enabled = config?.aiReviewer?.enabled === true;
   const selected = resolveSelectedModel(config?.aiReviewer?.provider, config?.aiReviewer?.model);
-  const providers = useMemo(() => buildSelectableProviderSelectorProviders(entries), [entries]);
+  const providers = useMemo(
+    () =>
+      buildSelectableProviderSelectorProviders(entries, {
+        selectedProvider: selected.provider || null,
+      }),
+    [entries, selected.provider],
+  );
   const policy = config?.aiReviewer?.policy ?? "";
   const currentPolicyText = policyDraft ?? policy;
   const hasPolicyChanges = policyDraft !== null && policyDraft !== policy;

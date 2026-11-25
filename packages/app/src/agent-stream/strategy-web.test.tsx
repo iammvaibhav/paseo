@@ -1,6 +1,7 @@
 /**
  * @vitest-environment jsdom
  */
+import { DEFAULT_CONTENT_MAX_WIDTH } from "@/styles/theme";
 import React from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -159,6 +160,7 @@ describe("createWebStreamStrategy", () => {
         listStyle: null,
         baseListContentContainerStyle: null,
         forwardListContentContainerStyle: null,
+        contentMaxWidth: DEFAULT_CONTENT_MAX_WIDTH,
       };
       let items: StreamItem[] = [];
       const updates = [
@@ -240,6 +242,7 @@ describe("createWebStreamStrategy", () => {
             listStyle: null,
             baseListContentContainerStyle: null,
             forwardListContentContainerStyle: null,
+            contentMaxWidth: DEFAULT_CONTENT_MAX_WIDTH,
           })}
         </>,
       );
@@ -279,6 +282,7 @@ describe("createWebStreamStrategy", () => {
       listStyle: null,
       baseListContentContainerStyle: null,
       forwardListContentContainerStyle: null,
+      contentMaxWidth: DEFAULT_CONTENT_MAX_WIDTH,
     };
     act(() => root?.render(strategy.render(input)));
     const row = container.querySelector('[data-history-row-id="message-0"]')!;
@@ -351,6 +355,7 @@ describe("createWebStreamStrategy", () => {
           listStyle: null,
           baseListContentContainerStyle: null,
           forwardListContentContainerStyle: null,
+          contentMaxWidth: DEFAULT_CONTENT_MAX_WIDTH,
         }),
       );
     });
@@ -397,6 +402,7 @@ describe("createWebStreamStrategy", () => {
       listStyle: null,
       baseListContentContainerStyle: null,
       forwardListContentContainerStyle: null,
+      contentMaxWidth: DEFAULT_CONTENT_MAX_WIDTH,
     };
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -455,6 +461,7 @@ describe("createWebStreamStrategy", () => {
       listStyle: null,
       baseListContentContainerStyle: null,
       forwardListContentContainerStyle: null,
+      contentMaxWidth: DEFAULT_CONTENT_MAX_WIDTH,
     };
     const unrevised = {
       contentById: new Set<string>(),
@@ -518,6 +525,7 @@ describe("createWebStreamStrategy", () => {
       listStyle: null,
       baseListContentContainerStyle: null,
       forwardListContentContainerStyle: null,
+      contentMaxWidth: DEFAULT_CONTENT_MAX_WIDTH,
     };
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -593,6 +601,7 @@ describe("createWebStreamStrategy", () => {
           listStyle: null,
           baseListContentContainerStyle: null,
           forwardListContentContainerStyle: null,
+          contentMaxWidth: DEFAULT_CONTENT_MAX_WIDTH,
         }),
       );
     });
@@ -637,6 +646,7 @@ describe("createWebStreamStrategy", () => {
           listStyle: null,
           baseListContentContainerStyle: null,
           forwardListContentContainerStyle: null,
+          contentMaxWidth: DEFAULT_CONTENT_MAX_WIDTH,
         }),
       );
     });
@@ -708,6 +718,7 @@ describe("createWebStreamStrategy", () => {
       listStyle: null,
       baseListContentContainerStyle: null,
       forwardListContentContainerStyle: null,
+      contentMaxWidth: DEFAULT_CONTENT_MAX_WIDTH,
     };
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -798,6 +809,7 @@ describe("createWebStreamStrategy", () => {
       listStyle: null,
       baseListContentContainerStyle: null,
       forwardListContentContainerStyle: null,
+      contentMaxWidth: DEFAULT_CONTENT_MAX_WIDTH,
     };
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -904,6 +916,7 @@ describe("createWebStreamStrategy", () => {
       listStyle: null,
       baseListContentContainerStyle: null,
       forwardListContentContainerStyle: null,
+      contentMaxWidth: DEFAULT_CONTENT_MAX_WIDTH,
     };
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -1006,6 +1019,7 @@ describe("createWebStreamStrategy", () => {
       listStyle: null,
       baseListContentContainerStyle: null,
       forwardListContentContainerStyle: null,
+      contentMaxWidth: DEFAULT_CONTENT_MAX_WIDTH,
     };
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -1106,6 +1120,7 @@ describe("createWebStreamStrategy", () => {
       listStyle: null,
       baseListContentContainerStyle: null,
       forwardListContentContainerStyle: null,
+      contentMaxWidth: DEFAULT_CONTENT_MAX_WIDTH,
     };
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -1231,6 +1246,7 @@ describe("createWebStreamStrategy", () => {
       listStyle: null,
       baseListContentContainerStyle: null,
       forwardListContentContainerStyle: null,
+      contentMaxWidth: DEFAULT_CONTENT_MAX_WIDTH,
     };
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -1328,6 +1344,7 @@ describe("createWebStreamStrategy", () => {
       listStyle: null,
       baseListContentContainerStyle: null,
       forwardListContentContainerStyle: null,
+      contentMaxWidth: DEFAULT_CONTENT_MAX_WIDTH,
     };
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -1447,6 +1464,7 @@ describe("createWebStreamStrategy", () => {
       listStyle: null,
       baseListContentContainerStyle: null,
       forwardListContentContainerStyle: null,
+      contentMaxWidth: DEFAULT_CONTENT_MAX_WIDTH,
     };
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -1680,6 +1698,7 @@ describe("createWebStreamStrategy", () => {
       listStyle: null,
       baseListContentContainerStyle: null,
       forwardListContentContainerStyle: null,
+      contentMaxWidth: DEFAULT_CONTENT_MAX_WIDTH,
     };
     const renderWithActivity = (active: boolean, input: StreamRenderInput = renderInput) => (
       <RetainedPanelActivity active={active}>{strategy.render(input)}</RetainedPanelActivity>
@@ -1814,6 +1833,7 @@ describe("createWebStreamStrategy", () => {
       listStyle: null,
       baseListContentContainerStyle: null,
       forwardListContentContainerStyle: null,
+      contentMaxWidth: DEFAULT_CONTENT_MAX_WIDTH,
     };
     const renderWithActivity = (active: boolean) => (
       <RetainedPanelActivity active={active}>{strategy.render(renderInput)}</RetainedPanelActivity>

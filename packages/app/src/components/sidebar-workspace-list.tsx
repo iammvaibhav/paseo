@@ -1,3 +1,4 @@
+import { useWorkspaceRowPress } from "../../modules/paseo-press-feedback";
 import { PressHighlight as Pressable } from "@/components/ui/press-highlight";
 import { LoadingSpinner } from "@/components/ui/loading-spinner";
 import {
@@ -122,7 +123,17 @@ import {
 import { useLongPressDragInteraction } from "@/components/sidebar/use-long-press-drag-interaction";
 import { SidebarSectionHeader } from "@/components/sidebar/sidebar-section-header";
 import { SidebarGroupToggleRow } from "@/components/sidebar/sidebar-group-toggle-row";
-import { createWorkspaceVisibilityPolicy } from "@/components/sidebar/sidebar-group-visibility";
+import {
+  createWorkspaceVisibilityPolicy,
+  selectSidebarGroupVisibility,
+} from "@/components/sidebar/sidebar-group-visibility";
+import {
+  isShiftPressEvent,
+  registerSidebarVisibleWorkspaceKeysReader,
+  useIsSidebarSelectionMode,
+  useIsWorkspaceBulkSelected,
+  useSidebarSelectionStore,
+} from "@/sidebar-selection";
 import { useLimitedSidebarGroup } from "@/components/sidebar/use-limited-sidebar-group";
 import {
   SidebarWorkspaceRowFrame,
@@ -151,7 +162,6 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { Shortcut } from "@/components/ui/shortcut";
 import type { ShortcutKey } from "@/utils/format-shortcut";
 import { useShortcutKeys } from "@/hooks/use-shortcut-keys";
-import { useKeyboardActionHandler } from "@/hooks/use-keyboard-action-handler";
 import { useWorkspaceReadState } from "@/hooks/use-workspace-read-state";
 import type { PrHint } from "@/git/use-pr-status-query";
 import {
@@ -316,6 +326,7 @@ interface WorkspaceRowInnerProps {
   archiveLabel?: string;
   archiveStatus?: "idle" | "pending" | "success";
   archivePendingLabel?: string;
+  onSelectWorkspace?: () => void;
   onArchive?: () => void;
   onAskHistory?: () => void;
   onCopyBranchName?: () => void;
@@ -707,12 +718,14 @@ function WorkspaceRowRightGroup({
   isHovered,
   isTouchPlatform,
   isCreating,
+  isSelectionMode,
   showShortcutBadge,
   shortcutNumber,
   archiveLabel,
   archiveStatus,
   archivePendingLabel,
   archiveShortcutKeys,
+  onSelectWorkspace,
   onArchive,
   onMarkAsRead,
   onAskHistory,
@@ -728,12 +741,14 @@ function WorkspaceRowRightGroup({
   isHovered: boolean;
   isTouchPlatform: boolean;
   isCreating: boolean;
+  isSelectionMode: boolean;
   showShortcutBadge: boolean;
   shortcutNumber: number | null;
   archiveLabel?: string;
   archiveStatus?: "idle" | "pending" | "success";
   archivePendingLabel?: string;
   archiveShortcutKeys?: ShortcutKey[][] | null;
+  onSelectWorkspace?: () => void;
   onArchive?: () => void;
   onMarkAsRead?: () => void;
   onAskHistory?: () => void;
@@ -762,6 +777,7 @@ function WorkspaceRowRightGroup({
     isHovered,
     isTouchPlatform,
     showShortcut,
+    isSelectionMode,
   });
   const kebab = useOpenKebabMenuVisibility(showKebabInSlot);
 
@@ -798,6 +814,7 @@ function WorkspaceRowRightGroup({
                 onMarkAsRead={onMarkAsRead}
                 onAskHistory={onAskHistory}
                 onMarkAsUnread={onMarkAsUnread}
+                onSelectWorkspace={onSelectWorkspace}
                 onArchive={onArchive}
                 archiveLabel={archiveLabel}
                 archiveStatus={archiveStatus}
@@ -1304,6 +1321,7 @@ function WorkspaceRowInner({
   archiveLabel,
   archiveStatus = "idle",
   archivePendingLabel,
+  onSelectWorkspace,
   onArchive,
   onAskHistory,
   onCopyBranchName,
@@ -1319,6 +1337,8 @@ function WorkspaceRowInner({
 }: WorkspaceRowInnerProps) {
   const isCompact = useIsCompactFormFactor();
   const [isHighlighted, setIsHighlighted] = useState(false);
+  const isSelectionMode = useIsSidebarSelectionMode();
+  const isBulkSelected = useIsWorkspaceBulkSelected(workspace.workspaceKey);
   const isTouchPlatform = platformIsNative || isCompact;
   const interaction = useLongPressDragInteraction({
     drag,
@@ -1359,16 +1379,49 @@ function WorkspaceRowInner({
     [dragHandleProps, dropRowRef],
   );
 
-  const handlePress = useCallback(() => {
-    if (interaction.didLongPressRef.current) {
-      interaction.didLongPressRef.current = false;
-      return;
-    }
-    onPress();
-  }, [interaction.didLongPressRef, onPress]);
+  const { onPress: handleNavigatePress, feedback } = useWorkspaceRowPress({
+    didLongPressRef: interaction.didLongPressRef,
+    onPress,
+    selected,
+  });
 
-  const accessibilityState = useMemo(() => ({ selected }), [selected]);
+  const handleRowPress = useCallback(
+    (event: GestureResponderEvent) => {
+      const shiftKey = isShiftPressEvent(event);
+      if (isSelectionMode || shiftKey) {
+        if (interaction.didLongPressRef.current) {
+          interaction.didLongPressRef.current = false;
+          return;
+        }
+        event.preventDefault?.();
+        useSidebarSelectionStore.getState().pressWorkspace(workspace.workspaceKey, { shiftKey });
+        return;
+      }
+      handleNavigatePress();
+    },
+    [handleNavigatePress, interaction.didLongPressRef, isSelectionMode, workspace.workspaceKey],
+  );
+
+  const handleRowPressIn = useCallback(
+    (event: GestureResponderEvent) => {
+      if (isShiftPressEvent(event)) {
+        event.preventDefault?.();
+        return;
+      }
+      if (!isSelectionMode) {
+        interaction.handlePressIn(event);
+      }
+    },
+    [interaction, isSelectionMode],
+  );
+
+  const rowSelected = isSelectionMode ? isBulkSelected : selected;
+  const accessibilityState = useMemo(
+    () => (isSelectionMode ? { checked: isBulkSelected } : { selected }),
+    [isSelectionMode, isBulkSelected, selected],
+  );
   const isEditingTitle = titleEditor !== null;
+  const disableDrag = isEditingTitle || isSelectionMode;
 
   return (
     <>
@@ -1376,6 +1429,7 @@ function WorkspaceRowInner({
         workspace={workspace}
         isDragging={isDragging}
         isEditingTitle={isEditingTitle}
+        isSelectionMode={isSelectionMode}
       >
         {({ isHovered, contextMenuOpen, onContextMenuOpenChange, hoverHandlers }) => {
           const isDesktop = !isTouchPlatform;
@@ -1384,19 +1438,19 @@ function WorkspaceRowInner({
             : null;
           const workspaceRowStyle = getProjectWorkspaceRowStyle({
             isDragging,
-            selected,
+            selected: rowSelected,
             isHovered,
           });
           const backdrop = getSidebarRowBackdrop({
             isDragging,
             isHighlighted,
-            selected,
+            selected: rowSelected,
             isHovered,
           });
           return (
             <View
               {...dragAttributes}
-              {...(isEditingTitle ? null : dragHandleProps?.listeners)}
+              {...(disableDrag ? null : dragHandleProps?.listeners)}
               ref={setRowRef}
               style={styles.workspaceRowContainer}
               {...hoverHandlers}
@@ -1413,6 +1467,7 @@ function WorkspaceRowInner({
                 onRename={onRename}
                 onMarkAsRead={onMarkAsRead}
                 onMarkAsUnread={onMarkAsUnread}
+                onSelectWorkspace={onSelectWorkspace}
                 onArchive={onArchive}
                 archiveLabel={archiveLabel}
                 archiveStatus={archiveStatus}
@@ -1422,17 +1477,18 @@ function WorkspaceRowInner({
                 onTogglePin={onTogglePin}
                 openInFileManagerPath={workspace.workspaceDirectory}
                 disabled={isArchiving}
-                enabled={!isEditingTitle}
-                aria-selected={selected}
-                accessibilityRole="button"
+                enabled={!isEditingTitle && !isSelectionMode}
+                aria-selected={isSelectionMode ? undefined : selected}
+                aria-checked={isSelectionMode ? isBulkSelected : undefined}
+                accessibilityRole={isSelectionMode ? "checkbox" : "button"}
                 accessibilityState={accessibilityState}
                 style={workspaceRowStyle}
                 highlightStyle={isEditingTitle ? undefined : styles.workspaceRowPressed}
                 onHighlightChange={setIsHighlighted}
-                onPressIn={isEditingTitle ? undefined : interaction.handlePressIn}
-                onTouchMove={isEditingTitle ? undefined : interaction.handleTouchMove}
-                onPressOut={isEditingTitle ? undefined : interaction.handlePressOut}
-                onPress={isEditingTitle ? undefined : handlePress}
+                onPressIn={isEditingTitle ? undefined : handleRowPressIn}
+                onTouchMove={disableDrag ? undefined : interaction.handleTouchMove}
+                onPressOut={disableDrag ? undefined : interaction.handlePressOut}
+                onPress={isEditingTitle ? undefined : handleRowPress}
                 testID={`sidebar-workspace-row-${workspace.workspaceKey}`}
               >
                 <SidebarWorkspaceRowContent
@@ -1445,6 +1501,8 @@ function WorkspaceRowInner({
                   isHovered={isHovered}
                   isLoading={isArchiving || isCreating}
                   isCreating={isCreating}
+                  isSelectionMode={isSelectionMode}
+                  isBulkSelected={isBulkSelected}
                   shortcutNumber={shortcutNumber}
                   showShortcutBadge={showShortcutBadge}
                   reserveIdleStatusIndicatorSpace={reserveIdleStatusIndicatorSpace}
@@ -1457,12 +1515,14 @@ function WorkspaceRowInner({
                     isHovered={isHovered}
                     isTouchPlatform={isTouchPlatform}
                     isCreating={isCreating}
+                    isSelectionMode={isSelectionMode}
                     showShortcutBadge={showShortcutBadge}
                     shortcutNumber={shortcutNumber}
                     archiveLabel={archiveLabel}
                     archiveStatus={archiveStatus}
                     archivePendingLabel={archivePendingLabel}
                     archiveShortcutKeys={archiveShortcutKeys}
+                    onSelectWorkspace={onSelectWorkspace}
                     onArchive={onArchive}
                     onMarkAsRead={onMarkAsRead}
                     onAskHistory={onAskHistory}
@@ -1474,6 +1534,7 @@ function WorkspaceRowInner({
                     onTogglePin={onTogglePin}
                   />
                 </SidebarWorkspaceRowContent>
+                {feedback}
               </SidebarWorkspaceContextMenu>
               {isAgentTabDropTarget ? (
                 <SidebarWorkspaceAgentDropIndicator workspaceKey={workspace.workspaceKey} />
@@ -1581,6 +1642,10 @@ function WorkspaceRowWithMenu({
     archiveController.archive();
   }, [archiveController, isArchiving]);
 
+  const handleSelectWorkspace = useCallback(() => {
+    useSidebarSelectionStore.getState().enter(workspace.workspaceKey);
+  }, [workspace.workspaceKey]);
+
   const clipboard = useWorkspaceClipboardActions();
   const handleCopyPath = useCallback(() => {
     clipboard.copyPath(workspace);
@@ -1613,17 +1678,6 @@ function WorkspaceRowWithMenu({
     });
   }, [markUnread, toast]);
 
-  useKeyboardActionHandler({
-    handlerId: `workspace-archive-${workspace.workspaceKey}`,
-    actions: ["workspace.archive"],
-    enabled: selected && !isArchiving,
-    priority: 0,
-    handle: () => {
-      handleArchive();
-      return true;
-    },
-  });
-
   return (
     <>
       <WorkspaceRowInner
@@ -1644,6 +1698,7 @@ function WorkspaceRowWithMenu({
         archiveLabel={t("sidebar.workspace.actions.archive")}
         archiveStatus={isArchiving ? "pending" : "idle"}
         archivePendingLabel={t("sidebar.workspace.actions.archiving")}
+        onSelectWorkspace={handleSelectWorkspace}
         onArchive={handleArchive}
         onAskHistory={handleAskHistory}
         onCopyBranchName={canCopyBranchName ? handleCopyBranchName : undefined}
@@ -2561,6 +2616,62 @@ function ProjectModeList({
     selection: selectionEnabled ? activeWorkspaceSelection : null,
     expanded: pinnedChatsExpanded,
   });
+
+  const visibleOrderInputRef = useRef({
+    pinnedCollapsed,
+    leadingPinnedChat,
+    visiblePinnedChats,
+    unpinnedProjects,
+    collapsedProjectKeys,
+    expandedProjectKeys,
+    selectionEnabled,
+    activeWorkspaceSelection,
+    workspaceEntriesByKey,
+  });
+  visibleOrderInputRef.current = {
+    pinnedCollapsed,
+    leadingPinnedChat,
+    visiblePinnedChats,
+    unpinnedProjects,
+    collapsedProjectKeys,
+    expandedProjectKeys,
+    selectionEnabled,
+    activeWorkspaceSelection,
+    workspaceEntriesByKey,
+  };
+
+  useEffect(() => {
+    return registerSidebarVisibleWorkspaceKeysReader(() => {
+      const current = visibleOrderInputRef.current;
+      const keys: string[] = [];
+      if (!current.pinnedCollapsed) {
+        if (current.leadingPinnedChat) keys.push(current.leadingPinnedChat.workspaceKey);
+        for (const item of current.visiblePinnedChats) {
+          keys.push(item.workspaceKey);
+        }
+      }
+      const policy = createWorkspaceVisibilityPolicy<SidebarWorkspacePlacement>(
+        current.workspaceEntriesByKey,
+      );
+      const selection = current.selectionEnabled ? current.activeWorkspaceSelection : null;
+      for (const project of current.unpinnedProjects) {
+        if (current.collapsedProjectKeys.has(project.viewKey) || project.workspaces.length === 0) {
+          continue;
+        }
+        const { leadingItem, visibleItems } = selectSidebarGroupVisibility({
+          items: project.workspaces,
+          selection,
+          expanded: current.expandedProjectKeys.has(project.viewKey),
+          policy,
+        });
+        if (leadingItem) keys.push(leadingItem.workspaceKey);
+        for (const item of visibleItems) {
+          keys.push(item.workspaceKey);
+        }
+      }
+      return keys;
+    });
+  }, []);
   const nativeScrollGestureProps = useMemo(
     () =>
       parentGestureRef

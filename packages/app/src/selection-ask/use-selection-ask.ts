@@ -246,8 +246,11 @@ export function useSelectionAsk(config: SelectionAskConfig): SelectionAskState {
   });
 
   const modelProviders = useMemo(
-    () => buildSelectableProviderSelectorProviders(providerSnapshot.entries),
-    [providerSnapshot.entries],
+    () =>
+      buildSelectableProviderSelectorProviders(providerSnapshot.entries, {
+        selectedProvider: selectedProvider || null,
+      }),
+    [providerSnapshot.entries, selectedProvider],
   );
 
   const preferenceScope = useMemo(

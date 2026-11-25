@@ -1,5 +1,5 @@
 import type { ProjectedTimelineRow } from "./timeline-projection.js";
-import type { AgentTimelineItem, AgentUsage } from "./agent-sdk-types.js";
+import type { AgentMetric, AgentTimelineItem, AgentUsage } from "./agent-sdk-types.js";
 
 export interface AgentTimelineRow {
   seq: number;
@@ -10,6 +10,8 @@ export interface AgentTimelineRow {
   // Turn-metrics: per-turn usage record stamped at turn completion. Carried
   // on the row so metrics survive daemon restarts with the timeline entry.
   readonly metrics?: AgentUsage;
+  /** Metrics of the turn this row carries the footer for. */
+  readonly turnMetrics?: AgentMetric[];
 }
 
 export interface AgentTimelineCursor {

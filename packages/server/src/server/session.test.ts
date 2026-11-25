@@ -555,6 +555,10 @@ test("routes plugin requests and releases its owned catalog subscription on clea
       return request;
     },
     emit: () => {},
+    hasWorktreeManager: () => false,
+    createWorktree: async () => null,
+    removeWorktree: async () => null,
+    restoreWorktree: async () => null,
     listPlugins: async () => [plugin],
     getLogs: () => [
       {
@@ -696,6 +700,10 @@ test("leaves out the client bundles a catalog request already holds", async () =
   const pluginRuntime: NonNullable<SessionOptions["pluginRuntime"]> = {
     before: async (_name, request) => request,
     emit: () => {},
+    hasWorktreeManager: () => false,
+    createWorktree: async () => null,
+    removeWorktree: async () => null,
+    restoreWorktree: async () => null,
     listPlugins: async () => [],
     getLogs: () => [],
     installDirectory: async () => {
@@ -4577,7 +4585,11 @@ describe("session checkout pull and push handling", () => {
       requestId: "request-push",
     });
 
-    expect(checkoutGitMocks.pushCurrentBranch).toHaveBeenCalledWith("/tmp/request-worktree");
+    expect(checkoutGitMocks.pushCurrentBranch).toHaveBeenCalledWith(
+      "/tmp/request-worktree",
+      undefined,
+      { paseoHome: "/tmp/paseo-home", worktreesRoot: undefined },
+    );
     expect(workspaceGitService.getSnapshot).toHaveBeenCalledWith("/tmp/request-worktree", {
       force: true,
       reason: "push",
@@ -6926,9 +6938,13 @@ describe("send_agent_message dispatch modes", () => {
 
     // Nothing to steer: the steer is attempted, reports no live turn, and the
     // prompt then starts an ordinary run.
-    expect(tryRunOutOfBand).toHaveBeenCalledWith(agentId, "fix the test", {
-      replaceOrigin: "user",
-    });
+    // The fourth argument is the queued-message admission check, which a direct prompt lacks.
+    expect(tryRunOutOfBand).toHaveBeenCalledWith(
+      agentId,
+      "fix the test",
+      { replaceOrigin: "user" },
+      undefined,
+    );
     expect(streamAgent).toHaveBeenCalledTimes(1);
     expect(replaceAgentRun).not.toHaveBeenCalled();
     expect(acceptedResponse(messages)).toMatchObject({
@@ -7400,15 +7416,25 @@ const heartbeatBackgroundWork = {
   stopToken: "heartbeat-token",
 };
 
+const changeRequestBackgroundWork = {
+  id: "daemon:change-request-watch:https://github.com/owner/repo/pull/42",
+  kind: "monitor",
+  description: "owner/repo #42",
+  startedAt: heartbeatBackgroundWork.startedAt,
+  canStop: true,
+  stopToken: "watch-token",
+};
+
 test.each([
   { permissions: ["workspace.read"], canStop: false },
   { permissions: ["workspace.read", "automation.manage"], canStop: false },
   { permissions: ["workspace.read", "workspace.write"], canStop: false },
   { permissions: ["workspace.read", "hub.execute", "automation.manage"], canStop: true },
 ] satisfies Array<{ permissions: DaemonPermission[]; canStop: boolean }>)(
-  "filters dormant heartbeat controls for $permissions on list and update",
+  "filters dormant daemon controls for $permissions on list and update",
   async ({ permissions, canStop }) => {
     const messages: SessionOutboundMessage[] = [];
+    const inventory = [heartbeatBackgroundWork, changeRequestBackgroundWork];
     let listener: ((event: AgentManagerEvent) => void) | undefined;
     const record = createStoredAgentRecord({ id: "agent-a", cwd: "/tmp/repo" });
     const session = createSessionForTest({
@@ -7416,8 +7442,8 @@ test.each([
       permissions,
       agentManager: {
         getAgent: () => undefined,
-        getAgentBackgroundWorkSummary: () => ({ count: 1 }),
-        listAgentBackgroundWork: () => [heartbeatBackgroundWork],
+        getAgentBackgroundWorkSummary: () => ({ count: inventory.length }),
+        listAgentBackgroundWork: () => inventory,
         subscribe: (callback: (event: AgentManagerEvent) => void) => {
           listener = callback;
           return () => {};
@@ -7439,11 +7465,12 @@ test.each([
     listener({
       type: "background_work",
       agentId: record.id,
-      items: [heartbeatBackgroundWork],
+      items: inventory,
     });
 
-    const { canStop: _canStop, stopToken: _token, ...readOnly } = heartbeatBackgroundWork;
-    const items = [canStop ? heartbeatBackgroundWork : readOnly];
+    const items = canStop
+      ? inventory
+      : inventory.map(({ canStop: _canStop, stopToken: _token, ...item }) => item);
     expect(findByType(messages, "agent.background_work.list.response")?.payload).toEqual({
       requestId: "list-heartbeat",
       agentId: record.id,
@@ -7853,4 +7880,78 @@ test("does not publish internal agents' background work to subscribed clients", 
   });
   await new Promise<void>((resolve) => setImmediate(resolve));
   expect(messages.some((message) => message.type === "agent.background_work.update")).toBe(false);
+});
+
+test("deduplicates repeated command names in list_commands_response for live agents and drafts", async () => {
+  const duplicateCommands = [
+    {
+      name: "goal",
+      description: "Run until goal is finished",
+      argumentHint: "",
+      kind: "command" as const,
+    },
+    {
+      name: "plan",
+      description: "Plan carefully before executing a task.",
+      argumentHint: "",
+      kind: "command" as const,
+    },
+    {
+      name: "plan",
+      description: "Local plan skill description",
+      argumentHint: "",
+      kind: "skill" as const,
+    },
+  ];
+  const expected = [duplicateCommands[0], duplicateCommands[1]];
+
+  const liveMessages: SessionOutboundMessage[] = [];
+  const liveSession = createSessionForTest({
+    messages: liveMessages,
+    agentManager: {
+      waitForAgentClose: async () => undefined,
+      getAgent: () =>
+        ({
+          id: "agent-1",
+          session: { listCommands: async () => duplicateCommands },
+        }) as never,
+    },
+  });
+  await liveSession.handleMessage({
+    type: "list_commands_request",
+    agentId: "agent-1",
+    requestId: "req-live",
+  });
+  expect(findByType(liveMessages, "list_commands_response")).toMatchObject({
+    payload: {
+      agentId: "agent-1",
+      requestId: "req-live",
+      error: null,
+      commands: expected,
+    },
+  });
+
+  const draftMessages: SessionOutboundMessage[] = [];
+  const draftSession = createSessionForTest({
+    messages: draftMessages,
+    agentManager: {
+      getAgent: () => undefined,
+      listDraftCommands: async () => duplicateCommands,
+    },
+    agentStorage: { get: async () => null },
+  });
+  await draftSession.handleMessage({
+    type: "list_commands_request",
+    agentId: "draft-1",
+    requestId: "req-draft",
+    draftConfig: { provider: "antigravity", cwd: "/tmp/repo" },
+  });
+  expect(findByType(draftMessages, "list_commands_response")).toMatchObject({
+    payload: {
+      agentId: "draft-1",
+      requestId: "req-draft",
+      error: null,
+      commands: expected,
+    },
+  });
 });

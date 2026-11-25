@@ -1,6 +1,7 @@
 packages:
   - "plugins"
   - "packages/expo-two-way-audio"
+  - "packages/react-native-enriched-markdown"
   - "packages/highlight"
   - "packages/plugin"
   - "packages/protocol"
@@ -19,6 +20,7 @@ packages:
 # allowed; without it every worktree gets a private, re-patched copy (mermaid alone is 88 MB).
 allowBuilds:
   "@gorhom/bottom-sheet": true
+  "@gorhom/portal": true
   "@legendapp/list": true
   "@mattermost/react-native-paste-input": true
   "@opencode-ai/sdk": true
@@ -32,8 +34,9 @@ allowBuilds:
   mermaid: true
   msgpackr-extract: false
   node-pty: true
+  react-dom: true
+  react-native: true
   react-native-draggable-flatlist: true
-  react-native-enriched-markdown: true
   react-native-gesture-handler: true
   react-native-reanimated: true
   react-native-svg: true
@@ -47,14 +50,16 @@ allowBuilds:
 # newly patched package to allowBuilds too.
 patchedDependencies:
   "@gorhom/bottom-sheet@5.2.14": patches/@gorhom__bottom-sheet@5.2.14.patch
+  "@gorhom/portal@1.0.14": patches/@gorhom__portal@1.0.14.patch
   "@legendapp/list@3.7.1": patches/@legendapp__list@3.7.1.patch
   "@mattermost/react-native-paste-input@2.0.1": patches/@mattermost__react-native-paste-input@2.0.1.patch
   "@opencode-ai/sdk@1.14.46": patches/@opencode-ai__sdk@1.14.46.patch
   "@xterm/addon-ligatures@0.11.0-beta.301": patches/@xterm__addon-ligatures@0.11.0-beta.301.patch
   expo-modules-core@57.0.23: patches/expo-modules-core@57.0.23.patch
   mermaid@11.17.2: patches/mermaid@11.17.2.patch
+  react-dom@19.2.3: patches/react-dom@19.2.3.patch
+  react-native@0.86.3: patches/react-native@0.86.3.patch
   react-native-draggable-flatlist@4.0.3: patches/react-native-draggable-flatlist@4.0.3.patch
-  react-native-enriched-markdown@1.2.0-nightly-20261014-766fc0e67: patches/react-native-enriched-markdown@1.2.0-nightly-20261014-766fc0e67.patch
   react-native-gesture-handler@2.32.0: patches/react-native-gesture-handler@2.32.0.patch
   react-native-reanimated@4.5.5: patches/react-native-reanimated@4.5.5.patch
   react-native-svg@15.15.4: patches/react-native-svg@15.15.4.patch
@@ -119,7 +124,7 @@ overrides:
   react-native-worklets: "0.10.4"
   # Upstream pins these in npm `overrides` (#8749, #8787) because the registry
   # served incomplete signature attestations for pkijs 3.4.3, semver 5.7.3 and
-  # semver 6.3.2, which fails `pnpm audit signatures` in CI. Keyed by range so
+  # semver 6.3.2, which fails `pnpm audit signatures`. Keyed by range so
   # other semver majors under the same parents keep resolving normally.
   "@electron/get@^3.0.0>semver@^6": "6.3.1"
   pkijs: "3.4.2"

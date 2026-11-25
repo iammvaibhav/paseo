@@ -31,8 +31,11 @@ export function useHistoryAskModelSelection(input: {
   });
 
   const modelSelectorProviders = useMemo(
-    () => buildSelectableProviderSelectorProviders(providerSnapshot.entries),
-    [providerSnapshot.entries],
+    () =>
+      buildSelectableProviderSelectorProviders(providerSnapshot.entries, {
+        selectedProvider: selectedProvider || null,
+      }),
+    [providerSnapshot.entries, selectedProvider],
   );
 
   useEffect(() => {

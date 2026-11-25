@@ -1,6 +1,6 @@
-import type { AgentUsage } from "@getpaseo/protocol/agent-types";
+import type { AgentMetric, AgentUsage } from "@getpaseo/protocol/agent-types";
 import type { TurnTiming } from "@/timeline/turn-time";
-import type { StreamItem } from "@/types/stream";
+import { getAssistantReply, type StreamItem } from "@/types/stream";
 import { getAssistantMessageSpacing, getGapBetweenStreamItems } from "./spacing";
 import type { StreamFrameChildOrder, StreamStrategy } from "./strategy";
 import { continuesResponse, continuesTurn, isResponseBoundary } from "./turn-membership";
@@ -11,6 +11,7 @@ export interface TurnFooterHost {
   itemId: string;
   items: StreamItem[];
   timing?: TurnTiming;
+  turnMetrics?: AgentMetric[];
   startIndex: number;
   metrics?: AgentUsage;
 }
@@ -72,10 +73,15 @@ function createTurnFooterHost(input: {
   timingByItemId: Map<string, TurnTiming>;
 }): TurnFooterHost {
   const assistantItem = input.item.kind === "assistant_message" ? input.item : null;
+  const turnMetrics =
+    input.item.kind === "tool_call"
+      ? input.item.turnMetrics
+      : getAssistantReply(input.item)?.turnMetrics;
   return {
     itemId: input.item.id,
     items: input.items,
     timing: input.timingByItemId.get(input.item.id),
+    ...(turnMetrics ? { turnMetrics } : {}),
     startIndex: input.index,
     metrics: assistantItem?.metrics,
   };
@@ -106,7 +112,7 @@ function findTurnFooterSource(input: {
       if (!item || (laterItem && !continuesResponse(item, laterItem))) {
         return toolFallback;
       }
-      if (item.kind === "assistant_message") {
+      if (getAssistantReply(item)) {
         return { item, items, index };
       }
       laterItem = item;
@@ -251,6 +257,7 @@ function areTurnFooterHostsEqual(
   return (
     left.itemId === right.itemId &&
     left.timing === right.timing &&
+    left.turnMetrics === right.turnMetrics &&
     left.startIndex === right.startIndex &&
     left.items === right.items &&
     left.metrics === right.metrics

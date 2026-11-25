@@ -1,11 +1,19 @@
-import type { PluginWorktreeCreateRequest } from "@getpaseo/plugin/server";
+import type {
+  PluginWorktreeCreateInput,
+  PluginWorktreeCreateRequest,
+} from "@getpaseo/plugin/server";
 import type { PluginLifecycle } from "./plugins/lifecycle/index.js";
+import type { PluginWorktreeManagerRuntime } from "./plugins/runtime.js";
 import { createNameId } from "mnemonic-id";
 
 import type { ForgeService } from "../services/forge-service.js";
 import {
   createWorktree,
+  fetchFirstAvailableRef,
+  prepareWorktreeBranchOff,
+  type PreparedWorktreeBranchOff,
   resolveDefaultWorktreePath,
+  runPluginWorktreeManagerCheckout,
   slugify,
   validateBranchSlug,
   type CreatedWorktree,
@@ -15,13 +23,17 @@ import {
   type ResolveWorktreeCreationIntentInput,
   UnsupportedForgeCheckoutTargetError,
   type WorktreeCreationIntent,
+  worktreeUntrustedSource,
 } from "./resolve-worktree-creation-intent.js";
 import type { ChangeRequestCheckoutSource, FirstAgentContext } from "@getpaseo/protocol/messages";
 import type { WorkspaceGitService } from "./workspace-git-service.js";
-import { branchNameFromRef } from "../utils/worktree-metadata.js";
+import { runWithRepositoryRoot } from "../utils/git-repository-discovery.js";
 import { runGitCommand, runWithGitCommandPriority } from "../utils/run-git-command.js";
-import { createPhaseTimer } from "../utils/phase-timer.js";
+import { branchNameFromRef, setPaseoWorktreeUntrustedSource } from "../utils/worktree-metadata.js";
+import { createPhaseTimer, type PhaseTimer } from "../utils/phase-timer.js";
 import type { WarmWorktreePool } from "./warm-worktree-pool.js";
+
+import type { UntrustedWorkspaceSource } from "./workspace-automation-gate.js";
 export interface CreateWorktreeCoreInput {
   cwd: string;
   worktreeSlug?: string;
@@ -37,6 +49,10 @@ export interface CreateWorktreeCoreInput {
 
 export interface CreateWorktreeCoreDeps {
   lifecycle?: Pick<PluginLifecycle, "before">;
+  worktreeManagers?: Pick<
+    PluginWorktreeManagerRuntime,
+    "hasWorktreeManager" | "createWorktree" | "removeWorktree"
+  >;
   github: ForgeService;
   workspaceGitService?: Pick<
     WorkspaceGitService,
@@ -53,6 +69,7 @@ export interface CreateWorktreeCoreDeps {
 export interface CreateWorktreeCoreResult {
   worktree: CreatedWorktree;
   intent: WorktreeCreationIntent;
+  untrustedSource?: UntrustedWorkspaceSource;
   repoRoot: string;
   created: boolean;
   /** Set when a warm-pool tree already ran worktree.setup at this commit; skip running it again. */
@@ -84,7 +101,11 @@ function buildWorktreeCreationIntentInput(
       worktreeSlug: requestedWorktreeSlug,
     };
   }
-  if (input.checkoutSource !== undefined || input.githubPrNumber !== undefined) {
+  if (
+    input.action !== "branch-off" &&
+    (input.checkoutSource !== undefined || input.githubPrNumber !== undefined)
+  ) {
+    // A change request with no action is checked out, as clients did before `action` existed.
     return {
       checkoutSource: input.checkoutSource,
       githubPrNumber: input.githubPrNumber,
@@ -95,6 +116,8 @@ function buildWorktreeCreationIntentInput(
   return {
     action: "branch-off",
     refName: input.refName,
+    checkoutSource: input.checkoutSource,
+    githubPrNumber: input.githubPrNumber,
     branchName: input.branchName?.trim(),
     worktreeSlug: requestedWorktreeSlug ?? normalizeWorktreeSlug(createNameId()),
   };
@@ -107,6 +130,17 @@ async function createWorktreeCoreWithPriority(
   const timer = createPhaseTimer();
   const repoRoot = await resolveWorktreeRepoRoot(input, deps.workspaceGitService);
   timer.mark("repoRootMs");
+  return runWithRepositoryRoot(repoRoot, () =>
+    createWorktreeAtRepositoryRoot(input, deps, repoRoot, timer),
+  );
+}
+
+async function createWorktreeAtRepositoryRoot(
+  input: CreateWorktreeCoreInput,
+  deps: CreateWorktreeCoreDeps,
+  repoRoot: string,
+  timer: PhaseTimer,
+): Promise<CreateWorktreeCoreResult> {
   const requestedWorktreeSlug = input.worktreeSlug
     ? normalizeWorktreeSlug(input.worktreeSlug)
     : undefined;
@@ -117,6 +151,8 @@ async function createWorktreeCoreWithPriority(
     forge: forge.forge,
     forgeService: forge.service,
     resolveDefaultBranch: (root) => resolveDefaultBranch(root, deps),
+    fetchRef: ({ repoRoot: cwd, sources, destination }) =>
+      fetchFirstAvailableRef({ cwd, sources, destination }),
   });
   let normalizedSlug: string;
 
@@ -157,9 +193,30 @@ async function createWorktreeCoreWithPriority(
   const transformed = deps.lifecycle
     ? await deps.lifecycle.before("worktree.create.before", request)
     : request;
+  const originalUntrustedSource = worktreeUntrustedSource(intent);
   normalizedSlug = validateWorktreeSlug(transformed.slug);
   intent = creationIntentFromRequest(transformed, intent);
+  const untrustedSource = originalUntrustedSource ?? worktreeUntrustedSource(intent);
   timer.mark("placementMs");
+
+  const { worktree: managedWorktree, preparedBranchOff } = await tryCreateWithWorktreeManager({
+    repoRoot,
+    transformed,
+    intent,
+    untrusted: Boolean(untrustedSource),
+    input,
+    deps,
+  });
+  if (managedWorktree) {
+    timer.mark("createMs");
+    return finishWorktreeCreate({
+      worktree: managedWorktree,
+      intent,
+      untrustedSource,
+      repoRoot,
+      timing: timer.phases,
+    });
+  }
 
   // Claim before the origin fetch. A warm worktree is already checked out at a
   // recent SHA; waiting up to DISPATCH_BASE_BRANCH_FETCH_TIMEOUT_MS here made
@@ -178,19 +235,19 @@ async function createWorktreeCoreWithPriority(
       ...(deps.prewarmAgentCwd ? { onReserved: deps.prewarmAgentCwd } : {}),
     });
     if (warmClaimResult) {
-      return {
+      return finishWorktreeCreate({
         worktree: warmClaimResult.worktree,
         intent,
+        untrustedSource,
         repoRoot,
-        created: true,
-        ...(warmClaimResult.setupPrepared ? { setupPrepared: true as const } : {}),
+        setupPrepared: warmClaimResult.setupPrepared,
         timing: {
           ...timer.phases,
           ...Object.fromEntries(
             Object.entries(warmClaimResult.timing).map(([name, ms]) => [`claim.${name}`, ms]),
           ),
         },
-      };
+      });
     }
     timer.mark("claimMissMs");
   }
@@ -204,11 +261,41 @@ async function createWorktreeCoreWithPriority(
     worktreeSlug: normalizedSlug,
     worktreePath: transformed.path,
     source: intent,
+    preparedBranchOff,
     paseoHome: input.paseoHome,
     worktreesRoot: input.worktreesRoot,
   });
   timer.mark("createMs");
-  return { worktree, intent, repoRoot, created: true, timing: timer.phases };
+  return finishWorktreeCreate({
+    worktree,
+    intent,
+    untrustedSource,
+    repoRoot,
+    timing: timer.phases,
+  });
+}
+
+/** Records an untrusted source on the new worktree, then assembles the create result. */
+async function finishWorktreeCreate(created: {
+  worktree: CreatedWorktree;
+  intent: WorktreeCreationIntent;
+  untrustedSource: UntrustedWorkspaceSource | undefined;
+  repoRoot: string;
+  setupPrepared?: boolean;
+  timing: Record<string, number>;
+}): Promise<CreateWorktreeCoreResult> {
+  if (created.untrustedSource) {
+    await setPaseoWorktreeUntrustedSource(created.worktree.worktreePath, created.untrustedSource);
+  }
+  return {
+    worktree: created.worktree,
+    intent: created.intent,
+    ...(created.untrustedSource ? { untrustedSource: created.untrustedSource } : {}),
+    repoRoot: created.repoRoot,
+    created: true,
+    ...(created.setupPrepared ? { setupPrepared: true as const } : {}),
+    timing: created.timing,
+  };
 }
 
 async function resolveForgeForWorktreeCreate(
@@ -225,6 +312,40 @@ async function resolveForgeForWorktreeCreate(
   return resolveForge(repoRoot, deps, intentInput);
 }
 
+async function tryCreateWithWorktreeManager(options: {
+  repoRoot: string;
+  transformed: PluginWorktreeCreateRequest;
+  intent: WorktreeCreationIntent;
+  untrusted: boolean;
+  input: Pick<CreateWorktreeCoreInput, "paseoHome" | "worktreesRoot">;
+  deps: Pick<CreateWorktreeCoreDeps, "worktreeManagers">;
+}): Promise<{ worktree: CreatedWorktree | null; preparedBranchOff?: PreparedWorktreeBranchOff }> {
+  const { repoRoot, transformed, intent, untrusted, input, deps } = options;
+  let preparedBranchOff: PreparedWorktreeBranchOff | undefined;
+  const worktree = await runPluginWorktreeManagerCheckout({
+    cwd: repoRoot,
+    source: intent,
+    operation: "create",
+    untrusted,
+    paseoHome: input.paseoHome,
+    worktreesBaseRoot: input.worktreesRoot,
+    worktreeManagers: deps.worktreeManagers,
+    run: async ({ changeRequestHeadSha }) => {
+      let request: PluginWorktreeCreateInput = {
+        ...transformed,
+        untrusted,
+        ...(changeRequestHeadSha ? { headSha: changeRequestHeadSha } : {}),
+      };
+      if (request.kind === "branch-off" && intent.kind === "branch-off") {
+        preparedBranchOff = await prepareWorktreeBranchOff(repoRoot, intent);
+        request = { ...request, baseRef: preparedBranchOff.baseRef };
+      }
+      return deps.worktreeManagers!.createWorktree(request);
+    },
+  });
+  return { worktree, preparedBranchOff };
+}
+
 function describeCreationRequest(
   intent: WorktreeCreationIntent,
   placement: Pick<PluginWorktreeCreateRequest, "repoRoot" | "sourceCheckout" | "slug" | "path">,
@@ -236,6 +357,7 @@ function describeCreationRequest(
       branch: intent.branchName,
       // Intent resolution always fills the base; only direct primitive callers omit it.
       baseRef: intent.baseBranch ?? "",
+      ...(intent.startPoint ? { startPoint: intent.startPoint } : {}),
     };
   if (intent.kind === "checkout-branch")
     return { ...placement, kind: intent.kind, branch: intent.branchName };
@@ -253,7 +375,14 @@ function creationIntentFromRequest(
   original: WorktreeCreationIntent,
 ): WorktreeCreationIntent {
   if (request.kind === "branch-off") {
-    return { kind: request.kind, branchName: request.branch, baseBranch: request.baseRef };
+    // Plugins see the base; where a branch off a fork's change request starts stays Paseo's.
+    const startPoint = original.kind === "branch-off" ? original.startPoint : undefined;
+    return {
+      kind: request.kind,
+      branchName: request.branch,
+      baseBranch: request.baseRef,
+      ...(startPoint ? { startPoint } : {}),
+    };
   }
   if (request.kind === "checkout-branch") {
     return {

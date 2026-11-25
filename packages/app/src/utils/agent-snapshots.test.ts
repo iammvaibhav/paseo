@@ -42,6 +42,7 @@ function createSnapshot(
       providerUnavailable: input.providerUnavailable,
       controls: input.controls,
       options: input.options,
+      sessionMetrics: input.sessionMetrics,
     }),
   };
 }
@@ -90,6 +91,15 @@ describe("normalizeAgentSnapshot", () => {
       status: "running",
       activeTurn: snapshot.activeTurn,
     });
+  });
+
+  it("round-trips session metrics through the canonical snapshot boundary", () => {
+    const sessionMetrics = [{ label: "Cost", value: "$0.42", tone: "warning" as const }];
+
+    const agent = normalizeAgentSnapshot(createSnapshot({ sessionMetrics }), "server-1");
+
+    expect(agent.sessionMetrics).toEqual(sessionMetrics);
+    expect(projectAgentSnapshot(agent).sessionMetrics).toEqual(sessionMetrics);
   });
 
   it("normalizes identified and legacy active turns at the snapshot boundary", () => {

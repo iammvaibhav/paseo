@@ -19,7 +19,8 @@ import {
 } from "react-native";
 import { isWeb as platformIsWeb } from "@/constants/platform";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { CircleAlert, Folder, FolderGit2, Monitor } from "lucide-react-native";
+import { Check, CircleAlert, Folder, FolderGit2, Monitor } from "lucide-react-native";
+import { bySizing } from "@/components/ui/control-geometry";
 import { ProjectStatusIndicator } from "@/components/sidebar/project-leading-visual";
 import type { SidebarSurfaceBackdrop } from "@/styles/surface-backdrop";
 import {
@@ -79,19 +80,26 @@ const needsInputColorMapping = (theme: Theme) => ({
   color: theme.colors.background,
   fill: getStatusDotColor({ theme, bucket: "needs_input" }) ?? undefined,
 });
+const checkedIconMapping = (theme: Theme) => ({
+  color: theme.colors.accentForeground,
+});
 
+const ThemedCheck = withUnistyles(Check);
 const ThemedCircleAlert = withUnistyles(CircleAlert);
 
 export function SidebarWorkspaceRowFrame({
   workspace,
   isDragging = false,
   isEditingTitle = false,
+  isSelectionMode = false,
   children,
 }: {
   workspace: SidebarWorkspaceEntry;
   isDragging?: boolean;
   /** Hover would fade the kebab in over the title being edited and open the hover card. */
   isEditingTitle?: boolean;
+  /** Hover cards would cover neighbouring rows while the user clicks through a selection. */
+  isSelectionMode?: boolean;
   children: (input: {
     isHovered: boolean;
     contextMenuOpen: boolean;
@@ -119,7 +127,7 @@ export function SidebarWorkspaceRowFrame({
       workspace={workspace}
       prHint={workspace.prHint}
       isDragging={isDragging}
-      disabled={contextMenuOpen || isEditingTitle}
+      disabled={contextMenuOpen || isEditingTitle || isSelectionMode}
     >
       {children({
         isHovered: isHovered && !contextMenuOpen && !isDragging && !isEditingTitle,
@@ -141,6 +149,8 @@ export const SidebarWorkspaceRowContent = memo(function SidebarWorkspaceRowConte
   isHovered,
   isLoading,
   isCreating = false,
+  isSelectionMode = false,
+  isBulkSelected = false,
   shortcutNumber = null,
   showShortcutBadge = false,
   reserveIdleStatusIndicatorSpace = true,
@@ -159,6 +169,8 @@ export const SidebarWorkspaceRowContent = memo(function SidebarWorkspaceRowConte
   isHovered: boolean;
   isLoading: boolean;
   isCreating?: boolean;
+  isSelectionMode?: boolean;
+  isBulkSelected?: boolean;
   shortcutNumber?: number | null;
   showShortcutBadge?: boolean;
   /** Keep the empty leading slot when the workspace has no active status. */
@@ -197,69 +209,50 @@ export const SidebarWorkspaceRowContent = memo(function SidebarWorkspaceRowConte
   const workspaceBranchTextStyle = useMemo(
     () => [
       styles.workspaceBranchText,
-      isHovered && styles.workspaceBranchTextHovered,
+      (isHovered || isBulkSelected) && styles.workspaceBranchTextHovered,
       isCreating && styles.workspaceBranchTextCreating,
       trailingFadeWidth !== null &&
         trailingActionFadeMask(trailingFadeWidth, rowRightWidth + TITLE_ROW_GAP),
     ],
-    [isHovered, isCreating, trailingFadeWidth, rowRightWidth],
+    [isHovered, isBulkSelected, isCreating, trailingFadeWidth, rowRightWidth],
   );
 
-  const leadingVisual = leadingProjectName ? (
-    <ProjectStatusIndicator
-      iconDataUri={leadingProjectIconDataUri}
-      displayName={leadingProjectName}
-      projectViewKey={workspace.projectViewKey}
-      statusBucket={workspace.statusBucket}
-      backdrop={backdrop}
-      loading={isLoading}
-      testID={`sidebar-row-project-icon-${workspace.workspaceKey}`}
-    />
-  ) : (
-    <WorkspaceStatusIndicator
-      bucket={workspace.statusBucket}
-      workspaceKind={workspace.workspaceKind}
-      loading={isLoading}
-      reserveIdleSpace={reserveIdleStatusIndicatorSpace}
-    />
-  );
+  let leadingVisual: ReactNode;
+  if (isSelectionMode) {
+    leadingVisual = (
+      <WorkspaceSelectionCheckbox checked={isBulkSelected} workspaceKey={workspace.workspaceKey} />
+    );
+  } else if (leadingProjectName) {
+    leadingVisual = (
+      <ProjectStatusIndicator
+        iconDataUri={leadingProjectIconDataUri}
+        displayName={leadingProjectName}
+        projectViewKey={workspace.projectViewKey}
+        statusBucket={workspace.statusBucket}
+        backdrop={backdrop}
+        loading={isLoading}
+        testID={`sidebar-row-project-icon-${workspace.workspaceKey}`}
+      />
+    );
+  } else {
+    leadingVisual = (
+      <WorkspaceStatusIndicator
+        bucket={workspace.statusBucket}
+        workspaceKind={workspace.workspaceKind}
+        loading={isLoading}
+        reserveIdleSpace={reserveIdleStatusIndicatorSpace}
+      />
+    );
+  }
 
-  const handleToggleAgents = useCallback(
-    (event: GestureResponderEvent) => {
-      event.stopPropagation();
-      agentsToggle?.onPress();
-    },
-    [agentsToggle],
-  );
-
-  const agentsToggleExpanded = agentsToggle?.expanded ?? false;
-  const agentsToggleAccessibilityState = useMemo(
-    () => ({ expanded: agentsToggleExpanded }),
-    [agentsToggleExpanded],
-  );
-  const agentsToggleStyle = useCallback(
-    ({ hovered, pressed }: PressableStateCallbackType) => [
-      styles.agentsToggle,
-      (hovered || pressed) && styles.agentsToggleActive,
-      agentsToggleExpanded && styles.agentsToggleExpanded,
-    ],
-    [agentsToggleExpanded],
-  );
-
-  const leadingSlot = agentsToggle ? (
-    <Pressable
-      onPress={handleToggleAgents}
-      hitSlop={4}
-      accessibilityRole={platformIsWeb ? undefined : "button"}
-      accessibilityLabel={agentsToggle.accessibilityLabel}
-      accessibilityState={agentsToggleAccessibilityState}
-      style={agentsToggleStyle}
-      testID={`sidebar-workspace-agents-toggle-${workspace.workspaceKey}`}
+  // In selection mode the leading slot is the bulk-select checkbox; the row press owns it.
+  const leadingSlot = (
+    <WorkspaceAgentsToggle
+      agentsToggle={isSelectionMode ? null : agentsToggle}
+      workspaceKey={workspace.workspaceKey}
     >
       {leadingVisual}
-    </Pressable>
-  ) : (
-    leadingVisual
+    </WorkspaceAgentsToggle>
   );
 
   return (
@@ -296,7 +289,7 @@ export const SidebarWorkspaceRowContent = memo(function SidebarWorkspaceRowConte
             />
           </View>
         </View>
-        {showShortcutBadge && shortcutNumber !== null ? (
+        {!isSelectionMode && showShortcutBadge && shortcutNumber !== null ? (
           <View style={styles.shortcutBadgeOverlay} pointerEvents="none">
             <SidebarWorkspaceShortcutBadge number={shortcutNumber} />
           </View>
@@ -305,6 +298,70 @@ export const SidebarWorkspaceRowContent = memo(function SidebarWorkspaceRowConte
     </TrailingFadeContext.Provider>
   );
 });
+
+/**
+ * The status slot doubles as the expand/collapse button for the workspace's agent list. The
+ * indicator inside keeps its look; only the hover and pressed fill shows it is a button. Without
+ * a toggle the slot is the indicator alone.
+ */
+function WorkspaceAgentsToggle({
+  agentsToggle,
+  workspaceKey,
+  children,
+}: {
+  agentsToggle: { expanded: boolean; onPress: () => void; accessibilityLabel: string } | null;
+  workspaceKey: string;
+  children: ReactNode;
+}) {
+  const expanded = agentsToggle?.expanded ?? false;
+  const onPress = agentsToggle?.onPress;
+  const handlePress = useCallback(
+    (event: GestureResponderEvent) => {
+      event.stopPropagation();
+      onPress?.();
+    },
+    [onPress],
+  );
+  const accessibilityState = useMemo(() => ({ expanded }), [expanded]);
+  const style = useCallback(
+    ({ hovered, pressed }: PressableStateCallbackType) => [
+      styles.agentsToggle,
+      (hovered || pressed) && styles.agentsToggleActive,
+      expanded && styles.agentsToggleExpanded,
+    ],
+    [expanded],
+  );
+  if (!agentsToggle) return children;
+  return (
+    <Pressable
+      onPress={handlePress}
+      hitSlop={4}
+      accessibilityRole={platformIsWeb ? undefined : "button"}
+      accessibilityLabel={agentsToggle.accessibilityLabel}
+      accessibilityState={accessibilityState}
+      style={style}
+      testID={`sidebar-workspace-agents-toggle-${workspaceKey}`}
+    >
+      {children}
+    </Pressable>
+  );
+}
+
+function WorkspaceSelectionCheckbox({
+  checked,
+  workspaceKey,
+}: {
+  checked: boolean;
+  workspaceKey: string;
+}) {
+  return (
+    <View style={styles.workspaceStatusDot} testID={`sidebar-workspace-checkbox-${workspaceKey}`}>
+      <View style={checked ? styles.selectionCheckboxChecked : styles.selectionCheckbox}>
+        {checked ? <ThemedCheck size={11} strokeWidth={2.5} uniProps={checkedIconMapping} /> : null}
+      </View>
+    </View>
+  );
+}
 
 function WorkspaceStatusIndicator({
   bucket,
@@ -488,6 +545,7 @@ export function resolveTrailingActionVisibility({
   isHovered,
   isTouchPlatform,
   showShortcut,
+  isSelectionMode = false,
 }: {
   workspace: SidebarWorkspaceEntry;
   trailing: SidebarWorkspaceTrailing;
@@ -495,6 +553,7 @@ export function resolveTrailingActionVisibility({
   isHovered: boolean;
   isTouchPlatform: boolean;
   showShortcut: boolean;
+  isSelectionMode?: boolean;
 }): {
   trailingPresentation: SidebarWorkspaceTrailingPresentation;
   showKebab: boolean;
@@ -504,10 +563,11 @@ export function resolveTrailingActionVisibility({
   reserveSlotWidth: boolean;
 } {
   const hasTrailing = hasSidebarWorkspaceTrailing({ workspace, trailing });
-  const showKebab = Boolean(hasArchiveAction && (isHovered || isTouchPlatform)) && !showShortcut;
+  const allowRowActions = hasArchiveAction && !isSelectionMode;
+  const showKebab = Boolean(allowRowActions && (isHovered || isTouchPlatform)) && !showShortcut;
   // Touch permanently replaces the trailing content with the menu. Only temporary shortcut hints
   // conceal content while retaining its width, so desktop rows do not shift.
-  const hasContent = hasTrailing && !(hasArchiveAction && isTouchPlatform);
+  const hasContent = hasTrailing && !(allowRowActions && isTouchPlatform);
   let trailingPresentation: SidebarWorkspaceTrailingPresentation = "absent";
   if (hasContent) trailingPresentation = showShortcut ? "hidden" : "visible";
   return {
@@ -520,12 +580,12 @@ export function resolveTrailingActionVisibility({
     // row — over an unhovered one the gradient fades to the wrong color. That is also why
     // touch, which shows the kebab without ever hovering, never gets one.
     showScrim: showKebab && isHovered,
-    renderSlot: hasArchiveAction || hasTrailing,
+    renderSlot: allowRowActions || hasTrailing,
     // The slot only holds width for something that permanently sits in it. Trailing content
     // does; the kebab only does on touch, where there is no hover for it to appear on and so
     // no scrim to let it overlay the title. Everywhere else the width goes back to the title
     // and the kebab fades in over its tail.
-    reserveSlotWidth: hasContent || (hasArchiveAction && isTouchPlatform),
+    reserveSlotWidth: hasContent || (allowRowActions && isTouchPlatform),
   };
 }
 
@@ -675,6 +735,25 @@ const styles = StyleSheet.create((theme) => ({
   },
   agentsToggleExpanded: {
     backgroundColor: theme.colors.surface2,
+  },
+  selectionCheckbox: {
+    width: bySizing({ touch: 18, pointer: 15 }),
+    height: bySizing({ touch: 18, pointer: 15 }),
+    borderRadius: theme.borderRadius.sm,
+    borderWidth: 1.5,
+    borderColor: theme.colors.borderAccent,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  selectionCheckboxChecked: {
+    width: bySizing({ touch: 18, pointer: 15 }),
+    height: bySizing({ touch: 18, pointer: 15 }),
+    borderRadius: theme.borderRadius.sm,
+    borderWidth: 1.5,
+    borderColor: theme.colors.accent,
+    backgroundColor: theme.colors.accent,
+    alignItems: "center",
+    justifyContent: "center",
   },
   statusDotOverlay: {
     position: "absolute",

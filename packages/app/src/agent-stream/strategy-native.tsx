@@ -9,6 +9,7 @@ import {
   useState,
 } from "react";
 import {
+  Dimensions,
   View,
   type LayoutChangeEvent,
   type NativeScrollEvent,
@@ -31,6 +32,7 @@ import { useTranslation } from "react-i18next";
 import type { StreamItem } from "@/types/stream";
 import type { Theme } from "@/styles/theme";
 import { useStableEvent } from "@/hooks/use-stable-event";
+import { useIsMobilePanelActive } from "@/mobile-panels/provider";
 import { shouldAnimateNativeScrollToBottom } from "./native-scroll-animation";
 import { useRevisedHistoryRows } from "./history-row-revision";
 import { type BottomAnchorMode, useBottomAnchorController } from "./bottom-anchor-controller";
@@ -43,6 +45,7 @@ import {
 } from "./native-disclosure-hold";
 import { EndPinnedScrollView } from "./native-end-pin";
 import { createNewRowEstimates } from "./new-row-estimates";
+import { createInitialDrawDistanceExpansion } from "./initial-draw-distance";
 import type {
   DisclosureTriggerEdge,
   StreamRenderInput,
@@ -137,6 +140,14 @@ interface SavedNativeScrollPosition {
   mode: BottomAnchorMode;
 }
 
+function InitialDrawDistanceExpansion({ schedule }: { schedule: () => () => void }) {
+  const isSidebarActive = useIsMobilePanelActive("agent-list");
+  useLayoutEffect(() => {
+    if (!isSidebarActive) return schedule();
+  }, [schedule, isSidebarActive]);
+  return null;
+}
+
 function NativeStreamViewport(props: StreamRenderInput & { strategy: StreamStrategy }) {
   const {
     agentId,
@@ -162,6 +173,16 @@ function NativeStreamViewport(props: StreamRenderInput & { strategy: StreamStrat
     strategy,
     topSlot,
   } = props;
+  // Keep a screenful in reserve for a fling that starts before the full buffer mounts.
+  const [drawDistance, setDrawDistance] = useState(() =>
+    Math.min(Dimensions.get("window").height, NATIVE_STREAM_DRAW_DISTANCE),
+  );
+  const [drawDistanceExpansion] = useState(() =>
+    createInitialDrawDistanceExpansion(
+      { requestFrame: requestAnimationFrame, cancelFrame: cancelAnimationFrame },
+      () => setDrawDistance(NATIVE_STREAM_DRAW_DISTANCE),
+    ),
+  );
   const { t } = useTranslation();
   const { renderHistoryMountedRow, renderLiveHeadRow, renderLiveAuxiliary } = renderers;
   const listRef = useRef<LegendListRef>(null);
@@ -671,6 +692,9 @@ function NativeStreamViewport(props: StreamRenderInput & { strategy: StreamStrat
     cancelDisclosureHold();
     bottomAnchorController.beginUserScroll();
     historyStartPagination.rearm();
+    // The reserve follows the gesture. Expanding the buffer here shifted the measured
+    // content and returned the viewport to the end during an Android fling.
+    drawDistanceExpansion.pauseForScroll();
   });
 
   useEffect(() => {
@@ -693,6 +717,7 @@ function NativeStreamViewport(props: StreamRenderInput & { strategy: StreamStrat
       bottomAnchorController.endUserScroll({
         isAtEnd: isReleasedAtEndRef.current || isAtEnd(),
       });
+      drawDistanceExpansion.resumeAfterScroll();
     });
   });
 
@@ -712,6 +737,7 @@ function NativeStreamViewport(props: StreamRenderInput & { strategy: StreamStrat
       bottomAnchorController.endUserScroll({
         isAtEnd: isReleasedAtEndRef.current || isScrollEventAtEnd(event),
       });
+      drawDistanceExpansion.resumeAfterScroll();
     },
   );
 
@@ -856,6 +882,11 @@ function NativeStreamViewport(props: StreamRenderInput & { strategy: StreamStrat
     );
   }, [historyStartPaginationState, hasOlderHistory, retryHistoryStart, t, topSlot]);
 
+  const canExpandDrawDistance =
+    drawDistance < NATIVE_STREAM_DRAW_DISTANCE &&
+    isActive &&
+    isListPlaced &&
+    historyStartPaginationState.visible;
   return (
     <View style={viewportStyle}>
       <LegendList<StreamItem>
@@ -888,11 +919,14 @@ function NativeStreamViewport(props: StreamRenderInput & { strategy: StreamStrat
         recycleItems={false}
         alignItemsAtEnd
         initialScrollAtEnd
-        drawDistance={NATIVE_STREAM_DRAW_DISTANCE}
+        drawDistance={drawDistance}
         getEstimatedItemSize={getEstimatedItemSize}
         scrollEnabled={scrollEnabled}
         showsVerticalScrollIndicator
       />
+      {canExpandDrawDistance ? (
+        <InitialDrawDistanceExpansion schedule={drawDistanceExpansion.schedule} />
+      ) : null}
       {!historyStartPaginationState.visible ? (
         <View pointerEvents="none" testID="agent-initial-fill" style={initialFillStyle}>
           <ThemedLoadingSpinner size="large" uniProps={foregroundMutedColorMapping} />

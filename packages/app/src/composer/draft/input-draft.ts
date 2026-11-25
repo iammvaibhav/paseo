@@ -427,6 +427,7 @@ export function useAgentInputDraft(input: UseAgentInputDraftInput): AgentInputDr
       agentMode,
       agentControls: buildDraftAgentControls({
         formState: draftForm,
+        effectiveModelId,
         optionControls: draftOptionControls,
         options: draftShownOptions,
         onSetOption: setDraftOption,

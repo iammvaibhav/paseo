@@ -12,7 +12,7 @@ import {
   createAssistantSelectionPlainText,
 } from "./content.web";
 import { getDefaultMarkdownClipboardEnvironment } from "@/utils/rich-clipboard-default-environment";
-import { type MarkdownClipboardContent, writeRichClipboardContent } from "@/utils/rich-clipboard";
+import { type MarkdownClipboardContent, writeClipboardContent } from "@/utils/rich-clipboard";
 import {
   SelectionAskPopoverHost,
   type SelectionAskPopoverHostProps,
@@ -70,7 +70,7 @@ export function AssistantSelectionCopySurface({
       if (content) {
         event.preventDefault();
         armGuard();
-        void writeRichClipboardContent(content, getDefaultMarkdownClipboardEnvironment());
+        void writeClipboardContent(content, getDefaultMarkdownClipboardEnvironment());
         return;
       }
 

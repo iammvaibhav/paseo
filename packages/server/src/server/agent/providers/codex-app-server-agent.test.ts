@@ -1470,6 +1470,31 @@ describe("Codex app-server provider", () => {
     }
   });
 
+  test.each(["thread/start", "thread/resume"] as const)(
+    "%s appends plugin instructions to the developer instructions configured in Codex",
+    async (method) => {
+      const appServer = createFakeCodexAppServer({
+        "config/read": () => ({ config: { developer_instructions: "Configured role" } }),
+      });
+      const provider = createProviderWithFakeAppServer(appServer);
+      const config = { pluginAppendSystemPrompt: ["Plugin instructions"] };
+      const session =
+        method === "thread/start"
+          ? await provider.createSession(createConfig(config))
+          : await provider.resumeSession({ sessionId: "saved-thread" }, config);
+      try {
+        await session.startTurn("hello");
+        await appServer.waitForTurnStart();
+        expect(
+          appServer.requests().find((request) => request.method === method)?.params,
+        ).toMatchObject({ developerInstructions: "Configured role\n\nPlugin instructions" });
+        appServer.assertNoErrors();
+      } finally {
+        await session.close();
+      }
+    },
+  );
+
   test("reopen injects current instructions once, including an explicit empty snapshot", async () => {
     const handlers = {
       initialize: () => ({ userAgent: "codex/0.165.0" }),
@@ -2520,6 +2545,24 @@ describe("Codex app-server provider", () => {
     ).toEqual([expect.objectContaining({ threadId: "saved-thread", excludeTurns: true })]);
     await session.close();
     appServer.assertNoErrors();
+  });
+
+  test("passes a cwd override when loading a persisted Codex thread", async () => {
+    const appServer = createFakeCodexAppServer();
+    const provider = createProviderWithFakeAppServer(appServer);
+    const cwd = "/workspace/new-directory";
+    const session = await provider.resumeSession(
+      { sessionId: "saved-thread", metadata: { cwd: "/workspace/old-directory" } },
+      { cwd },
+    );
+
+    try {
+      const resume = appServer.requests().find((request) => request.method === "thread/resume");
+      expect(resume?.params).toMatchObject({ threadId: "saved-thread", cwd });
+      appServer.assertNoErrors();
+    } finally {
+      await session.close();
+    }
   });
 
   test("reopening an agent whose timeline Paseo still holds does not read Codex history", async () => {
@@ -6837,7 +6880,11 @@ describe("Codex app-server provider", () => {
       { method: "thread/loaded/list", params: {} },
       {
         method: "thread/resume",
-        params: { threadId: "archived-thread-id", excludeTurns: true },
+        params: {
+          threadId: "archived-thread-id",
+          cwd: "/tmp/codex-question-test",
+          excludeTurns: true,
+        },
       },
     ]);
   });

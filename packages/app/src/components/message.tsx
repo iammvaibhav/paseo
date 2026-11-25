@@ -14,6 +14,7 @@ import { SecondOpinionMenu, type SecondOpinionMenuProps } from "@/components/sec
 import { useStableEvent } from "@/hooks/use-stable-event";
 import { getAgentAttachmentPillContent } from "@/attachments/attachment-pill-content";
 import { AssistantForkMenu, type AssistantForkTarget } from "@/components/assistant-fork-menu";
+import { TurnMetricsButton } from "@/components/turn-metrics";
 import { AttachmentLightbox, type ImageLightboxSource } from "@/components/attachment-lightbox";
 import {
   AttachmentFrame,
@@ -51,6 +52,7 @@ import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import type { AgentMessage } from "@getpaseo/protocol/agent-message";
 import type {
   AgentCapabilityFlags,
+  AgentMetric,
   AgentUsage,
   ToolCallDetail,
 } from "@getpaseo/protocol/agent-types";
@@ -680,11 +682,14 @@ interface AssistantTurnFooterProps {
   durationMs?: number | null;
   onFork?: (target: AssistantForkTarget) => Promise<void> | void;
   onJumpToUserMessage?: () => void;
-  metrics?: AgentUsage;
+  /** Daemon-measured usage for the turn; the fork's inline metrics line reads it. */
+  usage?: AgentUsage;
   turnMetricsEnabled?: boolean;
   onSecondOpinion?: SecondOpinionMenuProps;
   model?: string | null;
   sourceContext?: AssistantTurnSourceContext;
+  /** What the provider reported about the turn. Without any, the footer has no stats button. */
+  metrics?: AgentMetric[];
 }
 
 const assistantTurnFooterStylesheet = StyleSheet.create((theme) => ({
@@ -721,6 +726,8 @@ const assistantTurnFooterStylesheet = StyleSheet.create((theme) => ({
     flexShrink: 0,
     color: theme.colors.foregroundMuted,
     fontSize: STREAM_METADATA_FONT_SIZE,
+    // React Native Web preserves trailing spaces at line wraps by default.
+    ...(isWeb ? { whiteSpace: "normal" } : {}),
   },
   overlappingLabel: {
     marginLeft: "-100%",
@@ -743,11 +750,12 @@ export const AssistantTurnFooter = memo(function AssistantTurnFooter({
   durationMs,
   onFork,
   onJumpToUserMessage,
-  metrics,
+  usage,
   turnMetricsEnabled = false,
   onSecondOpinion,
   model,
   sourceContext: _sourceContext,
+  metrics,
 }: AssistantTurnFooterProps) {
   const { t } = useTranslation();
   const [hovered, setHovered] = useState(false);
@@ -765,12 +773,12 @@ export const AssistantTurnFooter = memo(function AssistantTurnFooter({
 
   const metricsLine = useMemo(() => {
     if (!turnMetricsEnabled) return null;
-    const mergedMetrics = metrics?.model || !model ? metrics : { ...metrics, model };
+    const mergedUsage = usage?.model || !model ? usage : { ...usage, model };
     return formatTurnMetricsLine({
-      metrics: mergedMetrics,
+      metrics: mergedUsage,
       fallbackDurationMs: durationMs,
     });
-  }, [turnMetricsEnabled, metrics, model, durationMs]);
+  }, [turnMetricsEnabled, usage, model, durationMs]);
 
   const durationLabel = useMemo(
     () =>
@@ -799,27 +807,10 @@ export const AssistantTurnFooter = memo(function AssistantTurnFooter({
       revealTimerRef.current = null;
     }, TIMESTAMP_REVEAL_MS);
   }, [canSwap]);
-  const handleFork = useCallback(
-    (target: AssistantForkTarget) => {
-      return onFork?.(target);
-    },
-    [onFork],
-  );
-  const canFork = Boolean(onFork);
 
   return (
     <View style={assistantTurnFooterStylesheet.container}>
-      {getContent || canFork ? (
-        <View style={assistantTurnFooterStylesheet.actions}>
-          {getContent ? (
-            <TurnCopyButton
-              getContent={getContent}
-              containerStyle={assistantTurnFooterStylesheet.copyButton}
-            />
-          ) : null}
-          {canFork ? <AssistantForkMenu onFork={handleFork} /> : null}
-        </View>
-      ) : null}
+      <AssistantTurnFooterActions getContent={getContent} onFork={onFork} metrics={metrics} />
       <AssistantTurnFooterForkActions
         onJumpToUserMessage={onJumpToUserMessage}
         onSecondOpinion={onSecondOpinion}
@@ -863,6 +854,34 @@ export const AssistantTurnFooter = memo(function AssistantTurnFooter({
     </View>
   );
 });
+
+/** Copy, fork, and the provider's turn stats: the footer's leading buttons. */
+function AssistantTurnFooterActions({
+  getContent,
+  onFork,
+  metrics,
+}: Pick<AssistantTurnFooterProps, "getContent" | "onFork" | "metrics">) {
+  const handleFork = useCallback(
+    (target: AssistantForkTarget) => {
+      return onFork?.(target);
+    },
+    [onFork],
+  );
+  const hasMetrics = metrics !== undefined && metrics.length > 0;
+  if (!getContent && !onFork && !hasMetrics) return null;
+  return (
+    <View style={assistantTurnFooterStylesheet.actions}>
+      {getContent ? (
+        <TurnCopyButton
+          getContent={getContent}
+          containerStyle={assistantTurnFooterStylesheet.copyButton}
+        />
+      ) : null}
+      {onFork ? <AssistantForkMenu onFork={handleFork} /> : null}
+      {hasMetrics ? <TurnMetricsButton metrics={metrics} /> : null}
+    </View>
+  );
+}
 
 /** Fork additions to the turn footer: jump to the prompt and ask another model. */
 function AssistantTurnFooterForkActions({

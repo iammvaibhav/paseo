@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { TimelineProjection, type ProjectedTimelineRow } from "./timeline-projection.js";
 import { limitAgentTimelineItemContent } from "./agent-timeline-content.js";
-import type { AgentTimelineItem, AgentUsage } from "./agent-sdk-types.js";
+import type { AgentMetric, AgentTimelineItem, AgentUsage } from "./agent-sdk-types.js";
 import type {
   AgentTimelineFetchOptions,
   AgentTimelineFetchResult,
@@ -144,6 +144,25 @@ export class InMemoryAgentTimelineStore {
       clientMessageId,
       providerMessageId,
     );
+  }
+
+  /** Records a completed turn's metrics on its footer row. Null when the turn has none. */
+  stampTurnMetrics(
+    agentId: string,
+    metrics: AgentMetric[],
+    options?: { turnId?: string },
+  ): AgentTimelineRow | null {
+    const state = this.requireState(agentId);
+    const row = state.projection.stampTurnMetrics(metrics, options?.turnId);
+    if (!row) return null;
+    // A re-projection (usage re-attach, retraction) rebuilds rows from `committed`, so the
+    // stamp also goes on the committed row the footer row ends with.
+    const seq = row.seqEnd ?? row.seq;
+    const index = state.committed.findIndex((candidate) => candidate.seq === seq);
+    if (index >= 0) {
+      state.committed[index] = { ...state.committed[index], turnMetrics: metrics };
+    }
+    return row;
   }
 
   getEpoch(agentId: string): string {

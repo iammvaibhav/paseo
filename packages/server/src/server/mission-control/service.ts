@@ -10,7 +10,10 @@ import type { AgentStorage, StoredAgentRecord } from "../agent/agent-storage.js"
 import type { AgentStreamEvent } from "../agent/agent-sdk-types.js";
 import type { AgentTimelineRow } from "../agent/agent-timeline-store-types.js";
 import { dispatchLocalPromptMode } from "../agent/tools/paseo-tools.js";
-import { formatSystemNotificationPrompt } from "../agent/agent-messages/index.js";
+import {
+  formatSystemNotificationPrompt,
+  type AgentMessageDelivery,
+} from "../agent/agent-messages/index.js";
 import { archiveAgentCommand } from "../agent/lifecycle-command.js";
 import type { DaemonConfigStore } from "../daemon-config-store.js";
 import type {
@@ -173,6 +176,12 @@ export interface MissionControlServiceOptions {
    * function returning it is accepted too.
    */
   peerManager?: (() => PeerManager | null) | PeerManager | null;
+  /**
+   * The daemon's agent message delivery. Machinery prompts are direct sends, so they join
+   * whatever is already queued for the recipient. Resolved lazily: the WebSocket server that
+   * owns it is constructed after the service.
+   */
+  agentMessages?: () => Pick<AgentMessageDelivery, "sendDirect">;
   broadcast: (message: SessionOutboundMessage) => void;
   /**
    * The daemon-wide central config store (constructed once in bootstrap and
@@ -301,6 +310,7 @@ export class MissionControlService {
   private readonly store: MissionControlStore;
   private readonly agentManager: AgentManager;
   private readonly agentStorage: AgentStorage;
+  private readonly agentMessages: (() => Pick<AgentMessageDelivery, "sendDirect">) | null;
   private readonly daemonConfigStore: DaemonConfigStore;
   private readonly serverId: string;
   private readonly hostName: string;
@@ -424,6 +434,7 @@ export class MissionControlService {
     this.logger = options.logger.child({ module: "mission-control" });
     this.agentManager = options.agentManager;
     this.agentStorage = options.agentStorage;
+    this.agentMessages = options.agentMessages ?? null;
     this.daemonConfigStore = options.daemonConfigStore;
     this.serverId = options.serverId;
     this.hostName = options.hostName;
@@ -1037,9 +1048,11 @@ export class MissionControlService {
       );
       return;
     }
+    if (!this.agentMessages) throw new Error("Agent message delivery is not configured");
     await dispatchLocalPromptMode({
       agentManager: this.agentManager,
       agentStorage: this.agentStorage,
+      agentMessages: this.agentMessages(),
       agentId: input.agentId,
       prompt: input.message,
       mode: input.deliveryMode,

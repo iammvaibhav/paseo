@@ -48,11 +48,12 @@ test.describe("Archive workspace from the workspace header menu", () => {
     return { ...worktree, route };
   }
 
-  async function archiveFromHeaderMenu(page: Page) {
+  // Wide menus end with the destructive archive row; compact menus use the route-keyed row.
+  async function archiveFromHeaderMenu(page: Page, archiveTestId: string) {
     const trigger = page.getByTestId("workspace-header-menu-trigger").filter({ visible: true });
     await expect(trigger).toBeVisible({ timeout: 30_000 });
     await trigger.click();
-    const archiveItem = page.getByTestId("workspace-header-archive").filter({ visible: true });
+    const archiveItem = page.getByTestId(archiveTestId).filter({ visible: true });
     await expect(archiveItem).toBeVisible();
     // Enabled once the worktree's dirty/unpushed state has loaded for the risk confirmation.
     await expect(archiveItem).toBeEnabled({ timeout: 30_000 });
@@ -75,13 +76,13 @@ test.describe("Archive workspace from the workspace header menu", () => {
 
   test("wide header menu archives the open worktree and leaves its route", async ({ page }) => {
     const worktree = await openWorktree(page, { width: 1280, height: 900 });
-    await archiveFromHeaderMenu(page);
+    await archiveFromHeaderMenu(page, "workspace-header-archive");
     await expectArchivedAndRedirected(page, worktree);
   });
 
   test("compact header menu archives the open worktree and leaves its route", async ({ page }) => {
     const worktree = await openWorktree(page, { width: 390, height: 844 });
-    await archiveFromHeaderMenu(page);
+    await archiveFromHeaderMenu(page, "workspace-header-archive-workspace");
     await expectArchivedAndRedirected(page, worktree);
   });
 });

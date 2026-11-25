@@ -35,9 +35,11 @@ import type {
   AgentMode,
   AgentCapabilityFlags,
   AgentUsage,
+  AgentMetric,
   AgentPersistenceHandle,
 } from "@getpaseo/protocol/agent-types";
 import type {
+  AgentBackgroundWorkSummary,
   ServerInfoStatusPayload,
   ProjectPlacementPayload,
   ServerCapabilities,
@@ -80,7 +82,7 @@ export interface Agent {
   id: string;
   provider: AgentProvider;
   status: AgentLifecycleStatus;
-  backgroundWork?: { count: number };
+  backgroundWork?: AgentBackgroundWorkSummary;
   turn: TurnLiveness;
   createdAt: Date;
   updatedAt: Date;
@@ -94,6 +96,8 @@ export interface Agent {
   runtimeInfo?: AgentRuntimeInfo;
   usageScopeKey?: string;
   lastUsage?: AgentUsage;
+  /** What the provider reports about the session, as label and value rows. */
+  sessionMetrics?: AgentMetric[];
   lastError?: string | null;
   title: string | null;
   // Optional like the wire payload: older daemons omit identity fields.
@@ -193,7 +197,7 @@ export function normalizeWorkspaceDescriptor(
     projectKind: payload.projectKind,
     workspaceKind: payload.workspaceKind,
     background: payload.background ?? false,
-    parentWorkspaceId: payload.parentWorkspaceId,
+    parentWorkspaceId: normalizeWorkspaceOpaqueId(payload.parentWorkspaceId) ?? undefined,
     name: payload.name,
     title: payload.title ?? null,
     pinnedAt: payload.pinnedAt ?? null,
@@ -323,6 +327,7 @@ export interface DaemonServerInfo {
   // Absolute home of the daemon's user (null on daemons that don't send it).
   homeDirectory?: string | null;
   version: string | null;
+  machineKind?: string | null;
   desktopManaged?: boolean;
   capabilities?: ServerCapabilities;
   features?: ServerInfoStatusPayload["features"];
@@ -335,6 +340,7 @@ export function toDaemonServerInfo(serverInfo: ServerInfoStatusPayload): DaemonS
     missionControlHostAlias: serverInfo.missionControlHostAlias ?? null,
     homeDirectory: serverInfo.homeDirectory ?? null,
     version: serverInfo.version ?? null,
+    ...(serverInfo.machineKind !== undefined ? { machineKind: serverInfo.machineKind } : {}),
     ...(serverInfo.desktopManaged !== undefined
       ? { desktopManaged: serverInfo.desktopManaged }
       : {}),
@@ -824,6 +830,7 @@ function isSessionServerInfoUnchanged(input: {
   nextVersion: string | null;
   nextMissionControlHostAlias: string | null;
   nextHomeDirectory: string | null;
+  nextMachineKind: string | null;
   nextDesktopManaged: boolean | undefined;
   nextCapabilities: ServerCapabilities | undefined;
   nextFeatures: ServerInfoStatusPayload["features"] | undefined;
@@ -834,6 +841,7 @@ function isSessionServerInfoUnchanged(input: {
     nextHostname,
     nextVersion,
     nextMissionControlHostAlias,
+    nextMachineKind,
     nextDesktopManaged,
     nextCapabilities,
     nextFeatures,
@@ -841,12 +849,14 @@ function isSessionServerInfoUnchanged(input: {
   const prevHostname = trimmedOrNull(currentServerInfo?.hostname);
   const prevVersion = trimmedOrNull(currentServerInfo?.version);
   const prevMissionControlHostAlias = trimmedOrNull(currentServerInfo?.missionControlHostAlias);
+  const prevMachineKind = trimmedOrNull(currentServerInfo?.machineKind);
   return (
     currentServerInfo?.serverId === input.nextServerId &&
     prevHostname === nextHostname &&
     prevVersion === nextVersion &&
     prevMissionControlHostAlias === nextMissionControlHostAlias &&
     trimmedOrNull(currentServerInfo?.homeDirectory) === input.nextHomeDirectory &&
+    prevMachineKind === nextMachineKind &&
     currentServerInfo?.desktopManaged === nextDesktopManaged &&
     areServerCapabilitiesEqual(currentServerInfo?.capabilities, nextCapabilities) &&
     areServerInfoFeaturesEqual(currentServerInfo?.features, nextFeatures)
@@ -986,6 +996,7 @@ export const useSessionStore = create<SessionStore>()(
           const nextVersion = info.version?.trim() || null;
           const nextMissionControlHostAlias = info.missionControlHostAlias?.trim() || null;
           const nextHomeDirectory = info.homeDirectory?.trim() || null;
+          const nextMachineKind = info.machineKind?.trim() || null;
           const nextDesktopManaged = info.desktopManaged;
           const nextCapabilities = info.capabilities;
           const nextFeatures = info.features;
@@ -997,6 +1008,7 @@ export const useSessionStore = create<SessionStore>()(
               nextVersion,
               nextMissionControlHostAlias,
               nextHomeDirectory,
+              nextMachineKind,
               nextDesktopManaged,
               nextCapabilities,
               nextFeatures,
@@ -1018,6 +1030,7 @@ export const useSessionStore = create<SessionStore>()(
                   missionControlHostAlias: nextMissionControlHostAlias,
                   homeDirectory: nextHomeDirectory,
                   version: nextVersion,
+                  ...(nextMachineKind !== null ? { machineKind: nextMachineKind } : {}),
                   ...(nextDesktopManaged !== undefined
                     ? { desktopManaged: nextDesktopManaged }
                     : {}),

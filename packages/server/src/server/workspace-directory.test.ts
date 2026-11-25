@@ -79,6 +79,7 @@ class WorkspaceStatus {
     activity: TerminalActivity | null;
   }> = [];
   private readonly directory = new WorkspaceDirectory({
+    getArchivingAt: () => null,
     logger: createTestLogger(),
     projectRegistry: { list: async () => [this.project] },
     workspaceRegistry: {
@@ -341,6 +342,15 @@ describe("WorkspaceDirectory", () => {
     });
     await expect(workspace.workspaceStatus()).resolves.toBe("running");
   });
+  test("keeps the workspace idle when root and delegated agents only have passive background work", async () => {
+    const workspace = new WorkspaceStatus();
+    const backgroundWork = { count: 1, runningCount: 0 };
+    workspace.hasRootAgent({ id: "parent-agent", status: "idle", backgroundWork });
+    workspace.hasDelegatedAgent({ id: "child-agent", status: "idle", backgroundWork });
+
+    await expect(workspace.workspaceStatus()).resolves.toBe("done");
+  });
+
   test("uses root agent activity, not delegated child activity, for workspace status", async () => {
     const workspace = new WorkspaceStatus();
 
@@ -682,6 +692,7 @@ describe("WorkspaceDirectory empty projects", () => {
     workspaces: PersistedWorkspaceRecord[];
   }): WorkspaceDirectory {
     return new WorkspaceDirectory({
+      getArchivingAt: () => null,
       logger: createTestLogger(),
       projectRegistry: { list: async () => input.projects },
       workspaceRegistry: {
@@ -845,6 +856,7 @@ test("Git observation targets exclude archived records without hydrating app des
     throw new Error("Watcher reconciliation hydrated app data");
   };
   const directory = new WorkspaceDirectory({
+    getArchivingAt: () => null,
     logger: createTestLogger(),
     projectRegistry: { list: async () => [project("active"), project("archived", NOW)] },
     workspaceRegistry: {
@@ -1016,6 +1028,7 @@ test("scoped descriptor builds allocate independently of archived history", asyn
       isStoredProviderAvailable: () => true,
     });
     const directory = new WorkspaceDirectory({
+      getArchivingAt: () => null,
       logger,
       workspaceRegistry: registry,
       projectRegistry: {

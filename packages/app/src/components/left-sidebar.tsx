@@ -63,6 +63,7 @@ import { SidebarSearchBar } from "@/components/sidebar/sidebar-search-bar";
 import { SidebarAgentViewList } from "@/components/sidebar/agent-view/list";
 import { SidebarSeparator } from "@/components/sidebar/sidebar-separator";
 import { SidebarToastRegion } from "@/components/sidebar/sidebar-toast-region";
+import { SidebarSelectionHost } from "@/sidebar-selection";
 import { SidebarNavRows, useVisibleSidebarNavItems } from "@/components/sidebar/sidebar-nav-rows";
 import { SidebarFooterIconHighlight } from "@/components/sidebar/sidebar-footer-icon-highlight";
 import { SidebarHelpMenu } from "@/components/sidebar/sidebar-help-menu";
@@ -465,10 +466,10 @@ function SidebarHostPicker({
       includeAddHost
       onAddHost={onAddHost}
       showActiveConnection
-      onOpenHostSettings={onOpenHostSettings}
       searchable
+      title={label}
       desktopPlacement="top-start"
-      desktopMinWidth={240}
+      desktopMinWidth={328}
       addHostTestID="sidebar-host-add"
       hostOptionTestID={sidebarHostOptionTestID}
     >
@@ -813,6 +814,7 @@ function MobileSidebar({
                 listHeaderComponent={sidebarSectionHeaderElement}
               />
             ) : null}
+            <SidebarSelectionHost active={active} workspaceEntriesByKey={workspaceEntriesByKey} />
           </SidebarToastRegion>
         </SidebarViewSlot>
 
@@ -1109,6 +1111,7 @@ function DesktopSidebar({
                   listHeaderComponent={sidebarSectionHeaderElement}
                 />
               ) : null}
+              <SidebarSelectionHost active={active} workspaceEntriesByKey={workspaceEntriesByKey} />
             </SidebarToastRegion>
           </SidebarViewSlot>
 

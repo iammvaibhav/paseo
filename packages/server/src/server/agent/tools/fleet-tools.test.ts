@@ -5,6 +5,7 @@ import { describe, expect, test, vi } from "vitest";
 import { createTestLogger } from "../../../test-utils/test-logger.js";
 import {
   asAgentStorage,
+  createAgentMessageDeliveryStub,
   createProviderSnapshotManagerStub,
 } from "../../test-utils/session-stubs.js";
 import { createTestAgentClients } from "../../test-utils/fake-agent-client.js";
@@ -12,6 +13,7 @@ import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import type { ServerInfoStatusPayload } from "@getpaseo/protocol/messages";
 import { AgentManager } from "../agent-manager.js";
 import { AgentStorage } from "../agent-storage.js";
+import { ForegroundPromptStart } from "../agent-run-state.js";
 import type { RoutingService } from "../../routing/routing-service.js";
 import type { ProviderSnapshotManager } from "../provider-snapshot-manager.js";
 import type { PeerManager } from "../../peers/peer-manager.js";
@@ -283,6 +285,8 @@ describe("fleet_list_agents roster enrichment", () => {
     const catalog = createCatalog(peerManager, {
       listAgents: () => [],
       getRegisteredProviderIds: () => [],
+      getAgentBackgroundWorkSummary: () => undefined,
+      effectiveOptionsFor: (_provider: string, own?: Record<string, unknown>) => own ?? {},
       getTimeline: () => [],
     } as unknown as AgentManager);
 
@@ -315,6 +319,8 @@ describe("fleet_list_agents roster enrichment", () => {
         listAgents: () => [],
         getAgent: (id: string) => (id === "caller" ? { id, cwd: "/work/mine" } : undefined),
         getRegisteredProviderIds: () => ["omp"],
+        getAgentBackgroundWorkSummary: () => undefined,
+        effectiveOptionsFor: (_provider: string, own?: Record<string, unknown>) => own ?? {},
         getTimeline: () => [],
         getPluginTools: () => [],
       } as unknown as AgentManager,
@@ -362,6 +368,8 @@ describe("fleet_list_agents roster enrichment", () => {
     const catalog = createCatalog(peerManager, {
       listAgents: () => [],
       getRegisteredProviderIds: () => [],
+      getAgentBackgroundWorkSummary: () => undefined,
+      effectiveOptionsFor: (_provider: string, own?: Record<string, unknown>) => own ?? {},
       getTimeline: () => [],
     } as unknown as AgentManager);
 
@@ -406,6 +414,8 @@ describe("fleet_list_agents roster enrichment", () => {
     const catalog = createCatalog(peerManager, {
       listAgents: () => [],
       getRegisteredProviderIds: () => [],
+      getAgentBackgroundWorkSummary: () => undefined,
+      effectiveOptionsFor: (_provider: string, own?: Record<string, unknown>) => own ?? {},
       getTimeline: () => [],
     } as unknown as AgentManager);
 
@@ -426,6 +436,8 @@ describe("fleet_list_agents roster enrichment", () => {
       agentManager: {
         listAgents: () => [],
         getRegisteredProviderIds: () => ["omp"],
+        getAgentBackgroundWorkSummary: () => undefined,
+        effectiveOptionsFor: (_provider: string, own?: Record<string, unknown>) => own ?? {},
         getTimeline: () => [],
       } as unknown as AgentManager,
       agentStorage: asAgentStorage({
@@ -461,6 +473,7 @@ describe("fleet_send_prompt mode", () => {
   test("an omitted mode steers for every caller, and queue or unknown modes are rejected", async () => {
     const { client, peerManager } = createFakePeerHarness();
     const catalog = createPaseoToolCatalog({
+      agentMessages: () => createAgentMessageDeliveryStub(),
       agentManager: {} as unknown as AgentManager,
       agentStorage: asAgentStorage({
         get: async () => null,
@@ -549,6 +562,7 @@ describe("fleet_send_prompt mode", () => {
         logger,
       });
       const catalog = createPaseoToolCatalog({
+        agentMessages: () => createAgentMessageDeliveryStub(),
         agentManager,
         agentStorage: storage,
         providerSnapshotManager: createProviderSnapshotManagerStub()
@@ -606,6 +620,7 @@ describe("fleet_send_prompt mode", () => {
       appendTimelineItem,
     } as unknown as AgentManager;
     const catalog = createPaseoToolCatalog({
+      agentMessages: () => createAgentMessageDeliveryStub(),
       agentManager,
       agentStorage: asAgentStorage({
         get: async () => null,
@@ -649,6 +664,7 @@ describe("fleet_send_prompt mode", () => {
     } as unknown as AgentManager;
 
     const catalog = createPaseoToolCatalog({
+      agentMessages: () => createAgentMessageDeliveryStub(),
       agentManager,
       agentStorage: asAgentStorage({
         get: async () => null,
@@ -696,6 +712,7 @@ describe("fleet_send_prompt mode", () => {
     // from the mission-control approval path with an explicit classification.
     const result = await dispatchLocalPromptMode({
       agentManager,
+      agentMessages: createAgentMessageDeliveryStub(),
       agentStorage: asAgentStorage({
         get: async () => null,
         listAll: async () => [],
@@ -737,6 +754,7 @@ describe("fleet_send_prompt mode", () => {
     // the machinery classification rides an expectation that stamps that echo.
     await dispatchLocalPromptMode({
       agentManager,
+      agentMessages: createAgentMessageDeliveryStub(),
       agentStorage: asAgentStorage({
         get: async () => null,
         listAll: async () => [],
@@ -768,6 +786,7 @@ describe("fleet_send_prompt mode", () => {
       reloadStalePluginSession: vi.fn(async () => undefined),
     } as unknown as AgentManager;
     const catalog = createPaseoToolCatalog({
+      agentMessages: () => createAgentMessageDeliveryStub(),
       agentManager,
       agentStorage: asAgentStorage({
         get: async () => null,
@@ -795,9 +814,12 @@ describe("fleet_send_prompt mode", () => {
     );
     // The steer fallback is a machinery dispatch (Commander/Verifier): the
     // superseded run keeps the failure treatment, never a user interruption.
-    expect(replaceAgentRun).toHaveBeenCalledWith(SEND_AGENT_UUID, "follow up", {
-      replaceOrigin: "machinery",
-    });
+    expect(replaceAgentRun).toHaveBeenCalledWith(
+      SEND_AGENT_UUID,
+      "follow up",
+      { replaceOrigin: "machinery" },
+      expect.any(ForegroundPromptStart),
+    );
     // The caller is told the truth: this was a steer request delivered as an
     // interrupt fallback, not a native steer.
     expect(result.structuredContent).toEqual({
@@ -823,6 +845,7 @@ describe("fleet_send_prompt mode", () => {
 
     const result = await dispatchLocalPromptMode({
       agentManager,
+      agentMessages: createAgentMessageDeliveryStub(),
       agentStorage: asAgentStorage({
         get: async () => null,
         listAll: async () => [],
@@ -955,6 +978,7 @@ describe("fleet_send_prompt mode", () => {
       reloadStalePluginSession: vi.fn(async () => undefined),
     } as unknown as AgentManager;
     const catalog = createPaseoToolCatalog({
+      agentMessages: () => createAgentMessageDeliveryStub(),
       agentManager,
       agentStorage: asAgentStorage({
         get: async () => null,
@@ -999,6 +1023,7 @@ describe("fleet_send_prompt mode", () => {
         },
       ],
       { replaceOrigin: "machinery" },
+      expect.any(ForegroundPromptStart),
     );
     expect(result.structuredContent).toMatchObject({ success: true, deliveryMode: "steer" });
   });
@@ -1184,6 +1209,8 @@ describe("fleet_list_agents roster fields (spec 03)", () => {
       agentManager: {
         listAgents: () => [],
         getRegisteredProviderIds: () => ["omp"],
+        getAgentBackgroundWorkSummary: () => undefined,
+        effectiveOptionsFor: (_provider: string, own?: Record<string, unknown>) => own ?? {},
         getTimeline: () => [],
       } as unknown as AgentManager,
       agentStorage: asAgentStorage({
@@ -1259,6 +1286,8 @@ describe("fleet_list_agents roster fields (spec 03)", () => {
     const catalog = createCatalog(peerManager, {
       listAgents: () => [],
       getRegisteredProviderIds: () => [],
+      getAgentBackgroundWorkSummary: () => undefined,
+      effectiveOptionsFor: (_provider: string, own?: Record<string, unknown>) => own ?? {},
       getTimeline: () => [],
     } as unknown as AgentManager);
 
@@ -1299,6 +1328,8 @@ describe("fleet_list_agents roster fields (spec 03)", () => {
     const catalog = createCatalog(peerManager, {
       listAgents: () => [],
       getRegisteredProviderIds: () => [],
+      getAgentBackgroundWorkSummary: () => undefined,
+      effectiveOptionsFor: (_provider: string, own?: Record<string, unknown>) => own ?? {},
       getTimeline: () => [],
     } as unknown as AgentManager);
 
@@ -1359,6 +1390,8 @@ describe("fleet_list_agents roster fields (spec 03)", () => {
     const catalog = createCatalog(peerManager, {
       listAgents: () => [],
       getRegisteredProviderIds: () => [],
+      getAgentBackgroundWorkSummary: () => undefined,
+      effectiveOptionsFor: (_provider: string, own?: Record<string, unknown>) => own ?? {},
       getTimeline: () => [],
     } as unknown as AgentManager);
 
@@ -1465,6 +1498,8 @@ describe("fleet_list_agents roster fields (spec 03)", () => {
       agentManager: {
         listAgents: () => [],
         getRegisteredProviderIds: () => ["omp"],
+        getAgentBackgroundWorkSummary: () => undefined,
+        effectiveOptionsFor: (_provider: string, own?: Record<string, unknown>) => own ?? {},
         getTimeline: () => [],
       } as unknown as AgentManager,
       agentStorage: asAgentStorage({
@@ -1610,6 +1645,8 @@ describe("fleet_send_prompt agentId contract (spec 03)", () => {
           },
         ],
         getRegisteredProviderIds: () => [],
+        getAgentBackgroundWorkSummary: () => undefined,
+        effectiveOptionsFor: (_provider: string, own?: Record<string, unknown>) => own ?? {},
       } as unknown as AgentManager,
       agentStorage: asAgentStorage({
         get: async () => null,
@@ -1667,6 +1704,8 @@ describe("list_agents stored roster (Mission Control caller)", () => {
     const agentManager = {
       listAgents: () => [],
       getRegisteredProviderIds: () => ["claude", "omp"],
+      getAgentBackgroundWorkSummary: () => undefined,
+      effectiveOptionsFor: (_provider: string, own?: Record<string, unknown>) => own ?? {},
       getAgent: () => null,
       getTimeline: () => {
         throw new Error("no timeline in unit test");

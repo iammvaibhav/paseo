@@ -28,6 +28,7 @@ import {
   useIconButtonChromeStyle,
 } from "@/components/ui/icon-button-chrome";
 import { TerminalProfileIcon } from "@/components/terminal-profile-icon";
+import { useActiveWorkspaceArchive } from "@/hooks/use-active-workspace-archive";
 import { useDaemonConfig } from "@/hooks/use-daemon-config";
 import { useShortcutKeys } from "@/hooks/use-shortcut-keys";
 import { Shortcut } from "@/components/ui/shortcut";
@@ -44,19 +45,19 @@ import {
 import { usePluginWorkspaceMenu } from "@/plugins";
 
 const ThemedEllipsis = withUnistyles(Ellipsis);
+const ThemedArchive = withUnistyles(Archive);
 const ThemedCopy = withUnistyles(Copy);
 const ThemedGlobe = withUnistyles(Globe);
 const ThemedImport = withUnistyles(ImportIcon);
 const ThemedSettings = withUnistyles(Settings);
-const ThemedArchive = withUnistyles(Archive);
 
 const mutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 
 const MENU_NEW_BROWSER_ICON = <ThemedGlobe size={16} uniProps={mutedColorMapping} />;
 const MENU_IMPORT_ICON = <ThemedImport size={16} uniProps={mutedColorMapping} />;
 const MENU_COPY_ICON = <ThemedCopy size={16} uniProps={mutedColorMapping} />;
-const MENU_SETTINGS_ICON = <ThemedSettings size={16} uniProps={mutedColorMapping} />;
 const MENU_ARCHIVE_ICON = <ThemedArchive size={16} uniProps={mutedColorMapping} />;
+const MENU_SETTINGS_ICON = <ThemedSettings size={16} uniProps={mutedColorMapping} />;
 
 function WorkspaceHeaderMenuTriggerIcon() {
   return (
@@ -161,7 +162,8 @@ function WorkspaceHeaderWorkspaceActionItems({
 }
 
 /**
- * Destructive, so it sits last behind its own separator in both menus, away from the copy rows.
+ * Destructive, so it sits last behind its own separator, away from the copy rows. The compact
+ * menu has its own Archive workspace row, keyed on the route (useActiveWorkspaceArchive).
  */
 function WorkspaceHeaderArchiveItem({
   archiveDisabled,
@@ -319,6 +321,10 @@ export function WorkspaceHeaderMenuMobile({
   const handleEditProfiles = useCallback(() => {
     router.push(buildSettingsHostSectionRoute(normalizedServerId, "terminals") as Href);
   }, [normalizedServerId, router]);
+  const { canArchive, archive } = useActiveWorkspaceArchive();
+  const handleArchiveWorkspace = useCallback(() => {
+    archive();
+  }, [archive]);
   const scriptsMenu = useWorkspaceScriptsMenuPages(scripts);
   const pluginMenu = usePluginWorkspaceMenu(normalizedServerId, normalizedWorkspaceId);
   const pages = useMemo(
@@ -390,6 +396,15 @@ export function WorkspaceHeaderMenuMobile({
         ) : null}
         <WorkspaceHeaderWorkspaceActionItems {...workspaceActions} />
         <DropdownMenuSeparator />
+        <DropdownMenuItem
+          testID="workspace-header-archive-workspace"
+          leading={MENU_ARCHIVE_ICON}
+          disabled={!canArchive}
+          onSelect={handleArchiveWorkspace}
+        >
+          {t("sidebar.workspace.actions.archiveWorkspace")}
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
         <DropdownMenuLabel>{t("workspace.tabs.actions.terminalProfilesMenu")}</DropdownMenuLabel>
         {profiles.map((profile) => (
           <HeaderMenuProfileItem
@@ -406,7 +421,6 @@ export function WorkspaceHeaderMenuMobile({
         >
           {t("workspace.tabs.actions.editTerminalProfiles")}
         </DropdownMenuItem>
-        <WorkspaceHeaderArchiveItem {...workspaceActions} />
       </DropdownMenuContent>
     </DropdownMenu>
   );

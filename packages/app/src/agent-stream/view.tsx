@@ -91,6 +91,7 @@ import { renderStreamRow, type RenderStreamItem } from "./stream-row";
 import { type NearBottom, useIsNearBottom, useNearBottom } from "./near-bottom";
 import { ChatOutlineRail } from "@/agent-stream/chat-outline/rail";
 import { useChatOutline } from "@/agent-stream/chat-outline/use-chat-outline";
+import { CHAT_COLUMN_RAIL_DATASET, useChatOutlineRail } from "@/chat-rail";
 import { getHostRuntimeStore } from "@/runtime/host-runtime";
 import { usePanelStore } from "@/stores/panel-store";
 import { useDesktopBrowserEditorUrl } from "@/workspace/use-desktop-browser-editor-url";
@@ -222,6 +223,7 @@ function renderStreamItemWithTurnFooter(input: {
       items={footerHost.items}
       timing={footerHost.timing}
       startIndex={footerHost.startIndex}
+      turnMetrics={footerHost.turnMetrics}
       supportsTimelineCursor={input.supportsTimelineCursor}
       onForkAssistantTurn={input.onForkAssistantTurn}
       onJumpToUserMessage={input.onJumpToUserMessage}
@@ -373,6 +375,16 @@ function buildForkSource(
   };
 }
 
+/** Second opinions fork the turn into another model, so they need the host's fork and metrics. */
+function useCanSecondOpinion(input: {
+  serverId: string;
+  readOnly: boolean;
+  suppressTurnActions: boolean;
+}): boolean {
+  const supported = useHostFeatures(input.serverId, "turnMetrics", "agentForkContext", "agentFork");
+  return supported && !input.readOnly && !input.suppressTurnActions;
+}
+
 function resolveBottomOverlayControlOffset(clearance: number | undefined): number {
   return Math.max(16, clearance ?? 0);
 }
@@ -402,7 +414,7 @@ function ScrollToBottomButton({
   );
   if (isNearBottom && !isTimelineDetached) return null;
   return (
-    <View style={containerStyle} pointerEvents="box-none">
+    <View style={containerStyle} dataSet={CHAT_COLUMN_RAIL_DATASET} pointerEvents="box-none">
       <Animated.View entering={scrollIndicatorFadeIn} exiting={scrollIndicatorFadeOut}>
         <Pressable
           style={stylesheet.scrollToBottomButton}
@@ -449,7 +461,6 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
     const { t } = useTranslation();
     const autoExpandReasoning = useSettings((settings) => settings.autoExpandReasoning);
     const chatDisplay = useSettings((settings) => settings.chatDisplay);
-    const chatOutlineEnabled = useSettings((settings) => settings.chatOutlineEnabled);
     const contentMaxWidth = useSettings(resolveContentMaxWidth);
     const viewportRef = useRef<StreamViewportHandle | null>(null);
     const pendingClientMessageIds = useMemo(
@@ -493,18 +504,11 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       "agentForkContextCursor",
     );
     const supportsTurnMetrics = useHostFeature(resolvedServerId, "turnMetrics");
-    const supportsSecondOpinionFlags = useHostFeatures(
-      resolvedServerId,
-      "turnMetrics",
-      "agentForkContext",
-      "agentFork",
-    );
-    const canSecondOpinion =
-      supportsSecondOpinionFlags && !readOnly && !turnChrome.suppressTurnActions;
-    const supportsChatOutline = useSessionStore(
-      (state) =>
-        state.sessions[resolvedServerId]?.serverInfo?.features?.agentTimelinePromptIndex === true,
-    );
+    const canSecondOpinion = useCanSecondOpinion({
+      serverId: resolvedServerId,
+      readOnly,
+      suppressTurnActions: turnChrome.suppressTurnActions,
+    });
     const timelineEpoch = useSessionStore(
       (state) => state.sessions[resolvedServerId]?.agentTimelineCursor.get(agentId)?.epoch ?? null,
     );
@@ -518,7 +522,8 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       [client, resolvedServerId, workspaceRoot],
     );
     const estimateStreamRowHeight = useCallback(
-      (item: StreamItem) => estimateStreamItemHeight({ item, contentMaxWidth }),
+      (item: StreamItem, contentWidth: number | undefined) =>
+        estimateStreamItemHeight({ item, contentMaxWidth: contentWidth ?? contentMaxWidth ?? 0 }),
       [contentMaxWidth],
     );
     const { revealDirectory, selectExplorerEntry } = useFileExplorerActions({
@@ -828,13 +833,15 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
           mountedHistoryMessageIds.has(messageId) || liveHeadMessageIds.has(messageId),
       };
     }, [baseRenderModel.segments.liveHead, mountedHistoryMessageIds]);
+    const outlineRail = useChatOutlineRail();
+    const outlineInset = outlineRail.inset;
     const chatOutline = useChatOutline({
       agentId,
       serverId: resolvedServerId,
       timelineEpoch,
       tail: effectiveStreamItems,
       head: effectiveStreamHead,
-      enabled: supportsChatOutline && chatOutlineEnabled,
+      enabled: outlineRail.enabled,
       viewportRef,
       onJumpError: handleTimelineHistoryLoadError,
       mountedHistoryMessageIds,
@@ -1563,15 +1570,19 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
                       forwardListContentContainerStyle: stylesheet.forwardListContentContainer,
                       keyExtractor: streamItemKeyExtractor,
                       estimateItemSize: estimateStreamRowHeight,
+                      contentMaxWidth,
+                      outlineInset,
                     })}
                   </UserMessageExpansionContext.Provider>
                 </ToolCallExpansionContext.Provider>
               </MessageOuterSpacingProvider>
-              <ChatOutlineRail
-                prompts={chatOutline.prompts}
-                activePrompt={chatOutline.activePrompt}
-                onJumpToPrompt={chatOutline.jumpToPrompt}
-              />
+              {outlineInset > 0 && chatOutline.prompts.length >= 2 ? (
+                <ChatOutlineRail
+                  prompts={chatOutline.prompts}
+                  activePrompt={chatOutline.activePrompt}
+                  onJumpToPrompt={chatOutline.jumpToPrompt}
+                />
+              ) : null}
               <ScrollToBottomButton
                 nearBottom={nearBottom}
                 isTimelineDetached={isTimelineDetached}

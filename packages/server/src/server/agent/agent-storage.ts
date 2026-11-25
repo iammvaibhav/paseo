@@ -6,7 +6,12 @@ import type { JsonValue } from "@getpaseo/protocol/agent-types";
 
 import { writeJsonFileAtomic } from "../atomic-file.js";
 import { AGENT_MODE_IDS } from "@getpaseo/protocol/agent-modes";
-import { AgentFeatureSchema, AgentOptionControlSchema, AgentStatusSchema } from "../messages.js";
+import {
+  AgentFeatureSchema,
+  AgentMetricSchema,
+  AgentOptionControlSchema,
+  AgentStatusSchema,
+} from "../messages.js";
 import { toStoredAgentRecord } from "./agent-projections.js";
 import type { ManagedAgent } from "./agent-manager.js";
 import type { AgentSessionConfig } from "./agent-sdk-types.js";
@@ -112,6 +117,7 @@ const RAW_STORED_AGENT_SCHEMA = z.object({
       }),
     )
     .optional(),
+  sessionMetrics: z.array(AgentMetricSchema).optional(),
   lastError: z.string().nullable().optional(),
   requiresAttention: z.boolean().optional(),
   attentionReason: z.enum(["finished", "error", "permission"]).nullable().optional(),
@@ -424,7 +430,15 @@ export class AgentStorage {
 
     if (previousPath && previousPath !== nextPath) {
       try {
-        await fs.unlink(previousPath);
+        // Compare the entries after the atomic replacement. On a case-insensitive
+        // volume both spellings can now address the file we just wrote.
+        const [previous, next] = await Promise.all([
+          fs.lstat(previousPath, { bigint: true }),
+          fs.lstat(nextPath, { bigint: true }),
+        ]);
+        if (previous.dev !== next.dev || previous.ino !== next.ino) {
+          await fs.unlink(previousPath);
+        }
       } catch {
         // ignore cleanup errors
       }

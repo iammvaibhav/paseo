@@ -37,7 +37,7 @@ const OMP_ENTRY: ProviderSnapshotEntry = {
 };
 
 function catalog() {
-  return buildSelectableProviderSelectorProviders([OMP_ENTRY]);
+  return buildSelectableProviderSelectorProviders([OMP_ENTRY], { selectedProvider: null });
 }
 
 function hide(...keys: string[]): ReadonlySet<string> {
@@ -115,10 +115,13 @@ describe("filterHiddenProviderModelRows", () => {
   });
 
   it("leaves loading and error providers untouched", () => {
-    const providers = buildSelectableProviderSelectorProviders([
-      { provider: "claude", status: "loading", enabled: true, models: [] },
-      { provider: "codex", status: "error", enabled: true, error: "boom", models: [] },
-    ]);
+    const providers = buildSelectableProviderSelectorProviders(
+      [
+        { provider: "claude", status: "loading", enabled: true, models: [] },
+        { provider: "codex", status: "error", enabled: true, error: "boom", models: [] },
+      ],
+      { selectedProvider: null },
+    );
 
     const filtered = filterHiddenProviderModelRows({
       providers,

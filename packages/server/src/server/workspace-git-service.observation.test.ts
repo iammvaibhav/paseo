@@ -73,6 +73,8 @@ function createCheckoutFacts(cwd: string): CheckoutSnapshotFacts {
     comparisonBaseRef: null,
     branchRemoteName: null,
     branchMergeRef: null,
+    upstreamStatus: { state: "none" },
+    pushTarget: null,
     pullRequestLookupTarget: { headRef: "main" },
   };
 }
@@ -1019,7 +1021,8 @@ describe("WorkspaceGitService checkout observation", () => {
         comparisonBaseRef: null,
         branchRemoteName: null,
         branchMergeRef: null,
-        upstreamStatus: null,
+        upstreamStatus: { state: "none" },
+        pushTarget: null,
       };
     });
     const runGitFetch = vi.fn(async () => ({
@@ -1162,7 +1165,8 @@ describe("WorkspaceGitService checkout observation", () => {
         comparisonBaseRef: "refs/heads/main",
         branchRemoteName: "origin",
         branchMergeRef: `refs/heads/${branch}`,
-        upstreamStatus: null,
+        upstreamStatus: { state: "none" },
+        pushTarget: null,
       } satisfies CheckoutSnapshotFacts;
     });
     const getCheckoutStatus = vi.fn(async (cwd: string) =>

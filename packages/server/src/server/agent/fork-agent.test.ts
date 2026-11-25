@@ -5,6 +5,7 @@ import path from "node:path";
 import { expect, test, vi } from "vitest";
 
 import { createTestLogger } from "../../test-utils/test-logger.js";
+import { createAgentMessageDeliveryStub } from "../test-utils/session-stubs.js";
 import { AgentManager, type ManagedAgent } from "./agent-manager.js";
 import { AgentStorage } from "./agent-storage.js";
 import { forkAgentToSibling, type ForkAgentBoundary } from "./fork-agent.js";
@@ -160,6 +161,7 @@ function createForkScenario(options?: {
       forkAgentToSibling({
         agentManager,
         agentStorage,
+        agentMessages: createAgentMessageDeliveryStub(),
         sourceAgentId: "source-agent",
         text: "continue from here",
         ...(boundary ? { boundary } : {}),

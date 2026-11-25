@@ -11,6 +11,7 @@ import type {
   AgentCapabilityFlags,
   AgentOptionControl,
   AgentMetadata,
+  AgentMetric,
   AgentMode,
   AgentPermissionRequest,
   AgentPersistenceHandle,
@@ -150,6 +151,7 @@ export function toStoredAgentRecord(
     runtimeInfo,
     controls: normalizeControls(agent.controls),
     persistence,
+    ...projectSessionMetrics(agent.sessionMetrics),
     lastError: agent.lastError ?? undefined,
     ...attention,
     // Turn-metrics: bounded per-agent map (matchKey → metrics) persisted with
@@ -218,6 +220,7 @@ export function toAgentPayload(
     metadata: agent.metadata,
     archivedAt: options?.archivedAt ?? null,
     ...visibilityFlags(agent),
+    ...projectSessionMetrics(agent.sessionMetrics),
   };
 
   const usageScopeKey = projectUsageScopeKey(agent);
@@ -403,6 +406,7 @@ export function buildStoredAgentPayload(
     labels: normalizeLabels(record.labels),
     metadata: record.metadata,
     ...buildStoredAgentOptionalFields(record, runtimeInfo, providerAvailable, bucket),
+    ...projectSessionMetrics(record.sessionMetrics),
   };
 }
 
@@ -672,6 +676,13 @@ function sanitizeMetadataArray(value: unknown): AgentMetadata[] | undefined {
     .map((entry) => sanitizeMetadata(entry))
     .filter((entry): entry is AgentMetadata => entry !== undefined);
   return sanitized.length > 0 ? sanitized : undefined;
+}
+
+/** A session with no metrics carries no field, on the wire and on disk. */
+function projectSessionMetrics(metrics: AgentMetric[] | undefined): {
+  sessionMetrics?: AgentMetric[];
+} {
+  return metrics?.length ? { sessionMetrics: metrics.map((metric) => ({ ...metric })) } : {};
 }
 
 // Numeric AgentUsage fields. `model` is a string, handled separately below.

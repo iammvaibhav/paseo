@@ -73,6 +73,7 @@
       "project": ["src/**/*.ts"]
     }
   },
+  "ignoreWorkspaces": ["packages/react-native-enriched-markdown"],
   "ignoreDependencies": [
     "sherpa-onnx-node",
     "@playwright/test",

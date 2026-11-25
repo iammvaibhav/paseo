@@ -3,6 +3,7 @@ import { stat } from "node:fs/promises";
 import type { Logger } from "pino";
 
 import { buildAgentForkContextAttachment, selectForkContextRows } from "./activity-curator.js";
+import type { AgentMessageDelivery } from "./agent-messages/index.js";
 import type { AgentManager, ManagedAgent } from "./agent-manager.js";
 import { sendPromptToAgent } from "./agent-prompt.js";
 import type { AgentMetadata, AgentPromptInput, AgentSessionConfig } from "./agent-sdk-types.js";
@@ -22,6 +23,8 @@ export interface ForkAgentBoundary {
 export interface ForkAgentInput {
   agentManager: AgentManager;
   agentStorage: AgentStorage;
+  /** The fork's first turn is a direct prompt, so it joins anything already queued for it. */
+  agentMessages: Pick<AgentMessageDelivery, "sendDirect">;
   sourceAgentId: string;
   /** First-turn prompt for the fork. */
   text: string;
@@ -328,6 +331,7 @@ async function runForkFirstTurn(params: {
   const { input } = params;
   const prompt: AgentPromptInput = buildAgentPrompt(input.text, input.images, params.attachments);
   await sendPromptToAgent({
+    agentMessages: input.agentMessages,
     agentManager: input.agentManager,
     agentStorage: input.agentStorage,
     agentId: params.agentId,

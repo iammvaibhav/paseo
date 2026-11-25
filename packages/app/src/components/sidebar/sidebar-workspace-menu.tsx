@@ -6,10 +6,11 @@ import {
   type ReactNode,
 } from "react";
 import { useTranslation } from "react-i18next";
-import type { PressableStateCallbackType } from "react-native";
+import type { GestureResponderEvent, PressableStateCallbackType } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import {
   Archive,
+  CheckSquare,
   Circle,
   CircleCheck,
   Copy,
@@ -67,6 +68,7 @@ const foregroundMutedColorMapping = (theme: Theme) => ({
 const ThemedMoreVertical = withUnistyles(MoreVertical);
 const ThemedCopy = withUnistyles(Copy);
 const ThemedArchive = withUnistyles(Archive);
+const ThemedCheckSquare = withUnistyles(CheckSquare);
 const ThemedCircle = withUnistyles(Circle);
 const ThemedPencil = withUnistyles(Pencil);
 const ThemedCircleCheck = withUnistyles(CircleCheck);
@@ -81,6 +83,7 @@ const markAsReadLeadingIcon = (
   <ThemedCircleCheck size={14} uniProps={foregroundMutedColorMapping} />
 );
 const markAsUnreadLeadingIcon = <ThemedCircle size={14} uniProps={foregroundMutedColorMapping} />;
+const selectLeadingIcon = <ThemedCheckSquare size={14} uniProps={foregroundMutedColorMapping} />;
 const archiveLeadingIcon = <ThemedArchive size={14} uniProps={foregroundMutedColorMapping} />;
 const pinLeadingIcon = <ThemedPin size={14} uniProps={foregroundMutedColorMapping} />;
 const unpinLeadingIcon = <ThemedPinOff size={14} uniProps={foregroundMutedColorMapping} />;
@@ -143,6 +146,7 @@ export interface SidebarWorkspaceMenuProps {
   onMarkAsRead?: () => void;
   onAskHistory?: () => void;
   onMarkAsUnread?: () => void;
+  onSelectWorkspace?: () => void;
   onArchive: () => void;
   archiveLabel?: string;
   archiveStatus?: "idle" | "pending" | "success";
@@ -182,38 +186,26 @@ function WorkspaceMenuItem({
   return <DropdownMenuItem {...props}>{children}</DropdownMenuItem>;
 }
 
-function SidebarWorkspaceMenuItems({
-  surface,
-  workspaceKey,
-  serverId,
-  workspaceId,
-  onCopyPath,
-  onCopyBranchName,
-  onRename,
-  onMarkAsRead,
-  onAskHistory,
-  onMarkAsUnread,
-  onArchive,
-  archiveLabel,
-  archiveStatus,
-  archivePendingLabel,
-  archiveShortcutKeys,
-  isPinned,
-  onTogglePin,
-  openInFileManagerPath,
-  onOpenInNewWindow,
-}: SidebarWorkspaceMenuItemsProps & { surface: MenuSurface }): ReactNode {
+/**
+ * Opens the workspace in a new desktop window, or a new tab on web. Undefined where neither
+ * exists or the workspace is not known yet.
+ */
+function useOpenWorkspaceInNewWindow(input: {
+  serverId?: string;
+  workspaceId?: string;
+  projectPath?: string | null;
+}): (() => void) | undefined {
+  const { serverId, workspaceId, projectPath } = input;
   const { t } = useTranslation();
   const toast = useToast();
-
-  const handleOpenInNewWindow = useCallback(() => {
+  const open = useCallback(() => {
     if (!serverId || !workspaceId) return;
     const route = buildHostWorkspaceRoute(serverId, workspaceId);
     if (getIsElectron()) {
       void getDesktopHost()
         ?.window?.openNew?.({
           initialRoute: route,
-          pendingOpenProjectPath: openInFileManagerPath?.trim() || null,
+          pendingOpenProjectPath: projectPath?.trim() || null,
         })
         ?.catch((error) => {
           console.warn("[sidebar] openNew failed", error);
@@ -229,12 +221,40 @@ function SidebarWorkspaceMenuItems({
         toast.error(t("sidebar.workspace.actions.openNewWindowFailed"));
       }
     }
-  }, [openInFileManagerPath, serverId, t, toast, workspaceId]);
+  }, [projectPath, serverId, t, toast, workspaceId]);
+  const canOpen = (isWeb || getIsElectron()) && Boolean(serverId && workspaceId);
+  return canOpen ? open : undefined;
+}
 
-  const canOpenInNewWindow = Boolean(isWeb || getIsElectron());
-  const openInNewWindowAction =
-    onOpenInNewWindow ??
-    (canOpenInNewWindow && serverId && workspaceId ? handleOpenInNewWindow : undefined);
+function SidebarWorkspaceMenuItems({
+  surface,
+  workspaceKey,
+  serverId,
+  workspaceId,
+  onCopyPath,
+  onCopyBranchName,
+  onRename,
+  onMarkAsRead,
+  onAskHistory,
+  onMarkAsUnread,
+  onSelectWorkspace,
+  onArchive,
+  archiveLabel,
+  archiveStatus,
+  archivePendingLabel,
+  archiveShortcutKeys,
+  isPinned,
+  onTogglePin,
+  openInFileManagerPath,
+  onOpenInNewWindow,
+}: SidebarWorkspaceMenuItemsProps & { surface: MenuSurface }): ReactNode {
+  const { t } = useTranslation();
+  const openWorkspaceInNewWindow = useOpenWorkspaceInNewWindow({
+    serverId,
+    workspaceId,
+    projectPath: openInFileManagerPath,
+  });
+  const openInNewWindowAction = onOpenInNewWindow ?? openWorkspaceInNewWindow;
   const archiveTrailing = useMemo(
     () => (archiveShortcutKeys ? <Shortcut chord={archiveShortcutKeys} /> : null),
     [archiveShortcutKeys],
@@ -330,6 +350,16 @@ function SidebarWorkspaceMenuItems({
         path={openInFileManagerPath}
         testID={`sidebar-workspace-menu-open-folder-${workspaceKey}`}
       />
+      {onSelectWorkspace ? (
+        <WorkspaceMenuItem
+          surface={surface}
+          testID={`sidebar-workspace-menu-select-${workspaceKey}`}
+          leading={selectLeadingIcon}
+          onSelect={onSelectWorkspace}
+        >
+          {t("sidebar.workspace.actions.select")}
+        </WorkspaceMenuItem>
+      ) : null}
       {openInNewWindowAction ? (
         <WorkspaceMenuItem
           surface={surface}
@@ -368,6 +398,7 @@ export function SidebarWorkspaceMenu({
   onMarkAsRead,
   onAskHistory,
   onMarkAsUnread,
+  onSelectWorkspace,
   onArchive,
   archiveLabel,
   archiveStatus,
@@ -415,6 +446,7 @@ export function SidebarWorkspaceMenu({
           onMarkAsRead={onMarkAsRead}
           onAskHistory={onAskHistory}
           onMarkAsUnread={onMarkAsUnread}
+          onSelectWorkspace={onSelectWorkspace}
           onArchive={onArchive}
           archiveLabel={archiveLabel}
           archiveStatus={archiveStatus}
@@ -449,6 +481,7 @@ export function SidebarWorkspaceContextMenu({
   onMarkAsRead,
   onAskHistory,
   onMarkAsUnread,
+  onSelectWorkspace,
   onArchive,
   archiveLabel,
   archiveStatus,
@@ -502,11 +535,37 @@ export function SidebarWorkspaceContextMenu({
     [workspace],
   );
   const pages = useWorkspaceLabelMenuPages(workspaceTarget);
+  const checkboxSpaceKeyProps = useMemo(() => {
+    if (!isWeb || triggerProps.accessibilityRole !== "checkbox" || !triggerProps.onPress) {
+      return {};
+    }
+    const onPress = triggerProps.onPress;
+    return {
+      // React Native Web's Pressable activates Space only for role="button", not checkbox.
+      onKeyDown: (event: {
+        key?: string;
+        repeat?: boolean;
+        target?: unknown;
+        currentTarget?: unknown;
+        preventDefault?: () => void;
+      }) => {
+        if (triggerProps.disabled) return;
+        if (event.target !== event.currentTarget) return;
+        if (event.key === " " || event.key === "Spacebar") {
+          event.preventDefault?.();
+          if (!event.repeat) {
+            onPress(event as unknown as GestureResponderEvent);
+          }
+        }
+      },
+    };
+  }, [triggerProps.accessibilityRole, triggerProps.disabled, triggerProps.onPress]);
 
   return (
     <ContextMenu open={contextMenuOpen} onOpenChange={onContextMenuOpenChange}>
       <ContextMenuTrigger
         {...triggerProps}
+        {...checkboxSpaceKeyProps}
         enabledOnMobile={false}
         accessibilityLabel={accessibilityLabel ?? rowAccessibilityLabel}
         highlightStyle={highlightStyle}
@@ -531,6 +590,7 @@ export function SidebarWorkspaceContextMenu({
           onMarkAsRead={onMarkAsRead}
           onAskHistory={onAskHistory}
           onMarkAsUnread={onMarkAsUnread}
+          onSelectWorkspace={onSelectWorkspace}
           onArchive={onArchive}
           archiveLabel={archiveLabel}
           archiveStatus={archiveStatus}

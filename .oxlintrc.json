@@ -7,7 +7,12 @@
   // follow omp's own style (tabs) and must stay diffable against upstream.
   // scripts/omp-proxy/** is a standalone bun project built against omp's packages,
   // in the same style.
-  "ignorePatterns": [".dev/**", "plugins/**", "scripts/omp-proxy/**"],
+  "ignorePatterns": [
+    ".dev/**",
+    "plugins/**",
+    "scripts/omp-proxy/**",
+    "packages/react-native-enriched-markdown/**"
+  ],
   "plugins": ["react", "react-perf", "unicorn", "typescript", "oxc", "import", "promise"],
   "jsPlugins": ["./scripts/oxlint/paseo-plugin.mjs"],
   "categories": {
@@ -491,7 +496,6 @@
         "packages/app/src/components/headers/back-header.tsx",
         "packages/app/src/components/headers/screen-header.tsx",
         "packages/app/src/components/host-status-dot.tsx",
-        "packages/app/src/components/hosts/host-picker.tsx",
         "packages/app/src/components/icons/paseo-logo.tsx",
         "packages/app/src/components/left-sidebar.tsx",
         "packages/app/src/components/plan-card.tsx",
@@ -620,9 +624,7 @@
         "packages/app/src/components/download-toast.tsx",
         "packages/app/src/components/file-explorer-pane.tsx",
         "packages/app/src/components/headers/back-header.tsx",
-        "packages/app/src/components/highlighted-code-block.tsx",
         "packages/app/src/components/hosts/host-filter.tsx",
-        "packages/app/src/components/hosts/host-picker.tsx",
         "packages/app/src/components/import-session-sheet.tsx",
         "packages/app/src/components/left-sidebar.tsx",
         "packages/app/src/components/markdown/fence/mermaid/host.native.tsx",

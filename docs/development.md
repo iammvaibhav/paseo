@@ -68,7 +68,7 @@ Ownership rule: each worktree owns its own `node_modules` — `pnpm install` in 
 
 Three things keep a worktree at about 0.3G of unshared files:
 
-- **Patches never edit the store.** pnpm applies [dependency patches](#dependency-patches) at import and stores each patched package as its own entry, so the side-effects cache stays on: a package with a build script (`@shopify/react-native-skia`, `react-native-enriched-markdown`, `node-pty`, `electron-winstaller`) builds once per machine and every later worktree hardlinks the result. Editing files under `node_modules` by hand writes through the hardlink into the store and every other worktree; use `pnpm patch` instead.
+- **Patches never edit the store.** pnpm applies [dependency patches](#dependency-patches) at import and stores each patched package as its own entry, so the side-effects cache stays on: a package with a build script (`@shopify/react-native-skia`, `node-pty`, `electron-winstaller`) builds once per machine and every later worktree hardlinks the result. Editing files under `node_modules` by hand writes through the hardlink into the store and every other worktree; use `pnpm patch` instead.
 - **npm is refused.** The root `preinstall` fails any install whose user agent is not pnpm. `npm ci` writes a private copy of every package (about 4G per worktree).
 - **Worktrees start from the configured base.** A create that names no base starts from `worktree.warmPool.baseRef` when set, then the project's remembered base, then the repository default branch (as `origin/<default>` when that tracking ref exists). On this fork the base is `vaibhav/customizations`; a worktree cut from upstream `main` would run `main`'s setup, which is `npm ci`. A bare configured base resolves local branch first, then `origin/<base>`, in both the create path and the [warm pool](#warm-worktree-pool), so the claimed warm tree is already at its target and skips setup.
 
@@ -813,8 +813,9 @@ where the overrides apply; workspace scripts still find the binary through the r
 
 ## Dependency signature audit
 
-The `quality` CI job runs `npm audit signatures`. It verifies every lockfile package's registry
-signature and, for packages published with provenance, fetches
+The [pre-release dependency checks](release.md#pre-release-dependency-checks) include
+`pnpm audit signatures`. The command verifies registry signatures and, for packages published
+with provenance, fetches
 `/-/npm/v1/attestations/<name>@<version>` from the registry. Cloudflare caches that document
 for a year. An edge that cached it in the seconds before the registry attached the publish
 attestation keeps serving a document with only the provenance bundle, and npm fails with:
@@ -825,11 +826,10 @@ npm error <name>@<version> has attestations but no corresponding public key(s) c
 ```
 
 The same package's registry signature verified a moment earlier with the same keys, so the
-key list is intact. The failure names one package, repeats only for that package, and depends
-on the Azure region the runner landed in, because each region maps to one Cloudflare colo. A
-rerun passes only by landing elsewhere.
+key list is intact. The failure names one package and depends on which Cloudflare edge serves
+the cached attestation.
 
-To confirm, fetch the URL from several runners and compare `content-length`, the `cf-ray` colo
+To confirm, fetch the URL from several regions and compare `content-length`, the `cf-ray` colo
 suffix, and the number of `attestations` entries (#7730 has the probe). To fix, remove or
 replace that version in the lockfile. If the dependent’s range cannot be changed, pin a clean
 version in root `overrides`. Report the URL to npm so they purge it.

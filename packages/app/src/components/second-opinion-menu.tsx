@@ -106,7 +106,11 @@ export const SecondOpinionMenu = memo(function SecondOpinionMenu({
 
   const filteredProviders = useMemo(() => {
     const options: Array<{ id: string; label: string; rows: ProviderSelectionModelRow[] }> = [];
-    const providers: ProviderSelectorProvider[] = buildSelectableProviderSelectorProviders(entries);
+    // A second opinion never offers an unavailable provider, even the current one.
+    const providers: ProviderSelectorProvider[] = buildSelectableProviderSelectorProviders(
+      entries,
+      { selectedProvider: null },
+    );
     for (const p of providers) {
       if (p.modelSelection.kind !== "models") {
         continue;

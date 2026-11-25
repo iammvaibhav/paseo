@@ -439,11 +439,13 @@ export function SheetHeaderSubtitle({ text, testID }: { text: string; testID?: s
 export function SheetHeaderView({
   header,
   onClose,
+  showCloseButton = true,
   testID,
   closeTestID,
 }: {
   header: SheetHeader;
   onClose: () => void;
+  showCloseButton?: boolean;
   testID?: string;
   closeTestID?: string;
 }) {
@@ -475,12 +477,14 @@ export function SheetHeaderView({
           </View>
           <View style={styles.headerTrailing}>
             {header.actions}
-            <SheetHeaderIconButton
-              icon={X}
-              label={t("common.actions.close")}
-              onPress={onClose}
-              testID={closeTestID}
-            />
+            {showCloseButton ? (
+              <SheetHeaderIconButton
+                icon={X}
+                label={t("common.actions.close")}
+                onPress={onClose}
+                testID={closeTestID}
+              />
+            ) : null}
           </View>
         </View>
       </IconButtonChromeProvider>
@@ -568,6 +572,11 @@ export interface AdaptiveModalSheetProps {
    * corner, and the compact sheet closes from its handle.
    */
   header?: SheetHeader;
+  /**
+   * Leave out the header's close button when `header.back` is the only way out, as for a sheet
+   * that stands in for a page of the surface beneath it. Escape still closes the sheet.
+   */
+  showCloseButton?: boolean;
   visible: boolean;
   onClose: () => void;
   onDismiss?: () => void;
@@ -590,6 +599,16 @@ export interface AdaptiveModalSheetProps {
   contentStyle?: StyleProp<ViewStyle>;
   /** Re-establishes caller-owned contexts inside the native or compact sheet portal. */
   contextBridge?: ContextBridge | null;
+  /**
+   * Keys the body handles while the sheet is the top overlay, such as list navigation. Escape
+   * always closes the sheet. Return true from `onKeyDown` to claim the key.
+   */
+  keyboard?: SheetKeyboard;
+}
+
+export interface SheetKeyboard {
+  keys: readonly string[];
+  onKeyDown: (event: KeyboardInputEvent) => boolean;
 }
 
 /**
@@ -598,6 +617,7 @@ export interface AdaptiveModalSheetProps {
  */
 function CompactSheetBody({
   header,
+  showCloseButton,
   onClose,
   testID,
   footer,
@@ -608,6 +628,7 @@ function CompactSheetBody({
   children,
 }: {
   header?: SheetHeader;
+  showCloseButton: boolean;
   onClose: () => void;
   testID?: string;
   footer: ReactNode;
@@ -637,7 +658,14 @@ function CompactSheetBody({
   );
   return (
     <SheetVisibleFrame footer={footerView}>
-      {header ? <SheetHeaderView header={header} onClose={onClose} testID={testID} /> : null}
+      {header ? (
+        <SheetHeaderView
+          header={header}
+          onClose={onClose}
+          showCloseButton={showCloseButton}
+          testID={testID}
+        />
+      ) : null}
       <View style={[styles.compactStaticContent, bodyStyle]}>
         {scrollable ? (
           <ScrollView
@@ -664,6 +692,7 @@ function CompactSheetBody({
 
 export function AdaptiveModalSheet({
   header,
+  showCloseButton = true,
   visible,
   onClose,
   onDismiss,
@@ -679,6 +708,7 @@ export function AdaptiveModalSheet({
   contentStyle,
   bodyStyle,
   contextBridge = null,
+  keyboard,
 }: AdaptiveModalSheetProps) {
   const { t } = useTranslation();
   const isMobile = useIsCompactFormFactor();
@@ -737,16 +767,21 @@ export function AdaptiveModalSheet({
 
   const handleOverlayKeyDown = useCallback(
     (event: KeyboardInputEvent) => {
-      if (event.key !== "Escape") return false;
+      if (event.key !== "Escape") {
+        if (!keyboard?.onKeyDown(event)) return false;
+        event.preventDefault();
+        return true;
+      }
       event.preventDefault();
       event.stopPropagation();
       onClose();
       return true;
     },
-    [onClose],
+    [keyboard, onClose],
   );
+  const overlayKeys = useMemo(() => ["Escape", ...(keyboard?.keys ?? [])], [keyboard?.keys]);
   const setOverlayScope = useOverlayRegistration({
-    keys: ["Escape"],
+    keys: overlayKeys,
     active: visible,
     layer: modalLayer,
     onKeyDown: handleOverlayKeyDown,
@@ -791,6 +826,7 @@ export function AdaptiveModalSheet({
         <OverlayLayerProvider layer={modalLayer}>
           <CompactSheetBody
             header={header}
+            showCloseButton={showCloseButton}
             onClose={onClose}
             testID={testID}
             footer={footerView}
@@ -810,7 +846,9 @@ export function AdaptiveModalSheet({
     desktopHeight == null ? styles.desktopStaticContent : styles.compactStaticContent;
   const cardInner = (
     <OverlayLayerProvider layer={modalLayer}>
-      {header ? <SheetHeaderView header={header} onClose={onClose} /> : null}
+      {header ? (
+        <SheetHeaderView header={header} onClose={onClose} showCloseButton={showCloseButton} />
+      ) : null}
       <View style={[scrollable ? styles.desktopScrollContainer : desktopStaticStyle, bodyStyle]}>
         {scrollable ? (
           <ScrollView

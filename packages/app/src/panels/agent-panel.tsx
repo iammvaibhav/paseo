@@ -21,6 +21,7 @@ import { shallow, useShallow } from "zustand/shallow";
 import { useStoreWithEqualityFn } from "zustand/traditional";
 import { useAgentStreamTail } from "@/agent-stream/use-agent-stream-tail";
 import { AgentStreamView, type AgentStreamViewHandle } from "@/agent-stream/view";
+import { CHAT_COLUMN_RAIL_DATASET, ChatColumnRailSurface } from "@/chat-rail";
 import { ArchivedAgentCallout } from "@/components/archived-agent-callout";
 import { SidebarCallout } from "@/components/sidebar-callout";
 import { UnavailableProviderCallout } from "@/components/unavailable-provider-callout";
@@ -1232,7 +1233,11 @@ const ChatAgentReadyContent = memo(function ChatAgentReadyContent({
   );
 
   const dock = (
-    <ChatSurface disabled={isArchivingCurrentAgent} fullscreen={isComposerFullscreen}>
+    <ChatSurface
+      serverId={serverId}
+      disabled={isArchivingCurrentAgent}
+      fullscreen={isComposerFullscreen}
+    >
       {dockContent}
       {composerSection}
       {dockOverlay}
@@ -1333,10 +1338,12 @@ function wrapAgentCommandProvider({
 }
 
 function ChatSurface({
+  serverId,
   children,
   disabled,
   fullscreen,
 }: {
+  serverId: string;
   children: [ReactNode, ReactNode, ReactNode];
   disabled: boolean;
   fullscreen: boolean;
@@ -1345,9 +1352,11 @@ function ChatSurface({
   // closes everything the chat opened.
   return (
     <OverlayDismissalScope>
-      <FileDropZone style={styles.container} disabled={disabled}>
-        <ComposerDock fullscreen={fullscreen}>{children}</ComposerDock>
-      </FileDropZone>
+      <ChatColumnRailSurface serverId={serverId}>
+        <FileDropZone style={styles.container} disabled={disabled}>
+          <ComposerDock fullscreen={fullscreen}>{children}</ComposerDock>
+        </FileDropZone>
+      </ChatColumnRailSurface>
     </OverlayDismissalScope>
   );
 }
@@ -1361,7 +1370,7 @@ function TimelineSyncErrorCallout({
 }) {
   const { t } = useTranslation();
   return (
-    <View style={styles.timelineSyncCalloutRail}>
+    <View style={styles.timelineSyncCalloutRail} dataSet={CHAT_COLUMN_RAIL_DATASET}>
       <View style={styles.timelineSyncCalloutContent}>
         <View style={styles.timelineSyncCallout} testID="agent-timeline-sync-error">
           <Text style={styles.timelineSyncCalloutText}>

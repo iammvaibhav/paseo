@@ -1,6 +1,6 @@
 import type { ReactElement } from "react";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { Folder, FolderPlus, GitBranch, GitPullRequest } from "lucide-react-native";
+import { Folder, FolderGit2, FolderPlus, GitBranch, GitPullRequest } from "lucide-react-native";
 import { AGENT_MODES, DEFAULT_AGENT_MODE_ID } from "@getpaseo/protocol/agent-modes";
 import { getApproachIcon } from "@/agent-controls/icons";
 import { ProjectIconView } from "@/components/project-icon-view";
@@ -9,11 +9,13 @@ import { projectIconPlaceholderLabelFromDisplayName } from "@/utils/project-disp
 
 const ThemedFolder = withUnistyles(Folder);
 const ThemedFolderPlus = withUnistyles(FolderPlus);
+const ThemedFolderGit = withUnistyles(FolderGit2);
 const ThemedGitBranch = withUnistyles(GitBranch);
 const ThemedGitPullRequest = withUnistyles(GitPullRequest);
 const mutedColor = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 
 export const folderIcon = <ThemedFolder size={ICON_SIZE.sm} uniProps={mutedColor} />;
+export const existingWorktreeIcon = <ThemedFolderGit size={ICON_SIZE.sm} uniProps={mutedColor} />;
 export const addProjectIcon = <ThemedFolderPlus size={ICON_SIZE.sm} uniProps={mutedColor} />;
 export const branchIcon = <ThemedGitBranch size={ICON_SIZE.sm} uniProps={mutedColor} />;
 export const pullRequestIcon = <ThemedGitPullRequest size={ICON_SIZE.sm} uniProps={mutedColor} />;

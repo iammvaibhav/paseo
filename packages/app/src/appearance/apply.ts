@@ -7,6 +7,7 @@ import {
   GLASS_THEME_NAME,
   REGISTERED_THEMES,
   resolveGlassColors,
+  themeContentMaxWidth,
   type GlassTuning,
   type Theme,
 } from "@/styles/theme";
@@ -20,7 +21,7 @@ export interface AppearanceInput {
   uiBaseFontSize: number; // already clamped
   contentFontSize: number; // already clamped
   codeFontSize: number; // already clamped
-  contentMaxWidth: number; // already clamped, default resolved
+  contentMaxWidth: number | undefined; // undefined fills the available width
   syntaxTheme: SyntaxThemeId;
   glassTuning: GlassTuning;
 }
@@ -70,6 +71,7 @@ export function applyAppearance(input: AppearanceInput): void {
   const mono = input.monoFontFamily.trim() || DEFAULT_MONO_FONT_STACK;
   const diffLineHeight = Math.round(input.codeFontSize * 1.5); // couple to code size
   const glass = resolveGlassColors(input.glassTuning);
+  const contentMaxWidth = themeContentMaxWidth(input.contentMaxWidth);
   const activeTheme = UnistylesRuntime.themeName;
   // Unistyles web emits after each registry patch. Updating the mounted theme
   // first ensures subscribers receive its new numeric tokens in this render;
@@ -93,7 +95,7 @@ export function applyAppearance(input: AppearanceInput): void {
           fontFamily,
           fontSize,
           lineHeight,
-          contentMaxWidth: input.contentMaxWidth,
+          contentMaxWidth,
           colors: { ...t.colors, syntax: resolveSyntaxColors(input.syntaxTheme, t.colorScheme) },
         };
       }
@@ -106,7 +108,7 @@ export function applyAppearance(input: AppearanceInput): void {
           fontFamily,
           fontSize,
           lineHeight,
-          contentMaxWidth: input.contentMaxWidth,
+          contentMaxWidth,
           colors: { ...t.colors, ...glass.colors, syntax },
           glass: glass.glass,
         };
@@ -116,7 +118,7 @@ export function applyAppearance(input: AppearanceInput): void {
         fontFamily,
         fontSize,
         lineHeight,
-        contentMaxWidth: input.contentMaxWidth,
+        contentMaxWidth,
         colors: { ...t.colors, syntax },
       };
     });

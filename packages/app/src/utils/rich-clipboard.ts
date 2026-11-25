@@ -86,30 +86,30 @@ export async function writeMarkdownToRichClipboard(
   markdown: string,
   environment: MarkdownClipboardEnvironment,
 ): Promise<void> {
-  await writeRichClipboardContent(createMarkdownClipboardContent(markdown), environment);
+  await writeClipboardContent(createMarkdownClipboardContent(markdown), environment);
 }
 
 /**
- * Writes a pre-built clipboard payload. The Markdown copy shortcut needs this
- * variant: its html half is already flattened for rich targets, so re-rendering
- * it from the Markdown source would change what gets pasted.
+ * Writes both flavors, or `plainText` alone where the host has no rich clipboard.
+ * Resolves false when the host refused the write.
  */
-export async function writeRichClipboardContent(
+export async function writeClipboardContent(
   content: MarkdownClipboardContent,
   environment: MarkdownClipboardEnvironment,
-): Promise<void> {
+): Promise<boolean> {
   if (environment.richWriter?.supportsHtml()) {
     try {
       await environment.richWriter.write({
         "text/plain": new Blob([content.plainText], { type: "text/plain" }),
         "text/html": new Blob([content.html], { type: "text/html" }),
       });
-      return;
+      return true;
     } catch {
       // Fall through to the plain-text path. Some webviews expose rich clipboard
       // APIs but deny writes depending on focus, permissions, or browser policy.
     }
   }
 
-  await environment.writePlainText(content.plainText);
+  // Expo resolves false for a write the host refused, instead of rejecting.
+  return (await environment.writePlainText(content.plainText)) !== false;
 }

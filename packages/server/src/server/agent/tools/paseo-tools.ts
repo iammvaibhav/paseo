@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import type { ChangeRequestWatches } from "../change-request-watches/index.js";
+import { changeRequestStatusSchema } from "../../../services/change-request-source.js";
 import { registerPluginTools } from "./plugin-tools.js";
 import type { FinishSubscriptions, FinishRegistration } from "../finish-subscriptions/index.js";
 import { isSystemInjectedEnvelope, type AgentMessageDelivery } from "../agent-messages/index.js";
@@ -29,7 +31,11 @@ import type {
   AgentTimelineUserMessageClassification,
 } from "../agent-sdk-types.js";
 import type { AgentManager, ManagedAgent } from "../agent-manager.js";
-import { ActiveTurnBehaviorSchema, AgentProfileSchema } from "@getpaseo/protocol/messages";
+import {
+  ActiveTurnBehaviorSchema,
+  AgentActiveTurnBehaviorSchema,
+  AgentProfileSchema,
+} from "@getpaseo/protocol/messages";
 import { slugify } from "@getpaseo/protocol/branch-slug";
 import type { DaemonConfigStore } from "../../daemon-config-store.js";
 import { featuresFromControls } from "@getpaseo/protocol/option-controls";
@@ -199,6 +205,7 @@ import { isPaseoToolEnabled } from "../paseo-tool-policy.js";
 
 export interface PaseoToolHostDependencies {
   agentMessages?: () => AgentMessageDelivery;
+  changeRequestWatches?: ChangeRequestWatches;
   finishSubscriptions?: () => FinishSubscriptions;
   hosts?: () => ToolHosts;
   agentManager: AgentManager;
@@ -213,6 +220,10 @@ export interface PaseoToolHostDependencies {
     "getSnapshot" | "listWorktrees" | "resolveRepoRoot" | "getCheckout" | "invalidateWorktrees"
   >;
   findWorkspaceIdForCwd?: ArchiveDependencies["findWorkspaceIdForCwd"];
+  worktreeManagers?: ArchiveDependencies["worktreeManagers"];
+  workspaceArchiveOperations?: ArchiveDependencies["workspaceArchiveOperations"];
+  assertWorkspaceAutomationAllowed?: ArchiveDependencies["assertWorkspaceAutomationAllowed"];
+  isCheckoutUntrusted?: ArchiveDependencies["isCheckoutUntrusted"];
   listActiveWorkspaces?: ArchiveDependencies["listActiveWorkspaces"];
   archiveWorkspaceRecord?: ArchiveDependencies["archiveWorkspaceRecord"];
   emitWorkspaceUpdatesForWorkspaceIds?: ArchiveDependencies["emitWorkspaceUpdatesForWorkspaceIds"];
@@ -1080,6 +1091,34 @@ function resolveCatalogCallerContext(
   return callerAgentId ? (resolveCallerContext?.(callerAgentId) ?? null) : null;
 }
 
+/**
+ * What every createAgentCommand call in a catalog shares. getWorkspace makes a named
+ * workspace's directory authoritative over the caller's (defaulted) cwd, so a
+ * workspaceId-only spawn lands in that workspace.
+ */
+function buildCatalogCreateAgentDependencies(
+  options: PaseoToolHostDependencies,
+  logger: Logger,
+): CreateAgentCommandDependencies {
+  return {
+    agentManager: options.agentManager,
+    agentStorage: options.agentStorage,
+    logger,
+    paseoHome: options.paseoHome,
+    worktreesRoot: options.worktreesRoot,
+    terminalManager: options.terminalManager,
+    providerSnapshotManager: options.providerSnapshotManager,
+    createPaseoWorktree: options.createPaseoWorktree,
+    ...(options.ensureWorkspaceForCreate
+      ? { ensureWorkspaceForCreate: options.ensureWorkspaceForCreate }
+      : {}),
+    getWorkspace: async (workspaceId) => {
+      const record = await options.workspaceRegistry?.get(workspaceId);
+      return record ? { cwd: record.cwd, archivedAt: record.archivedAt } : null;
+    },
+  };
+}
+
 const CREATED_AGENT_SCHEMA = z.object({ agentId: z.string(), cwd: z.string().optional() }).loose();
 
 const ARCHIVE_PREVIEW_AGENT_SCHEMA = z
@@ -1185,26 +1224,7 @@ function createToolCatalog(
     isSameFleetHost(fleetHosts, hostA, hostB);
   const fleetIdIndex = options.fleetIdIndex ?? buildCatalogFleetIdIndex(options, hostLabel);
   const childLogger = logger.child({ module: "agent", component: "paseo-tool-catalog" });
-  // Every createAgentCommand call in this catalog shares these. getWorkspace
-  // makes a named workspace's directory authoritative over the caller's
-  // (defaulted) cwd, so a workspaceId-only spawn lands in that workspace.
-  const createAgentDependencies: CreateAgentCommandDependencies = {
-    agentManager,
-    agentStorage,
-    logger: childLogger,
-    paseoHome: options.paseoHome,
-    worktreesRoot: options.worktreesRoot,
-    terminalManager,
-    providerSnapshotManager,
-    createPaseoWorktree: options.createPaseoWorktree,
-    ...(options.ensureWorkspaceForCreate
-      ? { ensureWorkspaceForCreate: options.ensureWorkspaceForCreate }
-      : {}),
-    getWorkspace: async (workspaceId) => {
-      const record = await options.workspaceRegistry?.get(workspaceId);
-      return record ? { cwd: record.cwd, archivedAt: record.archivedAt } : null;
-    },
-  };
+  const createAgentDependencies = buildCatalogCreateAgentDependencies(options, childLogger);
   const callerContext = resolveCatalogCallerContext(callerAgentId, resolveCallerContext);
 
   // Remote MCP clients (/mcp/fleet) act for a bot, not for an agent in this
@@ -2042,9 +2062,6 @@ function createToolCatalog(
     .object(legacyTopLevelCreateAgentInputSchema)
     .strict();
   const commonSendAgentPromptInputSchema = {
-    activeTurnBehavior: ActiveTurnBehaviorSchema.optional().describe(
-      'Agent callers: "steer" (default) waits until the current turn ends; "interrupt" replaces it. Other callers: "steer" (default) joins the turn, falling back to interrupt when unavailable; "interrupt" replaces it. Overrides `mode`.',
-    ),
     agentId: z.string(),
     prompt: z.string(),
     mode: z
@@ -2060,6 +2077,9 @@ function createToolCatalog(
   };
   const agentToAgentSendAgentPromptInputSchema = {
     ...commonSendAgentPromptInputSchema,
+    activeTurnBehavior: AgentActiveTurnBehaviorSchema.optional().describe(
+      'Leave this out unless the message cannot wait. Default "queue": the message waits until the agent\'s running turn ends. "steer": the message joins the running turn; a provider that cannot steer interrupts the turn instead. "interrupt": the running turn stops and a new turn starts with the message. A steer or interrupt carries the messages you queued before it, in order.',
+    ),
     notifyOnFinish: z
       .boolean()
       .optional()
@@ -2070,6 +2090,9 @@ function createToolCatalog(
   };
   const topLevelSendAgentPromptInputSchema = {
     ...commonSendAgentPromptInputSchema,
+    activeTurnBehavior: ActiveTurnBehaviorSchema.optional().describe(
+      'Default "steer": the prompt joins the running turn; a provider that cannot steer interrupts the turn instead. "interrupt": the running turn stops and a new turn starts with the prompt.',
+    ),
     notifyOnFinish: z
       .boolean()
       .optional()
@@ -2765,18 +2788,16 @@ function createToolCatalog(
     {
       title: "Send agent prompt",
       description:
-        "Send a task to a running agent. Always use the default mode steer: it does not cancel the " +
-        "running turn. Pass interrupt only when the user explicitly asked to cancel the running turn. " +
-        "Agent callers receive an immediate queued receipt; delivery follows after two quiet seconds " +
-        "per recipient and waits for the current turn to end unless interrupt is requested. " +
-        "Completion reports include the target’s last response by default. Paseo supplies caller " +
-        "identity.",
+        scope === "agent"
+          ? "Send a message to another agent. The response returns at once. Its guidance says whether the message waits for the running turn to end, joins it, or interrupts it, and how to deliver a waiting message now. Leave activeTurnBehavior out unless the message cannot wait. The recipient reads your messages in the order you sent them. A steer the recipient has not read is lost if its turn stops or is interrupted, along with the messages it carried. Completion reports include the target’s last response by default. Paseo supplies caller identity."
+          : "Send a prompt to an agent. By default the prompt joins a running turn and does not cancel it. Pass interrupt only when the user explicitly asked to cancel the running turn.",
       inputSchema: sendAgentPromptInputSchema,
       outputSchema: {
         success: z.boolean(),
         disposition: z.enum(["turn_started", "out_of_band", "steered"]).optional(),
         deliveryStatus: z.literal("queued").optional(),
         messageId: z.string().optional(),
+        activeTurnBehavior: AgentActiveTurnBehaviorSchema.optional(),
         status: AgentStatusEnum,
         guidance: z.string().optional(),
       },
@@ -2784,15 +2805,21 @@ function createToolCatalog(
     async ({
       agentId,
       prompt,
-      mode = "steer",
+      mode,
       sessionMode,
       agentMode,
       notifyOnFinish = Boolean(callerAgentId),
       activeTurnBehavior,
     }) => {
       await assertCallerTargetExists(agentId);
-      // `mode` is this fork's name for the same choice; both default to steer for every caller.
-      const turnBehavior = activeTurnBehavior ?? mode;
+      // `mode` is this fork's older name for the choice, and it never cancels a running turn
+      // unless it is "interrupt": agent callers then wait for the turn to end (queue), other
+      // callers join it. Other callers default to steer, not to interrupt.
+      let turnBehavior = activeTurnBehavior;
+      if (turnBehavior === undefined) {
+        if (mode === "interrupt") turnBehavior = "interrupt";
+        else if (!callerAgentId) turnBehavior = "steer";
+      }
       // Agent-originated (Commander/Verifier/worker) sends that supersede a
       // busy run are machinery-originated: the superseded run keeps the
       // failure treatment, never reads as a user interruption. A steer that
@@ -2848,15 +2875,17 @@ function createToolCatalog(
             success: true,
             deliveryStatus: receipt.status,
             messageId: receipt.messageId,
+            activeTurnBehavior: receipt.activeTurnBehavior,
             status: agentManager.getAgent(agentId)?.lifecycle ?? "idle",
             guidance: notifying
-              ? `Queued for delivery after two quiet seconds and the current turn ends. ${PROMPTED_AGENT_NOTIFICATION_GUIDANCE}`
-              : "Queued for delivery after two quiet seconds and the current turn ends; provider dispatch has not occurred.",
+              ? `${receipt.guidance} ${PROMPTED_AGENT_NOTIFICATION_GUIDANCE}`
+              : receipt.guidance,
           },
         };
       }
 
       const dispatch = await sendPromptToAgent({
+        agentMessages: agentMessages(),
         agentManager,
         agentStorage,
         agentId,
@@ -3517,6 +3546,67 @@ function createToolCatalog(
       };
     },
   );
+
+  if (options.changeRequestWatches) {
+    const watches = options.changeRequestWatches;
+    const inputSchema = {
+      url: z
+        .string()
+        .trim()
+        .min(1)
+        .describe("URL of a pull request or merge request on a supported forge."),
+    };
+    registerTool(
+      "subscribe_change_request",
+      {
+        title: "Watch change request",
+        description:
+          "Watch a pull request or merge request for check failures, passing checks, new comments, reviews, approvals, and closure. Returns the current state and sends future updates after your current turn.",
+        inputSchema,
+        outputSchema: {
+          url: z.string(),
+          ...changeRequestStatusSchema.shape,
+          subscribed: z.boolean(),
+          stale: z
+            .boolean()
+            .describe("The last stored status is shown because a fresh read is pending or failed."),
+        },
+      },
+      async ({ url }) => {
+        if (!callerAgentId) {
+          throw new PaseoToolInputError(
+            "subscribe_change_request requires an agent-scoped session",
+          );
+        }
+        resolveCallerAgent();
+        return {
+          content: [],
+          structuredContent: ensureValidJson(await watches.subscribe(callerAgentId, url)),
+        };
+      },
+    );
+    registerTool(
+      "unsubscribe_change_request",
+      {
+        title: "Stop watching change request",
+        description: "Stop your watch and discard its unsent updates.",
+        inputSchema,
+        outputSchema: { url: z.string(), removed: z.boolean() },
+      },
+      async ({ url }) => {
+        if (!callerAgentId) {
+          throw new PaseoToolInputError(
+            "unsubscribe_change_request requires an agent-scoped session",
+          );
+        }
+        resolveCallerAgent();
+        return {
+          content: [],
+          structuredContent: ensureValidJson(await watches.unsubscribe(callerAgentId, url)),
+        };
+      },
+    );
+  }
 
   registerTool(
     "list_providers",
@@ -5233,6 +5323,7 @@ function createToolCatalog(
           deliveredAs = await dispatchLocalPromptMode({
             agentManager,
             agentStorage,
+            agentMessages: agentMessages(),
             agentId,
             prompt,
             mode: effectiveMode,
@@ -6112,6 +6203,7 @@ async function waitForAgentIdle(
 async function dispatchInterrupt(params: {
   agentManager: AgentManager;
   agentStorage: AgentStorage;
+  agentMessages: Pick<AgentMessageDelivery, "sendDirect">;
   agentId: string;
   promptWithAttachments: AgentPromptInput;
   classification: AgentTimelineUserMessageClassification;
@@ -6124,6 +6216,7 @@ async function dispatchInterrupt(params: {
   const {
     agentManager,
     agentStorage,
+    agentMessages,
     agentId,
     promptWithAttachments,
     classification,
@@ -6141,6 +6234,7 @@ async function dispatchInterrupt(params: {
     recordStopOrigin?.(agentId, replaceOrigin ?? "machinery");
   }
   await sendPromptToAgent({
+    agentMessages,
     agentManager,
     agentStorage,
     agentId,
@@ -6258,6 +6352,8 @@ async function tryOmpLiveSteer(params: {
 export async function dispatchLocalPromptMode(params: {
   agentManager: AgentManager;
   agentStorage: AgentStorage;
+  /** Direct sends join whatever agent messages are already queued for the recipient. */
+  agentMessages: Pick<AgentMessageDelivery, "sendDirect">;
   agentId: string;
   prompt: string;
   mode: "steer" | "interrupt" | "queue";
@@ -6311,6 +6407,7 @@ export async function dispatchLocalPromptMode(params: {
   const {
     agentManager,
     agentStorage,
+    agentMessages,
     agentId,
     prompt,
     mode,
@@ -6331,6 +6428,7 @@ export async function dispatchLocalPromptMode(params: {
     return dispatchInterrupt({
       agentManager,
       agentStorage,
+      agentMessages,
       agentId,
       promptWithAttachments,
       classification,
@@ -6365,6 +6463,7 @@ export async function dispatchLocalPromptMode(params: {
         agentManager.expectPromptClassification(agentId, promptWithAttachments, "machinery");
       }
       await sendPromptToAgent({
+        agentMessages,
         agentManager,
         agentStorage,
         agentId,
@@ -6401,6 +6500,7 @@ export async function dispatchLocalPromptMode(params: {
   // The full send path, so a closed or archived agent is restored and loaded
   // first, as steer and interrupt do; queue only differs by never replacing.
   await sendPromptToAgent({
+    agentMessages,
     agentManager,
     agentStorage,
     agentId,
@@ -6447,14 +6547,27 @@ function archiveWorktreeDependencies(
   if (!options.clearWorkspaceArchiving) {
     throw new Error("Workspace archiving clearer is required to archive worktrees");
   }
+  if (!options.assertWorkspaceAutomationAllowed) {
+    throw new Error("Workspace automation gate is required to archive worktrees");
+  }
+  if (!options.isCheckoutUntrusted) {
+    throw new Error("Checkout trust lookup is required to archive worktrees");
+  }
   return {
     paseoHome: options.paseoHome,
     paseoWorktreesBaseRoot: options.worktreesRoot,
+    worktreeManagers: options.worktreeManagers,
+    workspaceArchiveOperations: options.workspaceArchiveOperations,
+    assertWorkspaceAutomationAllowed: options.assertWorkspaceAutomationAllowed,
+    isCheckoutUntrusted: options.isCheckoutUntrusted,
     github: options.github,
     workspaceGitService: options.workspaceGitService,
     agentManager: context.agentManager,
     agentStorage: context.agentStorage,
     findWorkspaceIdForCwd: options.findWorkspaceIdForCwd,
+    ...(options.workspaceRegistry
+      ? { getWorkspace: (workspaceId: string) => options.workspaceRegistry!.get(workspaceId) }
+      : {}),
     listActiveWorkspaces: options.listActiveWorkspaces,
     projectRegistry: options.projectRegistry,
     archiveWorkspaceRecord: options.archiveWorkspaceRecord,
