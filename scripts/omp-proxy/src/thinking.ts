@@ -10,9 +10,12 @@ import { clampThinkingLevelForModel, getSupportedEfforts } from "@oh-my-pi/pi-ca
 import type { ModelRegistry, Settings } from "@oh-my-pi/pi-coding-agent";
 import { classifyDifficulty } from "@oh-my-pi/pi-coding-agent/auto-thinking/classifier";
 import { cfgMagicKeyword, cfgMagicKeywordsEnabled } from "@oh-my-pi/pi-coding-agent/modes/settings";
+import { containsMagicKeyword } from "@oh-my-pi/pi-coding-agent/session/magic-keywords";
 import { cfgDefaultThinkingLevel } from "@oh-my-pi/pi-coding-agent/session/settings";
-import { containsMagicKeyword } from "@oh-my-pi/pi-tui/prompt/magic-keywords";
-import { clampAutoThinkingEffort, resolveProvisionalAutoLevel } from "@oh-my-pi/pi-tui/thinking";
+import {
+	clampAutoThinkingEffort,
+	resolveProvisionalAutoLevel,
+} from "@oh-my-pi/pi-coding-agent/thinking/levels";
 import { logger } from "@oh-my-pi/pi-utils";
 
 const AUTO = "auto";

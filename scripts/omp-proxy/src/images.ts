@@ -13,7 +13,7 @@
 import type { Context, ImageContent, TextContent } from "@oh-my-pi/pi-ai";
 import { decodeDataUri } from "@oh-my-pi/pi-ai/providers/openai-data-uri";
 import { resizeImage } from "@oh-my-pi/pi-coding-agent/utils/image-resize";
-import { ensureSupportedImageInput } from "@oh-my-pi/pi-tui/chat/image-loading";
+import { ensureSupportedImageInput } from "@oh-my-pi/pi-coding-agent/utils/image-input";
 import { isRecord } from "@oh-my-pi/pi-utils";
 
 export type ImageFormat = "openai-chat" | "openai-responses" | "anthropic-messages";
