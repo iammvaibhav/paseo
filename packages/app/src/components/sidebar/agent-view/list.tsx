@@ -72,7 +72,27 @@ export function SidebarAgentViewList({
   });
   const selectedKey = useSelectedSidebarAgentKey();
   const searchActive = useSidebarSearchStore((state) => state.query.trim().length > 0);
-  const hasArchivedMatches = useSidebarModel().search.archivedMatches.length > 0;
+  const sidebarModel = useSidebarModel();
+  const hasArchivedMatches = sidebarModel.search.archivedMatches.length > 0;
+  // "Show project" can only reveal a project the projects view lists, so resolve the agent's
+  // workspace against the same (filtered) project list it renders.
+  const projectViewKeyByWorkspaceKey = useMemo(() => {
+    const byWorkspaceKey = new Map<string, string>();
+    for (const project of sidebarModel.projects) {
+      for (const workspace of project.workspaces) {
+        byWorkspaceKey.set(workspace.workspaceKey, project.viewKey);
+      }
+    }
+    return byWorkspaceKey;
+  }, [sidebarModel.projects]);
+  const resolveProjectViewKey = useCallback(
+    (row: LifecycleRow) =>
+      row.agent.workspaceId
+        ? (projectViewKeyByWorkspaceKey.get(`${row.agent.serverId}:${row.agent.workspaceId}`) ??
+          null)
+        : null,
+    [projectViewKeyByWorkspaceKey],
+  );
 
   const nativeScrollGestureProps = useMemo(
     () =>
@@ -91,12 +111,13 @@ export function SidebarAgentViewList({
         <SidebarAgentViewRow
           key={key}
           row={row}
+          projectViewKey={resolveProjectViewKey(row)}
           selected={key === selectedKey}
           onAgentPress={onAgentPress}
         />
       );
     },
-    [onAgentPress, selectedKey],
+    [onAgentPress, resolveProjectViewKey, selectedKey],
   );
 
   const pinnedAgentOrder = useSidebarAgentViewStore((state) => state.pinnedAgentOrder);
@@ -115,13 +136,14 @@ export function SidebarAgentViewList({
     ({ item, isActive }: DraggableRenderItemInfo<LifecycleRow>) => (
       <SidebarAgentViewRow
         row={item}
+        projectViewKey={resolveProjectViewKey(item)}
         selected={agentKey(item) === selectedKey}
         onAgentPress={onAgentPress}
         draggable
         isDragging={isActive}
       />
     ),
-    [onAgentPress, selectedKey],
+    [onAgentPress, resolveProjectViewKey, selectedKey],
   );
 
   const emptyComponent = useMemo(

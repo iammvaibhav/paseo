@@ -115,6 +115,8 @@ export interface SidebarAgentViewRowProps {
   row: LifecycleRow;
   /** The agent the visible surface is showing; drawn like the open workspace's row. */
   selected: boolean;
+  /** The projects-view project holding the agent's workspace; null hides "Show project". */
+  projectViewKey: string | null;
   onAgentPress?: () => void;
   /**
    * The row sits in the Pinned section's drag list. Its status slot becomes the drag handle: it
@@ -126,6 +128,7 @@ export interface SidebarAgentViewRowProps {
 
 export const SidebarAgentViewRow = memo(function SidebarAgentViewRow({
   row,
+  projectViewKey,
   selected,
   onAgentPress,
   draggable = false,
@@ -277,7 +280,11 @@ export const SidebarAgentViewRow = memo(function SidebarAgentViewRow({
               ) : null}
             </View>
           </ContextMenuTrigger>
-          <SidebarAgentViewRowMenu row={row} onOpen={handleOpenInWorkspace} />
+          <SidebarAgentViewRowMenu
+            row={row}
+            projectViewKey={projectViewKey}
+            onOpen={handleOpenInWorkspace}
+          />
         </ContextMenu>
       </View>
     </SidebarAgentHoverCard>

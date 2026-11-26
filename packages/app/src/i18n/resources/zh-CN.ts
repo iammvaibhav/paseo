@@ -1435,6 +1435,7 @@ export const zhCN: TranslationResources = {
       },
       menu: {
         open: "在工作区中打开",
+        showProject: "显示项目",
         copyReference: "复制引用",
         pin: "置顶",
         unpin: "取消置顶",

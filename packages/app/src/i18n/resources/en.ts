@@ -1467,6 +1467,7 @@ export const en = {
       },
       menu: {
         open: "Open in workspace",
+        showProject: "Show project",
         copyReference: "Copy reference",
         pin: "Pin to top",
         unpin: "Unpin",
