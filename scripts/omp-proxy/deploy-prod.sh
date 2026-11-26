@@ -160,6 +160,7 @@ if [[ "$changed" == "1" ]]; then
   systemctl --user daemon-reload
 fi
 
+installed=0
 cur="$(sha256sum ~/.local/bin/omp-proxy 2>/dev/null | awk '{print $1}' || true)"
 if [[ "$cur" != "$LOCAL_SHA" ]]; then
   if [[ -f ~/.local/bin/omp-proxy ]]; then
@@ -167,6 +168,7 @@ if [[ "$cur" != "$LOCAL_SHA" ]]; then
   fi
   chmod +x ~/.local/bin/omp-proxy.new
   mv -f ~/.local/bin/omp-proxy.new ~/.local/bin/omp-proxy
+  installed=1
   log "prod: installed omp-proxy (previous kept as omp-proxy.prev)"
 else
   rm -f ~/.local/bin/omp-proxy.new
@@ -214,7 +216,17 @@ except Exception:
   fi
   sleep 1
 done
-[[ "$proxy_ok" == "1" ]] || unit_fail omp-proxy "healthz version '$hv' != '$TARGET' after 60s"
+if [[ "$proxy_ok" != "1" ]]; then
+  # A proxy that never comes up takes Bifrost's omp-proxy models down with it:
+  # put the previous binary back before failing the deploy.
+  if [[ "$installed" == "1" && -f ~/.local/bin/omp-proxy.prev ]]; then
+    cp -f ~/.local/bin/omp-proxy ~/.local/bin/omp-proxy.failed
+    cp -f ~/.local/bin/omp-proxy.prev ~/.local/bin/omp-proxy
+    systemctl --user restart omp-proxy omp-grok-refresher || true
+    log "prod: restored the previous omp-proxy (failed build kept as omp-proxy.failed)"
+  fi
+  unit_fail omp-proxy "healthz version '$hv' != '$TARGET' after 60s"
+fi
 log "prod: omp-proxy healthy (version $hv)"
 
 # Bifrost reads the proxy's thinking levels from model_parameters_url

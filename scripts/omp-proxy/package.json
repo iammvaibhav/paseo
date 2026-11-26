@@ -8,7 +8,7 @@
 		"grok-refresher": "bun run src/main.ts grok-refresher",
 		"sync-plugins": "bun run scripts/sync-plugins.ts",
 		"typecheck": "bun run scripts/sync-plugins.ts && tsc --noEmit -p .",
-		"build": "bun run scripts/sync-plugins.ts && bun build --compile --minify --target=bun-linux-arm64 --external omp-legacy-pi-modules src/main.ts --outfile dist/omp-proxy"
+		"build": "bun run scripts/sync-plugins.ts && bun run scripts/build.ts"
 	},
 	"dependencies": {
 		"@oh-my-pi/pi-ai": "19.2.1",

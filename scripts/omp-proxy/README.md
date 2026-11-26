@@ -172,11 +172,15 @@ generates that module so that plugins on disk can import OMP. The proxy
 compiles its plugins in and never loads plugins from disk, so it does
 not need it.
 
-The binary needs no Bun on the target host. It does need OMP's native
-library `~/.omp/natives/<pinned version>/pi_natives.linux-arm64.node`.
-`omp` unpacks the library for its own version at first start and deletes
-the other versions' libraries, so the proxy only starts on a host whose
-`omp` is the pinned version.
+The binary needs no Bun on the target host, and carries OMP's native
+library (`scripts/build.ts` embeds it the way omp's release binary does).
+At start it unpacks the library to
+`~/.omp/natives/<pinned version>/embedded-<hash>/`, the same directory the
+`omp` of that version uses, and loading a library deletes the other
+versions' directories. So the proxy and `omp` on one host must be the same
+version, or each start deletes the other's library. Since omp 19.2, `omp`
+no longer leaves a plain `pi_natives.linux-arm64.node` in that directory,
+so a proxy built without the embedded copy cannot start.
 
 ## Deployment (prod)
 
