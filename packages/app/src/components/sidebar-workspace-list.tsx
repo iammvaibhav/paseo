@@ -121,7 +121,7 @@ import {
   SidebarWorkspaceMenu,
 } from "@/components/sidebar/sidebar-workspace-menu";
 import { useLongPressDragInteraction } from "@/components/sidebar/use-long-press-drag-interaction";
-import { SidebarSectionHeader } from "@/components/sidebar/sidebar-section-header";
+import { SidebarPinnedSection } from "@/components/sidebar/sidebar-pinned-section";
 import { SidebarPinnedAgentRows } from "@/components/sidebar/agent-view/pinned-rows";
 import { useSidebarPinnedAgentRows } from "@/components/sidebar/agent-view/use-sidebar-agent-view";
 import type { LifecycleRow } from "@/mission-control/lifecycle";
@@ -2593,7 +2593,6 @@ function ProjectModeList({
   onToggleWorkspacePin: ToggleSidebarWorkspacePin;
   onPinnedWorkspaceReorder: (workspaces: SidebarWorkspacePlacement[]) => void;
 }) {
-  const { t } = useTranslation();
   const hasActiveHostFilter = useSidebarViewStore((state) => state.hostFilters.length > 0);
   const isSearchActive = useSidebarSearchStore((state) => state.query.trim().length > 0);
   const [creatingWorkspaceIds, setCreatingWorkspaceIds] = useState<Set<string>>(() => new Set());
@@ -2602,9 +2601,6 @@ function ProjectModeList({
   );
   const showShortcutBadges = useShowShortcutBadges();
   const pinnedCollapsed = useSidebarCollapsedSectionsStore((state) => state.collapsedPinned);
-  const togglePinnedCollapsed = useSidebarCollapsedSectionsStore(
-    (state) => state.togglePinnedCollapsed,
-  );
 
   const manualSort = useSidebarViewStore((state) => state.workspaceSort === "manual");
   const getWorkspaceOrder = useSidebarOrderStore((state) => state.getWorkspaceOrder);
@@ -2993,49 +2989,39 @@ function ProjectModeList({
   const content = (
     <>
       {pinnedChats.length > 0 || pinnedAgentRows.length > 0 ? (
-        <View style={styles.pinnedSection} testID="sidebar-pinned-section">
-          <SidebarSectionHeader
-            title={t("sidebar.pinned.title")}
-            collapsed={pinnedCollapsed}
-            onToggle={togglePinnedCollapsed}
-            testID="sidebar-pinned-section-header"
+        <SidebarPinnedSection>
+          {pinnedAgentRows.length > 0 ? (
+            <SidebarPinnedAgentRows
+              rows={pinnedAgentRows}
+              active={dragGestureHostActive ?? true}
+              onAgentPress={onWorkspacePress}
+              parentGestureRef={parentGestureRef}
+              testID="sidebar-pinned-agent-list"
+            />
+          ) : null}
+          {leadingPinnedChat ? renderPinnedChatRow(leadingPinnedChat) : null}
+          <DraggableList
+            testID="sidebar-pinned-list"
+            data={visiblePinnedChats}
+            keyExtractor={workspaceKeyExtractor}
+            renderItem={renderPinnedChat}
+            onDragEnd={onPinnedWorkspaceReorder}
+            extraData={activeWorkspaceSelectionKey(activeWorkspaceSelection)}
+            scrollEnabled={false}
+            useDragHandle
+            nestable={platformIsNative}
+            simultaneousGestureRef={parentGestureRef}
+            gestureHostPresented={dragGestureHostActive}
+            containerStyle={styles.workspaceListContainer}
           />
-          {pinnedCollapsed ? null : (
-            <>
-              {pinnedAgentRows.length > 0 ? (
-                <SidebarPinnedAgentRows
-                  rows={pinnedAgentRows}
-                  active={dragGestureHostActive ?? true}
-                  onAgentPress={onWorkspacePress}
-                  parentGestureRef={parentGestureRef}
-                  testID="sidebar-pinned-agent-list"
-                />
-              ) : null}
-              {leadingPinnedChat ? renderPinnedChatRow(leadingPinnedChat) : null}
-              <DraggableList
-                testID="sidebar-pinned-list"
-                data={visiblePinnedChats}
-                keyExtractor={workspaceKeyExtractor}
-                renderItem={renderPinnedChat}
-                onDragEnd={onPinnedWorkspaceReorder}
-                extraData={activeWorkspaceSelectionKey(activeWorkspaceSelection)}
-                scrollEnabled={false}
-                useDragHandle
-                nestable={platformIsNative}
-                simultaneousGestureRef={parentGestureRef}
-                gestureHostPresented={dragGestureHostActive}
-                containerStyle={styles.workspaceListContainer}
-              />
-              {canTogglePinnedChats ? (
-                <SidebarGroupToggleRow
-                  expanded={pinnedChatsExpanded}
-                  onPress={togglePinnedChatsExpanded}
-                  testID="sidebar-pinned-show-more"
-                />
-              ) : null}
-            </>
-          )}
-        </View>
+          {canTogglePinnedChats ? (
+            <SidebarGroupToggleRow
+              expanded={pinnedChatsExpanded}
+              onPress={togglePinnedChatsExpanded}
+              testID="sidebar-pinned-show-more"
+            />
+          ) : null}
+        </SidebarPinnedSection>
       ) : null}
       {/* The header carries the display menu, which is the only way back out of a filter, so it
         stays for as long as a filter is what emptied the list. It is absent only when the
@@ -3102,9 +3088,6 @@ const styles = StyleSheet.create((theme) => ({
   },
   projectListContainer: {
     width: "100%",
-  },
-  pinnedSection: {
-    marginBottom: theme.spacing[1],
   },
   // Three times the gap a row keeps from its neighbour, so the break between two groups reads as
   // a break rather than as one more row of pitch. Kept equal to `statusGroupBlockExpanded` — the

@@ -1,5 +1,6 @@
 import { Text, View } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
+import { density } from "@/styles/density";
 
 /** A bucket heading of the agent view, also used for the search bar's Archived section. */
 export function SidebarAgentViewSectionHeader({
@@ -24,10 +25,12 @@ export function SidebarAgentViewSectionHeader({
 }
 
 // Mirrors the project rows of the workspace view (`projectRow`, `projectTitle` in
-// sidebar-workspace-list.tsx).
+// sidebar-workspace-list.tsx), including their height: a project row's trailing action buttons
+// make it a full density row, so a bucket heading takes `density.rowHeight` too and the rows
+// under it start where a project's rows start.
 const styles = StyleSheet.create((theme) => ({
   sectionHeader: {
-    minHeight: 32,
+    minHeight: density.rowHeight,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",

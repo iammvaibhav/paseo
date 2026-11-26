@@ -75,7 +75,7 @@ import {
   SidebarWorkspaceContextMenu,
   SidebarWorkspaceMenu,
 } from "@/components/sidebar/sidebar-workspace-menu";
-import { SidebarSectionHeader } from "@/components/sidebar/sidebar-section-header";
+import { SidebarPinnedSection } from "@/components/sidebar/sidebar-pinned-section";
 import { SidebarGroupToggleRow } from "@/components/sidebar/sidebar-group-toggle-row";
 import { selectSidebarGroupVisibility } from "@/components/sidebar/sidebar-group-visibility";
 import { useLimitedSidebarGroup } from "@/components/sidebar/use-limited-sidebar-group";
@@ -161,15 +161,11 @@ export function SidebarStatusWorkspaceList({
   parentGestureRef,
   dragGestureHostActive,
 }: StatusWorkspaceListProps) {
-  const { t } = useTranslation();
   const activeWorkspaceSelection = useActiveWorkspaceSelection();
   const collapsedWorkspaceGroupKeys = useSidebarCollapsedSectionsStore(
     (state) => state.collapsedWorkspaceGroupKeys,
   );
   const pinnedCollapsed = useSidebarCollapsedSectionsStore((state) => state.collapsedPinned);
-  const togglePinnedCollapsed = useSidebarCollapsedSectionsStore(
-    (state) => state.togglePinnedCollapsed,
-  );
   const [pinnedWorkspacesExpanded, setPinnedWorkspacesExpanded] = useState(false);
   const togglePinnedWorkspacesExpanded = useCallback(
     () => setPinnedWorkspacesExpanded((current) => !current),
@@ -301,47 +297,37 @@ export function SidebarStatusWorkspaceList({
   const content = (
     <>
       {pinnedWorkspaces.length > 0 || pinnedAgentRows.length > 0 ? (
-        <View style={styles.pinnedSection} testID="sidebar-pinned-section">
-          <SidebarSectionHeader
-            title={t("sidebar.pinned.title")}
-            collapsed={pinnedCollapsed}
-            onToggle={togglePinnedCollapsed}
-            testID="sidebar-pinned-section-header"
+        <SidebarPinnedSection>
+          {pinnedAgentRows.length > 0 ? (
+            <SidebarPinnedAgentRows
+              rows={pinnedAgentRows}
+              active={dragGestureHostActive ?? true}
+              onAgentPress={onWorkspacePress}
+              parentGestureRef={parentGestureRef}
+              testID="sidebar-pinned-agent-list"
+            />
+          ) : null}
+          {leadingPinnedWorkspace ? renderPinnedWorkspaceRow(leadingPinnedWorkspace) : null}
+          <DraggableList
+            testID="sidebar-pinned-list"
+            data={visiblePinnedWorkspaces}
+            keyExtractor={statusWorkspaceKeyExtractor}
+            renderItem={renderPinnedWorkspace}
+            onDragEnd={onPinnedWorkspaceReorder}
+            scrollEnabled={false}
+            useDragHandle
+            nestable={platformIsNative}
+            simultaneousGestureRef={parentGestureRef}
+            gestureHostPresented={dragGestureHostActive}
           />
-          {pinnedCollapsed ? null : (
-            <>
-              {pinnedAgentRows.length > 0 ? (
-                <SidebarPinnedAgentRows
-                  rows={pinnedAgentRows}
-                  active={dragGestureHostActive ?? true}
-                  onAgentPress={onWorkspacePress}
-                  parentGestureRef={parentGestureRef}
-                  testID="sidebar-pinned-agent-list"
-                />
-              ) : null}
-              {leadingPinnedWorkspace ? renderPinnedWorkspaceRow(leadingPinnedWorkspace) : null}
-              <DraggableList
-                testID="sidebar-pinned-list"
-                data={visiblePinnedWorkspaces}
-                keyExtractor={statusWorkspaceKeyExtractor}
-                renderItem={renderPinnedWorkspace}
-                onDragEnd={onPinnedWorkspaceReorder}
-                scrollEnabled={false}
-                useDragHandle
-                nestable={platformIsNative}
-                simultaneousGestureRef={parentGestureRef}
-                gestureHostPresented={dragGestureHostActive}
-              />
-              {canTogglePinnedWorkspaces ? (
-                <SidebarGroupToggleRow
-                  expanded={pinnedWorkspacesExpanded}
-                  onPress={togglePinnedWorkspacesExpanded}
-                  testID="sidebar-pinned-show-more"
-                />
-              ) : null}
-            </>
-          )}
-        </View>
+          {canTogglePinnedWorkspaces ? (
+            <SidebarGroupToggleRow
+              expanded={pinnedWorkspacesExpanded}
+              onPress={togglePinnedWorkspacesExpanded}
+              testID="sidebar-pinned-show-more"
+            />
+          ) : null}
+        </SidebarPinnedSection>
       ) : null}
       {listHeaderComponent}
       {sidebarFilterEmpty ? (
@@ -1311,9 +1297,6 @@ const styles = StyleSheet.create((theme) => ({
     paddingTop: 2,
     // Room for the sidebar toast comes from SidebarToastClearance at the end of the content.
     paddingBottom: theme.spacing[4],
-  },
-  pinnedSection: {
-    marginBottom: theme.spacing[1],
   },
   // Matches `projectBlockExpanded` in sidebar-workspace-list.tsx. See the note there.
   statusGroupBlockExpanded: {

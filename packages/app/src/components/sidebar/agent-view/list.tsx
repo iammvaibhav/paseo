@@ -22,6 +22,7 @@ import {
 } from "./pinned-rows";
 import { SidebarAgentViewRow } from "./row";
 import { SidebarAgentViewSectionHeader } from "./section-header";
+import { SidebarPinnedSection } from "@/components/sidebar/sidebar-pinned-section";
 import { useSidebarAgentView } from "./use-sidebar-agent-view";
 export const SECTION_LABEL_KEYS: Record<SidebarAgentViewSectionKey, string> = {
   pinned: "sidebar.pinned.title",
@@ -128,26 +129,25 @@ export function SidebarAgentViewList({
     );
   }
 
-  // Pinned agents sit above the header, like pinned workspaces in the workspace view.
+  // Pinned agents sit above the header in the same Pinned section the workspaces view renders,
+  // so switching views leaves it untouched.
   const pinnedSection = sections.find((section) => section.key === "pinned") ?? null;
   const listSections = sections.filter((section) => section.key !== "pinned");
   const emptyBody = searchActive ? <SidebarSearchEmptyState /> : emptyComponent;
   const content = (
     <>
       {pinnedSection ? (
-        <View style={styles.section} testID="sidebar-agent-view-pinned">
-          <SidebarAgentViewSectionHeader
-            title={t(SECTION_LABEL_KEYS.pinned)}
-            count={pinnedSection.rows.length}
-            testID="sidebar-agent-view-section-pinned"
-          />
+        <SidebarPinnedSection
+          testID="sidebar-agent-view-pinned"
+          headerTestID="sidebar-agent-view-section-pinned"
+        >
           <SidebarPinnedAgentRows
             rows={pinnedSection.rows}
             active={active}
             onAgentPress={onAgentPress}
             parentGestureRef={parentGestureRef}
           />
-        </View>
+        </SidebarPinnedSection>
       ) : null}
       {listHeaderComponent}
       {listSections.length === 0 && !pinnedSection && !hasArchivedMatches
