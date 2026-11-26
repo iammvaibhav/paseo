@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo } from "react";
 import { useSidebarModel } from "@/components/sidebar/sidebar-model";
 import { resolveActiveProjectFilters } from "@/components/sidebar/sidebar-project-filter";
+import type { LifecycleRow } from "@/mission-control/lifecycle";
 import { useMissionControlLifecycle } from "@/mission-control/use-mission-control-lifecycle";
 import { useHostRegistryLoaded, useHosts } from "@/runtime/host-runtime";
 import { useSidebarAgentViewStore } from "@/stores/sidebar-agent-view-store";
@@ -101,4 +102,12 @@ export function useSidebarAgentView(options: { enabled: boolean }): SidebarAgent
     hasActiveFilter,
     clearFilters,
   };
+}
+
+const NO_PINNED_ROWS: LifecycleRow[] = [];
+
+/** The agent view's Pinned rows, for views that show pinned agents above their own list. */
+export function useSidebarPinnedAgentRows(options: { enabled: boolean }): LifecycleRow[] {
+  const { sections } = useSidebarAgentView(options);
+  return sections.find((section) => section.key === "pinned")?.rows ?? NO_PINNED_ROWS;
 }

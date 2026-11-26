@@ -122,6 +122,9 @@ import {
 } from "@/components/sidebar/sidebar-workspace-menu";
 import { useLongPressDragInteraction } from "@/components/sidebar/use-long-press-drag-interaction";
 import { SidebarSectionHeader } from "@/components/sidebar/sidebar-section-header";
+import { SidebarPinnedAgentRows } from "@/components/sidebar/agent-view/pinned-rows";
+import { useSidebarPinnedAgentRows } from "@/components/sidebar/agent-view/use-sidebar-agent-view";
+import type { LifecycleRow } from "@/mission-control/lifecycle";
 import { SidebarGroupToggleRow } from "@/components/sidebar/sidebar-group-toggle-row";
 import {
   createWorkspaceVisibilityPolicy,
@@ -2355,6 +2358,8 @@ export function SidebarWorkspaceList({
   dragGestureHostActive,
 }: SidebarWorkspaceListProps) {
   const pathname = usePathname();
+  // Pinned agents lead the Pinned section in every view, not only in the agent view.
+  const pinnedAgentRows = useSidebarPinnedAgentRows({ enabled: dragGestureHostActive ?? true });
   const hosts = useHosts();
   const rowItems = useSidebarRowItems();
   // Host badge visibility is a lattice, not three competing switches: this gate is the global
@@ -2426,6 +2431,7 @@ export function SidebarWorkspaceList({
       <SidebarGroupedModeList
         workspaceGroups={workspaceGroups}
         pinnedGroups={pinnedGroups}
+        pinnedAgentRows={pinnedAgentRows}
         workspaceEntriesByKey={workspaceEntriesByKey}
         projectIconByProjectViewKey={projectIconByProjectViewKey}
         shortcutIndexByWorkspaceKey={shortcutIndexByWorkspaceKey}
@@ -2443,6 +2449,7 @@ export function SidebarWorkspaceList({
       <ProjectModeList
         projects={projects}
         pinnedGroups={pinnedGroups}
+        pinnedAgentRows={pinnedAgentRows}
         workspaceEntriesByKey={workspaceEntriesByKey}
         projectIconByProjectViewKey={projectIconByProjectViewKey}
         collapsedProjectKeys={collapsedProjectKeys}
@@ -2479,6 +2486,7 @@ export function SidebarWorkspaceList({
 function SidebarGroupedModeList({
   workspaceGroups,
   pinnedGroups,
+  pinnedAgentRows,
   workspaceEntriesByKey,
   projectIconByProjectViewKey,
   shortcutIndexByWorkspaceKey: _projectShortcutIndex,
@@ -2494,6 +2502,7 @@ function SidebarGroupedModeList({
 }: {
   workspaceGroups: SidebarWorkspaceGroup[];
   pinnedGroups: PinnedSidebarGroups;
+  pinnedAgentRows: LifecycleRow[];
   workspaceEntriesByKey: ReadonlyMap<string, SidebarWorkspaceEntry>;
   projectIconByProjectViewKey: ReadonlyMap<string, string | null>;
   shortcutIndexByWorkspaceKey: Map<string, number>;
@@ -2521,6 +2530,7 @@ function SidebarGroupedModeList({
     <SidebarStatusWorkspaceList
       groups={workspaceGroups}
       pinnedWorkspaces={pinnedWorkspaces}
+      pinnedAgentRows={pinnedAgentRows}
       projectIconByProjectViewKey={projectIconByProjectViewKey}
       shortcutIndexByWorkspaceKey={_projectShortcutIndex}
       showShortcutBadges={showShortcutBadges}
@@ -2540,6 +2550,7 @@ function SidebarGroupedModeList({
 function ProjectModeList({
   projects,
   pinnedGroups,
+  pinnedAgentRows,
   workspaceEntriesByKey,
   projectIconByProjectViewKey,
   collapsedProjectKeys,
@@ -2572,6 +2583,7 @@ function ProjectModeList({
 > & {
   /** Swaps the list body for the label filter's empty state. Never the header above it. */
   sidebarFilterEmpty: boolean;
+  pinnedAgentRows: LifecycleRow[];
   projectIconByProjectViewKey: ReadonlyMap<string, string | null>;
   pathname: string;
   hostBadgeByServerId: ReadonlyMap<string, HostBadgeModel>;
@@ -2980,7 +2992,7 @@ function ProjectModeList({
 
   const content = (
     <>
-      {pinnedChats.length > 0 ? (
+      {pinnedChats.length > 0 || pinnedAgentRows.length > 0 ? (
         <View style={styles.pinnedSection} testID="sidebar-pinned-section">
           <SidebarSectionHeader
             title={t("sidebar.pinned.title")}
@@ -2990,6 +3002,15 @@ function ProjectModeList({
           />
           {pinnedCollapsed ? null : (
             <>
+              {pinnedAgentRows.length > 0 ? (
+                <SidebarPinnedAgentRows
+                  rows={pinnedAgentRows}
+                  active={dragGestureHostActive ?? true}
+                  onAgentPress={onWorkspacePress}
+                  parentGestureRef={parentGestureRef}
+                  testID="sidebar-pinned-agent-list"
+                />
+              ) : null}
               {leadingPinnedChat ? renderPinnedChatRow(leadingPinnedChat) : null}
               <DraggableList
                 testID="sidebar-pinned-list"

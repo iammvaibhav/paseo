@@ -90,6 +90,8 @@ import type { ToggleSidebarWorkspacePin } from "@/hooks/use-sidebar-workspace-pi
 import { DraggableList, type DraggableRenderItemInfo } from "@/components/draggable-list";
 import type { DraggableListDragHandleProps } from "@/components/draggable-list.types";
 import { useLongPressDragInteraction } from "@/components/sidebar/use-long-press-drag-interaction";
+import { SidebarPinnedAgentRows } from "@/components/sidebar/agent-view/pinned-rows";
+import type { LifecycleRow } from "@/mission-control/lifecycle";
 
 // Themed icon wrappers
 const mutedGroupIconProps = densityIconProps("sm", (theme) => ({
@@ -125,6 +127,8 @@ function statusWorkspaceKeyExtractor(workspace: SidebarWorkspaceEntry): string {
 interface StatusWorkspaceListProps {
   groups: SidebarWorkspaceGroup[];
   pinnedWorkspaces: SidebarWorkspaceEntry[];
+  /** Pinned agents, listed first in the Pinned section. */
+  pinnedAgentRows: LifecycleRow[];
   projectIconByProjectViewKey: ReadonlyMap<string, string | null>;
   shortcutIndexByWorkspaceKey: Map<string, number>;
   showShortcutBadges: boolean;
@@ -143,6 +147,7 @@ interface StatusWorkspaceListProps {
 export function SidebarStatusWorkspaceList({
   groups,
   pinnedWorkspaces,
+  pinnedAgentRows,
   projectIconByProjectViewKey,
   shortcutIndexByWorkspaceKey,
   showShortcutBadges,
@@ -295,7 +300,7 @@ export function SidebarStatusWorkspaceList({
   );
   const content = (
     <>
-      {pinnedWorkspaces.length > 0 ? (
+      {pinnedWorkspaces.length > 0 || pinnedAgentRows.length > 0 ? (
         <View style={styles.pinnedSection} testID="sidebar-pinned-section">
           <SidebarSectionHeader
             title={t("sidebar.pinned.title")}
@@ -305,6 +310,15 @@ export function SidebarStatusWorkspaceList({
           />
           {pinnedCollapsed ? null : (
             <>
+              {pinnedAgentRows.length > 0 ? (
+                <SidebarPinnedAgentRows
+                  rows={pinnedAgentRows}
+                  active={dragGestureHostActive ?? true}
+                  onAgentPress={onWorkspacePress}
+                  parentGestureRef={parentGestureRef}
+                  testID="sidebar-pinned-agent-list"
+                />
+              ) : null}
               {leadingPinnedWorkspace ? renderPinnedWorkspaceRow(leadingPinnedWorkspace) : null}
               <DraggableList
                 testID="sidebar-pinned-list"

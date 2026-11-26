@@ -4,26 +4,22 @@ import { NestableScrollContainer } from "react-native-draggable-flatlist";
 import type { GestureType } from "react-native-gesture-handler";
 import { StyleSheet } from "react-native-unistyles";
 import { useTranslation } from "react-i18next";
-import { usePathname } from "expo-router";
 import { Button } from "@/components/ui/button";
-import { DraggableList, type DraggableRenderItemInfo } from "@/components/draggable-list";
 import { SidebarAgentListSkeleton } from "@/components/sidebar-agent-list-skeleton";
 import { isNative as platformIsNative } from "@/constants/platform";
 import type { LifecycleRow } from "@/mission-control/lifecycle";
-import { useAgentGridStore } from "@/screens/mission-control/agent-grid/store";
-import { useActiveWorkspaceSelection } from "@/stores/navigation-active-workspace-store";
-import { useSidebarAgentViewStore } from "@/stores/sidebar-agent-view-store";
 import { useSidebarSearchStore } from "@/stores/sidebar-search-store";
 import {
   SidebarSearchArchivedSection,
   SidebarSearchEmptyState,
 } from "@/components/sidebar/sidebar-search-bar";
 import { useSidebarModel } from "@/components/sidebar/sidebar-model";
-import { getFocusedAgentId, useWorkspaceLayoutStore } from "@/stores/workspace-layout-store";
-import { buildMissionControlRoute } from "@/utils/host-routes";
-import { hasVisibleOrderChanged, mergeWithRemainder } from "@/utils/sidebar-reorder";
-import { buildWorkspaceTabPersistenceKey } from "@/workspace-tabs/model";
-import { agentKey, type SidebarAgentViewSectionKey } from "./model";
+import type { SidebarAgentViewSectionKey } from "./model";
+import {
+  SidebarPinnedAgentRows,
+  useResolveAgentProjectViewKey,
+  useSelectedSidebarAgentKey,
+} from "./pinned-rows";
 import { SidebarAgentViewRow } from "./row";
 import { SidebarAgentViewSectionHeader } from "./section-header";
 import { useSidebarAgentView } from "./use-sidebar-agent-view";
@@ -33,25 +29,6 @@ export const SECTION_LABEL_KEYS: Record<SidebarAgentViewSectionKey, string> = {
   recent: "sidebar.agentView.sections.recent",
   results: "sidebar.search.resultsTitle",
 };
-
-/**
- * `serverId:agentId` of the agent the visible surface is showing — the focused agent tab of
- * the open workspace, or the active tile while the Agent Grid is open — so the agent view marks
- * its row the way the workspace view marks the open workspace.
- */
-function useSelectedSidebarAgentKey(): string | null {
-  const pathname = usePathname();
-  const selection = useActiveWorkspaceSelection();
-  const workspaceKey = selection ? buildWorkspaceTabPersistenceKey(selection) : null;
-  const focusedAgentId = useWorkspaceLayoutStore((state) =>
-    workspaceKey ? getFocusedAgentId(state.layoutByWorkspace[workspaceKey]) : null,
-  );
-  const gridActiveKey = useAgentGridStore((state) =>
-    state.view === "grid" ? state.activeKey : null,
-  );
-  if (pathname === buildMissionControlRoute()) return gridActiveKey;
-  return selection && focusedAgentId ? `${selection.serverId}:${focusedAgentId}` : null;
-}
 
 export interface SidebarAgentViewListProps {
   active: boolean;
@@ -72,27 +49,8 @@ export function SidebarAgentViewList({
   });
   const selectedKey = useSelectedSidebarAgentKey();
   const searchActive = useSidebarSearchStore((state) => state.query.trim().length > 0);
-  const sidebarModel = useSidebarModel();
-  const hasArchivedMatches = sidebarModel.search.archivedMatches.length > 0;
-  // "Show project" can only reveal a project the projects view lists, so resolve the agent's
-  // workspace against the same (filtered) project list it renders.
-  const projectViewKeyByWorkspaceKey = useMemo(() => {
-    const byWorkspaceKey = new Map<string, string>();
-    for (const project of sidebarModel.projects) {
-      for (const workspace of project.workspaces) {
-        byWorkspaceKey.set(workspace.workspaceKey, project.viewKey);
-      }
-    }
-    return byWorkspaceKey;
-  }, [sidebarModel.projects]);
-  const resolveProjectViewKey = useCallback(
-    (row: LifecycleRow) =>
-      row.agent.workspaceId
-        ? (projectViewKeyByWorkspaceKey.get(`${row.agent.serverId}:${row.agent.workspaceId}`) ??
-          null)
-        : null,
-    [projectViewKeyByWorkspaceKey],
-  );
+  const hasArchivedMatches = useSidebarModel().search.archivedMatches.length > 0;
+  const resolveProjectViewKey = useResolveAgentProjectViewKey();
 
   const nativeScrollGestureProps = useMemo(
     () =>
@@ -119,33 +77,6 @@ export function SidebarAgentViewList({
     },
     [onAgentPress, resolveProjectViewKey, selectedKey],
   );
-
-  const pinnedAgentOrder = useSidebarAgentViewStore((state) => state.pinnedAgentOrder);
-  const setPinnedAgentOrder = useSidebarAgentViewStore((state) => state.setPinnedAgentOrder);
-  const handlePinnedDragEnd = useCallback(
-    (rows: LifecycleRow[]) => {
-      const reorderedVisibleKeys = rows.map(agentKey);
-      if (!hasVisibleOrderChanged({ currentOrder: pinnedAgentOrder, reorderedVisibleKeys })) return;
-      setPinnedAgentOrder(
-        mergeWithRemainder({ currentOrder: pinnedAgentOrder, reorderedVisibleKeys }),
-      );
-    },
-    [pinnedAgentOrder, setPinnedAgentOrder],
-  );
-  const renderPinnedRow = useCallback(
-    ({ item, isActive }: DraggableRenderItemInfo<LifecycleRow>) => (
-      <SidebarAgentViewRow
-        row={item}
-        projectViewKey={resolveProjectViewKey(item)}
-        selected={agentKey(item) === selectedKey}
-        onAgentPress={onAgentPress}
-        draggable
-        isDragging={isActive}
-      />
-    ),
-    [onAgentPress, resolveProjectViewKey, selectedKey],
-  );
-
   const emptyComponent = useMemo(
     () => (
       <View style={styles.emptyContainer} testID="sidebar-agent-view-empty-state">
@@ -210,18 +141,11 @@ export function SidebarAgentViewList({
             count={pinnedSection.rows.length}
             testID="sidebar-agent-view-section-pinned"
           />
-          <DraggableList
-            testID="sidebar-agent-view-pinned-list"
-            data={pinnedSection.rows}
-            keyExtractor={agentKey}
-            renderItem={renderPinnedRow}
-            onDragEnd={handlePinnedDragEnd}
-            extraData={selectedKey}
-            scrollEnabled={false}
-            useDragHandle
-            nestable={platformIsNative}
-            simultaneousGestureRef={parentGestureRef}
-            gestureHostPresented={active}
+          <SidebarPinnedAgentRows
+            rows={pinnedSection.rows}
+            active={active}
+            onAgentPress={onAgentPress}
+            parentGestureRef={parentGestureRef}
           />
         </View>
       ) : null}
