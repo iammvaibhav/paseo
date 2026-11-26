@@ -486,12 +486,15 @@ $PASEO_HOME/
 ├── projects/projects.json                      # Project registry
 ├── projects/workspaces.json                    # Workspace registry
 ├── projects/icons/                             # Custom project icon images
+├── uploads/{upload-id}/{file-name}             # Attachment store (+ {upload-id}.json with the MIME type)
 ├── config.json                                 # Daemon config (mutable)
 ├── daemon-keypair.json                         # Daemon identity for relay/E2EE
 ├── push-tokens.json                            # Mobile push tokens
 ├── paseo.pid                                   # Supervisor identity and published bound endpoint
 └── daemon.log                                  # Daemon trace logs (rotated)
 ```
+
+Every file or image attached to a prompt lives in `uploads/`: composer files, `fleet_upload_file` and fleet `attachments`, and inline images (app composer, `images` on create/send), which the daemon saves on arrival (`storePromptImages` in `packages/server/src/server/agent/prompt-attachments.ts`). The model still gets each image natively; the prompt also carries an `uploaded_file` block naming the file's `fileId` and path. That lets an agent hand the file on: `attachments: [{fileId}]` to `fleet_send_prompt` / `fleet_create_agent` through its own daemon, or the path to any tool that takes a file. A fileId resolves only on the host that stored it; through another host's MCP (ToolHive talks to prod), pass `{name, mimeType, base64}` read from the path instead. Nothing prunes `uploads/`.
 
 The supervisor alone publishes its ready worker's endpoint in `paseo.pid`, clears it before respawn, and fails if any worker exits before first readiness. CLI home selection trusts only that live record; config expresses desired state, never an endpoint fallback. POSIX home stop signals the captured supervisor without TCP. Windows graceful stop and ordinary RPCs trust the published endpoint. This metadata is not cryptographic listener ownership: edited endpoints, copied identities, PID reuse, and address takeover races remain outside that guarantee. A stale heartbeat never permits reclaiming a live lock.
 

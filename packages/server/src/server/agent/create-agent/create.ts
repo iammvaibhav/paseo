@@ -20,7 +20,7 @@ import type { ProviderSnapshotManager } from "../provider-snapshot-manager.js";
 import { startCreatedAgentInitialPrompt } from "../agent-prompt.js";
 
 import { resolveCreateAgentTitles } from "../create-agent-title.js";
-import { buildAgentPrompt } from "../prompt-attachments.js";
+import { buildAgentPrompt, storePromptImages } from "../prompt-attachments.js";
 import { normalizeClientMessageId, resolveClientMessageId } from "../../client-message-id.js";
 import { canonicalProviderModel } from "@getpaseo/protocol/provider-model";
 import { resolveRequiredProviderModel, type ResolvedProviderModel } from "../mcp-shared.js";
@@ -280,7 +280,11 @@ async function resolveSessionCreateAgent(
     modeId: resolvedCreateConfig.modeId,
     providerOptions: resolvedCreateConfig.providerOptions,
   };
-  const prompt = buildAgentPrompt(trimmedPrompt ?? "", input.images, input.attachments);
+  const prompt = buildAgentPrompt(
+    trimmedPrompt ?? "",
+    input.images,
+    await storePromptImages(dependencies.paseoHome, input.images, input.attachments),
+  );
   const hasPromptContent = Array.isArray(prompt) ? prompt.length > 0 : prompt.length > 0;
   const clientMessageId = normalizeClientMessageId(input.clientMessageId);
   const runOptions: AgentRunOptions | undefined =
@@ -386,7 +390,11 @@ async function resolveMcpCreateAgent(
   });
 
   const trimmedPrompt = input.initialPrompt?.trim() ?? "";
-  const prompt = buildAgentPrompt(trimmedPrompt, input.images, input.attachments);
+  const prompt = buildAgentPrompt(
+    trimmedPrompt,
+    input.images,
+    await storePromptImages(dependencies.paseoHome, input.images, input.attachments),
+  );
   const hasPromptContent = Array.isArray(prompt) ? prompt.length > 0 : prompt.length > 0;
   return {
     config: buildMcpSessionConfig({

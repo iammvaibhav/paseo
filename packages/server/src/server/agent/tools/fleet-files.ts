@@ -6,6 +6,7 @@ import { ensureValidJson } from "../../json-utils.js";
 import { AgentAttachmentSchema, type AgentAttachment } from "../../messages.js";
 import {
   readStoredUpload,
+  writeStoredUpload,
   type ChunkedUploadProgress,
   type ChunkedUploadSessions,
   type StoredUpload,
@@ -202,7 +203,6 @@ export async function resolveFleetPromptImages(
 export async function resolveFleetAttachments(
   attachments: readonly FleetAttachmentInput[] | undefined,
   paseoHome: string | undefined,
-  uploads: ChunkedUploadSessions | null | undefined,
 ): Promise<AgentAttachment[] | undefined> {
   if (!attachments || attachments.length === 0) return undefined;
   const resolved: AgentAttachment[] = [];
@@ -218,7 +218,7 @@ export async function resolveFleetAttachments(
           ? decodeBase64(attachment.base64, `attachments[${index}].base64`)
           : Buffer.from(attachment.text, "utf8");
       resolved.push(
-        await storeUpload(uploads, {
+        await storeUpload(paseoHome, {
           fileName: attachment.name,
           mimeType: attachment.mimeType,
           bytes,
@@ -283,23 +283,16 @@ export async function forwardUploadedFilesToPeer(
 
 /** Writes one file into this host's upload store, the same store fleet_upload_file uses. */
 async function storeUpload(
-  uploads: ChunkedUploadSessions | null | undefined,
+  paseoHome: string | undefined,
   file: { fileName: string; mimeType: string; bytes: Buffer },
 ): Promise<StoredUpload> {
-  if (!uploads) throw new Error("This host has no upload store for attachments");
+  if (!paseoHome) throw new Error("This host has no upload store for attachments");
   if (file.bytes.byteLength > FLEET_UPLOAD_MAX_BYTES) {
     throw new Error(
       `${file.fileName} is ${file.bytes.byteLength} bytes; the limit is ${FLEET_UPLOAD_MAX_BYTES / 1024 / 1024} MB`,
     );
   }
-  const uploadId = await uploads.start({
-    fileName: file.fileName,
-    mimeType: file.mimeType,
-    size: file.bytes.byteLength,
-  });
-  const { file: stored } = await uploads.append(uploadId, file.bytes);
-  if (!stored) throw new Error(`upload of ${file.fileName} did not complete`);
-  return stored;
+  return writeStoredUpload(paseoHome, file);
 }
 
 function errorResult(text: string): PaseoToolResult {

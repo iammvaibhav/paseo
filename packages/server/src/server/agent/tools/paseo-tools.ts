@@ -110,7 +110,11 @@ import {
   sendWhenIdle,
   waitForAgentRunStartWithTimeout,
 } from "../agent-prompt.js";
-import { buildAgentPrompt, renderPromptAttachmentAsText } from "../prompt-attachments.js";
+import {
+  buildAgentPrompt,
+  renderPromptAttachmentAsText,
+  storePromptImages,
+} from "../prompt-attachments.js";
 import { stripAgentNamePrefix } from "../../mission-control/spawn-title.js";
 import { respondToAgentPermission } from "../permission-response.js";
 import {
@@ -4899,11 +4903,7 @@ function createToolCatalog(
       // upload store, fileIds become descriptors, and fileId images become
       // inline images, so every path below (local create, peer create)
       // carries files the target host can use.
-      const attachments = await resolveFleetAttachments(
-        rawArgs.attachments,
-        options.paseoHome,
-        options.chunkedUploads,
-      );
+      const attachments = await resolveFleetAttachments(rawArgs.attachments, options.paseoHome);
       const resolvedImages = await resolveFleetPromptImages(
         rawArgs.images,
         attachments,
@@ -5299,11 +5299,7 @@ function createToolCatalog(
       // fileIds become store descriptors, and a file that is not here fails
       // the send. Image uploads also ride as native images so the model and
       // the user row see them.
-      const attachments = await resolveFleetAttachments(
-        attachmentInputs,
-        options.paseoHome,
-        options.chunkedUploads,
-      );
+      const attachments = await resolveFleetAttachments(attachmentInputs, options.paseoHome);
       const images = await resolveFleetPromptImages(imageInputs, attachments, options.paseoHome);
       const requirePeerClient = (peerHost: string): DaemonClient => {
         const client = resolveFleetHost(peerHost);
@@ -5331,7 +5327,8 @@ function createToolCatalog(
             agentId,
             prompt,
             mode: effectiveMode,
-            attachments,
+            // A peer stores inline images itself when the send arrives there.
+            attachments: await storePromptImages(options.paseoHome, images, attachments),
             images,
             replaceOrigin: "machinery",
             recordStopOrigin: (stopAgentId, origin) =>
