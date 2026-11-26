@@ -481,8 +481,6 @@ export const ptBR: TranslationResources = {
       forkUnavailable: "Atualize o host para usar isto.",
       forkMissingWorkspace: "Este agente não está em um workspace.",
       forkFailed: "Falha ao bifurcar o chat",
-      secondOpinion: "Second opinion",
-      noOtherModels: "No other models available",
       jumpToUserMessage: "Ir para a mensagem do usuário",
       openFile: "Abrir arquivo",
       copied: "Copiado",

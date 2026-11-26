@@ -10,7 +10,6 @@ import type { AttachmentMetadata } from "@/attachments/types";
 import { createPreviewAttachmentId } from "@/attachments/utils";
 import { ChartDataProvider } from "@/components/chart-data-context";
 import { JumpToUserMessageButton } from "@/components/jump-to-user-message-button";
-import { SecondOpinionMenu, type SecondOpinionMenuProps } from "@/components/second-opinion-menu";
 import { useStableEvent } from "@/hooks/use-stable-event";
 import { getAgentAttachmentPillContent } from "@/attachments/attachment-pill-content";
 import { AssistantForkMenu, type AssistantForkTarget } from "@/components/assistant-fork-menu";
@@ -685,7 +684,6 @@ interface AssistantTurnFooterProps {
   /** Daemon-measured usage for the turn; the fork's inline metrics line reads it. */
   usage?: AgentUsage;
   turnMetricsEnabled?: boolean;
-  onSecondOpinion?: SecondOpinionMenuProps;
   model?: string | null;
   sourceContext?: AssistantTurnSourceContext;
   /** What the provider reported about the turn. Without any, the footer has no stats button. */
@@ -752,7 +750,6 @@ export const AssistantTurnFooter = memo(function AssistantTurnFooter({
   onJumpToUserMessage,
   usage,
   turnMetricsEnabled = false,
-  onSecondOpinion,
   model,
   sourceContext: _sourceContext,
   metrics,
@@ -811,10 +808,7 @@ export const AssistantTurnFooter = memo(function AssistantTurnFooter({
   return (
     <View style={assistantTurnFooterStylesheet.container}>
       <AssistantTurnFooterActions getContent={getContent} onFork={onFork} metrics={metrics} />
-      <AssistantTurnFooterForkActions
-        onJumpToUserMessage={onJumpToUserMessage}
-        onSecondOpinion={onSecondOpinion}
-      />
+      {onJumpToUserMessage ? <JumpToUserMessageButton onPress={onJumpToUserMessage} /> : null}
       {primaryLabel ? (
         <Pressable
           style={assistantTurnFooterStylesheet.labelButton}
@@ -880,27 +874,6 @@ function AssistantTurnFooterActions({
       {onFork ? <AssistantForkMenu onFork={handleFork} /> : null}
       {hasMetrics ? <TurnMetricsButton metrics={metrics} /> : null}
     </View>
-  );
-}
-
-/** Fork additions to the turn footer: jump to the prompt and ask another model. */
-function AssistantTurnFooterForkActions({
-  onJumpToUserMessage,
-  onSecondOpinion,
-}: Pick<AssistantTurnFooterProps, "onJumpToUserMessage" | "onSecondOpinion">) {
-  return (
-    <>
-      {onJumpToUserMessage ? <JumpToUserMessageButton onPress={onJumpToUserMessage} /> : null}
-      {onSecondOpinion ? (
-        <SecondOpinionMenu
-          serverId={onSecondOpinion.serverId}
-          currentProvider={onSecondOpinion.currentProvider}
-          currentModel={onSecondOpinion.currentModel}
-          cwd={onSecondOpinion.cwd}
-          onSecondOpinion={onSecondOpinion.onSecondOpinion}
-        />
-      ) : null}
-    </>
   );
 }
 

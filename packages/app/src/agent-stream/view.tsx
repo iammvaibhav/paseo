@@ -95,21 +95,17 @@ import { CHAT_COLUMN_RAIL_DATASET, useChatOutlineRail } from "@/chat-rail";
 import { getHostRuntimeStore } from "@/runtime/host-runtime";
 import { usePanelStore } from "@/stores/panel-store";
 import { useDesktopBrowserEditorUrl } from "@/workspace/use-desktop-browser-editor-url";
-import { useHostFeature, useHostFeatures } from "@/runtime/host-features";
+import { useHostFeature } from "@/runtime/host-features";
 import { planTimelineTailFetch, type TimelineGap } from "@/timeline/timeline-sync-plan";
 import { HistoryGapRow } from "./history-gap-row";
 import { isPaseoSystemMessage, PaseoSystemRow } from "@/screens/mission-control/paseo-system-row";
 import { MachineryMessageRow } from "./machinery-message-row";
 import { useMissionControlVerbose } from "@/mission-control/use-mission-control-verbose";
-import { toErrorMessage } from "@/utils/error-messages";
-import { navigateToAgent } from "@/utils/navigate-to-agent";
-import { buildSecondOpinionPrompt, truncate } from "./turn-metrics";
 import {
   CompletedTurnFooterRow,
   TurnFooter,
   resolveTurnFooterBottomSpacing,
   type AssistantTurnForkHandler,
-  type AssistantTurnSecondOpinionHandler,
   type InFlightTurnForkHandler,
   type TurnContentStrategy,
 } from "./turn-footer";
@@ -204,12 +200,7 @@ function renderStreamItemWithTurnFooter(input: {
   onJumpToUserMessage?: (itemId: string) => void;
   includeTurnFooter: boolean;
   supportsTurnMetrics?: boolean;
-  canSecondOpinion?: boolean;
-  onSecondOpinionAssistantTurn?: AssistantTurnSecondOpinionHandler;
-  serverId?: string;
-  agentProvider?: string;
   agentModel?: string | null;
-  agentCwd?: string | null;
   sourceContext?: AssistantTurnSourceContext;
 }): ReactNode {
   if (!input.content) {
@@ -228,12 +219,7 @@ function renderStreamItemWithTurnFooter(input: {
       onForkAssistantTurn={input.onForkAssistantTurn}
       onJumpToUserMessage={input.onJumpToUserMessage}
       supportsTurnMetrics={input.supportsTurnMetrics}
-      canSecondOpinion={input.canSecondOpinion}
-      onSecondOpinionAssistantTurn={input.onSecondOpinionAssistantTurn}
-      serverId={input.serverId}
-      agentProvider={input.agentProvider}
       agentModel={input.agentModel}
-      agentCwd={input.agentCwd}
       metrics={footerHost.metrics}
       sourceContext={input.sourceContext}
     />
@@ -375,16 +361,6 @@ function buildForkSource(
   };
 }
 
-/** Second opinions fork the turn into another model, so they need the host's fork and metrics. */
-function useCanSecondOpinion(input: {
-  serverId: string;
-  readOnly: boolean;
-  suppressTurnActions: boolean;
-}): boolean {
-  const supported = useHostFeatures(input.serverId, "turnMetrics", "agentForkContext", "agentFork");
-  return supported && !input.readOnly && !input.suppressTurnActions;
-}
-
 function resolveBottomOverlayControlOffset(clearance: number | undefined): number {
   return Math.max(16, clearance ?? 0);
 }
@@ -504,11 +480,6 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
       "agentForkContextCursor",
     );
     const supportsTurnMetrics = useHostFeature(resolvedServerId, "turnMetrics");
-    const canSecondOpinion = useCanSecondOpinion({
-      serverId: resolvedServerId,
-      readOnly,
-      suppressTurnActions: turnChrome.suppressTurnActions,
-    });
     const timelineEpoch = useSessionStore(
       (state) => state.sessions[resolvedServerId]?.agentTimelineCursor.get(agentId)?.epoch ?? null,
     );
@@ -681,44 +652,6 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         target,
       });
     });
-    const handleSecondOpinionAssistantTurn: AssistantTurnSecondOpinionHandler = useStableEvent(
-      async ({ target, boundary, userMessage, assistantText, editedFiles }) => {
-        if (!client) {
-          toast?.error(t("workspace.terminal.hostDisconnected"));
-          return;
-        }
-        try {
-          const prompt = buildSecondOpinionPrompt({
-            provider: context.provider ?? "the agent",
-            userText: userMessage,
-            assistantText,
-            files: editedFiles,
-          });
-          const userSummary = userMessage?.trim()
-            ? truncate(userMessage.trim().split("\n")[0] ?? target.model, 30)
-            : target.model;
-          const forkTitle = `Second opinion: ${userSummary}`;
-
-          const result = await client.forkAgent(agentId, prompt, {
-            boundaryCursor: boundary.boundaryCursor,
-            boundaryMessageId: boundary.boundaryMessageId,
-            overrides: {
-              provider: target.provider,
-              model: target.model,
-              title: forkTitle,
-            },
-          });
-
-          navigateToAgent({
-            serverId: resolvedServerId,
-            agentId: result.agentId,
-            workspaceId: context.workspaceId,
-          });
-        } catch (error) {
-          toast?.error(toErrorMessage(error) || t("message.actions.forkFailed"));
-        }
-      },
-    );
 
     // Freeze stream presentation while this tab slot is hidden to prevent offscreen
     // cell-window and turn-lifecycle renders from background agents.
@@ -1275,14 +1208,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
           onJumpToUserMessage: jumpToUserMessage,
           includeTurnFooter: turnChrome.includeTurnFooter,
           supportsTurnMetrics,
-          canSecondOpinion,
-          onSecondOpinionAssistantTurn: canSecondOpinion
-            ? handleSecondOpinionAssistantTurn
-            : undefined,
-          serverId: resolvedServerId,
-          agentProvider: context.provider,
           agentModel: context.model,
-          agentCwd: context.cwd,
           sourceContext,
         });
         const gap = gapByAnchorId.get(layoutItem.item.id);
@@ -1299,19 +1225,14 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         );
       },
       [
-        canSecondOpinion,
-        context.cwd,
         context.model,
-        context.provider,
         gapByAnchorId,
         getTurnIndent,
         handleForkAssistantTurn,
         handleLoadGap,
-        handleSecondOpinionAssistantTurn,
         jumpToUserMessage,
         loadingGapStart,
         renderStreamItemContent,
-        resolvedServerId,
         streamRenderStrategy,
         supportsAgentForkContextCursor,
         supportsTurnMetrics,
@@ -1350,21 +1271,13 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
             onForkInFlightTurn={turnChrome.suppressTurnActions ? undefined : handleForkInFlightTurn}
             density={turnChrome.density}
             supportsTurnMetrics={supportsTurnMetrics}
-            canSecondOpinion={canSecondOpinion}
-            onSecondOpinionAssistantTurn={
-              canSecondOpinion ? handleSecondOpinionAssistantTurn : undefined
-            }
-            serverId={resolvedServerId}
-            agentProvider={context.provider}
             agentModel={context.model}
-            agentCwd={context.cwd}
             sourceContext={sourceContext}
           />
         ) : null,
       [
         handleForkAssistantTurn,
         handleForkInFlightTurn,
-        handleSecondOpinionAssistantTurn,
         jumpToUserMessage,
         turnChrome.density,
         turnChrome.includeTurnFooter,
@@ -1375,11 +1288,7 @@ const AgentStreamViewComponent = forwardRef<AgentStreamViewHandle, AgentStreamVi
         streamRenderStrategy,
         supportsAgentForkContextCursor,
         supportsTurnMetrics,
-        canSecondOpinion,
-        resolvedServerId,
-        context.provider,
         context.model,
-        context.cwd,
         sourceContext,
       ],
     );

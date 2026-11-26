@@ -1,13 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentUsage } from "@getpaseo/protocol/agent-types";
-import type { StreamItem } from "@/types/stream";
-import {
-  buildSecondOpinionPrompt,
-  collectTurnEditedFiles,
-  compactTokens,
-  formatTurnMetricsLine,
-  truncate,
-} from "./turn-metrics";
+import { compactTokens, formatTurnMetricsLine } from "./turn-metrics";
 
 describe("compactTokens", () => {
   it("formats token counts compactly", () => {
@@ -22,17 +15,6 @@ describe("compactTokens", () => {
     expect(compactTokens(-10)).toBe("0");
     expect(compactTokens(NaN)).toBe("0");
     expect(compactTokens(Infinity)).toBe("0");
-  });
-});
-
-describe("truncate", () => {
-  it("leaves short strings intact", () => {
-    expect(truncate("hello", 10)).toBe("hello");
-    expect(truncate("exact", 5)).toBe("exact");
-  });
-
-  it("appends ellipsis when exceeding limit", () => {
-    expect(truncate("hello world", 5)).toBe("hello…");
   });
 });
 
@@ -96,131 +78,5 @@ describe("formatTurnMetricsLine", () => {
     const line = formatTurnMetricsLine({ metrics });
     expect(line).not.toContain("tok/s");
     expect(line).toContain("out 500");
-  });
-});
-
-describe("collectTurnEditedFiles", () => {
-  it("collects edited and written file paths from tool calls, deduplicating them", () => {
-    const items: StreamItem[] = [
-      {
-        kind: "user_message",
-        id: "u1",
-        text: "Please update the app",
-        timestamp: new Date(),
-      },
-      {
-        kind: "tool_call",
-        id: "t1",
-        timestamp: new Date(),
-        payload: {
-          source: "agent",
-          data: {
-            provider: "claude",
-            callId: "c1",
-            name: "edit",
-            status: "completed",
-            error: null,
-            detail: {
-              type: "edit",
-              filePath: "src/index.ts",
-            },
-          },
-        },
-      },
-      {
-        kind: "tool_call",
-        id: "t2",
-        timestamp: new Date(),
-        payload: {
-          source: "agent",
-          data: {
-            provider: "claude",
-            callId: "c2",
-            name: "write",
-            status: "completed",
-            error: null,
-            detail: {
-              type: "write",
-              filePath: "src/utils.ts",
-            },
-          },
-        },
-      },
-      {
-        kind: "tool_call",
-        id: "t3",
-        timestamp: new Date(),
-        payload: {
-          source: "agent",
-          data: {
-            provider: "claude",
-            callId: "c3",
-            name: "edit",
-            status: "completed",
-            error: null,
-            detail: {
-              type: "edit",
-              filePath: "src/index.ts", // duplicate
-            },
-          },
-        },
-      },
-      {
-        kind: "assistant_message",
-        id: "a1",
-        text: "Done updating",
-        timestamp: new Date(),
-      },
-    ];
-
-    const files = collectTurnEditedFiles({
-      items,
-      startIndex: 4,
-    });
-
-    expect(files).toContain("src/index.ts");
-    expect(files).toContain("src/utils.ts");
-    expect(files).toHaveLength(2);
-  });
-});
-
-describe("buildSecondOpinionPrompt", () => {
-  it("constructs bounded critique prompt with all sections", () => {
-    const prompt = buildSecondOpinionPrompt({
-      provider: "claude",
-      userText: "Fix the race condition in the auth store",
-      assistantText: "I resolved the race condition by adding a lock.",
-      files: ["packages/app/src/auth.ts"],
-    });
-
-    expect(prompt).toContain(
-      "Give a second opinion on work claude just finished in this same working copy.",
-    );
-    expect(prompt).toContain("## User request\nFix the race condition in the auth store");
-    expect(prompt).toContain(
-      "## What claude reported\nI resolved the race condition by adding a lock.",
-    );
-    expect(prompt).toContain("## Files it edited\npackages/app/src/auth.ts");
-  });
-
-  it("handles missing user message, summary, and files gracefully", () => {
-    const prompt = buildSecondOpinionPrompt({
-      provider: "claude",
-    });
-
-    expect(prompt).toContain("## User request\n(not recorded)");
-    expect(prompt).toContain("## What claude reported\n(no written summary — inspect the files)");
-    expect(prompt).toContain("## Files it edited\n(none recorded on this turn)");
-  });
-
-  it("bounds long text with truncation", () => {
-    const prompt = buildSecondOpinionPrompt({
-      provider: "claude",
-      userText: "a".repeat(1000),
-      assistantText: "b".repeat(10000),
-    });
-
-    expect(prompt.length).toBeLessThan(5000);
-    expect(prompt).toContain("…");
   });
 });

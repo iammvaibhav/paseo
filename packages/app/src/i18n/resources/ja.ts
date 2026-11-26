@@ -482,8 +482,6 @@ export const ja: TranslationResources = {
       forkUnavailable: "これを使用するにはホストを更新してください。",
       forkMissingWorkspace: "このエージェントはワークスペース内にありません。",
       forkFailed: "チャットのフォークに失敗しました",
-      secondOpinion: "Second opinion",
-      noOtherModels: "No other models available",
       jumpToUserMessage: "ユーザーメッセージへジャンプ",
       openFile: "ファイルを開く",
       copied: "コピーしました",

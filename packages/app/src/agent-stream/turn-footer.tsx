@@ -1,5 +1,4 @@
 import type { AgentMetric, AgentUsage } from "@getpaseo/protocol/agent-types";
-import { collectTurnEditedFiles } from "./turn-metrics";
 import React, { memo, useCallback, useMemo, type ReactNode } from "react";
 import { View } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
@@ -50,13 +49,6 @@ export type AssistantTurnForkHandler = (input: {
   target: AssistantForkTarget;
   boundary: AssistantTurnForkBoundary;
 }) => Promise<void> | void;
-export type AssistantTurnSecondOpinionHandler = (input: {
-  target: { provider: string; model: string };
-  boundary: AssistantTurnForkBoundary;
-  userMessage?: string;
-  assistantText?: string;
-  editedFiles?: string[];
-}) => Promise<void> | void;
 export type JumpToUserMessageHandler = (itemId: string) => void;
 /**
  * Fork handler for the turn that is still streaming. It deliberately takes no
@@ -81,12 +73,7 @@ export const TurnFooter = memo(function TurnFooter({
   onForkInFlightTurn,
   density = "comfortable",
   supportsTurnMetrics,
-  canSecondOpinion,
-  onSecondOpinionAssistantTurn,
-  serverId,
-  agentProvider,
   agentModel,
-  agentCwd,
   sourceContext,
 }: {
   isRunning: boolean;
@@ -99,12 +86,7 @@ export const TurnFooter = memo(function TurnFooter({
   onForkInFlightTurn?: InFlightTurnForkHandler;
   density?: TurnFooterDensity;
   supportsTurnMetrics?: boolean;
-  canSecondOpinion?: boolean;
-  onSecondOpinionAssistantTurn?: AssistantTurnSecondOpinionHandler;
-  serverId?: string;
-  agentProvider?: string;
   agentModel?: string | null;
-  agentCwd?: string | null;
   sourceContext?: AssistantTurnSourceContext;
 }) {
   // Compact grid tiles must not keep the live elapsed row or the completed
@@ -137,12 +119,7 @@ export const TurnFooter = memo(function TurnFooter({
       onForkAssistantTurn={onForkAssistantTurn}
       onJumpToUserMessage={onJumpToUserMessage}
       supportsTurnMetrics={supportsTurnMetrics}
-      canSecondOpinion={canSecondOpinion}
-      onSecondOpinionAssistantTurn={onSecondOpinionAssistantTurn}
-      serverId={serverId}
-      agentProvider={agentProvider}
       agentModel={agentModel}
-      agentCwd={agentCwd}
       metrics={host.metrics}
       sourceContext={sourceContext}
     />
@@ -159,12 +136,7 @@ export const CompletedTurnFooterRow = memo(function CompletedTurnFooterRow({
   onForkAssistantTurn,
   onJumpToUserMessage,
   supportsTurnMetrics,
-  canSecondOpinion,
-  onSecondOpinionAssistantTurn,
-  serverId,
-  agentProvider,
   agentModel,
-  agentCwd,
   metrics,
   sourceContext,
 }: {
@@ -177,12 +149,7 @@ export const CompletedTurnFooterRow = memo(function CompletedTurnFooterRow({
   onForkAssistantTurn?: AssistantTurnForkHandler;
   onJumpToUserMessage?: JumpToUserMessageHandler;
   supportsTurnMetrics?: boolean;
-  canSecondOpinion?: boolean;
-  onSecondOpinionAssistantTurn?: AssistantTurnSecondOpinionHandler;
-  serverId?: string;
-  agentProvider?: string;
   agentModel?: string | null;
-  agentCwd?: string | null;
   metrics?: AgentUsage;
   sourceContext?: AssistantTurnSourceContext;
 }) {
@@ -198,12 +165,7 @@ export const CompletedTurnFooterRow = memo(function CompletedTurnFooterRow({
         onForkAssistantTurn={onForkAssistantTurn}
         onJumpToUserMessage={onJumpToUserMessage}
         supportsTurnMetrics={supportsTurnMetrics}
-        canSecondOpinion={canSecondOpinion}
-        onSecondOpinionAssistantTurn={onSecondOpinionAssistantTurn}
-        serverId={serverId}
-        agentProvider={agentProvider}
         agentModel={agentModel}
-        agentCwd={agentCwd}
         metrics={metrics}
         sourceContext={sourceContext}
       />
@@ -274,12 +236,7 @@ function CompletedTurnFooter({
   onForkAssistantTurn,
   onJumpToUserMessage,
   supportsTurnMetrics = false,
-  canSecondOpinion = false,
-  onSecondOpinionAssistantTurn,
-  serverId,
-  agentProvider,
   agentModel,
-  agentCwd,
   metrics: explicitMetrics,
   sourceContext,
 }: {
@@ -292,12 +249,7 @@ function CompletedTurnFooter({
   onForkAssistantTurn?: AssistantTurnForkHandler;
   onJumpToUserMessage?: JumpToUserMessageHandler;
   supportsTurnMetrics?: boolean;
-  canSecondOpinion?: boolean;
-  onSecondOpinionAssistantTurn?: AssistantTurnSecondOpinionHandler;
-  serverId?: string;
-  agentProvider?: string;
   agentModel?: string | null;
-  agentCwd?: string | null;
   metrics?: AgentUsage;
   sourceContext?: AssistantTurnSourceContext;
 }) {
@@ -346,59 +298,6 @@ function CompletedTurnFooter({
     onJumpToUserMessage(precedingUserMessage.id);
   }, [onJumpToUserMessage, precedingUserMessage]);
 
-  const handleSecondOpinion = useCallback(
-    async (target: { provider: string; model: string }) => {
-      if (!boundary || !onSecondOpinionAssistantTurn) return;
-      const assistantText = getContent();
-      const userMessage = precedingUserMessage?.text;
-      const editedFiles = collectTurnEditedFiles({
-        items,
-        startIndex,
-        getNeighborIndex: strategy.getNeighborIndex,
-      });
-      await onSecondOpinionAssistantTurn({
-        target,
-        boundary,
-        userMessage,
-        assistantText,
-        editedFiles,
-      });
-    },
-    [
-      boundary,
-      onSecondOpinionAssistantTurn,
-      getContent,
-      precedingUserMessage?.text,
-      items,
-      startIndex,
-      strategy.getNeighborIndex,
-    ],
-  );
-
-  const secondOpinionProps = useMemo(
-    () =>
-      canSecondOpinion && boundary && onSecondOpinionAssistantTurn && serverId
-        ? {
-            serverId,
-            currentProvider: agentProvider,
-            currentModel: metrics?.model ?? agentModel ?? null,
-            cwd: agentCwd,
-            onSecondOpinion: handleSecondOpinion,
-          }
-        : undefined,
-    [
-      agentCwd,
-      agentModel,
-      agentProvider,
-      boundary,
-      canSecondOpinion,
-      handleSecondOpinion,
-      metrics?.model,
-      onSecondOpinionAssistantTurn,
-      serverId,
-    ],
-  );
-
   return (
     <View style={stylesheet.turnFooterSlot}>
       <AssistantTurnFooter
@@ -412,7 +311,6 @@ function CompletedTurnFooter({
         onJumpToUserMessage={
           precedingUserMessage && onJumpToUserMessage ? handleJumpToUserMessage : undefined
         }
-        onSecondOpinion={secondOpinionProps}
         sourceContext={sourceContext}
         metrics={turnMetrics}
       />
