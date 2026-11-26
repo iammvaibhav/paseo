@@ -158,7 +158,7 @@ the linux-arm64 dev host only; prod gets the binary.
 
 ```sh
 bun install --frozen-lockfile
-bun run build          # dist/omp-proxy (about 120 MB, linux-arm64)
+bun run build          # dist/omp-proxy (about 170 MB with the native library, linux-arm64)
 bun run typecheck
 ```
 
