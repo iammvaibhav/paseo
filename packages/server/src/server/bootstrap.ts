@@ -2285,9 +2285,6 @@ export async function createPaseoDaemon(
   // first request does not pay for the vault. Values are never logged.
   void warmVaultSecrets([
     ...Object.values(centralMissionControlConfig.get().routingSecrets ?? {}),
-    ...(loadPersistedConfig(config.paseoHome).daemon?.mcp?.remoteClients ?? []).flatMap((client) =>
-      Object.values(client.notify?.headers ?? {}),
-    ),
     ...(loadPersistedConfig(config.paseoHome).daemon?.mcp?.notifyTargets ?? []).flatMap((target) =>
       Object.values(target.headers ?? {}).concat(target.signingSecret ?? []),
     ),
@@ -2792,11 +2789,9 @@ export async function createPaseoDaemon(
     named: ReadonlyMap<string, McpWebhookTarget>,
   ): McpNotifyTarget | null =>
     "name" in ref ? (named.get(ref.name) ?? null) : { kind: "agent", agentId: ref.agent };
-  // Arms a call's watches on this host. `host` set: the agent runs on that
-  // peer and the watch follows it from here.
+  // Arms a call's watches on this host, which runs the agent.
   const armNotifyHere = async (
     request: FleetMcpNotifyArmRequest,
-    host?: string,
   ): Promise<FleetMcpNotifyArmResult> => {
     const named = loadNamedNotifyTargets();
     const bindings = request.targets.map((ref) => ({ ref, target: bindNotifyTarget(ref, named) }));
@@ -2813,7 +2808,6 @@ export async function createPaseoDaemon(
         client: request.client,
         tool: request.tool,
         agentId: request.agentId,
-        ...(host ? { host } : {}),
         turnId: request.turnId,
         nextTurnAfter: request.nextTurnAfter,
         context: request.context,
@@ -2822,7 +2816,7 @@ export async function createPaseoDaemon(
         waitForAgent,
       });
     }
-    return { armedOn: host ? `local (following ${host})` : "local" };
+    return { armedOn: "local" };
   };
   // The agent's own host runs its watch: here when this host runs the agent,
   // else on the peer that does (NOTIFY_ARM_PEER_TOOL).
@@ -2847,9 +2841,6 @@ export async function createPaseoDaemon(
       }));
     if (response.ok) return { armedOn: host };
     const error = response.error ?? "the peer refused";
-    // COMPAT(notify-targets): added in v0.17.5, remove after 2026-12-10. A peer
-    // too old to arm its own watch: follow its agent from here instead.
-    if (error.includes("cannot be run by a peer")) return armNotifyHere(request, host);
     return { error: `${host}: ${error}` };
   };
   missionControlService.setNotifyArmHandler(async (args) => {
@@ -2871,13 +2862,7 @@ export async function createPaseoDaemon(
   });
   const restoreMcpFinishWatches = async () => {
     const { restored } = await mcpFinishNotifier.restore(async (clientName, ref) => {
-      // COMPAT(notify-targets): added in v0.17.5, remove after 2026-12-10. A
-      // watch armed before notifyTargets posts to its client's own webhook.
-      const target = ref
-        ? bindNotifyTarget(ref, loadNamedNotifyTargets())
-        : (loadPersistedConfig(config.paseoHome).daemon?.mcp?.remoteClients?.find(
-            (client) => client.name === clientName,
-          )?.notify ?? null);
+      const target = bindNotifyTarget(ref, loadNamedNotifyTargets());
       if (!target) return null;
       const { catalog } = await getFleetMcpCatalog(clientName);
       return { target, waitForAgent: createFleetMcpWaitForAgent(catalog) };

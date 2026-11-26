@@ -294,11 +294,7 @@ export interface McpFinishNotifier {
    * has settled.
    */
   restore(
-    resolveTarget: (
-      client: string,
-      /** null: a watch armed before notifyTargets; its client's legacy webhook. */
-      ref: McpNotifyTargetRef | null,
-    ) => Promise<McpClientBinding | null>,
+    resolveTarget: (client: string, ref: McpNotifyTargetRef) => Promise<McpClientBinding | null>,
   ): Promise<{ restored: number; settled: Promise<void> }>;
   /**
    * Daemon shutdown: stop every watch without delivering and flush the
@@ -341,13 +337,8 @@ interface ArmedEntry {
   host: string | null;
   tool: string;
   context: string | null;
-  /** Where the watch delivers. Absent in older entries: see notifyTarget. */
-  targetRef?: McpNotifyTargetRef;
-  /**
-   * COMPAT(notify-targets): added in v0.17.5, remove after 2026-12-10. Entries
-   * from before targetRef: a named target, or null → the client's own webhook.
-   */
-  notifyTarget?: string | null;
+  /** Where the watch delivers. */
+  targetRef: McpNotifyTargetRef;
   /** Bind to the first turn that starts after this one (the call's prompt waits for it to end). */
   nextTurnAfter?: string | null;
   /** The turn the watch is bound to: the create/send's turn, else the run in progress. */
@@ -428,8 +419,7 @@ interface GroupArmedEntry {
   client: string;
   tool: string;
   context: string | null;
-  /** Absent in older entries: the client's own webhook. */
-  targetRef?: McpNotifyTargetRef;
+  targetRef: McpNotifyTargetRef;
   perAgent: boolean;
   /** Epoch ms after which the group gives up. */
   deadline: number;
@@ -607,10 +597,9 @@ interface AttemptResult {
   retryInMs: number | null;
 }
 
-/** The webhook name a watch reports as `notifyTarget`; null for an agent target or a legacy client webhook. */
+/** The webhook name a watch reports as `notifyTarget`; null for an agent target. */
 function targetName(armed: ArmedEntry | GroupArmedEntry): string | null {
-  if (armed.targetRef) return "name" in armed.targetRef ? armed.targetRef.name : null;
-  return armed.event === "armed" ? (armed.notifyTarget ?? null) : null;
+  return "name" in armed.targetRef ? armed.targetRef.name : null;
 }
 
 function eventKind(reason: NotifyReason, final: boolean): NotifyTargetEvent {
@@ -1330,7 +1319,7 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
       host: member?.host ?? null,
       tool: armed.tool,
       context: armed.context,
-      ...(armed.targetRef ? { targetRef: armed.targetRef } : {}),
+      targetRef: armed.targetRef,
       turnId: member?.turnId ?? null,
       deadline: armed.deadline,
     },
@@ -1739,13 +1728,13 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
           });
           return null;
         }
-        const legacyName = armed.event === "armed" ? (armed.notifyTarget ?? null) : null;
-        const ref = armed.targetRef ?? (legacyName ? { name: legacyName } : null);
-        const binding = await resolveTarget(armed.client, ref).catch(() => null);
+        // Entries from before v0.17.5 carry no target; their callers have moved to notifyTargets.
+        const ref: McpNotifyTargetRef | undefined = armed.targetRef;
+        const binding = ref ? await resolveTarget(armed.client, ref).catch(() => null) : null;
         if (!binding) {
           const why = ref
             ? `notify target "${describeTargetRef(ref)}" is not configured`
-            : `client "${armed.client}" has no notify webhook configured`;
+            : "armed before notifyTargets; no target to deliver to";
           record({ event: "gave_up", ...ids, why });
           return null;
         }

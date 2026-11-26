@@ -102,18 +102,6 @@ export const RemoteMcpClientSchema = z
   .object({
     name: z.string().min(1),
     tokenHash: BcryptHashSchema,
-    /**
-     * COMPAT(notify-targets): ignored except to restore finish watches armed before
-     * per-call notifyTargets (v0.17.4); remove after 2026-12-10. Callbacks go only to
-     * the targets a call names (daemon.mcp.notifyTargets).
-     */
-    notify: z
-      .object({
-        url: z.string().url(),
-        headers: z.record(z.string(), z.string()).optional(),
-      })
-      .strict()
-      .optional(),
   })
   .strict();
 

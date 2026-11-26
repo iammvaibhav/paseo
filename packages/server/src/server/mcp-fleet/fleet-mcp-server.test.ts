@@ -482,20 +482,19 @@ describe("notifyTargets for MCP clients", () => {
     await close();
   });
 
-  // COMPAT(notify-targets): added in v0.17.5, remove after 2026-12-10.
-  test("pre-notifyTargets arguments still arm the same targets", async () => {
-    const { armed, server } = setup();
+  test("notifyOnFinish and notifyTarget are refused, naming notifyTargets; the tool never runs", async () => {
+    const { toolCalls, armed, server } = setup();
     const { client, close } = await connect(server);
-    await client.callTool({
-      name: "fleet_create_agent",
-      arguments: { notifyOnFinish: true, notifyTarget: "n8n-reviews" },
+    const result = await client.callTool({
+      name: "fleet_send_prompt",
+      arguments: { agentId: "agent-9", notifyOnFinish: true, notifyTarget: "n8n-reviews" },
     });
-    await client.callTool({ name: "fleet_create_agent", arguments: { notifyOnFinish: true } });
-    expect(armed.map((request) => request.targets)).toEqual([
-      [{ name: "n8n-reviews" }],
-      // notifyOnFinish alone: the target named like the client.
-      [{ name: "grok-bot" }],
-    ]);
+    expect(result.isError).toBe(true);
+    const text = extractFirstTextContent(result as { content: unknown[] });
+    expect(text).toContain('"notifyOnFinish" (removed: pass notifyTargets');
+    expect(text).toContain('"notifyTarget" (removed: pass notifyTargets');
+    expect(toolCalls).toEqual([]);
+    expect(armed).toEqual([]);
     await close();
   });
 

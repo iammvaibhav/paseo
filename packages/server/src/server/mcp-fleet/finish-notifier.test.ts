@@ -291,6 +291,7 @@ describe("createMcpFinishNotifier", () => {
     const arm = (client: string, agentId: string) =>
       subject.arm({
         client,
+        targetRef: { name: client },
         target: { url },
         agentId,
         turnId: `turn-${agentId}`,
@@ -1094,9 +1095,9 @@ describe("createMcpFinishNotifier", () => {
     expect(received.map((r) => r.body.notifyTarget)).toEqual(["n8n-reviews"]);
   });
 
-  it("restores a watch armed before notifyTargets to its client's own webhook", async () => {
+  it("drops a watch armed before notifyTargets instead of guessing where it goes", async () => {
     await mkdir(path.dirname(journalPath), { recursive: true });
-    // A pre-v0.17.5 journal entry: no targetRef, notifyTarget null.
+    // A pre-v0.17.5 journal entry: no targetRef.
     await writeFile(
       journalPath,
       `${JSON.stringify({
@@ -1113,14 +1114,12 @@ describe("createMcpFinishNotifier", () => {
         deadline: Date.now() + 60_000,
       })}\n`,
     );
-    const refs: unknown[] = [];
-    const { settled } = await daemon({}).restore(async (_client, ref) => {
-      refs.push(ref);
+    let asked = 0;
+    const { restored } = await daemon({}).restore(async () => {
+      asked += 1;
       return { target: { url }, waitForAgent: async () => result({ turnId: "turn-1" }) };
     });
-    await settled;
-    expect(refs).toEqual([null]);
-    expect(received.map((r) => r.body.notifyTarget)).toEqual([null]);
+    expect({ restored, asked }).toEqual({ restored: 0, asked: 0 });
   });
 
   it("sends a target only the events it takes; a skipped finish ends the watch unsent", async () => {

@@ -136,15 +136,6 @@ const NOTIFY_INPUT_SHAPE = {
     .max(MAX_NOTIFY_CONTEXT_LENGTH)
     .optional()
     .describe("Free-form tag echoed back verbatim as `context` in every callback."),
-  // COMPAT(notify-targets): added in v0.17.5, remove after 2026-12-10. Callers from before notifyTargets.
-  notifyOnFinish: z
-    .boolean()
-    .optional()
-    .describe(
-      'Deprecated: use notifyTargets. true → the target named like your client ("grok-bot").',
-    ),
-  // COMPAT(notify-targets): added in v0.17.5, remove after 2026-12-10.
-  notifyTarget: z.string().min(1).optional().describe("Deprecated: use notifyTargets: [name]."),
 };
 
 // Parsed off the tool arguments before the catalog tool runs.
@@ -169,7 +160,10 @@ function inputObjectSchema(tool: PaseoToolDefinition): z.ZodObject | null {
   else if (schema instanceof z.ZodObject) object = schema;
   else if (schema instanceof z.ZodType) return null;
   else object = z.object(schema);
-  return Object.hasOwn(object.shape, "serverId") ? object.omit({ serverId: true }) : object;
+  // notifyOnFinish wakes the calling agent's thread; /mcp/fleet callers name targets instead.
+  if (Object.hasOwn(object.shape, "serverId")) object = object.omit({ serverId: true });
+  if (Object.hasOwn(object.shape, "notifyOnFinish")) object = object.omit({ notifyOnFinish: true });
+  return object;
 }
 
 // fleet_agent_status notify:true calls back the targets in notifyTargets.
@@ -223,13 +217,17 @@ function closestArgName(key: string, known: readonly string[]): string | null {
   return ranked && ranked.distance <= Math.max(2, Math.floor(key.length / 3)) ? ranked.name : null;
 }
 
-// Arguments a tool took before upstream retired them, keyed "tool.arg". The
+// Arguments a tool took before they were retired, keyed "tool.arg". The
 // error says what replaced them, since a fixed-shape caller (an n8n node)
 // cannot guess.
 const RETIRED_ARGS: Record<string, string> = {
   // COMPAT(retired-background-arg): upstream #5039 dropped it (merged 2026-10-29); remove after 2027-01-31.
   "fleet_create_agent.background":
     "removed: fleet_create_agent never waits for the run, so drop it",
+  "fleet_create_agent.notifyOnFinish": 'removed: pass notifyTargets, e.g. ["grok-bot"]',
+  "fleet_create_agent.notifyTarget": 'removed: pass notifyTargets: ["<name>"]',
+  "fleet_send_prompt.notifyOnFinish": 'removed: pass notifyTargets, e.g. ["grok-bot"]',
+  "fleet_send_prompt.notifyTarget": 'removed: pass notifyTargets: ["<name>"]',
 };
 
 /**
@@ -440,12 +438,7 @@ export async function createFleetMcpServer(options: FleetMcpServerOptions): Prom
   const resolveTargetRefs = (
     notify: z.infer<typeof NotifyArgsSchema>,
   ): McpNotifyTargetRef[] | { error: string } => {
-    let entries = notify.notifyTargets ?? [];
-    // COMPAT(notify-targets): added in v0.17.5, remove after 2026-12-10.
-    if (!notify.notifyTargets && notify.notifyOnFinish !== false) {
-      if (notify.notifyTarget) entries = [notify.notifyTarget];
-      else if (notify.notifyOnFinish === true && options.clientName) entries = [options.clientName];
-    }
+    const entries = notify.notifyTargets ?? [];
     const refs: McpNotifyTargetRef[] = [];
     for (const entry of entries) {
       const ref: McpNotifyTargetRef = typeof entry === "string" ? { name: entry } : entry;
@@ -587,13 +580,7 @@ export async function createFleetMcpServer(options: FleetMcpServerOptions): Prom
     args: Record<string, unknown>,
     signal: AbortSignal | undefined,
   ): Promise<PaseoToolResult> => {
-    const {
-      notifyOnFinish: _notify,
-      notifyContext: _context,
-      notifyTarget: _target,
-      notifyTargets: _targets,
-      ...toolArgs
-    } = args;
+    const { notifyContext: _context, notifyTargets: _targets, ...toolArgs } = args;
     const notify = parseNotifyArgs(args);
     if ("error" in notify) return errorResult(notify.error);
     if (CATALOG_NOTIFY_TOOLS.has(name)) toolArgs.notifyOnFinish = false;
