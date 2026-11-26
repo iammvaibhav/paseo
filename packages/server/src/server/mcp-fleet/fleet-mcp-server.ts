@@ -236,10 +236,6 @@ const RETIRED_ARGS: Record<string, string> = {
   // COMPAT(retired-background-arg): upstream #5039 dropped it (merged 2026-10-29); remove after 2027-01-31.
   "fleet_create_agent.background":
     "removed: fleet_create_agent never waits for the run, so drop it",
-  "fleet_create_agent.notifyOnFinish": 'removed: pass notifyTargets, e.g. ["grok-bot"]',
-  "fleet_create_agent.notifyTarget": 'removed: pass notifyTargets: ["<name>"]',
-  "fleet_send_prompt.notifyOnFinish": 'removed: pass notifyTargets, e.g. ["grok-bot"]',
-  "fleet_send_prompt.notifyTarget": 'removed: pass notifyTargets: ["<name>"]',
 };
 
 /**

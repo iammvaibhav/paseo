@@ -1728,14 +1728,13 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
           });
           return null;
         }
-        // Entries from before v0.17.5 carry no target; their callers have moved to notifyTargets.
-        const ref: McpNotifyTargetRef | undefined = armed.targetRef;
-        const binding = ref ? await resolveTarget(armed.client, ref).catch(() => null) : null;
+        const binding = await resolveTarget(armed.client, armed.targetRef).catch(() => null);
         if (!binding) {
-          const why = ref
-            ? `notify target "${describeTargetRef(ref)}" is not configured`
-            : "armed before notifyTargets; no target to deliver to";
-          record({ event: "gave_up", ...ids, why });
+          record({
+            event: "gave_up",
+            ...ids,
+            why: `notify target "${describeTargetRef(armed.targetRef)}" is not configured`,
+          });
           return null;
         }
         record({ event: "restored", ...ids });

@@ -512,22 +512,6 @@ describe("notifyTargets for MCP clients", () => {
     await close();
   });
 
-  test("notifyOnFinish and notifyTarget are refused, naming notifyTargets; the tool never runs", async () => {
-    const { toolCalls, armed, server } = setup();
-    const { client, close } = await connect(server);
-    const result = await client.callTool({
-      name: "fleet_send_prompt",
-      arguments: { agentId: "agent-9", notifyOnFinish: true, notifyTarget: "n8n-reviews" },
-    });
-    expect(result.isError).toBe(true);
-    const text = extractFirstTextContent(result as { content: unknown[] });
-    expect(text).toContain('"notifyOnFinish" (removed: pass notifyTargets');
-    expect(text).toContain('"notifyTarget" (removed: pass notifyTargets');
-    expect(toolCalls).toEqual([]);
-    expect(armed).toEqual([]);
-    await close();
-  });
-
   test("rejects an unknown target, a URL, or {agent: self} before the tool runs", async () => {
     const { toolCalls, armed, server } = setup();
     const { client, close } = await connect(server);

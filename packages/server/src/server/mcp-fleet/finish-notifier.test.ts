@@ -1,6 +1,6 @@
 import { createHmac } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer, type IncomingHttpHeaders, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -1093,33 +1093,6 @@ describe("createMcpFinishNotifier", () => {
     await settled;
     expect(resolved).toEqual([["grok-bot", { name: "n8n-reviews" }]]);
     expect(received.map((r) => r.body.notifyTarget)).toEqual(["n8n-reviews"]);
-  });
-
-  it("drops a watch armed before notifyTargets instead of guessing where it goes", async () => {
-    await mkdir(path.dirname(journalPath), { recursive: true });
-    // A pre-v0.17.5 journal entry: no targetRef.
-    await writeFile(
-      journalPath,
-      `${JSON.stringify({
-        event: "armed",
-        ts: new Date().toISOString(),
-        watchId: "legacy-1",
-        client: "grok-bot",
-        agentId: "agent-1",
-        host: null,
-        tool: "fleet_create_agent",
-        context: null,
-        notifyTarget: null,
-        turnId: "turn-1",
-        deadline: Date.now() + 60_000,
-      })}\n`,
-    );
-    let asked = 0;
-    const { restored } = await daemon({}).restore(async () => {
-      asked += 1;
-      return { target: { url }, waitForAgent: async () => result({ turnId: "turn-1" }) };
-    });
-    expect({ restored, asked }).toEqual({ restored: 0, asked: 0 });
   });
 
   it("sends a target only the events it takes; a skipped finish ends the watch unsent", async () => {
