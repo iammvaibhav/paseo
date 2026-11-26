@@ -1,6 +1,7 @@
 import { renderPromptAttachmentAsText } from "../prompt-attachments.js";
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
+import type { PromptSender } from "@getpaseo/protocol/messages";
 import type {
   AgentPromptContentBlock,
   AgentPromptInput,
@@ -26,8 +27,27 @@ const sourceSchema = z.discriminatedUnion("kind", [
     title: z.string().min(1).optional(),
     event: z.enum(["finished", "errored", "permission-required", "closed"]),
   }),
+  // A named caller that is not an agent: an MCP client or a notify target (grok-bot, n8n-wren).
+  z.object({
+    kind: z.literal("client-message"),
+    name: z.string().min(1),
+  }),
 ]);
 export type AgentPromptSource = z.infer<typeof sourceSchema>;
+
+/** The envelope source a wire sender labels its prompt with. */
+export function promptSourceFromSender(
+  sender: PromptSender | undefined,
+): AgentPromptSource | undefined {
+  if (!sender) return undefined;
+  if (sender.kind === "client") return { kind: "client-message", name: sender.name };
+  return {
+    kind: "agent-message",
+    agentId: sender.agentId,
+    ...(sender.serverId ? { serverId: sender.serverId } : {}),
+    ...(sender.title ? { title: sender.title } : {}),
+  };
+}
 
 interface AgentMessage {
   id: string;
@@ -75,6 +95,9 @@ export function formatAgentMessage(message: AgentMessage): string {
   if (source?.kind === "change-request-update") {
     return `<paseo-system version="1" kind="change-request-update" source-url="${escapeXml(source.url)}" message-id="${escapeXml(message.id)}">\n${escapeXml(message.text)}\n</paseo-system>`;
   }
+  if (source?.kind === "client-message") {
+    return `<paseo-system version="1" kind="client-message" source-name="${escapeXml(source.name)}" message-id="${escapeXml(message.id)}">\n${escapeXml(message.text)}\n</paseo-system>`;
+  }
   const attributes = source
     ? `kind="${source.kind}" source-agent-id="${escapeXml(source.agentId)}"`
     : 'kind="user-message"';
@@ -110,6 +133,7 @@ export function parseAgentMessage(text: string): AgentMessage | null {
     event: attributes.get("event"),
     title: attributes.get("source-agent-title"),
     url: attributes.get("source-url"),
+    name: attributes.get("source-name"),
   });
   if (!source.success) return null;
   return { id, source: source.data, text: body };
@@ -226,12 +250,16 @@ function projectAgentMessage(item: AgentTimelineItem): AgentTimelineItem | null 
     type: "tool_call",
     callId: `paseo-agent-message:${message.id}`,
     agentMessage: {
-      event: source.kind === "agent-message" ? "message" : source.event,
-      sender: {
-        id: source.agentId,
-        ...(source.serverId ? { serverId: source.serverId } : {}),
-        ...(source.title ? { title: source.title } : {}),
-      },
+      event: source.kind === "agent-notification" ? source.event : "message",
+      sender:
+        source.kind === "client-message"
+          ? // The name doubles as the title, so a client that predates kind still reads it.
+            { id: source.name, title: source.name, kind: "client" }
+          : {
+              id: source.agentId,
+              ...(source.serverId ? { serverId: source.serverId } : {}),
+              ...(source.title ? { title: source.title } : {}),
+            },
       text: message.text,
     },
     // COMPAT(agentMessageToolEnvelope): added in v0.11.1; remove after 2027-04-08

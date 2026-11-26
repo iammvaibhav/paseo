@@ -1,6 +1,10 @@
 import { DiffSession } from "./diff/index.js";
 import { type WorkspaceRuntimeStore } from "./workspace-runtime-store/index.js";
-import type { AgentMessageBehavior, AgentMessageDelivery } from "./agent/agent-messages/index.js";
+import {
+  promptSourceFromSender,
+  type AgentMessageBehavior,
+  type AgentMessageDelivery,
+} from "./agent/agent-messages/index.js";
 import { AgentDirectory, type BackgroundVisibility } from "./agent/directory.js";
 import { ConnectedHostSession } from "./connected-hosts/index.js";
 import type { ConnectedHosts } from "./connected-hosts/index.js";
@@ -6383,7 +6387,7 @@ export class Session {
           initialPrompt,
           source: msg.callerAgentId
             ? { kind: "agent-message", agentId: msg.callerAgentId }
-            : undefined,
+            : promptSourceFromSender(msg.sender),
           clientMessageId,
           outputSchema,
           images,
@@ -11015,6 +11019,7 @@ export class Session {
         agentStorage: this.agentStorage,
         agentId,
         prompt,
+        source: promptSourceFromSender(msg.sender),
         replaceRunning: false,
         sessionMode: msg.sessionMode,
         beforeDispatch,
@@ -11027,6 +11032,7 @@ export class Session {
       agentStorage: this.agentStorage,
       agentId,
       prompt,
+      source: promptSourceFromSender(msg.sender),
       replaceOrigin: "user",
       messageId: msg.messageId,
       activeTurnBehavior,
@@ -11105,19 +11111,31 @@ export class Session {
       const fromPerson = this.clientType === "mobile" || this.clientType === "browser";
       const send = async (beforeDispatch: () => Promise<void>) => {
         if (msg.sourceAgentId) {
+          const senderTitle =
+            msg.sourceAgentTitle ??
+            (!msg.sourceAgentServerId
+              ? (this.agentManager.getAgent(msg.sourceAgentId)?.config.title ?? undefined)
+              : undefined);
           await beforeDispatch();
           const receipt = this.agentMessages.enqueue({
             recipientId: agentId,
             messageId: msg.messageId,
             prompt,
-            source: {
-              kind: "agent-message",
-              agentId: msg.sourceAgentId,
-              serverId: msg.sourceAgentServerId,
-              title: !msg.sourceAgentServerId
-                ? (this.agentManager.getAgent(msg.sourceAgentId)?.config.title ?? undefined)
-                : undefined,
-            },
+            // A report about the agent (it finished, errored...) or a message from it.
+            source: msg.sourceAgentEvent
+              ? {
+                  kind: "agent-notification",
+                  agentId: msg.sourceAgentId,
+                  serverId: msg.sourceAgentServerId,
+                  title: senderTitle,
+                  event: msg.sourceAgentEvent,
+                }
+              : {
+                  kind: "agent-message",
+                  agentId: msg.sourceAgentId,
+                  serverId: msg.sourceAgentServerId,
+                  title: senderTitle,
+                },
             activeTurnBehavior: this.agentSenderBehavior(requested),
             sessionMode: msg.sessionMode,
             clearPendingPermissions: false,
@@ -11143,6 +11161,7 @@ export class Session {
             agentStorage: this.agentStorage,
             agentId,
             prompt,
+            source: promptSourceFromSender(msg.sender),
             sessionMode: msg.sessionMode,
             logger: this.sessionLogger,
             waitForIdle: async () => {

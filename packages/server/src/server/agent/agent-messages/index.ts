@@ -1,4 +1,5 @@
 export {
+  envelopeMessage,
   formatAgentMessage,
   parseAgentMessage,
   parseAgentMessages,
@@ -6,6 +7,7 @@ export {
   projectAgentMessages,
   formatSystemNotificationPrompt,
   isSystemInjectedEnvelope,
+  promptSourceFromSender,
   type AgentPromptSource,
 } from "./envelope.js";
 export { createAgentMessageDelivery, type AgentMessageDelivery } from "./delivery.js";

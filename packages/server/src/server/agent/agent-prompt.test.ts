@@ -392,6 +392,26 @@ test("agent envelopes round-trip opaque sender IDs and XML-sensitive messages", 
   expect(parseAgentMessage(encoded.replace('version="1"', 'version="1" version="1"'))).toBeNull();
 });
 
+test("a named caller's prompt round-trips and shows as a message from that client", () => {
+  const message = {
+    id: "fleet-1",
+    source: { kind: "client-message" as const, name: 'n8n-"wren" <flow>' },
+    text: "Summarise the thread",
+  };
+  const encoded = formatAgentMessage(message);
+  expect(parseAgentMessage(encoded)).toEqual(message);
+  expect(projectAgentMessages({ type: "user_message", text: encoded })).toEqual([
+    expect.objectContaining({
+      type: "tool_call",
+      agentMessage: {
+        event: "message",
+        sender: { id: 'n8n-"wren" <flow>', title: 'n8n-"wren" <flow>', kind: "client" },
+        text: "Summarise the thread",
+      },
+    }),
+  ]);
+});
+
 test("a delivered batch projects each message and completion separately in order", () => {
   const entries = [
     {

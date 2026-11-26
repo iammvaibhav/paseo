@@ -25,7 +25,7 @@ export function buildAgentMessageDisplay(message: AgentMessage): AgentMessageDis
     ...(summary ? { summary } : {}),
     detail: {
       type: "plain_text",
-      text: `From agent: ${message.sender.id}\n\n${message.text}`,
+      text: `${message.sender.kind === "client" ? "From" : "From agent"}: ${message.sender.id}\n\n${message.text}`,
     },
   };
 }

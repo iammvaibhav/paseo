@@ -2,6 +2,7 @@ import { useState, useCallback, useLayoutEffect, useMemo, useRef, type ReactNode
 import { View, type LayoutChangeEvent, type ViewStyle } from "react-native";
 import { StyleSheet } from "react-native-unistyles";
 import { useTranslation } from "react-i18next";
+import { Webhook } from "lucide-react-native";
 import type { AgentMessage } from "@getpaseo/protocol/agent-message";
 import { Button } from "@/components/ui/button";
 import { EdgeFade } from "@/components/ui/edge-fade";
@@ -90,6 +91,33 @@ export function MessageSender({
   sender: AgentMessage["sender"];
   serverId?: string;
 }) {
+  if (sender.kind === "client") return <ClientSender name={sender.title ?? sender.id} />;
+  return <AgentSender sender={sender} serverId={serverId} />;
+}
+
+function renderClientIcon(color: string) {
+  return <Webhook size={16} color={color} />;
+}
+
+/** A named caller that is not an agent (grok-bot, an n8n flow): nothing to open. */
+function ClientSender({ name }: { name: string }) {
+  const { t } = useTranslation();
+  return (
+    <Button
+      variant="ghost"
+      size="sm"
+      leftIcon={renderClientIcon}
+      style={styles.sender}
+      textStyle={styles.senderText}
+      numberOfLines={1}
+      accessibilityRole="text"
+    >
+      {t("turnSummary.sentBy", { name })}
+    </Button>
+  );
+}
+
+function AgentSender({ sender, serverId }: { sender: AgentMessage["sender"]; serverId?: string }) {
   const { t } = useTranslation();
   const host = sender.serverId ?? serverId;
   const agent = useSessionStore((state) => {

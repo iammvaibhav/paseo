@@ -290,6 +290,7 @@ describe("notifyTargets for MCP clients", () => {
     } = {},
   ) {
     const toolCalls: Array<Record<string, unknown>> = [];
+    const senders: unknown[] = [];
     const armed: FleetMcpNotifyArmRequest[] = [];
     const armedGroups: ArmMcpGroupNotification[] = [];
     const armedStatusReports: ArmMcpStatusReportNotification[] = [];
@@ -306,8 +307,9 @@ describe("notifyTargets for MCP clients", () => {
     const tools = new Map<string, PaseoToolDefinition>([
       [
         "fleet_create_agent",
-        tool("fleet_create_agent", async (input) => {
+        tool("fleet_create_agent", async (input, context) => {
           toolCalls.push(input as Record<string, unknown>);
+          senders.push(context.promptSender ?? null);
           return {
             content: [],
             structuredContent: { agentId: "agent-9", status: "running", turnId: "turn-9" },
@@ -316,8 +318,9 @@ describe("notifyTargets for MCP clients", () => {
       ],
       [
         "fleet_send_prompt",
-        tool("fleet_send_prompt", async (input) => {
+        tool("fleet_send_prompt", async (input, context) => {
           toolCalls.push(input as Record<string, unknown>);
+          senders.push(context.promptSender ?? null);
           return {
             content: [],
             structuredContent: options.sendResult ?? {
@@ -383,6 +386,7 @@ describe("notifyTargets for MCP clients", () => {
     };
     return {
       toolCalls,
+      senders,
       armed,
       armedGroups,
       armedStatusReports,
@@ -444,6 +448,32 @@ describe("notifyTargets for MCP clients", () => {
         context: "essay-42",
         targets: [{ name: "n8n-reviews" }, { agent: "boss-1" }],
       },
+    ]);
+    await close();
+  });
+
+  test("the one target a call names is the prompt's sender; none or several name no one", async () => {
+    const { senders, server } = setup();
+    const { client, close } = await connect(server);
+    const agentId = "0d5cad7f-4e5d-40f2-8f9f-dbe9ae0d9675";
+    await client.callTool({
+      name: "fleet_create_agent",
+      arguments: { notifyTargets: ["n8n-reviews"] },
+    });
+    await client.callTool({
+      name: "fleet_send_prompt",
+      arguments: { agentId: "agent-9", notifyTargets: [{ agent: agentId }] },
+    });
+    await client.callTool({ name: "fleet_send_prompt", arguments: { agentId: "agent-9" } });
+    await client.callTool({
+      name: "fleet_send_prompt",
+      arguments: { agentId: "agent-9", notifyTargets: ["grok-bot", { agent: agentId }] },
+    });
+    expect(senders).toEqual([
+      { kind: "client", name: "n8n-reviews" },
+      { kind: "agent", agentId },
+      null,
+      null,
     ]);
     await close();
   });

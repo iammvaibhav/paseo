@@ -3,7 +3,13 @@ import type { ChangeRequestWatches } from "../change-request-watches/index.js";
 import { changeRequestStatusSchema } from "../../../services/change-request-source.js";
 import { registerPluginTools } from "./plugin-tools.js";
 import type { FinishSubscriptions, FinishRegistration } from "../finish-subscriptions/index.js";
-import { isSystemInjectedEnvelope, type AgentMessageDelivery } from "../agent-messages/index.js";
+import {
+  envelopeMessage,
+  isSystemInjectedEnvelope,
+  promptSourceFromSender,
+  type AgentMessageDelivery,
+  type AgentPromptSource,
+} from "../agent-messages/index.js";
 import {
   createHostResolver,
   HostOperationRejectedError,
@@ -35,6 +41,7 @@ import {
   ActiveTurnBehaviorSchema,
   AgentActiveTurnBehaviorSchema,
   AgentProfileSchema,
+  type PromptSender,
 } from "@getpaseo/protocol/messages";
 import { slugify } from "@getpaseo/protocol/branch-slug";
 import type { DaemonConfigStore } from "../../daemon-config-store.js";
@@ -4184,6 +4191,56 @@ function createToolCatalog(
     return peerManager.getPeerClient(resolution.peerName);
   };
 
+  /** An agent's title and the server it runs on; null when no host knows it. */
+  const describeAgentSender = async (
+    agentId: string,
+  ): Promise<{ serverId?: string; title?: string } | null> => {
+    const live = agentManager.getAgent(agentId);
+    const stored = live ? null : await agentStorage.get(agentId).catch(() => null);
+    if (live || stored) {
+      return { serverId, title: (live ? live.config.title : stored?.title)?.trim() };
+    }
+    const resolution = await fleetIdIndex.resolveFleetId(agentId).catch(() => null);
+    if (!resolution || resolution.kind === "unknown") return null;
+    let client: DaemonClient | null = null;
+    try {
+      client = resolveFleetHost(resolution.host);
+    } catch {
+      return null;
+    }
+    const fetched = await client?.fetchAgent(agentId).catch(() => null);
+    return {
+      serverId: client?.getLastServerInfoMessage()?.serverId,
+      title: fetched?.agent.title?.trim(),
+    };
+  };
+  /**
+   * Who a fleet prompt is from: the sender a /mcp/fleet call named, else the calling agent.
+   * An agent sender gets its title and host here, so the receiving host can label it even
+   * when it does not run that agent. Lookups that fail leave the id alone.
+   */
+  const resolvePromptSender = async (
+    named: PromptSender | undefined,
+  ): Promise<PromptSender | undefined> => {
+    // An agent's own catalog speaks for that agent; a remote MCP client names its sender itself.
+    const caller = callerAgentId && !isMcpClient ? callerAgentId : undefined;
+    const sender: PromptSender | undefined =
+      named ?? (caller ? { kind: "agent", agentId: caller } : undefined);
+    if (sender?.kind !== "agent" || sender.title) return sender;
+    const described = await describeAgentSender(sender.agentId);
+    return {
+      ...sender,
+      ...(described?.serverId ? { serverId: described.serverId } : {}),
+      ...(described?.title ? { title: described.title } : {}),
+    };
+  };
+  /** The sender field for a peer send or create; a host without promptSenders gets none. */
+  const peerPromptSender = (
+    client: DaemonClient,
+    sender: PromptSender | undefined,
+  ): { sender?: PromptSender } =>
+    sender && client.getLastServerInfoMessage()?.features?.promptSenders === true ? { sender } : {};
+
   /** Every host this daemon knows, with its names, for errors that teach the fix. */
   const knownFleetHostsText = (): string => describeFleetHosts(fleetHosts.directory());
   /** A host argument no host answers to: the resolver's reason (unknown or ambiguous) and the fleet. */
@@ -4860,7 +4917,7 @@ function createToolCatalog(
         plan: z.record(z.string(), z.unknown()).nullable().optional(),
       },
     },
-    async (inputArgs) => {
+    async (inputArgs, context) => {
       // Before placement: routing would otherwise send the pasted file to its judge.
       assertFleetPromptText(inputArgs.initialPrompt, "initialPrompt");
       // A path names a directory on one host. Without host, placement picks
@@ -4976,6 +5033,7 @@ function createToolCatalog(
       // A fleet agent on this host: run the spawn plan (placement, worktree,
       // settings) as a top-level agent for every caller. create_agent is the
       // tool for an agent's own subagents.
+      const sender = await resolvePromptSender(context.promptSender);
       const createLocally = async (): Promise<PaseoToolResult> => {
         const spawnPlan = buildMcpSpawnPlan({
           serverId: serverId ?? "",
@@ -5011,6 +5069,7 @@ function createToolCatalog(
           agentMode: plan.agentMode,
           ...(plan.worktree ? { worktree: plan.worktree } : {}),
           ...(plan.isolation ? { isolation: plan.isolation } : {}),
+          ...(sender ? { source: promptSourceFromSender(sender) } : {}),
           notifyOnFinish: false,
         });
         const turn = plan.initialPrompt
@@ -5074,7 +5133,10 @@ function createToolCatalog(
         if (settings?.agentMode) {
           assertPeerSupportsAgentModes(client, host);
         }
-        const payload = buildPeerCreateAgentPayload(args);
+        const payload = {
+          ...buildPeerCreateAgentPayload(args),
+          ...peerPromptSender(client, sender),
+        };
         const peerAttachments = await forwardUploadedFilesToPeer(attachments, client);
         if (peerAttachments) payload.attachments = peerAttachments;
         // A directory create without a workspace gets its own: the peer's
@@ -5255,15 +5317,18 @@ function createToolCatalog(
         guidance: z.string().optional(),
       },
     },
-    async ({
-      host,
-      agentId,
-      prompt,
-      mode,
-      images: imageInputs,
-      attachments: attachmentInputs,
-      agentMode,
-    }) => {
+    async (
+      {
+        host,
+        agentId,
+        prompt,
+        mode,
+        images: imageInputs,
+        attachments: attachmentInputs,
+        agentMode,
+      },
+      context,
+    ) => {
       // Fail fast (spec 03): agentId is the UUID agent id family — a title or
       // an mcp_ proposal id is never an agent. Reject at call time with
       // guidance so the model self-corrects in one step.
@@ -5313,6 +5378,7 @@ function createToolCatalog(
         return client;
       };
       const effectiveMode = mode ?? "steer";
+      const sender = await resolvePromptSender(context.promptSender);
       // Local dispatch: a Commander/Verifier dispatch superseding a busy
       // worker's run is machinery-originated — the superseded run must keep
       // the failure treatment, never read as a user interruption.
@@ -5337,6 +5403,7 @@ function createToolCatalog(
             recordStopOrigin: (stopAgentId, origin) =>
               missionControlService?.recordStopOrigin(stopAgentId, origin),
             ...(agentMode ? { agentMode } : {}),
+            ...(sender ? { source: promptSourceFromSender(sender) } : {}),
             logger: childLogger,
           });
         } catch (error) {
@@ -5389,6 +5456,7 @@ function createToolCatalog(
         dispatchMode: effectiveMode,
         ...(images ? { images } : {}),
         ...(peerAttachments ? { attachments: peerAttachments } : {}),
+        ...peerPromptSender(client, sender),
       });
       const wasIdle = before?.agent.status !== "running";
       // A steer the peer's agent could not take waits for its running turn to end.
@@ -6240,6 +6308,7 @@ async function dispatchInterrupt(params: {
   recordStopOrigin?: (agentId: string, origin: "user" | "machinery") => void;
   /** Client optimistic message id; rides the run so the echoed user row carries it. */
   messageId?: string;
+  source?: AgentPromptSource;
   logger: Logger;
 }): Promise<"interrupt"> {
   const {
@@ -6252,6 +6321,7 @@ async function dispatchInterrupt(params: {
     replaceOrigin,
     recordStopOrigin,
     messageId,
+    source,
     logger,
   } = params;
   // Interrupt turns echo the submitted prompt as a user row naturally; stamp
@@ -6268,6 +6338,7 @@ async function dispatchInterrupt(params: {
     agentStorage,
     agentId,
     prompt: promptWithAttachments,
+    source,
     replaceOrigin,
     messageId,
     logger,
@@ -6411,6 +6482,8 @@ export async function dispatchLocalPromptMode(params: {
    * this prompt in every mode (live steer, steer, interrupt, queue).
    */
   agentMode?: AgentModeId;
+  /** Who sent the prompt when no person typed it; the agent's chat labels it. */
+  source?: AgentPromptSource;
   logger: Logger;
 }): Promise<"steer" | "interrupt" | "queue" | "steer-queued"> {
   const {
@@ -6423,6 +6496,7 @@ export async function dispatchLocalPromptMode(params: {
     attachments,
     images,
     messageId,
+    source,
     logger,
   } = params;
   const classification = params.classification ?? "instruction";
@@ -6444,20 +6518,24 @@ export async function dispatchLocalPromptMode(params: {
       replaceOrigin,
       recordStopOrigin,
       messageId,
+      source,
       logger,
     });
   }
   if (mode === "steer") {
-    const liveSteer = await tryOmpLiveSteer({
-      agentManager,
-      agentId,
-      prompt,
-      attachments,
-      images,
-      classification,
-      messageId,
-      onOutOfBandSteer: params.onOutOfBandSteer,
-    });
+    // A labelled prompt takes the provider's own steer below, which carries its envelope.
+    const liveSteer = source
+      ? null
+      : await tryOmpLiveSteer({
+          agentManager,
+          agentId,
+          prompt,
+          attachments,
+          images,
+          classification,
+          messageId,
+          onOutOfBandSteer: params.onOutOfBandSteer,
+        });
     if (liveSteer) {
       return liveSteer;
     }
@@ -6477,6 +6555,7 @@ export async function dispatchLocalPromptMode(params: {
         agentStorage,
         agentId,
         prompt: promptWithAttachments,
+        source,
         replaceOrigin,
         messageId,
         logger,
@@ -6488,11 +6567,14 @@ export async function dispatchLocalPromptMode(params: {
     }
     // A provider with its own steer takes the prompt into the running turn.
     if (agentManager.canSteer(agentId)) {
+      const steer = source
+        ? envelopeMessage(promptWithAttachments, source, messageId)
+        : { prompt: promptWithAttachments, messageId };
       const steered = await agentManager
         .steerAgentRun(
           agentId,
-          promptWithAttachments,
-          messageId ? { clientMessageId: messageId } : undefined,
+          steer.prompt,
+          steer.messageId ? { clientMessageId: steer.messageId } : undefined,
         )
         .catch(() => ({ status: "unavailable" as const }));
       if (steered.status === "accepted") return "steer";
@@ -6504,6 +6586,7 @@ export async function dispatchLocalPromptMode(params: {
       agentStorage,
       agentId,
       prompt: promptWithAttachments,
+      source,
       messageId,
       logger,
       waitForIdle: () => waitForAgentIdle(agentManager, agentId, QUEUED_STEER_WAIT_MS),
@@ -6528,6 +6611,7 @@ export async function dispatchLocalPromptMode(params: {
     agentStorage,
     agentId,
     prompt: promptWithAttachments,
+    source,
     replaceRunning: false,
     messageId,
     logger,

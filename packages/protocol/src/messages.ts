@@ -1877,6 +1877,21 @@ export const FetchAgentRequestMessageSchema = z.object({
   agentId: z.string(),
 });
 
+/**
+ * Who sent a prompt no person typed: an agent, or a named caller (an MCP client or a
+ * notify target such as grok-bot or n8n-wren). It labels the prompt; delivery is unchanged.
+ */
+export const PromptSenderSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("agent"),
+    agentId: z.string().min(1),
+    serverId: z.string().min(1).optional(),
+    title: z.string().min(1).optional(),
+  }),
+  z.object({ kind: z.literal("client"), name: z.string().min(1) }),
+]);
+export type PromptSender = z.infer<typeof PromptSenderSchema>;
+
 export const SendAgentMessageRequestSchema = z.object({
   type: z.literal("send_agent_message_request"),
   requestId: z.string(),
@@ -1886,6 +1901,11 @@ export const SendAgentMessageRequestSchema = z.object({
   /** Opaque sender identity for agent-originated prompts. */
   sourceAgentId: z.string().min(1).optional(),
   sourceAgentServerId: z.string().min(1).optional(),
+  sourceAgentTitle: z.string().min(1).optional(),
+  /** With sourceAgentId: a report about that agent (it finished, errored...), not a message from it. */
+  sourceAgentEvent: z.enum(["finished", "errored", "permission-required", "closed"]).optional(),
+  /** Labels a prompt sent without sourceAgentId (a fleet send); needs features.promptSenders. */
+  sender: PromptSenderSchema.optional(),
   sessionMode: z.string().optional(),
   messageId: z.string().optional(), // Client-provided ID for deduplication
   /** queue needs an agent sender. */
@@ -2283,6 +2303,8 @@ export const CreateAgentRequestMessageSchema = z.object({
   // Optional caller context lets managed CLI invocations use the same daemon-owned
   // workspace and parentage policy as agent-scoped MCP creation.
   callerAgentId: z.string().optional(),
+  /** Labels the initial prompt when there is no callerAgentId; needs features.promptSenders. */
+  sender: PromptSenderSchema.optional(),
   worktreeName: z.string().optional(),
   initialPrompt: z.string().optional(),
   clientMessageId: z.string().optional(),
@@ -4841,6 +4863,8 @@ export const ServerInfoStatusPayloadSchema = z
         canonicalSubmittedPrompts: z.boolean().optional(),
         agentMessageProvenance: z.boolean().optional(),
         agentMessageBatching: z.boolean().optional(),
+        // sender / sourceAgentTitle / sourceAgentEvent on sends and creates.
+        promptSenders: z.boolean().optional(),
         // COMPAT(agentActiveTurnBehaviors): added in v0.17.2, remove gate after 2027-05-22.
         agentActiveTurnBehaviors: z.boolean().optional(),
         // COMPAT(agentTurnIdentity): accept peers that observed pre-release v0.2.6 through 2027-01-31.

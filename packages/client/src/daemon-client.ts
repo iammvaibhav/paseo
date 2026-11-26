@@ -512,6 +512,12 @@ export interface AgentMessageReceipt {
 export interface SendMessageOptions {
   sourceAgentId?: string;
   sourceAgentServerId?: string;
+  /** The source agent's title when the host does not run it. Needs features.promptSenders. */
+  sourceAgentTitle?: string;
+  /** A report about the source agent (it finished...), not a message from it. Needs features.promptSenders. */
+  sourceAgentEvent?: SendAgentMessageRequest["sourceAgentEvent"];
+  /** Labels a prompt sent without sourceAgentId. Needs features.promptSenders. */
+  sender?: SendAgentMessageRequest["sender"];
   sessionMode?: string;
   messageId?: string;
   /**
@@ -548,6 +554,8 @@ export interface CreateAgentRequestOptions extends AgentConfigOverrides {
   env?: CreateAgentRequestMessage["env"];
   workspaceId?: string;
   callerAgentId?: string;
+  /** Labels the initial prompt when there is no callerAgentId. Needs features.promptSenders. */
+  sender?: CreateAgentRequestMessage["sender"];
   initialPrompt?: string;
   idempotencyKey?: string;
   clientMessageId?: string;
@@ -3549,6 +3557,9 @@ export class DaemonClient {
     }
     if (options.background !== undefined) this.requireBackgroundCreation(options);
     if (options.metadata !== undefined) this.requireEntityMetadata();
+    if (options.sender && this.lastServerInfoMessage?.features?.promptSenders !== true) {
+      throw new Error("Update the Paseo host to create agents with a named sender.");
+    }
     const config = resolveAgentConfig(options);
     const result = await this.creations.createAgent({
       ...options,
@@ -4612,23 +4623,29 @@ export class DaemonClient {
   // Agent Interaction
   // ============================================================================
 
+  /** Each sender option needs the host feature that reads it; a host without it would drop it. */
+  private assertSenderOptionsSupported(options: SendMessageOptions): void {
+    const features = this.lastServerInfoMessage?.features;
+    if (options.sourceAgentId && features?.agentMessageProvenance !== true) {
+      throw new Error("Update the Paseo host to send messages with agent provenance.");
+    }
+    if (
+      (options.sourceAgentTitle || options.sourceAgentEvent || options.sender) &&
+      features?.promptSenders !== true
+    ) {
+      throw new Error("Update the Paseo host to send messages with a named sender.");
+    }
+    if (options.sourceAgentServerId && features?.agentMessageBatching !== true) {
+      throw new Error("Update the Paseo host to send messages with a qualified agent address.");
+    }
+  }
+
   async sendAgentMessage(
     agentId: string,
     text: string,
     options: SendMessageOptions = {},
   ): Promise<AgentMessageReceipt> {
-    if (
-      options.sourceAgentId &&
-      this.lastServerInfoMessage?.features?.agentMessageProvenance !== true
-    ) {
-      throw new Error("Update the Paseo host to send messages with agent provenance.");
-    }
-    if (
-      options.sourceAgentServerId &&
-      this.lastServerInfoMessage?.features?.agentMessageBatching !== true
-    ) {
-      throw new Error("Update the Paseo host to send messages with a qualified agent address.");
-    }
+    this.assertSenderOptionsSupported(options);
     const activeTurnBehavior = this.activeTurnBehaviorForHost(options);
     const requestId = this.createRequestId();
     const messageId = options.messageId ?? crypto.randomUUID();
@@ -4639,6 +4656,9 @@ export class DaemonClient {
       text,
       sourceAgentId: options.sourceAgentId,
       sourceAgentServerId: options.sourceAgentServerId,
+      sourceAgentTitle: options.sourceAgentTitle,
+      sourceAgentEvent: options.sourceAgentEvent,
+      sender: options.sender,
       sessionMode: options.sessionMode,
       ...(messageId ? { messageId } : {}),
       activeTurnBehavior,

@@ -133,3 +133,37 @@ test("an older client's agent steer still waits for the running turn to end", as
     await close();
   }
 });
+
+test("a peer's report about an agent arrives as that agent's finish, not a message from it", async () => {
+  const { client, runtime, recipient, sender, close } = await createWorkingRecipient();
+  try {
+    await client.sendAgentMessage(recipient.id, "Agent X finished its turn.", {
+      sourceAgentId: sender.id,
+      sourceAgentServerId: "srv_peer",
+      sourceAgentTitle: "Show project",
+      sourceAgentEvent: "finished",
+      activeTurnBehavior: "steer",
+    });
+    await expect.poll(() => runtime.prompts.length).toBe(2);
+    expect(runtime.prompts[1]).toContain('kind="agent-notification"');
+    expect(runtime.prompts[1]).toContain('source-agent-title="Show project"');
+    expect(runtime.prompts[1]).toContain('event="finished"');
+  } finally {
+    await close();
+  }
+});
+
+test("a fleet steer from a named caller reaches the agent labelled with that caller", async () => {
+  const { client, runtime, recipient, close } = await createWorkingRecipient();
+  try {
+    await client.sendAgentMessage(recipient.id, "Summarise the thread", {
+      dispatchMode: "steer",
+      sender: { kind: "client", name: "n8n-wren" },
+    });
+    await expect.poll(() => runtime.prompts.length).toBe(2);
+    expect(runtime.prompts[1]).toContain('kind="client-message" source-name="n8n-wren"');
+    expect(runtime.prompts[1]).toContain("Summarise the thread");
+  } finally {
+    await close();
+  }
+});

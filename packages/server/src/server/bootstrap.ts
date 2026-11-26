@@ -2765,9 +2765,17 @@ export async function createPaseoDaemon(
       const client = peer.state === "online" ? peerManager?.getPeerClient(peer.name) : null;
       const hosted = await client?.fetchAgent(delivery.agentId).catch(() => null);
       if (!client || !hosted) continue;
+      // A peer that predates promptSenders shows the report as a message from the agent.
+      const labelled = client.getLastServerInfoMessage()?.features?.promptSenders === true;
       await client.sendAgentMessage(delivery.agentId, delivery.prompt, {
         sourceAgentId: delivery.aboutAgentId,
         sourceAgentServerId: serverId,
+        ...(labelled
+          ? {
+              sourceAgentEvent: delivery.event,
+              ...(delivery.aboutTitle ? { sourceAgentTitle: delivery.aboutTitle } : {}),
+            }
+          : {}),
         activeTurnBehavior: "steer",
       });
       return;

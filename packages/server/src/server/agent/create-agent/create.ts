@@ -134,6 +134,8 @@ export interface CreateAgentFromMcpInput {
   }) => void;
   onWorktreeCreated?: (createdWorktree: CreatePaseoWorktreeWorkflowResult) => void;
   callerAgentId?: string;
+  /** Who the initial prompt is from; defaults to the caller agent. */
+  source?: AgentPromptSource;
   callerContext?: {
     lockedCwd?: string;
     allowCustomCwd?: boolean;
@@ -407,9 +409,9 @@ async function resolveMcpCreateAgent(
       ...(isAgentModeId(input.agentMode) ? { agentMode: input.agentMode } : {}),
     },
     prompt: hasPromptContent ? prompt : undefined,
-    source: input.callerAgentId
-      ? { kind: "agent-message", agentId: input.callerAgentId }
-      : undefined,
+    source:
+      input.source ??
+      (input.callerAgentId ? { kind: "agent-message", agentId: input.callerAgentId } : undefined),
     createdWorktree,
     promptFailure: input.promptFailure ?? "log",
   };

@@ -546,6 +546,30 @@ describe("fleet_send_prompt mode", () => {
     });
   });
 
+  test("a named sender rides the peer send only when the peer can label it", async () => {
+    let features: Record<string, boolean> = { promptSenders: true };
+    const { client, peerManager } = createFakePeerHarness({
+      client: { getLastServerInfoMessage: () => ({ features }) } as Partial<DaemonClient>,
+    });
+    const catalog = createCatalog(peerManager);
+    const send = () =>
+      catalog.executeTool(
+        "fleet_send_prompt",
+        { host: "macbook", agentId: SEND_AGENT_UUID, prompt: "review this" },
+        { promptSender: { kind: "client", name: "n8n-reviews" } },
+      );
+    await send();
+    expect(client.sendAgentMessage).toHaveBeenLastCalledWith(SEND_AGENT_UUID, "review this", {
+      dispatchMode: "steer",
+      sender: { kind: "client", name: "n8n-reviews" },
+    });
+    features = {};
+    await send();
+    expect(client.sendAgentMessage).toHaveBeenLastCalledWith(SEND_AGENT_UUID, "review this", {
+      dispatchMode: "steer",
+    });
+  });
+
   test.each([
     ["interrupt", "closed"],
     ["interrupt", "archived"],

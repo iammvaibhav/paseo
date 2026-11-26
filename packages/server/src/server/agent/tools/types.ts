@@ -1,5 +1,6 @@
 import type { z } from "zod";
 import type { ProviderPaseoToolsPolicy } from "@getpaseo/protocol/provider-config";
+import type { PromptSender } from "@getpaseo/protocol/messages";
 
 export class PaseoToolInputError extends Error {
   readonly status = 400;
@@ -24,6 +25,11 @@ export interface PaseoToolExecutionContext {
   sessionKey?: string;
   /** The remote MCP client making the call (/mcp/fleet clientName), for provenance. */
   callerClient?: string;
+  /**
+   * Who a fleet_create_agent / fleet_send_prompt prompt is from: the one notify target a
+   * /mcp/fleet call named. Absent: the calling agent, if any.
+   */
+  promptSender?: PromptSender;
 }
 
 export interface PaseoToolResult {

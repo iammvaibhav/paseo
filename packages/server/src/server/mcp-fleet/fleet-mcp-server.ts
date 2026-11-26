@@ -7,6 +7,7 @@ import type {
   ServerRequest,
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+import type { PromptSender } from "@getpaseo/protocol/messages";
 
 import { addModelVisibleStructuredContent } from "../agent/tools/paseo-tool-serialization.js";
 import {
@@ -203,6 +204,17 @@ function editDistance(a: string, b: string): number {
     previous = current;
   }
   return previous[b.length]!;
+}
+
+/**
+ * Who a fleet prompt is from. Every caller here shares one MCP client, so the only sign of
+ * the sender is the callback target it named for itself: one target labels the prompt, none
+ * or several leave it unlabelled rather than guess.
+ */
+function senderFromTargets(refs: readonly McpNotifyTargetRef[]): PromptSender | undefined {
+  const ref = refs.length === 1 ? refs[0] : undefined;
+  if (!ref) return undefined;
+  return "name" in ref ? { kind: "client", name: ref.name } : { kind: "agent", agentId: ref.agent };
 }
 
 function closestArgName(key: string, known: readonly string[]): string | null {
@@ -584,7 +596,11 @@ export async function createFleetMcpServer(options: FleetMcpServerOptions): Prom
     const notify = parseNotifyArgs(args);
     if ("error" in notify) return errorResult(notify.error);
     if (CATALOG_NOTIFY_TOOLS.has(name)) toolArgs.notifyOnFinish = false;
-    const result = await catalog.executeTool(name, toolArgs, { signal });
+    const promptSender = senderFromTargets(notify.refs);
+    const result = await catalog.executeTool(name, toolArgs, {
+      signal,
+      ...(promptSender ? { promptSender } : {}),
+    });
     if (notify.refs.length === 0 || result.isError) return result;
 
     const structured = (result.structuredContent ?? {}) as Record<string, unknown>;
