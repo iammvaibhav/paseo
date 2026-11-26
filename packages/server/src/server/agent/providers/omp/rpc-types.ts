@@ -555,6 +555,8 @@ export const OmpRuntimeEventSchema = z.discriminatedUnion("type", [
       thinkingLevel: z.string().optional(),
       // The user's selector ("auto") when it differs from the level OMP runs.
       configured: z.string().optional(),
+      // Set only when OMP's auto effort picked the level for the prompt about to run.
+      resolved: z.string().optional(),
     })
     .passthrough(),
 ]);

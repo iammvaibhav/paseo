@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { sanitizeAgentMetrics, withModelMetric } from "./agent-metrics.js";
+import { sanitizeAgentMetrics, withEffortMetric, withModelMetric } from "./agent-metrics.js";
 
 describe("sanitizeAgentMetrics", () => {
   it("keeps well-formed metrics in the provider's order", () => {
@@ -61,5 +61,24 @@ describe("withModelMetric", () => {
   it("adds nothing when the model is unknown", () => {
     expect(withModelMetric([], null)).toEqual([]);
     expect(withModelMetric([], undefined)).toEqual([]);
+  });
+});
+
+describe("withEffortMetric", () => {
+  it("puts the effort right after the model", () => {
+    const metrics = [
+      { label: "Model", value: "gpt-5.4" },
+      { label: "Speed", value: "80 tok/s" },
+    ];
+    expect(withEffortMetric(metrics, "high")).toEqual([
+      { label: "Model", value: "gpt-5.4" },
+      { label: "Effort", value: "high" },
+      { label: "Speed", value: "80 tok/s" },
+    ]);
+  });
+
+  it("keeps an effort the provider already reported", () => {
+    const metrics = [{ label: "Effort", value: "medium" }];
+    expect(withEffortMetric(metrics, "auto")).toEqual(metrics);
   });
 });

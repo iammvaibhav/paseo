@@ -89,7 +89,7 @@ import {
 import { buildArchivedAgentRecord, type ArchivedStoredAgentRecord } from "./agent-archive.js";
 import type { JsonValue, ProviderOptions } from "@getpaseo/protocol/agent-types";
 import { toStoredAgentRecord } from "./agent-projections.js";
-import { sanitizeAgentMetrics, withModelMetric } from "./agent-metrics.js";
+import { sanitizeAgentMetrics, withEffortMetric, withModelMetric } from "./agent-metrics.js";
 import {
   applyProviderOptionsPatch,
   exposeFeatureValuesToHook,
@@ -7500,11 +7500,16 @@ export class AgentManager implements DaemonPermissionHost {
     if (params.event.type !== "turn_completed") return params.event;
     const { agent } = params;
     const { metrics: reported, ...event } = params.event;
-    // A replayed turn may have run on another model than the agent has now.
-    const model = params.options?.fromHistory
-      ? null
-      : (agent.runtimeInfo?.model ?? agent.config.model);
-    const metrics = withModelMetric(sanitizeAgentMetrics(reported), model);
+    // A replayed turn may have run on another model and effort than the agent has now.
+    const live = !params.options?.fromHistory;
+    const model = live ? (agent.runtimeInfo?.model ?? agent.config.model) : null;
+    const effort = live
+      ? (agent.runtimeInfo?.thinkingOptionId ?? agent.config.thinkingOptionId)
+      : null;
+    const metrics = withEffortMetric(
+      withModelMetric(sanitizeAgentMetrics(reported), model),
+      effort,
+    );
     if (metrics.length === 0) return event;
     if (params.terminalDisposition !== "stale") {
       this.stampTurnMetrics(agent.id, metrics, event.turnId);

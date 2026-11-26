@@ -43,3 +43,20 @@ export function withModelMetric(
   if (!model || metrics.some((metric) => metric.label.toLowerCase() === "model")) return metrics;
   return [{ label: "Model", value: model }, ...metrics];
 }
+
+/**
+ * The effort (thinking option) a turn ran at, placed right after its Model row. Providers that
+ * resolve a selector such as "auto" report the resolved level themselves; this fills in the
+ * configured level for the rest.
+ */
+export function withEffortMetric(
+  metrics: AgentMetric[],
+  effort: string | null | undefined,
+): AgentMetric[] {
+  if (!effort || metrics.some((metric) => metric.label.toLowerCase() === "effort")) {
+    return metrics;
+  }
+  const row: AgentMetric = { label: "Effort", value: effort };
+  const modelIndex = metrics.findIndex((metric) => metric.label.toLowerCase() === "model");
+  return [...metrics.slice(0, modelIndex + 1), row, ...metrics.slice(modelIndex + 1)];
+}

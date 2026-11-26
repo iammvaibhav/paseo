@@ -876,6 +876,44 @@ describe("OMP agent client and session", () => {
     expect(omp.eventTypes().filter((type) => type === "thinking_option_changed")).toHaveLength(2);
   });
 
+  test("shows the effort OMP's auto effort picked, under the prompt and in the turn stats", async () => {
+    const omp = new OmpHarness();
+    await omp.start({ thinkingOptionId: "auto" });
+    const promptStarted = omp.runtime().nextPrompt();
+    const run = omp.requireSession().run("fix the flaky test");
+    await promptStarted;
+    const runtime = omp.runtime();
+    runtime.beginTurn();
+    runtime.emit(
+      OmpRuntimeEventSchema.parse({
+        type: "thinking_level_changed",
+        thinkingLevel: "high",
+        configured: "auto",
+        resolved: "high",
+      }),
+    );
+    runtime.acceptPrompt("fix the flaky test", "user-1");
+    runtime.streamAssistantText("fixed");
+    runtime.finishTurn();
+    await run;
+
+    const timeline = omp.timeline();
+    const effortIndex = timeline.findIndex(
+      (item) => item.type === "notification" && item.message === "Effort: high (auto)",
+    );
+    const promptIndex = timeline.findIndex((item) => item.type === "user_message");
+    // OMP picks the level before it echoes the prompt; the line still lands under the prompt.
+    expect(promptIndex).toBeGreaterThanOrEqual(0);
+    expect(effortIndex).toBeGreaterThan(promptIndex);
+    const completed = omp.streamEvents().find((event) => event.type === "turn_completed");
+    expect(completed?.type === "turn_completed" ? completed.metrics : undefined).toContainEqual({
+      label: "Effort",
+      value: "high",
+    });
+    // The selector stays "auto"; only the turn records the level it ran at.
+    expect((await omp.requireSession().getRuntimeInfo()).thinkingOptionId).toBe("auto");
+  });
+
   test("shows OMP's fallback model without persisting it as the selected model", async () => {
     const omp = new OmpHarness();
     await omp.start({ model: "openrouter/google/gemini-3.8-flash" });

@@ -134,6 +134,7 @@ import { mapOmpToolDetail } from "./tool-call-mapper.js";
 import { OmpUsagePoller, type OmpUsagePollScheduler } from "./usage-poller.js";
 import { ompReplyStep, ompSessionMetrics } from "./metrics.js";
 import { type MeasuredStep, measuredTurnMetrics, TurnMeter } from "../turn-metrics.js";
+import { withEffortMetric } from "../../agent-metrics.js";
 import { createSessionMetricsReporter } from "../metrics.js";
 import {
   buildOmpRpcUiPermissionResponse,
@@ -855,6 +856,12 @@ export class OmpAgentSession implements AgentSession {
   private readonly pendingPromptResults = new Map<string, OmpPromptResult>();
   private pendingNoTurnCompletionAbort: AbortController | null = null;
   private lastKnownThinkingOptionId: string | null;
+  /** The level OMP actually runs. Differs from the selector while that is "auto". */
+  private resolvedThinkingLevel: string | null = null;
+  /** An auto-effort pick waiting for its prompt's user message to be echoed. */
+  private pendingAutoEffortLevel: string | null = null;
+  /** `turnId:level` of the last auto-effort line shown, so a re-settle does not repeat it. */
+  private shownAutoEffortKey: string | null = null;
   private manualCompactionRunning = false;
   private commandCache: AgentSlashCommand[] | null = null;
   private readonly subagentIndex = new OmpSubagentIndex();
@@ -1075,6 +1082,7 @@ export class OmpAgentSession implements AgentSession {
     this.activeTurnStarted = false;
     this.outOfBandTurnStartAnnounced = false;
     this.activeTurnHasUserMessage = false;
+    this.pendingAutoEffortLevel = null;
     this.activePromptRequestId = null;
     this.clearNoTurnBuffers();
     const payload = await convertPromptInput(prompt, { model: this.state.model });
@@ -1569,6 +1577,7 @@ export class OmpAgentSession implements AgentSession {
     this.activeTurnStarted = false;
     this.outOfBandTurnStartAnnounced = false;
     this.activeTurnHasUserMessage = false;
+    this.pendingAutoEffortLevel = null;
     this.pendingClientMessages.length = 0;
     this.turnMeter.reset();
     this.clearNoTurnBuffers();
@@ -1682,6 +1691,8 @@ export class OmpAgentSession implements AgentSession {
       normalizeOmpThinkingOption(thinkingOptionId) ?? DEFAULT_OMP_THINKING_LEVEL;
     await this.runtimeSession.setThinkingLevel(thinkingLevel);
     this.lastKnownThinkingOptionId = thinkingLevel;
+    // OMP reports the level it settles on; until then the selector is all that is known.
+    this.resolvedThinkingLevel = null;
     this.config.thinkingOptionId = thinkingLevel;
     this.state = {
       ...this.state,
@@ -2033,6 +2044,11 @@ export class OmpAgentSession implements AgentSession {
   private handleThinkingLevelChanged(event: OmpRuntimeEvent): boolean {
     if (event.type !== "thinking_level_changed") {
       return false;
+    }
+    const ranLevel = normalizeOmpThinkingOption(event.resolved ?? event.thinkingLevel);
+    if (ranLevel && ranLevel !== "auto") {
+      this.resolvedThinkingLevel = ranLevel;
+      if (event.resolved) this.showAutoEffortLine(ranLevel);
     }
     const thinkingLevel = normalizeOmpThinkingOption(event.configured ?? event.thinkingLevel);
     if (!thinkingLevel || thinkingLevel === this.lastKnownThinkingOptionId) {
@@ -2536,6 +2552,7 @@ export class OmpAgentSession implements AgentSession {
           ...(clientMessageId ? { clientMessageId } : {}),
         },
       });
+      this.flushAutoEffortLine();
     };
     if (messageId) {
       emitUserMessage(messageId);
@@ -2568,6 +2585,32 @@ export class OmpAgentSession implements AgentSession {
         text: pending.text,
         ...(pending.clientMessageId ? { clientMessageId: pending.clientMessageId } : {}),
       },
+    });
+    this.flushAutoEffortLine();
+  }
+
+  /**
+   * OMP picks the auto effort while it receives the prompt, before it echoes the user message,
+   * so the line waits for that echo and lands right under the prompt it belongs to.
+   */
+  private showAutoEffortLine(level: string): void {
+    this.pendingAutoEffortLevel = level;
+    if (this.activeTurnHasUserMessage) this.flushAutoEffortLine();
+  }
+
+  private flushAutoEffortLine(): void {
+    const level = this.pendingAutoEffortLevel;
+    if (!level) return;
+    this.pendingAutoEffortLevel = null;
+    const turnId = this.currentTurnIdForEvent();
+    const key = `${turnId ?? ""}:${level}`;
+    if (key === this.shownAutoEffortKey) return;
+    this.shownAutoEffortKey = key;
+    this.emit({
+      type: "timeline",
+      provider: this.provider,
+      turnId,
+      item: { type: "notification", level: "info", message: `Effort: ${level} (auto)` },
     });
   }
 
@@ -2720,7 +2763,10 @@ export class OmpAgentSession implements AgentSession {
       return;
     }
     const finalUsage = this.usagePoller.completeTurn(turnId);
-    const metrics = measuredTurnMetrics(this.turnMeter.finish(Date.now()));
+    const metrics = withEffortMetric(
+      measuredTurnMetrics(this.turnMeter.finish(Date.now())),
+      this.resolvedThinkingLevel,
+    );
     this.resetActiveTurn({ terminalizeWork: false });
     this.emitTurnTerminal({
       type: "turn_completed",
