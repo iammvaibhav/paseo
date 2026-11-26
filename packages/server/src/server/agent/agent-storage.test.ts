@@ -385,6 +385,25 @@ describe("AgentStorage", () => {
     expect(await cleared.get("agent-metrics")).not.toHaveProperty("sessionMetrics");
   });
 
+  test("persistent notify entries survive snapshots, archive, unarchive and a restart; [] clears", async () => {
+    const entries = [{ target: "n8n-wren", context: '{"chat":1}', messages: "all" as const }];
+    await storage.applySnapshot(createManagedAgent({ id: "agent-notify" }));
+    await storage.setPersistentNotify("agent-notify", entries);
+    // The runtime snapshot does not carry them; the record keeps them.
+    await storage.applySnapshot(createManagedAgent({ id: "agent-notify", lifecycle: "running" }));
+    const record = (await storage.get("agent-notify"))!;
+    await storage.upsert({ ...record, archivedAt: "2026-11-26T00:00:00.000Z" });
+    await storage.upsert({ ...(await storage.get("agent-notify"))!, archivedAt: null });
+
+    const reloaded = new AgentStorage(storagePath, createTestLogger());
+    expect((await reloaded.get("agent-notify"))?.persistentNotify).toEqual(entries);
+    await reloaded.setPersistentNotify("agent-notify", []);
+    expect(
+      await new AgentStorage(storagePath, createTestLogger()).get("agent-notify"),
+    ).not.toHaveProperty("persistentNotify");
+    await expect(reloaded.setPersistentNotify("missing", entries)).rejects.toThrow("not found");
+  });
+
   test("a record stored with featureValues loads them in providerOptions", async () => {
     await storage.applySnapshot(createManagedAgent({ id: "agent-legacy" }));
     const file = findRecordFile(storagePath, "agent-legacy");

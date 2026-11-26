@@ -1048,6 +1048,77 @@ describe("createMcpFinishNotifier", () => {
     expect(received.map((r) => r.body.type)).toEqual(["paseo.agent.finished"]);
   });
 
+  it("a persistent entry and a call naming the same target this turn deliver once, with the call's context", async () => {
+    for (const persistentFirst of [true, false]) {
+      received = [];
+      const runEnds = Promise.withResolvers<FleetAgentWaitResult>();
+      const subject = notifier();
+      const arm = (persistent: boolean) =>
+        subject.arm({
+          client: persistent ? "persistent-notify" : "grok-bot",
+          targetRef: { name: "n8n-wren" },
+          target: { url },
+          agentId: "agent-1",
+          turnId: "turn-1",
+          tool: persistent ? "persistentNotify" : "fleet_send_prompt",
+          context: persistent ? '{"chat":1}' : '{"chat":1,"messageId":"m9"}',
+          waitForAgent: () => runEnds.promise,
+          ...(persistent ? { persistent: true } : {}),
+        });
+      const watches = persistentFirst ? [arm(true), arm(false)] : [arm(false), arm(true)];
+      runEnds.resolve(result({ turnId: "turn-1" }));
+      await Promise.all(watches);
+      expect(received.map((r) => [r.body.client, r.body.context])).toEqual([
+        ["grok-bot", '{"chat":1,"messageId":"m9"}'],
+      ]);
+    }
+  });
+
+  it("a persistent entry streams messages only when both it and its target take them", async () => {
+    const streamed = async (messages: "final" | "all", intermediateMessages: boolean) => {
+      received = [];
+      let emit: ((message: McpAssistantMessage) => void) | null = null;
+      const runEnds = Promise.withResolvers<FleetAgentWaitResult>();
+      const armed = createMcpFinishNotifier({
+        resolveSecret: async (value) => value,
+        logger: pino({ level: "silent" }),
+        pollMs: 0,
+        retryDelaysMs: [0],
+        messageRetryDelaysMs: [0],
+        localAgents: {
+          ...localAgents(neverStarts),
+          subscribeAssistantMessages: (_agentId, onMessage) => {
+            emit = onMessage;
+            return () => {
+              emit = null;
+            };
+          },
+        },
+      }).arm({
+        client: "persistent-notify",
+        targetRef: { name: "n8n-wren" },
+        target: { url, intermediateMessages, messageBatchMs: 0 },
+        agentId: "agent-1",
+        turnId: "turn-1",
+        tool: "persistentNotify",
+        context: null,
+        persistent: true,
+        messages,
+        waitForAgent: () => runEnds.promise,
+      });
+      await sleep(0);
+      emit?.({ turnId: "turn-1", seq: 1, text: "On it.", at: "t1" });
+      await sleep(10);
+      runEnds.resolve(result({ turnId: "turn-1", lastMessage: "Done." }));
+      await armed;
+      return received.map((r) => r.body.type);
+    };
+    expect(await streamed("all", true)).toEqual(["paseo.agent.message", "paseo.agent.finished"]);
+    expect(await streamed("final", true)).toEqual(["paseo.agent.finished"]);
+    // The target's configuration is the ceiling.
+    expect(await streamed("all", false)).toEqual(["paseo.agent.finished"]);
+  });
+
   it("signs the body with the target's vault secret into X-Paseo-Signature-256", async () => {
     await notifier().arm({
       client: "grok-bot",

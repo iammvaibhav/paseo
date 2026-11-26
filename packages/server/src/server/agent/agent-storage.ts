@@ -3,6 +3,10 @@ import path from "node:path";
 import { z } from "zod";
 import type { Logger } from "pino";
 import type { JsonValue } from "@getpaseo/protocol/agent-types";
+import {
+  PersistentNotifyEntrySchema,
+  type PersistentNotifyEntry,
+} from "@getpaseo/protocol/messages";
 
 import { writeJsonFileAtomic } from "../atomic-file.js";
 import { AGENT_MODE_IDS } from "@getpaseo/protocol/agent-modes";
@@ -118,6 +122,9 @@ const RAW_STORED_AGENT_SCHEMA = z.object({
     )
     .optional(),
   sessionMetrics: z.array(AgentMetricSchema).optional(),
+  // Callback targets this agent keeps for its turns (fleet_set_agent_notify). Owned by the
+  // record, not the runtime: snapshots carry it over.
+  persistentNotify: z.array(PersistentNotifyEntrySchema).optional(),
   lastError: z.string().nullable().optional(),
   requiresAttention: z.boolean().optional(),
   attentionReason: z.enum(["finished", "error", "permission"]).nullable().optional(),
@@ -216,6 +223,7 @@ function preserveStoredIdentityFields(
   if (existing && existing.archivedAt !== undefined) {
     record.archivedAt = existing.archivedAt;
   }
+  if (existing?.persistentNotify) record.persistentNotify = existing.persistentNotify;
 }
 
 export class AgentStorage {
@@ -523,6 +531,16 @@ export class AgentStorage {
       throw new Error(`Agent ${agentId} not found`);
     }
     await this.upsert({ ...record, title });
+  }
+
+  /** Replace the agent's persistent notify entries; an empty list clears them. */
+  async setPersistentNotify(agentId: string, entries: PersistentNotifyEntry[]): Promise<void> {
+    await this.load();
+    await this.queueRecordMutation(agentId, (existing) => {
+      if (!existing) throw new Error(`Agent ${agentId} not found`);
+      const { persistentNotify: _old, ...rest } = existing;
+      return entries.length > 0 ? { ...rest, persistentNotify: entries } : rest;
+    });
   }
 
   async flush(): Promise<void> {

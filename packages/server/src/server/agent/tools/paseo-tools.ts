@@ -31,6 +31,7 @@ import type { Logger } from "pino";
 import type {
   AgentMode,
   AgentPromptInput,
+  AgentRunOptions,
   AgentProvider,
   AgentSessionConfig,
   AgentTimelineItem,
@@ -41,7 +42,10 @@ import {
   ActiveTurnBehaviorSchema,
   AgentActiveTurnBehaviorSchema,
   AgentProfileSchema,
+  PersistentNotifyEntrySchema,
+  type PersistentNotifyEntry,
   type PromptSender,
+  type TurnOrigin,
 } from "@getpaseo/protocol/messages";
 import { slugify } from "@getpaseo/protocol/branch-slug";
 import type { DaemonConfigStore } from "../../daemon-config-store.js";
@@ -171,6 +175,11 @@ import {
 import { registerFleetControlTools } from "./fleet-control-tools.js";
 import { registerFleetUnarchiveTools } from "./fleet-unarchive-tools.js";
 import { registerFleetReminderTools } from "./fleet-reminder-tools.js";
+import { PersistentNotifyInputSchema, registerFleetNotifyTools } from "./fleet-notify-tools.js";
+import {
+  validatePersistentNotify,
+  type PersistentNotify,
+} from "../../mcp-fleet/persistent-notify.js";
 import type { AgentReminderService } from "../../reminders/agent-reminder-service.js";
 import {
   executeFleetToolOnPeer,
@@ -250,6 +259,8 @@ export interface PaseoToolHostDependencies {
   emitStoredAgentUpdate?: (record: StoredAgentRecord) => Promise<void>;
   /** Agent "Remind me" reminders on this host (fleet_remind_agent and friends). */
   agentReminders?: AgentReminderService | null;
+  /** Persistent callback targets of this host's agents (fleet_set_agent_notify). */
+  persistentNotify?: PersistentNotify | null;
   workspaceRegistry?: Pick<WorkspaceRegistry, "get" | "listAll" | "listActive" | "upsert">;
   projectRegistry?: Pick<ProjectRegistry, "get" | "list">;
   createDirectoryWorkspace?: (
@@ -4125,6 +4136,7 @@ function createToolCatalog(
         .array(FleetAttachmentInputSchema)
         .optional()
         .describe(FLEET_ATTACHMENTS_DESCRIPTION),
+      persistentNotify: PersistentNotifyInputSchema.optional(),
     })
     // COMPAT(retired-background-arg): /mcp/fleet refuses `background` with the reason in
     // RETIRED_ARGS (mcp-fleet/fleet-mcp-server.ts), so create_agent's background-agent
@@ -4238,6 +4250,14 @@ function createToolCatalog(
       ...(described?.title ? { title: described.title } : {}),
     };
   };
+  /** The turn origin for a peer send; a host without persistentNotify derives its own. */
+  const peerTurnOrigin = (
+    client: DaemonClient,
+    turnOrigin: TurnOrigin | undefined,
+  ): { turnOrigin?: TurnOrigin } =>
+    turnOrigin && client.getLastServerInfoMessage()?.features?.persistentNotify === true
+      ? { turnOrigin }
+      : {};
   /** The sender field for a peer send or create; a host without promptSenders gets none. */
   const peerPromptSender = (
     client: DaemonClient,
@@ -4919,6 +4939,9 @@ function createToolCatalog(
         // dryRun: the placement that would be used; nothing is created.
         dryRun: z.boolean().optional(),
         plan: z.record(z.string(), z.unknown()).nullable().optional(),
+        persistentNotify: z.array(PersistentNotifyEntrySchema).optional(),
+        // The agent was created but its persistent callbacks were not kept.
+        persistentNotifyError: z.string().optional(),
       },
     },
     async (inputArgs, context) => {
@@ -4939,7 +4962,8 @@ function createToolCatalog(
         const target = fleetHosts.resolve(inputArgs.host);
         if (!target.ok) throw new PaseoToolInputError(target.error);
       }
-      const { dryRun, ...requested } = inputArgs;
+      const { dryRun, persistentNotify: rawPersistentNotify, ...requested } = inputArgs;
+      const persistentNotify = rawPersistentNotify as PersistentNotifyEntry[] | undefined;
       const { args: rawArgs, plan: placementPlan } = await fillPlacement(
         options.routingService ?? null,
         requested,
@@ -5030,6 +5054,23 @@ function createToolCatalog(
         workspaceId,
         workspaceRegistry: options.workspaceRegistry ?? null,
       });
+      // Refused before anything is created: an agent without the callbacks it was asked for is a silent gap.
+      if (persistentNotify?.length) {
+        const invalid = validatePersistentNotify(
+          "",
+          persistentNotify,
+          (name) => options.persistentNotify?.isConfigured(name) ?? true,
+        );
+        if (invalid) throw new PaseoToolInputError(invalid);
+        if (
+          !isFleetLocalTarget(host) &&
+          resolveFleetHost(host)?.getLastServerInfoMessage()?.features?.persistentNotify !== true
+        ) {
+          throw new PaseoToolInputError(
+            `Host "${host}" cannot keep persistent callbacks; update Paseo there or drop persistentNotify.`,
+          );
+        }
+      }
       // A fleet agent on this host: run the spawn plan (placement, worktree,
       // settings) as a top-level agent for every caller. create_agent is the
       // tool for an agent's own subagents.
@@ -5116,8 +5157,30 @@ function createToolCatalog(
           structuredContent: ensureValidJson({ ...createdAgent.data, ...ticketResult }),
         };
       };
+      // The agent's persistent callbacks, kept on its own host, covering the turn the create started.
+      const withPersistentNotify = async (created: PaseoToolResult): Promise<PaseoToolResult> => {
+        const createdAgent = CREATED_AGENT_SCHEMA.safeParse(created.structuredContent);
+        if (!persistentNotify || created.isError || !createdAgent.success) return created;
+        const turnId = (created.structuredContent as { turnId?: unknown }).turnId;
+        const kept = await toCatalog().executeTool("fleet_set_agent_notify", {
+          agentId: createdAgent.data.agentId,
+          host,
+          persistentNotify,
+          ...(typeof turnId === "string" ? { turnId } : {}),
+        });
+        const outcome = kept.structuredContent as { ok?: boolean; error?: string } | undefined;
+        return {
+          ...created,
+          structuredContent: ensureValidJson({
+            ...(created.structuredContent as Record<string, unknown>),
+            ...(outcome?.ok
+              ? { persistentNotify }
+              : { persistentNotifyError: outcome?.error ?? "fleet_set_agent_notify failed" }),
+          }),
+        };
+      };
       if (isFleetLocalTarget(host)) {
-        return withTicket(await createLocally());
+        return withPersistentNotify(await withTicket(await createLocally()));
       }
       // Peer create path: the peer create RPC is the SESSION create path —
       // `provider` must be a plain provider id with `model` passed separately
@@ -5173,7 +5236,7 @@ function createToolCatalog(
         });
         return { content: [], structuredContent };
       };
-      return withTicket(await createAgentOnPeerHost());
+      return withPersistentNotify(await withTicket(await createAgentOnPeerHost()));
     },
   );
 
@@ -5283,6 +5346,13 @@ function createToolCatalog(
               'cancelling. "interrupt": only when the user explicitly asked to cancel the running turn.',
           ),
         agentMode: PromptAgentModeInputSchema,
+        turnOrigin: z
+          .enum(["prompt", "reminder"])
+          .optional()
+          .describe(
+            'What the turn this prompt starts counts as for persistent callbacks filtered by turns: "reminder" ' +
+              "when the prompt follows a paseo.agent.reminder. Default prompt.",
+          ),
         images: z
           .array(FleetImageInputSchema)
           .optional()
@@ -5326,6 +5396,7 @@ function createToolCatalog(
         images: imageInputs,
         attachments: attachmentInputs,
         agentMode,
+        turnOrigin,
       },
       context,
     ) => {
@@ -5401,6 +5472,7 @@ function createToolCatalog(
               missionControlService?.recordStopOrigin(stopAgentId, origin),
             ...(agentMode ? { agentMode } : {}),
             ...(sender ? { source: promptSourceFromSender(sender) } : {}),
+            turnOrigin: turnOrigin as TurnOrigin | undefined,
             logger: childLogger,
           });
         } catch (error) {
@@ -5454,6 +5526,7 @@ function createToolCatalog(
         ...(images ? { images } : {}),
         ...(peerAttachments ? { attachments: peerAttachments } : {}),
         ...peerPromptSender(client, sender),
+        ...peerTurnOrigin(client, turnOrigin as TurnOrigin | undefined),
       });
       const wasIdle = before?.agent.status !== "running";
       // A steer the peer's agent could not take waits for its running turn to end.
@@ -5524,6 +5597,7 @@ function createToolCatalog(
         .map((peer) => peer.name),
     callerAgentId,
   });
+  registerFleetNotifyTools({ ...fleetControlOptions, persistentNotify: options.persistentNotify });
 
   // The split meta tools share one output contract with fleet_meta. "scheduled"
   // is an agent's move of itself, applied when its turn ends; "applied" is any
@@ -6122,6 +6196,8 @@ function createToolCatalog(
         requested: z.boolean().optional(),
         requestId: z.string().optional(),
         note: z.string().optional(),
+        // The callback targets the agent keeps for its turns (fleet_set_agent_notify).
+        persistentNotify: z.array(PersistentNotifyEntrySchema).optional(),
       },
     },
     async ({
@@ -6163,7 +6239,12 @@ function createToolCatalog(
       if (!isFleetLocalTarget(targetHost)) {
         return fetchPeerAgentStatus(targetHost, agentId, fresh, notify, requestedRequestId);
       }
-      const record = await missionControlService.getAgentStatusRecord(agentId);
+      const persistentNotify = (await agentStorage.get(agentId).catch(() => null))
+        ?.persistentNotify;
+      const record = {
+        ...(await missionControlService.getAgentStatusRecord(agentId)),
+        ...(persistentNotify ? { persistentNotify } : {}),
+      };
       // Project attribution: resolve the workspace's project via the local
       // registry when available (absent registry → projectId stays null).
       let projectId: string | null = null;
@@ -6306,6 +6387,7 @@ async function dispatchInterrupt(params: {
   /** Client optimistic message id; rides the run so the echoed user row carries it. */
   messageId?: string;
   source?: AgentPromptSource;
+  runOptions?: AgentRunOptions;
   logger: Logger;
 }): Promise<"interrupt"> {
   const {
@@ -6319,6 +6401,7 @@ async function dispatchInterrupt(params: {
     recordStopOrigin,
     messageId,
     source,
+    runOptions,
     logger,
   } = params;
   // Interrupt turns echo the submitted prompt as a user row naturally; stamp
@@ -6336,6 +6419,7 @@ async function dispatchInterrupt(params: {
     agentId,
     prompt: promptWithAttachments,
     source,
+    runOptions,
     replaceOrigin,
     messageId,
     logger,
@@ -6481,6 +6565,8 @@ export async function dispatchLocalPromptMode(params: {
   agentMode?: AgentModeId;
   /** Who sent the prompt when no person typed it; the agent's chat labels it. */
   source?: AgentPromptSource;
+  /** What the turn this prompt starts counts as; default a fleet prompt. */
+  turnOrigin?: TurnOrigin;
   logger: Logger;
 }): Promise<"steer" | "interrupt" | "queue" | "steer-queued"> {
   const {
@@ -6496,6 +6582,7 @@ export async function dispatchLocalPromptMode(params: {
     source,
     logger,
   } = params;
+  const runOptions: AgentRunOptions = { turnOrigin: params.turnOrigin ?? "prompt" };
   const classification = params.classification ?? "instruction";
   const replaceOrigin = params.replaceOrigin;
   const recordStopOrigin = params.recordStopOrigin;
@@ -6516,6 +6603,7 @@ export async function dispatchLocalPromptMode(params: {
       recordStopOrigin,
       messageId,
       source,
+      runOptions,
       logger,
     });
   }
@@ -6553,6 +6641,7 @@ export async function dispatchLocalPromptMode(params: {
         agentId,
         prompt: promptWithAttachments,
         source,
+        runOptions,
         replaceOrigin,
         messageId,
         logger,
@@ -6584,6 +6673,7 @@ export async function dispatchLocalPromptMode(params: {
       agentId,
       prompt: promptWithAttachments,
       source,
+      runOptions,
       messageId,
       logger,
       waitForIdle: () => waitForAgentIdle(agentManager, agentId, QUEUED_STEER_WAIT_MS),
@@ -6609,6 +6699,7 @@ export async function dispatchLocalPromptMode(params: {
     agentId,
     prompt: promptWithAttachments,
     source,
+    runOptions,
     replaceRunning: false,
     messageId,
     logger,

@@ -32,7 +32,7 @@ import {
 } from "@getpaseo/protocol/agent-labels";
 import type { Logger } from "pino";
 import type { ToolPolicy } from "@getpaseo/protocol/agent-types";
-import type { AgentAttachment } from "@getpaseo/protocol/messages";
+import type { AgentAttachment, TurnOrigin } from "@getpaseo/protocol/messages";
 import {
   DEFAULT_AGENT_MODE_ID,
   splitAgentModeBlock,
@@ -336,6 +336,14 @@ function submittedPromptText(prompt: AgentPromptInput): string {
     .trim();
 }
 
+/** Another agent's message or a notification about an agent, in Paseo's versioned envelope. */
+const CALLBACK_ENVELOPE = /<paseo-system version="1" kind="(agent-message|agent-notification)"/;
+
+/** What started a turn when the dispatcher did not say: a callback envelope, else a fleet prompt. */
+function turnOriginOfPrompt(prompt: AgentPromptInput): TurnOrigin {
+  return CALLBACK_ENVELOPE.test(submittedPromptText(prompt)) ? "callback" : "prompt";
+}
+
 /**
  * The native images a submitted prompt's row shows. An image that also rides
  * as an uploaded_file attachment (fleet tools, storePromptImages) is shown
@@ -391,6 +399,13 @@ export class AgentRunCancellationError extends Error {
     );
     this.name = "AgentRunCancellationError";
   }
+}
+
+/** A foreground turn that started, and what started it. */
+export interface ForegroundTurnStart {
+  agentId: string;
+  turnId: string;
+  origin: TurnOrigin;
 }
 
 export type AgentRunCancellationResult =
@@ -1406,6 +1421,7 @@ export class AgentManager implements DaemonPermissionHost {
   private readonly runSettledWaiters = new Map<string, Array<() => void>>();
   private readonly subscribers = new Set<SubscriptionRecord>();
   private readonly stopListeners = new Set<(agentId: string) => void>();
+  private readonly turnStartListeners = new Set<(start: ForegroundTurnStart) => void>();
   private readonly idFactory: () => string;
   private readonly registry?: AgentStorage;
   private readonly durableTimelineStore?: AgentTimelineStore;
@@ -1884,6 +1900,12 @@ export class AgentManager implements DaemonPermissionHost {
   onStop(listener: (agentId: string) => void): () => void {
     this.stopListeners.add(listener);
     return () => this.stopListeners.delete(listener);
+  }
+
+  /** Notify when an agent's foreground turn starts, with what started it. */
+  onForegroundTurnStarted(listener: (start: ForegroundTurnStart) => void): () => void {
+    this.turnStartListeners.add(listener);
+    return () => this.turnStartListeners.delete(listener);
   }
 
   subscribe(callback: AgentSubscriber, options?: SubscribeOptions): () => void {
@@ -4854,6 +4876,21 @@ export class AgentManager implements DaemonPermissionHost {
         { type: "turn_started", provider: agent.provider, turnId },
         { timestamp: turnStartedAt.toISOString() },
       );
+      const turnStart: ForegroundTurnStart = {
+        agentId: agent.id,
+        turnId,
+        origin: runOptions?.turnOrigin ?? turnOriginOfPrompt(runPrompt),
+      };
+      for (const listener of this.turnStartListeners) {
+        try {
+          listener(turnStart);
+        } catch (error) {
+          this.logger.warn(
+            { err: error, agentId: agent.id, turnId },
+            "agent.turn.start_listener_failed",
+          );
+        }
+      }
       const stagedSubmittedPromptEcho = this.recordForegroundTurnSubmittedPrompt({
         agent,
         pendingRun,

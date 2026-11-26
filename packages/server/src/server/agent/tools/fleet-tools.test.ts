@@ -1068,7 +1068,7 @@ describe("fleet_send_prompt mode", () => {
           path: notesPath,
         },
       ],
-      { replaceOrigin: "machinery" },
+      { replaceOrigin: "machinery", turnOrigin: "prompt" },
       expect.any(ForegroundPromptStart),
     );
     expect(result.structuredContent).toMatchObject({ success: true, deliveryMode: "steer" });

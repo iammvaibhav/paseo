@@ -126,6 +126,13 @@ export interface ArmMcpFinishNotification extends McpClientBinding, McpNotifyAge
    * live-steer): bind to the first turn that starts after it instead.
    */
   nextTurnAfter?: string | null;
+  /** "final" keeps a target that takes intermediate messages to the turn's end; omitted = what the target takes. */
+  messages?: "final" | "all";
+  /**
+   * Armed from the agent's persistent notify entries. One delivery per target per turn: a
+   * call naming the same target for the turn takes the watch over with its own context.
+   */
+  persistent?: boolean;
 }
 
 export interface ArmMcpGroupNotification extends McpClientBinding {
@@ -341,6 +348,8 @@ interface ArmedEntry {
   targetRef: McpNotifyTargetRef;
   /** Bind to the first turn that starts after this one (the call's prompt waits for it to end). */
   nextTurnAfter?: string | null;
+  messages?: "final" | "all";
+  persistent?: boolean;
   /** The turn the watch is bound to: the create/send's turn, else the run in progress. */
   turnId: string | null;
   /** Epoch ms after which the watch gives up. */
@@ -972,6 +981,7 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
     const { target } = watch.binding;
     const subscribe = options.localAgents?.subscribeAssistantMessages;
     if (target.kind === "agent" || !target.intermediateMessages || !subscribe) return null;
+    if (watch.armed.messages === "final") return null;
     const batchMs = target.messageBatchMs ?? DEFAULT_MESSAGE_BATCH_MS;
     const { armed } = watch;
     let pending: McpAssistantMessage[] = [];
@@ -1464,28 +1474,77 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
       .then(() => journal?.flush());
   };
 
+  /** A call names a target a persistent entry already watches this turn: the call's context and messages win. */
+  const takeOver = (watch: ActiveWatch, input: ArmMcpFinishNotification, now: Date) => {
+    const { persistent: _persistent, messages: _messages, ...rest } = watch.armed;
+    watch.armed = {
+      ...rest,
+      ts: now.toISOString(),
+      client: input.client,
+      tool: input.tool,
+      context: input.context,
+      ...(input.messages ? { messages: input.messages } : {}),
+      turnId: watch.turnId,
+    };
+    record(watch.armed);
+    watch.messages ??= startMessages(watch);
+    logger.info(
+      {
+        watchId: watch.armed.watchId,
+        agentId: input.agentId,
+        turnId: watch.turnId,
+        tool: input.tool,
+      },
+      "mcp finish watch taken over by a call for this turn",
+    );
+  };
+
+  /**
+   * The watch already covering this target on the turn, if any. A steer joins the run in
+   * progress, so a send can bind to the turn a watch already follows; a second watch would
+   * deliver the same event twice. A persistent entry and a call naming the same target share
+   * one watch, which carries the call's context.
+   */
+  const coveringWatch = (
+    input: ArmMcpFinishNotification,
+    turnId: string,
+  ): { watch: ActiveWatch; takeOver: boolean } | null => {
+    for (const watch of active.values()) {
+      if (
+        watch.armed.agentId !== input.agentId ||
+        !sameTargetRef(watch.armed.targetRef, input.targetRef)
+      ) {
+        continue;
+      }
+      const covers =
+        watch.turnId === turnId ||
+        // A call's watch still waiting for the turn its queued prompt starts.
+        (input.persistent && watch.turnId === null && Boolean(watch.armed.nextTurnAfter));
+      if (!covers) continue;
+      if (!input.persistent && watch.armed.persistent) return { watch, takeOver: true };
+      if (input.persistent || watch.armed.context === input.context) {
+        return { watch, takeOver: false };
+      }
+    }
+    return null;
+  };
+
   const arm = (input: ArmMcpFinishNotification): Promise<void> => {
     const now = new Date();
     const turnId = input.nextTurnAfter
       ? null
       : (input.turnId ?? options.localAgents?.activeTurnId(input.agentId) ?? null);
-    // A steer joins the run in progress, so a send can bind to the turn a
-    // watch already follows; a second watch would deliver the same event twice.
-    if (turnId) {
-      for (const watch of active.values()) {
-        if (
-          watch.armed.agentId === input.agentId &&
-          watch.armed.context === input.context &&
-          sameTargetRef(watch.armed.targetRef, input.targetRef) &&
-          watch.turnId === turnId
-        ) {
-          logger.info(
-            { watchId: watch.armed.watchId, agentId: input.agentId, turnId, tool: input.tool },
-            "mcp finish watch already armed for this turn",
-          );
-          return Promise.resolve();
-        }
-      }
+    const covering = turnId ? coveringWatch(input, turnId) : null;
+    if (covering?.takeOver) {
+      takeOver(covering.watch, input, now);
+      return Promise.resolve();
+    }
+    if (covering) {
+      logger.info(
+        { watchId: covering.watch.armed.watchId, agentId: input.agentId, turnId, tool: input.tool },
+        "mcp finish watch already armed for this turn",
+      );
+      return Promise.resolve();
     }
     const armed: ArmedEntry = {
       event: "armed",
@@ -1498,6 +1557,8 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
       context: input.context,
       targetRef: input.targetRef,
       ...(input.nextTurnAfter ? { nextTurnAfter: input.nextTurnAfter } : {}),
+      ...(input.messages ? { messages: input.messages } : {}),
+      ...(input.persistent ? { persistent: true } : {}),
       turnId,
       deadline: now.getTime() + maxWatchMs,
     };

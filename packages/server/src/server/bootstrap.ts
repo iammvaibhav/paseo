@@ -189,6 +189,11 @@ import {
   type McpNotifyTargetRef,
   type McpWebhookTarget,
 } from "./mcp-fleet/finish-notifier.js";
+import {
+  createPersistentNotify,
+  PERSISTENT_NOTIFY_CLIENT,
+  persistentTargetRef,
+} from "./mcp-fleet/persistent-notify.js";
 import { createAgentReminderService } from "./reminders/agent-reminder-service.js";
 import { createReminderAgentDescriber } from "./reminders/reminder-agent-info.js";
 import { resolveVaultSecret, warmVaultSecrets } from "./secrets/vault-secret.js";
@@ -2250,6 +2255,41 @@ export async function createPaseoDaemon(
       },
       agentId,
     );
+  // Callback targets agents keep for every turn (fleet_set_agent_notify): each turn an agent
+  // starts here arms a watch for its entries, next to the targets of the call that started it.
+  const persistentNotify = createPersistentNotify({
+    agentManager,
+    agentStorage,
+    isConfigured: (name) => loadNamedNotifyTargets().has(name),
+    arm: (agentId, turnId, entry) => {
+      const targetRef = persistentTargetRef(entry);
+      const target = bindNotifyTarget(targetRef, loadNamedNotifyTargets());
+      if (!target) {
+        logger.warn({ agentId, turnId, targetRef }, "persistent notify target is not configured");
+        return;
+      }
+      void getFleetMcpCatalog(PERSISTENT_NOTIFY_CLIENT)
+        .then(({ catalog }) =>
+          mcpFinishNotifier.arm({
+            client: PERSISTENT_NOTIFY_CLIENT,
+            tool: "persistentNotify",
+            agentId,
+            turnId,
+            context: entry.context ?? null,
+            targetRef,
+            target,
+            waitForAgent: createFleetMcpWaitForAgent(catalog),
+            persistent: true,
+            ...(entry.messages ? { messages: entry.messages } : {}),
+          }),
+        )
+        .catch((error: unknown) => {
+          logger.warn({ err: error, agentId, turnId }, "persistent notify watch failed");
+        });
+    },
+    logger,
+  });
+  let stopPersistentNotify: (() => void) | null = null;
   // "Remind me": reminders live with their agent on this host and POST
   // paseo.agent.reminder through the finish notifier's delivery path.
   const agentReminders = createAgentReminderService({
@@ -2500,6 +2540,7 @@ export async function createPaseoDaemon(
     restoreWorkspace: restoreWorkspaceExternal,
     emitStoredAgentUpdate: emitStoredAgentUpdateExternal,
     agentReminders,
+    persistentNotify,
     workspaceRegistry,
     projectRegistry,
     createDirectoryWorkspace: async (cwd, title, projectId, context) => {
@@ -3019,6 +3060,8 @@ export async function createPaseoDaemon(
       } catch (error) {
         logger.error({ err: error }, "Failed to start agent reminders");
       }
+      // Before the server accepts prompts, so the first turns arm their persistent callbacks.
+      stopPersistentNotify = persistentNotify.start();
 
       // Start main HTTP server
       await new Promise<void>((resolve, reject) => {
@@ -3283,6 +3326,7 @@ export async function createPaseoDaemon(
     await wsServer?.agentMessages.close();
     agentManager.prepareForShutdown();
     agentReminders.stop();
+    stopPersistentNotify?.();
     // Before agents close: the shutdown's "closed" state is not the end of a watched run.
     await mcpFinishNotifier.suspend();
     await restartRecovery.captureRunningAgents();

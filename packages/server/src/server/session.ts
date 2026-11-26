@@ -12,7 +12,7 @@ import {
   createWorkspaceBaseBranchService,
   type WorkspaceBaseBranchService,
 } from "./session/workspace-base-branch/service.js";
-import type { WorkspaceBaseBranchSetRequest } from "@getpaseo/protocol/messages";
+import type { TurnOrigin, WorkspaceBaseBranchSetRequest } from "@getpaseo/protocol/messages";
 
 import { searchTimeline } from "./agent/chat-search/index.js";
 import type { BrowserToolsBroker } from "./browser-tools/broker.js";
@@ -266,6 +266,7 @@ const PEER_EXECUTABLE_TOOL_NAMES = new Set([
   "fleet_remind_agent",
   "fleet_cancel_reminder",
   "fleet_list_reminders",
+  "fleet_set_agent_notify",
 ]);
 import { resolveMissionControlMediaFetch } from "./mission-control/media.js";
 import { moveAgentToWorkspace } from "./mission-control/meta-actions.js";
@@ -1688,7 +1689,7 @@ export class Session {
               undefined,
               undefined,
               undefined,
-              undefined,
+              { turnOrigin: "app" },
               { spokenInput: true },
             );
           },
@@ -6388,6 +6389,10 @@ export class Session {
           source: msg.callerAgentId
             ? { kind: "agent-message", agentId: msg.callerAgentId }
             : promptSourceFromSender(msg.sender),
+          // Typed in the app; a fleet create (sender) or a CLI create is a prompt.
+          ...(!msg.callerAgentId && !msg.sender && this.isPersonClient()
+            ? { turnOrigin: "app" as const }
+            : {}),
           clientMessageId,
           outputSchema,
           images,
@@ -11020,6 +11025,7 @@ export class Session {
         agentId,
         prompt,
         source: promptSourceFromSender(msg.sender),
+        runOptions: { turnOrigin: this.sendTurnOrigin(msg) },
         replaceRunning: false,
         sessionMode: msg.sessionMode,
         beforeDispatch,
@@ -11033,6 +11039,7 @@ export class Session {
       agentId,
       prompt,
       source: promptSourceFromSender(msg.sender),
+      runOptions: { turnOrigin: this.sendTurnOrigin(msg) },
       replaceOrigin: "user",
       messageId: msg.messageId,
       activeTurnBehavior,
@@ -11041,6 +11048,18 @@ export class Session {
       beforeDispatch,
       logger: this.sessionLogger,
     });
+  }
+
+  /** A person typing in the app (not a peer daemon, the CLI, or a bot). */
+  private isPersonClient(): boolean {
+    return this.clientType === "mobile" || this.clientType === "browser";
+  }
+
+  /** What a send without an agent sender starts: the app's own turn, else a fleet prompt. */
+  private sendTurnOrigin(
+    msg: Extract<SessionInboundMessage, { type: "send_agent_message_request" }>,
+  ): TurnOrigin {
+    return this.isPersonClient() ? "app" : (msg.turnOrigin ?? "prompt");
   }
 
   private async prepareAgentMessage(agentId: string, text: string): Promise<void> {
@@ -11110,7 +11129,7 @@ export class Session {
       let deliveryStatus: "queued" | undefined;
       let queuedReceipt: { activeTurnBehavior: AgentMessageBehavior; guidance: string } | undefined;
       // A person typing in the app (not a peer daemon, the CLI, or a bot).
-      const fromPerson = this.clientType === "mobile" || this.clientType === "browser";
+      const fromPerson = this.isPersonClient();
       const send = async (beforeDispatch: () => Promise<void>) => {
         // Stored only when the send goes through, so a deduped retry writes nothing.
         const attachments = await storePromptImages(this.paseoHome, msg.images, msg.attachments);
@@ -11167,6 +11186,7 @@ export class Session {
             agentId,
             prompt,
             source: promptSourceFromSender(msg.sender),
+            runOptions: { turnOrigin: this.sendTurnOrigin(msg) },
             sessionMode: msg.sessionMode,
             logger: this.sessionLogger,
             waitForIdle: async () => {

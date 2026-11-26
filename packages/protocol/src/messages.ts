@@ -1892,6 +1892,25 @@ export const PromptSenderSchema = z.discriminatedUnion("kind", [
 ]);
 export type PromptSender = z.infer<typeof PromptSenderSchema>;
 
+/**
+ * What started an agent's turn: a fleet prompt (fleet_send_prompt / fleet_create_agent from any
+ * client), a callback (an agent notification or another agent's message), a prompt that follows a
+ * reminder, or Vaibhav typing in the app.
+ */
+export const TurnOriginSchema = z.enum(["prompt", "callback", "reminder", "app"]);
+export type TurnOrigin = z.infer<typeof TurnOriginSchema>;
+
+/** A callback target an agent keeps for its turns, next to the targets each call names. */
+export const PersistentNotifyEntrySchema = z.object({
+  target: z.union([z.string().min(1), z.object({ agent: z.string().min(1) }).strict()]),
+  context: z.string().max(2000).optional(),
+  /** "all" also streams intermediate messages, when the target is configured to take them. */
+  messages: z.enum(["final", "all"]).optional(),
+  /** The turn origins this entry reports; omitted = every turn. */
+  turns: z.array(TurnOriginSchema).min(1).optional(),
+});
+export type PersistentNotifyEntry = z.infer<typeof PersistentNotifyEntrySchema>;
+
 export const SendAgentMessageRequestSchema = z.object({
   type: z.literal("send_agent_message_request"),
   requestId: z.string(),
@@ -1906,6 +1925,8 @@ export const SendAgentMessageRequestSchema = z.object({
   sourceAgentEvent: z.enum(["finished", "errored", "permission-required", "closed"]).optional(),
   /** Labels a prompt sent without sourceAgentId (a fleet send); needs features.promptSenders. */
   sender: PromptSenderSchema.optional(),
+  /** What the turn this prompt starts counts as; omitted = derived. Needs features.persistentNotify. */
+  turnOrigin: TurnOriginSchema.optional(),
   sessionMode: z.string().optional(),
   messageId: z.string().optional(), // Client-provided ID for deduplication
   /** queue needs an agent sender. */
@@ -4865,6 +4886,8 @@ export const ServerInfoStatusPayloadSchema = z
         agentMessageBatching: z.boolean().optional(),
         // sender / sourceAgentTitle / sourceAgentEvent on sends and creates.
         promptSenders: z.boolean().optional(),
+        // turnOrigin on sends; fleet_set_agent_notify runs on this host for a peer.
+        persistentNotify: z.boolean().optional(),
         // COMPAT(agentActiveTurnBehaviors): added in v0.17.2, remove gate after 2027-05-22.
         agentActiveTurnBehaviors: z.boolean().optional(),
         // COMPAT(agentTurnIdentity): accept peers that observed pre-release v0.2.6 through 2027-01-31.

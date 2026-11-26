@@ -10,7 +10,11 @@ import type {
   ToolPolicy,
 } from "@getpaseo/protocol/agent-types";
 import type { AgentMessage } from "@getpaseo/protocol/agent-message";
-import type { AgentAttachment, ProviderInstallationInspection } from "@getpaseo/protocol/messages";
+import type {
+  AgentAttachment,
+  ProviderInstallationInspection,
+  TurnOrigin,
+} from "@getpaseo/protocol/messages";
 import type {
   ProviderInspection,
   ProviderUpdateCheck,
@@ -222,6 +226,12 @@ export interface AgentRunOptions {
    * untouched. Only consulted when a replace actually happens.
    */
   replaceOrigin?: "user" | "machinery";
+  /**
+   * What the turn this prompt starts counts as, for persistent notify entries filtered by turn
+   * origin. Absent: "callback" when the prompt carries another agent's message or notification,
+   * else "prompt".
+   */
+  turnOrigin?: TurnOrigin;
 }
 
 export interface AgentSteerOptions extends AgentRunOptions {

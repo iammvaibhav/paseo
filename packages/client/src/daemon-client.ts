@@ -518,6 +518,8 @@ export interface SendMessageOptions {
   sourceAgentEvent?: SendAgentMessageRequest["sourceAgentEvent"];
   /** Labels a prompt sent without sourceAgentId. Needs features.promptSenders. */
   sender?: SendAgentMessageRequest["sender"];
+  /** What the turn this message starts counts as. A host without features.persistentNotify ignores it. */
+  turnOrigin?: SendAgentMessageRequest["turnOrigin"];
   sessionMode?: string;
   messageId?: string;
   /**
@@ -4659,6 +4661,7 @@ export class DaemonClient {
       sourceAgentTitle: options.sourceAgentTitle,
       sourceAgentEvent: options.sourceAgentEvent,
       sender: options.sender,
+      turnOrigin: options.turnOrigin,
       sessionMode: options.sessionMode,
       ...(messageId ? { messageId } : {}),
       activeTurnBehavior,

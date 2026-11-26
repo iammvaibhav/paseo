@@ -12,6 +12,7 @@ import type {
   CreatePaseoWorktreeWorkflowResult,
 } from "../../worktree-session.js";
 import type { AgentAttachment, FirstAgentContext } from "../../messages.js";
+import type { TurnOrigin } from "@getpaseo/protocol/messages";
 import type { AgentManager, CreateAgentOptions, ManagedAgent } from "../agent-manager.js";
 import type { AgentPromptInput, AgentRunOptions, AgentSessionConfig } from "../agent-sdk-types.js";
 import type { AgentStorage } from "../agent-storage.js";
@@ -84,6 +85,8 @@ export interface CreateAgentFromSessionInput {
   background: boolean;
   initialPrompt?: string;
   source?: AgentPromptSource;
+  /** What the initial turn counts as; default "prompt". The app's own creates pass "app". */
+  turnOrigin?: TurnOrigin;
   clientMessageId?: string;
   outputSchema?: Record<string, unknown>;
   images?: Array<{ data: string; mimeType: string }>;
@@ -198,6 +201,7 @@ interface ResolvedCreateAgent {
   prompt?: AgentPromptInput;
   source?: AgentPromptSource;
   runOptions?: AgentRunOptions;
+  turnOrigin?: TurnOrigin;
   promptFailure: CreateAgentPromptFailureMode;
   promptLogger?: Logger;
   createdWorktree?: CreatePaseoWorktreeWorkflowResult;
@@ -316,6 +320,7 @@ async function resolveSessionCreateAgent(
     prompt: hasPromptContent ? prompt : undefined,
     source: input.source,
     runOptions,
+    ...(input.turnOrigin ? { turnOrigin: input.turnOrigin } : {}),
     // Registration commits creation. First-turn failures belong to the created agent.
     promptFailure: "return-error",
     promptLogger: dependencies.logger.child({
@@ -557,7 +562,8 @@ async function sendInitialPrompt(
       snapshot,
       prompt,
       source: resolved.source,
-      runOptions: resolved.runOptions,
+      // A create is a prompt even when its first message names an agent sender.
+      runOptions: { ...resolved.runOptions, turnOrigin: resolved.turnOrigin ?? "prompt" },
       logger: resolved.promptLogger ?? dependencies.logger,
     });
     return { started: true, liveSnapshot };

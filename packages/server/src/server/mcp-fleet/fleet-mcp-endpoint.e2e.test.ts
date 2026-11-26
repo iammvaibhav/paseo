@@ -619,11 +619,11 @@ describe("Fleet MCP Endpoint E2E (/mcp/fleet)", () => {
         },
       });
       expect(steered.structuredContent).toMatchObject({ success: true, deliveryMode: "steer" });
-      expect(runtime.prompts.at(-1)).toMatchObject({
-        message: "quick check: can you see the image?",
-        streamingBehavior: "steer",
-      });
-      runtime.acceptPrompt("quick check: can you see the image?", "user-2");
+      // Sent as grok-bot (its one notify target), so it joins the turn through the provider's steer with its envelope.
+      const steer = runtime.steerRequests.at(-1)?.message ?? "";
+      expect(steer).toContain('kind="client-message" source-name="grok-bot"');
+      expect(steer).toContain("quick check: can you see the image?");
+      runtime.acceptPrompt(steer, "user-2");
 
       const ttsrAbort = {
         role: "assistant" as const,
@@ -790,4 +790,146 @@ describe("Fleet MCP Endpoint E2E (/mcp/fleet)", () => {
       await rm(workDir, { recursive: true, force: true });
     }
   }, 60_000);
+
+  test("a turn another agent's callback starts still calls back the agent's persistent webhook", async () => {
+    const paseoHome = await mkdtemp(path.join(os.tmpdir(), "paseo-home-fleet-persistent-"));
+    const staticDir = await mkdtemp(path.join(os.tmpdir(), "paseo-static-fleet-persistent-"));
+    const workDir = await mkdtemp(path.join(os.tmpdir(), "paseo-work-fleet-persistent-"));
+    const port = await getAvailablePort();
+    const token = "wren-secret-token";
+    const webhook = await startWebhookReceiver();
+    await writeFile(
+      path.join(paseoHome, "config.json"),
+      JSON.stringify({
+        version: 1,
+        daemon: {
+          mcp: {
+            enabled: true,
+            remoteClients: [{ name: "grok-bot", tokenHash: hashDaemonPassword(token) }],
+            notifyTargets: [{ name: "n8n-wren", url: webhook.url }],
+          },
+        },
+      }),
+      "utf8",
+    );
+    const omp = new FakeOmp();
+    const daemon = await createPaseoDaemon(
+      {
+        listen: `127.0.0.1:${port}`,
+        paseoHome,
+        corsAllowedOrigins: [],
+        hostnames: true,
+        mcpEnabled: true,
+        staticDir,
+        mcpDebug: false,
+        agentClients: {
+          ...createTestAgentClients(),
+          omp: new OmpAgentClient({ logger: pino({ level: "silent" }), runtime: omp }),
+        },
+        providerOverrides: { omp: { enabled: true } },
+        agentStoragePath: path.join(paseoHome, "agents"),
+      },
+      pino({ level: "silent" }),
+    );
+    await daemon.start();
+    const client = new Client({ name: "e2e-persistent", version: "1.0.0" });
+    // Runs the session's next prompt to the end with one reply.
+    const runTurn = async (
+      runtime: ReturnType<FakeOmp["latestSession"]>,
+      index: number,
+      reply: string,
+    ) => {
+      await vi.waitFor(() => expect(runtime.prompts.length).toBeGreaterThan(index), {
+        timeout: 10_000,
+      });
+      runtime.state = { ...runtime.state, isStreaming: true };
+      runtime.emit({ type: "agent_start" });
+      runtime.beginTurn();
+      runtime.acceptPrompt(runtime.prompts[index]!.message, `user-${index}`);
+      runtime.streamAssistantText(reply, `assistant-${index}`);
+      runtime.state = { ...runtime.state, isStreaming: false };
+      runtime.finishTurn();
+    };
+    const finished = () => webhook.bodies.filter((body) => body.type === "paseo.agent.finished");
+    try {
+      await client.connect(
+        new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp/fleet`), {
+          requestInit: { headers: { Authorization: `Bearer ${token}` } },
+        }),
+      );
+      // n8n starts the chat agent: this turn's callback carries the message it answers.
+      const created = await client.callTool({
+        name: "fleet_create_agent",
+        arguments: {
+          host: "local",
+          cwd: workDir,
+          isolation: "local",
+          provider: "omp/anthropic/claude-opus-5-5",
+          title: "wren chat",
+          initialPrompt: "dispatch a worker",
+          notifyTargets: ["n8n-wren"],
+          notifyContext: '{"chat":1,"messageId":"m1"}',
+          persistentNotify: [{ target: "n8n-wren", context: '{"chat":1}' }],
+        },
+      });
+      expect(
+        created.isError,
+        extractFirstTextContent(created as { content: unknown[] }),
+      ).toBeFalsy();
+      const wrenId = created.structuredContent?.agentId as string;
+      expect(created.structuredContent).toMatchObject({
+        persistentNotify: [{ target: "n8n-wren", context: '{"chat":1}' }],
+      });
+      const wren = omp.latestSession();
+      await runTurn(wren, 0, "Dispatched.");
+      await vi.waitFor(() => expect(finished()).toHaveLength(1), { timeout: 20_000 });
+      expect(finished()[0]).toMatchObject({
+        client: "grok-bot",
+        context: '{"chat":1,"messageId":"m1"}',
+      });
+
+      // The chat agent's worker reports back to it; that callback starts the chat agent's next turn.
+      const worker = await client.callTool({
+        name: "fleet_create_agent",
+        arguments: {
+          host: "local",
+          cwd: workDir,
+          isolation: "local",
+          provider: "omp/anthropic/claude-opus-5-5",
+          title: "worker",
+          initialPrompt: "do the work",
+          notifyTargets: [{ agent: wrenId }],
+        },
+      });
+      expect(worker.isError, extractFirstTextContent(worker as { content: unknown[] })).toBeFalsy();
+      await runTurn(omp.latestSession(), 0, "Work done.");
+      await runTurn(wren, 1, "Your worker finished: work done.");
+
+      await vi.waitFor(() => expect(finished()).toHaveLength(2), { timeout: 20_000 });
+      expect(wren.prompts[1]!.message).toContain('kind="agent-notification"');
+      expect(finished()[1]).toMatchObject({
+        client: "persistent-notify",
+        notifyTarget: "n8n-wren",
+        context: '{"chat":1}',
+        agent: expect.objectContaining({
+          id: wrenId,
+          lastMessage: "Your worker finished: work done.",
+        }),
+      });
+      const status = await client.callTool({
+        name: "fleet_agent_status",
+        arguments: { agentId: wrenId },
+      });
+      expect(status.structuredContent).toMatchObject({
+        persistentNotify: [{ target: "n8n-wren", context: '{"chat":1}' }],
+      });
+    } finally {
+      await client.close();
+      await daemon.stop();
+      await webhook.close();
+      await rm(paseoHome, { recursive: true, force: true });
+      await rm(staticDir, { recursive: true, force: true });
+      await rm(workDir, { recursive: true, force: true });
+    }
+  }, 90_000);
 });
