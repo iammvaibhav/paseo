@@ -1,7 +1,16 @@
 import { Fragment, memo, useCallback, type ReactElement } from "react";
 import { useTranslation } from "react-i18next";
 import { withUnistyles } from "react-native-unistyles";
-import { Archive, CircleCheck, Copy, ExternalLink, Pin, PinOff, Square } from "lucide-react-native";
+import {
+  Archive,
+  CircleCheck,
+  Copy,
+  ExternalLink,
+  FolderOpen,
+  Pin,
+  PinOff,
+  Square,
+} from "lucide-react-native";
 import { getAgentPinnedAt } from "@getpaseo/protocol/agent-labels";
 import { ContextMenuContent, ContextMenuItem } from "@/components/ui/context-menu";
 import { useToast } from "@/contexts/toast-context";
@@ -14,11 +23,14 @@ import { useHostFeature } from "@/runtime/host-features";
 import type { Theme } from "@/styles/theme";
 import { copyToClipboard } from "@/utils/copy-to-clipboard";
 import { useAgentReminderMenu } from "@/agent-reminders/reminder-menu";
+import { useIsCompactFormFactor } from "@/constants/layout";
+import { revealProjectInSidebar } from "@/stores/sidebar-reveal-store";
 
 const ThemedCircleCheck = withUnistyles(CircleCheck);
 const ThemedArchive = withUnistyles(Archive);
 const ThemedCopy = withUnistyles(Copy);
 const ThemedExternalLink = withUnistyles(ExternalLink);
+const ThemedFolderOpen = withUnistyles(FolderOpen);
 const ThemedSquare = withUnistyles(Square);
 const ThemedPin = withUnistyles(Pin);
 const ThemedPinOff = withUnistyles(PinOff);
@@ -26,6 +38,7 @@ const ThemedPinOff = withUnistyles(PinOff);
 const menuIconMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 
 const MENU_OPEN_ICON = <ThemedExternalLink size={14} uniProps={menuIconMapping} />;
+const MENU_SHOW_PROJECT_ICON = <ThemedFolderOpen size={14} uniProps={menuIconMapping} />;
 const MENU_COPY_ICON = <ThemedCopy size={14} uniProps={menuIconMapping} />;
 const MENU_STOP_ICON = <ThemedSquare size={14} uniProps={menuIconMapping} />;
 const MENU_CIRCLE_CHECK_ICON = <ThemedCircleCheck size={14} uniProps={menuIconMapping} />;
@@ -35,11 +48,17 @@ const MENU_UNPIN_ICON = <ThemedPinOff size={14} uniProps={menuIconMapping} />;
 
 export interface SidebarAgentViewRowMenuProps {
   row: LifecycleRow;
+  /**
+   * The projects-view project holding the agent's workspace. Null when the agent has no workspace
+   * or the projects view does not list it, which hides "Show project".
+   */
+  projectViewKey: string | null;
   onOpen: () => void;
 }
 
 export const SidebarAgentViewRowMenu = memo(function SidebarAgentViewRowMenu({
   row,
+  projectViewKey,
   onOpen,
 }: SidebarAgentViewRowMenuProps): ReactElement {
   const { agent } = row;
@@ -86,6 +105,16 @@ export const SidebarAgentViewRowMenu = memo(function SidebarAgentViewRowMenu({
     void archiveAgent({ serverId: agent.serverId, agentId: agent.id }).catch(() => {});
   }, [agent.id, agent.serverId, archiveAgent]);
 
+  const isCompact = useIsCompactFormFactor();
+  const handleShowProject = useCallback(() => {
+    if (!projectViewKey) return;
+    revealProjectInSidebar({
+      projectViewKey,
+      workspaceKey: agent.workspaceId ? `${agent.serverId}:${agent.workspaceId}` : null,
+      isCompact,
+    });
+  }, [agent.serverId, agent.workspaceId, isCompact, projectViewKey]);
+
   const reminderMenu = useAgentReminderMenu({
     serverId: agent.serverId,
     agentId: agent.id,
@@ -103,14 +132,24 @@ export const SidebarAgentViewRowMenu = memo(function SidebarAgentViewRowMenu({
         switch (action) {
           case "open":
             return (
-              <ContextMenuItem
-                key={action}
-                leading={MENU_OPEN_ICON}
-                onSelect={onOpen}
-                testID={`sidebar-agent-view-row-open-${agent.serverId}-${agent.id}`}
-              >
-                {t("sidebar.agentView.menu.open")}
-              </ContextMenuItem>
+              <Fragment key={action}>
+                <ContextMenuItem
+                  leading={MENU_OPEN_ICON}
+                  onSelect={onOpen}
+                  testID={`sidebar-agent-view-row-open-${agent.serverId}-${agent.id}`}
+                >
+                  {t("sidebar.agentView.menu.open")}
+                </ContextMenuItem>
+                {projectViewKey ? (
+                  <ContextMenuItem
+                    leading={MENU_SHOW_PROJECT_ICON}
+                    onSelect={handleShowProject}
+                    testID={`sidebar-agent-view-row-show-project-${agent.serverId}-${agent.id}`}
+                  >
+                    {t("sidebar.agentView.menu.showProject")}
+                  </ContextMenuItem>
+                ) : null}
+              </Fragment>
             );
           case "copy-reference":
             return (

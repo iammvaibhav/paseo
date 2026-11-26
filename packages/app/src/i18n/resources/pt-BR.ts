@@ -1477,6 +1477,7 @@ export const ptBR: TranslationResources = {
       },
       menu: {
         open: "Abrir no espaço de trabalho",
+        showProject: "Mostrar projeto",
         copyReference: "Copiar referência",
         pin: "Fixar no topo",
         unpin: "Desafixar",

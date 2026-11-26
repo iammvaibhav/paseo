@@ -194,7 +194,7 @@ import { parsePluginClientId } from "./plugins/plugin-session-identity.js";
 import { selectItemsByProjectedLimit } from "./agent/timeline-projection.js";
 import { buildAgentForkContextAttachment, curateAgentActivity } from "./agent/activity-curator.js";
 import type { AgentPromptInput } from "./agent/agent-sdk-types.js";
-import { buildAgentPrompt } from "./agent/prompt-attachments.js";
+import { buildAgentPrompt, storePromptImages } from "./agent/prompt-attachments.js";
 import type { StructuredGenerationDaemonConfig } from "./agent/structured-generation-providers.js";
 import {
   getAgentStreamEventTurnId,
@@ -10948,7 +10948,7 @@ export class Session {
         sourceAgentId: msg.sourceAgentId,
         text: msg.text,
         images: msg.images,
-        attachments: msg.attachments,
+        attachments: await storePromptImages(this.paseoHome, msg.images, msg.attachments),
         messageId: msg.messageId,
         // `boundaryUserMessageId` only ever addressed a provider-native session
         // fork, which no longer exists. Old clients still send it; ignore it.
@@ -11088,7 +11088,9 @@ export class Session {
     try {
       const agentId = resolved.agentId;
 
-      const prompt = buildAgentPrompt(msg.text, msg.images, msg.attachments);
+      // The receipt fingerprint covers the request as sent, so a retry of the
+      // same message id still matches after its images were stored.
+      const requestPrompt = buildAgentPrompt(msg.text, msg.images, msg.attachments);
       this.sessionLogger.trace(
         {
           agentId,
@@ -11110,6 +11112,9 @@ export class Session {
       // A person typing in the app (not a peer daemon, the CLI, or a bot).
       const fromPerson = this.clientType === "mobile" || this.clientType === "browser";
       const send = async (beforeDispatch: () => Promise<void>) => {
+        // Stored only when the send goes through, so a deduped retry writes nothing.
+        const attachments = await storePromptImages(this.paseoHome, msg.images, msg.attachments);
+        const prompt = buildAgentPrompt(msg.text, msg.images, attachments);
         if (msg.sourceAgentId) {
           const senderTitle =
             msg.sourceAgentTitle ??
@@ -11196,7 +11201,7 @@ export class Session {
             // sent as a steer is a different operation from the same text sent
             // as an interrupt, and must not dedupe against it.
             request: {
-              prompt,
+              prompt: requestPrompt,
               sourceAgentId: msg.sourceAgentId,
               sourceAgentServerId: msg.sourceAgentServerId,
               sessionMode: msg.sessionMode,

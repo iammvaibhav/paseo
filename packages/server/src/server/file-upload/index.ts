@@ -162,12 +162,7 @@ export class FileUploadStore {
       );
     }
     upload.completed = true;
-    // The mime type is recorded beside the upload directory so the file can be
-    // resolved by id later (readStoredUpload) without trusting its extension.
-    await writeFile(
-      uploadMetadataPath(this.paseoHome, upload.id),
-      JSON.stringify({ fileName: upload.fileName, mimeType: upload.mimeType }),
-    );
+    await writeUploadMetadata(this.paseoHome, upload.id, upload.fileName, upload.mimeType);
     return buildUploadResponse(upload, null);
   }
 
@@ -223,6 +218,42 @@ const UPLOAD_ID_PATTERN = /^upload_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 
 function uploadMetadataPath(paseoHome: string, id: string): string {
   return join(paseoHome, "uploads", `${id}.json`);
+}
+
+// The mime type is recorded beside the upload directory so the file can be
+// resolved by id later (readStoredUpload) without trusting its extension.
+async function writeUploadMetadata(
+  paseoHome: string,
+  id: string,
+  fileName: string,
+  mimeType: string,
+): Promise<void> {
+  await writeFile(uploadMetadataPath(paseoHome, id), JSON.stringify({ fileName, mimeType }));
+}
+
+/**
+ * Writes a file whose bytes are already in memory into the attachment store,
+ * laid out exactly like a streamed upload, and returns its descriptor.
+ */
+export async function writeStoredUpload(
+  paseoHome: string,
+  file: { fileName: string; mimeType: string; bytes: Uint8Array },
+): Promise<StoredUpload> {
+  const id = `upload_${randomUUID()}`;
+  const fileName = sanitizeFileName(file.fileName);
+  const uploadDir = join(paseoHome, "uploads", id);
+  const path = join(uploadDir, fileName);
+  await mkdir(uploadDir, { recursive: true });
+  await writeFile(path, file.bytes);
+  await writeUploadMetadata(paseoHome, id, fileName, file.mimeType);
+  return {
+    type: "uploaded_file",
+    id,
+    fileName,
+    mimeType: file.mimeType,
+    size: file.bytes.byteLength,
+    path,
+  };
 }
 
 /**
