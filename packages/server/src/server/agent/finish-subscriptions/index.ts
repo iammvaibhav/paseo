@@ -236,8 +236,9 @@ export function createFinishSubscriptions(deps: Dependencies): FinishSubscriptio
           title,
           event: finishNotificationEvents[reason],
         },
-        // A finish report never enters a running turn.
-        activeTurnBehavior: "queue",
+        // A finish report joins the caller's running turn; a caller that cannot
+        // steer right now gets it once that turn ends.
+        activeTurnBehavior: "steer",
         unarchive: false,
       });
       acknowledgments.push(

@@ -28,7 +28,7 @@ export function describeAgentMessage(admission: Admission): string {
       "Queued, not delivered yet. The agent is working and reads your message when its current turn ends.";
     const followUp = canSteer
       ? 'If the message cannot wait, send a short follow-up with activeTurnBehavior "steer" (it joins the running turn) or "interrupt" (it stops the turn and starts a new one).'
-      : 'If the message cannot wait, send a short follow-up with activeTurnBehavior "interrupt" (it stops the turn and starts a new one). This agent\'s provider cannot steer, so "steer" also stops the turn.';
+      : 'If the message cannot wait, send a short follow-up with activeTurnBehavior "interrupt" (it stops the turn and starts a new one). This agent cannot steer right now, so "steer" also waits for the turn to end.';
     return `${waiting} ${followUp} ${DO_NOT_REPEAT}`;
   }
   if (!running) return "The agent is idle, so your message starts a turn now.";
@@ -36,5 +36,5 @@ export function describeAgentMessage(admission: Admission): string {
     return "Interrupting the running turn. A new turn starts with your message.";
   return canSteer
     ? "Steering the running turn. The agent reads your message at its next step and keeps working."
-    : "This agent's provider cannot steer, so your message interrupts the running turn. A new turn starts with your message.";
+    : "This agent cannot steer right now, so your message waits for the running turn to end and then starts a new one.";
 }

@@ -171,14 +171,23 @@ import { MemoryService } from "./memory/service.js";
 import { AgentStorage, type StoredAgentRecord } from "./agent/agent-storage.js";
 import { attachAgentStoragePersistence } from "./persistence-hooks.js";
 import { createAgentMcpServer } from "./agent/mcp-server.js";
-import { createFleetMcpServer, createFleetMcpWaitForAgent } from "./mcp-fleet/fleet-mcp-server.js";
+import {
+  createFleetMcpServer,
+  createFleetMcpWaitForAgent,
+  FleetMcpNotifyArmRequestSchema,
+  type FleetMcpNotifyArmRequest,
+  type FleetMcpNotifyArmResult,
+} from "./mcp-fleet/fleet-mcp-server.js";
 import { authenticateRemoteMcpClient } from "./mcp-fleet/auth.js";
 import { createMcpJsonBodyParser } from "./mcp-fleet/json-body.js";
 import { ChunkedUploadSessions, FileUploadStore } from "./file-upload/index.js";
 import {
   createMcpFinishLocalAgents,
   createMcpFinishNotifier,
+  type McpAgentDelivery,
   type McpNotifyTarget,
+  type McpNotifyTargetRef,
+  type McpWebhookTarget,
 } from "./mcp-fleet/finish-notifier.js";
 import { createAgentReminderService } from "./reminders/agent-reminder-service.js";
 import { createReminderAgentDescriber } from "./reminders/reminder-agent-info.js";
@@ -205,11 +214,7 @@ import { CheckoutDiffManager } from "./checkout-diff-manager.js";
 import { BaseCheckoutSyncService } from "./base-checkout-sync.js";
 import { IdleCloseOmpService } from "./idle-close/index.js";
 import { KeepAwakeService } from "./keep-awake/index.js";
-import {
-  AGENT_VIEWED_PEER_TOOL,
-  MissionControlService,
-  USER_TURN_PEER_TOOL,
-} from "./mission-control/service.js";
+import { MissionControlService, NOTIFY_ARM_PEER_TOOL } from "./mission-control/service.js";
 import { getItsaplanIssueIdFromLabels } from "./itsaplan/index.js";
 import { buildFleetContextData } from "./mission-control/context.js";
 import { resolveWorktreeDefaultBranch } from "./worktree-default-branch.js";
@@ -2734,111 +2739,145 @@ export async function createPaseoDaemon(
     }
     return cached;
   };
-  // Is someone looking at this agent's chat? Only the agent's own host sees
-  // the client heartbeats for it, so ask this host and every online peer.
-  const AgentViewedAnswerSchema = z.object({ viewed: z.boolean() });
-  const isAgentViewedAnywhere = async (agentId: string): Promise<boolean> => {
-    if (missionControlService.agentViews.isViewed(agentId)) return true;
-    const answers = await Promise.all(
-      (peerManager?.getPeerStatuses() ?? [])
-        .filter((peer) => peer.state === "online")
-        .map(async (peer) => {
-          const client = peerManager?.getPeerClient(peer.name);
-          const response = await client
-            ?.missionControlToolsExecute({
-              name: AGENT_VIEWED_PEER_TOOL,
-              args: { agentId },
-              timeoutMs: 5_000,
-            })
-            .catch(() => null);
-          return AgentViewedAnswerSchema.safeParse(response?.structuredContent).data?.viewed;
-        }),
-    );
-    return answers.includes(true);
-  };
-  const mcpFinishNotifier = createMcpFinishNotifier({
-    resolveSecret: resolveVaultSecret,
-    holdOwnTurn: async ({ agentId }) => {
-      const mode = centralMissionControlConfig.get().ownTurnNotify;
-      if (mode === "never") return "own_turns_off";
-      if (mode === "not_viewing" && (await isAgentViewedAnywhere(agentId))) return "chat_open";
-      return null;
-    },
-    logger,
-    journalPath: path.join(config.paseoHome, "mcp-fleet", "finish-watches.jsonl"),
-    deliveryLogPath: path.join(config.paseoHome, "mcp-fleet", "webhook-deliveries.jsonl"),
-    localAgents: createMcpFinishLocalAgents({ agentManager, agentStorage }),
-  });
-  const loadNamedNotifyTargets = (): Map<string, McpNotifyTarget> =>
+  const loadNamedNotifyTargets = (): Map<string, McpWebhookTarget> =>
     new Map(
       (loadPersistedConfig(config.paseoHome).daemon?.mcp?.notifyTargets ?? []).map(
         ({ name, ...target }) => [name, target],
       ),
     );
-  // Turns Vaibhav starts from the app: the agent's ticket gets his words, and
-  // every MCP client subscribed to the agent hears when the turn ends (origin
-  // "user"). Subscriptions live on whichever host the client calls, so the
-  // agent's host also tells its peers (USER_TURN_PEER_TOOL); a peer only arms.
-  const unsubscribeUserPrompts = missionControlService.subscribeUserPrompts((prompt) => {
-    const { agentId, turnId, text } = prompt;
-    if (!prompt.forwarded) {
-      void itsaplanBridge.mirrorUserPrompt(agentId, text).catch((error: unknown) => {
-        logger.warn({ err: error, agentId }, "itsaplan.bridge.user_prompt_mirror_failed");
+  // An agent target gets each event as a message: it joins the agent's running
+  // turn when the agent can live-steer, else it waits for that turn to end
+  // (AgentMessageDelivery). An agent on a peer gets it through that peer.
+  const deliverToAgent = async (delivery: McpAgentDelivery): Promise<void> => {
+    if (await mcpFinishLocalAgents.hosts(delivery.agentId)) {
+      if (!wsServer) throw new Error("Daemon is not accepting agent messages");
+      wsServer.agentMessages.enqueue({
+        recipientId: delivery.agentId,
+        prompt: delivery.prompt,
+        source: {
+          kind: "agent-notification",
+          agentId: delivery.aboutAgentId,
+          ...(delivery.aboutTitle ? { title: delivery.aboutTitle } : {}),
+          event: delivery.event,
+        },
+        activeTurnBehavior: "steer",
       });
-      for (const peer of peerManager?.getPeerStatuses() ?? []) {
-        const client = peer.state === "online" ? peerManager?.getPeerClient(peer.name) : null;
-        void client
-          ?.missionControlToolsExecute({
-            name: USER_TURN_PEER_TOOL,
-            args: { agentId, turnId, text },
-          })
-          .catch((error: unknown) => {
-            logger.debug(
-              { err: error, agentId, peer: peer.name },
-              "mcp.finish.user_turn_forward_failed",
-            );
-          });
-      }
+      return;
     }
-    void armUserTurnWatches(agentId, turnId, text).catch((error: unknown) => {
-      logger.warn({ err: error, agentId }, "mcp.finish.user_turn_arm_failed");
+    for (const peer of peerManager?.getPeerStatuses() ?? []) {
+      const client = peer.state === "online" ? peerManager?.getPeerClient(peer.name) : null;
+      const hosted = await client?.fetchAgent(delivery.agentId).catch(() => null);
+      if (!client || !hosted) continue;
+      await client.sendAgentMessage(delivery.agentId, delivery.prompt, {
+        sourceAgentId: delivery.aboutAgentId,
+        sourceAgentServerId: serverId,
+        activeTurnBehavior: "steer",
+      });
+      return;
+    }
+    throw new Error(`agent ${delivery.agentId} is not on this host or any online peer`);
+  };
+  const mcpFinishLocalAgents = createMcpFinishLocalAgents({ agentManager, agentStorage });
+  const mcpFinishNotifier = createMcpFinishNotifier({
+    resolveSecret: resolveVaultSecret,
+    logger,
+    journalPath: path.join(config.paseoHome, "mcp-fleet", "finish-watches.jsonl"),
+    deliveryLogPath: path.join(config.paseoHome, "mcp-fleet", "webhook-deliveries.jsonl"),
+    localAgents: mcpFinishLocalAgents,
+    deliverToAgent,
+  });
+  /** Where a target ref delivers from this host; null when the name is not configured here. */
+  const bindNotifyTarget = (
+    ref: McpNotifyTargetRef,
+    named: ReadonlyMap<string, McpWebhookTarget>,
+  ): McpNotifyTarget | null =>
+    "name" in ref ? (named.get(ref.name) ?? null) : { kind: "agent", agentId: ref.agent };
+  // Arms a call's watches on this host. `host` set: the agent runs on that
+  // peer and the watch follows it from here.
+  const armNotifyHere = async (
+    request: FleetMcpNotifyArmRequest,
+    host?: string,
+  ): Promise<FleetMcpNotifyArmResult> => {
+    const named = loadNamedNotifyTargets();
+    const bindings = request.targets.map((ref) => ({ ref, target: bindNotifyTarget(ref, named) }));
+    const missing = bindings.filter(({ target }) => !target).map(({ ref }) => ref);
+    if (missing.length > 0) {
+      return {
+        error: `notify target ${missing.map((ref) => ("name" in ref ? ref.name : ref.agent)).join(", ")} is not configured on ${serverId}.`,
+      };
+    }
+    const { catalog } = await getFleetMcpCatalog(request.client);
+    const waitForAgent = createFleetMcpWaitForAgent(catalog);
+    for (const { ref, target } of bindings) {
+      void mcpFinishNotifier.arm({
+        client: request.client,
+        tool: request.tool,
+        agentId: request.agentId,
+        ...(host ? { host } : {}),
+        turnId: request.turnId,
+        nextTurnAfter: request.nextTurnAfter,
+        context: request.context,
+        targetRef: ref,
+        target: target!,
+        waitForAgent,
+      });
+    }
+    return { armedOn: host ? `local (following ${host})` : "local" };
+  };
+  // The agent's own host runs its watch: here when this host runs the agent,
+  // else on the peer that does (NOTIFY_ARM_PEER_TOOL).
+  const armNotify = async (request: FleetMcpNotifyArmRequest): Promise<FleetMcpNotifyArmResult> => {
+    if (await mcpFinishLocalAgents.hosts(request.agentId)) return armNotifyHere(request);
+    const { catalog } = await getFleetMcpCatalog(request.client);
+    const status = await catalog.executeTool("fleet_agent_status", {
+      agentId: request.agentId,
+      ...(request.host ? { host: request.host } : {}),
+    });
+    const host = (status.structuredContent as { host?: unknown } | undefined)?.host;
+    if (status.isError || typeof host !== "string") {
+      return { error: `could not find the host of agent ${request.agentId}.` };
+    }
+    const client = peerManager?.getPeerClient(host);
+    if (!client) return { error: `host ${host} is not connected.` };
+    const response = await client
+      .missionControlToolsExecute({ name: NOTIFY_ARM_PEER_TOOL, args: request, timeoutMs: 15_000 })
+      .catch((error: unknown) => ({
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      }));
+    if (response.ok) return { armedOn: host };
+    const error = response.error ?? "the peer refused";
+    // COMPAT(notify-targets): added in v0.17.5, remove after 2026-12-10. A peer
+    // too old to arm its own watch: follow its agent from here instead.
+    if (error.includes("cannot be run by a peer")) return armNotifyHere(request, host);
+    return { error: `${host}: ${error}` };
+  };
+  missionControlService.setNotifyArmHandler(async (args) => {
+    const request = FleetMcpNotifyArmRequestSchema.safeParse(args);
+    if (!request.success) return { error: `invalid ${NOTIFY_ARM_PEER_TOOL} request` };
+    if (!(await mcpFinishLocalAgents.hosts(request.data.agentId))) {
+      return { error: `agent ${request.data.agentId} is not on ${serverId}` };
+    }
+    return armNotifyHere(request.data);
+  });
+  // Turns Vaibhav starts from the app: the agent's ticket gets his words.
+  const unsubscribeUserPrompts = missionControlService.subscribeUserPrompts((prompt) => {
+    void itsaplanBridge.mirrorUserPrompt(prompt.agentId, prompt.text).catch((error: unknown) => {
+      logger.warn(
+        { err: error, agentId: prompt.agentId },
+        "itsaplan.bridge.user_prompt_mirror_failed",
+      );
     });
   });
-  const armUserTurnWatches = async (
-    agentId: string,
-    turnId: string | null,
-    userPrompt: string,
-  ): Promise<void> => {
-    const persisted = loadPersistedConfig(config.paseoHome).daemon?.mcp;
-    for (const client of persisted?.remoteClients ?? []) {
-      const subscription = mcpFinishNotifier.subscription(client.name, agentId);
-      if (!subscription) continue;
-      const target = subscription.notifyTarget
-        ? loadNamedNotifyTargets().get(subscription.notifyTarget)
-        : client.notify;
-      if (!target) continue;
-      const { catalog } = await getFleetMcpCatalog(client.name);
-      void mcpFinishNotifier.arm({
-        client: client.name,
-        target,
-        notifyTarget: subscription.notifyTarget,
-        agentId,
-        turnId,
-        tool: "user_prompt",
-        context: subscription.context,
-        origin: "user",
-        userPrompt,
-        waitForAgent: createFleetMcpWaitForAgent(catalog),
-      });
-    }
-  };
   const restoreMcpFinishWatches = async () => {
-    const { restored } = await mcpFinishNotifier.restore(async (clientName, notifyTarget) => {
-      const target = notifyTarget
-        ? loadNamedNotifyTargets().get(notifyTarget)
-        : loadPersistedConfig(config.paseoHome).daemon?.mcp?.remoteClients?.find(
+    const { restored } = await mcpFinishNotifier.restore(async (clientName, ref) => {
+      // COMPAT(notify-targets): added in v0.17.5, remove after 2026-12-10. A
+      // watch armed before notifyTargets posts to its client's own webhook.
+      const target = ref
+        ? bindNotifyTarget(ref, loadNamedNotifyTargets())
+        : (loadPersistedConfig(config.paseoHome).daemon?.mcp?.remoteClients?.find(
             (client) => client.name === clientName,
-          )?.notify;
+          )?.notify ?? null);
       if (!target) return null;
       const { catalog } = await getFleetMcpCatalog(clientName);
       return { target, waitForAgent: createFleetMcpWaitForAgent(catalog) };
@@ -2857,8 +2896,8 @@ export async function createPaseoDaemon(
         catalog: cached.catalog,
         clientName,
         finishNotifier: mcpFinishNotifier,
-        notifyTarget: client.notify ?? null,
         namedNotifyTargets: loadNamedNotifyTargets(),
+        armNotify,
       });
 
       const transport = new StreamableHTTPServerTransport({

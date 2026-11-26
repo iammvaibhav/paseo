@@ -1140,6 +1140,11 @@ export class OmpAgentSession implements AgentSession {
 
     return { turnId };
   }
+  canSteerNow(): boolean {
+    // Cursor Agent Run owns the whole turn in one stream: nothing to inject a steer into.
+    return !isCursorOmpModel(this.state.model);
+  }
+
   async steerActiveTurn(
     prompt: AgentPromptInput,
     options: SteerActiveTurnOptions,

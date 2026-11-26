@@ -103,9 +103,9 @@ export const RemoteMcpClientSchema = z
     name: z.string().min(1),
     tokenHash: BcryptHashSchema,
     /**
-     * Where finish notifications for this client go (notifyOnFinish on
-     * /mcp/fleet). Header values may embed an Aside vault reference,
-     * e.g. "Bearer aside://<account>/<itemId>"; it is resolved at send time.
+     * COMPAT(notify-targets): ignored except to restore finish watches armed before
+     * per-call notifyTargets (v0.17.4); remove after 2026-12-10. Callbacks go only to
+     * the targets a call names (daemon.mcp.notifyTargets).
      */
     notify: z
       .object({
@@ -119,11 +119,15 @@ export const RemoteMcpClientSchema = z
 
 export type RemoteMcpClient = z.infer<typeof RemoteMcpClientSchema>;
 
+/** Finish-watch events a target can receive; omitted → all of them. */
+export const NotifyTargetEventSchema = z.enum(["finished", "needs_permission", "interrupted"]);
+
 /**
- * A named finish-notification webhook a /mcp/fleet caller selects with
- * notifyTarget, independent of which client token it authenticated with.
+ * A named callback webhook. A /mcp/fleet call lists the targets it wants with
+ * notifyTargets; nothing is sent to a target the call did not name.
  * signingSecret (usually an aside:// reference) signs each POST body with
- * HMAC-SHA256 into the X-Paseo-Signature-256 header.
+ * HMAC-SHA256 into the X-Paseo-Signature-256 header. Flotilla ships the same
+ * list to every host, since the agent's own host delivers its events.
  */
 export const NotifyTargetSchema = z
   .object({
@@ -131,10 +135,19 @@ export const NotifyTargetSchema = z
     url: z.string().url(),
     headers: z.record(z.string(), z.string()).optional(),
     signingSecret: z.string().min(1).optional(),
+    /** Which events to POST; omitted → finished, needs_permission and interrupted. */
+    events: z.array(NotifyTargetEventSchema).optional(),
+    /** Also POST paseo.agent.message for each assistant message the agent writes mid-turn. */
+    intermediateMessages: z.boolean().optional(),
+    /** Messages completed within this window share one POST. Default 2000. */
+    messageBatchMs: z.number().int().min(0).max(60_000).optional(),
+    /** Delays between attempts of a finish or permission event; its length + 1 is the attempt limit. */
+    retryDelaysMs: z.array(z.number().int().min(0)).max(20).optional(),
   })
   .strict();
 
 export type NotifyTargetConfig = z.infer<typeof NotifyTargetSchema>;
+export type NotifyTargetEvent = z.infer<typeof NotifyTargetEventSchema>;
 
 const SpeechProviderIdSchema = z
   .string()

@@ -3918,7 +3918,7 @@ describe("send_agent_prompt MCP tool", () => {
       steering: "none",
       applied: "queue",
       outcome: "queued",
-      guidance: 'provider cannot steer, so "steer" also stops the turn',
+      guidance: 'cannot steer right now, so "steer" also waits for the turn to end',
     },
     {
       agentScoped: true,
@@ -3928,13 +3928,14 @@ describe("send_agent_prompt MCP tool", () => {
       outcome: "steered",
       guidance: "Steering the running turn.",
     },
+    // A steer never cancels a turn: an agent that cannot steer gets it when the turn ends.
     {
       agentScoped: true,
       behavior: "steer",
       steering: "none",
-      applied: "steer",
-      outcome: "replaced",
-      guidance: "This agent's provider cannot steer, so your message interrupts the running turn.",
+      applied: "queue",
+      outcome: "queued",
+      guidance: "This agent cannot steer right now, so your message waits for the running turn",
     },
     // A provider that can steer may refuse one steer; the turn is replaced all the same.
     {

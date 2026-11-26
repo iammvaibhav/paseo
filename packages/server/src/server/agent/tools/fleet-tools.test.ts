@@ -107,6 +107,7 @@ function createFakePeerHarness(
     fetchAgentTimeline: vi.fn(async () => peerTimelinePayload()),
     sendAgentMessage: vi.fn(async () => {
       peerTurn += 1;
+      return {};
     }),
     missionControlToolsExecute: vi.fn(async (input: { name: string }) => ({
       ok: true,
@@ -773,12 +774,16 @@ describe("fleet_send_prompt mode", () => {
     expect(appendTimelineItem).not.toHaveBeenCalled();
   });
 
-  test("steer on a busy non-omp agent interrupts (replaceRunning) and reports the fallback honestly", async () => {
+  test("steer on a busy agent that cannot steer waits for its turn instead of cancelling it", async () => {
     const tryRunOutOfBand = vi.fn(() => false);
     const replaceAgentRun = vi.fn(async function* () {});
+    const steerAgentRun = vi.fn(async () => ({ status: "accepted" as const }));
+    let busy = true;
     const agentManager = {
       getAgent: vi.fn(() => ({ provider: "codex" })),
-      hasInFlightRun: vi.fn(() => true),
+      hasInFlightRun: vi.fn(() => busy),
+      canSteer: vi.fn(() => false),
+      steerAgentRun,
       hasTimeline: vi.fn(() => false),
       waitForAgentRunStart: vi.fn(async () => undefined),
       tryRunOutOfBand,
@@ -803,31 +808,48 @@ describe("fleet_send_prompt mode", () => {
       prompt: "follow up",
       mode: "steer",
     });
-    // No native steer path on codex: the run is replaced instead of queued —
-    // a steer's value is timely delivery, queue-until-idle can sit for tens of
-    // minutes. startAgentRun still probes out-of-band with the plain prompt
-    // (declined), then replaces.
-    expect(tryRunOutOfBand).not.toHaveBeenCalledWith(
-      SEND_AGENT_UUID,
-      "/steer follow up",
-      undefined,
-    );
-    // The steer fallback is a machinery dispatch (Commander/Verifier): the
-    // superseded run keeps the failure treatment, never a user interruption.
-    expect(replaceAgentRun).toHaveBeenCalledWith(
-      SEND_AGENT_UUID,
-      "follow up",
-      { replaceOrigin: "machinery" },
-      expect.any(ForegroundPromptStart),
-    );
-    // The caller is told the truth: this was a steer request delivered as an
-    // interrupt fallback, not a native steer.
+    busy = false;
+    expect(steerAgentRun).not.toHaveBeenCalled();
+    expect(replaceAgentRun).not.toHaveBeenCalled();
+    // The caller learns the prompt waits for the running turn; no turn of its own yet.
     expect(result.structuredContent).toEqual({
       success: true,
-      deliveryMode: "steer-interrupt",
+      deliveryMode: "steer-queued",
       runStarted: false,
       turnId: null,
+      waitsForTurnId: null,
     });
+  });
+
+  test("steer on a busy non-omp agent that can steer joins its turn through the provider", async () => {
+    const replaceAgentRun = vi.fn(async function* () {});
+    const steerAgentRun = vi.fn(async () => ({ status: "accepted" as const }));
+    const agentManager = {
+      getAgent: vi.fn(() => ({ provider: "claude" })),
+      hasInFlightRun: vi.fn(() => true),
+      canSteer: vi.fn(() => true),
+      steerAgentRun,
+      hasTimeline: vi.fn(() => false),
+      waitForAgentRunStart: vi.fn(async () => undefined),
+      tryRunOutOfBand: vi.fn(() => false),
+      replaceAgentRun,
+      reloadStalePluginSession: vi.fn(async () => undefined),
+    } as unknown as AgentManager;
+    const outcome = await dispatchLocalPromptMode({
+      agentManager,
+      agentMessages: createAgentMessageDeliveryStub(),
+      agentStorage: asAgentStorage({
+        get: async () => null,
+        listAll: async () => [],
+      }) as unknown as AgentStorage,
+      agentId: "agent-1",
+      prompt: "also check the tests",
+      mode: "steer",
+      logger: createTestLogger(),
+    });
+    expect(outcome).toBe("steer");
+    expect(steerAgentRun).toHaveBeenCalledWith("agent-1", "also check the tests", undefined);
+    expect(replaceAgentRun).not.toHaveBeenCalled();
   });
 
   test("steer with native images live-steers a structured OMP /steer prompt", async () => {

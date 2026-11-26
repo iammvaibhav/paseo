@@ -548,13 +548,8 @@ describe("Fleet MCP Endpoint E2E (/mcp/fleet)", () => {
         daemon: {
           mcp: {
             enabled: true,
-            remoteClients: [
-              {
-                name: "grok-bot",
-                tokenHash: hashDaemonPassword(token),
-                notify: { url: webhook.url },
-              },
-            ],
+            remoteClients: [{ name: "grok-bot", tokenHash: hashDaemonPassword(token) }],
+            notifyTargets: [{ name: "grok-bot", url: webhook.url }],
           },
         },
       }),
@@ -597,7 +592,7 @@ describe("Fleet MCP Endpoint E2E (/mcp/fleet)", () => {
           provider: "omp/anthropic/claude-opus-5-5",
           title: "ttsr worker",
           initialPrompt: "build it",
-          notifyOnFinish: true,
+          notifyTargets: ["grok-bot"],
           notifyContext: context,
         },
       });
@@ -619,7 +614,7 @@ describe("Fleet MCP Endpoint E2E (/mcp/fleet)", () => {
           agentId,
           prompt: "quick check: can you see the image?",
           mode: "steer",
-          notifyOnFinish: true,
+          notifyTargets: ["grok-bot"],
           notifyContext: context,
         },
       });
@@ -659,6 +654,131 @@ describe("Fleet MCP Endpoint E2E (/mcp/fleet)", () => {
           final: true,
           context,
           agent: expect.objectContaining({ id: agentId, lastMessage: "done with pnpm" }),
+        }),
+      ]);
+    } finally {
+      await client.close();
+      await daemon.stop();
+      await webhook.close();
+      await rm(paseoHome, { recursive: true, force: true });
+      await rm(staticDir, { recursive: true, force: true });
+      await rm(workDir, { recursive: true, force: true });
+    }
+  }, 60_000);
+
+  test("a target that takes intermediate messages gets each one before the finish", async () => {
+    const paseoHome = await mkdtemp(path.join(os.tmpdir(), "paseo-home-fleet-messages-"));
+    const staticDir = await mkdtemp(path.join(os.tmpdir(), "paseo-static-fleet-messages-"));
+    const workDir = await mkdtemp(path.join(os.tmpdir(), "paseo-work-fleet-messages-"));
+    const port = await getAvailablePort();
+    const token = "wren-secret-token";
+    const webhook = await startWebhookReceiver();
+    await writeFile(
+      path.join(paseoHome, "config.json"),
+      JSON.stringify({
+        version: 1,
+        daemon: {
+          mcp: {
+            enabled: true,
+            remoteClients: [{ name: "grok-bot", tokenHash: hashDaemonPassword(token) }],
+            notifyTargets: [
+              { name: "n8n-wren", url: webhook.url, intermediateMessages: true, messageBatchMs: 0 },
+            ],
+          },
+        },
+      }),
+      "utf8",
+    );
+    const omp = new FakeOmp();
+    const daemon = await createPaseoDaemon(
+      {
+        listen: `127.0.0.1:${port}`,
+        paseoHome,
+        corsAllowedOrigins: [],
+        hostnames: true,
+        mcpEnabled: true,
+        staticDir,
+        mcpDebug: false,
+        agentClients: {
+          ...createTestAgentClients(),
+          omp: new OmpAgentClient({ logger: pino({ level: "silent" }), runtime: omp }),
+        },
+        providerOverrides: { omp: { enabled: true } },
+        agentStoragePath: path.join(paseoHome, "agents"),
+      },
+      pino({ level: "silent" }),
+    );
+    await daemon.start();
+    const client = new Client({ name: "e2e-messages", version: "1.0.0" });
+    try {
+      await client.connect(
+        new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}/mcp/fleet`), {
+          requestInit: { headers: { Authorization: `Bearer ${token}` } },
+        }),
+      );
+      const created = await client.callTool({
+        name: "fleet_create_agent",
+        arguments: {
+          host: "local",
+          cwd: workDir,
+          isolation: "local",
+          provider: "omp/anthropic/claude-opus-5-5",
+          title: "wren chat",
+          initialPrompt: "what is on my calendar?",
+          notifyTargets: ["n8n-wren"],
+          notifyContext: "chat-91",
+        },
+      });
+      expect(
+        created.isError,
+        extractFirstTextContent(created as { content: unknown[] }),
+      ).toBeFalsy();
+      const agentId = created.structuredContent?.agentId;
+      await vi.waitFor(() => expect(omp.latestSession().prompts).toHaveLength(1));
+      const runtime = omp.latestSession();
+      runtime.state = { ...runtime.state, isStreaming: true };
+      runtime.emit({ type: "agent_start" });
+      runtime.beginTurn();
+      runtime.acceptPrompt("what is on my calendar?", "user-1");
+      runtime.streamAssistantText("Checking your calendar.", "omp-assistant-1");
+      runtime.emit({
+        type: "tool_execution_start",
+        toolCallId: "tool-1",
+        toolName: "bash",
+        args: { command: "gcal today" },
+      });
+      await vi.waitFor(() =>
+        expect(webhook.bodies).toContainEqual(
+          expect.objectContaining({ type: "paseo.agent.message" }),
+        ),
+      );
+      runtime.streamAssistantText("Two meetings: 10:00 and 15:00.", "omp-assistant-2");
+      runtime.state = { ...runtime.state, isStreaming: false };
+      runtime.finishTurn();
+
+      await vi.waitFor(
+        () =>
+          expect(webhook.bodies).toContainEqual(
+            expect.objectContaining({ type: "paseo.agent.finished" }),
+          ),
+        { timeout: 20_000 },
+      );
+      expect(webhook.bodies).toEqual([
+        expect.objectContaining({
+          type: "paseo.agent.message",
+          notifyTarget: "n8n-wren",
+          context: "chat-91",
+          messages: [expect.objectContaining({ text: "Checking your calendar." })],
+        }),
+        expect.objectContaining({
+          type: "paseo.agent.finished",
+          context: "chat-91",
+          messagesSent: 1,
+          lastMessageSent: false,
+          agent: expect.objectContaining({
+            id: agentId,
+            lastMessage: "Two meetings: 10:00 and 15:00.",
+          }),
         }),
       ]);
     } finally {

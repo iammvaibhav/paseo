@@ -480,6 +480,37 @@ export async function sendPromptToAgent(
   );
 }
 
+/**
+ * A steer the agent cannot take into its running turn: send the prompt once
+ * that turn ends, never replacing it. Returns at once; the send runs in the
+ * background and waits again when another prompt takes the agent first.
+ */
+export function sendWhenIdle(
+  params: SendDirectPromptParams & {
+    /** Resolves true once the agent is idle, false when it never got there in time. */
+    waitForIdle: () => Promise<boolean>;
+  },
+): void {
+  const { waitForIdle, ...send } = params;
+  const log = { agentId: params.agentId };
+  void (async () => {
+    for (;;) {
+      if (!(await waitForIdle())) {
+        params.logger.warn(log, "agent.prompt.queued_steer_expired");
+        return;
+      }
+      try {
+        await sendPromptToAgent({ ...send, idleOnly: true });
+        return;
+      } catch (error) {
+        if (!(error instanceof AgentTurnBusyError)) throw error;
+      }
+    }
+  })().catch((error: unknown) => {
+    params.logger.error({ ...log, err: error }, "agent.prompt.queued_steer_failed");
+  });
+}
+
 /** Dispatch daemon-prepared context without reclassifying it as human input. */
 export async function sendPreparedPromptToAgent(
   params: Omit<SendPromptToAgentParams, "source" | "messageId">,

@@ -327,7 +327,7 @@ Leave `--behavior` out unless the message cannot wait. The defaults depend on wh
 - From an agent (`PASEO_AGENT_ID` set), the default is `queue`. The message waits until the recipient's running turn ends. `--behavior steer` adds the message to the running turn, and `--behavior interrupt` stops the turn and starts a new one with the message. A steer or interrupt also delivers the messages you queued before it, in order.
 - From a person, the default is `interrupt`. `--behavior steer` adds the message to the running turn instead.
 
-If the recipient's provider cannot steer, `steer` interrupts the running turn instead. With `--no-wait`, the output says what happened to an agent's message and how to deliver a queued message now.
+If the recipient cannot steer right now, an agent's `steer` waits for the running turn to end, and a person's `steer` interrupts the running turn instead. With `--no-wait`, the output says what happened to an agent's message and how to deliver a queued message now.
 
 ## Viewing logs
 

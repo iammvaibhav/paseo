@@ -5,7 +5,6 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { PaseoToolCatalog, PaseoToolDefinition } from "../agent/tools/types.js";
 import type {
-  ArmMcpFinishNotification,
   ArmMcpGroupNotification,
   ArmMcpStatusReportNotification,
   McpFinishNotifier,
@@ -14,6 +13,8 @@ import {
   createFleetMcpServer,
   FLEET_MCP_INSTRUCTIONS,
   FLEET_MCP_REPLACED_TOOLS,
+  type FleetMcpNotifyArmRequest,
+  type FleetMcpNotifyArmResult,
 } from "./fleet-mcp-server.js";
 import type { PaseoToolHostDependencies } from "../agent/tools/paseo-tools.js";
 import { createPaseoToolCatalog } from "../agent/tools/paseo-tools.js";
@@ -222,18 +223,17 @@ describe("createFleetMcpServer", () => {
   // exactly these arguments. A merge that drops one from fleet_create_agent's
   // schema stops every review from starting.
   test("fleet_create_agent takes the PR-review dispatcher's arguments; background is refused as removed", async () => {
-    const armed: unknown[] = [];
+    const armed: FleetMcpNotifyArmRequest[] = [];
     const server = await createFleetMcpServer({
       hostDependencies: createProdHostDependencies(),
       clientName: "grok-bot",
-      finishNotifier: {
-        arm: async (input: unknown) => {
-          armed.push(input);
-        },
-      } as unknown as McpFinishNotifier,
       namedNotifyTargets: new Map([
         ["n8n-reviews", { url: "https://n8n.example/webhook/review", signingSecret: "s" }],
       ]),
+      armNotify: async (request) => {
+        armed.push(request);
+        return { armedOn: "local" };
+      },
     });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     const client = new Client({ name: "test-client", version: "1.0.0" });
@@ -247,8 +247,7 @@ describe("createFleetMcpServer", () => {
       initialPrompt: "Review https://github.com/AmbientAI/portal/pull/10719. Report only.",
       settings: { agentMode: "review", thinkingOptionId: "high" },
       labels: { "pr-review.url": "https://github.com/AmbientAI/portal/pull/10719" },
-      notifyOnFinish: true,
-      notifyTarget: "n8n-reviews",
+      notifyTargets: ["n8n-reviews"],
       notifyContext: '{"src":"n8n-pr-review"}',
       // Places nothing; the call still passes the argument check first.
       dryRun: true,
@@ -262,7 +261,7 @@ describe("createFleetMcpServer", () => {
       "has no argument",
     );
     expect(accepted.isError).toBeFalsy();
-    expect(accepted.structuredContent).toMatchObject({ dryRun: true });
+    expect(accepted.structuredContent).toMatchObject({ dryRun: true, notify: { armed: false } });
     expect(armed).toEqual([]);
 
     const stale = await client.callTool({
@@ -274,18 +273,24 @@ describe("createFleetMcpServer", () => {
     expect(text).toContain('"background" (removed:');
     expect(text).toContain("never waits");
     // Each valid argument is listed once.
-    expect(text.match(/\bnotifyOnFinish\b/g)).toHaveLength(1);
+    expect(text.match(/\bnotifyTargets\b/g)).toHaveLength(1);
 
     await client.close();
     await server.close();
   });
 });
 
-describe("notifyOnFinish for MCP clients", () => {
-  // A two-tool catalog: the wrapper's behavior does not depend on the rest.
-  function setup(options: { withTarget: boolean }) {
+describe("notifyTargets for MCP clients", () => {
+  // A three-tool catalog: the wrapper's behavior does not depend on the rest.
+  function setup(
+    options: {
+      sendResult?: Record<string, unknown>;
+      armResult?: FleetMcpNotifyArmResult;
+      callbacks?: boolean;
+    } = {},
+  ) {
     const toolCalls: Array<Record<string, unknown>> = [];
-    const armed: ArmMcpFinishNotification[] = [];
+    const armed: FleetMcpNotifyArmRequest[] = [];
     const armedGroups: ArmMcpGroupNotification[] = [];
     const armedStatusReports: ArmMcpStatusReportNotification[] = [];
     const tool = (
@@ -315,7 +320,11 @@ describe("notifyOnFinish for MCP clients", () => {
           toolCalls.push(input as Record<string, unknown>);
           return {
             content: [],
-            structuredContent: { success: true, deliveryMode: "steer", turnId: "turn-10" },
+            structuredContent: options.sendResult ?? {
+              success: true,
+              deliveryMode: "steer",
+              turnId: "turn-10",
+            },
           };
         }),
       ],
@@ -354,50 +363,47 @@ describe("notifyOnFinish for MCP clients", () => {
       getTool: (name) => tools.get(name),
       executeTool: (name, input, context) => tools.get(name)!.handler(input, context ?? {}),
     };
-    const subscriptions = new Map<
-      string,
-      { context: string | null; notifyTarget: string | null }
-    >();
+    const finishNotifier: McpFinishNotifier = {
+      arm: async () => {
+        throw new Error("start/prompt watches are armed through armNotify");
+      },
+      armGroup: async (input) => {
+        armedGroups.push(input);
+      },
+      restore: async () => ({ restored: 0, settled: Promise.resolve() }),
+      suspend: async () => {},
+      listDeliveries: async () => ({
+        totals: { events: 0, delivered: 0, failed: 0, suppressed: 0, attempts: 0, byStatus: {} },
+        deliveries: [],
+      }),
+      deliver: async () => ({ delivered: true, status: 200, attempts: 1, error: null }),
+      armStatusReport: (input) => {
+        armedStatusReports.push(input);
+      },
+    };
     return {
       toolCalls,
       armed,
       armedGroups,
+      armedStatusReports,
       server: createFleetMcpServer({
         hostDependencies: createTestHostDependencies(),
         catalog,
         clientName: "grok-bot",
-        finishNotifier: {
-          arm: async (input) => {
-            armed.push(input);
-            subscriptions.set(`${input.client}/${input.agentId}`, {
-              context: input.context,
-              notifyTarget: input.notifyTarget ?? null,
-            });
-          },
-          armGroup: async (input) => {
-            armedGroups.push(input);
-          },
-          subscription: (client, agentId) => subscriptions.get(`${client}/${agentId}`) ?? null,
-          unsubscribe: (client, agentId) => {
-            subscriptions.delete(`${client}/${agentId}`);
-          },
-          restore: async () => ({ restored: 0, settled: Promise.resolve() }),
-          suspend: async () => {},
-          listDeliveries: async () => ({
-            totals: { events: 0, delivered: 0, failed: 0, attempts: 0, byStatus: {} },
-            deliveries: [],
-          }),
-          deliver: async () => ({ delivered: true, status: 200, attempts: 1, error: null }),
-          armStatusReport: (input) => {
-            armedStatusReports.push(input);
-          },
-        },
-        notifyTarget: options.withTarget ? { url: "https://hook.example/x" } : null,
+        ...(options.callbacks === false
+          ? {}
+          : {
+              finishNotifier,
+              armNotify: async (request: FleetMcpNotifyArmRequest) => {
+                armed.push(request);
+                return options.armResult ?? { armedOn: "local" };
+              },
+            }),
         namedNotifyTargets: new Map([
+          ["grok-bot", { url: "https://hook.example/x" }],
           ["n8n-reviews", { url: "https://n8n.example/webhook/review", signingSecret: "s" }],
         ]),
       }),
-      armedStatusReports,
     };
   }
 
@@ -409,149 +415,152 @@ describe("notifyOnFinish for MCP clients", () => {
     return { client, close: async () => (await client.close(), await server.close()) };
   }
 
-  test("arms the client's webhook with the context and hides the notify args from the tool", async () => {
-    const { toolCalls, armed, server } = setup({ withTarget: true });
+  test("arms the named targets for the call's turn and hides the notify args from the tool", async () => {
+    const { toolCalls, armed, server } = setup();
     const { client, close } = await connect(server);
     const result = await client.callTool({
       name: "fleet_create_agent",
-      arguments: { host: "blrofc3", notifyOnFinish: true, notifyContext: "essay-42" },
+      arguments: {
+        host: "blrofc3",
+        notifyTargets: ["n8n-reviews", { agent: "boss-1" }, "n8n-reviews"],
+        notifyContext: "essay-42",
+      },
     });
     expect(result.isError).toBeFalsy();
-    expect(result.structuredContent).toMatchObject({ agentId: "agent-9", notify: { armed: true } });
-    expect(toolCalls).toEqual([{ host: "blrofc3", notifyOnFinish: false }]);
-    expect(armed).toHaveLength(1);
-    expect(armed[0]).toMatchObject({
-      client: "grok-bot",
+    expect(result.structuredContent).toMatchObject({
       agentId: "agent-9",
-      host: "blrofc3",
-      // Bound to the turn the create started, never an earlier run.
-      turnId: "turn-9",
-      tool: "fleet_create_agent",
-      context: "essay-42",
-      target: { url: "https://hook.example/x" },
+      notify: { armed: true, targets: ["n8n-reviews", "agent boss-1"], armedOn: "local" },
     });
-    await close();
-  });
-
-  test("notifyTarget routes the watch to the named target, and steers keep it", async () => {
-    const { armed, server } = setup({ withTarget: true });
-    const { client, close } = await connect(server);
-    const created = await client.callTool({
-      name: "fleet_create_agent",
-      arguments: { host: "blrofc3", notifyTarget: "n8n-reviews" },
-    });
-    expect(created.structuredContent).toMatchObject({ notify: { armed: true } });
-    await client.callTool({
-      name: "fleet_send_prompt",
-      arguments: { agentId: "agent-9" },
-    });
-    expect(armed.map((input) => [input.notifyTarget, input.target.url])).toEqual([
-      ["n8n-reviews", "https://n8n.example/webhook/review"],
-      ["n8n-reviews", "https://n8n.example/webhook/review"],
+    expect(toolCalls).toEqual([{ host: "blrofc3", notifyOnFinish: false }]);
+    expect(armed).toEqual([
+      {
+        client: "grok-bot",
+        tool: "fleet_create_agent",
+        agentId: "agent-9",
+        host: "blrofc3",
+        // Bound to the turn the create started, never an earlier run.
+        turnId: "turn-9",
+        nextTurnAfter: null,
+        context: "essay-42",
+        targets: [{ name: "n8n-reviews" }, { agent: "boss-1" }],
+      },
     ]);
     await close();
   });
 
-  test("notifyOnFinish without notifyTarget keeps using the client's own webhook", async () => {
-    const { armed, server } = setup({ withTarget: true });
-    const { client, close } = await connect(server);
-    await client.callTool({ name: "fleet_create_agent", arguments: { notifyOnFinish: true } });
-    expect(armed[0]).toMatchObject({
-      notifyTarget: null,
-      target: { url: "https://hook.example/x" },
-    });
-    await close();
-  });
-
-  test("rejects an unknown notifyTarget before the tool runs", async () => {
-    const { toolCalls, armed, server } = setup({ withTarget: true });
-    const { client, close } = await connect(server);
-    const result = await client.callTool({
-      name: "fleet_create_agent",
-      arguments: { notifyTarget: "https://evil.example/hook" },
-    });
-    expect(result.isError).toBe(true);
-    expect(JSON.stringify(result.content)).toContain("Configured targets: n8n-reviews");
-    expect(toolCalls).toEqual([]);
-    expect(armed).toEqual([]);
-    await close();
-  });
-
-  test("refuses notifyOnFinish without a webhook, before running the tool", async () => {
-    const { toolCalls, armed, server } = setup({ withTarget: false });
-    const { client, close } = await connect(server);
-    const result = await client.callTool({
-      name: "fleet_create_agent",
-      arguments: { notifyOnFinish: true },
-    });
-    expect(result.isError).toBe(true);
-    expect(extractFirstTextContent(result as { content: unknown[] })).toContain("fleet_wait_agent");
-    expect(toolCalls).toEqual([]);
-    expect(armed).toEqual([]);
-    await close();
-  });
-
-  test("rejects a notifyContext over the limit", async () => {
-    const { toolCalls, server } = setup({ withTarget: true });
-    const { client, close } = await connect(server);
-    const result = await client.callTool({
-      name: "fleet_create_agent",
-      arguments: { notifyOnFinish: true, notifyContext: "x".repeat(2001) },
-    });
-    expect(result.isError).toBe(true);
-    expect(toolCalls).toEqual([]);
-    await close();
-  });
-
-  test("a call without notifyOnFinish never arms", async () => {
-    const { armed, server } = setup({ withTarget: true });
-    const { client, close } = await connect(server);
-    await client.callTool({ name: "fleet_create_agent", arguments: { host: "local" } });
-    expect(armed).toEqual([]);
-    await close();
-  });
-
-  test("a follow-up send to an agent the client watched arms by default until it opts out", async () => {
-    const { armed, server } = setup({ withTarget: true });
+  test("a later send without notifyTargets calls back no one", async () => {
+    const { armed, server } = setup();
     const { client, close } = await connect(server);
     await client.callTool({
       name: "fleet_create_agent",
-      arguments: { host: "local", notifyOnFinish: true, notifyContext: "essay-42" },
+      arguments: { notifyTargets: ["grok-bot"] },
     });
     const followUp = await client.callTool({
       name: "fleet_send_prompt",
       arguments: { agentId: "agent-9" },
     });
-    expect(followUp.structuredContent).toMatchObject({ notify: { armed: true, inherited: true } });
-    expect(armed).toHaveLength(2);
-    expect(armed[1]).toMatchObject({
-      agentId: "agent-9",
-      turnId: "turn-10",
-      tool: "fleet_send_prompt",
-      // The create's context carries over, so the client can route the event.
-      context: "essay-42",
-    });
-
-    const optOut = await client.callTool({
-      name: "fleet_send_prompt",
-      arguments: { agentId: "agent-9", notifyOnFinish: false },
-    });
-    expect(optOut.structuredContent).not.toHaveProperty("notify");
-    await client.callTool({ name: "fleet_send_prompt", arguments: { agentId: "agent-9" } });
-    expect(armed).toHaveLength(2);
+    expect(followUp.structuredContent).not.toHaveProperty("notify");
+    expect(armed).toHaveLength(1);
     await close();
   });
 
-  test("a send to an agent the client never watched does not arm", async () => {
-    const { armed, server } = setup({ withTarget: true });
+  test("a steer that waits for the running turn binds the callback to the next turn", async () => {
+    const { armed, server } = setup({
+      sendResult: {
+        success: true,
+        deliveryMode: "steer-queued",
+        turnId: null,
+        waitsForTurnId: "turn-live",
+      },
+    });
     const { client, close } = await connect(server);
-    await client.callTool({ name: "fleet_send_prompt", arguments: { agentId: "agent-9" } });
+    await client.callTool({
+      name: "fleet_send_prompt",
+      arguments: { agentId: "agent-9", notifyTargets: ["grok-bot"] },
+    });
+    expect(armed[0]).toMatchObject({ turnId: null, nextTurnAfter: "turn-live" });
+    await close();
+  });
+
+  // COMPAT(notify-targets): added in v0.17.5, remove after 2026-12-10.
+  test("pre-notifyTargets arguments still arm the same targets", async () => {
+    const { armed, server } = setup();
+    const { client, close } = await connect(server);
+    await client.callTool({
+      name: "fleet_create_agent",
+      arguments: { notifyOnFinish: true, notifyTarget: "n8n-reviews" },
+    });
+    await client.callTool({ name: "fleet_create_agent", arguments: { notifyOnFinish: true } });
+    expect(armed.map((request) => request.targets)).toEqual([
+      [{ name: "n8n-reviews" }],
+      // notifyOnFinish alone: the target named like the client.
+      [{ name: "grok-bot" }],
+    ]);
+    await close();
+  });
+
+  test("rejects an unknown target, a URL, or {agent: self} before the tool runs", async () => {
+    const { toolCalls, armed, server } = setup();
+    const { client, close } = await connect(server);
+    const unknown = await client.callTool({
+      name: "fleet_create_agent",
+      arguments: { notifyTargets: ["https://evil.example/hook"] },
+    });
+    expect(unknown.isError).toBe(true);
+    expect(JSON.stringify(unknown.content)).toContain("Configured targets: grok-bot, n8n-reviews");
+    const self = await client.callTool({
+      name: "fleet_create_agent",
+      arguments: { notifyTargets: [{ agent: "self" }] },
+    });
+    expect(self.isError).toBe(true);
+    expect(JSON.stringify(self.content)).toContain("PASEO_AGENT_ID");
+    expect(toolCalls).toEqual([]);
     expect(armed).toEqual([]);
     await close();
   });
 
+  test("refuses notifyTargets where callbacks are not available, before running the tool", async () => {
+    const { toolCalls, server } = setup({ callbacks: false });
+    const { client, close } = await connect(server);
+    const result = await client.callTool({
+      name: "fleet_create_agent",
+      arguments: { notifyTargets: ["grok-bot"] },
+    });
+    expect(result.isError).toBe(true);
+    expect(extractFirstTextContent(result as { content: unknown[] })).toContain("fleet_wait_agent");
+    expect(toolCalls).toEqual([]);
+    await close();
+  });
+
+  test("a delivered prompt whose callback could not be armed says so", async () => {
+    const { server } = setup({ armResult: { error: "dell-server: n8n-wren is not configured" } });
+    const { client, close } = await connect(server);
+    const result = await client.callTool({
+      name: "fleet_send_prompt",
+      arguments: { agentId: "agent-9", notifyTargets: ["grok-bot"] },
+    });
+    expect(result.isError).toBeFalsy();
+    expect(result.structuredContent).toMatchObject({
+      success: true,
+      notify: { armed: false, error: "dell-server: n8n-wren is not configured" },
+    });
+    await close();
+  });
+
+  test("rejects a notifyContext over the limit", async () => {
+    const { toolCalls, server } = setup();
+    const { client, close } = await connect(server);
+    const result = await client.callTool({
+      name: "fleet_create_agent",
+      arguments: { notifyTargets: ["grok-bot"], notifyContext: "x".repeat(2001) },
+    });
+    expect(result.isError).toBe(true);
+    expect(toolCalls).toEqual([]);
+    await close();
+  });
+
   test("an undeclared argument is an error naming the closest real one; the tool never runs", async () => {
-    const { toolCalls, server } = setup({ withTarget: true });
+    const { toolCalls, server } = setup();
     const { client, close } = await connect(server);
     const direct = await client.callTool({
       name: "fleet_create_agent",
@@ -572,91 +581,95 @@ describe("notifyOnFinish for MCP clients", () => {
     await close();
   });
 
-  test("fleet_notify_on_finish arms one group bound to each agent's turn", async () => {
-    const { armed, armedGroups, server } = setup({ withTarget: true });
+  test("fleet_notify_on_finish arms each agent on its host and one group per target here", async () => {
+    const { armed, armedGroups, server } = setup();
     const { client, close } = await connect(server);
     const result = await client.callTool({
       name: "fleet_notify_on_finish",
       arguments: {
         agents: [{ agentId: "a", turnId: "turn-a" }, { agentId: "b" }],
         group: true,
-        perAgent: false,
+        notifyTargets: ["grok-bot"],
         notifyContext: "batch",
       },
     });
     expect(result.isError).toBeFalsy();
-    expect(armed).toEqual([]);
+    expect(armed.map((request) => [request.agentId, request.turnId, request.targets])).toEqual([
+      ["a", "turn-a", [{ name: "grok-bot" }]],
+      // No turnId given: bound to the run in progress at arm time.
+      ["b", "turn-live", [{ name: "grok-bot" }]],
+    ]);
     expect(armedGroups).toHaveLength(1);
     expect(armedGroups[0]).toMatchObject({
-      perAgent: false,
+      perAgent: true,
       context: "batch",
+      targetRef: { name: "grok-bot" },
+      target: { url: "https://hook.example/x" },
       agents: [
         { agentId: "a", turnId: "turn-a" },
-        // No turnId given: bound to the run in progress at arm time.
         { agentId: "b", turnId: "turn-live" },
       ],
     });
-    expect(result.structuredContent).toMatchObject({
-      groupId: armedGroups[0]!.groupId,
-      armed: [
-        { agentId: "a", turnId: "turn-a" },
-        { agentId: "b", turnId: "turn-live" },
-      ],
+    expect(result.structuredContent).toMatchObject({ groupId: armedGroups[0]!.groupId });
+
+    const untargeted = await client.callTool({
+      name: "fleet_notify_on_finish",
+      arguments: { agentIds: ["a"] },
     });
+    expect(untargeted.isError).toBe(true);
     await close();
   });
 
   test("fleet_agent_status with notify: true rejects when fresh is false", async () => {
-    const { server } = setup({ withTarget: true });
+    const { server } = setup();
     const { client, close } = await connect(server);
     const result = await client.callTool({
       name: "fleet_agent_status",
-      arguments: { agentId: "agent-1", notify: true, fresh: false },
+      arguments: { agentId: "agent-1", notify: true, fresh: false, notifyTargets: ["grok-bot"] },
     });
     expect(result.isError).toBe(true);
-    const firstBlock = result.content[0];
-    const blockText =
-      firstBlock &&
-      typeof firstBlock === "object" &&
-      "text" in firstBlock &&
-      typeof firstBlock.text === "string"
-        ? firstBlock.text
-        : "";
-    expect(blockText).toContain("notify: true is only valid when fresh: true");
+    expect(extractFirstTextContent(result as { content: unknown[] })).toContain(
+      "notify: true is only valid when fresh: true",
+    );
     await close();
   });
 
-  test("fleet_agent_status with notify: true rejects when webhook target is missing", async () => {
-    const { server } = setup({ withTarget: false });
+  test("fleet_agent_status with notify: true needs notifyTargets", async () => {
+    const { server, toolCalls } = setup();
     const { client, close } = await connect(server);
     const result = await client.callTool({
       name: "fleet_agent_status",
       arguments: { agentId: "agent-1", notify: true, fresh: true },
     });
     expect(result.isError).toBe(true);
-    const firstBlock = result.content[0];
-    const blockText =
-      firstBlock &&
-      typeof firstBlock === "object" &&
-      "text" in firstBlock &&
-      typeof firstBlock.text === "string"
-        ? firstBlock.text
-        : "";
-    expect(blockText).toContain("notify: true needs a webhook for this MCP client");
+    expect(extractFirstTextContent(result as { content: unknown[] })).toContain(
+      "notify: true needs notifyTargets",
+    );
+    expect(toolCalls).toEqual([]);
     await close();
   });
 
-  test("fleet_agent_status with notify: true arms armStatusReport and returns immediately", async () => {
-    const { server, armedStatusReports, toolCalls } = setup({ withTarget: true });
+  test("fleet_agent_status with notify: true arms a status report per target and returns immediately", async () => {
+    const { server, armedStatusReports, toolCalls } = setup();
     const { client, close } = await connect(server);
     const result = await client.callTool({
       name: "fleet_agent_status",
-      arguments: { agentId: "agent-1", notify: true, fresh: true, notifyContext: "status-tag" },
+      arguments: {
+        agentId: "agent-1",
+        notify: true,
+        fresh: true,
+        notifyContext: "status-tag",
+        notifyTargets: ["grok-bot", { agent: "boss-1" }],
+      },
     });
     expect(result.isError).toBeFalsy();
     expect(toolCalls).toHaveLength(1);
     expect(toolCalls[0]).toMatchObject({ agentId: "agent-1", fresh: true, notify: true });
-    expect(armedStatusReports).toHaveLength(1);
+    expect(toolCalls[0]).not.toHaveProperty("notifyTargets");
+    expect(armedStatusReports.map((report) => report.target)).toEqual([
+      { url: "https://hook.example/x" },
+      { kind: "agent", agentId: "boss-1" },
+    ]);
     expect(armedStatusReports[0]).toMatchObject({
       client: "grok-bot",
       agentId: "agent-1",

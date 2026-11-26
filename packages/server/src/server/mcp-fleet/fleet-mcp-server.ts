@@ -23,11 +23,14 @@ import type {
   PaseoToolResult,
 } from "../agent/tools/types.js";
 import {
+  describeTargetRef,
   MAX_NOTIFY_CONTEXT_LENGTH,
   type McpFinishNotifier,
   type McpFinishWaitForAgent,
   type McpNotifyAgent,
   type McpNotifyTarget,
+  type McpNotifyTargetRef,
+  type McpWebhookTarget,
 } from "./finish-notifier.js";
 import { loadFleetSkillText } from "./skill.js";
 
@@ -60,22 +63,48 @@ export const FLEET_MCP_REPLACED_TOOLS: Readonly<Record<string, string>> = {
   itsaplan_ticketize: "fleet_ticketize_agent",
 };
 
+/**
+ * A start/prompt call's request to watch one agent's turn for the targets it
+ * named. A host forwards it to the agent's own host (NOTIFY_ARM_PEER_TOOL),
+ * which parses it with this schema.
+ */
+export const FleetMcpNotifyArmRequestSchema = z.object({
+  client: z.string().min(1),
+  tool: z.string().min(1),
+  agentId: z.string().min(1),
+  /** The host hint the call passed; the arm finds the agent's host either way. */
+  host: z.string().min(1).optional(),
+  /** The turn the call started or joined; null → the run in progress. */
+  turnId: z.string().nullable(),
+  /** The call's prompt waits for this turn to end; the watch binds to the next one. */
+  nextTurnAfter: z.string().nullable(),
+  context: z.string().max(MAX_NOTIFY_CONTEXT_LENGTH).nullable(),
+  targets: z
+    .array(z.union([z.object({ name: z.string().min(1) }), z.object({ agent: z.string().min(1) })]))
+    .min(1),
+});
+
+export type FleetMcpNotifyArmRequest = z.infer<typeof FleetMcpNotifyArmRequestSchema>;
+
+/** Where the watch runs: "local" or the agent's peer host; an error when it could not be armed. */
+export type FleetMcpNotifyArmResult = { armedOn: string } | { error: string };
+
 export interface FleetMcpServerOptions {
   hostDependencies: PaseoToolHostDependencies;
   /** A catalog built earlier from the same hostDependencies; skips rebuilding it per request. */
   catalog?: PaseoToolCatalog;
   clientName?: string;
   explicitSkillPath?: string | null;
-  /** Delivers notifyOnFinish to the client's webhook; absent → notifyOnFinish is refused. */
+  /** Runs group and status-report watches here, and lists deliveries; absent → those tools are refused. */
   finishNotifier?: McpFinishNotifier;
-  /** The client's own webhook (daemon.mcp.remoteClients[].notify): the default when no notifyTarget is named. */
-  notifyTarget?: McpNotifyTarget | null;
-  /** Named webhooks (daemon.mcp.notifyTargets) a call selects with notifyTarget. */
-  namedNotifyTargets?: ReadonlyMap<string, McpNotifyTarget>;
+  /** Named webhooks (daemon.mcp.notifyTargets) a call lists in notifyTargets. */
+  namedNotifyTargets?: ReadonlyMap<string, McpWebhookTarget>;
+  /** Arms a start/prompt call's watch on the agent's own host; absent → notifyTargets is refused. */
+  armNotify?: (request: FleetMcpNotifyArmRequest) => Promise<FleetMcpNotifyArmResult>;
 }
 
-// Tools that start or prompt an agent. On /mcp/fleet their notifyOnFinish
-// means "POST to my webhook", never the catalog's agent-thread notification:
+// Tools that start or prompt an agent. On /mcp/fleet their callbacks go to
+// the targets the call names, never the catalog's agent-thread notification:
 // the MCP principal runs as the Commander, so that would wake the Commander.
 const NOTIFY_TOOLS = new Set(["fleet_create_agent", "fleet_send_prompt"]);
 const CREATE_TOOLS = new Set(["fleet_create_agent"]);
@@ -83,49 +112,43 @@ const CREATE_TOOLS = new Set(["fleet_create_agent"]);
 const CATALOG_NOTIFY_TOOLS = new Set(["fleet_create_agent"]);
 const WAIT_TOOL_MAX_SECONDS = 1800;
 
+const NOTIFY_TARGETS_SCHEMA = z
+  .array(z.union([z.string().min(1), z.object({ agent: z.string().min(1) }).strict()]))
+  .max(10);
+
+const NOTIFY_TARGETS_DESCRIPTION =
+  "Who gets callbacks for this turn: names of configured webhooks (daemon.mcp.notifyTargets, e.g. " +
+  '"grok-bot") and/or agents as {agent: "<agent id>"} (an agent gets each event as a prompt that joins ' +
+  "its running turn; pass your own id to be woken). Omitted or empty → no callback. Applies to this turn " +
+  "only: a later prompt calls back only the targets it names, and two callers steering into one running " +
+  "turn both hear its end. Unknown names are rejected; URLs are not accepted.";
+
 const NOTIFY_INPUT_SHAPE = {
-  notifyOnFinish: z
-    .boolean()
-    .optional()
-    .describe(
-      "POST a paseo.agent.finished event to your configured webhook when this agent's run ends " +
-        "(and paseo.agent.needs_permission if it blocks on a permission). Returns immediately. " +
-        "Once you arm it for an agent, later fleet_send_prompt calls to that agent arm it by default " +
-        "(reusing your last notifyContext); pass false on a send to stop. " +
-        "The watch survives a daemon restart: it reports the run the restarted daemon resumes, or " +
-        'reason "interrupted" when the run never resumes. If the agent\'s host restarts mid-run you ' +
-        "first get a non-final paseo.agent.interrupted event (final: false), then paseo.agent.finished " +
-        "for the run the host resumes.",
-    ),
+  notifyTargets: NOTIFY_TARGETS_SCHEMA.optional().describe(
+    `${NOTIFY_TARGETS_DESCRIPTION} Events: paseo.agent.finished when the turn ends (also on error, ` +
+      "cancel or archive), paseo.agent.needs_permission when it blocks on a permission, and " +
+      "paseo.agent.interrupted (final: false) when its host restarts mid-run; a target configured with " +
+      "intermediateMessages also gets paseo.agent.message for each message the agent writes mid-turn. " +
+      "The watch survives a daemon restart. Returns immediately.",
+  ),
   notifyContext: z
     .string()
     .max(MAX_NOTIFY_CONTEXT_LENGTH)
     .optional()
-    .describe("Free-form tag echoed back verbatim as `context` in the webhook payload."),
-  notifyTarget: z
-    .string()
-    .min(1)
+    .describe("Free-form tag echoed back verbatim as `context` in every callback."),
+  // COMPAT(notify-targets): added in v0.17.5, remove after 2026-12-10. Callers from before notifyTargets.
+  notifyOnFinish: z
+    .boolean()
     .optional()
     .describe(
-      "Name of a configured notify target (daemon.mcp.notifyTargets) to POST the finish event to, " +
-        "instead of your client's own webhook. Implies notifyOnFinish. Unknown names are rejected; " +
-        "URLs are not accepted. Omitted → your client's webhook, or on fleet_send_prompt the target " +
-        "your last arm on this agent used.",
+      'Deprecated: use notifyTargets. true → the target named like your client ("grok-bot").',
     ),
+  // COMPAT(notify-targets): added in v0.17.5, remove after 2026-12-10.
+  notifyTarget: z.string().min(1).optional().describe("Deprecated: use notifyTargets: [name]."),
 };
 
 // Parsed off the tool arguments before the catalog tool runs.
 const NotifyArgsSchema = z.object(NOTIFY_INPUT_SHAPE);
-
-/** Whether a start/prompt call arms a webhook watch, and where it posts. */
-interface NotifyPlan {
-  arm: boolean;
-  /** No notify argument was passed: the arm comes from the client's standing subscription. */
-  inherited: boolean;
-  context: string | null;
-  /** The named target; null → the client's own webhook. */
-  notifyTarget: string | null;
-}
 
 function withNotifyInput(schema: PaseoToolConfig["inputSchema"]): PaseoToolConfig["inputSchema"] {
   if (schema instanceof z.ZodObject) return schema.extend(NOTIFY_INPUT_SHAPE);
@@ -149,12 +172,26 @@ function inputObjectSchema(tool: PaseoToolDefinition): z.ZodObject | null {
   return Object.hasOwn(object.shape, "serverId") ? object.omit({ serverId: true }) : object;
 }
 
+// fleet_agent_status notify:true calls back the targets in notifyTargets.
+const STATUS_NOTIFY_SHAPE = {
+  notifyTargets: NOTIFY_TARGETS_SCHEMA.optional().describe(
+    `With notify: true, who gets paseo.agent.status_reported. ${NOTIFY_TARGETS_DESCRIPTION}`,
+  ),
+};
+
+/** The arguments /mcp/fleet adds to a catalog tool's own. */
+function addedInputShape(toolName: string): Record<string, z.ZodType> {
+  if (NOTIFY_TOOLS.has(toolName)) return NOTIFY_INPUT_SHAPE;
+  if (toolName === "fleet_agent_status") return STATUS_NOTIFY_SHAPE;
+  return {};
+}
+
 function mcpInputObject(tool: PaseoToolDefinition): PaseoToolConfig["inputSchema"] {
   const object = inputObjectSchema(tool);
   if (!object) {
     return NOTIFY_TOOLS.has(tool.name) ? withNotifyInput(tool.inputSchema) : tool.inputSchema;
   }
-  return (NOTIFY_TOOLS.has(tool.name) ? object.extend(NOTIFY_INPUT_SHAPE) : object).loose();
+  return object.extend(addedInputShape(tool.name)).loose();
 }
 
 /** Edit distance, for suggesting the argument a client meant. */
@@ -222,10 +259,7 @@ function describeUnknownArgs(
   const object = inputObjectSchema(tool);
   if (!object) return null;
   const known = [
-    ...new Set([
-      ...Object.keys(object.shape),
-      ...(NOTIFY_TOOLS.has(tool.name) ? Object.keys(NOTIFY_INPUT_SHAPE) : []),
-    ]),
+    ...new Set([...Object.keys(object.shape), ...Object.keys(addedInputShape(tool.name))]),
   ];
   return describeUnknownArgKeys(tool.name, known, args);
 }
@@ -263,11 +297,12 @@ const NOTIFY_ON_FINISH_INPUT = z.object({
     .boolean()
     .optional()
     .describe("POST one paseo.agents.group_finished once every agent finished (default false)."),
+  notifyTargets: NOTIFY_TARGETS_SCHEMA.min(1).describe(NOTIFY_TARGETS_DESCRIPTION),
   notifyContext: z
     .string()
     .max(MAX_NOTIFY_CONTEXT_LENGTH)
     .optional()
-    .describe("Free-form tag echoed back verbatim as `context` in the webhook payloads."),
+    .describe("Free-form tag echoed back verbatim as `context` in every callback."),
 });
 
 const WEBHOOK_DELIVERIES_INPUT = z.object({
@@ -284,20 +319,21 @@ function errorResult(text: string): PaseoToolResult {
   return { isError: true, content: [{ type: "text", text }] };
 }
 
-/** What a start/prompt call that armed the webhook tells the client. */
-function armedNotice(inherited: boolean): Record<string, unknown> {
-  if (!inherited) {
+/** What a start/prompt call tells the client about its callbacks. */
+function notifyNotice(
+  targets: readonly McpNotifyTargetRef[],
+  outcome: FleetMcpNotifyArmResult,
+): Record<string, unknown> {
+  if ("error" in outcome) {
     return {
-      notify: { armed: true },
-      guidance:
-        "Paseo will POST paseo.agent.finished to your webhook when this run ends. Do not poll for it.",
+      notify: { armed: false, error: outcome.error },
+      guidance: `The prompt was delivered, but no callback is armed: ${outcome.error} Use fleet_wait_agent instead.`,
     };
   }
+  const names = targets.map(describeTargetRef).join(", ");
   return {
-    notify: { armed: true, inherited: true },
-    guidance:
-      "notifyOnFinish is on for this agent from your earlier request: Paseo will POST paseo.agent.finished " +
-      "to your webhook when this run ends. Do not poll for it. Pass notifyOnFinish: false to stop.",
+    notify: { armed: true, targets: targets.map(describeTargetRef), armedOn: outcome.armedOn },
+    guidance: `Paseo calls back ${names} when this turn ends. Do not poll for it.`,
   };
 }
 
@@ -307,6 +343,7 @@ function parseNotifyOnFinishRequest(args: Record<string, unknown>):
       agents: Array<{ agentId: string; host?: string; turnId?: string }>;
       perAgent: boolean;
       group: boolean;
+      notifyTargets: Array<string | { agent: string }>;
       notifyContext: string | null;
     }
   | { error: string } {
@@ -329,7 +366,13 @@ function parseNotifyOnFinishRequest(args: Record<string, unknown>):
   const perAgent = input.perAgent ?? true;
   const group = input.group ?? false;
   if (!perAgent && !group) return { error: "Set perAgent, group, or both; nothing would be sent." };
-  return { agents, perAgent, group, notifyContext: input.notifyContext ?? null };
+  return {
+    agents,
+    perAgent,
+    group,
+    notifyTargets: input.notifyTargets,
+    notifyContext: input.notifyContext ?? null,
+  };
 }
 
 type McpToolContext = RequestHandlerExtra<ServerRequest, ServerNotification>;
@@ -391,64 +434,70 @@ export async function createFleetMcpServer(options: FleetMcpServerOptions): Prom
   };
 
   /**
-   * Whether a start/prompt call arms the client's webhook, and with which
-   * context. A follow-up send inherits the client's standing request for the
-   * agent, so a client that asked at create time keeps hearing about the runs
-   * its later prompts start; notifyOnFinish: false on a send drops it.
+   * The targets a call named, checked against this host's config. Webhook
+   * names must be configured; an agent target is any agent id.
    */
-  const resolveNotify = (
-    name: string,
-    toolArgs: Record<string, unknown>,
+  const resolveTargetRefs = (
     notify: z.infer<typeof NotifyArgsSchema>,
-  ): NotifyPlan => {
-    const { clientName, finishNotifier } = options;
-    const sendAgentId =
-      !CREATE_TOOLS.has(name) && typeof toolArgs.agentId === "string" ? toolArgs.agentId : null;
-    if (notify.notifyOnFinish === false) {
-      if (sendAgentId && clientName) finishNotifier?.unsubscribe(clientName, sendAgentId);
-      return { arm: false, inherited: false, context: null, notifyTarget: null };
+  ): McpNotifyTargetRef[] | { error: string } => {
+    let entries = notify.notifyTargets ?? [];
+    // COMPAT(notify-targets): added in v0.17.5, remove after 2026-12-10.
+    if (!notify.notifyTargets && notify.notifyOnFinish !== false) {
+      if (notify.notifyTarget) entries = [notify.notifyTarget];
+      else if (notify.notifyOnFinish === true && options.clientName) entries = [options.clientName];
     }
-    const subscription =
-      sendAgentId && clientName
-        ? (finishNotifier?.subscription(clientName, sendAgentId) ?? null)
-        : null;
-    const explicit = notify.notifyOnFinish === true || notify.notifyTarget !== undefined;
-    return {
-      arm: explicit || subscription !== null,
-      inherited: !explicit,
-      context: notify.notifyContext ?? subscription?.context ?? null,
-      notifyTarget: notify.notifyTarget ?? subscription?.notifyTarget ?? null,
-    };
+    const refs: McpNotifyTargetRef[] = [];
+    for (const entry of entries) {
+      const ref: McpNotifyTargetRef = typeof entry === "string" ? { name: entry } : entry;
+      if ("agent" in ref && ref.agent === "self") {
+        return {
+          error:
+            '{agent: "self"} needs a calling agent, and this endpoint does not know which agent is calling. ' +
+            "Pass your own agent id (env PASEO_AGENT_ID) instead.",
+        };
+      }
+      if ("name" in ref && !options.namedNotifyTargets?.has(ref.name)) {
+        const known = [...(options.namedNotifyTargets?.keys() ?? [])];
+        return {
+          error:
+            `Unknown notify target "${ref.name}". ` +
+            (known.length > 0
+              ? `Configured targets: ${known.join(", ")}.`
+              : "No notify targets are configured (daemon.mcp.notifyTargets)."),
+        };
+      }
+      if (!refs.some((existing) => describeTargetRef(existing) === describeTargetRef(ref))) {
+        refs.push(ref);
+      }
+    }
+    return refs;
   };
 
-  /**
-   * The webhook an arming call posts to: the named target, else the client's
-   * own. null when nothing is armed: the plan does not arm, or an inherited
-   * arm's target is gone (that only stops arming, never blocks the send).
-   * An error string when an explicit request cannot be met.
-   */
-  const resolveTarget = (plan: NotifyPlan): McpNotifyTarget | string | null => {
-    if (!plan.arm) return null;
-    let error =
-      "notifyOnFinish needs a webhook for this MCP client (daemon.mcp.remoteClients[].notify), and none is configured. " +
-      "Call again without notifyOnFinish and use fleet_wait_agent instead.";
-    const named = plan.notifyTarget ? options.namedNotifyTargets?.get(plan.notifyTarget) : null;
-    const target = plan.notifyTarget ? named : options.notifyTarget;
-    if (plan.notifyTarget && !named) {
-      const known = [...(options.namedNotifyTargets?.keys() ?? [])];
-      error =
-        `Unknown notifyTarget "${plan.notifyTarget}". ` +
-        (known.length > 0
-          ? `Configured targets: ${known.join(", ")}.`
-          : "No notify targets are configured (daemon.mcp.notifyTargets).");
+  /** Where a target ref delivers when a watch runs on this host. */
+  const bindTarget = (ref: McpNotifyTargetRef): McpNotifyTarget =>
+    "name" in ref
+      ? options.namedNotifyTargets!.get(ref.name)!
+      : { kind: "agent", agentId: ref.agent };
+
+  const parseNotifyArgs = (
+    args: Record<string, unknown>,
+  ): { refs: McpNotifyTargetRef[]; context: string | null } | { error: string } => {
+    const notify = NotifyArgsSchema.safeParse(args);
+    if (!notify.success) {
+      return {
+        error: `Invalid notify arguments: ${notify.error.issues.map((issue) => issue.message).join("; ")}`,
+      };
     }
-    if (target && options.finishNotifier && options.clientName) return target;
-    return plan.inherited ? null : error;
+    const refs = resolveTargetRefs(notify.data);
+    if ("error" in refs) return refs;
+    if (refs.length > 0 && (!options.armNotify || !options.clientName)) {
+      return {
+        error: "Callbacks are not available on this endpoint. Use fleet_wait_agent instead.",
+      };
+    }
+    return { refs, context: notify.data.notifyContext ?? null };
   };
 
-  // Runs a catalog tool for this MCP client. For the agent start/prompt tools
-  // it takes notifyOnFinish/notifyContext off the arguments and, after the
-  // tool succeeds, arms the client's webhook instead.
   function extractStatusNotifyFields(
     structured: Record<string, unknown>,
     args: Record<string, unknown>,
@@ -465,12 +514,7 @@ export async function createFleetMcpServer(options: FleetMcpServerOptions): Prom
     const title = typeof structured.title === "string" ? structured.title : null;
     const running = structured.running as { activeTurnId?: string | null } | null | undefined;
     const turnId = running?.activeTurnId ?? null;
-    let context: string | null = null;
-    if (typeof args.notifyContext === "string") {
-      context = args.notifyContext;
-    } else if (typeof args.context === "string") {
-      context = args.context;
-    }
+    const context = typeof args.notifyContext === "string" ? args.notifyContext : null;
     return { agentId, targetHost, title, turnId, context };
   }
 
@@ -482,21 +526,30 @@ export async function createFleetMcpServer(options: FleetMcpServerOptions): Prom
     if (args.fresh !== true) {
       return errorResult("notify: true is only valid when fresh: true");
     }
-    const { finishNotifier, notifyTarget, clientName } = options;
-    if (!finishNotifier || !notifyTarget || !clientName) {
+    const { notifyTargets: rawTargets, ...statusArgs } = args;
+    const targets = NOTIFY_TARGETS_SCHEMA.safeParse(rawTargets ?? []);
+    const refs = targets.success ? resolveTargetRefs({ notifyTargets: targets.data }) : [];
+    if ("error" in refs) return errorResult(refs.error);
+    const { finishNotifier, clientName } = options;
+    if (refs.length === 0) {
       return errorResult(
-        "notify: true needs a webhook for this MCP client (daemon.mcp.remoteClients[].notify), and none is configured. " +
-          "Call again without notify: true instead.",
+        'notify: true needs notifyTargets: the webhooks (e.g. ["grok-bot"]) or {agent: id} to call back.',
       );
     }
-    const requestId = typeof args.requestId === "string" ? args.requestId : `req_${randomUUID()}`;
-    const result = await catalog.executeTool(name, { ...args, requestId }, { signal });
+    if (!finishNotifier || !clientName) {
+      return errorResult(
+        "Callbacks are not available on this endpoint. Call again without notify.",
+      );
+    }
+    const requestId =
+      typeof statusArgs.requestId === "string" ? statusArgs.requestId : `req_${randomUUID()}`;
+    const result = await catalog.executeTool(name, { ...statusArgs, requestId }, { signal });
     if (result.isError) return result;
 
     const structured = (result.structuredContent ?? {}) as Record<string, unknown>;
     const { agentId, targetHost, title, turnId, context } = extractStatusNotifyFields(
       structured,
-      args,
+      statusArgs,
     );
     const target = createCatalogFleetHostResolver(options.hostDependencies).resolve(targetHost);
     const peerClient =
@@ -504,27 +557,32 @@ export async function createFleetMcpServer(options: FleetMcpServerOptions): Prom
         ? (options.hostDependencies.peerManager?.getPeerClient(target.peerName) ?? null)
         : null;
 
-    finishNotifier.armStatusReport({
-      client: clientName,
-      target: notifyTarget,
-      requestId: typeof structured.requestId === "string" ? structured.requestId : requestId,
-      agentId,
-      host: targetHost,
-      title,
-      turnId,
-      context,
-      waitForAgent,
-      subscribeSelfReports: options.hostDependencies.missionControlService
-        ? (listener) =>
-            options.hostDependencies.missionControlService!.subscribeSelfReports(listener)
-        : undefined,
-      peerClient,
-    });
+    for (const ref of refs) {
+      finishNotifier.armStatusReport({
+        client: clientName,
+        target: bindTarget(ref),
+        requestId: typeof structured.requestId === "string" ? structured.requestId : requestId,
+        agentId,
+        host: targetHost,
+        title,
+        turnId,
+        context,
+        waitForAgent,
+        subscribeSelfReports: options.hostDependencies.missionControlService
+          ? (listener) =>
+              options.hostDependencies.missionControlService!.subscribeSelfReports(listener)
+          : undefined,
+        peerClient,
+      });
+    }
 
     return result;
   };
 
-  const handleNotifyOnFinish = async (
+  // Runs fleet_create_agent / fleet_send_prompt for this MCP client: takes the
+  // notify arguments off, runs the tool, then arms a watch on the agent's own
+  // host for the targets the call named.
+  const handleNotifyTargets = async (
     name: string,
     args: Record<string, unknown>,
     signal: AbortSignal | undefined,
@@ -533,23 +591,14 @@ export async function createFleetMcpServer(options: FleetMcpServerOptions): Prom
       notifyOnFinish: _notify,
       notifyContext: _context,
       notifyTarget: _target,
+      notifyTargets: _targets,
       ...toolArgs
     } = args;
-    const notify = NotifyArgsSchema.safeParse(args);
-    if (!notify.success) {
-      return errorResult(
-        `Invalid notify arguments: ${notify.error.issues.map((issue) => issue.message).join("; ")}`,
-      );
-    }
-    if (notify.data.notifyOnFinish === false && notify.data.notifyTarget !== undefined) {
-      return errorResult("notifyTarget needs notifyOnFinish; drop notifyOnFinish: false.");
-    }
-    const plan = resolveNotify(name, toolArgs, notify.data);
-    const target = resolveTarget(plan);
-    if (typeof target === "string") return errorResult(target);
+    const notify = parseNotifyArgs(args);
+    if ("error" in notify) return errorResult(notify.error);
     if (CATALOG_NOTIFY_TOOLS.has(name)) toolArgs.notifyOnFinish = false;
     const result = await catalog.executeTool(name, toolArgs, { signal });
-    if (!target || result.isError) return result;
+    if (notify.refs.length === 0 || result.isError) return result;
 
     const structured = (result.structuredContent ?? {}) as Record<string, unknown>;
     const agentId = CREATE_TOOLS.has(name) ? structured.agentId : toolArgs.agentId;
@@ -559,24 +608,27 @@ export async function createFleetMcpServer(options: FleetMcpServerOptions): Prom
         structuredContent: {
           ...structured,
           notify: { armed: false },
-          guidance: "notifyOnFinish was not armed: no agent was started.",
+          guidance: "No callback is armed: no agent was started.",
         },
       };
     }
-    const host = typeof toolArgs.host === "string" ? toolArgs.host : undefined;
-    const turnId = typeof structured.turnId === "string" ? structured.turnId : null;
-    void options.finishNotifier!.arm({
+    const outcome = await options.armNotify!({
       client: options.clientName!,
-      target: target!,
-      notifyTarget: plan.notifyTarget,
-      agentId,
-      ...(host ? { host } : {}),
-      turnId,
       tool: name,
-      context: plan.context,
-      waitForAgent,
-    });
-    return { ...result, structuredContent: { ...structured, ...armedNotice(plan.inherited) } };
+      agentId,
+      ...(typeof toolArgs.host === "string" ? { host: toolArgs.host } : {}),
+      turnId: typeof structured.turnId === "string" ? structured.turnId : null,
+      nextTurnAfter:
+        typeof structured.waitsForTurnId === "string" ? structured.waitsForTurnId : null,
+      context: notify.context,
+      targets: notify.refs,
+    }).catch((error: unknown) => ({
+      error: error instanceof Error ? error.message : String(error),
+    }));
+    return {
+      ...result,
+      structuredContent: { ...structured, ...notifyNotice(notify.refs, outcome) },
+    };
   };
 
   const runCatalogTool = async (
@@ -596,7 +648,7 @@ export async function createFleetMcpServer(options: FleetMcpServerOptions): Prom
         ...(options.clientName ? { callerClient: options.clientName } : {}),
       });
     }
-    return handleNotifyOnFinish(name, args, signal);
+    return handleNotifyTargets(name, args, signal);
   };
 
   // Tools without the fleet_/memory_ prefix act on this daemon only; say so
@@ -627,25 +679,28 @@ export async function createFleetMcpServer(options: FleetMcpServerOptions): Prom
   server.registerTool(
     "fleet_notify_on_finish",
     {
-      title: "Webhook when agents finish",
+      title: "Callbacks when agents finish",
       description:
-        "Arm webhook callbacks for one or more agents without holding a call open. perAgent (default true) " +
-        "POSTs paseo.agent.finished as each agent's turn ends; group POSTs one paseo.agents.group_finished " +
-        "once every agent's turn has ended. needs_permission always POSTs per agent and does not complete " +
-        "the group. Each agent binds to the turnId given, else to its run in progress; an idle agent with " +
-        "no run fires at once with turnId null. Watches survive a daemon restart: each agent reports the " +
-        'run the restarted daemon resumes, or reason "interrupted" when it never resumes. An agent whose ' +
-        "host restarts mid-run first POSTs a non-final paseo.agent.interrupted. Returns immediately.",
+        "Arm callbacks for one or more agents without holding a call open; notifyTargets names who gets " +
+        "them. perAgent (default true) sends paseo.agent.finished as each agent's turn ends; group sends " +
+        "one paseo.agents.group_finished once every agent's turn has ended. needs_permission always goes " +
+        "per agent and does not complete the group. Each agent binds to the turnId given, else to its run " +
+        "in progress; an idle agent with no run fires at once with turnId null. Watches survive a daemon " +
+        'restart: each agent reports the run the restarted daemon resumes, or reason "interrupted" when ' +
+        "it never resumes. An agent whose host restarts mid-run first sends a non-final " +
+        "paseo.agent.interrupted. Returns immediately.",
       inputSchema: NOTIFY_ON_FINISH_INPUT.loose(),
     },
     async (args: Record<string, unknown>) => {
       const request = parseNotifyOnFinishRequest(args);
       if ("error" in request) return toMcpToolResult(errorResult(request.error));
-      if (!options.finishNotifier || !options.notifyTarget || !options.clientName) {
+      const refs = resolveTargetRefs({ notifyTargets: request.notifyTargets });
+      if ("error" in refs) return toMcpToolResult(errorResult(refs.error));
+      const { finishNotifier, armNotify, clientName } = options;
+      if (!finishNotifier || !armNotify || !clientName) {
         return toMcpToolResult(
           errorResult(
-            "fleet_notify_on_finish needs a webhook for this MCP client (daemon.mcp.remoteClients[].notify), " +
-              "and none is configured. Use fleet_wait_agents instead.",
+            "Callbacks are not available on this endpoint. Use fleet_wait_agents instead.",
           ),
         );
       }
@@ -655,28 +710,54 @@ export async function createFleetMcpServer(options: FleetMcpServerOptions): Prom
           return host ? { agentId, host, turnId: bound } : { agentId, turnId: bound };
         }),
       );
-      const common = {
-        client: options.clientName,
-        target: options.notifyTarget,
-        tool: "fleet_notify_on_finish",
-        context: request.notifyContext,
-        waitForAgent,
-      };
+      const tool = "fleet_notify_on_finish";
+      // Per-agent watches run on each agent's own host.
+      const perAgentErrors: string[] = [];
+      if (request.perAgent) {
+        const outcomes = await Promise.all(
+          agents.map((agent) =>
+            armNotify({
+              client: clientName,
+              tool,
+              agentId: agent.agentId,
+              ...(agent.host ? { host: agent.host } : {}),
+              turnId: agent.turnId ?? null,
+              nextTurnAfter: null,
+              context: request.notifyContext,
+              targets: refs,
+            }).catch((error: unknown) => ({
+              error: error instanceof Error ? error.message : String(error),
+            })),
+          ),
+        );
+        outcomes.forEach((outcome, index) => {
+          if ("error" in outcome)
+            perAgentErrors.push(`${agents[index]!.agentId}: ${outcome.error}`);
+        });
+      }
+      // A group spans hosts, so this host watches it.
       const groupId = request.group ? `grp_${randomUUID()}` : undefined;
       if (groupId) {
-        void options.finishNotifier.armGroup({
-          ...common,
-          groupId,
-          agents,
-          perAgent: request.perAgent,
-        });
-      } else {
-        for (const agent of agents) void options.finishNotifier.arm({ ...common, ...agent });
+        for (const ref of refs) {
+          void finishNotifier.armGroup({
+            client: clientName,
+            target: bindTarget(ref),
+            targetRef: ref,
+            tool,
+            context: request.notifyContext,
+            waitForAgent,
+            groupId: refs.length > 1 ? `${groupId}:${describeTargetRef(ref)}` : groupId,
+            agents,
+            perAgent: request.perAgent,
+          });
+        }
       }
       const structuredContent = {
         armed: agents.map(({ agentId, turnId }) => ({ agentId, turnId: turnId ?? null })),
+        targets: refs.map(describeTargetRef),
         ...(groupId ? { groupId } : {}),
-        guidance: "Paseo will POST to your webhook when these turns end. Do not poll for them.",
+        ...(perAgentErrors.length > 0 ? { errors: perAgentErrors } : {}),
+        guidance: "Paseo calls back your targets when these turns end. Do not poll for them.",
       };
       return {
         content: [{ type: "text" as const, text: JSON.stringify(structuredContent) }],
@@ -688,28 +769,25 @@ export async function createFleetMcpServer(options: FleetMcpServerOptions): Prom
   server.registerTool(
     "fleet_webhook_deliveries",
     {
-      title: "Webhook delivery history",
+      title: "Callback delivery history",
       description:
-        "List the POSTs Paseo made to your webhook (finish, needs_permission, interrupted, group and " +
-        "status-report events), newest first: one row per attempt with the event, agent, turn, " +
-        "notifyContext, HTTP status, response snippet, attempt number and outcome. All attempts of one " +
-        "event share deliveryId (also sent as the body's deliveryId and the X-Paseo-Delivery-Id header, " +
-        'so you can drop duplicates). "retrying" rows carry nextAttemptAt: Paseo retries network errors, ' +
-        "408, 425, 429, 5xx and rate-limited 4xx with backoff, 6 attempts over about 15 minutes. " +
+        "List the callbacks this host delivered for your calls (finish, needs_permission, interrupted, " +
+        "message, group and status-report events), newest first: one row per attempt with the event, agent, " +
+        "turn, notifyContext, HTTP status, response snippet, attempt number and outcome. An agent's own host " +
+        "delivers its callbacks, so this lists the agents this host runs, plus groups and status reports " +
+        "armed here. All attempts of one event share deliveryId (also sent as the body's deliveryId and the " +
+        "X-Paseo-Delivery-Id header, so you can drop duplicates). " +
+        '"retrying" rows carry nextAttemptAt: Paseo retries network errors, 408, 425, 429, 5xx and ' +
+        "rate-limited 4xx with backoff, by default 6 attempts over about 15 minutes. " +
         '"failed" means the event was given up on: failure "exhausted" (every retry failed) or ' +
         '"not_retryable" (another 4xx). "suppressed" rows were never sent on purpose: suppressedReason ' +
-        '"chat_open" (Vaibhav had the agent\'s chat open for a turn he started) or "own_turns_off" ' +
-        "(his setting turns those callbacks off). totals counts every match, not just the returned page. " +
-        "Use failedOnly to find events you never received.",
+        '"filtered" (the target is not configured to take that event). totals counts every match, not ' +
+        "just the returned page. Use failedOnly to find events you never received.",
       inputSchema: WEBHOOK_DELIVERIES_INPUT.shape,
     },
     async (args: z.infer<typeof WEBHOOK_DELIVERIES_INPUT>) => {
       if (!options.finishNotifier || !options.clientName) {
-        return toMcpToolResult(
-          errorResult(
-            "This MCP client has no webhook configured (daemon.mcp.remoteClients[].notify).",
-          ),
-        );
+        return toMcpToolResult(errorResult("Callbacks are not available on this endpoint."));
       }
       const structuredContent = await options.finishNotifier.listDeliveries({
         client: options.clientName,

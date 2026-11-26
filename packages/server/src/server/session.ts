@@ -106,6 +106,7 @@ import {
 import type { AgentTimelineItem, AgentUsage } from "./agent/agent-sdk-types.js";
 import {
   sendPromptToAgent,
+  sendWhenIdle,
   waitForAgentRunStartWithTimeout,
   unarchiveAgentState,
   type PromptDispatchResult,
@@ -245,21 +246,13 @@ import {
 import { DocThreadsSession, type DocThreadsHost } from "./doc-threads/session.js";
 import { FleetBrowserSession, type FleetBrowserService } from "./fleet-browser/index.js";
 import type { PeerManager } from "./peers/peer-manager.js";
-import {
-  AGENT_VIEWED_PEER_TOOL,
-  type MissionControlService,
-  USER_TURN_PEER_TOOL,
-} from "./mission-control/service.js";
-import { z } from "zod";
+import { type MissionControlService, NOTIFY_ARM_PEER_TOOL } from "./mission-control/service.js";
 import { buildLocalContextPayload } from "./mission-control/context.js";
 
+/** A fleet steer an agent cannot take waits this long for its running turn to end. */
+const QUEUED_STEER_WAIT_MS = 24 * 60 * 60_000;
+
 /** Fleet tools a peer daemon may run on this host (work owned by this host). */
-const AgentViewedPeerArgsSchema = z.object({ agentId: z.string().min(1) });
-const UserTurnPeerArgsSchema = z.object({
-  agentId: z.string().min(1),
-  turnId: z.string().nullable(),
-  text: z.string(),
-});
 const PEER_EXECUTABLE_TOOL_NAMES = new Set([
   "fleet_wait_agent",
   "fleet_unarchive_agent",
@@ -3531,24 +3524,12 @@ export class Session {
         payload: { requestId: msg.requestId, name: msg.name, ...payload },
       });
     try {
-      if (msg.name === AGENT_VIEWED_PEER_TOOL) {
-        const args = AgentViewedPeerArgsSchema.safeParse(msg.args);
-        if (!args.success) {
-          respond({ ok: false, error: `${AGENT_VIEWED_PEER_TOOL} needs agentId` });
-          return;
-        }
-        const viewed = this.missionControlService?.agentViews.isViewed(args.data.agentId) ?? false;
-        respond({ ok: true, structuredContent: { viewed } });
-        return;
-      }
-      if (msg.name === USER_TURN_PEER_TOOL) {
-        const args = UserTurnPeerArgsSchema.safeParse(msg.args);
-        if (!args.success) {
-          respond({ ok: false, error: `${USER_TURN_PEER_TOOL} needs agentId, turnId and text` });
-          return;
-        }
-        this.missionControlService?.noteUserPrompt({ ...args.data, forwarded: true });
-        respond({ ok: true });
+      if (msg.name === NOTIFY_ARM_PEER_TOOL) {
+        const result = (await this.missionControlService?.armForwardedNotify(msg.args)) ?? {
+          error: "This host cannot arm callbacks.",
+        };
+        if (typeof result.error === "string") respond({ ok: false, error: result.error });
+        else respond({ ok: true, structuredContent: result });
         return;
       }
       if (!PEER_EXECUTABLE_TOOL_NAMES.has(msg.name)) {
@@ -7216,10 +7197,6 @@ export class Session {
       appVisible: msg.appVisible,
       appVisibilityChangedAt,
     };
-    this.missionControlService?.agentViews.noteHeartbeat(this.clientId, {
-      agentId: msg.focusedAgentId,
-      appVisible: msg.appVisible,
-    });
     if (msg.appVisible && focusedTerminalId) {
       void this.clearFocusedTerminalAttention(focusedTerminalId);
     }
@@ -11124,6 +11101,8 @@ export class Session {
         throw new Error('activeTurnBehavior "queue" needs an agent sender');
       let deliveryStatus: "queued" | undefined;
       let queuedReceipt: { activeTurnBehavior: AgentMessageBehavior; guidance: string } | undefined;
+      // A person typing in the app (not a peer daemon, the CLI, or a bot).
+      const fromPerson = this.clientType === "mobile" || this.clientType === "browser";
       const send = async (beforeDispatch: () => Promise<void>) => {
         if (msg.sourceAgentId) {
           await beforeDispatch();
@@ -11149,6 +11128,31 @@ export class Session {
           await receipt.dispatched;
           return;
         }
+        // A fleet steer (a peer daemon or bot, not a person) never cancels the
+        // running turn: an agent that cannot steer right now gets it once the turn ends.
+        if (
+          msg.dispatchMode === "steer" &&
+          !fromPerson &&
+          this.agentManager.hasInFlightRun(agentId) &&
+          !this.agentManager.canSteer(agentId)
+        ) {
+          await beforeDispatch();
+          sendWhenIdle({
+            agentMessages: this.agentMessages,
+            agentManager: this.agentManager,
+            agentStorage: this.agentStorage,
+            agentId,
+            prompt,
+            sessionMode: msg.sessionMode,
+            logger: this.sessionLogger,
+            waitForIdle: async () => {
+              await this.waitForAgentIdle(agentId, QUEUED_STEER_WAIT_MS);
+              return !this.agentManager.hasInFlightRun(agentId);
+            },
+          });
+          deliveryStatus = "queued";
+          return;
+        }
         const result = await this.dispatchAgentMessageRun(msg, agentId, prompt, beforeDispatch);
         // Steer/queue deliveries are accepted as queued: the run may start only
         // after the current turn finishes, so a run-start wait would race it.
@@ -11165,8 +11169,6 @@ export class Session {
           );
         }
       };
-      // A person typing in the app (not a peer daemon, the CLI, or a bot).
-      const fromPerson = this.clientType === "mobile" || this.clientType === "browser";
       const sent = msg.messageId
         ? this.messageReceipts.send({
             agentId,
@@ -11569,7 +11571,6 @@ export class Session {
    * Clean up session resources
    */
   public async cleanup(): Promise<void> {
-    this.missionControlService?.agentViews.noteGone(this.clientId);
     this.sessionLogger.trace({}, "agent.session.lifecycle.cleanup");
     this.isCleanedUp = true;
     this.unsubscribeSetupObservation();

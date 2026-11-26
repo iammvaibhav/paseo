@@ -587,16 +587,19 @@ export function createAgentMessageDelivery(dependencies: Dependencies): AgentMes
         reject = failed;
       });
       void dispatched.catch(() => undefined);
-      const activeTurnBehavior = message.activeTurnBehavior ?? "queue";
+      const requested = message.activeTurnBehavior ?? "queue";
+      const running = isRunning(message.recipientId);
+      const canSteer = Boolean(dependencies.canSteer?.(message.recipientId));
+      // A steer never cancels the running turn: one the recipient cannot take waits for it.
+      const activeTurnBehavior =
+        requested === "steer" && running && dependencies.canSteer && !canSteer
+          ? "queue"
+          : requested;
       const receipt: Receipt = {
         status: "queued",
         messageId: message.messageId ?? randomUUID(),
         activeTurnBehavior,
-        guidance: describeAgentMessage({
-          activeTurnBehavior,
-          running: isRunning(message.recipientId),
-          canSteer: Boolean(dependencies.canSteer?.(message.recipientId)),
-        }),
+        guidance: describeAgentMessage({ activeTurnBehavior: requested, running, canSteer }),
         dispatched,
       };
       admit({

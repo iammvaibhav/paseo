@@ -463,6 +463,9 @@ export function wrapSessionProvider(provider: AgentProvider, inner: AgentSession
     get steerActiveTurn() {
       return inner.steerActiveTurn?.bind(inner);
     },
+    get canSteerNow() {
+      return inner.canSteerNow?.bind(inner);
+    },
     subscribe: (callback) => inner.subscribe((event) => callback(mapStreamEvent(provider, event))),
     async *streamHistory() {
       for await (const event of inner.streamHistory()) {

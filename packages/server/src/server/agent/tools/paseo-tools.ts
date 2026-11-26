@@ -107,7 +107,7 @@ import {
 import {
   type PromptDispatchDisposition,
   sendPromptToAgent,
-  startAgentRun,
+  sendWhenIdle,
   waitForAgentRunStartWithTimeout,
 } from "../agent-prompt.js";
 import { buildAgentPrompt, renderPromptAttachmentAsText } from "../prompt-attachments.js";
@@ -2078,7 +2078,7 @@ function createToolCatalog(
   const agentToAgentSendAgentPromptInputSchema = {
     ...commonSendAgentPromptInputSchema,
     activeTurnBehavior: AgentActiveTurnBehaviorSchema.optional().describe(
-      'Leave this out unless the message cannot wait. Default "queue": the message waits until the agent\'s running turn ends. "steer": the message joins the running turn; a provider that cannot steer interrupts the turn instead. "interrupt": the running turn stops and a new turn starts with the message. A steer or interrupt carries the messages you queued before it, in order.',
+      'Leave this out unless the message cannot wait. Default "queue": the message waits until the agent\'s running turn ends. "steer": the message joins the running turn; an agent that cannot steer right now gets it when the turn ends instead. "interrupt": the running turn stops and a new turn starts with the message. A steer or interrupt carries the messages you queued before it, in order.',
     ),
     notifyOnFinish: z
       .boolean()
@@ -5203,9 +5203,10 @@ function createToolCatalog(
         "Send a task to an agent across the fleet. agentId is fleet-wide; host is optional and resolved " +
         "automatically via the fleet index. Returns immediately in every mode; it never waits for a busy " +
         'agent. Always use the default mode "steer": it wakes a closed or archived agent and runs the ' +
-        "prompt, and on a busy agent it joins the live turn without cancelling it (OMP live-steer; a busy " +
-        'non-OMP agent is interrupted so the message lands promptly). Pass "interrupt" only when the user ' +
-        "explicitly asked to cancel the running turn and replace it.",
+        "prompt, and on a busy agent it joins the live turn without cancelling it. An agent that cannot " +
+        'steer right now (deliveryMode "steer-queued") gets the prompt once its running turn ends; a ' +
+        'steer never cancels a turn. Pass "interrupt" only when the user explicitly asked to cancel the ' +
+        "running turn and replace it.",
       inputSchema: {
         agentId: z
           .string()
@@ -5236,13 +5237,16 @@ function createToolCatalog(
       },
       outputSchema: {
         success: z.boolean(),
-        deliveryMode: z.enum(["steer", "interrupt", "steer-interrupt"]),
+        deliveryMode: z.enum(["steer", "interrupt", "steer-queued"]),
         // The agent was idle and its new run was seen starting before this
         // returned, so a fleet_wait_agent after it waits on the new run.
         runStarted: z.boolean().optional(),
         // The turn this prompt runs in (a live steer joins the current turn);
         // pass it to fleet_wait_agent/fleet_wait_agents to bind the wait.
+        // Null for "steer-queued": the turn starts after waitsForTurnId ends.
         turnId: z.string().nullable().optional(),
+        // "steer-queued": the running turn the prompt waits for.
+        waitsForTurnId: z.string().nullable().optional(),
         // Approval-flow outcome (spec 03): the proposal id when a send is
         // pending (or deduplicated onto an existing one) and guidance.
         // Additive.
@@ -5341,6 +5345,18 @@ function createToolCatalog(
           }
           throw error;
         }
+        if (deliveredAs === "steer-queued") {
+          return {
+            content: [],
+            structuredContent: ensureValidJson({
+              success: true,
+              deliveryMode: deliveredAs,
+              runStarted: false,
+              turnId: null,
+              waitsForTurnId: before?.active ?? null,
+            }),
+          };
+        }
         const turn = await resolvePromptedTurn({
           agentManager,
           agentId,
@@ -5369,18 +5385,31 @@ function createToolCatalog(
       if (agentMode) {
         await selectAgentModeOnPeer(client, targetHost, agentId, agentMode);
       }
-      await client.sendAgentMessage(agentId, prompt, {
+      const receipt = await client.sendAgentMessage(agentId, prompt, {
         dispatchMode: effectiveMode,
         ...(images ? { images } : {}),
         ...(peerAttachments ? { attachments: peerAttachments } : {}),
       });
       const wasIdle = before?.agent.status !== "running";
+      // A steer the peer's agent could not take waits for its running turn to end.
+      if (effectiveMode === "steer" && !wasIdle && receipt.deliveryStatus === "queued") {
+        return {
+          content: [],
+          structuredContent: ensureValidJson({
+            success: true,
+            deliveryMode: "steer-queued",
+            runStarted: false,
+            turnId: null,
+            waitsForTurnId: beforeTurn?.active ?? null,
+          }),
+        };
+      }
       const turn = await resolvePromptedTurn({
         client,
         agentId,
         previousTurnId: beforeTurn?.active ?? beforeTurn?.last ?? null,
-        // A busy omp agent takes a steer into its live turn.
-        joinsCurrentTurn: effectiveMode === "steer" && !wasIdle && before?.agent.provider === "omp",
+        // A busy agent takes a steer into its live turn.
+        joinsCurrentTurn: effectiveMode === "steer" && !wasIdle,
       });
       return {
         content: [],
@@ -5964,7 +5993,7 @@ function createToolCatalog(
         "projectId/host. fresh:true steers the agent to post a fresh report_status (user-invisible machinery " +
         "envelope) and waits up to 60s for it; on timeout it returns the stale data with fresh:false and a note. " +
         "Passing notify:true (only valid with fresh:true) returns immediately with requested:true and a requestId, " +
-        "without the 60s wait, and POSTs paseo.agent.status_reported to your configured webhook when the report lands " +
+        "without the 60s wait, and sends paseo.agent.status_reported to the notifyTargets you name when the report lands " +
         "(or with status no_report on 5-min timeout or turn end). The only mid-run status mechanism — fires only on " +
         "explicit request. Read-only; never approval-gated.",
       inputSchema: {
@@ -5984,13 +6013,13 @@ function createToolCatalog(
           .default(false)
           .describe(
             "When true (only valid with fresh:true), return immediately with requested:true and a requestId, " +
-              "and POST paseo.agent.status_reported to your configured webhook when the report lands (or status no_report on 5-min timeout / turn end).",
+              "and send paseo.agent.status_reported to the notifyTargets you name when the report lands (or status no_report on 5-min timeout / turn end).",
           ),
         notifyContext: z
           .string()
           .max(2000)
           .optional()
-          .describe("Free-form tag echoed back verbatim as context in the webhook payload."),
+          .describe("Free-form tag echoed back verbatim as context in the callback."),
         host: z.string().min(1).optional().describe(FLEET_HOST_HINT_DESCRIPTION),
         requestId: z
           .string()
@@ -6119,6 +6148,8 @@ function createToolCatalog(
 // with an actionable error. fleet_send_prompt never takes queue: it would block
 // the tool call until the agent goes idle.
 const FLEET_QUEUE_WAIT_TIMEOUT_MS = 10 * 60_000;
+// A steer the agent cannot take waits this long for its running turn to end.
+const QUEUED_STEER_WAIT_MS = 24 * 60 * 60_000;
 
 /**
  * How long fleet_agent_status fresh:true waits for the steered agent's
@@ -6175,13 +6206,11 @@ async function waitForAgentIdle(
 
 /**
  * Local delivery for fleet_send_prompt and Mission Control proposal modes:
- * - steer: OMP live-steer (out-of-band, non-cancelling) when the agent is busy
- *   on the omp provider; an idle agent just runs the prompt. A busy agent on a
- *   provider WITHOUT a native steer path is INTERRUPTED (replaceRunning) —
- *   a steer's value is timely delivery, and queue-until-idle can sit for tens
- *   of minutes, so the fallback cancels and replaces rather than waiting.
- *   The returned value distinguishes the fallback ("steer-interrupt") from a
- *   native steer so callers/logs stay honest about what actually happened.
+ * - steer: joins the running turn without cancelling it: OMP live-steer
+ *   (out-of-band /steer), else the provider's own steer. An agent that cannot
+ *   steer right now (a provider without it, an OMP session on a Cursor model)
+ *   gets the prompt once its running turn ends ("steer-queued"): a steer never
+ *   cancels a turn. An idle agent just runs the prompt.
  * - queue: wait for idle, then stream without replacing. Machinery only (it
  *   blocks until idle); fleet_send_prompt never takes it.
  * - interrupt: today's replaceRunning behavior (sendPromptToAgent).
@@ -6189,10 +6218,10 @@ async function waitForAgentIdle(
  * Attachments ride along as prompt blocks (buildAgentPrompt) — descriptors
  * only, resolved by the daemon from the attachment store, never base64.
  *
- * Returns what ACTUALLY happened: "steer" (native out-of-band steer or a plain
- * run on an idle agent), "steer-interrupt" (steer requested, delivered as an
- * interrupt fallback on a busy non-OMP agent), "interrupt" (requested
- * interrupt), or "queue" (requested queue; waited for idle then ran).
+ * Returns what ACTUALLY happened: "steer" (joined the running turn, or a plain
+ * run on an idle agent), "steer-queued" (steer requested; the prompt waits for
+ * the running turn to end), "interrupt" (requested interrupt), or "queue"
+ * (requested queue; waited for idle then ran).
  */
 /**
  * The interrupt delivery path (dispatchLocalPromptMode mode "interrupt"):
@@ -6244,26 +6273,6 @@ async function dispatchInterrupt(params: {
     logger,
   });
   return "interrupt";
-}
-
-/**
- * Run options for a dispatched prompt: the superseding origin and the client's
- * optimistic message id, omitted entirely when neither applies so callers keep
- * the previous "no runOptions" shape.
- */
-function dispatchRunOptions(input: {
-  replaceOrigin?: "user" | "machinery";
-  messageId?: string;
-}): { runOptions: { replaceOrigin?: "user" | "machinery"; clientMessageId?: string } } | undefined {
-  if (!input.replaceOrigin && !input.messageId) {
-    return undefined;
-  }
-  return {
-    runOptions: {
-      ...(input.replaceOrigin ? { replaceOrigin: input.replaceOrigin } : {}),
-      ...(input.messageId ? { clientMessageId: input.messageId } : {}),
-    },
-  };
 }
 
 function assertPeerSupportsAgentModes(client: DaemonClient, host: string): void {
@@ -6378,7 +6387,7 @@ export async function dispatchLocalPromptMode(params: {
   classification?: AgentTimelineUserMessageClassification;
   /**
    * Who supersedes the in-flight run when this dispatch replaces one
-   * (interrupt, or the steer→interrupt fallback on a busy non-OMP agent).
+   * (interrupt only).
    * Machinery dispatches pass "machinery" so the superseded run's terminal
    * failure keeps the failure treatment (see AgentRunOptions.replaceOrigin).
    */
@@ -6403,7 +6412,7 @@ export async function dispatchLocalPromptMode(params: {
    */
   agentMode?: AgentModeId;
   logger: Logger;
-}): Promise<"steer" | "interrupt" | "queue" | "steer-interrupt"> {
+}): Promise<"steer" | "interrupt" | "queue" | "steer-queued"> {
   const {
     agentManager,
     agentStorage,
@@ -6474,18 +6483,32 @@ export async function dispatchLocalPromptMode(params: {
       });
       return "steer";
     }
-    // Busy on a provider without a native steer path (or a "running" record
-    // whose runtime is dead): interrupt (replace the running turn). Queueing
-    // would sit behind a possibly-stuck run for up to ten minutes; the
-    // steer's value is timely delivery, so cancel and replace. startAgentRun
-    // still probes out-of-band first (harmless — the plain prompt has no
-    // /steer prefix), then replaces the running turn.
-    recordStopOrigin?.(agentId, replaceOrigin ?? "machinery");
-    await startAgentRun(agentManager, agentId, promptWithAttachments, logger, {
-      replaceRunning: true,
-      ...dispatchRunOptions({ replaceOrigin, messageId }),
+    if (classification === "machinery" && typeof promptWithAttachments === "string") {
+      agentManager.expectPromptClassification(agentId, promptWithAttachments, "machinery");
+    }
+    // A provider with its own steer takes the prompt into the running turn.
+    if (agentManager.canSteer(agentId)) {
+      const steered = await agentManager
+        .steerAgentRun(
+          agentId,
+          promptWithAttachments,
+          messageId ? { clientMessageId: messageId } : undefined,
+        )
+        .catch(() => ({ status: "unavailable" as const }));
+      if (steered.status === "accepted") return "steer";
+    }
+    // A steer never cancels the running turn: the prompt goes in once it ends.
+    sendWhenIdle({
+      agentMessages,
+      agentManager,
+      agentStorage,
+      agentId,
+      prompt: promptWithAttachments,
+      messageId,
+      logger,
+      waitForIdle: () => waitForAgentIdle(agentManager, agentId, QUEUED_STEER_WAIT_MS),
     });
-    return "steer-interrupt";
+    return "steer-queued";
   }
   const idle = await waitForAgentIdle(agentManager, agentId, FLEET_QUEUE_WAIT_TIMEOUT_MS);
   if (!idle) {

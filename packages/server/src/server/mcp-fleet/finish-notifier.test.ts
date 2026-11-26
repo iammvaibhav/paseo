@@ -1,16 +1,20 @@
 import { createHmac } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type IncomingHttpHeaders, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import pino from "pino";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { AgentManagerEvent } from "../agent/agent-manager.js";
+import type { AgentTimelineItem } from "../agent/agent-sdk-types.js";
 import type { FleetAgentWaitResult } from "../agent/tools/fleet-wait.js";
 import {
-  capUserPrompt,
+  createMcpFinishLocalAgents,
   createMcpFinishNotifier,
+  type McpAgentDelivery,
+  type McpAssistantMessage,
   type McpClientBinding,
   type McpFinishLocalAgents,
   type McpFinishRunStart as RunStart,
@@ -104,6 +108,7 @@ describe("createMcpFinishNotifier", () => {
     const waits: Array<{ agentId: string; host?: string }> = [];
     await notifier().arm({
       client: "grok-bot",
+      targetRef: { name: "grok-bot" },
       target: { url, headers: { Authorization: "Bearer aside://me@x/item1" } },
       agentId: "agent-1",
       host: "blrofc3",
@@ -136,100 +141,15 @@ describe("createMcpFinishNotifier", () => {
         lastMessage: "Done.",
         error: null,
       },
-      origin: "tool",
       trigger: { tool: "fleet_create_agent" },
     });
-  });
-
-  it("marks a turn Vaibhav started from the app with origin user", async () => {
-    await notifier().arm({
-      client: "grok-bot",
-      target: { url },
-      agentId: "agent-1",
-      tool: "user_prompt",
-      context: "essay-42",
-      origin: "user",
-      userPrompt: "rewrite the intro, keep it under 200 words",
-      waitForAgent: async () => result({}),
-    });
-    expect(received[0]!.body).toMatchObject({
-      type: "paseo.agent.finished",
-      origin: "user",
-      userPrompt: "rewrite the intro, keep it under 200 words",
-      userPromptTruncated: false,
-      context: "essay-42",
-      trigger: { tool: "user_prompt" },
-    });
-  });
-
-  it("holds a user-started turn's finish when told to, logs it, and never holds tool turns or permission asks", async () => {
-    const deliveryLogPath = path.join(dir, "mcp-fleet", "webhook-deliveries.jsonl");
-    const asked: string[] = [];
-    const subject = createMcpFinishNotifier({
-      resolveSecret: async (value) => value,
-      logger: pino({ level: "silent" }),
-      pollMs: 0,
-      retryDelaysMs: [0],
-      deliveryLogPath,
-      holdOwnTurn: async ({ agentId }) => {
-        asked.push(agentId);
-        return "chat_open";
-      },
-    });
-    let calls = 0;
-    // A turn Vaibhav started: a permission ask is sent, the finish is held.
-    await subject.arm({
-      client: "grok-bot",
-      target: { url },
-      agentId: "user-agent",
-      tool: "user_prompt",
-      context: null,
-      origin: "user",
-      userPrompt: "look at this",
-      waitForAgent: async () => {
-        calls += 1;
-        return calls === 1
-          ? result({ status: "permission", finished: false, needsPermission: true })
-          : result({ agentId: "user-agent" });
-      },
-    });
-    // A turn the bot started is sent even while the hold would say chat_open.
-    await subject.arm({
-      client: "grok-bot",
-      target: { url },
-      agentId: "tool-agent",
-      tool: "fleet_send_prompt",
-      context: null,
-      waitForAgent: async () => result({ agentId: "tool-agent" }),
-    });
-
-    expect(received.map((r) => [r.body.type, (r.body.agent as { id: string }).id])).toEqual([
-      ["paseo.agent.needs_permission", "user-agent"],
-      ["paseo.agent.finished", "tool-agent"],
-    ]);
-    expect(asked).toEqual(["user-agent"]);
-    const { totals, deliveries } = await subject.listDeliveries({ limit: 10 });
-    expect(totals).toMatchObject({ delivered: 2, suppressed: 1 });
-    expect(deliveries.find((row) => row.outcome === "suppressed")).toMatchObject({
-      agentId: "user-agent",
-      event: "paseo.agent.finished",
-      origin: "user",
-      suppressedReason: "chat_open",
-      status: null,
-    });
-  });
-
-  it("caps a long user prompt at 4 KB on a character boundary and flags it", () => {
-    const capped = capUserPrompt(`${"a".repeat(4095)}é and more`);
-    expect(capped.userPromptTruncated).toBe(true);
-    expect(capped.userPrompt).toBe("a".repeat(4095));
-    expect(capUserPrompt("short")).toEqual({ userPrompt: "short", userPromptTruncated: false });
   });
 
   it("sends needs_permission once while blocked, then the final event", async () => {
     let calls = 0;
     await notifier().arm({
       client: "grok-bot",
+      targetRef: { name: "grok-bot" },
       target: { url },
       agentId: "agent-1",
       tool: "fleet_send_prompt",
@@ -256,6 +176,7 @@ describe("createMcpFinishNotifier", () => {
     let calls = 0;
     await notifier().arm({
       client: "grok-bot",
+      targetRef: { name: "grok-bot" },
       target: { url },
       agentId: "agent-1",
       tool: "fleet_create_agent",
@@ -275,6 +196,7 @@ describe("createMcpFinishNotifier", () => {
     statuses = [503];
     await notifier().arm({
       client: "grok-bot",
+      targetRef: { name: "grok-bot" },
       target: { url },
       agentId: "agent-1",
       tool: "fleet_create_agent",
@@ -287,6 +209,7 @@ describe("createMcpFinishNotifier", () => {
     statuses = [401];
     await notifier().arm({
       client: "grok-bot",
+      targetRef: { name: "grok-bot" },
       target: { url },
       agentId: "agent-1",
       tool: "fleet_create_agent",
@@ -308,6 +231,7 @@ describe("createMcpFinishNotifier", () => {
     const arm = (agentId: string) =>
       subject.arm({
         client: "grok-bot",
+        targetRef: { name: "grok-bot" },
         target: { url },
         agentId,
         tool: "fleet_send_prompt",
@@ -433,6 +357,7 @@ describe("createMcpFinishNotifier", () => {
     const waits: Array<string | undefined> = [];
     await notifier().arm({
       client: "grok-bot",
+      targetRef: { name: "grok-bot" },
       target: { url },
       agentId: "agent-1",
       host: "macbook",
@@ -478,6 +403,7 @@ describe("createMcpFinishNotifier", () => {
     const waits: Array<string | undefined> = [];
     await notifier().arm({
       client: "grok-bot",
+      targetRef: { name: "grok-bot" },
       target: { url },
       agentId: "agent-1",
       host: "macbook",
@@ -518,6 +444,7 @@ describe("createMcpFinishNotifier", () => {
     let calls = 0;
     await notifier().arm({
       client: "grok-bot",
+      targetRef: { name: "grok-bot" },
       target: { url },
       agentId: "agent-1",
       host: "macbook",
@@ -544,6 +471,7 @@ describe("createMcpFinishNotifier", () => {
       resumeGraceMs: 20,
     }).arm({
       client: "grok-bot",
+      targetRef: { name: "grok-bot" },
       target: { url },
       agentId: "agent-1",
       host: "macbook",
@@ -575,6 +503,7 @@ describe("createMcpFinishNotifier", () => {
       },
     }).arm({
       client: "grok-bot",
+      targetRef: { name: "grok-bot" },
       target: { url },
       agentId: "agent-1",
       tool: "fleet_create_agent",
@@ -590,6 +519,7 @@ describe("createMcpFinishNotifier", () => {
   it("a turn the agent canceled (Stop, or a user prompt replacing it) posts reason interrupted", async () => {
     await notifier().arm({
       client: "grok-bot",
+      targetRef: { name: "grok-bot" },
       target: { url },
       agentId: "agent-1",
       turnId: "turn-1",
@@ -644,6 +574,7 @@ describe("createMcpFinishNotifier", () => {
     const before = daemon({ localAgents: localAgents(neverStarts) });
     const armed = before.arm({
       client: "grok-bot",
+      targetRef: { name: "grok-bot" },
       target: { url },
       agentId: "agent-1",
       tool: "fleet_send_prompt",
@@ -742,6 +673,7 @@ describe("createMcpFinishNotifier", () => {
     const before = daemon({ localAgents: remote(neverStarts) });
     const armed = before.arm({
       client: "grok-bot",
+      targetRef: { name: "grok-bot" },
       target: { url },
       agentId: "agent-1",
       host: "macbook",
@@ -806,6 +738,7 @@ describe("createMcpFinishNotifier", () => {
     const before = daemon({ retryDelaysMs: [60_000] });
     const armed = before.arm({
       client: "grok-bot",
+      targetRef: { name: "grok-bot" },
       target: { url },
       agentId: "agent-1",
       tool: "fleet_create_agent",
@@ -837,6 +770,7 @@ describe("createMcpFinishNotifier", () => {
     const turnIds: Array<string | undefined> = [];
     await notifier().arm({
       client: "grok-bot",
+      targetRef: { name: "grok-bot" },
       target: { url },
       agentId: "agent-1",
       tool: "fleet_send_prompt",
@@ -856,6 +790,7 @@ describe("createMcpFinishNotifier", () => {
     const turnIds: Array<string | undefined> = [];
     await notifier().arm({
       client: "grok-bot",
+      targetRef: { name: "grok-bot" },
       target: { url },
       agentId: "agent-1",
       turnId: "turn-from-send",
@@ -873,6 +808,7 @@ describe("createMcpFinishNotifier", () => {
     let blocked = false;
     await notifier().armGroup({
       client: "grok-bot",
+      targetRef: { name: "grok-bot" },
       target: { url },
       groupId: "grp_1",
       agents: [
@@ -914,6 +850,7 @@ describe("createMcpFinishNotifier", () => {
   it("group: a member a peer closed mid-run is reported at the end of its resumed run", async () => {
     await notifier().armGroup({
       client: "grok-bot",
+      targetRef: { name: "grok-bot" },
       target: { url },
       groupId: "grp_peer",
       agents: [
@@ -951,23 +888,30 @@ describe("createMcpFinishNotifier", () => {
     });
   });
 
-  it("group with perAgent also posts one finished event per agent", async () => {
-    awaitedCount = 3;
+  it("group with perAgent leaves permission asks to the per-agent watches", async () => {
+    let calls = 0;
     await notifier().armGroup({
       client: "grok-bot",
+      targetRef: { name: "grok-bot" },
       target: { url },
       groupId: "grp_2",
-      agents: [{ agentId: "a" }, { agentId: "b" }],
+      agents: [{ agentId: "a" }],
       perAgent: true,
       tool: "fleet_notify_on_finish",
       context: null,
-      waitForAgent: async (input) => result({ agentId: input.agentId }),
+      waitForAgent: async (input) => {
+        calls += 1;
+        return calls === 1
+          ? result({
+              agentId: input.agentId,
+              status: "permission",
+              finished: false,
+              needsPermission: true,
+            })
+          : result({ agentId: input.agentId });
+      },
     });
-    // The per-agent watches settle on their own schedule; wait for all three events.
-    await countReached.promise;
-    const types = received.map((r) => r.body.type);
-    expect(types.filter((type) => type === "paseo.agent.finished")).toHaveLength(2);
-    expect(types.filter((type) => type === "paseo.agents.group_finished")).toHaveLength(1);
+    expect(received.map((r) => r.body.type)).toEqual(["paseo.agents.group_finished"]);
   });
 
   it("group: the group event survives a restart, keeping members that ended before it", async () => {
@@ -977,6 +921,7 @@ describe("createMcpFinishNotifier", () => {
     const before = daemon({ localAgents: localAgents(neverStarts) });
     const armed = before.armGroup({
       client: "grok-bot",
+      targetRef: { name: "grok-bot" },
       target: { url },
       groupId: "grp_restart",
       agents: [
@@ -1050,6 +995,7 @@ describe("createMcpFinishNotifier", () => {
     const before = daemon({ retryDelaysMs: [60_000] });
     const armed = before.armGroup({
       client: "grok-bot",
+      targetRef: { name: "grok-bot" },
       target: { url },
       groupId: "grp_retry",
       agents: [{ agentId: "a", turnId: "t-a" }],
@@ -1085,6 +1031,7 @@ describe("createMcpFinishNotifier", () => {
     const arm = (tool: string) =>
       subject.arm({
         client: "grok-bot",
+        targetRef: { name: "grok-bot" },
         target: { url },
         agentId: "agent-1",
         turnId: "turn-1",
@@ -1100,44 +1047,11 @@ describe("createMcpFinishNotifier", () => {
     expect(received.map((r) => r.body.type)).toEqual(["paseo.agent.finished"]);
   });
 
-  it("an arm subscribes the client to the agent across a restart until it unsubscribes", async () => {
-    const binding: McpClientBinding = { target: { url }, waitForAgent: async () => result({}) };
-    const before = daemon({});
-    await before.arm({
-      ...binding,
-      client: "grok-bot",
-      agentId: "agent-1",
-      tool: "fleet_create_agent",
-      context: "essay-42",
-    });
-    expect(before.subscription("grok-bot", "agent-1")).toEqual({
-      context: "essay-42",
-      notifyTarget: null,
-    });
-    expect(before.subscription("grok-bot", "agent-2")).toBeNull();
-    expect(before.subscription("other-bot", "agent-1")).toBeNull();
-    await before.suspend();
-
-    const after = daemon({});
-    await after.restore(async () => binding);
-    expect(after.subscription("grok-bot", "agent-1")).toEqual({
-      context: "essay-42",
-      notifyTarget: null,
-    });
-    after.unsubscribe("grok-bot", "agent-1");
-    expect(after.subscription("grok-bot", "agent-1")).toBeNull();
-    await after.suspend();
-
-    const again = daemon({});
-    await again.restore(async () => binding);
-    expect(again.subscription("grok-bot", "agent-1")).toBeNull();
-  });
-
   it("signs the body with the target's vault secret into X-Paseo-Signature-256", async () => {
     await notifier().arm({
       client: "grok-bot",
+      targetRef: { name: "n8n-reviews" },
       target: { url, signingSecret: "aside://me@x/item1" },
-      notifyTarget: "n8n-reviews",
       agentId: "agent-1",
       tool: "fleet_create_agent",
       context: null,
@@ -1151,13 +1065,13 @@ describe("createMcpFinishNotifier", () => {
     expect(request!.headers["x-paseo-signature-256"]).toBe(`sha256=${expected}`);
   });
 
-  it("restores a watch to its named target after a restart", async () => {
+  it("restores a watch to the target it was armed for after a restart", async () => {
     const runEnds = Promise.withResolvers<FleetAgentWaitResult>();
     const before = daemon({});
     void before.arm({
       client: "grok-bot",
+      targetRef: { name: "n8n-reviews" },
       target: { url: "http://127.0.0.1:1/unused" },
-      notifyTarget: "n8n-reviews",
       agentId: "agent-1",
       turnId: "turn-1",
       tool: "fleet_create_agent",
@@ -1166,22 +1080,220 @@ describe("createMcpFinishNotifier", () => {
     });
     await before.suspend();
 
-    const resolved: Array<[string, string | null]> = [];
+    const resolved: Array<[string, unknown]> = [];
     const after = daemon({});
-    const { restored, settled } = await after.restore(async (client, notifyTarget) => {
-      resolved.push([client, notifyTarget]);
-      return notifyTarget === "n8n-reviews"
+    const { restored, settled } = await after.restore(async (client, ref) => {
+      resolved.push([client, ref]);
+      return ref && "name" in ref && ref.name === "n8n-reviews"
         ? { target: { url }, waitForAgent: async () => result({ turnId: "turn-1" }) }
         : null;
     });
     expect(restored).toBe(1);
     await settled;
-    expect(resolved).toEqual([["grok-bot", "n8n-reviews"]]);
+    expect(resolved).toEqual([["grok-bot", { name: "n8n-reviews" }]]);
     expect(received.map((r) => r.body.notifyTarget)).toEqual(["n8n-reviews"]);
-    expect(after.subscription("grok-bot", "agent-1")).toEqual({
-      context: "pr-7",
-      notifyTarget: "n8n-reviews",
+  });
+
+  it("restores a watch armed before notifyTargets to its client's own webhook", async () => {
+    await mkdir(path.dirname(journalPath), { recursive: true });
+    // A pre-v0.17.5 journal entry: no targetRef, notifyTarget null.
+    await writeFile(
+      journalPath,
+      `${JSON.stringify({
+        event: "armed",
+        ts: new Date().toISOString(),
+        watchId: "legacy-1",
+        client: "grok-bot",
+        agentId: "agent-1",
+        host: null,
+        tool: "fleet_create_agent",
+        context: null,
+        notifyTarget: null,
+        turnId: "turn-1",
+        deadline: Date.now() + 60_000,
+      })}\n`,
+    );
+    const refs: unknown[] = [];
+    const { settled } = await daemon({}).restore(async (_client, ref) => {
+      refs.push(ref);
+      return { target: { url }, waitForAgent: async () => result({ turnId: "turn-1" }) };
     });
+    await settled;
+    expect(refs).toEqual([null]);
+    expect(received.map((r) => r.body.notifyTarget)).toEqual([null]);
+  });
+
+  it("sends a target only the events it takes; a skipped finish ends the watch unsent", async () => {
+    const permissionThenFinish = () => {
+      let calls = 0;
+      return async () => {
+        calls += 1;
+        return calls === 1
+          ? result({ status: "permission", finished: false, needsPermission: true })
+          : result({});
+      };
+    };
+    const subject = daemon({});
+    await subject.arm({
+      client: "grok-bot",
+      targetRef: { name: "finish-only" },
+      target: { url, events: ["finished"] },
+      agentId: "agent-1",
+      tool: "fleet_send_prompt",
+      context: "a",
+      waitForAgent: permissionThenFinish(),
+    });
+    await subject.arm({
+      client: "grok-bot",
+      targetRef: { name: "permission-only" },
+      target: { url, events: ["needs_permission"] },
+      agentId: "agent-2",
+      tool: "fleet_send_prompt",
+      context: "b",
+      waitForAgent: permissionThenFinish(),
+    });
+    expect(received.map((r) => [r.body.type, r.body.context])).toEqual([
+      ["paseo.agent.finished", "a"],
+      ["paseo.agent.needs_permission", "b"],
+    ]);
+    // The skipped finish is settled: a restart does not send it.
+    await subject.suspend();
+    const { restored } = await daemon({}).restore(async () => null);
+    expect(restored).toBe(0);
+  });
+
+  it("sends the full final message, however long", async () => {
+    const long = "x".repeat(20_000);
+    await notifier().arm({
+      client: "grok-bot",
+      targetRef: { name: "grok-bot" },
+      target: { url },
+      agentId: "agent-1",
+      tool: "fleet_create_agent",
+      context: null,
+      waitForAgent: async () => result({ lastMessage: long }),
+    });
+    expect(received[0]!.body).toMatchObject({ agent: { lastMessage: long } });
+  });
+
+  it("streams intermediate messages in order before the finish, which says what it already sent", async () => {
+    let emit: ((message: McpAssistantMessage) => void) | null = null;
+    const runEnds = Promise.withResolvers<FleetAgentWaitResult>();
+    const subject = createMcpFinishNotifier({
+      resolveSecret: async (value) => value,
+      logger: pino({ level: "silent" }),
+      pollMs: 0,
+      retryDelaysMs: [0],
+      messageRetryDelaysMs: [0],
+      localAgents: {
+        ...localAgents(neverStarts),
+        subscribeAssistantMessages: (_agentId, onMessage) => {
+          emit = onMessage;
+          return () => {
+            emit = null;
+          };
+        },
+      },
+    });
+    const armed = subject.arm({
+      client: "grok-bot",
+      targetRef: { name: "n8n-wren" },
+      target: { url, intermediateMessages: true, messageBatchMs: 0 },
+      agentId: "agent-1",
+      turnId: "turn-1",
+      tool: "fleet_send_prompt",
+      context: "chat-9",
+      waitForAgent: () => runEnds.promise,
+    });
+    await sleep(0);
+    emit!({ turnId: "turn-1", seq: 3, text: "On it.", at: "t1" });
+    // Another turn's message is not this watch's.
+    emit!({ turnId: "turn-0", seq: 1, text: "old", at: "t0" });
+    emit!({ turnId: "turn-1", seq: 7, text: "Found the bug.", at: "t2" });
+    await sleep(10);
+    runEnds.resolve(result({ turnId: "turn-1", lastMessage: "Found the bug." }));
+    await armed;
+    expect(emit).toBeNull();
+    expect(received.map((r) => r.body.type)).toEqual([
+      "paseo.agent.message",
+      "paseo.agent.message",
+      "paseo.agent.finished",
+    ]);
+    expect(received.slice(0, 2).map((r) => r.body.messages)).toEqual([
+      [{ seq: 3, text: "On it.", at: "t1" }],
+      [{ seq: 7, text: "Found the bug.", at: "t2" }],
+    ]);
+    expect(received[0]!.body).toMatchObject({
+      notifyTarget: "n8n-wren",
+      context: "chat-9",
+      agent: { id: "agent-1", turnId: "turn-1" },
+    });
+    expect(received[2]!.body).toMatchObject({ messagesSent: 2, lastMessageSent: true });
+  });
+
+  it("delivers to an agent target as a prompt, retrying until it lands", async () => {
+    const deliveries: McpAgentDelivery[] = [];
+    let attempts = 0;
+    const subject = createMcpFinishNotifier({
+      resolveSecret: async (value) => value,
+      logger: pino({ level: "silent" }),
+      pollMs: 0,
+      retryDelaysMs: [0, 0],
+      deliverToAgent: async (delivery) => {
+        attempts += 1;
+        if (attempts === 1) throw new Error("not reachable yet");
+        deliveries.push(delivery);
+      },
+    });
+    await subject.arm({
+      client: "grok-bot",
+      targetRef: { agent: "boss-1" },
+      target: { kind: "agent", agentId: "boss-1" },
+      agentId: "agent-1",
+      tool: "fleet_create_agent",
+      context: "review PR 12",
+      waitForAgent: async () => result({ lastMessage: "LGTM with one nit." }),
+    });
+    expect(attempts).toBe(2);
+    expect(received).toHaveLength(0);
+    expect(deliveries).toEqual([
+      {
+        agentId: "boss-1",
+        aboutAgentId: "agent-1",
+        aboutTitle: "Essay writer",
+        event: "finished",
+        prompt:
+          "Agent agent-1 (Essay writer) finished its turn.\n\nYour context: review PR 12\n\n" +
+          "Its last message:\nLGTM with one nit.",
+      },
+    ]);
+  });
+
+  it("a prompt queued behind the running turn reports the turn it starts, not the running one", async () => {
+    const starts: Array<string | undefined> = [];
+    const waits: Array<string | undefined> = [];
+    const subject = daemon({
+      localAgents: localAgents(async (_agentId, _signal, notTurnId) => {
+        starts.push(notTurnId);
+        return { local: true, turnId: "turn-2" };
+      }),
+    });
+    await subject.arm({
+      client: "grok-bot",
+      targetRef: { name: "grok-bot" },
+      target: { url },
+      agentId: "agent-1",
+      nextTurnAfter: "turn-1",
+      tool: "fleet_send_prompt",
+      context: null,
+      waitForAgent: async (input) => {
+        waits.push(input.turnId);
+        return result({ turnId: input.turnId ?? null });
+      },
+    });
+    expect(starts).toEqual(["turn-1"]);
+    expect(waits).toEqual(["turn-2"]);
+    expect(received[0]!.body).toMatchObject({ agent: { turnId: "turn-2" } });
   });
 
   it("posts paseo.agent.status_reported when the agent reports status", async () => {
@@ -1334,5 +1446,50 @@ describe("createMcpFinishNotifier", () => {
       status: "no_report",
       headline: "",
     });
+  });
+});
+
+describe("createMcpFinishLocalAgents.subscribeAssistantMessages", () => {
+  it("emits each finished block of assistant text, never the block the turn ends on", () => {
+    let listener: ((event: AgentManagerEvent) => void) | null = null;
+    const local = createMcpFinishLocalAgents({
+      agentManager: {
+        getAgent: () => undefined,
+        subscribe: (callback) => {
+          listener = callback;
+          return () => {
+            listener = null;
+          };
+        },
+      },
+      agentStorage: { get: async () => null },
+    });
+    const messages: McpAssistantMessage[] = [];
+    const stop = local.subscribeAssistantMessages!("agent-1", (message) => messages.push(message));
+    let seq = 0;
+    const timeline = (item: AgentTimelineItem) => {
+      seq += 1;
+      listener!({
+        type: "agent_stream",
+        agentId: "agent-1",
+        event: { type: "timeline", provider: "omp", item, turnId: "turn-1" },
+        seq,
+        timestamp: `t${seq}`,
+      });
+    };
+    timeline({ type: "assistant_message", text: "On it, " });
+    timeline({ type: "assistant_message", text: "checking the logs." });
+    timeline({ type: "reasoning", text: "thinking" });
+    timeline({ type: "assistant_message", text: "Found it." });
+    listener!({
+      type: "agent_stream",
+      agentId: "agent-1",
+      event: { type: "turn_completed", provider: "omp", turnId: "turn-1" },
+    });
+    expect(messages).toEqual([
+      { turnId: "turn-1", seq: 1, text: "On it, checking the logs.", at: "t1" },
+    ]);
+    stop();
+    expect(listener).toBeNull();
   });
 });

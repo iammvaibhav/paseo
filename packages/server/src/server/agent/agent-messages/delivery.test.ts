@@ -1301,7 +1301,7 @@ test.each([
     running: true,
     canSteer: false,
     guidance:
-      'Queued, not delivered yet. The agent is working and reads your message when its current turn ends. If the message cannot wait, send a short follow-up with activeTurnBehavior "interrupt" (it stops the turn and starts a new one). This agent\'s provider cannot steer, so "steer" also stops the turn. The follow-up carries this message ahead of it, so do not send this message again.',
+      'Queued, not delivered yet. The agent is working and reads your message when its current turn ends. If the message cannot wait, send a short follow-up with activeTurnBehavior "interrupt" (it stops the turn and starts a new one). This agent cannot steer right now, so "steer" also waits for the turn to end. The follow-up carries this message ahead of it, so do not send this message again.',
   },
   {
     behavior: "steer",
@@ -1314,8 +1314,10 @@ test.each([
     behavior: "steer",
     running: true,
     canSteer: false,
+    // A steer never cancels the turn: it waits like a queued message.
+    applied: "queue",
     guidance:
-      "This agent's provider cannot steer, so your message interrupts the running turn. A new turn starts with your message.",
+      "This agent cannot steer right now, so your message waits for the running turn to end and then starts a new one.",
   },
   {
     behavior: "interrupt",
@@ -1337,7 +1339,8 @@ test.each([
   },
 ] as const)(
   "the receipt for $behavior (running: $running, can steer: $canSteer) tells the sender what happens",
-  async ({ behavior, running, canSteer, guidance }) => {
+  async (scenario) => {
+    const { behavior, running, canSteer, guidance } = scenario;
     const recipient = createRecipient({ running, canSteer });
     const receipt = recipient.delivery.enqueue({
       recipientId: "recipient",
@@ -1346,7 +1349,7 @@ test.each([
       activeTurnBehavior: behavior,
     });
     expect({ behavior: receipt.activeTurnBehavior, guidance: receipt.guidance }).toEqual({
-      behavior,
+      behavior: "applied" in scenario ? scenario.applied : behavior,
       guidance,
     });
     await recipient.delivery.close();

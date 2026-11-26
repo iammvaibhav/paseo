@@ -827,6 +827,12 @@ export interface AgentSession {
   /** Returns an ID unique across the agent lifetime, including resumed sessions and daemon restarts. */
   startTurn(prompt: AgentPromptInput, options?: AgentRunOptions): Promise<{ turnId: string }>;
   steerActiveTurn?(prompt: AgentPromptInput, options: SteerActiveTurnOptions): Promise<SteerResult>;
+  /**
+   * Whether steerActiveTurn can take a prompt now; absent → whenever it is
+   * offered. False for a session whose current model has no step to inject
+   * into (an OMP session on a Cursor model).
+   */
+  canSteerNow?(): boolean;
   subscribe(callback: (event: AgentStreamEvent) => void): () => void;
   streamHistory(): AsyncGenerator<AgentStreamEvent>;
   getRuntimeInfo(): Promise<AgentRuntimeInfo>;

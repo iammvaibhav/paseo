@@ -1,4 +1,3 @@
-import { AgentViewTracker } from "./agent-views.js";
 import type { Logger } from "pino";
 import type {
   AgentLifecycleStatus,
@@ -277,22 +276,18 @@ export type SelfReportResult =
     }
   | { ok: false; reason: "excluded" | "rate_limited"; message: string };
 
-/**
- * A prompt a person sent an agent directly. `forwarded` marks the copy a peer
- * receives so its MCP clients hear about the turn; only the agent's own host
- * comments on the ticket and forwards.
- */
+/** A prompt a person sent an agent directly; the agent's ticket mirrors it. */
 export interface UserPrompt {
   agentId: string;
   turnId: string | null;
   text: string;
-  forwarded?: boolean;
 }
 
-/** The peer-executable name a host uses to tell its peers a user turn started on one of its agents. */
-export const USER_TURN_PEER_TOOL = "paseo.user_turn";
-/** Asks a peer whether someone has one of its agents' chat open (AgentViewTracker). */
-export const AGENT_VIEWED_PEER_TOOL = "paseo.agent_viewed";
+/** The peer-executable name a host uses to arm a callback watch on the host that runs the agent. */
+export const NOTIFY_ARM_PEER_TOOL = "paseo.notify_arm";
+
+/** Arms a forwarded callback watch on this host; the result goes back to the peer that asked. */
+export type NotifyArmHandler = (args: unknown) => Promise<Record<string, unknown>>;
 
 export type ReviewStateListener = (
   agentId: string,
@@ -343,8 +338,7 @@ export class MissionControlService {
   private readonly reviewStateListeners = new Set<ReviewStateListener>();
   private readonly selfReportListeners = new Set<(event: MissionControlEvent) => void>();
   private readonly userPromptListeners = new Set<(prompt: UserPrompt) => void>();
-  /** Which agents a person has open in a Paseo client on this host. */
-  readonly agentViews = new AgentViewTracker();
+  private notifyArmHandler: NotifyArmHandler | null = null;
   /** Every emitted feed event, any kind/source — a general fan-out parallel to
    * selfReportListeners (which is scoped to source:"self"). Used by callers that need
    * to observe the Commander's own cards (e.g. the itsaplan chat-runner correlating an
@@ -1521,8 +1515,7 @@ export class MissionControlService {
    */
   /**
    * A person sent this agent a prompt from the app (not a bot, a peer daemon,
-   * or machinery). Listeners mirror it to the agent's ticket and notify bots
-   * subscribed to the agent.
+   * or machinery). Listeners mirror it to the agent's ticket.
    */
   noteUserPrompt(prompt: UserPrompt): void {
     for (const listener of this.userPromptListeners) {
@@ -1542,6 +1535,16 @@ export class MissionControlService {
     return () => {
       this.userPromptListeners.delete(listener);
     };
+  }
+
+  /** Bootstrap registers how this host arms a callback watch a peer forwards (NOTIFY_ARM_PEER_TOOL). */
+  setNotifyArmHandler(handler: NotifyArmHandler): void {
+    this.notifyArmHandler = handler;
+  }
+
+  async armForwardedNotify(args: unknown): Promise<Record<string, unknown>> {
+    if (!this.notifyArmHandler) return { error: "This host cannot arm callbacks." };
+    return this.notifyArmHandler(args);
   }
 
   subscribeSelfReports(listener: (event: MissionControlEvent) => void): () => void {

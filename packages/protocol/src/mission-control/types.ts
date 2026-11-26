@@ -691,9 +691,8 @@ export const MissionControlCentralConfigSchema = z.object({
   namingTheme: z.string().optional(),
   // Hide agent name chips, leaving titles.
   hideAgentNames: z.boolean().optional(),
-  // When MCP notify targets (the Commander bot) hear about a turn Vaibhav
-  // started himself from the app: "always", "not_viewing" (only when no
-  // Paseo client has that agent's chat open and visible), or "never".
+  // COMPAT(notify-targets): added in v0.17.5, remove after 2026-12-10. Read by
+  // daemons before v0.17.5 only; per-call notifyTargets replaced it.
   ownTurnNotify: z.enum(["always", "not_viewing", "never"]).optional(),
   // Preferred host when the Commander routes work.
   defaultDispatchHost: z.string().nullable().optional(),

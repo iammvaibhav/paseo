@@ -1833,11 +1833,12 @@ export class AgentManager implements DaemonPermissionHost {
   }
 
   /**
-   * The agent's session can take a prompt into a running turn. A session declares it by offering
-   * steerActiveTurn. A provider can still refuse one steer; the prompt then replaces the turn.
+   * The agent's session can take a prompt into a running turn now. A session declares it by
+   * offering steerActiveTurn, and canSteerNow when that depends on its current model.
    */
   canSteer(agentId: string): boolean {
-    return Boolean(this.agents.get(agentId)?.session?.steerActiveTurn);
+    const session = this.agents.get(agentId)?.session;
+    return Boolean(session?.steerActiveTurn) && (session?.canSteerNow?.() ?? true);
   }
 
   hasInFlightRun(agentId: string): boolean {

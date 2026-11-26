@@ -6,7 +6,7 @@ import type { Logger } from "pino";
 import type { AgentManager } from "../agent/agent-manager.js";
 import type { AgentStorage } from "../agent/agent-storage.js";
 import type { FleetAgentWaitResult } from "../agent/tools/fleet-wait.js";
-import type { RemoteMcpClient } from "../persisted-config.js";
+import type { NotifyTargetConfig, NotifyTargetEvent } from "../persisted-config.js";
 import type { ResolveSecret } from "../secrets/vault-secret.js";
 import { createWatchJournal } from "../watch-journal.js";
 import {
@@ -18,19 +18,17 @@ import {
 } from "./webhook-delivery-log.js";
 
 /**
- * notifyOnFinish for remote MCP clients (/mcp/fleet). A client has no agent
- * thread to wake, so the daemon POSTs a JSON event to the webhook configured
- * for that client (daemon.mcp.remoteClients[].notify) when the run ends.
- * Each watch is bound to a turn (the one the create/send started, else the
- * run in progress), so an earlier run's finish never fires it.
+ * Callbacks for agents started or prompted over /mcp/fleet. Every call names
+ * the targets it wants (notifyTargets): named webhooks
+ * (daemon.mcp.notifyTargets) and agents. A call that names none gets no
+ * callback, and nothing carries over to later calls: each watch is bound to
+ * one turn (the one the call started or joined, else the run in progress), so
+ * a later turn reports only to the targets its own call named. Two callers
+ * steering into one running turn both hear its end.
  *
- * Every per-agent arm also records a subscription: the client wants to hear
- * about this agent's runs. /mcp/fleet arms follow-up sends to a subscribed
- * agent by default, so a client that asked once at create time keeps
- * hearing about the runs its later prompts start. A send with
- * notifyOnFinish: false unsubscribes. Subscriptions are rebuilt from the
- * journal's armed/unsubscribed entries and lapse SUBSCRIPTION_TTL_MS after
- * the client's last arm on the agent.
+ * The agent's own host runs the watch, so it follows its agent from local
+ * events and can stream the agent's intermediate messages
+ * (paseo.agent.message) to targets that ask for them.
  *
  * Watches survive a daemon restart. Every watch transition (armed, fired,
  * delivered, failed, suspended, restored, interrupted, resumed, gave_up) is
@@ -43,39 +41,57 @@ import {
  * rebinds to that run's turn, and reports its end, or reason "interrupted"
  * when no run resumes within resumeGraceMs. Delivery of final events is
  * at-least-once: one fired but not confirmed before the restart is sent again.
+ * Intermediate messages are not journaled: a restart mid-turn drops the ones
+ * not yet sent.
  *
  * Each event carries a deliveryId (in the body and the X-Paseo-Delivery-Id
  * header) that every retry and every resend after a restart repeats, so the
  * receiver can drop duplicates. A failed POST is retried with exponential
- * backoff (DEFAULT_RETRY_DELAYS_MS: 6 attempts over about 15 minutes) when it
- * may succeed later: a network error, 408, 425, 429, 5xx, or any 4xx whose
- * body says the receiver is rate limiting. Other 4xx fail at once.
+ * backoff (the target's retryDelaysMs, else DEFAULT_RETRY_DELAYS_MS: 6
+ * attempts over about 15 minutes) when it may succeed later: a network error,
+ * 408, 425, 429, 5xx, or any 4xx whose body says the receiver is rate
+ * limiting. Other 4xx fail at once. Messages retry for about a minute
+ * (MESSAGE_RETRY_DELAYS_MS) and are then dropped, so one stuck message never
+ * holds up the rest.
+ *
+ * An agent target gets the event as a prompt: it joins the agent's running
+ * turn when the agent can live-steer, else it waits for that turn to end.
  *
  * Group watches (armGroup) are journaled the same way: the group, each
  * member's end as it lands, and the group event. A restored group keeps the
  * members that already ended and waits out the rest, so the group event is
  * sent once every member's run has ended, across restarts.
  *
- * A peer's restart (a deploy, a crash) closes the agents it hosts, so a wait
- * on a peer agent can end "closed" while its run has not finished, or, when
- * the connection drops before that close arrives, the restarted peer answers
- * "pending" for a turn it no longer knows. Neither is the run's end: the
- * watch posts a non-final paseo.agent.interrupted event, stays armed,
- * follows the run the peer resumes (the peer's deploy nudge starts it as a
- * new turn), and posts paseo.agent.finished when that run ends, or reason
- * "interrupted" when no run resumes within resumeGraceMs.
+ * A watch can still follow an agent on a peer (a caller's group of agents
+ * across hosts, or a peer too old to run the watch itself). A peer's restart
+ * (a deploy, a crash) closes the agents it hosts, so a wait on a peer agent
+ * can end "closed" while its run has not finished, or, when the connection
+ * drops before that close arrives, the restarted peer answers "pending" for a
+ * turn it no longer knows. Neither is the run's end: the watch posts a
+ * non-final paseo.agent.interrupted event, stays armed, follows the run the
+ * peer resumes (the peer's deploy nudge starts it as a new turn), and posts
+ * paseo.agent.finished when that run ends, or reason "interrupted" when no
+ * run resumes within resumeGraceMs.
  * Only an agent this daemon hosts can be closed while its watch runs on
  * purpose (archive, kill), since this daemon's own shutdown suspends watches
  * first; that "closed" stays final.
  */
-/**
- * Where a watch POSTs: a client's own notify webhook, or a named target
- * (daemon.mcp.notifyTargets) the caller selected with notifyTarget.
- * signingSecret, when set, signs each body into X-Paseo-Signature-256.
- */
-export type McpNotifyTarget = NonNullable<RemoteMcpClient["notify"]> & {
-  signingSecret?: string;
-};
+/** A named webhook (daemon.mcp.notifyTargets, without its name). */
+export type McpWebhookTarget = Omit<NotifyTargetConfig, "name"> & { kind?: undefined };
+/** An agent that gets each event as a prompt. */
+export interface McpAgentTarget {
+  kind: "agent";
+  agentId: string;
+}
+/** Where a watch delivers. */
+export type McpNotifyTarget = McpWebhookTarget | McpAgentTarget;
+
+/** How a call names a target: a configured webhook by name, or an agent by id. */
+export type McpNotifyTargetRef = { name: string } | { agent: string };
+
+export function describeTargetRef(ref: McpNotifyTargetRef): string {
+  return "name" in ref ? ref.name : `agent ${ref.agent}`;
+}
 
 /** One bounded wait, bound to turnId when given; the watcher calls it repeatedly until the turn ends. */
 export type McpFinishWaitForAgent = (input: {
@@ -85,7 +101,7 @@ export type McpFinishWaitForAgent = (input: {
   timeoutMs: number;
 }) => Promise<FleetAgentWaitResult>;
 
-/** How a watch reaches its client: the webhook, and the client's own view of the fleet. */
+/** How a watch reaches its target: where it delivers, and how it follows the agent. */
 export interface McpClientBinding {
   target: McpNotifyTarget;
   waitForAgent: McpFinishWaitForAgent;
@@ -103,22 +119,24 @@ export interface ArmMcpFinishNotification extends McpClientBinding, McpNotifyAge
   client: string;
   tool: string;
   context: string | null;
-  /** "user" when Vaibhav started the turn directly (not a tool call); default "tool". */
-  origin?: "user" | "tool";
-  /** With origin "user": what he typed, sent as `userPrompt` (capped at USER_PROMPT_MAX_BYTES). */
-  userPrompt?: string;
-  /** The named target the watch posts to; null → the client's own notify webhook. */
-  notifyTarget?: string | null;
+  /** The target as the call named it; journaled so a restart can resolve it again. */
+  targetRef: McpNotifyTargetRef;
+  /**
+   * The call's prompt waits for this turn to end (an agent that cannot
+   * live-steer): bind to the first turn that starts after it instead.
+   */
+  nextTurnAfter?: string | null;
 }
 
 export interface ArmMcpGroupNotification extends McpClientBinding {
   client: string;
   groupId: string;
   agents: McpNotifyAgent[];
-  /** Also arm a journaled per-agent watch for each agent. */
+  /** Per-agent watches (armed separately) send needs_permission and interrupted; the group does not. */
   perAgent: boolean;
   tool: string;
   context: string | null;
+  targetRef: McpNotifyTargetRef;
 }
 
 export interface ArmMcpStatusReportNotification {
@@ -134,22 +152,6 @@ export interface ArmMcpStatusReportNotification {
   subscribeSelfReports?: (listener: (event: MissionControlEvent) => void) => () => void;
   peerClient?: DaemonClient | null;
   timeoutMs?: number;
-}
-
-/** About 4 KB of what Vaibhav typed rides the finish event; the rest is in the transcript. */
-export const USER_PROMPT_MAX_BYTES = 4096;
-
-export function capUserPrompt(text: string): { userPrompt: string; userPromptTruncated: boolean } {
-  const bytes = Buffer.from(text, "utf8");
-  if (bytes.length <= USER_PROMPT_MAX_BYTES) {
-    return { userPrompt: text, userPromptTruncated: false };
-  }
-  // A cut inside a multi-byte character decodes to U+FFFD; drop it.
-  const cut = bytes
-    .subarray(0, USER_PROMPT_MAX_BYTES)
-    .toString("utf8")
-    .replace(/\uFFFD+$/, "");
-  return { userPrompt: cut, userPromptTruncated: true };
 }
 
 export function eventToReportStatus(
@@ -168,11 +170,13 @@ export interface McpFinishRunStart {
   turnId: string | null;
 }
 
-export interface McpFinishSubscription {
-  /** The notifyContext of the client's latest arm on the agent. */
-  context: string | null;
-  /** The named target of the client's latest arm on the agent; null → the client's own webhook. */
-  notifyTarget: string | null;
+/** A block of assistant text the agent finished writing: the next item was not more text. */
+export interface McpAssistantMessage {
+  turnId: string | null;
+  /** Timeline seq of the block's first row: increasing per agent, for ordering and dedupe. */
+  seq: number;
+  text: string;
+  at: string;
 }
 
 /** The agents this daemon hosts: a restart interrupts their runs, unlike agents on peers. */
@@ -181,25 +185,40 @@ export interface McpFinishLocalAgents {
   activeTurnId(agentId: string): string | null;
   /**
    * Resolves once an agent hosted here starts a run (at once when it runs
-   * now), with that run's turn id. Resolves `{ local: false }` for an agent
-   * this daemon does not host. Rejects when the signal aborts.
+   * now), with that run's turn id; a run of turn `notTurnId` does not count.
+   * Resolves `{ local: false }` for an agent this daemon does not host.
+   * Rejects when the signal aborts.
    */
-  waitForRunStart(agentId: string, signal: AbortSignal): Promise<McpFinishRunStart>;
+  waitForRunStart(
+    agentId: string,
+    signal: AbortSignal,
+    notTurnId?: string,
+  ): Promise<McpFinishRunStart>;
   /** Whether this daemon hosts the agent (live or stored). */
   hosts(agentId: string): Promise<boolean>;
+  /**
+   * Calls onMessage with each assistant message block the agent completes
+   * while subscribed. Returns the unsubscribe function.
+   */
+  subscribeAssistantMessages?(
+    agentId: string,
+    onMessage: (message: McpAssistantMessage) => void,
+  ): () => void;
 }
 
-/** Why a finish event for a turn Vaibhav started himself was not sent. */
-export type OwnTurnHoldReason = "chat_open" | "own_turns_off";
+/** An event delivered to an agent target, as a prompt. */
+export interface McpAgentDelivery {
+  /** The agent that gets the prompt. */
+  agentId: string;
+  prompt: string;
+  /** The agent the event is about. */
+  aboutAgentId: string;
+  aboutTitle: string | null;
+  event: "finished" | "errored" | "permission-required" | "closed";
+}
 
 export interface McpFinishNotifierOptions {
   resolveSecret: ResolveSecret;
-  /**
-   * Asked before a final paseo.agent.finished for an origin "user" turn is
-   * sent; a reason keeps it from being sent. needs_permission and tool-started
-   * turns are never asked.
-   */
-  holdOwnTurn?: (agent: { agentId: string }) => Promise<OwnTurnHoldReason | null>;
   logger: Logger;
   fetchImpl?: typeof fetch;
   /** Watch journal (JSONL). Absent → watches live in memory only and restore() finds none. */
@@ -213,8 +232,12 @@ export interface McpFinishNotifierOptions {
   waitChunkMs?: number;
   /** Pause between checks while blocked on a permission, and after a failed wait. */
   pollMs?: number;
-  /** Delays before each delivery retry; its length + 1 is the attempt limit. */
+  /** Default delays before each delivery retry; its length + 1 is the attempt limit. */
   retryDelaysMs?: readonly number[];
+  /** Delays before each intermediate-message retry. */
+  messageRetryDelaysMs?: readonly number[];
+  /** Hands an event to an agent target; throws when it could not be delivered. */
+  deliverToAgent?: (delivery: McpAgentDelivery) => Promise<void>;
   /**
    * How long a watch waits for an interrupted run to resume: a local agent's
    * run after this daemon restarts, or a peer agent's run after its host closed it.
@@ -230,10 +253,10 @@ export interface McpFinishNotifier {
    */
   arm(input: ArmMcpFinishNotification): Promise<void>;
   /**
-   * Watch a set of agents and POST one paseo.agents.group_finished once every
-   * agent's bound turn has ended (plus journaled per-agent watches when
-   * perAgent is set). needs_permission still POSTs per agent and does not
-   * complete the group. Journaled: the group event survives a restart.
+   * Watch a set of agents and deliver one paseo.agents.group_finished once
+   * every agent's bound turn has ended. Without perAgent, the group also sends
+   * each agent's needs_permission and interrupted events; they never complete
+   * the group. Journaled: the group event survives a restart.
    */
   armGroup(input: ArmMcpGroupNotification): Promise<void>;
   /**
@@ -242,15 +265,6 @@ export interface McpFinishNotifier {
    * report, POSTs with status: "no_report".
    */
   armStatusReport(input: ArmMcpStatusReportNotification): void;
-  /**
-   * The client's standing request to hear about an agent's runs: set by every
-   * per-agent arm, so a follow-up send to the agent arms by default. Null when
-   * the client never armed a watch on the agent, unsubscribed, or last armed
-   * one more than SUBSCRIPTION_TTL_MS ago.
-   */
-  subscription(client: string, agentId: string): McpFinishSubscription | null;
-  /** Drop the client's standing request for the agent (a send with notifyOnFinish: false). */
-  unsubscribe(client: string, agentId: string): void;
   /**
    * POST one event that no watch owns (e.g. paseo.agent.reminder) to a target,
    * signed and retried like a finish event; every attempt is a delivery-log
@@ -280,9 +294,10 @@ export interface McpFinishNotifier {
    * has settled.
    */
   restore(
-    resolveClient: (
+    resolveTarget: (
       client: string,
-      notifyTarget: string | null,
+      /** null: a watch armed before notifyTargets; its client's legacy webhook. */
+      ref: McpNotifyTargetRef | null,
     ) => Promise<McpClientBinding | null>,
   ): Promise<{ restored: number; settled: Promise<void> }>;
   /**
@@ -293,9 +308,6 @@ export interface McpFinishNotifier {
 }
 
 export const MAX_NOTIFY_CONTEXT_LENGTH = 2000;
-/** A subscription lapses this long after the client last armed a watch on the agent. */
-export const SUBSCRIPTION_TTL_MS = 30 * 24 * 60 * 60_000;
-const LAST_MESSAGE_LIMIT = 4000;
 /** One probe for the turn a peer agent runs now; a running agent holds it this long. */
 const RESUME_PROBE_MS = 1_000;
 const RESPONSE_SNIPPET_LIMIT = 500;
@@ -304,6 +316,9 @@ const VAULT_REF = /aside:\/\/\S+/;
 export const DEFAULT_RETRY_DELAYS_MS: readonly number[] = [
   30_000, 60_000, 120_000, 240_000, 480_000,
 ];
+/** 4 attempts over about a minute: an intermediate message is only worth sending while it is fresh. */
+export const MESSAGE_RETRY_DELAYS_MS: readonly number[] = [5_000, 15_000, 40_000];
+const DEFAULT_MESSAGE_BATCH_MS = 2_000;
 /** A 4xx body that says the receiver throttled the request (e.g. "Automation run rate limit exceeded"). */
 const RATE_LIMIT_TEXT = /rate.?limit|too many requests|throttl/i;
 
@@ -326,13 +341,15 @@ interface ArmedEntry {
   host: string | null;
   tool: string;
   context: string | null;
-  /** Who started the turn; absent (older entries) → "tool". */
-  origin?: "user" | "tool";
-  /** The prompt of a user-started turn, already capped. */
-  userPrompt?: string;
-  userPromptTruncated?: boolean;
-  /** The named target the watch posts to; null or absent (older entries) → the client's own webhook. */
+  /** Where the watch delivers. Absent in older entries: see notifyTarget. */
+  targetRef?: McpNotifyTargetRef;
+  /**
+   * COMPAT(notify-targets): added in v0.17.5, remove after 2026-12-10. Entries
+   * from before targetRef: a named target, or null → the client's own webhook.
+   */
   notifyTarget?: string | null;
+  /** Bind to the first turn that starts after this one (the call's prompt waits for it to end). */
+  nextTurnAfter?: string | null;
   /** The turn the watch is bound to: the create/send's turn, else the run in progress. */
   turnId: string | null;
   /** Epoch ms after which the watch gives up. */
@@ -381,16 +398,14 @@ type JournalEntry =
   /** A peer closed the agent mid-run; the watch now waits for the run it resumes. */
   | { event: "interrupted"; ts: string; watchId: string; agentId: string; turnId: string | null }
   | { event: "gave_up"; ts: string; watchId: string; agentId: string; why: string }
-  /** The event was not sent on purpose (see holdOwnTurn); the watch is done. */
+  /** The target does not take this event (its `events`); the watch is done. */
   | {
       event: "suppressed";
       ts: string;
       watchId: string;
       agentId: string;
-      reason: OwnTurnHoldReason;
+      reason: "filtered";
     }
-  /** The client asked to stop hearing about the agent's later runs. */
-  | { event: "unsubscribed"; ts: string; watchId: string; agentId: string; client: string }
   | GroupArmedEntry
   | {
       event: "member_ended";
@@ -413,6 +428,8 @@ interface GroupArmedEntry {
   client: string;
   tool: string;
   context: string | null;
+  /** Absent in older entries: the client's own webhook. */
+  targetRef?: McpNotifyTargetRef;
   perAgent: boolean;
   /** Epoch ms after which the group gives up. */
   deadline: number;
@@ -427,6 +444,17 @@ interface RunBinding {
   turnId: string | null;
   /** The peer closed the bound turn; the watch awaits the run the peer resumes. */
   interrupted: boolean;
+}
+
+/** How a watched run ended; the watch's final event. */
+interface RunEnd {
+  result: FleetAgentWaitResult;
+  reason: FinalReason;
+}
+
+function sameTargetRef(a: McpNotifyTargetRef | undefined, b: McpNotifyTargetRef): boolean {
+  if (!a) return false;
+  return "name" in a ? "name" in b && a.name === b.name : "agent" in b && a.agent === b.agent;
 }
 
 interface PendingWatch {
@@ -452,6 +480,8 @@ interface ActiveWatch extends RunBinding {
   controller: AbortController;
   /** The state the peer reported when it closed the run; the terminal event's fallback. */
   interruptedResult: FleetAgentWaitResult | null;
+  /** Intermediate messages streamed to the target; null when it does not take them. */
+  messages: MessageStream | null;
 }
 
 /** Older journal entries carry no `final`; needs_permission was the only non-final event then. */
@@ -550,37 +580,103 @@ function pendingFromJournal(entries: readonly JournalEntry[]): {
   return { watches: [...watches.values()], groups: [...groups.values()] };
 }
 
-/** A client's standing request for an agent: its latest arm on the agent. */
-interface SubscriptionRecord extends McpFinishSubscription {
-  armedAt: number;
-  /** The latest arm's watch; compaction keeps its entries, so the subscription survives it. */
-  watchId: string;
+interface MessageStream {
+  sentCount: number;
+  /** The text of the last message delivered, trimmed. */
+  lastSent: string | null;
+  /** Stop listening, send what is pending, and settle once every send has. */
+  stop(): Promise<void>;
 }
 
-const subscriptionKey = (client: string, agentId: string) => `${client}\u0000${agentId}`;
+interface Delivery {
+  client: string;
+  watchId: string;
+  deliveryId: string;
+  target: McpNotifyTarget;
+  /** Resolved webhook headers; empty for an agent target. */
+  headers: Record<string, string>;
+  body: string;
+  /** Delays before each retry; its length + 1 is the attempt limit. */
+  delays: readonly number[];
+}
 
-/** The subscriptions the journal shows live at `now`: armed, not since unsubscribed, not lapsed. */
-function subscriptionsFromJournal(
-  entries: readonly JournalEntry[],
-  now: number,
-): Map<string, SubscriptionRecord> {
-  const subscriptions = new Map<string, SubscriptionRecord>();
-  for (const entry of entries) {
-    if (entry.event === "armed") {
-      subscriptions.set(subscriptionKey(entry.client, entry.agentId), {
-        context: entry.context,
-        notifyTarget: entry.notifyTarget ?? null,
-        armedAt: Date.parse(entry.ts),
-        watchId: entry.watchId,
-      });
-    } else if (entry.event === "unsubscribed") {
-      subscriptions.delete(subscriptionKey(entry.client, entry.agentId));
-    }
+interface AttemptResult {
+  ok: boolean;
+  status: number | null;
+  error: string | null;
+  retryInMs: number | null;
+}
+
+/** The webhook name a watch reports as `notifyTarget`; null for an agent target or a legacy client webhook. */
+function targetName(armed: ArmedEntry | GroupArmedEntry): string | null {
+  if (armed.targetRef) return "name" in armed.targetRef ? armed.targetRef.name : null;
+  return armed.event === "armed" ? (armed.notifyTarget ?? null) : null;
+}
+
+function eventKind(reason: NotifyReason, final: boolean): NotifyTargetEvent {
+  if (reason === "needs_permission") return "needs_permission";
+  return final ? "finished" : "interrupted";
+}
+
+/** A webhook takes the events it lists (all when it lists none); an agent takes every one. */
+function targetTakes(target: McpNotifyTarget, kind: NotifyTargetEvent): boolean {
+  return target.kind === "agent" || !target.events || target.events.includes(kind);
+}
+
+type EventBody = Record<string, unknown> & {
+  type?: string;
+  reason?: string;
+  context?: string | null;
+  agent?: {
+    id?: string;
+    title?: string | null;
+    lastMessage?: string | null;
+    error?: string | null;
+  };
+};
+
+/**
+ * The prompt an agent target gets for an event body: what happened, the
+ * caller's context, and the agent's final message.
+ */
+export function agentDeliveryFor(agentId: string, body: EventBody): McpAgentDelivery {
+  const about = body.agent ?? {};
+  const aboutAgentId = about.id ?? String(body.agentId ?? "unknown");
+  const aboutTitle = about.title ?? (typeof body.title === "string" ? body.title : null);
+  const name = aboutTitle ? `Agent ${aboutAgentId} (${aboutTitle})` : `Agent ${aboutAgentId}`;
+  let event: McpAgentDelivery["event"] = "finished";
+  let headline: string;
+  switch (body.type) {
+    case "paseo.agent.finished":
+      if (body.reason === "errored") {
+        event = "errored";
+        headline = `${name} failed${about.error ? `: ${about.error}` : ""}.`;
+      } else if (body.reason === "closed") {
+        event = "closed";
+        headline = `${name} was closed before its turn finished.`;
+      } else if (body.reason === "interrupted") {
+        headline = `${name} was interrupted before its turn finished.`;
+      } else {
+        headline = `${name} finished its turn.`;
+      }
+      break;
+    case "paseo.agent.needs_permission":
+      event = "permission-required";
+      headline = `${name} is waiting for a permission decision (respond_to_permission).`;
+      break;
+    case "paseo.agent.interrupted":
+      headline = `${name} was interrupted by a host restart; it reports again when its resumed run ends.`;
+      break;
+    case "paseo.agent.status_reported":
+      headline = `${name} reported ${String(body.status)}: ${String(body.headline ?? "")}`.trim();
+      break;
+    default:
+      headline = `Paseo event ${String(body.type)}:\n${JSON.stringify(body, null, 2)}`;
   }
-  for (const [key, subscription] of subscriptions) {
-    if (now - subscription.armedAt >= SUBSCRIPTION_TTL_MS) subscriptions.delete(key);
-  }
-  return subscriptions;
+  const sections = [headline];
+  if (body.context) sections.push(`Your context: ${body.context}`);
+  if (about.lastMessage) sections.push(`Its last message:\n${about.lastMessage}`);
+  return { agentId, prompt: sections.join("\n\n"), aboutAgentId, aboutTitle, event };
 }
 
 export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpFinishNotifier {
@@ -589,13 +685,13 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
   const waitChunkMs = options.waitChunkMs ?? 30 * 60_000;
   const pollMs = options.pollMs ?? 15_000;
   const retryDelaysMs = options.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS;
+  const messageRetryDelaysMs = options.messageRetryDelaysMs ?? MESSAGE_RETRY_DELAYS_MS;
   const resumeGraceMs = options.resumeGraceMs ?? 10 * 60_000;
   const logger = options.logger.child({ module: "mcp-finish-notifier" });
   const active = new Map<string, ActiveWatch>();
   const activeGroups = new Map<string, AbortController>();
   const activeStatusWatches = new Map<string, () => void>();
   let suspended = false;
-  const subscriptions = new Map<string, SubscriptionRecord>();
   const journal = options.journalPath
     ? createWatchJournal<JournalEntry>({ path: options.journalPath, logger })
     : null;
@@ -611,7 +707,7 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
     journal?.append(entry);
   };
 
-  const resolveHeaders = async (target: McpNotifyTarget, body: string) => {
+  const resolveHeaders = async (target: McpWebhookTarget, body: string) => {
     const resolved: Record<string, string> = { "content-type": "application/json" };
     const resolveRefs = async (value: string) => {
       const ref = VAULT_REF.exec(value)?.[0];
@@ -633,91 +729,94 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
     return resolved;
   };
 
-  const agentPayload = (agentId: string, result: FleetAgentWaitResult, turnId: string | null) => {
-    let lastMessage = result.lastMessage?.trim() || null;
-    if (lastMessage && lastMessage.length > LAST_MESSAGE_LIMIT) {
-      lastMessage = `${lastMessage.slice(0, LAST_MESSAGE_LIMIT)}\n[truncated ${lastMessage.length - LAST_MESSAGE_LIMIT} chars; use fleet_get_transcript for the full response]`;
-    }
-    return {
-      id: agentId,
-      host: result.host,
-      turnId: result.turnId ?? turnId,
-      title: result.title,
-      status: result.status,
-      bucket: result.bucket,
-      finishedAt: new Date().toISOString(),
-      lastMessage,
-      error: result.error,
-    };
-  };
+  const agentPayload = (agentId: string, result: FleetAgentWaitResult, turnId: string | null) => ({
+    id: agentId,
+    host: result.host,
+    turnId: result.turnId ?? turnId,
+    title: result.title,
+    status: result.status,
+    bucket: result.bucket,
+    finishedAt: new Date().toISOString(),
+    lastMessage: result.lastMessage?.trim() || null,
+    error: result.error,
+  });
 
   // `final` is false for events that leave the watch armed: needs_permission,
   // and interrupted while the watch waits for the run a peer resumes.
   const buildBody = (
-    armed: ArmedEntry,
+    watch: ActiveWatch,
     reason: NotifyReason,
     final: boolean,
     result: FleetAgentWaitResult,
     deliveryId: string,
   ): string => {
+    const { armed, messages } = watch;
     let type = "paseo.agent.finished";
     if (reason === "needs_permission") type = "paseo.agent.needs_permission";
     else if (!final) type = "paseo.agent.interrupted";
+    const agent = agentPayload(armed.agentId, result, armed.turnId);
     return JSON.stringify({
       type,
       deliveryId,
       reason,
       final,
       client: armed.client,
-      notifyTarget: armed.notifyTarget ?? null,
+      notifyTarget: targetName(armed),
       context: armed.context,
-      origin: armed.origin ?? "tool",
-      ...(armed.userPrompt !== undefined
-        ? { userPrompt: armed.userPrompt, userPromptTruncated: armed.userPromptTruncated ?? false }
+      agent,
+      // A target that streams messages may already have the final text.
+      ...(messages && final
+        ? {
+            messagesSent: messages.sentCount,
+            lastMessageSent: agent.lastMessage !== null && messages.lastSent === agent.lastMessage,
+          }
         : {}),
-      agent: agentPayload(armed.agentId, result, armed.turnId),
       trigger: { tool: armed.tool, requestedAt: armed.ts },
     });
   };
 
-  // One POST to a client's webhook, recorded as a delivery-log row. A failed
-  // attempt is retried (retryInMs) when isRetryableWebhookFailure says it may
-  // succeed later and retryDelaysMs has a delay left.
-  const attemptPost = async (
-    delivery: {
-      client: string;
-      watchId: string;
-      deliveryId: string;
-      url: string;
-      headers: Record<string, string>;
-      body: string;
-    },
-    attempt: number,
-  ): Promise<{
-    ok: boolean;
-    status: number | null;
-    error: string | null;
-    retryInMs: number | null;
-  }> => {
+  const retryDelaysFor = (target: McpNotifyTarget): readonly number[] =>
+    (target.kind !== "agent" ? target.retryDelaysMs : undefined) ?? retryDelaysMs;
+
+  const deliverToAgentTarget = async (target: McpAgentTarget, body: string) => {
+    if (!options.deliverToAgent) throw new Error("this host cannot deliver to agent targets");
+    await options.deliverToAgent(agentDeliveryFor(target.agentId, JSON.parse(body)));
+  };
+
+  // One delivery attempt, recorded as a delivery-log row: a POST to a webhook,
+  // or a prompt to an agent target. A failed attempt is retried (retryInMs)
+  // when it may succeed later and the delays have one left.
+  const attemptDelivery = async (delivery: Delivery, attempt: number): Promise<AttemptResult> => {
     const started = Date.now();
     let status: number | null = null;
     let ok = false;
     let response: string | null = null;
-    try {
-      const reply = await fetchImpl(delivery.url, {
-        method: "POST",
-        headers: { ...delivery.headers, "x-paseo-delivery-id": delivery.deliveryId },
-        body: delivery.body,
-        signal: AbortSignal.timeout(15_000),
-      });
-      status = reply.status;
-      ok = reply.ok;
-      response = (await reply.text().catch(() => "")).slice(0, RESPONSE_SNIPPET_LIMIT) || null;
-    } catch (caught) {
-      response = caught instanceof Error ? caught.message : String(caught);
+    let retryable: boolean;
+    if (delivery.target.kind === "agent") {
+      try {
+        await deliverToAgentTarget(delivery.target, delivery.body);
+        ok = true;
+      } catch (caught) {
+        response = caught instanceof Error ? caught.message : String(caught);
+      }
+      retryable = !ok;
+    } else {
+      try {
+        const reply = await fetchImpl(delivery.target.url, {
+          method: "POST",
+          headers: { ...delivery.headers, "x-paseo-delivery-id": delivery.deliveryId },
+          body: delivery.body,
+          signal: AbortSignal.timeout(15_000),
+        });
+        status = reply.status;
+        ok = reply.ok;
+        response = (await reply.text().catch(() => "")).slice(0, RESPONSE_SNIPPET_LIMIT) || null;
+      } catch (caught) {
+        response = caught instanceof Error ? caught.message : String(caught);
+      }
+      retryable = !ok && isRetryableWebhookFailure(status, response);
     }
-    const retryable = !ok && isRetryableWebhookFailure(status, response);
-    const retryInMs = retryable ? (retryDelaysMs[attempt] ?? null) : null;
+    const retryInMs = retryable ? (delivery.delays[attempt] ?? null) : null;
     let outcome: WebhookDeliveryAttempt["outcome"] = "failed";
     if (ok) outcome = "delivered";
     else if (retryInMs !== null) outcome = "retrying";
@@ -742,7 +841,19 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
     return { ok, status, error: ok ? null : response, retryInMs };
   };
 
-  // POSTs one event under its deliveryId, retrying with backoff. A suspend
+  const prepareDelivery = async (input: {
+    client: string;
+    watchId: string;
+    deliveryId: string;
+    target: McpNotifyTarget;
+    body: string;
+    delays: readonly number[];
+  }): Promise<Delivery> => ({
+    ...input,
+    headers: input.target.kind === "agent" ? {} : await resolveHeaders(input.target, input.body),
+  });
+
+  // Delivers one event under its deliveryId, retrying with backoff. A suspend
   // during a retry pause leaves the event fired-but-unsent, so restore()
   // sends it again with the same deliveryId.
   const send = async (
@@ -753,23 +864,23 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
     deliveryId: string,
   ) => {
     const { armed, binding, controller } = watch;
-    const delivery = {
+    const delivery = await prepareDelivery({
       client: armed.client,
       watchId: armed.watchId,
       deliveryId,
-      url: binding.target.url,
-      headers: await resolveHeaders(binding.target, body),
+      target: binding.target,
       body,
-    };
+      delays: retryDelaysFor(binding.target),
+    });
     const ids = { watchId: armed.watchId, agentId: armed.agentId, reason, final };
     for (let attempt = 0; ; attempt += 1) {
-      const { ok, status, error, retryInMs } = await attemptPost(delivery, attempt);
-      if (ok && status !== null) {
+      const { ok, status, error, retryInMs } = await attemptDelivery(delivery, attempt);
+      if (ok) {
         record({
           event: "delivered",
           ts: new Date().toISOString(),
           ...ids,
-          status,
+          status: status ?? 0,
           attempts: attempt + 1,
         });
         return;
@@ -795,20 +906,16 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
     }
   };
 
-  // POSTs one event that belongs to no watch (a status report, a reminder),
+  // Delivers one event that belongs to no watch (a status report, a reminder),
   // retrying with backoff. Every attempt lands in the delivery log.
   const deliverEvent: McpFinishNotifier["deliver"] = async (input) => {
-    const delivery = {
-      client: input.client,
-      watchId: input.watchId,
-      deliveryId: input.deliveryId,
-      url: input.target.url,
-      headers: await resolveHeaders(input.target, input.body),
-      body: input.body,
-    };
+    const delivery = await prepareDelivery({
+      ...input,
+      delays: retryDelaysFor(input.target),
+    });
     const ids = { client: input.client, watchId: input.watchId, deliveryId: input.deliveryId };
     for (let attempt = 0; ; attempt += 1) {
-      const { ok, status, error, retryInMs } = await attemptPost(delivery, attempt);
+      const { ok, status, error, retryInMs } = await attemptDelivery(delivery, attempt);
       if (ok) {
         logger.info({ ...ids, status, attempts: attempt + 1 }, "mcp event delivered");
         return { delivered: true, status, attempts: attempt + 1, error: null };
@@ -829,12 +936,10 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
     result: FleetAgentWaitResult,
   ) => {
     const deliveryId = randomUUID();
-    const body = buildBody(watch.armed, reason, final, result, deliveryId);
-    const held =
-      final && watch.armed.origin === "user" && options.holdOwnTurn
-        ? await options.holdOwnTurn({ agentId: watch.armed.agentId }).catch(() => null)
-        : null;
-    if (held) {
+    const body = buildBody(watch, reason, final, result, deliveryId);
+    if (!targetTakes(watch.binding.target, eventKind(reason, final))) {
+      // A non-final event the target skips leaves the watch armed; nothing to record.
+      if (!final) return;
       deliveryLog?.append({
         ts: new Date().toISOString(),
         client: watch.armed.client,
@@ -844,7 +949,7 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
         attempt: 0,
         status: null,
         outcome: "suppressed",
-        suppressedReason: held,
+        suppressedReason: "filtered",
         response: null,
         durationMs: 0,
       });
@@ -853,7 +958,7 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
         ts: new Date().toISOString(),
         watchId: watch.armed.watchId,
         agentId: watch.armed.agentId,
-        reason: held,
+        reason: "filtered",
       });
       return;
     }
@@ -869,6 +974,79 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
       deliveryId,
     });
     await send(watch, reason, final, body, deliveryId);
+  };
+
+  // Streams the agent's intermediate messages to a webhook that asked for
+  // them (intermediateMessages), in order, batched by messageBatchMs. Only an
+  // agent this daemon hosts can be streamed. Not journaled.
+  const startMessages = (watch: ActiveWatch): MessageStream | null => {
+    const { target } = watch.binding;
+    const subscribe = options.localAgents?.subscribeAssistantMessages;
+    if (target.kind === "agent" || !target.intermediateMessages || !subscribe) return null;
+    const batchMs = target.messageBatchMs ?? DEFAULT_MESSAGE_BATCH_MS;
+    const { armed } = watch;
+    let pending: McpAssistantMessage[] = [];
+    let timer: NodeJS.Timeout | undefined;
+    let queue = Promise.resolve();
+    const stream: MessageStream = { sentCount: 0, lastSent: null, stop: async () => {} };
+    const post = async (batch: McpAssistantMessage[]) => {
+      const deliveryId = randomUUID();
+      const body = JSON.stringify({
+        type: "paseo.agent.message",
+        deliveryId,
+        client: armed.client,
+        notifyTarget: targetName(armed),
+        context: armed.context,
+        agent: { id: armed.agentId, turnId: batch.at(-1)?.turnId ?? watch.turnId },
+        messages: batch.map(({ seq, text, at }) => ({ seq, text, at })),
+      });
+      const delivery = await prepareDelivery({
+        client: armed.client,
+        watchId: armed.watchId,
+        deliveryId,
+        target,
+        body,
+        delays: messageRetryDelaysMs,
+      });
+      for (let attempt = 0; ; attempt += 1) {
+        const { ok, error, retryInMs } = await attemptDelivery(delivery, attempt);
+        if (ok) {
+          stream.sentCount += batch.length;
+          stream.lastSent = batch.at(-1)?.text.trim() ?? stream.lastSent;
+          return;
+        }
+        if (retryInMs === null) {
+          logger.warn(
+            { watchId: armed.watchId, agentId: armed.agentId, messages: batch.length, err: error },
+            "mcp intermediate messages dropped",
+          );
+          return;
+        }
+        await sleep(retryInMs);
+      }
+    };
+    const flush = () => {
+      clearTimeout(timer);
+      timer = undefined;
+      if (pending.length === 0) return;
+      const batch = pending;
+      pending = [];
+      queue = queue.then(() => post(batch)).catch(() => undefined);
+    };
+    const unsubscribe = subscribe(armed.agentId, (message) => {
+      // Messages of another turn (the one a queued prompt waits behind) are not this watch's.
+      if (message.turnId && armed.nextTurnAfter && message.turnId === armed.nextTurnAfter) return;
+      if (message.turnId && watch.turnId && message.turnId !== watch.turnId) return;
+      pending.push(message);
+      if (batchMs === 0) flush();
+      else timer ??= setTimeout(flush, batchMs);
+    });
+    stream.stop = async () => {
+      unsubscribe();
+      flush();
+      await queue;
+    };
+    return stream;
   };
 
   const pause = (watch: ActiveWatch, ms: number) =>
@@ -1037,7 +1215,7 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
     watch: ActiveWatch,
     onPermission: (result: FleetAgentWaitResult) => Promise<void>,
     onInterrupted: (result: FleetAgentWaitResult) => Promise<void>,
-  ): Promise<{ result: FleetAgentWaitResult; reason: FinalReason } | null> => {
+  ): Promise<RunEnd | null> => {
     const ids = { watchId: watch.armed.watchId, agentId: watch.armed.agentId };
     for (;;) {
       if (!watch.interrupted) {
@@ -1077,12 +1255,51 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
     }
   };
 
+  /**
+   * The call's prompt waits for the running turn to end (nextTurnAfter): bind
+   * to the first turn that starts after it. Only an agent this daemon hosts
+   * can be followed that way; a peer's watch keeps the run in progress.
+   */
+  const bindNextTurn = async (watch: ActiveWatch) => {
+    const after = watch.armed.nextTurnAfter;
+    const localAgents = options.localAgents;
+    if (!after || !localAgents || (watch.turnId && watch.turnId !== after)) return;
+    const deadline = AbortSignal.timeout(Math.max(0, watch.armed.deadline - Date.now()));
+    const run = await localAgents
+      .waitForRunStart(
+        watch.armed.agentId,
+        AbortSignal.any([watch.controller.signal, deadline]),
+        after,
+      )
+      .catch((error: unknown) => {
+        if (watch.controller.signal.aborted) throw new WatchSuspendedError();
+        throw error;
+      });
+    if (!run.local || !run.turnId) return;
+    watch.turnId = run.turnId;
+    record({
+      event: "resumed",
+      ts: new Date().toISOString(),
+      watchId: watch.armed.watchId,
+      agentId: watch.armed.agentId,
+      turnId: run.turnId,
+    });
+  };
+
   const watchUntilFinished = async (watch: ActiveWatch) => {
-    const end = await waitForRunEnd(
-      watch,
-      (blocked) => fire(watch, "needs_permission", false, blocked),
-      (closed) => fire(watch, "interrupted", false, closed),
-    );
+    await bindNextTurn(watch);
+    watch.messages = startMessages(watch);
+    let end: RunEnd | null;
+    try {
+      end = await waitForRunEnd(
+        watch,
+        (blocked) => fire(watch, "needs_permission", false, blocked),
+        (closed) => fire(watch, "interrupted", false, closed),
+      );
+    } finally {
+      // Every message the turn wrote goes out before its finish event.
+      await watch.messages?.stop();
+    }
     if (end) {
       await fire(watch, end.reason, true, end.result);
       return;
@@ -1113,6 +1330,7 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
       host: member?.host ?? null,
       tool: armed.tool,
       context: armed.context,
+      ...(armed.targetRef ? { targetRef: armed.targetRef } : {}),
       turnId: member?.turnId ?? null,
       deadline: armed.deadline,
     },
@@ -1121,6 +1339,7 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
     turnId: run?.turnId ?? member?.turnId ?? null,
     interrupted: run?.interrupted ?? false,
     interruptedResult: null,
+    messages: null,
   });
 
   /**
@@ -1214,6 +1433,7 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
       controller: new AbortController(),
       ...binds,
       interruptedResult: null,
+      messages: null,
     };
     active.set(armed.watchId, watch);
     return run(watch)
@@ -1257,16 +1477,17 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
 
   const arm = (input: ArmMcpFinishNotification): Promise<void> => {
     const now = new Date();
-    const turnId = input.turnId ?? options.localAgents?.activeTurnId(input.agentId) ?? null;
+    const turnId = input.nextTurnAfter
+      ? null
+      : (input.turnId ?? options.localAgents?.activeTurnId(input.agentId) ?? null);
     // A steer joins the run in progress, so a send can bind to the turn a
-    // watch already follows; a second watch would POST the same event twice.
+    // watch already follows; a second watch would deliver the same event twice.
     if (turnId) {
       for (const watch of active.values()) {
         if (
-          watch.armed.client === input.client &&
           watch.armed.agentId === input.agentId &&
           watch.armed.context === input.context &&
-          (watch.armed.notifyTarget ?? null) === (input.notifyTarget ?? null) &&
+          sameTargetRef(watch.armed.targetRef, input.targetRef) &&
           watch.turnId === turnId
         ) {
           logger.info(
@@ -1286,19 +1507,12 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
       host: input.host ?? null,
       tool: input.tool,
       context: input.context,
-      ...(input.origin ? { origin: input.origin } : {}),
-      ...(input.userPrompt !== undefined ? capUserPrompt(input.userPrompt) : {}),
-      notifyTarget: input.notifyTarget ?? null,
+      targetRef: input.targetRef,
+      ...(input.nextTurnAfter ? { nextTurnAfter: input.nextTurnAfter } : {}),
       turnId,
       deadline: now.getTime() + maxWatchMs,
     };
     record(armed);
-    subscriptions.set(subscriptionKey(input.client, input.agentId), {
-      context: input.context,
-      notifyTarget: input.notifyTarget ?? null,
-      armedAt: now.getTime(),
-      watchId: armed.watchId,
-    });
     // Armed while shutting down: journaled, so the next process restores it.
     if (suspended) return Promise.resolve();
     return start(armed, input, watchUntilFinished);
@@ -1308,18 +1522,6 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
     arm,
 
     armGroup(input) {
-      if (input.perAgent) {
-        for (const agent of input.agents) {
-          void arm({
-            ...agent,
-            client: input.client,
-            target: input.target,
-            waitForAgent: input.waitForAgent,
-            tool: input.tool,
-            context: input.context,
-          });
-        }
-      }
       const now = new Date();
       const armed: GroupArmedEntry = {
         event: "group_armed",
@@ -1329,6 +1531,7 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
         client: input.client,
         tool: input.tool,
         context: input.context,
+        targetRef: input.targetRef,
         perAgent: input.perAgent,
         deadline: now.getTime() + maxWatchMs,
         agents: input.agents.map((agent) => ({
@@ -1502,23 +1705,6 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
       })();
     },
 
-    subscription(client, agentId) {
-      const subscription = subscriptions.get(subscriptionKey(client, agentId));
-      if (!subscription || Date.now() - subscription.armedAt >= SUBSCRIPTION_TTL_MS) return null;
-      return { context: subscription.context, notifyTarget: subscription.notifyTarget };
-    },
-
-    unsubscribe(client, agentId) {
-      if (!subscriptions.delete(subscriptionKey(client, agentId))) return;
-      record({
-        event: "unsubscribed",
-        ts: new Date().toISOString(),
-        watchId: `unsubscribe:${randomUUID()}`,
-        agentId,
-        client,
-      });
-    },
-
     deliver: deliverEvent,
 
     async listDeliveries(query) {
@@ -1531,20 +1717,12 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
       return deliveryLog.list(query);
     },
 
-    async restore(resolveClient) {
+    async restore(resolveTarget) {
       if (!journal) return { restored: 0, settled: Promise.resolve() };
       const entries = await journal.read((all) => {
         const { watches, groups } = pendingFromJournal(all);
-        const live = subscriptionsFromJournal(all, Date.now());
-        return new Set([
-          ...[...watches, ...groups].map((pending) => pending.armed.watchId),
-          ...[...live.values()].map((subscription) => subscription.watchId),
-        ]);
+        return new Set([...watches, ...groups].map((pending) => pending.armed.watchId));
       });
-      for (const [key, subscription] of subscriptionsFromJournal(entries, Date.now())) {
-        // An arm made since startup is newer than anything the journal held.
-        if (!subscriptions.has(key)) subscriptions.set(key, subscription);
-      }
       const { watches, groups } = pendingFromJournal(entries);
       // Records why a pending watch or group is dropped, else that it is restored.
       const admit = async (armed: ArmedEntry | GroupArmedEntry) => {
@@ -1561,11 +1739,12 @@ export function createMcpFinishNotifier(options: McpFinishNotifierOptions): McpF
           });
           return null;
         }
-        const notifyTarget = armed.event === "armed" ? (armed.notifyTarget ?? null) : null;
-        const binding = await resolveClient(armed.client, notifyTarget).catch(() => null);
+        const legacyName = armed.event === "armed" ? (armed.notifyTarget ?? null) : null;
+        const ref = armed.targetRef ?? (legacyName ? { name: legacyName } : null);
+        const binding = await resolveTarget(armed.client, ref).catch(() => null);
         if (!binding) {
-          const why = notifyTarget
-            ? `notify target "${notifyTarget}" is not configured`
+          const why = ref
+            ? `notify target "${describeTargetRef(ref)}" is not configured`
             : `client "${armed.client}" has no notify webhook configured`;
           record({ event: "gave_up", ...ids, why });
           return null;
@@ -1656,7 +1835,7 @@ export function createMcpFinishLocalAgents(deps: {
   return {
     hosts,
     activeTurnId: (agentId) => agentManager.getAgent(agentId)?.activeForegroundTurnId ?? null,
-    waitForRunStart: (agentId, signal) => {
+    waitForRunStart: (agentId, signal, notTurnId) => {
       const { promise, resolve, reject } = Promise.withResolvers<McpFinishRunStart>();
       if (signal.aborted) {
         reject(signal.reason);
@@ -1678,6 +1857,7 @@ export function createMcpFinishLocalAgents(deps: {
         (event) => {
           if (event.type !== "agent_state" || event.agent.lifecycle !== "running") return;
           const turnId = event.agent.activeForegroundTurnId ?? null;
+          if (notTurnId && turnId === notTurnId) return;
           settle(() => resolve({ local: true, turnId }));
         },
         { agentId, replayState: true },
@@ -1689,6 +1869,36 @@ export function createMcpFinishLocalAgents(deps: {
       };
       void settleUnlessHostedHere();
       return promise;
+    },
+    subscribeAssistantMessages: (agentId, onMessage) => {
+      // Assistant text streams in as many small rows; a block ends when the
+      // next timeline item is something else. The block a turn ends on is not
+      // emitted: it is the finish event's lastMessage.
+      let block: McpAssistantMessage | null = null;
+      return agentManager.subscribe(
+        (event) => {
+          if (event.type !== "agent_stream") return;
+          const stream = event.event;
+          if (stream.type !== "timeline") {
+            if (stream.type.startsWith("turn_")) block = null;
+            return;
+          }
+          if (stream.item.type === "assistant_message") {
+            block ??= {
+              turnId: stream.turnId ?? null,
+              seq: event.seq ?? 0,
+              text: "",
+              at: event.timestamp ?? new Date().toISOString(),
+            };
+            block.text += stream.item.text;
+            return;
+          }
+          const done = block;
+          block = null;
+          if (done?.text.trim()) onMessage({ ...done, text: done.text.trim() });
+        },
+        { agentId },
+      );
     },
   };
 }
