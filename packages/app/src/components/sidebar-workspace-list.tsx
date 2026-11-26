@@ -1052,7 +1052,7 @@ function NewWorkspaceGhostRow({
     </Pressable>
   );
 }
-/** How long a project revealed from the command center stays highlighted. */
+/** How long a project revealed from the command center or agent view stays highlighted. */
 const PROJECT_REVEAL_HIGHLIGHT_MS = 1600;
 
 /**
@@ -2137,6 +2137,21 @@ function ProjectBlock({
   const handleToggleWorkspacesExpanded = useCallback(() => {
     onToggleWorkspacesExpanded(project.viewKey);
   }, [onToggleWorkspacesExpanded, project.viewKey]);
+
+  // A reveal that names a workspace past the "Show more" limit opens the full list, so the
+  // workspace that asked for the reveal is on screen with its project.
+  const revealWorkspaceKey = useSidebarRevealStore((state) =>
+    state.projectViewKey === project.viewKey ? state.workspaceKey : null,
+  );
+  const isRevealedWorkspaceHidden =
+    revealWorkspaceKey !== null &&
+    !workspacesExpanded &&
+    leadingWorkspace?.workspaceKey !== revealWorkspaceKey &&
+    project.workspaces.some((workspace) => workspace.workspaceKey === revealWorkspaceKey) &&
+    !visibleWorkspaces.some((workspace) => workspace.workspaceKey === revealWorkspaceKey);
+  useEffect(() => {
+    if (isRevealedWorkspaceHidden) handleToggleWorkspacesExpanded();
+  }, [handleToggleWorkspacesExpanded, isRevealedWorkspaceHidden]);
 
   let projectChildren = null;
   if (!collapsed) {

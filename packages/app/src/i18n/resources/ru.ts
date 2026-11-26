@@ -1470,6 +1470,7 @@ export const ru: TranslationResources = {
       },
       menu: {
         open: "Открыть в рабочей области",
+        showProject: "Показать проект",
         copyReference: "Скопировать ссылку",
         pin: "Закрепить вверху",
         unpin: "Открепить",

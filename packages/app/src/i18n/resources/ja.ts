@@ -1458,6 +1458,7 @@ export const ja: TranslationResources = {
       },
       menu: {
         open: "ワークスペースで開く",
+        showProject: "プロジェクトを表示",
         copyReference: "参照をコピー",
         pin: "上部に固定",
         unpin: "固定解除",

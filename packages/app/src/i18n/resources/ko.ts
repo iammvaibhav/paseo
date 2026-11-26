@@ -1451,6 +1451,7 @@ export const ko: TranslationResources = {
       },
       menu: {
         open: "워크스페이스에서 열기",
+        showProject: "프로젝트 보기",
         copyReference: "참조 복사",
         pin: "상단에 고정",
         unpin: "고정 해제",

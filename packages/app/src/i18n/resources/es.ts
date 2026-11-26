@@ -1488,6 +1488,7 @@ export const es: TranslationResources = {
       },
       menu: {
         open: "Abrir en espacio de trabajo",
+        showProject: "Mostrar proyecto",
         copyReference: "Copiar referencia",
         pin: "Anclar arriba",
         unpin: "Desanclar",

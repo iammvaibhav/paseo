@@ -6,20 +6,25 @@ import { useSidebarViewStore } from "@/stores/sidebar-view-store";
 /**
  * A one-shot request for the sidebar to bring a project into view. The project row consumes it:
  * it scrolls itself into view and highlights briefly. `nonce` lets the same project be revealed
- * twice in a row.
+ * twice in a row. `workspaceKey` names a workspace inside the project that must be visible too, so
+ * the project block opens its "Show more" list when that workspace sits past the limit.
  */
 interface SidebarRevealState {
   projectViewKey: string | null;
+  workspaceKey: string | null;
   nonce: number;
-  request: (projectViewKey: string) => void;
+  request: (input: { projectViewKey: string; workspaceKey?: string | null }) => void;
   clear: (nonce: number) => void;
 }
 
 export const useSidebarRevealStore = create<SidebarRevealState>()((set) => ({
   projectViewKey: null,
+  workspaceKey: null,
   nonce: 0,
-  request: (projectViewKey) => set((state) => ({ projectViewKey, nonce: state.nonce + 1 })),
-  clear: (nonce) => set((state) => (state.nonce === nonce ? { projectViewKey: null } : state)),
+  request: ({ projectViewKey, workspaceKey = null }) =>
+    set((state) => ({ projectViewKey, workspaceKey, nonce: state.nonce + 1 })),
+  clear: (nonce) =>
+    set((state) => (state.nonce === nonce ? { projectViewKey: null, workspaceKey: null } : state)),
 }));
 
 /**
@@ -27,11 +32,18 @@ export const useSidebarRevealStore = create<SidebarRevealState>()((set) => ({
  * project-grouped workspace list (the only view with project rows), expand the project, and ask
  * its row to scroll into view.
  */
-export function revealProjectInSidebar(input: { projectViewKey: string; isCompact: boolean }) {
+export function revealProjectInSidebar(input: {
+  projectViewKey: string;
+  workspaceKey?: string | null;
+  isCompact: boolean;
+}) {
   usePanelStore.getState().openAgentListForLayout({ isCompact: input.isCompact });
   const view = useSidebarViewStore.getState();
   if (view.viewMode !== "workspaces") view.setViewMode("workspaces");
   if (view.groupMode !== "project") view.setGroupMode("project");
   useSidebarCollapsedSectionsStore.getState().setProjectCollapsed(input.projectViewKey, false);
-  useSidebarRevealStore.getState().request(input.projectViewKey);
+  useSidebarRevealStore.getState().request({
+    projectViewKey: input.projectViewKey,
+    workspaceKey: input.workspaceKey,
+  });
 }

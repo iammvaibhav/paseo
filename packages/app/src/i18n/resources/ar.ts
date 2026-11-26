@@ -1446,6 +1446,7 @@ export const ar: TranslationResources = {
       },
       menu: {
         open: "فتح في مساحة العمل",
+        showProject: "إظهار المشروع",
         copyReference: "نسخ المرجع",
         pin: "تثبيت في الأعلى",
         unpin: "إلغاء التثبيت",

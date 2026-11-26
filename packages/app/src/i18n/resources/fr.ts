@@ -1480,6 +1480,7 @@ export const fr: TranslationResources = {
       },
       menu: {
         open: "Ouvrir dans l’espace de travail",
+        showProject: "Afficher le projet",
         copyReference: "Copier la référence",
         pin: "Épingler en haut",
         unpin: "Désépingler",
