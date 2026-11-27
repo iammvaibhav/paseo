@@ -26,7 +26,11 @@ import {
 
 import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import type { AgentPermissionResponse } from "@getpaseo/protocol/agent-types";
-import { getHostRuntimeStore, useHostRuntimeIsConnected } from "@/runtime/host-runtime";
+import {
+  getHostRuntimeStore,
+  isHostRuntimeConnected,
+  useHostRuntimeIsConnected,
+} from "@/runtime/host-runtime";
 import { useVoiceAudioEngineOptional, useVoiceRuntimeOptional } from "@/contexts/voice-context";
 import type { AudioPlaybackSource } from "@/audio";
 import {
@@ -447,6 +451,10 @@ function SessionProviderInternal({ children, serverId, client }: SessionProvider
     viewedTimelineSyncRef.current = sync;
     setViewedTimelineSync(serverId, sync);
     sync.setActive(getIsAppVisible(appStateRef.current));
+    // A make-before-break connection switch hands this provider a new client while the host
+    // stays online, so the effect below never fires for this owner. It starts disconnected and
+    // would report every open chat as reattaching, with no timeline subscription, forever.
+    sync.setConnected(isHostRuntimeConnected(getHostRuntimeStore().getSnapshot(serverId)));
     const stopObservingOpenChats = observeOpenWorkspaceAgentIds(serverId, (agentIds) =>
       sync.replaceOpenTabAgentIds(agentIds),
     );
