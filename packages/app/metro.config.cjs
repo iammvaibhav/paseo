@@ -1,5 +1,4 @@
 const { getDefaultConfig } = require("expo/metro-config");
-const { resolve } = require("metro-resolver");
 const fs = require("fs");
 const path = require("path");
 
@@ -19,7 +18,13 @@ const customWebPlatform = (process.env.PASEO_WEB_PLATFORM ?? "")
 
 const config = getDefaultConfig(projectRoot);
 config.cacheVersion = isWatchdogBuild ? "watchdog" : "standard";
-const defaultResolveRequest = config.resolver.resolveRequest ?? resolve;
+const upstreamResolveRequest = config.resolver.resolveRequest;
+// Inside a custom resolveRequest, Metro passes its default resolver as context.resolveRequest.
+// Requiring metro-resolver directly only works when an old hoisted install happens to provide it;
+// it is not a dependency of the app.
+function defaultResolveRequest(context, moduleName, platform) {
+  return (upstreamResolveRequest ?? context.resolveRequest)(context, moduleName, platform);
+}
 
 // Keep app exports deterministic across dev machines and CI. Metro's Watchman
 // crawler behavior depends on the host Watchman build/capabilities, while the

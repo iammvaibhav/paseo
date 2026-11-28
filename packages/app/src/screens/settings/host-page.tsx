@@ -82,6 +82,7 @@ import { PaseoToolsCard } from "./paseo-tools-card";
 import { RestartRecoveryCard } from "./restart-recovery-card";
 import { IdleRuntimeCleanupCard } from "./idle-runtime-cleanup-card";
 import { restartDaemonFromSettings, updateDaemonFromSettings } from "./daemon-lifecycle";
+import { MacWakeCard } from "@/mac-wake/mac-wake-card";
 
 const ThemedRestart = withUnistyles(RotateCw);
 const ThemedUpdate = withUnistyles(ArrowUpToLine);
@@ -442,6 +443,8 @@ export function HostSettingsPage({
       <BrowserEditorUrlCard host={host} />
 
       {!isLocalDaemon ? <SshHostCard host={host} /> : null}
+
+      <MacWakeCard host={host} />
 
       {!isLocalDaemon ? <UpdateDaemonCard key={host.serverId} host={host} /> : null}
 
