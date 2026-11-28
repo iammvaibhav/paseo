@@ -60,17 +60,6 @@ describe("useDraftAgentCreateFlow", () => {
 
     expect(result.current.isSubmitting).toBe(true);
     expect(result.current.draftAgent).toEqual({ currentAttempt: attempt });
-    expect(result.current.submittedStreamItems).toEqual([
-      {
-        kind: "user_message",
-        id: "msg-prepared",
-        clientMessageId: "msg-prepared",
-        text: "build this",
-        timestamp: attempt.timestamp,
-        images: [image],
-        attachments: [attachment],
-      },
-    ]);
     expect(createRequest).not.toHaveBeenCalled();
 
     await act(async () => {
@@ -249,5 +238,112 @@ describe("useDraftAgentCreateFlow", () => {
       cwd: "/repo",
     });
     expect(onCreateSuccess).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows creating an agent with an empty prompt when allowEmptyText is set", async () => {
+    const createRequest = vi.fn(async () => ({
+      agentId: "agent-1",
+      result: { id: "agent-1" },
+    }));
+    const onCreateSuccess = vi.fn();
+
+    const { result } = renderHook(() =>
+      useDraftAgentCreateFlow({
+        draftId: "draft-1",
+        getPendingServerId: () => "server-1",
+        allowEmptyText: true,
+        buildDraftAgent: (currentAttempt) => ({ currentAttempt }),
+        createRequest,
+        onCreateSuccess,
+      }),
+    );
+
+    await act(async () => {
+      await result.current.handleCreateFromInput({
+        text: "",
+        attachments: [],
+        cwd: "/repo",
+      });
+    });
+
+    expect(createRequest).toHaveBeenCalledWith({
+      attempt: expect.objectContaining({ text: "" }),
+      text: "",
+      cwd: "/repo",
+    });
+    expect(onCreateSuccess).toHaveBeenCalledTimes(1);
+  });
+
+  it("stores startVoiceMode on the pending create attempt", async () => {
+    const createRequest = vi.fn(async () => ({
+      agentId: "agent-1",
+      result: { id: "agent-1" },
+    }));
+    const onCreateSuccess = vi.fn();
+
+    const { result } = renderHook(() =>
+      useDraftAgentCreateFlow({
+        draftId: "draft-voice",
+        getPendingServerId: () => "server-1",
+        allowEmptyText: true,
+        buildDraftAgent: (currentAttempt) => ({ currentAttempt }),
+        createRequest,
+        onCreateSuccess,
+      }),
+    );
+
+    await act(async () => {
+      await result.current.handleCreateFromInput({
+        text: "",
+        attachments: [],
+        cwd: "/repo",
+        startVoiceMode: true,
+      });
+    });
+
+    const pending = useCreateFlowStore.getState().pendingByDraftId["draft-voice"];
+    expect(pending).toMatchObject({
+      agentId: "agent-1",
+      lifecycle: "sent",
+      startVoiceMode: true,
+    });
+  });
+
+  it("forwards startVoiceMode to validateBeforeSubmit for empty voice creates", async () => {
+    const createRequest = vi.fn(async () => ({
+      agentId: "agent-1",
+      result: { id: "agent-1" },
+    }));
+    const onCreateSuccess = vi.fn();
+    const validateBeforeSubmit = vi.fn(() => null);
+
+    const { result } = renderHook(() =>
+      useDraftAgentCreateFlow({
+        draftId: "draft-voice-validate",
+        getPendingServerId: () => "server-1",
+        allowEmptyText: true,
+        buildDraftAgent: (currentAttempt) => ({ currentAttempt }),
+        createRequest,
+        onCreateSuccess,
+        validateBeforeSubmit,
+      }),
+    );
+
+    await act(async () => {
+      await result.current.handleCreateFromInput({
+        text: "",
+        attachments: [],
+        cwd: "/repo",
+        startVoiceMode: true,
+      });
+    });
+
+    expect(validateBeforeSubmit).toHaveBeenCalledWith({
+      text: "",
+      attachments: [],
+      cwd: "/repo",
+      startVoiceMode: true,
+    });
+    expect(createRequest).toHaveBeenCalledTimes(1);
   });
 });

@@ -1,12 +1,12 @@
 import type { AgentSnapshotPayload } from "@getpaseo/protocol/messages";
 import type { AgentPermissionRequest } from "@getpaseo/protocol/agent-types";
-import { getParentAgentIdFromLabels } from "@getpaseo/protocol/agent-labels";
+import { getParentAddressFromLabels } from "@getpaseo/protocol/agent-labels";
+import type { Agent, SessionState } from "@/stores/session-store";
 import {
   TURN_LIVENESS_IDLE,
   type ActiveTurnIdentity,
   type TurnLiveness,
 } from "@/timeline/turn-liveness";
-import type { Agent } from "@/stores/session-store";
 
 function normalizeActiveTurn(
   snapshot: AgentSnapshotPayload,
@@ -57,6 +57,16 @@ export function derivePendingPermissionKey(
   return `${agentId}:${fallbackId}`;
 }
 
+function projectAttentionFields(
+  agent: Agent,
+): Pick<AgentSnapshotPayload, "requiresAttention" | "attentionReason" | "attentionTimestamp"> {
+  return {
+    requiresAttention: agent.requiresAttention ?? false,
+    attentionReason: agent.attentionReason ?? null,
+    attentionTimestamp: agent.attentionTimestamp?.toISOString() ?? null,
+  };
+}
+
 export function projectAgentSnapshot(agent: Agent): AgentSnapshotPayload {
   return {
     id: agent.id,
@@ -64,12 +74,14 @@ export function projectAgentSnapshot(agent: Agent): AgentSnapshotPayload {
     cwd: agent.cwd,
     ...(agent.workspaceId ? { workspaceId: agent.workspaceId } : {}),
     model: agent.model,
-    ...(agent.features ? { features: agent.features } : {}),
+    ...(agent.options ? { options: agent.options } : {}),
+    ...(agent.controls ? { controls: agent.controls } : {}),
     thinkingOptionId: agent.thinkingOptionId ?? null,
     createdAt: agent.createdAt.toISOString(),
     updatedAt: agent.updatedAt.toISOString(),
     lastUserMessageAt: agent.lastUserMessageAt?.toISOString() ?? null,
     status: agent.status,
+    backgroundWork: agent.backgroundWork,
     ...projectActiveTurn(agent),
     capabilities: agent.capabilities,
     currentModeId: agent.currentModeId,
@@ -77,28 +89,33 @@ export function projectAgentSnapshot(agent: Agent): AgentSnapshotPayload {
     pendingPermissions: agent.pendingPermissions,
     persistence: agent.persistence,
     ...(agent.runtimeInfo ? { runtimeInfo: agent.runtimeInfo } : {}),
+    ...(agent.usageScopeKey ? { usageScopeKey: agent.usageScopeKey } : {}),
     ...(agent.lastUsage ? { lastUsage: agent.lastUsage } : {}),
+    ...(agent.sessionMetrics ? { sessionMetrics: agent.sessionMetrics } : {}),
     ...(agent.lastError ? { lastError: agent.lastError } : {}),
     title: agent.title,
     labels: agent.labels,
-    requiresAttention: agent.requiresAttention ?? false,
-    attentionReason: agent.attentionReason ?? null,
-    attentionTimestamp: agent.attentionTimestamp?.toISOString() ?? null,
+    ...(agent.metadata ? { metadata: agent.metadata } : {}),
+    ...projectAttentionFields(agent),
+    ...(agent.bucket ? { bucket: agent.bucket } : {}),
     archivedAt: agent.archivedAt?.toISOString() ?? null,
+    ...(agent.reminder !== undefined ? { reminder: agent.reminder } : {}),
+    ...(agent.background ? { background: true } : {}),
   };
+}
+
+function parseOptionalDate(value: string | null | undefined): Date | null {
+  return value ? new Date(value) : null;
 }
 
 export function normalizeAgentSnapshot(snapshot: AgentSnapshotPayload, serverId: string) {
   const createdAt = new Date(snapshot.createdAt);
   const updatedAt = new Date(snapshot.updatedAt);
-  const lastUserMessageAt = snapshot.lastUserMessageAt
-    ? new Date(snapshot.lastUserMessageAt)
-    : null;
-  const attentionTimestamp = snapshot.attentionTimestamp
-    ? new Date(snapshot.attentionTimestamp)
-    : null;
-  const archivedAt = snapshot.archivedAt ? new Date(snapshot.archivedAt) : null;
-  const parentAgentId = getParentAgentIdFromLabels(snapshot.labels);
+  const lastUserMessageAt = parseOptionalDate(snapshot.lastUserMessageAt);
+  const attentionTimestamp = parseOptionalDate(snapshot.attentionTimestamp);
+  const archivedAt = parseOptionalDate(snapshot.archivedAt);
+  const parent = getParentAddressFromLabels(snapshot.labels, serverId);
+  const parentAgentId = parent?.serverId === serverId ? parent.agentId : null;
   // COMPAT(agentTurnIdentity): added in v0.2.6, remove after 2027-01-31 once daemon floor >= v0.2.6.
   // Old daemons expose only status. Normalize that legacy signal once so the rest
   // of the app consumes one activity shape.
@@ -109,6 +126,7 @@ export function normalizeAgentSnapshot(snapshot: AgentSnapshotPayload, serverId:
     id: snapshot.id,
     provider: snapshot.provider,
     status: snapshot.status,
+    backgroundWork: snapshot.backgroundWork,
     turn,
     createdAt,
     updatedAt,
@@ -120,19 +138,52 @@ export function normalizeAgentSnapshot(snapshot: AgentSnapshotPayload, serverId:
     pendingPermissions: snapshot.pendingPermissions ?? [],
     persistence: snapshot.persistence ?? null,
     runtimeInfo: snapshot.runtimeInfo,
+    usageScopeKey: snapshot.usageScopeKey,
     lastUsage: snapshot.lastUsage,
+    sessionMetrics: snapshot.sessionMetrics,
     lastError: snapshot.lastError ?? null,
     title: snapshot.title ?? null,
+    name: snapshot.name ?? null,
+    shortDescription: snapshot.shortDescription ?? null,
+    agentMode: snapshot.agentMode,
     cwd: snapshot.cwd,
     workspaceId: snapshot.workspaceId,
     model: snapshot.model ?? null,
-    features: snapshot.features,
+    options: snapshot.options,
+    controls: snapshot.controls,
     thinkingOptionId: snapshot.thinkingOptionId ?? null,
+    effectiveThinkingOptionId:
+      snapshot.effectiveThinkingOptionId ??
+      snapshot.runtimeInfo?.thinkingOptionId ??
+      snapshot.thinkingOptionId ??
+      null,
     requiresAttention: snapshot.requiresAttention ?? false,
     attentionReason: snapshot.attentionReason ?? null,
     attentionTimestamp,
+    stoppedBy: snapshot.stoppedBy ?? null,
+    bucket: snapshot.bucket,
     archivedAt,
+    background: snapshot.background === true,
     parentAgentId,
     labels: snapshot.labels,
+    providerUnavailable: snapshot.providerUnavailable === true,
+    reminder: snapshot.reminder,
+    metadata: snapshot.metadata,
   };
+}
+
+/**
+ * Resolve an agent snapshot from a session, spanning both directories.
+ *
+ * Active, project-placed agents live in `agents`; agents hydrated without a
+ * project placement (and archived ones) live in `agentDetails` — see
+ * `storeFetchedAgentDetail`. Callers that render or gate on an agent must
+ * consult both, otherwise a live agent looks statusless for the whole run.
+ */
+export function resolveSessionAgent(
+  session: Pick<SessionState, "agents" | "agentDetails"> | undefined,
+  agentId: string | undefined,
+): Agent | null {
+  if (!agentId) return null;
+  return session?.agents.get(agentId) ?? session?.agentDetails.get(agentId) ?? null;
 }

@@ -1,13 +1,17 @@
-import { resolve, sep } from "node:path";
+import { posix, win32 } from "node:path";
+import { createPathContainmentMatcher, type PathContainmentMatcher } from "../../../utils/path.js";
 
 export interface ObserverPaths {
   isInside(root: string, path: string): boolean;
   normalizeIgnoredRoots(root: string, paths: string[]): string[];
   collapse(paths: string[]): string[];
+  createIgnoreMatcher(roots: string[]): PathContainmentMatcher;
   isExpectedWatchDisappearance(error: unknown): boolean;
 }
 
 export function createObserverPaths(platform: NodeJS.Platform): ObserverPaths {
+  const pathApi = platform === "win32" ? win32 : posix;
+
   function comparable(path: string): string {
     return platform === "win32" ? path.toLowerCase() : path;
   }
@@ -15,21 +19,45 @@ export function createObserverPaths(platform: NodeJS.Platform): ObserverPaths {
   function isInside(root: string, path: string): boolean {
     const comparedRoot = comparable(root);
     const comparedPath = comparable(path);
-    return comparedPath === comparedRoot || comparedPath.startsWith(`${comparedRoot}${sep}`);
+    return (
+      comparedPath === comparedRoot || comparedPath.startsWith(`${comparedRoot}${pathApi.sep}`)
+    );
   }
 
   function collapse(paths: string[]): string[] {
-    return [...new Set(paths)]
-      .sort((left, right) => left.length - right.length)
-      .filter((path, index, all) => !all.slice(0, index).some((parent) => isInside(parent, path)));
+    // Plain lexicographic sort does not put a parent immediately before its
+    // descendants: a sibling whose name extends the parent's with a
+    // character that sorts below the separator (e.g. "app" vs "app-web")
+    // lands between them. Sort on a key with the separator swapped for a
+    // character below everything instead, so "app" < "app/src" < "app-web"
+    // holds and one backward look is enough.
+    const decorated = [...new Set(paths)].map((path) => ({
+      path,
+      key: comparable(path).split(pathApi.sep).join("\0"),
+    }));
+    decorated.sort((left, right) => {
+      if (left.key < right.key) return -1;
+      if (left.key > right.key) return 1;
+      return 0;
+    });
+    const kept: string[] = [];
+    for (const { path } of decorated) {
+      const previous = kept[kept.length - 1];
+      if (previous !== undefined && isInside(previous, path)) continue;
+      kept.push(path);
+    }
+    return kept;
   }
 
   return {
     isInside,
     collapse,
+    createIgnoreMatcher(roots) {
+      return createPathContainmentMatcher({ roots, compareAsWindows: platform === "win32" });
+    },
     normalizeIgnoredRoots(root, paths) {
       const inside = paths
-        .map((path) => resolve(path))
+        .map((path) => pathApi.resolve(path))
         .filter((path) => path !== root && isInside(root, path));
       return collapse(inside);
     },

@@ -88,6 +88,7 @@ describe("OpenCodeServerManager generations", () => {
     const acquisition = await manager.acquireCurrent();
 
     expect(runtime.spawnCalls[0]?.options.baseEnv).toEqual(baseEnv);
+    expect(acquisition.environment).toBe(runtime.spawnCalls[0]?.options.baseEnv);
     await acquisition.release();
   });
 
@@ -222,6 +223,69 @@ describe("OpenCodeServerManager generations", () => {
     await expect(acquisition).rejects.toThrow("OpenCode server exited with code null");
     expect(runtime.terminatedPorts).toEqual([4472]);
     expect(await runtime.managedProcesses.list()).toEqual([]);
+  });
+
+  test("shutdown stops a startup still allocating its port before it spawns", async () => {
+    const { runtime } = createTestManager([4478, 4479]);
+    let releasePort!: () => void;
+    const portHeld = new Promise<void>((resolve) => {
+      releasePort = resolve;
+    });
+    const manager = new OpenCodeServerManager({
+      logger: createTestLogger(),
+      managedProcesses: runtime.managedProcesses,
+      portAllocator: async () => {
+        await portHeld;
+        return runtime.allocatePort();
+      },
+      resolveCommandPrefix: runtime.resolveCommandPrefix,
+      spawnServerProcess: runtime.spawnServerProcess,
+      terminateProcess: runtime.terminateProcess,
+    });
+
+    const acquisition = manager.acquireCurrent();
+    const shutdown = manager.shutdown();
+    releasePort();
+    await shutdown;
+
+    await expect(acquisition).rejects.toThrow("OpenCode server manager shut down");
+    expect(runtime.launchedPorts).toEqual([]);
+    expect(await runtime.managedProcesses.list()).toEqual([]);
+
+    const later = await manager.acquireCurrent();
+    expect(later.server.url).toBe("http://127.0.0.1:4479");
+    await later.release();
+  });
+
+  test("shutdown stops a rotation that has not started its server yet", async () => {
+    const { runtime } = createTestManager([4490, 4491], { autoAnnounce: false });
+    let releaseStop!: () => void;
+    const stopHeld = new Promise<void>((resolve) => {
+      releaseStop = resolve;
+    });
+    const manager = new OpenCodeServerManager({
+      logger: createTestLogger(),
+      managedProcesses: runtime.managedProcesses,
+      portAllocator: runtime.allocatePort,
+      resolveCommandPrefix: runtime.resolveCommandPrefix,
+      spawnServerProcess: runtime.spawnServerProcess,
+      terminateProcess: async (target, options) => {
+        await stopHeld;
+        return runtime.terminateProcess(target, options);
+      },
+    });
+
+    const first = manager.acquireCurrent();
+    await runtime.settle();
+    const rotation = manager.acquireNew();
+    await runtime.settle();
+    const shutdown = manager.shutdown();
+    releaseStop();
+    await shutdown;
+
+    await expect(first).rejects.toThrow();
+    await expect(rotation).rejects.toThrow("OpenCode server manager shut down");
+    expect(runtime.launchedPorts).toEqual([4490]);
   });
 
   test("dedicated server startup is protected from retired cleanup", async () => {
@@ -393,8 +457,8 @@ describe.runIf(process.platform === "win32")(
         expect(records).toHaveLength(1);
         const record = records[0]!;
         expect(path.extname(record.command).toLowerCase()).toBe(".exe");
-        expect(path.normalize(record.command).toLowerCase()).toContain(
-          path.normalize("node_modules/opencode-ai/bin/opencode.exe").toLowerCase(),
+        expect(path.normalize(record.command).toLowerCase()).toMatch(
+          /opencode-(?:ai|windows-(?:x64|arm64))[\\/]bin[\\/]opencode\.exe$/,
         );
         expect(record.command.toLowerCase()).not.toBe(detectedOpenCode!.toLowerCase());
         expect(record.args).toEqual(["serve", "--port", String(acquisition.server.port)]);

@@ -1,6 +1,7 @@
 import { expect, test } from "../support/fixtures";
 import { gotoAppShell } from "../support/helpers/app";
 import {
+  chooseProjectWithKeyboard,
   connectNewWorkspaceDaemonClient,
   expectNewWorkspaceControlsEnabled,
   expectNewWorkspaceProjectSelected,
@@ -95,7 +96,7 @@ test.describe("New workspace entry points", () => {
     }
   });
 
-  test("the New Workspace screen hides the host selector when there is only one host", async ({
+  test("the New Workspace screen shows the host selector with Add host when there is only one host", async ({
     page,
   }) => {
     const seeded: SeededWorkspace = await seedWorkspace({ repoPrefix: "entry-single-host-" });
@@ -120,7 +121,16 @@ test.describe("New workspace entry points", () => {
       await expect(page.getByTestId("new-workspace-project-picker-trigger")).toBeVisible({
         timeout: 30_000,
       });
-      await expect(page.getByTestId("host-picker-trigger")).toHaveCount(0);
+      const hostTrigger = page.getByTestId("host-picker-trigger");
+      await expect(hostTrigger).toContainText("localhost", { timeout: 30_000 });
+      const originalUrl = page.url();
+      await hostTrigger.click();
+      await expect(page.getByTestId("new-workspace-host-picker-add-host")).toBeVisible();
+      await page.getByTestId("new-workspace-host-picker-add-host").click();
+      await expect(
+        page.getByRole("button", { name: "Direct connection", exact: true }),
+      ).toBeVisible();
+      await expect(page).toHaveURL(originalUrl);
     } finally {
       await seeded.cleanup();
     }
@@ -148,6 +158,49 @@ test.describe("New workspace entry points", () => {
       await openNewWorkspaceProjectPickerWithShortcut(page);
     } finally {
       await seeded.cleanup();
+    }
+  });
+
+  test("Ctrl+N opens the project picker with search focused", async ({ page }) => {
+    const seeded: SeededWorkspace = await seedWorkspace({ repoPrefix: "entry-shortcut-" });
+
+    try {
+      await gotoAppShell(page);
+      await waitForSidebarHydration(page);
+      await openGlobalNewWorkspaceComposer(page);
+
+      await openGlobalNewWorkspaceComposer(page);
+      await page.goBack();
+      await openNewWorkspaceProjectPickerWithShortcut(page, "Control+N");
+    } finally {
+      await seeded.cleanup();
+    }
+  });
+
+  test("choosing a project returns focus to the composer, even when the picker was opened by clicking it", async ({
+    page,
+  }) => {
+    const projectA: SeededWorkspace = await seedWorkspace({ repoPrefix: "entry-focus-a-" });
+    const projectB: SeededWorkspace = await seedWorkspace({ repoPrefix: "entry-focus-b-" });
+
+    try {
+      await gotoAppShell(page);
+      await waitForSidebarHydration(page);
+      await openGlobalNewWorkspaceComposer(page);
+      const composer = page.getByRole("textbox", { name: "Message agent..." });
+
+      await page.getByTestId("new-workspace-project-picker-trigger").click();
+      await chooseProjectWithKeyboard(page, projectB.projectDisplayName);
+      await expectNewWorkspaceProjectSelected(page, projectB.projectDisplayName);
+      await expect(composer).toBeFocused();
+
+      await page.keyboard.press("Control+N");
+      await chooseProjectWithKeyboard(page, projectA.projectDisplayName);
+      await expectNewWorkspaceProjectSelected(page, projectA.projectDisplayName);
+      await expect(composer).toBeFocused();
+    } finally {
+      await projectA.cleanup();
+      await projectB.cleanup();
     }
   });
 

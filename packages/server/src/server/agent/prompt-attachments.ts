@@ -1,6 +1,9 @@
 import { getForgeDefinitionOrNeutral } from "@getpaseo/protocol/forge-manifest";
 import type { AgentAttachment } from "@getpaseo/protocol/messages";
+import { writeStoredUpload } from "../file-upload/index.js";
 import type { AgentPromptContentBlock, AgentPromptInput } from "./agent-sdk-types.js";
+
+type UploadedFileAttachment = Extract<AgentAttachment, { type: "uploaded_file" }>;
 
 const REVIEW_LINE_MARKERS = { add: "+", remove: "-", context: " " } as const;
 
@@ -35,6 +38,58 @@ export function buildAgentPrompt(
   }
   blocks.push(...otherAttachments);
   return blocks;
+}
+
+/**
+ * Whether a native image is the inline copy of an uploaded_file attachment in
+ * the same prompt. Fleet tools and storePromptImages send an image both ways:
+ * the native block for the model, the attachment for its path.
+ */
+export function isUploadedFileCopy(
+  image: { data: string; mimeType: string },
+  uploads: readonly UploadedFileAttachment[],
+): boolean {
+  return uploads.some(
+    (upload) =>
+      upload.mimeType === image.mimeType && Buffer.byteLength(image.data, "base64") === upload.size,
+  );
+}
+
+function imageFileExtension(mimeType: string): string {
+  const subtype = mimeType.split("/")[1]?.split(/[+;]/)[0]?.trim().toLowerCase() ?? "";
+  if (subtype === "jpeg") return "jpg";
+  return /^[a-z0-9.-]+$/.test(subtype) ? subtype : "bin";
+}
+
+/**
+ * Saves each inline prompt image that has no uploaded_file copy yet into the
+ * upload store and returns the attachments with those copies appended. The
+ * model still gets the native image; the attachment tells the agent the
+ * file's path so it can hand the image on (fleet_send_prompt attachments,
+ * WhatsApp media). Without a paseoHome the attachments pass through.
+ */
+export async function storePromptImages(
+  paseoHome: string | undefined,
+  images: ReadonlyArray<{ data: string; mimeType: string }> | undefined,
+  attachments: AgentAttachment[] | undefined,
+): Promise<AgentAttachment[] | undefined> {
+  if (!paseoHome || !images || images.length === 0) return attachments;
+  const uploads = (attachments ?? []).filter(
+    (attachment): attachment is UploadedFileAttachment => attachment.type === "uploaded_file",
+  );
+  const stored: AgentAttachment[] = [];
+  // Sequential: each image is written to disk in turn.
+  for (const [index, image] of images.entries()) {
+    if (isUploadedFileCopy(image, uploads)) continue;
+    stored.push(
+      await writeStoredUpload(paseoHome, {
+        fileName: `image-${index + 1}.${imageFileExtension(image.mimeType)}`,
+        mimeType: image.mimeType,
+        bytes: Buffer.from(image.data, "base64"),
+      }),
+    );
+  }
+  return stored.length > 0 ? [...(attachments ?? []), ...stored] : attachments;
 }
 
 export function renderPromptAttachmentAsText(attachment: AgentAttachment): string {
@@ -118,6 +173,7 @@ export function renderPromptAttachmentAsText(attachment: AgentAttachment): strin
     case "uploaded_file": {
       return [
         `Uploaded file: ${attachment.fileName}`,
+        `fileId: ${attachment.id}`,
         `Path: ${attachment.path}`,
         `MIME: ${attachment.mimeType}`,
         `Size: ${attachment.size} bytes`,

@@ -1,65 +1,67 @@
-import {
-  memo,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ReactElement,
-  type RefObject,
-} from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { router } from "expo-router";
+import type { DaemonClient } from "@getpaseo/client/internal/daemon-client";
 import {
   View,
-  Text,
   Pressable,
   Keyboard,
   useWindowDimensions,
   type LayoutChangeEvent,
-  type PressableStateCallbackType,
-  type StyleProp,
-  type ViewStyle,
 } from "react-native";
 import { StyleSheet, useUnistyles } from "react-native-unistyles";
 import { useShallow } from "zustand/shallow";
 import { Settings2 } from "lucide-react-native";
-import { getAgentFeatureIcon, ThinkingIcon } from "@/agent-controls/icons";
+import { readSelectOption, type ComposerOptionControls } from "@/agent-controls/option-controls";
 import { formatThinkingOptionLabel } from "@/agent-controls/labels";
-import { ComboboxTrigger } from "@/components/ui/combobox-trigger";
 import { CombinedModelSelector } from "@/components/combined-model-selector";
+import { isSystemOwnedAgentLabels } from "@getpaseo/protocol/mission-control/system-owned";
 import {
-  buildProviderSelectorProviders,
+  resolveUnattendedModeId,
+  type UnattendedModeCandidate,
+} from "@/history-ask/unattended-mode";
+import {
   buildSelectableProviderSelectorProviders,
   type ProviderSelectorProvider,
 } from "@/provider-selection/provider-selection";
 import { filterSelectableModels } from "@/provider-selection/model-catalog";
 import { useSessionStore } from "@/stores/session-store";
 import { useProvidersSnapshot } from "@/hooks/use-providers-snapshot";
-import { resolveProviderDefinition } from "@/utils/provider-definitions";
-import { mergeProviderPreferences, useFormPreferences } from "@/hooks/use-form-preferences";
-import { Combobox, ComboboxItem, type ComboboxOption } from "@/components/ui/combobox";
+import {
+  mergeProviderPreferencesWithScope,
+  resolveEffectiveFormPreferences,
+  useFormPreferences,
+  type FormPreferenceScope,
+} from "@/hooks/use-form-preferences";
 import {
   AgentModeControl,
   useLiveAgentModeControl,
   type AgentModeControlValue,
 } from "@/composer/agent-controls/mode-control";
+import { AgentModePicker, LiveAgentModePicker } from "@/composer/agent-controls/agent-mode-picker";
 import { AdaptiveModalSheet, type SheetHeader } from "@/components/adaptive-modal-sheet";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type {
-  AgentFeature,
+  AgentOptionControl,
+  JsonValue,
+  ProviderOptions,
   AgentMode,
   AgentModelDefinition,
   AgentProvider,
 } from "@getpaseo/protocol/agent-types";
 import type { AgentProviderDefinition } from "@getpaseo/protocol/provider-manifest";
 import {
-  getFeatureHighlightColor,
-  getFeatureTooltip,
   getAgentControlHintKey,
   resolveAgentModelSelection,
+  resolveProviderSnapshotEntry,
 } from "@/composer/agent-controls/utils";
 import { useIsCompactFormFactor } from "@/constants/layout";
+import {
+  controlSizingForLayout,
+  TOOLBAR_CONTROL_GAP,
+  toolbarGlyphColor,
+  type ToolbarGlyphs,
+  toolbarSlot,
+} from "@/components/ui/control-geometry";
 import { readMeasuredWidth } from "@/hooks/use-container-width";
 import { useToast } from "@/contexts/toast-context";
 import { toErrorMessage } from "@/utils/error-messages";
@@ -68,22 +70,50 @@ import {
   useAgentControlCommandCenterActions,
   type AgentControlCommandCenterSource,
 } from "@/command-center/agent-control-registration";
+import { useShortcutKeys } from "@/hooks/use-shortcut-keys";
 import { useComposerKeyboardScope } from "@/composer/keyboard-scope";
-import { isNative } from "@/constants/platform";
+import { formatProviderLabel } from "@/utils/provider-label";
 import {
+  composerToolbarGeometry,
   resolveComposerControlDensity,
   resolveComposerControlPresentation,
-  resolveComposerToolbarGlyphSize,
   type ComposerControlDensity,
   type ComposerControlPresentation,
 } from "@/composer/agent-controls/layout";
 import { ComposerControlLayoutProvider } from "@/composer/agent-controls/layout-context";
 import { ComposerToolbarGlyph } from "@/composer/agent-controls/glyph";
-import { AgentControlTrigger } from "@/composer/agent-controls/control";
+import {
+  ComposerControls,
+  ControlTooltipHint,
+  type ComposerControlItem,
+} from "@/composer/agent-controls/composer-control";
+import {
+  useAgentControlItems,
+  useEffortCycleShortcut,
+  useModelPickerShortcut,
+} from "@/composer/agent-controls/control-items";
 import { CompactModelSheet } from "@/composer/agent-controls/model-sheet";
+import { generateDraftId } from "@/stores/draft-keys";
+import {
+  buildDraftWorkspaceAttachmentScopeKey,
+  useWorkspaceAttachmentsStore,
+} from "@/attachments/workspace-attachments-store";
+import { navigateToWorkspace } from "@/stores/navigation-active-workspace-store";
+import { useComposerSheetBridge } from "@/composer/agent-controls/sheet-bridge";
+import { draftComposerAgent } from "@/composer/draft/composer-agent";
+import { agentComposer } from "@/composer/agent-composer";
+import { composerModelFromHalves } from "@/composer/halves-model";
+import { ComposerModelProvider } from "@/composer/model";
+import { ComposerAgentProvider, useComposerInput } from "@/composer/session";
+import { PluginComposerItems, usePluginComposerItemCount } from "@/plugins/composer-items";
+import {
+  PluginToolbarSlot,
+  usePluginToolbarWidth,
+} from "@/composer/agent-controls/plugin-toolbar-slot";
 import {
   useAgentProfileEditor,
   useAgentProfilePicker,
+  type AgentProfile,
   type AgentProfileApplyTarget,
   type AgentProfileEditorControls,
   type AgentProfilePicker,
@@ -97,15 +127,37 @@ interface AgentControlOption {
   label: string;
 }
 
-type AgentControlSelector = "provider" | "mode" | "model" | "thinking" | `feature-${string}`;
+/** Renders the agent mode (Approach) picker for the toolbar row or the compact sheet. */
+type AgentModePickerSlot = (surface: "toolbar" | "sheet") => ReactNode;
 
 const EMPTY_AGENT_PROVIDER_DEFINITIONS: AgentProviderDefinition[] = [];
+const EMPTY_OPTIONS: ProviderOptions = {};
+
+/**
+ * Mode to persist when the model picker switches an agent to another provider.
+ * A mode picked on the old provider is meaningless on the new one; map it to
+ * the new provider's unattended equivalent (same mapping History Ask uses for
+ * unattended launches). Returns undefined when the current mode stays valid or
+ * when there is nothing to remap — the daemon then keeps the stored mode and
+ * defensively falls back at launch if the provider rejects it.
+ */
+function resolveModeIdForProviderSwitch(input: {
+  currentModeId: string | null;
+  nextProvider: string;
+  nextProviderModes?: readonly UnattendedModeCandidate[] | null;
+}): string | undefined {
+  const { currentModeId, nextProvider, nextProviderModes } = input;
+  if (!currentModeId) {
+    return undefined;
+  }
+  if (nextProviderModes?.some((mode) => mode.id === currentModeId)) {
+    return undefined;
+  }
+  return resolveUnattendedModeId(nextProvider, nextProviderModes);
+}
 
 interface ControlledAgentControlsProps {
   provider: string;
-  providerOptions?: AgentControlOption[];
-  selectedProviderId?: string;
-  onSelectProvider?: (providerId: string) => void;
   modelOptions?: AgentControlOption[];
   selectedModelId?: string;
   onSelectModel?: (modelId: string) => void;
@@ -119,17 +171,24 @@ interface ControlledAgentControlsProps {
   agentProfiles?: AgentProfilePicker | null;
   onApplyAgentProfile?: (profileId: string) => void;
   onEditAgentProfiles?: () => void;
-  onCreateAgentProfile?: (seed: AgentProfileSeed) => void;
+  onCreateAgentProfile?: (seed: AgentProfileSeed) => Promise<AgentProfile | null> | void;
   onEditAgentProfile?: (profileId: string) => void;
-  features?: AgentFeature[];
-  onSetFeature?: (featureId: string, value: unknown) => void;
+  optionControls?: ComposerOptionControls;
   onDropdownClose?: () => void;
   onModelSelectorOpen?: () => void;
   onRetryModelProvider?: (provider: AgentProvider) => void;
   isRetryingModelProvider?: boolean;
   modeControl?: AgentModeControlValue | null;
+  /** Approach picker (Build, Orchestrate, …), rendered after the access mode control. */
+  agentModePicker?: AgentModePickerSlot;
   modelSelectorServerId?: string | null;
   isCompactLayout?: boolean;
+}
+
+/** Approach (agent mode) the draft will create its agent with. */
+export interface DraftAgentModeControl {
+  value: string;
+  onSelect: (id: string) => void;
 }
 
 export interface DraftAgentControlsProps {
@@ -140,17 +199,22 @@ export interface DraftAgentControlsProps {
   onSelectMode: (modeId: string) => void;
   models: AgentModelDefinition[];
   selectedModel: string;
+  effectiveModelId: string;
   onSelectModel: (modelId: string) => void;
   isModelLoading: boolean;
   modelSelectorProviders: ProviderSelectorProvider[];
   isAllModelsLoading: boolean;
-  onSelectProviderAndModel: (provider: AgentProvider, modelId: string) => void;
+  /** `false` when the provider is unknown or not ready. */
+  onSelectProviderAndModel: (provider: AgentProvider, modelId: string) => boolean;
   thinkingOptions: NonNullable<AgentModelDefinition["thinkingOptions"]>;
   selectedThinkingOptionId: string;
   onSelectThinkingOption: (thinkingOptionId: string) => void;
   onApplyAgentProfile: DraftAgentProfileControls["applyProfile"];
-  features?: AgentFeature[];
-  onSetFeature?: (featureId: string, value: unknown) => void;
+  /** The controls the daemon described for the draft; absent until it answers. */
+  optionControls?: ComposerOptionControls;
+  /** What the draft will create with, edits included, whether or not the daemon has answered. */
+  options: ProviderOptions;
+  onSetOption: (key: string, value: unknown) => void;
   onDropdownClose?: () => void;
   onModelSelectorOpen?: () => void;
   onRetryModelProvider?: (provider: AgentProvider) => void;
@@ -158,9 +222,17 @@ export interface DraftAgentControlsProps {
   disabled?: boolean;
   modelSelectorServerId?: string | null;
   isCompactLayout?: boolean;
+  /** Absent hides the Approach picker (fork drafts, screens that show it elsewhere). */
+  agentMode?: DraftAgentModeControl;
+  /** Which composer a plugin's `useComposer()` reports. */
+  context?: "draft" | "new-workspace";
+  /** What plugins set on the agent this draft creates. */
+  metadata: Record<string, JsonValue>;
+  onSetMetadata: (patch: Record<string, JsonValue>) => void;
 }
 
 interface AgentControlsProps {
+  showToolbar: boolean;
   agentId: string;
   serverId: string;
   onDropdownClose?: () => void;
@@ -176,10 +248,10 @@ function AgentControlCommandCenterRegistration({
   enabled: boolean;
   controls: AgentControlCommandCenterSource;
 }) {
-  const { isActiveComposer } = useComposerKeyboardScope();
+  const { isCommandCenterTarget } = useComposerKeyboardScope();
   useAgentControlCommandCenterActions({
     sourceId,
-    enabled: enabled && isActiveComposer,
+    enabled: enabled && isCommandCenterTarget,
     controls,
   });
   return null;
@@ -210,58 +282,28 @@ function getModeProviderDefinitions(modeControl: AgentModeControlValue | null) {
   return modeControl?.providerDefinitions ?? EMPTY_AGENT_PROVIDER_DEFINITIONS;
 }
 
-function getFeatureIconColor(
-  featureId: string,
-  enabled: boolean,
-  palette: {
-    blue: { 400: string };
-    green: { 400: string };
-    yellow: { 400: string };
-  },
-  foregroundMuted: string,
-): string {
-  if (!enabled) {
-    return foregroundMuted;
-  }
-
-  switch (getFeatureHighlightColor(featureId)) {
-    case "blue":
-      return palette.blue[400];
-    case "green":
-      return palette.green[400];
-    case "yellow":
-      return palette.yellow[400];
-    default:
-      return foregroundMuted;
-  }
-}
-
-type ActiveSheet = "thinking" | "features" | null;
+type ActiveSheet = "features" | null;
 
 function resolveHasAnyControl({
-  providerOptions,
   canSelectModel,
   thinkingOptions,
-  features,
+  controls,
   hasMode,
+  pluginItemCount,
 }: {
-  providerOptions: AgentControlOption[] | undefined;
   canSelectModel: boolean;
   thinkingOptions: AgentControlOption[] | undefined;
-  features: AgentFeature[] | undefined;
+  controls: readonly AgentOptionControl[] | undefined;
   hasMode: boolean;
+  pluginItemCount: number;
 }) {
   return (
-    Boolean(providerOptions?.length) ||
     canSelectModel ||
     Boolean(thinkingOptions?.length) ||
-    Boolean(features?.length) ||
-    hasMode
+    Boolean(controls?.length) ||
+    hasMode ||
+    pluginItemCount > 0
   );
-}
-
-function toComboboxOptions(options: AgentControlOption[] | undefined): ComboboxOption[] {
-  return (options ?? []).map((o) => ({ id: o.id, label: o.label }));
 }
 
 function toThinkingControlOptions(options: AgentControlOption[] | undefined): AgentControlOption[] {
@@ -281,7 +323,7 @@ function useEditAgentProfilesNavigation(
 ): (() => void) | undefined {
   const handleEdit = useCallback(() => {
     if (!serverId) return;
-    router.push(buildSettingsHostSectionRoute(serverId, "agents"));
+    router.push(buildSettingsHostSectionRoute(serverId, "agent-profiles"));
   }, [serverId]);
   return serverId && isSupported ? handleEdit : undefined;
 }
@@ -290,16 +332,123 @@ function resolveAgentProfileEditorActions(
   isSupported: boolean,
   editor: AgentProfileEditorControls,
 ): {
-  create?: (seed: AgentProfileSeed) => void;
+  create?: (seed: AgentProfileSeed) => Promise<AgentProfile | null>;
   edit?: (profileId: string) => void;
 } {
   if (!isSupported) {
     return {};
   }
   return {
-    create: editor.openCreateFromModel,
+    create: editor.quickCreateFromModel,
     edit: editor.openEdit,
   };
+}
+
+/** Profiles applicable to a live agent (single provider process). */
+function useAgentBoundProfiles(
+  serverId: string,
+  agentId: string,
+  agentProvider: AgentProvider | undefined,
+  snapshotSelectedEntry: ReturnType<typeof resolveProviderSnapshotEntry>,
+) {
+  const profileProviders = useMemo(() => (agentProvider ? [agentProvider] : []), [agentProvider]);
+  const profileModeIds = useMemo(
+    () => resolveSnapshotModeIds(snapshotSelectedEntry),
+    [snapshotSelectedEntry],
+  );
+  const profileTarget = useMemo<AgentProfileApplyTarget>(
+    () => ({ kind: "agent", agentId, availableModeIds: profileModeIds }),
+    [agentId, profileModeIds],
+  );
+  const agentProfiles = useAgentProfilePicker({
+    serverId,
+    availableProviders: profileProviders,
+    target: profileTarget,
+  });
+  const handleEditAgentProfiles = useEditAgentProfilesNavigation(serverId, agentProfiles !== null);
+  return { agentProfiles, handleEditAgentProfiles };
+}
+
+function useLiveAgentPreferenceHandlers(args: {
+  agentId: string;
+  agentProvider?: AgentProvider;
+  activeModelId?: string | null;
+  client: DaemonClient | null;
+  preferenceScope: FormPreferenceScope | null;
+  toast: ReturnType<typeof useToast>;
+  updatePreferences: ReturnType<typeof useFormPreferences>["updatePreferences"];
+}) {
+  const {
+    agentId,
+    agentProvider,
+    activeModelId,
+    client,
+    preferenceScope,
+    toast,
+    updatePreferences,
+  } = args;
+
+  const handleSelectThinkingOption = useCallback(
+    (thinkingOptionId: string) => {
+      if (!client || !agentProvider) {
+        return;
+      }
+      if (activeModelId) {
+        void updatePreferences((current) =>
+          mergeProviderPreferencesWithScope({
+            preferences: current,
+            provider: agentProvider,
+            updates: {
+              model: activeModelId,
+              thinkingByModel: {
+                [activeModelId]: thinkingOptionId,
+              },
+            },
+            scope: preferenceScope,
+          }),
+        ).catch((error) => {
+          console.warn("[AgentControls] persist thinking preference failed", error);
+        });
+      }
+      void client
+        .setAgentThinkingOption(agentId, thinkingOptionId)
+        .then((notice) => showProviderNoticeToast(toast, notice))
+        .catch((error: unknown) => {
+          console.warn("[AgentControls] setAgentThinkingOption failed", error);
+          toast.error(toErrorMessage(error));
+        });
+    },
+    [activeModelId, agentId, agentProvider, client, preferenceScope, toast, updatePreferences],
+  );
+
+  const handleSetOption = useCallback(
+    (key: string, value: unknown) => {
+      if (!client || !agentProvider) {
+        return;
+      }
+      void updatePreferences((current) =>
+        mergeProviderPreferencesWithScope({
+          preferences: current,
+          provider: agentProvider,
+          updates: {
+            options: {
+              [key]: value,
+            },
+          },
+          scope: preferenceScope,
+        }),
+      ).catch((error: unknown) => {
+        console.warn("[AgentControls] persist option preference failed", error);
+      });
+      void client.setAgentOptions(agentId, { [key]: value }).catch((error: unknown) => {
+        console.warn("[AgentControls] setAgentOptions failed", error);
+        toast.error(toErrorMessage(error));
+      });
+    },
+    [agentId, agentProvider, client, preferenceScope, toast, updatePreferences],
+  );
+
+  return { handleSelectThinkingOption, handleSetOption };
 }
 
 function buildFallbackModelSelectorProviders(
@@ -327,41 +476,20 @@ function buildFallbackModelSelectorProviders(
   ];
 }
 
-function makeBadgePressableStyle(
-  baseStyle: StyleProp<ViewStyle>,
-  disabledStyle: StyleProp<ViewStyle>,
-  disabled: boolean,
-  isOpen: boolean,
-) {
-  return ({ pressed, hovered }: PressableStateCallbackType) => [
-    baseStyle,
-    hovered && styles.modeBadgeHovered,
-    (pressed || isOpen) && styles.modeBadgePressed,
-    disabled && disabledStyle,
-  ];
-}
-
 function pickSheetModel({
   nextProviderId,
   modelId,
-  currentProvider,
   onSelectProviderAndModel,
-  onSelectProvider,
   onSelectModel,
 }: {
   nextProviderId: string;
   modelId: string;
-  currentProvider: string;
   onSelectProviderAndModel?: (provider: string, modelId: string) => void;
-  onSelectProvider?: (providerId: string) => void;
   onSelectModel?: (modelId: string) => void;
 }) {
   if (onSelectProviderAndModel) {
     onSelectProviderAndModel(nextProviderId, modelId);
     return;
-  }
-  if (nextProviderId !== currentProvider) {
-    onSelectProvider?.(nextProviderId);
   }
   onSelectModel?.(modelId);
 }
@@ -391,45 +519,73 @@ function pickDesktopModel({
 type AgentControlsSlice = {
   provider: string;
   cwd: string | null;
+  workspaceId: string | null;
+  projectKey: string | null;
   runtimeModelId: string | null;
   model: string | null | undefined;
-  features: AgentFeature[] | undefined;
+  options: ProviderOptions | undefined;
+  controls: AgentOptionControl[] | undefined;
+  runtimeThinkingOptionId: string | null;
   thinkingOptionId: string | null | undefined;
   lastUsage: unknown;
+  title: string | null;
+  metadata: Record<string, JsonValue> | undefined;
 } | null;
+
+function resolveAgentPreferenceScope(input: {
+  workspaceId: string | null | undefined;
+  projectKey: string | null | undefined;
+}): FormPreferenceScope | null {
+  const workspaceId = input.workspaceId?.trim() || null;
+  const projectKey = input.projectKey?.trim() || null;
+  if (!workspaceId && !projectKey) {
+    return null;
+  }
+  return { workspaceId, projectKey };
+}
+
+function findCurrentAgent(
+  state: ReturnType<typeof useSessionStore.getState>,
+  serverId: string,
+  agentId: string,
+) {
+  const session = state.sessions[serverId];
+  if (!session) return null;
+  return session.agents.get(agentId) ?? session.agentDetails.get(agentId) ?? null;
+}
 
 function selectAgentControlsSlice(
   state: ReturnType<typeof useSessionStore.getState>,
   serverId: string,
   agentId: string,
 ): AgentControlsSlice {
-  const currentAgent = state.sessions[serverId]?.agents?.get(agentId) ?? null;
+  const currentAgent = findCurrentAgent(state, serverId, agentId);
   if (!currentAgent) {
     return null;
   }
+  const session = state.sessions[serverId];
+  const workspaceId = currentAgent.workspaceId ?? null;
+  const workspace = workspaceId && session ? (session.workspaces.get(workspaceId) ?? null) : null;
+  const projectKey = workspace?.projectId ?? workspace?.project?.projectKey ?? null;
   return {
     provider: currentAgent.provider,
     cwd: currentAgent.cwd,
+    workspaceId,
+    projectKey,
     runtimeModelId: currentAgent.runtimeInfo?.model ?? null,
     model: currentAgent.model,
-    features: currentAgent.features,
+    options: currentAgent.options,
+    controls: currentAgent.controls,
+    runtimeThinkingOptionId: currentAgent.runtimeInfo?.thinkingOptionId ?? null,
     thinkingOptionId: currentAgent.thinkingOptionId,
     lastUsage: currentAgent.lastUsage,
+    title: currentAgent.title,
+    metadata: currentAgent.metadata,
   };
 }
 
-function resolveSnapshotSelectedEntry(
-  snapshotEntries: ReturnType<typeof useProvidersSnapshot>["entries"],
-  agentProvider: string | undefined,
-) {
-  if (!snapshotEntries || !agentProvider) {
-    return null;
-  }
-  return snapshotEntries.find((e) => e.provider === agentProvider) ?? null;
-}
-
 function resolveSnapshotModeIds(
-  entry: ReturnType<typeof resolveSnapshotSelectedEntry>,
+  entry: ReturnType<typeof resolveProviderSnapshotEntry>,
 ): string[] | null {
   if (entry?.status !== "ready" || !entry.modes) {
     return null;
@@ -437,45 +593,12 @@ function resolveSnapshotModeIds(
   return entry.modes.map((mode) => mode.id);
 }
 
-function buildAgentProviderDefinitions(
-  agentProvider: string | undefined,
-  snapshotEntries: ReturnType<typeof useProvidersSnapshot>["entries"],
-): AgentProviderDefinition[] {
-  const definition = agentProvider
-    ? resolveProviderDefinition(agentProvider, snapshotEntries)
-    : undefined;
-  return definition ? [definition] : [];
-}
-
-function buildAgentProviderModels(
-  agentProvider: string | undefined,
-  models: AgentModelDefinition[] | null,
-): Map<string, AgentModelDefinition[]> {
-  const map = new Map<string, AgentModelDefinition[]>();
-  if (agentProvider && models) {
-    map.set(agentProvider, models);
-  }
-  return map;
-}
-
-function buildOpenChangeHandler(
-  selector: AgentControlSelector,
-  setOpenSelector: (next: AgentControlSelector | null) => void,
-  onDropdownClose?: () => void,
-) {
-  return (nextOpen: boolean) => {
-    setOpenSelector(nextOpen ? selector : null);
-    if (!nextOpen) {
-      onDropdownClose?.();
-    }
-  };
+function densityFolds(density: ComposerControlDensity): boolean {
+  return resolveComposerControlPresentation(density).foldControls;
 }
 
 function ControlledAgentControls({
   provider,
-  providerOptions,
-  selectedProviderId,
-  onSelectProvider,
   modelOptions,
   selectedModelId,
   onSelectModel,
@@ -491,45 +614,41 @@ function ControlledAgentControls({
   onEditAgentProfiles,
   onCreateAgentProfile,
   onEditAgentProfile,
-  features,
-  onSetFeature,
+  optionControls,
   onDropdownClose,
   onModelSelectorOpen,
   onRetryModelProvider,
   isRetryingModelProvider = false,
   modeControl,
+  agentModePicker,
   modelSelectorServerId = null,
   isCompactLayout,
 }: ControlledAgentControlsProps) {
-  const { theme } = useUnistyles();
   const { t } = useTranslation();
   const isCompactFormFactor = useIsCompactFormFactor();
   const isCompact = isCompactLayout ?? isCompactFormFactor;
+  // Control sizes follow the window layout, as the toolbar's stylesheet does. A narrow pane in a
+  // wide window (`isCompactLayout`) changes which labels show, never how large a control is.
+  const toolbarSizing = controlSizingForLayout(isCompactFormFactor);
+  const toolbarGeometry = useMemo(() => composerToolbarGeometry(toolbarSizing), [toolbarSizing]);
   const { fontScale } = useWindowDimensions();
   const [activeSheet, setActiveSheet] = useState<ActiveSheet>(null);
-  const [openSelector, setOpenSelector] = useState<AgentControlSelector | null>(null);
-  const initialDensity: ComposerControlDensity = isCompact ? "tight" : "full";
+  const [openSelector, setOpenSelector] = useState<string | null>(null);
+  // A compact composer always folds its controls into the model sheet; the width budget only
+  // decides whether the model keeps its label.
+  const minimumDensity: ComposerControlDensity = isCompact ? "compact" : "full";
+  const initialDensity = minimumDensity;
   const [density, setDensity] = useState<ComposerControlDensity>(initialDensity);
   const densityRef = useRef<ComposerControlDensity>(initialDensity);
   const availableWidthRef = useRef(0);
 
-  const providerAnchorRef = useRef<View>(null);
-  const _modelAnchorRef = useRef<View>(null);
-  const thinkingAnchorRef = useRef<View>(null);
-
-  const canSelectProvider = Boolean(
-    onSelectProvider && providerOptions && providerOptions.length > 0,
-  );
   const canSelectModel = Boolean(onSelectModel);
   const canSelectThinking = Boolean(
     onSelectThinkingOption && thinkingOptions && thinkingOptions.length > 0,
   );
+  const pluginItemCount = usePluginComposerItemCount(modelSelectorServerId);
+  const { width: pluginItemsWidth, onLayout: handlePluginItemsLayout } = usePluginToolbarWidth();
 
-  const displayProvider = findOptionLabel(
-    providerOptions,
-    selectedProviderId,
-    t("agentControls.provider.fallback"),
-  );
   const formattedThinkingOptions = useMemo(
     () => toThinkingControlOptions(thinkingOptions),
     [thinkingOptions],
@@ -541,23 +660,25 @@ function ControlledAgentControls({
   );
 
   const hasAnyControl = resolveHasAnyControl({
-    providerOptions,
     canSelectModel,
     thinkingOptions,
-    features,
+    controls: optionControls?.controls,
     hasMode: modeControl !== null && modeControl !== undefined,
+    pluginItemCount,
   });
   const featureControls = useMemo(
     () =>
-      (features ?? []).map((feature) => {
-        if (feature.type === "toggle") return { type: "toggle" as const };
-        const selectedOption = feature.options.find((option) => option.id === feature.value);
+      (optionControls?.controls ?? []).map((control) => {
+        if (control.type === "toggle") return { type: "toggle" as const };
+        if (control.desktopTrigger === "icon") return { type: "select" as const, label: null };
+        const selected = readSelectOption(control, optionControls?.options ?? {});
+        const choice = control.choices.find((candidate) => candidate.value === selected);
         return {
           type: "select" as const,
-          label: selectedOption?.label ?? feature.label,
+          label: choice?.label ?? control.label,
         };
       }),
-    [features],
+    [optionControls],
   );
   const controlPresence = useMemo(
     () => ({
@@ -565,17 +686,18 @@ function ControlledAgentControls({
       hasThinking: canSelectThinking,
       hasMode: modeControl !== null && modeControl !== undefined,
       features: featureControls,
+      pluginItemsWidth,
       fontScale,
     }),
-    [canSelectModel, canSelectThinking, featureControls, fontScale, modeControl],
+    [canSelectModel, canSelectThinking, featureControls, fontScale, modeControl, pluginItemsWidth],
   );
   const presentation = useMemo(() => resolveComposerControlPresentation(density), [density]);
   const layoutContextValue = useMemo(
     () => ({
-      glyphSize: resolveComposerToolbarGlyphSize(isNative ? "native" : "web"),
+      glyphs: toolbarGeometry.glyphs,
       presentation,
     }),
-    [presentation],
+    [presentation, toolbarGeometry],
   );
 
   const updateDensityForWidth = useCallback(
@@ -584,12 +706,20 @@ function ControlledAgentControls({
         availableWidth,
         currentDensity: densityRef.current,
         controls: controlPresence,
+        geometry: toolbarGeometry,
+        minimumDensity,
       });
       if (nextDensity === densityRef.current) return;
+      // Folding swaps the toolbar controls for the model sheet and back, so whatever menu or
+      // sheet was open belonged to controls that are gone.
+      if (densityFolds(nextDensity) !== densityFolds(densityRef.current)) {
+        setOpenSelector(null);
+        setActiveSheet(null);
+      }
       densityRef.current = nextDensity;
       setDensity(nextDensity);
     },
-    [controlPresence],
+    [controlPresence, minimumDensity, toolbarGeometry],
   );
 
   const handleLayout = useCallback(
@@ -608,65 +738,44 @@ function ControlledAgentControls({
     }
   }, [updateDensityForWidth]);
 
-  const modelDisabled = disabled;
-
-  const comboboxProviderOptions = useMemo<ComboboxOption[]>(
-    () => toComboboxOptions(providerOptions),
-    [providerOptions],
-  );
   const fallbackModelSelectorProviders = useMemo(
     () => buildFallbackModelSelectorProviders(provider, modelOptions),
     [modelOptions, provider],
   );
   const effectiveModelSelectorProviders = modelSelectorProviders ?? fallbackModelSelectorProviders;
-  const comboboxThinkingOptions = useMemo<ComboboxOption[]>(
-    () => toComboboxOptions(formattedThinkingOptions),
-    [formattedThinkingOptions],
-  );
 
-  const renderThinkingOption = useCallback(
-    (args: { option: ComboboxOption; selected: boolean; active: boolean; onPress: () => void }) => (
-      <ThinkingComboboxOption
-        option={args.option}
-        selected={args.selected}
-        active={args.active}
-        onPress={args.onPress}
-        iconColor={theme.colors.foreground}
-      />
-    ),
-    [theme.colors.foreground],
+  const thinking = useMemo(
+    () =>
+      canSelectThinking && onSelectThinkingOption
+        ? {
+            options: formattedThinkingOptions,
+            selectedId: selectedThinkingOptionId,
+            onSelect: onSelectThinkingOption,
+            displayLabel: displayThinking,
+          }
+        : null,
+    [
+      canSelectThinking,
+      displayThinking,
+      formattedThinkingOptions,
+      onSelectThinkingOption,
+      selectedThinkingOptionId,
+    ],
   );
+  const effortKeys = useEffortCycleShortcut(thinking, disabled);
+  const items = useAgentControlItems({
+    surface: presentation.foldControls ? "sheet" : "toolbar",
+    presentation,
+    thinking,
+    optionControls,
+  });
 
-  const handleOpenChange = useCallback(
-    (selector: AgentControlSelector) =>
-      buildOpenChangeHandler(selector, setOpenSelector, onDropdownClose),
-    [onDropdownClose],
-  );
-  const handleSheetOpenChange = useCallback(
-    (selector: AgentControlSelector) => (nextOpen: boolean) => {
-      setOpenSelector(nextOpen ? selector : null);
+  const handleToolbarOpenChange = useCallback(
+    (id: string | null) => {
+      setOpenSelector(id);
+      if (id === null) onDropdownClose?.();
     },
-    [],
-  );
-
-  const handleProviderPress = useCallback(() => {
-    handleOpenChange("provider")(openSelector !== "provider");
-  }, [handleOpenChange, openSelector]);
-
-  const handleThinkingPress = useCallback(() => {
-    handleOpenChange("thinking")(openSelector !== "thinking");
-  }, [handleOpenChange, openSelector]);
-
-  const handleProviderOpenChange = useMemo(() => handleOpenChange("provider"), [handleOpenChange]);
-  const handleThinkingOpenChange = useMemo(() => handleOpenChange("thinking"), [handleOpenChange]);
-
-  const handleProviderSelect = useCallback(
-    (id: string) => onSelectProvider?.(id),
-    [onSelectProvider],
-  );
-  const handleThinkingSelect = useCallback(
-    (id: string) => onSelectThinkingOption?.(id),
-    [onSelectThinkingOption],
+    [onDropdownClose],
   );
 
   const handleDesktopModelSelect = useCallback(
@@ -682,17 +791,6 @@ function ControlledAgentControls({
     [onSelectModel, onSelectProviderAndModel, provider],
   );
 
-  const providerPressableStyle = useMemo(
-    () =>
-      makeBadgePressableStyle(
-        styles.modeBadge,
-        styles.disabledBadge,
-        disabled || !canSelectProvider,
-        openSelector === "provider",
-      ),
-    [canSelectProvider, disabled, openSelector],
-  );
-
   const handleOpenSheet = useCallback((sheet: Exclude<ActiveSheet, null>) => {
     Keyboard.dismiss();
     setActiveSheet(sheet);
@@ -700,29 +798,19 @@ function ControlledAgentControls({
 
   const handleCloseSheet = useCallback(() => {
     setActiveSheet(null);
-    if (!isCompact) onDropdownClose?.();
-  }, [isCompact, onDropdownClose]);
-
-  const handleSelectThinkingAndClose = useCallback(
-    (thinkingOptionId: string) => {
-      onSelectThinkingOption?.(thinkingOptionId);
-      setActiveSheet(null);
-    },
-    [onSelectThinkingOption],
-  );
+    if (!presentation.foldControls) onDropdownClose?.();
+  }, [onDropdownClose, presentation.foldControls]);
 
   const handleSheetModelSelect = useCallback(
     (nextProviderId: string, modelId: string) => {
       pickSheetModel({
         nextProviderId,
         modelId,
-        currentProvider: provider,
         onSelectProviderAndModel,
-        onSelectProvider,
         onSelectModel,
       });
     },
-    [onSelectModel, onSelectProvider, onSelectProviderAndModel, provider],
+    [onSelectModel, onSelectProviderAndModel],
   );
 
   if (!hasAnyControl) {
@@ -731,18 +819,14 @@ function ControlledAgentControls({
 
   return (
     <ComposerControlLayoutProvider value={layoutContextValue}>
-      <View style={styles.container} onLayout={handleLayout}>
-        {!isCompact ? (
+      <View style={styles.container} onLayout={handleLayout} testID="agent-controls-toolbar">
+        {!presentation.foldControls ? (
           <DesktopAgentControlsContent
             provider={provider}
-            providerOptions={providerOptions}
-            selectedProviderId={selectedProviderId}
-            modelOptions={modelOptions}
             selectedModelId={selectedModelId}
-            thinkingOptions={formattedThinkingOptions}
-            selectedThinkingOptionId={selectedThinkingOptionId}
-            features={features}
-            onSetFeature={onSetFeature}
+            thinkingItems={items.thinking}
+            effortKeys={effortKeys}
+            featureItems={items.features}
             onApplyAgentProfile={onApplyAgentProfile}
             onEditAgentProfiles={onEditAgentProfiles}
             onCreateAgentProfile={onCreateAgentProfile}
@@ -754,32 +838,17 @@ function ControlledAgentControls({
             agentProfiles={agentProfiles}
             disabled={disabled}
             isModelLoading={isModelLoading}
-            canSelectProvider={canSelectProvider}
             canSelectModel={canSelectModel}
-            canSelectThinking={canSelectThinking}
             modelSelectorProviders={effectiveModelSelectorProviders}
-            modelDisabled={modelDisabled}
-            comboboxProviderOptions={comboboxProviderOptions}
-            comboboxThinkingOptions={comboboxThinkingOptions}
-            displayProvider={displayProvider}
-            displayThinking={displayThinking}
             openSelector={openSelector}
-            providerAnchorRef={providerAnchorRef}
-            thinkingAnchorRef={thinkingAnchorRef}
-            providerPressableStyle={providerPressableStyle}
-            handleProviderPress={handleProviderPress}
-            handleThinkingPress={handleThinkingPress}
-            handleProviderSelect={handleProviderSelect}
-            handleThinkingSelect={handleThinkingSelect}
             handleDesktopModelSelect={handleDesktopModelSelect}
-            handleProviderOpenChange={handleProviderOpenChange}
-            handleThinkingOpenChange={handleThinkingOpenChange}
-            handleOpenChange={handleOpenChange}
-            handleNestedOpenChange={handleSheetOpenChange}
-            renderThinkingOption={renderThinkingOption}
+            handleToolbarOpenChange={handleToolbarOpenChange}
+            handleSheetOpenChange={setOpenSelector}
             modeControl={modeControl}
+            agentModePicker={agentModePicker}
             presentation={presentation}
-            glyphSize={layoutContextValue.glyphSize}
+            hasPluginItems={pluginItemsWidth > 0}
+            glyphs={layoutContextValue.glyphs}
             activeSheet={activeSheet}
             handleOpenSheet={handleOpenSheet}
             handleCloseSheet={handleCloseSheet}
@@ -789,9 +858,9 @@ function ControlledAgentControls({
           <SheetAgentControlsContent
             provider={provider}
             selectedModelId={selectedModelId}
-            selectedThinkingOptionId={selectedThinkingOptionId}
-            features={features}
-            onSetFeature={onSetFeature}
+            thinkingItems={items.thinking}
+            effortKeys={effortKeys}
+            featureItems={items.features}
             onApplyAgentProfile={onApplyAgentProfile}
             onEditAgentProfiles={onEditAgentProfiles}
             onCreateAgentProfile={onCreateAgentProfile}
@@ -804,43 +873,41 @@ function ControlledAgentControls({
             disabled={disabled}
             isModelLoading={isModelLoading}
             canSelectModel={canSelectModel}
-            canSelectThinking={canSelectThinking}
             modelSelectorProviders={effectiveModelSelectorProviders}
-            modelDisabled={modelDisabled}
-            comboboxThinkingOptions={comboboxThinkingOptions}
             openSelector={openSelector}
-            displayThinking={displayThinking}
-            activeSheet={activeSheet}
-            handleOpenSheet={handleOpenSheet}
-            handleCloseSheet={handleCloseSheet}
+            displayThinking={thinking ? displayThinking : null}
             handleSheetModelSelect={handleSheetModelSelect}
-            handleSelectThinkingAndClose={handleSelectThinkingAndClose}
-            handleOpenChange={handleSheetOpenChange}
-            renderThinkingOption={renderThinkingOption}
+            handleSheetOpenChange={setOpenSelector}
             modeControl={modeControl}
-            glyphSize={layoutContextValue.glyphSize}
+            agentModePicker={agentModePicker}
+            glyphs={layoutContextValue.glyphs}
+            showLabels={presentation.showModelLabel}
             modelSelectorServerId={modelSelectorServerId}
             canSwitchProvider={Boolean(onSelectProviderAndModel)}
           />
         )}
+        {!isCompact ? (
+          <PluginToolbarSlot
+            serverId={modelSelectorServerId}
+            width={pluginItemsWidth}
+            fits={!presentation.aggregateFeatures}
+            onLayout={handlePluginItemsLayout}
+          />
+        ) : null}
       </View>
     </ComposerControlLayoutProvider>
   );
 }
 
-interface DesktopAgentControlsContentProps {
+interface AgentControlsContentProps {
   provider: string;
-  providerOptions?: AgentControlOption[];
-  selectedProviderId?: string;
-  modelOptions?: AgentControlOption[];
   selectedModelId?: string;
-  thinkingOptions?: AgentControlOption[];
-  selectedThinkingOptionId?: string;
-  features?: AgentFeature[];
-  onSetFeature?: (featureId: string, value: unknown) => void;
+  thinkingItems: ComposerControlItem[];
+  effortKeys: ReturnType<typeof useShortcutKeys>;
+  featureItems: ComposerControlItem[];
   onApplyAgentProfile?: (profileId: string) => void;
   onEditAgentProfiles?: () => void;
-  onCreateAgentProfile?: (seed: AgentProfileSeed) => void;
+  onCreateAgentProfile?: (seed: AgentProfileSeed) => Promise<AgentProfile | null> | void;
   onEditAgentProfile?: (profileId: string) => void;
   onDropdownClose?: () => void;
   onModelSelectorOpen?: () => void;
@@ -849,57 +916,36 @@ interface DesktopAgentControlsContentProps {
   agentProfiles: AgentProfilePicker | null;
   disabled: boolean;
   isModelLoading: boolean;
-  canSelectProvider: boolean;
   canSelectModel: boolean;
-  canSelectThinking: boolean;
   modelSelectorProviders: ProviderSelectorProvider[];
-  modelDisabled: boolean;
-  comboboxProviderOptions: ComboboxOption[];
-  comboboxThinkingOptions: ComboboxOption[];
-  displayProvider: string;
-  displayThinking: string;
-  openSelector: AgentControlSelector | null;
-  providerAnchorRef: RefObject<View | null>;
-  thinkingAnchorRef: RefObject<View | null>;
-  providerPressableStyle: (state: PressableStateCallbackType) => StyleProp<ViewStyle>;
-  handleProviderPress: () => void;
-  handleThinkingPress: () => void;
-  handleProviderSelect: (id: string) => void;
-  handleThinkingSelect: (id: string) => void;
-  handleDesktopModelSelect: (providerId: string, modelId: string) => void;
-  handleProviderOpenChange: (open: boolean) => void;
-  handleThinkingOpenChange: (open: boolean) => void;
-  handleOpenChange: (selector: AgentControlSelector) => (nextOpen: boolean) => void;
-  handleNestedOpenChange: (selector: AgentControlSelector) => (nextOpen: boolean) => void;
-  renderThinkingOption: (args: {
-    option: ComboboxOption;
-    selected: boolean;
-    active: boolean;
-    onPress: () => void;
-  }) => ReactElement;
+  openSelector: string | null;
+  handleSheetOpenChange: (id: string | null) => void;
   modeControl?: AgentModeControlValue | null;
-  presentation: ComposerControlPresentation;
-  glyphSize: number;
-  activeSheet: ActiveSheet;
-  handleOpenSheet: (sheet: Exclude<ActiveSheet, null>) => void;
-  handleCloseSheet: () => void;
+  agentModePicker?: AgentModePickerSlot;
+  glyphs: ToolbarGlyphs;
   modelSelectorServerId: string | null;
 }
 
-const DESKTOP_SEARCH_THRESHOLD = 6;
+interface DesktopAgentControlsContentProps extends AgentControlsContentProps {
+  handleDesktopModelSelect: (providerId: string, modelId: string) => void;
+  handleToolbarOpenChange: (id: string | null) => void;
+  presentation: ComposerControlPresentation;
+  hasPluginItems: boolean;
+  activeSheet: ActiveSheet;
+  handleOpenSheet: (sheet: Exclude<ActiveSheet, null>) => void;
+  handleCloseSheet: () => void;
+}
 
 function DesktopAgentControlsContent(props: DesktopAgentControlsContentProps) {
+  const sheetBridge = useComposerSheetBridge();
   const { theme } = useUnistyles();
   const { t } = useTranslation();
   const {
     provider,
-    providerOptions,
-    selectedProviderId,
     selectedModelId,
-    thinkingOptions,
-    selectedThinkingOptionId,
-    features,
-    onSetFeature,
+    thinkingItems,
+    effortKeys,
+    featureItems,
     onApplyAgentProfile,
     onEditAgentProfiles,
     onCreateAgentProfile,
@@ -911,151 +957,80 @@ function DesktopAgentControlsContent(props: DesktopAgentControlsContentProps) {
     agentProfiles,
     disabled,
     isModelLoading,
-    canSelectProvider,
     canSelectModel,
-    canSelectThinking,
     modelSelectorProviders,
-    modelDisabled,
-    comboboxProviderOptions,
-    comboboxThinkingOptions,
-    displayProvider,
-    displayThinking,
     openSelector,
-    providerAnchorRef,
-    thinkingAnchorRef,
-    providerPressableStyle,
-    handleProviderPress,
-    handleThinkingPress,
-    handleProviderSelect,
-    handleThinkingSelect,
     handleDesktopModelSelect,
-    handleProviderOpenChange,
-    handleThinkingOpenChange,
-    handleOpenChange,
-    handleNestedOpenChange,
-    renderThinkingOption,
+    handleToolbarOpenChange,
+    handleSheetOpenChange,
     modeControl,
+    agentModePicker,
     presentation,
-    glyphSize,
+    hasPluginItems,
+    glyphs,
     activeSheet,
     handleOpenSheet,
     handleCloseSheet,
     modelSelectorServerId,
   } = props;
+  const { action: toggleAction, keys: modelKeys } = useModelPickerShortcut(disabled);
+  const modelTooltipLabel = t(getAgentControlHintKey("model"));
   const modelToolbar = useMemo(
-    () => ({ glyphSize, showCaret: presentation.showCarets }),
-    [glyphSize, presentation.showCarets],
+    () => ({
+      glyph: glyphs.label,
+      showCaret: presentation.showCarets,
+      tooltip: <ControlTooltipHint label={modelTooltipLabel} shortcutKeys={modelKeys} />,
+    }),
+    [glyphs.label, presentation.showCarets, modelTooltipLabel, modelKeys],
   );
   const featuresSheetHeader = useMemo<SheetHeader>(
     () => ({ title: t("agentControls.features.title") }),
     [t],
   );
   const handleOpenFeatures = useCallback(() => handleOpenSheet("features"), [handleOpenSheet]);
+  const hasFeatures = featureItems.length > 0 || hasPluginItems;
   return (
     <>
-      {providerOptions && providerOptions.length > 0 ? (
-        <>
-          <ComboboxTrigger
-            ref={providerAnchorRef}
-            collapsable={false}
-            disabled={disabled || !canSelectProvider}
-            onPress={handleProviderPress}
-            style={providerPressableStyle}
-            accessibilityRole="button"
-            accessibilityLabel={t("agentControls.provider.select")}
-            testID="agent-provider-selector"
-          >
-            <Text style={styles.modeBadgeText}>{displayProvider}</Text>
-          </ComboboxTrigger>
-          <Combobox
-            options={comboboxProviderOptions}
-            value={selectedProviderId ?? ""}
-            onSelect={handleProviderSelect}
-            searchable={comboboxProviderOptions.length > DESKTOP_SEARCH_THRESHOLD}
-            open={openSelector === "provider"}
-            onOpenChange={handleProviderOpenChange}
-            anchorRef={providerAnchorRef}
-            desktopPlacement="top-start"
-          />
-        </>
-      ) : null}
-
       {canSelectModel ? (
-        <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
-          <TooltipTrigger asChild triggerRefProp="ref">
-            <View style={styles.modelControl}>
-              <CombinedModelSelector
-                providers={modelSelectorProviders}
-                selectedProvider={provider}
-                selectedModel={selectedModelId ?? ""}
-                onSelect={handleDesktopModelSelect}
-                profiles={agentProfiles}
-                onApplyProfile={onApplyAgentProfile}
-                onEditProfiles={onEditAgentProfiles}
-                onCreateProfile={onCreateAgentProfile}
-                onEditProfile={onEditAgentProfile}
-                isLoading={isModelLoading}
-                disabled={modelDisabled}
-                onOpen={onModelSelectorOpen}
-                onClose={onDropdownClose}
-                onRetryProvider={onRetryModelProvider}
-                isRetryingProvider={isRetryingModelProvider}
-                serverId={modelSelectorServerId}
-                desktopPlacement="top-start"
-                desktopMinWidth={360}
-                toolbar={modelToolbar}
-              />
-            </View>
-          </TooltipTrigger>
-          <TooltipContent side="top" align="center" offset={8}>
-            <Text style={styles.tooltipText}>{t(getAgentControlHintKey("model"))}</Text>
-          </TooltipContent>
-        </Tooltip>
+        <View style={styles.modelControl}>
+          <CombinedModelSelector
+            providers={modelSelectorProviders}
+            selectedProvider={provider}
+            selectedModel={selectedModelId ?? ""}
+            onSelect={handleDesktopModelSelect}
+            profiles={agentProfiles}
+            onApplyProfile={onApplyAgentProfile}
+            onEditProfiles={onEditAgentProfiles}
+            onCreateProfile={onCreateAgentProfile}
+            onEditProfile={onEditAgentProfile}
+            isLoading={isModelLoading}
+            disabled={disabled}
+            toggleAction={toggleAction}
+            onOpen={onModelSelectorOpen}
+            onClose={onDropdownClose}
+            onRetryProvider={onRetryModelProvider}
+            isRetryingProvider={isRetryingModelProvider}
+            serverId={modelSelectorServerId}
+            desktopPlacement="top-start"
+            desktopMinWidth={360}
+            toolbar={modelToolbar}
+          />
+        </View>
       ) : null}
 
-      {thinkingOptions && thinkingOptions.length > 0 ? (
-        <>
-          <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
-            <TooltipTrigger asChild triggerRefProp="ref">
-              <AgentControlTrigger
-                ref={thinkingAnchorRef}
-                icon={ThinkingIcon}
-                surface="toolbar"
-                label={t("agentControls.thinking.title")}
-                value={displayThinking}
-                showToolbarLabel={presentation.showThinkingLabel}
-                showCaret={presentation.showCarets}
-                open={openSelector === "thinking"}
-                disabled={disabled || !canSelectThinking}
-                onPress={handleThinkingPress}
-                accessibilityLabel={t("agentControls.thinking.selectWithValue", {
-                  value: displayThinking,
-                })}
-                testID="agent-thinking-selector"
-              />
-            </TooltipTrigger>
-            <TooltipContent side="top" align="center" offset={8}>
-              <Text style={styles.tooltipText}>{t(getAgentControlHintKey("thinking"))}</Text>
-            </TooltipContent>
-          </Tooltip>
-          <Combobox
-            options={comboboxThinkingOptions}
-            value={selectedThinkingOptionId ?? ""}
-            onSelect={handleThinkingSelect}
-            searchable={comboboxThinkingOptions.length > DESKTOP_SEARCH_THRESHOLD}
-            open={openSelector === "thinking"}
-            onOpenChange={handleThinkingOpenChange}
-            anchorRef={thinkingAnchorRef}
-            desktopPlacement="top-start"
-            desktopMinWidth={200}
-            renderOption={renderThinkingOption}
-          />
-        </>
-      ) : null}
+      <ComposerControls
+        items={thinkingItems}
+        shortcutKeys={effortKeys}
+        surface="toolbar"
+        disabled={disabled}
+        openId={openSelector}
+        onOpenIdChange={handleToolbarOpenChange}
+      />
 
       {modeControl ? <AgentModeControl {...modeControl} onClose={onDropdownClose} /> : null}
+      {agentModePicker?.("toolbar")}
 
-      {presentation.aggregateFeatures && features?.length ? (
+      {presentation.aggregateFeatures && hasFeatures ? (
         <>
           <Pressable
             onPress={handleOpenFeatures}
@@ -1065,95 +1040,60 @@ function DesktopAgentControlsContent(props: DesktopAgentControlsContentProps) {
             accessibilityLabel={t("agentControls.features.open")}
             testID="agent-controls-features"
           >
-            <ComposerToolbarGlyph size={glyphSize}>
-              <Settings2 size={glyphSize} color={theme.colors.foregroundMuted} />
+            <ComposerToolbarGlyph role="icon">
+              <Settings2
+                size={glyphs.icon.size}
+                strokeWidth={glyphs.icon.strokeWidth}
+                color={toolbarGlyphColor(theme, glyphs.icon.tone)}
+              />
             </ComposerToolbarGlyph>
           </Pressable>
           <AdaptiveModalSheet
             header={featuresSheetHeader}
             visible={activeSheet === "features"}
             onClose={handleCloseSheet}
+            contextBridge={sheetBridge}
             testID="agent-features-sheet"
           >
-            {features.map((feature) => (
-              <SheetFeatureItem
-                key={`feature-${feature.id}`}
-                feature={feature}
-                disabled={disabled}
-                openSelector={openSelector}
-                handleOpenChange={handleNestedOpenChange}
-                onSetFeature={onSetFeature}
-              />
-            ))}
+            <ComposerControls
+              items={featureItems}
+              surface="sheet"
+              disabled={disabled}
+              openId={openSelector}
+              onOpenIdChange={handleSheetOpenChange}
+            />
+            <PluginComposerItems serverId={modelSelectorServerId} surface="sheet" />
           </AdaptiveModalSheet>
         </>
       ) : (
-        features?.map((feature) => (
-          <DesktopFeatureItem
-            key={`feature-${feature.id}`}
-            feature={feature}
-            disabled={disabled}
-            openSelector={openSelector}
-            handleOpenChange={handleOpenChange}
-            onSetFeature={onSetFeature}
-            onActionComplete={onDropdownClose}
-          />
-        ))
+        <ComposerControls
+          items={featureItems}
+          surface="toolbar"
+          disabled={disabled}
+          openId={openSelector}
+          onOpenIdChange={handleToolbarOpenChange}
+          onActionComplete={onDropdownClose}
+        />
       )}
     </>
   );
 }
 
-interface SheetAgentControlsContentProps {
-  provider: string;
-  selectedModelId?: string;
-  selectedThinkingOptionId?: string;
-  features?: AgentFeature[];
-  onSetFeature?: (featureId: string, value: unknown) => void;
-  onApplyAgentProfile?: (profileId: string) => void;
-  onEditAgentProfiles?: () => void;
-  onCreateAgentProfile?: (seed: AgentProfileSeed) => void;
-  onEditAgentProfile?: (profileId: string) => void;
-  onDropdownClose?: () => void;
-  onModelSelectorOpen?: () => void;
-  onRetryModelProvider?: (provider: AgentProvider) => void;
-  isRetryingModelProvider: boolean;
-  agentProfiles: AgentProfilePicker | null;
-  disabled: boolean;
-  isModelLoading: boolean;
-  canSelectModel: boolean;
-  canSelectThinking: boolean;
-  modelSelectorProviders: ProviderSelectorProvider[];
-  modelDisabled: boolean;
-  comboboxThinkingOptions: ComboboxOption[];
-  openSelector: AgentControlSelector | null;
-  displayThinking: string;
-  activeSheet: ActiveSheet;
-  handleOpenSheet: (sheet: Exclude<ActiveSheet, null>) => void;
-  handleCloseSheet: () => void;
+interface SheetAgentControlsContentProps extends AgentControlsContentProps {
+  showLabels: boolean;
+  displayThinking: string | null;
   handleSheetModelSelect: (providerId: string, modelId: string) => void;
-  handleSelectThinkingAndClose: (thinkingOptionId: string) => void;
-  handleOpenChange: (selector: AgentControlSelector) => (nextOpen: boolean) => void;
-  renderThinkingOption: (args: {
-    option: ComboboxOption;
-    selected: boolean;
-    active: boolean;
-    onPress: () => void;
-  }) => ReactElement;
-  modeControl?: AgentModeControlValue | null;
-  glyphSize: number;
-  modelSelectorServerId: string | null;
   canSwitchProvider: boolean;
 }
 
 function SheetAgentControlsContent(props: SheetAgentControlsContentProps) {
-  const { t } = useTranslation();
+  const sheetBridge = useComposerSheetBridge();
   const {
     provider,
     selectedModelId,
-    selectedThinkingOptionId,
-    features,
-    onSetFeature,
+    thinkingItems,
+    effortKeys,
+    featureItems,
     onApplyAgentProfile,
     onEditAgentProfiles,
     onCreateAgentProfile,
@@ -1166,86 +1106,40 @@ function SheetAgentControlsContent(props: SheetAgentControlsContentProps) {
     disabled,
     isModelLoading,
     canSelectModel,
-    canSelectThinking,
     modelSelectorProviders,
-    modelDisabled,
-    comboboxThinkingOptions,
     openSelector,
     displayThinking,
-    activeSheet,
-    handleOpenSheet,
-    handleCloseSheet,
     handleSheetModelSelect,
-    handleSelectThinkingAndClose,
-    handleOpenChange,
-    renderThinkingOption,
+    handleSheetOpenChange,
     modeControl,
-    glyphSize,
+    agentModePicker,
+    glyphs,
+    showLabels,
     modelSelectorServerId,
     canSwitchProvider,
   } = props;
 
-  const thinkingAnchorRef = useRef<View | null>(null);
-
-  const hasThinking = comboboxThinkingOptions.length > 0;
-
-  const handleOpenThinking = useCallback(() => handleOpenSheet("thinking"), [handleOpenSheet]);
-  const handleThinkingSheetOpenChange = useCallback(
-    (nextOpen: boolean) => {
-      if (nextOpen) {
-        handleOpenSheet("thinking");
-      } else {
-        handleCloseSheet();
-      }
-    },
-    [handleCloseSheet, handleOpenSheet],
-  );
-
   const sheetControls = (
     <View style={styles.combinedSheetControls} testID="agent-controls-combined-sheet-controls">
-      {hasThinking ? (
-        <>
-          <AgentControlTrigger
-            ref={thinkingAnchorRef}
-            icon={ThinkingIcon}
-            surface="sheet"
-            label={t("agentControls.thinking.title")}
-            value={displayThinking}
-            open={activeSheet === "thinking"}
-            onPress={handleOpenThinking}
-            disabled={disabled || !canSelectThinking}
-            accessibilityLabel={t("agentControls.thinking.selectWithValue", {
-              value: displayThinking,
-            })}
-            testID="agent-controls-thinking"
-          />
-          <Combobox
-            options={comboboxThinkingOptions}
-            value={selectedThinkingOptionId ?? ""}
-            onSelect={handleSelectThinkingAndClose}
-            searchable={false}
-            title={t("agentControls.thinking.title")}
-            open={activeSheet === "thinking"}
-            onOpenChange={handleThinkingSheetOpenChange}
-            anchorRef={thinkingAnchorRef}
-            renderOption={renderThinkingOption}
-            presentation="push"
-          />
-        </>
-      ) : null}
+      <ComposerControls
+        items={thinkingItems}
+        surface="sheet"
+        disabled={disabled}
+        openId={openSelector}
+        onOpenIdChange={handleSheetOpenChange}
+      />
 
       {modeControl ? <AgentModeControl {...modeControl} surface="sheet" /> : null}
+      {agentModePicker?.("sheet")}
 
-      {(features ?? []).map((feature) => (
-        <SheetFeatureItem
-          key={`feature-${feature.id}`}
-          feature={feature}
-          disabled={disabled}
-          openSelector={openSelector}
-          handleOpenChange={handleOpenChange}
-          onSetFeature={onSetFeature}
-        />
-      ))}
+      <ComposerControls
+        items={featureItems}
+        surface="sheet"
+        disabled={disabled}
+        openId={openSelector}
+        onOpenIdChange={handleSheetOpenChange}
+      />
+      <PluginComposerItems serverId={modelSelectorServerId} surface="sheet" />
     </View>
   );
 
@@ -1254,21 +1148,24 @@ function SheetAgentControlsContent(props: SheetAgentControlsContentProps) {
       providers={modelSelectorProviders}
       selectedProvider={provider}
       selectedModel={selectedModelId ?? ""}
-      thinkingLabel={hasThinking ? displayThinking : null}
+      thinkingLabel={displayThinking}
+      effortKeys={effortKeys}
       onSelect={handleSheetModelSelect}
       profiles={agentProfiles}
       onApplyProfile={onApplyAgentProfile}
       onEditProfiles={onEditAgentProfiles}
       onCreateProfile={onCreateAgentProfile}
       onEditProfile={onEditAgentProfile}
+      contextBridge={sheetBridge}
       isLoading={isModelLoading}
-      disabled={modelDisabled}
+      disabled={disabled}
       onOpen={onModelSelectorOpen}
       onClose={onDropdownClose}
       onRetryProvider={onRetryModelProvider}
       isRetryingProvider={isRetryingModelProvider}
       serverId={modelSelectorServerId}
-      glyphSize={glyphSize}
+      glyphs={glyphs}
+      showLabels={showLabels}
       canSwitchProvider={canSwitchProvider}
     >
       {sheetControls}
@@ -1276,275 +1173,38 @@ function SheetAgentControlsContent(props: SheetAgentControlsContentProps) {
   ) : null;
 }
 
-function DesktopFeatureItem({
-  feature,
-  disabled,
-  openSelector,
-  handleOpenChange,
-  onSetFeature,
-  onActionComplete,
-}: {
-  feature: AgentFeature;
-  disabled: boolean;
-  openSelector: AgentControlSelector | null;
-  handleOpenChange: (selector: AgentControlSelector) => (nextOpen: boolean) => void;
-  onSetFeature?: (featureId: string, value: unknown) => void;
-  onActionComplete?: () => void;
-}) {
-  const { theme } = useUnistyles();
-  const featureSelector: AgentControlSelector = `feature-${feature.id}`;
-  const featureAnchorRef = useRef<View>(null);
-
-  const handleFeatureOpenChange = useMemo(
-    () => handleOpenChange(featureSelector),
-    [handleOpenChange, featureSelector],
-  );
-  const handleSelectPress = useCallback(
-    () => handleFeatureOpenChange(openSelector !== featureSelector),
-    [featureSelector, handleFeatureOpenChange, openSelector],
-  );
-
-  const handleTogglePress = useCallback(() => {
-    if (feature.type === "toggle") {
-      onSetFeature?.(feature.id, !feature.value);
-      onActionComplete?.();
-    }
-  }, [feature, onActionComplete, onSetFeature]);
-
-  const handleSelectOption = useCallback(
-    (optionId: string) => {
-      onSetFeature?.(feature.id, optionId);
-    },
-    [feature.id, onSetFeature],
-  );
-  const comboboxOptions = useMemo<ComboboxOption[]>(
-    () =>
-      feature.type === "select"
-        ? feature.options.map((option) => ({ id: option.id, label: option.label }))
-        : [],
-    [feature],
-  );
-
-  if (feature.type === "toggle") {
-    const FeatureIcon = getAgentFeatureIcon(feature.icon);
-    return (
-      <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
-        <TooltipTrigger asChild triggerRefProp="ref">
-          <AgentControlTrigger
-            icon={FeatureIcon}
-            iconColor={getFeatureIconColor(
-              feature.id,
-              feature.value,
-              theme.colors.palette,
-              theme.colors.foregroundMuted,
-            )}
-            surface="toolbar"
-            label={feature.label}
-            showToolbarLabel={false}
-            disabled={disabled}
-            onPress={handleTogglePress}
-            accessibilityLabel={getFeatureTooltip(feature)}
-            testID={`agent-feature-${feature.id}`}
-          />
-        </TooltipTrigger>
-        <TooltipContent side="top" align="center" offset={8}>
-          <Text style={styles.tooltipText}>{getFeatureTooltip(feature)}</Text>
-        </TooltipContent>
-      </Tooltip>
-    );
-  }
-
-  if (feature.type === "select") {
-    const FeatureIcon = getAgentFeatureIcon(feature.icon);
-    const selectedOption = feature.options.find((o) => o.id === feature.value);
-    return (
-      <>
-        <Tooltip delayDuration={0} enabledOnDesktop enabledOnMobile={false}>
-          <TooltipTrigger asChild triggerRefProp="ref">
-            <AgentControlTrigger
-              ref={featureAnchorRef}
-              icon={FeatureIcon}
-              surface="toolbar"
-              label={feature.label}
-              value={selectedOption?.label ?? feature.label}
-              open={openSelector === featureSelector}
-              disabled={disabled}
-              onPress={handleSelectPress}
-              accessibilityLabel={getFeatureTooltip(feature)}
-              testID={`agent-feature-${feature.id}`}
-            />
-          </TooltipTrigger>
-          <TooltipContent side="top" align="center" offset={8}>
-            <Text style={styles.tooltipText}>{getFeatureTooltip(feature)}</Text>
-          </TooltipContent>
-        </Tooltip>
-        <Combobox
-          options={comboboxOptions}
-          value={String(feature.value)}
-          onSelect={handleSelectOption}
-          open={openSelector === featureSelector}
-          onOpenChange={handleFeatureOpenChange}
-          anchorRef={featureAnchorRef}
-          desktopPlacement="top-start"
-        />
-      </>
-    );
-  }
-
-  return null;
-}
-
-function SheetFeatureItem({
-  feature,
-  disabled,
-  openSelector,
-  handleOpenChange,
-  onSetFeature,
-}: {
-  feature: AgentFeature;
-  disabled: boolean;
-  openSelector: AgentControlSelector | null;
-  handleOpenChange: (selector: AgentControlSelector) => (nextOpen: boolean) => void;
-  onSetFeature?: (featureId: string, value: unknown) => void;
-}) {
-  const { theme } = useUnistyles();
-  const { t } = useTranslation();
-  const featureSelector: AgentControlSelector = `feature-${feature.id}`;
-  const featureAnchorRef = useRef<View>(null);
-
-  const handleFeatureOpenChange = useMemo(
-    () => handleOpenChange(featureSelector),
-    [handleOpenChange, featureSelector],
-  );
-  const handleSelectPress = useCallback(
-    () => handleFeatureOpenChange(openSelector !== featureSelector),
-    [featureSelector, handleFeatureOpenChange, openSelector],
-  );
-  const sheetHeader = useMemo<SheetHeader>(() => ({ title: feature.label }), [feature.label]);
-
-  const handleSelectOption = useCallback(
-    (optionId: string) => {
-      onSetFeature?.(feature.id, feature.type === "toggle" ? optionId === "true" : optionId);
-    },
-    [feature.id, feature.type, onSetFeature],
-  );
-  const comboboxOptions = useMemo<ComboboxOption[]>(() => {
-    if (feature.type === "select") {
-      return feature.options.map((option) => ({ id: option.id, label: option.label }));
-    }
-    return [
-      { id: "true", label: t("agentControls.features.on") },
-      { id: "false", label: t("agentControls.features.off") },
-    ];
-  }, [feature, t]);
-
-  if (feature.type === "toggle") {
-    const FeatureIcon = getAgentFeatureIcon(feature.icon);
-    return (
-      <>
-        <AgentControlTrigger
-          ref={featureAnchorRef}
-          icon={FeatureIcon}
-          iconColor={getFeatureIconColor(
-            feature.id,
-            feature.value,
-            theme.colors.palette,
-            theme.colors.foregroundMuted,
-          )}
-          surface="sheet"
-          label={feature.label}
-          value={feature.value ? t("agentControls.features.on") : t("agentControls.features.off")}
-          open={openSelector === featureSelector}
-          disabled={disabled}
-          onPress={handleSelectPress}
-          accessibilityLabel={getFeatureTooltip(feature)}
-          testID={`agent-feature-${feature.id}`}
-        />
-        <Combobox
-          options={comboboxOptions}
-          value={String(feature.value)}
-          onSelect={handleSelectOption}
-          open={openSelector === featureSelector}
-          onOpenChange={handleFeatureOpenChange}
-          anchorRef={featureAnchorRef}
-          presentation="push"
-          searchable={false}
-          header={sheetHeader}
-        />
-      </>
-    );
-  }
-
-  if (feature.type === "select") {
-    const FeatureIcon = getAgentFeatureIcon(feature.icon);
-    const selectedOption = feature.options.find((o) => o.id === feature.value);
-    return (
-      <>
-        <AgentControlTrigger
-          ref={featureAnchorRef}
-          icon={FeatureIcon}
-          surface="sheet"
-          label={feature.label}
-          value={selectedOption?.label ?? feature.label}
-          open={openSelector === featureSelector}
-          disabled={disabled}
-          onPress={handleSelectPress}
-          accessibilityLabel={getFeatureTooltip(feature)}
-          testID={`agent-feature-${feature.id}`}
-        />
-        <Combobox
-          options={comboboxOptions}
-          value={String(feature.value)}
-          onSelect={handleSelectOption}
-          open={openSelector === featureSelector}
-          onOpenChange={handleFeatureOpenChange}
-          anchorRef={featureAnchorRef}
-          presentation="push"
-          header={sheetHeader}
-        />
-      </>
-    );
-  }
-
-  return null;
-}
-
-function ThinkingComboboxOption({
-  option,
-  selected,
-  active,
-  onPress,
-  iconColor,
-}: {
-  option: ComboboxOption;
-  selected: boolean;
-  active: boolean;
-  onPress: () => void;
-  iconColor: string;
-}) {
-  const leadingSlot = useMemo(() => <ThinkingIcon size={16} color={iconColor} />, [iconColor]);
-  return (
-    <ComboboxItem
-      label={option.label}
-      selected={selected}
-      active={active}
-      onPress={onPress}
-      leadingSlot={leadingSlot}
-    />
+function useAgentOptionControls(
+  agent: { controls?: AgentOptionControl[]; options?: ProviderOptions } | null | undefined,
+  onSetOption: ComposerOptionControls["onSetOption"],
+): ComposerOptionControls {
+  const controls = agent?.controls;
+  const options = agent?.options;
+  return useMemo(
+    () => ({ controls: controls ?? [], options: options ?? EMPTY_OPTIONS, onSetOption }),
+    [controls, onSetOption, options],
   );
 }
 
+// Cross-provider fork (fork) + agent profiles (upstream) keep this control dense.
+// eslint-disable-next-line complexity -- live agent controls orchestrate many surfaces
 export const AgentControls = memo(function AgentControls({
+  showToolbar,
   agentId,
   serverId,
   onDropdownClose,
   isCompactLayout,
 }: AgentControlsProps) {
-  const { updatePreferences } = useFormPreferences();
+  const { t } = useTranslation();
+  const { preferences, updatePreferences } = useFormPreferences(serverId);
   const agent = useSessionStore(
     useShallow((state) => selectAgentControlsSlice(state, serverId, agentId)),
   );
   const client = useSessionStore((state) => state.sessions[serverId]?.client ?? null);
+  const agentLabels = useSessionStore(
+    (state) => state.sessions[serverId]?.agents.get(agentId)?.labels ?? null,
+  );
+  // Machinery agents (mission-control labels) run in a fixed mode.
+  const isSystemOwned = isSystemOwnedAgentLabels(agentLabels ?? undefined);
   const toast = useToast();
   const modeControl = useLiveAgentModeControl(serverId, agentId);
   const commandCenterModes = toCommandCenterModes(modeControl);
@@ -1559,36 +1219,28 @@ export const AgentControls = memo(function AgentControls({
   } = useProvidersSnapshot(serverId, { cwd: agent?.cwd });
 
   const snapshotSelectedEntry = useMemo(
-    () => resolveSnapshotSelectedEntry(snapshotEntries, agent?.provider),
+    () => resolveProviderSnapshotEntry(snapshotEntries, agent?.provider),
     [snapshotEntries, agent?.provider],
   );
 
   const models = filterSelectableModels(snapshotSelectedEntry?.models ?? null);
   const selectedProviderIsLoading = snapshotSelectedEntry?.status === "loading";
 
-  const agentProviderDefinitions = useMemo(
-    () => buildAgentProviderDefinitions(agent?.provider, snapshotEntries),
-    [agent?.provider, snapshotEntries],
+  // Live agents still only mutate model on the current provider session, but the
+  // selector lists every available provider so the user can fork into another one.
+  const agentModelSelectorProviders = useMemo(
+    () =>
+      buildSelectableProviderSelectorProviders(snapshotEntries, {
+        selectedProvider: agent?.provider ?? null,
+      }),
+    [snapshotEntries, agent?.provider],
   );
-
-  const agentProviderModels = useMemo(
-    () => buildAgentProviderModels(agent?.provider, models),
-    [agent?.provider, models],
-  );
-  const agentModelSelectorProviders = useMemo(() => {
-    if (snapshotSelectedEntry) {
-      return buildSelectableProviderSelectorProviders([snapshotSelectedEntry]);
-    }
-    return buildProviderSelectorProviders({
-      providerDefinitions: agentProviderDefinitions,
-      modelsByProvider: agentProviderModels,
-    });
-  }, [agentProviderDefinitions, agentProviderModels, snapshotSelectedEntry]);
 
   const modelSelection = resolveAgentModelSelection({
     models,
     runtimeModelId: agent?.runtimeModelId,
     configuredModelId: agent?.model,
+    runtimeThinkingOptionId: agent?.runtimeThinkingOptionId,
     explicitThinkingOptionId: agent?.thinkingOptionId,
   });
 
@@ -1605,19 +1257,40 @@ export const AgentControls = memo(function AgentControls({
 
   const agentProvider = agent?.provider;
   const activeModelId = modelSelection.activeModelId;
+  const preferenceScope = useMemo(
+    () =>
+      resolveAgentPreferenceScope({
+        workspaceId: agent?.workspaceId,
+        projectKey: agent?.projectKey,
+      }),
+    [agent?.projectKey, agent?.workspaceId],
+  );
 
-  const handleSelectModel = useCallback(
+  const supportsAgentForkContext = useSessionStore(
+    (state) => state.sessions[serverId]?.serverInfo?.features?.agentForkContext === true,
+  );
+
+  const handleSelectSameProviderModel = useCallback(
     async (modelId: string) => {
       if (!client || !agentProvider) {
         return;
       }
       try {
         await client.setAgentModel(agentId, modelId);
+        const preferredThinking =
+          resolveEffectiveFormPreferences(preferences, preferenceScope).providerPreferences?.[
+            agentProvider
+          ]?.thinkingByModel?.[modelId]?.trim() ?? "";
+        if (preferredThinking) {
+          const notice = await client.setAgentThinkingOption(agentId, preferredThinking);
+          showProviderNoticeToast(toast, notice);
+        }
         await updatePreferences((current) =>
-          mergeProviderPreferences({
+          mergeProviderPreferencesWithScope({
             preferences: current,
             provider: agentProvider,
             updates: { model: modelId },
+            scope: preferenceScope,
           }),
         );
       } catch (error) {
@@ -1625,89 +1298,173 @@ export const AgentControls = memo(function AgentControls({
         toast.error(toErrorMessage(error));
       }
     },
-    [agentId, agentProvider, client, toast, updatePreferences],
-  );
-  const handleSelectCommandCenterModel = useCallback(
-    (_provider: AgentProvider, modelId: string) => handleSelectModel(modelId),
-    [handleSelectModel],
+    [agentId, agentProvider, client, preferenceScope, preferences, toast, updatePreferences],
   );
 
-  // A running agent is one provider's process, so only that provider's profiles
-  // can apply to it.
-  const profileProviders = useMemo(() => (agentProvider ? [agentProvider] : []), [agentProvider]);
-  const profileModeIds = useMemo(
-    () => resolveSnapshotModeIds(snapshotSelectedEntry),
-    [snapshotSelectedEntry],
-  );
-  const profileTarget = useMemo<AgentProfileApplyTarget>(
-    () => ({ kind: "agent", agentId, availableModeIds: profileModeIds }),
-    [agentId, profileModeIds],
-  );
-  const agentProfiles = useAgentProfilePicker({
+  const { agentProfiles, handleEditAgentProfiles } = useAgentBoundProfiles(
     serverId,
-    availableProviders: profileProviders,
-    target: profileTarget,
-  });
-  const handleEditAgentProfiles = useEditAgentProfilesNavigation(serverId, agentProfiles !== null);
+    agentId,
+    agentProvider,
+    snapshotSelectedEntry,
+  );
   const profileEditor = useAgentProfileEditor(serverId);
   const profileActions = resolveAgentProfileEditorActions(agentProfiles !== null, profileEditor);
 
-  const handleSelectThinkingOption = useCallback(
-    (thinkingOptionId: string) => {
-      if (!client || !agentProvider) {
+  const handleCrossProviderFork = useCallback(
+    async (nextProvider: string, modelId: string): Promise<void> => {
+      if (!client || !agent) {
         return;
       }
-      if (activeModelId) {
-        void updatePreferences((current) =>
-          mergeProviderPreferences({
-            preferences: current,
-            provider: agentProvider,
-            updates: {
-              model: activeModelId,
-              thinkingByModel: {
-                [activeModelId]: thinkingOptionId,
+      const workspaceId = agent.workspaceId?.trim() || null;
+      if (!workspaceId) {
+        toast.error(t("message.actions.forkMissingWorkspace"));
+        return;
+      }
+      if (!supportsAgentForkContext) {
+        toast.error(t("message.actions.forkUnavailable"));
+        return;
+      }
+      try {
+        const draftId = generateDraftId();
+        const payload = await client.buildAgentForkContext(agentId);
+        if (!payload.attachment) {
+          throw new Error(payload.error ?? t("message.actions.forkFailed"));
+        }
+        useWorkspaceAttachmentsStore.getState().setWorkspaceAttachments({
+          scopeKey: buildDraftWorkspaceAttachmentScopeKey(draftId),
+          attachments: [
+            {
+              kind: "chat_history",
+              id: `chat_history:${draftId}`,
+              attachment: payload.attachment,
+              source: {
+                serverId,
+                agentId,
+                boundaryMessageId: payload.boundaryMessageId,
+                boundaryCursor: payload.boundaryCursor,
+                itemCount: payload.itemCount,
               },
             },
-          }),
-        ).catch((error) => {
-          console.warn("[AgentControls] persist thinking preference failed", error);
+          ],
         });
-      }
-      void client
-        .setAgentThinkingOption(agentId, thinkingOptionId)
-        .then((notice) => showProviderNoticeToast(toast, notice))
-        .catch((error) => {
-          console.warn("[AgentControls] setAgentThinkingOption failed", error);
-          toast.error(toErrorMessage(error));
-        });
-    },
-    [activeModelId, agentId, agentProvider, client, toast, updatePreferences],
-  );
 
-  const handleSetFeature = useCallback(
-    (featureId: string, value: unknown) => {
-      if (!client || !agentProvider) {
-        return;
-      }
-      void updatePreferences((current) =>
-        mergeProviderPreferences({
-          preferences: current,
-          provider: agentProvider,
-          updates: {
-            featureValues: {
-              [featureId]: value,
+        navigateToWorkspace({
+          serverId,
+          workspaceId,
+          target: {
+            kind: "draft",
+            draftId,
+            setup: {
+              provider: nextProvider,
+              cwd: agent.cwd ?? "",
+              modeId: null,
+              model: modelId,
+              thinkingOptionId: null,
+              // Option values belong to the old provider; the new draft starts from its own defaults.
+              providerOptions: {},
             },
           },
-        }),
-      ).catch((error) => {
-        console.warn("[AgentControls] persist feature preference failed", error);
-      });
-      void client.setAgentFeature(agentId, featureId, value).catch((error) => {
-        console.warn("[AgentControls] setAgentFeature failed", error);
-        toast.error(toErrorMessage(error));
-      });
+        });
+      } catch (error) {
+        console.warn("[AgentControls] cross-provider fork failed", error);
+        toast.error(toErrorMessage(error) || t("message.actions.forkFailed"));
+      }
     },
-    [agentId, agentProvider, client, toast, updatePreferences],
+    [agent, agentId, client, serverId, supportsAgentForkContext, t, toast],
+  );
+
+  const handleSelectProviderAndModel = useCallback(
+    async (nextProvider: string, modelId: string) => {
+      if (!client || !agent) {
+        return;
+      }
+      if (nextProvider === agent.provider) {
+        await handleSelectSameProviderModel(modelId);
+        return;
+      }
+
+      // A mode picked on the old provider (e.g. claude `bypassPermissions`) is
+      // meaningless on the new one. Remap it to the new provider's unattended
+      // equivalent so the agent survives the switch; the daemon also remaps
+      // defensively when no mode is sent here.
+      const modeId = resolveModeIdForProviderSwitch({
+        currentModeId: modeControl?.selectedModeId ?? null,
+        nextProvider,
+        nextProviderModes: snapshotEntries?.find((entry) => entry.provider === nextProvider)?.modes,
+      });
+
+      // Try updating the agent's provider in-place first
+      try {
+        await client.updateAgent(agentId, {
+          provider: nextProvider,
+          model: modelId,
+          ...(modeId !== undefined ? { modeId } : {}),
+        });
+        toast.show(
+          t("agentControls.providerSwitched", { provider: formatProviderLabel(nextProvider) }),
+        );
+        return;
+      } catch (updateErr) {
+        console.info(
+          "[AgentControls] in-place provider update failed, falling back to fork",
+          updateErr,
+        );
+      }
+
+      // In-place update failed (the daemon cannot switch a live agent across
+      // providers): fork the agent into a new draft on the new provider.
+      await handleCrossProviderFork(nextProvider, modelId);
+    },
+    [
+      agent,
+      agentId,
+      client,
+      handleCrossProviderFork,
+      handleSelectSameProviderModel,
+      modeControl,
+      snapshotEntries,
+      t,
+      toast,
+    ],
+  );
+  // Selecting a model from the Command Center may cross providers, which forks
+  // the agent into a new draft; `handleSelectProviderAndModel` short-circuits to
+  // a plain model switch when the provider is unchanged.
+  const handleSelectCommandCenterModel = useCallback(
+    (provider: AgentProvider, modelId: string) => {
+      void handleSelectProviderAndModel(provider, modelId);
+    },
+    [handleSelectProviderAndModel],
+  );
+
+  const { handleSelectThinkingOption, handleSetOption } = useLiveAgentPreferenceHandlers({
+    agentId,
+    agentProvider,
+    activeModelId,
+    client,
+    preferenceScope,
+    toast,
+    updatePreferences,
+  });
+
+  const agentOptionControls = useAgentOptionControls(agent, handleSetOption);
+
+  // The agent's composer exists apart from this component; while this is mounted, prompt
+  // commands go through the input the user is typing in.
+  const composer = useMemo(() => agentComposer(serverId, agentId), [agentId, serverId]);
+  const composerInput = useComposerInput();
+  useEffect(
+    () =>
+      composerInput
+        ? composer.attachInput({
+            isLive: composerInput.isLive,
+            setText: composerInput.setText,
+            insertText: composerInput.insertText,
+            isRevealed: composerInput.isRevealed,
+            focus: composerInput.focus,
+          })
+        : undefined,
+    [composer, composerInput],
   );
 
   const commandCenterControls = useMemo<AgentControlCommandCenterSource>(
@@ -1716,6 +1473,7 @@ export const AgentControls = memo(function AgentControls({
       ownerKey: agentId,
       provider: agentProvider,
       providerDefinitions: modeProviderDefinitions,
+      profiles: agentProfiles,
       models: {
         providers: agentModelSelectorProviders,
         selectedProvider: agentProvider,
@@ -1728,21 +1486,19 @@ export const AgentControls = memo(function AgentControls({
         select: handleSelectThinkingOption,
       },
       modes: commandCenterModes,
-      features: {
-        list: agent?.features,
-        set: handleSetFeature,
-      },
+      optionControls: client ? agentOptionControls : null,
     }),
     [
       activeModelId,
-      agent?.features,
+      agentOptionControls,
+      agentProfiles,
+      client,
       agentId,
       agentModelSelectorProviders,
       agentProvider,
       commandCenterModes,
       handleSelectCommandCenterModel,
       handleSelectThinkingOption,
-      handleSetFeature,
       modeProviderDefinitions,
       modelSelection.selectedThinkingId,
       modelSelection.thinkingOptions,
@@ -1769,45 +1525,68 @@ export const AgentControls = memo(function AgentControls({
     [refreshSnapshot],
   );
 
+  const agentModePicker = useMemo<AgentModePickerSlot | undefined>(
+    () =>
+      isSystemOwned
+        ? undefined
+        : (surface) => (
+            <LiveAgentModePicker
+              serverId={serverId}
+              agentId={agentId}
+              disabled={!client}
+              surface={surface}
+            />
+          ),
+    [agentId, client, isSystemOwned, serverId],
+  );
+
   if (!agent) {
     return null;
   }
 
   return (
-    <>
+    <ComposerModelProvider value={composer}>
       {commandCenterRegistration}
-      {profileEditor.element}
-      <ControlledAgentControls
-        provider={agent.provider}
-        modelSelectorProviders={agentModelSelectorProviders}
-        modelOptions={modelOptions}
-        selectedModelId={modelSelection.activeModelId ?? undefined}
-        onSelectModel={handleSelectModel}
-        agentProfiles={agentProfiles}
-        onApplyAgentProfile={agentProfiles?.applyProfile}
-        onEditAgentProfiles={handleEditAgentProfiles}
-        onCreateAgentProfile={profileActions.create}
-        onEditAgentProfile={profileActions.edit}
-        thinkingOptions={thinkingOptions.length > 0 ? thinkingOptions : undefined}
-        selectedThinkingOptionId={modelSelection.selectedThinkingId ?? undefined}
-        onSelectThinkingOption={handleSelectThinkingOption}
-        features={agent.features}
-        onSetFeature={handleSetFeature}
-        isModelLoading={snapshotIsLoading || selectedProviderIsLoading}
-        onModelSelectorOpen={handleModelSelectorOpen}
-        onRetryModelProvider={handleRetryModelProvider}
-        isRetryingModelProvider={snapshotIsRefreshing}
-        onDropdownClose={onDropdownClose}
-        disabled={!client}
-        modeControl={modeControl}
-        modelSelectorServerId={serverId}
-        isCompactLayout={isCompactLayout}
-      />
-    </>
+      {showToolbar ? (
+        <>
+          {profileEditor.element}
+          <ControlledAgentControls
+            provider={agent.provider}
+            modelSelectorProviders={agentModelSelectorProviders}
+            modelOptions={modelOptions}
+            selectedModelId={modelSelection.activeModelId ?? undefined}
+            onSelectModel={handleSelectSameProviderModel}
+            onSelectProviderAndModel={handleSelectProviderAndModel}
+            agentProfiles={agentProfiles}
+            onApplyAgentProfile={agentProfiles?.applyProfile}
+            onEditAgentProfiles={handleEditAgentProfiles}
+            onCreateAgentProfile={profileActions.create}
+            onEditAgentProfile={profileActions.edit}
+            thinkingOptions={thinkingOptions.length > 0 ? thinkingOptions : undefined}
+            selectedThinkingOptionId={modelSelection.selectedThinkingId ?? undefined}
+            onSelectThinkingOption={handleSelectThinkingOption}
+            optionControls={agentOptionControls}
+            isModelLoading={snapshotIsLoading || selectedProviderIsLoading}
+            onModelSelectorOpen={handleModelSelectorOpen}
+            onRetryModelProvider={handleRetryModelProvider}
+            isRetryingModelProvider={snapshotIsRefreshing}
+            onDropdownClose={onDropdownClose}
+            disabled={!client}
+            modeControl={modeControl}
+            agentModePicker={agentModePicker}
+            modelSelectorServerId={serverId}
+            isCompactLayout={isCompactLayout}
+          />
+        </>
+      ) : null}
+    </ComposerModelProvider>
   );
 });
 
 export function DraftAgentControls({
+  showToolbar,
+  draftId,
+  serverId,
   providerDefinitions,
   selectedProvider,
   modeOptions,
@@ -1815,6 +1594,7 @@ export function DraftAgentControls({
   onSelectMode,
   models,
   selectedModel,
+  effectiveModelId,
   onSelectModel,
   isModelLoading: _isModelLoading,
   modelSelectorProviders,
@@ -1824,8 +1604,9 @@ export function DraftAgentControls({
   selectedThinkingOptionId,
   onSelectThinkingOption,
   onApplyAgentProfile,
-  features,
-  onSetFeature,
+  optionControls,
+  options,
+  onSetOption,
   onDropdownClose,
   onModelSelectorOpen,
   onRetryModelProvider,
@@ -1833,13 +1614,16 @@ export function DraftAgentControls({
   disabled = false,
   modelSelectorServerId = null,
   isCompactLayout,
-}: DraftAgentControlsProps) {
+  agentMode,
+  context = "draft",
+  metadata,
+  onSetMetadata,
+}: DraftAgentControlsProps & { draftId: string; serverId: string; showToolbar: boolean }) {
   const mappedThinkingOptions = useMemo<AgentControlOption[]>(() => {
     return toThinkingControlOptions(thinkingOptions);
   }, [thinkingOptions]);
 
-  const effectiveSelectedThinkingOption =
-    selectedThinkingOptionId || mappedThinkingOptions[0]?.id || undefined;
+  const effectiveSelectedThinkingOption = selectedThinkingOptionId || mappedThinkingOptions[0]?.id;
 
   const modelOptions = useMemo<AgentControlOption[]>(
     () =>
@@ -1892,37 +1676,154 @@ export function DraftAgentControls({
     [selectedProvider, providerDefinitions, modeOptions, selectedMode, onSelectMode, disabled],
   );
 
+  const agentModePicker = useMemo<AgentModePickerSlot | undefined>(
+    () =>
+      agentMode && modelSelectorServerId
+        ? (surface) => (
+            <AgentModePicker
+              serverId={modelSelectorServerId}
+              value={agentMode.value}
+              onSelect={agentMode.onSelect}
+              disabled={disabled}
+              surface={surface}
+            />
+          )
+        : undefined,
+    [agentMode, disabled, modelSelectorServerId],
+  );
+
+  const disabledRef = useRef(disabled);
+  disabledRef.current = disabled;
+  const isLocked = useCallback(() => disabledRef.current, []);
+  const composerAgent = useMemo(
+    () =>
+      draftComposerAgent({
+        context,
+        disabled,
+        isLocked,
+        selectedProvider,
+        selectedModel,
+        selectedMode,
+        thinking: effectiveSelectedThinkingOption ?? null,
+        options,
+        metadata,
+        onSelectProviderAndModel,
+        onSelectModel,
+        onSelectMode,
+        onSelectThinkingOption,
+        onSetOption,
+        onSetMetadata,
+      }),
+    [
+      context,
+      disabled,
+      isLocked,
+      effectiveSelectedThinkingOption,
+      metadata,
+      onSelectMode,
+      onSelectModel,
+      onSelectProviderAndModel,
+      onSelectThinkingOption,
+      onSetMetadata,
+      onSetOption,
+      options,
+      selectedMode,
+      selectedModel,
+      selectedProvider,
+    ],
+  );
+
+  const composerInput = useComposerInput();
+  const composerModel = useMemo(
+    () =>
+      composerInput
+        ? composerModelFromHalves({ agent: composerAgent, input: composerInput })
+        : null,
+    [composerAgent, composerInput],
+  );
+
+  const commandCenterControls = useMemo<AgentControlCommandCenterSource>(
+    () => ({
+      serverId,
+      ownerKey: draftId,
+      provider: selectedProvider,
+      providerDefinitions,
+      profiles: agentProfiles,
+      models: {
+        providers: modelSelectorProviders,
+        selectedProvider,
+        selectedModelId: effectiveModelId,
+        select: (provider, modelId) => {
+          onSelectProviderAndModel(provider, modelId);
+        },
+      },
+      thinking: {
+        options: thinkingOptions,
+        selectedId: selectedThinkingOptionId,
+        select: onSelectThinkingOption,
+      },
+      modes: toCommandCenterModes(modeControl),
+      optionControls: optionControls ?? null,
+    }),
+    [
+      serverId,
+      draftId,
+      selectedProvider,
+      providerDefinitions,
+      agentProfiles,
+      modelSelectorProviders,
+      effectiveModelId,
+      onSelectProviderAndModel,
+      thinkingOptions,
+      selectedThinkingOptionId,
+      onSelectThinkingOption,
+      modeControl,
+      optionControls,
+    ],
+  );
+
   return (
-    <>
-      {profileEditor.element}
-      <ControlledAgentControls
-        provider={selectedProvider ?? ""}
-        modelSelectorProviders={modelSelectorProviders}
-        modelOptions={modelOptions}
-        selectedModelId={selectedModel}
-        onSelectModel={onSelectModel}
-        onSelectProviderAndModel={onSelectProviderAndModel}
-        isModelLoading={isAllModelsLoading}
-        agentProfiles={agentProfiles}
-        onApplyAgentProfile={agentProfiles?.applyProfile}
-        onEditAgentProfiles={handleEditAgentProfiles}
-        onCreateAgentProfile={profileActions.create}
-        onEditAgentProfile={profileActions.edit}
-        thinkingOptions={mappedThinkingOptions.length > 0 ? mappedThinkingOptions : undefined}
-        selectedThinkingOptionId={effectiveSelectedThinkingOption}
-        onSelectThinkingOption={onSelectThinkingOption}
-        features={features}
-        onSetFeature={onSetFeature}
-        onDropdownClose={onDropdownClose}
-        onModelSelectorOpen={onModelSelectorOpen}
-        onRetryModelProvider={onRetryModelProvider}
-        isRetryingModelProvider={isRetryingModelProvider}
-        disabled={disabled}
-        modeControl={modeControl}
-        modelSelectorServerId={modelSelectorServerId}
-        isCompactLayout={isCompactLayout}
-      />
-    </>
+    <ComposerAgentProvider value={composerAgent}>
+      <ComposerModelProvider value={composerModel}>
+        <AgentControlCommandCenterRegistration
+          sourceId={`draft:${serverId}:${draftId}`}
+          enabled={!disabled}
+          controls={commandCenterControls}
+        />
+        {showToolbar ? (
+          <>
+            {profileEditor.element}
+            <ControlledAgentControls
+              provider={selectedProvider ?? ""}
+              modelSelectorProviders={modelSelectorProviders}
+              modelOptions={modelOptions}
+              selectedModelId={selectedModel}
+              onSelectModel={onSelectModel}
+              onSelectProviderAndModel={onSelectProviderAndModel}
+              isModelLoading={isAllModelsLoading}
+              agentProfiles={agentProfiles}
+              onApplyAgentProfile={agentProfiles?.applyProfile}
+              onEditAgentProfiles={handleEditAgentProfiles}
+              onCreateAgentProfile={profileActions.create}
+              onEditAgentProfile={profileActions.edit}
+              thinkingOptions={mappedThinkingOptions.length > 0 ? mappedThinkingOptions : undefined}
+              selectedThinkingOptionId={effectiveSelectedThinkingOption}
+              onSelectThinkingOption={onSelectThinkingOption}
+              optionControls={optionControls}
+              onDropdownClose={onDropdownClose}
+              onModelSelectorOpen={onModelSelectorOpen}
+              onRetryModelProvider={onRetryModelProvider}
+              isRetryingModelProvider={isRetryingModelProvider}
+              disabled={disabled}
+              modeControl={modeControl}
+              agentModePicker={agentModePicker}
+              modelSelectorServerId={modelSelectorServerId}
+              isCompactLayout={isCompactLayout}
+            />
+          </>
+        ) : null}
+      </ComposerModelProvider>
+    </ComposerAgentProvider>
   );
 }
 
@@ -1933,57 +1834,22 @@ const styles = StyleSheet.create((theme) => ({
     flexShrink: 1,
     flexDirection: "row",
     alignItems: "center",
-    gap: theme.spacing[1],
+    gap: TOOLBAR_CONTROL_GAP,
+    // Clips pickers that run out of room.
     overflow: "hidden",
-  },
-  modeBadge: {
-    height: 28,
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "transparent",
-    gap: theme.spacing[1],
-    paddingHorizontal: theme.spacing[2],
-    borderRadius: theme.borderRadius["2xl"],
   },
   modelControl: {
     minWidth: 0,
     flexShrink: 1,
   },
-  toolbarCaret: {
-    width: 14,
-    height: 14,
-    flexShrink: 0,
-  },
   modeIconBadge: {
-    width: 28,
-    height: 28,
+    ...toolbarSlot(),
     alignItems: "center",
     justifyContent: "center",
     paddingHorizontal: 0,
     flexShrink: 0,
     backgroundColor: "transparent",
     borderRadius: theme.borderRadius.full,
-  },
-  modeBadgeHovered: {
-    backgroundColor: theme.colors.surface2,
-  },
-  modeBadgePressed: {
-    backgroundColor: theme.colors.surface0,
-  },
-  disabledBadge: {
-    opacity: 0.5,
-  },
-  modeBadgeText: {
-    minWidth: 0,
-    flexShrink: 1,
-    color: theme.colors.foregroundMuted,
-    fontSize: theme.fontSize.base,
-    fontWeight: theme.fontWeight.normal,
-  },
-  tooltipText: {
-    color: theme.colors.foreground,
-    fontSize: theme.fontSize.base,
-    lineHeight: theme.fontSize.base * 1.4,
   },
   combinedSheetControls: {
     gap: theme.spacing[1],

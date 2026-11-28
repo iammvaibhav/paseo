@@ -4,11 +4,16 @@ import pThrottle from "p-throttle";
 export interface GitProcessPolicy {
   maxProcessesPerSecond: number;
   maxProcessConcurrency: number;
+  /** Concurrency slots normal-priority git work may never fully consume, so a
+   * high-priority create-path command always finds a free slot instead of
+   * queuing behind bulk metadata-watch/observation traffic. */
+  reservedHighPrioritySlots?: number;
 }
 
 export const DEFAULT_GIT_PROCESS_POLICY: GitProcessPolicy = {
   maxProcessesPerSecond: 64,
   maxProcessConcurrency: 8,
+  reservedHighPrioritySlots: 2,
 };
 
 export interface ScheduledGitProcess<T> {
@@ -16,7 +21,10 @@ export interface ScheduledGitProcess<T> {
   exited: Promise<void>;
 }
 
-export type GitProcessPriority = "normal" | "high";
+// Lanes drain in this order. "background" is for daemon-initiated fan-out
+// (reconciliation, observation-driven refreshes, fetches) so it never sits in
+// front of work a user is waiting for.
+export type GitProcessPriority = "high" | "normal" | "background";
 
 function parsePositiveInteger(value: string | undefined): number | undefined {
   if (value === undefined) {
@@ -41,14 +49,33 @@ export function resolveGitProcessPolicy(input: {
       parsePositiveInteger(input.env.PASEO_GIT_CONCURRENCY) ??
       input.persisted?.maxProcessConcurrency ??
       DEFAULT_GIT_PROCESS_POLICY.maxProcessConcurrency,
+    reservedHighPrioritySlots:
+      (input.persisted?.reservedHighPrioritySlots !== undefined &&
+      Number.isInteger(input.persisted.reservedHighPrioritySlots) &&
+      input.persisted.reservedHighPrioritySlots >= 0
+        ? input.persisted.reservedHighPrioritySlots
+        : undefined) ?? DEFAULT_GIT_PROCESS_POLICY.reservedHighPrioritySlots,
   };
 }
 
+// Admission reserves a process slot and a start-rate token; the job runs only
+// once its token fires. The job is chosen when the token fires, not when the
+// slot is reserved, so work submitted while background jobs hold every reserved
+// slot still takes the next start.
 export class GitProcessScheduler {
   private readonly startThrottled;
-  private readonly highPriorityQueue: Array<() => void> = [];
-  private readonly normalPriorityQueue: Array<() => void> = [];
+  private readonly queues: Record<GitProcessPriority, Array<() => Promise<void>>> = {
+    high: [],
+    normal: [],
+    background: [],
+  };
+  // Normal- and background-priority work never occupies more than
+  // maxProcessConcurrency minus this many slots, clamped so it always keeps at
+  // least one slot even when the configured reserve would otherwise consume the
+  // whole pool.
+  private readonly reservedHighPrioritySlots: number;
   private admitted = 0;
+  private reservedStarts = 0;
   private running = 0;
   private waiting = 0;
   private drainScheduled = false;
@@ -59,7 +86,11 @@ export class GitProcessScheduler {
       interval: 1_000,
       strict: true,
     });
-    this.startThrottled = throttle((start: () => Promise<void>) => start());
+    this.startThrottled = throttle(() => this.startNext());
+    this.reservedHighPrioritySlots = Math.min(
+      policy.reservedHighPrioritySlots ?? DEFAULT_GIT_PROCESS_POLICY.reservedHighPrioritySlots ?? 0,
+      Math.max(0, policy.maxProcessConcurrency - 1),
+    );
   }
 
   get activeCount(): number {
@@ -76,17 +107,7 @@ export class GitProcessScheduler {
   ): Promise<T> {
     this.waiting += 1;
     return new Promise<T>((resolve, reject) => {
-      const admit = () => {
-        void this.startThrottled(() => this.execute(start, resolve, reject)).catch((error) => {
-          this.waiting = Math.max(0, this.waiting - 1);
-          this.admitted = Math.max(0, this.admitted - 1);
-          reject(error);
-          this.scheduleDrain();
-        });
-      };
-      const queue =
-        options?.priority === "high" ? this.highPriorityQueue : this.normalPriorityQueue;
-      queue.push(admit);
+      this.queues[options?.priority ?? "normal"].push(() => this.execute(start, resolve, reject));
       if (this.admitted === 0 && !this.drainScheduled) {
         this.drainOne();
       } else {
@@ -95,11 +116,23 @@ export class GitProcessScheduler {
     });
   }
 
-  private scheduleDrain(): void {
-    if (this.drainScheduled || this.admitted >= this.policy.maxProcessConcurrency) {
-      return;
+  private canReserveStart(): boolean {
+    if (this.admitted >= this.policy.maxProcessConcurrency || this.waiting <= this.reservedStarts) {
+      return false;
     }
-    if (this.highPriorityQueue.length === 0 && this.normalPriorityQueue.length === 0) {
+    if (this.admitted < this.policy.maxProcessConcurrency - this.reservedHighPrioritySlots) {
+      return true;
+    }
+    // Reserved slots are held back from normal and background work even when no
+    // high-priority job is queued, so one always finds a slot immediately instead
+    // of waiting behind bulk observation traffic. A start fired from a reserved
+    // slot always takes the high lane first, so reserve one only while queued
+    // high-priority jobs outnumber the starts already reserved.
+    return this.queues.high.length > this.reservedStarts;
+  }
+
+  private scheduleDrain(): void {
+    if (this.drainScheduled || !this.canReserveStart()) {
       return;
     }
     this.drainScheduled = true;
@@ -108,18 +141,26 @@ export class GitProcessScheduler {
 
   private drainOne(): void {
     this.drainScheduled = false;
-    if (this.admitted >= this.policy.maxProcessConcurrency) {
-      return;
-    }
-    const admit = this.highPriorityQueue.shift() ?? this.normalPriorityQueue.shift();
-    if (!admit) {
+    if (!this.canReserveStart()) {
       return;
     }
     this.admitted += 1;
-    admit();
+    this.reservedStarts += 1;
+    void this.startThrottled();
     // Spawning can be synchronous and expensive on a throttled host. Let timers,
     // sockets, and child exits run before admitting another Git process.
     this.scheduleDrain();
+  }
+
+  private startNext(): Promise<void> {
+    this.reservedStarts -= 1;
+    // Every reservation is backed by a queued job: jobs leave the queues only here.
+    const next =
+      this.queues.high.shift() ?? this.queues.normal.shift() ?? this.queues.background.shift();
+    if (!next) {
+      throw new Error("Git process start fired without a queued process");
+    }
+    return next();
   }
 
   private async execute<T>(

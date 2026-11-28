@@ -14,7 +14,9 @@ export type MessageInputKeyboardActionKind =
   | "dictation-confirm"
   | "voice-toggle"
   | "voice-mute-toggle"
-  | "mode-cycle";
+  | "mode-cycle"
+  | "model-toggle"
+  | "effort-cycle";
 
 export type KeyboardActionId =
   | "agent.interrupt"
@@ -27,6 +29,8 @@ export type KeyboardActionId =
   | "workspace.tab.close.current"
   | "workspace.tab.navigate.index"
   | "workspace.tab.navigate.relative"
+  | "tab.history.navigate"
+  | "tab.recent.navigate"
   | "workspace.pane.split.right"
   | "workspace.pane.split.down"
   | "workspace.pane.focus.left"
@@ -52,6 +56,7 @@ export type KeyboardActionId =
   | "workspace.project.pick"
   | "worktree.new"
   | "workspace.archive"
+  | "workspace.archive.undo"
   | "workspace.pin"
   | "view.toggle.focus"
   | "theme.cycle"

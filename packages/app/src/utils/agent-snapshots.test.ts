@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { AgentSnapshotPayload } from "@getpaseo/protocol/messages";
 import { PARENT_AGENT_ID_LABEL } from "@getpaseo/protocol/agent-labels";
-import { normalizeAgentSnapshot, projectAgentSnapshot } from "./agent-snapshots";
+import { isControlActive, readSelectOption } from "@/agent-controls/option-controls";
+import {
+  normalizeAgentSnapshot,
+  projectAgentSnapshot,
+  resolveSessionAgent,
+} from "./agent-snapshots";
 
 function createSnapshot(
   input: Partial<Omit<AgentSnapshotPayload, "labels">> & {
@@ -32,10 +37,50 @@ function createSnapshot(
     persistence: input.persistence ?? null,
     title: input.title ?? null,
     labels: (input.labels ?? {}) as AgentSnapshotPayload["labels"],
+    ...withoutNullish({
+      bucket: input.bucket,
+      providerUnavailable: input.providerUnavailable,
+      controls: input.controls,
+      options: input.options,
+      sessionMetrics: input.sessionMetrics,
+    }),
   };
 }
 
+function withoutNullish<T extends Record<string, unknown>>(value: T): Partial<T> {
+  return Object.fromEntries(
+    Object.entries(value).filter(([, entry]) => entry != null),
+  ) as Partial<T>;
+}
+
 describe("normalizeAgentSnapshot", () => {
+  it("keeps a closed agent's stored options and controls, so its Fast control draws", () => {
+    const speed = {
+      type: "select" as const,
+      key: "service_tier",
+      label: "Speed",
+      defaultValue: "default",
+      choices: [
+        { value: "default", label: "Normal" },
+        { value: "priority", label: "Fast" },
+      ],
+    };
+    const agent = normalizeAgentSnapshot(
+      createSnapshot({
+        status: "closed",
+        controls: [speed],
+        options: { service_tier: "priority", sandbox_mode: "read-only" },
+      }),
+      "server-1",
+    );
+
+    expect(agent.status).toBe("closed");
+    expect(agent.controls).toEqual([speed]);
+    expect(agent.options).toEqual({ service_tier: "priority", sandbox_mode: "read-only" });
+    expect(readSelectOption(speed, agent.options ?? {})).toBe("priority");
+    expect(isControlActive(speed, agent.options ?? {})).toBe(true);
+  });
+
   it("round-trips identified active turns through the canonical snapshot boundary", () => {
     const snapshot = createSnapshot({
       status: "running",
@@ -46,6 +91,15 @@ describe("normalizeAgentSnapshot", () => {
       status: "running",
       activeTurn: snapshot.activeTurn,
     });
+  });
+
+  it("round-trips session metrics through the canonical snapshot boundary", () => {
+    const sessionMetrics = [{ label: "Cost", value: "$0.42", tone: "warning" as const }];
+
+    const agent = normalizeAgentSnapshot(createSnapshot({ sessionMetrics }), "server-1");
+
+    expect(agent.sessionMetrics).toEqual(sessionMetrics);
+    expect(projectAgentSnapshot(agent).sessionMetrics).toEqual(sessionMetrics);
   });
 
   it("normalizes identified and legacy active turns at the snapshot boundary", () => {
@@ -113,5 +167,68 @@ describe("normalizeAgentSnapshot", () => {
     expect(missing.parentAgentId).toBeNull();
     expect(empty.parentAgentId).toBeNull();
     expect(nonString.parentAgentId).toBeNull();
+  });
+
+  it("preserves providerUnavailable from the snapshot payload", () => {
+    const unavailable = normalizeAgentSnapshot(
+      createSnapshot({ providerUnavailable: true }),
+      "server-1",
+    );
+    const available = normalizeAgentSnapshot(createSnapshot(), "server-1");
+
+    expect(unavailable.providerUnavailable).toBe(true);
+    expect(available.providerUnavailable).toBe(false);
+  });
+
+  it("round-trips the daemon-owned lifecycle bucket", () => {
+    const agent = normalizeAgentSnapshot(createSnapshot({ bucket: "ready" }), "server-1");
+
+    expect(agent.bucket).toBe("ready");
+    expect(projectAgentSnapshot(agent).bucket).toBe("ready");
+  });
+});
+
+describe("resolveSessionAgent", () => {
+  function session(input: {
+    agents?: AgentSnapshotPayload[];
+    agentDetails?: AgentSnapshotPayload[];
+  }) {
+    const toMap = (snapshots: AgentSnapshotPayload[] = []) =>
+      new Map(
+        snapshots.map((snapshot) => [snapshot.id, normalizeAgentSnapshot(snapshot, "server-1")]),
+      );
+    return { agents: toMap(input.agents), agentDetails: toMap(input.agentDetails) };
+  }
+
+  it("resolves a running agent that only lives in agentDetails", () => {
+    // Active agents hydrated without a project placement land in `agentDetails`.
+    // The composer gates its Stop button on this status, so missing the fallback
+    // hid Stop for the entire run.
+    const resolved = resolveSessionAgent(
+      session({ agentDetails: [createSnapshot({ id: "agent-1", status: "running" })] }),
+      "agent-1",
+    );
+
+    expect(resolved?.status).toBe("running");
+  });
+
+  it("prefers the live directory when an agent is in both", () => {
+    const resolved = resolveSessionAgent(
+      session({
+        agents: [createSnapshot({ id: "agent-1", status: "running" })],
+        agentDetails: [createSnapshot({ id: "agent-1", status: "idle" })],
+      }),
+      "agent-1",
+    );
+
+    expect(resolved?.status).toBe("running");
+  });
+
+  it("returns null for an unknown agent, a missing id, and a missing session", () => {
+    const populated = session({ agents: [createSnapshot({ id: "agent-1" })] });
+
+    expect(resolveSessionAgent(populated, "agent-2")).toBeNull();
+    expect(resolveSessionAgent(populated, undefined)).toBeNull();
+    expect(resolveSessionAgent(undefined, "agent-1")).toBeNull();
   });
 });

@@ -184,6 +184,55 @@ describe("planWorkspaceOpenTargets", () => {
     ]);
   });
 
+  it("opens the branch and the active file on the web host the daemon resolved for an SSH alias", () => {
+    const aliasStatus = {
+      isGit: true,
+      remoteUrl: "git@github.com-work:acme/repo.git",
+      currentBranch: "feature/x",
+      forgeWeb: { host: "github.com" },
+    };
+    const open = (activeFile?: { path: string }) =>
+      planWorkspaceOpenTargets({
+        workspaceDirectory: "/repo",
+        activeFile,
+        desktopTargets: [],
+        canUseDesktopBridge: false,
+        isLocalExecution: false,
+        checkoutStatus: aliasStatus,
+        forge: "github",
+      }).map((target) => (target.source === "forge" ? target.url : null));
+
+    expect(open()).toEqual(["https://github.com/acme/repo/tree/feature/x"]);
+    expect(open({ path: "src/app.ts" })).toEqual([
+      "https://github.com/acme/repo/blob/feature/x/src/app.ts",
+    ]);
+  });
+
+  it("keeps the branch and file on the origin repository of a fork", () => {
+    const forkStatus = {
+      isGit: true,
+      remoteUrl: "git@github.com:fork-owner/repo.git",
+      currentBranch: "feature/only-on-fork",
+      forgeWeb: { host: "github.com", referenceRepository: "main-owner/repo" },
+    };
+    const forgeUrls = (activeFile: { path: string } | undefined) =>
+      planWorkspaceOpenTargets({
+        workspaceDirectory: "/repo",
+        activeFile,
+        desktopTargets: [],
+        canUseDesktopBridge: false,
+        isLocalExecution: false,
+        checkoutStatus: forkStatus,
+        forge: "github",
+      }).flatMap((target) => (target.source === "forge" ? [target.url] : []));
+    const urls = [...forgeUrls(undefined), ...forgeUrls({ path: "src/app.ts" })];
+
+    expect(urls).toEqual([
+      "https://github.com/fork-owner/repo/tree/feature/only-on-fork",
+      "https://github.com/fork-owner/repo/blob/feature/only-on-fork/src/app.ts",
+    ]);
+  });
+
   it("infers the forge from the remote URL when the forge input is null", () => {
     const targets = planWorkspaceOpenTargets({
       workspaceDirectory: "/repo",
@@ -232,5 +281,108 @@ describe("planWorkspaceOpenTargets", () => {
     });
 
     expect(targets.map((target) => target.id)).toEqual(["github"]);
+  });
+
+  it("plans remote-capable editors with sshHost when the host has one configured", () => {
+    const targets = planWorkspaceOpenTargets({
+      workspaceDirectory: "/repo",
+      activeFile: { path: "src/app.ts" },
+      desktopTargets: [
+        { id: "cursor", label: "Cursor", kind: "editor", supportsRemote: true },
+        { id: "vscode", label: "VS Code", kind: "editor", supportsRemote: true },
+        { id: "webstorm", label: "WebStorm", kind: "editor" },
+        { id: "finder", label: "Finder", kind: "file-manager" },
+      ],
+      canUseDesktopBridge: true,
+      isLocalExecution: false,
+      remoteSshHost: "vaibhav@dev-box",
+      checkoutStatus,
+    });
+
+    expect(targets.map((target) => target.id)).toEqual(["cursor", "vscode", "github"]);
+    expect(targets[0]).toMatchObject({
+      source: "desktop",
+      id: "cursor",
+      openInput: {
+        editorId: "cursor",
+        path: "/repo/src/app.ts",
+        cwd: "/repo",
+        sshHost: "vaibhav@dev-box",
+      },
+    });
+  });
+
+  it("plans remote workspace folder open without an active file", () => {
+    const targets = planWorkspaceOpenTargets({
+      workspaceDirectory: "/repo",
+      desktopTargets: [{ id: "cursor", label: "Cursor", kind: "editor", supportsRemote: true }],
+      canUseDesktopBridge: true,
+      isLocalExecution: false,
+      remoteSshHost: "dev-box",
+    });
+
+    expect(targets).toEqual([
+      {
+        source: "desktop",
+        id: "cursor",
+        label: "Cursor",
+        editorId: "cursor",
+        openInput: { editorId: "cursor", path: "/repo", sshHost: "dev-box" },
+      },
+    ]);
+  });
+
+  it("does not attach sshHost to local execution targets", () => {
+    const targets = planWorkspaceOpenTargets({
+      workspaceDirectory: "/repo",
+      desktopTargets,
+      canUseDesktopBridge: true,
+      isLocalExecution: true,
+      remoteSshHost: "dev-box",
+    });
+
+    const first = targets[0];
+    expect(first).toMatchObject({
+      source: "desktop",
+      openInput: { editorId: "vscode", workspacePath: "/repo" },
+    });
+    if (first?.source !== "desktop") throw new Error("expected desktop target");
+    expect(first.openInput.sshHost).toBeUndefined();
+  });
+
+  it("plans VS Code Web when a browserEditorUrl is configured", () => {
+    const targets = planWorkspaceOpenTargets({
+      workspaceDirectory: "/home/vaibhav/paseo",
+      desktopTargets: [],
+      canUseDesktopBridge: false,
+      isLocalExecution: false,
+      browserEditorUrl: "http://blrofc3:8765",
+    });
+
+    expect(targets).toEqual([
+      {
+        source: "browser-editor",
+        id: "vscode-web",
+        label: "VS Code Web",
+        url: "http://blrofc3:8765/?folder=%2Fhome%2Fvaibhav%2Fpaseo",
+      },
+    ]);
+  });
+
+  it("keeps VS Code Web alongside remote desktop editors", () => {
+    const targets = planWorkspaceOpenTargets({
+      workspaceDirectory: "/repo",
+      desktopTargets: [
+        { id: "cursor", label: "Cursor", kind: "editor", supportsRemote: true },
+        { id: "vscode", label: "VS Code", kind: "editor", supportsRemote: true },
+        { id: "finder", label: "Finder", kind: "file-manager" },
+      ],
+      canUseDesktopBridge: true,
+      isLocalExecution: false,
+      remoteSshHost: "blrofc3",
+      browserEditorUrl: "http://blrofc3:8765",
+    });
+
+    expect(targets.map((target) => target.id)).toEqual(["cursor", "vscode", "vscode-web"]);
   });
 });

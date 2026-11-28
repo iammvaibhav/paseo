@@ -13,14 +13,35 @@ Everything beyond the [supported providers](/docs/supported-providers) lives und
 - **Extend** a first-class provider to point at a different API (Z.AI, Alibaba/Qwen, a proxy, a self-hosted endpoint).
 - **Add profiles**, multiple entries against the same underlying provider with different credentials or curated model lists.
 - **Override the binary**, run a nightly build, a wrapper script, or a Docker image instead of the installed CLI.
-- **Add ACP agents**, Gemini CLI, Hermes, or any agent speaking the Agent Client Protocol over stdio.
+- **Add ACP agents**, Gemini CLI, Qwen Code, or any agent speaking the Agent Client Protocol over stdio.
 - **Disable** a provider you don't use.
 
 Run `paseo reload` after editing the file. Provider changes apply to future launches without restarting the daemon.
 
-Provider IDs must be lowercase alphanumeric with hyphens (`/^[a-z][a-z0-9-]*$/`). Every custom entry needs `extends` (a first-class provider ID or `"acp"`) and a `label`.
+Provider IDs must be lowercase alphanumeric with hyphens (`/^[a-z][a-z0-9-]*$/`). A new custom provider needs `extends` (a first-class provider ID or `"acp"`) and a `label`.
+To override a bundled provider plugin, use its provider ID and omit `extends`. For
+[Muse Code](/docs/supported-providers/muse-code), set command or environment overrides under `agents.providers.muse`.
 
 The examples below are a quick tour. The full, up-to-date reference is on GitHub: [docs/custom-providers.md](https://github.com/getpaseo/paseo/blob/main/docs/custom-providers.md).
+
+## Provider options
+
+Set defaults in `agents.providers.<id>.options`:
+
+```json
+{
+  "agents": {
+    "providers": {
+      "pi": { "options": { "rpcTimeoutMs": 90000 } }
+    }
+  }
+}
+```
+
+Override defaults for one agent with SDK `config.options` (wire
+`providerOptions`). The provider validates and applies the resulting record.
+See [Provider options](/docs/sdk/provider-options) for the two layers, deep-merge
+rule, persistence behavior, and provider-specific examples.
 
 ## Extending a first-class provider
 
@@ -145,11 +166,6 @@ Any agent that speaks [ACP](https://agentclientprotocol.com) over stdio can be a
         "extends": "acp",
         "label": "Google Gemini",
         "command": ["gemini", "--acp"]
-      },
-      "hermes": {
-        "extends": "acp",
-        "label": "Hermes",
-        "command": ["hermes", "acp"]
       }
     }
   }
@@ -192,4 +208,4 @@ Any agent that speaks [ACP](https://agentclientprotocol.com) over stdio can be a
 
 ## Full reference
 
-For the complete field reference (`extends`, `label`, `command`, `env`, `models`, `additionalModels`, `disallowedTools`, `paseoTools`, `enabled`, `order`), model and thinking-option schemas, and deeper examples for each plan, see [docs/custom-providers.md](https://github.com/getpaseo/paseo/blob/main/docs/custom-providers.md) on GitHub. See [Limit Paseo tools by provider](/docs/mcp#limit-paseo-tools-by-provider) for `paseoTools` configuration.
+For the complete field reference (`extends`, `label`, `command`, `env`, `options`, `models`, `additionalModels`, `disallowedTools`, `paseoTools`, `enabled`, `order`), model and thinking-option schemas, and deeper examples for each plan, see [docs/custom-providers.md](https://github.com/getpaseo/paseo/blob/main/docs/custom-providers.md) on GitHub. See [Limit Paseo tools by provider](/docs/mcp#limit-paseo-tools-by-provider) for `paseoTools` configuration.

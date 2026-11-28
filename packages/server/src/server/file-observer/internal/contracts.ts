@@ -7,6 +7,7 @@ export interface ObserverMetrics extends Omit<
   | "nativeTrackedFileCount"
   | "pendingEventCount"
   | "pendingReconciliationWorkCount"
+  | "pendingClassificationCount"
   | "reconciliationInFlightCount"
 > {}
 
@@ -14,6 +15,7 @@ export interface BackendDiagnostics {
   nativeHandleCount: number;
   nativeTrackedFileCount: number;
   pendingReconciliationWorkCount: number;
+  pendingClassificationCount: number;
   reconciliationInFlight: boolean;
 }
 
@@ -29,6 +31,8 @@ export interface ObservationHost {
   metrics: ObserverMetrics;
   isActive(): boolean;
   isIgnored(path: string): boolean;
+  /** O(1) exact ignored-root check for a child whose parent is already known non-ignored. */
+  isIgnoredRoot(path: string): boolean;
   isPathInside(root: string, path: string): boolean;
   queueEvent(type: FileChangeType, path: string): void;
   fail(error: Error): void;

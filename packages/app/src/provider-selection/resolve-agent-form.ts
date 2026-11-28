@@ -5,7 +5,8 @@ import type {
   ProviderSnapshotEntry,
 } from "@getpaseo/protocol/agent-types";
 import {
-  mergeProviderPreferences,
+  mergeProviderPreferencesWithScope,
+  type FormPreferenceScope,
   type FormPreferences,
   type ProviderPreferences,
 } from "@/hooks/use-form-preferences";
@@ -167,6 +168,14 @@ function resolvePreferredThinkingOptionId(input: {
   return "";
 }
 
+// COMPAT(claudeUltracodePreference): added in v0.17.0, remove after 2027-05-18.
+export function findThinkingOptionReplacement(
+  options: NonNullable<AgentModelDefinition["thinkingOptions"]>,
+  legacyId: string,
+): string | undefined {
+  return options.find((option) => option.metadata?.replacesThinkingOptionId === legacyId)?.id;
+}
+
 export function resolveThinkingOptionId(args: {
   availableModels: AgentModelDefinition[] | null;
   modelId: string;
@@ -181,6 +190,9 @@ export function resolveThinkingOptionId(args: {
     normalizedThinkingOptionId &&
     thinkingOptions.some((option) => option.id === normalizedThinkingOptionId)
   ) {
+    return normalizedThinkingOptionId;
+  }
+  if (findThinkingOptionReplacement(thinkingOptions, normalizedThinkingOptionId)) {
     return normalizedThinkingOptionId;
   }
 
@@ -214,11 +226,13 @@ export function mergeSelectedComposerPreferences(args: {
   preferences: FormPreferences;
   provider: AgentProvider;
   updates: Partial<ProviderPreferences>;
+  scope?: FormPreferenceScope | null;
 }): FormPreferences {
-  return mergeProviderPreferences({
+  return mergeProviderPreferencesWithScope({
     preferences: args.preferences,
     provider: args.provider,
     updates: args.updates,
+    scope: args.scope,
   });
 }
 

@@ -2,16 +2,23 @@ import TurndownService from "turndown";
 import { gfm } from "turndown-plugin-gfm";
 import {
   createCodeClipboardContent,
-  createMarkdownClipboardContent,
+  createSelectionClipboardContent,
   type MarkdownClipboardContent,
 } from "@/utils/rich-clipboard";
 import {
+  MARKDOWN_ADMONITION_TITLE_ATTRIBUTE,
+  MARKDOWN_ADMONITION_TYPE_ATTRIBUTE,
+  MARKDOWN_COPY_IMAGE_SOURCES_ATTRIBUTE,
   MARKDOWN_COPY_ALIGN_ATTRIBUTE,
+  MARKDOWN_COPY_ALT_ATTRIBUTE,
+  MARKDOWN_COPY_FENCE_SOURCE_ATTRIBUTE,
   MARKDOWN_COPY_IGNORE_ATTRIBUTE,
   MARKDOWN_COPY_LANGUAGE_ATTRIBUTE,
   MARKDOWN_COPY_LIST_MARKER_ATTRIBUTE,
   MARKDOWN_COPY_LIST_START_ATTRIBUTE,
+  MARKDOWN_COPY_SRC_ATTRIBUTE,
   MARKDOWN_COPY_TAG_ATTRIBUTE,
+  MARKDOWN_COPY_RECOGNIZED_LINK_ATTRIBUTE,
   MARKDOWN_COPY_UNWRAP_ATTRIBUTE,
   TRAILING_CODE_LINE_BREAKS,
 } from "./markup";
@@ -20,58 +27,194 @@ const ASSISTANT_MESSAGE_SELECTOR = '[data-testid="assistant-message"]';
 const MESSAGE_ROW_SELECTOR = "[data-message-id]";
 const CHAT_SCROLL_SELECTOR = '[data-testid="agent-chat-scroll"]';
 const messageRowSelector = (messageId: string) => `[data-message-id="${CSS.escape(messageId)}"]`;
-const CODE_BLOCK_SELECTOR = `[${MARKDOWN_COPY_TAG_ATTRIBUTE}="pre"]`;
-const CODE_REGION_SELECTOR = `${CODE_BLOCK_SELECTOR}, [${MARKDOWN_COPY_TAG_ATTRIBUTE}="code"]`;
+const CODE_BLOCK_SELECTOR = `pre, [${MARKDOWN_COPY_TAG_ATTRIBUTE}="pre"]`;
+const CODE_REGION_SELECTOR = `${CODE_BLOCK_SELECTOR}, code, [${MARKDOWN_COPY_TAG_ATTRIBUTE}="code"]`;
+const IMAGE_FRAME_SELECTOR = `img, [${MARKDOWN_COPY_TAG_ATTRIBUTE}="img"]`;
 
-const turndown = new TurndownService({
-  bulletListMarker: "-",
-  codeBlockStyle: "fenced",
-  emDelimiter: "_",
-  strongDelimiter: "**",
-});
-turndown.use(gfm);
-turndown.addRule("escapedGfmTableCell", {
-  filter: ["th", "td"],
-  replacement: (content, node) => {
-    const index = node.parentNode ? Array.from(node.parentNode.childNodes).indexOf(node) : 0;
-    const prefix = index === 0 ? "| " : " ";
-    return `${prefix}${content.replace(/\|/g, "\\|")} |`;
-  },
-});
-turndown.addRule("gfmStrikethrough", {
-  filter: ["del", "s"],
-  replacement: (content) => `~~${content}~~`,
-});
-turndown.addRule("compactListItem", {
-  filter: "li",
-  replacement: (content, node, options) => {
-    const item = content
-      .replace(/^\n+/, "")
-      .replace(/\n+$/, "\n")
-      .replace(/\n(?=\S)/g, "\n    ");
-    const parent = node.parentElement;
-    if (parent?.nodeName !== "OL") {
-      return `${options.bulletListMarker} ${item}\n`;
-    }
-    const start = Number(parent.getAttribute("start") ?? 1);
-    const index = Array.from(parent.children).indexOf(node);
-    return `${start + index}. ${item}\n`;
-  },
-});
+const SEMANTIC_TAGS =
+  "p,blockquote,br,code,pre,h1,h2,h3,h4,h5,h6,hr,img,li,ol,ul,strong,em,s,del,table,thead,tbody,tr,th,td";
+function semanticTag(element: Element): string | null {
+  return (
+    element.getAttribute(MARKDOWN_COPY_TAG_ATTRIBUTE) ??
+    (element.matches(SEMANTIC_TAGS) ? element.tagName.toLowerCase() : null)
+  );
+}
+function copySemanticAttributes(original: Element, copy: Element): void {
+  const tag = semanticTag(original);
+  if (!tag || original.hasAttribute(MARKDOWN_COPY_TAG_ATTRIBUTE)) return;
+  copy.setAttribute(MARKDOWN_COPY_TAG_ATTRIBUTE, tag);
+  if (tag === "ol")
+    copy.setAttribute(MARKDOWN_COPY_LIST_START_ATTRIBUTE, original.getAttribute("start") ?? "1");
+  if (tag === "img") {
+    const url = original.getAttribute("src") ?? "";
+    const encodedSources = original
+      .closest(`[${MARKDOWN_COPY_IMAGE_SOURCES_ATTRIBUTE}]`)
+      ?.getAttribute(MARKDOWN_COPY_IMAGE_SOURCES_ATTRIBUTE);
+    const sources: Record<string, string> = encodedSources ? JSON.parse(encodedSources) : {};
+    copy.setAttribute(MARKDOWN_COPY_SRC_ATTRIBUTE, sources[url] ?? url);
+    copy.setAttribute(MARKDOWN_COPY_ALT_ATTRIBUTE, original.getAttribute("alt") ?? "");
+  }
+  if (tag === "td" || tag === "th") {
+    const align = (original as HTMLElement).style.textAlign;
+    if (align) copy.setAttribute(MARKDOWN_COPY_ALIGN_ATTRIBUTE, align);
+  }
+}
 
-export function createAssistantSelectionClipboardContent(
+function createTurndown(flavor: "markdown" | "plain"): TurndownService {
+  const turndown = new TurndownService({
+    bulletListMarker: "-",
+    codeBlockStyle: "fenced",
+    emDelimiter: "_",
+    strongDelimiter: "**",
+  });
+  turndown.use(gfm);
+  // text/plain still carries tables as GFM syntax, so a cell's pipe stays escaped there.
+  turndown.addRule("escapedGfmTableCell", {
+    filter: ["th", "td"],
+    replacement: (content, node) => {
+      const index = node.parentNode ? Array.from(node.parentNode.childNodes).indexOf(node) : 0;
+      const prefix = index === 0 ? "| " : " ";
+      return `${prefix}${content.replace(/\|/g, "\\|")} |`;
+    },
+  });
+  // A link Paseo recognized pastes as the text the reply showed. Rich paste keeps it as a
+  // link when it points to a web page, such as a forge reference.
+  turndown.addRule("recognizedLink", {
+    filter: (node) =>
+      node.nodeName === "A" &&
+      node.hasAttribute(MARKDOWN_COPY_RECOGNIZED_LINK_ATTRIBUTE) &&
+      (flavor === "plain" || !isWebUrl(node.getAttribute("href") ?? "")),
+    replacement: (content) => content,
+  });
+  if (flavor === "markdown") {
+    // Turndown leaves `<` unescaped, so displayed text such as `<http://localhost>`
+    // would render back into text/html as an autolink.
+    const escapeMarkdown = turndown.escape.bind(turndown);
+    turndown.escape = (text) => escapeMarkdown(text).replace(/</g, "\\<");
+  } else {
+    turndown.escape = (text) => text;
+  }
+  // An admonition copies as its `> [!TYPE]` source.
+  turndown.addRule("admonition", {
+    filter: (node) => node.hasAttribute(MARKDOWN_ADMONITION_TYPE_ATTRIBUTE),
+    replacement: (content, node) => {
+      const type = (node as Element)
+        .getAttribute(MARKDOWN_ADMONITION_TYPE_ATTRIBUTE)!
+        .toUpperCase();
+      const body = content.replace(/^\n+|\n+$/g, "");
+      return `\n\n${`[!${type}]\n${body}`.replace(/^/gm, "> ")}\n\n`;
+    },
+  });
+  turndown.addRule("gfmStrikethrough", {
+    filter: ["del", "s"],
+    replacement: (content) => `~~${content}~~`,
+  });
+  turndown.addRule("compactListItem", {
+    filter: "li",
+    replacement: (content, node, options) => {
+      const item = content
+        .replace(/^\n+/, "")
+        .replace(/\n+$/, "\n")
+        // Every non-empty line, so indented code lines stay inside the item.
+        .replace(/\n(?=[^\n])/g, "\n    ");
+      const parent = node.parentElement;
+      if (parent?.nodeName !== "OL") {
+        return `${options.bulletListMarker} ${item}\n`;
+      }
+      return `${node.getAttribute("value")}. ${item}\n`;
+    },
+  });
+  return turndown;
+}
+
+function isWebUrl(href: string): boolean {
+  return /^https?:\/\//i.test(href);
+}
+
+const markdownTurndown = createTurndown("markdown");
+const plainTurndown = createTurndown("plain");
+
+/**
+ * A fence rendered as something other than its code, such as a Mermaid diagram, carries
+ * its source in an attribute. Put the code block back so the fence is what gets copied.
+ */
+function restoreFenceSources(container: Element): void {
+  for (const region of container.querySelectorAll(`[${MARKDOWN_COPY_FENCE_SOURCE_ATTRIBUTE}]`)) {
+    const source = region.getAttribute(MARKDOWN_COPY_FENCE_SOURCE_ATTRIBUTE);
+    if (source === null) continue;
+    const pre = document.createElement("pre");
+    const code = document.createElement("code");
+    const language = region.getAttribute(MARKDOWN_COPY_LANGUAGE_ATTRIBUTE);
+    if (language) code.className = `language-${language}`;
+    code.textContent = source;
+    pre.append(code);
+    region.replaceWith(pre);
+  }
+}
+
+/**
+ * Clipboard payload for everything inside `element`, without the element's own syntax:
+ * a quote's body carries no `>` prefix. Null when there is nothing to copy.
+ */
+export function createElementClipboardContent(element: Element): MarkdownClipboardContent | null {
+  const container = document.createElement("div");
+  container.append(...Array.from(element.childNodes, (child) => child.cloneNode(true)));
+  const originals = element.querySelectorAll("*");
+  const copies = container.querySelectorAll("*");
+  originals.forEach((original, index) => copySemanticAttributes(original, copies[index]!));
+  restoreFenceSources(container);
+  restoreAdmonitions(container);
+  restoreMarkdownElements(container);
+  return clipboardContentFromMarkup(container);
+}
+
+function clipboardContentFromMarkup(container: HTMLElement): MarkdownClipboardContent | null {
+  const markdown = markdownTurndown.turndown(container).trim();
+  if (!markdown) {
+    return null;
+  }
+  // text/plain carries unescaped Markdown: a plain target shows backslashes literally.
+  // text/html is rendered from escaped Markdown, so literal Markdown characters stay
+  // literal in a rich target.
+  const plainText = plainTurndown.turndown(container).trim();
+  const content = createSelectionClipboardContent(markdown, plainText);
+  return { ...content, html: flattenClipboardListMarkup(content.html) };
+}
+
+interface AssistantSelectionContext {
+  range: Range;
+  parts: SelectedMessagePart[];
+}
+
+/**
+ * The selection this module owns: one non-collapsed range whose endpoints are
+ * assistant blocks of the same message. A selection that crosses messages, or
+ * that leaves assistant Markdown, copies with the browser default.
+ */
+function getAssistantSelectionContext(
   selection: Selection | null,
-): MarkdownClipboardContent | null {
+): AssistantSelectionContext | null {
   if (!selection || selection.rangeCount !== 1 || selection.isCollapsed) {
     return null;
   }
 
-  const range = selection.getRangeAt(0);
-  const parts = selectedMessageParts(range);
-  if (!parts) {
+  const range = startAfterImageFrame(selection.getRangeAt(0));
+  const parts = selectedMessageParts(range)?.filter((part) => selectsContent(part.range));
+  if (!parts?.length) {
+    return null;
+  }
+  return { range, parts };
+}
+
+export function createAssistantSelectionClipboardContent(
+  selection: Selection | null,
+): MarkdownClipboardContent | null {
+  const context = getAssistantSelectionContext(selection);
+  if (!context) {
     return null;
   }
 
+  const { range, parts } = context;
   if (parts.length === 1) {
     const partialCode = createPartialCodeContent(range, parts[0]!.message);
     if (partialCode) {
@@ -84,13 +227,56 @@ export function createAssistantSelectionClipboardContent(
     container.append(cloneMarkdownSelection(part.range, part.message));
   }
   restoreMarkdownElements(container);
+  return clipboardContentFromMarkup(container);
+}
 
-  const markdown = turndown.turndown(container.innerHTML).trim();
-  if (!markdown) {
+/**
+ * The plain-text half of the same selection: the rendered text with none of the
+ * Markdown syntax. `Cmd/Ctrl+C` copies this; the Markdown source is the
+ * `Cmd/Ctrl+Shift+C` path.
+ *
+ * The live selection reflects the rendered message's CSS, so `toString()`
+ * matches what the user sees: block elements become line breaks and code keeps
+ * its `white-space: pre` newlines. A detached re-render cannot say the same
+ * without the app's stylesheet.
+ */
+export function createAssistantSelectionPlainText(selection: Selection | null): string | null {
+  const context = getAssistantSelectionContext(selection);
+  if (!context) {
     return null;
   }
-  const content = createMarkdownClipboardContent(markdown);
-  return { ...content, html: flattenClipboardListMarkup(content.html) };
+
+  // Trailing whitespace would hand a terminal an extra executable line when a
+  // code line is the last thing copied.
+  const text = (selection?.toString() ?? "").replace(/[ \t\r\n]+$/, "");
+  return text || null;
+}
+
+/**
+ * A drag that starts in the gap below an image anchors at the start of the image's
+ * rendered internals, ahead of the hidden `img`, while only the text after it is
+ * highlighted. Pressing on the image itself opens it instead of starting a selection,
+ * so a selection that starts inside an image, before any of its text, and ends past it
+ * starts after the image. A failed image shows its error as text, and a selection
+ * starting in that text keeps the image.
+ */
+function startAfterImageFrame(range: Range): Range {
+  const start =
+    range.startContainer instanceof Element
+      ? range.startContainer
+      : range.startContainer.parentElement;
+  const frame = start?.closest(IMAGE_FRAME_SELECTOR);
+  if (!frame || frame.contains(range.endContainer)) {
+    return range;
+  }
+  const insideFrame = range.cloneRange();
+  insideFrame.setEnd(frame, frame.childNodes.length);
+  if (insideFrame.toString()) {
+    return range;
+  }
+  const afterFrame = range.cloneRange();
+  afterFrame.setStartAfter(frame);
+  return afterFrame;
 }
 
 /**
@@ -103,10 +289,12 @@ export function createAssistantSelectionClipboardContent(
  *
  * A selection contained inside code always copies as code, even when it contains every
  * character. A selection that crosses the code boundary stays on the Markdown path so
- * a complete block retains its fence.
+ * a complete block retains its fence. Crossing means selecting content outside the code:
+ * a drag that starts or ends in the gap beside a block anchors at the edge of the
+ * neighbouring block, which selects nothing there.
  */
 function createPartialCodeContent(range: Range, message: Element): MarkdownClipboardContent | null {
-  const region = closestCodeRegion(range.commonAncestorContainer, message);
+  const region = selectedCodeRegion(range, message);
   if (!region) {
     return null;
   }
@@ -128,6 +316,18 @@ function createPartialCodeContent(range: Range, message: Element): MarkdownClipb
     language: fence?.getAttribute(MARKDOWN_COPY_LANGUAGE_ATTRIBUTE),
     block,
   });
+}
+
+function selectedCodeRegion(range: Range, message: Element): Element | null {
+  const edgeRegions = [range.startContainer, range.endContainer].map((node) =>
+    closestCodeRegion(node, message),
+  );
+  return (
+    edgeRegions.find(
+      // Measure against the whole block, so its own hover Copy button is not outside it.
+      (edge) => edge && selectsNothingOutside(range, edge.closest(CODE_BLOCK_SELECTOR) ?? edge),
+    ) ?? null
+  );
 }
 
 function closestCodeRegion(node: Node, message: Element): Element | null {
@@ -205,6 +405,7 @@ function cloneMarkdownSelection(range: Range, message: Element): Node {
   while (ancestor && ancestor !== message) {
     if (shouldPreserveSemanticElement(range, ancestor)) {
       const wrapper = ancestor.cloneNode(false) as Element;
+      copySemanticAttributes(ancestor, wrapper);
       normalizeOrderedListStart(wrapper, ancestor, range);
       wrapper.append(selected);
       selected = wrapper;
@@ -252,25 +453,26 @@ function nodeAtPath(root: Node, path: number[]): Node {
 }
 
 function removeUnselectedSemantics(range: Range, source: Element, clone: Element): void {
-  const selector = `[${MARKDOWN_COPY_TAG_ATTRIBUTE}], a`;
+  const selector = `[${MARKDOWN_COPY_TAG_ATTRIBUTE}], a, ${SEMANTIC_TAGS}`;
   const originals = Array.from(source.querySelectorAll(selector));
   const copies = Array.from(clone.querySelectorAll(selector));
 
   originals.forEach((original, index) => {
     const copy = copies[index];
+    if (copy) copySemanticAttributes(original, copy);
     if (!copy || shouldPreserveSemanticElement(range, original)) {
       if (copy) {
         normalizeOrderedListStart(copy, original, range);
       }
       return;
     }
-    const tag = original.getAttribute(MARKDOWN_COPY_TAG_ATTRIBUTE);
+    const tag = semanticTag(original);
     if (tag && isBlockBoundary(tag)) {
       copy.setAttribute(MARKDOWN_COPY_TAG_ATTRIBUTE, "p");
       return;
     }
     copy.removeAttribute(MARKDOWN_COPY_TAG_ATTRIBUTE);
-    if (copy.tagName === "A") {
+    if (copy.matches(SEMANTIC_TAGS) || copy.tagName === "A") {
       copy.setAttribute(MARKDOWN_COPY_UNWRAP_ATTRIBUTE, "true");
     }
   });
@@ -280,8 +482,12 @@ function shouldPreserveSemanticElement(range: Range, element: Element): boolean 
   if (!range.intersectsNode(element)) {
     return false;
   }
-  const tag = element.getAttribute(MARKDOWN_COPY_TAG_ATTRIBUTE);
-  if (tag === "p" || isTableStructure(tag)) {
+  const tag = semanticTag(element);
+  // An image has no part to select, so touching it selects all of it.
+  if (tag === "p" || tag === "img" || isTableStructure(tag)) {
+    return true;
+  }
+  if (isCrossBoundaryCodeElement(range, element, tag)) {
     return true;
   }
   const isSelectableSemantic = tag !== null && tag !== "li" && tag !== "ol" && tag !== "ul";
@@ -297,10 +503,23 @@ function shouldPreserveSemanticElement(range: Range, element: Element): boolean 
       (item) => hasSelectedListMarker(range, item) || hasSelectedAllContents(range, item, true),
     );
   }
-  if (tag === "li" && hasSelectedListMarker(range, element)) {
-    return true;
+  if (tag === "li") {
+    if (hasSelectedListMarker(range, element)) return true;
+    // CSS list markers are outside text nodes. Starting inside a semantic item
+    // excludes its marker even when all of the label's characters are selected.
+    if (
+      element.tagName === "LI" &&
+      range.startContainer !== element &&
+      element.contains(range.startContainer)
+    )
+      return false;
   }
   return hasSelectedAllContents(range, element, tag === "li");
+}
+
+function isCrossBoundaryCodeElement(range: Range, element: Element, tag: string | null): boolean {
+  const isCode = tag === "pre" || (tag === "code" && Boolean(element.closest(CODE_BLOCK_SELECTOR)));
+  return isCode && !selectionStaysInsideElement(range, element);
 }
 
 function selectionStaysInsideElement(range: Range, element: Element): boolean {
@@ -315,7 +534,7 @@ function selectionStaysInsideElement(range: Range, element: Element): boolean {
 function selectedListItems(list: Element, range: Range): Element[] {
   return Array.from(list.children).filter(
     (child) =>
-      child.getAttribute(MARKDOWN_COPY_TAG_ATTRIBUTE) === "li" &&
+      semanticTag(child) === "li" &&
       (child.contains(range.startContainer) ||
         child.contains(range.endContainer) ||
         hasSelectedAllContents(range, child, true)),
@@ -325,7 +544,7 @@ function selectedListItems(list: Element, range: Range): Element[] {
 function hasSelectedListMarker(range: Range, item: Element): boolean {
   const marker = item.querySelector(`:scope > [${MARKDOWN_COPY_LIST_MARKER_ATTRIBUTE}]`);
   if (!marker) {
-    return false;
+    return item.tagName === "LI" && range.startContainer === item && range.startOffset === 0;
   }
 
   const markerContents = document.createRange();
@@ -348,18 +567,20 @@ function hasSelectedListMarker(range: Range, item: Element): boolean {
 }
 
 function normalizeOrderedListStart(copy: Element, original: Element, range: Range): void {
-  if (original.getAttribute(MARKDOWN_COPY_TAG_ATTRIBUTE) !== "ol") {
+  if (semanticTag(original) !== "ol") {
     return;
   }
   const firstSelectedItem = selectedListItems(original, range)[0];
   if (!firstSelectedItem) {
     return;
   }
-  const items = Array.from(original.children).filter(
-    (child) => child.getAttribute(MARKDOWN_COPY_TAG_ATTRIBUTE) === "li",
-  );
+  const items = Array.from(original.children).filter((child) => semanticTag(child) === "li");
   const omittedItems = items.indexOf(firstSelectedItem);
-  const originalStart = Number(original.getAttribute(MARKDOWN_COPY_LIST_START_ATTRIBUTE) ?? 1);
+  const originalStart = Number(
+    original.getAttribute(MARKDOWN_COPY_LIST_START_ATTRIBUTE) ??
+      original.getAttribute("start") ??
+      1,
+  );
   copy.setAttribute(MARKDOWN_COPY_LIST_START_ATTRIBUTE, String(originalStart + omittedItems));
 }
 
@@ -384,6 +605,31 @@ function hasSelectedAllContents(range: Range, element: Element, includeIgnored =
   return true;
 }
 
+function selectsContent(range: Range): boolean {
+  return hasMarkdownContent(range.cloneContents(), true);
+}
+
+function selectsNothingOutside(range: Range, element: Element): boolean {
+  const contents = document.createRange();
+  contents.selectNodeContents(element);
+
+  if (range.compareBoundaryPoints(Range.START_TO_START, contents) < 0) {
+    const before = range.cloneRange();
+    before.setEnd(contents.startContainer, contents.startOffset);
+    if (selectsContent(before)) {
+      return false;
+    }
+  }
+  if (range.compareBoundaryPoints(Range.END_TO_END, contents) > 0) {
+    const after = range.cloneRange();
+    after.setStart(contents.endContainer, contents.endOffset);
+    if (selectsContent(after)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function hasMarkdownContent(fragment: DocumentFragment, includeIgnored: boolean): boolean {
   if (!includeIgnored) {
     for (const ignored of fragment.querySelectorAll(`[${MARKDOWN_COPY_IGNORE_ATTRIBUTE}]`)) {
@@ -393,8 +639,9 @@ function hasMarkdownContent(fragment: DocumentFragment, includeIgnored: boolean)
   if (fragment.textContent) {
     return true;
   }
-  const visibleVoidSelector = ["br", "hr"]
+  const visibleVoidSelector = ["br", "hr", "img"]
     .map((tag) => `[${MARKDOWN_COPY_TAG_ATTRIBUTE}="${tag}"]`)
+    .concat("img")
     .join(",");
   return Boolean(fragment.querySelector(visibleVoidSelector));
 }
@@ -488,14 +735,19 @@ function restoreMarkdownElements(container: HTMLElement): void {
       continue;
     }
     const semanticElement = document.createElement(tagName);
-    if (tagName !== "br") {
+    if (tagName !== "br" && tagName !== "img") {
       semanticElement.append(...element.childNodes);
+    }
+    if (tagName === "img") {
+      semanticElement.setAttribute("src", element.getAttribute(MARKDOWN_COPY_SRC_ATTRIBUTE) ?? "");
+      semanticElement.setAttribute("alt", element.getAttribute(MARKDOWN_COPY_ALT_ATTRIBUTE) ?? "");
     }
     if (tagName === "ol") {
       const start = element.getAttribute(MARKDOWN_COPY_LIST_START_ATTRIBUTE);
       if (start) {
         semanticElement.setAttribute("start", start);
       }
+      numberOrderedListItems(semanticElement, Number(start ?? 1));
     }
     if (tagName === "pre") {
       const language = element.getAttribute(MARKDOWN_COPY_LANGUAGE_ATTRIBUTE);
@@ -525,6 +777,44 @@ function restoreMarkdownElements(container: HTMLElement): void {
   const presentational = Array.from(container.querySelectorAll("div, span"));
   for (const element of presentational.toReversed()) {
     element.replaceWith(...element.childNodes);
+  }
+  // Turndown escapes line-start Markdown per text node, so text split by an unwrapped
+  // element, such as `#` and ` for`, has to be one node to keep `# for` literal.
+  container.normalize();
+}
+
+/**
+ * Assign item numbers before passing the DOM to Turndown. A partly selected item
+ * still takes its original list position when copied as a paragraph, so the following
+ * items keep their numbers.
+ */
+function numberOrderedListItems(list: Element, start: number): void {
+  Array.from(list.children).forEach((child, index) => {
+    if (child.tagName === "LI") {
+      child.setAttribute("value", String(start + index));
+    }
+  });
+}
+
+/**
+ * The library renders an admonition as a box with a generated title. Keep it a quote
+ * with its type, so it copies as its callout source rather than as the title's prose.
+ * Only a whole-element copy does this: a selection cannot tell from its cloned markup
+ * whether it holds the whole callout, so it copies the text it shows.
+ */
+function restoreAdmonitions(container: Element): void {
+  const admonitions = Array.from(
+    container.querySelectorAll(`[${MARKDOWN_ADMONITION_TYPE_ATTRIBUTE}]`),
+  );
+  for (const admonition of admonitions.toReversed()) {
+    admonition.querySelector(`:scope > [${MARKDOWN_ADMONITION_TITLE_ATTRIBUTE}]`)?.remove();
+    const quote = document.createElement("blockquote");
+    quote.setAttribute(
+      MARKDOWN_ADMONITION_TYPE_ATTRIBUTE,
+      admonition.getAttribute(MARKDOWN_ADMONITION_TYPE_ATTRIBUTE) ?? "note",
+    );
+    quote.append(...admonition.childNodes);
+    admonition.replaceWith(quote);
   }
 }
 

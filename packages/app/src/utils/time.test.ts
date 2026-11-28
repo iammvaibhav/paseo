@@ -1,8 +1,11 @@
 import { describe, it, expect } from "vitest";
 import {
   describeCompactTimeAgo,
+  describeTimeAgo,
   formatCompactTimeAgo,
+  formatCompactTimeAgoAsProse,
   formatDuration,
+  formatDurationMinutes,
   formatMessageTimestamp,
   formatTimeAgo,
 } from "./time";
@@ -12,13 +15,28 @@ describe("formatTimeAgo", () => {
 
   it.each([
     ["2026-07-16T11:59:55.000Z", "just now"],
-    ["2026-07-16T11:59:30.000Z", "30s ago"],
+    ["2026-07-16T11:59:30.000Z", "just now"],
+    ["2026-07-16T11:59:00.000Z", "1m ago"],
     ["2026-07-16T11:55:00.000Z", "5m ago"],
     ["2026-07-16T10:00:00.000Z", "2h ago"],
     ["2026-07-13T12:00:00.000Z", "3d ago"],
     ["2026-01-15T12:00:00.000Z", "Jan 15"],
   ])("formats %s as %s", (date, expected) => {
     expect(formatTimeAgo(new Date(date), now)).toBe(expected);
+  });
+});
+
+describe("describeTimeAgo", () => {
+  const now = new Date("2026-07-16T12:00:00.000Z");
+
+  it.each([
+    ["2026-07-16T11:59:30.000Z", "just now", "minute"],
+    ["2026-07-16T11:55:00.000Z", "5m ago", "minute"],
+    ["2026-07-16T10:00:00.000Z", "2h ago", "hour"],
+    ["2026-07-13T12:00:00.000Z", "3d ago", "day"],
+    ["2026-01-15T12:00:00.000Z", "Jan 15", "static"],
+  ] as const)("formats %s as %s at %s resolution", (date, label, resolution) => {
+    expect(describeTimeAgo(new Date(date), now)).toEqual({ label, resolution });
   });
 });
 
@@ -63,6 +81,15 @@ describe("describeCompactTimeAgo", () => {
   });
 });
 
+describe("formatCompactTimeAgoAsProse", () => {
+  it("puts elapsed labels back into prose and leaves dates alone", () => {
+    expect(formatCompactTimeAgoAsProse("now")).toBe("just now");
+    expect(formatCompactTimeAgoAsProse("3m")).toBe("3m ago");
+    expect(formatCompactTimeAgoAsProse("2h")).toBe("2h ago");
+    expect(formatCompactTimeAgoAsProse("Jan 15")).toBe("Jan 15");
+  });
+});
+
 describe("formatDuration", () => {
   it("renders sub-minute durations as whole seconds", () => {
     expect(formatDuration(0)).toBe("0s");
@@ -90,6 +117,31 @@ describe("formatDuration", () => {
   });
 });
 
+describe("formatDurationMinutes", () => {
+  it("collapses anything under a minute to a single sub-minute label", () => {
+    expect(formatDurationMinutes(0)).toBe("<1m");
+    expect(formatDurationMinutes(47_000)).toBe("<1m");
+    expect(formatDurationMinutes(59_999)).toBe("<1m");
+  });
+
+  it("drops the seconds the agent window shows once past a minute", () => {
+    expect(formatDurationMinutes(60_000)).toBe("1m");
+    expect(formatDurationMinutes(132_000)).toBe("2m");
+    expect(formatDurationMinutes(3_540_000)).toBe("59m");
+  });
+
+  it("renders hours and remainder minutes like formatDuration", () => {
+    expect(formatDurationMinutes(3_600_000)).toBe("1h");
+    expect(formatDurationMinutes(3_900_000)).toBe("1h 5m");
+    expect(formatDurationMinutes(8_100_000)).toBe("2h 15m");
+  });
+
+  it("guards against negative and NaN", () => {
+    expect(formatDurationMinutes(-1)).toBe("<1m");
+    expect(formatDurationMinutes(Number.NaN)).toBe("<1m");
+  });
+});
+
 describe("formatMessageTimestamp", () => {
   it("shows only time for same-day timestamps", () => {
     const now = new Date(2026, 4, 14, 17, 30);
@@ -106,6 +158,17 @@ describe("formatMessageTimestamp", () => {
     const formatted = formatMessageTimestamp(date, now);
     expect(formatted).toMatch(/Monday/);
     expect(formatted).toMatch(/10:12 PM|22:12/);
+  });
+
+  it("shows the full date for last week's same weekday, even under seven days ago", () => {
+    // 2026-09-18 is a Friday. The reply is 6 days 23h45m old and lands on today's weekday,
+    // so a weekday label would read as today.
+    const now = new Date(2026, 8, 25, 11, 47);
+    const date = new Date(2026, 8, 18, 12, 2);
+    const formatted = formatMessageTimestamp(date, now);
+    expect(formatted).toMatch(/Sep|September/);
+    expect(formatted).toMatch(/18/);
+    expect(formatted).not.toMatch(/Friday/);
   });
 
   it("includes full date for older timestamps", () => {

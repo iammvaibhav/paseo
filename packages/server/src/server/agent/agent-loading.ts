@@ -5,12 +5,18 @@ import type { AgentManager, ManagedAgent } from "./agent-manager.js";
 import type { AgentStorage } from "./agent-storage.js";
 import {
   buildConfigOverrides,
-  buildSessionConfig,
   extractAttention,
   extractTimestamps,
   isStoredAgentProviderAvailable,
   toAgentPersistenceHandle,
 } from "../persistence-hooks.js";
+
+export class AgentNotFoundError extends Error {
+  constructor(agentId: string) {
+    super(`Agent not found: ${agentId}`);
+    this.name = "AgentNotFoundError";
+  }
+}
 
 interface PendingAgentInitialization {
   promise: Promise<ManagedAgent>;
@@ -19,9 +25,19 @@ interface PendingAgentInitialization {
 
 const pendingAgentInitializations = new Map<string, PendingAgentInitialization>();
 
+/**
+ * Resolves once an in-flight `ensureAgentLoaded` for this agent has settled.
+ * A resumed agent is registered before its history is hydrated, so a reader of
+ * the live timeline must wait here or it can serve that empty window as the
+ * authoritative history. Load failures are left to the loader's caller.
+ */
+export async function waitForPendingAgentLoad(agentId: string): Promise<void> {
+  await pendingAgentInitializations.get(agentId)?.promise.catch(() => undefined);
+}
+
 export type AgentLoaderManager = Pick<
   AgentManager,
-  | "createAgent"
+  | "createAgentFromRecord"
   | "getAgent"
   | "getRegisteredProviderIds"
   | "hydrateTimelineFromProvider"
@@ -34,6 +50,7 @@ export interface EnsureAgentLoadedDeps {
   agentStorage: AgentStorage;
   validProviders?: Iterable<AgentProvider>;
   broadcastTimeline?: boolean;
+  purpose?: "history" | "interactive";
   logger: Logger;
 }
 
@@ -94,7 +111,7 @@ export async function ensureAgentLoaded(
   const initPromise = (async () => {
     const record = await deps.agentStorage.get(agentId);
     if (!record) {
-      throw new Error(`Agent not found: ${agentId}`);
+      throw new AgentNotFoundError(agentId);
     }
 
     const validProviders = deps.validProviders ?? deps.agentManager.getRegisteredProviderIds();
@@ -110,30 +127,31 @@ export async function ensureAgentLoaded(
         handle,
         buildConfigOverrides(record),
         agentId,
-        { ...extractTimestamps(record), attention: extractAttention(record) },
-        record.archivedAt ? { purpose: "history" } : undefined,
+        // Labels ride extractTimestamps into the launch options so the
+        // launch-context catalog build sees the caller labels (verifier/
+        // Commander tools are label-gated: a resumed verifier session must
+        // keep contact_worker/submit_verdict).
+        {
+          ...extractTimestamps(record),
+          attention: extractAttention(record),
+          ...(record.agentMode ? { agentMode: record.agentMode } : {}),
+          ...(record.appliedAgentMode ? { appliedAgentMode: record.appliedAgentMode } : {}),
+        },
+        deps.purpose ? { purpose: deps.purpose } : undefined,
       );
       deps.logger.info({ agentId, provider: record.provider }, "Agent resumed from persistence");
     } else {
       // No provider handle to resume: this starts the agent's first session rather than
       // bringing one back, so it stamps activity and carries no stored attention. Records
-      // without a handle never got far enough to accumulate either.
-      const config = buildSessionConfig(record, {
-        validProviders,
-      });
-      if (!config) {
-        throw new Error(`Agent ${agentId} references unavailable provider '${record.provider}'`);
-      }
-      snapshot = await deps.agentManager.createAgent(config, agentId, {
-        labels: record.labels,
-        workspaceId: record.workspaceId,
-        owner: record.owner,
-      });
+      // without a handle never got far enough to accumulate either. The manager rereads the
+      // record inside the agent's lane, so a write that lands after this read is not lost.
+      snapshot = await deps.agentManager.createAgentFromRecord(agentId);
       deps.logger.info({ agentId, provider: record.provider }, "Agent created from stored config");
     }
 
     await deps.agentManager.hydrateTimelineFromProvider(agentId, {
       broadcast: () => pendingOptions.broadcastTimeline,
+      providerSubagents: true,
     });
     return deps.agentManager.getAgent(agentId) ?? snapshot;
   })();

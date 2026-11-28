@@ -13,7 +13,7 @@ import {
   type ProviderSnapshot,
   type ProviderSnapshotTransition,
 } from "../../agent/provider-snapshot-manager.js";
-import type { ProviderSnapshotEntry } from "../../agent/agent-sdk-types.js";
+import type { AgentSessionConfig, ProviderSnapshotEntry } from "../../agent/agent-sdk-types.js";
 import { ProviderUsageService } from "../../../services/quota-fetcher/service.js";
 import { expandProviderSnapshot } from "@getpaseo/protocol/provider-snapshot-codec";
 
@@ -60,7 +60,7 @@ function makeSubsystem(options: MakeOptions = {}) {
     },
     supportsCompactProviderSnapshots: () => options.supportsCompactProviderSnapshots ?? false,
     listProviderAvailability: async () => [],
-    listDraftFeatures: async () => [],
+    listDraftControls: async () => ({ controls: [], options: {} }),
     ...options.host,
   };
   const providerSnapshotManager = createStub<ProviderSnapshotManager>({
@@ -318,10 +318,122 @@ describe("ProviderCatalogSession", () => {
     expect(err?.payload.requestId).toBe("u1");
   });
 
+  it("forwards forceRefresh to the provider usage service", async () => {
+    const listUsage = vi.fn(async () => ({
+      fetchedAt: "2026-06-19T00:00:00.000Z",
+      providers: [],
+    }));
+    const { subsystem, emitted } = makeSubsystem({
+      usage: {
+        listUsage,
+      },
+    });
+
+    await subsystem.handleProviderUsageListRequest({
+      type: "provider.usage.list.request",
+      requestId: "u2",
+      forceRefresh: true,
+    });
+
+    expect(listUsage).toHaveBeenCalledWith({ forceRefresh: true });
+    const res = findByType(emitted, "provider.usage.list.response");
+    expect(res?.payload.requestId).toBe("u2");
+  });
+
+  it("lists controls and effective options for a draft config", async () => {
+    const drafts: AgentSessionConfig[] = [];
+    const { subsystem, emitted } = makeSubsystem({
+      host: {
+        listDraftControls: async (config) => {
+          drafts.push(config);
+          return {
+            controls: [{ type: "toggle", key: "fast_mode", label: "Fast" }],
+            options: { fast_mode: true },
+          };
+        },
+      },
+    });
+
+    await subsystem.handleProviderControlsListRequest({
+      type: "provider.controls.list.request",
+      requestId: "c1",
+      draftConfig: {
+        provider: "claude",
+        cwd: "/tmp/project",
+        model: "claude-opus-4-8",
+        providerOptions: { fast_mode: true },
+      },
+    });
+
+    expect(drafts).toEqual([
+      {
+        provider: "claude",
+        cwd: "/tmp/project",
+        model: "claude-opus-4-8",
+        providerOptions: { fast_mode: true },
+      },
+    ]);
+    expect(findByType(emitted, "provider.controls.list.response")?.payload).toEqual({
+      provider: "claude",
+      controls: [{ type: "toggle", key: "fast_mode", label: "Fast" }],
+      options: { fast_mode: true },
+      error: null,
+      fetchedAt: expect.any(String),
+      requestId: "c1",
+    });
+  });
+
+  it("surfaces a controls failure inline, not as an rpc_error", async () => {
+    const { subsystem, emitted } = makeSubsystem({
+      host: {
+        listDraftControls: async () => {
+          throw new Error("controls probe failed");
+        },
+      },
+    });
+
+    await subsystem.handleProviderControlsListRequest({
+      type: "provider.controls.list.request",
+      requestId: "c2",
+      draftConfig: { provider: "codex", cwd: "/tmp/project" },
+    });
+
+    expect(findByType(emitted, "rpc_error")).toBeUndefined();
+    expect(findByType(emitted, "provider.controls.list.response")?.payload.error).toBe(
+      "controls probe failed",
+    );
+  });
+
+  it("answers list_provider_features_request from controls, folding legacy featureValues", async () => {
+    const drafts: AgentSessionConfig[] = [];
+    const { subsystem, emitted } = makeSubsystem({
+      host: {
+        listDraftControls: async (config) => {
+          drafts.push(config);
+          return {
+            controls: [{ type: "toggle", key: "fast_mode", label: "Fast" }],
+            options: { fast_mode: true },
+          };
+        },
+      },
+    });
+
+    await subsystem.handleListProviderFeaturesRequest({
+      type: "list_provider_features_request",
+      requestId: "f0",
+      draftConfig: { provider: "claude", cwd: "/tmp/project", featureValues: { fast_mode: true } },
+    });
+
+    expect(drafts[0]?.providerOptions).toEqual({ fast_mode: true });
+    expect(findByType(emitted, "list_provider_features_response")?.payload.features).toEqual([
+      { type: "toggle", id: "fast_mode", label: "Fast", value: true },
+    ]);
+  });
+
   it("surfaces a feature-list failure inline, not as an rpc_error", async () => {
     const { subsystem, emitted } = makeSubsystem({
       host: {
-        listDraftFeatures: async () => {
+        listDraftControls: async () => {
           throw new Error("feature probe failed");
         },
       },
@@ -405,7 +517,7 @@ it("announces shared content without retransmitting models or hashing discovery 
         },
         supportsProviderSnapshotReferences: () => references,
         listProviderAvailability: async () => [],
-        listDraftFeatures: async () => [],
+        listDraftControls: async () => ({ controls: [], options: {} }),
       },
     });
   const emitted: SessionOutboundMessage[] = [];

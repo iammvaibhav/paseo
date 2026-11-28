@@ -2,7 +2,13 @@ import type { ComponentType } from "react";
 import {
   Bot,
   Brain,
+  Bug,
+  Eye,
+  Hammer,
+  ListChecks,
   ListTodo,
+  Network,
+  Search,
   Settings2,
   Shield,
   ShieldAlert,
@@ -13,11 +19,14 @@ import {
   ShieldQuestionMark,
   Zap,
 } from "lucide-react-native";
+import { DEFAULT_AGENT_MODE_ID, type AgentModeId } from "@getpaseo/protocol/agent-modes";
+import { isLucideIconName, pluginIconComponent } from "@/plugins/icons";
 import { getModeVisuals, type AgentProviderDefinition } from "@getpaseo/protocol/provider-manifest";
 
 export interface AgentControlIconProps {
   size: number;
   color: string;
+  strokeWidth?: number;
 }
 
 export type AgentControlIcon = ComponentType<AgentControlIconProps>;
@@ -47,6 +56,7 @@ export function getAgentModeIcon(
   modeId: string,
   providerDefinitions: AgentProviderDefinition[],
 ): AgentControlIcon {
+  if (modeId === "ai-review") return ShieldCheck;
   const icon = getModeVisuals(provider, modeId, providerDefinitions)?.icon;
   return (icon ? MODE_ICONS[icon] : undefined) ?? Bot;
 }
@@ -56,10 +66,28 @@ export function getAgentModeOptionIcon(
   modeId: string,
   providerDefinitions: AgentProviderDefinition[],
 ): AgentControlIcon | undefined {
+  if (modeId === "ai-review") return ShieldCheck;
   const icon = getModeVisuals(provider, modeId, providerDefinitions)?.icon;
   return icon ? MODE_ICONS[icon] : undefined;
 }
 
+/** A built-in control names its icon in kebab case; a plugin provider names a Lucide icon. */
 export function getAgentFeatureIcon(icon?: string): AgentControlIcon {
-  return (icon ? FEATURE_ICONS[icon] : undefined) ?? Settings2;
+  if (!icon) return Settings2;
+  if (FEATURE_ICONS[icon]) return FEATURE_ICONS[icon];
+  return isLucideIconName(icon) ? pluginIconComponent(icon) : Settings2;
+}
+
+const APPROACH_ICONS: Record<AgentModeId, AgentControlIcon> = {
+  solo: Hammer,
+  orchestrator: Network,
+  plan: ListChecks,
+  research: Search,
+  review: Eye,
+  debug: Bug,
+};
+
+/** Icon for an approach (agent mode); an unknown id from a newer host gets the default's icon. */
+export function getApproachIcon(id: string): AgentControlIcon {
+  return APPROACH_ICONS[id as AgentModeId] ?? APPROACH_ICONS[DEFAULT_AGENT_MODE_ID];
 }

@@ -11,12 +11,9 @@ import {
   installDesktopRuntime,
   openDesktopAboutSettings,
   openDesktopSettings,
-  expectUpdateBanner,
   clickCheckForUpdates,
   expectPendingUpdateCheckResult,
   expectReadyUpdateCheckResult,
-  clickInstallUpdate,
-  expectInstallInProgress,
   interceptDaemonManagementConfirmDialog,
   interceptDaemonStopConfirmDialog,
   toggleDaemonManagement,
@@ -47,20 +44,6 @@ test.describe("Desktop updates", () => {
       "This daemon is managed by Paseo Desktop. Update Paseo Desktop on the host.",
     );
     await expect(page.getByTestId("host-page-update-button")).toBeDisabled();
-  });
-
-  test("clicking install shows the installing state on the callout", async ({ page }) => {
-    await installDesktopRuntime(page, {
-      serverId: getServerId(),
-      updateAvailable: true,
-      latestVersion: "1.2.3",
-      slowInstall: true,
-    });
-    await gotoAppShell(page);
-
-    await expectUpdateBanner(page, "1.2.3");
-    await clickInstallUpdate(page);
-    await expectInstallInProgress(page);
   });
 
   test("manual check reports a found update while it downloads", async ({ page }) => {

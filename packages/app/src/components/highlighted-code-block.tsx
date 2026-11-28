@@ -1,11 +1,9 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Pressable, View, type StyleProp, type TextStyle, type ViewStyle } from "react-native";
-import { StyleSheet } from "react-native-unistyles";
-import { MarkdownTextSpan } from "@/components/markdown-text";
+import React, { useCallback, useMemo, useState } from "react";
+import { View, Text, type StyleProp, type TextStyle, type ViewStyle } from "react-native";
 import * as Clipboard from "expo-clipboard";
-import { Check, Copy } from "lucide-react-native";
 import { useTranslation } from "react-i18next";
 import type { HighlightToken } from "@getpaseo/highlight";
+import { BlockCopyButton } from "@/components/markdown/block-copy-button";
 import { isNative, isWeb } from "@/constants/platform";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import { syntaxTokenStyleFor } from "@/styles/syntax-token-styles";
@@ -40,6 +38,7 @@ const LANGUAGE_ALIASES: Record<string, string> = {
   "objective-c": "m",
   markdown: "md",
   elixir: "ex",
+  terraform: "tf",
 };
 
 function fenceLanguageToExtension(info: string | null | undefined): string | null {
@@ -60,6 +59,7 @@ export const HighlightedCodeBlock = React.memo(function HighlightedCodeBlock({
   inheritedStyles,
   textStyle,
 }: HighlightedCodeBlockProps) {
+  const isEmpty = !code || code.trim().length === 0;
   // Box styles (bg / padding / border / radius / margin) go on the wrapper View
   // so the absolute copy button positions relative to the visible code area,
   // not to a parent that includes the Text's own marginVertical.
@@ -77,7 +77,11 @@ export const HighlightedCodeBlock = React.memo(function HighlightedCodeBlock({
     () => highlightToKeyedLines(renderedCode, fenceLanguageToExtension(language)),
     [renderedCode, language],
   );
-
+  const { t } = useTranslation();
+  // A fence with no code (e.g. an orphaned "```" leaked before a tool call)
+  // must not render a styled container — that paints an empty grey box.
+  // The empty check lives here instead of the callers so every fence and
+  // code_block surface shares the guard; hooks stay unconditional above.
   const isCompact = useIsCompactFormFactor();
   const [isHovered, setIsHovered] = useState(false);
   const handlePointerEnter = useCallback(() => setIsHovered(true), []);
@@ -86,7 +90,14 @@ export const HighlightedCodeBlock = React.memo(function HighlightedCodeBlock({
   // Copy the code without its trailing blank lines. A fence body ends in a newline,
   // and ends in more than one when the author left a blank line before the closing
   // fence; pasting any of them into a terminal runs the last line.
-  const getCode = useCallback(() => code.replace(TRAILING_CODE_LINE_BREAKS, ""), [code]);
+  const copyCode = useCallback(async () => {
+    const content = code.replace(TRAILING_CODE_LINE_BREAKS, "");
+    if (!content) return false;
+    return Clipboard.setStringAsync(content);
+  }, [code]);
+  if (isEmpty) {
+    return null;
+  }
 
   return (
     <View
@@ -96,15 +107,19 @@ export const HighlightedCodeBlock = React.memo(function HighlightedCodeBlock({
       onPointerLeave={handlePointerLeave}
     >
       {keyedLines ? (
-        <MarkdownTextSpan style={innerTextStyle} copyTag="code">
+        <Text style={innerTextStyle} dataSet={markdownCopyDataSet.code}>
           {renderCodeSegments(keyedLines)}
-        </MarkdownTextSpan>
+        </Text>
       ) : (
-        <MarkdownTextSpan style={innerTextStyle} copyTag="code">
+        <Text style={innerTextStyle} dataSet={markdownCopyDataSet.code}>
           {renderedCode}
-        </MarkdownTextSpan>
+        </Text>
       )}
-      <CopyButton getCode={getCode} visible={controlsVisible} />
+      <BlockCopyButton
+        onCopy={copyCode}
+        visible={controlsVisible}
+        label={t("message.actions.copyCode")}
+      />
     </View>
   );
 });
@@ -129,9 +144,7 @@ interface TokenSpanProps {
 
 const TokenSpan = React.memo(function TokenSpan({ token }: TokenSpanProps) {
   return (
-    <MarkdownTextSpan style={token.style ? syntaxTokenStyleFor(token.style) : undefined}>
-      {token.text}
-    </MarkdownTextSpan>
+    <Text style={token.style ? syntaxTokenStyleFor(token.style) : undefined}>{token.text}</Text>
   );
 });
 
@@ -140,7 +153,7 @@ interface CodeTextSpanProps {
 }
 
 const CodeTextSpan = React.memo(function CodeTextSpan({ text }: CodeTextSpanProps) {
-  return <MarkdownTextSpan>{text}</MarkdownTextSpan>;
+  return <Text>{text}</Text>;
 });
 
 interface SplitStyles {
@@ -163,87 +176,3 @@ function splitFenceStyle(inheritedStyles: TextStyle, textStyle: TextStyle): Spli
     innerTextStyle: [inheritedStyles, textOnly],
   };
 }
-
-interface CopyButtonProps {
-  getCode: () => string;
-  visible: boolean;
-}
-
-const COPIED_RESET_MS = 1500;
-
-const CopyButton = React.memo(function CopyButton({ getCode, visible }: CopyButtonProps) {
-  const { t } = useTranslation();
-  const [copied, setCopied] = useState(false);
-  const resetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  useEffect(
-    () => () => {
-      if (resetRef.current) clearTimeout(resetRef.current);
-    },
-    [],
-  );
-
-  const handlePress = useCallback(async () => {
-    const content = getCode();
-    if (!content) return;
-    await Clipboard.setStringAsync(content);
-    setCopied(true);
-    if (resetRef.current) clearTimeout(resetRef.current);
-    resetRef.current = setTimeout(() => {
-      setCopied(false);
-      resetRef.current = null;
-    }, COPIED_RESET_MS);
-  }, [getCode]);
-
-  const visibilityStyle = visible
-    ? copyButtonStyles.containerVisible
-    : copyButtonStyles.containerHidden;
-  const wrapperStyle = useMemo(
-    () => [copyButtonStyles.container, visibilityStyle],
-    [visibilityStyle],
-  );
-
-  return (
-    <Pressable
-      onPress={handlePress}
-      style={wrapperStyle}
-      pointerEvents={visible ? "auto" : "none"}
-      accessibilityRole="button"
-      accessibilityLabel={copied ? t("message.actions.copied") : t("message.actions.copyCode")}
-      hitSlop={8}
-      dataSet={markdownCopyDataSet.ignore}
-    >
-      {({ hovered }) => {
-        const iconColor = hovered
-          ? copyButtonStyles.iconHoveredColor.color
-          : copyButtonStyles.iconColor.color;
-        return copied ? (
-          <Check size={14} color={iconColor} />
-        ) : (
-          <Copy size={14} color={iconColor} />
-        );
-      }}
-    </Pressable>
-  );
-});
-
-const copyButtonStyles = StyleSheet.create((theme) => ({
-  container: {
-    position: "absolute",
-    top: theme.spacing[2],
-    right: theme.spacing[2],
-    padding: theme.spacing[1],
-  },
-  containerVisible: {
-    opacity: 1,
-  },
-  containerHidden: {
-    opacity: 0,
-  },
-  iconColor: {
-    color: theme.colors.foregroundMuted,
-  },
-  iconHoveredColor: {
-    color: theme.colors.foreground,
-  },
-}));

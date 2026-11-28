@@ -1,17 +1,18 @@
 import { describe, expect, it } from "vitest";
+import { DEFAULT_CONTENT_MAX_WIDTH } from "@/styles/theme";
 import type { StreamItem } from "@/types/stream";
 import {
-  clearAssistantImageMetadataCache,
-  setAssistantImageMetadata,
-} from "@/utils/assistant-image-metadata";
+  setAssistantMessageHeight,
+  clearAssistantMessageHeightEstimateCache,
+} from "@/utils/assistant-message-height-estimate";
 import {
   DEFAULT_WEB_MOUNTED_RECENT_STREAM_ITEMS,
   DEFAULT_WEB_PARTIAL_VIRTUALIZATION_THRESHOLD,
   estimateStreamItemHeight,
   findMountedWindowStart,
+  MAX_MOUNTED_WEB_WINDOW_ITEMS,
   getWebMountedRecentStreamItems,
   getWebPartialVirtualizationThreshold,
-  shouldAdjustScrollForVirtualRowResize,
   splitWebVirtualizedHistory,
   type IndexedStreamItem,
 } from "./web-virtualization";
@@ -70,6 +71,17 @@ function indexEntries(items: StreamItem[]): IndexedStreamItem[] {
 }
 
 describe("findMountedWindowStart", () => {
+  it("mounts complete autonomous runs and keeps same-run steers together", () => {
+    const items = [
+      { ...userMessage("human", 1), turnId: "first" },
+      { ...assistantMessage("reply", 2), turnId: "first" },
+      { ...toolCall("wake", 3), turnId: "autonomous" },
+      { ...userMessage("steer", 4), turnId: "autonomous" },
+      { ...assistantMessage("done", 5), turnId: "autonomous" },
+    ];
+    expect(findMountedWindowStart({ items, minMountedCount: 1 })).toBe(2);
+  });
+
   it("keeps all items mounted when the chat is below the threshold", () => {
     const items = [userMessage("u1", 1), assistantMessage("a1", 2)];
 
@@ -97,6 +109,37 @@ describe("findMountedWindowStart", () => {
       }),
     ).toBe(39);
   });
+
+  it("keeps a whole turn when the caller does not cap the rewind", () => {
+    const items = Array.from({ length: MAX_MOUNTED_WEB_WINDOW_ITEMS + 40 }, (_, index) => ({
+      ...toolCall(`t${index}`, index % 60),
+      turnId: "long",
+    }));
+
+    expect(findMountedWindowStart({ items, minMountedCount: 20 })).toBe(0);
+  });
+
+  it("stops a long turn at the cap and still honors a larger minimum", () => {
+    const items = Array.from({ length: 200 }, (_, index) => ({
+      ...toolCall(`t${index}`, index % 60),
+      turnId: "long",
+    }));
+
+    expect(
+      findMountedWindowStart({
+        items,
+        minMountedCount: 20,
+        maxMountedCount: MAX_MOUNTED_WEB_WINDOW_ITEMS,
+      }),
+    ).toBe(200 - MAX_MOUNTED_WEB_WINDOW_ITEMS);
+    expect(
+      findMountedWindowStart({
+        items,
+        minMountedCount: 80,
+        maxMountedCount: MAX_MOUNTED_WEB_WINDOW_ITEMS,
+      }),
+    ).toBe(120);
+  });
 });
 
 describe("splitWebVirtualizedHistory", () => {
@@ -119,12 +162,55 @@ describe("splitWebVirtualizedHistory", () => {
     expect(window.mountedEntries[0]?.item.id).toBe("u5");
     expect(window.mountedEntries).toHaveLength(50);
   });
+
+  it("virtualizes the older rows of a turn that is longer than the mounted cap", () => {
+    const length = MAX_MOUNTED_WEB_WINDOW_ITEMS + 25;
+    const items = Array.from({ length }, (_, index) => ({
+      ...toolCall(`t${index}`, index % 60),
+      turnId: "long",
+    }));
+
+    const window = splitWebVirtualizedHistory({
+      entries: indexEntries(items),
+      minMountedCount: DEFAULT_WEB_MOUNTED_RECENT_STREAM_ITEMS,
+    });
+
+    expect(window.mountedEntries).toHaveLength(MAX_MOUNTED_WEB_WINDOW_ITEMS);
+    expect(window.virtualizedEntries).toHaveLength(25);
+    expect(window.mountedEntries[0]?.item.id).toBe(`t${length - MAX_MOUNTED_WEB_WINDOW_ITEMS}`);
+    expect(window.virtualizedEntries[0]?.item.id).toBe("t0");
+  });
+
+  it("keeps a turn that fits under the cap mounted together", () => {
+    const items = Array.from({ length: 40 }, (_, index) => ({
+      ...toolCall(`t${index}`, index),
+      turnId: "short",
+    }));
+
+    const window = splitWebVirtualizedHistory({
+      entries: indexEntries(items),
+      minMountedCount: DEFAULT_WEB_MOUNTED_RECENT_STREAM_ITEMS,
+    });
+
+    expect(window.virtualizedEntries).toHaveLength(0);
+    expect(window.mountedEntries).toHaveLength(40);
+  });
 });
 
 describe("estimateStreamItemHeight", () => {
   it("uses compact estimates for collapsed tool sequence rows", () => {
-    expect(estimateStreamItemHeight(toolCall("tool", 1))).toBe(40);
-    expect(estimateStreamItemHeight(thought("thought", 2))).toBe(40);
+    expect(
+      estimateStreamItemHeight({
+        item: toolCall("tool", 1),
+        contentMaxWidth: DEFAULT_CONTENT_MAX_WIDTH,
+      }),
+    ).toBe(40);
+    expect(
+      estimateStreamItemHeight({
+        item: thought("thought", 2),
+        contentMaxWidth: DEFAULT_CONTENT_MAX_WIDTH,
+      }),
+    ).toBe(40);
   });
 
   it("uses a larger estimate for user messages with image attachments", () => {
@@ -146,75 +232,23 @@ describe("estimateStreamItemHeight", () => {
       ],
     };
 
-    expect(estimateStreamItemHeight(item)).toBe(220);
+    expect(estimateStreamItemHeight({ item, contentMaxWidth: DEFAULT_CONTENT_MAX_WIDTH })).toBe(
+      220,
+    );
   });
 
-  it("uses cached assistant image metadata when available", () => {
-    clearAssistantImageMetadataCache();
-    setAssistantImageMetadata(
-      {
-        source: "https://example.com/tall.png",
-      },
-      { width: 800, height: 1600 },
-    );
-
+  it("uses the renderer's whole-message measurement at the measured width", () => {
+    clearAssistantMessageHeightEstimateCache();
     const item: StreamItem = {
       kind: "assistant_message",
-      id: "a-image",
-      text: "Look at this\n\n![Screenshot](https://example.com/tall.png)",
+      id: "measured",
+      text: "First paragraph\n\n![Image](image.png)",
       timestamp: createTimestamp(2),
     };
-
-    expect(estimateStreamItemHeight(item)).toBeGreaterThan(220);
-  });
-});
-
-describe("virtual row resize anchoring", () => {
-  it("does not move the viewport when a visible row expands while detached", () => {
-    expect(
-      shouldAdjustScrollForVirtualRowResize({
-        isHistoryStartPrependActive: false,
-        rowStart: 1200,
-        scrollOffset: 1000,
-        remainingDistanceFromBottom: 5000,
-        bottomThreshold: 64,
-      }),
-    ).toBe(false);
-  });
-
-  it("keeps the reading position when a row above the viewport changes size", () => {
-    expect(
-      shouldAdjustScrollForVirtualRowResize({
-        isHistoryStartPrependActive: false,
-        rowStart: 800,
-        scrollOffset: 1000,
-        remainingDistanceFromBottom: 5000,
-        bottomThreshold: 64,
-      }),
-    ).toBe(true);
-  });
-
-  it("leaves history prepend and bottom following to their existing anchors", () => {
-    const baseInput = {
-      rowStart: 800,
-      scrollOffset: 1000,
-      remainingDistanceFromBottom: 5000,
-      bottomThreshold: 64,
-    };
-
-    expect(
-      shouldAdjustScrollForVirtualRowResize({
-        ...baseInput,
-        isHistoryStartPrependActive: true,
-      }),
-    ).toBe(false);
-    expect(
-      shouldAdjustScrollForVirtualRowResize({
-        ...baseInput,
-        isHistoryStartPrependActive: false,
-        remainingDistanceFromBottom: 64,
-      }),
-    ).toBe(false);
+    setAssistantMessageHeight({ markdown: item.text, width: 608, height: 640 });
+    expect(estimateStreamItemHeight({ item, contentMaxWidth: 608 })).toBe(640);
+    expect(estimateStreamItemHeight({ item, contentMaxWidth: 320 })).toBe(220);
+    clearAssistantMessageHeightEstimateCache();
   });
 });
 

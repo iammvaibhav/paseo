@@ -1,7 +1,7 @@
 import { type ReactNode, useCallback, useMemo, useState } from "react";
 import { Image, Pressable, Text, View } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { X } from "lucide-react-native";
+import { ImageOff, X } from "lucide-react-native";
 import { isNative } from "@/constants/platform";
 import { useIsCompactFormFactor } from "@/constants/layout";
 import type { AttachmentMetadata } from "@/attachments/types";
@@ -133,15 +133,35 @@ export function AttachmentLabel({ icon, title, subtitle }: AttachmentLabelProps)
 
 /** Square image preview pill body. */
 export function AttachmentThumbnail({ metadata }: { metadata: AttachmentMetadata }) {
-  const uri = useAttachmentPreviewUrl(metadata);
-  const source = useMemo(() => ({ uri: uri ?? "" }), [uri]);
-  if (!uri) {
+  const preview = useAttachmentPreviewUrl(metadata);
+  const uri = preview.status === "ready" ? preview.url : null;
+  const source = useMemo(() => (uri ? { uri } : null), [uri]);
+  if (!source) {
     return <View style={styles.thumbnailPlaceholder} />;
   }
   return <Image source={source} style={styles.thumbnail} />;
 }
 
+/** Square placeholder for an image whose data cannot be decoded. */
+export function AttachmentUnavailableThumbnail({
+  accessibilityLabel,
+}: {
+  accessibilityLabel: string;
+}) {
+  return (
+    <View
+      style={styles.thumbnailUnavailable}
+      accessible
+      accessibilityRole="image"
+      accessibilityLabel={accessibilityLabel}
+    >
+      <ThemedImageOff size={18} uniProps={iconForegroundMutedMapping} />
+    </View>
+  );
+}
+
 const ThemedX = withUnistyles(X);
+const ThemedImageOff = withUnistyles(ImageOff);
 const iconForegroundMutedMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
 
 const styles = StyleSheet.create((theme) => ({
@@ -187,6 +207,13 @@ const styles = StyleSheet.create((theme) => ({
   thumbnailPlaceholder: {
     width: ATTACHMENT_CONTENT_HEIGHT,
     height: ATTACHMENT_CONTENT_HEIGHT,
+    backgroundColor: theme.colors.surface1,
+  },
+  thumbnailUnavailable: {
+    width: ATTACHMENT_CONTENT_HEIGHT,
+    height: ATTACHMENT_CONTENT_HEIGHT,
+    alignItems: "center",
+    justifyContent: "center",
     backgroundColor: theme.colors.surface1,
   },
   closeButton: {

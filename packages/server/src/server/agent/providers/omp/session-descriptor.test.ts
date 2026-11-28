@@ -1,9 +1,17 @@
-import { mkdtemp, mkdir, utimes, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, mkdir, readFile, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, test } from "vitest";
 
-import { listOmpImportableSessions, readOmpImportSessionConfig } from "./session-descriptor.js";
+import {
+  cloneOmpSessionFile,
+  hasOmpSessionHeader,
+  listOmpImportableSessions,
+  locateOmpSessionFile,
+  readOmpImportSessionConfig,
+  resolveOmpSessionFile,
+  restoreOmpSessionHeader,
+} from "./session-descriptor.js";
 
 async function writeSession(root: string, relativePath: string, lines: unknown[]): Promise<string> {
   const filePath = path.join(root, "sessions", relativePath);
@@ -95,6 +103,50 @@ describe("OMP session descriptor", () => {
     });
   });
 
+  test("resolves a bare session id to its file and reads the same import config", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "paseo-omp-session-by-id-"));
+    const sessionDir = path.join(root, "sessions");
+    const cwd = path.join(root, "repo");
+    const sessionId = "01a03dc8-77bb-7000-b0a3-bb7d25477e81";
+    const sessionFile = await writeSession(
+      root,
+      `project/2026-08-26T11-15-43-163Z_${sessionId}.jsonl`,
+      [
+        { type: "title", v: 1, title: "", updatedAt: "2026-08-26T11:15:43.163Z" },
+        { type: "session", version: 3, id: sessionId, timestamp: "2026-08-26T11:15:43.163Z", cwd },
+        {
+          type: "model_change",
+          id: "model-1",
+          timestamp: "2026-08-26T11:15:43.200Z",
+          model: "anthropic/claude-opus-5",
+        },
+      ],
+    );
+    // A decoy whose filename does not follow the `<timestamp>_<id>` convention
+    // but whose header carries the id must still be found.
+    const oddlyNamedId = "renamed-session";
+    const oddlyNamed = await writeSession(root, "project/notes.jsonl", [
+      { type: "session", id: oddlyNamedId, timestamp: "2026-08-27T00:00:00.000Z", cwd },
+      {
+        type: "model_change",
+        id: "model-2",
+        timestamp: "2026-08-27T00:00:00.100Z",
+        model: "mimorouter/claude-fable-5-1",
+      },
+    ]);
+
+    await expect(resolveOmpSessionFile(sessionId, { sessionDir })).resolves.toBe(sessionFile);
+    await expect(resolveOmpSessionFile(sessionFile, { sessionDir })).resolves.toBe(sessionFile);
+    await expect(resolveOmpSessionFile(oddlyNamedId, { sessionDir })).resolves.toBe(oddlyNamed);
+    await expect(resolveOmpSessionFile("does-not-exist", { sessionDir })).resolves.toBeNull();
+
+    const byId = await readOmpImportSessionConfig(sessionId, { sessionDir });
+    const byPath = await readOmpImportSessionConfig(sessionFile, { sessionDir });
+    expect(byId).toEqual({ model: "anthropic/claude-opus-5" });
+    expect(byId).toEqual(byPath);
+    await expect(readOmpImportSessionConfig("does-not-exist", { sessionDir })).resolves.toEqual({});
+  });
+
   test("keeps recent nested OMP subagent sessions importable", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "paseo-omp-session-nested-"));
     const cwd = path.join(root, "repo");
@@ -145,4 +197,368 @@ describe("OMP session descriptor", () => {
       expect.objectContaining({ providerHandleId: sessionFile, cwd }),
     ]);
   });
+  test("locateOmpSessionFile locates actual session file when given a stub or missing path", async () => {
+    const home = await mkdtemp(path.join(tmpdir(), "paseo-omp-session-resolve-"));
+    const fileName = "2026-08-04T00-00-00-000Z_019f0000-0000-7000-8000-000000000000.jsonl";
+    const invalidPath = path.join(home, ".omp", "agent", "sessions", "invalid-dir", fileName);
+    const realPath = path.join(home, ".omp", "agent", "sessions", "home-real-dir", fileName);
+
+    await mkdir(path.dirname(realPath), { recursive: true });
+    const line = JSON.stringify({ type: "session", id: "s1", timestamp: "2026-08-04" }) + "\n";
+    await writeFile(realPath, line.repeat(50), "utf8");
+
+    const resolved = await locateOmpSessionFile(invalidPath, { homeDir: home });
+    expect(resolved).toBe(realPath);
+  });
+
+  test("locateOmpSessionFile resolves a bare session id to its transcript", async () => {
+    // `paseo import` persists the provider handle the user typed, which for omp
+    // is a session id. Handed to omp unresolved it is a *relative path*: omp
+    // mints an empty session next to the cwd and the agent opens blank.
+    const home = await mkdtemp(path.join(tmpdir(), "paseo-omp-session-id-"));
+    const sessionId = "019f0000-0000-7000-8000-00000000abcd";
+    const realPath = path.join(
+      home,
+      ".omp",
+      "agent",
+      "sessions",
+      "home-real-dir",
+      `2026-08-04T00-00-00-000Z_${sessionId}.jsonl`,
+    );
+
+    await mkdir(path.dirname(realPath), { recursive: true });
+    const line = JSON.stringify({ type: "session", id: sessionId, timestamp: "2026-08-04" }) + "\n";
+    await writeFile(realPath, line.repeat(50), "utf8");
+
+    await expect(locateOmpSessionFile(sessionId, { homeDir: home })).resolves.toBe(realPath);
+  });
+
+  test("cloneOmpSessionFile creates an independent, byte-identical copy in the same directory", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "paseo-omp-session-clone-"));
+    const source = path.join(
+      root,
+      "2026-08-04T00-00-00-000Z_019f0000-0000-7000-8000-000000000001.jsonl",
+    );
+    const line = JSON.stringify({ type: "session", id: "s1", timestamp: "2026-08-04", cwd: root });
+    await writeFile(source, `${line}\n`.repeat(10), "utf8");
+
+    const clone = await cloneOmpSessionFile(source);
+    // Fresh uniquely-named file in the same directory, never the source path.
+    expect(clone).not.toBe(source);
+    expect(path.dirname(clone)).toBe(path.dirname(source));
+    expect(clone).toMatch(/\.jsonl$/u);
+    // Byte-identical content (reflink or plain-copy fallback both deliver this).
+    await expect(readFile(clone, "utf8")).resolves.toBe(await readFile(source, "utf8"));
+    // The clone owns its history: appending to it must not touch the source.
+    await appendFile(clone, '{"type":"session_info","name":"fork"}\n', "utf8");
+    expect(await readFile(source, "utf8")).not.toContain("fork");
+  });
+
+  test("cloneOmpSessionFile with targetUserTurnCount slices session entries to the requested turn", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "paseo-omp-session-clone-bounded-"));
+    const source = path.join(
+      root,
+      "2026-08-04T00-00-00-000Z_019f0000-0000-7000-8000-000000000002.jsonl",
+    );
+    const lines = [
+      JSON.stringify({ type: "title", v: 1, title: "Initial title" }),
+      JSON.stringify({ type: "session", id: "root-1", parentId: null, cwd: root }),
+      JSON.stringify({
+        type: "message",
+        id: "user-1",
+        parentId: "root-1",
+        message: { role: "user", content: "first prompt" },
+      }),
+      JSON.stringify({
+        type: "message",
+        id: "assistant-1",
+        parentId: "user-1",
+        message: { role: "assistant", content: [{ type: "text", text: "first response" }] },
+      }),
+      JSON.stringify({
+        type: "message",
+        id: "user-2",
+        parentId: "assistant-1",
+        message: { role: "user", content: "second prompt" },
+      }),
+      JSON.stringify({
+        type: "message",
+        id: "assistant-2",
+        parentId: "user-2",
+        message: { role: "assistant", content: [{ type: "text", text: "second response" }] },
+      }),
+    ];
+    await writeFile(source, lines.join("\n") + "\n", "utf8");
+
+    const clone = await cloneOmpSessionFile(source, { targetUserTurnCount: 1 });
+    expect(clone).not.toBe(source);
+    const cloneContent = await readFile(clone, "utf8");
+    const cloneLines = cloneContent.trim().split("\n");
+
+    // Contains title, session, user-1, assistant-1; omits user-2 and assistant-2
+    expect(cloneLines).toHaveLength(4);
+    expect(cloneContent).toContain("first prompt");
+    expect(cloneContent).toContain("first response");
+    expect(cloneContent).not.toContain("second prompt");
+    expect(cloneContent).not.toContain("second response");
+  });
+  test("cloneOmpSessionFile preserves session header when root events have null parentId", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "paseo-omp-session-clone-null-parent-"));
+    const source = path.join(
+      root,
+      "2026-08-04T00-00-00-000Z_019f0000-0000-7000-8000-000000000004.jsonl",
+    );
+    const lines = [
+      JSON.stringify({ type: "title", v: 1, title: "Initial title" }),
+      JSON.stringify({ type: "session", id: "019f0000-0000-7000-8000-000000000004", cwd: root }),
+      JSON.stringify({
+        type: "thinking_level_change",
+        id: "think-1",
+        parentId: null,
+        thinkingLevel: "high",
+      }),
+      JSON.stringify({
+        type: "service_tier_change",
+        id: "tier-1",
+        parentId: "think-1",
+        serviceTier: null,
+      }),
+      JSON.stringify({
+        type: "message",
+        id: "user-1",
+        parentId: "tier-1",
+        message: { role: "user", content: "first prompt" },
+      }),
+      JSON.stringify({
+        type: "message",
+        id: "assistant-1",
+        parentId: "user-1",
+        message: { role: "assistant", content: [{ type: "text", text: "first response" }] },
+      }),
+      JSON.stringify({
+        type: "message",
+        id: "user-2",
+        parentId: "assistant-1",
+        message: { role: "user", content: "second prompt" },
+      }),
+      JSON.stringify({
+        type: "message",
+        id: "assistant-2",
+        parentId: "user-2",
+        message: { role: "assistant", content: [{ type: "text", text: "second response" }] },
+      }),
+    ];
+    await writeFile(source, lines.join("\n") + "\n", "utf8");
+
+    const clone = await cloneOmpSessionFile(source, { targetUserTurnCount: 1 });
+    const cloneContent = await readFile(clone, "utf8");
+    const cloneLines = cloneContent.trim().split("\n");
+
+    expect(cloneLines).toHaveLength(6);
+    expect(JSON.parse(cloneLines[0]!).type).toBe("title");
+    expect(JSON.parse(cloneLines[1]!).type).toBe("session");
+    expect(JSON.parse(cloneLines[2]!).type).toBe("thinking_level_change");
+    expect(JSON.parse(cloneLines[3]!).type).toBe("service_tier_change");
+    expect(JSON.parse(cloneLines[4]!).id).toBe("user-1");
+    expect(JSON.parse(cloneLines[5]!).id).toBe("assistant-1");
+  });
+
+  test("cloneOmpSessionFile with targetUserTurnCount >= session turns copies full file", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "paseo-omp-session-clone-bounded-full-"));
+    const source = path.join(
+      root,
+      "2026-08-04T00-00-00-000Z_019f0000-0000-7000-8000-000000000003.jsonl",
+    );
+    const lines = [
+      JSON.stringify({ type: "session", id: "root-1", parentId: null, cwd: root }),
+      JSON.stringify({
+        type: "message",
+        id: "user-1",
+        parentId: "root-1",
+        message: { role: "user", content: "first prompt" },
+      }),
+      JSON.stringify({
+        type: "message",
+        id: "assistant-1",
+        parentId: "user-1",
+        message: { role: "assistant", content: [{ type: "text", text: "first response" }] },
+      }),
+    ];
+    await writeFile(source, lines.join("\n") + "\n", "utf8");
+
+    const clone = await cloneOmpSessionFile(source, { targetUserTurnCount: 5 });
+    const cloneContent = await readFile(clone, "utf8");
+    expect(cloneContent).toBe(await readFile(source, "utf8"));
+  });
+
+  test("hasOmpSessionHeader rejects a transcript whose session record is gone", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "paseo-omp-session-header-"));
+    const intact = path.join(root, "2026-08-31T02-54-51-722Z_intact.jsonl");
+    const damaged = path.join(root, "2026-08-31T02-54-51-722Z_damaged.jsonl");
+    const event = JSON.stringify({
+      type: "model_change",
+      id: "40fd32e4",
+      parentId: "1c11ecc2",
+      model: "grok-build/grok-4.6",
+    });
+    await writeFile(
+      intact,
+      `${JSON.stringify({ type: "title", v: 1, title: "" })}\n${JSON.stringify({
+        type: "session",
+        version: 3,
+        id: "intact",
+      })}\n${event}\n`,
+      "utf8",
+    );
+    // What omp leaves behind after relocating a session: the preamble is gone
+    // and the first surviving record names a parent the file no longer holds.
+    await writeFile(damaged, `${event}\n`, "utf8");
+
+    await expect(hasOmpSessionHeader(intact)).resolves.toBe(true);
+    await expect(hasOmpSessionHeader(damaged)).resolves.toBe(false);
+    // A file omp has not written yet is its own problem to mint, not damage.
+    await expect(hasOmpSessionHeader(path.join(root, "missing.jsonl"))).resolves.toBe(true);
+  });
+
+  test("restoreOmpSessionHeader prepends a header and keeps every entry", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "paseo-omp-session-restore-"));
+    const damaged = path.join(
+      root,
+      "2026-08-31T02-54-51-722Z_511fc990-9989-4cfe-84f8-4ca1d0940c5a.jsonl",
+    );
+    const body = [
+      JSON.stringify({ type: "model_change", id: "40fd32e4", parentId: "1c11ecc2" }),
+      JSON.stringify({
+        type: "message",
+        id: "d63b3ef3",
+        parentId: "40fd32e4",
+        message: { role: "user", content: [{ type: "text", text: "start a deployment" }] },
+      }),
+    ];
+    await writeFile(damaged, `${body.join("\n")}\n`, "utf8");
+
+    await expect(restoreOmpSessionHeader(damaged, { cwd: "/data/paseo" })).resolves.toBe(true);
+
+    const repaired = (await readFile(damaged, "utf8")).trim().split("\n");
+    // The session id and creation time come from omp's own file naming, so the
+    // restored header agrees with the file that holds it.
+    expect(JSON.parse(repaired[0] ?? "")).toEqual({
+      type: "session",
+      version: 3,
+      id: "511fc990-9989-4cfe-84f8-4ca1d0940c5a",
+      timestamp: "2026-08-31T02:54:51.722Z",
+      cwd: "/data/paseo",
+    });
+    expect(repaired.slice(1)).toEqual(body);
+    await expect(hasOmpSessionHeader(damaged)).resolves.toBe(true);
+  });
+
+  test("restoreOmpSessionHeader leaves an intact or empty session untouched", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "paseo-omp-session-restore-noop-"));
+    const intact = path.join(root, "2026-08-31T02-54-51-722Z_intact.jsonl");
+    const empty = path.join(root, "2026-08-31T02-54-51-722Z_empty.jsonl");
+    const intactContent = `${JSON.stringify({ type: "session", version: 3, id: "intact" })}\n`;
+    await writeFile(intact, intactContent, "utf8");
+    await writeFile(empty, "", "utf8");
+
+    await expect(restoreOmpSessionHeader(intact)).resolves.toBe(false);
+    await expect(restoreOmpSessionHeader(empty)).resolves.toBe(false);
+    await expect(readFile(intact, "utf8")).resolves.toBe(intactContent);
+    await expect(readFile(empty, "utf8")).resolves.toBe("");
+  });
+
+  test("uses a named OMP profile's session directory", async () => {
+    const home = await mkdtemp(path.join(tmpdir(), "paseo-omp-profile-home-"));
+    const cwd = path.join(home, "repo");
+    const sessionFile = path.join(
+      home,
+      ".omp",
+      "profiles",
+      "qa",
+      "agent",
+      "sessions",
+      "project",
+      "profile.jsonl",
+    );
+    await mkdir(path.dirname(sessionFile), { recursive: true });
+    await writeFile(sessionFile, JSON.stringify({ type: "session", id: "qa-profile", cwd }));
+
+    await expect(
+      listOmpImportableSessions({
+        homeDir: home,
+        env: {},
+        runtimeSettings: { env: { OMP_PROFILE: "qa" } },
+      }),
+    ).resolves.toEqual([expect.objectContaining({ providerHandleId: sessionFile })]);
+  });
+
+  test.skipIf(process.platform === "win32")(
+    "uses a profile's XDG data directory after OMP has created it",
+    async () => {
+      const home = await mkdtemp(path.join(tmpdir(), "paseo-omp-xdg-home-"));
+      const cwd = path.join(home, "repo");
+      const xdgDataHome = path.join(home, "xdg-data");
+      const sessionFile = path.join(
+        xdgDataHome,
+        "omp",
+        "profiles",
+        "qa",
+        "sessions",
+        "project",
+        "session.jsonl",
+      );
+      await mkdir(path.dirname(sessionFile), { recursive: true });
+      await writeFile(sessionFile, JSON.stringify({ type: "session", id: "xdg-profile", cwd }));
+
+      await expect(
+        listOmpImportableSessions({
+          homeDir: home,
+          env: { OMP_PROFILE: "qa", XDG_DATA_HOME: xdgDataHome },
+        }),
+      ).resolves.toEqual([expect.objectContaining({ providerHandleId: sessionFile })]);
+    },
+  );
+
+  test.runIf(process.platform === "win32")(
+    "ignores a profile's XDG data directory on Windows",
+    async () => {
+      const home = await mkdtemp(path.join(tmpdir(), "paseo-omp-windows-xdg-home-"));
+      const cwd = path.join(home, "repo");
+      const xdgDataHome = path.join(home, "xdg-data");
+      const xdgSessionFile = path.join(
+        xdgDataHome,
+        "omp",
+        "profiles",
+        "qa",
+        "sessions",
+        "project",
+        "xdg.jsonl",
+      );
+      const profileSessionFile = path.join(
+        home,
+        ".omp",
+        "profiles",
+        "qa",
+        "agent",
+        "sessions",
+        "project",
+        "profile.jsonl",
+      );
+      await Promise.all([
+        mkdir(path.dirname(xdgSessionFile), { recursive: true }),
+        mkdir(path.dirname(profileSessionFile), { recursive: true }),
+      ]);
+      await Promise.all([
+        writeFile(xdgSessionFile, JSON.stringify({ type: "session", id: "xdg-profile", cwd })),
+        writeFile(profileSessionFile, JSON.stringify({ type: "session", id: "qa-profile", cwd })),
+      ]);
+
+      await expect(
+        listOmpImportableSessions({
+          homeDir: home,
+          env: { OMP_PROFILE: "qa", XDG_DATA_HOME: xdgDataHome },
+        }),
+      ).resolves.toEqual([expect.objectContaining({ providerHandleId: profileSessionFile })]);
+    },
+  );
 });

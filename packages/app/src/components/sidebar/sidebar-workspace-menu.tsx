@@ -1,22 +1,36 @@
-import { useMemo, type ComponentProps, type PropsWithChildren, type ReactNode } from "react";
+import {
+  useCallback,
+  useMemo,
+  type ComponentProps,
+  type PropsWithChildren,
+  type ReactNode,
+} from "react";
 import { useTranslation } from "react-i18next";
-import { type PressableStateCallbackType } from "react-native";
+import type { GestureResponderEvent, PressableStateCallbackType } from "react-native";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import {
   Archive,
+  CheckSquare,
   Circle,
   CircleCheck,
   Copy,
+  MessageCircleQuestion,
   MoreVertical,
   Pencil,
   Pin,
   PinOff,
   Tag,
+  ExternalLink,
 } from "lucide-react-native";
-import { isWeb } from "@/constants/platform";
+import { PressHighlight } from "@/components/ui/press-highlight";
+import { getIsElectron, isWeb } from "@/constants/platform";
+import { getDesktopHost } from "@/desktop/host";
+import { buildHostWorkspaceRoute } from "@/utils/host-routes";
+import { useToast } from "@/contexts/toast-context";
 import { getForgePresentation, normalizeForge } from "@/git/forge";
 import type { SidebarWorkspaceEntry } from "@/hooks/use-sidebar-workspaces-list";
 import { useAppSettings } from "@/hooks/use-settings";
+import { densityIconProps } from "@/styles/density";
 import type { Theme } from "@/styles/theme";
 import type { ShortcutKey } from "@/utils/format-shortcut";
 import {
@@ -35,6 +49,7 @@ import {
 import { Shortcut } from "@/components/ui/shortcut";
 import { OpenInFileManagerMenuItem } from "@/workspace/open-in-file-manager/menu-item";
 import { resolveSidebarWorkspaceAccessibilityLabel } from "@/components/sidebar/sidebar-workspace-title";
+import { bySizing } from "@/components/ui/control-geometry";
 import {
   workspaceServiceLabelKey,
   type WorkspaceServiceSummary,
@@ -53,29 +68,70 @@ const foregroundMutedColorMapping = (theme: Theme) => ({
 const ThemedMoreVertical = withUnistyles(MoreVertical);
 const ThemedCopy = withUnistyles(Copy);
 const ThemedArchive = withUnistyles(Archive);
+const ThemedCheckSquare = withUnistyles(CheckSquare);
 const ThemedCircle = withUnistyles(Circle);
 const ThemedPencil = withUnistyles(Pencil);
 const ThemedCircleCheck = withUnistyles(CircleCheck);
 const ThemedPin = withUnistyles(Pin);
 const ThemedPinOff = withUnistyles(PinOff);
+const ThemedMessageCircleQuestion = withUnistyles(MessageCircleQuestion);
 const ThemedTag = withUnistyles(Tag);
-
+const ThemedExternalLink = withUnistyles(ExternalLink);
 const copyLeadingIcon = <ThemedCopy size={14} uniProps={foregroundMutedColorMapping} />;
 const renameLeadingIcon = <ThemedPencil size={14} uniProps={foregroundMutedColorMapping} />;
 const markAsReadLeadingIcon = (
   <ThemedCircleCheck size={14} uniProps={foregroundMutedColorMapping} />
 );
 const markAsUnreadLeadingIcon = <ThemedCircle size={14} uniProps={foregroundMutedColorMapping} />;
+const selectLeadingIcon = <ThemedCheckSquare size={14} uniProps={foregroundMutedColorMapping} />;
 const archiveLeadingIcon = <ThemedArchive size={14} uniProps={foregroundMutedColorMapping} />;
 const pinLeadingIcon = <ThemedPin size={14} uniProps={foregroundMutedColorMapping} />;
 const unpinLeadingIcon = <ThemedPinOff size={14} uniProps={foregroundMutedColorMapping} />;
+const askHistoryLeadingIcon = (
+  <ThemedMessageCircleQuestion size={14} uniProps={foregroundMutedColorMapping} />
+);
+const openInNewWindowLeadingIcon = (
+  <ThemedExternalLink size={14} uniProps={foregroundMutedColorMapping} />
+);
+
+/** Pointer-only, so it is always the kebab's pointer size. */
+const ARCHIVE_BUTTON_SIZE = 18;
+/** Keeps a press aimed at the kebab from landing on the one-click archive. */
+const ARCHIVE_BUTTON_KEBAB_GAP = 8;
+/** The width the archive button and its gap take up left of the kebab. */
+export const ARCHIVE_BUTTON_FOOTPRINT = ARCHIVE_BUTTON_SIZE + ARCHIVE_BUTTON_KEBAB_GAP;
+
+const triggerIconProps = densityIconProps("sm", foregroundMutedColorMapping);
+const triggerIconHoveredProps = densityIconProps("sm", foregroundColorMapping);
 
 function renderTriggerIcon({ hovered }: { hovered?: boolean }) {
+  return <ThemedMoreVertical uniProps={hovered ? triggerIconHoveredProps : triggerIconProps} />;
+}
+
+function renderArchiveIcon({ hovered }: PressableStateCallbackType & { hovered?: boolean }) {
+  return <ThemedArchive uniProps={hovered ? triggerIconHoveredProps : triggerIconProps} />;
+}
+
+/** One-click archive beside the kebab, for pointer rows that reveal it on hover. */
+export function SidebarWorkspaceArchiveButton({
+  workspaceKey,
+  onArchive,
+}: {
+  workspaceKey: string;
+  onArchive: () => void;
+}) {
+  const { t } = useTranslation();
   return (
-    <ThemedMoreVertical
-      size={14}
-      uniProps={hovered ? foregroundColorMapping : foregroundMutedColorMapping}
-    />
+    <PressHighlight
+      hitSlop={4}
+      style={archiveButtonStyle}
+      onPress={onArchive}
+      accessibilityRole={isWeb ? undefined : "button"}
+      accessibilityLabel={t("sidebar.workspace.actions.archiveWorkspace")}
+      testID={`sidebar-workspace-archive-button-${workspaceKey}`}
+    >
+      {renderArchiveIcon}
+    </PressHighlight>
   );
 }
 
@@ -88,7 +144,9 @@ export interface SidebarWorkspaceMenuProps {
   onCopyBranchName?: () => void;
   onRename?: () => void;
   onMarkAsRead?: () => void;
+  onAskHistory?: () => void;
   onMarkAsUnread?: () => void;
+  onSelectWorkspace?: () => void;
   onArchive: () => void;
   archiveLabel?: string;
   archiveStatus?: "idle" | "pending" | "success";
@@ -97,6 +155,7 @@ export interface SidebarWorkspaceMenuProps {
   isPinned?: boolean;
   onTogglePin?: () => void;
   openInFileManagerPath?: string | null;
+  onOpenInNewWindow?: () => void;
   /**
    * Lifted so the row that reveals the kebab can keep it mounted while its menu is up. See
    * `useOpenKebabMenuVisibility`.
@@ -127,6 +186,46 @@ function WorkspaceMenuItem({
   return <DropdownMenuItem {...props}>{children}</DropdownMenuItem>;
 }
 
+/**
+ * Opens the workspace in a new desktop window, or a new tab on web. Undefined where neither
+ * exists or the workspace is not known yet.
+ */
+function useOpenWorkspaceInNewWindow(input: {
+  serverId?: string;
+  workspaceId?: string;
+  projectPath?: string | null;
+}): (() => void) | undefined {
+  const { serverId, workspaceId, projectPath } = input;
+  const { t } = useTranslation();
+  const toast = useToast();
+  const open = useCallback(() => {
+    if (!serverId || !workspaceId) return;
+    const route = buildHostWorkspaceRoute(serverId, workspaceId);
+    if (getIsElectron()) {
+      void getDesktopHost()
+        ?.window?.openNew?.({
+          initialRoute: route,
+          pendingOpenProjectPath: projectPath?.trim() || null,
+        })
+        ?.catch((error) => {
+          console.warn("[sidebar] openNew failed", error);
+          toast.error(t("sidebar.workspace.actions.openNewWindowFailed"));
+        });
+      return;
+    }
+    if (isWeb && typeof window !== "undefined") {
+      try {
+        window.open(route, "_blank");
+      } catch (error) {
+        console.warn("[sidebar] window.open failed", error);
+        toast.error(t("sidebar.workspace.actions.openNewWindowFailed"));
+      }
+    }
+  }, [projectPath, serverId, t, toast, workspaceId]);
+  const canOpen = (isWeb || getIsElectron()) && Boolean(serverId && workspaceId);
+  return canOpen ? open : undefined;
+}
+
 function SidebarWorkspaceMenuItems({
   surface,
   workspaceKey,
@@ -136,7 +235,9 @@ function SidebarWorkspaceMenuItems({
   onCopyBranchName,
   onRename,
   onMarkAsRead,
+  onAskHistory,
   onMarkAsUnread,
+  onSelectWorkspace,
   onArchive,
   archiveLabel,
   archiveStatus,
@@ -145,8 +246,15 @@ function SidebarWorkspaceMenuItems({
   isPinned,
   onTogglePin,
   openInFileManagerPath,
+  onOpenInNewWindow,
 }: SidebarWorkspaceMenuItemsProps & { surface: MenuSurface }): ReactNode {
   const { t } = useTranslation();
+  const openWorkspaceInNewWindow = useOpenWorkspaceInNewWindow({
+    serverId,
+    workspaceId,
+    projectPath: openInFileManagerPath,
+  });
+  const openInNewWindowAction = onOpenInNewWindow ?? openWorkspaceInNewWindow;
   const archiveTrailing = useMemo(
     () => (archiveShortcutKeys ? <Shortcut chord={archiveShortcutKeys} /> : null),
     [archiveShortcutKeys],
@@ -218,6 +326,16 @@ function SidebarWorkspaceMenuItems({
           {isPinned ? t("sidebar.workspace.actions.unpin") : t("sidebar.workspace.actions.pin")}
         </WorkspaceMenuItem>
       ) : null}
+      {onAskHistory ? (
+        <WorkspaceMenuItem
+          surface={surface}
+          testID={`sidebar-workspace-menu-ask-history-${workspaceKey}`}
+          leading={askHistoryLeadingIcon}
+          onSelect={onAskHistory}
+        >
+          {t("sidebar.workspace.actions.askHistory")}
+        </WorkspaceMenuItem>
+      ) : null}
       {serverId && workspaceId ? (
         <DropdownMenuSubTrigger
           id={WORKSPACE_LABEL_PAGE_ID}
@@ -232,6 +350,26 @@ function SidebarWorkspaceMenuItems({
         path={openInFileManagerPath}
         testID={`sidebar-workspace-menu-open-folder-${workspaceKey}`}
       />
+      {onSelectWorkspace ? (
+        <WorkspaceMenuItem
+          surface={surface}
+          testID={`sidebar-workspace-menu-select-${workspaceKey}`}
+          leading={selectLeadingIcon}
+          onSelect={onSelectWorkspace}
+        >
+          {t("sidebar.workspace.actions.select")}
+        </WorkspaceMenuItem>
+      ) : null}
+      {openInNewWindowAction ? (
+        <WorkspaceMenuItem
+          surface={surface}
+          testID={`sidebar-workspace-menu-open-new-window-${workspaceKey}`}
+          leading={openInNewWindowLeadingIcon}
+          onSelect={openInNewWindowAction}
+        >
+          {t("sidebar.workspace.actions.openNewWindow")}
+        </WorkspaceMenuItem>
+      ) : null}
       {onArchive ? (
         <WorkspaceMenuItem
           surface={surface}
@@ -258,7 +396,9 @@ export function SidebarWorkspaceMenu({
   onCopyBranchName,
   onRename,
   onMarkAsRead,
+  onAskHistory,
   onMarkAsUnread,
+  onSelectWorkspace,
   onArchive,
   archiveLabel,
   archiveStatus,
@@ -304,7 +444,9 @@ export function SidebarWorkspaceMenu({
           onCopyBranchName={onCopyBranchName}
           onRename={onRename}
           onMarkAsRead={onMarkAsRead}
+          onAskHistory={onAskHistory}
           onMarkAsUnread={onMarkAsUnread}
+          onSelectWorkspace={onSelectWorkspace}
           onArchive={onArchive}
           archiveLabel={archiveLabel}
           archiveStatus={archiveStatus}
@@ -337,7 +479,9 @@ export function SidebarWorkspaceContextMenu({
   onCopyBranchName,
   onRename,
   onMarkAsRead,
+  onAskHistory,
   onMarkAsUnread,
+  onSelectWorkspace,
   onArchive,
   archiveLabel,
   archiveStatus,
@@ -380,6 +524,7 @@ export function SidebarWorkspaceContextMenu({
     serviceLabel: serviceSummary
       ? t(workspaceServiceLabelKey(serviceSummary), { name: serviceSummary.name })
       : null,
+    t,
   });
   const workspaceTarget = useMemo<WorkspaceLabelTarget>(
     () => ({
@@ -390,11 +535,37 @@ export function SidebarWorkspaceContextMenu({
     [workspace],
   );
   const pages = useWorkspaceLabelMenuPages(workspaceTarget);
+  const checkboxSpaceKeyProps = useMemo(() => {
+    if (!isWeb || triggerProps.accessibilityRole !== "checkbox" || !triggerProps.onPress) {
+      return {};
+    }
+    const onPress = triggerProps.onPress;
+    return {
+      // React Native Web's Pressable activates Space only for role="button", not checkbox.
+      onKeyDown: (event: {
+        key?: string;
+        repeat?: boolean;
+        target?: unknown;
+        currentTarget?: unknown;
+        preventDefault?: () => void;
+      }) => {
+        if (triggerProps.disabled) return;
+        if (event.target !== event.currentTarget) return;
+        if (event.key === " " || event.key === "Spacebar") {
+          event.preventDefault?.();
+          if (!event.repeat) {
+            onPress(event as unknown as GestureResponderEvent);
+          }
+        }
+      },
+    };
+  }, [triggerProps.accessibilityRole, triggerProps.disabled, triggerProps.onPress]);
 
   return (
     <ContextMenu open={contextMenuOpen} onOpenChange={onContextMenuOpenChange}>
       <ContextMenuTrigger
         {...triggerProps}
+        {...checkboxSpaceKeyProps}
         enabledOnMobile={false}
         accessibilityLabel={accessibilityLabel ?? rowAccessibilityLabel}
         highlightStyle={highlightStyle}
@@ -417,7 +588,9 @@ export function SidebarWorkspaceContextMenu({
           onCopyBranchName={onCopyBranchName}
           onRename={onRename}
           onMarkAsRead={onMarkAsRead}
+          onAskHistory={onAskHistory}
           onMarkAsUnread={onMarkAsUnread}
+          onSelectWorkspace={onSelectWorkspace}
           onArchive={onArchive}
           archiveLabel={archiveLabel}
           archiveStatus={archiveStatus}
@@ -436,16 +609,37 @@ function triggerStyle({ hovered = false }: PressableStateCallbackType & { hovere
   return [styles.trigger, hovered && styles.triggerHovered];
 }
 
+function archiveButtonStyle({
+  hovered = false,
+}: PressableStateCallbackType & { hovered?: boolean }) {
+  return [styles.archiveButton, hovered && styles.triggerHovered];
+}
+
 const styles = StyleSheet.create((theme) => ({
   trigger: {
-    padding: 2,
+    // Larger on touch so the kebab is an easy tap target.
+    width: bySizing({ touch: 32, pointer: 18 }),
+    height: bySizing({ touch: 32, pointer: 18 }),
+    alignItems: "center",
+    justifyContent: "center",
     borderRadius: 4,
-    marginLeft: 2,
+    // Center the touch box on the 20px title line it is anchored to.
+    marginTop: bySizing({ touch: -6, pointer: 0 }),
     // MoreVertical paints only around the center of its SVG. Keep the padded hit box, but
     // pull the painted dots through that unused view-box space onto the trailing-content rail.
-    marginRight: -7,
+    marginRight: bySizing({ touch: -14, pointer: -7 }),
   },
   triggerHovered: {
     backgroundColor: theme.colors.surface2,
+  },
+  // The kebab's box without its offsets: the archive glyph fills its view box, so it needs
+  // none of the nudging the three dots do.
+  archiveButton: {
+    width: ARCHIVE_BUTTON_SIZE,
+    height: ARCHIVE_BUTTON_SIZE,
+    marginRight: ARCHIVE_BUTTON_KEBAB_GAP,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 4,
   },
 }));

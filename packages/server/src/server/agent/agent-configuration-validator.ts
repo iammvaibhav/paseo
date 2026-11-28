@@ -3,10 +3,10 @@ import type { HubExecutionAgentValidationIssue } from "@getpaseo/protocol/messag
 
 import type { ProviderSnapshotEntry } from "./agent-sdk-types.js";
 import { filterSelectableAgentModels } from "./agent-sdk-types.js";
-import { ProviderOptionsValidationError } from "./provider-options.js";
 
 export interface AgentConfigurationValidationInput {
   provider: string;
+  cwd?: string;
   model?: string;
   modeId?: string;
   thinkingOptionId?: string;
@@ -16,13 +16,11 @@ export interface AgentConfigurationValidationInput {
 interface AgentConfigurationValidationContext {
   input: AgentConfigurationValidationInput;
   provider: ProviderSnapshotEntry;
-  validateOptions(options: ProviderOptions | undefined): ProviderOptions | undefined;
 }
 
 export function validateAgentConfigurationAgainstProvider({
   input,
   provider,
-  validateOptions,
 }: AgentConfigurationValidationContext): HubExecutionAgentValidationIssue[] {
   const issues: HubExecutionAgentValidationIssue[] = [];
   const models = filterSelectableAgentModels(provider.models);
@@ -51,18 +49,6 @@ export function validateAgentConfigurationAgainstProvider({
       path: ["thinkingOptionId"],
       message: `Thinking option '${input.thinkingOptionId}' is not available for provider '${input.provider}'`,
     });
-  }
-
-  try {
-    validateOptions(input.providerOptions);
-  } catch (error) {
-    if (!(error instanceof ProviderOptionsValidationError)) throw error;
-    issues.push(
-      ...error.issues.map((issue) => ({
-        path: ["providerOptions", ...issue.path],
-        message: issue.message,
-      })),
-    );
   }
 
   return issues;

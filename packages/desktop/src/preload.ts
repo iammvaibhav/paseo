@@ -12,6 +12,10 @@ const PASEO_BROWSER_PROFILE_PARTITION = "persist:paseo-browser";
 
 type EventHandler = (payload: unknown) => void;
 
+function readArgValue(prefix: string): string | undefined {
+  return process.argv.find((argument) => argument.startsWith(prefix))?.slice(prefix.length);
+}
+
 function readWindowChromeMode(): DesktopWindowChromeMode {
   const prefix = "--paseo-window-chrome-mode=";
   const value = process.argv.find((argument) => argument.startsWith(prefix))?.slice(prefix.length);
@@ -32,6 +36,8 @@ interface AttachedBrowserRegistration {
 contextBridge.exposeInMainWorld("paseoDesktop", {
   platform: process.platform,
   windowChromeMode: readWindowChromeMode(),
+  browserHostLabel: readArgValue("--paseo-browser-host-label="),
+  browserHostInstanceId: readArgValue("--paseo-browser-host-instance-id="),
   invoke: (command: string, args?: Record<string, unknown>) =>
     ipcRenderer.invoke("paseo:invoke", command, args),
   getPendingOpenProject: () =>
@@ -55,7 +61,7 @@ contextBridge.exposeInMainWorld("paseoDesktop", {
     },
   },
   window: {
-    openNew: (options?: { pendingOpenProjectPath?: string | null }) =>
+    openNew: (options?: { pendingOpenProjectPath?: string | null; initialRoute?: string | null }) =>
       ipcRenderer.invoke("paseo:window:openNew", options),
     getCurrentWindow: () => ({
       minimize: () => ipcRenderer.invoke("paseo:window:minimize"),
@@ -65,8 +71,11 @@ contextBridge.exposeInMainWorld("paseoDesktop", {
       setFullscreen: (fullscreen: boolean) =>
         ipcRenderer.invoke("paseo:window:setFullscreen", fullscreen),
       isFullscreen: () => ipcRenderer.invoke("paseo:window:isFullscreen"),
-      updateChrome: (update: { backgroundColor?: string; trafficLightOffsetY?: number }) =>
-        ipcRenderer.invoke("paseo:window:updateChrome", update),
+      updateChrome: (update: {
+        backgroundColor?: string;
+        trafficLightOffsetY?: number;
+        vibrancy?: boolean;
+      }) => ipcRenderer.invoke("paseo:window:updateChrome", update),
       onResized: (handler: EventHandler): (() => void) => {
         const listener = (_ipcEvent: Electron.IpcRendererEvent, payload: unknown) => {
           handler(payload);
@@ -95,13 +104,17 @@ contextBridge.exposeInMainWorld("paseoDesktop", {
     openUrl: (url: string) => ipcRenderer.invoke("paseo:opener:openUrl", url),
   },
   editor: {
-    listTargets: () => ipcRenderer.invoke("paseo:editor:listTargets"),
+    listTargets: (input?: { workspacePath?: string }) =>
+      ipcRenderer.invoke("paseo:editor:listTargets", input),
     openTarget: (input: {
       editorId: string;
-      workspacePath: string;
+      workspacePath?: string;
       filePath?: string;
       line?: number;
       column?: number;
+      path?: string;
+      cwd?: string;
+      sshHost?: string;
     }) => ipcRenderer.invoke("paseo:editor:openTarget", input),
   },
   webUtils: {
@@ -136,5 +149,13 @@ contextBridge.exposeInMainWorld("paseoDesktop", {
     ) => ipcRenderer.invoke("paseo:browser:capture-element", browserId, rect),
     copyElement: (payload: { text?: string; imageDataUrl?: string }) =>
       ipcRenderer.invoke("paseo:browser:copy-element", payload),
+  },
+  browserEditor: {
+    setInsecureOrigins: (origins: string[]) =>
+      ipcRenderer.invoke("paseo:browser-editor:setInsecureOrigins", origins) as Promise<{
+        restartRequired: boolean;
+      }>,
+    getInsecureOrigins: () =>
+      ipcRenderer.invoke("paseo:browser-editor:getInsecureOrigins") as Promise<string[]>,
   },
 });

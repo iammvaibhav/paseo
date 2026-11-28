@@ -19,6 +19,68 @@ import {
   type TimelineCursor,
 } from "./session-stream-reducers";
 
+it("keeps streamed reasoning together while the initial history is loading", () => {
+  let head: StreamItem[] = [];
+  const chunks = ["Checking a long oper", "ation before", " the re", "sult arrives."];
+  for (const [index, text] of chunks.entries()) {
+    const result = processAgentStreamEvent({
+      event: {
+        type: "timeline",
+        provider: "codex",
+        turnId: "turn-18",
+        item: { type: "reasoning", text },
+      },
+      seq: index + 1,
+      epoch: "epoch-1",
+      currentTail: [],
+      currentHead: head,
+      currentCursor: undefined,
+      timestamp: new Date(1000 + index),
+      hasAuthoritativeBaseline: false,
+    });
+    head = result.head;
+    expect(head).toHaveLength(1);
+    expect(head[0]).toMatchObject({
+      kind: "thought",
+      text: chunks.slice(0, index + 1).join(""),
+      turnId: "turn-18",
+    });
+  }
+});
+
+it.each([false, true])(
+  "keeps adjacent reasoning from different turns separate (history loaded: %s)",
+  (hasAuthoritativeBaseline) => {
+    let head: StreamItem[] = [];
+    let tail: StreamItem[] = [];
+    let cursor: TimelineCursor | undefined;
+    for (const [index, turnId] of ["turn-1", "turn-2"].entries()) {
+      const result = processAgentStreamEvent({
+        event: {
+          type: "timeline",
+          provider: "codex",
+          turnId,
+          item: { type: "reasoning", text: turnId },
+        },
+        seq: index + 1,
+        epoch: "epoch-1",
+        currentTail: tail,
+        currentHead: head,
+        currentCursor: cursor,
+        timestamp: new Date(1000),
+        hasAuthoritativeBaseline,
+      });
+      head = result.head;
+      tail = result.tail;
+      cursor = result.cursor ?? cursor;
+    }
+    expect([...tail, ...head]).toMatchObject([
+      { kind: "thought", text: "turn-1", turnId: "turn-1" },
+      { kind: "thought", text: "turn-2", turnId: "turn-2" },
+    ]);
+  },
+);
+
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
@@ -514,6 +576,61 @@ describe("processTimelineResponse", () => {
         timelineCursor: { epoch: "timeline-1", seq: 42 },
       }),
     ]);
+  });
+
+  it("replaces an unanchored tail when a cursorless tail page arrives outside init", () => {
+    const stranded: StreamItem = {
+      kind: "thought",
+      id: "thought-stranded",
+      text: "live reasoning that landed before any cursor",
+      timestamp: new Date(500),
+      status: "ready",
+    };
+
+    const result = processTimelineResponse({
+      ...baseTimelineInput,
+      currentTail: [stranded],
+      currentCursor: undefined,
+      payload: {
+        ...baseTimelineInput.payload,
+        direction: "tail",
+        startCursor: { seq: 1 },
+        endCursor: { seq: 2 },
+        entries: [
+          makeTimelineEntry(1, "first prompt", "user_message"),
+          makeTimelineEntry(2, "answer"),
+        ],
+      },
+    });
+
+    expect(result.tail.map((item) => item.kind)).toEqual(["user_message", "assistant_message"]);
+    expect(result.cursor).toEqual({ epoch: "epoch-1", startSeq: 1, endSeq: 2 });
+  });
+
+  it("keeps older loaded history when a tail page arrives with a cursor", () => {
+    const older: StreamItem = {
+      kind: "thought",
+      id: "thought-older",
+      text: "older page",
+      timestamp: new Date(500),
+      status: "ready",
+    };
+
+    const result = processTimelineResponse({
+      ...baseTimelineInput,
+      currentTail: [older],
+      currentCursor: { epoch: "epoch-1", startSeq: 1, endSeq: 5 },
+      payload: {
+        ...baseTimelineInput.payload,
+        direction: "tail",
+        window: { minSeq: 6, maxSeq: 6, nextSeq: 7 },
+        startCursor: { seq: 6 },
+        endCursor: { seq: 6 },
+        entries: [makeTimelineEntry(6, "newest")],
+      },
+    });
+
+    expect(result.tail.map((item) => item.kind)).toEqual(["thought", "assistant_message"]);
   });
 
   it("returns error path when payload.error is set", () => {
@@ -1202,6 +1319,49 @@ describe("processTimelineResponse", () => {
     });
 
     expect(repeated.tail.filter((item) => item.kind === "user_message")).toEqual(userMessages);
+  });
+
+  it("keeps canonical images when the matched row was restored without them", () => {
+    // The replica cache stores user rows without images, so a cold start restores a
+    // text-only twin of a steered prompt that carried native images.
+    const restored = createUserMessage({
+      clientMessageId: "steer-with-images",
+      messageId: "steer-with-images",
+      timelineCursor: { epoch: "epoch-1", seq: 1 },
+      text: "Attached inline",
+      timestamp: new Date(1000),
+    });
+    const nativeImage = { data: "iVBORw0KGgo=", mimeType: "image/png" };
+
+    const result = processTimelineResponse({
+      ...baseTimelineInput,
+      currentTail: [restored],
+      payload: {
+        ...baseTimelineInput.payload,
+        reset: true,
+        startCursor: { seq: 1 },
+        endCursor: { seq: 1 },
+        entries: [
+          {
+            ...makeTimelineEntry(1, "Attached inline", "user_message"),
+            item: {
+              type: "user_message",
+              text: "Attached inline",
+              messageId: "steer-with-images",
+              clientMessageId: "steer-with-images",
+              images: [nativeImage],
+            },
+          },
+        ],
+      },
+    });
+
+    const userMessages = result.tail.filter((item) => item.kind === "user_message");
+    expect(userMessages).toHaveLength(1);
+    expect(userMessages[0]).toMatchObject({
+      clientMessageId: "steer-with-images",
+      images: [nativeImage],
+    });
   });
 
   it("keeps an unmatched submitted user message during tail replacement", () => {
@@ -2776,6 +2936,49 @@ describe("processTimelineResponse", () => {
     expect(result.sideEffects).not.toContainEqual(expect.objectContaining({ type: "catch_up" }));
   });
 
+  it("closes the gap after a prompt jump once a gap page joins both ranges", () => {
+    const result = processTimelineResponse({
+      ...baseTimelineInput,
+      currentTail: [
+        {
+          kind: "user_message",
+          id: "oldest",
+          text: "oldest",
+          timestamp: new Date(1),
+          timelineCursor: { epoch: "epoch-1", seq: 1 },
+        },
+        {
+          kind: "user_message",
+          id: "newest",
+          text: "newest",
+          timestamp: new Date(1000),
+          timelineCursor: { epoch: "epoch-1", seq: 100 },
+        },
+      ],
+      currentCursor: {
+        epoch: "epoch-1",
+        startSeq: 80,
+        endSeq: 100,
+        retainedRanges: [{ startSeq: 1, endSeq: 40, hasOlder: false }],
+      },
+      payload: {
+        ...baseTimelineInput.payload,
+        direction: "before",
+        mergeWindow: true,
+        epoch: "epoch-1",
+        startCursor: { seq: 41 },
+        endCursor: { seq: 79 },
+        hasOlder: true,
+        hasNewer: true,
+        entries: [makeTimelineEntry(41, "middle", "user_message", 79)],
+      },
+    });
+
+    expect(getUserTexts(result.tail)).toEqual(["oldest", "middle", "newest"]);
+    expect(result.cursor).toEqual({ epoch: "epoch-1", startSeq: 1, endSeq: 100 });
+    expect(result.older).toBe("unchanged");
+  });
+
   it("keeps whole live assistant messages ordered when merging a disjoint prompt-jump window", () => {
     const live = processAgentStreamEvents({
       events: [
@@ -2788,7 +2991,7 @@ describe("processTimelineResponse", () => {
       ],
       currentTail: [],
       currentHead: [],
-      currentCursor: undefined,
+      currentCursor: { epoch: "epoch-1", startSeq: 60, endSeq: 79 },
     });
     expect(getAssistantTexts([...live.tail, ...live.head])).toEqual([
       "First paragraph.\n\nSecond paragraph.",
@@ -3617,6 +3820,7 @@ describe("processAgentStreamEvent", () => {
       event: makeAssistantTimelineEvent("[System Error] failed"),
       epoch: "timeline-1",
       seq: 42,
+      currentCursor: { epoch: "timeline-1", startSeq: 1, endSeq: 41 },
     });
 
     expect(result.head).toEqual([
@@ -3750,7 +3954,7 @@ describe("processAgentStreamEvent", () => {
     });
   });
 
-  it("drops stale timeline event", () => {
+  it("drops a stale timeline event and requests a re-baseline", () => {
     const existingCursor: TimelineCursor = {
       epoch: "epoch-1",
       startSeq: 1,
@@ -3768,10 +3972,10 @@ describe("processAgentStreamEvent", () => {
     expect(result.cursorChanged).toBe(false);
     expect(result.changedTail).toBe(false);
     expect(result.changedHead).toBe(false);
-    expect(result.sideEffects).toEqual([]);
+    expect(result.sideEffects).toEqual([{ type: "rebaseline" }]);
   });
 
-  it("drops timeline event with epoch mismatch", () => {
+  it("drops a timeline event from a rotated epoch and requests a re-baseline", () => {
     const existingCursor: TimelineCursor = {
       epoch: "epoch-1",
       startSeq: 1,
@@ -3789,7 +3993,28 @@ describe("processAgentStreamEvent", () => {
     expect(result.cursorChanged).toBe(false);
     expect(result.changedTail).toBe(false);
     expect(result.changedHead).toBe(false);
-    expect(result.sideEffects).toEqual([]);
+    expect(result.sideEffects).toEqual([{ type: "rebaseline" }]);
+  });
+
+  it("re-baselines after an epoch rotation mid-turn with a seq far above 1", () => {
+    const existingCursor: TimelineCursor = {
+      epoch: "epoch-1",
+      startSeq: 1,
+      endSeq: 1458,
+    };
+
+    const result = processAgentStreamEvent({
+      ...baseStreamInput,
+      event: makeTimelineEvent("rotated turn output"),
+      seq: 1619,
+      epoch: "epoch-2",
+      currentCursor: existingCursor,
+    });
+
+    expect(result.cursorChanged).toBe(false);
+    expect(result.changedTail).toBe(false);
+    expect(result.changedHead).toBe(false);
+    expect(result.sideEffects).toEqual([{ type: "rebaseline" }]);
   });
 
   it("resets visible timeline when a new epoch starts at seq 1", () => {
@@ -3834,6 +4059,24 @@ describe("processAgentStreamEvent", () => {
       epoch: "epoch-1",
       startSeq: 1,
       endSeq: 1,
+    });
+  });
+
+  it("catches up from the first row when a chat that was empty receives a later row", () => {
+    const result = processAgentStreamEvent({
+      ...baseStreamInput,
+      event: makeTimelineEvent("word3"),
+      seq: 6,
+      epoch: "epoch-1",
+      currentCursor: undefined,
+    });
+
+    expect(result).toMatchObject({
+      head: [],
+      changedHead: false,
+      cursor: null,
+      cursorChanged: false,
+      sideEffects: [{ type: "catch_up", cursor: { epoch: "epoch-1", endSeq: 0 } }],
     });
   });
 
@@ -4027,7 +4270,7 @@ describe("processAgentStreamEvents", () => {
       ],
       currentTail: [],
       currentHead: [],
-      currentCursor: undefined,
+      currentCursor: { epoch: "epoch-1", startSeq: 1, endSeq: 237 },
     });
 
     expect(result.changedTail).toBe(false);
@@ -4201,6 +4444,7 @@ describe("processAgentStreamEvents", () => {
       currentTail: [],
       currentHead: [],
       currentCursor: undefined,
+      hasAuthoritativeBaseline: false,
       timestamp: new Date("2026-05-02T10:00:00.186Z"),
     });
 
@@ -4296,6 +4540,38 @@ describe("processAgentStreamEvents", () => {
     expect(finalAssistantItems[0]?.text).toBe(
       "Call-site API — exactly one primitive. Not gateValue, not filterEnum.",
     );
+  });
+
+  it("emits one rebaseline effect per dropped event of a rotated epoch burst", () => {
+    const existingCursor: TimelineCursor = {
+      epoch: "epoch-1",
+      startSeq: 1,
+      endSeq: 100,
+    };
+
+    const result = processAgentStreamEvents({
+      events: [101, 102, 103, 104].map((seq) => ({
+        event: makeTimelineEvent(`rotated ${seq}`),
+        seq,
+        epoch: "epoch-2",
+        timestamp: new Date(1000 + seq),
+      })),
+      currentTail: [],
+      currentHead: [],
+      currentCursor: existingCursor,
+      hasAuthoritativeBaseline: true,
+    });
+
+    expect(result.changedTail).toBe(false);
+    expect(result.changedHead).toBe(false);
+    expect(result.cursorChanged).toBe(false);
+    expect(result.cursor).toEqual(existingCursor);
+    expect(result.sideEffects).toEqual([
+      { type: "rebaseline" },
+      { type: "rebaseline" },
+      { type: "rebaseline" },
+      { type: "rebaseline" },
+    ]);
   });
 });
 
@@ -4402,7 +4678,7 @@ describe("createAgentStreamReducerQueue", () => {
     const scheduler = createManualScheduler();
     let currentTail: StreamItem[] = [];
     let currentHead: StreamItem[] = [];
-    let currentCursor: TimelineCursor | undefined;
+    let currentCursor: TimelineCursor | undefined = { epoch: "epoch-1", startSeq: 1, endSeq: 1 };
 
     const queue = createAgentStreamReducerQueue({
       getSnapshot: () => ({
@@ -4445,7 +4721,7 @@ describe("createAgentStreamReducerQueue", () => {
     expect(getAssistantTexts(currentHead)).toEqual(["This is a paragraph continues."]);
     expect(currentCursor).toEqual({
       epoch: "epoch-1",
-      startSeq: 2,
+      startSeq: 1,
       endSeq: 4,
     });
   });
@@ -4474,5 +4750,264 @@ describe("createAgentStreamReducerQueue", () => {
 
     expect(commits).toEqual(["agent-1:queued"]);
     expect(scheduler.size).toBe(0);
+  });
+});
+
+describe("turn metrics", () => {
+  const metrics = [
+    { label: "Model", value: "opus" },
+    { label: "Cache", value: "82%", tone: "ok" as const },
+  ];
+
+  function liveTurn(events: AgentStreamEventPayload[]) {
+    let seq = 0;
+    return processAgentStreamEvents({
+      events: events.map((event) =>
+        event.type === "timeline"
+          ? makeStreamReducerEvent(event, ++seq)
+          : { event, seq: undefined, epoch: undefined, timestamp: new Date(1000 + seq) },
+      ),
+      currentTail: [],
+      currentHead: [],
+      currentCursor: undefined,
+    });
+  }
+
+  function inTurn(event: AgentStreamEventPayload, turnId: string): AgentStreamEventPayload {
+    return { ...event, turnId } as AgentStreamEventPayload;
+  }
+
+  function turnCompleted(turnId?: string, turnMetrics = metrics): AgentStreamEventPayload {
+    return {
+      type: "turn_completed",
+      provider: "claude",
+      ...(turnId ? { turnId } : {}),
+      metrics: turnMetrics,
+    };
+  }
+
+  function metricsByKind(items: StreamItem[]) {
+    return items.map((item) => ({
+      kind: item.kind,
+      turnMetrics: "turnMetrics" in item ? item.turnMetrics : undefined,
+    }));
+  }
+
+  it("puts a live turn's metrics on its last assistant message", () => {
+    const result = liveTurn([
+      inTurn(makeTimelineEvent("question", "user_message"), "turn-1"),
+      inTurn(makeAssistantTimelineEvent("Looking."), "turn-1"),
+      inTurn(makeToolCallTimelineEvent("read-1"), "turn-1"),
+      inTurn(makeAssistantTimelineEvent("Done."), "turn-1"),
+      turnCompleted("turn-1"),
+    ]);
+
+    expect(metricsByKind([...result.tail, ...result.head])).toEqual([
+      { kind: "user_message", turnMetrics: undefined },
+      { kind: "assistant_message", turnMetrics: undefined },
+      { kind: "tool_call", turnMetrics: undefined },
+      { kind: "assistant_message", turnMetrics: metrics },
+    ]);
+  });
+
+  it("puts a live tool-only turn's metrics on its last tool call", () => {
+    const result = liveTurn([
+      inTurn(makeTimelineEvent("question", "user_message"), "turn-1"),
+      inTurn(makeToolCallTimelineEvent("read-1"), "turn-1"),
+      inTurn(makeToolCallTimelineEvent("read-2"), "turn-1"),
+      turnCompleted("turn-1"),
+    ]);
+
+    expect(metricsByKind(result.tail)).toEqual([
+      { kind: "user_message", turnMetrics: undefined },
+      { kind: "tool_call", turnMetrics: undefined },
+      { kind: "tool_call", turnMetrics: metrics },
+    ]);
+  });
+
+  it("does not put a turn's metrics on an earlier turn's reply", () => {
+    const result = liveTurn([
+      inTurn(makeTimelineEvent("first", "user_message"), "turn-1"),
+      inTurn(makeAssistantTimelineEvent("First reply."), "turn-1"),
+      turnCompleted("turn-1", [{ label: "Model", value: "first" }]),
+      inTurn(makeTimelineEvent("second", "user_message"), "turn-2"),
+      inTurn(makeToolCallTimelineEvent("read-1"), "turn-2"),
+      inTurn(makeTimelineEvent("thinking", "reasoning"), "turn-2"),
+      turnCompleted("turn-2"),
+    ]);
+
+    expect(metricsByKind(result.tail)).toEqual([
+      { kind: "user_message", turnMetrics: undefined },
+      { kind: "assistant_message", turnMetrics: [{ label: "Model", value: "first" }] },
+      { kind: "user_message", turnMetrics: undefined },
+      { kind: "tool_call", turnMetrics: undefined },
+      { kind: "thought", turnMetrics: undefined },
+    ]);
+  });
+
+  it("leaves the timeline untouched when a turn completes without metrics", () => {
+    const before = liveTurn([
+      inTurn(makeTimelineEvent("question", "user_message"), "turn-1"),
+      inTurn(makeAssistantTimelineEvent("Done."), "turn-1"),
+      turnCompleted("turn-1", []),
+    ]);
+    const after = processAgentStreamEvent({
+      ...baseStreamInput,
+      event: { type: "turn_completed", provider: "claude", turnId: "turn-1" },
+      currentTail: before.tail,
+      currentHead: before.head,
+    });
+
+    expect(after.tail).toBe(before.tail);
+    expect(metricsByKind(after.tail)).toEqual([
+      { kind: "user_message", turnMetrics: undefined },
+      { kind: "assistant_message", turnMetrics: undefined },
+    ]);
+  });
+
+  it("hydrates turn metrics from a replaced history page", () => {
+    const result = processTimelineResponse({
+      ...baseTimelineInput,
+      payload: {
+        ...baseTimelineInput.payload,
+        reset: true,
+        startCursor: { seq: 1 },
+        endCursor: { seq: 4 },
+        entries: [
+          makeTimelineEntry(1, "question", "user_message"),
+          { ...makeTimelineEntry(2, "Reply."), turnMetrics: metrics },
+          makeTimelineEntry(3, "next question", "user_message"),
+          {
+            ...makeToolCallTimelineEntry(4, "read-1", "completed", {
+              type: "read",
+              filePath: "/tmp/a.ts",
+            }),
+            turnMetrics: [{ label: "Model", value: "sonnet" }],
+          },
+        ],
+      },
+    });
+
+    expect(metricsByKind(result.tail)).toEqual([
+      { kind: "user_message", turnMetrics: undefined },
+      { kind: "assistant_message", turnMetrics: metrics },
+      { kind: "user_message", turnMetrics: undefined },
+      { kind: "tool_call", turnMetrics: [{ label: "Model", value: "sonnet" }] },
+    ]);
+  });
+
+  it("hydrates turn metrics from an older history page", () => {
+    const currentTail: StreamItem[] = [
+      { kind: "user_message", id: "current-3", text: "current-3", timestamp: new Date(3000) },
+    ];
+    const result = processTimelineResponse({
+      ...baseTimelineInput,
+      currentTail,
+      currentCursor: { epoch: "epoch-1", startSeq: 3, endSeq: 3 },
+      payload: {
+        ...baseTimelineInput.payload,
+        direction: "before",
+        startCursor: { seq: 1 },
+        endCursor: { seq: 2 },
+        entries: [
+          makeTimelineEntry(1, "older question", "user_message"),
+          { ...makeTimelineEntry(2, "Older reply."), turnMetrics: metrics },
+        ],
+      },
+    });
+
+    expect(metricsByKind(result.tail)).toEqual([
+      { kind: "user_message", turnMetrics: undefined },
+      { kind: "assistant_message", turnMetrics: metrics },
+      { kind: "user_message", turnMetrics: undefined },
+    ]);
+  });
+
+  it("hydrates turn metrics on a projected reply that replaces the live one", () => {
+    const live = processAgentStreamEvents({
+      events: [makeStreamReducerEvent(makeAssistantTimelineEvent("Partial"), 2)],
+      currentTail: [],
+      currentHead: [],
+      currentCursor: { epoch: "epoch-1", startSeq: 1, endSeq: 1 },
+    });
+
+    const result = processTimelineResponse({
+      ...baseTimelineInput,
+      currentTail: live.tail,
+      currentHead: live.head,
+      currentCursor: live.cursor ?? undefined,
+      payload: {
+        ...baseTimelineInput.payload,
+        startCursor: { seq: 3 },
+        endCursor: { seq: 3 },
+        entries: [
+          {
+            ...makeTimelineEntry(2, "Partial reply.", "assistant_message", 3),
+            sourceSeqRanges: [{ startSeq: 2, endSeq: 3 }],
+            turnMetrics: metrics,
+          },
+        ],
+      },
+    });
+
+    expect(metricsByKind([...result.tail, ...result.head])).toEqual([
+      { kind: "assistant_message", turnMetrics: metrics },
+    ]);
+  });
+
+  it("keeps live turn metrics when canonical history replaces the timeline", () => {
+    const live = liveTurn([
+      makeTimelineEvent("question", "user_message"),
+      makeAssistantTimelineEvent("Done."),
+      turnCompleted(),
+    ]);
+
+    const result = processTimelineResponse({
+      ...baseTimelineInput,
+      currentTail: live.tail,
+      currentHead: live.head,
+      currentCursor: live.cursor ?? undefined,
+      payload: {
+        ...baseTimelineInput.payload,
+        reset: true,
+        startCursor: { seq: 1 },
+        endCursor: { seq: 2 },
+        entries: [
+          makeTimelineEntry(1, "question", "user_message"),
+          { ...makeTimelineEntry(2, "Done."), turnMetrics: metrics },
+        ],
+      },
+    });
+
+    expect(metricsByKind(result.tail)).toEqual([
+      { kind: "user_message", turnMetrics: undefined },
+      { kind: "assistant_message", turnMetrics: metrics },
+    ]);
+  });
+
+  it("keeps row identity when a page repeats metrics the row already has", () => {
+    const first = processTimelineResponse({
+      ...baseTimelineInput,
+      payload: {
+        ...baseTimelineInput.payload,
+        reset: true,
+        startCursor: { seq: 1 },
+        endCursor: { seq: 1 },
+        entries: [{ ...makeTimelineEntry(1, "Reply."), turnMetrics: metrics }],
+      },
+    });
+    const repeated = processTimelineResponse({
+      ...baseTimelineInput,
+      currentTail: first.tail,
+      currentCursor: first.cursor ?? undefined,
+      payload: {
+        ...baseTimelineInput.payload,
+        startCursor: { seq: 1 },
+        endCursor: { seq: 1 },
+        entries: [{ ...makeTimelineEntry(1, "Reply."), turnMetrics: [...metrics] }],
+      },
+    });
+
+    expect(repeated.tail).toBe(first.tail);
   });
 });

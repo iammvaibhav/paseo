@@ -14,6 +14,45 @@ function thought(text: string, status: "loading" | "ready" = "loading"): StreamI
 }
 
 describe("plugin timeline projection", () => {
+  it.each(["message", "finished", "errored", "permission-required", "closed"] as const)(
+    "preserves immutable agent-message provenance for %s cards",
+    (event) => {
+      const agentMessage = {
+        event,
+        sender: { id: "remote::reviewer", title: "QA question-timing #7014/#7000/#6809" },
+        text: "The original message, including **Markdown**.",
+      };
+      const source: StreamItem = {
+        kind: "tool_call",
+        id: "message-1",
+        timestamp: new Date("2026-01-01T00:00:00.000Z"),
+        payload: {
+          source: "agent",
+          data: {
+            provider: "codex",
+            callId: "delivery-1",
+            name: "agent_message",
+            status: "completed",
+            error: null,
+            detail: { type: "plain_text", text: agentMessage.text, icon: "bot" },
+            agentMessage,
+          },
+        },
+      };
+      const inspect: TimelineItemTransform = ({ item }) => {
+        expect(item.type).toBe("tool_call");
+        if (item.type !== "tool_call") throw new Error("Expected a tool call");
+        expect(item.agentMessage).toEqual(agentMessage);
+        expect(item.agentMessage).not.toBe(agentMessage);
+        expect(Object.isFrozen(item.agentMessage)).toBe(true);
+        expect(Object.isFrozen(item.agentMessage?.sender)).toBe(true);
+        return undefined;
+      };
+      expect(projectPluginTimelineItems([source], inspect)).toEqual([source]);
+      expect(Object.isFrozen(agentMessage.sender)).toBe(false);
+    },
+  );
+
   it("does not expose mutable tool detail from stream state", () => {
     const detail = { type: "read" as const, filePath: "/repo/original.ts" };
     const source: StreamItem = {
@@ -59,6 +98,7 @@ describe("plugin timeline projection", () => {
       {
         kind: "plugin",
         id: "inline-thinking/thought-1/0",
+        source: { kind: "thought", id: "thought-1" },
         data: { text: "First", phase: "streaming" },
       },
     ]);
@@ -150,5 +190,55 @@ describe("plugin timeline projection", () => {
       "split/thought-1/right",
     ]);
     expect(filtered).toEqual([]);
+  });
+
+  it("keeps the replaced reply on every card it was split into", () => {
+    const source: StreamItem = {
+      kind: "assistant_message",
+      id: "assistant-1",
+      messageId: "provider-msg-1",
+      timelineCursor: { epoch: "e1", seq: 7 },
+      turnId: "turn-1",
+      text: 'Summary\n\n```ui\nCard("Hi", [])\n```',
+      timestamp: new Date("2026-01-01T00:00:02.000Z"),
+    };
+    const split: TimelineItemTransform = ({ sourceId }) => [
+      {
+        type: "plugin",
+        id: `${sourceId}/text`,
+        pluginId: "genui",
+        kind: "genui-text",
+        version: 1,
+        data: { part: "text" },
+      },
+      {
+        type: "plugin",
+        id: `${sourceId}/card`,
+        pluginId: "genui",
+        kind: "genui-block",
+        version: 1,
+        data: { part: "card" },
+      },
+    ];
+    const projected = projectPluginTimelineItems([source], split);
+
+    expect(projected).toMatchObject([
+      {
+        kind: "plugin",
+        id: "genui/assistant-1/text",
+        timelineCursor: { epoch: "e1", seq: 7 },
+        turnId: "turn-1",
+      },
+      {
+        kind: "plugin",
+        id: "genui/assistant-1/card",
+        timelineCursor: { epoch: "e1", seq: 7 },
+        turnId: "turn-1",
+      },
+    ]);
+    expect(projected.map((item) => item.kind === "plugin" && item.source)).toEqual([
+      source,
+      source,
+    ]);
   });
 });

@@ -1,9 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 
+import { readStoredUpload } from "../file-upload/index.js";
 import {
   buildAgentBranchNameSeed,
   buildAgentPrompt,
   renderPromptAttachmentAsText,
+  storePromptImages,
 } from "./prompt-attachments.js";
 
 describe("prompt attachments", () => {
@@ -69,13 +74,13 @@ describe("prompt attachments", () => {
     ).toContain("GitLab MR !123: Fix race in worktree setup");
   });
 
-  it("renders review attachments with compact file, line, comment, and context details", () => {
+  it.each(["base", "uncommitted", "all"] as const)("renders %s reviews", (mode) => {
     expect(
       renderPromptAttachmentAsText({
         type: "review",
         mimeType: "application/paseo-review",
         cwd: "/tmp/repo",
-        mode: "base",
+        mode,
         baseRef: "main",
         comments: [
           {
@@ -111,7 +116,7 @@ describe("prompt attachments", () => {
       }),
     ).toBe(
       [
-        "Paseo review attachment (base)",
+        `Paseo review attachment (${mode})`,
         "CWD: /tmp/repo",
         "Base: main",
         "",
@@ -160,11 +165,59 @@ describe("prompt attachments", () => {
     ).toBe(
       [
         "Uploaded file: notes.txt",
+        "fileId: upload_req-upload",
         "Path: /tmp/paseo/uploads/upload_req-upload/notes.txt",
         "MIME: text/plain",
         "Size: 11 bytes",
       ].join("\n"),
     );
+  });
+
+  describe("storePromptImages", () => {
+    const homes: string[] = [];
+    const makeHome = () => {
+      const home = mkdtempSync(join(tmpdir(), "paseo-prompt-images-"));
+      homes.push(home);
+      return home;
+    };
+    afterEach(() => {
+      for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true });
+    });
+    const png = Buffer.from("fake png bytes");
+    const image = { data: png.toString("base64"), mimeType: "image/png" };
+
+    it("saves an inline image to the upload store and attaches its path", async () => {
+      const home = makeHome();
+      const issue = {
+        type: "github_issue" as const,
+        number: 7,
+        title: "Bug",
+        url: "https://github.com/o/r/issues/7",
+      };
+
+      const attachments = await storePromptImages(home, [image], [issue]);
+
+      expect(attachments).toHaveLength(2);
+      expect(attachments?.[0]).toBe(issue);
+      const stored = attachments?.[1];
+      if (stored?.type !== "uploaded_file") throw new Error("expected an uploaded_file");
+      expect(stored).toMatchObject({ fileName: "image-1.png", mimeType: "image/png", size: 14 });
+      expect(readFileSync(stored.path)).toEqual(png);
+      // Resolvable by id, so the agent can pass it on as attachments: [{fileId}].
+      expect(await readStoredUpload(home, stored.id)).toEqual(stored);
+    });
+
+    it("does not store an image that already rides as an uploaded file", async () => {
+      const home = makeHome();
+      const [upload] = (await storePromptImages(home, [image], undefined)) ?? [];
+      if (upload?.type !== "uploaded_file") throw new Error("expected an uploaded_file");
+
+      expect(await storePromptImages(home, [image], [upload])).toEqual([upload]);
+    });
+
+    it("passes attachments through without a paseo home", async () => {
+      expect(await storePromptImages(undefined, [image], undefined)).toBeUndefined();
+    });
   });
 
   it("returns undefined when firstAgentContext is empty", () => {

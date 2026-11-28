@@ -1,14 +1,37 @@
 import { useId } from "react";
-import { View } from "react-native";
+import { View, type TextStyle, type ViewStyle } from "react-native";
 import Svg, { Defs, LinearGradient as SvgLinearGradient, Rect, Stop } from "react-native-svg";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
 import type { SurfaceBackdrop } from "@/styles/surface-backdrop";
 import type { Theme } from "@/styles/theme";
 
 export const SCRIM_WIDTH = 48;
-const SCRIM_SOLID_OFFSET = "55%";
+// The fade is a fixed length so a wider scrim only adds solid surface under its actions.
+const SCRIM_FADE_WIDTH = SCRIM_WIDTH * 0.55;
 
-function TrailingActionScrimSvg({ gradientId, color }: { gradientId: string; color: string }) {
+/**
+ * The scrim's fade as a mask on the content itself, for a translucent fill the scrim cannot
+ * repaint without showing as a solid strip. `inset` is how far the content's right edge sits left
+ * of the scrim's. Web only: React Native Web passes CSS masks through, native has none.
+ */
+export function trailingActionFadeMask(width: number, inset = 0): (ViewStyle & TextStyle) | null {
+  const end = width - inset;
+  if (end <= 0) return null;
+  const solid = Math.max(0, end - SCRIM_FADE_WIDTH);
+  const mask = `linear-gradient(to left, transparent ${solid}px, black ${end}px)`;
+  // Fits both a View and a Text.
+  return { maskImage: mask, WebkitMaskImage: mask } as unknown as ViewStyle & TextStyle;
+}
+
+function TrailingActionScrimSvg({
+  gradientId,
+  color,
+  solidOffset,
+}: {
+  gradientId: string;
+  color: string;
+  solidOffset: string;
+}) {
   return (
     <Svg width="100%" height="100%" preserveAspectRatio="none">
       <Defs>
@@ -16,7 +39,7 @@ function TrailingActionScrimSvg({ gradientId, color }: { gradientId: string; col
           {/* Vary opacity rather than interpolating toward `transparent`, which crosses black in
               some engines and leaves a grey fringe. */}
           <Stop offset="0%" stopColor={color} stopOpacity={0} />
-          <Stop offset={SCRIM_SOLID_OFFSET} stopColor={color} stopOpacity={1} />
+          <Stop offset={solidOffset} stopColor={color} stopOpacity={1} />
           <Stop offset="100%" stopColor={color} stopOpacity={1} />
         </SvgLinearGradient>
       </Defs>
@@ -28,28 +51,39 @@ function TrailingActionScrimSvg({ gradientId, color }: { gradientId: string; col
 const ThemedTrailingActionScrimSvg = withUnistyles(TrailingActionScrimSvg);
 
 const backdropColorMappings: Record<SurfaceBackdrop, (theme: Theme) => { color: string }> = {
-  surface0: (theme) => ({ color: theme.colors.surface0 }),
-  surface1: (theme) => ({ color: theme.colors.surface1 }),
-  surface2: (theme) => ({ color: theme.colors.surface2 }),
-  surfaceSidebar: (theme) => ({ color: theme.colors.surfaceSidebar }),
-  surfaceSidebarHover: (theme) => ({ color: theme.colors.surfaceSidebarHover }),
-  surfaceSidebarSelected: (theme) => ({ color: theme.colors.surfaceSidebarSelected }),
+  surface0: (theme) => ({ color: theme.glass?.scrim.surface0 ?? theme.colors.surface0 }),
+  surface1: (theme) => ({ color: theme.glass?.scrim.surface1 ?? theme.colors.surface1 }),
+  surface2: (theme) => ({ color: theme.glass?.scrim.surface2 ?? theme.colors.surface2 }),
+  surfaceSidebar: (theme) => ({
+    color: theme.glass?.scrim.surfaceSidebar ?? theme.colors.surfaceSidebar,
+  }),
+  surfaceSidebarHover: (theme) => ({
+    color: theme.glass?.scrim.surfaceSidebarHover ?? theme.colors.surfaceSidebarHover,
+  }),
+  surfaceSidebarSelected: (theme) => ({
+    color: theme.glass?.scrim.surfaceSidebarSelected ?? theme.colors.surfaceSidebarSelected,
+  }),
 };
 
 /** Fades trailing content into the surface beneath an absolutely overlaid action. */
 export function TrailingActionScrim({
   backdrop,
+  width = SCRIM_WIDTH,
   testID,
 }: {
   backdrop: SurfaceBackdrop;
+  /** Covers more than one trailing action; the fade keeps its length. */
+  width?: number;
   testID?: string;
 }) {
   // React-generated ids contain characters that are invalid inside SVG fragment references.
   const gradientId = `trailing-action-scrim-${useId().replace(/[^a-zA-Z0-9_-]/g, "")}`;
+  const solidOffset = `${Math.round((SCRIM_FADE_WIDTH / width) * 100)}%`;
   return (
-    <View style={styles.scrim} pointerEvents="none" testID={testID}>
+    <View style={styles.scrim(width)} pointerEvents="none" testID={testID}>
       <ThemedTrailingActionScrimSvg
         gradientId={gradientId}
+        solidOffset={solidOffset}
         uniProps={backdropColorMappings[backdrop]}
       />
     </View>
@@ -57,11 +91,11 @@ export function TrailingActionScrim({
 }
 
 const styles = StyleSheet.create({
-  scrim: {
+  scrim: (width: number) => ({
     position: "absolute",
     top: 0,
     bottom: 0,
     right: 0,
-    width: SCRIM_WIDTH,
-  },
+    width,
+  }),
 });

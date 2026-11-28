@@ -1,0 +1,18 @@
+[Unit]
+Description=x-search (read-only X MCP server over Grok x_search, on the NetBird address)
+After=network-online.target omp-auth-broker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# X_SEARCH_TOKEN (vault item "x-search MCP bearer (prod)") and X_SEARCH_BIND.
+EnvironmentFile=%h/.config/x-search/env
+# `omp token grok-build` supplies the Grok Build token.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/bin/x-search
+# Binds only to the NetBird address; retries until wt0 is up after boot.
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

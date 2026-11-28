@@ -1,7 +1,26 @@
-import { memo, useMemo, useCallback, useState, type ReactNode } from "react";
-import { Text, View, type ViewStyle } from "react-native";
+import {
+  createContext,
+  memo,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
+import {
+  Pressable,
+  Text,
+  View,
+  type GestureResponderEvent,
+  type LayoutChangeEvent,
+  type PressableStateCallbackType,
+  type ViewStyle,
+} from "react-native";
+import { isWeb as platformIsWeb } from "@/constants/platform";
 import { StyleSheet, withUnistyles } from "react-native-unistyles";
-import { CircleAlert, Folder, FolderGit2, Monitor } from "lucide-react-native";
+import { Check, CircleAlert, Folder, FolderGit2, Monitor } from "lucide-react-native";
+import { bySizing } from "@/components/ui/control-geometry";
 import { ProjectStatusIndicator } from "@/components/sidebar/project-leading-visual";
 import type { SidebarSurfaceBackdrop } from "@/styles/surface-backdrop";
 import {
@@ -16,7 +35,9 @@ import {
   type SidebarWorkspaceTrailing,
 } from "@/components/sidebar/workspace-trailing";
 import { useAppSettings } from "@/hooks/use-settings";
-import type { Theme } from "@/styles/theme";
+import { isGlassThemePreference } from "@/appearance/glass";
+import { densityIconBox } from "@/styles/density";
+import { SPACING, type Theme } from "@/styles/theme";
 import type { SidebarStateBucket } from "@/utils/sidebar-agent-state";
 import { getStatusDotColor } from "@/utils/status-dot-color";
 import {
@@ -27,27 +48,58 @@ import {
 import { shouldRenderSyncedStatusLoader } from "@/utils/status-loader";
 import { StatusRing } from "@/components/status-ring";
 import { resolveSidebarWorkspacePrimaryLabel } from "@/components/sidebar/sidebar-workspace-title";
-import { TrailingActionScrim } from "@/components/ui/trailing-action-scrim";
+import { DensityIcon } from "@/components/ui/density-icon";
+import {
+  SCRIM_WIDTH,
+  TrailingActionScrim,
+  trailingActionFadeMask,
+} from "@/components/ui/trailing-action-scrim";
+import {
+  ARCHIVE_BUTTON_FOOTPRINT,
+  SidebarWorkspaceArchiveButton,
+} from "@/components/sidebar/sidebar-workspace-menu";
 import { useWorkspaceLabelDefinitions } from "@/workspace-labels";
 
-const foregroundMutedColorMapping = (theme: Theme) => ({ color: theme.colors.foregroundMuted });
+/**
+ * In a glass theme the row's hover fill is a wash, and an opaque scrim over the label would show
+ * as a solid strip on it. There the trailing overlay publishes its width instead, and the title
+ * and trailing content fade themselves out under it with a mask.
+ */
+interface TrailingFade {
+  masks: boolean;
+  width: number | null;
+  setWidth: (width: number | null) => void;
+}
+
+const TrailingFadeContext = createContext<TrailingFade | null>(null);
+
+// Between the title and the trailing group; the title's mask is offset by it.
+const TITLE_ROW_GAP = SPACING[2];
+
 const needsInputColorMapping = (theme: Theme) => ({
-  color: theme.colors.surface0,
+  color: theme.colors.background,
   fill: getStatusDotColor({ theme, bucket: "needs_input" }) ?? undefined,
 });
+const checkedIconMapping = (theme: Theme) => ({
+  color: theme.colors.accentForeground,
+});
 
+const ThemedCheck = withUnistyles(Check);
 const ThemedCircleAlert = withUnistyles(CircleAlert);
-const ThemedMonitor = withUnistyles(Monitor);
-const ThemedFolder = withUnistyles(Folder);
-const ThemedFolderGit2 = withUnistyles(FolderGit2);
 
 export function SidebarWorkspaceRowFrame({
   workspace,
   isDragging = false,
+  isEditingTitle = false,
+  isSelectionMode = false,
   children,
 }: {
   workspace: SidebarWorkspaceEntry;
   isDragging?: boolean;
+  /** Hover would fade the kebab in over the title being edited and open the hover card. */
+  isEditingTitle?: boolean;
+  /** Hover cards would cover neighbouring rows while the user clicks through a selection. */
+  isSelectionMode?: boolean;
   children: (input: {
     isHovered: boolean;
     contextMenuOpen: boolean;
@@ -75,10 +127,10 @@ export function SidebarWorkspaceRowFrame({
       workspace={workspace}
       prHint={workspace.prHint}
       isDragging={isDragging}
-      disabled={contextMenuOpen}
+      disabled={contextMenuOpen || isEditingTitle || isSelectionMode}
     >
       {children({
-        isHovered: isHovered && !contextMenuOpen && !isDragging,
+        isHovered: isHovered && !contextMenuOpen && !isDragging && !isEditingTitle,
         contextMenuOpen,
         onContextMenuOpenChange: handleContextMenuOpenChange,
         hoverHandlers,
@@ -97,9 +149,13 @@ export const SidebarWorkspaceRowContent = memo(function SidebarWorkspaceRowConte
   isHovered,
   isLoading,
   isCreating = false,
+  isSelectionMode = false,
+  isBulkSelected = false,
   shortcutNumber = null,
   showShortcutBadge = false,
   reserveIdleStatusIndicatorSpace = true,
+  agentsToggle = null,
+  titleEditor = null,
   children,
 }: {
   workspace: SidebarWorkspaceEntry;
@@ -113,74 +169,199 @@ export const SidebarWorkspaceRowContent = memo(function SidebarWorkspaceRowConte
   isHovered: boolean;
   isLoading: boolean;
   isCreating?: boolean;
+  isSelectionMode?: boolean;
+  isBulkSelected?: boolean;
   shortcutNumber?: number | null;
   showShortcutBadge?: boolean;
   /** Keep the empty leading slot when the workspace has no active status. */
   reserveIdleStatusIndicatorSpace?: boolean;
+  /**
+   * When set, the leading status slot becomes a button that toggles the workspace's
+   * expanded agent list. The status indicator itself is unchanged — the dot is simply
+   * clickable now.
+   */
+  agentsToggle?: {
+    expanded: boolean;
+    onPress: () => void;
+    accessibilityLabel: string;
+  } | null;
+  /** Takes the title's place, in a box exactly one title line tall, while renaming in place. */
+  titleEditor?: ReactNode;
   children?: ReactNode;
 }) {
   const {
-    settings: { workspaceTitleSource },
+    settings: { workspaceTitleSource, theme: themePreference },
   } = useAppSettings();
   const workspaceLabel = resolveSidebarWorkspacePrimaryLabel({ workspace, workspaceTitleSource });
   // The workspace carries label names; their colors live in its host's catalog, so the row is
   // where the two meet — the meta line is handed finished definitions.
   const labels = useWorkspaceLabelDefinitions(workspace.serverId, workspace.labels);
+  const [trailingFadeWidth, setTrailingFadeWidth] = useState<number | null>(null);
+  const [rowRightWidth, setRowRightWidth] = useState(0);
+  const handleRowRightLayout = useCallback((event: LayoutChangeEvent) => {
+    setRowRightWidth(event.nativeEvent.layout.width);
+  }, []);
+  const masksTrailing = isGlassThemePreference(themePreference);
+  const trailingFade = useMemo(
+    () => ({ masks: masksTrailing, width: trailingFadeWidth, setWidth: setTrailingFadeWidth }),
+    [masksTrailing, trailingFadeWidth],
+  );
   const workspaceBranchTextStyle = useMemo(
     () => [
       styles.workspaceBranchText,
-      isHovered && styles.workspaceBranchTextHovered,
+      (isHovered || isBulkSelected) && styles.workspaceBranchTextHovered,
       isCreating && styles.workspaceBranchTextCreating,
+      trailingFadeWidth !== null &&
+        trailingActionFadeMask(trailingFadeWidth, rowRightWidth + TITLE_ROW_GAP),
     ],
-    [isHovered, isCreating],
+    [isHovered, isBulkSelected, isCreating, trailingFadeWidth, rowRightWidth],
+  );
+
+  let leadingVisual: ReactNode;
+  if (isSelectionMode) {
+    leadingVisual = (
+      <WorkspaceSelectionCheckbox checked={isBulkSelected} workspaceKey={workspace.workspaceKey} />
+    );
+  } else if (leadingProjectName) {
+    leadingVisual = (
+      <ProjectStatusIndicator
+        iconDataUri={leadingProjectIconDataUri}
+        displayName={leadingProjectName}
+        projectViewKey={workspace.projectViewKey}
+        statusBucket={workspace.statusBucket}
+        backdrop={backdrop}
+        loading={isLoading}
+        testID={`sidebar-row-project-icon-${workspace.workspaceKey}`}
+      />
+    );
+  } else {
+    leadingVisual = (
+      <WorkspaceStatusIndicator
+        bucket={workspace.statusBucket}
+        workspaceKind={workspace.workspaceKind}
+        loading={isLoading}
+        reserveIdleSpace={reserveIdleStatusIndicatorSpace}
+      />
+    );
+  }
+
+  // In selection mode the leading slot is the bulk-select checkbox; the row press owns it.
+  const leadingSlot = (
+    <WorkspaceAgentsToggle
+      agentsToggle={isSelectionMode ? null : agentsToggle}
+      workspaceKey={workspace.workspaceKey}
+    >
+      {leadingVisual}
+    </WorkspaceAgentsToggle>
   );
 
   return (
-    <View style={styles.workspaceRowContent}>
-      <View style={styles.workspaceRowMain}>
-        {leadingProjectName ? (
-          <ProjectStatusIndicator
-            iconDataUri={leadingProjectIconDataUri}
-            displayName={leadingProjectName}
-            projectViewKey={workspace.projectViewKey}
-            statusBucket={workspace.statusBucket}
-            backdrop={backdrop}
-            loading={isLoading}
-            testID={`sidebar-row-project-icon-${workspace.workspaceKey}`}
-          />
-        ) : (
-          <WorkspaceStatusIndicator
-            bucket={workspace.statusBucket}
-            workspaceKind={workspace.workspaceKind}
-            loading={isLoading}
-            reserveIdleSpace={reserveIdleStatusIndicatorSpace}
-          />
-        )}
-        <View style={styles.workspaceContentColumn}>
-          <View style={styles.workspaceTitleRow}>
-            <Text style={workspaceBranchTextStyle} numberOfLines={1}>
-              {workspaceLabel}
-            </Text>
-            <View style={sidebarWorkspaceRowStyles.rowRight}>{children}</View>
+    <TrailingFadeContext.Provider value={trailingFade}>
+      <View style={styles.workspaceRowContent}>
+        <View style={styles.workspaceRowMain}>
+          {leadingSlot}
+          <View style={styles.workspaceContentColumn}>
+            <View style={styles.workspaceTitleRow}>
+              {titleEditor ? (
+                <View style={styles.workspaceTitleEditorSlot}>{titleEditor}</View>
+              ) : (
+                <Text
+                  style={workspaceBranchTextStyle}
+                  numberOfLines={1}
+                  testID={`sidebar-workspace-title-${workspace.workspaceKey}`}
+                >
+                  {workspaceLabel}
+                </Text>
+              )}
+              <View style={sidebarWorkspaceRowStyles.rowRight} onLayout={handleRowRightLayout}>
+                {children}
+              </View>
+            </View>
+            <WorkspaceMetaRow
+              backdrop={backdrop}
+              currentBranch={workspace.currentBranch}
+              projectName={leadingProjectName}
+              hostBadge={hostBadge ?? null}
+              prHint={workspace.prHint}
+              serviceSummary={serviceSummary}
+              labels={labels}
+              workspace={workspace}
+            />
           </View>
-          <WorkspaceMetaRow
-            currentBranch={workspace.currentBranch}
-            projectName={leadingProjectName}
-            hostBadge={hostBadge ?? null}
-            prHint={workspace.prHint}
-            serviceSummary={serviceSummary}
-            labels={labels}
-          />
         </View>
+        {!isSelectionMode && showShortcutBadge && shortcutNumber !== null ? (
+          <View style={styles.shortcutBadgeOverlay} pointerEvents="none">
+            <SidebarWorkspaceShortcutBadge number={shortcutNumber} />
+          </View>
+        ) : null}
       </View>
-      {showShortcutBadge && shortcutNumber !== null ? (
-        <View style={styles.shortcutBadgeOverlay} pointerEvents="none">
-          <SidebarWorkspaceShortcutBadge number={shortcutNumber} />
-        </View>
-      ) : null}
-    </View>
+    </TrailingFadeContext.Provider>
   );
 });
+
+/**
+ * The status slot doubles as the expand/collapse button for the workspace's agent list. The
+ * indicator inside keeps its look; only the hover and pressed fill shows it is a button. Without
+ * a toggle the slot is the indicator alone.
+ */
+function WorkspaceAgentsToggle({
+  agentsToggle,
+  workspaceKey,
+  children,
+}: {
+  agentsToggle: { expanded: boolean; onPress: () => void; accessibilityLabel: string } | null;
+  workspaceKey: string;
+  children: ReactNode;
+}) {
+  const expanded = agentsToggle?.expanded ?? false;
+  const onPress = agentsToggle?.onPress;
+  const handlePress = useCallback(
+    (event: GestureResponderEvent) => {
+      event.stopPropagation();
+      onPress?.();
+    },
+    [onPress],
+  );
+  const accessibilityState = useMemo(() => ({ expanded }), [expanded]);
+  const style = useCallback(
+    ({ hovered, pressed }: PressableStateCallbackType) => [
+      styles.agentsToggle,
+      (hovered || pressed) && styles.agentsToggleActive,
+      expanded && styles.agentsToggleExpanded,
+    ],
+    [expanded],
+  );
+  if (!agentsToggle) return children;
+  return (
+    <Pressable
+      onPress={handlePress}
+      hitSlop={4}
+      accessibilityRole={platformIsWeb ? undefined : "button"}
+      accessibilityLabel={agentsToggle.accessibilityLabel}
+      accessibilityState={accessibilityState}
+      style={style}
+      testID={`sidebar-workspace-agents-toggle-${workspaceKey}`}
+    >
+      {children}
+    </Pressable>
+  );
+}
+
+function WorkspaceSelectionCheckbox({
+  checked,
+  workspaceKey,
+}: {
+  checked: boolean;
+  workspaceKey: string;
+}) {
+  return (
+    <View style={styles.workspaceStatusDot} testID={`sidebar-workspace-checkbox-${workspaceKey}`}>
+      <View style={checked ? styles.selectionCheckboxChecked : styles.selectionCheckbox}>
+        {checked ? <ThemedCheck size={11} strokeWidth={2.5} uniProps={checkedIconMapping} /> : null}
+      </View>
+    </View>
+  );
+}
 
 function WorkspaceStatusIndicator({
   bucket,
@@ -241,15 +422,15 @@ function WorkspaceStatusIndicator({
     ) : null;
   }
 
-  let KindIcon: typeof ThemedMonitor;
-  if (workspaceKind === "local_checkout") KindIcon = ThemedMonitor;
-  else if (workspaceKind === "worktree") KindIcon = ThemedFolderGit2;
-  else KindIcon = ThemedFolder;
+  let KindIcon: typeof Monitor;
+  if (workspaceKind === "local_checkout") KindIcon = Monitor;
+  else if (workspaceKind === "worktree") KindIcon = FolderGit2;
+  else KindIcon = Folder;
 
   const dotColorStyle = getStatusDotColorStyle(bucket);
   return (
     <View style={styles.workspaceStatusDot} testID={`workspace-status-indicator-${bucket}`}>
-      <KindIcon size={14} uniProps={foregroundMutedColorMapping} />
+      <DensityIcon icon={KindIcon} size="sm" color="foregroundMuted" />
       {dotColorStyle ? <StatusDotOverlay dotColorStyle={dotColorStyle} /> : null}
     </View>
   );
@@ -332,6 +513,8 @@ export const sidebarWorkspaceRowStyles = StyleSheet.create((theme) => ({
     position: "absolute",
     top: 0,
     right: 0,
+    flexDirection: "row",
+    alignItems: "flex-start",
   },
 }));
 
@@ -362,6 +545,7 @@ export function resolveTrailingActionVisibility({
   isHovered,
   isTouchPlatform,
   showShortcut,
+  isSelectionMode = false,
 }: {
   workspace: SidebarWorkspaceEntry;
   trailing: SidebarWorkspaceTrailing;
@@ -369,33 +553,39 @@ export function resolveTrailingActionVisibility({
   isHovered: boolean;
   isTouchPlatform: boolean;
   showShortcut: boolean;
+  isSelectionMode?: boolean;
 }): {
   trailingPresentation: SidebarWorkspaceTrailingPresentation;
   showKebab: boolean;
+  showArchiveButton: boolean;
   showScrim: boolean;
   renderSlot: boolean;
   reserveSlotWidth: boolean;
 } {
   const hasTrailing = hasSidebarWorkspaceTrailing({ workspace, trailing });
-  const showKebab = Boolean(hasArchiveAction && (isHovered || isTouchPlatform)) && !showShortcut;
-  // Touch permanently replaces the stats with the menu. Only temporary shortcut hints
+  const allowRowActions = hasArchiveAction && !isSelectionMode;
+  const showKebab = Boolean(allowRowActions && (isHovered || isTouchPlatform)) && !showShortcut;
+  // Touch permanently replaces the trailing content with the menu. Only temporary shortcut hints
   // conceal content while retaining its width, so desktop rows do not shift.
-  const hasContent = hasTrailing && !(hasArchiveAction && isTouchPlatform);
+  const hasContent = hasTrailing && !(allowRowActions && isTouchPlatform);
   let trailingPresentation: SidebarWorkspaceTrailingPresentation = "absent";
   if (hasContent) trailingPresentation = showShortcut ? "hidden" : "visible";
   return {
     trailingPresentation,
     showKebab,
+    // One-click archive is a pointer affordance: on touch it would sit a few pixels from the
+    // kebab and turn a miss into an archive.
+    showArchiveButton: showKebab && isHovered && !isTouchPlatform,
     // The scrim paints the row's own hover background, so it can only be drawn on a hovered
     // row — over an unhovered one the gradient fades to the wrong color. That is also why
     // touch, which shows the kebab without ever hovering, never gets one.
     showScrim: showKebab && isHovered,
-    renderSlot: hasArchiveAction || hasTrailing,
+    renderSlot: allowRowActions || hasTrailing,
     // The slot only holds width for something that permanently sits in it. Trailing content
     // does; the kebab only does on touch, where there is no hover for it to appear on and so
     // no scrim to let it overlay the title. Everywhere else the width goes back to the title
     // and the kebab fades in over its tail.
-    reserveSlotWidth: hasContent || (hasArchiveAction && isTouchPlatform),
+    reserveSlotWidth: hasContent || (allowRowActions && isTouchPlatform),
   };
 }
 
@@ -426,9 +616,15 @@ export function SidebarWorkspaceTrailingActionBase({
   presentation: SidebarWorkspaceTrailingPresentation;
   children: ReactNode;
 }) {
+  const fadeWidth = useContext(TrailingFadeContext)?.width ?? null;
   if (presentation === "absent") return null;
   return (
-    <View style={presentation === "hidden" ? sidebarWorkspaceRowStyles.hidden : undefined}>
+    <View
+      style={[
+        presentation === "hidden" && sidebarWorkspaceRowStyles.hidden,
+        fadeWidth !== null && trailingActionFadeMask(fadeWidth),
+      ]}
+    >
       {children}
     </View>
   );
@@ -437,23 +633,57 @@ export function SidebarWorkspaceTrailingActionBase({
 export function SidebarWorkspaceTrailingActionOverlay({
   visible,
   scrimBackdrop,
+  workspaceKey,
+  onArchiveButtonPress,
   children,
 }: {
   visible: boolean;
-  /** Fade the row into the kebab when something (the diff stat) is still rendered behind it. */
+  /** Fade the row into the kebab when something (the timestamp) is still rendered behind it. */
   scrimBackdrop?: SidebarSurfaceBackdrop;
+  workspaceKey: string;
+  /**
+   * Shows the archive button left of the kebab. It overlays the title like the kebab does, so
+   * the scrim widens to cover it rather than the slot reserving its width.
+   */
+  onArchiveButtonPress?: () => void;
   children: ReactNode;
 }) {
+  const fade = useContext(TrailingFadeContext);
+  const masks = fade?.masks ?? false;
+  const setFadeWidth = fade?.setWidth;
+  const scrimWidth = onArchiveButtonPress ? SCRIM_WIDTH + ARCHIVE_BUTTON_FOOTPRINT : SCRIM_WIDTH;
+  const maskedFadeWidth =
+    masks && visible && Boolean(children) && scrimBackdrop ? scrimWidth : null;
+  useEffect(() => {
+    if (!setFadeWidth) return;
+    setFadeWidth(maskedFadeWidth);
+    return () => setFadeWidth(null);
+  }, [maskedFadeWidth, setFadeWidth]);
   if (!visible || !children) return null;
   return (
     <>
-      {scrimBackdrop ? (
-        <TrailingActionScrim backdrop={scrimBackdrop} testID="sidebar-workspace-trailing-scrim" />
+      {scrimBackdrop && !masks ? (
+        <TrailingActionScrim
+          backdrop={scrimBackdrop}
+          width={scrimWidth}
+          testID="sidebar-workspace-trailing-scrim"
+        />
       ) : null}
-      <View style={sidebarWorkspaceRowStyles.trailingActionOverlay}>{children}</View>
+      <View style={sidebarWorkspaceRowStyles.trailingActionOverlay}>
+        {onArchiveButtonPress ? (
+          <SidebarWorkspaceArchiveButton
+            workspaceKey={workspaceKey}
+            onArchive={onArchiveButtonPress}
+          />
+        ) : null}
+        {children}
+      </View>
     </>
   );
 }
+
+// The status dot centres on the title's first line, so both share its line height.
+const TITLE_LINE_HEIGHT = 20;
 
 const styles = StyleSheet.create((theme) => ({
   workspaceRowContent: {
@@ -473,7 +703,7 @@ const styles = StyleSheet.create((theme) => ({
     flexDirection: "row",
     alignItems: "flex-start",
     justifyContent: "space-between",
-    gap: theme.spacing[2],
+    gap: TITLE_ROW_GAP,
   },
   shortcutBadgeOverlay: {
     position: "absolute",
@@ -482,10 +712,46 @@ const styles = StyleSheet.create((theme) => ({
   },
   workspaceStatusDot: {
     position: "relative",
+    width: densityIconBox("md"),
+    height: TITLE_LINE_HEIGHT,
+    borderRadius: theme.borderRadius.full,
+    flexShrink: 0,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  // The status slot doubles as the expand/contract button for the workspace's agent list.
+  // The slot keeps its size and the dot inside keeps its look — only the hover/pressed
+  // fill signals that the slot is now interactive.
+  agentsToggle: {
     width: theme.iconSize.md,
     height: 20,
     borderRadius: theme.borderRadius.full,
     flexShrink: 0,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  agentsToggleActive: {
+    backgroundColor: theme.colors.surface2,
+  },
+  agentsToggleExpanded: {
+    backgroundColor: theme.colors.surface2,
+  },
+  selectionCheckbox: {
+    width: bySizing({ touch: 18, pointer: 15 }),
+    height: bySizing({ touch: 18, pointer: 15 }),
+    borderRadius: theme.borderRadius.sm,
+    borderWidth: 1.5,
+    borderColor: theme.colors.borderAccent,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  selectionCheckboxChecked: {
+    width: bySizing({ touch: 18, pointer: 15 }),
+    height: bySizing({ touch: 18, pointer: 15 }),
+    borderRadius: theme.borderRadius.sm,
+    borderWidth: 1.5,
+    borderColor: theme.colors.accent,
+    backgroundColor: theme.colors.accent,
     alignItems: "center",
     justifyContent: "center",
   },
@@ -517,8 +783,13 @@ const styles = StyleSheet.create((theme) => ({
     color: theme.colors.foreground,
     fontSize: theme.fontSize.base,
     fontWeight: "400",
-    lineHeight: 20,
+    lineHeight: TITLE_LINE_HEIGHT,
     opacity: 0.76,
+    flex: 1,
+    minWidth: 0,
+  },
+  workspaceTitleEditorSlot: {
+    height: TITLE_LINE_HEIGHT,
     flex: 1,
     minWidth: 0,
   },

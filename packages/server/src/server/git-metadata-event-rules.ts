@@ -1,20 +1,28 @@
 export type GitMetadataScope = "worktree" | "common";
 
+/** Config keys treated as repo-wide even though only one branch's config line changed. */
+export const GIT_METADATA_CONFIG_GLOBAL_PREFIXES = ["remote.", "core.", "extensions."] as const;
+
 type GitMetadataEventRule = {
   id: string;
   scope: GitMetadataScope | "both";
   path: string;
   prune?: true;
+  diffInput?: true;
 } & (
   | { match: "exact" | "prefix" | "suffix"; route: "ignore" }
   | { match: "exact" | "prefix" | "suffix"; route: "owner" | "all"; refreshBase: boolean }
   | { match: "prefix"; route: "local-ref" | "remote-ref" }
+  | { match: "exact"; route: "config" }
+  | { match: "exact" | "prefix"; route: "packed-refs" }
 );
 
 export type GitMetadataEffect =
   | { kind: "ignore" }
   | { kind: "owner" | "all"; refreshBase: boolean }
-  | { kind: "ref"; namespace: "local" | "remote"; ref: string };
+  | { kind: "ref"; namespace: "local" | "remote"; ref: string }
+  | { kind: "config" }
+  | { kind: "packed-refs" };
 
 export const GIT_METADATA_EVENT_RULES = [
   { id: "lock", scope: "both", match: "suffix", path: ".lock", route: "ignore" },
@@ -36,6 +44,7 @@ export const GIT_METADATA_EVENT_RULES = [
   },
   {
     id: "worktree-config",
+    diffInput: true,
     scope: "worktree",
     match: "exact",
     path: "config.worktree",
@@ -44,7 +53,7 @@ export const GIT_METADATA_EVENT_RULES = [
   },
   {
     id: "paseo-worktree-metadata",
-    scope: "worktree",
+    scope: "both",
     match: "exact",
     path: "paseo/worktree.json",
     route: "owner",
@@ -74,6 +83,14 @@ export const GIT_METADATA_EVENT_RULES = [
     route: "local-ref",
   },
   {
+    id: "tag",
+    scope: "common",
+    match: "prefix",
+    path: "refs/tags/",
+    route: "all",
+    refreshBase: true,
+  },
+  {
     id: "remote-branch",
     scope: "common",
     match: "prefix",
@@ -85,24 +102,31 @@ export const GIT_METADATA_EVENT_RULES = [
     scope: "common",
     match: "exact",
     path: "packed-refs",
-    route: "all",
-    refreshBase: true,
+    route: "packed-refs",
   },
   {
     id: "reftable",
     scope: "common",
     match: "prefix",
     path: "reftable/",
-    route: "all",
-    refreshBase: true,
+    route: "packed-refs",
   },
   {
     id: "shared-config",
+    diffInput: true,
     scope: "common",
     match: "exact",
     path: "config",
+    route: "config",
+  },
+  {
+    id: "shared-attributes",
+    diffInput: true,
+    scope: "common",
+    match: "exact",
+    path: "info/attributes",
     route: "all",
-    refreshBase: true,
+    refreshBase: false,
   },
   {
     id: "worktree-administration",
@@ -150,20 +174,31 @@ export function classifyGitMetadataPath(
   inputPath: string,
 ): GitMetadataEffect {
   const path = inputPath.replaceAll("\\", "/");
-  const rule = GIT_METADATA_EVENT_RULES.find(
-    (candidate) =>
-      (candidate.scope === "both" || candidate.scope === scope) &&
-      matchesGitMetadataPath(candidate.match, candidate.path, path),
-  );
+  const rule = findGitMetadataRule(scope, path);
   if (!rule || rule.route === "ignore") return { kind: "ignore" };
   if (rule.route === "owner" || rule.route === "all") {
     return { kind: rule.route, refreshBase: rule.refreshBase };
   }
+  if (rule.route === "config") return { kind: "config" };
+  if (rule.route === "packed-refs") return { kind: "packed-refs" };
   return {
     kind: "ref",
     namespace: rule.route === "local-ref" ? "local" : "remote",
     ref: path.slice(rule.path.length),
   };
+}
+
+export function affectsGitDiffInterpretation(scope: GitMetadataScope, inputPath: string): boolean {
+  const rule = findGitMetadataRule(scope, inputPath.replaceAll("\\", "/"));
+  return rule !== undefined && "diffInput" in rule && rule.diffInput;
+}
+
+function findGitMetadataRule(scope: GitMetadataScope, path: string) {
+  return GIT_METADATA_EVENT_RULES.find(
+    (candidate) =>
+      (candidate.scope === "both" || candidate.scope === scope) &&
+      matchesGitMetadataPath(candidate.match, candidate.path, path),
+  );
 }
 
 function matchesGitMetadataPath(

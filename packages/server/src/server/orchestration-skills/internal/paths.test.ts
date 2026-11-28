@@ -45,9 +45,31 @@ describe("orchestration skill paths", () => {
     const home = os.homedir();
 
     expect(resolveSkillTargets()).toMatchObject({
-      agentsDir: path.join(home, ".agents", "skills"),
-      claudeDir: path.join(home, ".claude", "skills"),
+      installDirs: [
+        path.join(home, ".agents", "skills"),
+        path.join(home, ".claude", "skills"),
+        path.join(home, ".gemini", "config", "skills"),
+      ],
       codexDir: path.join(home, ".codex", "skills"),
     });
+  });
+
+  it("honors PASEO_SKILLS_HOME when set", () => {
+    const customHome = "/tmp/custom-skills-home";
+    const previous = process.env.PASEO_SKILLS_HOME;
+    try {
+      process.env.PASEO_SKILLS_HOME = customHome;
+      expect(resolveSkillTargets()).toMatchObject({
+        agentsDir: path.join(customHome, ".agents", "skills"),
+        claudeDir: path.join(customHome, ".claude", "skills"),
+        codexDir: path.join(customHome, ".codex", "skills"),
+      });
+    } finally {
+      if (previous === undefined) {
+        delete process.env.PASEO_SKILLS_HOME;
+      } else {
+        process.env.PASEO_SKILLS_HOME = previous;
+      }
+    }
   });
 });

@@ -1,6 +1,8 @@
-import { type Command } from "commander";
+import { type Command, Option } from "commander";
+import type { AgentActiveTurnBehavior } from "@getpaseo/protocol/messages";
 import { collectMultiple } from "../../utils/command-options.js";
 import { connectToDaemon } from "../../utils/client.js";
+import type { AgentMessageReceipt } from "@getpaseo/client/internal/daemon-client";
 import type {
   CommandOptions,
   SingleResult,
@@ -13,7 +15,9 @@ import { extname, resolve } from "node:path";
 /** Result type for agent send command */
 export interface AgentSendResult {
   agentId: string;
-  status: "sent" | "completed" | "timeout" | "permission" | "error";
+  status: "queued" | "sent" | "completed" | "timeout" | "permission" | "error";
+  /** What the host applied to an agent's message with a running turn. */
+  activeTurnBehavior?: AgentActiveTurnBehavior;
   message: string;
 }
 
@@ -28,6 +32,7 @@ export const agentSendSchema: OutputSchema<AgentSendResult> = {
 };
 
 export interface AgentSendOptions extends CommandOptions {
+  behavior?: AgentActiveTurnBehavior;
   wait?: boolean;
   image?: string[];
   prompt?: string;
@@ -42,6 +47,12 @@ export function addSendOptions(cmd: Command): Command {
     .option("--prompt <text>", "Provide the message inline as a flag")
     .option("--prompt-file <path>", "Read the message from a UTF-8 text file")
     .option("--image <path>", "Attach image(s) to the message", collectMultiple, [])
+    .addOption(
+      new Option(
+        "--behavior <behavior>",
+        "Leave out unless the message cannot wait. From an agent (PASEO_AGENT_ID set): queue (default) waits for the running turn to end, steer joins it, interrupt replaces it. From a person: interrupt (default) or steer",
+      ).choices(["queue", "steer", "interrupt"]),
+    )
     .option("--no-wait", "Return immediately without waiting for completion");
 }
 
@@ -162,6 +173,22 @@ function buildSendResult(agentIdArg: string, state: SendWaitState): AgentSendRes
   return { agentId, status: "completed", message: "Agent completed processing the message" };
 }
 
+export function buildNoWaitResult(agentId: string, receipt: AgentMessageReceipt): AgentSendResult {
+  return {
+    agentId,
+    status: receipt.deliveryStatus ?? "sent",
+    ...(receipt.activeTurnBehavior ? { activeTurnBehavior: receipt.activeTurnBehavior } : {}),
+    message: sendReceiptMessage(receipt),
+  };
+}
+
+function sendReceiptMessage(receipt: AgentMessageReceipt): string {
+  if (receipt.deliveryStatus !== "queued") return "Message sent, not waiting for completion";
+  // COMPAT(agentActiveTurnBehaviors): added in v0.17.2, remove after 2027-05-22 once daemon
+  // floor >= v0.17.2. Older hosts return no guidance.
+  return receipt.guidance ?? "Message queued for delivery after the current turn ends";
+}
+
 export async function runSendCommand(
   agentIdArg: string,
   prompt: string | undefined,
@@ -191,8 +218,13 @@ export async function runSendCommand(
     const images =
       options.image && options.image.length > 0 ? await readImageFiles(options.image) : undefined;
 
+    const sourceAgentId = process.env.PASEO_AGENT_ID?.trim() || undefined;
     // Send the message
-    await client.sendAgentMessage(agentIdArg, promptInput, { images });
+    const receipt = await client.sendAgentMessage(agentIdArg, promptInput, {
+      images,
+      sourceAgentId,
+      activeTurnBehavior: options.behavior,
+    });
 
     // If --no-wait, return immediately
     if (options.wait === false) {
@@ -200,11 +232,7 @@ export async function runSendCommand(
 
       return {
         type: "single",
-        data: {
-          agentId: agentIdArg,
-          status: "sent",
-          message: "Message sent, not waiting for completion",
-        },
+        data: buildNoWaitResult(agentIdArg, receipt),
         schema: agentSendSchema,
       };
     }

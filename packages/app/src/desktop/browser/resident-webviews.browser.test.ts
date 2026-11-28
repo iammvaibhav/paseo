@@ -1,16 +1,20 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   applyInactiveBrowserWebviewViewport,
   type BrowserWebviewProfileHost,
   clearResidentBrowserWebviewsForTests,
+  ensurePersistentBrowserWebview,
   ensureResidentBrowserWebview,
   getResidentBrowserWebview,
+  hidePersistentBrowserWebview,
+  isBrowserWebviewDomReady,
   prepareBrowserWebview,
   presentBrowserWebview,
   rememberBrowserWebviewSize,
   releaseResidentBrowserWebview,
   removeResidentBrowserWebview,
   resizeResidentBrowserWebview,
+  showPersistentBrowserWebview,
   takeResidentBrowserWebview,
 } from "./resident-webviews";
 import {
@@ -448,5 +452,138 @@ describe("resident browser webviews", () => {
 
     expect(webview?.isConnected).toBe(false);
     expect(takeResidentBrowserWebview("browser-closed")).toBeNull();
+  });
+
+  it("shows and hides a persistent webview without ever reparenting it", () => {
+    const webview = ensurePersistentBrowserWebview({
+      browserId: "browser-persistent",
+      url: "https://example.com",
+      profileHost,
+    });
+    const wrapper = webview?.parentElement ?? null;
+    const target = document.createElement("div");
+    target.getBoundingClientRect = () =>
+      ({
+        left: 20,
+        top: 30,
+        width: 900,
+        height: 700,
+        right: 920,
+        bottom: 730,
+        x: 20,
+        y: 30,
+        toJSON: () => ({}),
+      }) as DOMRect;
+    document.body.appendChild(target);
+
+    expect(isBrowserWebviewDomReady(webview as HTMLElement)).toBe(false);
+    webview?.dispatchEvent(new Event("dom-ready"));
+    expect(isBrowserWebviewDomReady(webview as HTMLElement)).toBe(true);
+    expect(showPersistentBrowserWebview("browser-persistent", target)).toBe(true);
+    expect(webview?.parentElement).toBe(wrapper);
+    expect(wrapper?.style.left).toBe("20px");
+    expect(wrapper?.style.top).toBe("30px");
+    expect(wrapper?.style.width).toBe("900px");
+    expect(wrapper?.style.height).toBe("700px");
+    expect(wrapper?.style.zIndex).toBe("0");
+
+    expect(hidePersistentBrowserWebview("browser-persistent")).toBe(true);
+    expect(webview?.parentElement).toBe(wrapper);
+    expect(wrapper?.style.width).toBe("1px");
+    expect(wrapper?.style.height).toBe("1px");
+    expect(wrapper?.style.zIndex).toBe("0");
+    expect(isBrowserWebviewDomReady(webview as HTMLElement)).toBe(true);
+  });
+
+  it("keeps the webview shown when a pane that no longer shows it cleans up", () => {
+    const webview = ensurePersistentBrowserWebview({
+      browserId: "browser-shared",
+      url: "https://example.com",
+      profileHost,
+    });
+    const wrapper = webview?.parentElement ?? null;
+    const pane = (left: number) => {
+      const element = document.createElement("div");
+      element.getBoundingClientRect = () =>
+        ({
+          left,
+          top: 0,
+          width: 800,
+          height: 600,
+          right: left + 800,
+          bottom: 600,
+          x: left,
+          y: 0,
+          toJSON: () => ({}),
+        }) as DOMRect;
+      document.body.appendChild(element);
+      return element;
+    };
+    // Two workspaces each hold a tab for the one VS Code webview.
+    const outgoing = pane(10);
+    const incoming = pane(20);
+    showPersistentBrowserWebview("browser-shared", outgoing);
+
+    // The incoming workspace shows it before the outgoing pane's cleanup runs.
+    showPersistentBrowserWebview("browser-shared", incoming);
+    expect(hidePersistentBrowserWebview("browser-shared", outgoing)).toBe(false);
+    expect(wrapper?.style.width).toBe("800px");
+    expect(wrapper?.style.left).toBe("20px");
+
+    // The pane that shows it can still park it.
+    expect(hidePersistentBrowserWebview("browser-shared", incoming)).toBe(true);
+    expect(wrapper?.style.width).toBe("1px");
+  });
+
+  it("reloads a persistent webview whose page failed to load, backing off until it loads", () => {
+    vi.useFakeTimers();
+    try {
+      const url = "http://iammvaibhav:8765/?folder=%2Frepo";
+      const webview = ensurePersistentBrowserWebview({
+        browserId: "browser-persistent-retry",
+        url,
+        profileHost,
+      }) as HTMLElement & { src: string; getURL?: () => string };
+      const fail = (errorCode: number, isMainFrame = true) =>
+        webview.dispatchEvent(
+          Object.assign(new Event("did-fail-load"), { errorCode, isMainFrame, validatedURL: url }),
+        );
+
+      // A navigation the page replaced, or a failed subframe, is no failure.
+      webview.src = "chrome-error://chromewebdata/";
+      fail(-3);
+      fail(-118, false);
+      vi.advanceTimersByTime(60_000);
+      expect(webview.src).toBe("chrome-error://chromewebdata/");
+
+      fail(-21); // ERR_NETWORK_CHANGED
+      vi.advanceTimersByTime(1_999);
+      expect(webview.src).toBe("chrome-error://chromewebdata/");
+      vi.advanceTimersByTime(1);
+      expect(webview.src).toBe(url);
+
+      webview.src = "chrome-error://chromewebdata/";
+      fail(-118); // ERR_CONNECTION_TIMED_OUT: second failure waits longer
+      vi.advanceTimersByTime(4_999);
+      expect(webview.src).toBe("chrome-error://chromewebdata/");
+      vi.advanceTimersByTime(1);
+      expect(webview.src).toBe(url);
+
+      // Loaded: the next failure starts from the shortest delay again.
+      webview.getURL = () => url;
+      webview.dispatchEvent(new Event("did-finish-load"));
+      webview.src = "chrome-error://chromewebdata/";
+      fail(-118);
+      vi.advanceTimersByTime(2_000);
+      expect(webview.src).toBe(url);
+
+      // The network coming back retries at once.
+      webview.src = "chrome-error://chromewebdata/";
+      fail(-106); // ERR_INTERNET_DISCONNECTED
+      window.dispatchEvent(new Event("online"));
+      expect(webview.src).toBe(url);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

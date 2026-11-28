@@ -45,7 +45,7 @@ export function formatHostRuntimeSection(input: {
         ? describeConnectionKind(snapshot.activeConnection.type)
         : "none",
     },
-    { label: "Last online", value: snapshot?.lastOnlineAt ?? "never" },
+    { label: "Last online", value: snapshot?.lastOnlineAt ?? "unknown" },
     { label: "Last error", value: snapshot?.lastError ?? "none" },
     {
       label: "Agent directory",
@@ -81,6 +81,10 @@ export function formatServerInfoSection(serverInfo: ServerInfoStatusPayload | nu
   return formatDiagnosticSection("Server info", [
     { label: "Server ID", value: serverInfo.serverId },
     { label: "Hostname", value: serverInfo.hostname ?? "unknown" },
+    {
+      label: "Mission control alias",
+      value: serverInfo.missionControlHostAlias ?? "unknown",
+    },
     { label: "Version", value: serverInfo.version ?? "unknown" },
     {
       label: "Desktop managed",
@@ -100,6 +104,8 @@ export function describeConnectionKind(type: HostConnection["type"] | string): s
       return "local pipe";
     case "relay":
       return "relay";
+    case "routed":
+      return "routed";
     default:
       return "unknown";
   }
@@ -125,11 +131,11 @@ export function redactAppDiagnosticReport(report: string, hosts: HostProfile[]):
 function collectSensitiveHostValues(hosts: HostProfile[]): string[] {
   const values = new Set<string>();
   for (const host of hosts) {
+    if (host.password) values.add(host.password);
     for (const connection of host.connections) {
       values.add(connection.id);
       if (connection.type === "directTcp") {
         values.add(connection.endpoint);
-        if (connection.password) values.add(connection.password);
       } else if (connection.type === "relay") {
         values.add(connection.relayEndpoint);
         values.add(connection.daemonPublicKeyB64);

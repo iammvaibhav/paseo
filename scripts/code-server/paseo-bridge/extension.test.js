@@ -1,0 +1,623 @@
+// Run with: node --test scripts/code-server/paseo-bridge/extension.test.js
+const test = require("node:test");
+const assert = require("node:assert");
+const { Readable } = require("node:stream");
+const {
+  captureEditorSession,
+  createBrokerHandler,
+  createRequestHandler,
+  hasDiffTab,
+  parseOpenPayload,
+  parseJsonc,
+  resolveProjectFolderVariables,
+  restoreEditorSession,
+  selectBrokerTargets,
+} = require("./extension.js");
+
+function mockReq({ method, url, body }) {
+  const req = Readable.from(body != null ? [Buffer.from(body)] : []);
+  req.method = method;
+  req.url = url;
+  return req;
+}
+
+function runHandler(handler, req) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const res = {
+      status: 0,
+      headers: null,
+      body: "",
+      writeHead(status, headers) {
+        this.status = status;
+        this.headers = headers;
+      },
+      end(chunk) {
+        if (chunk) {
+          this.body = String(chunk);
+        }
+        if (!settled) {
+          settled = true;
+          resolve(this);
+        }
+      },
+    };
+    handler(req, res);
+  });
+}
+
+test("parseOpenPayload normalizes fields", () => {
+  assert.deepEqual(parseOpenPayload(JSON.stringify({ path: "/a", line: 3, column: 2 })), {
+    path: "/a",
+    line: 3,
+    column: 2,
+    mode: "file",
+  });
+  assert.equal(parseOpenPayload("{}").error, "missing path");
+  assert.equal(parseOpenPayload("not json").error, "invalid json");
+  assert.equal(parseOpenPayload(JSON.stringify({ path: "/a", line: 0 })).line, null);
+  assert.deepEqual(
+    parseOpenPayload(JSON.stringify({ path: "/a", mode: "diff", baseRef: " master " })),
+    { path: "/a", line: null, column: null, mode: "diff", baseRef: "master" },
+  );
+});
+
+test("parseOpenPayload expands ~ to the host home, and only a leading ~/", () => {
+  const home = require("node:os").homedir();
+  const parse = (target) => parseOpenPayload(JSON.stringify({ path: target })).path;
+  assert.equal(parse("~/.omp/agent/config.yml"), `${home}/.omp/agent/config.yml`);
+  assert.equal(parse("~"), home);
+  assert.equal(parse("/srv/~/x"), "/srv/~/x");
+  assert.equal(parse("~other/x"), "~other/x");
+});
+
+test("POST /open on a directory reveals it in the Explorer instead of opening it", async () => {
+  const revealed = [];
+  let openedFile = false;
+  const handler = createRequestHandler({
+    fileExists: () => true,
+    isDirectory: (target) => target === "/repo/src",
+    revealFolder: async (target) => {
+      revealed.push(target);
+    },
+    openFile: async () => {
+      openedFile = true;
+    },
+    saveSession: async () => {},
+  });
+  const res = await runHandler(
+    handler,
+    mockReq({ method: "POST", url: "/open", body: JSON.stringify({ path: "/repo/src" }) }),
+  );
+  assert.equal(res.status, 200);
+  assert.deepEqual(revealed, ["/repo/src"]);
+  assert.equal(openedFile, false);
+});
+
+test("POST /command runs only the allowlisted commands", async () => {
+  const ran = [];
+  const handler = createRequestHandler({
+    runCommand: (command) => {
+      ran.push(command);
+    },
+  });
+  const send = (command) =>
+    runHandler(
+      handler,
+      mockReq({
+        method: "POST",
+        url: "/command",
+        body: JSON.stringify({ folder: "/repo", command }),
+      }),
+    );
+  assert.equal((await send("quickOpen")).status, 200);
+  assert.equal((await send("openFile")).status, 200);
+  assert.equal((await send("workbench.action.terminal.new")).status, 400);
+  assert.equal((await send("toString")).status, 400);
+  assert.deepEqual(ran, ["quickOpen", "openFile"]);
+});
+
+test("copied settings resolve folder variables to the project, not the window's first folder", () => {
+  const resolved = resolveProjectFolderVariables(
+    {
+      "python.defaultInterpreterPath": "${workspaceFolder}/.venv-ide/bin/python",
+      "python.analysis.extraPaths": ["${workspaceRoot}/src", "${workspaceFolder:other}/lib"],
+      "window.title": "${workspaceFolderBasename} ${activeEditorShort}",
+      "editor.tabSize": 4,
+    },
+    "/home/u/stackmod",
+  );
+  assert.deepEqual(resolved, {
+    "python.defaultInterpreterPath": "/home/u/stackmod/.venv-ide/bin/python",
+    "python.analysis.extraPaths": ["/home/u/stackmod/src", "${workspaceFolder:other}/lib"],
+    "window.title": "stackmod ${activeEditorShort}",
+    "editor.tabSize": 4,
+  });
+});
+
+test("parseJsonc reads settings files: comments, trailing commas, look-alikes in strings", () => {
+  const text = `{
+    // line comment
+    "a": "http://x/y", /* block */
+    "b": ",}",
+    "c": [1, 2,],
+    "[python]": { "editor.tabSize": 4, },
+  }`;
+  assert.deepEqual(parseJsonc(text), {
+    a: "http://x/y",
+    b: ",}",
+    c: [1, 2],
+    "[python]": { "editor.tabSize": 4 },
+  });
+});
+
+test("broker routes a switch to the window of its workspace file, newest first", async () => {
+  const calls = [];
+  const registration = (id, port, workspaceFile, startedAt) => [
+    id,
+    { id, port, folders: ["/root", "/repo/a"], workspaceFile, startedAt, lastSeen: 10_000 },
+  ];
+  const handler = createBrokerHandler({
+    registrations: new Map([
+      registration("folder-window", 9001, null, 300),
+      registration("old", 9002, "/ws/paseo.code-workspace", 100),
+      registration("new", 9003, "/ws/paseo.code-workspace", 200),
+    ]),
+    now: () => 10_000,
+    forward: async (input) => {
+      calls.push(input);
+      return { status: 200, body: JSON.stringify({ ok: true }) };
+    },
+  });
+  const response = await runHandler(
+    handler,
+    mockReq({
+      method: "POST",
+      url: "/broker/switch",
+      body: JSON.stringify({ folder: "/repo/b", workspaceFile: "/ws/paseo.code-workspace" }),
+    }),
+  );
+  assert.equal(response.status, 200);
+  assert.deepEqual(
+    calls.map((call) => [call.port, call.route]),
+    [[9003, "/switch"]],
+  );
+});
+
+test("POST /open with mode=diff opens a diff instead of the file", async () => {
+  const diffCalls = [];
+  let openedFile = false;
+  const handler = createRequestHandler({
+    fileExists: () => true,
+    openFile: async () => {
+      openedFile = true;
+    },
+    openDiff: async (target, baseRef) => {
+      diffCalls.push([target, baseRef]);
+    },
+  });
+  const res = await runHandler(
+    handler,
+    mockReq({
+      method: "POST",
+      url: "/open",
+      body: JSON.stringify({ path: "/repo/a.ts", mode: "diff", baseRef: "master" }),
+    }),
+  );
+  assert.equal(res.status, 200);
+  assert.deepEqual(diffCalls, [["/repo/a.ts", "master"]]);
+  assert.equal(openedFile, false);
+});
+
+test("hasDiffTab matches only the exact revision pair on screen", () => {
+  const uri = (value) => ({ toString: () => value });
+  const left = uri('paseo-git:/a.sh?{"ref":"main"}');
+  const right = uri('paseo-git:/a.sh?{"ref":"HEAD"}');
+  const withTabs = (tabs) => ({ window: { tabGroups: { all: [{ tabs }] } } });
+
+  assert.equal(
+    hasDiffTab(withTabs([{ input: { original: left, modified: right } }]), left, right),
+    true,
+  );
+  // Same file, different base — a stale tab must not pass for a new request.
+  assert.equal(
+    hasDiffTab(
+      withTabs([{ input: { original: uri('paseo-git:/a.sh?{"ref":"dev"}'), modified: right } }]),
+      left,
+      right,
+    ),
+    false,
+  );
+  // A plain editor for the same file is not a diff.
+  assert.equal(hasDiffTab(withTabs([{ input: { uri: right } }]), left, right), false);
+  assert.equal(hasDiffTab({ window: { tabGroups: {} } }, left, right), false);
+});
+
+test("GET /health returns ok", async () => {
+  const handler = createRequestHandler({ openFile: async () => {} });
+  const res = await runHandler(handler, mockReq({ method: "GET", url: "/health" }));
+  assert.equal(res.status, 200);
+  assert.match(res.body, /paseo-bridge/);
+});
+
+test("POST /open calls openFile with parsed args", async () => {
+  const calls = [];
+  const handler = createRequestHandler({
+    fileExists: () => true,
+    openFile: async (path, line, column) => {
+      calls.push([path, line, column]);
+    },
+  });
+  const res = await runHandler(
+    handler,
+    mockReq({
+      method: "POST",
+      url: "/open",
+      body: JSON.stringify({ path: "/repo/a.ts", line: 5, column: 1 }),
+    }),
+  );
+  assert.equal(res.status, 200);
+  assert.deepEqual(calls, [["/repo/a.ts", 5, 1]]);
+});
+
+test("POST /open with a missing path returns 400 and does not open", async () => {
+  let called = false;
+  const handler = createRequestHandler({
+    openFile: async () => {
+      called = true;
+    },
+  });
+  const res = await runHandler(
+    handler,
+    mockReq({ method: "POST", url: "/open", body: JSON.stringify({}) }),
+  );
+  assert.equal(res.status, 400);
+  assert.equal(called, false);
+});
+
+test("POST /open for a path that is not on disk returns 404 and does not open", async () => {
+  let called = false;
+  const handler = createRequestHandler({
+    fileExists: () => false,
+    openFile: async () => {
+      called = true;
+    },
+  });
+  const res = await runHandler(
+    handler,
+    mockReq({
+      method: "POST",
+      url: "/open",
+      body: JSON.stringify({ path: "/repo/gone.ts" }),
+    }),
+  );
+  assert.equal(res.status, 404);
+  assert.equal(called, false);
+});
+
+test("POST /close-all closes every editor in the worker window", async () => {
+  let called = false;
+  const savedFolders = [];
+  const handler = createRequestHandler({
+    closeEditors: async () => {
+      called = true;
+    },
+    saveSession: async (folder) => savedFolders.push(folder),
+  });
+  const response = await runHandler(
+    handler,
+    mockReq({
+      method: "POST",
+      url: "/close-all",
+      body: JSON.stringify({ folder: "/repo" }),
+    }),
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(called, true);
+  assert.deepEqual(savedFolders, ["/repo"]);
+});
+
+test("captureEditorSession records file order, groups, and the globally active tab", () => {
+  const first = { input: { uri: { fsPath: "/repo/a.ts" } } };
+  const second = { input: { uri: { fsPath: "/repo/b.ts" } } };
+  const ignored = { input: {} };
+  const session = captureEditorSession({
+    window: {
+      tabGroups: {
+        activeTabGroup: { activeTab: second },
+        all: [
+          { viewColumn: 1, tabs: [first, ignored] },
+          { viewColumn: 2, tabs: [second] },
+        ],
+      },
+    },
+  });
+
+  assert.deepEqual(session, {
+    version: 1,
+    files: [
+      { path: "/repo/a.ts", viewColumn: 1, active: false },
+      { path: "/repo/b.ts", viewColumn: 2, active: true },
+    ],
+  });
+});
+
+test("restoreEditorSession closes stale editors and focuses the saved active file last", async () => {
+  const calls = [];
+  const vscode = {
+    Uri: { file: (filePath) => ({ fsPath: filePath }) },
+    commands: {
+      executeCommand: async (command) => calls.push(["command", command]),
+    },
+    window: {
+      showTextDocument: async (uri, options) => calls.push(["open", uri.fsPath, options]),
+    },
+  };
+
+  const result = await restoreEditorSession(
+    {
+      files: [
+        { path: "/repo/active.ts", viewColumn: 1, active: true },
+        { path: "/repo/other.ts", viewColumn: 2, active: false },
+      ],
+    },
+    vscode,
+  );
+
+  assert.deepEqual(result, { restored: 2, failed: 0 });
+  assert.equal(calls[0][1], "workbench.action.closeAllEditors");
+  assert.equal(calls[1][1], "/repo/other.ts");
+  assert.equal(calls[1][2].preserveFocus, true);
+  assert.equal(calls[2][1], "/repo/active.ts");
+  assert.equal(calls[2][2].preserveFocus, false);
+});
+
+test("POST /restore restores the saved session for the worker folder", async () => {
+  const folders = [];
+  const handler = createRequestHandler({
+    restoreSession: async (folder) => {
+      folders.push(folder);
+      return { found: true, restored: 2, failed: 0 };
+    },
+  });
+  const response = await runHandler(
+    handler,
+    mockReq({
+      method: "POST",
+      url: "/restore",
+      body: JSON.stringify({ folder: "/repo" }),
+    }),
+  );
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(folders, ["/repo"]);
+  assert.deepEqual(JSON.parse(response.body), {
+    ok: true,
+    found: true,
+    restored: 2,
+    failed: 0,
+  });
+});
+
+test("unknown route returns 404", async () => {
+  const handler = createRequestHandler({ openFile: async () => {} });
+  const res = await runHandler(handler, mockReq({ method: "GET", url: "/nope" }));
+  assert.equal(res.status, 404);
+});
+
+test("broker prefers the newest worker for the page's exact workspace folder", () => {
+  const now = 10_000;
+  const registrations = new Map([
+    [
+      "old-hidden",
+      {
+        id: "old-hidden",
+        port: 9001,
+        folders: ["/repo/old"],
+        focused: true,
+        startedAt: 100,
+        lastSeen: now,
+      },
+    ],
+    [
+      "current",
+      {
+        id: "current",
+        port: 9002,
+        folders: ["/repo/current"],
+        focused: false,
+        startedAt: 200,
+        lastSeen: now,
+      },
+    ],
+    [
+      "stale-same-folder",
+      {
+        id: "stale-same-folder",
+        port: 9003,
+        folders: ["/repo/current"],
+        focused: false,
+        startedAt: 150,
+        lastSeen: now,
+      },
+    ],
+  ]);
+
+  const targets = selectBrokerTargets(
+    registrations,
+    { path: "/outside/file.ts", folder: "/repo/current" },
+    now,
+  );
+
+  assert.equal(targets[0].id, "current");
+  assert.equal(targets[1].id, "stale-same-folder");
+  assert.equal(targets.length, 2);
+});
+
+test("broker drops expired workers and uses file containment without a folder hint", () => {
+  const now = 20_000;
+  const registrations = new Map([
+    [
+      "expired",
+      {
+        id: "expired",
+        port: 9001,
+        folders: ["/repo"],
+        focused: true,
+        startedAt: 300,
+        lastSeen: 1,
+      },
+    ],
+    [
+      "matching",
+      {
+        id: "matching",
+        port: 9002,
+        folders: ["/repo"],
+        focused: false,
+        startedAt: 100,
+        lastSeen: now,
+      },
+    ],
+  ]);
+
+  const targets = selectBrokerTargets(registrations, { path: "/repo/src/file.ts" }, now);
+
+  assert.deepEqual(
+    targets.map((target) => target.id),
+    ["matching"],
+  );
+});
+
+test("broker forwards its dedicated open route to the matching worker", async () => {
+  const calls = [];
+  const registrations = new Map([
+    [
+      "current",
+      {
+        id: "current",
+        port: 9002,
+        folders: ["/repo/current"],
+        focused: false,
+        startedAt: 200,
+        sequence: 1,
+        lastSeen: 10_000,
+      },
+    ],
+  ]);
+  const handler = createBrokerHandler({
+    registrations,
+    now: () => 10_000,
+    forward: async (input) => {
+      calls.push(input);
+      return { status: 200, body: JSON.stringify({ ok: true }) };
+    },
+  });
+
+  const response = await runHandler(
+    handler,
+    mockReq({
+      method: "POST",
+      url: "/broker/open",
+      body: JSON.stringify({
+        path: "/outside/file.ts",
+        folder: "/repo/current",
+      }),
+    }),
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].port, 9002);
+});
+
+test("broker does not expose the legacy fixed-port open route", async () => {
+  const handler = createBrokerHandler();
+  const response = await runHandler(
+    handler,
+    mockReq({
+      method: "POST",
+      url: "/open",
+      body: JSON.stringify({ path: "/repo/file.ts", folder: "/repo" }),
+    }),
+  );
+
+  assert.equal(response.status, 404);
+});
+
+test("broker routes close-all to the matching worker", async () => {
+  const calls = [];
+  const registrations = new Map([
+    [
+      "current",
+      {
+        id: "current",
+        port: 9002,
+        folders: ["/repo/current"],
+        focused: false,
+        startedAt: 200,
+        sequence: 1,
+        lastSeen: 10_000,
+      },
+    ],
+  ]);
+  const handler = createBrokerHandler({
+    registrations,
+    now: () => 10_000,
+    forward: async (input) => {
+      calls.push(input);
+      return { status: 200, body: JSON.stringify({ ok: true }) };
+    },
+  });
+  const response = await runHandler(
+    handler,
+    mockReq({
+      method: "POST",
+      url: "/broker/close-all",
+      body: JSON.stringify({ folder: "/repo/current" }),
+    }),
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].route, "/close-all");
+});
+
+test("broker routes restore to the matching worker", async () => {
+  const calls = [];
+  const registrations = new Map([
+    [
+      "current",
+      {
+        id: "current",
+        port: 9002,
+        folders: ["/repo/current"],
+        focused: false,
+        startedAt: 200,
+        sequence: 1,
+        lastSeen: 10_000,
+      },
+    ],
+  ]);
+  const handler = createBrokerHandler({
+    registrations,
+    now: () => 10_000,
+    forward: async (input) => {
+      calls.push(input);
+      return { status: 200, body: JSON.stringify({ ok: true, restored: 2 }) };
+    },
+  });
+  const response = await runHandler(
+    handler,
+    mockReq({
+      method: "POST",
+      url: "/broker/restore",
+      body: JSON.stringify({ folder: "/repo/current" }),
+    }),
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].route, "/restore");
+});

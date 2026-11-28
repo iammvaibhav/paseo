@@ -43,12 +43,32 @@ export const PaseoScriptEntryRawSchema = z
   })
   .passthrough();
 
+export const PaseoWorktreeWarmPoolConfigRawSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    targetIdle: z.number().int().nonnegative().optional(),
+    // Git ref the warm pool cuts from (branch, tag, or origin/<branch>).
+    // Omitted or blank → repository default branch.
+    baseRef: z
+      .string()
+      .optional()
+      .transform((value) => {
+        const trimmed = value?.trim();
+        return trimmed && trimmed.length > 0 ? trimmed : undefined;
+      }),
+  })
+  .passthrough();
+
 export const PaseoWorktreeConfigRawSchema = z
   .object({
     setup: PaseoLifecycleCommandRawSchema.optional(),
     teardown: PaseoLifecycleCommandRawSchema.optional(),
+    // Checked by WorktreeConfigSchema, where an invalid value falls back to the default, so it
+    // never stops paseo.json from being edited or sent to the app.
+    teardownTimeoutMs: z.unknown().optional(),
     terminals: z.unknown().optional(),
     servicePorts: PaseoServicePortAllocationSchema.optional(),
+    warmPool: PaseoWorktreeWarmPoolConfigRawSchema.optional(),
   })
   .passthrough();
 
@@ -71,17 +91,40 @@ export const PaseoMetadataGenerationSchema = z
   .passthrough()
   .catch({});
 
+export const PaseoCommanderConfigRawSchema = z
+  .object({
+    instructions: z.string().optional(),
+    instructionsFile: z.string().optional(),
+  })
+  .passthrough()
+  .catch({});
+
+export const PaseoCommanderConfigSchema = PaseoCommanderConfigRawSchema;
+
 export const PaseoConfigRawSchema = z
   .object({
     worktree: PaseoWorktreeConfigRawSchema.optional(),
     scripts: z.record(z.string(), PaseoScriptEntryRawSchema).optional(),
     metadataGeneration: PaseoMetadataGenerationSchema.optional(),
+    commander: PaseoCommanderConfigRawSchema.optional(),
+    commanderInstructions: z.string().optional(),
   })
   .passthrough();
+
+// Node timers can't wait longer than this; a longer delay fires at once.
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 export const WorktreeConfigSchema = PaseoWorktreeConfigRawSchema.extend({
   setup: z.unknown().optional().transform(normalizeLifecycleCommands),
   teardown: z.unknown().optional().transform(normalizeLifecycleCommands),
+  // Its own catch, so an invalid limit doesn't drop the commands with the rest of the worktree.
+  teardownTimeoutMs: z
+    .number()
+    .int()
+    .positive()
+    .max(MAX_TIMER_DELAY_MS)
+    .optional()
+    .catch(undefined),
 })
   .passthrough()
   .catch({ setup: [], teardown: [] });
@@ -92,10 +135,11 @@ export const PaseoConfigSchema = PaseoConfigRawSchema.extend({
   worktree: WorktreeConfigSchema.optional(),
   scripts: z.record(z.string(), ScriptEntrySchema).optional().catch({}),
   metadataGeneration: PaseoMetadataGenerationSchema.optional(),
+  commander: PaseoCommanderConfigSchema.optional(),
+  commanderInstructions: z.string().optional(),
 })
   .passthrough()
   .catch({});
-
 export const PaseoConfigRevisionSchema = z.object({
   mtimeMs: z.number(),
   size: z.number(),
@@ -119,3 +163,6 @@ export type PaseoConfigRaw = z.infer<typeof PaseoConfigRawSchema>;
 export type PaseoConfig = z.infer<typeof PaseoConfigSchema>;
 export type PaseoConfigRevision = z.infer<typeof PaseoConfigRevisionSchema>;
 export type ProjectConfigRpcError = z.infer<typeof ProjectConfigRpcErrorSchema>;
+export type PaseoCommanderConfigRaw = z.infer<typeof PaseoCommanderConfigRawSchema>;
+export type PaseoCommanderConfig = z.infer<typeof PaseoCommanderConfigSchema>;
+export type PaseoWorktreeWarmPoolConfigRaw = z.infer<typeof PaseoWorktreeWarmPoolConfigRawSchema>;

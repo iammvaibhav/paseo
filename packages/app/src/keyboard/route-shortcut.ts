@@ -24,15 +24,21 @@ export type ShortcutCallbackName = "toggle-agent-list" | "toggle-both-sidebars" 
 
 export type ShortcutAction =
   | { kind: "none" }
-  | { kind: "dispatch"; action: KeyboardActionDefinition }
+  | {
+      kind: "dispatch";
+      action: KeyboardActionDefinition;
+      /** Runs when no handler takes the action. */
+      fallback?: ShortcutAction;
+    }
   | { kind: "navigate-workspace"; serverId: string; workspaceId: string }
+  | { kind: "navigate-tab-history"; mode: TabHistoryMode; delta: 1 | -1 }
   | { kind: "navigate-last-workspace" }
   | { kind: "router-replace"; route: string }
   | { kind: "router-back" }
   | { kind: "router-push"; route: string }
   | { kind: "open-project-picker" }
   | { kind: "callback"; name: ShortcutCallbackName }
-  | { kind: "command-center-toggle"; nextOpen: boolean; scope?: "files" }
+  | { kind: "command-center-toggle"; nextOpen: boolean; tab?: "files" }
   | { kind: "shortcuts-dialog-toggle"; nextOpen: boolean };
 
 const NONE: ShortcutAction = { kind: "none" };
@@ -48,6 +54,7 @@ const PASSTHROUGH_DISPATCH: Record<string, KeyboardActionDefinition> = {
   "workspace.new": { id: "workspace.new", scope: "sidebar" },
   "workspace.project.pick": { id: "workspace.project.pick", scope: "workspace" },
   "workspace.archive": { id: "workspace.archive", scope: "sidebar" },
+  "workspace.archive.undo": { id: "workspace.archive.undo", scope: "global" },
   "workspace.pin": { id: "workspace.pin", scope: "sidebar" },
   "worktree.new": { id: "worktree.new", scope: "sidebar" },
   "workspace.terminal.new": { id: "workspace.terminal.new", scope: "workspace" },
@@ -73,6 +80,14 @@ const SIMPLE_CALLBACKS: Record<string, ShortcutCallbackName> = {
   "theme.cycle": "cycle-theme",
 };
 
+/** "history" steps back/forward through focused tabs; "recent" jumps by recency. */
+export type TabHistoryMode = "history" | "recent";
+
+const TAB_HISTORY_MODES: Record<string, TabHistoryMode> = {
+  "tab.history.navigate": "history",
+  "tab.recent.navigate": "recent",
+};
+
 const MESSAGE_INPUT_DISPATCH: Record<
   MessageInputKeyboardActionKind,
   KeyboardActionDefinition | null
@@ -84,6 +99,8 @@ const MESSAGE_INPUT_DISPATCH: Record<
   "dictation-confirm": { id: "message-input.dictation-confirm", scope: "message-input" },
   "voice-toggle": { id: "message-input.voice-toggle", scope: "message-input" },
   "voice-mute-toggle": { id: "message-input.voice-mute-toggle", scope: "message-input" },
+  "model-toggle": { id: "message-input.model-toggle", scope: "message-input" },
+  "effort-cycle": { id: "message-input.effort-cycle", scope: "message-input" },
   "mode-cycle": { id: "message-input.mode-cycle", scope: "message-input" },
 };
 
@@ -192,6 +209,13 @@ export function routeKeyboardShortcut(
     return { kind: "callback", name: callback };
   }
 
+  const tabHistoryMode = TAB_HISTORY_MODES[input.action];
+  if (tabHistoryMode) {
+    return hasPayloadKey(input.payload, "delta")
+      ? { kind: "navigate-tab-history", mode: tabHistoryMode, delta: input.payload.delta }
+      : NONE;
+  }
+
   switch (input.action) {
     case "workspace.tab.navigate.index":
       return routeWorkspaceTabNavigateIndex(input.payload);
@@ -204,6 +228,14 @@ export function routeKeyboardShortcut(
     case "message-input.action":
       return routeMessageInputAction(input.payload);
     case "agent.new":
+      if (parseHostWorkspaceRouteFromPathname(ctx.pathname)) {
+        // A host with VS Code Web takes Open project into VS Code's Open File.
+        return {
+          kind: "dispatch",
+          action: { id: "workspace.editor.open-file", scope: "workspace" },
+          fallback: { kind: "open-project-picker" },
+        };
+      }
       return { kind: "open-project-picker" };
     case "settings.toggle":
       return routeSettingsToggle(ctx);
@@ -211,7 +243,12 @@ export function routeKeyboardShortcut(
       return { kind: "command-center-toggle", nextOpen: !ctx.commandCenterOpen };
     case "command-center.files":
       if (parseHostWorkspaceRouteFromPathname(ctx.pathname)) {
-        return { kind: "command-center-toggle", nextOpen: true, scope: "files" };
+        // A host with VS Code Web takes Search files into VS Code's Quick Open.
+        return {
+          kind: "dispatch",
+          action: { id: "workspace.editor.quick-open", scope: "workspace" },
+          fallback: { kind: "command-center-toggle", nextOpen: true, tab: "files" },
+        };
       }
       return dispatch({ id: "workspace.project.pick", scope: "workspace" });
     case "shortcuts.dialog.toggle":

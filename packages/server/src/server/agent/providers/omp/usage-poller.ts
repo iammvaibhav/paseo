@@ -7,7 +7,8 @@ export interface OmpUsagePollScheduler {
 
 interface OmpUsagePollerOptions {
   readStats(): Promise<OmpSessionStats>;
-  onUsage(usage: AgentUsage, turnId?: string): void;
+  /** Called when usage changes, with the stats it was read from. */
+  onUsage(usage: AgentUsage, turnId: string | undefined, stats: OmpSessionStats): void;
   onPollError(error: unknown): void;
   scheduler?: OmpUsagePollScheduler;
 }
@@ -21,30 +22,48 @@ function createScheduler(): OmpUsagePollScheduler {
   };
 }
 
-function toAgentUsage(stats: OmpSessionStats): AgentUsage | undefined {
-  const inputTokens = stats.tokens?.input ?? 0;
-  const cachedInputTokens = stats.tokens?.cacheRead ?? 0;
-  const outputTokens = stats.tokens?.output ?? 0;
-  const totalCostUsd = stats.cost ?? 0;
-  const contextWindowMaxTokens = stats.contextUsage?.contextWindow ?? undefined;
-  const contextWindowUsedTokens = stats.contextUsage?.tokens ?? undefined;
+interface OmpUsageCounters {
+  inputTokens: number;
+  cachedInputTokens: number;
+  cacheWriteTokens: number;
+  outputTokens: number;
+  totalCostUsd: number;
+  contextWindowMaxTokens: number | undefined;
+  contextWindowUsedTokens: number | undefined;
+}
 
-  if (
-    inputTokens === 0 &&
-    cachedInputTokens === 0 &&
-    outputTokens === 0 &&
-    totalCostUsd === 0 &&
-    contextWindowMaxTokens === undefined &&
-    contextWindowUsedTokens === undefined
-  ) {
-    return undefined;
-  }
-
+function readOmpUsageCounters(stats: OmpSessionStats): OmpUsageCounters {
   return {
-    inputTokens,
-    cachedInputTokens,
-    outputTokens,
-    totalCostUsd,
+    inputTokens: stats.tokens?.input ?? 0,
+    cachedInputTokens: stats.tokens?.cacheRead ?? 0,
+    // Turn-metrics: report session cacheWrite alongside the other counters.
+    cacheWriteTokens: stats.tokens?.cacheWrite ?? 0,
+    outputTokens: stats.tokens?.output ?? 0,
+    totalCostUsd: stats.cost ?? 0,
+    contextWindowMaxTokens: stats.contextUsage?.contextWindow ?? undefined,
+    contextWindowUsedTokens: stats.contextUsage?.tokens ?? undefined,
+  };
+}
+
+function hasOmpUsage(counters: OmpUsageCounters): boolean {
+  return (
+    counters.inputTokens !== 0 ||
+    counters.cachedInputTokens !== 0 ||
+    counters.cacheWriteTokens !== 0 ||
+    counters.outputTokens !== 0 ||
+    counters.totalCostUsd !== 0 ||
+    counters.contextWindowMaxTokens !== undefined ||
+    counters.contextWindowUsedTokens !== undefined
+  );
+}
+
+function toAgentUsage(stats: OmpSessionStats): AgentUsage | undefined {
+  const counters = readOmpUsageCounters(stats);
+  if (!hasOmpUsage(counters)) return undefined;
+  const { cacheWriteTokens, contextWindowMaxTokens, contextWindowUsedTokens, ...rest } = counters;
+  return {
+    ...rest,
+    ...(cacheWriteTokens > 0 ? { cacheWriteTokens } : {}),
     ...(typeof contextWindowMaxTokens === "number" ? { contextWindowMaxTokens } : {}),
     ...(typeof contextWindowUsedTokens === "number" ? { contextWindowUsedTokens } : {}),
   };
@@ -93,16 +112,27 @@ export class OmpUsagePoller {
     }
     this.active = false;
     const completionGeneration = this.invalidatePendingWork();
-    let usage: AgentUsage | undefined;
+    let stats: OmpSessionStats;
     try {
-      usage = toAgentUsage(await this.options.readStats());
+      stats = await this.options.readStats();
     } catch {
       return;
     }
     if (this.closed || this.generation !== completionGeneration) {
       return;
     }
-    this.publishUsage(usage, turnId);
+    this.publishUsage(stats, turnId);
+  }
+
+  async refresh(): Promise<void> {
+    let stats: OmpSessionStats;
+    try {
+      stats = await this.options.readStats();
+    } catch (error) {
+      if (!this.closed) this.options.onPollError(error);
+      return;
+    }
+    if (!this.closed) this.publishUsage(stats);
   }
 
   close(): void {
@@ -126,9 +156,9 @@ export class OmpUsagePoller {
   }
 
   private async poll(generation: number): Promise<void> {
-    let usage: AgentUsage | undefined;
+    let stats: OmpSessionStats;
     try {
-      usage = toAgentUsage(await this.options.readStats());
+      stats = await this.options.readStats();
     } catch (error) {
       try {
         if (this.active && !this.closed && this.generation === generation) {
@@ -143,7 +173,7 @@ export class OmpUsagePoller {
     }
     try {
       if (this.active && !this.closed && this.generation === generation) {
-        this.publishUsage(usage);
+        this.publishUsage(stats);
       }
     } finally {
       if (this.active && !this.closed && this.generation === generation) {
@@ -160,10 +190,10 @@ export class OmpUsagePoller {
     return usage;
   }
 
-  private publishUsage(usage: AgentUsage | undefined, turnId?: string): void {
-    const changedUsage = this.takeChangedUsage(usage);
+  private publishUsage(stats: OmpSessionStats, turnId?: string): void {
+    const changedUsage = this.takeChangedUsage(toAgentUsage(stats));
     if (changedUsage) {
-      this.options.onUsage(changedUsage, turnId);
+      this.options.onUsage(changedUsage, turnId, stats);
     }
   }
 }

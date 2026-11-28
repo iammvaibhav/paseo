@@ -3,8 +3,10 @@ import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { createJiti } from "jiti";
+import type { z } from "zod";
 import { describe, expect, it } from "vitest";
-import { WSOutboundMessageSchema as GeneratedWSOutboundMessageSchema } from "../../src/generated/validation/ws-outbound.aot.js";
+import { PluginRpcInvokeResponseSchema, WSOutboundMessageSchema } from "../../src/messages.js";
+import { validateWSOutboundMessage } from "../../src/validation/ws-outbound.js";
 
 interface GeneratedSchema {
   safeParse(input: unknown): { success: boolean; data?: unknown };
@@ -132,10 +134,8 @@ const SourceSchema = z.object({
   });
 
   it("accepts a minimal valid envelope and rejects a corrupted envelope", () => {
-    expect(GeneratedWSOutboundMessageSchema.safeParse({ type: "pong" }).success).toBe(true);
-    expect(GeneratedWSOutboundMessageSchema.safeParse({ type: "not_a_message" }).success).toBe(
-      false,
-    );
+    expect(validateWSOutboundMessage({ type: "pong" }).success).toBe(true);
+    expect(validateWSOutboundMessage({ type: "not_a_message" }).success).toBe(false);
   });
 
   it("accepts project config responses with and without setup commit status", () => {
@@ -158,11 +158,10 @@ const SourceSchema = z.object({
       },
     });
 
-    expect(GeneratedWSOutboundMessageSchema.safeParse(envelope(payload)).success).toBe(true);
+    expect(validateWSOutboundMessage(envelope(payload)).success).toBe(true);
     expect(
-      GeneratedWSOutboundMessageSchema.safeParse(
-        envelope({ ...payload, hasUncommittedWorktreeSetupChanges: true }),
-      ).success,
+      validateWSOutboundMessage(envelope({ ...payload, hasUncommittedWorktreeSetupChanges: true }))
+        .success,
     ).toBe(true);
   });
 
@@ -196,7 +195,7 @@ const SourceSchema = z.object({
       },
     };
 
-    expect(GeneratedWSOutboundMessageSchema.safeParse(envelope)).toEqual({
+    expect(validateWSOutboundMessage(envelope)).toEqual({
       success: true,
       data: envelope,
     });
@@ -255,19 +254,75 @@ const SourceSchema = z.object({
   ])("preserves workspaceId in a $name", ({ message }) => {
     const envelope = { type: "session", message };
 
-    expect(GeneratedWSOutboundMessageSchema.safeParse(envelope)).toEqual({
+    expect(validateWSOutboundMessage(envelope)).toEqual({
       success: true,
       data: envelope,
     });
   });
 
+  it("preserves turn metrics on a completed turn and on its timeline row", () => {
+    const metrics = [
+      { label: "Model", value: "gpt-5.5" },
+      { label: "Cache", value: "82%", tone: "ok" },
+    ];
+    const completed = {
+      type: "session",
+      message: {
+        type: "agent_stream",
+        payload: {
+          agentId: "agent-1",
+          event: { type: "turn_completed", provider: "codex", turnId: "turn-1", metrics },
+          timestamp: "2026-11-22T00:00:00.000Z",
+        },
+      },
+    };
+    const timeline = {
+      type: "session",
+      message: {
+        type: "fetch_agent_timeline_response",
+        payload: {
+          requestId: "timeline",
+          agentId: "agent-1",
+          agent: null,
+          direction: "tail",
+          projection: "projected",
+          epoch: "epoch-1",
+          reset: false,
+          staleCursor: false,
+          gap: false,
+          window: { minSeq: 1, maxSeq: 1, nextSeq: 2 },
+          startCursor: null,
+          endCursor: null,
+          hasOlder: false,
+          hasNewer: false,
+          entries: [
+            {
+              provider: "codex",
+              item: { type: "assistant_message", text: "Done" },
+              timestamp: "2026-11-22T00:00:00.000Z",
+              seqStart: 1,
+              seqEnd: 1,
+              sourceSeqRanges: [{ startSeq: 1, endSeq: 1 }],
+              collapsed: [],
+              turnMetrics: metrics,
+            },
+          ],
+          error: null,
+        },
+      },
+    };
+
+    expect(validateWSOutboundMessage(completed)).toEqual({ success: true, data: completed });
+    expect(validateWSOutboundMessage(timeline)).toEqual({ success: true, data: timeline });
+  });
+
   it("emits runtime imports with .js extensions", async () => {
     const generated = await readFile(generatedWSOutboundPath, "utf8");
-    expect(generated).toContain('from "../../validation/ws-outbound-schema-metadata.js"');
+    expect(generated).toContain('from "./ws-outbound-schema-metadata.js"');
   });
 
   it("accepts a forge.search.response envelope", () => {
-    const result = GeneratedWSOutboundMessageSchema.safeParse({
+    const result = validateWSOutboundMessage({
       type: "session",
       message: {
         type: "forge.search.response",
@@ -293,7 +348,7 @@ const SourceSchema = z.object({
   });
 
   it("accepts a legacy github_search_response envelope", () => {
-    const result = GeneratedWSOutboundMessageSchema.safeParse({
+    const result = validateWSOutboundMessage({
       type: "session",
       message: {
         type: "github_search_response",
@@ -319,4 +374,91 @@ const SourceSchema = z.object({
     });
     expect(result.success).toBe(true);
   });
+
+  it("keeps each generated validator function small", async () => {
+    // A single function for the whole protocol made V8's Maglev tier spend ~800 MB and seconds compiling it.
+    const generated = await readFile(generatedWSOutboundPath, "utf8");
+    const starts = [...generated.matchAll(/function safeParse_\w+\(/g)].map((match) => match.index);
+    const sizes = starts.map((start, index) => (starts[index + 1] ?? generated.length) - start);
+
+    expect(Math.max(...sizes)).toBeLessThan(1_000_000);
+    expect(sizes.length).toBeGreaterThan(1);
+  });
+
+  it("keeps nested union issue paths rooted at the envelope", () => {
+    // Generated validators root branch issues at the input; runtime Zod reports them relative to the union.
+    const envelope = {
+      type: "session",
+      message: {
+        type: "read_project_config_response",
+        payload: { repoRoot: "/repo", ok: true, config: {}, revision: { mtimeMs: 1, size: 1 } },
+      },
+    };
+    const paths = (issues: z.core.$ZodIssue[]): PropertyKey[][] =>
+      issues.flatMap((issue) => [
+        issue.path,
+        ...(issue.code === "invalid_union" ? paths(issue.errors.flat()) : []),
+      ]);
+
+    const result = validateWSOutboundMessage(envelope);
+
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(paths(result.error.issues)).toEqual([
+      ["message", "payload"],
+      ["message", "payload", "requestId"],
+      ["message", "payload", "requestId"],
+      ["message", "payload", "ok"],
+      ["message", "payload", "error"],
+    ]);
+  });
+
+  it("applies defaults from the matching session message schema", () => {
+    const envelope = {
+      type: "session",
+      message: {
+        type: "agent_update",
+        payload: {
+          kind: "upsert",
+          agent: {
+            id: "agent-1",
+            provider: "claude",
+            cwd: "/repo",
+            model: "model",
+            createdAt: "2026-01-01T00:00:00.000Z",
+            updatedAt: "2026-01-01T00:00:00.000Z",
+            lastUserMessageAt: "2026-01-01T00:00:00.000Z",
+            status: "initializing",
+            capabilities: {
+              supportsStreaming: false,
+              supportsSessionPersistence: false,
+              supportsDynamicModes: false,
+              supportsMcpServers: false,
+              supportsReasoningStream: false,
+              supportsToolInvocations: false,
+            },
+            currentModeId: "default",
+            availableModes: [],
+            pendingPermissions: [],
+            persistence: { provider: "claude", sessionId: "session-1" },
+            title: "Agent",
+          },
+        },
+      },
+    };
+
+    const result = validateWSOutboundMessage(envelope);
+    const expected = WSOutboundMessageSchema.safeParse(envelope);
+
+    expect(expected.success).toBe(true);
+    expect(result).toEqual(expected);
+    expect(result.success && result.data).toMatchObject({
+      message: { payload: { agent: { capabilities: { supportsRewindConversation: false } } } },
+    });
+  });
+});
+
+it("accepts omitted RPC output so the receiving client can apply schema defaults", () => {
+  const message = { type: "plugin.rpc.invoke.response", payload: { requestId: "default-output" } };
+  expect(PluginRpcInvokeResponseSchema.safeParse(message).success).toBe(true);
 });

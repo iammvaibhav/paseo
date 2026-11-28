@@ -1,14 +1,21 @@
-import { useMemo, useCallback, useEffect, useRef, useSyncExternalStore } from "react";
+import { useMemo, useCallback, useRef, useSyncExternalStore } from "react";
 import equal from "fast-deep-equal";
 import { useShallow } from "zustand/shallow";
+import { isCommanderOrMachineryLabels } from "@getpaseo/protocol/mission-control/system-owned";
 import { useSessionStore } from "@/stores/session-store";
 import type { AgentDirectoryEntry } from "@/types/agent-directory";
 import type { Agent } from "@/stores/session-store";
+import type { LifecycleBucket } from "@getpaseo/protocol/agent-state-bucket";
+import { useMissionControlVerbose } from "@/mission-control/use-mission-control-verbose";
+import { deriveSidebarLifecycleBucket } from "@/utils/sidebar-agent-state";
 import { getHostRuntimeStore, useHosts } from "@/runtime/host-runtime";
+import { useAllDirectoryDemand } from "./use-directory-demand";
 
 export interface AggregatedAgent extends AgentDirectoryEntry {
   serverId: string;
   serverLabel: string;
+  /** Canonical lifecycle bucket; payload field or old-daemon fallback. */
+  bucket: LifecycleBucket;
 }
 
 export interface AggregatedAgentsResult {
@@ -19,6 +26,45 @@ export interface AggregatedAgentsResult {
   refreshAll: () => void;
 }
 
+const NO_AGENT_MAPS: Record<string, Map<string, Agent> | undefined> = Object.freeze({});
+const NO_AGENTS: AggregatedAgent[] = [];
+
+function toAggregatedAgent(agent: Agent, serverId: string, serverLabel: string): AggregatedAgent {
+  return {
+    id: agent.id,
+    serverId,
+    serverLabel,
+    title: agent.title ?? null,
+    name: agent.name ?? null,
+    shortDescription: agent.shortDescription ?? null,
+    status: agent.status,
+    backgroundWork: agent.backgroundWork,
+    turn: agent.turn,
+    lastActivityAt: agent.lastActivityAt,
+    lastUserMessageAt: agent.lastUserMessageAt,
+    cwd: agent.cwd,
+    workspaceId: agent.workspaceId,
+    provider: agent.provider,
+    pendingPermissionCount: agent.pendingPermissions.length,
+    requiresAttention: agent.requiresAttention,
+    attentionReason: agent.attentionReason,
+    attentionTimestamp: agent.attentionTimestamp,
+    stoppedBy: agent.stoppedBy ?? null,
+    bucket: deriveSidebarLifecycleBucket({
+      bucket: agent.bucket,
+      status: agent.status,
+      pendingPermissionCount: agent.pendingPermissions.length,
+      attentionReason: agent.attentionReason,
+      stoppedBy: agent.stoppedBy,
+    }),
+    archivedAt: agent.archivedAt,
+    createdAt: agent.createdAt,
+    labels: agent.labels,
+    projectPlacement: agent.projectPlacement,
+    reminder: agent.reminder ?? null,
+  };
+}
+
 export function useAggregatedAgents(options?: {
   includeArchived?: boolean;
   demand?: boolean;
@@ -26,21 +72,30 @@ export function useAggregatedAgents(options?: {
   const daemons = useHosts();
   const runtime = getHostRuntimeStore();
   const includeArchived = options?.includeArchived ?? false;
+  // Mission Control verbose is THE debug gate: the Commander itself and
+  // non-verifier machinery (monitors, build-hash stamps) are hidden from
+  // every list/board/badge surface while it is OFF, and visible everywhere
+  // when it is ON. Verifiers, Commander workers, and subagents are tracked —
+  // their lifecycle shows on the board like any root agent. One filter here
+  // so no surface keeps its own variant.
+  const [verbose] = useMissionControlVerbose();
   const demand = options?.demand ?? true;
   const serverIds = useMemo(() => daemons.map((daemon) => daemon.serverId), [daemons]);
-  useEffect(() => {
-    if (!demand) return;
-    const releases = serverIds.map((serverId) => runtime.acquireDirectoryDemand(serverId));
-    return () => releases.forEach((release) => release());
-  }, [demand, runtime, serverIds]);
+  useAllDirectoryDemand({ serverIds, enabled: demand });
   const runtimeVersion = useSyncExternalStore(
     (onStoreChange) => runtime.subscribeAll(onStoreChange),
     () => runtime.getVersion(),
     () => runtime.getVersion(),
   );
 
+  // The caller has said it does not need the directory, so stay off the agent maps entirely:
+  // every map change otherwise re-renders this hook and rebuilds the whole list for a surface
+  // that is not on screen (the command center while it is closed).
   const sessionAgents = useSessionStore(
     useShallow((state) => {
+      if (!demand) {
+        return NO_AGENT_MAPS;
+      }
       const result: Record<string, Map<string, Agent> | undefined> = {};
       for (const [serverId, session] of Object.entries(state.sessions)) {
         result[serverId] = session.agents;
@@ -64,6 +119,16 @@ export function useAggregatedAgents(options?: {
   const result = useMemo(() => {
     // runtimeVersion is referenced so the memo recomputes when runtime state changes.
     void runtimeVersion;
+    if (!demand) {
+      prevAgentsRef.current = new Map();
+      prevSortedRef.current = NO_AGENTS;
+      return {
+        agents: NO_AGENTS,
+        isLoading: false,
+        isInitialLoad: false,
+        isRevalidating: false,
+      };
+    }
     const allAgents: AggregatedAgent[] = [];
     const serverLabelById = new Map(
       daemons.map((daemon) => [daemon.serverId, daemon.label] as const),
@@ -76,29 +141,13 @@ export function useAggregatedAgents(options?: {
       }
       const serverLabel = serverLabelById.get(serverId) ?? serverId;
       for (const agent of agents.values()) {
-        if (!includeArchived && agent.archivedAt) {
+        if (agent.background || (!includeArchived && agent.archivedAt)) {
           continue;
         }
-        const nextAgent: AggregatedAgent = {
-          id: agent.id,
-          serverId,
-          serverLabel,
-          title: agent.title ?? null,
-          status: agent.status,
-          turn: agent.turn,
-          lastActivityAt: agent.lastActivityAt,
-          cwd: agent.cwd,
-          workspaceId: agent.workspaceId,
-          provider: agent.provider,
-          pendingPermissionCount: agent.pendingPermissions.length,
-          requiresAttention: agent.requiresAttention,
-          attentionReason: agent.attentionReason,
-          attentionTimestamp: agent.attentionTimestamp,
-          archivedAt: agent.archivedAt,
-          createdAt: agent.createdAt,
-          labels: agent.labels,
-          projectPlacement: agent.projectPlacement,
-        };
+        if (!verbose && isCommanderOrMachineryLabels(agent.labels)) {
+          continue;
+        }
+        const nextAgent = toAggregatedAgent(agent, serverId, serverLabel);
         const cacheKey = `${serverId}:${agent.id}`;
         const prev = prevAgentsRef.current.get(cacheKey);
         // Preserve object identity when fields are unchanged so callers can use
@@ -107,19 +156,39 @@ export function useAggregatedAgents(options?: {
       }
     }
 
-    // Sort by: running agents first, then by most recent activity
+    // Sort by: running agents first, then by most recent activity. Running
+    // agents sort by name ascending — a running agent's lastActivityAt ticks
+    // on every timeline row, so sorting it by activity would reorder the board
+    // mid-stream. Name (then id) is a total order: stable while the set of
+    // running agents changes. Non-running agents keep recency order, with the
+    // same deterministic tiebreaks so the whole sort is a strict total order.
     allAgents.sort((left, right) => {
       const leftRunning = left.turn.phase === "open";
       const rightRunning = right.turn.phase === "open";
-      if (leftRunning && !rightRunning) {
-        return -1;
+      if (leftRunning !== rightRunning) {
+        return leftRunning ? -1 : 1;
       }
-      if (!leftRunning && rightRunning) {
-        return 1;
+      if (leftRunning) {
+        const leftKey = left.name ?? left.title ?? left.id;
+        const rightKey = right.name ?? right.title ?? right.id;
+        const nameCmp = leftKey.localeCompare(rightKey);
+        if (nameCmp !== 0) {
+          return nameCmp;
+        }
+        return `${left.serverId}:${left.id}`.localeCompare(`${right.serverId}:${right.id}`);
       }
       const leftTime = left.lastActivityAt.getTime();
       const rightTime = right.lastActivityAt.getTime();
-      return rightTime - leftTime;
+      if (leftTime !== rightTime) {
+        return rightTime - leftTime;
+      }
+      const leftKey = left.name ?? left.title ?? left.id;
+      const rightKey = right.name ?? right.title ?? right.id;
+      const nameCmp = leftKey.localeCompare(rightKey);
+      if (nameCmp !== 0) {
+        return nameCmp;
+      }
+      return `${left.serverId}:${left.id}`.localeCompare(`${right.serverId}:${right.id}`);
     });
 
     // Update the identity cache for the next render pass.
@@ -157,7 +226,7 @@ export function useAggregatedAgents(options?: {
       isInitialLoad,
       isRevalidating,
     };
-  }, [daemons, includeArchived, runtime, runtimeVersion, sessionAgents]);
+  }, [daemons, demand, includeArchived, runtime, runtimeVersion, sessionAgents, verbose]);
 
   return {
     ...result,

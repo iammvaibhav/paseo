@@ -1,4 +1,12 @@
-import type { AgentAttachment } from "./messages.js";
+import type { AgentMessage } from "./agent-message.js";
+import type {
+  AgentAttachment,
+  AgentOptionChoiceSchema,
+  AgentOptionControlSchema,
+  AgentOptionSelectControlSchema,
+  AgentOptionToggleControlSchema,
+} from "./messages.js";
+import type { z } from "zod";
 
 export type AgentProvider = string;
 
@@ -67,6 +75,8 @@ export interface AgentMode {
   description?: string;
   icon?: string;
   colorTier?: string;
+  // Marks the provider's most-permissioned no-prompt mode. Selecting it means tools run without approval; the runtime mechanism is provider-specific.
+  isUnattended?: boolean;
 }
 
 export type ProviderStatus = "ready" | "loading" | "error" | "unavailable";
@@ -125,6 +135,8 @@ export interface ProviderSnapshotEntry {
   label?: string;
   description?: string;
   iconSvg?: string;
+  /** The page that helps users set up and troubleshoot this provider. */
+  docsUrl?: string;
   defaultModeId?: string | null;
 }
 
@@ -145,11 +157,27 @@ export interface AgentFeatureSelect {
   description?: string;
   tooltip?: string;
   icon?: string;
+  /** Desktop toolbar presentation; omitted means labeled. Mobile selectors stay labeled. */
+  desktopTrigger?: "icon" | "label";
   value: string | null;
   options: AgentSelectOption[];
 }
 
 export type AgentFeature = AgentFeatureToggle | AgentFeatureSelect;
+
+export type AgentOptionChoice = z.infer<typeof AgentOptionChoiceSchema>;
+
+/** `key` is the top-level provider option key the control reads and writes. */
+export type AgentOptionToggleControl = z.infer<typeof AgentOptionToggleControlSchema>;
+
+/** `defaultValue` is the choice an unset option stands for. */
+export type AgentOptionSelectControl = z.infer<typeof AgentOptionSelectControlSchema>;
+
+/**
+ * A provider's description of a composer control over one top-level option key.
+ * The control carries no value: it is read from the agent's effective options.
+ */
+export type AgentOptionControl = z.infer<typeof AgentOptionControlSchema>;
 
 export interface AgentCapabilityFlags {
   [capability: string]: boolean | undefined;
@@ -188,11 +216,33 @@ export interface AgentRunOptions {
 
 export interface AgentUsage {
   inputTokens?: number;
+  // Cache READ tokens (Anthropic cache_read_input_tokens, ACP cachedReadTokens).
   cachedInputTokens?: number;
+  // Cache creation/write tokens (Anthropic cache_creation_input_tokens, ACP
+  // cachedWriteTokens, OpenCode tokens.cache.write, omp tokens.cacheWrite). Absent
+  // when the provider does not report it — never zero-fill.
+  cacheWriteTokens?: number;
   outputTokens?: number;
   totalCostUsd?: number;
   contextWindowMaxTokens?: number;
   contextWindowUsedTokens?: number;
+  // Daemon-measured wall clock for the turn (turn start → terminal stream event),
+  // stamped by AgentManager so figures are comparable across providers.
+  durationMs?: number;
+  // Model of record at turn completion (runtimeInfo.model ?? config.model).
+  model?: string | null;
+}
+
+export type AgentMetricTone = "default" | "ok" | "warning" | "danger";
+
+/**
+ * One provider-owned label/value row. The provider formats `value`; Paseo renders
+ * it as given and never interprets it.
+ */
+export interface AgentMetric {
+  label: string;
+  value: string;
+  tone?: AgentMetricTone;
 }
 
 export const TOOL_CALL_ICON_NAMES = [
@@ -285,7 +335,7 @@ export type ToolCallDetail =
       subAgentType?: string;
       description?: string;
       childSessionId?: string;
-      log: string;
+      log?: string;
       actions?: Array<{
         index: number;
         toolName: string;
@@ -309,6 +359,7 @@ export type ToolCallDetail =
     };
 
 interface ToolCallBase {
+  agentMessage?: AgentMessage;
   [key: string]: unknown;
   type: "tool_call";
   callId: string;
@@ -351,6 +402,22 @@ export interface CompactionTimelineItem {
   preTokens?: number;
 }
 
+/**
+ * Who originated a user-role timeline row. Machinery delivers prompts into an
+ * agent's own chat (stall status-ask nudges, Commander/Verifier directions)
+ * and marks the row at the source so the agent chat can render it distinctly.
+ * Absent = "instruction" (a visible prompt) — real user messages and legacy
+ * rows are never hidden.
+ */
+export type AgentTimelineUserMessageClassification = "machinery" | "instruction";
+
+/**
+ * M9 voice dialogue mirror marker on timeline rows appended by the voice
+ * mirror RPC. "qa" = pure Q&A (the app hides the row unless verbose);
+ * "dispatch" = the turn asked the fleet to do something (visible).
+ */
+export type AgentTimelineVoiceMirrorKind = "qa" | "dispatch";
+
 export interface PluginTimelineItem {
   type: "plugin";
   id: string;
@@ -369,8 +436,27 @@ export interface AgentTaskItem {
 }
 
 export type AgentTimelineItem =
-  | { type: "user_message"; text: string; messageId?: string; clientMessageId?: string }
-  | { type: "assistant_message"; text: string; messageId?: string }
+  | {
+      type: "user_message";
+      text: string;
+      messageId?: string;
+      clientMessageId?: string;
+      classification?: AgentTimelineUserMessageClassification;
+      voiceMirrorKind?: AgentTimelineVoiceMirrorKind;
+      // Native images for this user row (composer paste / ticket dispatch).
+      // Optional so older daemons still parse timeline rows.
+      images?: Array<{ data: string; mimeType: string }>;
+      // Attachments the prompt carried (uploaded files, PRs, reviews), so the
+      // row renders them as it rendered in the composer. Optional so older
+      // daemons still parse timeline rows.
+      attachments?: AgentAttachment[];
+    }
+  | {
+      type: "assistant_message";
+      text: string;
+      messageId?: string;
+      voiceMirrorKind?: AgentTimelineVoiceMirrorKind;
+    }
   | { type: "reasoning"; text: string }
   | ToolCallTimelineItem
   | { type: "todo"; items: AgentTaskItem[] }
@@ -381,12 +467,25 @@ export type AgentTimelineItem =
       message: string;
     }
   | CompactionTimelineItem
-  | PluginTimelineItem;
+  | PluginTimelineItem
+  | {
+      type: "ai_review_decision";
+      requestId: string;
+      decision: "allow" | "deny" | "escalate";
+      reason: string;
+      toolName?: string;
+    };
 
 export type AgentStreamEvent =
   | { type: "thread_started"; sessionId: string; provider: AgentProvider }
   | { type: "turn_started"; provider: AgentProvider; turnId?: string }
-  | { type: "turn_completed"; provider: AgentProvider; usage?: AgentUsage; turnId?: string }
+  | {
+      type: "turn_completed";
+      provider: AgentProvider;
+      usage?: AgentUsage;
+      turnId?: string;
+      metrics?: AgentMetric[];
+    }
   | { type: "usage_updated"; provider: AgentProvider; usage: AgentUsage; turnId?: string }
   | {
       type: "mode_changed";
@@ -496,7 +595,7 @@ export type JsonValue =
   | JsonValue[]
   | { [key: string]: JsonValue };
 
-export type ProviderOptions = Record<string, JsonValue>;
+export type ProviderOptions = Record<string, unknown>;
 
 export interface McpToolRef {
   kind: "mcp";
@@ -516,9 +615,15 @@ export interface AgentSessionConfig {
    * Mapped by each provider to its native instruction field.
    */
   systemPrompt?: string;
+  systemPromptMode?: "append" | "replace";
+  toolAllowlist?: string[];
   modeId?: string;
   model?: string;
   thinkingOptionId?: string;
+  /**
+   * @deprecated COMPAT(featureValues): added in v0.15.0, remove after 2027-05-01.
+   * Folded into `providerOptions` at the daemon's edge; the daemon never reads it internally.
+   */
   featureValues?: Record<string, unknown>;
   title?: string | null;
   providerOptions?: ProviderOptions;

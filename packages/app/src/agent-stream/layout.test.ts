@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { TurnTiming } from "@/timeline/turn-time";
+import type { TimelineItemTransform } from "@/plugins/timeline";
+import { projectPluginTimelineItems } from "@/plugins/timeline/projection";
 import type { StreamItem } from "@/types/stream";
 import {
   orderHeadForStreamRenderStrategy,
@@ -25,7 +27,7 @@ function userMessage(id: string, seed: number): Extract<StreamItem, { kind: "use
 function assistantMessage(
   id: string,
   seed: number,
-  block?: { groupId: string; index: number },
+  _block?: { groupId: string; index: number },
   turnId?: string,
 ): Extract<StreamItem, { kind: "assistant_message" }> {
   return {
@@ -33,7 +35,6 @@ function assistantMessage(
     id,
     text: id,
     timestamp: timestamp(seed),
-    ...(block ? { blockGroupId: block.groupId, blockIndex: block.index } : {}),
     ...(turnId ? { turnId } : {}),
   };
 }
@@ -105,7 +106,7 @@ function layoutFor(input: {
       strategy,
       streamHead: input.head ?? [],
     }),
-    timingByAssistantId: timingFor(...(input.timingIds ?? [])),
+    timingByItemId: timingFor(...(input.timingIds ?? [])),
   });
 }
 
@@ -149,7 +150,7 @@ function findLayoutItem(layout: StreamLayout, id: string): StreamLayoutItem {
 }
 
 describe("layoutStream", () => {
-  it("places one response footer after an adjacent tagged tool-only turn", () => {
+  it("keeps separate footers for an assistant turn and an adjacent tool-only turn", () => {
     const priorAssistant = assistantMessage("prior", 1, undefined, "turn-1");
     const nextTool = toolCall("next-tool", 2, "turn-2");
     const layout = layoutFor({
@@ -158,8 +159,8 @@ describe("layoutStream", () => {
       timingIds: [priorAssistant.id],
     });
 
-    expect(layout.auxiliaryTurnFooter?.itemId).toBe(priorAssistant.id);
-    expect(footerOwners(layout)).toEqual([priorAssistant.id]);
+    expect(layout.auxiliaryTurnFooter?.itemId).toBe(nextTool.id);
+    expect(footerOwners(layout)).toEqual([priorAssistant.id, nextTool.id]);
   });
 
   it("recomputes cached history layout when only the live boundary turn changes", () => {
@@ -172,7 +173,7 @@ describe("layoutStream", () => {
       isTurnActive: true,
       history,
       liveHead,
-      timingByAssistantId: timingFor(priorAssistant.id),
+      timingByItemId: timingFor(priorAssistant.id),
     });
 
     liveHead[0] = { ...liveHead[0]!, turnId: "turn-2" };
@@ -181,7 +182,7 @@ describe("layoutStream", () => {
       isTurnActive: true,
       history,
       liveHead,
-      timingByAssistantId: timingFor(priorAssistant.id),
+      timingByItemId: timingFor(priorAssistant.id),
     });
 
     expect(footerOwners(first)).toEqual([]);
@@ -290,7 +291,7 @@ describe("layoutStream", () => {
     expect(layout.auxiliaryTurnFooter).toBeNull();
     expect(assistantRow.completedFooter?.itemId).toBe(assistant.id);
     expect(assistantRow.belowItem?.id).toBe("u2");
-    expect(assistantRow.frameOrder).toBe("footer-then-content");
+    expect(assistantRow.frameOrder).toBe("content-then-footer");
   });
 
   it("keeps an accepted steer inline while its canonical turn is active", () => {
@@ -318,7 +319,7 @@ describe("layoutStream", () => {
     expect(assistantRow.frameOrder).toBe("content-then-footer");
   });
 
-  it("compacts assistant block spacing across the history and live-head boundary", () => {
+  it("keeps separate messages spaced across history and the live head", () => {
     const historyBlock = assistantMessage("turn:block:0", 2, { groupId: "turn", index: 0 });
     const headBlock = assistantMessage("turn:head", 3, { groupId: "turn", index: 1 });
     const layout = layoutFor({
@@ -328,8 +329,8 @@ describe("layoutStream", () => {
       timingIds: [historyBlock.id, headBlock.id],
     });
 
-    expect(findLayoutItem(layout, historyBlock.id).assistantSpacing).toBe("compactBottom");
-    expect(findLayoutItem(layout, headBlock.id).assistantSpacing).toBe("compactBoth");
+    expect(findLayoutItem(layout, historyBlock.id).assistantSpacing).toBe("default");
+    expect(findLayoutItem(layout, headBlock.id).assistantSpacing).toBe("compactBottom");
   });
 
   it.each(["web", "android"] as const)(
@@ -392,6 +393,39 @@ describe("layoutStream", () => {
 
     expect(findLayoutItem(layout, shell.id).toolSequence).toBe("first");
     expect(findLayoutItem(layout, thinking.id).toolSequence).toBe("last");
+  });
+
+  it.each(["web", "android"] as const)(
+    "carries turn metrics from the footer's source row on %s",
+    (platform) => {
+      const metrics = [{ label: "Model", value: "opus" }];
+      const earlier = { ...assistantMessage("a1", 2), turnMetrics: metrics };
+      const latest = { ...toolCall("tool-2", 5), turnMetrics: [{ label: "Steps", value: "2" }] };
+      const layout = layoutFor({
+        platform,
+        tail: [userMessage("u1", 1), earlier, toolCall("tool-1", 3), userMessage("u2", 4), latest],
+      });
+
+      expect(findLayoutItem(layout, "tool-1").completedFooter?.turnMetrics).toBe(metrics);
+      expect(layout.auxiliaryTurnFooter?.turnMetrics).toBe(latest.turnMetrics);
+    },
+  );
+
+  it("lays out the footer again when its source row gains turn metrics", () => {
+    const assistant = assistantMessage("a1", 2);
+    const trailing = toolCall("tool-2", 4);
+    const tail = [userMessage("u1", 1), assistant, toolCall("tool-1", 3), trailing];
+    const next = userMessage("u2", 5);
+    const before = layoutFor({ platform: "android", tail: [...tail, next] });
+
+    const metrics = [{ label: "Model", value: "opus" }];
+    const stamped = [...tail];
+    stamped[1] = { ...assistant, turnMetrics: metrics };
+    const after = layoutFor({ platform: "android", tail: [...stamped, next] });
+
+    expect(findLayoutItem(before, trailing.id).completedFooter?.turnMetrics).toBeUndefined();
+    expect(findLayoutItem(after, trailing.id).completedFooter?.turnMetrics).toBe(metrics);
+    expect(findLayoutItem(after, next.id)).toBe(findLayoutItem(before, next.id));
   });
 
   it("keeps bottom and inline footer ownership mutually exclusive", () => {
@@ -544,6 +578,42 @@ describe("layoutStream", () => {
       expect(layout.auxiliaryTurnFooter).toBeNull();
       expect(findLayoutItem(layout, assistant.id).completedFooter).toBeNull();
       expect(footerOwners(layout)).toEqual([]);
+    },
+  );
+
+  it.each(["web", "android"] as const)(
+    "attaches the turn footer to the final card of a plugin-split reply on %s",
+    (platform) => {
+      const metrics = [{ label: "Model", value: "opus" }];
+      const first = { ...assistantMessage("a1", 2), turnMetrics: [{ label: "Steps", value: "1" }] };
+      const latest = { ...assistantMessage("a2", 4), turnMetrics: metrics };
+      const splitIntoCards: TimelineItemTransform = ({ item, sourceId }) =>
+        item.type !== "assistant_message"
+          ? undefined
+          : ["text", "card"].map((part) => ({
+              type: "plugin",
+              id: `${sourceId}/${part}`,
+              pluginId: "genui",
+              kind: `genui-${part}`,
+              version: 1,
+              data: {},
+            }));
+      const tail = projectPluginTimelineItems(
+        [userMessage("u1", 1), first, userMessage("u2", 3), latest],
+        splitIntoCards,
+      );
+
+      const layout = layoutFor({
+        platform,
+        tail,
+        timingIds: ["genui/a1/card", "genui/a2/card"],
+      });
+
+      expect(footerOwners(layout)).toEqual(["genui/a1/card", "genui/a2/card"]);
+      expect(findLayoutItem(layout, "genui/a1/card").completedFooter?.turnMetrics).toBe(
+        first.turnMetrics,
+      );
+      expect(layout.auxiliaryTurnFooter?.turnMetrics).toBe(metrics);
     },
   );
 });

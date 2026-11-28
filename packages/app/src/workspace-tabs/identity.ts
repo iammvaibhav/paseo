@@ -1,5 +1,9 @@
 import { normalizeWorkspaceFileLocation, workspaceFileLocationsEqual } from "@/workspace/file-open";
-import type { WorkspaceDraftTabSetup, WorkspaceTabTarget } from "@/workspace-tabs/model";
+import type {
+  WorkspaceDraftForkSource,
+  WorkspaceDraftTabSetup,
+  WorkspaceTabTarget,
+} from "@/workspace-tabs/model";
 
 export function normalizeWorkspaceTabTarget(
   value: WorkspaceTabTarget | null | undefined,
@@ -13,7 +17,13 @@ export function normalizeWorkspaceTabTarget(
       return null;
     }
     const setup = normalizeWorkspaceDraftTabSetup(value.setup);
-    return setup ? { kind: "draft", draftId, setup } : { kind: "draft", draftId };
+    const forkSource = normalizeWorkspaceDraftForkSource(value.forkSource);
+    return {
+      kind: "draft",
+      draftId,
+      ...(setup ? { setup } : {}),
+      ...(forkSource ? { forkSource } : {}),
+    };
   }
   if (value.kind === "new_tab") {
     return { kind: "new_tab" };
@@ -57,6 +67,7 @@ function normalizeSimpleWorkspaceTabTarget(value: WorkspaceTabTarget): Workspace
     }
     case "changes_tree":
     case "files":
+    case "fleet_browser":
     case "pull_request":
       return { kind: value.kind };
     case "setup": {
@@ -92,8 +103,47 @@ export function normalizeWorkspaceDraftTabSetup(
     thinkingOptionId: trimOptionalString(
       typeof record.thinkingOptionId === "string" ? record.thinkingOptionId : null,
     ),
-    featureValues: isPlainRecord(record.featureValues) ? { ...record.featureValues } : {},
+    providerOptions: isPlainRecord(record.providerOptions) ? { ...record.providerOptions } : {},
   };
+}
+
+export function normalizeWorkspaceDraftForkSource(
+  value: unknown,
+): WorkspaceDraftForkSource | undefined {
+  const record = isPlainRecord(value) ? value : null;
+  if (!record) {
+    return undefined;
+  }
+  const sourceAgentId = trimNonEmpty(
+    typeof record.sourceAgentId === "string" ? record.sourceAgentId : null,
+  );
+  if (!sourceAgentId) {
+    return undefined;
+  }
+  const boundaryMessageId = trimNonEmpty(
+    typeof record.boundaryMessageId === "string" ? record.boundaryMessageId : null,
+  );
+  const boundaryCursor = normalizeWorkspaceDraftForkBoundaryCursor(record.boundaryCursor);
+  return {
+    sourceAgentId,
+    ...(boundaryCursor ? { boundaryCursor } : {}),
+    ...(boundaryMessageId ? { boundaryMessageId } : {}),
+  };
+}
+
+function normalizeWorkspaceDraftForkBoundaryCursor(
+  value: unknown,
+): NonNullable<WorkspaceDraftForkSource["boundaryCursor"]> | undefined {
+  const record = isPlainRecord(value) ? value : null;
+  if (!record) {
+    return undefined;
+  }
+  const epoch = trimNonEmpty(typeof record.epoch === "string" ? record.epoch : null);
+  const seq =
+    typeof record.seq === "number" && Number.isInteger(record.seq) && record.seq >= 0
+      ? record.seq
+      : null;
+  return epoch && seq !== null ? { epoch, seq } : undefined;
 }
 
 export function workspaceTabTargetsEqual(
@@ -104,7 +154,11 @@ export function workspaceTabTargetsEqual(
     return false;
   }
   if (left.kind === "draft" && right.kind === "draft") {
-    return left.draftId === right.draftId && workspaceDraftTabSetupsEqual(left.setup, right.setup);
+    return (
+      left.draftId === right.draftId &&
+      workspaceDraftTabSetupsEqual(left.setup, right.setup) &&
+      workspaceDraftForkSourcesEqual(left.forkSource, right.forkSource)
+    );
   }
   if (left.kind === "agent" && right.kind === "agent") {
     return left.agentId === right.agentId;
@@ -146,6 +200,9 @@ function secondaryWorkspaceTabTargetsEqual(
   if (left.kind === "changes_tree" && right.kind === "changes_tree") {
     return true;
   }
+  if (left.kind === "fleet_browser" && right.kind === "fleet_browser") {
+    return true;
+  }
   if (left.kind === "pull_request" && right.kind === "pull_request") {
     return true;
   }
@@ -171,7 +228,22 @@ function workspaceDraftTabSetupsEqual(
     left.modeId === right.modeId &&
     left.model === right.model &&
     left.thinkingOptionId === right.thinkingOptionId &&
-    recordsShallowEqual(left.featureValues, right.featureValues)
+    recordsShallowEqual(left.providerOptions, right.providerOptions)
+  );
+}
+
+function workspaceDraftForkSourcesEqual(
+  left: WorkspaceDraftForkSource | undefined,
+  right: WorkspaceDraftForkSource | undefined,
+): boolean {
+  if (!left || !right) {
+    return left === right;
+  }
+  return (
+    left.sourceAgentId === right.sourceAgentId &&
+    left.boundaryMessageId === right.boundaryMessageId &&
+    left.boundaryCursor?.epoch === right.boundaryCursor?.epoch &&
+    left.boundaryCursor?.seq === right.boundaryCursor?.seq
   );
 }
 
@@ -219,7 +291,12 @@ export function buildDeterministicWorkspaceTabId(target: WorkspaceTabTarget): st
   if (target.kind === "working_diff") {
     return "working_diff";
   }
-  if (target.kind === "changes_tree" || target.kind === "files" || target.kind === "pull_request") {
+  if (
+    target.kind === "changes_tree" ||
+    target.kind === "files" ||
+    target.kind === "fleet_browser" ||
+    target.kind === "pull_request"
+  ) {
     return target.kind;
   }
   if (target.kind === "plugin") {

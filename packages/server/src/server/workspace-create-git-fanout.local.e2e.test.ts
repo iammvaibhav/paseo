@@ -123,6 +123,7 @@ function seedFixture(siblingCount = SIBLING_COUNT): {
         projectKey: null,
         customName: null,
         customIconRevision: null,
+        baseWorkspaceId: null,
         createdAt: CREATED_AT,
         updatedAt: CREATED_AT,
         archivedAt: null,

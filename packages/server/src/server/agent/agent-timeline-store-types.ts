@@ -1,5 +1,5 @@
 import type { ProjectedTimelineRow } from "./timeline-projection.js";
-import type { AgentTimelineItem } from "./agent-sdk-types.js";
+import type { AgentMetric, AgentTimelineItem, AgentUsage } from "./agent-sdk-types.js";
 
 export interface AgentTimelineRow {
   seq: number;
@@ -7,6 +7,11 @@ export interface AgentTimelineRow {
   item: AgentTimelineItem;
   readonly turnId?: string;
   readonly providerMessageId?: string;
+  // Turn-metrics: per-turn usage record stamped at turn completion. Carried
+  // on the row so metrics survive daemon restarts with the timeline entry.
+  readonly metrics?: AgentUsage;
+  /** Metrics of the turn this row carries the footer for. */
+  readonly turnMetrics?: AgentMetric[];
 }
 
 export interface AgentTimelineCursor {
@@ -17,6 +22,7 @@ export interface AgentTimelineCursor {
 export type AgentTimelineFetchDirection = "tail" | "before" | "after";
 
 export interface AgentTimelineFetchOptions {
+  wholeTurns?: boolean;
   direction?: AgentTimelineFetchDirection;
   cursor?: AgentTimelineCursor;
   /**
@@ -59,6 +65,11 @@ export interface AgentTimelineStore {
   ): Promise<AgentTimelineFetchResult>;
   getLatestCommittedSeq(agentId: string): Promise<number>;
   getCommittedRows(agentId: string): Promise<AgentTimelineRow[]>;
+  /**
+   * Retract committed rows by seq. Optional: implementations that cannot
+   * remove rows simply omit it, and `removeTimelineRows` feature-detects.
+   */
+  removeCommittedRows?(agentId: string, rowIds: readonly number[]): Promise<void>;
   getLastItem(agentId: string): Promise<AgentTimelineItem | null>;
   getLastAssistantMessage(agentId: string): Promise<string | null>;
   deleteAgent(agentId: string): Promise<void>;

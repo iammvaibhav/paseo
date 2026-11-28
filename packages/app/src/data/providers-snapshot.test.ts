@@ -1,14 +1,11 @@
 import { createRequire } from "node:module";
-import { QueryClient, CancelledError } from "@tanstack/react-query";
+import { QueryClient, CancelledError, QueryObserver } from "@tanstack/react-query";
 import type { ProviderSnapshotEntry } from "@getpaseo/protocol/agent-types";
 import type { GetProvidersSnapshotResponseMessage } from "@getpaseo/protocol/messages";
 import { compactProviderSnapshot } from "@getpaseo/protocol/provider-snapshot-codec";
 import { applyProvidersSnapshotUpdate } from "./push-router";
 import { createProviderSnapshotCache } from "./provider-snapshot-cache";
-import {
-  resolveProviderIconName,
-  replaceProviderSnapshotIcons,
-} from "@/components/provider-icon-name";
+import { providerSnapshotIcons, replaceProviderSnapshotIcons } from "@/data/provider-icons";
 import { describe, expect, it } from "vitest";
 import {
   fetchProvidersSnapshot,
@@ -143,10 +140,9 @@ describe("provider fetch with runtime abort signals", () => {
         expect(result.entries).toEqual(entries);
         expect(queryClient.getQueryData(queryKey)).toEqual(result);
         expect((await cache.read(serverId, snapshot.cwd))?.entries).toEqual(entries);
-        expect(resolveProviderIconName("test-provider", serverId)).toEqual({
-          kind: "svg",
-          svg: entries[0].iconSvg,
-        });
+        expect(providerSnapshotIcons.getState().get(serverId)?.get("test-provider")).toEqual(
+          entries[0].iconSvg,
+        );
       } finally {
         queryClient.clear();
         replaceProviderSnapshotIcons(serverId, []);
@@ -203,10 +199,9 @@ describe.each([
         ).rejects.toBeInstanceOf(CancelledError);
         expect(controller.signal.aborted).toBe(true);
         expect(queryClient.getQueryData(queryKey)).toEqual(previous);
-        expect(resolveProviderIconName("test-provider", serverId)).toEqual({
-          kind: "svg",
-          svg: "previous-icon",
-        });
+        expect(providerSnapshotIcons.getState().get(serverId)?.get("test-provider")).toEqual(
+          "previous-icon",
+        );
         expect((await cache.readHash(serverId, "test-hash"))?.entries ?? null).toEqual(
           hasBody ? entries : null,
         );
@@ -287,10 +282,9 @@ it("keeps a replacement query when the cancelled native fetch finishes late", as
     expect(queryClient.getQueryData(queryKey)).toEqual(replacement);
     expect(replacement.entries).toEqual(replacementEntries);
     expect((await cache.read(serverId, snapshot.cwd))?.entries).toEqual(replacementEntries);
-    expect(resolveProviderIconName("test-provider", serverId)).toEqual({
-      kind: "svg",
-      svg: "replacement-icon",
-    });
+    expect(providerSnapshotIcons.getState().get(serverId)?.get("test-provider")).toEqual(
+      "replacement-icon",
+    );
   } finally {
     finishResponse();
     queryClient.clear();
@@ -313,6 +307,14 @@ describe("provider snapshot publication identity", () => {
       snapshotHash: "next-hash",
       compactSnapshot: compactProviderSnapshot([{ ...entries[0]!, label: "Updated provider" }]),
     };
+    // Announcements only publish into a directory a screen is showing.
+    const shownKey = providersSnapshotQueryKey(serverId, snapshot.cwd);
+    queryClient.setQueryData(shownKey, snapshot);
+    const unsubscribe = new QueryObserver(queryClient, {
+      queryKey: shownKey,
+      queryFn: async () => snapshot,
+      staleTime: Infinity,
+    }).subscribe(() => {});
     try {
       for (const body of [snapshot, changed, changed]) {
         await applyProvidersSnapshotUpdate({
@@ -331,6 +333,7 @@ describe("provider snapshot publication identity", () => {
         expect(published.entries[0]!.models).toBe(canonical.entries[0]!.models);
       }
     } finally {
+      unsubscribe();
       queryClient.clear();
     }
   });

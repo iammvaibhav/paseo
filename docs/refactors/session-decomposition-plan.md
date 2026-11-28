@@ -19,7 +19,6 @@ The first carves shipped as **deep modules with a narrow Host seam**, not the `d
 
 - **#1640 — VoiceSession** (`session/voice/voice-session.ts`, seam `VoiceSessionHost`): the STT/TTS/dictation/turn-detection subsystem. _(Originally landed at `server/voice/`; relocated under `session/` so all session subsystems share one home.)_
 - **#1644 — CheckoutSession, read side** (`session/checkout/checkout-session.ts`, seam `CheckoutSessionHost`, port `CheckoutDiffSubscriber`): status, branch validate/suggest, diff subscribe/unsubscribe, manual refresh. The workspace-git observer already delegates `emitStatusUpdate`/`scheduleDiffRefresh` to it.
-- **ScheduleSession** (`session/schedule/schedule-session.ts`, seam `ScheduleSessionHost`): scheduled-agent request handling.
 
 **Next carve — CheckoutSession mutation side (Slice 4 below).** The 17 checkout _write_ handlers still inline in `session.ts` (`dispatchCheckoutMessage`, ~2010) — branch switch/rename, commit, merge, merge-from-base, pull, push, PR create/merge, github set-auto-merge/get-check-details, PR status, PR timeline, github search, stash save/pop/list — move into the existing `session/checkout/checkout-session.ts` behind `CheckoutSessionHost`. The Slice-3 observer entanglement the table fears is already resolved: #1644 moved the status/diff read side into CheckoutSession, so the workspace observer delegates today and this no longer blocks on the WorkspaceController split.
 
@@ -121,9 +120,9 @@ Parameterize the 4 setter envelopes `handleSetAgentMode/Model/Feature/Thinking` 
 
 ## Cross-cutting invariants (every slice)
 
-- **Always** run `npm run typecheck` and `npm run lint` after each slice; run `npm run build:server` before diagnosing cross-package type errors.
+- **Always** run `pnpm run typecheck` and `pnpm run lint` after each slice; run `pnpm run build:server` before diagnosing cross-package type errors.
 - Controller `dispatch` is **NON-async**, guarded by an owned-type `ReadonlySet` check returning `undefined` synchronously on miss. Never `async dispatch`.
 - Controllers add **no** try/catch inside `dispatch` — error handling stays in `handleMessage`.
 - `cleanup()` stays the single ordered teardown orchestrator on the shell.
 - Move domain error emitters **verbatim**; treat any cross-domain emitter merge as a separate, test-guarded change.
-- Per-slice typecheck/lint/format via `npm run` scripts; never re-run the full suite locally (run only the listed files with `--bail=1`).
+- Per-slice typecheck/lint/format via `pnpm run` scripts; never re-run the full suite locally (run only the listed files with `--bail=1`).

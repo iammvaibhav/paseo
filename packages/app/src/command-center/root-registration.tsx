@@ -1,9 +1,10 @@
+import { usesDesktopBindings } from "@/keyboard";
 import { useMemo } from "react";
 import { router, type Href } from "expo-router";
 import { useTranslation } from "react-i18next";
 import {
-  CalendarClock,
   CircleDashed,
+  Copy,
   Folder,
   FolderPlus,
   History,
@@ -13,38 +14,40 @@ import {
   PanelLeft,
   Plus,
   Settings,
+  SquareKanban,
 } from "lucide-react-native";
 import { withUnistyles } from "react-native-unistyles";
-import { getIsElectronRuntime, useIsCompactFormFactor } from "@/constants/layout";
+import { useIsCompactFormFactor } from "@/constants/layout";
+import { useToast } from "@/contexts/toast-context";
+import { getDesktopHost } from "@/desktop/host";
 import { useKeyboardShortcutOverrides } from "@/hooks/use-keyboard-shortcut-overrides";
 import { useOpenAddProject } from "@/hooks/use-open-add-project";
 import { useImportSession } from "@/hooks/use-import-session";
 import { useKeyboardActionDispatcher } from "@/keyboard/keyboard-action-dispatcher-context";
-import { useKeyboardShortcutsAvailable } from "@/keyboard/availability";
+import { useHardwareKeyboardPresent } from "@/keyboard";
 import { resolveShortcutKeysForAction } from "@/keyboard/keyboard-shortcuts";
 import { useKeyboardShortcutsStore } from "@/stores/keyboard-shortcuts-store";
 import { usePanelStore } from "@/stores/panel-store";
 import { useSidebarViewStore } from "@/stores/sidebar-view-store";
 import { clearCommandCenterFocusRestoreElement } from "@/utils/command-center-focus-restore";
+import { copyToClipboard } from "@/utils/copy-to-clipboard";
 import {
+  buildItsaplanRoute,
   buildOpenProjectRoute,
-  buildSchedulesRoute,
   buildSessionsRoute,
   buildSettingsRoute,
 } from "@/utils/host-routes";
 import { getShortcutOs } from "@/utils/shortcut-platform";
 import type { CommandCenterContribution, CommandCenterIconProps } from "./contributions";
+import { getCommandCenterIcon } from "./icon";
 import { useCommandCenterActions } from "./provider";
-import { buildGroupingContribution } from "./root-contributions";
+import { buildGroupingContribution, buildItsaplanContribution } from "./root-contributions";
 
 const ThemedPlus = withUnistyles(Plus, (theme) => ({ color: theme.colors.foregroundMuted }));
 const ThemedFolderPlus = withUnistyles(FolderPlus, (theme) => ({
   color: theme.colors.foregroundMuted,
 }));
 const ThemedHistory = withUnistyles(History, (theme) => ({
-  color: theme.colors.foregroundMuted,
-}));
-const ThemedCalendarClock = withUnistyles(CalendarClock, (theme) => ({
   color: theme.colors.foregroundMuted,
 }));
 const ThemedKeyboard = withUnistyles(Keyboard, (theme) => ({
@@ -62,6 +65,10 @@ const ThemedCircleDashed = withUnistyles(CircleDashed, (theme) => ({
 const ThemedPanelLeft = withUnistyles(PanelLeft, (theme) => ({
   color: theme.colors.foregroundMuted,
 }));
+const ThemedSquareKanban = withUnistyles(SquareKanban, (theme) => ({
+  color: theme.colors.foregroundMuted,
+}));
+const BrowserHostCopyIcon = getCommandCenterIcon(Copy);
 
 function PlusIcon({ size }: CommandCenterIconProps) {
   return <ThemedPlus size={size} strokeWidth={2.4} />;
@@ -77,10 +84,6 @@ function SettingsIcon({ size }: CommandCenterIconProps) {
 
 function HistoryIcon({ size }: CommandCenterIconProps) {
   return <ThemedHistory size={size} strokeWidth={2.2} />;
-}
-
-function SchedulesIcon({ size }: CommandCenterIconProps) {
-  return <ThemedCalendarClock size={size} strokeWidth={2.2} />;
 }
 
 function KeyboardIcon({ size }: CommandCenterIconProps) {
@@ -107,17 +110,23 @@ function PanelLeftIcon({ size }: CommandCenterIconProps) {
   return <ThemedPanelLeft size={size} strokeWidth={2.2} />;
 }
 
+function ItsaplanIcon({ size }: CommandCenterIconProps) {
+  return <ThemedSquareKanban size={size} strokeWidth={2.2} />;
+}
+
 export function CommandCenterRootActions() {
   const keyboardActionDispatcher = useKeyboardActionDispatcher();
   const { t } = useTranslation();
+  const toast = useToast();
+  const browserHostLabel = getDesktopHost()?.browserHostLabel;
   const { overrides } = useKeyboardShortcutOverrides();
-  const shortcutsAvailable = useKeyboardShortcutsAvailable();
+  const shortcutsAvailable = useHardwareKeyboardPresent();
   const openAddProject = useOpenAddProject();
   const { open: openImportSession, sheet: importSessionSheet } = useImportSession();
   const settingsRoute = useMemo<Href>(() => buildSettingsRoute(), []);
   const homeRoute = useMemo<Href>(() => buildOpenProjectRoute(), []);
   const sessionsRoute = useMemo<Href>(() => buildSessionsRoute(), []);
-  const schedulesRoute = useMemo<Href>(() => buildSchedulesRoute(), []);
+  const itsaplanRoute = useMemo<Href>(() => buildItsaplanRoute(), []);
   const setShortcutsDialogOpen = useKeyboardShortcutsStore((state) => state.setShortcutsDialogOpen);
   // Narrow selector on purpose: a whole-store subscription would re-register every root action
   // each time host filters are reconciled.
@@ -128,7 +137,7 @@ export function CommandCenterRootActions() {
   const toggleDesktopAgentList = usePanelStore((state) => state.toggleDesktopAgentList);
   const toggleAgentList = isCompact ? toggleMobileAgentList : toggleDesktopAgentList;
   const shortcutPlatform = useMemo(
-    () => ({ isMac: getShortcutOs() === "mac", isDesktop: getIsElectronRuntime() }),
+    () => ({ isMac: getShortcutOs() === "mac", usesDesktopBindings }),
     [],
   );
   const actions = useMemo<CommandCenterContribution[]>(() => {
@@ -228,24 +237,6 @@ export function CommandCenterRootActions() {
         },
       },
       {
-        id: "schedules",
-        group: "actions",
-        groupRank: 0,
-        rank: 5,
-        keywords: ["schedules", "scheduled", "automation", "recurring"],
-        visibility: "always",
-        run: () => {
-          clearCommandCenterFocusRestoreElement();
-          router.push(schedulesRoute);
-        },
-        presentation: {
-          kind: "action",
-          title: t("sidebar.sections.schedules"),
-          sectionTitle: t("shell.commandCenter.actions"),
-          icon: SchedulesIcon,
-        },
-      },
-      {
         id: "settings",
         group: "actions",
         groupRank: 0,
@@ -295,6 +286,32 @@ export function CommandCenterRootActions() {
       },
     ];
 
+    if (browserHostLabel) {
+      availableActions.push({
+        id: "copy-browser-host-name",
+        group: "actions",
+        groupRank: 0,
+        rank: 9,
+        keywords: ["browser", "host", "window", browserHostLabel],
+        visibility: "query",
+        run: async () => {
+          try {
+            await copyToClipboard(browserHostLabel);
+            toast.copied();
+          } catch {
+            toast.error(t("common.errors.unableToCopy"));
+          }
+        },
+        presentation: {
+          kind: "action",
+          title: t("shell.commandCenter.copyBrowserHostName"),
+          subtitle: browserHostLabel,
+          sectionTitle: t("shell.commandCenter.actions"),
+          icon: BrowserHostCopyIcon,
+        },
+      });
+    }
+
     if (shortcutsAvailable) {
       availableActions.push({
         id: "keyboard-shortcuts",
@@ -317,6 +334,20 @@ export function CommandCenterRootActions() {
     }
 
     availableActions.push(
+      buildItsaplanContribution({
+        labels: {
+          section: t("shell.commandCenter.actions"),
+          itsaplan: t("sidebar.sections.itsaplan"),
+        },
+        icon: ItsaplanIcon,
+        onOpen: () => {
+          clearCommandCenterFocusRestoreElement();
+          router.push(itsaplanRoute);
+        },
+      }),
+    );
+
+    availableActions.push(
       buildGroupingContribution({
         groupMode,
         labels: {
@@ -331,13 +362,14 @@ export function CommandCenterRootActions() {
 
     return availableActions;
   }, [
+    browserHostLabel,
     groupMode,
     homeRoute,
+    itsaplanRoute,
     keyboardActionDispatcher,
     openAddProject,
     openImportSession,
     overrides,
-    schedulesRoute,
     sessionsRoute,
     setGroupMode,
     setShortcutsDialogOpen,
@@ -345,6 +377,7 @@ export function CommandCenterRootActions() {
     shortcutPlatform,
     shortcutsAvailable,
     t,
+    toast,
     toggleAgentList,
   ]);
 

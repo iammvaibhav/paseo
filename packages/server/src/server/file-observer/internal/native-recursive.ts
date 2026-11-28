@@ -4,8 +4,15 @@ import { dirname, join, resolve } from "node:path";
 import type { BackendDiagnostics, ObservationBackend, ObservationHost } from "./contracts.js";
 import type { ObserverPaths } from "./paths.js";
 import { isMissingPathError, toError } from "./paths.js";
+import { createScanSliceBudget, type ScanSliceBudget } from "./scan-slice.js";
 
 const MAX_TRACKED_ENTRIES = 250_000;
+// fs.stat runs on the libuv threadpool, which is four threads and shared by the
+// whole daemon. One stat per native event pins it and unrelated filesystem work
+// stalls. Beyond the queue bound, fall back to a directory scan, which finds the
+// same paths at a fraction of the cost.
+const MAX_CONCURRENT_CLASSIFICATIONS = 32;
+const MAX_QUEUED_CLASSIFICATIONS = 2_048;
 const AUDIT_QUIET_MS = 500;
 const AUDIT_MAX_DIRTY_MS = 5_000;
 const OPTIONAL_AUDIT_QUIET_MS = 8_000;
@@ -47,9 +54,20 @@ export function createNativeRecursiveBackend(
 class NativeRecursiveBackend implements ObservationBackend {
   private watcher: ReturnType<WatchDirectory> | null = null;
   private files = new Set<string>();
+  // Files classified before their parent directory has an entries bucket.
+  // walkSubtree can only reach files through that bucket, so these stay
+  // tracked directly until a scoped audit builds the bucket and adopts them.
+  // Bounded by every file classified within one full-audit window (up to
+  // FULL_AUDIT_MAX_DIRTY_MS, 5 minutes) whose parent never got a bucket, not
+  // by the size of the tracked set.
+  private orphanFiles = new Set<string>();
   private directories = new Set<string>();
   private entries = new Map<string, DirectoryEntry>();
   private readonly classifications = new Set<Promise<void>>();
+  private readonly classificationQueue: Array<{
+    path: string;
+    onPresent: (isDirectory: boolean) => void;
+  }> = [];
   private readonly localScopes = new Set<string>();
   private readonly changeScopes = new Set<string>();
   private readonly recursiveScopes = new Set<string>();
@@ -85,11 +103,14 @@ class NativeRecursiveBackend implements ObservationBackend {
   }
 
   async updateIgnore(): Promise<void> {
+    this.discardIgnoredClassifications();
+    const inFlight = [...this.classifications];
     this.generation += 1;
     this.cancelAudits();
     this.fullAuditRequested = true;
     this.auditQueued = true;
     await this.enqueueAudit(true, this.generation);
+    await Promise.allSettled(inFlight);
   }
 
   close(): Promise<void> {
@@ -110,18 +131,22 @@ class NativeRecursiveBackend implements ObservationBackend {
         this.changeScopes.size +
         this.recursiveScopes.size +
         this.classifications.size +
+        this.classificationQueue.length +
         this.queueDepth +
         Number(this.auditTimer !== null || this.auditQueued || this.auditDirty),
+      pendingClassificationCount: this.classifications.size + this.classificationQueue.length,
       reconciliationInFlight: this.inFlight,
     };
   }
 
   private async finishClose(): Promise<void> {
     await this.reconcileTail;
+    this.classificationQueue.length = 0;
     await Promise.allSettled(this.classifications);
     this.watcher?.close();
     this.watcher = null;
     this.files.clear();
+    this.orphanFiles.clear();
     this.directories.clear();
     this.entries.clear();
   }
@@ -154,10 +179,21 @@ class NativeRecursiveBackend implements ObservationBackend {
       }
       this.classify(path, (isDirectory) => {
         if (!isDirectory) {
-          // Remember files as soon as we announce them. A coalesced delete must
-          // still be found by the next audit, even before the first directory scan.
-          this.files.add(path);
-          this.entries.get(scope)?.files.add(path);
+          const entry = this.entries.get(scope);
+          if (entry) {
+            // Remember files as soon as we announce them. A coalesced delete must
+            // still be found by the next audit, even before the first directory scan.
+            this.files.add(path);
+            entry.files.add(path);
+          } else {
+            // No inventory for the parent yet. startClassification already
+            // announced this as a create, so it must stay findable for a
+            // matching delete: track it directly until a scoped audit builds
+            // the bucket and adopts it (see orphanFiles above).
+            this.files.add(path);
+            this.orphanFiles.add(path);
+            this.requestAudit(scope);
+          }
           return;
         }
         if (knownDirectory) this.requestAudit(path, true);
@@ -201,9 +237,12 @@ class NativeRecursiveBackend implements ObservationBackend {
     const startedAt = performance.now();
     try {
       if (fullAudit) {
-        const next = await this.scanTree(this.host.root);
+        const next = await this.scanTree(this.host.root, generation);
         if (!this.canCommit(generation)) return;
-        if (emitDiff) this.queueDiff(next.files, this.files);
+        if (emitDiff) {
+          this.queueDiff(next.files, this.files);
+          this.queueRemovedDirectories(next.directories, this.directories);
+        }
         this.replaceInventory(next);
         this.lastFullAuditAt = performance.now();
         this.host.metrics.fullReconciliationCount += 1;
@@ -229,14 +268,16 @@ class NativeRecursiveBackend implements ObservationBackend {
     }
   }
 
-  private async scanTree(root: string): Promise<Inventory> {
+  private async scanTree(root: string, generation: number): Promise<Inventory> {
     const files = new Set<string>();
     const directories = new Set<string>();
     const entries = new Map<string, DirectoryEntry>();
     const pending = [root];
-    while (pending.length > 0 && this.host.isActive()) {
+    const slice = createScanSliceBudget();
+    while (pending.length > 0 && this.canCommit(generation)) {
       const directory = pending.pop();
       if (!directory) continue;
+      if (this.host.isIgnored(directory)) continue;
       let children: Dirent[];
       try {
         children = await readdir(directory, { withFileTypes: true });
@@ -247,24 +288,56 @@ class NativeRecursiveBackend implements ObservationBackend {
         if (!isMissingPathError(error) || directory === this.host.root) throw error;
         continue;
       }
-      directories.add(directory);
-      this.assertWithinLimit(files.size + directories.size);
-      const entry: DirectoryEntry = { directories: new Set(), files: new Set() };
-      for (const child of children) {
-        const path = join(directory, child.name);
-        if (this.host.isIgnored(path)) continue;
-        if (child.isDirectory()) {
-          entry.directories.add(path);
-          pending.push(path);
-        } else {
-          entry.files.add(path);
-          files.add(path);
-          this.assertWithinLimit(files.size + directories.size);
-        }
+      if (!this.canCommit(generation)) return { directories, entries, files };
+      if (this.host.isIgnored(directory)) continue;
+      const inventory: Inventory = { directories, entries, files };
+      const keepScanning = await this.scanDirectoryChildren(
+        directory,
+        children,
+        generation,
+        inventory,
+        pending,
+        slice,
+      );
+      if (!keepScanning) return inventory;
+      if (slice.isExpired()) {
+        await slice.yield();
       }
-      entries.set(directory, entry);
     }
     return { directories, entries, files };
+  }
+
+  private async scanDirectoryChildren(
+    directory: string,
+    children: Dirent[],
+    generation: number,
+    inventory: Inventory,
+    pending: string[],
+    slice: ScanSliceBudget,
+  ): Promise<boolean> {
+    const baseCount = inventory.files.size + inventory.directories.size + 1;
+    this.assertWithinLimit(baseCount);
+    const entry: DirectoryEntry = { directories: new Set(), files: new Set() };
+    for (const child of children) {
+      if (slice.shouldYield()) {
+        await slice.yield();
+        if (!this.canCommit(generation)) return false;
+        if (this.host.isIgnored(directory)) return true;
+      }
+      const path = join(directory, child.name);
+      if (this.host.isIgnoredRoot(path)) continue;
+      if (child.isDirectory()) {
+        entry.directories.add(path);
+      } else {
+        entry.files.add(path);
+        this.assertWithinLimit(baseCount + entry.files.size);
+      }
+    }
+    inventory.directories.add(directory);
+    for (const file of entry.files) inventory.files.add(file);
+    for (const childDir of entry.directories) pending.push(childDir);
+    inventory.entries.set(directory, entry);
+    return true;
   }
 
   private async reconcileScopes(
@@ -278,10 +351,12 @@ class NativeRecursiveBackend implements ObservationBackend {
     for (const directory of new Set(localScopes)) {
       await this.reconcileDirectory(directory, generation);
       if (!this.canCommit(generation)) return;
+      await new Promise<void>((done) => setImmediate(done));
     }
     for (const directory of new Set(recursiveScopes)) {
       await this.reconcileSubtree(directory, generation);
       if (!this.canCommit(generation)) return;
+      await new Promise<void>((done) => setImmediate(done));
     }
     // Parent scans are shallow, so a queued parent cannot cover its children.
     for (const directory of new Set(changeScopes)) {
@@ -291,6 +366,7 @@ class NativeRecursiveBackend implements ObservationBackend {
       if (alreadyCovered) continue;
       await this.reconcileDirectory(directory, generation);
       if (!this.canCommit(generation)) return;
+      await new Promise<void>((done) => setImmediate(done));
     }
   }
 
@@ -303,9 +379,13 @@ class NativeRecursiveBackend implements ObservationBackend {
       await this.reconcileUnknownSubtree(directory, generation);
       return;
     }
-    const next = await this.readDirectory(directory);
+    const next = await this.readDirectory(directory, generation);
     if (!this.canCommit(generation)) return;
     if (!next) {
+      if (this.host.isIgnored(directory)) {
+        this.removeSubtree(directory, false);
+        return;
+      }
       this.removeSubtree(directory, true);
       return;
     }
@@ -323,6 +403,7 @@ class NativeRecursiveBackend implements ObservationBackend {
       if (!next.directories.has(path)) this.removeSubtree(path, true);
     }
     for (const path of next.files) {
+      this.orphanFiles.delete(path);
       if (!previous.files.has(path)) {
         this.files.add(path);
         this.host.queueEvent("create", path);
@@ -330,7 +411,7 @@ class NativeRecursiveBackend implements ObservationBackend {
     }
     for (const path of next.directories) {
       if (previous.directories.has(path)) continue;
-      const inventory = await this.scanTree(path);
+      const inventory = await this.scanTree(path, generation);
       if (!this.canCommit(generation)) return;
       if (!inventory.directories.has(path)) {
         next.directories.delete(path);
@@ -344,7 +425,7 @@ class NativeRecursiveBackend implements ObservationBackend {
   }
 
   private async reconcileUnknownSubtree(directory: string, generation: number): Promise<void> {
-    const inventory = await this.scanTree(directory);
+    const inventory = await this.scanTree(directory, generation);
     if (!this.canCommit(generation)) return;
     if (!inventory.directories.has(directory)) {
       this.removeSubtree(directory, true);
@@ -354,7 +435,10 @@ class NativeRecursiveBackend implements ObservationBackend {
     this.mergeInventory(inventory, true);
   }
 
-  private async readDirectory(directory: string): Promise<DirectoryEntry | null> {
+  private async readDirectory(
+    directory: string,
+    generation: number,
+  ): Promise<DirectoryEntry | null> {
     this.host.metrics.nativeShallowScanCount += 1;
     let children: Dirent[];
     try {
@@ -363,10 +447,16 @@ class NativeRecursiveBackend implements ObservationBackend {
       if (!isMissingPathError(error) || directory === this.host.root) throw error;
       return null;
     }
+    if (!this.canCommit(generation) || this.host.isIgnored(directory)) return null;
     const entry: DirectoryEntry = { directories: new Set(), files: new Set() };
+    const slice = createScanSliceBudget();
     for (const child of children) {
+      if (slice.shouldYield()) {
+        await slice.yield();
+        if (!this.canCommit(generation) || this.host.isIgnored(directory)) return null;
+      }
       const path = join(directory, child.name);
-      if (this.host.isIgnored(path)) continue;
+      if (this.host.isIgnoredRoot(path)) continue;
       if (child.isDirectory()) entry.directories.add(path);
       else entry.files.add(path);
     }
@@ -375,13 +465,25 @@ class NativeRecursiveBackend implements ObservationBackend {
 
   private async reconcileSubtree(directory: string, generation: number): Promise<void> {
     if (!this.directories.has(directory) || this.host.isIgnored(directory)) return;
-    const inventory = await this.scanTree(directory);
+    const inventory = await this.scanTree(directory, generation);
     if (!this.canCommit(generation)) return;
-    const previousFiles = new Set(
-      [...this.files].filter((path) => this.host.isPathInside(directory, path)),
-    );
+    const previousFiles = new Set<string>();
+    for (const tracked of this.walkSubtree(directory)) {
+      const entry = this.entries.get(tracked);
+      if (!entry) continue;
+      for (const file of entry.files) previousFiles.add(file);
+    }
     this.queueDiff(inventory.files, previousFiles);
+    this.queueRemovedDirectories(inventory.directories, this.walkSubtree(directory));
     this.removeSubtree(directory, false);
+    // removeSubtree unlinks `directory` from its own parent's directories set
+    // as part of tearing down the old subtree. Mirror reconcileUnknownSubtree
+    // and re-link it, guarded on the directory still existing -- it can
+    // vanish between the `this.directories.has` check above and this scan --
+    // or walkSubtree can no longer reach anything under it from the root.
+    if (inventory.directories.has(directory)) {
+      this.entries.get(dirname(directory))?.directories.add(directory);
+    }
     this.mergeInventory(inventory, false);
   }
 
@@ -394,8 +496,16 @@ class NativeRecursiveBackend implements ObservationBackend {
     }
   }
 
+  private queueRemovedDirectories(next: Set<string>, previous: Iterable<string>): void {
+    for (const directory of previous) {
+      if (!next.has(directory)) this.host.queueEvent("delete", directory);
+    }
+  }
+
   private replaceInventory(inventory: Inventory): void {
     this.files = inventory.files;
+    // A full scan gives every existing file a directory-index home.
+    this.orphanFiles.clear();
     this.directories = inventory.directories;
     this.entries = inventory.entries;
   }
@@ -404,6 +514,7 @@ class NativeRecursiveBackend implements ObservationBackend {
     for (const directory of inventory.directories) this.directories.add(directory);
     for (const [directory, entry] of inventory.entries) this.entries.set(directory, entry);
     for (const path of inventory.files) {
+      this.orphanFiles.delete(path);
       const added = !this.files.has(path);
       this.files.add(path);
       if (emitCreates && added) this.host.queueEvent("create", path);
@@ -411,17 +522,50 @@ class NativeRecursiveBackend implements ObservationBackend {
     this.assertWithinLimit(this.files.size + this.directories.size);
   }
 
+  // Depends on the invariant that every tracked directory has an `entries`
+  // bucket, and that `this.directories` and `this.entries` are written and
+  // cleared together. A root with no bucket yields nothing here, which makes
+  // `removeSubtree` a near no-op for that root — it deletes nothing from
+  // `entries`/`directories` and only cleans up matching `orphanFiles` — so
+  // nothing enforces the invariant beyond this comment.
+  private *walkSubtree(root: string): Generator<string> {
+    const stack = [root];
+    while (stack.length > 0) {
+      const directory = stack.pop();
+      if (directory === undefined) continue;
+      const entry = this.entries.get(directory);
+      if (!entry) continue;
+      yield directory;
+      for (const child of entry.directories) stack.push(child);
+    }
+  }
+
   private removeSubtree(root: string, emitDeletes: boolean): void {
-    for (const path of this.files) {
-      if (!this.host.isPathInside(root, path)) continue;
-      this.files.delete(path);
-      if (emitDeletes) this.host.queueEvent("delete", path);
-    }
-    for (const directory of this.directories) {
-      if (!this.host.isPathInside(root, directory)) continue;
-      this.directories.delete(directory);
+    for (const directory of this.walkSubtree(root)) {
+      const entry = this.entries.get(directory);
+      if (entry) {
+        for (const file of entry.files) {
+          if (!this.files.delete(file)) continue;
+          if (emitDeletes) this.host.queueEvent("delete", file);
+        }
+        // A native rename can name only a deleted file. The scoped scan still
+        // knows its parent disappeared, so report that topology change too.
+        if (emitDeletes) this.host.queueEvent("delete", directory);
+      }
       this.entries.delete(directory);
+      this.directories.delete(directory);
     }
+    // Orphaned files have no directory-index home, so walkSubtree cannot
+    // find them. This set is bounded by every file classified within one
+    // full-audit window (up to FULL_AUDIT_MAX_DIRTY_MS, 5 minutes) whose
+    // parent never got a bucket, not by the tracked-set size.
+    for (const path of this.orphanFiles) {
+      if (!this.host.isPathInside(root, path)) continue;
+      this.orphanFiles.delete(path);
+      if (this.files.delete(path) && emitDeletes) this.host.queueEvent("delete", path);
+    }
+    // `root` can be a tracked file rather than a directory.
+    if (this.files.delete(root) && emitDeletes) this.host.queueEvent("delete", root);
     const parent = this.entries.get(dirname(root));
     parent?.directories.delete(root);
     parent?.files.delete(root);
@@ -578,6 +722,38 @@ class NativeRecursiveBackend implements ObservationBackend {
   }
 
   private classify(path: string, onPresent: (isDirectory: boolean) => void): void {
+    if (this.classificationQueue.length >= MAX_QUEUED_CLASSIFICATIONS) {
+      // Shed load onto the scoped audit, which reads the directory once instead
+      // of stat-ing every entry in it.
+      this.requestAudit(dirname(path));
+      return;
+    }
+    this.classificationQueue.push({ path, onPresent });
+    this.pumpClassifications();
+  }
+
+  private discardIgnoredClassifications(): void {
+    let kept = 0;
+    for (const classification of this.classificationQueue) {
+      if (!this.host.isIgnored(classification.path)) {
+        this.classificationQueue[kept++] = classification;
+      }
+    }
+    this.classificationQueue.length = kept;
+  }
+
+  private pumpClassifications(): void {
+    while (
+      this.classifications.size < MAX_CONCURRENT_CLASSIFICATIONS &&
+      this.classificationQueue.length > 0
+    ) {
+      const next = this.classificationQueue.shift();
+      if (!next) return;
+      this.startClassification(next.path, next.onPresent);
+    }
+  }
+
+  private startClassification(path: string, onPresent: (isDirectory: boolean) => void): void {
     this.host.metrics.nativeClassificationCount += 1;
     let classification!: Promise<void>;
     classification = stat(path)
@@ -593,7 +769,10 @@ class NativeRecursiveBackend implements ObservationBackend {
         }
         this.host.fail(toError(error));
       })
-      .finally(() => this.classifications.delete(classification));
+      .finally(() => {
+        this.classifications.delete(classification);
+        if (this.host.isActive()) this.pumpClassifications();
+      });
     this.classifications.add(classification);
   }
 
