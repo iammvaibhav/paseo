@@ -29,7 +29,7 @@ import {
   usageCard,
 } from "../support/helpers/context-window";
 import { openAgentRoute, seedMockAgentWorkspace } from "../support/helpers/mock-agent";
-import { claudeAndCodexReports, expectUnpinnableRows } from "../support/helpers/usage-sidebar-item";
+import { claudeAndCodexReports } from "../support/helpers/usage-sidebar-item";
 import { installLoginUsage } from "../support/helpers/usage-login";
 
 const test = base.extend<{ agent: MockAgentSession }>({
@@ -215,9 +215,8 @@ async function expectCardsToStreamIn(
   await expect(
     usageCard(details, "codex:work").getByText("Session", { exact: true }),
   ).toBeVisible();
-  // Only the agent's login, never the host's default one, and no pins.
+  // Only the agent's login, never the host's default one.
   await expect(details.getByText("dev@example.com", { exact: true })).toHaveCount(0);
-  await expectUnpinnableRows(details);
   return details;
 }
 

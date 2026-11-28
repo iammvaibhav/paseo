@@ -3,7 +3,6 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { UsageReport } from "@getpaseo/protocol/messages";
 import { expect, type Page } from "@playwright/test";
-import { expectPinnedUsage, pinRow, usageItem } from "./usage-sidebar-item";
 import { connectNewWorkspaceDaemonClient } from "./new-workspace";
 import { pluginRequirements } from "./plugin-fixture";
 
@@ -62,13 +61,6 @@ export async function refreshLoginUsage(page: Page) {
   await page.getByRole("button", { name: "Refresh Claude", exact: true }).click();
 }
 
-export async function hoverUsageWindow(page: Page, window: string) {
-  await page
-    .getByRole("checkbox", { name: new RegExp(`^Pin Claude ${window}, `) })
-    .getByTestId(/usage-pin-glyph-/)
-    .hover();
-}
-
 /** Exercises the built-in Codex adapter through the real plugin loader and daemon transport. */
 export async function installCodexWindowUsage(payload: unknown) {
   const directory = await mkdtemp(path.join(tmpdir(), "usage-codex-windows-"));
@@ -120,19 +112,12 @@ export default function contribute(server) {
 }
 
 export async function expectCodexReportedWindows(page: Page, shape: "seven-day-only" | "Spark") {
-  await expectPinnedUsage(page, ["11% wk"]);
-  await expect(pinRow(page.locator("body"), "Codex", "Weekly")).toBeChecked();
+  await expect(page.getByText("Weekly", { exact: true })).toBeVisible();
+  await expect(page.getByText("11% used", { exact: true })).toBeVisible();
   await expect(page.getByText("Session", { exact: true })).toHaveCount(0);
   if (shape === "Spark") {
-    const fiveHour = pinRow(page.locator("body"), "Codex", "GPT-5.3-Codex-Spark · 5-hour");
-    const weekly = pinRow(page.locator("body"), "Codex", "GPT-5.3-Codex-Spark · Weekly");
-    await expect(fiveHour).not.toBeChecked();
-    await expect(weekly).not.toBeChecked();
-    await fiveHour.click();
-    await expect(fiveHour).toBeChecked();
-    await expect(usageItem(page)).toHaveAccessibleName(
-      /Codex Weekly 11% used, Codex GPT-5.3-Codex-Spark · 5-hour 0% used/,
-    );
+    await expect(page.getByText("GPT-5.3-Codex-Spark · 5-hour", { exact: true })).toBeVisible();
+    await expect(page.getByText("GPT-5.3-Codex-Spark · Weekly", { exact: true })).toBeVisible();
   }
 }
 

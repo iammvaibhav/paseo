@@ -326,10 +326,9 @@ describe("loadAppSettingsFromStorage", () => {
     ]);
   });
 
-  it("loads legacy usage pins in order and defaults a fresh device to source defaults", async () => {
+  it("defaults a fresh device's usage preferences and drops pins saved by earlier versions", async () => {
     expect((await loadAppSettingsFromStorage(makeDeps())).usage).toEqual({
       displayAs: "used",
-      pins: null,
       serverId: null,
       cardOrder: [],
       cardVisibility: {},
@@ -340,10 +339,8 @@ describe("loadAppSettingsFromStorage", () => {
         [APP_SETTINGS_KEY]: JSON.stringify({
           usage: {
             displayAs: "remaining",
-            pinned: [
-              { sourceId: "codex", windowId: "weekly" },
-              { sourceId: "claude", windowId: "five-hour" },
-            ],
+            pins: [{ sourceId: "codex", windowId: "weekly" }],
+            pinned: [{ sourceId: "claude", windowId: "five-hour" }],
             serverId: "server",
           },
         }),
@@ -352,27 +349,6 @@ describe("loadAppSettingsFromStorage", () => {
 
     expect((await loadAppSettingsFromStorage(deps)).usage).toEqual({
       displayAs: "remaining",
-      pins: [
-        { sourceId: "codex", windowId: "weekly" },
-        { sourceId: "claude", windowId: "five-hour" },
-      ],
-      serverId: "server",
-      cardOrder: [],
-      cardVisibility: {},
-    });
-  });
-
-  it("loads an explicitly empty usage selection without restoring defaults", async () => {
-    const deps = makeDeps({
-      storage: createInMemoryKeyValueStorage({
-        [APP_SETTINGS_KEY]: JSON.stringify({
-          usage: { displayAs: "remaining", pins: [], serverId: "server" },
-        }),
-      }),
-    });
-    expect((await loadAppSettingsFromStorage(deps)).usage).toEqual({
-      displayAs: "remaining",
-      pins: [],
       serverId: "server",
       cardOrder: [],
       cardVisibility: {},
@@ -385,7 +361,7 @@ describe("loadAppSettingsFromStorage", () => {
         [APP_SETTINGS_KEY]: JSON.stringify({
           usage: {
             displayAs: "percent",
-            pinned: [{ sourceId: "claude", windowId: "weekly" }],
+            cardOrder: ["claude:work"],
             serverId: 42,
           },
         }),
@@ -394,9 +370,8 @@ describe("loadAppSettingsFromStorage", () => {
 
     expect((await loadAppSettingsFromStorage(deps)).usage).toEqual({
       displayAs: "used",
-      pins: [{ sourceId: "claude", windowId: "weekly" }],
       serverId: null,
-      cardOrder: [],
+      cardOrder: ["claude:work"],
       cardVisibility: {},
     });
   });

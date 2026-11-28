@@ -21,13 +21,10 @@ import {
 import {
   leaveSettings,
   openSidebarNavSettings,
-  seedSidebarFooterPreferences,
   setFooterItemVisible,
 } from "../support/helpers/sidebar-nav-settings";
 import { seedWorkspace } from "../support/helpers/seed-client";
 import { getServerId } from "../support/helpers/server-id";
-import { installUsageReportsFixture } from "../support/helpers/usage-reports";
-import { claudeAndCodexReports } from "../support/helpers/usage-sidebar-item";
 import { daemonWsRoutePattern } from "../support/helpers/daemon-port";
 
 const APP_SETTINGS_KEY = "@paseo:app-settings";
@@ -273,9 +270,6 @@ test.describe("Plugin sidebar items", () => {
     page,
   }) => {
     test.setTimeout(180_000);
-    // The Usage item shows only with summary data, once it is turned on.
-    await installUsageReportsFixture(page, { lists: [() => claudeAndCodexReports()] });
-    await seedSidebarFooterPreferences(page, [{ key: "usage", visible: true }]);
     await page.setViewportSize(WIDE);
     await gotoWorkspace(page, workspaceId);
     const row = headerRow(page, SHOWCASE_PLUGIN_ID, "deploys");
@@ -314,7 +308,6 @@ test.describe("Plugin sidebar items", () => {
     await test.step("the footer row renders as a row above the bottom line", async () => {
       await expect(sync).toHaveAccessibleName("Sync");
       await expectFooterRow(page, sync);
-      await expect(visibleTestId(page, "sidebar-usage")).toBeVisible();
       await qaScreenshot(page, "phase5-desktop-footer", sidebarFooter(page));
     });
 

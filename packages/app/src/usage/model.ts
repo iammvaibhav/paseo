@@ -24,20 +24,6 @@ export function displayPercent(window: UsageWindow, displayAs: UsageDisplayAs): 
   return used == null ? null : 100 - used;
 }
 
-/**
- * A window row's accessible label: what pinning it pins, then what the row shows. The row is a
- * checkbox, so its checked state says whether it is pinned: "Pin Claude Session, 31% · resets in
- * 2h", checked.
- */
-export function usageWindowRowLabel(input: {
-  pinLabel: string;
-  value: string;
-  trailing: string | null | undefined;
-}): string {
-  const summary = input.trailing ? `${input.value} · ${input.trailing}` : input.value;
-  return `${input.pinLabel}, ${summary}`;
-}
-
 /** The outcome of a user-requested usage refresh. */
 export type UsageRefresh = "idle" | "pending" | "failed";
 
@@ -212,8 +198,8 @@ export interface UsageHostChoice {
 }
 
 /**
- * The host the sidebar Usage row reads: the picked host, else the active workspace's host, else the
- * first host. Each only while it is connected and reports usage.
+ * The host usage reads: the picked host, else the active workspace's host, else the first host.
+ * Each only while it is connected and reports usage.
  */
 export function resolveUsageHostId(choice: UsageHostChoice): string | null {
   const reporting = choice.hosts.filter((host) => host.isConnected && host.supportsUsage);
@@ -225,7 +211,7 @@ export function resolveUsageHostId(choice: UsageHostChoice): string | null {
 
 /**
  * The host the Usage modal shows: the picked host while it is connected, even one that cannot
- * report usage so the modal says to update it; else the sidebar row's host; else the first
+ * report usage so the modal says to update it; else the usage host; else the first
  * connected host.
  */
 export function resolveUsageModalHostId(choice: UsageHostChoice): string | null {

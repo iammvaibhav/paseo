@@ -175,10 +175,12 @@ export function SidebarSearchEmptyState(): ReactElement {
 }
 
 const styles = StyleSheet.create((theme) => ({
-  // Lines the field up with the list's section headers below it.
+  // Same inset as the rows: the field's edges line up with the row highlights below it, and
+  // the top padding matches the nav rows' so it does not sit on the divider above.
   bar: {
     flexDirection: "row",
-    paddingHorizontal: theme.spacing[3],
+    paddingHorizontal: theme.spacing[2],
+    paddingTop: theme.spacing[2],
     paddingBottom: theme.spacing[1.5],
   },
   archived: {

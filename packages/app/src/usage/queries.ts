@@ -2,7 +2,6 @@ import { useTranslation } from "react-i18next";
 import { supportsUsageReports } from "@getpaseo/client/internal/daemon-client";
 import { useCallback, useMemo } from "react";
 import {
-  skipToken,
   useMutation,
   useQueryClient,
   type QueryClient,
@@ -37,7 +36,6 @@ import type { UsageReportEntry, UsageView } from "./types";
 // The daemon caches each report for five minutes, so re-reading it is cheap.
 // An explicit refresh passes `forceRefresh` to bypass that cache.
 const REPORTS_STALE_TIME_MS = 60_000;
-const REPORTS_REFETCH_INTERVAL_MS = 5 * 60_000;
 
 /** Every report list of a host: its own and each agent's. */
 function hostUsageQueryKey(serverId: string) {
@@ -194,31 +192,6 @@ export function useHostUsage(serverId: string): { view: UsageView; refresh: () =
     t,
   );
   return { view, refresh };
-}
-
-const NO_REPORTS: UsageReportEntry[] = [];
-
-interface UsageHostReportsInput {
-  serverId: string | null;
-  shouldPoll?: boolean;
-}
-
-/** A host's reports, with periodic refresh enabled only by the visible sidebar summary. */
-export function useUsageHostReports({
-  serverId,
-  shouldPoll = false,
-}: UsageHostReportsInput): UsageReportEntry[] {
-  const setting = useUsageSetting(serverId);
-  const queryClient = useQueryClient();
-  const query = useFetchQuery({
-    enabled: setting.enabled,
-    queryKey: usageReportsQueryKey(serverId ?? ""),
-    queryFn: serverId ? () => listReports(queryClient, serverId) : skipToken,
-    dataShape: "value",
-    staleTimeMs: REPORTS_STALE_TIME_MS,
-    refetchInterval: shouldPoll ? REPORTS_REFETCH_INTERVAL_MS : false,
-  });
-  return setting.enabled ? (query.data ?? NO_REPORTS) : NO_REPORTS;
 }
 
 /**

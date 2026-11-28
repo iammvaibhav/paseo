@@ -112,7 +112,6 @@ import { useHostRuntimeConnectionStatuses, useHosts } from "@/runtime/host-runti
 import { useHostFeatureMap } from "@/runtime/host-features";
 import { useAgentGridStore } from "@/screens/mission-control/agent-grid/store";
 import { PluginSidebarItem } from "@/plugins/sidebar-items";
-import { builtinSidebarNavLabelKey } from "@/sidebar-nav/model";
 import { useSidebarNavItems } from "@/sidebar-nav/use-sidebar-nav-items";
 import { usePanelStore } from "@/stores/panel-store";
 import { useOwnsWindowChromeCorner, WindowChromeSafeArea } from "@/utils/desktop-window";
@@ -126,7 +125,7 @@ import {
 } from "@/utils/host-routes";
 import { useActiveWorkspaceSelection } from "@/stores/navigation-active-workspace-store";
 import { openSettingsFromSidebar } from "@/navigation/settings-navigation";
-import { UsageSidebarItem, UsageSidebarRoot, useUsageSummary, useOpenSidebarUsage } from "@/usage";
+import { UsageSidebarRoot, useOpenSidebarUsage } from "@/usage";
 import { SidebarAgentListSkeleton } from "./sidebar-agent-list-skeleton";
 import { SidebarCalloutSlot } from "./sidebar-callout-slot";
 import { SidebarWorkspaceList } from "./sidebar-workspace-list";
@@ -300,7 +299,7 @@ export const LeftSidebar = memo(function LeftSidebar({
       hosts: t("sidebar.actions.hosts"),
       settings: t("sidebar.actions.settings"),
       searchHosts: t("sidebar.host.searchPlaceholder"),
-      usage: t(builtinSidebarNavLabelKey("usage")),
+      usage: t("sidebar.footer.usage"),
       itsaplan: t("sidebar.sections.itsaplan"),
       agentGrid: t("sidebar.sections.agentGrid"),
       closeSidebar: t("sidebar.actions.closeSidebar"),
@@ -636,17 +635,11 @@ function SidebarUsageIcon({ label }: { label: string }) {
   );
 }
 
-/**
- * The footer rows in the user's `sidebarFooterItems` order: the Usage item and plugin rows. The
- * Usage item is left out while it has no summary to show.
- */
+/** The plugin footer rows in the user's `sidebarFooterItems` order. */
 function SidebarFooterRows({ onBeforeNavigate }: { onBeforeNavigate?: () => void }) {
   const { items } = useSidebarNavItems("footer");
-  const usageSummary = useUsageSummary();
   const rowsRef = useRef<View | null>(null);
-  const visibleItems = items.filter(
-    (item) => item.visible && (item.kind === "plugin" || usageSummary.length > 0),
-  );
+  const visibleItems = items.filter((item) => item.visible);
   if (visibleItems.length === 0) return null;
   return (
     <>
@@ -660,9 +653,7 @@ function SidebarFooterRows({ onBeforeNavigate }: { onBeforeNavigate?: () => void
               fallbackAnchorRef={rowsRef}
               onBeforeNavigate={onBeforeNavigate}
             />
-          ) : (
-            <UsageSidebarItem key={item.key} sources={usageSummary} />
-          ),
+          ) : null,
         )}
       </View>
       <SidebarSeparator testID="sidebar-footer-separator" />
@@ -1279,7 +1270,7 @@ const styles = StyleSheet.create((theme) => ({
   footerSpacer: {
     flex: 1,
   },
-  // Usage and plugin rows sit above the footer's icon line, spaced like the header nav rows.
+  // Plugin rows sit above the footer's icon line, spaced like the header nav rows.
   footerRows: {
     paddingHorizontal: theme.spacing[2],
     paddingVertical: theme.spacing[1.5],

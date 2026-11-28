@@ -73,7 +73,6 @@ export async function openSidebarNavSettings(page: Page): Promise<void> {
   await openSettings(page);
   await openSettingsSection(page, "sidebar");
   await expect(page.getByTestId("sidebar-nav-section-header")).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByTestId("sidebar-nav-section-footer")).toBeVisible();
 }
 
 export async function leaveSettings(page: Page): Promise<void> {
@@ -162,7 +161,6 @@ async function expectVerticalOrder<Key extends string>(
 
 /** Persisted footer row key -> the testID the app shell renders that row with. */
 function shellFooterTestID(key: string): string {
-  if (key === "usage") return "sidebar-usage";
   const [, pluginId, itemId] = key.split(":");
   return `plugin-sidebar-footer-${pluginId}-${itemId}`;
 }
@@ -208,15 +206,6 @@ export async function setFooterItemVisible(
   const toggle = footerItemSwitch(page, key);
   await toggle.click();
   await expect(toggle).toHaveAttribute("aria-checked", String(visible));
-}
-
-/** Whether Settings > Sidebar shows a footer item as on. */
-export async function expectFooterItemSetting(
-  page: Page,
-  key: string,
-  visible: boolean,
-): Promise<void> {
-  await expect(footerItemSwitch(page, key)).toHaveAttribute("aria-checked", String(visible));
 }
 
 export async function expectFooterOrder(page: Page, keys: string[]): Promise<void> {

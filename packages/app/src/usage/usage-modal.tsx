@@ -2,7 +2,6 @@ import { useMemo, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { View } from "react-native";
 import { AdaptiveModalSheet, SheetHeaderSubtitle } from "@/components/adaptive-modal-sheet";
-import { builtinSidebarNavLabelKey } from "@/sidebar-nav/model";
 import { useHostUsageWithControls } from "./controls";
 import { getHostPickerLabel } from "@/components/hosts/host-picker";
 import { hasHostChoice, useUsageHostSelection } from "./hosts";
@@ -17,7 +16,7 @@ interface UsageModalProps {
 
 /**
  * Usage over the current screen: a dialog on wide layouts, a bottom sheet on compact ones. It
- * shows the usage host's reports with pins, and Refresh all and Settings in its title row. With more
+ * shows the usage host's reports, and Refresh all and Settings in its title row. With more
  * than one host, the host shown is the title's subtitle, and Settings is where it is picked.
  */
 export function UsageModal(props: UsageModalProps) {
@@ -80,7 +79,7 @@ function UsageModalFrame({
   children,
 }: UsageModalProps & { actions?: ReactNode; subtitle?: string; children: ReactNode }) {
   const { t } = useTranslation();
-  const title = t(builtinSidebarNavLabelKey("usage"));
+  const title = t("sidebar.footer.usage");
   const header = useMemo(
     () => ({
       title,

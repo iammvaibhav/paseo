@@ -10,7 +10,6 @@ import { UsageMeter } from "./meter";
 const window: UsageWindow = { id: "session", label: "Session", usedPct: 70 };
 const exhaustedWindow: UsageWindow = { ...window, usedPct: 100 };
 const balance: UsageBalance = { id: "credits", label: "Credits", unit: "usd", remaining: 12 };
-const ignorePin = () => {};
 
 let root: Root;
 let container: HTMLDivElement;
@@ -32,16 +31,7 @@ it("translates mounted usage rows when the language changes", async () => {
   act(() =>
     root.render(
       <>
-        <UsageWindowBar
-          window={window}
-          forecastAt={null}
-          displayAs="used"
-          pinnable={false}
-          pinned={false}
-          onTogglePin={ignorePin}
-          pinLabel=""
-          pinTestID=""
-        />
+        <UsageWindowBar window={window} forecastAt={null} displayAs="used" />
         <UsageBalanceBar balance={balance} />
       </>,
     ),
@@ -63,7 +53,6 @@ it("colors healthy quota bars green and keeps the warning and danger colors", ()
         <UsageMeter percent={20} tone="ok" />
         <UsageMeter percent={20} tone="warning" />
         <UsageMeter percent={20} tone="danger" />
-        <UsageMeter percent={20} tone="danger" quiet />
       </>,
     ),
   );
@@ -76,24 +65,13 @@ it("colors healthy quota bars green and keeps the warning and danger colors", ()
     "rgb(21, 128, 61)",
     "rgb(217, 119, 6)",
     "rgb(185, 28, 28)",
-    "rgb(212, 212, 216)",
   ]);
 });
 
 it("keeps an exhausted quota red when a failed refresh removes its forecast", () => {
   act(() =>
     root.render(
-      <UsageWindowBar
-        window={exhaustedWindow}
-        forecastAt={null}
-        retained
-        displayAs="used"
-        pinnable={false}
-        pinned={false}
-        onTogglePin={ignorePin}
-        pinLabel=""
-        pinTestID=""
-      />,
+      <UsageWindowBar window={exhaustedWindow} forecastAt={null} retained displayAs="used" />,
     ),
   );
   expect(container.textContent).toBe("Session100% used");
@@ -126,16 +104,7 @@ it.each([
 ] as const)("shows only the reset details for an on-track %s bar", (_, usageWindow, color) => {
   act(() =>
     root.render(
-      <UsageWindowBar
-        window={usageWindow}
-        forecastAt={narrowForecastAt}
-        displayAs="used"
-        pinnable={false}
-        pinned={false}
-        onTogglePin={ignorePin}
-        pinLabel=""
-        pinTestID=""
-      />,
+      <UsageWindowBar window={usageWindow} forecastAt={narrowForecastAt} displayAs="used" />,
     ),
   );
 
@@ -149,16 +118,7 @@ it.each([
 it("shows the forecast as one more datapoint after the reset countdown, in the same line", async () => {
   act(() =>
     root.render(
-      <UsageWindowBar
-        window={narrowWindow}
-        forecastAt={narrowForecastAt}
-        displayAs="used"
-        pinnable={false}
-        pinned={false}
-        onTogglePin={ignorePin}
-        pinLabel=""
-        pinTestID=""
-      />,
+      <UsageWindowBar window={narrowWindow} forecastAt={narrowForecastAt} displayAs="used" />,
     ),
   );
 
@@ -173,16 +133,7 @@ it("wraps the forecast below the countdown in a narrow French card instead of ov
   container.style.width = "272px";
   act(() =>
     root.render(
-      <UsageWindowBar
-        window={narrowWindow}
-        forecastAt={narrowForecastAt}
-        displayAs="used"
-        pinnable={false}
-        pinned={false}
-        onTogglePin={ignorePin}
-        pinLabel=""
-        pinTestID=""
-      />,
+      <UsageWindowBar window={narrowWindow} forecastAt={narrowForecastAt} displayAs="used" />,
     ),
   );
 

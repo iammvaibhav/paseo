@@ -1,6 +1,5 @@
 import { expect, test } from "../support/fixtures";
 import { gotoAppShell } from "../support/helpers/app";
-import { seedSidebarFooterPreferences } from "../support/helpers/sidebar-nav-settings";
 import { installUsageReportsFixture } from "../support/helpers/usage-reports";
 import {
   claudeAndCodexReports,
@@ -8,8 +7,6 @@ import {
   openUsageOptions,
   closeUsageOptions,
   closeUsage,
-  expectNoUsageItem,
-  expectPinnedUsage,
 } from "../support/helpers/usage-sidebar-item";
 
 test("Check usage applies to the host and Turn on restores cards", async ({
@@ -23,9 +20,7 @@ test("Check usage applies to the host and Turn on restores cards", async ({
       lists: [() => claudeAndCodexReports()],
     });
     await page.setViewportSize({ width: 1440, height: 1000 });
-    await seedSidebarFooterPreferences(page, [{ key: "usage", visible: true }]);
     await gotoAppShell(page);
-    await expectPinnedUsage(page, ["31% 5h", "54% wk", "7% 5h", "12% wk"]);
     await openUsageFromIcon(page);
     await usage.waitForListRequests(1);
     await openUsageOptions(page);
@@ -34,7 +29,6 @@ test("Check usage applies to the host and Turn on restores cards", async ({
     await expect(page.getByRole("button", { name: "Turn on", exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Refresh all", exact: true })).toHaveCount(0);
     expect((await e2eWorkerClient.getDaemonConfig()).config.usage).toEqual({ enabled: false });
-    await expectNoUsageItem(page);
     const before = usage.listRequests().length;
     await closeUsage(page);
     await page.reload();

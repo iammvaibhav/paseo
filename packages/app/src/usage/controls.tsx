@@ -74,7 +74,7 @@ export function useHostUsageWithControls(hostSelection: UsageHostSelection): {
   openOptions: () => void;
 } {
   const { view, refresh } = useHostUsage(hostSelection.serverId);
-  const { display } = useUsageDisplay(view.kind === "ready" ? view.reports : []);
+  const { display } = useUsageDisplay();
   const [optionsOpen, setOptionsOpen] = useState(false);
   const openOptions = useCallback(() => setOptionsOpen(true), []);
   const controls = useMemo(

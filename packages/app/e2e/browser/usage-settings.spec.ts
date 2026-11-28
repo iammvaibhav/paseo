@@ -114,7 +114,7 @@ test.describe("usage settings", () => {
     test.setTimeout(120_000);
     const serverId = getServerId();
     const windows = (usedPct: number) => [{ id: "w", label: "Weekly", usedPct }];
-    // The sidebar summary and the section each load reports; only Refresh forces one.
+    // The section loads reports on open; only Refresh forces one.
     const usage = await installUsageReportsFixture(page, {
       lists: [
         (request) => [

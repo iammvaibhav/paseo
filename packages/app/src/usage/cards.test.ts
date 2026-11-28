@@ -6,10 +6,8 @@ import {
   isUsageCardOn,
   setUsageCardOn,
   UsagePreferencesSchema,
-  usageReportsOn,
   type UsagePreferences,
 } from "./preferences";
-import { resolvePinnedUsage } from "./pinned";
 import type { UsageReportEntry } from "./types";
 
 function report(
@@ -27,7 +25,7 @@ function report(
     ...(defaultEnabled === undefined ? {} : { defaultEnabled }),
     report: {
       status: "available",
-      windows: [{ id: "weekly", label: "Weekly", summary: true, usedPct: 40 }],
+      windows: [{ id: "weekly", label: "Weekly", usedPct: 40 }],
     },
   };
 }
@@ -131,38 +129,9 @@ describe("usage cards turned off", () => {
   it("hides sources hinted off by default until the user explicitly turns them on", () => {
     const uninstalledCopilot = report("copilot", "GitHub Copilot", undefined, false);
     expect(isUsageCardOn(DEFAULT_USAGE_PREFERENCES, uninstalledCopilot)).toBe(false);
-    expect(ids(usageReportsOn([codex, uninstalledCopilot], DEFAULT_USAGE_PREFERENCES))).toEqual([
-      "codex:default",
-    ]);
-    expect(
-      resolvePinnedUsage([codex, uninstalledCopilot], DEFAULT_USAGE_PREFERENCES).map(
-        (source) => source.key,
-      ),
-    ).toEqual(["codex:default"]);
 
     const optedIn = setUsageCardOn(DEFAULT_USAGE_PREFERENCES, uninstalledCopilot.id, true);
     expect(isUsageCardOn(optedIn, uninstalledCopilot)).toBe(true);
-    expect(ids(usageReportsOn([codex, uninstalledCopilot], optedIn))).toEqual([
-      "codex:default",
-      "copilot:default",
-    ]);
-  });
-
-  it("leaves off cards out of the sidebar summary", () => {
-    const preferences = setUsageCardOn(DEFAULT_USAGE_PREFERENCES, "codex:default", false);
-
-    expect(ids(usageReportsOn([codex, claudeWork], preferences))).toEqual(["claude:work"]);
-    expect(
-      resolvePinnedUsage([codex, claudeWork], preferences).map((source) => source.key),
-    ).toEqual(["claude:work"]);
-  });
-
-  it("orders the sidebar summary like the cards", () => {
-    const preferences = arranged(["codex:default"]);
-
-    expect(
-      resolvePinnedUsage([claudeWork, codex], preferences).map((source) => source.key),
-    ).toEqual(["codex:default", "claude:work"]);
   });
 });
 

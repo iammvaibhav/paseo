@@ -137,11 +137,6 @@ function visible(page: Page, testID: string): Locator {
   return page.locator(`[data-testid="${testID}"]:visible`).first();
 }
 
-/** The sidebar footer's Usage item: each summary window with data. */
-export function usageItem(page: Page): Locator {
-  return visible(page, "sidebar-usage");
-}
-
 /** The Usage modal's body: a dialog on wide layouts, a bottom sheet on compact ones. */
 export function usageModal(page: Page): Locator {
   return visible(page, "usage-modal-body");
@@ -237,68 +232,9 @@ export async function recordUsageCardPositionsAfterRelease(
     });
 }
 
-/** Each pinned window as it reads: its percent and short label, "31% 5h". */
-export async function expectPinnedUsage(page: Page, windows: string[]): Promise<void> {
-  const pinned = usageItem(page).getByTestId("sidebar-usage-pinned-window");
-  await expect(pinned).toHaveText(windows);
-}
-
-/** Without a summary window with data the footer has no Usage item, only the Usage icon. */
-export async function expectNoUsageItem(page: Page): Promise<void> {
-  await expect(page.locator('[data-testid="sidebar-usage"]:visible')).toHaveCount(0);
-  await expect(page.locator('[data-testid="sidebar-usage-icon"]:visible')).toBeVisible();
-}
-
-/** A window row, which is itself the pin toggle: "Claude", "Session". */
-export function pinRow(scope: Locator, source: string, window: string): Locator {
-  // The row's label goes on with its percent and reset: "Pin Claude Session, 31% · resets in 2h".
-  return scope.getByRole("checkbox", { name: new RegExp(`^Pin ${source} ${window}, `) });
-}
-
-/**
- * A report card whose window rows do not pin: no pin toggle, no pin glyph, and nothing focusable
- * but the header's buttons, so no row presses or highlights on hover.
- */
-export async function expectUnpinnableRows(card: Locator): Promise<void> {
-  await expect(card.getByRole("checkbox")).toHaveCount(0);
-  await expect(card.locator('[data-testid^="usage-pin-"]')).toHaveCount(0);
-  const focusable = await card
-    .locator("[tabindex]")
-    .evaluateAll((nodes) => nodes.filter((node) => node.getAttribute("role") !== "button").length);
-  expect(focusable).toBe(0);
-}
-
-export async function togglePin(scope: Locator, source: string, window: string) {
-  const row = pinRow(scope, source, window);
-  const pinned = await row.isChecked();
-  await row.click();
-  await expect(row).toBeChecked({ checked: !pinned });
-}
-
-/**
- * The footer's Usage icon, which is there whether or not the Usage item is on. On a phone the
- * sidebar drawer has to be open.
- */
+/** The footer's Usage icon. On a phone the sidebar drawer has to be open. */
 export async function openUsageFromIcon(page: Page): Promise<void> {
   await page.getByRole("button", { name: "Usage", exact: true }).click({ timeout: 30_000 });
-  await expect(usageModal(page)).toBeVisible();
-}
-
-/** The footer's Usage item, its summary of pinned windows. */
-export async function openUsageFromItem(page: Page): Promise<void> {
-  await usageItem(page).click();
-  await expect(usageModal(page)).toBeVisible();
-}
-
-export async function openUsageFromItemWithPressFeedback(page: Page): Promise<void> {
-  const summary = page.getByRole("button", { name: /^Usage:/ });
-  await summary.hover();
-  const hoveredFill = await summary.evaluate(
-    (element) => getComputedStyle(element).backgroundColor,
-  );
-  await page.mouse.down();
-  await expect(summary).not.toHaveCSS("background-color", hoveredFill);
-  await page.mouse.up();
   await expect(usageModal(page)).toBeVisible();
 }
 
@@ -336,23 +272,6 @@ export async function closeUsageFromBackdrop(page: Page): Promise<void> {
   if (!bounds) throw new Error("Usage must be open before closing it.");
   await page.mouse.click(bounds.x + bounds.width / 2, bounds.y / 2);
   await expect(sheet).toHaveCount(0);
-}
-
-function summaryInSidebarSwitch(page: Page): Locator {
-  return page.getByRole("switch", { name: "Summary in sidebar", exact: true });
-}
-
-/** Turns the sidebar Usage summary on or off from the Usage modal's Settings. */
-export async function setSummaryInSidebar(page: Page, on: boolean): Promise<void> {
-  await openUsageOptions(page);
-  await summaryInSidebarSwitch(page).click();
-  await expectSummaryInSidebar(page, on);
-}
-
-export async function expectSummaryInSidebar(page: Page, on: boolean): Promise<void> {
-  await openUsageOptions(page);
-  await expect(summaryInSidebarSwitch(page)).toBeChecked({ checked: on });
-  await closeUsageOptions(page);
 }
 
 /** Open the cog's settings popover or compact sheet. */

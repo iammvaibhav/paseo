@@ -7,7 +7,7 @@ import { UsageSection } from "./usage-section";
 export function HostUsageSection({ serverId }: { serverId: string }) {
   const { t } = useTranslation();
   const { view, refresh } = useHostUsage(serverId);
-  const { display } = useUsageDisplay(view.kind === "ready" ? view.reports : []);
+  const { display } = useUsageDisplay();
   return (
     <UsageSection
       serverId={serverId}

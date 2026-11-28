@@ -25,7 +25,6 @@ import { useHosts } from "@/runtime/host-runtime";
 import { settingsStyles } from "@/styles/settings";
 import { useUsageSetting } from "./setting";
 import { useUsageDisplay, type UsageDisplay } from "./display";
-import { useUsageInSidebar } from "./in-sidebar";
 import { hasHostChoice, type UsageHostSelection } from "./hosts";
 import type { UsageDisplayAs } from "./preferences";
 import { UsageSourceIcon } from "./source-icon";
@@ -68,9 +67,8 @@ export function UsageOptions({
   ];
   const compact = useIsCompactFormFactor();
   const glyphSize = useIconButtonChromeGlyphSize("small", compact);
-  const fallbackDisplay = useUsageDisplay(providedDisplay ? [] : reports).display;
+  const fallbackDisplay = useUsageDisplay().display;
   const display = providedDisplay ?? fallbackDisplay;
-  const { inSidebar, setInSidebar } = useUsageInSidebar();
   const hostChoice = hasHostChoice(hostSelection) ? hostSelection : null;
   const arrangedReports = useMemo(() => display.arrange(reports), [display, reports]);
   const hasSources = arrangedReports.length > 0;
@@ -151,15 +149,6 @@ export function UsageOptions({
               />
             ) : null}
             <View style={setting.supported ? settingsStyles.rowBorder : undefined}>
-              <SettingsSwitch
-                label={t("providerUsage.showInSidebar")}
-                hint={t("providerUsage.showInSidebarHint")}
-                value={inSidebar}
-                onValueChange={setInSidebar}
-                testID="usage-show-in-sidebar"
-              />
-            </View>
-            <View style={settingsStyles.rowBorder}>
               <SettingsRow label={t("providerUsage.displayAs")}>
                 <SegmentedControl
                   options={displayAsOptions}

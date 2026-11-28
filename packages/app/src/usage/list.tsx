@@ -8,7 +8,6 @@ import { isNative } from "@/constants/platform";
 import { settingsStyles } from "@/styles/settings";
 import { UsageCard } from "./card";
 import type { UsageDisplay } from "./display";
-import { useUsageInSidebar } from "./in-sidebar";
 import type { UsageReportEntry } from "./types";
 
 function reportKey(entry: UsageReportEntry): string {
@@ -17,7 +16,6 @@ function reportKey(entry: UsageReportEntry): string {
 
 /**
  * One card per shown report (source + account), in the user's order. Each card drags by its handle.
- * Window rows pin while the sidebar summary is on.
  */
 export function UsageList({
   serverId,
@@ -28,7 +26,6 @@ export function UsageList({
   reports: UsageReportEntry[];
   display: UsageDisplay;
 }) {
-  const { inSidebar } = useUsageInSidebar();
   const { arrangeCards } = display;
   const handleDragEnd = useCallback(
     (next: UsageReportEntry[], moved: string) =>
@@ -38,16 +35,10 @@ export function UsageList({
   const renderItem = useCallback(
     ({ item, isActive }: DraggableRenderItemInfo<UsageReportEntry>) => (
       <View style={styles.item}>
-        <UsageListCard
-          serverId={serverId}
-          entry={item}
-          display={display}
-          pinnable={inSidebar}
-          dragging={isActive}
-        />
+        <UsageListCard serverId={serverId} entry={item} display={display} dragging={isActive} />
       </View>
     ),
-    [display, inSidebar, serverId],
+    [display, serverId],
   );
   return (
     <DraggableList
@@ -72,13 +63,11 @@ function UsageListCard({
   serverId,
   entry,
   display,
-  pinnable,
   dragging,
 }: {
   serverId: string;
   entry: UsageReportEntry;
   display: UsageDisplay;
-  pinnable: boolean;
   dragging: boolean;
 }) {
   const isCompact = useIsCompactFormFactor();
@@ -108,7 +97,6 @@ function UsageListCard({
           serverId={serverId}
           entry={entry}
           display={display}
-          pinnable={pinnable}
           refreshable
           arrangement={arrangement}
         />

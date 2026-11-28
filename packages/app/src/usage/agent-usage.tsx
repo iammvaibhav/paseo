@@ -9,7 +9,7 @@ import type { UsageReportEntry } from "./types";
 
 /**
  * The usage of the account an agent runs under, for its context window details: one card per
- * report in the user's card order, without pins. Nothing on hosts that cannot report usage, or for an
+ * report in the user's card order. Nothing on hosts that cannot report usage, or for an
  * agent with no account to report.
  */
 export function AgentUsage({
@@ -55,7 +55,7 @@ function AgentUsageCards({
   reports: readonly UsageReportEntry[];
   refreshable: boolean;
 }) {
-  const { display } = useUsageDisplay(reports);
+  const { display } = useUsageDisplay();
   const arranged = useMemo(() => display.arrange(reports), [display, reports]);
   return arranged.map((entry) => (
     <UsageCard
@@ -65,7 +65,6 @@ function AgentUsageCards({
       entry={entry}
       display={display}
       compact
-      pinnable={false}
       refreshable={refreshable}
     />
   ));

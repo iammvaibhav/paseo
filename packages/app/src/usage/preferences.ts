@@ -1,21 +1,12 @@
 import { z } from "zod";
-import { displayPercent, resolveUsageSnapshot } from "./model";
 import type { UsageReportEntry } from "./types";
 
 /** Whether percentages read as the share used or the share left. */
 export type UsageDisplayAs = "used" | "remaining";
 
-/** A window the user pinned to the sidebar Usage item. It matches every account of the source. */
-export interface UsagePin {
-  sourceId: string;
-  windowId: string;
-}
-
-/** Device-local. `pins` is in selection order. */
+/** Device-local. */
 export interface UsagePreferences {
   displayAs: UsageDisplayAs;
-  /** null follows source defaults; an array is the user's selection, including none. */
-  pins: UsagePin[] | null;
   /** The host the user picked to show usage for; null until they pick one. */
   serverId: string | null;
   /** Report IDs the user arranged, in their order. Shared by every host. */
@@ -26,105 +17,36 @@ export interface UsagePreferences {
 
 export const DEFAULT_USAGE_PREFERENCES: UsagePreferences = {
   displayAs: "used",
-  pins: null,
   serverId: null,
   cardOrder: [],
   cardVisibility: {},
 };
 
-const pinsSchema = z.array(z.object({ sourceId: z.string(), windowId: z.string() }));
 const reportIdsSchema = z.array(z.string()).optional().catch(undefined);
 const cardVisibilitySchema = z.record(z.string(), z.boolean()).optional().catch(undefined);
 
 export const UsagePreferencesSchema = z
   .object({
     displayAs: z.enum(["used", "remaining"]).catch("used"),
-    pins: pinsSchema.nullable().optional().catch(null),
-    // COMPAT(usagePinSelection): added in v0.11, remove after 2027-04-02.
-    // Old [] meant defaults. Read it only when the new selection is absent.
-    pinned: pinsSchema.optional().catch([]),
     serverId: z.string().nullable().catch(null),
     cardOrder: reportIdsSchema,
     cardVisibility: cardVisibilitySchema,
     // COMPAT(usageCardsOff): replaced by cardVisibility in v0.18, remove after 2027-05-22.
     cardsOff: reportIdsSchema,
   })
-  .transform(
-    ({
+  .transform(({ displayAs, serverId, cardOrder, cardVisibility, cardsOff }): UsagePreferences => {
+    const legacyVisibility =
+      cardsOff && cardsOff.length > 0
+        ? Object.fromEntries(cardsOff.map((id) => [id, false] as const))
+        : {};
+    return {
       displayAs,
-      pins,
-      pinned,
       serverId,
-      cardOrder,
-      cardVisibility,
-      cardsOff,
-    }): UsagePreferences => {
-      const legacyPins = pinned && pinned.length > 0 ? pinned : null;
-      const legacyVisibility =
-        cardsOff && cardsOff.length > 0
-          ? Object.fromEntries(cardsOff.map((id) => [id, false] as const))
-          : {};
-      return {
-        displayAs,
-        pins: pins === undefined ? legacyPins : pins,
-        serverId,
-        cardOrder: cardOrder ?? [],
-        cardVisibility: cardVisibility ?? legacyVisibility,
-      };
-    },
-  )
+      cardOrder: cardOrder ?? [],
+      cardVisibility: cardVisibility ?? legacyVisibility,
+    };
+  })
   .catch(DEFAULT_USAGE_PREFERENCES);
-
-function samePin(a: UsagePin, b: UsagePin): boolean {
-  return a.sourceId === b.sourceId && a.windowId === b.windowId;
-}
-
-/** The only owner of default and customized pin selection, shared by every usage surface. */
-export function effectiveUsagePins(
-  preferences: UsagePreferences,
-  reports: readonly UsageReportEntry[],
-): UsagePin[] {
-  if (preferences.pins !== null) return preferences.pins;
-  const pins: UsagePin[] = [];
-  for (const entry of reports) {
-    const snapshot = resolveUsageSnapshot(entry);
-    if (!snapshot) continue;
-    const withPercent = snapshot.report.windows.filter(
-      (window) => displayPercent(window, preferences.displayAs) !== null,
-    );
-    const marked = withPercent.filter((window) => window.summary);
-    for (const window of marked.length > 0 ? marked : withPercent.slice(0, 1)) {
-      const pin = { sourceId: entry.sourceId, windowId: window.id };
-      if (!pins.some((existing) => samePin(existing, pin))) pins.push(pin);
-    }
-  }
-  return pins;
-}
-
-export function isUsagePinned(
-  preferences: UsagePreferences,
-  pin: UsagePin,
-  reports: readonly UsageReportEntry[],
-): boolean {
-  return effectiveUsagePins(preferences, reports).some((pinned) => samePin(pinned, pin));
-}
-
-/** The first edit snapshots the displayed defaults before toggling one window. */
-export function toggleUsagePin({
-  preferences,
-  pin,
-  reports,
-}: {
-  preferences: UsagePreferences;
-  pin: UsagePin;
-  reports: readonly UsageReportEntry[];
-}): UsagePreferences {
-  const selected = effectiveUsagePins(preferences, reports);
-  const pins = selected.some((existing) => samePin(existing, pin))
-    ? selected.filter((existing) => !samePin(existing, pin))
-    : [...selected, { sourceId: pin.sourceId, windowId: pin.windowId }];
-  return { ...preferences, pins };
-}
 
 export function setUsageDisplayAs(
   preferences: UsagePreferences,
@@ -164,16 +86,6 @@ export function arrangeUsageReports(
     if (rankB !== undefined) return 1;
     return compareByDefaultOrder(a, b);
   });
-}
-
-/** Reports whose cards are on, in card order: what the sidebar summary reads. */
-export function usageReportsOn(
-  reports: readonly UsageReportEntry[],
-  preferences: UsagePreferences,
-): UsageReportEntry[] {
-  return arrangeUsageReports(reports, preferences).filter((entry) =>
-    isUsageCardOn(preferences, entry),
-  );
 }
 
 /** A drop as the list reports it: the card the user moved and the shown cards' order after it. */

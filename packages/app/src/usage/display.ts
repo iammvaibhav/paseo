@@ -4,23 +4,18 @@ import {
   arrangeUsageCards,
   arrangeUsageReports,
   isUsageCardOn,
-  isUsagePinned,
   setUsageCardOn,
   setUsageDisplayAs,
-  toggleUsagePin,
   type UsageCardDrop,
   type UsageDisplayAs,
-  type UsagePin,
   type UsagePreferences,
 } from "./preferences";
 import type { UsageReportEntry } from "./types";
 
-/** What usage views need from the preferences: how to read percents, the pins, and the cards. */
+/** What usage views need from the preferences: how to read percents, and the cards. */
 export interface UsageDisplay {
   displayAs: UsageDisplayAs;
   setDisplayAs: (displayAs: UsageDisplayAs) => void;
-  isPinned: (pin: UsagePin) => boolean;
-  togglePin: (pin: UsagePin) => void;
   /** Reports in the order their cards show. */
   arrange: (reports: readonly UsageReportEntry[]) => UsageReportEntry[];
   /** Saves the order of the shown cards after the user drops one. */
@@ -34,8 +29,8 @@ interface UsagePreferencesState {
   display: UsageDisplay;
 }
 
-/** The device's usage preferences, with pins resolved against the given reports. */
-export function useUsageDisplay(reports: readonly UsageReportEntry[]): UsagePreferencesState {
+/** The device's usage preferences. */
+export function useUsageDisplay(): UsagePreferencesState {
   const { settings, updateSettings } = useAppSettings();
   const preferences = settings.usage;
   const setDisplayAs = useCallback(
@@ -43,14 +38,6 @@ export function useUsageDisplay(reports: readonly UsageReportEntry[]): UsagePref
       void updateSettings((current) => ({ usage: setUsageDisplayAs(current.usage, displayAs) }));
     },
     [updateSettings],
-  );
-  const togglePin = useCallback(
-    (pin: UsagePin) => {
-      void updateSettings((current) => ({
-        usage: toggleUsagePin({ preferences: current.usage, pin, reports }),
-      }));
-    },
-    [updateSettings, reports],
   );
   const arrangeCards = useCallback(
     (drop: UsageCardDrop) => {
@@ -68,14 +55,12 @@ export function useUsageDisplay(reports: readonly UsageReportEntry[]): UsagePref
     () => ({
       displayAs: preferences.displayAs,
       setDisplayAs,
-      isPinned: (pin) => isUsagePinned(preferences, pin, reports),
-      togglePin,
       arrange: (shown) => arrangeUsageReports(shown, preferences),
       arrangeCards,
       isCardOn: (entry) => isUsageCardOn(preferences, entry),
       setCardOn,
     }),
-    [arrangeCards, preferences, reports, setCardOn, setDisplayAs, togglePin],
+    [arrangeCards, preferences, setCardOn, setDisplayAs],
   );
   return { preferences, display };
 }

@@ -16,24 +16,21 @@ function fillToneStyle(tone: UsageTone) {
 }
 
 /**
- * A window's share as a bar, coloured by its tone. `quiet` fills it with a surface colour instead,
- * for summaries where a row of coloured bars would be noise. The caller sizes the track.
+ * A window's share as a bar, coloured by its tone. The caller sizes the track.
  */
 export function UsageMeter({
   percent,
   tone,
-  quiet = false,
   style,
 }: {
   percent: number;
   tone: UsageTone;
-  quiet?: boolean;
   style?: StyleProp<ViewStyle>;
 }) {
   const fillWidth = clampPct(percent);
   const fillStyle = useMemo<StyleProp<ViewStyle>>(
-    () => [styles.fill, quiet ? styles.fillQuiet : fillToneStyle(tone), { width: `${fillWidth}%` }],
-    [fillWidth, quiet, tone],
+    () => [styles.fill, fillToneStyle(tone), { width: `${fillWidth}%` }],
+    [fillWidth, tone],
   );
   return (
     <View style={[styles.track, style]}>
@@ -53,9 +50,6 @@ const styles = StyleSheet.create((theme) => ({
   fill: {
     height: "100%",
     borderRadius: theme.borderRadius.full,
-  },
-  fillQuiet: {
-    backgroundColor: theme.colors.surface4,
   },
   fillOk: {
     backgroundColor: theme.colors.statusSuccess,
